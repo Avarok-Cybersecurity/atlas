@@ -42,19 +42,19 @@
     "numerics": { "_benches": ["bfcl-subset-echolp"] },
     "loader": { "_benches": ["bfcl-subset-echolp", "ttft-cold-gate"] },
     "tool-calling": { "_benches": ["bfcl-subset-echolp"] },
-    "ssm-state": { "_benches": ["ttft-warm-gate"] },
-    "kv-cache": { "_benches": ["ttft-warm-gate", "ttft-cold-gate"] },
-    "sampling": {}
+    "ssm-state": { "_benches": ["ttft-warm-gate", "ssm-state-poisoning-gate"] },
+    "kv-cache": { "_benches": ["ttft-warm-gate", "ttft-cold-gate", "ssm-state-poisoning-gate"] },
+    "sampling": { "_benches": ["bfcl-subset-echolp", "agentic-webserver"] }
   },
 
   "performance": {
     "_benches": ["agentic-webserver"],
-    "decode": { "_benches": ["bfcl-subset", "ttft-warm-gate"] },
+    "decode": { "_benches": ["bfcl-subset", "ttft-warm-gate", "decode-floor"] },
     "prefill": { "_benches": ["ttft-cold-gate", "ttft-warm-gate"] },
-    "kernel-dispatch": { "_benches": ["bfcl-subset"] },
-    "memory-traffic": { "_benches": ["bfcl-subset", "ttft-warm-gate"] },
-    "scheduling": { "_benches": ["ttft-warm-gate"] },
-    "speculation": { "_benches": ["bfcl-subset"] }
+    "kernel-dispatch": { "_benches": ["bfcl-subset", "decode-floor"] },
+    "memory-traffic": { "_benches": ["bfcl-subset", "ttft-warm-gate", "decode-floor"] },
+    "scheduling": { "_benches": ["ttft-warm-gate", "concurrency-sweep"] },
+    "speculation": { "_benches": ["bfcl-subset", "decode-floor"] }
   },
 
   "capability": {
@@ -62,11 +62,18 @@
     "new-model": { "_benches": ["ttft-cold-gate"] },
     "new-hardware": { "_benches": ["ttft-cold-gate", "ttft-warm-gate"] },
     "quantization": { "_benches": ["bfcl-subset-echolp"] },
-    "adapters": {},
-    "serving-api": {}
+    "adapters": { "_benches": ["bfcl-subset-echolp", "ttft-cold-gate"] },
+    "serving-api": { "_benches": ["concurrency-sweep", "ttft-warm-gate"] }
   },
 
   "infrastructure": {
+    "_doc": [
+      "Deliberately NO _benches anywhere under this root (2026-08-16 fill):",
+      "CI, release and build tooling cannot move an inference number, so this",
+      "emptiness is on purpose, not an omission awaiting a fill. If a change",
+      "here CAN move a number, it is misfiled — it belongs under performance/",
+      "or correctness/ instead."
+    ],
     "ci": {},
     "benchmark-gate": {},
     "release": {},
@@ -75,6 +82,10 @@
   },
 
   "documentation": {
+    "_doc": [
+      "Deliberately NO _benches (2026-08-16 fill): prose cannot move an",
+      "inference number. Empty on purpose, not awaiting entries."
+    ],
     "reference": {},
     "design-record": {}
   },

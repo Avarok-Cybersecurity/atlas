@@ -181,6 +181,22 @@ pub fn invalidating_paths(
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .filter(|p| super::coverage::invalidates(gate, p))
+            // ★ The one-time 2026-08-16 amnesty: a surviving path whose blob
+            // at `head` is exactly the grant's pinned content is excused,
+            // loudly. Content-pinned, so any later edit to the file changes
+            // the OID and invalidates as before. See `amnesty.rs` for the
+            // grant, the fail-closed rule, and the removal condition.
+            .filter(|p| {
+                if super::amnesty::excused(root, head, p) {
+                    tracing::warn!(
+                        "amnesty: {p} would re-open {} but its content at {head} is the \
+                         pinned one-time 2026-08-16 grant — excused (see gate/amnesty.rs)",
+                        gate.id
+                    );
+                    return false;
+                }
+                true
+            })
             .map(str::to_string)
             .collect(),
     )

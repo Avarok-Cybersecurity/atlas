@@ -104,3 +104,48 @@ unreachable trains people to ignore it.
 - `intent_only()` is retained separately from the union so the telemetry table
   can say *why* a gate is required. Collapsed into one set, "intent added this"
   becomes invisible, which is how the previous coverage gap survived.
+
+## Amendment (2026-08-16): three claims above went stale, and one was never true
+
+Audits during the governance-harvest work (ADR-0015) refuted parts of this
+record. Per this directory's append-only rule the original text stands;
+read it against the following.
+
+**1. "Any code change already invalidates all five gates" was never true.**
+Reason 2 under *What this does NOT buy* claimed the union is vacuous for code
+PRs because `PERF_PATHS` contains a bare `crates`. It does — but
+`GATE_MACHINERY` excludes the whole `crates/atlas-plugin/src/gate` prefix
+from **every** gate, so paths under it invalidate nothing and intent is their
+only source of coverage. The union was live inside `crates/` from day one; it
+was never waiting on the closure-hash narrowing.
+`required_tests::crates_paths_split_into_fully_covered_and_not_covered_at_all`
+pins both halves of the corrected claim.
+
+**2. The `recipes/` "live case" is unreachable from this repository.** This
+repo tracks zero `recipes/` files — they live in the separate `atlas-recipes`
+repo, and `invalidating_paths` diffs *this* one, so a `recipes/` path can
+never appear in the diff the gate filters. The reachable
+off-the-floor classes are `docker/`, `docs/`, `.github/`, `scripts/`,
+`bench/`, `kernels/**/BENCH.toml`, and the excluded `crates/` paths above.
+The tests named in the original text are gone with the claim:
+`the_live_case_is_recipes` became `intent_adds_where_the_paths_are_silent`
+(which pins reachable paths only), and `intent_is_redundant_for_a_crates_change`
+became the split test cited in point 1.
+
+**3. "Five gates" is now ten.** `REQUIRED` grew to ten entries: the vision
+and video fidelity gates, the echolp BFCL draw, the SSM state-poisoning gate,
+and — promoted from candidates on 2026-08-15 once their calibration
+preconditions were met — `decode-floor` and `concurrency-sweep`. Every count
+above should be read against `coverage::REQUIRED`, which is the SSOT.
+
+**4. The empty-`_benches` gap is closed.** The original tree left
+`correctness/sampling`, `capability/adapters` and `capability/serving-api`
+empty and named none of the later gates. The 2026-08-16 fill (ADR-0015)
+populated every leaf that describes something a benchmark measures, and
+pinned the deliberate emptiness of `infrastructure/*`, `documentation/*`
+and `unknown` — with `_doc` notes in the JSON and a test over the `unknown`
+subtree, so an abstention can never manufacture GPU spend.
+
+Unchanged: the union is still advisory (`check_gates` iterates
+`REQUIRED_GATES` unconditionally and the exit code cannot see intent), and
+`_benches` still may only ADD — both by the same doctrine as before.
