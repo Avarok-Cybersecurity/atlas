@@ -144,6 +144,21 @@ fn f16_h_state_still_needs_the_fused_norm_arm() {
 }
 
 #[test]
+fn ssm_rollback_mode_values_and_typos() {
+    // The explicit default parses and validates (PCND: published on every
+    // serve), and both recognized values round-trip.
+    let a = parse(&[]);
+    assert_eq!(a.ssm_rollback_mode, "snapshot");
+    assert!(validate_serve_args(&a).is_ok());
+    assert!(validate_serve_args(&parse(&["--ssm-rollback-mode", "replay"])).is_ok());
+    // A typo is refused through the model-side FromStr (SSOT with the
+    // publication parse) — never published, never silently defaulted.
+    let err = validate_serve_args(&parse(&["--ssm-rollback-mode", "Replay"])).unwrap_err();
+    assert!(err.contains("--ssm-rollback-mode"), "{err}");
+    assert!(err.contains("snapshot"), "{err}");
+}
+
+#[test]
 fn a_mistyped_mtp_gate_is_still_caught() {
     // Making the flag optional must not make its typo check optional.
     let err = validate_serve_args(&parse(&["--mtp-gate", "always"])).unwrap_err();

@@ -65,6 +65,21 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         }
         warn_shadowed_env();
     }
+    // `--ssm-rollback-mode`: explicit clap default ("snapshot"), so it is
+    // published on every serve. The value was validated by
+    // `validate_serve_args` through the SAME `FromStr` (SSOT) before this
+    // runs, so the parse cannot fail here.
+    let rollback = args
+        .ssm_rollback_mode
+        .parse::<spark_model::ssm_reserve::SsmRollbackMode>()
+        .expect("validated by validate_serve_args");
+    let rollback_in_force = spark_model::ssm_reserve::set_ssm_rollback_mode(rollback);
+    if rollback_in_force != rollback {
+        tracing::warn!(
+            "ssm-rollback-mode was already resolved ({rollback_in_force:?}); the command \
+             line's ({rollback:?}) did NOT take effect"
+        );
+    }
     // `None` where the flag was not given, so the documented `ATLAS_*` fallback
     // still decides. Passing the clap default instead sealed both cells on
     // every boot and made those variables silent no-ops.
@@ -79,7 +94,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
-         exact_verify={} ssm_tail_midchunk={} mtp_gate={}",
+         exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -92,6 +107,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         } else {
             "auto"
         },
+        spark_model::ssm_reserve::ssm_rollback_mode(),
     );
 }
 

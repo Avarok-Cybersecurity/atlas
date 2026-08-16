@@ -209,6 +209,9 @@ impl TransformerModel {
             // preflight refuses it until prefill narrowing lands, so it is
             // false on every serveable config today.
             crate::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
+            // `--ssm-rollback-mode` (EXPERIMENTAL replay scaffold; default
+            // snapshot, published by spark-server's serve_flags).
+            crate::ssm_reserve::ssm_rollback_mode(),
             gpu.as_ref(),
         )?);
 

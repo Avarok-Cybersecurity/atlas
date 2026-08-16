@@ -201,6 +201,22 @@ pub struct ServeArgs {
     #[arg(long)]
     pub ssm_h_dtype: Option<String>,
 
+    /// EXPERIMENTAL — SSM verify-rollback mode: `snapshot` (default) or
+    /// `replay`.
+    ///
+    /// `snapshot` is the wired production path: every verify writes per-token
+    /// h/conv state snapshots and a partial accept restores from them.
+    /// `replay` is a capacity SCAFFOLD: it keeps only the pre-verify
+    /// checkpoint blob per verify slot plus a small verify-window input ring
+    /// (-18.8 GiB total reserve at bs=128/K=4 on the 27B vs the wave-47
+    /// reference), and reconstructs partial accepts by replaying accepted
+    /// tokens from the checkpoint. Its device wiring (input capture + replay)
+    /// is NOT implemented yet: a replay serve boots — the preflight reserve
+    /// shows the win — but every speculative verify step refuses loudly.
+    /// The default is explicit (PCND): published on every serve.
+    #[arg(long, default_value = "snapshot")]
+    pub ssm_rollback_mode: String,
+
     /// Fused GDN output-norm kernel on the decode path (default: off).
     ///
     /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
