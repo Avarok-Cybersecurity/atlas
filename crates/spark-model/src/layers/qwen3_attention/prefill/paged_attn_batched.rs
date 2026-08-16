@@ -134,6 +134,38 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
+            (KvCacheDtype::Nvfp4, true) => {
+                if self.prefill_attn_paged_nvfp4_batched_64_k.0 == 0 {
+                    anyhow::bail!(
+                        "prefill_attn_paged_nvfp4_batched_64 kernel not loaded — \
+                         rebuild atlas-kernels (commit 4ec2cf2)."
+                    );
+                }
+                ops::prefill_attention_paged_nvfp4_batched_64(
+                    ctx.gpu,
+                    self.prefill_attn_paged_nvfp4_batched_64_k,
+                    q_contiguous,
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    attn_out,
+                    block_table_ptrs,
+                    batch_size,
+                    cu_seqlens,
+                    kv_lens,
+                    chunk_len,
+                    kv_len,
+                    q_offset_u32,
+                    nq,
+                    nkv,
+                    hd,
+                    bs_u,
+                    self.sliding_window.unwrap_or(0),
+                    inv_sqrt_d,
+                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.nvfp4_data_bytes() as u64,
+                    stream,
+                )?;
+            }
             (KvCacheDtype::Fp8, false) => {
                 if self.prefill_attn_paged_fp8_batched_k.0 == 0 {
                     anyhow::bail!(
