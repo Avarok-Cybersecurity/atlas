@@ -50,8 +50,12 @@ const CONTENT = [
   '```rust\n',
   'let kept = draft.iter().zip(verified).take_while(|(d, v)| v.argmax() == **d).count();\n',
   '```\n\n',
-  'Probe: <img src=x one',
-  'rror="window.__xss=1"> must print as text, never run.'
+  // The attribute name is split across two deltas so escaping is proven on
+  // partially-streamed markup. The split point sits after "on" because the
+  // repo-wide typos gate reads fixture strings too, and "rror" is in its
+  // dictionary as a misspelling of "error".
+  'Probe: <img src=x on',
+  'error="window.__xss=1"> must print as text, never run.'
 ];
 
 async function routeRetrieval(context) {
