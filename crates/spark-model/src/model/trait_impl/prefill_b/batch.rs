@@ -178,7 +178,16 @@ impl TransformerModel {
             );
             match self.prefill_batch_chunk_kernel_batched(streams, stream, row_base) {
                 Ok(KernelBatchResult::Completed(v)) => {
-                    tracing::debug!(target: "atlas::q12", "Q12 kernel-batched succeeded");
+                    // INFO on purpose: this is THE engagement signal for the
+                    // fused large-M prefill — total is the M every per-layer
+                    // GEMM launched at. One line per admitted wave.
+                    let total: usize = streams.iter().map(|s| s.chunk_len).sum();
+                    tracing::info!(
+                        target: "atlas::q12",
+                        n = n,
+                        total_tokens = total,
+                        "Q12 kernel-batched prefill dispatched (fused large-M)"
+                    );
                     return Ok(v);
                 }
                 Ok(KernelBatchResult::NotAdmitted) => {
@@ -199,22 +208,39 @@ impl TransformerModel {
             );
         } else {
             // Observability: eligibility failed. Surface why so operators
-            // can diagnose silent fallback. Logged at debug to avoid log
-            // floods on hot paths.
+            // can diagnose silent fallback. INFO under varlen — an operator
+            // who opted into `--prefill-varlen-batch` needs the serve log to
+            // prove (non-)engagement (the 2026-08-16 stackval diagnosis
+            // stalled on exactly this silence); debug otherwise to avoid
+            // noise on the default path.
             let chunk_lens: Vec<usize> = streams.iter().map(|s| s.chunk_len).collect();
             let chunk_starts: Vec<usize> = streams.iter().map(|s| s.chunk_start).collect();
             let total: usize = chunk_lens.iter().sum();
-            tracing::debug!(
-                target: "atlas::q12",
-                n = n,
-                chunk_lens = ?chunk_lens,
-                chunk_starts = ?chunk_starts,
-                total = total,
-                arena_cap = self.buffers.max_batch_tokens(),
-                head_dim = self.config.head_dim,
-                model_type = self.config.model_type.as_str(),
-                "Q12 kernel-batched ineligible — falling back to per-stream"
-            );
+            if super::batch_kernel::varlen_prefill_enabled() {
+                tracing::info!(
+                    target: "atlas::q12",
+                    n = n,
+                    chunk_lens = ?chunk_lens,
+                    chunk_starts = ?chunk_starts,
+                    total = total,
+                    arena_cap = self.buffers.max_batch_tokens(),
+                    head_dim = self.config.head_dim,
+                    model_type = self.config.model_type.as_str(),
+                    "Q12 kernel-batched ineligible — falling back to per-stream"
+                );
+            } else {
+                tracing::debug!(
+                    target: "atlas::q12",
+                    n = n,
+                    chunk_lens = ?chunk_lens,
+                    chunk_starts = ?chunk_starts,
+                    total = total,
+                    arena_cap = self.buffers.max_batch_tokens(),
+                    head_dim = self.config.head_dim,
+                    model_type = self.config.model_type.as_str(),
+                    "Q12 kernel-batched ineligible — falling back to per-stream"
+                );
+            }
         }
 
         // Multi-rank world (EP or pure TP) → NCCL needs the default stream.
