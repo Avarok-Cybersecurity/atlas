@@ -403,6 +403,130 @@ export const reachout = {
   discordCta: 'Or pull up in Discord'
 };
 
+// --- ask the codebase (chat modal) -------------------------------------------
+// Copy SSOT for the CodeChat modal. Retrieval runs locally in wasm from the
+// repo corpus, answers come from free OpenRouter models with the visitor's own
+// key. Same voice rules as everything above.
+export const codeChat = {
+  navLabel: 'Ask the codebase',
+  closeLabel: 'Close ask the codebase',
+  label: '// 11 \u00b7 ask the codebase',
+  title: 'Ask the codebase.',
+  sub:
+    'The whole Atlas repo is embedded into a vector lattice that runs right here in your browser. Ask a question, get an answer with file and line receipts.',
+  boot: [
+    'atlas code lattice online',
+    'retrieval runs locally in wasm, only the model call leaves this page',
+    'pick a question or type your own'
+  ],
+  starters: [
+    'How does MTP speculative decoding pick which draft tokens to keep?',
+    'Where does the scheduler decide which requests join a decode batch?',
+    'How do the NVFP4 GEMM kernels get dispatched on GB10?'
+  ],
+  key: {
+    tag: 'openrouter key',
+    lead:
+      'Answers come from free models on OpenRouter, so you bring your own key. It stays in this browser and we never see it.',
+    linkText: 'grab a free key at openrouter.ai/keys',
+    url: 'https://openrouter.ai/keys',
+    placeholder: 'sk-or-v1-...',
+    inputLabel: 'OpenRouter API key',
+    reveal: 'show',
+    conceal: 'hide',
+    save: 'connect',
+    connectedTag: 'connected',
+    connectedNote: 'key stored in this browser only',
+    change: 'swap key'
+  },
+  status: {
+    idle: 'standby',
+    'wasm-init': 'starting engine',
+    manifest: 'fetching manifest',
+    'loading-cached': 'reading local cache',
+    downloading: 'downloading corpus',
+    caching: 'writing local cache',
+    indexing: 'indexing',
+    ready: 'ready',
+    error: 'fault'
+  },
+  offlineBadge: 'cached \u00b7 offline',
+  phase: {
+    retrieving: 'searching the lattice',
+    reranking: 'reranking matches',
+    thinking: 'reasoning',
+    writing: 'writing'
+  },
+  trace: {
+    label: 'reasoning',
+    reasonedPrefix: 'reasoned for',
+    show: 'show',
+    hide: 'hide'
+  },
+  loader: {
+    title: 'mounting the code lattice',
+    commitLabel: 'commit',
+    sizeLabel: 'download',
+    chunksLabel: 'chunks',
+    stages: {
+      'wasm-init': 'start the wasm engine',
+      manifest: 'fetch the corpus manifest',
+      corpus: 'load the corpus',
+      indexing: 'index the chunks'
+    },
+    cancelNote: 'close anytime, the download cancels cleanly and nothing partial is kept'
+  },
+  input: {
+    placeholder: 'ask about kernels, scheduling, quantization, anything in the repo',
+    ask: 'ask',
+    hintLoading: 'the corpus is still mounting, hang tight',
+    hintNoKey: 'connect your OpenRouter key above to ask',
+    fine: 'answers are generated and can be wrong, the source links are real so read them before you trust them'
+  },
+  answerTag: 'answer',
+  sourcesHeading: 'source receipts',
+  sourcesOne: 'source',
+  sourcesMany: 'sources',
+  loadFail: 'The chat window did not load, maybe the network blinked. Close and try again.',
+  errors: {
+    wasm: {
+      tag: 'engine fault',
+      body: 'The wasm engine failed to start. Usually a one off, a retry brings it right up.',
+      retry: 'restart engine'
+    },
+    manifest: {
+      tag: 'manifest unreachable',
+      body: 'Could not reach the corpus manifest. Check your connection and retry.',
+      retry: 'retry'
+    },
+    corpus: {
+      tag: 'download failed',
+      body: 'The corpus download did not finish. Nothing partial was kept, retry whenever.',
+      retry: 'retry download'
+    },
+    decompress: {
+      tag: 'unpack failed',
+      body: 'Your browser could not unpack the corpus stream. Any current Chrome, Edge, Firefox or Safari handles it.',
+      retry: 'retry'
+    },
+    rate: {
+      tag: 'rate limited',
+      body: 'The free OpenRouter models are catching their breath. Give it a few seconds.',
+      retry: 'ask again'
+    },
+    key: {
+      tag: 'key rejected',
+      body: 'OpenRouter did not accept that key. Paste a fresh one and reconnect.',
+      retry: 'swap key'
+    },
+    generic: {
+      tag: 'hiccup',
+      body: 'That one did not go through. Retry in a moment.',
+      retry: 'retry'
+    }
+  }
+};
+
 // --- footer ------------------------------------------------------------------
 export const footer = {
   tagline: 'Pure Rust and CUDA inference for the machine on your desk.',

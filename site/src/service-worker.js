@@ -12,8 +12,14 @@ import { build, files, version } from '$service-worker';
 const CACHE = `atlas-site-${version}`;
 
 // The og-image is fetched by social scrapers, never by visitors — don't spend
-// visitors' disk/bandwidth pre-caching it.
-const PRECACHE = ['/', ...build, ...files.filter((f) => !f.includes('og-image'))];
+// visitors' disk/bandwidth pre-caching it. /lattice/ (the 763 KB LatticeDB
+// wasm + loader for the chat modal) is excluded too: it must load only when
+// the feature is used, not at SW install for every visitor.
+const PRECACHE = [
+  '/',
+  ...build,
+  ...files.filter((f) => !f.includes('og-image') && !f.startsWith('/lattice/'))
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

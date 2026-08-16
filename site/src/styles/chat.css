@@ -1,0 +1,319 @@
+/* =============================================================================
+   "Ask the codebase" modal — a lab instrument printing its telemetry onto
+   receipt stock. Same warm-workshop dialect as app.css and dashboard.css.
+   Loaded AFTER dashboard.css (reuses .bd-close, the bd-shimmer keyframes and
+   the .bd-skeleton-* pieces) and BEFORE mobile.css, the SSOT for every
+   viewport rule. Copper means activity, green means ready, amber means fault.
+   Status colors stay status colors.
+   ========================================================================== */
+
+/* ---- shell ---------------------------------------------------------------- */
+.cc-backdrop {
+  position: fixed; inset: 0; z-index: 110; background: rgba(38, 30, 18, 0.45);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 3.5rem 1.25rem 2rem;
+}
+.cc {
+  position: relative; width: min(860px, 100%);
+  max-height: calc(100dvh - 5.5rem);
+  display: flex; flex-direction: column;
+  background: var(--card); color: var(--t1);
+  border: 1px solid var(--border-strong); border-radius: 4px 4px 12px 12px;
+  box-shadow: var(--shadow-lg); overflow: hidden; outline: none;
+  font-family: var(--font-mono);
+}
+/* receipt tear along the top edge — the same scallop trick as .receipt::before */
+.cc::before {
+  content: ''; position: absolute; top: -1px; left: 0; right: 0; height: 8px;
+  z-index: 3; pointer-events: none;
+  background: radial-gradient(circle at 6px -2px, transparent 6px, var(--card) 6px) repeat-x;
+  background-size: 14px 8px; transform: rotate(180deg);
+}
+
+/* the full deep-learning glyph, printed faintly off-center on the instrument */
+.cc-motif {
+  position: absolute; top: -70px; right: -90px; width: 460px; height: 460px;
+  color: var(--accent); opacity: 0.05; transform: rotate(8deg);
+  pointer-events: none; z-index: 0;
+}
+
+/* ---- header, the status instrument ---------------------------------------- */
+.cc-head {
+  display: flex; align-items: flex-start; gap: 1rem;
+  padding: 1.35rem 1.5rem 0.9rem; border-bottom: 1.5px dashed var(--border-strong);
+  position: relative; z-index: 1;
+}
+.cc-head-titles { flex: 1; min-width: 0; }
+.cc-slabel { display: block; margin-bottom: 0.3rem; }
+.cc-title { font-family: var(--font-sans); font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em; }
+.cc-status {
+  display: inline-flex; align-items: center; gap: 0.45rem; margin-top: 0.2rem;
+  max-width: 42%; padding: 0.35rem 0.7rem;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg);
+  font-size: 0.7rem; font-weight: 600; color: var(--t2); white-space: nowrap;
+}
+.cc-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cc-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--t3); flex-shrink: 0; }
+.cc-status[data-tone='working'] .cc-status-dot { background: var(--accent); animation: cc-pulse 1.2s ease-in-out infinite; }
+.cc-status[data-tone='ready'] .cc-status-dot { background: var(--green); }
+.cc-status[data-tone='error'] .cc-status-dot { background: var(--amber); }
+.cc-status[data-tone='error'] { color: var(--amber); border-color: rgba(154, 106, 26, 0.4); }
+@keyframes cc-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(181, 98, 47, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(181, 98, 47, 0); }
+}
+.cc-close { flex-shrink: 0; }
+
+/* ---- loading panel (the professional loader) ------------------------------ */
+.cc-panel { padding: 1.5rem; position: relative; z-index: 1; }
+.cc-load-title {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; color: var(--accent);
+}
+.cc-load-meta { display: flex; flex-wrap: wrap; gap: 0.4rem 1.6rem; margin-top: 0.7rem; }
+.cc-load-meta div { display: flex; gap: 0.45rem; align-items: baseline; }
+.cc-load-meta dt { font-size: 0.68rem; color: var(--t3); }
+.cc-load-meta dd { font-size: 0.76rem; font-weight: 700; color: var(--t1); font-variant-numeric: tabular-nums; }
+.cc-stages { list-style: none; margin: 1.1rem 0 1rem; display: grid; gap: 0.5rem; }
+.cc-stage { display: flex; align-items: baseline; gap: 0.6rem; font-size: 0.78rem; color: var(--t3); }
+.cc-stage[data-state='done'] { color: var(--t2); }
+.cc-stage[data-state='active'] { color: var(--t1); font-weight: 600; }
+.cc-stage-glyph { width: 1.1em; text-align: center; flex-shrink: 0; }
+.cc-stage[data-state='done'] .cc-stage-glyph { color: var(--green); }
+.cc-stage[data-state='active'] .cc-stage-glyph { color: var(--accent); animation: cc-blink 1.2s ease-in-out infinite; }
+@keyframes cc-blink { 50% { opacity: 0.35; } }
+.cc-stage-detail { margin-left: auto; color: var(--accent-deep); font-weight: 700; font-variant-numeric: tabular-nums; }
+.cc-bar {
+  height: 7px; border-radius: 999px; overflow: hidden;
+  background: var(--bg2); border: 1px solid var(--border);
+}
+.cc-bar-fill { height: 100%; border-radius: 999px; background: var(--bar); transition: width 0.25s linear; }
+/* indeterminate sheen — reuses the bd-shimmer keyframes from dashboard.css */
+.cc-shimmer {
+  background: linear-gradient(100deg, var(--bg2) 40%, var(--border-strong) 50%, var(--bg2) 60%);
+  background-size: 200% 100%; animation: bd-shimmer 1.4s ease-in-out infinite;
+}
+.cc-fine { margin-top: 0.85rem; font-size: 0.68rem; color: var(--t3); }
+
+/* ---- message log (ruled paper) -------------------------------------------- */
+.cc-log {
+  flex: 1; min-height: 16rem; overflow-y: auto; overscroll-behavior: contain;
+  padding: 1.4rem 1.5rem 1.5rem; position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: stretch; gap: 1rem;
+  background-image: repeating-linear-gradient(transparent, transparent 27px, rgba(90, 74, 44, 0.05) 27px, rgba(90, 74, 44, 0.05) 28px);
+}
+.cc-sub { font-family: var(--font-sans); font-size: 0.88rem; color: var(--t2); line-height: 1.6; max-width: 56ch; }
+.cc-boot { display: grid; gap: 0.3rem; }
+.cc-boot-line { font-size: 0.78rem; color: var(--t2); }
+.cc-boot-line::before { content: '· '; color: var(--accent); font-weight: 700; }
+.cc-boot-corpus { color: var(--t1); font-weight: 600; }
+.cc-offline {
+  align-self: flex-start; padding: 0.2rem 0.6rem; border-radius: 999px;
+  font-size: 0.66rem; font-weight: 700; color: var(--amber);
+  background: rgba(154, 106, 26, 0.12); border: 1px solid rgba(154, 106, 26, 0.3);
+}
+.cc-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.cc-chip {
+  font-family: inherit; font-size: 0.76rem; font-weight: 600; text-align: left;
+  color: var(--accent-deep); background: var(--accent-soft);
+  border: 1px solid rgba(181, 98, 47, 0.3); border-radius: 999px;
+  padding: 0.45rem 0.9rem; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.cc-chip:hover { background: var(--accent); color: #fff; }
+
+/* user prompt lines */
+.cm-user { font-size: 0.85rem; color: var(--t1); overflow-wrap: anywhere; }
+.cm-prompt { color: var(--accent); font-weight: 800; margin-right: 0.4rem; }
+
+/* per-message working line */
+.cc-pending { display: flex; align-items: center; gap: 0.55rem; font-size: 0.74rem; color: var(--t2); }
+.cc-pending .cc-status-dot { background: var(--accent); animation: cc-pulse 1.2s ease-in-out infinite; }
+.cc-pending-bar { width: 7rem; height: 6px; border-radius: 999px; }
+
+/* ---- assistant receipt cards ---------------------------------------------- */
+.cm-card {
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 4px;
+  box-shadow: var(--shadow-sm); padding: 0.9rem 1.05rem 0.8rem;
+}
+.cm-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem;
+  border-bottom: 1.5px dashed var(--border-strong);
+  padding-bottom: 0.45rem; margin-bottom: 0.6rem;
+}
+.cm-title { font-size: 0.64rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+.cm-count { font-size: 0.64rem; color: var(--t3); }
+.cm-body { font-family: var(--font-sans); font-size: 0.9rem; line-height: 1.6; color: var(--t1); overflow-wrap: anywhere; }
+.cm-body p { margin: 0 0 0.7rem; }
+.cm-body p:last-child { margin-bottom: 0; }
+.cm-body ul, .cm-body ol { margin: 0 0 0.7rem 1.25rem; }
+.cm-body li { margin-bottom: 0.25rem; }
+.cm-body a { color: var(--accent); font-weight: 600; }
+.cm-body sup { color: var(--accent); font-weight: 700; }
+.cm-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.08em 0.35em;
+}
+/* code fences are screens embedded in the instrument (the .term treatment) */
+.cm-body pre {
+  background: #201d18; color: #e6dfce; border-radius: 8px;
+  padding: 0.8rem 0.95rem; margin: 0 0 0.7rem; overflow-x: auto; scrollbar-width: thin;
+}
+.cm-body pre:last-child { margin-bottom: 0; }
+.cm-body pre code {
+  background: none; border: 0; padding: 0;
+  font-size: 0.78rem; line-height: 1.65; color: inherit;
+}
+/* reasoning trace — the instrument's strip-chart annotation. Streams open
+   under a small `reasoning` slabel with a copper left rule, then collapses to
+   the one-line "reasoned for N.Ns · show" disclosure when the answer starts.
+   The clip animates max-height so the collapse never jumps the layout. */
+.cm-think { margin-bottom: 0.65rem; }
+.cm-think-label { display: block; color: var(--t3); }
+.cm-think-clip { overflow: hidden; max-height: 12rem; transition: max-height 0.35s ease; }
+.cm-think[data-open='false'] .cm-think-clip { max-height: 0; }
+.cm-think-text {
+  margin: 0.35rem 0 0; padding-left: 0.7rem;
+  border-left: 2px solid rgba(181, 98, 47, 0.4);
+  max-height: 11.5rem; overflow-y: auto; scrollbar-width: thin;
+  font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.6;
+  color: var(--t3); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.cm-think-toggle {
+  display: inline-flex; align-items: baseline; gap: 0.45rem;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.05em; color: var(--t3);
+}
+.cm-think-toggle:hover { color: var(--accent); }
+.cm-think-sep { color: var(--border-strong); }
+.cm-think-act { color: var(--accent-deep); text-decoration: underline dotted; text-underline-offset: 2px; }
+.cm-think[data-open='true'] .cm-think-toggle { margin-bottom: 0; }
+
+/* streaming caret — a soft copper blink at the end of whatever is printing */
+.cm-card[data-streaming='thinking'] .cm-think-text::after,
+.cm-card[data-streaming='writing'] .cm-body > :last-child::after {
+  content: ''; display: inline-block; width: 0.5em; height: 1.05em;
+  margin-left: 0.15em; vertical-align: text-bottom; border-radius: 1px;
+  background: var(--accent); animation: cm-caret 1.1s ease-in-out infinite;
+}
+@keyframes cm-caret { 0%, 100% { opacity: 0.85; } 50% { opacity: 0.1; } }
+
+.cm-sources { margin-top: 0.75rem; border-top: 1.5px dashed var(--border-strong); padding-top: 0.55rem; }
+.cm-sources summary {
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.66rem; font-weight: 800;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--t2);
+}
+.cm-sources summary:hover { color: var(--accent); }
+.cm-src {
+  display: flex; align-items: baseline; gap: 0.6rem; padding: 0.3rem 0;
+  font-family: var(--font-mono); font-size: 0.74rem; color: var(--t2);
+  text-decoration: none; border-bottom: 1px dotted var(--border);
+}
+.cm-src:last-child { border-bottom: 0; }
+.cm-src:hover .cm-src-path { color: var(--accent); }
+.cm-src-n { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+.cm-src-path { color: var(--t1); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.cm-src-lines { color: var(--t3); white-space: nowrap; }
+.cm-src-pct { margin-left: auto; padding-left: 0.6rem; color: var(--accent-deep); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ---- error cards ----------------------------------------------------------- */
+.cc-error {
+  border: 1.5px dashed rgba(154, 106, 26, 0.5); border-radius: 4px;
+  background: rgba(154, 106, 26, 0.06); padding: 0.85rem 1rem;
+}
+.cc-error-tag { font-size: 0.66rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--amber); }
+.cc-error-body { font-family: var(--font-sans); font-size: 0.84rem; color: var(--t2); line-height: 1.55; margin-top: 0.35rem; }
+.cc-error-retry {
+  margin-top: 0.6rem; padding: 0.4rem 0.85rem; cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid rgba(181, 98, 47, 0.3); border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+.cc-error-retry:hover { background: var(--accent); color: #fff; }
+
+/* ---- key entry (a pending receipt) ---------------------------------------- */
+.cc-key {
+  margin: 0 1.5rem 0.9rem; padding: 0.85rem 1rem; position: relative; z-index: 1;
+  border: 1.5px dashed var(--border-strong); border-radius: 4px; background: var(--bg);
+}
+.cc-key-tag { font-size: 0.66rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+.cc-key-lead { font-family: var(--font-sans); font-size: 0.82rem; color: var(--t2); line-height: 1.55; margin-top: 0.35rem; }
+.cc-key-form { display: flex; gap: 0.5rem; margin-top: 0.65rem; }
+.cc-key-input {
+  flex: 1; min-width: 0; padding: 0.5rem 0.7rem;
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--t1);
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 7px;
+}
+.cc-key-toggle, .cc-key-save {
+  flex-shrink: 0; padding: 0.45rem 0.8rem; cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; border-radius: 7px;
+}
+.cc-key-toggle { background: var(--bg2); color: var(--t2); border: 1px solid var(--border-strong); }
+.cc-key-toggle:hover { color: var(--t1); border-color: var(--accent); }
+.cc-key-save { background: var(--accent); color: #fff; border: 1px solid var(--accent); }
+.cc-key-save:hover { background: var(--accent-deep); }
+.cc-key-save:disabled { opacity: 0.45; cursor: not-allowed; }
+.cc-keyrow { display: flex; align-items: center; gap: 0.7rem; margin: 0 1.5rem 0.7rem; position: relative; z-index: 1; }
+.cc-connected {
+  display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.65rem;
+  font-size: 0.68rem; font-weight: 700; color: var(--green);
+  background: var(--green-soft); border: 1px solid rgba(59, 122, 80, 0.3); border-radius: 999px;
+}
+.cc-connected .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cc-keyrow-note { font-size: 0.68rem; color: var(--t3); }
+.cc-keyrow-swap {
+  margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700; color: var(--accent);
+}
+.cc-keyrow-swap:hover { color: var(--accent-deep); text-decoration: underline; }
+
+/* ---- input row + fine print ------------------------------------------------ */
+.cc-input-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.85rem 1.5rem; border-top: 1px solid var(--border);
+  background: var(--card); position: relative; z-index: 1;
+}
+.cc-input-row:focus-within { box-shadow: inset 0 2px 0 var(--accent); }
+.cc-prompt { color: var(--accent); font-weight: 800; font-size: 1rem; }
+.cc-input {
+  flex: 1; min-width: 0; padding: 0.45rem 0; border: 0; background: transparent;
+  font-family: var(--font-mono); font-size: 0.86rem; color: var(--t1);
+}
+.cc-input::placeholder { color: var(--t3); }
+.cc-input:focus { outline: none; } /* the row's focus-within rule carries the cue */
+.cc-input:disabled { color: var(--t3); }
+.cc-ask {
+  flex-shrink: 0; padding: 0.5rem 1.15rem; cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em;
+  color: #fff; background: var(--accent); border: 0; border-radius: 8px;
+  transition: background 0.15s;
+}
+.cc-ask:hover:not(:disabled) { background: var(--accent-deep); }
+.cc-ask:disabled { opacity: 0.45; cursor: not-allowed; }
+.cc-foot {
+  display: flex; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap;
+  padding: 0 1.5rem 0.85rem; position: relative; z-index: 1; background: var(--card);
+  font-size: 0.64rem; color: var(--t3);
+}
+.cc-hint { color: var(--accent-deep); font-weight: 600; }
+
+/* ---- loading skeleton (shown while the lazy chunk arrives) ----------------- */
+/* Shares .cc geometry, borrows .bd-skeleton-bar/.bd-skeleton-chart shimmer
+   pieces from dashboard.css (SSOT for the shimmer treatment). */
+.cc-skeleton { display: block; min-height: 46vh; padding: 1.5rem 1.75rem; }
+.cc-skeleton-close { position: absolute; top: 1.25rem; right: 1.5rem; }
+.cc-skeleton-error { font-family: var(--font-sans); font-size: 0.85rem; color: var(--t2); padding-right: 3rem; }
+
+/* ---- reduced motion -------------------------------------------------------- */
+/* app.css already zeroes every animation globally, these keep the intent
+   explicit for the instrument's own cues. */
+@media (prefers-reduced-motion: reduce) {
+  .cc-status-dot, .cc-stage-glyph, .cc-shimmer, .cc-pending .cc-status-dot { animation: none !important; }
+  .cc-bar-fill { transition: none; }
+  /* static caret, instant trace collapse */
+  .cm-card[data-streaming='thinking'] .cm-think-text::after,
+  .cm-card[data-streaming='writing'] .cm-body > :last-child::after { animation: none; opacity: 0.6; }
+  .cm-think-clip { transition: none; }
+}

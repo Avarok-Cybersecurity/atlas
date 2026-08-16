@@ -237,3 +237,52 @@ img, svg, video { max-width: 100%; }
 @media (pointer: coarse) {
   .bd-tab, .bd-close, .gpc-close { min-height: 42px; }
 }
+
+/* ---- ask-the-codebase modal (all viewport rules live here) ---------------- */
+@media (max-width: 860px) {
+  /* full-screen sheet, the log scrolls inside while the input stays pinned */
+  .cc-backdrop { padding: 0; align-items: stretch; }
+  .cc {
+    width: 100%; height: 100dvh; max-height: none;
+    border-radius: 0; border-left: 0; border-right: 0;
+  }
+  .cc::before { display: none; } /* no torn edge on a full-bleed sheet */
+  .cc-motif { top: auto; bottom: -60px; right: -70px; width: 340px; height: 340px; }
+  .cc-head { padding: 0.85rem 1rem 0.7rem; flex-wrap: wrap; align-items: center; }
+  .cc-head-titles { order: 1; }
+  .cc-close { order: 2; }
+  .cc-status { order: 3; flex-basis: 100%; max-width: 100%; margin-top: 0.4rem; }
+  .cc-title { font-size: 1.15rem; }
+  .cc-panel { padding: 1.15rem 1rem; }
+  .cc-log { padding: 1.1rem 1rem 1.25rem; min-height: 0; }
+  .cc-key, .cc-keyrow { margin-left: 1rem; margin-right: 1rem; }
+  .cc-key-form { flex-wrap: wrap; }
+  .cc-key-input { flex-basis: 100%; }
+
+  /* starter chips become a scroll-snap rail */
+  .cc-chips {
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin;
+    scroll-snap-type: x proximity; padding-bottom: 0.35rem;
+    margin-right: -1rem; padding-right: 1rem;
+  }
+  .cc-chip { flex-shrink: 0; scroll-snap-align: start; max-width: 82vw; white-space: normal; }
+
+  /* input pinned above the home indicator */
+  .cc-input-row { position: sticky; bottom: 0; padding: 0.7rem 1rem; }
+  .cc-foot { padding: 0.45rem 1rem calc(0.6rem + env(safe-area-inset-bottom)); }
+
+  /* legibility floor, matching the site-wide block above */
+  .cc-status { font-size: 0.74rem; }
+  .cc-boot-line, .cc-chip { font-size: 0.8rem; }
+  .cc-stage, .cm-src { font-size: 0.78rem; }
+  .cc-fine, .cc-foot, .cm-title, .cm-count { font-size: 0.72rem; }
+  .cm-user { font-size: 0.88rem; }
+  .cm-body { font-size: 0.92rem; }
+  .cm-body pre code { font-size: 0.76rem; }
+}
+@media (pointer: coarse) {
+  .nav-chat-btn { width: 42px; height: 42px; }
+  .cc-ask, .cc-chip, .cc-key-toggle, .cc-key-save, .cc-error-retry, .cc-close { min-height: 42px; }
+  .cc-keyrow-swap, .cm-sources summary { padding-block: 0.55rem; }
+  .cm-src { min-height: 42px; align-items: center; }
+}
