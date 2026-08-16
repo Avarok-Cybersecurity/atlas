@@ -92,6 +92,17 @@ jobs:
             kernels/**/*.metal
           exclude: |
             **/target/**
+            **/*_tests.rs
+            crates/**/tests/**
+          # Corpus size is bounded by GitHub's 100 MB per-file push limit on
+          # gh-pages. The first full run at the action defaults (90-line
+          # chunks, 6 significant digits) produced a 165 MB gz from 11 024
+          # chunks x dim 2048, so the corpus is tuned coarser here: 150-line
+          # chunks with light overlap, 5 significant digits (embedding noise
+          # floor sits well above the 5th digit), and test files excluded.
+          chunk-lines: '150'
+          chunk-overlap: '10'
+          vector-precision: '5'
           embedding-endpoint: ${{ steps.ssot.outputs.endpoint_base }}
           embedding-model: ${{ steps.ssot.outputs.embed_model }}
           embedding-api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
@@ -114,6 +125,21 @@ jobs:
 
       # Orphan single-commit branch: gh-pages history never grows, this
       # workflow is its sole owner, and the corpus URLs are stable forever.
+      - name: Refuse an unpublishable corpus
+        env:
+          GZ: ${{ steps.rag.outputs.corpus-gz-file }}
+        run: |
+          set -euo pipefail
+          # GitHub rejects any pushed file over 100 MB. Fail here with the
+          # real number instead of dying inside git push with an LFS hint.
+          bytes=$(stat -c%s "$GZ")
+          limit=$(( 95 * 1024 * 1024 ))
+          echo "corpus gz: $bytes bytes (cap $limit)"
+          if [ "$bytes" -gt "$limit" ]; then
+            echo "::error::corpus gz is $bytes bytes, over the $limit-byte publish cap — raise chunk-lines, lower vector-precision, or trim paths"
+            exit 1
+          fi
+
       - name: Publish to orphan gh-pages
         env:
           CORPUS_GZ: ${{ steps.rag.outputs.corpus-gz-file }}
