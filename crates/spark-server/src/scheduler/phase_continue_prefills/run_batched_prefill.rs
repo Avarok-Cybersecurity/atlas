@@ -41,14 +41,22 @@ pub(super) fn run_batched_prefill_step(
     let n = prefilling.len();
     let mut chunk_lens: Vec<usize> = Vec::with_capacity(n);
     let mut is_last_flags: Vec<bool> = Vec::with_capacity(n);
+    // VARLEN batched prefill: resolved once here — it governs the wave
+    // planner below AND subsumes the codispatch shared-geometry hack (varlen
+    // admits ragged chunk-0 batches directly, so equal-length coercion is
+    // redundant; per-stream geometry is what the cu_seqlens path wants).
+    // Precedence: when both `--prefill-varlen-batch` and the codispatch env
+    // are set, varlen wins.
+    let varlen = spark_model::layers::ops::prefill_varlen_enabled();
     // Co-dispatch (ATLAS_PREFILL_CODISPATCH=1): when all streams are at chunk 0
     // and equal-length, give them ONE shared geometry so the kernel-batched path
     // is eligible (check_kernel_batched_eligible requires identical chunk_len /
     // chunk_start / is_last across streams). Ragged or non-chunk-0 batches keep
     // per-stream geometry, which the dispatcher handles via per-stream fallback.
-    let shared_geom: Option<(usize, bool)> = if std::env::var("ATLAS_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    let shared_geom: Option<(usize, bool)> = if !varlen
+        && std::env::var("ATLAS_PREFILL_CODISPATCH")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
         && !model.is_mla()
         && n >= 2
         && prefilling.iter().all(|p| p.chunk_offset == 0)
@@ -98,7 +106,6 @@ pub(super) fn run_batched_prefill_step(
     // back-to-back within this tick, so every stream still advances one
     // chunk per tick. Flag OFF ⇒ exactly one wave holding every stream — the
     // pre-wave dispatch, byte-identical (pinned in prefill_waves tests).
-    let varlen = spark_model::layers::ops::prefill_varlen_enabled();
     let wave_cap = max_prefill_tokens.min(max_batch_tokens).max(1);
     let geoms: Vec<WaveGeom> = prefilling
         .iter()
@@ -111,6 +118,21 @@ pub(super) fn run_batched_prefill_step(
         .collect();
     let waves = plan_prefill_waves(&geoms, varlen, wave_cap);
     let n_waves = waves.len();
+    if varlen {
+        // Engagement proof for serve-log diagnosis: one INFO line per tick
+        // with the planned wave shapes. M per wave = Σ chunk_len of its
+        // members — the row count every fused per-layer GEMM launches at
+        // (assuming the model-side dispatch admits; it logs its own verdict
+        // under target "atlas::q12").
+        let wave_m: Vec<usize> = waves
+            .iter()
+            .map(|w| w.iter().map(|&i| chunk_lens[i]).sum())
+            .collect();
+        tracing::info!(
+            "Varlen prefill waves: {n} streams -> {n_waves} wave(s), M per wave {wave_m:?} \
+             (cap {wave_cap})"
+        );
+    }
 
     let t0_batch = Instant::now();
     for wave in waves {

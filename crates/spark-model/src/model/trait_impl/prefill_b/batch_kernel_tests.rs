@@ -7,7 +7,8 @@
 use spark_runtime::prefix_cache::PrefixMatch;
 
 use super::batch_kernel::{
-    cache_batch_matches_compatible, check_kernel_batched_eligible, config_is_mla,
+    batched_reserve_hybrid_ssm_ok, cache_batch_matches_compatible, check_kernel_batched_eligible,
+    config_is_mla,
 };
 
 /// (chunk_len, chunk_start, is_last_chunk)
@@ -45,6 +46,31 @@ fn cache_match(tokens: usize) -> PrefixMatch {
         ssm_snapshot_tier_tokens: 0,
         ssm_snapshot_is_tail: false,
     }
+}
+
+#[test]
+fn hybrid_ssm_admits_only_all_cold_reservations() {
+    // The 2026-08-16 stackval blocker: a blanket num_ssm_layers!=0 veto
+    // rejected COLD chunk-0 waves on the hybrid 27B, serializing the whole
+    // prefill ramp. Cold (matched_tokens == 0 everywhere) must be admitted —
+    // it is state-identical to the cache-inactive case.
+    assert!(batched_reserve_hybrid_ssm_ok(
+        &[cache_match(0), cache_match(0), cache_match(0)],
+        true,
+    ));
+    // A warm match on a hybrid model keeps the per-stream path (KV/Marconi
+    // skip interplay with recurrent state is not admitted transactionally).
+    assert!(!batched_reserve_hybrid_ssm_ok(
+        &[cache_match(0), cache_match(48)],
+        true,
+    ));
+    // Attention-only models are unaffected either way.
+    assert!(batched_reserve_hybrid_ssm_ok(
+        &[cache_match(48), cache_match(48)],
+        false,
+    ));
+    // No matches (cache active, empty batch guard upstream) is trivially ok.
+    assert!(batched_reserve_hybrid_ssm_ok(&[], true));
 }
 
 #[test]

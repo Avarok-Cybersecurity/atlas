@@ -131,6 +131,20 @@ pub(in crate::model) fn cache_batch_matches_compatible(
     })
 }
 
+/// Hybrid-SSM admission rule for the batched prefix reservation: a model
+/// with SSM layers may only enter the batched path when every reservation is
+/// COLD (`matched_tokens == 0`) — an empty match acquires no blocks and
+/// implies no KV/Marconi skip, making the batch state-identical to the
+/// cache-inactive admission that has always accepted hybrid models. A warm
+/// match on a hybrid model routes to the per-stream path, whose
+/// restore/skip logic is established. Attention-only models are unaffected.
+pub(in crate::model) fn batched_reserve_hybrid_ssm_ok(
+    matches: &[PrefixMatch],
+    hybrid_ssm: bool,
+) -> bool {
+    !hybrid_ssm || matches.iter().all(|m| m.matched_tokens == 0)
+}
+
 impl TransformerModel {
     /// DIAG: detect cross-stream physical-block sharing (co-dispatch KV
     /// double-issue hypothesis for the n>=5 decode-bleed bug). Gated behind
