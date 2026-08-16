@@ -323,6 +323,9 @@ impl Model for TransformerModel {
     fn has_ssm_layers(&self) -> bool {
         self.ssm_pool.num_ssm_layers > 0
     }
+    fn mtp_slot_draft_capacity(&self, slot_idx: usize) -> usize {
+        self.ssm_pool.verify_draft_capacity(slot_idx)
+    }
     fn decode_rollback_ring_slots(&self) -> usize {
         if self.ssm_snapshots.decode_rollback_enabled() {
             self.ssm_snapshots.decode_ring_slots

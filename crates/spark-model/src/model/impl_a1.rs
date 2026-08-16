@@ -202,6 +202,7 @@ impl TransformerModel {
             max_batch_size,
             has_mtp,
             num_intermediates,
+            num_drafts,
             gpu.as_ref(),
         )?);
 

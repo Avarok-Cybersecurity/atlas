@@ -326,7 +326,10 @@ impl TransformerModel {
         // and any subsequent MTP save_hidden / start_checkpoint_async on this seq
         // would write into the new occupant's pool memory — cross-seq corruption.
         let has_mtp = self.ssm_pool.has_mtp;
+        // Tiered pools: the H-intermediate count is a property of the SLOT
+        // (h_inter_count), the conv count is uniform (num_intermediates).
         let num_intermediates = self.ssm_pool.num_intermediates;
+        let h_intermediates = self.ssm_pool.h_inter_count(new_slot);
         let mut ssm_layer_idx = 0usize;
         for (i, state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == LayerType::LinearAttention {
@@ -344,7 +347,7 @@ impl TransformerModel {
                         }
                         if !ssm.h_state_intermediates.is_empty() {
                             ssm.h_state_intermediates.clear();
-                            for t in 0..num_intermediates {
+                            for t in 0..h_intermediates {
                                 ssm.h_state_intermediates.push(self.ssm_pool.h_intermediate(
                                     ssm_layer_idx,
                                     new_slot,

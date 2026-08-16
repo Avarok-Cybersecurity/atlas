@@ -54,6 +54,19 @@ pub fn step_mtp(
     } else {
         crate::scheduler::adaptive_rung::drafts_for(active.len(), num_drafts)
     };
+    // Tiered verify-pool capacity clamp (2026-08-16): the step's draft
+    // count must respect the MINIMUM slot capacity across the active
+    // sequences — a sequence in a K=2-sized slot must never receive K=4
+    // drafts. Capacities are the model's ACTUAL pool geometry
+    // (`mtp_slot_draft_capacity`); full-width pools (kill switch, DFlash-γ,
+    // pure-attention) report usize::MAX and leave the ladder untouched.
+    // See `spec_capacity` for the invariant and its two trigger shapes.
+    let ladder_nd = crate::scheduler::spec_capacity::clamp_drafts_to_slot_capacity(
+        ladder_nd,
+        active
+            .iter()
+            .map(|a| model.mtp_slot_draft_capacity(a.seq.slot_idx)),
+    );
 
     // ── Phase A: Bootstrap decode for sequences without a draft ──
     if !bootstrap_idxs.is_empty() {

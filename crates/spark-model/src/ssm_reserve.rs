@@ -97,13 +97,23 @@ pub struct DecodeRingDecision {
 /// would recover ~9 GB and still not reach 0.70; the reserve, not the
 /// speculation regime, is what makes the low-util single config impossible.
 pub fn mtp_state_slots(max_batch_size: usize) -> usize {
-    let full_width = std::env::var_os("ATLAS_MTP_POOL_FULL_WIDTH").is_some()
-        || matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2"));
     mtp_state_slots_with(
         max_batch_size,
         crate::speculative::mtp_max_seqs(),
-        full_width,
+        mtp_pool_full_width(),
     )
+}
+
+/// The `ATLAS_MTP_POOL_FULL_WIDTH` kill switch (PRESENCE, house convention —
+/// `=0` is NOT off), plus the EP-v2 implication (v2 pins slots in place for
+/// the worker mirror, so a high slot may legitimately speculate forever).
+/// SSOT for BOTH pool diets it disables: the bs>32 slot-count cap
+/// ([`mtp_state_slots`]) and the tiered per-slot verify capacity
+/// ([`verify_slot_drafts`]) — one switch restores the full-width,
+/// uniform-K sizing everywhere (pool, preflight, scheduler clamp).
+pub fn mtp_pool_full_width() -> bool {
+    std::env::var_os("ATLAS_MTP_POOL_FULL_WIDTH").is_some()
+        || matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2"))
 }
 
 /// Pure core of [`mtp_state_slots`] (env-free, unit-testable).
@@ -123,29 +133,125 @@ pub fn mtp_state_slots_with(
     max_batch_size.min(spec_dispatch_cap.max(crate::layer::VERIFY_WY_TABLE_SEQS))
 }
 
+/// Per-slot verify DRAFT capacity — the tiered half of the verify-pool
+/// diet (2026-08-16). Pure core; `drafts_at(n)` is the ladder policy
+/// (`speculative::mtp_ladder_drafts`).
+///
+/// A sequence occupying pool slot `slot_idx` can only be co-active with at
+/// least `slot_idx + 1` sequences UNDER the contiguity invariant ("active
+/// sequences occupy contiguous slots [0..n)"), so the deepest draft count
+/// the ladder can ever hand it is the max over widths `n > slot_idx`. The
+/// invariant is TRANSIENTLY breakable (LIFO free-list claim after churn),
+/// which is why this number is also ENFORCED at dispatch: the scheduler
+/// clamps the step's draft count to the minimum capacity across the active
+/// slots (`step_mtp`), so a high-slotted straggler shrinks K for its step
+/// instead of overflowing its slot's pools.
+///
+/// Default ladder (`4:3,8:3,16:1,32:1`, `--num-drafts 3`): slots 0..8 keep
+/// capacity 3 (K=4), slots 8.. get capacity 1 (K=2). NOTE the runtime
+/// `adaptive_rung` lift (n in 9..=16 to 2 drafts on tool-shaped accept
+/// stats) EXCEEDS the static ladder this sizing derives from; under the
+/// tiered default it is clamped back to K=2 whenever any active sequence
+/// sits in a capacity-1 slot — i.e. at every n >= 9 under contiguity.
+/// `ATLAS_MTP_POOL_FULL_WIDTH` restores uniform full-K pools and re-enables
+/// the lift.
+pub fn verify_slot_drafts_with(
+    slot_idx: usize,
+    dispatch_cap: usize,
+    num_drafts: usize,
+    drafts_at: impl Fn(usize) -> usize,
+) -> usize {
+    if num_drafts == 0 {
+        return 0;
+    }
+    let hi = dispatch_cap.max(slot_idx + 1);
+    ((slot_idx + 1)..=hi)
+        .map(&drafts_at)
+        .max()
+        .unwrap_or(num_drafts)
+        .clamp(1, num_drafts)
+}
+
+/// Env-reading wrapper of [`verify_slot_drafts_with`]: the ladder policy
+/// (with its `ATLAS_MTP_K_LADDER` / `ATLAS_NO_MTP_K_LADDER` overrides — a
+/// disabled ladder returns `num_drafts` at every width, making the tiers
+/// vacuous) plus the [`mtp_pool_full_width`] kill switch.
+pub fn verify_slot_drafts(slot_idx: usize, num_drafts: usize) -> usize {
+    if mtp_pool_full_width() {
+        return num_drafts;
+    }
+    verify_slot_drafts_with(
+        slot_idx,
+        crate::speculative::mtp_max_seqs(),
+        num_drafts,
+        |n| crate::speculative::mtp_ladder_drafts(n, num_drafts),
+    )
+}
+
+/// Number of per-token H-state intermediates the verify pools allocate for
+/// pool slot `slot_idx`: the slot's draft capacity + 1 (one snapshot per
+/// verify row). `uniform_verify` (DFlash-γ pools, whose verify width does
+/// not follow the MTP ladder) sizes every slot at the full `num_drafts + 1`.
+///
+/// Only the H side tiers. The CONV intermediates stay UNIFORM at
+/// `num_drafts + 1` per slot: the batched conv verify kernel
+/// (`gdn_verify_fused_conv_kn_batched`) requires a uniform cross-sequence
+/// snapshot stride (checked against the actual pointers in
+/// `trait_decode_batched_conv_gdn_multi.rs`) and writes all K snapshots —
+/// tiering conv would silently decline the two-launch fast path for every
+/// spec batch spanning the tier boundary (all n >= 9). Conv is ~5% of the
+/// blob, so the forgone saving is ~0.35 GiB at 32 slots while the H side
+/// carries the other 6.75 GiB.
+pub fn verify_slot_h_intermediates(
+    slot_idx: usize,
+    num_drafts: usize,
+    uniform_verify: bool,
+) -> usize {
+    if uniform_verify {
+        return num_drafts + 1;
+    }
+    verify_slot_drafts(slot_idx, num_drafts) + 1
+}
+
 /// SSM state-pool reserve bytes for the pre-load preflight — MUST mirror
 /// what `SsmStatePool::new` allocates (modulo the +1 dummy slot per pool,
 /// which preflight has never counted; the CUDA headroom term absorbs it):
 ///
 /// * base: `max_batch_size` live per-seq blobs (h_state + conv_state across
 ///   all SSM layers);
-/// * spec: `mtp_state_slots` × (`num_drafts`+1 per-token intermediates
-///   + 1 pre-verify checkpoint) blobs.
+/// * spec, per verify slot (`mtp_state_slots` of them):
+///   - H intermediates: [`verify_slot_h_intermediates`] × h blob (TIERED);
+///   - conv intermediates: `num_drafts + 1` × conv blob (uniform — see
+///     [`verify_slot_h_intermediates`] for why conv does not tier);
+///   - 1 pre-verify checkpoint blob (h + conv).
 ///
-/// At `mtp_state_slots == max_batch_size` this reproduces the historical
-/// `max_batch × blob × (1 + (num_drafts+1) + 1)` byte-for-byte.
+/// `h_blob_bytes` / `conv_blob_bytes` are the per-seq totals across all SSM
+/// layers (`num_ssm_layers × ssm_h_state_bytes/ssm_conv_state_bytes`).
+/// With `uniform_verify` (DFlash, `ATLAS_MTP_POOL_FULL_WIDTH`, ladder
+/// disabled) and `mtp_state_slots == max_batch_size` this reproduces the
+/// historical `max_batch × blob × (1 + (num_drafts+1) + 1)` byte-for-byte.
 pub fn ssm_pool_reserve_bytes(
     max_batch_size: usize,
-    per_seq_blob_bytes: usize,
+    h_blob_bytes: usize,
+    conv_blob_bytes: usize,
     spec_on: bool,
     num_drafts: usize,
     mtp_state_slots: usize,
+    uniform_verify: bool,
 ) -> usize {
-    let base = max_batch_size * per_seq_blob_bytes;
+    let blob = h_blob_bytes + conv_blob_bytes;
+    let base = max_batch_size * blob;
     if !spec_on {
         return base;
     }
-    base + mtp_state_slots * per_seq_blob_bytes * (num_drafts + 2)
+    let verify: usize = (0..mtp_state_slots)
+        .map(|slot| {
+            verify_slot_h_intermediates(slot, num_drafts, uniform_verify) * h_blob_bytes
+                + (num_drafts + 1) * conv_blob_bytes
+                + blob
+        })
+        .sum();
+    base + verify
 }
 
 /// Decide the per-sequence decode-rollback ring depth.
@@ -192,36 +298,60 @@ pub fn decode_rollback_ring_slots(
         },
     }
 }
-
 #[cfg(test)]
 mod mtp_state_slot_tests {
     use super::*;
 
-    /// bs=64 reserve-diet ledger, Qwen3.6-27B (config.json of
+    /// Reserve-diet ledger constants, Qwen3.6-27B (config.json of
     /// centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf), `--max-seq-len 4096
-    /// --num-drafts 3 --ssm-cache-slots 32 --speculative`, kv bf16.
+    /// --num-drafts 3 --speculative`, kv bf16.
     ///
     /// Per-seq SSM blob: 48 GDN layers × (h 48·128·128·4 B + conv
     /// (16·128·2 + 48·128)·4·4 B) = 48 × 3,309,568 = 158,859,264 B —
-    /// the "158.9 MB" blob every campaign doc quotes.
-    const BLOB: usize = 48 * (48 * 128 * 128 * 4 + (16 * 128 * 2 + 48 * 128) * 4 * 4);
+    /// the "158.9 MB" (151.5 MiB) blob every campaign doc quotes. The
+    /// verify tiers split it: H is 95% of the blob, conv the other 5%.
+    const H_BLOB: usize = 48 * (48 * 128 * 128 * 4);
+    const CONV_BLOB: usize = 48 * ((16 * 128 * 2 + 48 * 128) * 4 * 4);
+    const BLOB: usize = H_BLOB + CONV_BLOB;
     const ND: usize = 3; // --num-drafts 3 (K=4 ceiling)
 
-    /// The historical formula this diet must reproduce at bs<=32:
+    /// The historical formula the pre-tier sizing reproduced at bs<=32:
     /// `max_batch × blob × (1 + (nd+1) + 1)`.
     fn legacy_pool_bytes(bs: usize, spec_on: bool) -> usize {
         let mult = if spec_on { 1 + (ND + 1) + 1 } else { 1 };
         bs * BLOB * mult
     }
 
+    /// The DEFAULT ladder shape (`4:3,8:3,16:1,32:1`), spelled out so these
+    /// tests do not depend on process env (CI sets neither
+    /// ATLAS_MTP_K_LADDER nor ATLAS_NO_MTP_K_LADDER; the env-reading
+    /// wrappers are covered by the ladder's own tests).
+    fn default_ladder(n: usize) -> usize {
+        if n <= 8 { 3 } else { 1 }
+    }
+
+    fn tiered_pool_bytes(bs: usize, spec_on: bool) -> usize {
+        ssm_pool_reserve_bytes(
+            bs,
+            H_BLOB,
+            CONV_BLOB,
+            spec_on,
+            ND,
+            mtp_state_slots_with(bs, 32, false),
+            false,
+        )
+    }
+
     #[test]
     fn blob_matches_campaign_constant() {
+        assert_eq!(H_BLOB, 150_994_944);
+        assert_eq!(CONV_BLOB, 7_864_320);
         assert_eq!(BLOB, 158_859_264);
     }
 
     #[test]
     fn cap_identity_at_or_below_32_every_config() {
-        // bs<=32 must be BYTE-IDENTICAL to the legacy sizing for every
+        // bs<=32 slot COUNT must be identical to the legacy sizing for every
         // dispatch-cap value (incl. ATLAS_NO_MTP_K_LADDER's 4) because the
         // floor is VERIFY_WY_TABLE_SEQS = 32.
         for bs in 1..=32 {
@@ -232,12 +362,56 @@ mod mtp_state_slot_tests {
                     "bs={bs} cap={cap}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn tier_capacity_default_ladder_shape() {
+        // Slots 0..8 keep the full K=4 depth; slots 8.. are sized for the
+        // ladder's deepest possible draft count at widths that can reach
+        // them — 1 (K=2) under the default ladder.
+        for slot in 0..8 {
+            assert_eq!(verify_slot_drafts_with(slot, 32, 3, default_ladder), 3);
+        }
+        for slot in 8..32 {
+            assert_eq!(verify_slot_drafts_with(slot, 32, 3, default_ladder), 1);
+        }
+        // Beyond the dispatch cap (transient churn can still park a covered
+        // sequence there): last-rung depth, never zero.
+        assert_eq!(verify_slot_drafts_with(40, 32, 3, default_ladder), 1);
+        // --num-drafts remains the ceiling and the floor collapses with it.
+        for slot in 0..32 {
+            assert_eq!(verify_slot_drafts_with(slot, 32, 1, default_ladder), 1);
+            assert_eq!(verify_slot_drafts_with(slot, 32, 0, default_ladder), 0);
+        }
+        // An explicit deeper ladder (e.g. "4:3,8:3,16:2,24:2,32:2") widens
+        // the low tier with it — capacity follows the POLICY, not a magic 8.
+        let deep = |n: usize| if n <= 8 { 3 } else { 2 };
+        assert_eq!(verify_slot_drafts_with(8, 32, 3, deep), 2);
+        assert_eq!(verify_slot_drafts_with(31, 32, 3, deep), 2);
+    }
+
+    #[test]
+    fn tiering_cannot_bite_at_or_below_8_and_kill_switch_restores() {
+        // Slots 0..8 are full-K under the default ladder, so bs<=8 sizing is
+        // byte-identical to the legacy formula in every mode.
+        for bs in 1..=8 {
             for spec_on in [false, true] {
-                let slots = mtp_state_slots_with(bs, 32, false);
                 assert_eq!(
-                    ssm_pool_reserve_bytes(bs, BLOB, spec_on, ND, slots),
+                    tiered_pool_bytes(bs, spec_on),
                     legacy_pool_bytes(bs, spec_on),
-                    "bs={bs} spec={spec_on}: bs<=32 ledger must not move by a byte"
+                    "bs={bs} spec={spec_on}: bs<=8 ledger must not move by a byte"
+                );
+            }
+        }
+        // uniform_verify (DFlash-γ pools / ATLAS_MTP_POOL_FULL_WIDTH /
+        // ladder disabled) restores the legacy bytes at every bs<=32.
+        for bs in 1..=32 {
+            for spec_on in [false, true] {
+                assert_eq!(
+                    ssm_pool_reserve_bytes(bs, H_BLOB, CONV_BLOB, spec_on, ND, bs, true),
+                    legacy_pool_bytes(bs, spec_on),
+                    "bs={bs} spec={spec_on}: uniform sizing must reproduce legacy"
                 );
             }
         }
@@ -256,13 +430,43 @@ mod mtp_state_slot_tests {
     }
 
     #[test]
+    fn tiered_totals_pinned() {
+        // Verify-pool bytes per covered slot: H tier (capacity+1 h blobs) +
+        // uniform conv (ND+1) + one checkpoint blob. Aggregates pinned
+        // EXACTLY so any future drift in the formula is a test edit, not an
+        // accident.
+        //
+        // bs=16 (slots 8..16 on the low tier): saves 8 slots × 2 h blobs.
+        assert_eq!(legacy_pool_bytes(16, true), 15_250_489_344);
+        assert_eq!(tiered_pool_bytes(16, true), 12_834_570_240);
+        assert_eq!(
+            legacy_pool_bytes(16, true) - tiered_pool_bytes(16, true),
+            16 * H_BLOB // 2.25 GiB
+        );
+        // bs=32: 24 low-tier slots × 2 h blobs = 48 h blobs = 6.75 GiB.
+        // (The task-#1 estimate of 7.1 GiB counted 48 FULL blobs; conv
+        // stays uniform for the batched-conv stride precondition, so the H
+        // side carries 6.75 GiB and conv's 0.35 GiB is deliberately kept.)
+        assert_eq!(
+            legacy_pool_bytes(32, true) - tiered_pool_bytes(32, true),
+            48 * H_BLOB // 7_247_757_312
+        );
+        assert_eq!(tiered_pool_bytes(32, true) - 32 * BLOB, 18_169_724_928);
+        // Spec off: base only, at any bs.
+        assert_eq!(tiered_pool_bytes(64, false), 64 * BLOB);
+    }
+
+    #[test]
     fn bs64_ledger_before_after_and_fit() {
-        // ── Pool term ──
-        let old_pool = legacy_pool_bytes(64, true);
-        assert_eq!(old_pool, 61_001_957_376); // 56.81 GiB
-        let new_pool = ssm_pool_reserve_bytes(64, BLOB, true, ND, 32);
-        assert_eq!(new_pool, 35_584_475_136); // 33.14 GiB (64 base + 32×5 spec blobs)
-        assert_eq!(old_pool - new_pool, 25_417_482_240); // the diet: 23.67 GiB
+        // ── Pool terms: the three diet rungs ──
+        let full_width = legacy_pool_bytes(64, true);
+        assert_eq!(full_width, 61_001_957_376); // 56.81 GiB (pre-diet)
+        let slot_capped = ssm_pool_reserve_bytes(64, H_BLOB, CONV_BLOB, true, ND, 32, true);
+        assert_eq!(slot_capped, 35_584_475_136); // 33.14 GiB (slot-count cap)
+        assert_eq!(full_width - slot_capped, 25_417_482_240); // 23.67 GiB
+        let tiered = tiered_pool_bytes(64, true);
+        assert_eq!(tiered, 28_336_717_824); // 26.39 GiB (+ tiered slots)
+        assert_eq!(slot_capped - tiered, 48 * H_BLOB); // 6.75 GiB more
 
         // ── Full inference reserve (mirrors preflight_reserve term-by-term) ──
         // snapshot: --ssm-cache-slots 32 × blob (decode ring skipped: spec on)
@@ -274,13 +478,15 @@ mod mtp_state_slot_tests {
         // CUDA headroom under spec
         let headroom = 4usize * 1024 * 1024 * 1024;
 
-        let old_reserve = old_pool + snapshot + gdn + headroom;
+        let full_reserve = full_width + snapshot + gdn + headroom;
         // = the EXACT 67297 MiB the wave-10 bs=64 refusal logged.
-        assert_eq!(old_reserve, 70_566_543_360);
-        assert_eq!(old_reserve / (1024 * 1024), 67_297);
+        assert_eq!(full_reserve, 70_566_543_360);
+        assert_eq!(full_reserve / (1024 * 1024), 67_297);
 
-        let new_reserve = new_pool + snapshot + gdn + headroom;
-        assert_eq!(new_reserve, 45_149_061_120); // 42.05 GiB
+        let capped_reserve = slot_capped + snapshot + gdn + headroom;
+        assert_eq!(capped_reserve, 45_149_061_120); // 42.05 GiB
+        let tiered_reserve = tiered + snapshot + gdn + headroom;
+        assert_eq!(tiered_reserve, 37_901_303_808); // 35.30 GiB
 
         // ── Fit at util 0.70 (values from the wave-9/10 refusal logs) ──
         // total_budget: "budget 85.2 GB (util 0.70)" ⇒ 85.2 GiB.
@@ -294,17 +500,37 @@ mod mtp_state_slot_tests {
         let kv_floor = 64 * (128 + 1024) * (16 * 2 * 4 * 256 * 2);
         assert_eq!(kv_floor, 4_831_838_208); // 4.50 GiB
 
-        // Old reserve: refused with ~19 GiB overshoot before any KV.
-        assert!(pre_kv + old_reserve > budget);
-        // New reserve: boots, and the KV budget clears the workload floor.
-        let kv_left = budget - pre_kv - new_reserve;
+        // Full-width reserve: refused with ~19 GiB overshoot before any KV.
+        assert!(pre_kv + full_reserve > budget);
+        // Slot-capped reserve: boots, KV budget clears the workload floor
+        // (the wave-10 claim, preserved byte-for-byte).
+        let kv_left = budget - pre_kv - capped_reserve;
         assert!(
             kv_left >= kv_floor,
             "bs=64 KV budget {kv_left} must cover the decode_short peak {kv_floor}"
         );
-        // Documented margin: ≥150 MiB over the dense worst case on the
-        // worst logged box state (1.05 GiB on the wave-10 state); paged-KV
-        // overcommit (default) back-pressures anything beyond it.
         assert!(kv_left - kv_floor >= 150 * 1024 * 1024);
+        // Tiered reserve: strictly better — the 6.75 GiB rejoins the KV pool.
+        assert!(budget - pre_kv - tiered_reserve - kv_floor >= 150 * 1024 * 1024);
+    }
+
+    #[test]
+    fn bs128_ledger_matches_campaign_reference() {
+        // The wave-47 measured bs=128 reserve the campaign docs quote as
+        // "51.5 GiB": base 128 blobs + 32 verify slots × 5 blobs + 32
+        // Marconi slots + GDN scratch + 4 GiB spec headroom.
+        let gdn = 186_122_240usize;
+        let headroom = 4usize * 1024 * 1024 * 1024;
+        let old_pool = ssm_pool_reserve_bytes(128, H_BLOB, CONV_BLOB, true, ND, 32, true);
+        assert_eq!(old_pool, 45_751_468_032);
+        let old_reserve = old_pool + 32 * BLOB + gdn + headroom;
+        assert_eq!(old_reserve, 55_316_054_016); // 51.52 GiB — the reference
+        // Tiered slots: −6.75 GiB from the H intermediates.
+        let new_pool = tiered_pool_bytes(128, true);
+        assert_eq!(new_pool, 38_503_710_720);
+        let new_reserve = new_pool + 32 * BLOB + gdn + headroom;
+        assert_eq!(new_reserve, 48_068_296_704); // 44.77 GiB
+        // With the concurrency profile's Marconi 32→8 (#0): another 3.55 GiB.
+        assert_eq!(new_pool + 8 * BLOB + gdn + headroom, 44_255_674_368); // 41.22 GiB
     }
 }

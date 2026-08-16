@@ -290,10 +290,15 @@ impl TransformerModel {
                     ssm_state.conv_state_checkpoint =
                         Some(self.ssm_pool.conv_checkpoint(ssm_layer_idx, slot));
 
-                    for t in 0..self.ssm_pool.num_intermediates {
+                    // Tiered pools: H count is per-SLOT (h_inter_count),
+                    // conv count is uniform. The vec lengths are the
+                    // capacity gates every verify arm checks before writing.
+                    for t in 0..self.ssm_pool.h_inter_count(slot) {
                         ssm_state
                             .h_state_intermediates
                             .push(self.ssm_pool.h_intermediate(ssm_layer_idx, slot, t));
+                    }
+                    for t in 0..self.ssm_pool.num_intermediates {
                         ssm_state
                             .conv_state_intermediates
                             .push(self.ssm_pool.conv_intermediate(ssm_layer_idx, slot, t));

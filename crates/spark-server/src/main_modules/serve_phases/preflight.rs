@@ -35,14 +35,19 @@ pub(crate) fn preflight_reserve(
     // (25.4 GB at bs=64/K=4 on the 27B — the bs=64 preflight refusal).
     // Kill switch: ATLAS_MTP_POOL_FULL_WIDTH (presence) restores
     // full-width sizing on BOTH sides.
-    let ssm_blob_bytes = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
     let mtp_state_slots = spark_model::ssm_reserve::mtp_state_slots(args.max_batch_size);
+    // Tiered verify slots (2026-08-16): the H-intermediate term is per-slot
+    // (`verify_slot_h_intermediates`); DFlash pools are γ-sized and do not
+    // follow the MTP ladder, so they reserve uniform full width — mirroring
+    // `SsmStatePool::new`'s `num_intermediates != num_drafts + 1` condition.
     let ssm_pool_bytes = spark_model::ssm_reserve::ssm_pool_reserve_bytes(
         args.max_batch_size,
-        ssm_blob_bytes,
+        config.num_ssm_layers() * h_state_bytes,
+        config.num_ssm_layers() * conv_state_bytes,
         spec_on_pool,
         args.resolved_num_drafts(),
         mtp_state_slots,
+        args.dflash,
     );
     let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
         args.resolved_num_drafts() + 2

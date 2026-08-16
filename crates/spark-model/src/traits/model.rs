@@ -487,6 +487,18 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// Verify DRAFT capacity of the MTP state pools for a sequence
+    /// occupying SSM pool slot `slot_idx` — the deepest `num_drafts` a
+    /// speculative step may dispatch to it without overflowing its slot's
+    /// per-token H-intermediate allocation (tiered since 2026-08-16; SSOT
+    /// `ssm_reserve::verify_slot_h_intermediates`). The scheduler clamps
+    /// every spec step's draft count to the MINIMUM capacity across the
+    /// active slots. Default `usize::MAX`: no SSM verify pools to
+    /// constrain (pure-attention models, spec off).
+    fn mtp_slot_draft_capacity(&self, _slot_idx: usize) -> usize {
+        usize::MAX
+    }
+
     /// Number of decode-rollback SSM snapshot slots reserved **per
     /// active sequence** (Phase-C). The scheduler's per-sequence
     /// snapshot ring is sized from this. `0` (the default) means the

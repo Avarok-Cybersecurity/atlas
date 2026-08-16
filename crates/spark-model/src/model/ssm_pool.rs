@@ -59,8 +59,38 @@ pub(crate) struct SsmStatePool {
     pub(super) mtp_slots: usize,
     pub(super) num_ssm_layers: usize,
     pub(super) has_mtp: bool,
+    /// UNIFORM per-slot count of the CONV intermediates (and the H count of
+    /// every slot when the tiers are off — DFlash-γ pools, kill switch,
+    /// ladder disabled). Conv never tiers: the batched conv verify kernel
+    /// needs a uniform cross-sequence snapshot stride and writes all K
+    /// snapshots (see `ssm_reserve::verify_slot_h_intermediates`).
     pub(super) num_intermediates: usize,
+    /// TIERED per-slot H-intermediate counts, one entry per MTP slot plus
+    /// the MTP dummy at index `mtp_slots` (always full-width — pad rows may
+    /// write any token index). SSOT for the values:
+    /// `ssm_reserve::verify_slot_h_intermediates`. Empty when `!has_mtp`.
+    pub(super) h_inter_counts: Vec<usize>,
+    /// Prefix sums over `h_inter_counts` (len + 1): slot `s`'s H
+    /// intermediates start at element `h_inter_offsets[s]` of each layer's
+    /// pool; the last entry is the per-layer pool size in h_state units.
+    /// Fixed at allocation ⇒ per-slot addresses stay CUDA-graph-stable.
+    pub(super) h_inter_offsets: Vec<usize>,
     pub(super) free_slots: Mutex<Vec<usize>>,
+}
+
+/// Prefix-sum layout for tiered per-slot H intermediates: returns
+/// `(offsets, total)` where `offsets[s]` is slot `s`'s first element index
+/// and `total` the pool size in elements. Pure — the offset arithmetic is
+/// the failure mode of a tiered pool, so it is factored out and tested.
+fn h_inter_layout(counts: &[usize]) -> (Vec<usize>, usize) {
+    let mut offsets = Vec::with_capacity(counts.len() + 1);
+    let mut acc = 0usize;
+    for &c in counts {
+        offsets.push(acc);
+        acc += c;
+    }
+    offsets.push(acc);
+    (offsets, acc)
 }
 
 impl SsmStatePool {
@@ -69,6 +99,7 @@ impl SsmStatePool {
         max_slots: usize,
         has_mtp: bool,
         num_intermediates: usize,
+        num_drafts: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let _d_conv = config.linear_conv_kernel_dim;
@@ -115,12 +146,38 @@ impl SsmStatePool {
         } else {
             0
         };
+        // TIERED per-slot H-intermediate capacity (2026-08-16). SSOT:
+        // `ssm_reserve::verify_slot_h_intermediates` — the same numbers
+        // preflight reserves and the scheduler's dispatch clamp enforces
+        // (`Model::mtp_slot_draft_capacity`). Uniform (every slot at
+        // `num_intermediates`) when the pools are DFlash-γ sized
+        // (`num_intermediates != num_drafts + 1` — DFlash verify width does
+        // not follow the MTP ladder); the kill switch and a disabled ladder
+        // make `verify_slot_h_intermediates` itself uniform. The MTP dummy
+        // at index `mtp_slots` is ALWAYS full-width: batched-verify pad rows
+        // may write any token index regardless of the active slots' tiers.
+        let uniform_h = num_intermediates != num_drafts + 1;
+        let h_inter_counts: Vec<usize> = if has_mtp {
+            (0..=mtp_slots)
+                .map(|s| {
+                    if s == mtp_slots || uniform_h {
+                        num_intermediates
+                    } else {
+                        crate::ssm_reserve::verify_slot_h_intermediates(s, num_drafts, false)
+                            .min(num_intermediates)
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (h_inter_offsets, h_inter_total) = h_inter_layout(&h_inter_counts);
         if has_mtp {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
             for _ in 0..num_ssm_layers {
-                let h_inter = gpu.alloc(mtp_total * ni * h_bytes)?;
-                gpu.memset(h_inter, 0, mtp_total * ni * h_bytes)?;
+                let h_inter = gpu.alloc(h_inter_total * h_bytes)?;
+                gpu.memset(h_inter, 0, h_inter_total * h_bytes)?;
                 h_intermediate_pools.push(h_inter);
 
                 let conv_inter = gpu.alloc(mtp_total * ni * conv_bytes)?;
@@ -138,18 +195,22 @@ impl SsmStatePool {
             }
 
             let mtp_mb = num_ssm_layers
-                * mtp_total
-                * (ni * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
+                * (h_inter_total * h_bytes + mtp_total * (ni * conv_bytes + h_bytes + conv_bytes))
                 / (1024 * 1024);
-            if mtp_slots < max_slots {
-                let saved_mb = num_ssm_layers
+            let full_h = mtp_total * ni;
+            if mtp_slots < max_slots || h_inter_total < full_h {
+                let saved_mb = (num_ssm_layers
                     * (max_slots - mtp_slots)
                     * (ni * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
+                    + num_ssm_layers * (full_h - h_inter_total) * h_bytes)
                     / (1024 * 1024);
                 tracing::info!(
-                    "SSM MTP pools ({ni} intermediates + checkpoints): {mtp_mb} MB, \
-                     CAPPED at {mtp_slots}/{max_slots} slots (spec dispatch width; \
-                     saves {saved_mb} MB; kill switch ATLAS_MTP_POOL_FULL_WIDTH)"
+                    "SSM MTP pools (conv {ni}/slot, h tiered {:?}..{:?} + checkpoints): \
+                     {mtp_mb} MB, covering {mtp_slots}/{max_slots} slots (spec dispatch \
+                     width; saves {saved_mb} MB vs full-width uniform; kill switch \
+                     ATLAS_MTP_POOL_FULL_WIDTH)",
+                    h_inter_counts.iter().min(),
+                    h_inter_counts.iter().max(),
                 );
             } else {
                 tracing::info!("SSM MTP pools ({ni} intermediates + checkpoints): {mtp_mb} MB");
@@ -179,6 +240,8 @@ impl SsmStatePool {
             num_ssm_layers,
             has_mtp,
             num_intermediates,
+            h_inter_counts,
+            h_inter_offsets,
             free_slots: Mutex::new(free_slots),
         })
     }
@@ -354,9 +417,44 @@ impl SsmStatePool {
         slot: usize,
         token_idx: usize,
     ) -> DevicePtr {
-        let ni = self.num_intermediates;
         let slot = self.mtp_slot(slot);
-        self.h_intermediate_pools[ssm_layer_idx].offset((slot * ni + token_idx) * self.h_bytes)
+        debug_assert!(
+            token_idx < self.h_inter_counts[slot],
+            "h_intermediate: token_idx {token_idx} >= slot {slot}'s tiered capacity {}",
+            self.h_inter_counts[slot],
+        );
+        self.h_intermediate_pools[ssm_layer_idx]
+            .offset((self.h_inter_offsets[slot] + token_idx) * self.h_bytes)
+    }
+
+    /// Number of H intermediates allocated for `slot` (tiered — see
+    /// `h_inter_counts`). Uncovered slots clamp onto the full-width MTP
+    /// dummy, mirroring the pointer accessors. 0 when `!has_mtp`.
+    #[inline]
+    pub(super) fn h_inter_count(&self, slot: usize) -> usize {
+        if !self.has_mtp {
+            return 0;
+        }
+        self.h_inter_counts[self.mtp_slot(slot)]
+    }
+
+    /// Verify DRAFT capacity of `slot`'s H-intermediate allocation: the
+    /// deepest `num_drafts` a speculative step may dispatch to a sequence
+    /// occupying it. The scheduler's dispatch clamp
+    /// (`Model::mtp_slot_draft_capacity`) reads THIS — the allocated
+    /// geometry, not a re-derivation of the policy — so pool and dispatch
+    /// cannot disagree. `usize::MAX` when there are no verify pools to
+    /// constrain; 0 for uncovered slots (spec dispatch is already gated off
+    /// them by the `spec_slots_covered` guard).
+    #[inline]
+    pub(crate) fn verify_draft_capacity(&self, slot: usize) -> usize {
+        if !self.has_mtp {
+            return usize::MAX;
+        }
+        if slot >= self.mtp_slots {
+            return 0;
+        }
+        self.h_inter_counts[slot] - 1
     }
 
     pub(super) fn conv_intermediate(
@@ -388,8 +486,10 @@ impl SsmStatePool {
             gpu.memset(self.h_state(i, slot), 0, self.h_bytes)?;
             gpu.memset(self.conv_state(i, slot), 0, self.conv_bytes)?;
             if reset_mtp {
-                for t in 0..self.num_intermediates {
+                for t in 0..self.h_inter_count(slot) {
                     gpu.memset(self.h_intermediate(i, slot, t), 0, self.h_bytes)?;
+                }
+                for t in 0..self.num_intermediates {
                     gpu.memset(self.conv_intermediate(i, slot, t), 0, self.conv_bytes)?;
                 }
                 gpu.memset(self.h_checkpoint(i, slot), 0, self.h_bytes)?;
@@ -428,13 +528,20 @@ impl SsmStatePool {
                 stream,
             )?;
             if copy_mtp {
-                for t in 0..self.num_intermediates {
+                // Tiered H: compaction migrates DOWNWARD (targets < n <=
+                // source), so `to`'s tier is >= `from`'s and the prefix copy
+                // is lossless. The intermediates are per-verify-step scratch
+                // regardless — nothing in them survives a step — so even a
+                // truncated copy could not lose live state.
+                for t in 0..self.h_inter_count(from).min(self.h_inter_count(to)) {
                     gpu.copy_d2d_async(
                         self.h_intermediate(i, from, t),
                         self.h_intermediate(i, to, t),
                         self.h_bytes,
                         stream,
                     )?;
+                }
+                for t in 0..self.num_intermediates {
                     gpu.copy_d2d_async(
                         self.conv_intermediate(i, from, t),
                         self.conv_intermediate(i, to, t),
@@ -571,6 +678,37 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
 }
 
 #[cfg(test)]
+mod h_inter_layout_tests {
+    use super::h_inter_layout;
+
+    #[test]
+    fn offsets_are_prefix_sums_and_total_is_the_sum() {
+        // The default-ladder tier shape at nd=3, 32 covered slots + dummy:
+        // 8 full slots (4), 24 low slots (2), dummy full (4).
+        let mut counts = vec![4usize; 8];
+        counts.extend(std::iter::repeat_n(2usize, 24));
+        counts.push(4);
+        let (offsets, total) = h_inter_layout(&counts);
+        assert_eq!(offsets.len(), counts.len() + 1);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[8], 32); // tier-1 region: 8 × 4
+        assert_eq!(offsets[32], 32 + 48); // + tier-2 region: 24 × 2
+        assert_eq!(total, 84); // + dummy 4
+        for s in 0..counts.len() {
+            assert_eq!(offsets[s + 1] - offsets[s], counts[s]);
+        }
+        // Uniform counts reproduce the legacy `slot * ni` addressing.
+        let (uni, uni_total) = h_inter_layout(&[5usize; 33]);
+        assert_eq!(uni_total, 165);
+        for (s, off) in uni.iter().take(33).enumerate() {
+            assert_eq!(*off, s * 5);
+        }
+        // Empty (no MTP pools) is a valid degenerate layout.
+        assert_eq!(h_inter_layout(&[]), (vec![0], 0));
+    }
+}
+
+#[cfg(test)]
 mod slot_guard_tests {
     use super::*;
 
@@ -593,6 +731,8 @@ mod slot_guard_tests {
             num_ssm_layers: 0,
             has_mtp: false,
             num_intermediates: 0,
+            h_inter_counts: Vec::new(),
+            h_inter_offsets: Vec::new(),
             free_slots: Mutex::new((0..max_slots).rev().collect()),
         })
     }
