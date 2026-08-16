@@ -154,9 +154,20 @@ pub fn detect_nvfp4_variant(
     // that ship only `.weight` tensors with no per-channel scales.
     let any_standard_scale = store.names().any(|k| k.ends_with(".weight_scale"));
     if !any_standard_scale {
+        // Says which weights are affected, because "quality will be inferior"
+        // full stop sent me looking for a requant that does not happen on most
+        // of the model. On the qwen35_dense target, attention (q/k/v/o) and the
+        // GDN qkvz/out_proj are kept in BF16 and dispatch the dense_gemv_bf16 /
+        // dense_gemm_bf16 family; it is the dense FFN that is runtime-quantized,
+        // and MEASURED 2026-08-16 that FFN NVFP4 is what serves the hot path —
+        // forcing the FFN to BF16 instead cost 2.1x decode (11.8 -> 5.4 tok/s
+        // on a BF16 fine-tune of Qwen3.8-27B) and changed the temperature-0
+        // answer. So the requant is load-bearing for speed, not just a fallback.
         tracing::warn!(
-            "No NVFP4/FP8 quantization metadata found (no .weight_packed / .weight_scale_inv / .weight_scale). \
-             Falling back to runtime BF16→NVFP4 quantization. Quality will be inferior to a calibrated NVFP4 release."
+            "No NVFP4/FP8 quantization metadata found (no .weight_packed / .weight_scale_inv / \
+             .weight_scale) — treating the checkpoint as raw BF16. The dense FFN is runtime-\
+             quantized to NVFP4 (quality will be inferior to a calibrated NVFP4 release); \
+             attention and GDN projections, where the target supports it, stay BF16."
         );
         return Nvfp4Variant::Bf16Raw;
     }
