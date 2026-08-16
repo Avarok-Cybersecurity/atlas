@@ -120,6 +120,14 @@ pub(super) fn apply_threshold_params(
         let Some(bound) = entry.metrics.get(*metric) else {
             continue;
         };
+        // The driver compares RAW values against the bar it is handed, while
+        // the gate judge (`gate::scoring::compare`) allows the bound's noise
+        // band (pass iff value + noise >= min, value - noise <= max). Hand the
+        // driver the noise-adjusted bar, or a run inside the band passes the
+        // gate and FAILs its own verdict — which the record then carries, and
+        // CI requires verdict == PASS (bfcl-subset-echolp, 2026-08-16:
+        // 86.35 vs min 86.50, noise 0.4 — gate pass, self-verdict fail).
+        let noise = bound.noise.unwrap_or(0.0);
         let derived = match (bound.min, bound.max) {
             (Some(min), Some(max)) => bail!(
                 "{} couples param {param:?} to metric {metric:?}, whose baseline bound \
@@ -127,8 +135,8 @@ pub(super) fn apply_threshold_params(
                  tell which one to self-verdict against. Split the metric or drop a bound.",
                 descriptor.id
             ),
-            (None, Some(max)) => max,
-            (Some(min), None) => min,
+            (None, Some(max)) => max + noise,
+            (Some(min), None) => min - noise,
             (None, None) => continue,
         };
         let spec = specs.iter().find(|s| s.key == *param).ok_or_else(|| {

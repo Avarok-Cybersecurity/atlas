@@ -253,6 +253,53 @@ fn threshold_params_substitute_a_min_bound_when_the_metric_is_a_floor() {
     assert_eq!(values.float("min_normalized").unwrap(), 83.72);
 }
 
+/// The driver self-verdicts on RAW values; the gate judge allows the bound's
+/// noise band. The bar handed to the driver must therefore be the
+/// noise-adjusted one (min - noise, max + noise), or a run inside the band
+/// passes `gate::scoring::compare` and still records a FAIL verdict — the
+/// exact split the 2026-08-16 echolp record hit (86.35 vs min 86.50,
+/// noise 0.4).
+#[test]
+fn threshold_params_hand_the_driver_the_noise_adjusted_bar() {
+    let descriptor = atlas_plugin::registry::find("bfcl-subset").expect("registered");
+    let specs = descriptor.build().parameters();
+    let mut entry =
+        two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
+    entry.metrics = BTreeMap::from([
+        (
+            "overall_accuracy".to_string(),
+            Bound {
+                min: Some(86.50),
+                max: None,
+                noise: Some(0.4),
+            },
+        ),
+        (
+            "normalized_single_turn_score".to_string(),
+            Bound {
+                min: Some(86.90),
+                max: None,
+                noise: Some(0.4),
+            },
+        ),
+    ]);
+    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let applied =
+        apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
+    assert_eq!(
+        applied,
+        vec![
+            ("min_overall".to_string(), 86.10),
+            ("min_normalized".to_string(), 86.50),
+        ]
+    );
+    let sample = 86.35;
+    assert!(
+        sample >= values.float("min_overall").unwrap(),
+        "a run the gate judge passes must clear the driver's bar too"
+    );
+}
+
 /// A paired metric declaring BOTH bounds is ambiguous — which one the driver
 /// should self-verdict against cannot be inferred — so the substitution errors
 /// loudly instead of guessing a direction.
