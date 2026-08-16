@@ -284,3 +284,59 @@ pub fn prefill_attention_paged_nvfp4_batched(
         .arg_u64(data_section_bytes)
         .launch(stream)
 }
+
+/// Batched NVFP4-KV paged prefill attention (BR=64, chunk_len >= 256).
+///
+/// Same argument contract as [`prefill_attention_paged_nvfp4_batched`];
+/// the `_64` kernel sibling is generated from the shared
+/// `prefill_paged_compute.cuh` (8 warps, 64 Q rows per CTA).
+pub fn prefill_attention_paged_nvfp4_batched_64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table_ptrs: DevicePtr,
+    batch_size: u32,
+    cu_seqlens: DevicePtr,
+    kv_lens: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    block_stride_bytes: u64,
+    data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    let br = 64u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), batch_size])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table_ptrs)
+        .arg_u32(batch_size)
+        .arg_ptr(cu_seqlens)
+        .arg_ptr(kv_lens)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        .arg_u32(1u32)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(block_stride_bytes)
+        .arg_u64(data_section_bytes)
+        .launch(stream)
+}
