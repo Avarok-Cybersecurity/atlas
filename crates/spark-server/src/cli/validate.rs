@@ -82,6 +82,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             "add --gdn-fused-norm, or use --ssm-h-dtype f32",
         ));
     }
+
     // #435: the exact-verify arm's kernels are FP32 readers, so an FP16
     // h-state pool disables it (`GdnFlags::verify_exact_active`). Honouring
     // `--ssm-h-dtype f16` by SILENTLY ignoring an explicit `--exact-verify`

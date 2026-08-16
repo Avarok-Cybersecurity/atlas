@@ -205,6 +205,10 @@ impl TransformerModel {
             has_mtp,
             num_intermediates,
             num_drafts,
+            // Stage-3 f16-SIZED h pools. No CLI surface publishes this and
+            // preflight refuses it until prefill narrowing lands, so it is
+            // false on every serveable config today.
+            crate::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
             gpu.as_ref(),
         )?);
 

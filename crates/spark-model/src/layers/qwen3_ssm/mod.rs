@@ -464,8 +464,8 @@ mod trait_prefill_proj;
 mod trait_prefill_recur;
 
 pub use gdn_flags::{
-    GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_fp16_enabled,
-    verify_exact_enabled,
+    GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_f16_pool_enabled,
+    ssm_h_fp16_enabled, verify_exact_enabled,
 };
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──

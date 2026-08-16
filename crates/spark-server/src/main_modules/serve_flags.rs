@@ -47,6 +47,11 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     if gdn_from_cli {
         let flags = spark_model::layers::qwen3_ssm::GdnFlags {
             h_f16: args.ssm_h_dtype.as_deref() == Some("f16"),
+            // Stage 3 (f16-SIZED pools) has NO CLI surface yet: the sizing
+            // plumbing exists and is unit-tested parameter-side, but prefill
+            // still writes the h-state FP32 in place, so no serve config may
+            // publish it. `ssm_h_fp16_preconditions` refuses it besides.
+            h_f16_pool: false,
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
             batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
             exact_verify: args.exact_verify.unwrap_or(false),

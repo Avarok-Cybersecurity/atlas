@@ -227,6 +227,31 @@ pub fn verify_slot_h_intermediates(
     verify_slot_drafts(slot_idx, num_drafts)
 }
 
+/// Storage width of one h-state blob in the SSM state pools (stage 3 of
+/// `--ssm-h-dtype f16`): 2 bytes per element under the f16-SIZED pool, the
+/// FP32 4 bytes otherwise. SSOT — `SsmStatePool::new` (allocation strides),
+/// `preflight_reserve` (the pre-load reserve) and every byte-copier that
+/// moves h-state between pool regions derive their width from THIS, so
+/// sizing and copies cannot disagree.
+///
+/// `f16_pool` is `gdn_flags::ssm_h_f16_pool_enabled()` at the production
+/// call sites (`--ssm-h-dtype f16-pool`), passed as a parameter so pool
+/// construction and sizing stay testable without the process-global flag
+/// cell. NOTE stage 1/2 (`--ssm-h-dtype f16`) deliberately keep the pool
+/// FP32-SIZED (`f16_pool = false`): the state bits are FP16 during decode
+/// but prefill still writes FP32 in place, so the slot must stay wide.
+pub fn ssm_h_stored_bytes(h_f32_bytes: usize, f16_pool: bool) -> usize {
+    debug_assert!(
+        h_f32_bytes.is_multiple_of(4),
+        "h-state blobs are FP32-element sized"
+    );
+    if f16_pool {
+        h_f32_bytes / 2
+    } else {
+        h_f32_bytes
+    }
+}
+
 /// SSM state-pool reserve bytes for the pre-load preflight — MUST mirror
 /// what `SsmStatePool::new` allocates (modulo the +1 dummy slot per pool,
 /// which preflight has never counted; the CUDA headroom term absorbs it):
@@ -242,7 +267,10 @@ pub fn verify_slot_h_intermediates(
 ///   - 1 pre-verify checkpoint blob (h + conv).
 ///
 /// `h_blob_bytes` / `conv_blob_bytes` are the per-seq totals across all SSM
-/// layers (`num_ssm_layers × ssm_h_state_bytes/ssm_conv_state_bytes`).
+/// layers (`num_ssm_layers × ssm_h_state_bytes/ssm_conv_state_bytes`),
+/// ALWAYS at the FP32 width — `h_f16_pool` narrows every h term through
+/// [`ssm_h_stored_bytes`] inside, so preflight and `SsmStatePool::new`
+/// cannot narrow differently.
 /// The historical sizing was `max_batch × blob × (1 + (num_drafts+1) + 1)`;
 /// today's uniform mode differs from it by exactly one h blob per slot
 /// (the dead K-1 intermediate).
@@ -254,7 +282,9 @@ pub fn ssm_pool_reserve_bytes(
     num_drafts: usize,
     mtp_state_slots: usize,
     uniform_verify: bool,
+    h_f16_pool: bool,
 ) -> usize {
+    let h_blob_bytes = ssm_h_stored_bytes(h_blob_bytes, h_f16_pool);
     let blob = h_blob_bytes + conv_blob_bytes;
     let base = max_batch_size * blob;
     if !spec_on {
@@ -355,6 +385,21 @@ mod mtp_state_slot_tests {
             ND,
             mtp_state_slots_with(bs, 32, false),
             false,
+            false,
+        )
+    }
+
+    /// Stage-3 twin of `tiered_pool_bytes`: the f16-SIZED pool.
+    fn tiered_pool_bytes_f16(bs: usize, spec_on: bool) -> usize {
+        ssm_pool_reserve_bytes(
+            bs,
+            H_BLOB,
+            CONV_BLOB,
+            spec_on,
+            ND,
+            mtp_state_slots_with(bs, 32, false),
+            false,
+            true,
         )
     }
 
@@ -431,7 +476,7 @@ mod mtp_state_slot_tests {
             for spec_on in [false, true] {
                 let expect = legacy_pool_bytes(bs, spec_on) - if spec_on { bs * H_BLOB } else { 0 };
                 assert_eq!(
-                    ssm_pool_reserve_bytes(bs, H_BLOB, CONV_BLOB, spec_on, ND, bs, true),
+                    ssm_pool_reserve_bytes(bs, H_BLOB, CONV_BLOB, spec_on, ND, bs, true, false),
                     expect,
                     "bs={bs} spec={spec_on}: uniform = legacy minus the dead h blob/slot"
                 );
@@ -490,7 +535,7 @@ mod mtp_state_slot_tests {
         assert_eq!(full_width - slot_capped, 25_417_482_240); // 23.67 GiB
         // Today's uniform mode = slot-capped minus the dead h blob/slot.
         assert_eq!(
-            ssm_pool_reserve_bytes(64, H_BLOB, CONV_BLOB, true, ND, 32, true),
+            ssm_pool_reserve_bytes(64, H_BLOB, CONV_BLOB, true, ND, 32, true, false),
             slot_capped - 32 * H_BLOB // 30_752_636_928
         );
         let tiered = tiered_pool_bytes(64, true);
@@ -564,5 +609,43 @@ mod mtp_state_slot_tests {
         assert_eq!(new_reserve, 43_236_458_496); // 40.27 GiB
         // With the concurrency profile's Marconi 32→8 (#0): another 3.55 GiB.
         assert_eq!(new_pool + 8 * BLOB + gdn + headroom, 39_423_836_160); // 36.72 GiB
+    }
+
+    #[test]
+    fn h_stored_bytes_is_identity_off_and_half_on() {
+        // Flag off: EXACT identity at any width — stage 1/2 keep the pool
+        // FP32-sized, and every currently-serveable config takes this arm.
+        for b in [4usize, 128, H_BLOB, CONV_BLOB] {
+            assert_eq!(ssm_h_stored_bytes(b, false), b);
+        }
+        // Stage 3: half. h blobs are FP32-element sized, so /2 is exact.
+        assert_eq!(ssm_h_stored_bytes(H_BLOB, true), H_BLOB / 2);
+        assert_eq!(ssm_h_stored_bytes(4, true), 2);
+    }
+
+    #[test]
+    fn f16_pool_sizing_pinned_and_flag_off_untouched() {
+        // The h_f16_pool=false arm must not move a BYTE — re-pin the exact
+        // totals the flag-off tests above already pin, through the new
+        // parameter position (a transposed argument would show up here).
+        assert_eq!(tiered_pool_bytes(32, true) - 32 * BLOB, 13_337_886_720);
+        assert_eq!(tiered_pool_bytes(128, true), 33_671_872_512);
+
+        // Stage 3 (`--ssm-h-dtype f16-pool`, refused at serve until prefill
+        // narrowing lands — these pin the ALLOCATOR-side arithmetic): every
+        // h term (base, tiered intermediates, checkpoints) halves; conv is
+        // untouched. bs=128/K=4, the reference shape:
+        //   base 128 × (H/2 + CONV)               = 10_670_309_376
+        //   slots 0..8:  8 × (3·H/2 + 4·CONV + (H/2 + CONV)) = 2_730_491_904
+        //   slots 8..32: 24 × (1·H/2 + 4·CONV + (H/2 + CONV)) = 4_567_597_056
+        let f16 = tiered_pool_bytes_f16(128, true);
+        assert_eq!(f16, 17_968_398_336); // 16.73 GiB
+        // vs the FP32-sized stage-1/2 pool: 14.62 GiB rejoins the KV budget.
+        assert_eq!(tiered_pool_bytes(128, true) - f16, 15_703_474_176);
+        // Spec off: only the base h blobs narrow.
+        assert_eq!(
+            tiered_pool_bytes_f16(64, false),
+            64 * (H_BLOB / 2 + CONV_BLOB)
+        );
     }
 }

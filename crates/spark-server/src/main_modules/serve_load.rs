@@ -99,7 +99,9 @@ pub(crate) fn load_model(
     // principle, and it said f32 in every run of the campaign that ran f16.
     tracing::info!(
         "SSM decode h-state dtype: {} (--ssm-h-dtype)",
-        if spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() {
+        if spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled() {
+            "f16 + f16-sized pools (stage 3)"
+        } else if spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() {
             "f16"
         } else {
             "f32 (full precision)"
