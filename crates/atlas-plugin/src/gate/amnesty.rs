@@ -5,7 +5,7 @@
 //! # The grant
 //!
 //! `.github/pr-taxonomy.json` and `check.rs` are
-//! [`super::coverage::BOUNDARY_FILES`]: touching either invalidates every
+//! `coverage::BOUNDARY_FILES` entries: touching either invalidates every
 //! standing gate record, at ~4h19m of GPU to re-earn. The 2026-08-16
 //! governance PR has to touch exactly those two files — the taxonomy to fill
 //! its empty `_benches` leaves, `check.rs` to add the hook that consults this
@@ -16,8 +16,8 @@
 //!
 //! # Why content-pinned rather than waived
 //!
-//! Each entry pins the exact blob OID this PR lands. `git rev-parse
-//! <head>:<path>` names the CONTENT of the file at the commit being checked,
+//! Each entry pins the exact blob OID this PR lands. `git rev-parse <head>:<path>`
+//! names the CONTENT of the file at the commit being checked,
 //! so the grant covers precisely the reviewed bytes: the moment anyone edits
 //! either file again, the OID changes and invalidation applies exactly as
 //! before. There is no time window and no path-level waiver to inherit —
@@ -46,7 +46,7 @@
 //! # Removal condition
 //!
 //! EMPTY THE TABLE once every required gate has a record newer than
-//! [`AMNESTY_EPOCH`]. At that point the grant protects nothing — every
+//! `AMNESTY_EPOCH`. At that point the grant protects nothing — every
 //! record postdates the grant day and was earned against the amnestied
 //! content. `amnesty_expires_once_every_gate_has_a_fresh_record` fails with
 //! instructions when that day arrives, so the table cannot quietly outlive
