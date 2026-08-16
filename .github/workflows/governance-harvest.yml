@@ -1,0 +1,357 @@
+name: Governance harvest
+
+# The other half of pr-categorize's artifact handoff. The classify job appends
+# a `Category` line to the PR journey ledger and deliberately CANNOT commit it:
+# it holds `permissions: contents: read` because it consumes model output
+# derived from an attacker-authored PR title, and that missing write scope is
+# the job's whole security promise. So the line leaves as a workflow artifact,
+# and THIS workflow — running default-branch code, which the PR author cannot
+# edit — downloads it, re-validates every line through `ledger_harvest`, and
+# commits the result. Without it, `governance/` stays empty forever and the
+# intent half of `required_for = by_path ∪ by_intent` is dead weight.
+#
+# Trust boundary, stated exactly: artifact CONTENT is untrusted (produced on
+# the PR author's branch). The artifact NAME is only a search hint. The PR
+# number handed to `ledger_harvest --pr` comes from the run's own API record
+# (head_sha → commits/{sha}/pulls), never from anything the artifact claims,
+# and the binary rejects any event line disagreeing with it.
+
+on:
+  # The moment a CI run finishes, its ledger artifact is ready. This fires for
+  # every CI completion (push, merge_group, dispatch too); the job-level `if`
+  # keeps only pull_request runs, which are the only ones that produce a
+  # governance artifact.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  schedule:
+    # Daily backstop: sweeps the last 3 days of completed pull_request CI runs,
+    # so a harvest that raced, failed, or was skipped is retried while the
+    # artifact (30-day retention) is still alive. Dedup by Event::identity
+    # makes the re-harvest converge instead of accumulating.
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: >-
+          Harvest exactly this CI run id. Empty = sweep the last 3 days like
+          the schedule does.
+        required: false
+        type: string
+      dry_run:
+        description: >-
+          Validate and merge, but upload the would-be commit as an artifact
+          instead of landing it.
+        required: false
+        default: false
+        type: boolean
+
+# Least privilege at the top; the single job re-grants exactly what it needs.
+permissions: {}
+
+# One harvest at a time, never cancelled mid-flight: two concurrent runs could
+# both commit ledger lines and race each other's push, and a cancelled run
+# could leave the rolling bot branch half-updated while a PR still points at it.
+concurrency:
+  group: governance-harvest
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same two flags ci.yml sets for every cargo invocation on a GPU-less runner:
+  # skip CUDA/nvcc in build.rs (stub target_ptx.rs) and short-circuit cudarc's
+  # nvcc probe (13000 == CUDA 13.0). atlas-plugin is host-only and CUDA-free.
+  ATLAS_SKIP_BUILD: "1"
+  CUDARC_CUDA_VERSION: "13000"
+
+jobs:
+  harvest:
+    name: Harvest PR intent ledgers
+    runs-on: ubuntu-latest
+    # Only pull_request CI runs carry a governance artifact; schedule and
+    # dispatch triggers pass through and enumerate for themselves.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
+    permissions:
+      # Commits governance/*.jsonl (direct push when GOVERNANCE_PUSH_TOKEN is
+      # configured with a ruleset bypass; branch push otherwise).
+      contents: write
+      # `read` covers listing/downloading run artifacts. `write` exists for ONE
+      # line in the fallback landing lane: `gh workflow run ci.yml --ref
+      # bot/governance-harvest`. Pushes and PRs made with GITHUB_TOKEN never
+      # trigger `pull_request` workflows, so without that dispatch the auto-
+      # merge PR's required checks would simply never report.
+      actions: write
+      # Fallback landing lane only: open/refresh the rolling harvest PR and
+      # request auto-merge on it. The direct-push lane never uses it.
+      pull-requests: write
+    steps:
+      # `ref: main` explicitly, not the event's default: for workflow_run the
+      # harvested code MUST be default-branch code (that is the entire trust
+      # story), and saying so beats relying on workflow_run's default checkout
+      # behaviour. Full history so the direct-push lane can rebase onto a main
+      # that moved while we worked.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # Same warm target/ as pr-categorize (both build only atlas-plugin's
+      # host-only bins), so neither job pays the other's cold build.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: pr-categorize
+
+      - name: Enumerate target runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Both ids come from GitHub-controlled payloads (the workflow_run
+          # event record; a maintainer's dispatch form). They still cross into
+          # the script through env, never `${{ }}` splices — and the dispatch
+          # input is validated as digits because an operator typo should fail
+          # here, not deep inside the artifact loop.
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_RUN_ID:-}" ]; then
+            case "$INPUT_RUN_ID" in
+              *[!0-9]*|'') echo "::error::run_id must be a run id (digits), got: $INPUT_RUN_ID"; exit 1 ;;
+            esac
+            printf '%s\n' "$INPUT_RUN_ID" > runs.txt
+            echo "target: dispatch-named run $INPUT_RUN_ID"
+          elif [ -n "${EVENT_RUN_ID:-}" ]; then
+            printf '%s\n' "$EVENT_RUN_ID" > runs.txt
+            echo "target: completed CI run $EVENT_RUN_ID (workflow_run trigger)"
+          else
+            since=$(date -u -d '3 days ago' +%Y-%m-%d)
+            # By workflow FILENAME, not display name — a rename of `name: CI`
+            # would silently empty a name-based query. `-X GET -f` url-encodes
+            # the `>=` in the created filter. `--paginate --jq` emits newline-
+            # delimited ids PER PAGE, which concatenates safely (the same
+            # pagination shape pr-telemetry.yml documents the hard way).
+            gh api -X GET "repos/$REPO/actions/workflows/ci.yml/runs" \
+              -f event=pull_request -f status=completed \
+              -f "created=>=$since" -f per_page=100 \
+              --paginate --jq '.workflow_runs[].id' > runs.txt
+            echo "target: $(wc -l < runs.txt) completed pull_request CI run(s) since $since"
+          fi
+
+      - name: Download, validate and merge each run's ledger artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p governance
+          : > harvested_runs.txt
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            echo "── run $run_id"
+            if ! head_sha=$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.head_sha' 2>/dev/null); then
+              echo "::warning::run $run_id: could not read the run record — skipped"
+              continue
+            fi
+
+            # ★ THE identity step. The PR number comes from the run's own
+            # head_sha via the commits API. The artifact's name says
+            # `governance-event-pr<N>` but is authored by the PR branch and is
+            # NEVER trusted for identity — it is only the search hint below.
+            # Exactly one associated PR or we refuse: zero means nothing to
+            # attribute to, more than one means the attribution is ambiguous,
+            # and a guessed PR number is worse than no harvest.
+            if ! pr_numbers=$(gh api "repos/$REPO/commits/$head_sha/pulls" --jq '[.[].number] | unique' 2>/dev/null); then
+              echo "::warning::run $run_id: commits/$head_sha/pulls failed — skipped"
+              continue
+            fi
+            n=$(jq 'length' <<<"$pr_numbers")
+            if [ "$n" -ne 1 ]; then
+              echo "::warning::run $run_id: head $head_sha maps to $n pull request(s), not exactly 1 — skipped, identity must be unambiguous"
+              continue
+            fi
+            pr=$(jq -r '.[0]' <<<"$pr_numbers")
+
+            artifact=$(gh api "repos/$REPO/actions/runs/$run_id/artifacts" \
+              --jq '[.artifacts[] | select((.name | test("^governance-event-pr[0-9]+$")) and (.expired | not))] | first // empty' \
+              2>/dev/null) || artifact=""
+            if [ -z "$artifact" ]; then
+              echo "run $run_id (pr #$pr): no governance-event artifact — nothing to harvest"
+              continue
+            fi
+            artifact_id=$(jq -r '.id' <<<"$artifact")
+
+            tmp=$(mktemp -d)
+            if ! gh api "repos/$REPO/actions/artifacts/$artifact_id/zip" > "$tmp/artifact.zip" 2>/dev/null; then
+              echo "::warning::run $run_id (pr #$pr): downloading artifact $artifact_id failed — skipped"
+              rm -rf "$tmp"; continue
+            fi
+            # `-j` junks every stored path into a fresh flat dir: an archive
+            # entry named `../../.github/workflows/x.yml` lands as `x.yml`
+            # inside $tmp/extracted, so a hostile zip cannot write outside it.
+            if ! unzip -q -j -o "$tmp/artifact.zip" -d "$tmp/extracted" 2>/dev/null; then
+              echo "::warning::run $run_id (pr #$pr): artifact $artifact_id is not a readable zip — skipped"
+              rm -rf "$tmp"; continue
+            fi
+
+            found=0
+            while IFS= read -r -d '' file; do
+              found=1
+              dest="governance/pr-$pr.jsonl"
+              # Snapshot-and-restore keeps ledger_harvest's wholesale-rejection
+              # doctrine true at the file level: the binary appends line by
+              # line, so a mid-file bail would otherwise leave a valid prefix
+              # of a rejected artifact in the working tree.
+              rm -f "$tmp/dest.bak"
+              if [ -f "$dest" ]; then cp "$dest" "$tmp/dest.bak"; fi
+              if cargo run --quiet --locked -p atlas-plugin --bin ledger_harvest -- \
+                   --root . --pr "$pr" --from "$file"; then
+                echo "$run_id" >> harvested_runs.txt
+              else
+                echo "::warning::run $run_id (pr #$pr): ledger_harvest rejected $(basename "$file") — prior ledger restored, artifact discarded"
+                if [ -f "$tmp/dest.bak" ]; then cp "$tmp/dest.bak" "$dest"; else rm -f "$dest"; fi
+              fi
+            done < <(find "$tmp/extracted" -maxdepth 1 -type f -regextype posix-extended -regex '.*/pr-[0-9]+\.jsonl' -print0)
+            [ "$found" -eq 1 ] || echo "run $run_id (pr #$pr): artifact held no pr-<n>.jsonl file"
+            rm -rf "$tmp"
+          done < runs.txt
+          sort -u harvested_runs.txt -o harvested_runs.txt
+          echo "harvested from $(wc -l < harvested_runs.txt) run(s)"
+
+      - name: Abstain-rate histogram (last 30 days)
+        # The doctrine that keeps intent advisory ("enforcement waits for
+        # abstain-rate evidence") needs the evidence to exist somewhere
+        # visible. Dedup by the same identity Event::identity() uses —
+        # (head_sha, run_id, attempt, kind) with `at` excluded — so replayed
+        # runs collapse here exactly as they do in the ledger.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(governance/pr-*.jsonl)
+          echo "## Governance harvest" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No PR ledgers exist yet — no abstain-rate to report." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cutoff=$(date -u -d '30 days ago' +%s)
+          jq -c -s --argjson cutoff "$cutoff" '
+            [ .[] | select(.kind == "category" and .at >= $cutoff) ]
+            | unique_by([.head_sha, .run_id, .attempt, .value, .status])
+            | group_by(.status) | map({status: .[0].status, n: length})
+            | { hist: .,
+                total: (map(.n) | add // 0),
+                abstained: (map(select(.status == "abstain" or .status == "error") | .n) | add // 0) }
+            | .pct = (if .total > 0 then ((.abstained * 1000 / .total) | round) / 10 else 0 end)
+          ' "${files[@]}" > hist.json
+          {
+            echo "### Category status histogram (last 30 days, deduplicated)"
+            echo ""
+            echo "| status | events |"
+            echo "|---|---|"
+            jq -r '.hist[] | "| \(.status) | \(.n) |"' hist.json
+            echo ""
+            # `partial` counts as an answer: classify-path documents it as "a
+            # real answer, not a failure". Non-answers are abstain + error.
+            jq -r '"**Non-answers (abstain + error): \(.abstained)/\(.total) = \(.pct)%**"' hist.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          if jq -e '.total > 0 and .pct > 25' hist.json > /dev/null; then
+            pct=$(jq -r '.pct' hist.json)
+            echo "::warning::category abstain rate over the last 30 days is ${pct}% (> 25%) — the classifier is not answering often enough for its ledger to mean much; check the free-tier endpoint and key before trusting or escalating intent data"
+          fi
+
+      - name: Land the harvest
+        id: land
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Mode auto-selects on secret presence: configured (with a ruleset
+          # bypass actor — a one-time repo-settings step) means direct push to
+          # main; absent means the rolling-branch auto-merge PR lane.
+          GOVERNANCE_PUSH_TOKEN: ${{ secrets.GOVERNANCE_PUSH_TOKEN }}
+          # Boolean dispatch input; empty on schedule/workflow_run triggers.
+          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          d="__ATLAS_HARVEST_EOF_$RANDOM$RANDOM"
+          emit_landed() { printf 'landed<<%s\n%s\n%s\n' "$d" "$1" "$d" >> "$GITHUB_OUTPUT"; }
+
+          if [ -z "$(git status --porcelain governance/)" ]; then
+            echo "nothing new — every harvested line was already in the ledger"
+            emit_landed none
+            exit 0
+          fi
+
+          run_ids=$(tr '\n' ' ' < harvested_runs.txt | sed 's/ *$//')
+          msg="chore(governance): harvest PR intent ledgers (runs ${run_ids:-unknown})"
+          git config user.name  "tbraun96"
+          git config user.email "tbraun96@gmail.com"
+          git add governance/
+          git commit -m "$msg"
+          git show --stat HEAD
+
+          if [ "$DRY_RUN" = "true" ]; then
+            mkdir -p harvest-dry-run
+            git format-patch -1 --stdout HEAD > harvest-dry-run/harvest.patch
+            git show --stat HEAD > harvest-dry-run/commit-stat.txt
+            cp governance/pr-*.jsonl harvest-dry-run/ 2>/dev/null || true
+            echo "dry run: nothing pushed; the would-be commit is attached as an artifact"
+            emit_landed dry-run
+            exit 0
+          fi
+
+          if [ -n "${GOVERNANCE_PUSH_TOKEN:-}" ]; then
+            # Direct-push lane. Retried through a rebase because main moves
+            # fast here: losing the race is expected, silently giving up is
+            # not. governance/*.jsonl carries merge=union, so a concurrent
+            # harvest rebases clean by construction.
+            ok=""
+            for attempt in 1 2 3; do
+              git pull --rebase origin main
+              if git push "https://x-access-token:${GOVERNANCE_PUSH_TOKEN}@github.com/${REPO}.git" HEAD:refs/heads/main; then
+                ok=1; break
+              fi
+              echo "push attempt $attempt lost the race — rebasing and retrying"
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::direct push to main failed 3 times — either the race is pathological or GOVERNANCE_PUSH_TOKEN lost its ruleset bypass"
+              exit 1
+            fi
+            emit_landed direct-push
+          else
+            # Fallback lane, no settings prerequisite: a rolling branch,
+            # force-recreated as main + this one harvest commit (stale
+            # never-merged content is discarded — the 3-day cron sweep
+            # re-converges anything it carried), plus an auto-merge PR.
+            git push --force origin HEAD:refs/heads/bot/governance-harvest
+            printf '%s\n\n%s\n' \
+              "Automated harvest of PR intent ledger artifacts (runs ${run_ids:-unknown})." \
+              "Opened by governance-harvest.yml because GOVERNANCE_PUSH_TOKEN is not configured. Auto-merge is requested; the workflow dispatches CI on the branch itself because GITHUB_TOKEN events never trigger pull_request runs." \
+              > "$RUNNER_TEMP/pr-body.md"
+            existing=$(gh pr list --head bot/governance-harvest --base main --state open \
+              --json number --jq '.[0].number // empty')
+            if [ -n "$existing" ]; then
+              gh pr edit "$existing" --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md"
+              pr_number=$existing
+            else
+              gh pr create --head bot/governance-harvest --base main \
+                --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md" > /dev/null
+              pr_number=$(gh pr list --head bot/governance-harvest --base main --state open \
+                --json number --jq '.[0].number')
+            fi
+            gh pr merge --auto --squash "$pr_number" \
+              || echo "::warning::could not enable auto-merge on #$pr_number — merge it manually"
+            # CI is the only required workflow and it is dispatchable (it grew
+            # workflow_dispatch after the 2026-08-06 Actions incident). Without
+            # this, the PR's required checks never report — GITHUB_TOKEN
+            # pushes and PRs do not create pull_request runs.
+            gh workflow run ci.yml --ref bot/governance-harvest \
+              || echo "::warning::could not dispatch CI on bot/governance-harvest — required checks may never report; dispatch it manually"
+            emit_landed "auto-merge-pr #$pr_number"
+          fi
+
+      - name: Hand off the would-be commit (dry run)
+        if: steps.land.outputs.landed == 'dry-run'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: governance-harvest-dry-run
+          path: harvest-dry-run/
+          retention-days: 7
