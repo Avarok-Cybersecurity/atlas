@@ -66,6 +66,7 @@ fn an_absent_lever_flag_parses_as_unspecified() {
     // the GDN cell; the resolved default (the legacy WY arms — exact verify
     // is OPT-IN) is asserted in gdn_flags' own tests.
     assert!(a.exact_verify.is_none(), "--exact-verify");
+    assert!(a.prefill_varlen_batch.is_none(), "ATLAS_PREFILL_VARLEN");
 
     let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
     assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");
@@ -89,6 +90,11 @@ fn the_bare_gdn_switches_still_mean_on() {
     assert_eq!(a.exact_verify, Some(true));
     let a = parse(&["--exact-verify", "false"]);
     assert_eq!(a.exact_verify, Some(false));
+    // `--prefill-varlen-batch` follows the same convention.
+    let a = parse(&["--prefill-varlen-batch"]);
+    assert_eq!(a.prefill_varlen_batch, Some(true));
+    let a = parse(&["--prefill-varlen-batch", "false"]);
+    assert_eq!(a.prefill_varlen_batch, Some(false));
 }
 
 #[test]

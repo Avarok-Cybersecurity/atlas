@@ -247,6 +247,25 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
 
+    /// VARLEN (ragged) batched prefill — OPT-IN (default: off).
+    ///
+    /// Concatenates concurrently queued prompts of DIFFERENT lengths into one
+    /// forward per wave (cu_seqlens geometry): every projection/FFN GEMM
+    /// launches once at M = Σ tokens instead of once per request at its own
+    /// small M, and the scheduler defers chunk-0 so late arrivals join the
+    /// next wave. Waves are capped at the `--max-prefill-tokens` budget and
+    /// iterate until every queued stream has advanced.
+    ///
+    /// Same certification caveat as `--ssm-batched-recurrent`: batching
+    /// changes GEMM row counts, and kernels selected on row count round
+    /// differently, so per-request outputs are not bitwise-identical to the
+    /// serial path. Gate recipes stay on the default (off) until certified.
+    ///
+    /// Legacy: `ATLAS_PREFILL_VARLEN=1`, on the same terms as
+    /// `--gdn-fused-norm`, and `Option` for the same reason.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub prefill_varlen_batch: Option<bool>,
+
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
