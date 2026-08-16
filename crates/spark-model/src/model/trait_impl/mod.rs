@@ -83,6 +83,9 @@ impl Model for TransformerModel {
     // first propose, a concurrent sequence's prefill has already restarted it
     // and every sequence but the last-prefilled drafts blind. See
     // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
+    fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
+        self.tokens_have_vision_pad(tokens)
+    }
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;

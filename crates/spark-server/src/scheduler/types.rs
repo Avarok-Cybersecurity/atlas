@@ -399,6 +399,14 @@ pub(super) struct ActiveSeq {
     pub adaptive: crate::adaptive_sampler::AdaptiveSamplingState,
     /// Number of prompt tokens served by the prefix cache (no prefill cost).
     pub cached_prompt_tokens: u32,
+    /// Decode-preemption starvation guard: this sequence must not be chosen
+    /// as a KV-preemption victim again until `output_tokens.len()` reaches
+    /// this threshold. Set on every resume (requeue re-prefill AND swap-in)
+    /// to `output_tokens.len() + preempt::PREEMPT_IMMUNITY_TOKENS`; 0 (the
+    /// default for fresh sequences) means "no immunity". Compared against
+    /// output length rather than decremented per step so it costs nothing
+    /// on the decode hot path and is deterministic to test.
+    pub preempt_immune_until_tokens: usize,
 }
 
 impl ActiveSeq {
@@ -526,6 +534,28 @@ pub(super) struct SwappedSeq {
     pub cached_prompt_tokens: u32,
     pub timeout_at: Option<Instant>,
     pub swap_id: u64,
+}
+
+/// A sequence preempted out of decode when the KV pool ran dry, awaiting a
+/// requeue-resume (the no-`--swap-space` counterpart of [`SwappedSeq`]).
+///
+/// Unlike a disk spill nothing is serialized: the victim's GPU resources are
+/// freed (its computed KV is offered to the prefix cache first, exactly like
+/// `finish_sequence`) and the WHOLE `ActiveSeq` — sink, sampling params,
+/// guard/think/tool state, output already streamed — is retained on the CPU.
+/// Resume re-prefills `tokens` to rebuild KV + SSM state and transplants the
+/// fresh `SequenceState` back into `a`, so the client's stream continues
+/// where it paused: nothing already streamed is invalidated or re-emitted.
+pub(super) struct PreemptedSeq {
+    /// Retained request state. `a.seq` holds NO GPU resources (freed at
+    /// preemption); everything CPU-side stays live, including `cancel_flag`
+    /// (requeue is same-process and short-lived, unlike a disk swap).
+    pub a: ActiveSeq,
+    /// Token history to re-prefill on resume: prompt + every PROCESSED
+    /// output token. Excludes `a.last_token`, which is the pending decode
+    /// input (already streamed) — resume feeds it to the first decode step,
+    /// so no token is re-sampled or re-emitted.
+    pub tokens: Vec<u32>,
 }
 
 #[cfg(test)]
