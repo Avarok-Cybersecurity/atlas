@@ -377,15 +377,50 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     );
     assert_eq!(p.serve_overrides.len(), 2, "{:?}", p.serve_overrides);
 
+    // The concurrency gate declares its whole batched serve profile: the
+    // shared agentic recipe is a serial reproduction config (batch 1, bf16 KV,
+    // 256 Marconi slots, 32K context) that strangles a concurrency instrument.
+    // lm_head_dtype is deliberately absent — the recipe's bf16 head is a
+    // correctness pin, not a throughput knob.
+    let sweep = baseline_for(&root, "concurrency-sweep").unwrap();
+    let (_, c) = sweep.resolve("gb10", None).unwrap();
+    for (key, want) in [
+        ("max_batch_size", "32"),
+        ("kv_cache_dtype", "fp8"),
+        ("ssm_cache_slots", "32"),
+        ("max_model_len", "4096"),
+    ] {
+        assert_eq!(
+            c.serve_overrides.get(key).map(String::as_str),
+            Some(want),
+            "concurrency-sweep serve pin {key}: {:?}",
+            c.serve_overrides
+        );
+    }
+    assert_eq!(c.serve_overrides.len(), 4, "{:?}", c.serve_overrides);
+    assert!(
+        !c.serve_overrides.contains_key("lm_head_dtype"),
+        "the bf16 head is a correctness pin the gate must not touch"
+    );
+
     // Everything else keeps the recipe's own config. bfcl-subset in
     // particular: its default subject's bars (Qwen3.8-27B, 2026-08-14) were
     // measured WITHOUT a pin, and a pin added after the fact would desync the
     // thresholds from the config that produced them.
+    //
+    // ★ decode-floor is in this list as a REGRESSION PIN: on 2026-08-15 the
+    // concurrency gate's serve pin was committed ABOVE its own [[benchmarks]]
+    // header, so TOML attached it to the PRECEDING decode-floor entry — the
+    // concurrency gate then served the recipe's batch 1 (silently: the
+    // OVERRIDES disclosure only prints for a non-empty merged set) while the
+    // NEXT decode-floor run would have served batch 32, a different
+    // instrument than its floor describes.
     for id in [
         "bfcl-subset",
         "ttft-warm-gate",
         "ttft-cold-gate",
         "agentic-webserver",
+        "decode-floor",
     ] {
         let b = baseline_for(&root, id).unwrap();
         let (_, entry) = b.resolve("gb10", None).unwrap();

@@ -243,15 +243,7 @@ max = 3.0
 # so this is the gate's one default subject.
 #
 # ★ THE INSTRUMENT IS PINNED, because the schema defaults are a different
-# instrument (C=1,2,4,8,16,32 at osl 128): the # The shared agentic recipe pins max_batch_size: 1 (its own memory doctrine).
-# A concurrency instrument measured at batch 1 is serial by construction —
-# the 2026-08-15 first certified run proved it (C=1..16 all ~19 tok/s, TTFT
-# stacking linearly). The gate therefore overrides batching on, disclosed in
-# the record per the serve_overrides contract. 0.85 util + batch 32 verified
-# to boot and serve on 2026-08-15 (calibration ladders ran on it).
-[benchmarks.serve_overrides]
-max_batch_size = "32"
-[benchmarks.param_overrides]
+# instrument (C=1,2,4,8,16,32 at osl 128): the [benchmarks.param_overrides]
 # table below is applied by gate self-start exactly as serve_overrides is on
 # the serve side (bench_resolve::apply_param_overrides), recorded in the run
 # record's params, and demanded on the record by check_record — a record
@@ -288,7 +280,61 @@ i.e. the default budget cannot measure the top rung on this model. That is \
 the vacuity guarantee min_completion_tokens pins below. Floors are set at \
 mean minus max(3*sigma, ~5%) per rung, so a sub-noise wobble passes and a \
 real regression does not. Recalibrate all five together, from >=3 fresh \
-reps on this same instrument, never from a best rep."""
+reps on this same instrument, never from a best rep. \
+★ SERVE PROFILE (2026-08-15): the recipe is the shared AGENTIC profile — a \
+serial reproduction config (batch 1, bf16 KV, 256 Marconi slots, 32K \
+context) that strangles a concurrency instrument: the first certified run \
+served it verbatim and measured C=1..16 all ~19 tok/s with TTFT stacking \
+linearly, and its serve sized only ~0.6-1.1 GB of KV — nowhere near 16 \
+concurrent ~832-token sequences. The gate therefore pins its own serve \
+profile in [benchmarks.serve_overrides] below (each key justified inline), \
+disclosed on every record per the serve_overrides contract; lm_head_dtype \
+stays the recipe's bf16 correctness pin. \
+★ FLOORS AWAIT RE-CUT: the five committed floors (24/43/63/94/94) were cut \
+from the 2026-08-15 hand-built batched calibration serve, NOT from a \
+certified run on the pinned profile (fp8 KV, 32 Marconi slots, 4K context \
+change the memory geometry). They stand untouched as placeholders until the \
+first batched certified run on this profile; re-cut all five together from \
+that run's cells."""
+
+# ★ PLACEMENT: a [benchmarks.*] sub-table attaches to the MOST RECENT
+# [[benchmarks]] header above it. This serve pin was first committed ABOVE
+# this entry's header (2026-08-15), so TOML silently attached it to the
+# PREVIOUS entry (decode-floor) and the gate served the recipe's batch 1
+# with no OVERRIDES disclosure line — keep every sub-table BELOW the header
+# it belongs to. bench_tests pins where each committed serve pin sits.
+[benchmarks.serve_overrides]
+# The gate's serve profile. Every key is a `defaults:` key of the
+# qwen3.8/qwen3.8-27b-nvfp4-unsloth recipe, overridden because that recipe
+# is the serial agentic reproduction config (see the note). Applied by gate
+# self-start, recorded on the run record, and demanded there by
+# check_record.
+#
+# The recipe pins max_batch_size: 1 (its own memory doctrine). A concurrency
+# instrument measured at batch 1 is serial by construction — the 2026-08-15
+# first certified run proved it (C=1..16 all ~19 tok/s, TTFT stacking
+# linearly). 0.85 util + batch 32 verified to boot and serve on 2026-08-15
+# (the calibration ladders ran on it).
+max_batch_size = "32"
+# The recipe's bf16 KV is its <=32K single-stream reproduction pin. This
+# model's own MODEL.toml carries default_kv_dtype = "fp8" (a property of the
+# shared FP8-KV kernel set), and the serve itself WARNs that bf16 is the
+# risky override for this model; fp8 halves KV bytes, which this profile
+# spends on concurrent sequences.
+kv_cache_dtype = "fp8"
+# The recipe's 256 slots built a measured 38.7 GB Marconi snapshot pool
+# (2026-08-16 gate serve log) — geometry for 1000-sample serial prefix
+# reuse, useless to a 16-way ladder and the single largest KV thief. 32
+# slots keep prefix caching alive (2x the gate's peak concurrency) and
+# return ~34 GB to the KV budget.
+ssm_cache_slots = "32"
+# The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
+# 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
+# and the max_model_len-sized inference reserve — multiplying available KV
+# blocks roughly 8x vs the recipe's 32768.
+max_model_len = "4096"
+# lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
+# correctness pin (exact argmax over the 248K vocab), not a throughput knob.
 
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
