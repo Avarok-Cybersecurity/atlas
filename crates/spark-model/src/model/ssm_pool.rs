@@ -378,6 +378,15 @@ impl SsmStatePool {
         }
     }
 
+    /// True when `idx` is currently on the free list — claimable, owned by no
+    /// live sequence. Drain-tail graph borrowing (`graph_borrow.rs`) uses this
+    /// to prove a borrowed graph's tail rows only scribble on unowned state.
+    /// The scheduler thread is the only claimer/releaser, so the answer is
+    /// stable for the duration of a dispatch it performs itself.
+    pub(super) fn slot_is_free(&self, idx: usize) -> bool {
+        self.free_slots.lock().contains(&idx)
+    }
+
     /// Reserved pool slot used by `decode_batch` / `mixed_forward` padding.
     /// Never claimed by `claim_slot()`, never released. SSM kernels are
     /// free to read/write this slot's pool memory without affecting any

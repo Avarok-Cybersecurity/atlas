@@ -88,15 +88,23 @@ impl TransformerModel {
     /// provides h_state + ≥ k-1 h intermediates (the layer-side batched arm
     /// re-checks per layer; defense in depth). NULL keeps the per-sequence
     /// WY loop, which is byte-identical math.
+    /// `ghosts` — drain-tail borrow only (`graph_borrow.rs`): `(slot, k)`
+    /// pairs for the borrowed graph's baked tail rows, appended after the
+    /// batch entries. A captured entry is a pure function of `(layer, slot)`
+    /// (`SsmLayerState` pointers ARE the pool accessors), so ghost entries
+    /// are synthesized straight from the pool — reproducing byte-for-byte
+    /// the pointers the departed sequence's capture staged. Empty on every
+    /// non-borrow step.
     pub(super) fn upload_verify_wy_tables(
         &self,
         seqs: &[&mut SequenceState],
         k: usize,
+        ghosts: &[(u32, u32)],
         stream: u64,
     ) -> Result<DevicePtr> {
         let n = seqs.len();
         if self.verify_wy_tables.is_null()
-            || n > VERIFY_WY_TABLE_SEQS
+            || n + ghosts.len() > VERIFY_WY_TABLE_SEQS
             || !(2..=crate::layer::VERIFY_WY_TABLES_PER_LAYER).contains(&k)
         {
             return Ok(DevicePtr::NULL);
@@ -126,6 +134,15 @@ impl TransformerModel {
                 host[base + i] = st.h_state.0;
                 for t in 0..k - 1 {
                     host[base + (t + 1) * VERIFY_WY_TABLE_SEQS + i] = st.h_state_intermediates[t].0;
+                }
+            }
+            for (gi, &(slot, gk)) in ghosts.iter().enumerate() {
+                let i = n + gi;
+                let s = slot as usize;
+                host[base + i] = self.ssm_pool.h_state(ssm_idx, s).0;
+                for t in 0..(gk as usize).saturating_sub(1) {
+                    host[base + (t + 1) * VERIFY_WY_TABLE_SEQS + i] =
+                        self.ssm_pool.h_intermediate(ssm_idx, s, t).0;
                 }
             }
             ssm_idx += 1;
