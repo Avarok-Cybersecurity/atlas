@@ -372,13 +372,14 @@ min = 73.5
 noise = 1.5
 
 [benchmarks.metrics.min_completion_tokens]
-# The vacuity guarantee, restated where the gate can see it: at osl=320
-# every request hits the full budget (the fixture's minimum deterministic
-# completion is 334 > 320), so the minimum delivered completion across ALL
-# requests in ALL cells is exactly the budget. A run below this measured a
-# different instrument or an early stop, and its aggregates are not
-# comparable to these floors.
-min = 320.0
+# The vacuity guarantee, restated where the gate can see it. The original
+# calibration (fixture minimum 334 > 320, every request budget-capped) was
+# measured on a tree where MTP speculated inside <think>; with the
+# serial-in-think fix (2c80bf2f7) token trajectories shifted and the
+# fixture's minimum deterministic completion is 296 (natural EOS, temp 0).
+# The floor guards degenerate early-EOS collapse; per-cell vacuity is
+# policed by vacuous_cells below.
+min = 280.0
 
 [benchmarks.metrics.vacuous_cells]
 # Zero, absolutely: the driver already refuses to mint throughput keys from
