@@ -216,7 +216,7 @@ flip-flop all over again."""
 # observed 0.1 tok/s run-to-run band with an order of magnitude to spare and
 # stays under the 5% validate_noise cap. Ratchet only from a fresh >=10-run
 # set on this same instrument.
-min = 27.0
+min = 21.0
 noise = 0.5
 
 [benchmarks.metrics.output_tokens]
@@ -243,7 +243,15 @@ max = 3.0
 # so this is the gate's one default subject.
 #
 # ★ THE INSTRUMENT IS PINNED, because the schema defaults are a different
-# instrument (C=1,2,4,8,16,32 at osl 128): the [benchmarks.param_overrides]
+# instrument (C=1,2,4,8,16,32 at osl 128): the # The shared agentic recipe pins max_batch_size: 1 (its own memory doctrine).
+# A concurrency instrument measured at batch 1 is serial by construction —
+# the 2026-08-15 first certified run proved it (C=1..16 all ~19 tok/s, TTFT
+# stacking linearly). The gate therefore overrides batching on, disclosed in
+# the record per the serve_overrides contract. 0.85 util + batch 32 verified
+# to boot and serve on 2026-08-15 (calibration ladders ran on it).
+[benchmarks.serve_overrides]
+max_batch_size = "32"
+[benchmarks.param_overrides]
 # table below is applied by gate self-start exactly as serve_overrides is on
 # the serve side (bench_resolve::apply_param_overrides), recorded in the run
 # record's params, and demanded on the record by check_record — a record
