@@ -83,6 +83,22 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         ));
     }
 
+    // `--ssm-rollback-mode`: validated through the model-side `FromStr` —
+    // the SAME parse `publish_kernel_flags` uses — so what is accepted here
+    // and what is published cannot drift (mirrors the kv-cache-dtype rule).
+    if let Err(why) = args
+        .ssm_rollback_mode
+        .parse::<spark_model::ssm_reserve::SsmRollbackMode>()
+    {
+        v.push(Violation::new(
+            format!(
+                "--ssm-rollback-mode '{}' is not a valid value.",
+                args.ssm_rollback_mode
+            ),
+            why,
+            "use snapshot (default, wired) or replay (experimental scaffold).",
+        ));
+    }
     // #435: the exact-verify arm's kernels are FP32 readers, so an FP16
     // h-state pool disables it (`GdnFlags::verify_exact_active`). Honouring
     // `--ssm-h-dtype f16` by SILENTLY ignoring an explicit `--exact-verify`

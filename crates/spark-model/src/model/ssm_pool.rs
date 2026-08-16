@@ -82,6 +82,18 @@ pub(crate) struct SsmStatePool {
     /// pool; the last entry is the per-layer pool size in h_state units.
     /// Fixed at allocation ⇒ per-slot addresses stay CUDA-graph-stable.
     pub(super) h_inter_offsets: Vec<usize>,
+    /// Verify-rollback mode (`--ssm-rollback-mode`, EXPERIMENTAL). Under
+    /// `Replay` the per-token intermediate pools are NOT allocated (one
+    /// checkpoint blob per slot instead) and every speculative verify entry
+    /// refuses through [`Self::require_verify_rollback_supported`] — the
+    /// capture/replay device path is scaffold-only.
+    pub(super) rollback_mode: crate::ssm_reserve::SsmRollbackMode,
+    /// Replay-mode verify-window input ring, one flat region per SSM layer
+    /// (`(mtp_slots + 1) × (K-1) rows` of qkvz+gates each — layout
+    /// `ssm_reserve::ssm_replay_ring_bytes` / `ssm_replay_row_bytes`).
+    /// Empty in snapshot mode. Allocated so boot sizing is honest; the
+    /// capture that would fill it is not wired yet.
+    pub(super) replay_input_rings: Vec<DevicePtr>,
     pub(super) free_slots: Mutex<Vec<usize>>,
 }
 
@@ -111,6 +123,7 @@ impl SsmStatePool {
         num_intermediates: usize,
         num_drafts: usize,
         h_f16_pool: bool,
+        rollback_mode: crate::ssm_reserve::SsmRollbackMode,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let _d_conv = config.linear_conv_kernel_dim;
@@ -174,8 +187,13 @@ impl SsmStatePool {
         // the CONV side keeps all K because the fused conv kernels write the
         // dead K-1 snapshot on-device. `num_intermediates` remains the K
         // ceiling (conv count); the uniform H count is `num_intermediates-1`.
+        let replay = rollback_mode == crate::ssm_reserve::SsmRollbackMode::Replay;
         let uniform_h = num_intermediates != num_drafts + 1;
-        let h_inter_counts: Vec<usize> = if has_mtp {
+        let h_inter_counts: Vec<usize> = if has_mtp && replay {
+            // Replay: no per-token snapshots exist — every slot's count is 0
+            // (the vec stays populated so accessors keep their shape).
+            vec![0; mtp_slots + 1]
+        } else if has_mtp {
             (0..=mtp_slots)
                 .map(|s| {
                     if s == mtp_slots || uniform_h {
@@ -190,19 +208,36 @@ impl SsmStatePool {
             Vec::new()
         };
         let (h_inter_offsets, h_inter_total) = h_inter_layout(&h_inter_counts);
+        let mut replay_input_rings = Vec::new();
         if has_mtp {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
             for _ in 0..num_ssm_layers {
-                let h_inter = gpu.alloc(h_inter_total * h_stored_bytes)?;
-                gpu.memset(h_inter, 0, h_inter_total * h_stored_bytes)?;
-                h_intermediate_pools.push(h_inter);
+                if !replay {
+                    let h_inter = gpu.alloc(h_inter_total * h_stored_bytes)?;
+                    gpu.memset(h_inter, 0, h_inter_total * h_stored_bytes)?;
+                    h_intermediate_pools.push(h_inter);
 
-                let conv_inter = gpu.alloc(mtp_total * ni * conv_bytes)?;
-                gpu.memset(conv_inter, 0, mtp_total * ni * conv_bytes)?;
-                conv_intermediate_pools.push(conv_inter);
+                    let conv_inter = gpu.alloc(mtp_total * ni * conv_bytes)?;
+                    gpu.memset(conv_inter, 0, mtp_total * ni * conv_bytes)?;
+                    conv_intermediate_pools.push(conv_inter);
+                } else {
+                    // Replay: verify-window INPUT rows instead of state
+                    // snapshots — (mtp_total slots incl. dummy) × (K-1)
+                    // rows of qkvz+gates per layer. Sized by the same SSOT
+                    // preflight reserves through.
+                    let row = crate::ssm_reserve::ssm_replay_row_bytes(
+                        config.ssm_qkvz_size(),
+                        config.linear_num_value_heads,
+                    );
+                    let ring = crate::ssm_reserve::ssm_replay_ring_bytes(1, row, ni, mtp_total);
+                    let r = gpu.alloc(ring)?;
+                    gpu.memset(r, 0, ring)?;
+                    replay_input_rings.push(r);
+                }
 
-                // 1 checkpoint per slot per layer
+                // 1 checkpoint per slot per layer (BOTH modes: replay's
+                // reconstruction base is exactly this blob).
                 let h_ckpt = gpu.alloc(mtp_total * h_stored_bytes)?;
                 gpu.memset(h_ckpt, 0, mtp_total * h_stored_bytes)?;
                 h_checkpoint_pools.push(h_ckpt);
@@ -267,6 +302,8 @@ impl SsmStatePool {
             num_intermediates,
             h_inter_counts,
             h_inter_offsets,
+            rollback_mode,
+            replay_input_rings,
             free_slots: Mutex::new(free_slots),
         })
     }
@@ -481,12 +518,39 @@ impl SsmStatePool {
         if !self.has_mtp {
             return usize::MAX;
         }
+        // Replay scaffold: capacity is NOT snapshot-bounded (no per-token
+        // snapshots exist to overflow). Report unconstrained so the
+        // scheduler does not silently zero out speculation — dispatch then
+        // hits `require_verify_rollback_supported`'s LOUD refusal instead.
+        if self.rollback_mode == crate::ssm_reserve::SsmRollbackMode::Replay {
+            return usize::MAX;
+        }
         if slot >= self.mtp_slots {
             return 0;
         }
         // K-1 sizing: the count IS the draft capacity (a K-row verify
         // writes K-1 H snapshots, indices 0..K-2).
         self.h_inter_counts[slot]
+    }
+
+    /// Refuse a speculative VERIFY under the replay scaffold. The replay
+    /// mode's device path (verify-window input capture + checkpoint-replay
+    /// reconstruction) is not wired; running a verify would either index
+    /// empty intermediate vecs (opaque) or, worse, roll back to nothing
+    /// (silent corruption). Called by every `decode_verify*` entry.
+    pub(crate) fn require_verify_rollback_supported(&self) -> Result<()> {
+        if self.rollback_mode == crate::ssm_reserve::SsmRollbackMode::Replay
+            && self.num_ssm_layers > 0
+        {
+            bail!(
+                "--ssm-rollback-mode replay is an EXPERIMENTAL scaffold: the verify-window \
+                 input capture and checkpoint-replay reconstruction are not wired yet, so \
+                 speculative verify cannot run. The serve boots (reserve sizing shows the \
+                 replay capacity win) but --speculative traffic must use \
+                 --ssm-rollback-mode snapshot."
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn conv_intermediate(
@@ -750,7 +814,50 @@ mod h_stored_geometry_tests {
     fn pool(h_f16_pool: bool) -> SsmStatePool {
         let config = ModelConfig::qwen3_next_80b_nvfp4();
         let gpu = MockGpuBackend::new();
-        SsmStatePool::new(&config, 4, true, 4, 3, h_f16_pool, &gpu).unwrap()
+        SsmStatePool::new(
+            &config,
+            4,
+            true,
+            4,
+            3,
+            h_f16_pool,
+            crate::ssm_reserve::SsmRollbackMode::Snapshot,
+            &gpu,
+        )
+        .unwrap()
+    }
+
+    /// Replay-scaffold pool geometry: no per-token intermediates, checkpoints
+    /// and the input ring allocated, verify refused loudly, dispatch capacity
+    /// unconstrained (the refusal must be LOUD, never a silent zero-draft).
+    #[test]
+    fn replay_pool_has_checkpoints_and_ring_but_no_intermediates() {
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        let gpu = MockGpuBackend::new();
+        let p = SsmStatePool::new(
+            &config,
+            4,
+            true,
+            4,
+            3,
+            false,
+            crate::ssm_reserve::SsmRollbackMode::Replay,
+            &gpu,
+        )
+        .unwrap();
+        assert!(p.h_intermediate_pools.is_empty());
+        assert!(p.conv_intermediate_pools.is_empty());
+        assert_eq!(p.h_inter_counts, vec![0; p.mtp_slots + 1]);
+        assert_eq!(p.h_checkpoint_pools.len(), p.num_ssm_layers);
+        assert_eq!(p.replay_input_rings.len(), p.num_ssm_layers);
+        assert_eq!(p.verify_draft_capacity(0), usize::MAX);
+        let err = p.require_verify_rollback_supported().unwrap_err();
+        assert!(err.to_string().contains("EXPERIMENTAL"), "{err}");
+        // Snapshot mode: supported, and its geometry untouched.
+        let snap = pool(false);
+        assert!(snap.require_verify_rollback_supported().is_ok());
+        assert!(snap.replay_input_rings.is_empty());
+        assert!(!snap.h_intermediate_pools.is_empty());
     }
 
     /// Stage-3 sizing is a STORAGE-width change, not a layout change: every
@@ -825,6 +932,8 @@ mod slot_guard_tests {
             num_intermediates: 0,
             h_inter_counts: Vec::new(),
             h_inter_offsets: Vec::new(),
+            rollback_mode: crate::ssm_reserve::SsmRollbackMode::Snapshot,
+            replay_input_rings: Vec::new(),
             free_slots: Mutex::new((0..max_slots).rev().collect()),
         })
     }

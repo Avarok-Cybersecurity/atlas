@@ -53,7 +53,32 @@ pub(crate) fn preflight_reserve(
         // above), wired so preflight and allocator cannot diverge when the
         // refusal lifts.
         spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
+        // `--ssm-rollback-mode` (published by serve_flags before this runs).
+        // Replay drops every per-token verify intermediate; its input ring
+        // is the separate term below.
+        spark_model::ssm_reserve::ssm_rollback_mode(),
     );
+    // Replay-mode verify-window input ring (EXPERIMENTAL scaffold): sized by
+    // the SAME SSOT `SsmStatePool::new` allocates through. K ceiling is the
+    // MTP `num_drafts + 1` — matching this preflight's existing convention
+    // for the conv term (the DFlash γ=17 widening and the pools' dummy slot
+    // have never been preflight-counted; the CUDA headroom absorbs them).
+    let ssm_replay_ring = if spec_on_pool
+        && spark_model::ssm_reserve::ssm_rollback_mode()
+            == spark_model::ssm_reserve::SsmRollbackMode::Replay
+    {
+        spark_model::ssm_reserve::ssm_replay_ring_bytes(
+            config.num_ssm_layers(),
+            spark_model::ssm_reserve::ssm_replay_row_bytes(
+                config.ssm_qkvz_size(),
+                config.linear_num_value_heads,
+            ),
+            args.resolved_num_drafts() + 1,
+            mtp_state_slots,
+        )
+    } else {
+        0
+    };
     let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
         args.resolved_num_drafts() + 2
     } else {
@@ -149,7 +174,7 @@ pub(crate) fn preflight_reserve(
         }
     };
     let inference_reserve: usize =
-        ssm_pool_bytes + ssm_snapshot_bytes + gdn_two_phase_bytes + cuda_headroom;
+        ssm_pool_bytes + ssm_replay_ring + ssm_snapshot_bytes + gdn_two_phase_bytes + cuda_headroom;
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
