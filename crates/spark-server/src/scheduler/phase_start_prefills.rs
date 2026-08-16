@@ -45,6 +45,20 @@ pub(super) fn start_new_requests(
         && prefilling.is_empty()
         && !model.is_ep()
         && !new_reqs.iter().any(|r| r.has_image_pixels());
+    // VARLEN batched prefill (`--prefill-varlen-batch`): defer chunk-0 whenever
+    // there is (or will be) company to batch with — >=2 co-admitted this tick,
+    // OR streams already prefilling that a late arrival can join next wave.
+    // Unlike codispatch it does NOT require equal prompt lengths (ragged
+    // cu_seqlens geometry) and does not require `prefilling` to be empty.
+    // A request admitted alone with nothing in flight keeps the inline
+    // chunk-0 (and its `max_batch_tokens` solo budget) — deferral there
+    // would only shrink its first chunk. Vision excluded per request, same
+    // shared-buffer reason as codispatch; EP excluded like every batched path.
+    let want_varlen_defer = chunked
+        && !model.is_ep()
+        && active.is_empty()
+        && (new_reqs.len() >= 2 || !prefilling.is_empty())
+        && spark_model::layers::ops::prefill_varlen_enabled();
     // Always-mixed chunk-0 fuse: when decodes are active and ATLAS_HOLO_ALWAYS_MIXED
     // is on, DEFER a new request's chunk-0 (admit it to `prefilling` with
     // chunk_offset=0, skip the inline blocking prefill) so it runs this SAME tick
@@ -220,7 +234,8 @@ pub(super) fn start_new_requests(
     for (req_idx, req) in new_reqs.into_iter().enumerate() {
         let precomputed_beam_hyp = beam_hyps[req_idx].take();
         if chunked {
-            let defer = want_codispatch || (mixed_defer && !req.has_image_pixels());
+            let defer =
+                want_codispatch || ((mixed_defer || want_varlen_defer) && !req.has_image_pixels());
             // Pre-encoded by the co-dispatch pre-pass? (num_images>0 ⇒ batched)
             let slice = vision_slices[req_idx];
             let vision_slice = if slice.num_images > 0 {
