@@ -67,14 +67,13 @@ jobs:
 
       # ***********************************************************************
       # * PLACEHOLDER PIN — CI FAILS ON THIS STEP UNTIL IT IS REPLACED.      *
-      # * __PIN_AFTER_PUBLISH__ must become the commit SHA of AutoRepoRAG's  *
       # * v1 tag once Avarok-Cybersecurity/AutoRepoRAG is published, keeping *
       # * the SHA-pinning convention every other action here follows. GitHub *
       # * cannot resolve this ref until then — that is deliberate.           *
       # ***********************************************************************
       - name: Build corpus (incremental against the published one)
         id: rag
-        uses: Avarok-Cybersecurity/AutoRepoRAG@__PIN_AFTER_PUBLISH__ # v1
+        uses: Avarok-Cybersecurity/AutoRepoRAG@61101adaa3d2e5937099f9ecb3386a07c7d65670 # v0.1.0
         with:
           collection: atlas-coderag
           # output-name is a basename: the action writes <name>.jsonl,
