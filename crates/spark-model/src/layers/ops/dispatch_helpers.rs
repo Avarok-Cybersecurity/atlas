@@ -34,17 +34,32 @@ pub fn prefill_batched_first_chunk_enabled() -> bool {
         .any(|value| bool_value_enabled(value.as_deref()))
 }
 
-/// VARLEN (ragged) batched prefill enabled? (`ATLAS_PREFILL_VARLEN=1`).
+/// The resolved VARLEN batched-prefill decision. One cell, three readers
+/// (admission predicate, batched-attention chunk-0 guard, scheduler wave
+/// planner) — a `OnceLock` so the decision cannot change mid-serve.
+static PREFILL_VARLEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Publish the command line's `--prefill-varlen-batch` decision. Returns the
+/// value IN FORCE, which differs from `enabled` when something already
+/// resolved the cell (then the command line did NOT take effect — the caller
+/// warns, mirroring `gdn_flags::set_from_cli`). Absent flag ⇒ never called ⇒
+/// the documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
+pub fn set_prefill_varlen_from_cli(enabled: bool) -> bool {
+    let _ = PREFILL_VARLEN.set(enabled);
+    *PREFILL_VARLEN.get().expect("just set")
+}
+
+/// VARLEN (ragged) batched prefill enabled? (`--prefill-varlen-batch`,
+/// legacy `ATLAS_PREFILL_VARLEN=1`; default OFF).
 ///
-/// SSOT for both the admission predicate (`check_kernel_batched_eligible`) and
-/// the batched-attention layer's chunk-0 guard. Those two must agree: if
-/// admission accepts a batch the layer then rejects, the bail happens
-/// mid-Phase-A with streams already mutated, and the per-stream fallback
-/// re-runs setup on dirty state.
+/// SSOT for the admission predicate (`check_kernel_batched_eligible`), the
+/// batched-attention layer's chunk-0 guard, and the scheduler's prefill wave
+/// planner. Those must agree: if admission accepts a batch the layer then
+/// rejects, the bail happens mid-Phase-A with streams already mutated, and
+/// the per-stream fallback re-runs setup on dirty state.
 pub fn prefill_varlen_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| bool_value_enabled(std::env::var("ATLAS_PREFILL_VARLEN").ok().as_deref()))
+    *PREFILL_VARLEN
+        .get_or_init(|| bool_value_enabled(std::env::var("ATLAS_PREFILL_VARLEN").ok().as_deref()))
 }
 
 fn bool_value_enabled(value: Option<&str>) -> bool {

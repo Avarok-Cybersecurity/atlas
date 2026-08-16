@@ -80,6 +80,25 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
              line's ({rollback:?}) did NOT take effect"
         );
     }
+    // `--prefill-varlen-batch`: its own single-value cell, so it publishes
+    // independently of the GDN trio. Absent publishes nothing and the
+    // documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
+    if let Some(varlen) = args.prefill_varlen_batch {
+        let in_force = spark_model::layers::ops::set_prefill_varlen_from_cli(varlen);
+        if in_force != varlen {
+            tracing::warn!(
+                "prefill-varlen-batch was already resolved ({in_force}); the command \
+                 line's ({varlen}) did NOT take effect"
+            );
+        }
+        if std::env::var_os("ATLAS_PREFILL_VARLEN").is_some() {
+            tracing::warn!(
+                "ATLAS_PREFILL_VARLEN is set but was OVERRIDDEN: `--prefill-varlen-batch` \
+                 on the command line owns the decision. Drop the flag to let the \
+                 environment decide."
+            );
+        }
+    }
     // `None` where the flag was not given, so the documented `ATLAS_*` fallback
     // still decides. Passing the clap default instead sealed both cells on
     // every boot and made those variables silent no-ops.
@@ -94,7 +113,8 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
-         exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?}",
+         exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
+         prefill_varlen_batch={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -108,6 +128,8 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             "auto"
         },
         spark_model::ssm_reserve::ssm_rollback_mode(),
+        // RESOLVED, not the raw argument — may come from the environment.
+        spark_model::layers::ops::prefill_varlen_enabled(),
     );
 }
 
