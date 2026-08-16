@@ -292,7 +292,7 @@ disclosed on every record per the serve_overrides contract; lm_head_dtype \
 stays the recipe's bf16 correctness pin. \
 ★ FLOORS AWAIT RE-CUT: the five committed floors (24/43/63/94/94) were cut \
 from the 2026-08-15 hand-built batched calibration serve, NOT from a \
-certified run on the pinned profile (fp8 KV, 32 Marconi slots, 4K context \
+certified run on the pinned profile (fp8 KV, 8 Marconi slots, 4K context \
 change the memory geometry). They stand untouched as placeholders until the \
 first batched certified run on this profile; re-cut all five together from \
 that run's cells."""
@@ -324,10 +324,17 @@ max_batch_size = "32"
 kv_cache_dtype = "fp8"
 # The recipe's 256 slots built a measured 38.7 GB Marconi snapshot pool
 # (2026-08-16 gate serve log) — geometry for 1000-sample serial prefix
-# reuse, useless to a 16-way ladder and the single largest KV thief. 32
-# slots keep prefix caching alive (2x the gate's peak concurrency) and
-# return ~34 GB to the KV budget.
-ssm_cache_slots = "32"
+# reuse, useless to a 16-way ladder and the single largest KV thief. Each
+# slot holds one full per-seq SSM blob (48 GDN layers × 3,309,568 B =
+# 151.5 MiB), so 32 slots reserve 4.73 GiB and 8 reserve 1.18 GiB.
+# Concurrency serving does not replay long shared prefixes — the ladder's
+# requests are independent ~832-token sequences — so 8 slots retain the
+# warm-prefix value at 1/4 the reserve, returning the other 3.55 GiB to
+# the KV budget on top of the ~34 GB the 256→32 cut already returned.
+# ⚠ The committed record above was measured with 32 slots; this pin change
+# means that record no longer covers, pending the planned re-record (the
+# floors already carry the "AWAIT RE-CUT" caveat in the note).
+ssm_cache_slots = "8"
 # The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
 # 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
 # and the max_model_len-sized inference reserve — multiplying available KV
