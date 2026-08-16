@@ -230,11 +230,17 @@ impl TransformerModel {
                     e.1 = tick;
                     replay = Some(e.0);
                     ghosts = b.ghosts;
-                    tracing::debug!(
-                        "verify graph borrow: n={n} R={r_total} -> replaying captured \
-                         key with {} ghost pairs",
-                        ghosts.len()
-                    );
+                    // INFO once per transition (same cardinality as the
+                    // captures this replaces); repeats of the same pair
+                    // stay silent. Provable engagement: grep "graph borrow".
+                    if super::graph_borrow::VERIFY_BORROW_LOG.should_log(key, &b.key) {
+                        tracing::info!(
+                            "verify graph borrow: n={n} R={r_total} -> replaying captured \
+                             {}-seq key with {} ghost pairs",
+                            (b.key.len() - 1) / 2,
+                            ghosts.len()
+                        );
+                    }
                 }
             }
         }

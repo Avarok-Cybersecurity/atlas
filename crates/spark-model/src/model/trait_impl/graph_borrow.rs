@@ -44,16 +44,15 @@
 //! width (see the pin in `mtp_gate/tests.rs`).
 //!
 //! POLICY: borrow only graphs at most [`borrow_width_cap`] = 2 × the batch's
-//! own `padded_batch_n` bucket wide (the factor-2 window mirrors the
-//! `mtp_gate` power-of-two width-regime economics). Wider than that, wasted
-//! pad lanes cost more over a drain segment than one narrow capture, and the
-//! narrow capture is canonical — it is reused by every later drain. With the
-//! window, a full 32→1 drain captures O(2) graphs per family instead of ~29.
+//! POWER-OF-TWO width bucket (one `mtp_gate` width regime above its own).
+//! Wider than that, wasted pad lanes cost more over a drain segment than one
+//! narrow capture, and the narrow capture is canonical — it is reused by
+//! every later drain. With the window, a full 32→1 drain captures O(1)
+//! graphs per family instead of ~29 (only the ladder's `k_drafts`
+//! deepening below n≈13 still forces new verify shapes).
 //!
 //! Kill switch: `ATLAS_NO_GRAPH_BORROW` (PRESENCE disables, house
 //! convention — `=0` is NOT off). Read once per process.
-
-use crate::traits::padded_batch_n;
 
 /// Borrowing enabled unless `ATLAS_NO_GRAPH_BORROW` is present.
 pub(super) fn graph_borrow_enabled() -> bool {
@@ -61,13 +60,55 @@ pub(super) fn graph_borrow_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GRAPH_BORROW").is_none())
 }
 
-/// Widest captured graph an `n`-active batch may borrow: twice its own
-/// padding bucket. Within the factor-2 window the step stays
-/// bandwidth-bound-cheap; beyond it a fresh narrow capture amortizes better
-/// over the drain segment (and seeds the canonical key for later drains).
+/// Widest captured graph an `n`-active batch may borrow: twice its
+/// POWER-OF-TWO width bucket (`n.next_power_of_two()` — the same bucket the
+/// `mtp_gate` width-regime arbiter uses), i.e. one regime above the batch's
+/// own. Within the window the step stays bandwidth-bound-cheap; beyond it a
+/// fresh narrow capture amortizes better over the drain segment (and seeds
+/// the canonical key for later drains).
+///
+/// This was `2 * padded_batch_n(n)` in the first cut, which the 2026-08-16
+/// dgx2 validation run (`/tmp/atlas-dtval-serve.log`) caught declining the
+/// clean n=12-under-n=32 borrow: 12 is itself a padding-ladder rung, so its
+/// padded bucket is 12 and the cap (24) rejected the only cached wider key
+/// (32) — the engine then CAPTURED a fresh n=12 verify graph at 21:04:56
+/// mid-drain. The power-of-two bucket (16) puts 32 inside the window, which
+/// is what the drain needs: below n=13 the ladder deepens `k_drafts`
+/// anyway, so n=9..12 is the LAST band the steady-state k=2 graph can
+/// serve — declining there buys a capture and saves nothing later.
 pub(super) fn borrow_width_cap(n: usize) -> usize {
-    2 * padded_batch_n(n)
+    2 * n.next_power_of_two()
 }
+
+/// Dedup gate for borrow INFO logs. A drain band replays the same borrowed
+/// graph for hundreds of consecutive steps; logging each replay would flood
+/// the serve log, logging at `debug!` proved NOTHING at the production
+/// `info` level (the 2026-08-16 validation could not tell "borrow engaged
+/// silently" from "borrow never ran"). Log exactly the TRANSITIONS: one
+/// line whenever the (exact key, borrowed key) pair differs from the
+/// previous borrow — the same cardinality as the captures the borrow
+/// replaced.
+pub(super) struct BorrowLogGate(std::sync::atomic::AtomicU64);
+
+impl BorrowLogGate {
+    pub(super) const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(0))
+    }
+
+    /// True when this (exact, borrowed) pair is not the one last logged.
+    /// FNV-1a over both keys; 0 is reserved for "nothing logged yet".
+    pub(super) fn should_log(&self, exact: &[u32], borrowed: &[u32]) -> bool {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &v in exact.iter().chain(borrowed.iter()) {
+            h = (h ^ u64::from(v)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let h = if h == 0 { 1 } else { h };
+        self.0.swap(h, std::sync::atomic::Ordering::Relaxed) != h
+    }
+}
+
+pub(super) static DECODE_BORROW_LOG: BorrowLogGate = BorrowLogGate::new();
+pub(super) static VERIFY_BORROW_LOG: BorrowLogGate = BorrowLogGate::new();
 
 /// Find a captured batched-decode key to replay for `active_slots`
 /// (this batch's per-row SSM slots, batch order).
@@ -185,18 +226,22 @@ pub(super) fn find_borrowable_verify_key<'a>(
 mod tests {
     use super::*;
 
-    /// The width→bucket policy, pinned: a batch may borrow up to 2× its own
-    /// padding-ladder bucket.
+    /// The width→bucket policy, pinned: a batch may borrow up to 2× its
+    /// POWER-OF-TWO width bucket (one arbiter width-regime above its own).
+    /// NOT the padding ladder: `2 * padded_batch_n(12) = 24` rejected the
+    /// n=12-under-n=32 drain borrow on dgx2 (2026-08-16) because 12 is
+    /// itself a ladder rung.
     #[test]
-    fn borrow_width_cap_is_twice_the_padding_bucket() {
-        assert_eq!(borrow_width_cap(1), 4); // padded 2
+    fn borrow_width_cap_is_twice_the_power_of_two_bucket() {
+        assert_eq!(borrow_width_cap(1), 2);
         assert_eq!(borrow_width_cap(2), 4);
-        assert_eq!(borrow_width_cap(3), 8); // padded 4
+        assert_eq!(borrow_width_cap(3), 8);
         assert_eq!(borrow_width_cap(8), 16);
-        assert_eq!(borrow_width_cap(9), 24); // padded 12
-        assert_eq!(borrow_width_cap(13), 32); // padded 16
-        assert_eq!(borrow_width_cap(17), 48); // padded 24
-        assert_eq!(borrow_width_cap(25), 64); // padded 32
+        assert_eq!(borrow_width_cap(9), 32); // bucket 16 — NOT padded 12
+        assert_eq!(borrow_width_cap(12), 32); // the dgx2 counter-example band
+        assert_eq!(borrow_width_cap(13), 32);
+        assert_eq!(borrow_width_cap(16), 32);
+        assert_eq!(borrow_width_cap(17), 64); // bucket 32 (bs=64 boots)
         assert_eq!(borrow_width_cap(32), 64);
     }
 
@@ -212,7 +257,7 @@ mod tests {
     fn drain_widths_inside_the_bucket_replay_the_steady_state_graph() {
         let k32 = canonical(32);
         let cache = [k32.clone()];
-        for n in 13..32usize {
+        for n in 9..32usize {
             let active = canonical(n as u32);
             let found = find_borrowable_decode_key(&active, cache.iter(), |s| s >= n as u32);
             assert_eq!(
@@ -224,11 +269,13 @@ mod tests {
     }
 
     /// Below the factor-2 window the borrow declines — one narrow capture is
-    /// cheaper over the drain segment than 32-wide pad lanes at n≤12.
+    /// cheaper over the drain segment than 32-wide pad lanes at n≤8 (and
+    /// the verify ladder deepens k there anyway, so the k=2 graph could not
+    /// serve those widths for long).
     #[test]
     fn drain_widths_below_the_window_capture_a_narrow_canonical_graph() {
         let cache = [canonical(32)];
-        for n in 2..=12usize {
+        for n in 2..=8usize {
             let active = canonical(n as u32);
             assert!(
                 find_borrowable_decode_key(&active, cache.iter(), |s| s >= n as u32).is_none(),
@@ -317,7 +364,7 @@ mod tests {
     fn verify_drain_widths_replay_the_steady_state_graph_with_ghost_tails() {
         let k32 = uniform(32, 2, WY);
         let cache = [k32.clone()];
-        for n in 13..32u32 {
+        for n in 9..32u32 {
             let exact = uniform(n, 2, WY);
             let found = find_borrowable_verify_key(&exact, cache.iter(), |s, _| s >= n)
                 .unwrap_or_else(|| panic!("verify n={n} must borrow, not capture"));
@@ -328,11 +375,54 @@ mod tests {
                 "ghost tail must be the baked (slot, k) pairs beyond the batch"
             );
         }
-        let exact = uniform(12, 2, WY);
+        let exact = uniform(8, 2, WY);
         assert!(
-            find_borrowable_verify_key(&exact, cache.iter(), |s, _| s >= 12).is_none(),
-            "n=12 is outside the 32-wide window"
+            find_borrowable_verify_key(&exact, cache.iter(), |s, _| s >= 8).is_none(),
+            "n=8 is outside the 32-wide window"
         );
+    }
+
+    /// REGRESSION (dgx2 2026-08-16, `/tmp/atlas-dtval-serve.log`): the
+    /// LITERAL key pair from the failed validation run. 21:02:38 captured
+    /// the steady-state n=32 verify graph; 21:04:56 the engine captured a
+    /// fresh n=12 graph mid-drain instead of borrowing it — [0..11] is a
+    /// clean prefix of [0..31], all ks=2, sentinels equal, slots 12..31
+    /// free. The old padded-ladder cap (24) was the only rejector; under
+    /// the power-of-two cap this borrow MUST fire.
+    #[test]
+    fn dgx2_n12_under_n32_log_keys_borrow() {
+        // Verbatim from the serve log (n=32 capture, 21:02:38).
+        let k32: Vec<u32> = vec![
+            0, 2, 1, 2, 2, 2, 3, 2, 4, 2, 5, 2, 6, 2, 7, 2, 8, 2, 9, 2, 10, 2, 11, 2, 12, 2, 13, 2,
+            14, 2, 15, 2, 16, 2, 17, 2, 18, 2, 19, 2, 20, 2, 21, 2, 22, 2, 23, 2, 24, 2, 25, 2, 26,
+            2, 27, 2, 28, 2, 29, 2, 30, 2, 31, 2, 4294967295,
+        ];
+        // Verbatim from the serve log (n=12 capture, 21:04:56 — the miss).
+        let exact: Vec<u32> = vec![
+            0, 2, 1, 2, 2, 2, 3, 2, 4, 2, 5, 2, 6, 2, 7, 2, 8, 2, 9, 2, 10, 2, 11, 2, 4294967295,
+        ];
+        let cache = [k32.clone()];
+        let found = find_borrowable_verify_key(&exact, cache.iter(), |s, _| s >= 12)
+            .expect("the dgx2 n=12 drain batch must borrow the n=32 graph");
+        assert_eq!(found.key, k32);
+        assert_eq!(found.ghosts, (12..32).map(|s| (s, 2)).collect::<Vec<_>>());
+    }
+
+    /// Borrow logging is transition-deduped: a drain band that replays one
+    /// borrowed graph for hundreds of steps logs ONCE; every width change
+    /// (new pair) logs again — the same cardinality as the captures the
+    /// borrow replaced. Steady repeats of the same pair stay silent.
+    #[test]
+    fn borrow_log_gate_fires_once_per_transition() {
+        let gate = BorrowLogGate::new();
+        let k32 = canonical(32);
+        let a = canonical(20);
+        let b = canonical(19);
+        assert!(gate.should_log(&a, &k32), "first borrow must log");
+        assert!(!gate.should_log(&a, &k32), "same pair repeats silently");
+        assert!(!gate.should_log(&a, &k32));
+        assert!(gate.should_log(&b, &k32), "width change logs again");
+        assert!(gate.should_log(&a, &k32), "returning to a prior pair logs");
     }
 
     /// Depth is part of the row layout: a prefix whose ks differ must not

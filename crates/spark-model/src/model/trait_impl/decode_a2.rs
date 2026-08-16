@@ -274,10 +274,15 @@ impl TransformerModel {
                             .expect("borrowed key comes from this cache");
                     e.1 = tick;
                     replay = Some(e.0);
-                    tracing::debug!(
-                        "decode graph borrow: n={n} padded_n={padded_n} -> replaying \
-                         captured width {dispatch_n}"
-                    );
+                    // INFO once per transition (same cardinality as the
+                    // captures this replaces); repeats of the same pair
+                    // stay silent. Provable engagement: grep "graph borrow".
+                    if super::graph_borrow::DECODE_BORROW_LOG.should_log(key, &bk) {
+                        tracing::info!(
+                            "decode graph borrow: n={n} padded_n={padded_n} -> replaying \
+                             captured width {dispatch_n}"
+                        );
+                    }
                 }
             }
         }
