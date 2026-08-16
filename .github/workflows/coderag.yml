@@ -102,6 +102,13 @@ jobs:
           # floor sits well above the 5th digit), and test files excluded.
           chunk-lines: '150'
           chunk-overlap: '10'
+          # The embedder rejects inputs over 8192 tokens; dense generated code
+          # (hex tables, LUT headers) can reach ~2 bytes per token, so a
+          # 16 KB chunk overflowed at 8 245 tokens on 2026-08-16. Capping
+          # chunks at 8 192 BYTES guarantees <= 8 192 tokens even at the
+          # 1-byte-per-token worst case. Typical 150-line chunks are ~4.5 KB,
+          # so only outlier lines get truncated.
+          max-chunk-bytes: '8192'
           vector-precision: '5'
           embedding-endpoint: ${{ steps.ssot.outputs.endpoint_base }}
           embedding-model: ${{ steps.ssot.outputs.embed_model }}
