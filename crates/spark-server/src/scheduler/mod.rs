@@ -53,6 +53,7 @@ mod rollback;
 mod sample_step;
 pub mod sched_ctx;
 pub mod snapshot;
+mod spec_capacity;
 pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
@@ -686,7 +687,15 @@ pub fn run(
                 && active[0].grammar_state.is_none()
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
-                step_self_spec(&*model, &mut active, &sched, num_drafts, &verify_ctx);
+                // Clamped to the active slot's tiered verify capacity, like
+                // the MTP lane (see `spec_capacity`).
+                let nd = spec_capacity::clamp_drafts_to_slot_capacity(
+                    num_drafts,
+                    active
+                        .iter()
+                        .map(|a| model.mtp_slot_draft_capacity(a.seq.slot_idx)),
+                );
+                step_self_spec(&*model, &mut active, &sched, nd, &verify_ctx);
             } else if use_mtp
                 && spec_width_ok
                 && spec_slots_covered
