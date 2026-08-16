@@ -554,11 +554,12 @@ impl Qwen3SsmLayer {
                 // out-of-bounds panic instead of an actionable error (see #bugs
                 // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
                 // without `--speculative --mtp-quantization` to mirror the head.
-                if ssm_state.h_state_intermediates.len() < num_tokens
+                if ssm_state.h_state_intermediates.len() + 1 < num_tokens
                     || ssm_state.conv_state_intermediates.len() < num_tokens
                 {
                     anyhow::bail!(
-                        "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()={}, \
+                        "SSM MTP intermediate buffers not allocated (need K-1 h + K conv; \
+                         h_state_intermediates.len()={}, \
                          conv_state_intermediates.len()={}, num_tokens={}). \
                          If this is an EP=2 worker, the head node is sending MTP verify commands \
                          but the worker was started without `--speculative` (and matching \
@@ -683,7 +684,7 @@ impl Qwen3SsmLayer {
                                 .as_any_mut()
                                 .downcast_mut::<SsmLayerState>()
                                 .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
-                            if ssm_state.h_state_intermediates.len() < kk
+                            if ssm_state.h_state_intermediates.len() + 1 < kk
                                 || ssm_state.conv_state_intermediates.len() < kk
                             {
                                 anyhow::bail!(

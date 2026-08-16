@@ -169,7 +169,9 @@ impl TransformerModel {
         );
 
         // Build SSM state pool (with MTP intermediate/checkpoint pools only if speculative decoding enabled)
-        // num_intermediates = K (per-token SSM h/conv state snapshots).
+        // num_intermediates = K, the verify-width ceiling. The CONV pools
+        // allocate K snapshots per slot; the H pools allocate K-1 (index
+        // K-1 is never written or read — see ssm_reserve) and tier by slot.
         // For MTP K=2/3/4 verify: K = num_drafts + 1.
         // For DFlash K=γ verify: K = γ + 1 (drafter's γ drafts + 1 verified bonus slot).
         // Pool size = max of both so DFlash and MTP can coexist on the same model.
