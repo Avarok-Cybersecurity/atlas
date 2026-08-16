@@ -73,7 +73,7 @@ jobs:
       # ***********************************************************************
       - name: Build corpus (incremental against the published one)
         id: rag
-        uses: Avarok-Cybersecurity/AutoRepoRAG@61101adaa3d2e5937099f9ecb3386a07c7d65670 # v0.1.0
+        uses: Avarok-Cybersecurity/AutoRepoRAG@f35cc9788aab8cd863d6af24a368d4a2fa37be93 # v0.1.1
         with:
           collection: atlas-coderag
           # output-name is a basename: the action writes <name>.jsonl,
