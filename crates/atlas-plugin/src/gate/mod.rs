@@ -20,6 +20,8 @@
 //!   committed records are checked against this file alone, so the check
 //!   carries no per-box state ([`check`]).
 
+/// The one-time, content-pinned 2026-08-16 invalidation amnesty.
+pub mod amnesty;
 pub mod bench;
 pub mod check;
 pub mod closure;
@@ -239,6 +241,11 @@ mod coverage_squash_tests;
 #[cfg(test)]
 #[path = "hardening_tests.rs"]
 mod hardening_tests;
+
+/// The one-time 2026-08-16 amnesty: pinned grant, fail-closed, expiry.
+#[cfg(test)]
+#[path = "amnesty_tests.rs"]
+mod amnesty_tests;
 
 #[cfg(test)]
 #[path = "dirty_tests.rs"]

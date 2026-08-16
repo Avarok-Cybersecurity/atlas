@@ -89,6 +89,62 @@ fn every_declared_bench_is_a_required_gate() {
     walk(&roots, &known);
 }
 
+/// ★ `unknown` is the abstain arm. If its subtree ever gained `_benches`, a
+/// classifier outage or a 429 could manufacture GPU spend out of nothing —
+/// `required.rs` skips `error`/`abstain` rows for exactly this reason, and
+/// this pins the other half: even a CONFIDENT `unknown` implies no spend.
+#[test]
+fn the_unknown_root_and_its_descendants_carry_no_benches() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let roots = load(&root).unwrap();
+    let unknown = roots
+        .iter()
+        .find(|r| r.name == "unknown")
+        .expect("the tree offers `unknown`");
+    fn walk(node: &Node, trail: &str) {
+        assert!(
+            node.benches.is_empty(),
+            "{trail}/{} carries _benches {:?} — an abstention must never cost GPU",
+            node.name,
+            node.benches
+        );
+        for child in &node.children {
+            walk(child, &format!("{trail}/{}", node.name));
+        }
+    }
+    walk(unknown, "");
+}
+
+/// The 2026-08-16 fill: `correctness/ssm-state` names the gate built for the
+/// Marconi SSM-snapshot poisoning class. Before the fill the ssm-state intent
+/// implied only a warm-TTFT leg — the one gate that polices restored state
+/// directly was unreachable through intent.
+#[test]
+fn ssm_state_intent_implies_the_poison_gate() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let roots = load(&root).unwrap();
+    for path in [
+        vec!["correctness".to_string(), "ssm-state".into()],
+        vec!["correctness".to_string(), "kv-cache".into()],
+    ] {
+        assert!(
+            benches_for(&roots, &path).contains("ssm-state-poisoning-gate"),
+            "{path:?} must imply the poison gate — restored-state bugs are \
+             exactly what these intents describe"
+        );
+    }
+}
+
 // ── ★ The safety property ──────────────────────────────────────────────────
 
 /// **The whole design rests on this.** Descending FURTHER can only grow the

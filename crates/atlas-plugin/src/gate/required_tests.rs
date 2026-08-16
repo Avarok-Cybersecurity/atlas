@@ -57,13 +57,41 @@ fn intent_adds_where_the_paths_are_silent() {
         );
         assert_eq!(
             got.intent_only(),
-            ["agentic-webserver", "bfcl-subset", "ttft-warm-gate"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<BTreeSet<String>>(),
-            "{changed}: intent should supply all three, since paths supply none"
+            [
+                "agentic-webserver",
+                "bfcl-subset",
+                "decode-floor",
+                "ttft-warm-gate"
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<BTreeSet<String>>(),
+            "{changed}: intent should supply all four, since paths supply none \
+             (decode-floor joined the leaf in the 2026-08-16 fill)"
         );
     }
+
+    // ★ The promoted gates are reachable through intent too. `concurrency-sweep`
+    // graduated to REQUIRED on 2026-08-15, and the 2026-08-16 fill put it on
+    // `performance/scheduling` — so a diff off the invalidation floor entirely
+    // (docs/) classified as a scheduling change now owes the concurrency curve,
+    // the exact "10% at C=32, flat at C=1" regression paths cannot see.
+    let promoted = required_for(
+        &["docs/adr/0011-ep-batched-decode-optimization.md".to_string()],
+        &[cat("performance/scheduling")],
+        &roots,
+    );
+    assert!(
+        promoted.by_path.is_empty(),
+        "a docs diff must stay off the floor, got {:?}",
+        promoted.by_path
+    );
+    assert!(
+        promoted.intent_only().contains("concurrency-sweep"),
+        "performance/scheduling must add the promoted concurrency-sweep gate; \
+         intent supplied {:?}",
+        promoted.intent_only()
+    );
 }
 
 /// ★ **The mutation four rounds of mutation-testing missed.**
