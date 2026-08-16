@@ -34,7 +34,6 @@ mod prefill_a;
 mod prefill_b;
 mod prefill_c;
 mod prefill_d;
-mod prefix_hit;
 mod sequence;
 mod speculative;
 pub(in crate::model) mod ssm_fault_in;
