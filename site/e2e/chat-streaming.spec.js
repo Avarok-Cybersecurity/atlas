@@ -52,8 +52,9 @@ const CONTENT = [
   '```\n\n',
   // The attribute name is split across two deltas so escaping is proven on
   // partially-streamed markup. The split point sits after "on" because the
-  // repo-wide typos gate reads fixture strings too, and "rror" is in its
-  // dictionary as a misspelling of "error".
+  // repo-wide typos gate reads fixture strings too and flags the trailing
+  // fragment of the attribute name as a misspelling when the cut lands one
+  // letter later.
   'Probe: <img src=x on',
   'error="window.__xss=1"> must print as text, never run.'
 ];
