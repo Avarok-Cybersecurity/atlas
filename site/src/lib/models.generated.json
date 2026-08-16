@@ -144,6 +144,15 @@
             "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4-unsloth --hosts localhost"
           },
           {
+            "displayName": "Qwen3.6 27B W55 Sweep Dev",
+            "hfId": "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf",
+            "params": "27B",
+            "quant": "w4a4",
+            "topology": "single",
+            "recipeStem": "qwen3.6-27b-w55-sweep-dev",
+            "command": "sparkrun run @atlas/qwen3.6-27b-w55-sweep-dev --hosts localhost"
+          },
+          {
             "displayName": "Qwen3.6 35B A3B FP8 Bf16head",
             "hfId": "Qwen/Qwen3.6-35B-A3B-FP8",
             "params": "35B",
@@ -178,20 +187,6 @@
             "topology": "single",
             "recipeStem": "qwen3.6-35b-a3b-nvfp4",
             "command": "sparkrun run @atlas/qwen3.6-35b-a3b-nvfp4 --hosts localhost"
-          }
-        ]
-      },
-      {
-        "name": "Qwen3.8",
-        "recipes": [
-          {
-            "displayName": "Qwen3.8 27B NVFP4 Unsloth",
-            "hfId": "unsloth/Qwen3.8-27B-NVFP4",
-            "params": "27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers)",
-            "quant": "NVFP4 (mixed precision above layer 55, FP8 linear_attn projections)",
-            "topology": "single",
-            "recipeStem": "qwen3.8-27b-nvfp4-unsloth",
-            "command": "sparkrun run @atlas/qwen3.8-27b-nvfp4-unsloth --hosts localhost"
           }
         ]
       }
