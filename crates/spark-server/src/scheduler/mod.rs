@@ -45,6 +45,9 @@ pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
+mod preempt;
+#[cfg(test)]
+mod preempt_tests;
 mod prefill_a_step;
 mod prefill_a_step_params;
 mod prefill_b_step;
@@ -370,6 +373,7 @@ pub fn run(
     let mut active: Vec<ActiveSeq> = Vec::new();
     let mut prefilling: Vec<PrefillInProgress> = Vec::new();
     let mut swapped: Vec<SwappedSeq> = Vec::new();
+    let mut preempted: Vec<PreemptedSeq> = Vec::new();
     let mut spill_manager: Option<KvSpillManager> = if swap_space_gb > 0 {
         let max_bytes = swap_space_gb as u64 * 1024 * 1024 * 1024;
         // Per-PROCESS directory. `KvSpillManager::new` wipes stale `swap_*` files
@@ -403,8 +407,17 @@ pub fn run(
         // records one scheduler-tick section. `record` no-ops when the env is
         // unset; the Instant::now() reads are the documented residual cost.
         let t_loop = std::time::Instant::now();
-        let new_reqs =
-            drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+        let new_reqs = drain_pending_requests(
+            &pending,
+            &active,
+            &prefilling,
+            &*policy,
+            max_batch_size,
+            // Parked sequences (spilled or requeued) are waiting on blocks,
+            // not on new requests — never block on the request condvar while
+            // any exist, or an empty active set would strand them forever.
+            !(swapped.is_empty() && preempted.is_empty()),
+        );
         sched.timing.record(mtp_timing::Phase::LoopDrain, t_loop);
 
         // ── Publish the observability snapshot (one uncontended lock + a
@@ -419,7 +432,7 @@ pub fn run(
             sched.snapshot.publish(snapshot::SchedulerSnapshot {
                 active_seqs: active.len() as u32,
                 prefilling_seqs: prefilling.len() as u32,
-                swapped_seqs: swapped.len() as u32,
+                swapped_seqs: (swapped.len() + preempted.len()) as u32,
                 pending_len: new_reqs.len() as u32,
                 kv_blocks_free: model.num_free_blocks() as u32,
                 kv_blocks_total: model.num_total_blocks() as u32,
@@ -441,7 +454,12 @@ pub fn run(
         // ref (#25), so without this gate a Promote/swap could evict/re-stage the
         // slot its KV was computed under and corrupt it on resume (#27 FINDING 1 /
         // #31). Otherwise the commands stay queued and retry once the batch drains.
-        if active.is_empty() && prefilling.is_empty() && new_reqs.is_empty() && swapped.is_empty() {
+        if active.is_empty()
+            && prefilling.is_empty()
+            && new_reqs.is_empty()
+            && swapped.is_empty()
+            && preempted.is_empty()
+        {
             let rotations = std::mem::take(&mut pending.0.lock().rotations);
             for (cmd, ack) in rotations {
                 let res = match cmd {
@@ -603,7 +621,23 @@ pub fn run(
         sched.timing.record(mtp_timing::Phase::LoopPrefill, t_loop);
 
         if active.is_empty() {
-            continue;
+            // Every sequence can be parked (decode-preempted/spilled) with
+            // nothing new admitted; the resume passes at the tail of the
+            // loop sit AFTER decode, which this `continue` skips — so give
+            // requeued victims their resume chance here or an otherwise
+            // idle server would strand them.
+            if !preempted.is_empty() {
+                preempt::resume_preempted_seqs(
+                    &*model,
+                    &mut active,
+                    &mut preempted,
+                    max_batch_size,
+                    block_size,
+                );
+            }
+            if active.is_empty() {
+                continue;
+            }
         }
 
         // Skip decode when mixed_forward already processed decode logits.
@@ -781,6 +815,9 @@ pub fn run(
                                     tool_call_end_token,
                                     adaptive_sampling,
                                     &sched,
+                                    spill_manager.as_mut(),
+                                    &mut swapped,
+                                    &mut preempted,
                                 );
                                 // A plain decode step emits ONE token PER
                                 // ACTIVE SEQUENCE. Charging 1 regardless of
@@ -922,6 +959,9 @@ pub fn run(
                     tool_call_end_token,
                     adaptive_sampling,
                     &sched,
+                    spill_manager.as_mut(),
+                    &mut swapped,
+                    &mut preempted,
                 );
                 for a in active.iter_mut() {
                     a.mtp_acct.record_serial();
@@ -999,6 +1039,14 @@ pub fn run(
                 }
             }
         }
+        // ── Resume requeued (decode-preempted) sequences when blocks free ──
+        preempt::resume_preempted_seqs(
+            &*model,
+            &mut active,
+            &mut preempted,
+            max_batch_size,
+            block_size,
+        );
         sched.timing.record(mtp_timing::Phase::LoopSwap, t_loop);
     }
 
@@ -1022,6 +1070,12 @@ pub fn run(
         for s in swapped {
             let _ = spill.remove_file(s.swap_id);
         }
+    }
+    for mut p in preempted {
+        send_error_to_sink(
+            &mut p.a.sink,
+            "server shutting down before preempted resume",
+        );
     }
     for p in prefilling {
         let mut seq = p.seq;

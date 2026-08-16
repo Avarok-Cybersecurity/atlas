@@ -1089,6 +1089,16 @@ pub trait Model: Send + Sync {
         bail!("swap not supported by this model")
     }
 
+    /// Whether `tokens` contains a vision pad token for this model — i.e.
+    /// the KV at those positions came from image/video EMBEDDINGS that a
+    /// plain token re-prefill cannot reproduce. Decode-time preemption uses
+    /// this to exclude vision sequences from the requeue-with-re-prefill
+    /// path (the spill path, which saves KV verbatim, stays eligible).
+    /// Default false: pure-text models are always re-prefillable.
+    fn tokens_contain_vision_pad(&self, _tokens: &[u32]) -> bool {
+        false
+    }
+
     /// Number of free KV cache blocks available for allocation.
     fn num_free_blocks(&self) -> usize {
         0
