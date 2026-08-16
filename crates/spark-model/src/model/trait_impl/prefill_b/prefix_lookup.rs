@@ -383,10 +383,14 @@ impl TransformerModel {
         if !self.prefix_cache.is_active() || streams.first()?.chunk_start != 0 {
             return Some(Vec::new());
         }
-        // A multi-rank prefix match needs the normal EP min-reduction, while
-        // SSM snapshots can restore different recurrent state per sequence.
-        // Neither operation is safe inside this v1 transactional admission.
-        if self.multi_rank_protocol_active() || self.config.num_ssm_layers() != 0 {
+        // A multi-rank prefix match needs the normal EP min-reduction, which
+        // is not safe inside this transactional admission.
+        if self.multi_rank_protocol_active() {
+            tracing::info!(
+                target: "atlas::q12",
+                "batched prefix reservation declined: multi-rank world needs \
+                 the EP min-reduction — falling back to per-stream"
+            );
             return None;
         }
 
@@ -396,6 +400,11 @@ impl TransformerModel {
             if self.tokens_have_vision_pad(slice.prompt_tokens)
                 || seq.collect_prompt_logprobs.is_some()
             {
+                tracing::info!(
+                    target: "atlas::q12",
+                    "batched prefix reservation declined: vision pads or \
+                     prompt-logprob collection — falling back to per-stream"
+                );
                 self.release_batched_prefix_reservations(streams, &matches, block_size);
                 return None;
             }
@@ -407,7 +416,36 @@ impl TransformerModel {
             ));
         }
 
+        // Hybrid-SSM models: a WARM prefix match implies a KV/Marconi skip
+        // whose recurrent-state interplay this transactional admission does
+        // not handle (the v1 rule). But a model-level blanket veto rejected
+        // COLD batches too, which serialized every chunk-0 wave on hybrid
+        // checkpoints — the entire measured C=32/C=128 prefill ramp
+        // (2026-08-16 stackval: every wave logged "cache plan not admitted").
+        // An all-cold reservation (matched_tokens == 0 everywhere) acquires
+        // no blocks, restores no snapshot and skips nothing — provably the
+        // same state as the cache-inactive admission above, which has always
+        // admitted hybrid models. Warm hybrid batches keep falling back to
+        // the per-stream path, whose restore logic is established.
+        if !super::batch_kernel::batched_reserve_hybrid_ssm_ok(
+            &matches,
+            self.config.num_ssm_layers() != 0,
+        ) {
+            tracing::info!(
+                target: "atlas::q12",
+                "batched prefix reservation declined: hybrid-SSM model with a \
+                 warm prefix match — falling back to per-stream"
+            );
+            self.release_batched_prefix_reservations(streams, &matches, block_size);
+            return None;
+        }
+
         if !super::batch_kernel::cache_batch_matches_compatible(&matches, streams[0].chunk_len) {
+            tracing::info!(
+                target: "atlas::q12",
+                "batched prefix reservation declined: prefix matches not \
+                 batch-compatible — falling back to per-stream"
+            );
             self.release_batched_prefix_reservations(streams, &matches, block_size);
             return None;
         }
