@@ -44,10 +44,14 @@ function systemPrompt(repo, commit, context) {
  * @param {object} opts
  * @param {string} opts.apiKey       visitor's OpenRouter key
  * @param {object} opts.corpus      { commit, dim, repo, ... } from state
- * @param {(phase: 'retrieving'|'reranking'|'writing') => void} [opts.onPhase]
+ * @param {(phase: 'retrieving'|'reranking'|'thinking') => void} [opts.onPhase]
+ *   'writing' is not announced here — the caller flips to it from its onDelta
+ *   when the first answer token arrives (the chat model reasons first).
+ * @param {(delta: {reasoning?: string, content?: string}) => void} [opts.onDelta]
+ *   streamed thinking/answer tokens, forwarded verbatim from openrouter.chat
  * @returns {Promise<{answer: string, sources: Array<object>}>}
  */
-export async function askCodebase(question, history, { apiKey, corpus, onPhase }) {
+export async function askCodebase(question, history, { apiKey, corpus, onPhase, onDelta }) {
   onPhase?.('retrieving');
 
   const vector = await getEmbedding(question, apiKey);
@@ -112,11 +116,12 @@ export async function askCodebase(question, history, { apiKey, corpus, onPhase }
           .join('\n\n')
       : 'No relevant code was found in the corpus for this question.';
 
-  onPhase?.('writing');
+  onPhase?.('thinking');
   const answer = await chat(
     [...history, { role: 'user', content: question }],
     systemPrompt(corpus.repo, corpus.commit, context),
-    apiKey
+    apiKey,
+    { onDelta }
   );
 
   return { answer, sources };

@@ -34,6 +34,14 @@
   const sourcesOpen =
     typeof window === 'undefined' ? true : !window.matchMedia('(max-width: 860px)').matches;
 
+  // The in-flight streamed card takes over from the pending line as soon as
+  // the first thinking or answer token lands.
+  const streamLive = $derived(
+    asking && chat.stream && (chat.stream.reasoningText || chat.stream.answerText)
+      ? chat.stream
+      : null
+  );
+
   const mb = (bytes) => (bytes / 1048576).toFixed(1);
 
   const statusTone = $derived(
@@ -124,11 +132,13 @@
     if (chat.status === 'ready') onready?.();
   });
 
-  // Keep the newest print in view.
+  // Keep the newest print in view (streamed tokens grow the live card).
   $effect(() => {
     void messages.length;
     void asking;
     void chat.msgPhase;
+    void chat.stream?.reasoningText;
+    void chat.stream?.answerText;
     if (logEl) logEl.scrollTop = logEl.scrollHeight;
   });
 
@@ -162,7 +172,13 @@
     askError = null;
     try {
       const res = await ask(q, history);
-      messages.push({ role: 'assistant', text: res.answer, sources: res.sources });
+      messages.push({
+        role: 'assistant',
+        text: res.answer,
+        sources: res.sources,
+        reasoning: res.reasoning,
+        reasoningMs: res.reasoningMs
+      });
     } catch {
       const k = chat.error?.kind;
       askError = {
@@ -325,7 +341,9 @@
         {#each messages as m, i (i)}
           <ChatMessage message={m} {sourcesOpen} />
         {/each}
-        {#if asking}
+        {#if streamLive}
+          <ChatMessage live={streamLive} {sourcesOpen} />
+        {:else if asking}
           <p class="cc-pending">
             <span class="cc-status-dot" aria-hidden="true"></span>
             {codeChat.phase[chat.msgPhase] ?? codeChat.phase.writing}

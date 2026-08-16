@@ -25,7 +25,11 @@ export const chat = $state({
   offline: false, // serving a cached corpus because the manifest fetch failed
   error: null, // { kind: 'wasm'|'manifest'|'corpus'|'decompress'|'rate'|'key', message }
   keyState: 'missing', // 'missing'|'set'
-  msgPhase: null // null|'retrieving'|'reranking'|'writing'
+  msgPhase: null, // null|'retrieving'|'reranking'|'thinking'|'writing'
+  // In-flight streamed message, non-null only while ask() runs. The UI renders
+  // its growing texts per animation frame; reasoningMs is stamped when the
+  // first answer token arrives (how long the model reasoned).
+  stream: null // null | { reasoningText, answerText, reasoningMs }
 });
 
 if (browser) {
@@ -395,9 +399,13 @@ function finishReady(header, repo, sha, meta) {
 
 /**
  * Ask a question against the ready corpus. `history` is prior turns as
- * [{ role, content }]. Resolves { answer, sources } (see rag.js). Rejects on
- * failure after recording a chat.error of kind 'key' (missing/rejected key) or
- * 'rate' (transient upstream saturation).
+ * [{ role, content }]. While in flight, streamed thinking/answer tokens grow
+ * chat.stream (batched to one state write per animation frame so a fast token
+ * burst costs one re-render) and chat.msgPhase walks
+ * retrieving -> reranking -> thinking -> writing. Resolves
+ * { answer, sources, reasoning, reasoningMs } (see rag.js for answer/sources).
+ * Rejects on failure after recording a chat.error of kind 'key'
+ * (missing/rejected key) or 'rate' (transient upstream saturation).
  */
 export async function ask(question, history = []) {
   if (chat.status !== 'ready') {
@@ -410,16 +418,63 @@ export async function ask(question, history = []) {
     throw err;
   }
 
+  chat.stream = { reasoningText: '', answerText: '', reasoningMs: 0 };
+  let reasoningAll = ''; // full trace for the resolved message (survives chat.stream reset)
+  let pendingReasoning = '';
+  let pendingAnswer = '';
+  let rafId = 0;
+  let thinkStart = 0;
+
+  const flush = () => {
+    rafId = 0;
+    if (!chat.stream) return;
+    if (pendingReasoning) {
+      chat.stream.reasoningText += pendingReasoning;
+      pendingReasoning = '';
+    }
+    if (pendingAnswer) {
+      chat.stream.answerText += pendingAnswer;
+      pendingAnswer = '';
+    }
+  };
+  const schedule = () => {
+    if (!rafId) rafId = requestAnimationFrame(flush);
+  };
+
+  const onDelta = ({ reasoning, content }) => {
+    if (reasoning) {
+      if (!thinkStart) thinkStart = performance.now();
+      reasoningAll += reasoning;
+      pendingReasoning += reasoning;
+      schedule();
+    }
+    if (content) {
+      // First answer token: phase flips immediately (not on the rAF tick) so
+      // the trace collapse and the pill react without a frame of lag.
+      if (chat.msgPhase !== 'writing') {
+        chat.msgPhase = 'writing';
+        if (thinkStart && chat.stream && chat.stream.reasoningMs === 0) {
+          chat.stream.reasoningMs = performance.now() - thinkStart;
+        }
+      }
+      pendingAnswer += content;
+      schedule();
+    }
+  };
+
   try {
     const result = await askCodebase(question, history, {
       apiKey,
       corpus: chat.corpus,
       onPhase: (phase) => {
         chat.msgPhase = phase;
-      }
+      },
+      onDelta
     });
     if (chat.error?.kind === 'rate' || chat.error?.kind === 'key') chat.error = null;
-    return result;
+    const reasoningMs =
+      chat.stream?.reasoningMs || (thinkStart ? performance.now() - thinkStart : 0);
+    return { ...result, reasoning: reasoningAll, reasoningMs };
   } catch (err) {
     const msg = String(err?.message ?? err);
     if (/\b401\b|\b403\b|invalid.{0,20}key|no auth/i.test(msg)) failAsk('key', err);
@@ -427,7 +482,9 @@ export async function ask(question, history = []) {
     else failAsk('rate', err);
     throw err;
   } finally {
+    if (rafId) cancelAnimationFrame(rafId);
     chat.msgPhase = null;
+    chat.stream = null;
   }
 }
 

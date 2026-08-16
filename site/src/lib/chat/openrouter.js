@@ -129,26 +129,148 @@ export async function getEmbedding(text, apiKey, model = EMBEDDING_MODEL) {
 }
 
 /**
- * Chat completion. `system` is the complete system-message content (the caller
- * builds it — this module stays free of prompt policy).
+ * Thinking tokens arrive on `delta.reasoning` (a plain string) while
+ * `delta.content` stays empty; some providers ship a `delta.reasoning_details`
+ * array of typed parts instead. Prefer the string, fall back to concatenating
+ * the parts' text — defensively, since the part shapes vary by provider.
  */
-export async function chat(messages, system, apiKey, model = CHAT_MODEL) {
-  const allMessages = [{ role: 'system', content: system }, ...messages];
+function reasoningFromDelta(delta) {
+  if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning;
+  if (Array.isArray(delta.reasoning_details)) {
+    let out = '';
+    for (const part of delta.reasoning_details) {
+      if (typeof part?.text === 'string') out += part.text;
+      else if (typeof part?.summary === 'string') out += part.summary;
+    }
+    if (out) return out;
+  }
+  return undefined;
+}
 
-  const data = await withRetry(async () => {
+/**
+ * Consume an OpenRouter SSE body: `data:` lines carrying JSON chunks,
+ * `:`-prefixed keepalive comments, and a final `data: [DONE]`. Reasoning
+ * models emit thinking deltas first, then switch to `delta.content` for the
+ * answer. An upstream failure can also arrive as an `{ "error": … }` chunk
+ * mid-stream — surfaced as a throw from here.
+ */
+async function readSseStream(bodyStream, emit) {
+  const reader = bodyStream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are newline-delimited; process every complete line and
+      // keep any partial remainder in the buffer.
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+
+        if (line === '' || line.startsWith(':')) continue; // blank / keepalive
+        if (!line.startsWith('data:')) continue;
+
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return;
+
+        let chunk;
+        try {
+          chunk = JSON.parse(payload);
+        } catch {
+          continue; // tolerate any non-JSON line
+        }
+
+        if (chunk.error) {
+          const message = chunk.error.message ?? 'unknown error';
+          throw new OpenRouterError(
+            `Chat request failed: ${message}`,
+            chunk.error.code === 429 ||
+              (chunk.error.code ?? 0) >= 500 ||
+              /ResourceExhausted|rate.?limit|overloaded/i.test(message)
+          );
+        }
+
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+        const reasoning = reasoningFromDelta(delta);
+        const answer =
+          typeof delta.content === 'string' && delta.content ? delta.content : undefined;
+        if (reasoning || answer) emit(reasoning, answer);
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+}
+
+/**
+ * Chat completion, streamed. `system` is the complete system-message content
+ * (the caller builds it — this module stays free of prompt policy).
+ *
+ * Requests `stream: true` and invokes `onDelta({ reasoning, content })` as
+ * thinking and answer tokens arrive; resolves with the full answer text
+ * (reasoning excluded). A response that is not SSE falls back to the plain
+ * completion shape (and to parseResponse's 200-with-error-body handling).
+ * Retries stay confined to errors BEFORE the first emitted token — once
+ * anything has been rendered, restarting the stream would duplicate it, so a
+ * mid-stream failure surfaces as a stream error instead.
+ */
+export async function chat(messages, system, apiKey, { onDelta, model = CHAT_MODEL } = {}) {
+  const body = JSON.stringify({
+    model,
+    messages: [{ role: 'system', content: system }, ...messages],
+    stream: true
+  });
+
+  let content = '';
+  let emitted = false;
+
+  const emit = (reasoning, answer) => {
+    emitted = true;
+    if (answer) content += answer;
+    onDelta?.({ reasoning, content: answer });
+  };
+
+  const runOnce = async () => {
     const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
       method: 'POST',
       headers: headersFor(apiKey),
-      body: JSON.stringify({ model, messages: allMessages })
+      body
     });
-    return parseResponse(response, 'Chat request');
-  });
 
-  const content = data.choices?.[0]?.message?.content;
-  if (content === undefined) {
-    throw new Error('Chat request returned no message content');
+    const type = response.headers.get('content-type') ?? '';
+    if (!response.ok || !type.includes('text/event-stream')) {
+      // Non-SSE: a plain JSON completion, or an error envelope — parseResponse
+      // owns !ok, invalid-JSON, and the 200-with-error-body quirk.
+      const data = await parseResponse(response, 'Chat request');
+      const full = data.choices?.[0]?.message?.content;
+      if (full === undefined) {
+        throw new Error('Chat request returned no message content');
+      }
+      emit(undefined, full);
+      return;
+    }
+    if (!response.body) {
+      throw new OpenRouterError('Chat request returned no response stream', true);
+    }
+    await readSseStream(response.body, emit);
+  };
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await runOnce();
+      return content;
+    } catch (error) {
+      const transient = error instanceof OpenRouterError && error.transient;
+      if (!transient || emitted || attempt >= OR_MAX_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryBaseMs * 2 ** (attempt - 1)));
+    }
   }
-  return content;
 }
 
 /**

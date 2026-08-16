@@ -6,9 +6,6 @@
 // =============================================================================
 
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { CORPUS_GZ_URL, CORPUS_META_URL, LS_OPENROUTER_KEY } from '../src/lib/chat/config.js';
 import {
   OR_EMBEDDINGS,
@@ -21,34 +18,25 @@ import {
   http429Handler,
   ok200ErrorBodyHandler
 } from './fixtures/openrouter.js';
+import {
+  META,
+  GZ,
+  COMMIT,
+  READY_LINE,
+  TEST_KEY,
+  JSON_HEADERS,
+  GZ_HEADERS,
+  routeCorpus,
+  isMobile,
+  openChat,
+  statusText,
+  waitReady,
+  withKey,
+  askQuestion
+} from './fixtures/chat-helpers.js';
 import { startSlowServer } from './fixtures/slow-server.mjs';
 
-const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
-const META = JSON.parse(readFileSync(join(FIX, 'corpus-small.meta.json'), 'utf8'));
-const GZ = readFileSync(join(FIX, 'corpus-small.jsonl.gz'));
-const COMMIT = META.commit_sha;
-const SHORT = COMMIT.slice(0, 7);
-const READY_LINE = `ready · ${SHORT} · ${META.points} chunks · dim ${META.dim}`;
-const TEST_KEY = 'sk-or-v1-e2e-fixture-key';
-
 // --- route helpers -----------------------------------------------------------
-
-const JSON_HEADERS = { ...CORS_HEADERS, 'content-type': 'application/json' };
-const GZ_HEADERS = { ...CORS_HEADERS, 'content-type': 'application/gzip' };
-
-/** Serve meta + corpus from fixtures, counting hits per URL. */
-async function routeCorpus(context) {
-  const hits = { meta: 0, gz: 0 };
-  await context.route(CORPUS_META_URL, async (route) => {
-    hits.meta++;
-    await route.fulfill({ status: 200, headers: JSON_HEADERS, body: JSON.stringify(META) });
-  });
-  await context.route(CORPUS_GZ_URL, async (route) => {
-    hits.gz++;
-    await route.fulfill({ status: 200, headers: GZ_HEADERS, body: GZ });
-  });
-  return hits;
-}
 
 /** Redirect the corpus URL to a local server that streams the gz slowly. */
 async function routeSlowCorpus(context, hits, opts) {
@@ -77,43 +65,7 @@ async function routeOpenRouter(context, answer, { embedDim = META.dim } = {}) {
 }
 
 // --- UI helpers --------------------------------------------------------------
-
-const isMobile = (page) => page.viewportSize().width <= 860;
-
-async function clickChatTrigger(page) {
-  if (isMobile(page)) {
-    await page.locator('.nav-toggle').click();
-    await page.locator('#nav-drawer .nav-chat-btn').click();
-  } else {
-    await page.locator('.nav-links .nav-chat-btn').click();
-  }
-}
-
-/** Open the modal and wait for the real dialog (past the lazy-load skeleton). */
-async function openChat(page) {
-  await clickChatTrigger(page);
-  const dialog = page.locator('.cc[role="dialog"]:not(.cc-skeleton)');
-  await expect(dialog).toBeVisible();
-  return dialog;
-}
-
-const statusText = (page) => page.locator('.cc-status-text');
-
-async function waitReady(page) {
-  await expect(statusText(page)).toContainText('ready ·', { timeout: 30_000 });
-}
-
-function withKey(page) {
-  return page.addInitScript(
-    ([k, v]) => localStorage.setItem(k, v),
-    [LS_OPENROUTER_KEY, TEST_KEY]
-  );
-}
-
-async function askQuestion(page, question) {
-  await page.locator('.cc-input').fill(question);
-  await page.locator('.cc-ask').click();
-}
+// (shared drivers live in fixtures/chat-helpers.js)
 
 const opfsFiles = (page) =>
   page.evaluate(async () => {
@@ -426,6 +378,10 @@ test('mocked round-trip prints prompt, receipt, markdown, and real source links'
   // Markdown: citations as <sup>, the fence as <pre><code>.
   await expect(card.locator('sup.cc-cite')).toHaveText(['[1]', '[2]']);
   await expect(card.locator('pre.cc-fence code.language-rust')).toContainText('take_while');
+
+  // This mock answers with a plain JSON completion (not SSE) — the non-stream
+  // fallback path. It carries no reasoning, so no thinking trace is printed.
+  expect(await card.locator('.cm-think').count()).toBe(0);
 
   // XSS probe arrived escaped: rendered as text, no element, no execution.
   await expect(card.locator('.cm-body')).toContainText('<img src=x onerror=');

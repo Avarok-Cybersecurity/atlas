@@ -454,7 +454,14 @@ export const codeChat = {
   phase: {
     retrieving: 'searching the lattice',
     reranking: 'reranking matches',
+    thinking: 'reasoning',
     writing: 'writing'
+  },
+  trace: {
+    label: 'reasoning',
+    reasonedPrefix: 'reasoned for',
+    show: 'show',
+    hide: 'hide'
   },
   loader: {
     title: 'mounting the code lattice',
