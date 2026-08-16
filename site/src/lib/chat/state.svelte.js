@@ -242,7 +242,15 @@ async function loadFromNetwork(token, meta) {
   // OPFS writer for the decompressed corpus; null when OPFS is unavailable
   // (private browsing) — we then stream without caching.
   writer = await createCorpusWriter(meta.commit_sha);
-  throwIfAborted(token);
+  if (token.aborted) {
+    // abortLoad() ran while the writer was being created (it saw writer ===
+    // null and had nothing to discard) — discard here or the create:true file
+    // and its open-writable swap leak in OPFS.
+    const w = writer;
+    writer = null;
+    if (w) await w.discard().catch(() => undefined);
+    throw new AbortedError();
+  }
 
   // Runs once the byte stream is fully drained (all bytes teed), BEFORE the
   // trailing 'indexing' flush — preserving the contract's state order

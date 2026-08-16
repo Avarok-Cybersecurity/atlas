@@ -52,8 +52,17 @@
     if (asking) return codeChat.phase[chat.msgPhase] ?? codeChat.phase.writing;
     if (ready && chat.corpus) {
       const c = chat.corpus;
-      const line = `${codeChat.status.ready} · ${shortCommit} · ${c.files} files · ${c.chunks} chunks · dim ${c.dim}`;
-      return chat.offline ? `${line} · ${codeChat.offlineBadge}` : line;
+      // files is null on the offline-manifest path (no meta.json) — skip it
+      // rather than printing "null files".
+      const parts = [
+        codeChat.status.ready,
+        shortCommit,
+        c.files == null ? null : `${c.files} files`,
+        `${c.chunks} chunks`,
+        `dim ${c.dim}`
+      ];
+      if (chat.offline) parts.push(codeChat.offlineBadge);
+      return parts.filter(Boolean).join(' · ');
     }
     if (chat.status === 'downloading' && chat.progress.totalBytes > 0)
       return `${codeChat.status.downloading} ${mb(chat.progress.loadedBytes)} of ${mb(chat.progress.totalBytes)} MB`;
@@ -103,7 +112,15 @@
     ensureReady().catch(() => {});
     return () => {
       document.body.style.overflow = '';
-      if (prev instanceof HTMLElement) prev.focus();
+      if (prev instanceof HTMLElement) {
+        prev.focus();
+        if (document.activeElement !== prev) {
+          // The opener can refuse focus after close — on a phone it lives in
+          // the nav drawer, which is display none again by now. Land on the
+          // drawer toggle instead of dropping focus to body.
+          document.querySelector('.nav-toggle')?.focus();
+        }
+      }
     };
   });
 
@@ -152,7 +169,12 @@
       messages.push({ role: 'assistant', text: res.answer, sources: res.sources });
     } catch {
       const k = chat.error?.kind;
-      askError = { kind: k === 'rate' || k === 'key' ? k : 'generic' };
+      askError = {
+        kind: k === 'rate' || k === 'key' ? k : 'generic',
+        // Engine-crafted diagnostics (e.g. the embedding-dim mismatch) are
+        // written for humans — surface them instead of the generic copy.
+        detail: k === 'corpus' ? chat.error?.message : null
+      };
     } finally {
       asking = false;
     }
@@ -317,7 +339,7 @@
         {#if askError}
           <div class="cc-error" role="alert">
             <span class="cc-error-tag">{codeChat.errors[askError.kind].tag}</span>
-            <p class="cc-error-body">{codeChat.errors[askError.kind].body}</p>
+            <p class="cc-error-body">{askError.detail ?? codeChat.errors[askError.kind].body}</p>
             <button type="button" class="cc-error-retry" onclick={retryAsk}>
               {codeChat.errors[askError.kind].retry}
             </button>
