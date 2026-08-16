@@ -53,8 +53,62 @@ fn test_parse_nemotron_h_config() {
     assert_eq!(cfg.layer_type(1), LayerType::Moe); // E
     assert_eq!(cfg.layer_type(5), LayerType::FullAttention); // *
     assert_eq!(cfg.gqa_ratio(), 16); // 32/2
-    assert_eq!(cfg.rotary_dim(), 128); // partial_rotary_factor=1.0
+    // NoPE: the reference NemotronHAttention applies no rotary embedding
+    // (position is carried by the mamba layers) — rope launches must skip.
+    assert_eq!(cfg.rotary_dim(), 0);
     assert_eq!(cfg.routed_scaling_factor, 2.5);
+}
+
+/// Nemotron-3.5 Lightning (transformers 5.x) drops `hybrid_override_pattern`
+/// and ships the hybrid schedule as a `layers_block_type` string list.
+/// Fails without the list-form arm in the nemotron_h dispatch: layer_types
+/// comes out empty and every per-layer count below reads 0.
+#[test]
+fn test_parse_nemotron_h_layers_block_type_list() {
+    // Same 52-layer schedule as Nano's pattern string, list-encoded.
+    let blocks: Vec<String> = "MEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEMEM*EMEMEMEME"
+        .chars()
+        .map(|c| match c {
+            'M' => r#""mamba""#.to_string(),
+            'E' => r#""moe""#.to_string(),
+            _ => r#""attention""#.to_string(),
+        })
+        .collect();
+    let json = format!(
+        r#"{{
+        "model_type": "nemotron_h",
+        "hidden_size": 2688,
+        "num_hidden_layers": 52,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "intermediate_size": 1856,
+        "n_routed_experts": 128,
+        "num_experts_per_tok": 6,
+        "moe_intermediate_size": 1856,
+        "moe_shared_expert_intermediate_size": 3712,
+        "vocab_size": 131072,
+        "layers_block_type": [{}],
+        "mamba_num_heads": 64,
+        "mamba_head_dim": 64,
+        "ssm_state_size": 128,
+        "n_groups": 8,
+        "expand": 2,
+        "conv_kernel": 4,
+        "norm_eps": 1e-5,
+        "rope_theta": 10000,
+        "norm_topk_prob": true
+    }}"#,
+        blocks.join(",")
+    );
+    let cfg = parse_config(&json).unwrap();
+    assert_eq!(cfg.layer_types.len(), 52);
+    assert_eq!(cfg.num_ssm_layers(), 23);
+    assert_eq!(cfg.num_moe_layers(), 23);
+    assert_eq!(cfg.num_attention_layers(), 6);
+    assert_eq!(cfg.layer_type(0), LayerType::LinearAttention);
+    assert_eq!(cfg.layer_type(1), LayerType::Moe);
+    assert_eq!(cfg.layer_type(5), LayerType::FullAttention);
 }
 
 #[test]
