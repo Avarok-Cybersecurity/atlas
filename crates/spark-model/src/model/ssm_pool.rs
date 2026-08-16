@@ -41,7 +41,14 @@ pub(crate) struct SsmStatePool {
     /// Per-slot SSM state checkpoint pools (only allocated when has_mtp).
     pub(super) h_checkpoint_pools: Vec<DevicePtr>,
     pub(super) conv_checkpoint_pools: Vec<DevicePtr>,
+    /// FP32-width h blob bytes per layer (`config.ssm_h_state_bytes()`) —
+    /// the ELEMENT-count authority (elems = h_bytes / 4) and the width of
+    /// everything outside this pool (Marconi snapshots stay FP32).
     pub(super) h_bytes: usize,
+    /// STORAGE width of one h blob inside this pool — what the h pools
+    /// allocate, offset and copy by. Equals `h_bytes` except under the
+    /// stage-3 f16-SIZED pool (`ssm_reserve::ssm_h_stored_bytes`).
+    pub(super) h_stored_bytes: usize,
     pub(super) conv_bytes: usize,
     /// Number of CLAIMABLE slots (excludes the reserved dummy slot at
     /// index `max_slots`). All claim_slot/release_slot operations work
@@ -94,17 +101,22 @@ fn h_inter_layout(counts: &[usize]) -> (Vec<usize>, usize) {
 }
 
 impl SsmStatePool {
+    /// `h_f16_pool` is `gdn_flags::ssm_h_f16_pool_enabled()` at the one
+    /// production call site (`impl_a1.rs`) — a parameter, not a flag read,
+    /// so pool geometry stays testable without the process-global cell.
     pub(super) fn new(
         config: &ModelConfig,
         max_slots: usize,
         has_mtp: bool,
         num_intermediates: usize,
         num_drafts: usize,
+        h_f16_pool: bool,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let _d_conv = config.linear_conv_kernel_dim;
 
         let h_bytes = config.ssm_h_state_bytes();
+        let h_stored_bytes = crate::ssm_reserve::ssm_h_stored_bytes(h_bytes, h_f16_pool);
         let conv_bytes = config.ssm_conv_state_bytes();
         let num_ssm_layers = config.num_ssm_layers();
 
@@ -126,8 +138,8 @@ impl SsmStatePool {
         let mut conv_checkpoint_pools = Vec::new();
 
         for _ in 0..num_ssm_layers {
-            let h_pool = gpu.alloc(total_slots * h_bytes)?;
-            gpu.memset(h_pool, 0, total_slots * h_bytes)?;
+            let h_pool = gpu.alloc(total_slots * h_stored_bytes)?;
+            gpu.memset(h_pool, 0, total_slots * h_stored_bytes)?;
             h_state_pools.push(h_pool);
 
             let conv_pool = gpu.alloc(total_slots * conv_bytes)?;
@@ -182,8 +194,8 @@ impl SsmStatePool {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
             for _ in 0..num_ssm_layers {
-                let h_inter = gpu.alloc(h_inter_total * h_bytes)?;
-                gpu.memset(h_inter, 0, h_inter_total * h_bytes)?;
+                let h_inter = gpu.alloc(h_inter_total * h_stored_bytes)?;
+                gpu.memset(h_inter, 0, h_inter_total * h_stored_bytes)?;
                 h_intermediate_pools.push(h_inter);
 
                 let conv_inter = gpu.alloc(mtp_total * ni * conv_bytes)?;
@@ -191,8 +203,8 @@ impl SsmStatePool {
                 conv_intermediate_pools.push(conv_inter);
 
                 // 1 checkpoint per slot per layer
-                let h_ckpt = gpu.alloc(mtp_total * h_bytes)?;
-                gpu.memset(h_ckpt, 0, mtp_total * h_bytes)?;
+                let h_ckpt = gpu.alloc(mtp_total * h_stored_bytes)?;
+                gpu.memset(h_ckpt, 0, mtp_total * h_stored_bytes)?;
                 h_checkpoint_pools.push(h_ckpt);
 
                 let conv_ckpt = gpu.alloc(mtp_total * conv_bytes)?;
@@ -201,7 +213,8 @@ impl SsmStatePool {
             }
 
             let mtp_mb = num_ssm_layers
-                * (h_inter_total * h_bytes + mtp_total * (ni * conv_bytes + h_bytes + conv_bytes))
+                * (h_inter_total * h_stored_bytes
+                    + mtp_total * (ni * conv_bytes + h_stored_bytes + conv_bytes))
                 / (1024 * 1024);
             // Baseline for the log: FULL-WIDTH UNIFORM sizing at today's
             // per-slot shape ((ni-1) H + ni conv + checkpoint).
@@ -209,8 +222,11 @@ impl SsmStatePool {
             if mtp_slots < max_slots || h_inter_total < full_h {
                 let saved_mb = (num_ssm_layers
                     * (max_slots - mtp_slots)
-                    * (ni.saturating_sub(1) * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
-                    + num_ssm_layers * (full_h - h_inter_total) * h_bytes)
+                    * (ni.saturating_sub(1) * h_stored_bytes
+                        + ni * conv_bytes
+                        + h_stored_bytes
+                        + conv_bytes)
+                    + num_ssm_layers * (full_h - h_inter_total) * h_stored_bytes)
                     / (1024 * 1024);
                 tracing::info!(
                     "SSM MTP pools (conv {ni}/slot, h tiered {:?}..{:?} + checkpoints): \
@@ -229,7 +245,7 @@ impl SsmStatePool {
         // `max_slots` is permanently reserved.
         let free_slots: Vec<usize> = (0..max_slots).rev().collect();
 
-        let total_mb = num_ssm_layers * max_slots * (h_bytes + conv_bytes) / (1024 * 1024);
+        let total_mb = num_ssm_layers * max_slots * (h_stored_bytes + conv_bytes) / (1024 * 1024);
         tracing::info!(
             "SSM state pool: {max_slots} slots × {num_ssm_layers} layers = {total_mb} MB",
         );
@@ -242,6 +258,7 @@ impl SsmStatePool {
             h_checkpoint_pools,
             conv_checkpoint_pools,
             h_bytes,
+            h_stored_bytes,
             conv_bytes,
             max_slots,
             mtp_slots,
@@ -338,14 +355,14 @@ impl SsmStatePool {
     /// from prior sequences from corrupting new prefill output.
     pub(super) fn zero_slot(&self, idx: usize, gpu: &dyn GpuBackend, stream: u64) -> Result<()> {
         for i in 0..self.num_ssm_layers {
-            gpu.memset_async(self.h_state(i, idx), 0, self.h_bytes, stream)?;
+            gpu.memset_async(self.h_state(i, idx), 0, self.h_stored_bytes, stream)?;
             gpu.memset_async(self.conv_state(i, idx), 0, self.conv_bytes, stream)?;
         }
         Ok(())
     }
 
     pub(super) fn h_state(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
-        self.h_state_pools[ssm_layer_idx].offset(slot * self.h_bytes)
+        self.h_state_pools[ssm_layer_idx].offset(slot * self.h_stored_bytes)
     }
 
     pub(super) fn conv_state(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
@@ -376,7 +393,12 @@ impl SsmStatePool {
         let mut g_c_ssq = 0f64;
         let mut g_c_sabs = 0f64;
         for i in 0..self.num_ssm_layers {
-            let mut hb = vec![0u8; self.h_bytes];
+            // Storage width, not FP32 width: reading h_bytes off a stage-3
+            // f16-sized slot would run past the slot. The FP32 reduction
+            // below is only meaningful over an FP32-holding slot; on an FP16
+            // slot the triple still flags divergence (same bits => same
+            // sums), it just isn't interpretable as values.
+            let mut hb = vec![0u8; self.h_stored_bytes];
             let mut cb = vec![0u8; self.conv_bytes];
             if gpu.copy_d2h(self.h_state(i, slot), &mut hb).is_err() {
                 return;
@@ -432,7 +454,7 @@ impl SsmStatePool {
             self.h_inter_counts[slot],
         );
         self.h_intermediate_pools[ssm_layer_idx]
-            .offset((self.h_inter_offsets[slot] + token_idx) * self.h_bytes)
+            .offset((self.h_inter_offsets[slot] + token_idx) * self.h_stored_bytes)
     }
 
     /// Number of H intermediates allocated for `slot` (tiered — see
@@ -480,7 +502,7 @@ impl SsmStatePool {
     }
 
     pub(super) fn h_checkpoint(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
-        self.h_checkpoint_pools[ssm_layer_idx].offset(self.mtp_slot(slot) * self.h_bytes)
+        self.h_checkpoint_pools[ssm_layer_idx].offset(self.mtp_slot(slot) * self.h_stored_bytes)
     }
 
     pub(super) fn conv_checkpoint(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
@@ -493,16 +515,16 @@ impl SsmStatePool {
         // the shared MTP dummy — zeroing that would be wasted work).
         let reset_mtp = self.has_mtp && slot < self.mtp_slots;
         for i in 0..self.num_ssm_layers {
-            gpu.memset(self.h_state(i, slot), 0, self.h_bytes)?;
+            gpu.memset(self.h_state(i, slot), 0, self.h_stored_bytes)?;
             gpu.memset(self.conv_state(i, slot), 0, self.conv_bytes)?;
             if reset_mtp {
                 for t in 0..self.h_inter_count(slot) {
-                    gpu.memset(self.h_intermediate(i, slot, t), 0, self.h_bytes)?;
+                    gpu.memset(self.h_intermediate(i, slot, t), 0, self.h_stored_bytes)?;
                 }
                 for t in 0..self.num_intermediates {
                     gpu.memset(self.conv_intermediate(i, slot, t), 0, self.conv_bytes)?;
                 }
-                gpu.memset(self.h_checkpoint(i, slot), 0, self.h_bytes)?;
+                gpu.memset(self.h_checkpoint(i, slot), 0, self.h_stored_bytes)?;
                 gpu.memset(self.conv_checkpoint(i, slot), 0, self.conv_bytes)?;
             }
         }
@@ -528,7 +550,7 @@ impl SsmStatePool {
             gpu.copy_d2d_async(
                 self.h_state(i, from),
                 self.h_state(i, to),
-                self.h_bytes,
+                self.h_stored_bytes,
                 stream,
             )?;
             gpu.copy_d2d_async(
@@ -547,7 +569,7 @@ impl SsmStatePool {
                     gpu.copy_d2d_async(
                         self.h_intermediate(i, from, t),
                         self.h_intermediate(i, to, t),
-                        self.h_bytes,
+                        self.h_stored_bytes,
                         stream,
                     )?;
                 }
@@ -562,7 +584,7 @@ impl SsmStatePool {
                 gpu.copy_d2d_async(
                     self.h_checkpoint(i, from),
                     self.h_checkpoint(i, to),
-                    self.h_bytes,
+                    self.h_stored_bytes,
                     stream,
                 )?;
                 gpu.copy_d2d_async(
@@ -719,6 +741,65 @@ mod h_inter_layout_tests {
 }
 
 #[cfg(test)]
+mod h_stored_geometry_tests {
+    use super::*;
+    use atlas_core::config::ModelConfig;
+    use spark_runtime::gpu::mock::MockGpuBackend;
+
+    /// Build the pool on the mock backend (only `alloc`/`memset` are hit).
+    fn pool(h_f16_pool: bool) -> SsmStatePool {
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        let gpu = MockGpuBackend::new();
+        SsmStatePool::new(&config, 4, true, 4, 3, h_f16_pool, &gpu).unwrap()
+    }
+
+    /// Stage-3 sizing is a STORAGE-width change, not a layout change: every
+    /// h family (base slots, tiered intermediates, checkpoints) strides by
+    /// `h_stored_bytes`, and flag-off that width IS `h_bytes` — pinning
+    /// that the default geometry did not move by a byte.
+    #[test]
+    fn h_families_stride_by_the_stored_width() {
+        for f16 in [false, true] {
+            let p = pool(f16);
+            let expect = if f16 { p.h_bytes / 2 } else { p.h_bytes };
+            assert_eq!(p.h_stored_bytes, expect, "f16={f16}");
+            assert_eq!(
+                p.h_state(0, 1).0 - p.h_state(0, 0).0,
+                expect as u64,
+                "base slot stride (f16={f16})"
+            );
+            assert_eq!(
+                p.h_intermediate(0, 0, 1).0 - p.h_intermediate(0, 0, 0).0,
+                expect as u64,
+                "intermediate stride (f16={f16})"
+            );
+            assert_eq!(
+                p.h_checkpoint(0, 1).0 - p.h_checkpoint(0, 0).0,
+                expect as u64,
+                "checkpoint stride (f16={f16})"
+            );
+            // Conv never narrows — its kernels are FP32 writers in every mode.
+            assert_eq!(
+                p.conv_state(0, 1).0 - p.conv_state(0, 0).0,
+                p.conv_bytes as u64,
+                "conv stride (f16={f16})"
+            );
+        }
+    }
+
+    /// The FP32 element-count authority (`h_bytes`) must NOT narrow with the
+    /// storage width — converters and kernels derive `n = h_bytes / 4` from
+    /// it in both modes.
+    #[test]
+    fn h_bytes_stays_the_fp32_width() {
+        let p32 = pool(false);
+        let p16 = pool(true);
+        assert_eq!(p16.h_bytes, p32.h_bytes);
+        assert_eq!(p16.h_stored_bytes * 2, p16.h_bytes);
+    }
+}
+
+#[cfg(test)]
 mod slot_guard_tests {
     use super::*;
 
@@ -735,6 +816,7 @@ mod slot_guard_tests {
             h_checkpoint_pools: Vec::new(),
             conv_checkpoint_pools: Vec::new(),
             h_bytes: 0,
+            h_stored_bytes: 0,
             conv_bytes: 0,
             max_slots,
             mtp_slots: 0,

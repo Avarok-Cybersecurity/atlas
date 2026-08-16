@@ -60,7 +60,9 @@ impl TransformerModel {
                     .downcast_ref::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let mut h_buf = vec![0u8; self.ssm_pool.h_bytes];
+                // Pool h STORAGE width: the swap record holds exactly what the
+                // slot holds (FP32 today; f16 under the stage-3 sized pool).
+                let mut h_buf = vec![0u8; self.ssm_pool.h_stored_bytes];
                 let mut c_buf = vec![0u8; self.ssm_pool.conv_bytes];
                 gpu.copy_d2h(ssm.h_state, &mut h_buf)?;
                 gpu.copy_d2h(ssm.conv_state, &mut c_buf)?;
@@ -126,7 +128,9 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let mut h_buf = vec![0u8; self.ssm_pool.h_bytes];
+                // Pool h STORAGE width: the swap record holds exactly what the
+                // slot holds (FP32 today; f16 under the stage-3 sized pool).
+                let mut h_buf = vec![0u8; self.ssm_pool.h_stored_bytes];
                 let mut c_buf = vec![0u8; self.ssm_pool.conv_bytes];
                 reader.read_exact(&mut h_buf)?;
                 reader.read_exact(&mut c_buf)?;

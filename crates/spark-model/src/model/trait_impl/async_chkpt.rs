@@ -43,7 +43,8 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let nk = self.config.linear_num_key_heads;
                 let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4;
+                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd;
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4;
@@ -95,7 +96,8 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let nk = self.config.linear_num_key_heads;
                 let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4;
+                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd;
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4;
@@ -263,7 +265,8 @@ impl TransformerModel {
             let vd = self.config.linear_value_head_dim;
             let nk = self.config.linear_num_key_heads;
             let kd = self.config.linear_key_head_dim;
-            let h_bytes = nv * vd * kd * 4;
+            // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+            let h_bytes = self.ssm_pool.h_stored_bytes;
             let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
 
             // Partial accept: rewind live state to the last accepted token's

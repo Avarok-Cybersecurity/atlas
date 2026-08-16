@@ -282,7 +282,11 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let nk = self.config.linear_num_key_heads;
                 let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4; // FP32
+                // STORAGE width of pool h regions (SSOT: ssm_pool /
+                // ssm_reserve::ssm_h_stored_bytes) — FP32 today; halves
+                // under the stage-3 f16-sized pool so these copies can
+                // never overrun a narrow slot.
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd; // 8192
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4; // FP32
@@ -364,7 +368,8 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let kd = self.config.linear_key_head_dim;
                 let nk = self.config.linear_num_key_heads;
-                let h_bytes = nv * vd * kd * 4;
+                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd; // 8192
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4;

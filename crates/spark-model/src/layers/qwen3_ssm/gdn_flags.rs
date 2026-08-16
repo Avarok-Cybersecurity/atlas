@@ -34,6 +34,15 @@ static FLAGS: std::sync::OnceLock<GdnFlags> = std::sync::OnceLock::new();
 pub struct GdnFlags {
     /// `--ssm-h-dtype f16`: store the GDN decode h-state as FP16.
     pub h_f16: bool,
+    /// Stage 3 of the f16 h-state: additionally SIZE the h pools at 2 bytes
+    /// per element. Must imply `h_f16` (a narrow pool holding FP32 would be
+    /// an OOB write, not a mode). NOT serveable yet and therefore has NO
+    /// CLI surface — the CLI mapping always publishes `false`, and
+    /// `ssm_h_fp16_preconditions` refuses it besides (defense in depth) —
+    /// but the sizing plumbing keys off THIS field so the pool, preflight
+    /// and every byte-copier already agree on the storage width when
+    /// prefill narrowing lands.
+    pub h_f16_pool: bool,
     /// `--gdn-fused-norm`: fused GDN output-norm decode kernel.
     pub fused_norm: bool,
     /// `--ssm-batched-recurrent`: one strided recurrent launch per batch.
@@ -78,6 +87,10 @@ impl GdnFlags {
     fn from_env() -> Self {
         Self {
             h_f16: std::env::var("ATLAS_SSM_H_FP16").is_ok(),
+            // No environment fallback on purpose (house rule: no new env
+            // knobs) — stage 3 has no CLI surface either until prefill
+            // narrowing lands; only unit tests exercise the sizing.
+            h_f16_pool: false,
             fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
             batched_recurrent: std::env::var("ATLAS_SSM_BATCHED_RECURRENT").as_deref() == Ok("1"),
             // No legacy environment variable on purpose (house rule: CLI flags
@@ -108,6 +121,13 @@ pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16
 }
 
+/// Stage 3 of the f16 h-state: h pools SIZED at 2 bytes/element. Today this
+/// can only be true in unit tests — no CLI surface publishes it, and
+/// `ssm_h_fp16_preconditions` refuses it until prefill narrowing lands.
+pub fn ssm_h_f16_pool_enabled() -> bool {
+    flags().h_f16_pool
+}
+
 /// `--gdn-fused-norm` (legacy `ATLAS_GDN_FUSED_NORM=1`).
 pub fn gdn_fused_norm_enabled() -> bool {
     flags().fused_norm
@@ -132,6 +152,7 @@ mod tests {
 
     const BASE: GdnFlags = GdnFlags {
         h_f16: false,
+        h_f16_pool: false,
         fused_norm: false,
         batched_recurrent: false,
         exact_verify: false,
@@ -189,6 +210,8 @@ mod tests {
     #[test]
     fn env_fallback_never_enables_exact_verify() {
         assert!(!GdnFlags::from_env().exact_verify);
+        // Same rule for the stage-3 pool sizing: no env variable feeds it.
+        assert!(!GdnFlags::from_env().h_f16_pool);
     }
 
     /// NEGATIVE: an FP16 h-state forces non-exact EVEN WHEN exact was

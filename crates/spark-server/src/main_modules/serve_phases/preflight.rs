@@ -48,6 +48,11 @@ pub(crate) fn preflight_reserve(
         args.resolved_num_drafts(),
         mtp_state_slots,
         args.dflash,
+        // Stage-3 f16-SIZED pool: mirrors `SsmStatePool::new`'s narrowing.
+        // Unreachable today (ssm_h_fp16_preconditions refuses the mode
+        // above), wired so preflight and allocator cannot diverge when the
+        // refusal lifts.
+        spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
     );
     let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
         args.resolved_num_drafts() + 2
@@ -385,6 +390,22 @@ fn ssm_h_fp16_preconditions(args: &cli::ServeArgs, config: &ModelConfig) -> Resu
     // reading the kernels did not share.
     if !spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() || config.num_ssm_layers() == 0 {
         return Ok(());
+    }
+    // Stage 3 of the f16 h-state (f16-SIZED pools): the h pools would be SIZED at
+    // 2 bytes/element, but prefill still writes the h-state FP32 IN PLACE
+    // through the six GDN prefill kernel families (trait_prefill_gdn.rs /
+    // trait_prefill_recur.rs) — over a 2-byte slot that is an overrun into
+    // the neighboring slot, and a Marconi restore would land f16 under an
+    // FP32 prefill continuation. No CLI surface publishes the mode; this
+    // guards any non-CLI flag publication until prefill narrowing lands.
+    if spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled() {
+        anyhow::bail!(
+            "the f16-SIZED SSM h pool (stage 3 of ssm-h-dtype f16) is not serveable yet: \
+             prefill writes the h-state FP32 in place, which would overrun the 2-byte-sized \
+             pool slots. The sizing plumbing (pool allocation, preflight reserve, \
+             byte-copiers) is in place and tested; prefill narrowing is the remaining \
+             work. Use --ssm-h-dtype f16 (FP32-sized pool) until then."
+        );
     }
     // STAGE 2 lifted the blanket refusal on `--speculative`: the MTP verify
     // path's WY kernels now have FP16 h-state twins
