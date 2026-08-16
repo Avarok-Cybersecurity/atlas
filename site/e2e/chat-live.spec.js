@@ -19,9 +19,9 @@ test.describe('@live real corpus', () => {
     await expect(page.locator('.cc[role="dialog"]:not(.cc-skeleton)')).toBeVisible();
     const status = page.locator('.cc-status-text');
     await expect(status).toContainText('ready ·', { timeout: 280_000 });
-    // Real stats: a commit short-sha, non-zero files/chunks, and a real dim.
+    // Real stats: a commit short-sha, non-zero chunks, and a real dim.
     await expect(status).toHaveText(
-      /^ready · [0-9a-f]{7} · [1-9]\d* files · [1-9]\d* chunks · dim [1-9]\d*$/
+      /^ready · [0-9a-f]{7} · [1-9]\d* chunks · dim [1-9]\d*$/
     );
   });
 
