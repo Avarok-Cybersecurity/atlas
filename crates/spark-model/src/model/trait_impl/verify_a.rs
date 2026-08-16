@@ -342,8 +342,9 @@ impl TransformerModel {
                          (layer {i}): only {} per-token intermediate(s) available. \
                          With no intermediates this is the self-speculative / ngram \
                          path — use --speculative (MTP) or --num-drafts 1 for SSM \
-                         models. With too few, the MTP intermediate pool \
-                         (num_drafts + 1) is smaller than the verify width K. \
+                         models. With too few, the MTP h-intermediate pool \
+                         (num_drafts per slot, tiered — K-1 snapshots for a \
+                         K-row verify) is smaller than this rollback target. \
                          No rollback copies were enqueued.",
                         ssm.h_state_intermediates.len(),
                     );

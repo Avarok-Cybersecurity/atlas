@@ -84,11 +84,14 @@ impl Qwen3SsmLayer {
             let Some(st) = state.as_any().downcast_ref::<SsmLayerState>() else {
                 return Ok(false);
             };
-            if st.conv_state_intermediates.len() < kk || st.h_state_intermediates.len() < kk {
+            // h side: kk-1 intermediates (the kernel writes indices
+            // 0..kk-2 and NULL-skips the dead kk-1 — see below; the pool
+            // allocates exactly K-1 per slot since the K-1 shrink).
+            if st.conv_state_intermediates.len() < kk || st.h_state_intermediates.len() < kk - 1 {
                 return Ok(false);
             }
             let hi0 = st.h_state_intermediates[0];
-            for t in 1..kk {
+            for t in 1..kk - 1 {
                 if st.h_state_intermediates[t].0 != hi0.0 + (t * h_bytes) as u64 {
                     return Ok(false);
                 }
@@ -107,7 +110,7 @@ impl Qwen3SsmLayer {
                     h_inter_seq_stride = hi0.0.wrapping_sub(h_inter_base.0);
                     // The kernel writes kk-1 dense snapshots per sequence;
                     // they must not overlap the next sequence's region.
-                    if h_inter_seq_stride < (kk * h_bytes) as u64 {
+                    if h_inter_seq_stride < ((kk - 1) * h_bytes) as u64 {
                         return Ok(false);
                     }
                 } else if hi0.0 != h_inter_base.0 + (i as u64) * h_inter_seq_stride {

@@ -126,12 +126,18 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                // Skip t == K-1: dead write, no reader (enumeration in
+                // trait_decode_batched_conv_gdn.rs). The FUSED conv arm
+                // above still writes all K snapshots (on-device kernel),
+                // which is why the conv pools keep K per slot.
+                if (t as usize) + 1 < num_tokens {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
         }
 

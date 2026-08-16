@@ -189,9 +189,23 @@ pub fn verify_slot_drafts(slot_idx: usize, num_drafts: usize) -> usize {
 }
 
 /// Number of per-token H-state intermediates the verify pools allocate for
-/// pool slot `slot_idx`: the slot's draft capacity + 1 (one snapshot per
-/// verify row). `uniform_verify` (DFlash-γ pools, whose verify width does
-/// not follow the MTP ladder) sizes every slot at the full `num_drafts + 1`.
+/// pool slot `slot_idx`: exactly the slot's draft capacity (K-1 snapshots
+/// for a K-row verify). `uniform_verify` (DFlash-γ pools, whose verify
+/// width does not follow the MTP ladder) sizes every slot at the full
+/// `num_drafts`.
+///
+/// WHY K-1 and not K (2026-08-16 audit): no verify arm ever writes OR
+/// reads H intermediate index K-1. The fused WY kernels write
+/// Hi_0..Hi_{K-2} plus the final H in place (`gdn_decode_wy{2,3,4}`,
+/// `wyn`/`wy17`, the strided `_snap` twins NULL-skip index K-1), the
+/// single-seq K=2/3/4 arms and the exact arm skip the dead snapshot
+/// explicitly, and the sequential fallback now skips t = K-1 too. Every
+/// reader is bounded at index K-2: `commit_accepted_prefix` pins the
+/// reachable index to [0, k-2], `rollback_ssm_states` validates against
+/// the vec length with callers guaranteeing a rejected draft, and
+/// `start_rollback_and_checkpoint_async` is only called with 1..=K-1
+/// (index ≤ K-2). See the reader enumeration in
+/// `trait_decode_batched_conv_gdn.rs`.
 ///
 /// Only the H side tiers. The CONV intermediates stay UNIFORM at
 /// `num_drafts + 1` per slot: the batched conv verify kernel
@@ -208,9 +222,9 @@ pub fn verify_slot_h_intermediates(
     uniform_verify: bool,
 ) -> usize {
     if uniform_verify {
-        return num_drafts + 1;
+        return num_drafts;
     }
-    verify_slot_drafts(slot_idx, num_drafts) + 1
+    verify_slot_drafts(slot_idx, num_drafts)
 }
 
 /// SSM state-pool reserve bytes for the pre-load preflight — MUST mirror
@@ -220,16 +234,18 @@ pub fn verify_slot_h_intermediates(
 /// * base: `max_batch_size` live per-seq blobs (h_state + conv_state across
 ///   all SSM layers);
 /// * spec, per verify slot (`mtp_state_slots` of them):
-///   - H intermediates: [`verify_slot_h_intermediates`] × h blob (TIERED);
-///   - conv intermediates: `num_drafts + 1` × conv blob (uniform — see
+///   - H intermediates: [`verify_slot_h_intermediates`] × h blob (TIERED,
+///     and K-1 per K-row verify — index K-1 is never written or read);
+///   - conv intermediates: `num_drafts + 1` × conv blob (uniform AND still
+///     K — the fused conv kernels write all K snapshots on-device; see
 ///     [`verify_slot_h_intermediates`] for why conv does not tier);
 ///   - 1 pre-verify checkpoint blob (h + conv).
 ///
 /// `h_blob_bytes` / `conv_blob_bytes` are the per-seq totals across all SSM
 /// layers (`num_ssm_layers × ssm_h_state_bytes/ssm_conv_state_bytes`).
-/// With `uniform_verify` (DFlash, `ATLAS_MTP_POOL_FULL_WIDTH`, ladder
-/// disabled) and `mtp_state_slots == max_batch_size` this reproduces the
-/// historical `max_batch × blob × (1 + (num_drafts+1) + 1)` byte-for-byte.
+/// The historical sizing was `max_batch × blob × (1 + (num_drafts+1) + 1)`;
+/// today's uniform mode differs from it by exactly one h blob per slot
+/// (the dead K-1 intermediate).
 pub fn ssm_pool_reserve_bytes(
     max_batch_size: usize,
     h_blob_bytes: usize,
@@ -392,26 +408,32 @@ mod mtp_state_slot_tests {
     }
 
     #[test]
-    fn tiering_cannot_bite_at_or_below_8_and_kill_switch_restores() {
-        // Slots 0..8 are full-K under the default ladder, so bs<=8 sizing is
-        // byte-identical to the legacy formula in every mode.
+    fn k_minus_1_shrink_and_kill_switch_shape() {
+        // The K-1 h-intermediate shrink applies EVERYWHERE (it removes a
+        // slot that is never written or read, not a policy tier): every
+        // sizing differs from the historical formula by exactly one h blob
+        // per verify slot, plus the tier savings where the tiers bite.
+        //
+        // bs<=8: tiers cannot bite (all slots full-K), so the delta is the
+        // dead-slot removal alone.
         for bs in 1..=8 {
-            for spec_on in [false, true] {
-                assert_eq!(
-                    tiered_pool_bytes(bs, spec_on),
-                    legacy_pool_bytes(bs, spec_on),
-                    "bs={bs} spec={spec_on}: bs<=8 ledger must not move by a byte"
-                );
-            }
+            assert_eq!(
+                legacy_pool_bytes(bs, true) - tiered_pool_bytes(bs, true),
+                bs * H_BLOB,
+                "bs={bs}: exactly one dead h blob per slot"
+            );
+            // Spec off: base only, unchanged from the historical formula.
+            assert_eq!(tiered_pool_bytes(bs, false), legacy_pool_bytes(bs, false));
         }
         // uniform_verify (DFlash-γ pools / ATLAS_MTP_POOL_FULL_WIDTH /
-        // ladder disabled) restores the legacy bytes at every bs<=32.
+        // ladder disabled): same dead-slot removal, no tiers, at every bs.
         for bs in 1..=32 {
             for spec_on in [false, true] {
+                let expect = legacy_pool_bytes(bs, spec_on) - if spec_on { bs * H_BLOB } else { 0 };
                 assert_eq!(
                     ssm_pool_reserve_bytes(bs, H_BLOB, CONV_BLOB, spec_on, ND, bs, true),
-                    legacy_pool_bytes(bs, spec_on),
-                    "bs={bs} spec={spec_on}: uniform sizing must reproduce legacy"
+                    expect,
+                    "bs={bs} spec={spec_on}: uniform = legacy minus the dead h blob/slot"
                 );
             }
         }
@@ -431,42 +453,49 @@ mod mtp_state_slot_tests {
 
     #[test]
     fn tiered_totals_pinned() {
-        // Verify-pool bytes per covered slot: H tier (capacity+1 h blobs) +
-        // uniform conv (ND+1) + one checkpoint blob. Aggregates pinned
-        // EXACTLY so any future drift in the formula is a test edit, not an
-        // accident.
+        // Verify-pool bytes per covered slot: H tier (capacity h blobs —
+        // K-1 per K-row verify) + uniform conv (ND+1) + one checkpoint
+        // blob. Aggregates pinned EXACTLY so any future drift in the
+        // formula is a test edit, not an accident.
         //
-        // bs=16 (slots 8..16 on the low tier): saves 8 slots × 2 h blobs.
+        // bs=16: 8 low-tier slots × 2 h blobs (tier) + 16 dead h blobs.
         assert_eq!(legacy_pool_bytes(16, true), 15_250_489_344);
-        assert_eq!(tiered_pool_bytes(16, true), 12_834_570_240);
+        assert_eq!(tiered_pool_bytes(16, true), 10_418_651_136);
         assert_eq!(
             legacy_pool_bytes(16, true) - tiered_pool_bytes(16, true),
-            16 * H_BLOB // 2.25 GiB
+            (16 + 16) * H_BLOB // tier 2.25 GiB + dead-slot 2.25 GiB
         );
-        // bs=32: 24 low-tier slots × 2 h blobs = 48 h blobs = 6.75 GiB.
-        // (The task-#1 estimate of 7.1 GiB counted 48 FULL blobs; conv
-        // stays uniform for the batched-conv stride precondition, so the H
-        // side carries 6.75 GiB and conv's 0.35 GiB is deliberately kept.)
+        // bs=32: tier saves 48 h blobs (6.75 GiB — the task-#1 estimate of
+        // 7.1 GiB counted full blobs; conv stays uniform for the
+        // batched-conv stride precondition) and the K-1 shrink another 32
+        // (4.5 GiB): 80 h blobs = 11.25 GiB total.
         assert_eq!(
             legacy_pool_bytes(32, true) - tiered_pool_bytes(32, true),
-            48 * H_BLOB // 7_247_757_312
+            80 * H_BLOB // 12_079_595_520
         );
-        assert_eq!(tiered_pool_bytes(32, true) - 32 * BLOB, 18_169_724_928);
+        assert_eq!(tiered_pool_bytes(32, true) - 32 * BLOB, 13_337_886_720);
         // Spec off: base only, at any bs.
         assert_eq!(tiered_pool_bytes(64, false), 64 * BLOB);
     }
 
     #[test]
     fn bs64_ledger_before_after_and_fit() {
-        // ── Pool terms: the three diet rungs ──
+        // ── Pool terms: the diet rungs ──
         let full_width = legacy_pool_bytes(64, true);
         assert_eq!(full_width, 61_001_957_376); // 56.81 GiB (pre-diet)
-        let slot_capped = ssm_pool_reserve_bytes(64, H_BLOB, CONV_BLOB, true, ND, 32, true);
+        // Historical slot-count-capped rung (wave 10, PRE the K-1 shrink):
+        // kept as the formula the refusal/fit logs were cut against.
+        let slot_capped = 64 * BLOB + 32 * (ND + 2) * BLOB;
         assert_eq!(slot_capped, 35_584_475_136); // 33.14 GiB (slot-count cap)
         assert_eq!(full_width - slot_capped, 25_417_482_240); // 23.67 GiB
+        // Today's uniform mode = slot-capped minus the dead h blob/slot.
+        assert_eq!(
+            ssm_pool_reserve_bytes(64, H_BLOB, CONV_BLOB, true, ND, 32, true),
+            slot_capped - 32 * H_BLOB // 30_752_636_928
+        );
         let tiered = tiered_pool_bytes(64, true);
-        assert_eq!(tiered, 28_336_717_824); // 26.39 GiB (+ tiered slots)
-        assert_eq!(slot_capped - tiered, 48 * H_BLOB); // 6.75 GiB more
+        assert_eq!(tiered, 23_504_879_616); // 21.89 GiB (tiers + K-1 shrink)
+        assert_eq!(slot_capped - tiered, 80 * H_BLOB); // 11.25 GiB more
 
         // ── Full inference reserve (mirrors preflight_reserve term-by-term) ──
         // snapshot: --ssm-cache-slots 32 × blob (decode ring skipped: spec on)
@@ -486,7 +515,7 @@ mod mtp_state_slot_tests {
         let capped_reserve = slot_capped + snapshot + gdn + headroom;
         assert_eq!(capped_reserve, 45_149_061_120); // 42.05 GiB
         let tiered_reserve = tiered + snapshot + gdn + headroom;
-        assert_eq!(tiered_reserve, 37_901_303_808); // 35.30 GiB
+        assert_eq!(tiered_reserve, 33_069_465_600); // 30.80 GiB
 
         // ── Fit at util 0.70 (values from the wave-9/10 refusal logs) ──
         // total_budget: "budget 85.2 GB (util 0.70)" ⇒ 85.2 GiB.
@@ -510,7 +539,7 @@ mod mtp_state_slot_tests {
             "bs=64 KV budget {kv_left} must cover the decode_short peak {kv_floor}"
         );
         assert!(kv_left - kv_floor >= 150 * 1024 * 1024);
-        // Tiered reserve: strictly better — the 6.75 GiB rejoins the KV pool.
+        // Tiered reserve: strictly better — 11.25 GiB rejoins the KV pool.
         assert!(budget - pre_kv - tiered_reserve - kv_floor >= 150 * 1024 * 1024);
     }
 
@@ -521,16 +550,19 @@ mod mtp_state_slot_tests {
         // Marconi slots + GDN scratch + 4 GiB spec headroom.
         let gdn = 186_122_240usize;
         let headroom = 4usize * 1024 * 1024 * 1024;
-        let old_pool = ssm_pool_reserve_bytes(128, H_BLOB, CONV_BLOB, true, ND, 32, true);
+        // The measured pre-diet formula (wave 47): 128 base blobs +
+        // 32 slots × 5 blobs.
+        let old_pool = 128 * BLOB + 32 * (ND + 2) * BLOB;
         assert_eq!(old_pool, 45_751_468_032);
         let old_reserve = old_pool + 32 * BLOB + gdn + headroom;
         assert_eq!(old_reserve, 55_316_054_016); // 51.52 GiB — the reference
-        // Tiered slots: −6.75 GiB from the H intermediates.
+        // Tiered slots (−6.75 GiB) + K-1 shrink (−4.5 GiB).
         let new_pool = tiered_pool_bytes(128, true);
-        assert_eq!(new_pool, 38_503_710_720);
+        assert_eq!(new_pool, 33_671_872_512);
+        assert_eq!(old_pool - new_pool, 80 * H_BLOB); // 11.25 GiB
         let new_reserve = new_pool + 32 * BLOB + gdn + headroom;
-        assert_eq!(new_reserve, 48_068_296_704); // 44.77 GiB
+        assert_eq!(new_reserve, 43_236_458_496); // 40.27 GiB
         // With the concurrency profile's Marconi 32→8 (#0): another 3.55 GiB.
-        assert_eq!(new_pool + 8 * BLOB + gdn + headroom, 44_255_674_368); // 41.22 GiB
+        assert_eq!(new_pool + 8 * BLOB + gdn + headroom, 39_423_836_160); // 36.72 GiB
     }
 }

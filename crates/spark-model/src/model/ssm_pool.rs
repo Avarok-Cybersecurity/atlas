@@ -154,17 +154,23 @@ impl SsmStatePool {
         // (`num_intermediates != num_drafts + 1` — DFlash verify width does
         // not follow the MTP ladder); the kill switch and a disabled ladder
         // make `verify_slot_h_intermediates` itself uniform. The MTP dummy
-        // at index `mtp_slots` is ALWAYS full-width: batched-verify pad rows
-        // may write any token index regardless of the active slots' tiers.
+        // at index `mtp_slots` is ALWAYS full-width (K-1): batched-verify
+        // pad rows may write any of the K-1 live token indices regardless
+        // of the active slots' tiers.
+        // H side allocates K-1 intermediates per K-row verify (index K-1 is
+        // never written or read — audit in `verify_slot_h_intermediates`);
+        // the CONV side keeps all K because the fused conv kernels write the
+        // dead K-1 snapshot on-device. `num_intermediates` remains the K
+        // ceiling (conv count); the uniform H count is `num_intermediates-1`.
         let uniform_h = num_intermediates != num_drafts + 1;
         let h_inter_counts: Vec<usize> = if has_mtp {
             (0..=mtp_slots)
                 .map(|s| {
                     if s == mtp_slots || uniform_h {
-                        num_intermediates
+                        num_intermediates.saturating_sub(1)
                     } else {
                         crate::ssm_reserve::verify_slot_h_intermediates(s, num_drafts, false)
-                            .min(num_intermediates)
+                            .min(num_intermediates.saturating_sub(1))
                     }
                 })
                 .collect()
@@ -197,11 +203,13 @@ impl SsmStatePool {
             let mtp_mb = num_ssm_layers
                 * (h_inter_total * h_bytes + mtp_total * (ni * conv_bytes + h_bytes + conv_bytes))
                 / (1024 * 1024);
-            let full_h = mtp_total * ni;
+            // Baseline for the log: FULL-WIDTH UNIFORM sizing at today's
+            // per-slot shape ((ni-1) H + ni conv + checkpoint).
+            let full_h = mtp_total * ni.saturating_sub(1);
             if mtp_slots < max_slots || h_inter_total < full_h {
                 let saved_mb = (num_ssm_layers
                     * (max_slots - mtp_slots)
-                    * (ni * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
+                    * (ni.saturating_sub(1) * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
                     + num_ssm_layers * (full_h - h_inter_total) * h_bytes)
                     / (1024 * 1024);
                 tracing::info!(
@@ -454,7 +462,9 @@ impl SsmStatePool {
         if slot >= self.mtp_slots {
             return 0;
         }
-        self.h_inter_counts[slot] - 1
+        // K-1 sizing: the count IS the draft capacity (a K-row verify
+        // writes K-1 H snapshots, indices 0..K-2).
+        self.h_inter_counts[slot]
     }
 
     pub(super) fn conv_intermediate(
@@ -683,17 +693,17 @@ mod h_inter_layout_tests {
 
     #[test]
     fn offsets_are_prefix_sums_and_total_is_the_sum() {
-        // The default-ladder tier shape at nd=3, 32 covered slots + dummy:
-        // 8 full slots (4), 24 low slots (2), dummy full (4).
-        let mut counts = vec![4usize; 8];
-        counts.extend(std::iter::repeat_n(2usize, 24));
-        counts.push(4);
+        // The default-ladder tier shape at nd=3, 32 covered slots + dummy,
+        // K-1 sizing: 8 full slots (3), 24 low slots (1), dummy full (3).
+        let mut counts = vec![3usize; 8];
+        counts.extend(std::iter::repeat_n(1usize, 24));
+        counts.push(3);
         let (offsets, total) = h_inter_layout(&counts);
         assert_eq!(offsets.len(), counts.len() + 1);
         assert_eq!(offsets[0], 0);
-        assert_eq!(offsets[8], 32); // tier-1 region: 8 × 4
-        assert_eq!(offsets[32], 32 + 48); // + tier-2 region: 24 × 2
-        assert_eq!(total, 84); // + dummy 4
+        assert_eq!(offsets[8], 24); // tier-1 region: 8 × 3
+        assert_eq!(offsets[32], 24 + 24); // + tier-2 region: 24 × 1
+        assert_eq!(total, 51); // + dummy 3
         for s in 0..counts.len() {
             assert_eq!(offsets[s + 1] - offsets[s], counts[s]);
         }
