@@ -52,15 +52,11 @@
     if (asking) return codeChat.phase[chat.msgPhase] ?? codeChat.phase.writing;
     if (ready && chat.corpus) {
       const c = chat.corpus;
-      // files is null on the offline-manifest path (no meta.json) — skip it
-      // rather than printing "null files".
-      const parts = [
-        codeChat.status.ready,
-        shortCommit,
-        c.files == null ? null : `${c.files} files`,
-        `${c.chunks} chunks`,
-        `dim ${c.dim}`
-      ];
+      // The pill has limited width and ellipsizes from the right, so it carries
+      // only the segments not shown elsewhere. The file count lives in the
+      // welcome line (and the title tooltip) — including it here pushed
+      // "dim 2048" past the ellipsis at 1280px.
+      const parts = [codeChat.status.ready, shortCommit, `${c.chunks} chunks`, `dim ${c.dim}`];
       if (chat.offline) parts.push(codeChat.offlineBadge);
       return parts.filter(Boolean).join(' · ');
     }
@@ -250,7 +246,7 @@
         <span class="slabel cc-slabel">{codeChat.label}</span>
         <h2 class="cc-title">{codeChat.title}</h2>
       </div>
-      <p class="cc-status" data-tone={statusTone} aria-live="polite">
+      <p class="cc-status" data-tone={statusTone} aria-live="polite" title={statusText}>
         <span class="cc-status-dot" aria-hidden="true"></span>
         <span class="cc-status-text">{statusText}</span>
       </p>

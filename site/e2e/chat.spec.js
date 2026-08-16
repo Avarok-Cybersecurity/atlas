@@ -28,7 +28,7 @@ const META = JSON.parse(readFileSync(join(FIX, 'corpus-small.meta.json'), 'utf8'
 const GZ = readFileSync(join(FIX, 'corpus-small.jsonl.gz'));
 const COMMIT = META.commit_sha;
 const SHORT = COMMIT.slice(0, 7);
-const READY_LINE = `ready · ${SHORT} · ${META.files} files · ${META.points} chunks · dim ${META.dim}`;
+const READY_LINE = `ready · ${SHORT} · ${META.points} chunks · dim ${META.dim}`;
 const TEST_KEY = 'sk-or-v1-e2e-fixture-key';
 
 // --- route helpers -----------------------------------------------------------
