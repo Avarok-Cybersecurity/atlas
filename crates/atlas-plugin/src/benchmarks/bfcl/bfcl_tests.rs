@@ -62,9 +62,17 @@ fn scores(overall: f64, normalized: f64) -> Scores {
     }
 }
 
+/// The submission checkpoint, as `configured` cannot know it: verdict scoping
+/// reads the model captured at `load()`, which unit tests set directly.
+fn on_model(variant: Variant, model: &str) -> Bfcl {
+    let mut b = configured(variant);
+    b.target_model = Some(model.to_string());
+    b
+}
+
 #[test]
 fn the_verdict_gates_on_both_mlperf_floors() {
-    let mut b = configured(Variant::Subset);
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.6-27B-NVFP4");
 
     b.scores = Some(scores(87.44, 88.53));
     assert_eq!(b.verdict().kind, VerdictKind::Pass);
@@ -90,7 +98,7 @@ fn the_verdict_gates_on_both_mlperf_floors() {
 
 #[test]
 fn the_verdict_always_states_the_measured_values_and_the_floor() {
-    let mut b = configured(Variant::Subset);
+    let mut b = on_model(Variant::Subset, "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf");
     b.scores = Some(scores(87.44, 88.53));
     let reason = b.verdict().reason;
     assert!(reason.contains("87.44") && reason.contains("83.64"));
@@ -101,6 +109,184 @@ fn the_verdict_always_states_the_measured_values_and_the_floor() {
 fn an_unscored_run_is_info_not_a_pass() {
     let b = configured(Variant::Subset);
     assert_eq!(b.verdict().kind, VerdictKind::Info);
+}
+
+/// ★ The miscomparison the floor scoping removes: a healthy Qwen3.8 run at
+/// 84.22/84.12 — below the 3.6 floor, above nothing that applies to it — must
+/// NOT be verdicted FAIL on a floor derived for different weights. It is
+/// judged by its own BENCH.toml thresholds under --pull-request-gate, and the
+/// run verdict says so.
+#[test]
+fn a_qwen38_run_below_the_36_floor_is_not_failed_by_it() {
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.8-27B-NVFP4");
+    b.scores = Some(scores(84.22, 84.12));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Info, "{}", v.reason);
+    assert!(
+        v.reason.contains("judged by baseline thresholds"),
+        "{}",
+        v.reason
+    );
+    assert!(
+        !v.reason.contains("BELOW THE MLPERF-EDGE FLOOR"),
+        "{}",
+        v.reason
+    );
+    // The measured values and the reference floor still read out.
+    assert!(
+        v.reason.contains("84.22") && v.reason.contains("85.32"),
+        "{}",
+        v.reason
+    );
+}
+
+/// A checkpoint judged by its own bars, wired through the same path the gate
+/// uses: `min_overall`/`min_normalized` are threshold params
+/// (descriptors::GATE_THRESHOLD_PARAMS) auto-filled from BENCH.toml under
+/// --pull-request-gate, and here set through `configure` exactly as the gate
+/// sets them.
+fn with_mins(overall: f64, normalized: f64) -> Bfcl {
+    let mut b = Bfcl::new(Variant::Subset);
+    let mut v = ParamValues::defaults(&b.parameters());
+    v.set("min_overall", ParamValue::Float(overall));
+    v.set("min_normalized", ParamValue::Float(normalized));
+    b.configure(&v).unwrap();
+    b.target_model = Some("unsloth/Qwen3.8-27B-NVFP4".to_string());
+    b
+}
+
+/// ★ Review C1: a required bfcl-subset run on a non-MLPerf checkpoint that
+/// CLEARS its own BENCH.toml bars must produce a PASS run verdict — the gate
+/// machinery (`GateRecord::verdict_passes`, check.rs "run verdict is not
+/// PASS") accepts nothing less, and the old info verdict read red despite a
+/// healthy score. 84.22/84.12 vs the committed 83.82/83.72 bars is exactly
+/// the run that motivated this.
+#[test]
+fn a_qwen38_run_clearing_its_own_bars_passes() {
+    let mut b = with_mins(83.82, 83.72);
+    b.scores = Some(scores(84.22, 84.12));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
+    // The detail names both values and both bars.
+    for needle in ["84.22", "83.82", "84.12", "83.72"] {
+        assert!(v.reason.contains(needle), "{}", v.reason);
+    }
+
+    // Exactly on both bars passes — inclusive, like every other floor here.
+    // (Deliberately STRICTER than gate scoring, which allows value + noise
+    // >= min: the raw comparison can only fail a sub-noise dip, never
+    // green-light a regression.)
+    b.scores = Some(scores(83.82, 83.72));
+    assert_eq!(b.verdict().kind, VerdictKind::Pass);
+}
+
+#[test]
+fn a_qwen38_run_below_its_own_bars_fails() {
+    let mut b = with_mins(83.82, 83.72);
+    b.scores = Some(scores(83.50, 84.12));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(
+        v.reason.contains("BELOW THE BASELINE THRESHOLDS"),
+        "{}",
+        v.reason
+    );
+    for needle in ["83.50", "83.82", "84.12", "83.72"] {
+        assert!(v.reason.contains(needle), "{}", v.reason);
+    }
+
+    // Either bar alone fails the run — both floors must clear.
+    b.scores = Some(scores(84.22, 83.50));
+    assert_eq!(b.verdict().kind, VerdictKind::Fail);
+}
+
+/// The MLPerf submission checkpoints keep the EXACT floor verdict — the mins
+/// exist for everyone else and must not soften or double-gate the floor.
+#[test]
+fn baseline_mins_do_not_touch_the_mlperf_family() {
+    let mut b = with_mins(80.0, 80.0);
+    b.target_model = Some("unsloth/Qwen3.6-27B-NVFP4".to_string());
+    // Above the mins but below the MLPerf floor: still a floor FAIL.
+    b.scores = Some(scores(83.63, 90.0));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(
+        v.reason.contains("BELOW THE MLPERF-EDGE FLOOR"),
+        "{}",
+        v.reason
+    );
+}
+
+/// Both GATED draws declare the same param↔metric coupling (the echolp entry
+/// in kernels/gb10/qwen3.6-35b-a3b/BENCH.toml bounds the same two metric
+/// names); bfcl-full is not a gate and declares none.
+#[test]
+fn the_gated_descriptors_declare_the_verdict_threshold_params() {
+    let wired = [
+        ("min_overall", "overall_accuracy"),
+        ("min_normalized", "normalized_single_turn_score"),
+    ];
+    assert_eq!(SUBSET_DESCRIPTOR.threshold_params, wired);
+    assert_eq!(SUBSET_ECHOLP_DESCRIPTOR.threshold_params, wired);
+    assert!(FULL_DESCRIPTOR.threshold_params.is_empty());
+    // The coupling only works if the schema carries the params (the gate
+    // errors on drift — bench_resolve) and their defaults are the OFF state.
+    for variant in [Variant::Subset, Variant::SubsetEcholp, Variant::Full] {
+        let v = ParamValues::defaults(&Bfcl::new(variant).parameters());
+        assert_eq!(v.float("min_overall").unwrap(), 0.0);
+        assert_eq!(v.float("min_normalized").unwrap(), 0.0);
+    }
+}
+
+/// The scoping must not weaken the floor where it DOES apply: both submission
+/// checkpoints, either spelling case, still fail below 85.32 normalized.
+#[test]
+fn a_36_submission_run_below_the_floor_still_fails() {
+    for model in [
+        "unsloth/Qwen3.6-27B-NVFP4",
+        "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf",
+        "UNSLOTH/QWEN3.6-27B-NVFP4",
+    ] {
+        let mut b = on_model(Variant::Subset, model);
+        b.scores = Some(scores(90.0, 85.31));
+        let v = b.verdict();
+        assert_eq!(v.kind, VerdictKind::Fail, "{model}: {}", v.reason);
+        assert!(
+            v.reason.contains("BELOW THE MLPERF-EDGE FLOOR"),
+            "{}",
+            v.reason
+        );
+    }
+}
+
+/// An UNKNOWN served model is not silently floored either — failing weights
+/// nobody identified is the same miscomparison with less information.
+#[test]
+fn an_unknown_model_is_not_failed_by_the_floor() {
+    let mut b = configured(Variant::Subset);
+    b.scores = Some(scores(80.0, 80.0));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Info, "{}", v.reason);
+    assert!(
+        v.reason.contains("judged by baseline thresholds"),
+        "{}",
+        v.reason
+    );
+}
+
+/// The floor STYLING stays for every model — the summary tile styles against
+/// the floor as a visual reference even where the verdict no longer gates on
+/// it. Below-floor renders Bad, above-floor Good, on 3.8 exactly as on 3.6.
+#[test]
+fn floor_styling_is_kept_for_non_submission_checkpoints() {
+    use crate::result::CellStyle;
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.8-27B-NVFP4");
+    b.scores = Some(scores(84.22, 84.12));
+    let stats = b.summary();
+    let overall = &stats[0];
+    let normalized = &stats[1];
+    assert_eq!(overall.style, CellStyle::Good, "84.22 >= floor 83.64");
+    assert_eq!(normalized.style, CellStyle::Bad, "84.12 < floor 85.32");
 }
 
 #[test]

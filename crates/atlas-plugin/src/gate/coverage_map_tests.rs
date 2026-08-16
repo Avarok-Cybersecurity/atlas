@@ -236,20 +236,50 @@ fn every_exclusion_is_actually_on_the_boundary() {
 /// silently false exclusion.
 #[test]
 fn benchmark_drivers_do_not_import_each_other() {
-    let root = repo_root();
-    let drivers = ["ttft", "bfcl", "agentic", "contamination", "ssm_poison"];
-    for driver in drivers {
-        let dir = root.join("crates/atlas-plugin/src/benchmarks").join(driver);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            panic!("benchmark driver directory {} is missing", dir.display());
+    let root = repo_root().join("crates/atlas-plugin/src/benchmarks");
+    // One rule for every driver namespace, directory and single-file alike.
+    // `decode_floor` (a directory since the C1 verdict split) in particular
+    // must not borrow quick-speed's fixtures or helpers: its exclusion lists
+    // (and quick-speed's excusal) assume the two are independent, and its
+    // pinned prompt is part of its metric's identity.
+    let names = [
+        "ttft",
+        "bfcl",
+        "agentic",
+        "contamination",
+        "ssm_poison",
+        "decode_floor",
+        "quick_speed",
+        "concurrency",
+    ];
+    for driver in names {
+        let dir = root.join(driver);
+        let sources: Vec<std::path::PathBuf> = if dir.is_dir() {
+            std::fs::read_dir(&dir)
+                .expect("driver directory reads")
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+                .collect()
+        } else {
+            // Single-file driver: the file itself (must exist) plus optional
+            // `_tests` and `_verdict` siblings (the concurrency driver keeps
+            // its pure self-verdict in a `_verdict` file for the 500-LoC cap,
+            // and that file must obey the same no-cross-import rule).
+            let main = root.join(format!("{driver}.rs"));
+            assert!(main.exists(), "driver file {} is missing", main.display());
+            [
+                main,
+                root.join(format!("{driver}_tests.rs")),
+                root.join(format!("{driver}_verdict.rs")),
+            ]
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect()
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
+        for path in sources {
             let src = std::fs::read_to_string(&path).unwrap_or_default();
-            for other in drivers.iter().filter(|o| **o != driver) {
+            for other in names.iter().filter(|o| **o != driver) {
                 let needle = format!("benchmarks::{other}");
                 assert!(
                     !src.contains(&needle),

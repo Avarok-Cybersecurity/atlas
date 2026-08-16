@@ -193,7 +193,13 @@ fn main() {
 
     assert!(
         !targets.is_empty(),
-        "No kernel targets resolved. Check ATLAS_TARGET_* env vars."
+        "{}",
+        build_diagnose::no_targets(
+            &workspace_root.join("kernels"),
+            &env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| build_diagnose::DEFAULT_HW.into()),
+            &env::var("ATLAS_TARGET_MODEL").unwrap_or_else(|_| "*".into()),
+            &env::var("ATLAS_TARGET_QUANT").unwrap_or_else(|_| "nvfp4".into()),
+        )
     );
 
     // ── Resolve compute target (compiler) from HARDWARE.toml vendor ──
@@ -201,7 +207,7 @@ fn main() {
     // Apple (xcrun→metallib), Intel (icpx→SPIR-V). Only NVIDIA is implemented.
     let hw_dir = workspace_root
         .join("kernels")
-        .join(env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| "gb10".into()));
+        .join(env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| build_diagnose::DEFAULT_HW.into()));
     let hw_toml_path = hw_dir.join("HARDWARE.toml");
     let hw_toml: toml::Value = {
         let content = std::fs::read_to_string(&hw_toml_path)
@@ -974,16 +980,24 @@ fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::P
 
 /// Resolve all compilation targets from env vars, expanding wildcards.
 fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
-    let hw = env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| "gb10".into());
+    let kernels_root = workspace_root.join("kernels");
+
+    let hw = env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| build_diagnose::DEFAULT_HW.into());
     let model_spec = env::var("ATLAS_TARGET_MODEL").unwrap_or_else(|_| "*".into());
     let quant_spec = env::var("ATLAS_TARGET_QUANT").unwrap_or_else(|_| "nvfp4".into());
 
-    let hw_dir = workspace_root.join("kernels").join(&hw);
+    let hw_dir = kernels_root.join(&hw);
     assert!(
         hw_dir.is_dir(),
-        "Hardware kernel directory not found: {}",
-        hw_dir.display()
+        "{}",
+        build_diagnose::unknown_hw(&kernels_root, &hw)
     );
+
+    // Nothing else in the build names the hardware it chose. Say it here,
+    // before any of it can fail somewhere that never mentions the env var —
+    // but AFTER the target is known to exist, so a rejected target is not
+    // also announced as the one being built.
+    build_diagnose::warn_if_defaulted(&kernels_root, &hw, &model_spec, &quant_spec);
 
     // Parse HARDWARE.toml (shared across all models for this hw)
     let hw_toml_path = hw_dir.join("HARDWARE.toml");
@@ -1019,7 +1033,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
     for model in &models {
         let model_dir = hw_dir.join(model);
         if !model_dir.is_dir() {
-            panic!("Model kernel directory not found: {}", model_dir.display());
+            panic!("{}", build_diagnose::unknown_model(&hw_dir, &hw, model));
         }
 
         // `[model] kernel_source` — this target compiles another target's
@@ -1365,6 +1379,9 @@ use build_codegen::generate_target_ptx_rs;
 #[path = "build_target.rs"]
 mod build_target;
 use build_target::resolve_compute_target;
+
+#[path = "build_diagnose.rs"]
+mod build_diagnose;
 // Force recompilation 1775404930
 
 /// Every `(module, kernel)` this target's model-specific files drop relative to

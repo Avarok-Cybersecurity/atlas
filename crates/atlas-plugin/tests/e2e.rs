@@ -323,7 +323,7 @@ async fn a_headless_run_persists_a_record_the_history_pane_can_read() {
     // 4. The WHOLE configuration, defaults included — not just the overrides.
     assert_eq!(r.params.len(), specs.len(), "{:?}", r.params);
     assert_eq!(r.params["osl"], "8");
-    assert_eq!(r.params["prompt_mode"], "count", "an untouched default");
+    assert_eq!(r.params["prompt_mode"], "natural", "an untouched default");
     assert_eq!(r.values(&specs).expect("rehydrates"), want_values);
     assert_eq!(r.target(), want_target);
 

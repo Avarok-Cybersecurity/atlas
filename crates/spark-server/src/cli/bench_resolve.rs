@@ -90,13 +90,21 @@ pub(super) fn resolve(
 /// `BENCH.toml` bound. Precedence is explicit and narrow:
 ///
 /// 1. an operator's `--param KEY=…` wins untouched — stated intent;
-/// 2. otherwise a `max` bound on the paired metric replaces the default;
+/// 2. otherwise the paired metric's bound replaces the default: `max` if the
+///    baseline declares one (a ceiling like the agentic Σ-wall), else `min`
+///    (a floor like the BFCL accuracies or the decode-rate floor). A paired
+///    metric carrying BOTH bounds is ambiguous — which one the driver should
+///    self-verdict against cannot be inferred — so that is a loud error, not
+///    a guess;
 /// 3. a variant with no such bound leaves the schema default standing.
 ///
 /// Returns what was applied so the caller can PRINT it — a run whose effective
 /// budget differs from the schema default must say where the number came from.
 /// Every applied value still lands in the record's `params`, so the record
 /// stays self-describing.
+///
+/// ★ `bench_variants::BenchState::choose_variant` (TUI) carries a textually
+/// parallel copy of this bound selection — keep the two in step.
 pub(super) fn apply_threshold_params(
     descriptor: &atlas_plugin::BenchmarkDescriptor,
     specs: &[atlas_plugin::ParamSpec],
@@ -109,8 +117,27 @@ pub(super) fn apply_threshold_params(
         if explicit.iter().any(|(k, _)| k == param) {
             continue;
         }
-        let Some(max) = entry.metrics.get(*metric).and_then(|b| b.max) else {
+        let Some(bound) = entry.metrics.get(*metric) else {
             continue;
+        };
+        // The driver compares RAW values against the bar it is handed, while
+        // the gate judge (`gate::scoring::compare`) allows the bound's noise
+        // band (pass iff value + noise >= min, value - noise <= max). Hand the
+        // driver the noise-adjusted bar, or a run inside the band passes the
+        // gate and FAILs its own verdict — which the record then carries, and
+        // CI requires verdict == PASS (bfcl-subset-echolp, 2026-08-16:
+        // 86.35 vs min 86.50, noise 0.4 — gate pass, self-verdict fail).
+        let noise = bound.noise.unwrap_or(0.0);
+        let derived = match (bound.min, bound.max) {
+            (Some(min), Some(max)) => bail!(
+                "{} couples param {param:?} to metric {metric:?}, whose baseline bound \
+                 declares BOTH min ({min}) and max ({max}) — ambiguous: the driver cannot \
+                 tell which one to self-verdict against. Split the metric or drop a bound.",
+                descriptor.id
+            ),
+            (None, Some(max)) => max + noise,
+            (Some(min), None) => min - noise,
+            (None, None) => continue,
         };
         let spec = specs.iter().find(|s| s.key == *param).ok_or_else(|| {
             anyhow::anyhow!(
@@ -121,11 +148,76 @@ pub(super) fn apply_threshold_params(
         })?;
         // Through the spec's own parser, so the kind (and its bounds) cannot
         // be bypassed by this path any more than by a typed --param.
-        let value = spec.kind.parse(&format!("{max}")).with_context(|| {
-            format!("deriving --param {param} from the baseline's {metric} bound {max}")
+        let value = spec.kind.parse(&format!("{derived}")).with_context(|| {
+            format!("deriving --param {param} from the baseline's {metric} bound {derived}")
         })?;
         values.set(param.to_string(), value);
-        applied.push((param.to_string(), max));
+        applied.push((param.to_string(), derived));
+    }
+    Ok(applied)
+}
+
+/// Apply the selected variant's `[benchmarks.param_overrides]` pins — the
+/// request-side sibling of `serve_overrides`, and the mechanism that lets a
+/// gate's thresholds be calibrated on a NON-default instrument.
+///
+/// The concurrency gate is the motivating case: its committed floors were
+/// measured on the C=1/4/8/16 ladder at isl 512 / osl 320, while the schema
+/// defaults sweep C=1..32 at osl 128 — a gate run on the defaults would score
+/// a different instrument against these thresholds. So the baseline entry pins
+/// the parameters, and self-start applies them here. Precedence mirrors
+/// [`apply_threshold_params`]: an operator's `--param KEY=…` wins untouched;
+/// otherwise the pin replaces the schema default, routed through the spec's
+/// own parser so the kind's bounds cannot be bypassed.
+///
+/// Two loud refusals rather than guesses:
+/// * a pin naming a `threshold_params`-coupled parameter — that value comes
+///   from the paired metric's bound, and a second source here would silently
+///   fight it;
+/// * a pin naming no schema parameter at all — the BENCH.toml and the driver
+///   have drifted, and a silently-dropped pin runs the wrong instrument.
+///
+/// Returns what was applied so the caller can PRINT it; every applied value
+/// also lands in the record's `params` (defaults included), and
+/// `check_record` demands the pin on the record — so a record measured
+/// without the pin cannot read green against the pinned thresholds.
+pub(super) fn apply_param_overrides(
+    descriptor: &atlas_plugin::BenchmarkDescriptor,
+    specs: &[atlas_plugin::ParamSpec],
+    values: &mut atlas_plugin::ParamValues,
+    entry: &gate::ModelBaseline,
+    explicit: &[(String, String)],
+) -> Result<Vec<(String, String)>> {
+    let mut applied = Vec::new();
+    for (key, raw) in &entry.param_overrides {
+        if descriptor.threshold_params.iter().any(|(p, _)| p == key) {
+            bail!(
+                "{}: baseline param override {key:?} names a threshold-coupled parameter — \
+                 its value is derived from the paired metric's bound, and a second source \
+                 here would fight it. Move the number into the metric's bound instead.",
+                descriptor.id
+            );
+        }
+        if explicit.iter().any(|(k, _)| k == key) {
+            continue; // stated intent wins, exactly as for threshold params
+        }
+        let spec = specs
+            .iter()
+            .find(|s| s.key == key.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}: baseline param override {key:?} names no parameter in the schema — \
+                 the BENCH.toml pin and the driver have drifted, and running without it \
+                 would measure a different instrument than the thresholds describe",
+                    descriptor.id
+                )
+            })?;
+        let value = spec
+            .kind
+            .parse(raw)
+            .with_context(|| format!("applying the baseline's param override {key}={raw}"))?;
+        values.set(key.clone(), value);
+        applied.push((key.clone(), raw.clone()));
     }
     Ok(applied)
 }
@@ -166,3 +258,7 @@ pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String,
 #[cfg(test)]
 #[path = "bench_resolve_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_resolve_params_tests.rs"]
+mod params_tests;

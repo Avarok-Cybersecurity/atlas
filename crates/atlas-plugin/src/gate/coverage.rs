@@ -274,10 +274,6 @@ const SSM_POISON_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
-/// What the cross-contamination candidate ignores: gate bookkeeping and the
-/// OTHER benchmark drivers, exactly as a required gate would. Its own driver
-/// directory is deliberately NOT here — a change to the detector re-opens the
-/// detector.
 /// The concurrency curve is a LATENCY/THROUGHPUT measurement of the serving
 /// path, so almost nothing is excusable: scheduler, kernels, batching, KV and
 /// sampling all move it. Only the other benchmark DRIVERS are — a driver is
@@ -309,6 +305,41 @@ const CONCURRENCY_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
+/// The decode-floor gate measures single-user DECODE throughput of the
+/// serving path, so — like the concurrency curve — nothing in the engine is
+/// excusable: kernels, scheduler, batching, KV, sampling and the MTP verify
+/// path all move it, and so does the usage plumbing its accept pin reads.
+/// Only the other benchmark DRIVERS are excluded: client-side request-issuing
+/// code cannot change how fast the server decodes. Its own driver file is
+/// deliberately NOT here — a change to the pins re-opens the pins.
+const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change the server's single-user decode rate",
+    ),
+];
+
+/// What the cross-contamination candidate ignores: gate bookkeeping and the
+/// OTHER benchmark drivers, exactly as a required gate would. Its own driver
+/// directory is deliberately NOT here — a change to the detector re-opens the
+/// detector.
 const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
     GATE_MACHINERY,
     other_driver(
@@ -351,7 +382,7 @@ const VISION_EXCLUDES: &[Exclusion] = &[
 ];
 
 /// The gates whose records must pass, and what each one ignores.
-pub const REQUIRED: [GateCoverage; 8] = [
+pub const REQUIRED: [GateCoverage; 10] = [
     GateCoverage {
         id: "agentic-webserver",
         excludes: AGENTIC_EXCLUDES,
@@ -365,9 +396,10 @@ pub const REQUIRED: [GateCoverage; 8] = [
     // REQUIRED rather than a promotion candidate because it is measured: all
     // three targets ran it on 2026-08-14 and passed 8/8 geometry, 3/3 probes,
     // control held, with IDENTICAL token counts across a dense NVFP4, an
-    // unsloth NVFP4 and an FP8 MoE. Its bounds are absolute and carry no noise
-    // term, so unlike `concurrency-sweep` there is no thresholds-less entry
-    // problem to solve first.
+    // unsloth NVFP4 and an FP8 MoE. Its bounds are absolute and carry no
+    // noise term, so there was never a thresholds-less entry problem to
+    // solve first (the hurdle that kept `concurrency-sweep` a candidate
+    // until its 2026-08-15 calibration).
     GateCoverage {
         id: "vision-fidelity",
         excludes: VISION_EXCLUDES,
@@ -408,6 +440,31 @@ pub const REQUIRED: [GateCoverage; 8] = [
         id: "ssm-state-poisoning-gate",
         excludes: SSM_POISON_EXCLUDES,
     },
+    // ── Promoted from PROMOTION_CANDIDATES 2026-08-15 ──────────────────────
+    //
+    // Both promotions' calibration preconditions are met, on the FIXED
+    // instruments the gates now pin (the maintainer wants the concurrency
+    // gate MANDATORY, not accruing debt):
+    //
+    // * `decode-floor`: the promotion ruling demanded a >=10-run sigma
+    //   calibration so the bar comes from measured run-to-run noise. Done —
+    //   12 runs across 4 driver passes (2026-08-15, dgx1), every run
+    //   28.0–28.1 tok/s, mean 28.03, sigma ~0.05; the BENCH.toml floor
+    //   (27.0, noise 0.5) is set from that set, not from three points.
+    // * `concurrency-sweep`: it could not be REQUIRED while its entries were
+    //   thresholds-less (check_record refuses a thresholds-less PASS). The
+    //   dense Qwen3.8-27B entry now carries measured floors from an n=3
+    //   ladder on the fixed instrument (C=1/4/8/16, isl 512, osl 320, zero
+    //   vacuous cells), and the entry's param_overrides pin that instrument
+    //   so a gate run reproduces it.
+    GateCoverage {
+        id: "decode-floor",
+        excludes: DECODE_FLOOR_EXCLUDES,
+    },
+    GateCoverage {
+        id: "concurrency-sweep",
+        excludes: CONCURRENCY_EXCLUDES,
+    },
 ];
 
 /// Registered benchmarks that are deliberately **not** gates, each with the
@@ -415,9 +472,9 @@ pub const REQUIRED: [GateCoverage; 8] = [
 /// `bfcl-full` gate?" should find the answer here, not infer it from absence.
 /// Gates that are NOT required **yet**, but are on a declared promotion path.
 ///
-/// ★ The difference from [`NOT_REQUIRED`] is the whole point. Those three are
-/// permanently excused, with a reason: `bfcl-full` duplicates cheaper coverage,
-/// `concurrency-sweep` has no thresholds, `serve-matrix` measures breadth.
+/// ★ The difference from [`NOT_REQUIRED`] is the whole point. Its permanently
+/// excused entries carry a reason: `bfcl-full` duplicates cheaper coverage,
+/// `quick-speed-bench` is a measurement tool, `serve-matrix` measures breadth.
 /// Nothing is owed for them, ever.
 ///
 /// A promotion candidate is different: it is a gate we intend to require once
@@ -438,53 +495,28 @@ pub const REQUIRED: [GateCoverage; 8] = [
 /// candidate naming an unregistered id would be a debt row nobody can ever
 /// discharge, which is worse than no row.
 /// `every_promotion_candidate_is_a_registered_benchmark` pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
-    GateCoverage {
-        id: "cross-contamination",
-        excludes: CONTAMINATION_EXCLUDES,
-    },
-    // Promoted out of NOT_REQUIRED 2026-08-11. It was excused as "an
-    // exploratory table with no baseline thresholds" — true when written, and
-    // the reason it cannot go straight to REQUIRED: `check_record` refuses to
-    // let a thresholds-less entry read as PASS ("there is nothing here for
-    // this run to have passed"), so requiring it today would produce a gate no
-    // PR could ever clear.
-    //
-    // Candidate rather than excused, because the concurrency curve is not
-    // exploratory any more: the C=1..32 ladder is the artifact the GB10
-    // campaign is argued from, and C=32 is where time-to-answer INVERTS in
-    // Atlas's favour (-4.47% vs vLLM). A change that quietly costs 10% at
-    // C=32 currently merges with nothing measured and nothing said — the
-    // "listing only what was gated silently converts ungated into unaffected"
-    // shape this list exists to prevent.
-    //
-    // Promotion to REQUIRED needs thresholds, and thresholds need a measured
-    // run on main. This lands the debt row first so the gap is visible while
-    // that run is collected.
-    GateCoverage {
-        id: "concurrency-sweep",
-        excludes: CONCURRENCY_EXCLUDES,
-    },
-];
+///
+/// ★ The list is the PIPELINE, not a parking lot: `concurrency-sweep` and
+/// `decode-floor` both graduated to [`REQUIRED`] on 2026-08-15 once their
+/// calibration preconditions were met (see the comments on their REQUIRED
+/// entries). Their old candidate entries are gone from here because a gate
+/// cannot be owed and excused at once — the test above pins that.
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
+    id: "cross-contamination",
+    excludes: CONTAMINATION_EXCLUDES,
+}];
 
-pub const NOT_REQUIRED: [(&str, &str); 5] = [
+pub const NOT_REQUIRED: [(&str, &str); 4] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
-         deliberately never a gate: the seven required gates already cost ~4.5 h per PR, and \
+         deliberately never a gate: the required gates already cost hours per PR, and \
          its warm-path numbers (primed prefix cache + SSM snapshot) are not regression evidence",
     ),
     (
         "bfcl-full",
         "the unsampled ~3600-sample draw; the two subset gates cover the same code at a \
          fraction of the GPU time, and a full run would dominate every PR",
-    ),
-    (
-        "concurrency-sweep",
-        "not required YET: a promotion candidate (see PROMOTION_CANDIDATES). It cannot be \
-         REQUIRED until it has measured thresholds — check_record refuses to let a \
-         thresholds-less entry read as PASS, so requiring it today would be a gate no PR \
-         could clear",
     ),
     (
         "serve-matrix",

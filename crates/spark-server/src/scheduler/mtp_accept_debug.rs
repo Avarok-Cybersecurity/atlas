@@ -137,3 +137,155 @@ pub(super) fn record(n: usize, k_drafts: usize, d1_match: bool, num_accepted: us
         }
     }
 }
+
+/// Per-request view of the same quantities [`record`] accumulates
+/// (`p1`, `mean_na`, `tok_step = 1 + mean_na`), plus serial-vs-MTP step
+/// fraction and depth-regime re-probe count for the Done-line.
+/// Not a new telemetry product — the request-finished line is the sink.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RequestAccept {
+    serial_steps: u64,
+    mtp_steps: u64,
+    d1: u64,
+    na: u64,
+    pub regime_reprobes: u64,
+}
+
+impl RequestAccept {
+    pub fn record_serial(&mut self) {
+        self.serial_steps = self.serial_steps.saturating_add(1);
+    }
+
+    /// `emitted` is tokens committed this verify (1 + accepted drafts).
+    /// `d1_match` agrees with `emitted > 1` today (see [`record`]).
+    pub fn record_verify_emitted(&mut self, emitted: usize) {
+        self.mtp_steps = self.mtp_steps.saturating_add(1);
+        let accepted = emitted.saturating_sub(1) as u64;
+        self.na = self.na.saturating_add(accepted);
+        if accepted > 0 {
+            self.d1 = self.d1.saturating_add(1);
+        }
+    }
+
+    /// Total draft tokens ACCEPTED for this request — the per-request quantity
+    /// `usage.completion_tokens_details.accepted_prediction_tokens` reports.
+    /// Raw count, not a rate: the wire field's meaning is "predicted tokens
+    /// that matched generation", and `na` is exactly that sum.
+    pub fn accepted_total(&self) -> u64 {
+        self.na
+    }
+
+    pub fn note_regime_reprobe(&mut self) {
+        self.regime_reprobes = self.regime_reprobes.saturating_add(1);
+    }
+
+    fn total_steps(&self) -> u64 {
+        self.serial_steps.saturating_add(self.mtp_steps)
+    }
+
+    pub fn serial_frac(&self) -> f64 {
+        let n = self.total_steps();
+        if n == 0 {
+            0.0
+        } else {
+            self.serial_steps as f64 / n as f64
+        }
+    }
+
+    pub fn mtp_frac(&self) -> f64 {
+        let n = self.total_steps();
+        if n == 0 {
+            0.0
+        } else {
+            self.mtp_steps as f64 / n as f64
+        }
+    }
+
+    pub fn p1(&self) -> f64 {
+        if self.mtp_steps == 0 {
+            0.0
+        } else {
+            self.d1 as f64 / self.mtp_steps as f64
+        }
+    }
+
+    pub fn mean_na(&self) -> f64 {
+        if self.mtp_steps == 0 {
+            0.0
+        } else {
+            self.na as f64 / self.mtp_steps as f64
+        }
+    }
+
+    pub fn tok_step(&self) -> f64 {
+        1.0 + self.mean_na()
+    }
+
+    pub fn done_suffix(&self) -> String {
+        format!(
+            "serial={:.2} mtp={:.2} p1={:.3} mean_na={:.3} tok_step={:.3} regime_reprobes={}",
+            self.serial_frac(),
+            self.mtp_frac(),
+            self.p1(),
+            self.mean_na(),
+            self.tok_step(),
+            self.regime_reprobes
+        )
+    }
+
+    pub fn log_done(n: usize, reason: &str, tps: f64, ttft_ms: f64, acct: &Self) {
+        tracing::info!(
+            "Done: {n} tokens ({reason}) {tps:.1} tok/s, TTFT={ttft_ms:.1}ms, {}",
+            acct.done_suffix()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_suffix_is_zeros() {
+        let a = RequestAccept::default();
+        assert_eq!(
+            a.done_suffix(),
+            "serial=0.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0"
+        );
+    }
+
+    #[test]
+    fn thinking_serial_run_is_all_serial() {
+        let mut a = RequestAccept::default();
+        for _ in 0..300 {
+            a.record_serial();
+        }
+        assert!((a.serial_frac() - 1.0).abs() < 1e-9);
+        assert_eq!(a.mean_na(), 0.0);
+        assert_eq!(a.tok_step(), 1.0);
+        assert!(a.done_suffix().contains("serial=1.00"));
+        assert!(a.done_suffix().contains("mtp=0.00"));
+    }
+
+    #[test]
+    fn mtp_run_reports_p1_mean_na_tok_step() {
+        let mut a = RequestAccept::default();
+        for _ in 0..7 {
+            a.record_verify_emitted(2); // 1 draft, d1 match
+        }
+        for _ in 0..3 {
+            a.record_verify_emitted(1); // reject
+        }
+        assert!((a.mtp_frac() - 1.0).abs() < 1e-9);
+        assert!((a.p1() - 0.7).abs() < 1e-9);
+        assert!((a.mean_na() - 0.7).abs() < 1e-9);
+        // 7 verifies each accepting 1 draft: the per-request total the usage
+        // field reports is the raw sum, not a rate.
+        assert_eq!(a.accepted_total(), 7);
+        assert!((a.tok_step() - 1.7).abs() < 1e-9);
+        a.note_regime_reprobe();
+        assert!(a.done_suffix().contains("mean_na=0.700"));
+        assert!(a.done_suffix().contains("tok_step=1.700"));
+        assert!(a.done_suffix().contains("regime_reprobes=1"));
+    }
+}

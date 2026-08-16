@@ -113,12 +113,10 @@ pub(crate) fn prepare_chat_prompt(
     if !thinking_directive.is_explicit() {
         thinking_directive = state.default_thinking;
     }
-    let (enable_thinking, thinking_budget) = thinking::resolve_thinking(
-        state,
-        thinking_directive,
-        req.max_tokens as u32,
-        tools_active,
-    );
+    let gen_max =
+        thinking::generation_max_tokens(req.max_tokens, tools_active, state.tool_max_tokens);
+    let (enable_thinking, thinking_budget) =
+        thinking::resolve_thinking(state, thinking_directive, gen_max as u32, tools_active);
     let reasoning_effort = effective_reasoning_effort(
         req.reasoning_effort,
         state.default_reasoning_effort,

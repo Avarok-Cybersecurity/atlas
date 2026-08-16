@@ -79,7 +79,9 @@ takes the grouped-GEMM arm, and a regression can hit one without touching \
 the other. A curve measured on one model cannot speak for the other.
 
 NO [benchmarks.metrics] TABLE ON PURPOSE. concurrency-sweep is a promotion \
-candidate, not a required gate, and it has never been run on main at C=32. \
+candidate HISTORICALLY; since 2026-08-15 concurrency-sweep IS REQUIRED, with \
+its measured subject on qwen3.8-27b — this 3.6 entry stays an unmeasured \
+declaration. It has never been run on main at C=32. \
 A guessed threshold a run could clear would report PASS for something nobody \
 measured — the exact failure this file's header warns about. Thresholds land \
 here after the first measured run, and that run is what promotes the bench \

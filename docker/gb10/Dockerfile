@@ -34,6 +34,11 @@ COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
+# quick-speed-bench (atlas-plugin) include_str!'s its ISL prompt fixtures from
+# tests/fixtures — without this line the release build fails in-container
+# ("couldn't read ../../tests/fixtures/bench_prompt_128.txt") while every
+# full-tree local build succeeds. Copy just the fixtures, not all of tests/.
+COPY tests/fixtures/ tests/fixtures/
 
 ENV ATLAS_TARGET_HW=gb10
 ENV ATLAS_TARGET_MODEL=*

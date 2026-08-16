@@ -245,9 +245,26 @@ impl Benchmark for VideoFidelity {
                  enough that a reply is not truncated mid-sequence. Keep it well above the \
                  model's thinking budget if you re-enable thinking, or a reasoning block \
                  consumes the whole budget and returns empty content that reads as a video \
-                 failure and is not one.",
+                 failure and is not one. The same trap has a thinking-OFF form, which is \
+                 why the default is 320 and not the 120 it was: a cell that sends TWO \
+                 media items can provoke a preamble the single-item cells never see, and \
+                 a budget that truncates the preamble truncates the answer with it.",
                 ParamKind::Int { min: 16, max: 2048 },
-                ParamValue::Int(120),
+                // 320, from measurement rather than taste. On qwen3.8-27B-NVFP4 the
+                // video-before-image reply needs 153 completion tokens and returned
+                // `finish_reason=length` at the old 120, so the 4th color could fall
+                // outside the budget and the cell FAILED as "wanted [red, green, blue,
+                // yellow], got [red, green, blue]" — which reads as a model fidelity
+                // limit and is not one. The identical video-ONLY control answers in 8
+                // tokens: with a second media item present the model stops obeying the
+                // prompt's "Only color names" and writes a preamble first. Whether the
+                // list survived came down to where that preamble happened to end, so
+                // the cell passed on one serve config and failed on another (2026-08-15;
+                // a one-variable A/B also cleared the non_thinking preset's
+                // presence_penalty=1.5 as the cause — pp=1.5 and pp=0 answer alike).
+                // Raising the cap cannot slow the well-behaved cells: every one of them
+                // stops at EOS far below even the old ceiling.
+                ParamValue::Int(320),
             ),
             ParamSpec::new(
                 "request_timeout_s",

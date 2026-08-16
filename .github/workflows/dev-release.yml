@@ -1,0 +1,222 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Rolling dev releases from `main`.
+#
+# The problem this solves: the release matrix has been building a working
+# `spark` for nine (OS, arch, GPU) combinations for months, and NOT ONE of
+# them was ever downloadable. `release.yml` publishes only on
+# workflow_dispatch, and no dispatch has ever been run with dry_run=false, so
+# the repo's Releases page is empty. Everything a PR builds is uploaded as an
+# Actions artifact, which expires after one day (ci.yml passes
+# retention_days: 1) and cannot be downloaded without a GitHub login at all.
+#
+# The practical effect was that "how do I test it?" had no good answer for
+# anyone without a full CUDA/HIP/ROCm toolchain and half an hour — even
+# though a binary for their exact platform had already been built and thrown
+# away. This workflow keeps it.
+#
+# Modelled on llama.cpp, which publishes a numbered build off master
+# (`b10423`) many times a day, one zip per backend. Same idea here: the tag
+# is `b<commit-count>`, the assets are the SAME per-platform packages
+# `release-build.yml` already produces, and nothing about the curated semver
+# path in `release.yml` changes.
+#
+# Deliberately NOT a replacement for `release.yml`:
+#   - every release here is a PRERELEASE, so it never becomes "Latest" and
+#     never shadows a real semver release on the Releases page
+#   - no Cargo.toml version bump, no commit pushed back to main
+#   - the tag is `bNNNN`, which cannot collide with `vX.Y.Z`
+name: Dev release
+
+on:
+  # workflow_run, NOT push. CI already runs on every push to main, so a
+  # `push` trigger here would either duplicate the whole test suite or skip
+  # the gate entirely and publish binaries from a main that does not pass its
+  # own checks. Chaining off CI's verdict costs nothing and gates properly.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # Manual escape hatch, for the same reason ci.yml has one: during the
+  # 2026-08-06 Actions incident webhook triggers were throttled and no runs
+  # were created at all.
+  #
+  # Deliberately takes NO `ref` input. An arbitrary ref would flow into
+  # release-build.yml's checkout, which runs Swatinem/rust-cache in the
+  # default-branch context — letting anyone who can dispatch this workflow
+  # poison the cache that every later main build restores from. CodeQL
+  # (actions/cache-poisoning) flagged exactly that path when this workflow
+  # first had the input. This hatch only ever needs to build main, which is
+  # what it does.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # NOT cancel-in-progress. Two runs never contend for a tag (the build
+  # number is derived from the commit), and cancelling a run midway through
+  # uploading assets leaves a published release with a partial set of
+  # binaries — worse than spending the runner minutes.
+  group: dev-release-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Decide whether to build at all, and what to call the result. Cheap, so
+  # every reason to skip is discovered before the matrix starts.
+  # ---------------------------------------------------------------------
+  prepare:
+    name: decide + number the build
+    runs-on: ubuntu-24.04
+    # Never publish from a fork: a fork running this would try to create a
+    # release on its own repo with our tag scheme, and fail confusingly.
+    if: github.repository == 'Avarok-Cybersecurity/atlas'
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      build_number: ${{ steps.decide.outputs.build_number }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run runs against the DEFAULT branch's workflow files but
+          # must build the commit CI actually validated, not whatever main
+          # points at now — those differ as soon as a second PR merges while
+          # this run is queued.
+          # workflow_run: the commit CI actually validated. Manual dispatch:
+          # main, and only ever main — see the trigger comment above.
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+          # rev-list --count needs real history. depth-1 would report 1.
+          fetch-depth: 0
+
+      - name: Decide
+        id: decide
+        env:
+          # workflow_run gives the upstream verdict; a manual dispatch has no
+          # upstream run and is treated as an explicit "yes".
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+          # A monotonically increasing integer that is stable for a given
+          # commit and needs no state stored anywhere. This is the same
+          # quantity llama.cpp's BUILD_NUMBER tracks.
+          n="$(git rev-list --count HEAD)"
+          echo "build_number=b$n" >> "$GITHUB_OUTPUT"
+
+          skip() { echo "::notice::skipping dev release — $1"; \
+                   echo "should_build=false" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          if [ "$EVENT" = workflow_run ] && [ "$CI_CONCLUSION" != success ]; then
+            skip "CI concluded '$CI_CONCLUSION'"
+          fi
+
+          # Opt-out escape hatch, llama.cpp's convention. Lets a docs-only or
+          # obviously-broken merge land without minting a build.
+          msg="$(git log -1 --pretty=%B)"
+          case "$msg" in
+            *'[no release]'*) skip "commit message contains [no release]" ;;
+          esac
+
+          # Re-runs of CI on an already-published commit must not try to
+          # recreate the tag: `gh release create` fails on an existing tag,
+          # which would turn a harmless re-run red.
+          if git ls-remote --exit-code --tags origin "refs/tags/b$n" >/dev/null 2>&1; then
+            skip "tag b$n already published"
+          fi
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "will publish b$n from $sha"
+
+  # ---------------------------------------------------------------------
+  # The SAME reusable matrix every PR dry-runs and every semver release
+  # uses. If this ever diverges from what a PR validated, that is a bug.
+  # ---------------------------------------------------------------------
+  build:
+    name: build
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ needs.prepare.outputs.build_number }}
+      ref: ${{ needs.prepare.outputs.sha }}
+      pr_mode: false
+      # Short: the assets live on the Release from here on, so the Actions
+      # artifact is only a handoff between two jobs in this run.
+      retention_days: 7
+      publishing: true
+
+  publish:
+    name: publish b-release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      # The only job in this workflow that can write anything.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Refuse to publish an empty release
+        run: |
+          set -euo pipefail
+          # Every GPU row is `experimental: true`, i.e. continue-on-error, so
+          # the matrix can go green with binaries missing. A release with no
+          # binaries is worse than no release.
+          count=$(find dist -type f ! -name '*.sha256' | wc -l)
+          [ "$count" -gt 0 ] || { echo "::error::no artifacts to publish"; exit 1; }
+          echo "publishing $count artifact(s)"
+          find dist -type f | sort
+
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: ${{ needs.prepare.outputs.build_number }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # --target creates the tag as part of creating the release, so this
+          # job needs no git push and no tag step that could half-apply.
+          # --prerelease keeps `bNNNN` out of the "Latest release" slot that
+          # belongs to semver releases from release.yml.
+          # Every claim in these notes has to survive the fact that CI has no
+          # GPU of any vendor. "It built" is the only thing this run proves,
+          # so it is the only thing the notes are allowed to say.
+          {
+            echo "Rolling development build from \`main\` @ \`${SHA:0:12}\`."
+            echo
+            echo "**Not a stable release, and not a tested one.** Every GPU target"
+            echo "in the matrix is marked experimental and is *built* on a hosted"
+            echo "runner that has no GPU of that vendor. These binaries compile and"
+            echo "link; whether they run on your hardware is exactly what has not"
+            echo "been checked here."
+            echo
+            echo "One archive per platform, named"
+            echo "\`spark-${BUILD}-<os>-<arch>-<vendor>-<toolchain>\`, each with a"
+            echo "matching \`.sha256\`. Verify before running:"
+            echo
+            echo '```'
+            echo "sha256sum -c spark-${BUILD}-<platform>.<ext>.sha256"
+            echo '```'
+            echo
+            echo "Per-target caveats — including which ones are known *not* to run"
+            echo "yet — are recorded in \`.github/release-matrix.json\` under each"
+            echo "entry's \`note\` field."
+          } > notes.md
+          gh release create "$BUILD" \
+            --title "Atlas $BUILD" \
+            --notes-file notes.md \
+            --prerelease \
+            --target "$SHA" \
+            dist/*
+          echo "published: $(gh release view "$BUILD" --json url --jq .url)"

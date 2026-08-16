@@ -276,6 +276,7 @@ pub(crate) async fn run_chat_stream(
                 decode_time_ms,
                 reasoning_tokens,
                 cached_prompt_tokens,
+                accepted_prediction_tokens,
                 guard_stop,
             } => {
                 // ★ `.or()`, NOT `=`. This field began life as a scheduler-owned
@@ -301,6 +302,7 @@ pub(crate) async fn run_chat_stream(
                     decode_time_ms,
                     reasoning_tokens,
                     cached_prompt_tokens,
+                    accepted_prediction_tokens,
                 )
             }
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),

@@ -58,6 +58,23 @@ impl Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        // PER-ROW FP8 from the checkpoint (`ATLAS_FP8_ROWWISE=1`), dequantised
+        // once to BF16 — see the matching arm in `trait_prefill_proj.rs` for
+        // why BF16 and not the row-wise FP8 GEMM. First because it is the only
+        // arm that never re-quantises.
+        if let Some(ref fp8w) = self.out_proj_fp8w_rowwise {
+            return ops::cublas_bf16_proj(
+                ctx.gpu,
+                ctx.derived,
+                normed_out_buf,
+                fp8w,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            );
+        }
         if ctx.dispatch.cutlass_nvfp4_ssm_out
             && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
         {

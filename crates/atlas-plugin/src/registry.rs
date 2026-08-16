@@ -4,8 +4,8 @@
 
 use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{
-    agentic, bfcl, concurrency, contamination, quick_speed, serve_matrix, ssm_poison, ttft, video,
-    vision,
+    agentic, bfcl, concurrency, contamination, decode_floor, quick_speed, serve_matrix, ssm_poison,
+    ttft, video, vision,
 };
 
 /// Every benchmark, list order. Cheapest and most-run first.
@@ -19,6 +19,11 @@ const ALL: &[&BenchmarkDescriptor] = &[
     // design: no baseline, no thresholds, excused from the PR gate set in
     // `gate::coverage::NOT_REQUIRED`.
     &quick_speed::DESCRIPTOR,
+    // The gate-shaped counterpart of the probe above: same cost class
+    // (~3–6 min), every knob pinned, judged against a BENCH.toml floor.
+    // REQUIRED (`gate::coverage::REQUIRED`) since 2026-08-15, promoted on
+    // the 12-run sigma calibration of the floor.
+    &decode_floor::DESCRIPTOR,
     &concurrency::DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,

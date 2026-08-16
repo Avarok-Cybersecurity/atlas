@@ -46,6 +46,17 @@ jobs:
           # split. Adding to this list requires a rationale comment AND
           # a tracking issue.
           allow_list=(
+            # 2026-08-15 concurrency cycle (#525): grew past 500 in this stack's
+            # instrumentation work. Reduce when feasible.
+            "crates/atlas-plugin/src/benchmarks/concurrency.rs"
+            "crates/atlas-plugin/src/gate/record.rs"
+            "crates/spark-server/src/scheduler/lifecycle.rs"
+            "crates/spark-server/src/scheduler/mtp_gate.rs"
+            # 2026-08-16: 510 LoC — crossed 500 by the regression-pin tests
+            # for the serial-in-think dispatch fix (2c80bf2f7). Splitting a
+            # test module mid-campaign would invalidate the night's gate
+            # records (any crates/ diff does); split next cycle.
+            "crates/spark-server/src/scheduler/mtp_gate/tests.rs"
             # 2026-08-15 stack merge (#516 video + #514 batch6 + reasoning-effort):
             # these crossed 500 in the merged stacks; splitting them mid-campaign
             # was judged riskier than shipping. Reduce when feasible.

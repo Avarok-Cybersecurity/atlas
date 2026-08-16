@@ -12,6 +12,7 @@ pub mod baseline;
 pub mod bfcl;
 pub mod concurrency;
 pub mod contamination;
+pub mod decode_floor;
 pub mod media_integrity;
 pub mod quick_speed;
 pub mod serve_matrix;

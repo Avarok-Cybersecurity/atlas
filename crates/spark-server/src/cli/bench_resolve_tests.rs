@@ -26,6 +26,8 @@ fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
                 label: String::new(),
                 note: String::new(),
                 metrics: BTreeMap::new(),
+                serve_overrides: BTreeMap::new(),
+                param_overrides: BTreeMap::new(),
             },
         );
     }
@@ -150,6 +152,8 @@ fn two_variant_baseline() -> GateBaseline {
             label: "35B MoE flagship".to_string(),
             note: String::new(),
             metrics: BTreeMap::from([("sum_wall_s".to_string(), max_bound(1000.0))]),
+            serve_overrides: BTreeMap::new(),
+            param_overrides: BTreeMap::new(),
         },
     );
     models.insert(
@@ -159,6 +163,8 @@ fn two_variant_baseline() -> GateBaseline {
             label: "dense 27B".to_string(),
             note: String::new(),
             metrics: BTreeMap::from([("sum_wall_s".to_string(), max_bound(2500.0))]),
+            serve_overrides: BTreeMap::new(),
+            param_overrides: BTreeMap::new(),
         },
     );
     GateBaseline {
@@ -216,6 +222,123 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
         apply_threshold_params(descriptor, &specs, &mut values, &bare, &[]).expect("applies");
     assert!(applied.is_empty());
     assert_eq!(values.float("wall_budget_s").unwrap(), 1000.0);
+}
+
+/// The `min` arm, through the REAL bfcl-subset wiring: a floor metric (BFCL's
+/// accuracies carry `min` bounds, no `max`) substitutes the variant's floor
+/// into the paired verdict param — this is what lets a non-MLPerf checkpoint
+/// that clears its own BENCH.toml bars get the PASS run verdict the gate
+/// machinery requires (review C1).
+#[test]
+fn threshold_params_substitute_a_min_bound_when_the_metric_is_a_floor() {
+    let descriptor = atlas_plugin::registry::find("bfcl-subset").expect("registered");
+    let specs = descriptor.build().parameters();
+    let mut entry =
+        two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
+    entry.metrics = BTreeMap::from([
+        ("overall_accuracy".to_string(), min_bound(83.82)),
+        ("normalized_single_turn_score".to_string(), min_bound(83.72)),
+    ]);
+    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let applied =
+        apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
+    assert_eq!(
+        applied,
+        vec![
+            ("min_overall".to_string(), 83.82),
+            ("min_normalized".to_string(), 83.72),
+        ]
+    );
+    assert_eq!(values.float("min_overall").unwrap(), 83.82);
+    assert_eq!(values.float("min_normalized").unwrap(), 83.72);
+}
+
+/// The driver self-verdicts on RAW values; the gate judge allows the bound's
+/// noise band. The bar handed to the driver must therefore be the
+/// noise-adjusted one (min - noise, max + noise), or a run inside the band
+/// passes `gate::scoring::compare` and still records a FAIL verdict — the
+/// exact split the 2026-08-16 echolp record hit (86.35 vs min 86.50,
+/// noise 0.4).
+#[test]
+fn threshold_params_hand_the_driver_the_noise_adjusted_bar() {
+    let descriptor = atlas_plugin::registry::find("bfcl-subset").expect("registered");
+    let specs = descriptor.build().parameters();
+    let mut entry =
+        two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
+    entry.metrics = BTreeMap::from([
+        (
+            "overall_accuracy".to_string(),
+            Bound {
+                min: Some(86.50),
+                max: None,
+                noise: Some(0.4),
+            },
+        ),
+        (
+            "normalized_single_turn_score".to_string(),
+            Bound {
+                min: Some(86.90),
+                max: None,
+                noise: Some(0.4),
+            },
+        ),
+    ]);
+    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let applied =
+        apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
+    assert_eq!(
+        applied,
+        vec![
+            ("min_overall".to_string(), 86.10),
+            ("min_normalized".to_string(), 86.50),
+        ]
+    );
+    let sample = 86.35;
+    assert!(
+        sample >= values.float("min_overall").unwrap(),
+        "a run the gate judge passes must clear the driver's bar too"
+    );
+}
+
+/// A paired metric declaring BOTH bounds is ambiguous — which one the driver
+/// should self-verdict against cannot be inferred — so the substitution errors
+/// loudly instead of guessing a direction.
+#[test]
+fn a_paired_metric_with_both_bounds_is_a_loud_error_not_a_guess() {
+    let descriptor = atlas_plugin::registry::find("agentic-webserver").expect("registered");
+    let specs = descriptor.build().parameters();
+    let mut entry =
+        two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
+    entry.metrics = BTreeMap::from([(
+        "sum_wall_s".to_string(),
+        Bound {
+            min: Some(900.0),
+            max: Some(2500.0),
+            noise: None,
+        },
+    )]);
+    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let err = apply_threshold_params(descriptor, &specs, &mut values, &entry, &[])
+        .expect_err("ambiguous bounds must not be resolved silently");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("BOTH min"), "{msg}");
+    assert!(msg.contains("sum_wall_s"), "{msg}");
+    // An explicit --param still wins over the ambiguity — stated intent needs
+    // no bound at all.
+    let explicit = vec![("wall_budget_s".to_string(), "1234".to_string())];
+    let mut values =
+        atlas_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")]).unwrap();
+    let applied = apply_threshold_params(descriptor, &specs, &mut values, &entry, &explicit)
+        .expect("explicit param sidesteps the ambiguous bound");
+    assert!(applied.is_empty());
+}
+
+fn min_bound(min: f64) -> Bound {
+    Bound {
+        min: Some(min),
+        max: None,
+        noise: None,
+    }
 }
 
 /// The ordinary case: KEY=VALUE reaches the recipe as an override.
@@ -313,4 +436,28 @@ fn a_repeated_key_takes_the_last_value() {
 #[test]
 fn no_overrides_is_empty_not_an_error() {
     assert!(parse_serve_overrides(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn resolve_carries_baseline_serve_overrides() {
+    // The pin travels inside the resolved entry, verbatim — `serve_for` reads
+    // it from there, so a dropped clone here would silently serve the recipe's
+    // default pool while the record claimed the pinned one.
+    let mut b = baseline(&[("gb10", "m", Some("r"))]);
+    b.hardware
+        .get_mut("gb10")
+        .unwrap()
+        .models
+        .get_mut("m")
+        .unwrap()
+        .serve_overrides
+        .insert("ssm_cache_slots".to_string(), "256".to_string());
+    let r = resolve(&b, "bfcl-subset", None, None).expect("resolved");
+    assert_eq!(
+        r.entry
+            .serve_overrides
+            .get("ssm_cache_slots")
+            .map(String::as_str),
+        Some("256")
+    );
 }

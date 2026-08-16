@@ -76,10 +76,14 @@ pub struct CompletionTokensDetails {
     pub reasoning_tokens: usize,
     /// Audio-output tokens. Always 0 on Atlas until audio modality lands.
     pub audio_tokens: usize,
-    /// Predicted-output (`prediction`) tokens that matched generation.
-    /// Always 0 on Atlas — we don't implement predicted outputs yet.
+    /// Predicted tokens that matched generation. Atlas has no client-supplied
+    /// `prediction` feature; this reports the SPECULATIVE-DECODE draft tokens
+    /// the MTP verify step accepted for this request — the same "predicted
+    /// tokens that matched generation" meaning, with the server as the
+    /// predictor. 0 when speculation is off or nothing was accepted.
     pub accepted_prediction_tokens: usize,
-    /// Predicted-output tokens that were rejected. Always 0 on Atlas.
+    /// Predicted-output tokens that were rejected. Always 0 on Atlas —
+    /// rejected MTP drafts are not client-billable and are not reported here.
     pub rejected_prediction_tokens: usize,
 }
 

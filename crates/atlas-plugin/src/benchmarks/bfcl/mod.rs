@@ -40,7 +40,10 @@ use crate::result::{BenchmarkResult, LogLine, RunStatus};
 
 use draw::DrawSpec;
 
-pub use report::{MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL};
+pub use report::{
+    MLPERF_FLOOR_CHECKPOINTS, MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL,
+    is_mlperf_submission_checkpoint,
+};
 
 mod descriptors;
 pub use descriptors::{
@@ -156,6 +159,14 @@ pub struct Bfcl {
     request_timeout: Duration,
     started: Option<Instant>,
     tool_call_samples: usize,
+    /// The served model, captured at `load()` from the target endpoint.
+    /// Decides whether the MLPerf floor VERDICT applies (`report.rs`) — the
+    /// floor rides on the Qwen3.6-27B submission checkpoints and does not
+    /// transfer to other weights (BENCH.toml doctrine).
+    target_model: Option<String>,
+    /// Baseline floors for non-MLPerf checkpoints (`report::BaselineMins`) —
+    /// gate-filled from the variant's BENCH.toml; both 0.0 = info verdict.
+    baseline_mins: report::BaselineMins,
 }
 
 impl Bfcl {
@@ -176,6 +187,8 @@ impl Bfcl {
             request_timeout: Duration::from_secs(600),
             started: None,
             tool_call_samples: 0,
+            target_model: None,
+            baseline_mins: report::BaselineMins::default(),
         }
     }
 
@@ -270,6 +283,7 @@ impl Plugin for Bfcl {
 
     fn load(&mut self, handle: PluginHandle) -> impl Future<Output = Result<()>> + Send {
         self.started = Some(Instant::now());
+        self.target_model = Some(handle.target().model.clone());
         self.handle = Some(handle.clone());
         async move {
             let artifacts = provision::ensure(handle.artifacts(), &handle).await?;
@@ -286,7 +300,7 @@ impl Benchmark for Bfcl {
 
     fn parameters(&self) -> Vec<ParamSpec> {
         let v = self.variant;
-        vec![
+        let mut specs = vec![
             ParamSpec::new(
                 "non_live_pct",
                 "non_live %",
@@ -351,7 +365,9 @@ impl Benchmark for Bfcl {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
-        ]
+        ];
+        specs.extend(report::BaselineMins::specs());
+        specs
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
@@ -375,6 +391,7 @@ impl Benchmark for Bfcl {
         self.max_new_tokens = values.usize("max_new_tokens")?;
         self.temperature = values.float("temperature")?;
         self.request_timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.baseline_mins = report::BaselineMins::from_values(values)?;
         self.phase = Phase::Provision;
         self.cursor = 0;
         self.responses.clear();

@@ -148,3 +148,78 @@ fn a_torn_down_server_is_not_torn_down_twice() {
         assert!(matches!(waited, Ok(Err(_))), "{waited:?}");
     });
 }
+
+// ── Baseline-declared serve pins ──
+
+/// Baseline pins land on the resolved serve, and a CLI clash takes the
+/// operator: `[benchmarks.serve_overrides]` states what the gate needs, but an
+/// operator typing `--serve-override` is stating intent for THIS run. Both end
+/// up disclosed in the record either way, so precedence never hides anything.
+#[test]
+fn baseline_pins_are_applied_and_the_operator_wins_a_clash() {
+    let baseline = BTreeMap::from([
+        ("ssm_cache_slots".to_string(), "256".to_string()),
+        ("kv_cache_dtype".to_string(), "bf16".to_string()),
+    ]);
+    let requested = BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]);
+    let merged = atlas_plugin::gate::merge_serve_overrides(baseline, requested);
+    assert_eq!(
+        merged.get("ssm_cache_slots").map(String::as_str),
+        Some("256"),
+        "an unclashed pin survives the merge"
+    );
+    assert_eq!(
+        merged.get("kv_cache_dtype").map(String::as_str),
+        Some("fp8"),
+        "the operator's value wins the clash"
+    );
+}
+
+/// ★ The 2026-08-15 repro, end to end over the REAL tree: a serve pin the
+/// BASELINE declares — with NO `--serve-override` typed — must reach the
+/// rendered serve args. The concurrency gate's pin was committed ABOVE its own
+/// `[[benchmarks]]` header, so TOML attached it to the preceding decode-floor
+/// entry; the gate then served the recipe's `max_batch: 1` (C=1..16 all
+/// ~19 tok/s, serial by construction) and printed no OVERRIDES disclosure,
+/// because `serve_for`'s warn only fires on a non-empty merged set. Nothing in
+/// the code path was wrong — which is exactly why this walks `serve_for`'s
+/// pure prefix (read_baseline → resolve → merge with an EMPTY CLI map →
+/// `Recipe::serve_args`) against the committed BENCH.toml, where the bug
+/// lived.
+#[test]
+fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_flags() {
+    let root = crate::cli::bench_run::repo_root().expect("inside the repo");
+    let baseline = gate::read_baseline(&root, "concurrency-sweep").expect("baseline assembles");
+    let resolved = crate::cli::bench_resolve::resolve(&baseline, "concurrency-sweep", None, None)
+        .expect("the default variant resolves");
+    assert_eq!(resolved.recipe_id, "qwen3.8/qwen3.8-27b-nvfp4-unsloth");
+
+    // No CLI overrides — the whole point of the repro.
+    let merged =
+        gate::merge_serve_overrides(resolved.entry.serve_overrides.clone(), BTreeMap::new());
+    assert!(
+        !merged.is_empty(),
+        "the baseline-declared serve pin was lost before the merge: with no CLI flags the \
+         gate would serve the recipe verbatim and print no OVERRIDES line"
+    );
+
+    // Render through a committed recipe fixture that pins the same `defaults:`
+    // keys the real qwen3.8 agentic recipe does (the real yaml lives in the
+    // atlas-recipes repo, not in this tree; the fixture stands in for the
+    // RENDERING only — which entry carries the pin is asserted on the real
+    // BENCH.toml above and in gate::bench_tests).
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/recipes/qwen3.6/qwen3.6-27b-nvfp4.yaml");
+    let text = std::fs::read_to_string(&fixture).expect("fixture recipe");
+    let recipe = crate::recipe::Recipe::parse("qwen3.6/qwen3.6-27b-nvfp4", &text).expect("parses");
+    let args = recipe
+        .serve_args(&merged)
+        .expect("pins render to valid serve args");
+    assert_eq!(
+        args.max_batch_size, 32,
+        "the batching pin reached the serve"
+    );
+    assert_eq!(args.kv_cache_dtype.as_deref(), Some("fp8"));
+    assert_eq!(args.ssm_cache_slots, 32);
+    assert_eq!(args.max_seq_len, 4096);
+}

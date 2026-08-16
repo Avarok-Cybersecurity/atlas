@@ -36,6 +36,22 @@ pub(super) fn resolve_thinking(
     )
 }
 
+/// Generation allowance after the tools-active `--tool-max-tokens` shrink.
+/// Single source of truth for thinking-budget resolution and sampling
+/// `max_tokens` (#517). A tool turn must not receive a thinking budget
+/// larger than the tokens it is actually allowed to emit.
+pub(super) fn generation_max_tokens(
+    max_tokens: usize,
+    tools_active: bool,
+    tool_max_tokens: usize,
+) -> usize {
+    if tools_active {
+        max_tokens.min(tool_max_tokens)
+    } else {
+        max_tokens
+    }
+}
+
 /// Server/model policy inputs, split from `AppState` so the resolution
 /// core is a pure function.
 #[derive(Clone, Copy)]
@@ -431,5 +447,16 @@ mod tests {
         );
         assert!(!et);
         assert!(tb.is_none());
+    }
+
+    #[test]
+    fn issue_517_tool_capped_ceiling_leaves_room_for_tool_call() {
+        // Caller hoists min(max_tokens, tool_max_tokens) before resolve
+        // (#517). 90% of the real ceiling (256) is 230, not 90% of the
+        // raw client max_tokens (2048 -> 1843).
+        let (et, tb) = resolve(ThinkingDirective::On { budget: None }, policy(), 256, true);
+        assert!(et);
+        assert_eq!(tb, Some(230));
+        assert!(tb.unwrap() < 256);
     }
 }

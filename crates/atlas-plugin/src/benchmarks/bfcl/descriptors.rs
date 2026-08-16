@@ -22,6 +22,20 @@ pub const SUBSET_METADATA: PluginMetadata = PluginMetadata::atlas(SUBSET_SUMMARY
 pub const FULL_METADATA: PluginMetadata = PluginMetadata::atlas(FULL_SUMMARY);
 pub const ECHOLP_METADATA: PluginMetadata = PluginMetadata::atlas(ECHOLP_SUMMARY);
 
+/// The baseline-coupled verdict params both GATED draws share: under
+/// `--pull-request-gate` each is auto-filled from the selected variant's own
+/// BENCH.toml `min` bound (`bench_resolve::apply_threshold_params`), so a
+/// non-MLPerf checkpoint that clears its committed bars gets a PASS verdict —
+/// which the gate machinery requires (`GateRecord::verdict_passes`) — instead
+/// of the info verdict that used to read red. Both draws gate on the same two
+/// metric names; their BARS differ per variant, which is exactly why these are
+/// threshold params and not schema constants. `bfcl-full` is not a gate and
+/// deliberately declares none.
+const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &[
+    ("min_overall", "overall_accuracy"),
+    ("min_normalized", "normalized_single_turn_score"),
+];
+
 pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "bfcl-subset",
     name: "BFCL (subset)",
@@ -29,10 +43,13 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     detail: "Berkeley Function Calling Leaderboard v4, single-turn, on the golden MLPerf-edge \
              draw: categories non_live/live/hallucination at 62/10/10 with a 25-sample floor, \
              which is exactly 995 samples. Reports overall_accuracy and \
-             normalized_single_turn_score against the MLPerf-edge floor (83.64 / 85.32). \
+             normalized_single_turn_score against the MLPerf-edge floor (83.64 / 85.32); \
+             the floor VERDICT applies only to the Qwen3.6-27B submission checkpoints — \
+             every other checkpoint is judged by its own BENCH.toml thresholds, with the \
+             floor kept as table styling for reference. \
              Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
     duration_hint: "~3.5 h",
-    updated: "2026-07-31",
+    updated: "2026-08-15",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
     // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
@@ -49,7 +66,10 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                and inherits neither 3.6's floors nor the MLPerf floor). Scores on any \
                other checkpoint have no recorded baseline to beat.",
     }),
-    threshold_params: &[],
+    // Under --pull-request-gate the run's own verdict is judged against the
+    // selected variant's committed BENCH.toml floors (min bounds), not the
+    // MLPerf floor — which gates only the submission checkpoints (report.rs).
+    threshold_params: GATE_THRESHOLD_PARAMS,
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
@@ -62,7 +82,7 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              stays comparable — it just removes the sampling noise, at roughly 3.6× the wall \
              time.",
     duration_hint: "~12 h",
-    updated: "2026-07-31",
+    updated: "2026-08-15",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
     // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
@@ -95,7 +115,7 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              draw's, and it carries its own baseline. It exists because the 35B's only recorded \
              BFCL history is on this draw.",
     duration_hint: "~3.5 h",
-    updated: "2026-08-06",
+    updated: "2026-08-15",
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
         families: &["qwen3.6-35b-a3b"],
@@ -103,6 +123,8 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                high-water). The dense 27B is gated on the golden n=995 draw instead — do not \
                cross the two, the category mix alone moves normalized by ~1.8 points.",
     }),
-    threshold_params: &[],
+    // Same two gating metrics as the golden draw (its BENCH.toml entry bounds
+    // overall_accuracy and normalized_single_turn_score), different bars.
+    threshold_params: GATE_THRESHOLD_PARAMS,
     ctor: || Box::new(Bfcl::new(Variant::SubsetEcholp)),
 };

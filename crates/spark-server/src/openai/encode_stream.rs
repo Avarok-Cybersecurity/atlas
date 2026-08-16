@@ -117,7 +117,8 @@ fn chunk_json(chunk: ChatCompletionChunk) -> String {
 
 /// `ir::Usage` → OpenAI wire usage, field for field the construction
 /// the streaming Done arm performed historically (`total_tokens` is
-/// prompt + completion; audio/prediction counters pinned to 0).
+/// prompt + completion; audio counters pinned to 0,
+/// `accepted_prediction_tokens` carried through from the IR).
 fn wire_usage(u: &crate::ir::Usage) -> Usage {
     Usage {
         prompt_tokens: u.prompt_tokens,
@@ -130,7 +131,7 @@ fn wire_usage(u: &crate::ir::Usage) -> Usage {
         completion_tokens_details: Some(CompletionTokensDetails {
             reasoning_tokens: u.reasoning_tokens,
             audio_tokens: 0,
-            accepted_prediction_tokens: 0,
+            accepted_prediction_tokens: u.accepted_prediction_tokens,
             rejected_prediction_tokens: 0,
         }),
         time_to_first_token_ms: u.time_to_first_token_ms,
@@ -283,6 +284,7 @@ mod tests {
             completion_tokens: 5,
             cached_prompt_tokens: 2,
             reasoning_tokens: 3,
+            accepted_prediction_tokens: 4,
             time_to_first_token_ms: 12.5,
             response_tokens_per_second: 40.0,
         };
@@ -307,6 +309,18 @@ mod tests {
         assert!(p[0].contains("\"total_tokens\":15"), "payload: {}", p[0]);
         assert!(p[0].contains("\"cached_tokens\":2"), "payload: {}", p[0]);
         assert!(p[0].contains("\"reasoning_tokens\":3"), "payload: {}", p[0]);
+        // The accept count survives IR -> wire: this was hardcoded 0 at every
+        // emit site before the accept-stats instrumentation.
+        assert!(
+            p[0].contains("\"accepted_prediction_tokens\":4"),
+            "payload: {}",
+            p[0]
+        );
+        assert!(
+            p[0].contains("\"rejected_prediction_tokens\":0"),
+            "payload: {}",
+            p[0]
+        );
         assert!(
             p[0].contains("\"time_to_first_token_ms\":12.5"),
             "payload: {}",

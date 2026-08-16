@@ -335,6 +335,22 @@ The whole supported model matrix lives in one Docker image. Pull it, mount your 
 
 > **Defaults below are tuned for maximum accuracy under agentic-coding workloads** — 64K context window, BF16 MTP draft head (highest acceptance rate ⇒ highest end-to-end throughput), prefix caching for multi-turn tool loops, and FP8 KV cache with `auto`-promoted boundary layers. These are the recipes we use to drive opencode / Claude Code / Cline through Atlas on a single Spark.
 
+### Recipe 0 — no flags, pick a model in the TUI
+
+Omit the model ID and `serve` boots into the Library — pick a model and recipe interactively (TTY only):
+
+```bash
+docker run -it --rm --network host --gpus all --ipc=host -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" -v "${HOME}/.atlas:/root/.atlas" avarok/atlas-gb10:latest serve
+```
+
+- `-it` — the TUI needs a real terminal to render (and Esc to quit).
+- `--rm` — throwaway container; nothing to clean up after the session.
+- `--network host` — the served port is reachable on localhost directly, no `-p` mapping.
+- `--gpus all` — hands the GB10 to the container.
+- `--ipc=host` — host-sized shared memory; the Docker default 64 MB `/dev/shm` is too small for CUDA.
+- `-v ~/.cache/huggingface` — reuse the host's model cache instead of re-downloading weights.
+- `-v ~/.atlas` — persist Atlas state (recipes, benchmark records, artifacts) across runs.
+
 <a id="run-atlas"></a>
 
 ### Recipe A — Qwen3.6-35B-A3B (FP8 hybrid MoE, ~130 tok/s)

@@ -169,6 +169,38 @@ fn server_timing_extensions_are_captured_and_absent_ones_stay_none() {
     assert_eq!(bare.server_tps, None);
 }
 
+/// The accept count rides in `completion_tokens_details` and must keep the
+/// three-way distinction the decode-floor vacuity pin is built on: a reported
+/// count (Some(n)), a reported zero (Some(0), speculation off), and a server
+/// with no details object at all (None, no instrumentation) — the last must
+/// never be fabricated into a 0.
+#[test]
+fn accepted_prediction_tokens_are_captured_and_absence_stays_none() {
+    let mut out = ChatOutcome::default();
+    apply_chunk(
+        &sse(r#"{"usage":{"completion_tokens":49,"prompt_tokens":12,
+                "completion_tokens_details":{"reasoning_tokens":0,
+                "accepted_prediction_tokens":31}},"choices":[]}"#),
+        &mut out,
+    );
+    assert_eq!(out.accepted_prediction_tokens, Some(31));
+
+    let mut zero = ChatOutcome::default();
+    apply_chunk(
+        &sse(r#"{"usage":{"completion_tokens":3,"prompt_tokens":2,
+                "completion_tokens_details":{"accepted_prediction_tokens":0}},"choices":[]}"#),
+        &mut zero,
+    );
+    assert_eq!(zero.accepted_prediction_tokens, Some(0));
+
+    let mut bare = ChatOutcome::default();
+    apply_chunk(
+        &sse(r#"{"usage":{"completion_tokens":3,"prompt_tokens":2},"choices":[]}"#),
+        &mut bare,
+    );
+    assert_eq!(bare.accepted_prediction_tokens, None);
+}
+
 #[test]
 fn finish_reason_is_captured() {
     let mut out = ChatOutcome::default();

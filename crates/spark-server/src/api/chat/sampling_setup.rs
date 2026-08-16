@@ -16,6 +16,7 @@ use crate::tool_parser;
 use super::super::compact::openai_error_response;
 use super::super::inference_impl::tokenize_stop_sequences;
 use super::super::inference_types::GrammarSpec;
+use super::thinking;
 
 pub(super) struct SamplingSetup {
     pub(super) temperature: f32,
@@ -248,21 +249,18 @@ pub(super) fn build_sampling(
         }
     }
 
-    // max_tokens cap when tools are active.
-    let max_tokens = if tools_active {
-        let capped = req.max_tokens.min(state.tool_max_tokens);
-        if capped < req.max_tokens {
-            tracing::info!(
-                "Tool max_tokens cap: {} → {} (tool_max_tokens={})",
-                req.max_tokens,
-                capped,
-                state.tool_max_tokens
-            );
-        }
-        capped
-    } else {
-        req.max_tokens
-    };
+    // max_tokens cap when tools are active. Same ceiling as thinking
+    // resolution (#517) — do not recompute min() here.
+    let max_tokens =
+        thinking::generation_max_tokens(req.max_tokens, tools_active, state.tool_max_tokens);
+    if tools_active && max_tokens < req.max_tokens {
+        tracing::info!(
+            "Tool max_tokens cap: {} → {} (tool_max_tokens={})",
+            req.max_tokens,
+            max_tokens,
+            state.tool_max_tokens
+        );
+    }
 
     // Stop tokens.
     //

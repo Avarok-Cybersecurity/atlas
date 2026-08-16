@@ -18,7 +18,7 @@ fn drive_mtp(g: &mut MtpGate, n: usize, emitted: usize, wall: Duration) {
             GateStep::MeasureVerify,
             "expected Mtp-path step"
         );
-        g.record_verify_step(wall, emitted);
+        g.record_verify_step(wall, emitted, 1);
     }
 }
 
@@ -30,7 +30,7 @@ fn drive_serial(g: &mut MtpGate, n: usize, wall: Duration) {
             GateStep::MeasureDecode,
             "expected serial step"
         );
-        g.record_decode(wall);
+        g.record_decode(wall, 1);
     }
 }
 
@@ -40,7 +40,7 @@ fn run_mtp_until_probe(g: &mut MtpGate, emitted: usize, wall: Duration) {
         if g.next_step() == GateStep::MeasureDecode {
             return;
         }
-        g.record_verify_step(wall, emitted);
+        g.record_verify_step(wall, emitted, 1);
     }
     panic!("gate never opened a serial probe");
 }
@@ -51,7 +51,7 @@ fn run_serial_until_probe(g: &mut MtpGate, wall: Duration) {
         if g.next_step() == GateStep::MeasureVerify {
             return;
         }
-        g.record_decode(wall);
+        g.record_decode(wall, 1);
     }
     panic!("gate never opened an MTP re-probe");
 }
@@ -104,7 +104,7 @@ fn switches_to_serial_when_clearly_faster_with_dwell() {
         if g.next_step() != GateStep::MeasureVerify {
             break;
         }
-        g.record_verify_step(ms(100), 2);
+        g.record_verify_step(ms(100), 2, 1);
     }
     assert!(
         g.in_serial_mode(),
@@ -126,7 +126,7 @@ fn hysteresis_blocks_within_margin_switches() {
         if g.next_step() != GateStep::MeasureVerify {
             break;
         }
-        g.record_verify_step(ms(50), 2);
+        g.record_verify_step(ms(50), 2, 1);
     }
     assert!(
         !g.in_serial_mode(),
@@ -145,7 +145,7 @@ fn serial_mode_reprobes_mtp_and_recovers() {
         if g.next_step() != GateStep::MeasureVerify {
             break;
         }
-        g.record_verify_step(ms(100), 2);
+        g.record_verify_step(ms(100), 2, 1);
     }
     assert!(g.in_serial_mode());
     g.take_fresh_decision();
@@ -173,7 +173,8 @@ fn depth_change_schedules_early_probe_without_state_wipe() {
     let tps_before = g.mtp_tps_debug();
     assert!(tps_before.is_some());
     // Depth doubles: baselines stale, probe due immediately, EWMA retained.
-    g.maybe_remeasure(1300);
+    assert!(g.maybe_remeasure(1300));
+    assert_eq!(g.regime_reprobe_count(), 1);
     assert_eq!(
         g.mtp_tps_debug(),
         tps_before,
@@ -186,6 +187,39 @@ fn depth_change_schedules_early_probe_without_state_wipe() {
         GateStep::MeasureDecode,
         "stale regime must probe soon"
     );
+    // Extend: the early probe is ONE window. A 300–1000 token think
+    // (3.8 budget / #517-shaped length) must not be dominated by serial.
+    // Probe serial at 20 tok/s vs MTP 40 — stay MTP after the window.
+    drive_serial(&mut g, WINDOW_STEPS, ms(50));
+    assert_eq!(g.next_step(), GateStep::MeasureVerify);
+    assert!(!g.in_serial_mode());
+    let mut serial_steps = WINDOW_STEPS;
+    let mut mtp_steps = WINDOW_STEPS * 2 + 1;
+    let mut tokens = (WINDOW_STEPS * 2 + 1) * 2 + WINDOW_STEPS;
+    while tokens < 1000 {
+        match g.next_step() {
+            GateStep::MeasureVerify => {
+                g.record_verify_step(ms(50), 2, 1);
+                mtp_steps += 1;
+                tokens += 2;
+            }
+            GateStep::MeasureDecode => {
+                g.record_decode(ms(50), 1);
+                serial_steps += 1;
+                tokens += 1;
+            }
+        }
+    }
+    let serial_frac = serial_steps as f64 / (serial_steps + mtp_steps) as f64;
+    assert!(
+        serial_steps <= WINDOW_STEPS,
+        "regime change must not add serial beyond the one-window probe ({serial_steps})"
+    );
+    assert!(
+        serial_frac < 0.05,
+        "serial must not dominate a 1000-token turn (frac={serial_frac:.3})"
+    );
+    assert!(!g.in_serial_mode());
 }
 
 #[test]
@@ -193,7 +227,7 @@ fn bootstrap_steps_count_at_least_one_token() {
     let mut g = MtpGate::new(1);
     // emitted=0 must not divide-by-zero or record zero-token windows.
     for _ in 0..WINDOW_STEPS {
-        g.record_verify_step(ms(10), 0);
+        g.record_verify_step(ms(10), 0, 1);
     }
     let tps = g.mtp_tps_debug().expect("window closed");
     assert!(tps > 0.0);
@@ -219,7 +253,7 @@ fn entry_pin_overrides_serial_mode_for_answer_openings() {
         if g.next_step() != GateStep::MeasureVerify {
             break;
         }
-        g.record_verify_step(ms(100), 2);
+        g.record_verify_step(ms(100), 2, 1);
     }
     assert!(g.in_serial_mode());
     assert_eq!(g.next_step(), GateStep::MeasureDecode);
@@ -246,7 +280,7 @@ fn entry_pin_steps_do_not_touch_arbitration_state() {
         if g.next_step() != GateStep::MeasureVerify {
             break;
         }
-        g.record_verify_step(ms(100), 2);
+        g.record_verify_step(ms(100), 2, 1);
     }
     assert!(g.in_serial_mode());
     g.take_fresh_decision();
@@ -269,4 +303,208 @@ fn entry_pin_env_parse() {
     assert_eq!(parse_entry_pin_tokens(Some("12")), 12);
     assert_eq!(parse_entry_pin_tokens(Some("garbage")), 8);
     assert_eq!(parse_entry_pin_tokens(Some("-3")), 8);
+}
+
+#[test]
+fn stale_other_baseline_cannot_steal_mode() {
+    let mut g = MtpGate::new(1);
+    run_mtp_until_probe(&mut g, 2, ms(50));
+    drive_serial(&mut g, WINDOW_STEPS, ms(40));
+    assert!(!g.in_serial_mode());
+    assert!(g.serial_tps_debug().is_some());
+    // Regime change: serial EWMA is stale. Degrade MTP to 10 tok/s —
+    // faster than switching onto the stale 25 tok/s serial baseline.
+    assert!(g.maybe_remeasure(2000));
+    for _ in 0..(WINDOW_STEPS * SWITCH_DWELL_WINDOWS * 2) {
+        if g.next_step() != GateStep::MeasureVerify {
+            break;
+        }
+        g.record_verify_step(ms(200), 2, 1);
+    }
+    assert!(
+        !g.in_serial_mode(),
+        "a stale serial baseline must not win a switch after a depth-regime change"
+    );
+    assert_eq!(g.take_fresh_decision(), None);
+}
+
+#[test]
+fn standard_mtp_stays_serial_in_think() {
+    assert!(!spec_dispatch_eligible(
+        true, 0, 0, false, false, false, 0, false
+    ));
+    assert!(!spec_dispatch_eligible(
+        true, 0, 50, false, false, false, 0, false
+    ));
+    assert!(spec_dispatch_eligible(
+        false, 0, 50, false, false, false, 0, false
+    ));
+}
+
+#[test]
+fn standard_mtp_spec_think_opts_in() {
+    assert!(spec_dispatch_eligible(
+        true, 0, 50, false, false, true, 0, false
+    ));
+}
+
+#[test]
+fn dflash_raw_argmax_stays_serial_in_think() {
+    assert!(!spec_dispatch_eligible(
+        true, 0, 50, false, false, false, 0, true
+    ));
+    assert!(spec_dispatch_eligible(
+        false, 0, 50, false, false, false, 0, true
+    ));
+}
+
+#[test]
+fn dflash_spec_think_opts_in() {
+    assert!(spec_dispatch_eligible(
+        true, 0, 0, false, false, true, 0, true
+    ));
+}
+
+/// 3.8 `max_thinking_budget = 2048` can cross the floor twice.
+/// Each crossing may open the shipped one-window probe. Serial must
+/// stay a measurement phase, not the mode.
+#[test]
+fn think_budget_2048_two_crossings_do_not_dump_serial() {
+    let mut g = MtpGate::new(1);
+    let mut depth = 64usize;
+    g.note_depth(depth);
+    let mut serial_steps = 0usize;
+    let mut mtp_steps = 0usize;
+    let mut tokens = 0usize;
+    while tokens < 2048 {
+        g.note_depth(depth);
+        let _ = g.maybe_remeasure(depth);
+        match g.next_step() {
+            GateStep::MeasureVerify => {
+                g.record_verify_step(ms(50), 2, 1);
+                mtp_steps += 1;
+                tokens += 2;
+                depth += 2;
+            }
+            GateStep::MeasureDecode => {
+                g.record_decode(ms(50), 1);
+                serial_steps += 1;
+                tokens += 1;
+                depth += 1;
+            }
+        }
+    }
+    let serial_frac = serial_steps as f64 / (serial_steps + mtp_steps) as f64;
+    assert_eq!(g.regime_reprobe_count(), 2);
+    assert!(
+        serial_steps <= WINDOW_STEPS * 3,
+        "at most one-window probe per crossing plus shipped refresh, got {serial_steps}"
+    );
+    assert!(
+        serial_frac < 0.08,
+        "serial must not dominate a 2048-token think (frac={serial_frac:.3})"
+    );
+    assert!(!g.in_serial_mode());
+}
+
+// ---- batch-width accounting (2026-08-15 decode-side fix) --------------------
+
+/// A plain decode step over n sequences emits n tokens. Before the fix,
+/// `record_decode` charged 1 token regardless of width, so a serial probe at
+/// batch 4 read ~4× slower than delivered while the verify side was already
+/// multi-seq summed — DisableMtp was unreachable exactly under concurrency.
+#[test]
+fn decode_steps_charge_the_batch_width() {
+    let mut g = MtpGate::new(1);
+    run_mtp_until_probe(&mut g, 2, ms(50));
+    // Serial probe at batch width 4: 4 tokens per 10ms step = 400 tok/s.
+    // (The width-1 → width-4 regime change lands on the probe's first,
+    // still-empty window, so all WINDOW_STEPS steps measure in-regime.)
+    for _ in 0..WINDOW_STEPS {
+        assert_eq!(g.next_step(), GateStep::MeasureDecode);
+        g.record_decode(ms(10), 4);
+    }
+    let serial = g.serial_tps_debug().expect("probe closed a window");
+    assert!(
+        (serial - 400.0).abs() < 1.0,
+        "serial EWMA must read the delivered 400 tok/s, not the pre-fix \
+         one-token 100 tok/s (got {serial:.1})"
+    );
+}
+
+/// A width-regime change is a depth-regime change's twin: EWMAs measured at
+/// batch 1 must not arbitrate against windows measured at batch 8. The
+/// mixed-width partial window is discarded, and — like a depth change — the
+/// probe cadence is pulled forward, so the first in-regime step closes a
+/// one-step window that REPLACES the current mode's EWMA and the very next
+/// step probes the other mode at the new width. Arbitration therefore only
+/// ever compares two same-regime numbers.
+#[test]
+fn width_regime_change_stales_and_remeasures_in_the_new_regime() {
+    let mut g = MtpGate::new(1);
+    // Both baselines at width 1; gate stays Mtp (40 vs 25 tok/s).
+    run_mtp_until_probe(&mut g, 2, ms(50));
+    drive_serial(&mut g, WINDOW_STEPS, ms(40));
+    assert!(!g.in_serial_mode());
+    // Half a window at width 1, then the batch widens into bucket 8.
+    drive_mtp(&mut g, WINDOW_STEPS / 2, 2, ms(50));
+    g.record_verify_step(ms(5), 6, 8);
+    assert!(
+        g.serial.stale,
+        "off-mode baseline is stale after the change"
+    );
+    let mtp = g.mtp_tps_debug().expect("one-step window closed");
+    assert!(
+        (mtp - 1200.0).abs() < 1.0,
+        "Mtp EWMA must be REPLACED by the in-regime window (6 tok / 5 ms = \
+         1200 tok/s), not blended with the width-1 40 tok/s (got {mtp:.0})"
+    );
+    // The early probe opens immediately, measuring serial at the new width.
+    assert_eq!(
+        g.next_step(),
+        GateStep::MeasureDecode,
+        "probe pulled forward"
+    );
+    for _ in 0..WINDOW_STEPS {
+        g.record_decode(ms(10), 8); // 800 tok/s in-regime
+    }
+    assert!(
+        !g.serial.stale,
+        "probe re-measured serial in the new regime"
+    );
+    // 800 < 1200: stays Mtp. Had the stale width-1 numbers survived, serial
+    // (probe window vs the old 40 tok/s EWMA) would have looked 20x faster.
+    assert!(!g.in_serial_mode());
+    assert_eq!(g.take_fresh_decision(), None);
+}
+
+/// Per-step width churn INSIDE a power-of-two bucket is scheduler noise
+/// (join/leave of one sequence), not a regime change — it must blend into
+/// the EWMA, not thrash the baselines stale on every step.
+#[test]
+fn width_jitter_inside_a_bucket_does_not_stale() {
+    let mut g = MtpGate::new(1);
+    // Widths 5..=8 share bucket 8.
+    for w in [5usize, 6, 7, 8, 6, 5, 7] {
+        g.record_verify_step(ms(10), 2 * w, w);
+    }
+    assert!(
+        !g.mtp.stale && !g.serial.stale,
+        "same-bucket churn is noise"
+    );
+    assert_eq!(g.win_steps, 7, "nothing discarded inside the bucket");
+    // Dropping to bucket 4 IS a regime change: partial window discarded,
+    // the step re-measures Mtp in-regime (probe-forward closes it), and the
+    // never-measured serial side is left stale until its probe.
+    g.record_verify_step(ms(10), 8, 4);
+    assert!(g.serial.stale && !g.mtp.stale);
+    assert_eq!(
+        g.win_steps, 0,
+        "mixed-width window discarded, fresh one closed"
+    );
+    assert_eq!(
+        g.next_step(),
+        GateStep::MeasureDecode,
+        "probe pulled forward"
+    );
 }

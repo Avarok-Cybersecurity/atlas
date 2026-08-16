@@ -160,6 +160,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
                     decode_time_ms: decode_ms,
                     reasoning_tokens: a.thinking_tokens,
                     cached_prompt_tokens: a.cached_prompt_tokens,
+                    accepted_prediction_tokens: a.mtp_acct.accepted_total() as usize,
                     guard_stop: a.guard_stop,
                 },
                 "done frame",
@@ -178,6 +179,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        accepted_prediction_tokens: a.mtp_acct.accepted_total() as usize,
                         prompt_logprobs: std::mem::take(&mut a.seq.prompt_logprobs)
                             .into_iter()
                             .map(|p| crate::api::TokenLogprobs {
@@ -204,7 +206,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
         0.0
     };
     let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
-    tracing::info!("Done: {n} tokens ({reason}) {tps:.1} tok/s, TTFT={ttft_ms:.1}ms");
+    super::mtp_accept_debug::RequestAccept::log_done(n, reason, tps, ttft_ms, &a.mtp_acct);
     // Cache the full sequence (prompt + generated) in the prefix cache.
     // Must happen BEFORE free_sequence() so block indices are still valid.
     // Enables multi-turn sessions to reuse KV cache for prior assistant responses.
@@ -353,6 +355,7 @@ pub fn swap_out_sequence(
         tools_present: a.tools_present,
         suppress_tool_call: a.suppress_tool_call,
         disable_mtp: a.disable_mtp,
+        mtp_acct: a.mtp_acct,
         content_started: a.content_started,
         content_tokens: a.content_tokens,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
@@ -453,6 +456,7 @@ pub fn resume_swapped_seq(
         tools_present: s.tools_present,
         suppress_tool_call: s.suppress_tool_call,
         disable_mtp: s.disable_mtp,
+        mtp_acct: s.mtp_acct,
         content_started: false,
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,

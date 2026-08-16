@@ -76,6 +76,42 @@ pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<
         )]);
     }
     let mut problems = Vec::new();
+    // Baseline-declared serve pins must be ON the record, at the pinned value.
+    // BENCH.toml is outside the closure hash, so a pin-only edit would
+    // otherwise leave an old record — measured under a different serve config —
+    // reading green for a config it never ran.
+    for (k, want) in &entry.serve_overrides {
+        match record.serve_overrides.get(k) {
+            Some(got) if got == want => {}
+            Some(got) => problems.push(format!(
+                "serve override {k}={got} does not match the baseline pin {k}={want}"
+            )),
+            None => problems.push(format!(
+                "serve override {k}={want} is pinned on the baseline but missing from the record"
+            )),
+        }
+    }
+    // Baseline-declared PARAM pins must be on the record too, at the pinned
+    // value — the same argument as the serve pins one loop up: BENCH.toml is
+    // outside the closure hash, so pinning a gate to a calibrated instrument
+    // (a specific concurrency ladder, prompt size, output budget) must not
+    // leave an old record — measured on the schema default — reading green
+    // for an instrument it never ran. Compared whitespace-insensitively:
+    // records render int lists as "1, 4, 8, 16" while pins are typed
+    // "1,4,8,16", and both name the same value.
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    for (k, want) in &entry.param_overrides {
+        match record.params.get(k) {
+            Some(got) if squash(got) == squash(want) => {}
+            Some(got) => problems.push(format!(
+                "param {k}={got} does not match the baseline pin {k}={want} — the run \
+                 measured a different instrument than the one these thresholds describe"
+            )),
+            None => problems.push(format!(
+                "param {k}={want} is pinned on the baseline but missing from the record"
+            )),
+        }
+    }
     for (name, bound) in &entry.metrics {
         let Some(value) = record.metrics.get(name) else {
             problems.push(format!("{name}: missing from the record"));

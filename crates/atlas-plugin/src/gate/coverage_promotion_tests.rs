@@ -101,6 +101,51 @@ fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
     );
 }
 
+/// ★ PROMOTED 2026-08-15: `decode-floor` and `concurrency-sweep` graduated
+/// from this list to [`coverage::REQUIRED`] once their calibration
+/// preconditions were met (12-run sigma set for the floor; a measured n=3
+/// ladder on the pinned instrument for the sweep). Promotion must not have
+/// weakened anything: what used to accrue DEBT now INVALIDATES — engine and
+/// kernel paths, each gate's own driver (the pins are the benchmark, and the
+/// decode-floor driver is a directory since the C1 split), and the usage
+/// plumbing the accept pin reads. Another driver's file still owes neither.
+#[test]
+fn the_promoted_gates_invalidate_where_they_used_to_accrue_debt() {
+    for id in ["decode-floor", "concurrency-sweep"] {
+        assert!(
+            coverage::REQUIRED.iter().any(|g| g.id == id),
+            "{id} must be REQUIRED after promotion"
+        );
+        assert!(
+            !coverage::PROMOTION_CANDIDATES.iter().any(|g| g.id == id),
+            "{id} must have left the candidate list — owed and excused at once is a contradiction"
+        );
+        assert!(
+            !coverage::NOT_REQUIRED.iter().any(|(n, _)| *n == id),
+            "{id} must not be excused any more"
+        );
+    }
+    for path in [
+        "crates/spark-server/src/scheduler/mod.rs",
+        "kernels/gb10/common/paged_decode_attn_fp8.cu",
+        "crates/spark-server/src/openai/encode_stream.rs",
+        "crates/atlas-plugin/src/benchmarks/decode_floor/mod.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+    ] {
+        let hit = coverage::invalidated_by([path]);
+        assert!(
+            hit.contains(&"decode-floor") && hit.contains(&"concurrency-sweep"),
+            "{path} must invalidate both promoted gates: {hit:?}"
+        );
+    }
+    let hit = coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"]);
+    assert!(
+        !hit.contains(&"decode-floor") && !hit.contains(&"concurrency-sweep"),
+        "the BFCL driver can change neither the decode rate nor the ladder: {hit:?}"
+    );
+}
+
 /// Candidate exclusions are held to the same bar as required-gate exclusions:
 /// a written rationale, a prefix that exists, and a prefix that is actually on
 /// the boundary (an off-boundary exclusion is a rule with no effect).

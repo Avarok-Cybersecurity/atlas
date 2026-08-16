@@ -110,7 +110,15 @@ bit-reproduced (new high-water); 2026-08-12 03a74eac19 85.34/84.76 REGRESSION (b
 stack); 2026-08-13 cb9f8ecab4 85.34/84.76 (identical — deterministic). The draw is PINNED \
 at n=1004: a score from a different draw is not comparable to these thresholds, and the \
 sample count is the only thing that reveals it after the fact, so it is gated exactly rather \
-than merely recorded."""
+than merely recorded. Self-start pins ssm_cache_slots=256 via [benchmarks.serve_overrides] \
+(the same override the poison gate uses) so a 1004-sample serial generate cannot evict its \
+own Marconi snapshots; the flagship recipe leaves the pool at its default 16. That is \
+capacity, not a score lever — the floors below stay the ratchet — but check_record demands \
+the pin on the record, so records measured before the pin stop covering and the next gate \
+run re-records under the declared config."""
+
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
 min = 86.90
@@ -212,9 +220,11 @@ attestation — see its own comment below.
 not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
 the first recorded run; ratchet after measurement, never to the best.
 
-Serves with `--serve-override ssm_cache_slots=256` (the flagship recipe's \
-pinned value; recorded in the gate record's serve_overrides). The bf16head \
-recipe leaves the Marconi snapshot pool at its default 16, which evicts \
+Self-start applies `ssm_cache_slots = "256"` from the \
+[benchmarks.serve_overrides] table below (the flagship recipe's pinned \
+value; recorded in the gate record's serve_overrides, and demanded on the \
+record by check_record). The bf16head recipe leaves the Marconi snapshot \
+pool at its default 16, which evicts \
 under this multi-turn load — replays then restore from DRIFTING anchors \
 (different replay geometry, legitimately different output), which is \
 pool-churn noise, not the poisoned-restore-content class this gate polices. \
@@ -225,21 +235,32 @@ main (2026-08-12, sha 7dd4cc33bc) proved the churn: replays 2-12 diverged \
 with restore anchors drifting 992→1040→1088→1152 and 33 'no SSM snapshot — \
 recomputing' events in the serve log.
 
-★ THINKING IS PINNED OFF PER REQUEST (probe.rs `chat_template_kwargs.\
-enable_thinking: false`, added 2026-08-15). This recipe serves thinking-on \
-(MODEL.toml thinking_default=true, budget 768), under which the #513 \
-reference anchors are unsatisfiable by construction: the budget forces \
-`</think>` mid-reasoning and the derailed answer misses 'exactly one line' \
-/ '3 numbered lines' (measured 2026-08-15, sha 62a89527fb — the first \
-post-#513 run; every pre-#513 PASS predates the anchors and compared \
-thinking bytes against a truncated, anchor-less reference). The pre-#513 \
-records' max_tokens=256 is superseded by the driver's 1024 default for the \
-same reason (collapse-ratio headroom). Pinning per request rather than in \
-the recipe keeps the serve byte-identical to the flagship config the other \
-five gates certify, and loses nothing under test: the gate polices the \
-PREFILL restore of the shared document prefix, and thinking tokens are \
-post-prefill output the template strips from replayed history anyway.\
+★ THINKING IS DISABLED VIA THE SERVE CONFIG for this gate — the baseline \
+declares `disable_thinking = "true"` in [benchmarks.serve_overrides] below, \
+so a `--pull-request-gate` run applies BOTH deltas with no operator flags \
+and the run record is reproducible hands-free (the recipe carries \
+`disable_thinking: false` in its defaults precisely so the override is \
+accepted; the record discloses it). The serve is therefore NOT \
+byte-identical to the flagship config the other gates certify — the \
+override is the one delta. History of how this landed (2026-08-15): the \
+recipe serves thinking-on (MODEL.toml thinking_default=true, budget 768), \
+under which the #513 reference anchors are unsatisfiable — the budget \
+forces `</think>` mid-reasoning and the answer misses 'exactly one line' / \
+'3 numbered lines' (measured at 62a89527fb, the first post-#513 run; every \
+pre-#513 PASS predates the anchors). A first fix pinned per-request \
+`chat_template_kwargs.enable_thinking:false` in probe.rs; that path \
+DEGENERATES to a ~2-token stop on qwen3_6_moe and was reverted — probe \
+bodies now carry no chat_template_kwargs at all (probe_tests pins this). \
+Turn-1's space-drop half of the failure was the api/strip.rs streaming \
+regression (#473), fixed separately. Nothing under test is lost by \
+thinking-off: the gate polices the PREFILL restore of the shared document \
+prefix, and thinking tokens are post-prefill output the template strips \
+from replayed history anyway.\
 """
+
+[benchmarks.serve_overrides]
+disable_thinking = "true"
+ssm_cache_slots = "256"
 
 [benchmarks.metrics.rounds]
 min = 12.0

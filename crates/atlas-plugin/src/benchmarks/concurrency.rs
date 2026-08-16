@@ -7,7 +7,18 @@
 //! as p50/p90/p99 plus the aggregate output throughput of the batch. One cell
 //! per `next()`, so the pane paints a row as soon as it exists and cancellation
 //! lands within one cell rather than at the end of the sweep.
+//!
+//! ★ A cell's tok/s is only as real as the tokens behind it. The 2026-08-15
+//! re-scope: the counting prompt produced C=1 cells of 49-token bursts and
+//! C≥4 cells with 0–1 output tokens (E2E==TTFT, TPOT 0.0, aggregate
+//! DECREASING with C) on a serve where a natural code-generation prompt
+//! completed the full 800-token budget at every C (C=1: 31.9 → C=16: 170.1
+//! aggregate tok/s). The instrument was broken, not the server. Hence: the
+//! natural code-generation fixture is the default, every request's delivered
+//! evidence is recorded, and cells below the vacuity floor are flagged
+//! non-comparable instead of silently reported.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
@@ -21,7 +32,7 @@ use crate::metadata::PluginMetadata;
 use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
 use crate::result::{
-    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
+    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat,
 };
 
 const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 32";
@@ -35,16 +46,79 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              reports client TTFT, TPOT and end-to-end latency as p50/p90/p99, plus the batch's \
              aggregate output throughput. This is the curve the GB10 concurrency campaign is \
              measured on — C=1 is where Atlas leads, C=16 is the bar, and C=32 is where \
-             time-to-answer starts inverting in Atlas's favour.",
+             time-to-answer starts inverting in Atlas's favour. Requests pin temperature 0.0 / \
+             seed 0 and send reasoning_effort \"none\" so the ladder measures decode, not \
+             thinking. A cell where any request delivers under 80% of the output budget is \
+             flagged vacuous and its tok/s marked non-comparable. REQUIRED gate since \
+             2026-08-15: under --pull-request-gate the run serves the calibrated instrument \
+             (C=1/4/8/16, isl 512, osl 320 via the variant's param_overrides) and \
+             self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
+             cell or request error never passes, whatever the floors say.",
     duration_hint: "~15–45 min",
-    updated: "2026-08-11",
+    updated: "2026-08-15",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.
     intended_for: None,
-    threshold_params: &[],
+    // Under --pull-request-gate each floor is auto-filled from the selected
+    // variant's BENCH.toml `min` bound, so a run that clears its committed
+    // ladder self-verdicts PASS — which gate machinery requires now that this
+    // gate is REQUIRED (`gate::coverage::REQUIRED`). The gated ladder's SHAPE
+    // (C=1/4/8/16, isl 512, osl 320) arrives via the same entry's
+    // `[benchmarks.param_overrides]`, not from these schema defaults.
+    threshold_params: GATE_THRESHOLD_PARAMS,
     ctor: || Box::new(ConcurrencySweep::default()),
 };
+
+/// The baseline-coupled verdict params: each is paired to the metric the
+/// BENCH.toml floor is written on (`min` bounds; see `bench_resolve::
+/// apply_threshold_params`). Float, default 0.0 = non-gating, so a standalone
+/// run keeps its info verdict.
+const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &[
+    ("min_c1", "c1_aggregate_tok_s"),
+    ("min_c4", "c4_aggregate_tok_s"),
+    ("min_c8", "c8_aggregate_tok_s"),
+    ("min_c16", "c16_aggregate_tok_s"),
+    ("min_peak", "peak_aggregate_tok_s"),
+];
+
+/// Natural code-generation fixture (own constant — no cross-driver imports).
+/// Appended after the ISL padding so the filler reads as context and this
+/// reads as the ask. A code-generation task of this shape reliably fills a
+/// several-hundred-token output budget on a thinking-off serve, which is what
+/// makes the cell's TPOT and aggregate tok/s measurements of decode at all.
+const CODE_TASK: &str = "Ignore the reference text above. Task: write a complete, \
+    production-quality MinHeap class in Python with insert, peek_min, extract_min, \
+    decrease_key and heapify methods — full docstrings, input validation and a worked \
+    usage example — followed by a unit-test class covering every method, including \
+    empty-heap, duplicate-key and single-element edge cases. Write every method and \
+    every test out in full; do not summarize or elide any code.";
+
+/// Fraction of the output budget below which one request's completion makes
+/// its whole cell vacuous. 80%: a natural stop a few tokens early is fine; a
+/// 49-token burst against a 512-token budget is not a throughput measurement.
+const VACUITY_FLOOR: f64 = 0.8;
+
+/// What one completed request actually delivered — the evidence a cell's
+/// tok/s stands on. `http::ChatOutcome` already parses all of this from the
+/// stream's `usage`; the old sweep summed `completion_tokens` and discarded
+/// the rest.
+#[derive(Clone, Debug, Default)]
+struct RequestEvidence {
+    completion_tokens: usize,
+    finish_reason: Option<String>,
+    server_ttft_ms: Option<f64>,
+    server_tps: Option<f64>,
+}
+
+/// A cell is vacuous when ANY of its requests finished materially short of
+/// the output budget — the aggregate then divides missing tokens' wall time
+/// into real tokens and the number comparable to nothing.
+fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
+    requests
+        .iter()
+        .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
+}
 
 #[derive(Default)]
 struct CellRow {
@@ -55,6 +129,18 @@ struct CellRow {
     e2e_p50: Option<f64>,
     throughput: f64,
     errors: usize,
+    requests: Vec<RequestEvidence>,
+    vacuous: bool,
+}
+
+impl CellRow {
+    fn min_completion(&self) -> Option<usize> {
+        self.requests.iter().map(|r| r.completion_tokens).min()
+    }
+    /// Clean and above the vacuity floor — the only rows metrics may quote.
+    fn comparable(&self) -> bool {
+        self.errors == 0 && !self.vacuous
+    }
 }
 
 #[derive(Default)]
@@ -69,6 +155,9 @@ pub struct ConcurrencySweep {
     rows: Vec<CellRow>,
     started: Option<Instant>,
     probed: bool,
+    /// Verdict floors (tok/s); all 0.0 = info verdict. Gate-filled per
+    /// variant via `GATE_THRESHOLD_PARAMS`.
+    floors: verdict::Floors,
 }
 
 impl ConcurrencySweep {
@@ -76,8 +165,41 @@ impl ConcurrencySweep {
         self.handle.as_ref().context("benchmark was not loaded")
     }
 
+    /// One verdict-floor spec. The generation/sweep knobs are the benchmark;
+    /// these are the gate's bars and cannot move a measured number.
+    fn floor_spec(key: &'static str, label: &'static str) -> ParamSpec {
+        ParamSpec::new(
+            key,
+            label,
+            "Run-verdict floor on this rung's aggregate tok/s (comparable cells only). 0 \
+             disables (a standalone run reports an info verdict); under --pull-request-gate \
+             it is auto-filled from the variant's BENCH.toml `min` bound. Vacuous or errored \
+             sweeps never PASS regardless.",
+            ParamKind::Float {
+                min: 0.0,
+                max: 100_000.0,
+            },
+            // 0.0 is the documented OFF state, not an implicit bar (PCND).
+            ParamValue::Float(0.0),
+        )
+    }
+
     fn elapsed(&self) -> Duration {
         self.started.map(|s| s.elapsed()).unwrap_or_default()
+    }
+
+    /// The prompt for one cell: ISL padding first (the prefix-cache
+    /// mechanics live in [`stats::make_prompt`]), the mode's task last.
+    fn cell_prompt(&self, isl: usize, prefix_tag: &str) -> String {
+        match self.mode {
+            PromptMode::Count => stats::make_prompt(isl, PromptMode::Count, prefix_tag),
+            PromptMode::Natural => {
+                let mut p = stats::make_prompt(isl, PromptMode::Natural, prefix_tag);
+                p.push(' ');
+                p.push_str(CODE_TASK);
+                p
+            }
+        }
     }
 
     /// One request. Returns `Err` only for transport failures — a completed
@@ -89,8 +211,16 @@ impl ConcurrencySweep {
             "model": target.model,
             "stream": true,
             "max_tokens": self.osl,
+            // Pinned sampling: the ladder is a performance instrument, and an
+            // unpinned draw is run-to-run noise in the one thing it measures.
             "temperature": 0.0,
-            "messages": [{"role": "user", "content": stats::make_prompt(isl, self.mode, &prefix_tag)}],
+            "seed": 0,
+            // Ladders measure DECODE, not thinking. On a thinking-on serve
+            // the output budget otherwise disappears into <think> at whatever
+            // effort the template defaults to, and the cell measures
+            // reasoning length instead of decode.
+            "reasoning_effort": "none",
+            "messages": [{"role": "user", "content": self.cell_prompt(isl, &prefix_tag)}],
         });
         http::chat_stream(target, &body, self.timeout).await
     }
@@ -120,6 +250,7 @@ impl ConcurrencySweep {
         let mut ttft = Vec::new();
         let mut tpot = Vec::new();
         let mut e2e = Vec::new();
+        let mut requests = Vec::new();
         let mut tokens = 0usize;
         let mut errors = 0usize;
         for outcome in outcomes {
@@ -133,12 +264,33 @@ impl ConcurrencySweep {
                     }
                     e2e.push(o.e2e_ms);
                     tokens += o.completion_tokens;
+                    requests.push(RequestEvidence {
+                        completion_tokens: o.completion_tokens,
+                        finish_reason: o.finish_reason.clone(),
+                        server_ttft_ms: o.server_ttft_ms,
+                        server_tps: o.server_tps,
+                    });
                 }
                 Err(e) => {
                     errors += 1;
                     handle.warn(format!("isl {isl} conc {conc}: {e:#}"));
                 }
             }
+        }
+        let vacuous = cell_is_vacuous(&requests, self.osl);
+        handle.info(evidence_line(isl, conc, &requests));
+        if vacuous {
+            handle.warn(format!(
+                "isl {isl} conc {conc}: a request delivered under {:.0}% of the {}-token \
+                 budget (min {} tok) — this cell's tok/s is NOT comparable",
+                VACUITY_FLOOR * 100.0,
+                self.osl,
+                requests
+                    .iter()
+                    .map(|r| r.completion_tokens)
+                    .min()
+                    .unwrap_or(0),
+            ));
         }
         Ok(CellRow {
             isl,
@@ -148,6 +300,8 @@ impl ConcurrencySweep {
             e2e_p50: stats::percentile(&e2e, 50),
             throughput: tokens as f64 / wall,
             errors,
+            requests,
+            vacuous,
         })
     }
 
@@ -164,6 +318,7 @@ impl ConcurrencySweep {
                 Column::right("p90", 8),
                 Column::right("E2E p50", 9),
                 Column::right("tok/s", 8),
+                Column::right("min tok", 7),
                 Column::right("err", 4),
             ],
         );
@@ -177,7 +332,19 @@ impl ConcurrencySweep {
                 Cell::styled(stats::fmt_ms(r.tpot.p50), CellStyle::Accent),
                 Cell::new(stats::fmt_ms(r.tpot.p90)),
                 Cell::new(stats::fmt_ms(r.e2e_p50)),
-                Cell::styled(format!("{:.1}", r.throughput), CellStyle::Good),
+                // A vacuous cell's tok/s is printed struck with a marker, not
+                // hidden: the number is evidence of the failure, it is just
+                // not comparable to anything.
+                if r.vacuous {
+                    Cell::styled(format!("{:.1}*", r.throughput), CellStyle::Bad)
+                } else {
+                    Cell::styled(format!("{:.1}", r.throughput), CellStyle::Good)
+                },
+                Cell::new(
+                    r.min_completion()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
                 Cell::styled(
                     r.errors.to_string(),
                     if r.errors == 0 {
@@ -195,6 +362,7 @@ impl ConcurrencySweep {
         let peak = self
             .rows
             .iter()
+            .filter(|r| r.comparable())
             .max_by(|a, b| a.throughput.total_cmp(&b.throughput));
         let best_ttft = self
             .rows
@@ -232,6 +400,72 @@ impl ConcurrencySweep {
             ),
         ]
     }
+
+    /// The gate/dashboard channel. Vacuous or errored cells are EXCLUDED from
+    /// every throughput/TTFT key — a future threshold must never be minted
+    /// from a cell whose tokens were not delivered — while
+    /// `min_completion_tokens` spans ALL requests, because it is the evidence
+    /// the exclusion decision rests on.
+    fn metrics(&self) -> BTreeMap<String, f64> {
+        let mut m = BTreeMap::new();
+        // Per-C: the best comparable aggregate across ISLs at that rung (the
+        // sustained curve the ladder is quoted on); TTFT p50 from that cell.
+        let mut per_c: BTreeMap<usize, &CellRow> = BTreeMap::new();
+        for r in self.rows.iter().filter(|r| r.comparable()) {
+            let slot = per_c.entry(r.conc).or_insert(r);
+            if r.throughput > slot.throughput {
+                *slot = r;
+            }
+        }
+        for (c, r) in &per_c {
+            m.insert(format!("c{c}_aggregate_tok_s"), r.throughput);
+            if let Some(t) = r.ttft.p50 {
+                m.insert(format!("c{c}_ttft_p50_ms"), t);
+            }
+        }
+        if let Some(peak) = per_c.values().map(|r| r.throughput).max_by(f64::total_cmp) {
+            m.insert("peak_aggregate_tok_s".to_string(), peak);
+        }
+        if let Some(min) = self.rows.iter().filter_map(CellRow::min_completion).min() {
+            m.insert("min_completion_tokens".to_string(), min as f64);
+        }
+        m.insert(
+            "vacuous_cells".to_string(),
+            self.rows.iter().filter(|r| r.vacuous).count() as f64,
+        );
+        m
+    }
+}
+
+/// One compact per-request evidence line for the run log: delivered tokens in
+/// request order, a finish-reason histogram, and the server's own prefill/
+/// decode numbers when the stream carried `usage`.
+fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> String {
+    let toks: Vec<String> = requests
+        .iter()
+        .map(|r| r.completion_tokens.to_string())
+        .collect();
+    let mut finish: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in requests {
+        *finish
+            .entry(r.finish_reason.as_deref().unwrap_or("?"))
+            .or_default() += 1;
+    }
+    let finish: Vec<String> = finish.iter().map(|(k, n)| format!("{k}×{n}")).collect();
+    let sttft: Vec<f64> = requests.iter().filter_map(|r| r.server_ttft_ms).collect();
+    let stps: Vec<f64> = requests.iter().filter_map(|r| r.server_tps).collect();
+    let mut line = format!(
+        "evidence isl {isl} conc {conc}: tok [{}] · finish [{}]",
+        toks.join(","),
+        finish.join(",")
+    );
+    if let Some(v) = stats::percentile(&sttft, 50) {
+        line.push_str(&format!(" · server ttft p50 {v:.0} ms"));
+    }
+    if let Some(v) = stats::percentile(&stps, 50) {
+        line.push_str(&format!(" · server decode p50 {v:.1} tok/s"));
+    }
+    line
 }
 
 impl Plugin for ConcurrencySweep {
@@ -293,9 +527,15 @@ impl Benchmark for ConcurrencySweep {
             ParamSpec::new(
                 "prompt_mode",
                 "Prompt mode",
-                "count forces the full output budget so TPOT is real; natural lets the model stop early.",
-                ParamKind::Choice(&["count", "natural"]),
-                ParamValue::Text("count".into()),
+                // ★ Honest phrasing: NEITHER mode forces the output budget —
+                // the server has no ignore_eos, so nothing can. Short
+                // completions are caught by the vacuity floor instead of
+                // being promised away here.
+                "natural (default) poses a code-generation task that reliably fills the output \
+                 budget; count appends a counting instruction the model may still stop early on. \
+                 Neither forces the budget — under-budget cells are flagged vacuous.",
+                ParamKind::Choice(&["natural", "count"]),
+                ParamValue::Text("natural".into()),
             ),
             ParamSpec::new(
                 "request_timeout_s",
@@ -304,6 +544,11 @@ impl Benchmark for ConcurrencySweep {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
+            Self::floor_spec("min_c1", "C=1 aggregate floor"),
+            Self::floor_spec("min_c4", "C=4 aggregate floor"),
+            Self::floor_spec("min_c8", "C=8 aggregate floor"),
+            Self::floor_spec("min_c16", "C=16 aggregate floor"),
+            Self::floor_spec("min_peak", "Peak aggregate floor"),
         ]
     }
 
@@ -325,8 +570,17 @@ impl Benchmark for ConcurrencySweep {
         self.osl = values.usize("osl")?;
         self.warmup = values.usize("warmup")?;
         self.mode = PromptMode::parse(values.text("prompt_mode")?)
-            .context("prompt_mode must be count or natural")?;
+            .context("prompt_mode must be natural or count")?;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.floors = verdict::Floors {
+            per_c: vec![
+                (1, values.float("min_c1")?),
+                (4, values.float("min_c4")?),
+                (8, values.float("min_c8")?),
+                (16, values.float("min_c16")?),
+            ],
+            peak: values.float("min_peak")?,
+        };
         self.cursor = 0;
         self.rows.clear();
         Ok(())
@@ -358,15 +612,20 @@ impl Benchmark for ConcurrencySweep {
 
         if self.cursor >= self.cells.len() {
             let errors: usize = self.rows.iter().map(|r| r.errors).sum();
-            let verdict = if errors == 0 {
-                Verdict::info(format!("{} cells, no request errors", self.rows.len()))
-            } else {
-                // Errors do not fail the sweep — they invalidate the cells
-                // they landed in, and saying so is more useful than a FAIL.
-                Verdict::fail(format!(
-                    "{errors} request(s) failed — affected rows are not comparable"
-                ))
-            };
+            let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
+            // The verdict is computed over the SAME metrics map the gate
+            // record carries (see `verdict::sweep_verdict`), so the two can
+            // never disagree about a rung's value. Floors all-zero keeps the
+            // pre-gate info verdicts verbatim.
+            let metrics = self.metrics();
+            let verdict = verdict::sweep_verdict(
+                &metrics,
+                self.rows.len(),
+                errors,
+                vacuous,
+                VACUITY_FLOOR * 100.0,
+                &self.floors,
+            );
             let mut frame = BenchmarkResult {
                 status: RunStatus::Completed,
                 ..BenchmarkResult::running("done", self.elapsed())
@@ -374,6 +633,7 @@ impl Benchmark for ConcurrencySweep {
             .with_progress(self.cells.len() as u64, self.cells.len() as u64)
             .with_summary(self.summary())
             .with_table(self.table())
+            .with_metrics(metrics)
             .with_verdict(verdict);
             // A "—" in the TPOT column is a measurement limit, not a broken
             // number, and it is worth saying which: the endpoint delivered the
@@ -394,10 +654,11 @@ impl Benchmark for ConcurrencySweep {
         let (isl, conc) = self.cells[self.cursor];
         let row = self.run_cell(isl, conc).await?;
         let line = LogLine::info(format!(
-            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms · {:.1} tok/s",
+            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms · {:.1} tok/s{}",
             stats::fmt_ms(row.ttft.p50),
             stats::fmt_ms(row.tpot.p50),
-            row.throughput
+            row.throughput,
+            if row.vacuous { " (vacuous)" } else { "" }
         ));
         self.rows.push(row);
         self.cursor += 1;
@@ -412,68 +673,9 @@ impl Benchmark for ConcurrencySweep {
     }
 }
 
+#[path = "concurrency_verdict.rs"]
+mod verdict;
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
-        let mut b = ConcurrencySweep::default();
-        let mut v = ParamValues::defaults(&b.parameters());
-        v.set("concurrencies", ParamValue::IntList(concs));
-        v.set("isls", ParamValue::IntList(isls));
-        b.configure(&v).unwrap();
-        b
-    }
-
-    #[test]
-    fn cells_are_isl_major() {
-        let b = configured(vec![1, 2], vec![128, 512]);
-        assert_eq!(b.cells, vec![(128, 1), (128, 2), (512, 1), (512, 2)]);
-    }
-
-    #[test]
-    fn defaults_are_the_campaign_sweep() {
-        let b = ConcurrencySweep::default();
-        let v = ParamValues::defaults(&b.parameters());
-        // The PARAM DEFAULTS are what actually runs — `configure()` rebuilds
-        // from these, so a descriptor blurb saying "1 → 32" proves nothing on
-        // its own. This assertion is the only thing that pins the sweep.
-        assert_eq!(v.int_list("concurrencies").unwrap(), &[1, 2, 4, 8, 16, 32]);
-        assert_eq!(v.usize("osl").unwrap(), 128);
-    }
-
-    /// The top rung must be 32: below it the sweep only covers the regime
-    /// where Atlas trails vLLM, and omits the C=32 inversion that is the
-    /// point of running the curve at all.
-    #[test]
-    fn the_sweep_reaches_the_inversion_rung() {
-        let b = ConcurrencySweep::default();
-        let v = ParamValues::defaults(&b.parameters());
-        let cs = v.int_list("concurrencies").unwrap();
-        assert!(
-            cs.contains(&32),
-            "C=32 missing from the default sweep ({cs:?}) — that is the rung where \
-             time-to-answer inverts (-4.47% vs vLLM); a curve that stops at 16 \
-             reports only the losing regime"
-        );
-    }
-
-    #[test]
-    fn an_out_of_range_parameter_is_rejected_before_the_run() {
-        let mut b = ConcurrencySweep::default();
-        let mut v = ParamValues::defaults(&b.parameters());
-        v.set("osl", ParamValue::Int(0));
-        let err = b.configure(&v).unwrap_err().to_string();
-        assert!(err.contains("Output tokens"), "{err}");
-    }
-
-    #[test]
-    fn reconfiguring_clears_prior_rows() {
-        let mut b = configured(vec![1], vec![128]);
-        b.rows.push(CellRow::default());
-        let mut v = ParamValues::defaults(&b.parameters());
-        v.set("isls", ParamValue::IntList(vec![256]));
-        b.configure(&v).unwrap();
-        assert!(b.rows.is_empty() && b.cursor == 0);
-    }
-}
+#[path = "concurrency_tests.rs"]
+mod concurrency_tests;
