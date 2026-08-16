@@ -1,0 +1,145 @@
+name: CodeRAG
+
+# Builds the "Ask the codebase" corpus. Every merge to main that touches Atlas
+# source chunks + embeds the changed code (incremental against the previously
+# published corpus, so steady state embeds only what moved) and publishes a
+# self-verifying lattice-jsonl corpus — gzip twin + metadata — for the website
+# to load into an in-browser lattice-db.
+#
+# Stable URLs this produces (no TTL, fetchable directly from the browser):
+#   https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz
+#   https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.meta.json
+#
+# Why gh-pages and not the alternatives: GitHub Pages serves with
+# `Access-Control-Allow-Origin: *` (verified 2026-08-16), so the site can fetch
+# the corpus cross-origin. Release assets send no CORS headers at all, and
+# workflow artifacts are auth-only downloads capped at 90 days — neither can
+# back an anonymous browser fetch. The 30-day artifact below is a CI copy for
+# inspection, not the serving path.
+#
+# One-time prerequisite (repo settings, not automatable from here):
+# Settings -> Pages -> "Deploy from a branch" -> branch `gh-pages`, folder
+# `/ (root)`. Until that is enabled the branch updates but nothing is served.
+#
+# Fallback if Pages ever misbehaves: ship the same two files through the site's
+# existing rsync deploy (site.yml) so they are served same-origin from
+# atlasinference.io — same bytes, and no CORS in play at all.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'kernels/**'
+      - '.github/ai-models.json'
+      - '.github/workflows/coderag.yml'
+  workflow_dispatch:
+
+# Two corpus publishes must never race the gh-pages force-push; a superseded
+# run's corpus is worthless the moment a newer main exists, so cancel it.
+concurrency:
+  group: coderag-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  corpus:
+    name: Build and publish the corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read model SSOT
+        id: ssot
+        # .github/ai-models.json is the single source of truth for the embed
+        # model id and endpoint. Free-tier ids rotate without notice, so
+        # nothing model-shaped is hardcoded in this file. `jq -e` fails the
+        # step outright on a missing/null key instead of exporting "null".
+        run: |
+          set -euo pipefail
+          embed_model="$(jq -er '.models.embed' .github/ai-models.json)"
+          endpoint_base="$(jq -er '.endpoint_base' .github/ai-models.json)"
+          echo "embed_model=${embed_model}" >> "$GITHUB_OUTPUT"
+          echo "endpoint_base=${endpoint_base}" >> "$GITHUB_OUTPUT"
+
+      # ***********************************************************************
+      # * PLACEHOLDER PIN — CI FAILS ON THIS STEP UNTIL IT IS REPLACED.      *
+      # * __PIN_AFTER_PUBLISH__ must become the commit SHA of AutoRepoRAG's  *
+      # * v1 tag once Avarok-Cybersecurity/AutoRepoRAG is published, keeping *
+      # * the SHA-pinning convention every other action here follows. GitHub *
+      # * cannot resolve this ref until then — that is deliberate.           *
+      # ***********************************************************************
+      - name: Build corpus (incremental against the published one)
+        id: rag
+        uses: Avarok-Cybersecurity/AutoRepoRAG@__PIN_AFTER_PUBLISH__ # v1
+        with:
+          collection: atlas-coderag
+          # output-name is a basename: the action writes <name>.jsonl,
+          # <name>.jsonl.gz and <name>.meta.json. "atlas-coderag.jsonl" is
+          # deliberate — it makes the metadata file atlas-coderag.jsonl.meta.json,
+          # the exact name the site's OPFS preflight fetches; the doubled
+          # .jsonl.jsonl(.gz) intermediates are renamed at publish below.
+          output-name: atlas-coderag.jsonl
+          paths: |
+            crates/**/*.rs
+            crates/**/*.cu
+            crates/**/*.cuh
+            kernels/**/*.cu
+            kernels/**/*.cuh
+            kernels/**/*.h
+            kernels/**/*.metal
+          exclude: |
+            **/target/**
+          embedding-endpoint: ${{ steps.ssot.outputs.endpoint_base }}
+          embedding-model: ${{ steps.ssot.outputs.embed_model }}
+          embedding-api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          # The first run 404s here -> the action warns and does a full embed.
+          # Every later run reuses vectors for unchanged chunks by chunk_hash.
+          previous-corpus-url: https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz
+          # Slower than the action's 2500ms default: OPENROUTER_API_KEY_FREE
+          # rides the free tier, and a merge-time batch job has no latency SLO.
+          request-interval-ms: '3000'
+
+      - name: Upload CI copy (30-day artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: atlas-coderag
+          path: |
+            ${{ steps.rag.outputs.corpus-gz-file }}
+            ${{ steps.rag.outputs.metadata-file }}
+          retention-days: 30
+          if-no-files-found: error
+
+      # Orphan single-commit branch: gh-pages history never grows, this
+      # workflow is its sole owner, and the corpus URLs are stable forever.
+      - name: Publish to orphan gh-pages
+        env:
+          CORPUS_GZ: ${{ steps.rag.outputs.corpus-gz-file }}
+          META: ${{ steps.rag.outputs.metadata-file }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          site="$(mktemp -d)"
+          mkdir -p "$site/coderag"
+          cp "$CORPUS_GZ" "$site/coderag/atlas-coderag.jsonl.gz"
+          # One meta file, two published names, one per consumer:
+          #   atlas-coderag.jsonl.meta.json — the site's OPFS preflight name.
+          #   atlas-coderag.meta.json       — the sibling AutoRepoRAG derives
+          #     from previous-corpus-url (strip .gz, strip .jsonl, append
+          #     .meta.json); without it the model check 404s and every run
+          #     falls back to a full re-embed.
+          cp "$META" "$site/coderag/atlas-coderag.jsonl.meta.json"
+          cp "$META" "$site/coderag/atlas-coderag.meta.json"
+          touch "$site/.nojekyll"
+          cd "$site"
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "coderag corpus @ ${GITHUB_SHA}"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            gh-pages
