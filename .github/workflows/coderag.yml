@@ -73,6 +73,12 @@ jobs:
       # ***********************************************************************
       - name: Build corpus (incremental against the published one)
         id: rag
+        # A corpus is DERIVED data. If the embedder is rate limited, a chunk
+        # trips a provider limit, or verification finds a real problem, the
+        # right outcome is a loud warning and yesterday's corpus staying up,
+        # not a red main that blocks unrelated work. Every downstream step is
+        # gated on this one's outcome and the job concludes green either way.
+        continue-on-error: true
         uses: Avarok-Cybersecurity/AutoRepoRAG@f35cc9788aab8cd863d6af24a368d4a2fa37be93 # v0.1.1
         with:
           collection: atlas-coderag
@@ -121,6 +127,7 @@ jobs:
           request-interval-ms: '3000'
 
       - name: Upload CI copy (30-day artifact)
+        if: steps.rag.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: atlas-coderag
@@ -133,6 +140,8 @@ jobs:
       # Orphan single-commit branch: gh-pages history never grows, this
       # workflow is its sole owner, and the corpus URLs are stable forever.
       - name: Refuse an unpublishable corpus
+        id: sizecheck
+        if: steps.rag.outcome == 'success'
         env:
           GZ: ${{ steps.rag.outputs.corpus-gz-file }}
         run: |
@@ -143,11 +152,14 @@ jobs:
           limit=$(( 95 * 1024 * 1024 ))
           echo "corpus gz: $bytes bytes (cap $limit)"
           if [ "$bytes" -gt "$limit" ]; then
-            echo "::error::corpus gz is $bytes bytes, over the $limit-byte publish cap — raise chunk-lines, lower vector-precision, or trim paths"
-            exit 1
+            echo "::warning::corpus gz is $bytes bytes, over the $limit-byte publish cap. Keeping the published corpus as is. Raise chunk-lines, lower vector-precision, or trim paths."
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "publishable=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish to orphan gh-pages
+        if: steps.rag.outcome == 'success' && steps.sizecheck.outputs.publishable == 'true'
         env:
           CORPUS_GZ: ${{ steps.rag.outputs.corpus-gz-file }}
           META: ${{ steps.rag.outputs.metadata-file }}
@@ -175,3 +187,28 @@ jobs:
           git push --force \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             gh-pages
+
+      - name: Report the outcome
+        if: always()
+        env:
+          BUILD: ${{ steps.rag.outcome }}
+          PUBLISHABLE: ${{ steps.sizecheck.outputs.publishable }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The job concludes green even when the corpus did not refresh, so
+          # this line is the only place a reader learns which happened.
+          if [ "$BUILD" != "success" ]; then
+            echo "::warning::CodeRAG corpus build did not succeed. The published corpus is unchanged and the site keeps serving it. See the build step log."
+            echo "### CodeRAG corpus NOT refreshed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The build step failed at \`$SHA\`. The previously published corpus is still live, so the site keeps working with slightly older code knowledge." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PUBLISHABLE" != "true" ]; then
+            echo "### CodeRAG corpus built but NOT published" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The corpus exceeded the publish size cap. It is attached as an artifact and the previously published corpus is still live." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### CodeRAG corpus published" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Live at https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz for commit \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
