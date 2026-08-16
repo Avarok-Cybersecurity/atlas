@@ -1,8 +1,11 @@
 name: Classify into a taxonomy path
 description: >-
   Descend a category tree ONE LEVEL AT A TIME, emitting a full path like
-  `performance/decode`. Each level is a separate closed-set classification, so
-  the allowlist guarantee of `actions/categorize` holds at every step.
+  `performance/decode`. Each level is a separate closed-set classification:
+  the model's answer is validated against the handful of keys actually
+  offered at that node, so a hostile input can at worst pick the WRONG
+  member of the allowed set — no model-authored string ever becomes a path
+  segment or flows onward through step outputs.
 
 # ── Why descend rather than pick a leaf from a flat list ─────────────────────
 #
@@ -101,7 +104,9 @@ runs:
     - id: run
       shell: bash
       # Every input crosses in through `env:`, never `${{ }}` spliced into the
-      # script body — same rule as `actions/categorize`, same reason.
+      # script body. Interpolating attacker-authored text (a title, a body, a
+      # path) into `run:` is the workflow-injection shape this repo's
+      # CODEOWNERS warns about; env is data, a spliced expression is code.
       env:
         INPUT_TEXT: ${{ inputs.text }}
         INPUT_CONTEXT: ${{ inputs.context }}

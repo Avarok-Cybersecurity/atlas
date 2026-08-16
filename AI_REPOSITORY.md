@@ -118,7 +118,7 @@ flowchart LR
     end
     subgraph gh [".github/"]
         TJ["pr-taxonomy.json (PR #433)"]
-        CAT["actions/categorize\nactions/classify-path"]
+        CAT["actions/classify-path"]
         CIW["workflows/ci.yml\npr-categorize · pr-benchmark-gate"]
         PTW["workflows/pr-telemetry.yml"]
     end
@@ -156,7 +156,7 @@ Ownership, one line each:
 | The CLI entry point | `crates/spark-server/src/cli/bench_run.rs` (`gate_check_cmd`) |
 | The intent taxonomy and its rules | `.github/pr-taxonomy.json`, `gate/pr_taxonomy.rs` |
 | The union a PR owes | `gate/required.rs` |
-| The classifier plumbing | `.github/actions/categorize`, `.github/actions/classify-path`, `ci.yml` `pr-categorize` |
+| The classifier plumbing | `.github/actions/classify-path`, `ci.yml` `pr-categorize` |
 | The journey ledger | `crates/atlas-governance` |
 | Artifact → ledger validation | `crates/atlas-plugin/src/bin/ledger_harvest.rs` |
 | The cross-PR/debt view | `gate/telemetry.rs`, `bin/pr_telemetry.rs`, `.github/workflows/pr-telemetry.yml` |
@@ -654,20 +654,22 @@ matched prefix — fewer *extra* benches, never a crash — and
 
 ### The classifier
 
-Two composite actions, both `run:`-steps-only because the org's SHA-pinning
-requirement applies transitively (`.github/actions/categorize/action.yml:6-11`):
+One composite action, `run:`-steps-only because the org's SHA-pinning
+requirement applies transitively — the same rule that blocked adopting
+`apache/skywalking-eyes/header` for the SPDX check (see `ci.yml`'s
+license-headers job). A second, flat action (`categorize`: one closed-set
+pick from seven siblings) ran beside the descent through the observe-only
+period and has since been **deleted**: three live runs on one PR produced
+`tooling`, `performance`, `tooling` from it while the descent held
+`infrastructure/*` throughout, its output fed nothing, and every call was
+free-tier budget. Its load-bearing properties were inherited, not lost —
+the caller-validated allowlist (the worst a hostile input achieves is a
+*wrong category from the allowed set*, never arbitrary text flowing into a
+later shell), the `abstain`-vs-`error` distinction (a provider outage must
+never be mistaken for a caller bug or vice versa), and every input crossing
+via `env:`, never `${{ }}` interpolation — the injection shape the repo's
+CODEOWNERS warns about. All of them now apply at *every level* of the walk:
 
-- **`categorize`**: one closed-set classification over an OpenAI-compatible
-  endpoint. The output is validated against a caller-supplied allowlist, so
-  the worst a hostile input achieves is a *wrong category from the allowed
-  set*, never arbitrary text flowing into a later shell
-  (`action.yml:13-19,193-198`). Statuses are `ok | abstain | error`, and
-  the distinction is load-bearing: `abstain` is "could not answer" (no key —
-  the fork-PR case, HTTP failure, off-list reply), `error` is "this action
-  was misconfigured"; a provider outage must never be mistaken for a caller
-  bug or vice versa (`action.yml:68-73`). Every input crosses into the
-  script via `env:`, never `${{ }}` interpolation — the injection shape the
-  repo's CODEOWNERS warns about (`action.yml:83-96`).
 - **`classify-path`**: descends the taxonomy **one level at a time**, one
   closed-set call per level (`.github/actions/classify-path/action.yml:1-27`).
   A flat 25-leaf list weakens the allowlist property (a near-miss is
