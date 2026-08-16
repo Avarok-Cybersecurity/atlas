@@ -43,8 +43,8 @@ mod eligible;
 // after the eligibility cluster moved into the `eligible` submodule.
 use eligible::first_chunk_batched_enabled;
 pub(in crate::model) use eligible::{
-    cache_batch_matches_compatible, check_kernel_batched_eligible, config_is_mla,
-    varlen_prefill_enabled,
+    batched_reserve_hybrid_ssm_ok, cache_batch_matches_compatible, check_kernel_batched_eligible,
+    config_is_mla, varlen_prefill_enabled,
 };
 
 use crate::layer::{
