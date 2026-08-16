@@ -14,6 +14,7 @@
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
 mod adaptive_rung;
 mod adaptive_spec;
+mod admission;
 mod beam_prefill;
 mod confidence;
 mod decode_logits_content;
@@ -329,6 +330,11 @@ pub fn run(
         tracing::info!("ATLAS_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
     }
 
+    // Depth-aware admission watermark (PCND: explicit default = the served
+    // context ceiling, i.e. reserve each request's own max_tokens; see
+    // `admission` module docs and ATLAS_KV_ADMIT_WATERMARK).
+    let admit_watermark = admission::resolve_admit_watermark(sched.limits.max_seq_len);
+
     let pending = Arc::new((
         Mutex::new(PendingQueue {
             requests: Vec::new(),
@@ -417,6 +423,20 @@ pub fn run(
             // not on new requests — never block on the request condvar while
             // any exist, or an empty active set would strand them forever.
             !(swapped.is_empty() && preempted.is_empty()),
+        );
+        // ── Depth-aware admission: queue what cannot fit its decode depth ──
+        // (admit-then-preempt was the C=128 thrash; see `admission` docs).
+        let new_reqs = admission::gate_admissions(
+            &*model,
+            &pending,
+            new_reqs,
+            &active,
+            &prefilling,
+            &swapped,
+            &preempted,
+            admit_watermark,
+            sched.limits.max_seq_len,
+            block_size,
         );
         sched.timing.record(mtp_timing::Phase::LoopDrain, t_loop);
 
