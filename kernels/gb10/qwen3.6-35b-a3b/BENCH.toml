@@ -115,16 +115,18 @@ than merely recorded. Self-start pins ssm_cache_slots=256 via [benchmarks.serve_
 own Marconi snapshots; the flagship recipe leaves the pool at its default 16. That is \
 capacity, not a score lever — the floors below stay the ratchet — but check_record demands \
 the pin on the record, so records measured before the pin stop covering and the next gate \
-run re-records under the declared config. RE-ENCODED 2026-08-16: floors 86.50/86.90 with noise 0.4 rewritten as raw floors 86.10/86.50 with no noise term - the SAME effective bar (pass iff value >= min-noise), folded in because the driver self-verdict compares raw and the CI gate requires verdict == PASS; with the two-term form a run at 86.35/86.70 passed the gate compare but failed its own verdict. The 86.55/86.95 high-water and the ratchet doctrine stand unchanged."""
+run re-records under the declared config."""
 
 [benchmarks.serve_overrides]
 ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
-min = 86.50
+min = 86.90
+noise = 0.4
 
 [benchmarks.metrics.overall_accuracy]
-min = 86.10
+min = 86.50
+noise = 0.4
 
 [benchmarks.metrics.samples]
 min = 1004
