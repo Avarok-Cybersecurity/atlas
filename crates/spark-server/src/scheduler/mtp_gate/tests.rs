@@ -329,12 +329,22 @@ fn stale_other_baseline_cannot_steal_mode() {
 }
 
 #[test]
-fn standard_mtp_thinks() {
-    assert!(spec_dispatch_eligible(
+fn standard_mtp_stays_serial_in_think() {
+    assert!(!spec_dispatch_eligible(
         true, 0, 0, false, false, false, 0, false
     ));
-    assert!(spec_dispatch_eligible(
+    assert!(!spec_dispatch_eligible(
         true, 0, 50, false, false, false, 0, false
+    ));
+    assert!(spec_dispatch_eligible(
+        false, 0, 50, false, false, false, 0, false
+    ));
+}
+
+#[test]
+fn standard_mtp_spec_think_opts_in() {
+    assert!(spec_dispatch_eligible(
+        true, 0, 50, false, false, true, 0, false
     ));
 }
 

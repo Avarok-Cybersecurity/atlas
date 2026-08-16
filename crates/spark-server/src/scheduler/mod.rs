@@ -691,9 +691,8 @@ pub fn run(
                 && spec_width_ok
                 && spec_slots_covered
                 && (
-                    // Standard MTP verifies during `<think>` (same machine as
-                    // thinking-off). DFlash raw-argmax stays serial-in-think
-                    // unless ATLAS_DFLASH_SPEC_THINK=1. Resume guard still
+                    // Both lanes stay serial inside `<think>` unless
+                    // ATLAS_DFLASH_SPEC_THINK=1. Resume guard still
                     // serial-decodes the spec-entry window. EVERY active
                     // sequence must be eligible, not just active[0].
                     active.iter().all(|a| {

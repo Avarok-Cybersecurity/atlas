@@ -144,8 +144,17 @@ pub fn spec_dispatch_eligible(
     if suppress_tool_call || disable_mtp {
         return false;
     }
+    // Speculation never enters `<think>` without the ATLAS_DFLASH_SPEC_THINK
+    // opt-in, for BOTH lanes: batch-K verify is not byte-lossless at T=0 (the
+    // numerics floor can flip a low-margin token mid-reasoning), and the
+    // agentic-webserver gate measured the damage as deterministic 8-9/10
+    // trajectory failures (2026-08-16 bisect: main+this-hunk fails, main
+    // without it passes 10/10).
+    if inside_thinking && !spec_think {
+        return false;
+    }
     if dflash_raw_argmax && !spec_think {
-        return !inside_thinking && post_think_emitted >= resume_guard;
+        return post_think_emitted >= resume_guard;
     }
     if inside_thinking {
         output_len >= resume_guard
