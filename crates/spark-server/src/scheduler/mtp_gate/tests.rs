@@ -432,6 +432,34 @@ fn decode_steps_charge_the_batch_width() {
     );
 }
 
+/// Drain-tail graph borrowing (spark-model `graph_borrow.rs`) may replay a
+/// WIDER captured CUDA graph for a shrinking batch — the wall then includes
+/// pad-lane compute. The arbiter stays honest only if the scheduler keeps
+/// charging steps at the ACTIVE width (tokens actually delivered), never at
+/// any padded width: the model layer hides padding entirely, so the call
+/// sites must pass `active.len()`.
+///
+/// PROVEN BY: rewriting the decode charge in `scheduler/mod.rs` to anything
+/// other than `active.len()` turns this red.
+#[test]
+fn arbiter_charges_active_width_never_a_padded_width() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scheduler/mod.rs"),
+    )
+    .unwrap();
+    assert!(
+        src.contains("gate.record_decode(t0.elapsed(), active.len())"),
+        "decode steps must be charged at the active batch width"
+    );
+    for call in src.split("gate.record_decode(").skip(1) {
+        let args = call.split(';').next().unwrap_or("");
+        assert!(
+            args.contains("active.len()"),
+            "every decode charge must use active.len(), got `record_decode({args})`"
+        );
+    }
+}
+
 /// A width-regime change is a depth-regime change's twin: EWMAs measured at
 /// batch 1 must not arbitrate against windows measured at batch 8. The
 /// mixed-width partial window is discarded, and — like a depth change — the
