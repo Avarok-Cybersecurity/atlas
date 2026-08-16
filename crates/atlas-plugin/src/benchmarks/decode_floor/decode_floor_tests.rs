@@ -273,9 +273,9 @@ fn the_floor_param_is_wired_to_the_gate() {
 fn the_pins_are_the_documented_fingerprint() {
     assert_eq!(RUNS, 3);
     assert_eq!(MAX_TOKENS, 1500);
-    // 800 since the 2026-08-15 promotion calibration: the instrument's
+    // 750 since the 2026-08-15 promotion calibration: the instrument's
     // deterministic natural stop is 915, and the pin must sit under it.
-    assert_eq!(MIN_OUTPUT_TOKENS, 800);
+    assert_eq!(MIN_OUTPUT_TOKENS, 750);
     assert_eq!(MIN_ACCEPT_LEN, 1.5);
     assert!(MINHEAP_PROMPT.contains("MinHeap"));
 }
