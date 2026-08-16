@@ -1,23 +1,35 @@
 {
   "schema": 1,
-  "benchmark_id": "vision-fidelity",
-  "benchmark_name": "Vision Fidelity",
-  "git_sha": "2c80bf2f7a",
-  "recorded_at": 1786857235,
+  "benchmark_id": "ttft-cold-gate",
+  "benchmark_name": "Cold TTFT Regression Gate",
+  "git_sha": "33975ee507",
+  "recorded_at": 1786878104,
   "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "params": {
-    "max_tokens": "128",
-    "request_timeout_s": "300"
+    "median_limit_pct": "3",
+    "p90_limit_pct": "5",
+    "prompt_lengths": "256, 1024, 4096",
+    "repeats": "12",
+    "request_timeout_s": "300",
+    "update_baseline": "true"
   },
   "command": [
     "spark",
     "benchmark",
     "run",
-    "vision-fidelity",
+    "ttft-cold-gate",
     "--param",
-    "max_tokens=128",
+    "median_limit_pct=3",
+    "--param",
+    "p90_limit_pct=5",
+    "--param",
+    "prompt_lengths=256, 1024, 4096",
+    "--param",
+    "repeats=12",
     "--param",
     "request_timeout_s=300",
+    "--param",
+    "update_baseline=true",
     "--pull-request-gate"
   ],
   "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
@@ -25,27 +37,18 @@
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.126.09",
-    "sm_clock_mhz": 2457.0,
+    "sm_clock_mhz": 2437.0,
     "source": "nvidia-smi"
   },
   "metrics": {
-    "conc_1_wall_ms": 491.0,
-    "conc_2_wall_ms": 963.0,
-    "conc_4_wall_ms": 1813.0,
-    "concurrency_levels_clean": 3.0,
-    "control_held": 1.0,
-    "geometry_asserted": 14.0,
-    "geometry_cells": 14.0,
-    "geometry_matched": 14.0,
-    "integrity_measured": 10.0,
-    "integrity_passed": 10.0,
-    "probes_passed": 3.0,
-    "probes_total": 3.0
+    "median_ms": 1642.568217,
+    "p90_ms": 4494.383527,
+    "samples": 36.0
   },
   "frame_status": "Completed",
   "verdict": "PASS",
-  "verdict_reason": "14 geometry cells matched, 3/3 probes, control held",
-  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · conc_1_wall_ms=491.00, conc_2_wall_ms=963.00, conc_4_wall_ms=1813.00, concurrency_levels_clean=3.00, control_held=1.00, geometry_asserted=14.00, geometry_cells=14.00, geometry_matched=14.00, integrity_measured=10.00, integrity_passed=10.00, probes_passed=3.00, probes_total=3.00 · Pass: 14 geometry cells matched, 3/3 probes, control held",
+  "verdict_reason": "median -0.3% (limit +3.0%) · p90 +0.2% (limit +5.0%)",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=1642.57, p90_ms=4494.38, samples=36.00 · Pass: median -0.3% (limit +3.0%) · p90 +0.2% (limit +5.0%)",
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {
       "hash": "f8968e056e438f2db75dd8e3a61fcd049544cfbf565e6ac65a52882ac8b5d81c",

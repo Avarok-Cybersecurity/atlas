@@ -1,57 +1,49 @@
 {
   "schema": 1,
-  "benchmark_id": "ssm-state-poisoning-gate",
-  "benchmark_name": "SSM State Poisoning Gate",
-  "git_sha": "2c80bf2f7a",
-  "recorded_at": 1786857889,
-  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "benchmark_id": "video-fidelity",
+  "benchmark_name": "Video Fidelity",
+  "git_sha": "33975ee507",
+  "recorded_at": 1786877715,
+  "target_model": "unsloth/Qwen3.6-27B-NVFP4",
   "params": {
-    "max_tokens": "1024",
-    "request_timeout_s": "300",
-    "rounds": "12"
+    "max_tokens": "320",
+    "request_timeout_s": "300"
   },
   "command": [
     "spark",
     "benchmark",
     "run",
-    "ssm-state-poisoning-gate",
+    "video-fidelity",
     "--param",
-    "max_tokens=1024",
+    "max_tokens=320",
     "--param",
     "request_timeout_s=300",
-    "--param",
-    "rounds=12",
-    "--serve-override",
-    "disable_thinking=true",
-    "--serve-override",
-    "ssm_cache_slots=256",
     "--pull-request-gate"
   ],
-  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
-  "serve_overrides": {
-    "disable_thinking": "true",
-    "ssm_cache_slots": "256"
-  },
+  "served_by": "qwen3.6/qwen3.6-27b-nvfp4-unsloth",
   "atlas_version": "1.0.0-beta-preview",
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.126.09",
-    "sm_clock_mhz": 2444.0,
+    "sm_clock_mhz": 2483.0,
     "source": "nvidia-smi"
   },
   "metrics": {
-    "collapsed": 0.0,
-    "invariant": 12.0,
-    "jittered": 0.0,
-    "min_cached_prompt_tokens": 1026.0,
-    "rounds": 12.0,
-    "sum_wall_s": 114.41042592,
-    "unmeasured": 0.0
+    "conc_1_correct": 1.0,
+    "conc_1_wall_ms": 753.0,
+    "conc_2_correct": 2.0,
+    "conc_2_wall_ms": 1513.0,
+    "conc_4_correct": 4.0,
+    "conc_4_wall_ms": 3015.0,
+    "control_held": 1.0,
+    "legs_asserted": 13.0,
+    "legs_passed": 13.0,
+    "legs_skipped": 0.0
   },
   "frame_status": "Completed",
   "verdict": "PASS",
-  "verdict_reason": "12 of 12 replays byte-identical to the reference",
-  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · collapsed=0.00, invariant=12.00, jittered=0.00, min_cached_prompt_tokens=1026.00, rounds=12.00, sum_wall_s=114.41, unmeasured=0.00 · Pass: 12 of 12 replays byte-identical to the reference",
+  "verdict_reason": "13/13 legs passed, control held, 0 skipped",
+  "summary": "unsloth/Qwen3.6-27B-NVFP4 · conc_1_correct=1.00, conc_1_wall_ms=753.00, conc_2_correct=2.00, conc_2_wall_ms=1513.00, conc_4_correct=4.00, conc_4_wall_ms=3015.00, control_held=1.00, legs_asserted=13.00, legs_passed=13.00, legs_skipped=0.00 · Pass: 13/13 legs passed, control held, 0 skipped",
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {
       "hash": "f8968e056e438f2db75dd8e3a61fcd049544cfbf565e6ac65a52882ac8b5d81c",
