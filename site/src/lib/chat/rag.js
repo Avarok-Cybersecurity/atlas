@@ -51,7 +51,7 @@ function systemPrompt(repo, commit, context) {
  *   streamed thinking/answer tokens, forwarded verbatim from openrouter.chat
  * @returns {Promise<{answer: string, sources: Array<object>}>}
  */
-export async function askCodebase(question, history, { apiKey, corpus, onPhase, onDelta }) {
+export async function askCodebase(question, history, { apiKey, corpus, onPhase, onDelta, chatModel }) {
   onPhase?.('retrieving');
 
   const vector = await getEmbedding(question, apiKey);
@@ -121,7 +121,7 @@ export async function askCodebase(question, history, { apiKey, corpus, onPhase, 
     [...history, { role: 'user', content: question }],
     systemPrompt(corpus.repo, corpus.commit, context),
     apiKey,
-    { onDelta }
+    { onDelta, model: chatModel }
   );
 
   return { answer, sources };

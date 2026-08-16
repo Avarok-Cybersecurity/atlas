@@ -488,6 +488,11 @@ export const codeChat = {
   sourcesOne: 'source',
   sourcesMany: 'sources',
   loadFail: 'The chat window did not load, maybe the network blinked. Close and try again.',
+  model: {
+    label: 'answer model',
+    reset: 'back to free'
+  },
+
   errors: {
     wasm: {
       tag: 'engine fault',
@@ -512,6 +517,13 @@ export const codeChat = {
     rate: {
       tag: 'rate limited',
       body: 'The free OpenRouter models are catching their breath. Give it a few seconds.',
+      retry: 'ask again'
+    },
+    quota: {
+      tag: 'daily limit reached',
+      body: 'Your OpenRouter key has spent its free model allowance for today. Retrieval still runs locally so the corpus stays loaded and ready.',
+      reset: 'The free pool refills at',
+      paid: 'switch to the paid model and spend my own credits',
       retry: 'ask again'
     },
     key: {

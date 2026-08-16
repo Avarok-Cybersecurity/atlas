@@ -4,7 +4,9 @@
   // aria, scroll lock, Escape) plus a real focus trap and focus return since
   // this dialog holds form controls. All engine state comes from
   // chat/state.svelte.js (the contract SSOT), this component never fetches.
-  import { chat, ensureReady, abortLoad, setKey, clearKey, ask } from '../chat/state.svelte.js';
+  import {
+    chat, ensureReady, abortLoad, setKey, clearKey, ask, setChatModel, resetChatModel
+  } from '../chat/state.svelte.js';
   import ChatMessage from './ChatMessage.svelte';
   import { codeChat } from '$lib/data.js';
 
@@ -33,6 +35,20 @@
   // component only ever mounts in the browser (lazy import on click).
   const sourcesOpen =
     typeof window === 'undefined' ? true : !window.matchMedia('(max-width: 860px)').matches;
+
+  // A spent daily allowance names a real reset time, and the same model without
+  // the ":free" suffix is usually available on credits. Both are shown only
+  // when they actually apply.
+  const resetLabel = $derived(
+    askError?.resetAt
+      ? new Date(askError.resetAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      : ''
+  );
+  const FREE = ':free';
+  const paidModel = $derived(
+    chat.chatModel.endsWith(FREE) ? chat.chatModel.slice(0, -FREE.length) : ''
+  );
+  const modelIsDefault = $derived(chat.chatModel.endsWith(FREE));
 
   // The in-flight streamed card takes over from the pending line as soon as
   // the first thinking or answer token lands.
@@ -182,7 +198,9 @@
     } catch {
       const k = chat.error?.kind;
       askError = {
-        kind: k === 'rate' || k === 'key' ? k : 'generic',
+        kind: ['rate', 'quota', 'key'].includes(k) ? k : 'generic',
+        // A per-day cap knows when it lifts; the card names that time.
+        resetAt: k === 'quota' ? (chat.error?.resetAt ?? null) : null,
         // Engine-crafted diagnostics (e.g. the embedding-dim mismatch) are
         // written for humans — surface them instead of the generic copy.
         detail: k === 'corpus' ? chat.error?.message : null
@@ -213,6 +231,15 @@
       lastQuestion,
       messages.slice(0, -1).map((m) => ({ role: m.role, content: m.text }))
     );
+  }
+
+  // Spending the visitor's credits is their call, so this only ever runs from
+  // an explicit click on the quota card.
+  function usePaidModel() {
+    if (!paidModel) return;
+    setChatModel(paidModel);
+    askError = null;
+    retryAsk();
   }
 
   function chipPick(q) {
@@ -354,9 +381,19 @@
           <div class="cc-error" role="alert">
             <span class="cc-error-tag">{codeChat.errors[askError.kind].tag}</span>
             <p class="cc-error-body">{askError.detail ?? codeChat.errors[askError.kind].body}</p>
-            <button type="button" class="cc-error-retry" onclick={retryAsk}>
-              {codeChat.errors[askError.kind].retry}
-            </button>
+            {#if askError.kind === 'quota' && resetLabel}
+              <p class="cc-error-reset">{codeChat.errors.quota.reset} {resetLabel}.</p>
+            {/if}
+            <div class="cc-error-actions">
+              {#if askError.kind === 'quota' && paidModel}
+                <button type="button" class="cc-error-paid" onclick={usePaidModel}>
+                  {codeChat.errors.quota.paid}
+                </button>
+              {/if}
+              <button type="button" class="cc-error-retry" onclick={retryAsk}>
+                {codeChat.errors[askError.kind].retry}
+              </button>
+            </div>
           </div>
         {/if}
       </div>
@@ -390,6 +427,15 @@
         <span class="cc-connected"><span class="dot" aria-hidden="true"></span>{codeChat.key.connectedTag}</span>
         <span class="cc-keyrow-note">{codeChat.key.connectedNote}</span>
         <button type="button" class="cc-keyrow-swap" onclick={swapKey}>{codeChat.key.change}</button>
+        <span class="cc-model" title={chat.chatModel}>
+          <span class="cc-model-label">{codeChat.model.label}</span>
+          <span class="cc-model-id">{chat.chatModel}</span>
+          {#if !modelIsDefault}
+            <button type="button" class="cc-model-reset" onclick={resetChatModel}>
+              {codeChat.model.reset}
+            </button>
+          {/if}
+        </span>
       </div>
     {/if}
 

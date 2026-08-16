@@ -193,6 +193,52 @@ export function http429Handler({ log } = {}) {
   };
 }
 
+// The daily free-model allowance, verified against the live API on
+// 2026-08-16. Distinct from a momentary 429 in exactly one way that matters:
+// metadata.limit_source names a per-day source and carries the reset stamp.
+export const QUOTA_RESET_AT = 1786924800000;
+
+/** Factory: HTTP 429 for a spent per-day free-model allowance. */
+export function dailyQuota429Handler({ log, resetAt = QUOTA_RESET_AT } = {}) {
+  return async (route) => {
+    if (await handlePreflight(route)) return;
+    log?.push(route.request().postDataJSON());
+    await route.fulfill(
+      json(
+        {
+          error: {
+            message: 'Rate limit exceeded: free-models-per-day-high-balance. ',
+            code: 429,
+            metadata: {
+              headers: {
+                'X-RateLimit-Limit': '1000',
+                'X-RateLimit-Remaining': '0',
+                'X-RateLimit-Reset': String(resetAt)
+              },
+              limit_source: 'openrouter_free_tier_daily',
+              remedy_hint: 'Wait for the daily reset, or purchase credits.'
+            }
+          }
+        },
+        429
+      )
+    );
+  };
+}
+
+/**
+ * Factory: quota-limit the ":free" model while the paid twin answers normally,
+ * so the "switch to the paid model" remedy can be exercised end to end.
+ */
+export function freeQuotaPaidOkHandler(answer, { log } = {}) {
+  const quota = dailyQuota429Handler({ log });
+  const ok = chatHandler(answer, { log });
+  return async (route) => {
+    const model = route.request().postDataJSON()?.model ?? '';
+    return model.endsWith(':free') ? quota(route) : ok(route);
+  };
+}
+
 /**
  * Factory: the OpenRouter quirk — HTTP 200 whose body is an error envelope
  * (transient upstream saturation). The engine must treat it as retryable.
