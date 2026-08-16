@@ -292,89 +292,19 @@ pub fn swap_out_sequence(
         model.detach_slot_for_reuse(&mut a.seq);
     }
 
-    let (swap_id, mut writer) = spill.create_file()?;
-    model.save_sequence_state(&a.seq, &mut writer)?;
-    drop(writer);
-    spill.record_usage(swap_id);
-
-    let num_blocks = a.seq.block_table.len();
-    let seq_len = a.seq.seq_len;
-    let tokens = a.seq.tokens.clone();
-
-    // Free GPU resources (KV blocks + SSM slot).
-    let slot_idx = a.seq.slot_idx as u32;
-    model.free_sequence(&mut a.seq)?;
-    let _ = model.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF1);
-
-    Ok(SwappedSeq {
-        tokens,
-        session_hash: a.session_hash,
-        adapter_slot: a.seq.adapter_slot,
-        adapter_id: a.seq.adapter_id,
-        seq_len,
-        num_blocks,
-        last_token: a.last_token,
-        output_tokens: a.output_tokens,
-        remaining: a.remaining,
-        min_tokens: a.min_tokens,
-        eos_tokens: a.eos_tokens,
-        sink: a.sink,
-        temperature: a.temperature,
-        top_k: a.top_k,
-        top_p: a.top_p,
-        top_n_sigma: a.top_n_sigma,
-        min_p: a.min_p,
-        repetition_penalty: a.repetition_penalty,
-        presence_penalty: a.presence_penalty,
-        frequency_penalty: a.frequency_penalty,
-        repetition_penalty_window: 256,
-        lz_penalty: DEFAULT_LZ_PENALTY,
-        dry_multiplier: a.dry_multiplier,
-        dry_base: a.dry_base,
-        dry_allowed_length: a.dry_allowed_length,
-        dry_sequence_breakers: a.dry_sequence_breakers,
-        logit_bias: a.logit_bias,
-        inside_thinking: a.inside_thinking,
-        enable_thinking: a.enable_thinking,
-        thinking_budget: a.thinking_budget,
-        repetition_detection: a.repetition_detection,
-        spontaneous_think_budget: a.spontaneous_think_budget,
-        thinking_tokens: a.thinking_tokens,
-        force_end_thinking: a.force_end_thinking,
-        sentence_defer_count: a.sentence_defer_count,
-        consecutive_confident: a.consecutive_confident,
-        in_code_fence: a.in_code_fence,
-        think_end_token: a.think_end_token,
-        think_start_token: a.think_start_token,
-        think_ended: a.think_ended,
-        think_just_ended: a.think_just_ended,
-        post_think_emitted: a.post_think_emitted,
-        think_skip_count: a.think_skip_count,
-        require_tool_call: a.require_tool_call,
-        tool_request: a.tool_request,
-        tools_present: a.tools_present,
-        suppress_tool_call: a.suppress_tool_call,
-        disable_mtp: a.disable_mtp,
-        mtp_acct: a.mtp_acct,
-        content_started: a.content_started,
-        content_tokens: a.content_tokens,
-        prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
-        think_watchdog_fires: a.think_watchdog_fires,
-        think_force_closed: a.think_force_closed,
-        rollback_count: a.rollback_count,
-        tool_call_start_token: a.tool_call_start_token,
-        tool_call_opened: a.tool_call_opened,
-        tool_call_end_token: a.tool_call_end_token,
-        last_token_time: a.last_token_time,
-        request_start: a.request_start,
-        decode_start: a.decode_start,
-        seed: a.seed,
-        top_logprobs: a.top_logprobs,
-        logprobs_data: a.logprobs_data,
-        timeout_at: a.timeout_at,
-        swap_id,
-        cached_prompt_tokens: a.cached_prompt_tokens,
-    })
+    // Save + free + build moved to `preempt::spill_out_sequence` so the
+    // decode-time preemption path (which must NOT reorder/compact the active
+    // vec mid-step) can share it — SSOT for the spill image. On error the
+    // victim is surfaced to its client and freed here rather than silently
+    // dropped (the old path leaked the GPU blocks AND the client saw only
+    // "Inference cancelled").
+    match super::preempt::spill_out_sequence(model, a, spill) {
+        Ok(s) => Ok(s),
+        Err((mut a, e)) => {
+            send_error(model, &mut a, &format!("swap-out failed: {e:#}"));
+            Err(e)
+        }
+    }
 }
 
 /// Resume a swapped-out sequence by restoring its state from disk.
@@ -385,6 +315,9 @@ pub fn resume_swapped_seq(
     s: SwappedSeq,
     spill: &mut KvSpillManager,
 ) -> Result<ActiveSeq> {
+    // Starvation guard: a just-resumed sequence must not be the next KV
+    // victim before it makes real progress (see `preempt` module docs).
+    let immune_until = s.output_tokens.len() + super::preempt::PREEMPT_IMMUNITY_TOKENS;
     let mut seq = model.alloc_sequence()?;
     let mut reader = spill.open_file(s.swap_id)?;
     model.restore_sequence_state(&mut seq, s.num_blocks, &mut reader)?;
@@ -494,6 +427,7 @@ pub fn resume_swapped_seq(
         timeout_at: s.timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(s.temperature),
         cached_prompt_tokens: s.cached_prompt_tokens,
+        preempt_immune_until_tokens: immune_until,
     })
 }
 

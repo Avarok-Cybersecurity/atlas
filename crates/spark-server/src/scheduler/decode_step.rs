@@ -15,6 +15,9 @@ pub fn step_decode_only(
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
+    spill: Option<&mut KvSpillManager>,
+    swapped: &mut Vec<SwappedSeq>,
+    preempted: &mut Vec<PreemptedSeq>,
 ) {
     let t0 = std::time::Instant::now();
     let n = active.len();
@@ -68,72 +71,17 @@ pub fn step_decode_only(
 
     // Decode, PREEMPTING on KV exhaustion instead of failing the whole batch.
     //
-    // Sequences grow one block per `block_size` tokens as they decode, but
-    // admission control only sizes the pool against a new request's PROMPT
-    // (scheduler/mod.rs: `blocks_needed = prompt_len / block_size + 1`) and is
-    // never re-consulted afterwards. So N conversations admitted comfortably at
-    // 2K tokens each can collectively exhaust the pool once they reach 18K —
-    // measured: 8 seqs x 1173 blocks = 9384 needed vs a 9058-block pool.
-    // Previously ONE sequence failing to extend its block table errored EVERY
-    // sequence in the batch, destroying up to `max_num_seqs` in-flight requests
-    // because one of them wanted a single extra block.
-    //
-    // Instead: drop the largest sequence (its `free_sequence` in `send_error`
-    // returns its blocks to the pool) and retry, so the rest of the batch makes
-    // progress. Victim choice mirrors the admission-time policy — largest
-    // block_table, grammar-active sequences excluded (their state isn't
-    // reconstructible). Preferable would be swapping the victim out for later
-    // resume (`swap_out_sequence`), but that needs the KvSpillManager threaded
-    // in; dropping one to save the rest is the strictly-better-than-today fix.
-    let logits = loop {
-        let tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
-        let mut refs: Vec<&mut SequenceState> = active.iter_mut().map(|a| &mut a.seq).collect();
-        match model.decode_batch(&tokens, &mut refs, 0) {
-            Ok(l) => break l,
-            Err(e) => {
-                drop(refs);
-                let victim = if format!("{e:#}").contains("KV cache exhausted") && active.len() > 1
-                {
-                    active
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, a)| a.grammar_state.is_none())
-                        .max_by_key(|(_, a)| a.seq.block_table.len())
-                        .map(|(i, _)| i)
-                } else {
-                    None
-                };
-                let Some(vi) = victim else {
-                    tracing::error!("decode_batch error: {e:#}");
-                    for mut a in active.drain(..) {
-                        send_error(model, &mut a, &format!("{e:#}"));
-                    }
-                    // A destroyed CUDA context (issue #429) surfaces here like
-                    // any other decode error, but it is terminal: the next tick
-                    // would admit the next request onto a dead context and fail
-                    // it identically, forever. The backend has already probed
-                    // and latched by this point, so the only thing left is to
-                    // stop. `request` is idempotent, so the echoing failures of
-                    // the remaining in-flight batches do not re-trigger it.
-                    if let Some(reason) = atlas_core::fault::global().fault() {
-                        crate::tui::shutdown::request(reason);
-                    }
-                    return;
-                };
-                // `remove` (not `swap_remove`) keeps the ascending SSM-slot order
-                // established above; a hole only costs the batched path a fallback
-                // to the eager loop for this step, and the next step re-sorts.
-                let mut v = active.remove(vi);
-                tracing::warn!(
-                    "KV cache exhausted during decode: preempting slot={} ({} blocks) \
-                     so the other {} sequence(s) can continue",
-                    v.seq.slot_idx,
-                    v.seq.block_table.len(),
-                    active.len(),
-                );
-                send_error(model, &mut v, &format!("{e:#}"));
-            }
-        }
+    // Sequences grow one block per `block_size` tokens as they decode; when
+    // admission overcommitted the pool (see `admission`), decode is where
+    // the collision lands. `decode_batch_with_preemption` spills or requeues
+    // ONE victim per retry — for later RESUME, never a kill — so the rest of
+    // the batch makes progress and the victim's stream continues once blocks
+    // free up. See the `preempt` module docs for the policy and the
+    // measured C=128 evidence that motivated it.
+    let Some(logits) =
+        super::preempt::decode_batch_with_preemption(model, active, spill, swapped, preempted)
+    else {
+        return;
     };
     // Preemption may have shrunk the batch; `n` gates the n==1 paths below.
     let n = active.len();

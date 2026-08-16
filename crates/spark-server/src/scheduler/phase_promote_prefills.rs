@@ -182,6 +182,7 @@ fn build_active_seq_from_prefill(
         spontaneous_think_budget: p.spontaneous_think_budget,
         thinking_tokens: 0,
         cached_prompt_tokens: cached_prompt_tok,
+        preempt_immune_until_tokens: 0,
         force_end_thinking: false,
         think_force_closed: false,
         sentence_defer_count: 0,
