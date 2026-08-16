@@ -381,13 +381,16 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // shared agentic recipe is a serial reproduction config (batch 1, bf16 KV,
     // 256 Marconi slots, 32K context) that strangles a concurrency instrument.
     // lm_head_dtype is deliberately absent — the recipe's bf16 head is a
-    // correctness pin, not a throughput knob.
+    // correctness pin, not a throughput knob. Marconi is pinned at 8 slots
+    // (2026-08-16): concurrency serving does not replay long shared prefixes,
+    // so 8 retains the warm-prefix value at 1/4 the 32-slot reserve
+    // (151.5 MiB/slot — see the BENCH.toml comment for the byte math).
     let sweep = baseline_for(&root, "concurrency-sweep").unwrap();
     let (_, c) = sweep.resolve("gb10", None).unwrap();
     for (key, want) in [
         ("max_batch_size", "32"),
         ("kv_cache_dtype", "fp8"),
-        ("ssm_cache_slots", "32"),
+        ("ssm_cache_slots", "8"),
         ("max_model_len", "4096"),
     ] {
         assert_eq!(
