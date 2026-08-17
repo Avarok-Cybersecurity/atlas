@@ -602,34 +602,12 @@ impl Qwen3AttentionLayer {
         // stream bandwidth. nsys (2026-07-18, drafts=3): the M64-tile
         // w4a16_gemm_t this bypasses cost 16.3 ms/verify-step across the 16
         // attention layers' q/k/v/o at M=4 (94% tile padding) vs ~4.5 ms via
-        // the GEMV. m=5..8 rides w4a16_gemv_batch8 (batchm_bench: same
-        // weight-streaming bandwidth, no M>4 cliff). Gated to m<=8 so the
-        // DFlash wide verify (M=17) keeps the GEMM.
-        if m <= 4 && self.w4a16_gemv_batch4_k.0 != 0 {
-            return ops::w4a16_gemv_batchm(
-                gpu,
-                self.w4a16_gemv_batch4_k,
-                input,
-                w_base,
-                output,
-                m,
-                n,
-                k,
-                stream,
-            );
-        }
-        if (5..=8).contains(&m) && self.w4a16_gemv_batch8_k.0 != 0 {
-            return ops::w4a16_gemv_batchm(
-                gpu,
-                self.w4a16_gemv_batch8_k,
-                input,
-                w_base,
-                output,
-                m,
-                n,
-                k,
-                stream,
-            );
+        // the GEMV. m=5..8 rides the narrow batch{5,6,7,8} tiers (batchm_bench:
+        // same weight-streaming bandwidth, no M>4 cliff). The family caps at
+        // M=8, so the DFlash wide verify (M=17) keeps the GEMM.
+        let batchm = self.w4a16_batchm.kernel(m);
+        if batchm.0 != 0 {
+            return ops::w4a16_gemv_batchm(gpu, batchm, input, w_base, output, m, n, k, stream);
         }
         if let Some(wt) = w_t {
             // Small-M routing (w4a16_m17_bench): at M<=64 the M64-tile

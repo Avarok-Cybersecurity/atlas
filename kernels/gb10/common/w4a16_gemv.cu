@@ -451,9 +451,10 @@ extern "C" __global__ void w4a16_gemv_logits(
 //
 // Register cost lands at or BELOW the pre-fix body — batch16 56 vs 70 and
 // batch32 80 vs 106, so 4 and 3 CTA/SM where the pre-fix body got 3 and 2 —
-// and no `__launch_bounds__` is wanted on the wide tiers: pinning them all
-// measured 12.70 ms against 11.49 ms free. batch8 is the one exception (see
-// its entry point) — it is the only tier still above the pre-fix time.
+// and no `__launch_bounds__` is wanted on the WIDE tiers (16/32): pinning them
+// all measured 12.70 ms against 11.49 ms free. The narrow M=5..8 tiers are the
+// exception and are pinned to 5 CTA/SM; the register table and the reasoning
+// are on `w4a16_gemv_batch5`.
 //
 // A:[M,K] BF16, B_packed:[N,K/2], B_scale:[N,K/16] FP8-E4M3, scale2 FP32,
 // C:[M,N] BF16. Grid: (ceil(N/4),1,1) Block: (256,1,1).
@@ -537,9 +538,27 @@ __device__ __forceinline__ void w4a16_gemv_batchm_impl(
                 float part = 0.0f;
                 #pragma unroll
                 for (int b = 0; b < 8; b++) {
-                    float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&ar[b]);
-                    part = fmaf(af.x, wl[b * 2], part);
-                    part = fmaf(af.y, wl[b * 2 + 1], part);
+                    // BF16 -> FP32 is EXACT and is nothing but `bits << 16`
+                    // (BF16 is the high half of the FP32 word), so this is a
+                    // bit-for-bit substitution for
+                    // `__bfloat1622float2(*(const __nv_bfloat162*)&ar[b])`,
+                    // NOT a numeric change: the intrinsic lowers to
+                    // `mov.b32 %f, {0, %h}`, which forces ptxas to first
+                    // EXTRACT each 16-bit half into its own register (one
+                    // PRMT apiece) and then re-assemble it. Doing the two
+                    // shifts on the packed word the load already produced
+                    // skips the extraction entirely: measured on sm_121f
+                    // (`cuobjdump -sass`, --fmad=false) it removes all 64
+                    // PRMT from batch8 (824 -> 760 static instructions,
+                    // -7.8%) and all 32 from batch4 (472 -> 440, -6.8%) at
+                    // identical registers (48), smem and occupancy. The
+                    // template is issue-bound at M>=5, not DRAM-bound (see
+                    // the tier table on `w4a16_gemv_batch5`), so instructions
+                    // removed from this loop are the whole game.
+                    const float ax = __uint_as_float(ar[b] << 16);
+                    const float ay = __uint_as_float(ar[b] & 0xFFFF0000u);
+                    part = fmaf(ax, wl[b * 2], part);
+                    part = fmaf(ay, wl[b * 2 + 1], part);
                 }
                 acc[t] = fmaf(scale, part, acc[t]);
             }
@@ -635,6 +654,90 @@ extern "C" __global__ void w4a16_gemv_batch4(
     w4a16_gemv_batchm_impl<4>(A, B_packed, B_scale, scale2, C, M, N, K);
 }
 
+// ── EXACT-M TIERS 5/6/7 ─────────────────────────────────────────────────────
+// Why they exist. `MAX_M` sizes `acc[]`, `s_vl[]` and `smem[]`, and — because
+// the row loop is `#pragma unroll`ed — it also sizes the CODE. The `t >= M`
+// guard skips the WORK of a dead row at run time but not its instructions:
+// running M=5 on the MAX_M=8 tier still carries three dead unrolled row
+// blocks through the hot loop. Measured on the real 27B qkv/o shape
+// (N=5120 K=5120, cold-cycled weights, 273 GB/s peak) BEFORE this change:
+//
+//   tier    M    time      eff BW     % peak
+//   batch4  4    70.5 us   209.2 GB/s  76.6%
+//   batch8  4    74.8 us   197.3 GB/s  72.3%   <- same M, same work, +6.1%
+//   batch8  5    89.0 us   165.7 GB/s  60.7%
+//   batch8  6    91.5 us   161.2 GB/s  59.0%
+//   batch8  8   106.4 us   138.5 GB/s  50.7%
+//   batch16 8   113.3 us   130.1 GB/s  47.7%
+//
+// The batch8-at-M=4 row is the whole argument: identical rows, identical
+// weight stream, +6.1%. It is NOT the `__launch_bounds__` — batch4 lands on
+// 48 registers / 5 CTA with no pragma at all, exactly what the pragma pins
+// batch8 to, so the two tiers run at the SAME occupancy. What differs is the
+// unrolled body: 824 vs 472 static SASS instructions before the conversion
+// fix above, 760 vs 440 after. Sizing the tier to the real row count is the
+// only way to stop paying for rows that are not there.
+//
+// Occupancy. `__launch_bounds__(BLOCK_SIZE, 5)` on 5/6/7 for the same reason
+// it is on 8, and it is free here — measured with `ptxas -v` on sm_121f:
+//
+//   MAX_M   free regs / CTA-per-SM      pinned to 5 CTA
+//   5       48 / 5   (already 5)        48, no spill
+//   6       55 / 4                      48, no spill
+//   7       56 / 4                      48, no spill
+//   8       56 / 4                      48, no spill  <- the existing pin
+//
+// i.e. 6 and 7 would otherwise DROP to 4 CTA/SM and lose the thing the tier
+// was added to win. 48 is the ceiling at 5 CTA (5 x 256 x 48 = 61440 of the
+// SM's 65536 registers; the next allocation step, 56, only fits 4 CTAs), and
+// asking for 6 CTA spills 32 B at MAX_M=8 and 8 B at MAX_M=5.
+//
+// Dispatch picks the narrowest RESOLVED tier >= M
+// (`spark-model/src/layers/w4a16_gemv_tiers.rs`); `ATLAS_NO_GEMV_EXACT_M_TIERS=1`
+// hides 5/6/7 and restores the batch4/batch8-only decision.
+//
+// Bit-parity: same template, same `MAX_M`-independent FMA chain per row, so
+// tier 5/6/7 output is bit-identical to tier 8 (and to M x `w4a16_gemv`) at
+// the same M — enforced by `w4a16_batch_bitparity_microtest`.
+extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch5(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<5>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch6(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<6>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch7(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<7>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
 // M<=8 (chain-verify K=5..8) — keeps M=5..8 projections on the
 // weight-streaming batched GEMV instead of falling to the tile GEMMs.
 // batch16's acc[16] + smem[16][8] register/smem pressure is halved at
@@ -646,6 +749,11 @@ extern "C" __global__ void w4a16_gemv_batch4(
 // 2.261 ms over the gate's M=5..8 legs (6 CTA is worse again, 2.437 ms). It is
 // also the only tier still slower than the pre-fix body (1.969 ms, +10%);
 // batch2/3/4/16/32 are all at or under it.
+//
+// DROPPING the pragma was re-examined 2026-08-17 and REJECTED: it does not
+// reproduce batch4's codegen (batch4 is 48/5 for free), it produces the
+// 56-register / 4-CTA variant the line above already measured as the slower
+// of the two. The tiers above carry the same pin for the same reason.
 extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch8(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,

@@ -415,8 +415,7 @@ impl MtpHead {
                 "gemm",
                 "dense_gemm_bf16_pipelined",
             ),
-            w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
-            w4a16_gemv_batch8_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             w4a16_gemv_batch16_k: crate::layers::try_kernel(
                 gpu,
                 "w4a16_gemv",

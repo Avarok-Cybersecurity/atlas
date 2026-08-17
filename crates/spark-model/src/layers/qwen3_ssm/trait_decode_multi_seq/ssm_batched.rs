@@ -94,7 +94,7 @@ impl Qwen3SsmLayer {
             && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
                 || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
             || (self.qkvz_nvfp4.is_some()
-                && ((self.w4a16_gemv_batch4_k.0 != 0 && n <= 16) || tc_wide_ok));
+                && ((self.w4a16_batchm.has_base() && n <= 16) || tc_wide_ok));
         let out_ok = self.out_proj_fp8w.is_some()
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
@@ -123,7 +123,7 @@ impl Qwen3SsmLayer {
                     out_ok,
                 );
                 let nvfp4 = self.qkvz_nvfp4.is_some();
-                let b4 = self.w4a16_gemv_batch4_k.0 != 0;
+                let b4 = self.w4a16_batchm.has_base();
                 let tct = self.qkvz_nvfp4_t.is_some() && self.out_proj_nvfp4_t.is_some();
                 WHY.call_once(|| {
                     tracing::info!(
@@ -225,14 +225,14 @@ impl Qwen3SsmLayer {
         let use_batch4 = gemv_batch_k.0 != 0
             && n <= 16
             && std::env::var("ATLAS_SSM_GEMV_BATCH4").ok().as_deref() != Some("0");
-        // FP4 sibling: w4a16_gemv batch4 (M<=4) / batch8 (M=5..8) / batch16
-        // (M<=16). Single NVFP4 weight pass for the QKVZ + out_proj GEMVs
-        // (amortizes the weight read). batch8 halves batch16's acc/smem
-        // pressure at the mid tier; 0-handle → batch16 as before.
-        let fp4_gemv_batch_k = if n <= 4 {
-            self.w4a16_gemv_batch4_k
-        } else if n <= 8 && self.w4a16_gemv_batch8_k.0 != 0 {
-            self.w4a16_gemv_batch8_k
+        // FP4 sibling: the narrow w4a16_gemv batch{4..8} family (M<=8), else
+        // batch16 (M<=16). Single NVFP4 weight pass for the QKVZ + out_proj
+        // GEMVs (amortizes the weight read). The narrow tiers size acc/smem —
+        // and, because the row loop is unrolled, the CODE — to the real row
+        // count instead of batch16's 16; 0-handle → batch16 as before.
+        let narrow = self.w4a16_batchm.kernel(n as u32);
+        let fp4_gemv_batch_k = if narrow.0 != 0 {
+            narrow
         } else {
             self.w4a16_gemv_batch16_k
         };

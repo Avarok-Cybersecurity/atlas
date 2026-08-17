@@ -108,14 +108,10 @@ impl TransformerModel {
         };
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
-        // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
-        // 0-handle on targets that predate it; dispatch falls back).
-        let w4a16_gemv_batch4_kernel =
-            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
-        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
-        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
-        let w4a16_gemv_batch8_kernel =
-            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
+        // Narrow batched-GEMV family (M=4..8) for the K=3..8 verify lm_head
+        // (try_kernel per tier: 0-handle on targets that predate a tier;
+        // dispatch widens, then falls back to the GEMM).
+        let w4a16_batchm = crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu.as_ref());
         // M<=16 batched GEMV for the wide BATCHED-DECODE lm_head. The SSM mixer
         // already carries this handle (qwen3_ssm/mod.rs); the model level did
         // not, so the decode head had no arm above 8 and fell to the M64-tile
@@ -712,8 +708,7 @@ impl TransformerModel {
             w4a16_gemm_t_bf16_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
-            w4a16_gemv_batch4_kernel,
-            w4a16_gemv_batch8_kernel,
+            w4a16_batchm,
             w4a16_gemv_batch16_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
