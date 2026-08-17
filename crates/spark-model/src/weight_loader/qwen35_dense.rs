@@ -235,9 +235,18 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         let fp8_ssm_prefill = std::env::var_os("ATLAS_NO_GDN_FP8_PREFILL").is_none();
         let bf16_to_fp8_k = if fp8_ssm_prefill {
             tracing::info!(
+                // The old wording — "NVFP4 kept as structural fallback for
+                // decode batch paths" — was DISPROVEN by nsys at C=8
+                // (2026-08-17): the batched verify QKVZ was taking this FP8
+                // copy at every M>8, 26.3% of the step. It is true again only
+                // because that arm now reads NVFP4; say the actual rule so the
+                // log cannot re-drift from the dispatch.
                 "SSM in_proj_qkv + out_proj via native FP8 prefill GEMM \
-                 (BF16 act × FP8 weight via fp8_gemm_n128); NVFP4 kept as \
-                 structural fallback for decode batch paths"
+                 (BF16 act × FP8 weight via fp8_gemm_n128). PREFILL ONLY: \
+                 decode + batched verify read the NVFP4 copy — weight-streaming \
+                 GEMV at M<=8, tile GEMM above it (trait_decode_batched.rs). \
+                 The FP8 copy reaches decode only at M<=8 on a build whose \
+                 batched NVFP4 GEMVs are absent"
             );
             Some(gpu.kernel("w4a16", "bf16_to_fp8")?)
         } else {
