@@ -16,6 +16,10 @@ toml = "0.8"
 # happened to hold when the record was written.
 atlas-closure = { path = "../atlas-closure" }
 serde_json.workspace = true
+# Raw-bytes hash of the committed GDN AOT kernel object (gdn_holo_0.o) for the
+# gb10 attestation entry — the .o is binary, so it cannot go through
+# atlas-closure's UTF-8 include expansion.
+sha2.workspace = true
 
 # Same crate the build script already pulls, so Cargo.lock is unchanged.
 # `tests/kernel_shadow_detector.rs` reads the `[modules]` and `[shadow_exempt]`

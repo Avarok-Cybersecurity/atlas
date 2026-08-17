@@ -626,6 +626,54 @@ fn closure_attestation(
             }),
         );
     }
+    // The vendored FlashInfer GDN AOT kernel (gb10 only). Not a .cu target —
+    // the kernel itself is a committed pre-built object (gdn_holo_0.o; no CUDA
+    // C++ source exists, the pinned re-export recipe is in
+    // 3rdparty_patches/gdn_aot/STATUS.md) — but it IS device code the gb10
+    // binary ships, so the attestation must cover it: the .o's bytes plus the
+    // shim sources that spark-model/build.rs compiles and links around it
+    // (`build_gdn_aot`). Hashing the .o as an opaque source is deliberate:
+    // recipe reproducibility is the only provenance a binary artifact has.
+    if targets.iter().any(|t| t.hw == "gb10") {
+        let gdn_dir = workspace_root.join("3rdparty_patches/gdn_aot");
+        let kernel_o = gdn_dir.join("gdn_holo_0.o");
+        // Shim sources go through the normal include-expanding closure hash
+        // (gdn_shim.cpp pulls gdn_holo_0.h via its quoted include); the binary
+        // .o is hashed as raw bytes — atlas_closure reads sources as UTF-8.
+        let sources: Vec<PathBuf> = ["gdn_shim.cpp", "gdn_transpose.cu", "gdn_cute_rt_stub.cpp"]
+            .iter()
+            .map(|f| gdn_dir.join(f))
+            .filter(|p| p.is_file())
+            .collect();
+        if sources.len() == 3 && kernel_o.is_file() {
+            let inputs = atlas_closure::ClosureInputs {
+                sources,
+                configs: vec![],
+                flags: vec![],
+                arch: "sm_121a".into(),
+                compiler: compiler.clone(),
+            };
+            let object_sha256 = std::fs::read(&kernel_o).ok().map(|bytes| {
+                use sha2::Digest as _;
+                format!("{:x}", sha2::Sha256::digest(&bytes))
+            });
+            if let (Ok(closure), Some(object_sha256)) = (
+                atlas_closure::hash_with_report(workspace_root, &inputs),
+                object_sha256,
+            ) {
+                map.insert(
+                    "gb10/gdn_aot/vendored".into(),
+                    serde_json::json!({
+                        "hash": closure.digest,
+                        "object_sha256": object_sha256,
+                        "arch": "sm_121a",
+                        "compiler": compiler,
+                        "flags": [],
+                    }),
+                );
+            }
+        }
+    }
     serde_json::Value::Object(map).to_string()
 }
 

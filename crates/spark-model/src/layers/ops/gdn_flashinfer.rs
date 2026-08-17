@@ -10,8 +10,18 @@
 //! strides (no copy). Atlas's `gate` is already linear α (the kernel does the `logf`),
 //! so there is NO gate-space conversion.
 //!
-//! dlopen (not link-time) keeps this fully opt-in: the binary builds and runs without the
-//! library; it is only loaded when the flag is set. `ATLAS_GDN_LIB` overrides the path.
+//! Two resolution paths, preferred in this order:
+//!   1. **Linked (cfg `atlas_gdn_aot`)** — gb10/aarch64 builds statically link the AOT
+//!      kernel object + shim (`spark-model/build.rs::build_gdn_aot`), so the symbols
+//!      below are real `extern "C"` prototypes checked at link time. No dlopen, no
+//!      transmute, no `libcute_dsl_runtime.so`.
+//!   2. **dlopen fallback** — other builds (or an explicit `ATLAS_GDN_LIB` override,
+//!      which wins over the linked path so the two can be A/B'd; the parity test in
+//!      `tests/gdn_aot_parity.rs` leans on this) reach `libatlasgdn.so` via
+//!      dlopen/dlsym as before. The binary builds and runs without the library; it is
+//!      only loaded when the flag is set.
+//!
+//! Either way the feature stays fully opt-in behind `ATLAS_GDN_FLASHINFER=1`.
 use anyhow::{Result, anyhow, bail, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::os::raw::{c_char, c_float, c_int, c_void};
@@ -64,6 +74,37 @@ type PackedFn = unsafe extern "C" fn(
     *mut c_void, // stream
 ) -> c_int;
 
+// Link-time prototypes for the vendored AOT kernel (`libatlas_gdn_aot.a`,
+// archived by spark-model/build.rs from gdn_shim.cpp + gdn_cute_rt_stub.cpp +
+// gdn_transpose.cu + the committed gdn_holo_0.o). Same two entry points the
+// dlopen path resolves by name — but HERE a drift between shim and Rust is a
+// link error, not runtime UB. The declarations must still match gdn_shim.cpp
+// argument-for-argument (see the PackedFn note above); the linker checks the
+// NAMES exist, the parity test checks the behavior.
+#[cfg(atlas_gdn_aot)]
+mod linked {
+    use std::os::raw::{c_float, c_int, c_void};
+    unsafe extern "C" {
+        pub fn atlas_gdn_load();
+        pub fn atlas_gdn_prefill_packed_managed(
+            qkv: *mut c_void,
+            gate_beta: *mut c_void,
+            output: *mut c_void,
+            h_state: *mut c_void,
+            scale: c_float,
+            total_seqlen: c_int,
+            nk: c_int,
+            nv: c_int,
+            kd: c_int,
+            vd: c_int,
+            conv_dim: c_int,
+            gb_stride: c_int,
+            num_seqs: c_int,
+            stream: *mut c_void,
+        ) -> c_int;
+    }
+}
+
 struct Lib {
     prefill: PackedFn,
 }
@@ -104,6 +145,18 @@ fn lib() -> Option<&'static Lib> {
     //     at most once, so `atlas_gdn_load()` (which loads the cubin module onto
     //     the device) is called exactly once, as the shim's `g_loaded` expects.
     LIB.get_or_init(|| unsafe {
+        // Linked path first: the kernel is inside this binary (cfg atlas_gdn_aot),
+        // so no dlopen and no transmute. An explicit ATLAS_GDN_LIB override still
+        // routes through dlopen — that is how the parity test A/Bs the linked
+        // kernel against an external .so build of the same artifact.
+        #[cfg(atlas_gdn_aot)]
+        if std::env::var("ATLAS_GDN_LIB").is_err() {
+            linked::atlas_gdn_load(); // load the cubin onto the device(s) once
+            tracing::info!("ATLAS_GDN_FLASHINFER: FlashInfer GDN kernel linked-in (AOT, opt-in)");
+            return Some(Lib {
+                prefill: linked::atlas_gdn_prefill_packed_managed as PackedFn,
+            });
+        }
         let path = std::env::var("ATLAS_GDN_LIB").unwrap_or_else(|_| "libatlasgdn.so".to_string());
         let cpath = std::ffi::CString::new(path.clone()).ok()?;
         let h = dlopen(cpath.as_ptr(), RTLD_NOW);
@@ -128,8 +181,40 @@ fn lib() -> Option<&'static Lib> {
 }
 
 /// True when `ATLAS_GDN_FLASHINFER=1` AND the library + symbols loaded successfully.
+/// The env read is cached (checked per GDN layer per chunk otherwise); `lib()` is
+/// already `OnceLock`-cached, so this is a cheap load after first call.
 pub fn available() -> bool {
-    std::env::var("ATLAS_GDN_FLASHINFER").as_deref() == Ok("1") && lib().is_some()
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("ATLAS_GDN_FLASHINFER").as_deref() == Ok("1"))
+        && lib().is_some()
+}
+
+/// Surface the GDN kernel in the boot kernel audit (`--check-kernels`).
+///
+/// Called eagerly from `Qwen3SsmLayer::new`, like every other kernel lookup on
+/// the `build_model` path, so the boot table shows `gdn_aot::…` whenever the
+/// opt-in is active — the kernel was invisible to the audit for as long as it
+/// lived behind a lazy dlopen at first prefill.
+///
+/// Only a SUCCESSFUL resolution is recorded. Flag-on-but-unresolved keeps the
+/// pre-existing contract (a `warn!` from `lib()` + silent FLA fallback):
+/// recording `loaded=false` would turn that fallback into a boot-gate failure,
+/// and this change is plumbing, not a behavior change. `#[track_caller]` so
+/// the audit row's site points at the layer constructor.
+#[track_caller]
+pub fn record_boot_audit() {
+    static ONCE: OnceLock<()> = OnceLock::new();
+    let site = std::panic::Location::caller();
+    ONCE.get_or_init(|| {
+        if available() {
+            spark_runtime::kernel_audit::record(
+                "gdn_aot",
+                "atlas_gdn_prefill_packed_managed",
+                true,
+                site,
+            );
+        }
+    });
 }
 
 /// Run one prefill GDN scan through the FlashInfer kernel on Atlas's native buffers.

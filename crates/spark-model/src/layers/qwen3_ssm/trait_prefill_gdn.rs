@@ -101,7 +101,16 @@ impl Qwen3SsmLayer {
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. Single-stream only;
         // takes Atlas's native packed-QKV + interleaved gate/beta directly (see
         // ops::gdn_flashinfer). FLA path below is the fallback when the flag/lib is absent.
-        if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashinfer::available() {
+        // Gated to the VALIDATED Holo head counts (nk=16/nv=32): the AOT kernel's
+        // descriptors are dynamic so other shapes (e.g. 27B nk/nv) likely work, but are
+        // unvalidated — widen this gate once a shape is verified bit-exact.
+        if !ctx.gdn_exact_replay
+            && kd == 128
+            && vd == 128
+            && nk == 16
+            && nv == 32
+            && ops::gdn_flashinfer::available()
+        {
             let scale = 1.0f32 / (kd as f32).sqrt();
             return ops::gdn_flashinfer::flashinfer_gdn_prefill(
                 ctx.gpu,

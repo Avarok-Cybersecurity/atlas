@@ -5,18 +5,43 @@
 # say in the commit message which toolchain produced the new bytes.
 # Rebuild recipe: ./rebuild.sh (this directory).
 #
-# Source provenance the pinned binaries are BELIEVED to correspond to
+# WHAT IS PINNED, and why it changed here
+# ---------------------------------------
+# Until this PR the pinned set was the two dlopen'd shared libraries
+# (`libatlasgdn.so`, `gdn_holo.so`) plus the export patch. This PR retires both
+# .so blobs: the AOT kernel is now linked INTO the binary from the committed
+# relocatable object `gdn_holo_0.o` (see STATUS.md "TRACK B"), so neither .so is
+# in the tree any more and `sha256sum -c` could only report them missing.
+#
+# The pinned set is therefore the artifacts this directory actually ships:
+# `gdn_holo_0.o` — the same bytes the two .so were linked FROM, and the same
+# sha256 the build bakes into ATLAS_TARGET_CLOSURES as `gb10/gdn_aot/vendored`
+# — plus the export patch. Nothing was rebuilt or swapped to make this pass;
+# the patch's pin is byte-for-byte the one #447 recorded, and the .o's pin is
+# the `ea1c5632…` hash STATUS.md's 2026-08-10 provenance update already names
+# as "the .o the vendored-link branch commits".
+#
+# Source provenance the pinned artifacts are BELIEVED to correspond to
 # (see STATUS.md "PROVENANCE" for what is and is not verified):
 #   FlashInfer:        https://github.com/flashinfer-ai/flashinfer.git
 #                      @ a671c02ee2fbcdde7cc991f5a01c7cf5eb4a8972
 #                      + delta_rule_sm120_aot_export.patch (pinned below)
 #   Export toolchain:  nvidia-cutlass-dsl[cu13]==4.5.0 (CuTe DSL, export_to_c),
 #                      CUTE_DSL_ARCH=sm_121a, GB10 (sm_121a) GPU, torch cu13
-#   Link toolchain:    g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, aarch64,
-#                      nvcc CUDA 13.x (-arch=sm_121a for gdn_transpose.cu)
-#   Original build environment (from the committed RUNPATH): a venv at
-#                      /tmp/gdn-bench/lib/python3.12/site-packages/nvidia_cutlass_dsl/lib
+#   Export environment of the committed `gdn_holo_0.o`: the dgx-00 July 2026
+#                      env (STATUS.md 2026-08-10). A re-export from the now
+#                      DOCUMENTED gx10-9959 env is deterministic but produces
+#                      DIFFERENT bytes (`35671a38…`); it is a deliberate re-pin
+#                      when it happens, not a silent drift.
+#   Link toolchain (historical .so only): g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1)
+#                      13.3.0, aarch64, nvcc CUDA 13.x (-arch=sm_121a for
+#                      gdn_transpose.cu)
 #
-2669982a6d9c6c5609322627348c78e793f6aeffa1b4d1ba1b12d3827bb6a9ea  libatlasgdn.so
-1b3da6dca80fe53f45d37935b056dbdba6cd93157f0a87f585215910b559e349  gdn_holo.so
+# Historical pins, retained as a record of the bytes #447 attested and
+# `rebuild.sh` still compares its .so output against. Commented out because the
+# files are no longer committed — `sha256sum -c` must not look for them:
+#   2669982a6d9c6c5609322627348c78e793f6aeffa1b4d1ba1b12d3827bb6a9ea  libatlasgdn.so
+#   1b3da6dca80fe53f45d37935b056dbdba6cd93157f0a87f585215910b559e349  gdn_holo.so
+#
+ea1c56320b8311a25b4abad98fe7a3c4366f0854027e91002da393154e964568  gdn_holo_0.o
 382cb0a0121f38d295280cb3baaa640174654ea4b453d18670d9982bd564361a  delta_rule_sm120_aot_export.patch

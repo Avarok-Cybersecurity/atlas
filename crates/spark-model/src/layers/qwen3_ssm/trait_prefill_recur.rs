@@ -135,7 +135,14 @@ impl Qwen3SsmLayer {
         // single-stream prefill path (trait_prefill.rs -> prefill_gdn_recurrence). q_ptr is
         // the packed-QKV base, gates_buf the gate base — handed straight to the bit-exact
         // shim (ops::gdn_flashinfer). FLA ladder below is the fallback when flag/lib absent.
-        if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashinfer::available() {
+        // Gated to the VALIDATED Holo head counts (nk=16/nv=32) — see trait_prefill_gdn.rs.
+        if !ctx.gdn_exact_replay
+            && kd == 128
+            && vd == 128
+            && nk == 16
+            && nv == 32
+            && ops::gdn_flashinfer::available()
+        {
             let scale = 1.0f32 / (kd as f32).sqrt();
             return ops::gdn_flashinfer::flashinfer_gdn_prefill(
                 ctx.gpu,

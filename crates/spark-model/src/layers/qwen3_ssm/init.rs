@@ -23,6 +23,13 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
+        // Surface the opt-in FlashInfer GDN AOT prefill kernel in the boot
+        // kernel audit — eager, on the build_model path, like every other
+        // lookup in this constructor, so `--check-kernels` accounts for it
+        // instead of it resolving invisibly at first prefill. No-op unless
+        // ATLAS_GDN_FLASHINFER=1 resolves (linked or dlopen).
+        ops::gdn_flashinfer::record_boot_audit();
+
         Ok(Self {
             input_norm,
             ssm,

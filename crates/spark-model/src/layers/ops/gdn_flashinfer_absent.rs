@@ -25,6 +25,10 @@ pub fn available() -> bool {
     false
 }
 
+/// No-op: nothing can resolve here, and only successful resolutions are
+/// recorded (see the unix twin).
+pub fn record_boot_audit() {}
+
 /// Unreachable through the guarded call sites, which check [`available`] first.
 /// Bails rather than silently returning `Ok(())`: a caller that reached this
 /// without checking would otherwise get an unwritten output buffer treated as a

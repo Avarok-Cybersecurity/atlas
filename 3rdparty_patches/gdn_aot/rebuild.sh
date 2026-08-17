@@ -173,11 +173,14 @@ echo "== rebuilt artifact hashes ($OUT) =="
 sha256sum gdn_holo_0.o gdn_holo.so libatlasgdn.so
 echo
 echo "== committed pins ($HERE/PINS.sha256) =="
-grep -E '^[0-9a-f]{64}' "$HERE/PINS.sha256" || true
+grep -E '^#? *[0-9a-f]{64}' "$HERE/PINS.sha256" || true
 echo
 verdict=0
-for so in libatlasgdn.so gdn_holo.so; do
-    want=$(grep -E "^[0-9a-f]{64}  $so\$" "$HERE/PINS.sha256" | cut -d' ' -f1 || true)
+# gdn_holo.so / libatlasgdn.so are no longer committed (the AOT .o is linked
+# into the binary instead), so their pins live in PINS.sha256 as COMMENTED
+# historical records — the `#\?` below reads those as well as the live pins.
+for so in gdn_holo_0.o libatlasgdn.so gdn_holo.so; do
+    want=$(sed -n "s/^#\? *\([0-9a-f]\{64\}\)  $so\$/\1/p" "$HERE/PINS.sha256")
     got=$(sha256sum "$so" | cut -d' ' -f1)
     if [ "$want" = "$got" ]; then
         echo "MATCH  $so — rebuild is bit-identical to the committed pin"
