@@ -43,8 +43,8 @@
 //! above. So the row-wise weights live in their own fields, the NVFP4 copy is
 //! still built and still serves decode, and prefill is the phase that stops
 //! double-quantising. Mixing precision across phases is already the house
-//! pattern — the native-FP8 SSM arm logs "NVFP4 kept as structural fallback
-//! for decode batch paths".
+//! pattern — the native-FP8 SSM arm logs that its FP8 copy is "PREFILL ONLY"
+//! and that decode + batched verify read the NVFP4 copy.
 //!
 //! A decode-side fix needs a per-row `w8a16_gemv` variant, which does not
 //! exist yet; see `docs/fp8-rowwise-mixed-precision.md`.
