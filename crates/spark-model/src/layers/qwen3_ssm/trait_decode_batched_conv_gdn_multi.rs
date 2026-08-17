@@ -69,6 +69,36 @@ fn first_for_k(mask: &std::sync::atomic::AtomicU32, k: usize) -> bool {
     (mask.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit) == 0
 }
 
+/// Periodic engaged-vs-declined RATE at INFO, under the existing
+/// `ATLAS_MTP_ACCEPT_DEBUG` gate (checked FIRST — a default serve pays one
+/// `OnceLock` load and nothing else).
+///
+/// The per-`k` first-occurrence lines above prove WHICH widths ever took
+/// each arm; they say nothing about how often. That distinction is the whole
+/// question when the batched verify carries a per-step cost the n==1 path
+/// does not: a declined call runs `n*(2k-1)` launches per GDN layer instead
+/// of 2 (768 vs 96 at n=2, k=4 over 48 GDN layers), so a decline RATE is a
+/// millisecond-scale term while a single decline is noise.
+fn record_multi_rate(n: usize, kk: usize) {
+    use std::sync::atomic::Ordering;
+    const PERIOD: u64 = 2048;
+    static SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if !crate::speculative::mtp_accept_debug() {
+        return;
+    }
+    if SINCE.fetch_add(1, Ordering::Relaxed) + 1 >= PERIOD {
+        SINCE.store(0, Ordering::Relaxed);
+        let ok = BATCHED_OK.load(Ordering::Relaxed);
+        let fb = FALLBACK.load(Ordering::Relaxed);
+        tracing::info!(
+            "batched-verify GDN conv+WY [last n={n} k={kk}]: engaged={ok} declined={fb} \
+             declined_frac={:.3} (a declined call is {} launches/layer, not 2)",
+            fb as f64 / (ok + fb).max(1) as f64,
+            n * (kk + kk - 1),
+        );
+    }
+}
+
 /// Kill switch, PRESENCE check (`=0` is NOT off), read once per process.
 fn verify_gdn_batch_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -310,6 +340,7 @@ impl Qwen3SsmLayer {
         }
 
         let ok = BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        record_multi_rate(n, kk);
         if first_for_k(&ENGAGED_KMASK, kk) {
             tracing::info!(
                 "batched-verify GDN conv+WY ENGAGED (n={n}, k={kk}): per-layer {} launches \
@@ -328,6 +359,7 @@ impl Qwen3SsmLayer {
     /// `return Ok(self.gdn_multi_decline(n, kk))`.
     fn gdn_multi_decline(&self, n: usize, kk: usize) -> bool {
         let n_fb = FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        record_multi_rate(n, kk);
         if first_for_k(&DECLINED_KMASK, kk) {
             tracing::info!(
                 "batched-verify GDN conv+WY DECLINED (n={n}, k={kk}): batch is not on \

@@ -147,6 +147,72 @@ pub(super) fn verify_wy_cache_key(slots: &[u32], k: usize, ghosts: &[(u32, u32)]
     key
 }
 
+/// What the batched verify did with its CUDA graph on one step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum VerifyGraphOutcome {
+    /// Exact slot-vector hit — the whole forward replayed.
+    Replay,
+    /// Drain-tail borrow: a WIDER captured key replayed with ghost rows.
+    Borrow,
+    /// Miss: the forward ran eagerly UNDER CAPTURE and a graph was
+    /// instantiated (the expensive outcome — `verify_key`'s module docs
+    /// price instantiate+destroy at 23.2 ms/step at an 89% recapture rate).
+    Capture,
+    /// No graph at all: `ATLAS_NO_MTP_VERIFY_GRAPHS`, `ATLAS_K4_DIAG`, or a
+    /// batch with a slotless sequence.
+    Eager,
+}
+
+/// Periodic INFO summary of the batched-verify graph outcomes, under the
+/// existing `ATLAS_MTP_ACCEPT_DEBUG` gate (checked FIRST, so a default serve
+/// pays one `OnceLock` load and no atomics).
+///
+/// ★ Why this exists. The n>=2 verify path carries a per-step FIXED cost the
+/// n==1 path does not, and the two candidates of the right magnitude — graph
+/// RE-capture, and the batched GDN conv+WY fast path declining into the
+/// per-sequence loop — were both unanswerable from a ladder log. Captures
+/// only logged one INFO line each (thousands of lines, no rate) and the GDN
+/// engage/decline counters only surfaced at `debug`. A rate, and the live key
+/// count next to it, is what distinguishes "the key space collapsed and the
+/// path replays" from "this rung re-captures every step".
+pub(super) fn record_verify_graph_outcome(n: usize, live_keys: usize, outcome: VerifyGraphOutcome) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    const PERIOD: u64 = 200;
+    static STEPS: AtomicU64 = AtomicU64::new(0);
+    static REPLAY: AtomicU64 = AtomicU64::new(0);
+    static BORROW: AtomicU64 = AtomicU64::new(0);
+    static CAPTURE: AtomicU64 = AtomicU64::new(0);
+    static EAGER: AtomicU64 = AtomicU64::new(0);
+    if !crate::speculative::mtp_accept_debug() {
+        return;
+    }
+    match outcome {
+        VerifyGraphOutcome::Replay => &REPLAY,
+        VerifyGraphOutcome::Borrow => &BORROW,
+        VerifyGraphOutcome::Capture => &CAPTURE,
+        VerifyGraphOutcome::Eager => &EAGER,
+    }
+    .fetch_add(1, Ordering::Relaxed);
+    if STEPS.fetch_add(1, Ordering::Relaxed) + 1 >= PERIOD {
+        let steps = STEPS.swap(0, Ordering::Relaxed).max(1);
+        let (replay, borrow) = (
+            REPLAY.swap(0, Ordering::Relaxed),
+            BORROW.swap(0, Ordering::Relaxed),
+        );
+        let (capture, eager) = (
+            CAPTURE.swap(0, Ordering::Relaxed),
+            EAGER.swap(0, Ordering::Relaxed),
+        );
+        tracing::info!(
+            "batched-verify graphs [{steps} steps, last n={n}]: replay={replay} \
+             borrow={borrow} CAPTURE={capture} eager={eager} capture_frac={:.3} \
+             live_keys={live_keys}/{}",
+            capture as f64 / steps as f64,
+            VERIFY_BATCHED_GRAPH_CAP,
+        );
+    }
+}
+
 impl TransformerModel {
     /// Batched-verify graph key: each sequence's ssm-pool slot in batch
     /// order — every SSM pointer the graph bakes (h/conv state, rollback
