@@ -112,10 +112,15 @@ impl MtpHead {
     /// a 0 handle when none is resolved (`try_kernel` misses are a silent 0 —
     /// gate on the handle, never assume the kernel is in this target's set).
     pub(crate) fn lm_head_batch_kernel(&self, n: usize) -> KernelHandle {
+        // Narrow family (4..8) first — same "narrowest resolved tier that
+        // covers n" rule this loop implements, but SSOT'd in
+        // `layers::w4a16_gemv_tiers` because five call sites share it.
+        let narrow = self.w4a16_batchm.kernel(n as u32);
+        if narrow.0 != 0 {
+            return narrow;
+        }
         for (max_m, k) in [
-            (4usize, self.w4a16_gemv_batch4_k),
-            (8, self.w4a16_gemv_batch8_k),
-            (16, self.w4a16_gemv_batch16_k),
+            (16usize, self.w4a16_gemv_batch16_k),
             (32, self.w4a16_gemv_batch32_k),
         ] {
             if n <= max_m && k.0 != 0 {
