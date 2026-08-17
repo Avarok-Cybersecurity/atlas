@@ -293,3 +293,64 @@ fn model_toml_backed_flags_distinguish_omitted_from_explicit() {
     // `default_value_t = 0` could not express.
     assert_eq!(explicit.fp8_kv_calibration_tokens, Some(0));
 }
+
+#[test]
+fn f16_pool_is_a_published_dtype_and_inherits_every_f16_rule() {
+    use spark_model::layers::qwen3_ssm::ssm_h_dtype_bits;
+
+    // SSOT: the validator and `publish_kernel_flags` decode through the SAME
+    // function, so a spelling accepted here publishes exactly these bits.
+    assert_eq!(ssm_h_dtype_bits(None), (false, false));
+    assert_eq!(ssm_h_dtype_bits(Some("f32")), (false, false));
+    assert_eq!(ssm_h_dtype_bits(Some("f16")), (true, false));
+    // f16-pool is f16 PLUS the narrow pool — never the pool without the bits,
+    // which would be an FP32 write into a 2-byte-sized slot.
+    assert_eq!(ssm_h_dtype_bits(Some("f16-pool")), (true, true));
+
+    // Accepted by the enum check, and serveable with the fused-norm arm.
+    assert!(
+        validate_serve_args(&parse(&["--ssm-h-dtype", "f16-pool", "--gdn-fused-norm"])).is_ok(),
+        "the supported stage-3 pairing"
+    );
+    // Every f16 rule binds on it too, because it IS f16.
+    assert!(validate_serve_args(&parse(&["--ssm-h-dtype", "f16-pool"])).is_err());
+    assert!(
+        validate_serve_args(&parse(&[
+            "--exact-verify",
+            "--ssm-h-dtype",
+            "f16-pool",
+            "--gdn-fused-norm",
+        ]))
+        .is_err()
+    );
+    // An unknown spelling is still rejected by the enum check, and decodes to
+    // FP32 rather than to something half-enabled.
+    assert!(validate_serve_args(&parse(&["--ssm-h-dtype", "f16pool"])).is_err());
+    assert_eq!(ssm_h_dtype_bits(Some("f16pool")), (false, false));
+}
+
+#[test]
+fn dflash_refuses_the_f16_h_state() {
+    // gamma+1 = 17 verify rows dispatch `gated_delta_rule_wy17`: FP32-only,
+    // and the one WY family with an explicit FP32-element intermediate
+    // stride. Over an FP16 h-state that is fluent garbage, not a fault —
+    // the same class the `--num-drafts > 3` preflight refusal exists for.
+    for dtype in ["f16", "f16-pool"] {
+        let err = validate_serve_args(&parse(&[
+            "--dflash",
+            "--ssm-h-dtype",
+            dtype,
+            "--gdn-fused-norm",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("--dflash"), "{dtype}: {err}");
+    }
+    // POSITIVE controls: each side alone stays valid.
+    assert!(validate_serve_args(&parse(&["--dflash"])).is_ok());
+    assert!(validate_serve_args(&parse(&["--ssm-h-dtype", "f16", "--gdn-fused-norm"])).is_ok());
+    // f32 (the default) is unaffected.
+    assert!(
+        validate_serve_args(&parse(&["--dflash", "--ssm-h-dtype", "f32"])).is_ok(),
+        "the FP32 h-state has always been DFlash's supported pairing"
+    );
+}

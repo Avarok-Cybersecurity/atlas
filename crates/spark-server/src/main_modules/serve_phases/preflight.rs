@@ -8,6 +8,9 @@ use atlas_core::config::ModelConfig;
 
 use crate::cli;
 
+mod ssm_h_fp16;
+use ssm_h_fp16::ssm_h_fp16_preconditions;
+
 pub(crate) struct ReservePreflight {
     pub(crate) inference_reserve: usize,
     pub(crate) buffer_arena_bytes: usize,
@@ -40,6 +43,17 @@ pub(crate) fn preflight_reserve(
     // (`verify_slot_h_intermediates`); DFlash pools are γ-sized and do not
     // follow the MTP ladder, so they reserve uniform full width — mirroring
     // `SsmStatePool::new`'s `num_intermediates != num_drafts + 1` condition.
+    // Stage-3 f16-SIZED pool: the FP32 prefill staging arena, ONE blob per
+    // slot (shared across layers — see `ssm_h_prefill_stage_bytes`). A
+    // separate term for the same reason the replay ring is: it is sized by a
+    // SINGLE layer's h blob, not by the across-layers per-seq total every
+    // other term here uses. Zero on an FP32-sized pool. `max_batch_size`, not
+    // `+1`: this preflight has never counted the pools' dummy slot.
+    let ssm_h_stage_bytes = spark_model::ssm_reserve::ssm_h_prefill_stage_bytes(
+        args.max_batch_size,
+        h_state_bytes,
+        spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
+    );
     let ssm_pool_bytes = spark_model::ssm_reserve::ssm_pool_reserve_bytes(
         args.max_batch_size,
         config.num_ssm_layers() * h_state_bytes,
@@ -173,13 +187,17 @@ pub(crate) fn preflight_reserve(
             0
         }
     };
-    let inference_reserve: usize =
-        ssm_pool_bytes + ssm_replay_ring + ssm_snapshot_bytes + gdn_two_phase_bytes + cuda_headroom;
+    let inference_reserve: usize = ssm_pool_bytes
+        + ssm_h_stage_bytes
+        + ssm_replay_ring
+        + ssm_snapshot_bytes
+        + gdn_two_phase_bytes
+        + cuda_headroom;
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
         let free_gb = free_mem as f64 / (1024.0 * 1024.0 * 1024.0);
-        let fixed = ssm_pool_bytes + ssm_snapshot_bytes + cuda_headroom;
+        let fixed = ssm_pool_bytes + ssm_h_stage_bytes + ssm_snapshot_bytes + cuda_headroom;
         let budget_for_seq_term = free_mem.saturating_sub(fixed) / 2;
         let per_tok_bytes = {
             let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
@@ -384,103 +402,6 @@ pub(crate) fn post_load_memory_audit(
         estimated_free as f64 / (1024.0 * 1024.0 * 1024.0),
         actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
         inference_reserve / (1024 * 1024),
-    );
-    Ok(())
-}
-
-/// `ATLAS_SSM_H_FP16` refuses rather than degrades.
-///
-/// The flag narrows the GDN h-state to FP16. Stage 1 shipped twins of the two
-/// NON-speculative decode kernels — `gated_delta_rule_decode_f16_strided_norm_half`
-/// (batched) and `..._f16_norm` (per-sequence, taken at n == 1 and whenever
-/// pool slots fragment out of slice order). Stage 2 adds twins of the MTP
-/// verify path — `gated_delta_rule_wy{2,3,4}_f16` plus the register-resident
-/// `wy{2,3}_resident_f16` — so the state stays FP16 through a verify step and
-/// the flag composes with `--speculative`. That matters because the ladder's
-/// low and middle rungs are all spec-ON, so before stage 2 they could not use
-/// the lever at all.
-///
-/// Every remaining h-state reader is still FP32, and an FP32 kernel pointed at
-/// an FP16 pool produces fluent garbage rather than an error — so the
-/// unsupported configurations are rejected here, at boot, instead of being
-/// discovered in a benchmark.
-///
-/// Sizing is untouched: the pool stays FP32-sized (prefill still writes FP32)
-/// and the FP16 state occupies the first half of the same region, so no
-/// reserve arithmetic above depends on the flag.
-fn ssm_h_fp16_preconditions(args: &cli::ServeArgs, config: &ModelConfig) -> Result<()> {
-    // SSOT: the same resolution the kernels dispatch on — `--ssm-h-dtype`,
-    // falling back to `ATLAS_SSM_H_FP16`. This check used to decode the
-    // environment independently, which is how a preflight could pass on a
-    // reading the kernels did not share.
-    if !spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() || config.num_ssm_layers() == 0 {
-        return Ok(());
-    }
-    // Stage 3 of the f16 h-state (f16-SIZED pools): the h pools would be SIZED at
-    // 2 bytes/element, but prefill still writes the h-state FP32 IN PLACE
-    // through the six GDN prefill kernel families (trait_prefill_gdn.rs /
-    // trait_prefill_recur.rs) — over a 2-byte slot that is an overrun into
-    // the neighboring slot, and a Marconi restore would land f16 under an
-    // FP32 prefill continuation. No CLI surface publishes the mode; this
-    // guards any non-CLI flag publication until prefill narrowing lands.
-    if spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled() {
-        anyhow::bail!(
-            "the f16-SIZED SSM h pool (stage 3 of ssm-h-dtype f16) is not serveable yet: \
-             prefill writes the h-state FP32 in place, which would overrun the 2-byte-sized \
-             pool slots. The sizing plumbing (pool allocation, preflight reserve, \
-             byte-copiers) is in place and tested; prefill narrowing is the remaining \
-             work. Use --ssm-h-dtype f16 (FP32-sized pool) until then."
-        );
-    }
-    // STAGE 2 lifted the blanket refusal on `--speculative`: the MTP verify
-    // path's WY kernels now have FP16 h-state twins
-    // (`gated_delta_rule_wy{2,3,4}_f16` and the register-resident
-    // `wy{2,3}_resident_f16`), so the h-state stays FP16 end-to-end through a
-    // verify step. What is still refused is any configuration that can reach a
-    // K with NO twin, because the fallback is an FP32 kernel over an FP16 pool
-    // — which does not fault, it emits fluent garbage.
-    //
-    // The reachable K is bounded by the draft count: the ladder's draft count
-    // is capped by `--num-drafts`, and K = drafts + 1 rows per sequence. Twins
-    // exist for K = 2, 3, 4, so up to 3 drafts is supported. Above that the
-    // width lands on the wyN (K=5..8) or wy17 DFlash arms, which are FP32-only.
-    if args.self_speculative || args.ngram_speculative {
-        anyhow::bail!(
-            "--ssm-h-dtype f16 supports --speculative (MTP) only. The self-speculative and \
-             ngram-speculative verify paths still write the h-state as FP32, and an FP32 \
-             kernel over an FP16 pool produces fluent garbage rather than an error. Run \
-             without --self-speculative/--ngram-speculative, or use --ssm-h-dtype f32."
-        );
-    }
-    if args.speculative && args.resolved_num_drafts() > 3 {
-        anyhow::bail!(
-            "--ssm-h-dtype f16 supports up to 3 drafts (K <= 4 verify rows); --num-drafts is \
-             {}. Wider verify widths dispatch the wyN (K=5..8) / wy17 arms, which have no \
-             FP16 h-state twin. Lower --num-drafts to 3, or use --ssm-h-dtype f32.",
-            args.resolved_num_drafts()
-        );
-    }
-    if !spark_model::layers::qwen3_ssm::gdn_fused_norm_enabled() {
-        anyhow::bail!(
-            "--ssm-h-dtype f16 requires --gdn-fused-norm — the non-fused decode arms \
-             (gated_delta_rule_decode, ..._decode_f32_strided) have no FP16 twin in stage 1."
-        );
-    }
-    if std::env::var("ATLAS_GDN_FUSED_CONV").ok().as_deref() == Some("1") {
-        anyhow::bail!(
-            "--ssm-h-dtype f16 is incompatible with ATLAS_GDN_FUSED_CONV=1 —              gated_delta_rule_decode_f32_conv_norm has no FP16 twin in stage 1."
-        );
-    }
-    if config.linear_key_head_dim != 128 || config.linear_value_head_dim != 128 {
-        anyhow::bail!(
-            "--ssm-h-dtype f16 needs linear head dims 128/128 (the FP16 twins size their shared              memory for k_dim == 128); this model is {}/{}",
-            config.linear_key_head_dim,
-            config.linear_value_head_dim
-        );
-    }
-    tracing::info!(
-        "--ssm-h-dtype f16: GDN h-state stored FP16 during decode AND MTP verify (pool stays \
-         FP32-sized; prefill unchanged). Scan replica at n=128: 183 -> 84 ms/step."
     );
     Ok(())
 }
