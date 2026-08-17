@@ -18,6 +18,11 @@
 
   let question = $state('');
   let messages = $state([]);
+  // Every entry carries a stable id so the streaming card and the settled card
+  // are the SAME keyed node. Without that the list swapped one component for
+  // another at completion, remounting the DOM: the card blinked, its print
+  // animation replayed, and the sources snapped in.
+  let seq = $state(0);
   let asking = $state(false);
   let askError = $state(null);
   let lastQuestion = '';
@@ -56,6 +61,12 @@
     asking && chat.stream && (chat.stream.reasoningText || chat.stream.answerText)
       ? chat.stream
       : null
+  );
+
+  // The in-flight card takes the id the finished message will be pushed with,
+  // so the keyed each block updates props in place instead of remounting.
+  const rendered = $derived(
+    streamLive ? [...messages, { id: seq, role: 'assistant', live: streamLive }] : messages
   );
 
   const mb = (bytes) => (bytes / 1048576).toFixed(1);
@@ -148,14 +159,27 @@
     if (chat.status === 'ready') onready?.();
   });
 
-  // Keep the newest print in view (streamed tokens grow the live card).
+  // Keep the newest print in view. While tokens stream we jump instantly so the
+  // text never lags behind itself; once the answer settles and the sources
+  // print, we glide instead, which reads as the receipt finishing rather than
+  // the pane snapping.
+  const reducedMotion = () =>
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   $effect(() => {
     void messages.length;
     void asking;
     void chat.msgPhase;
     void chat.stream?.reasoningText;
     void chat.stream?.answerText;
-    if (logEl) logEl.scrollTop = logEl.scrollHeight;
+    if (!logEl) return;
+    const settling = !streamLive && !asking;
+    if (settling && !reducedMotion()) {
+      logEl.scrollTo({ top: logEl.scrollHeight, behavior: 'smooth' });
+    } else {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
   });
 
   function close() {
@@ -189,6 +213,7 @@
     try {
       const res = await ask(q, history);
       messages.push({
+        id: seq++,
         role: 'assistant',
         text: res.answer,
         sources: res.sources,
@@ -216,7 +241,7 @@
     question = '';
     lastQuestion = q;
     const history = messages.map((m) => ({ role: m.role, content: m.text }));
-    messages.push({ role: 'user', text: q });
+    messages.push({ id: seq++, role: 'user', text: q });
     runAsk(q, history);
   }
 
@@ -365,12 +390,10 @@
             {/each}
           </div>
         {/if}
-        {#each messages as m, i (i)}
-          <ChatMessage message={m} {sourcesOpen} />
+        {#each rendered as m (m.id)}
+          <ChatMessage message={m.live ? null : m} live={m.live ?? null} {sourcesOpen} />
         {/each}
-        {#if streamLive}
-          <ChatMessage live={streamLive} {sourcesOpen} />
-        {:else if asking}
+        {#if !streamLive && asking}
           <p class="cc-pending">
             <span class="cc-status-dot" aria-hidden="true"></span>
             {codeChat.phase[chat.msgPhase] ?? codeChat.phase.writing}
