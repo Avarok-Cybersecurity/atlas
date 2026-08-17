@@ -73,6 +73,10 @@ impl TransformerModel {
                         // them with the active mode so the decode mixer does
                         // not re-convert scratch on every single step.
                         h_is_f16: crate::layers::qwen3_ssm::ssm_h_fp16_enabled(),
+                        // Decode-only rows: never prefilled. Carried anyway so
+                        // the dummy slot's geometry matches a real one and a
+                        // stray prefill over it stages rather than overruns.
+                        h_prefill_stage: self.ssm_pool.h_prefill_stage(dummy_ssm_slot),
                     }));
                     ssm_idx += 1;
                 } else {

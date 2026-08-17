@@ -49,6 +49,15 @@ pub(crate) struct SsmStatePool {
     /// allocate, offset and copy by. Equals `h_bytes` except under the
     /// stage-3 f16-SIZED pool (`ssm_reserve::ssm_h_stored_bytes`).
     pub(super) h_stored_bytes: usize,
+    /// Stage-3 f16-SIZED pool ONLY: one FP32 h-state staging blob per slot,
+    /// laid out `[total_slots] × h_bytes` in a single allocation. `None`
+    /// under an FP32-sized pool, where prefill writes the slot in place.
+    ///
+    /// Shared across LAYERS on purpose — see
+    /// [`crate::ssm_reserve::ssm_h_prefill_stage_bytes`] for why one blob per
+    /// slot is sufficient and why per-slot (rather than per-co-dispatched-
+    /// sequence) is the sizing that needs no width assumption.
+    pub(super) h_prefill_stage_pool: Option<DevicePtr>,
     pub(super) conv_bytes: usize,
     /// Number of CLAIMABLE slots (excludes the reserved dummy slot at
     /// index `max_slots`). All claim_slot/release_slot operations work
@@ -159,6 +168,28 @@ impl SsmStatePool {
             gpu.memset(conv_pool, 0, total_slots * conv_bytes)?;
             conv_state_pools.push(conv_pool);
         }
+
+        // Stage-3 f16-SIZED pool: the FP32 prefill staging arena. Allocated
+        // ONLY when the h slots actually narrowed — an FP32-sized pool needs
+        // no staging and must not pay for it (flag-off is byte-identical).
+        let h_prefill_stage_pool = {
+            let bytes = crate::ssm_reserve::ssm_h_prefill_stage_bytes(
+                total_slots,
+                h_bytes,
+                h_stored_bytes < h_bytes,
+            );
+            if bytes == 0 {
+                None
+            } else {
+                let p = gpu.alloc(bytes)?;
+                gpu.memset(p, 0, bytes)?;
+                tracing::info!(
+                    "SSM f16-sized h pool: FP32 prefill staging arena {} MB ({total_slots} slots × {h_bytes} B)",
+                    bytes / (1024 * 1024)
+                );
+                Some(p)
+            }
+        };
 
         // MTP verify pools cover only the slots spec dispatch can reach
         // (SSOT: `ssm_reserve::mtp_state_slots` — the same number preflight
@@ -294,6 +325,7 @@ impl SsmStatePool {
             conv_checkpoint_pools,
             h_bytes,
             h_stored_bytes,
+            h_prefill_stage_pool,
             conv_bytes,
             max_slots,
             mtp_slots,
@@ -409,6 +441,17 @@ impl SsmStatePool {
 
     pub(super) fn h_state(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
         self.h_state_pools[ssm_layer_idx].offset(slot * self.h_stored_bytes)
+    }
+
+    /// This slot's FP32 prefill staging blob (stage-3 f16-SIZED pool only).
+    ///
+    /// `None` under an FP32-sized pool — the ONLY signal the prefill path
+    /// needs to know that it must widen/narrow, and the reason flag-off
+    /// prefill is byte-identical (there is nothing to convert through).
+    /// Layer-independent by construction: see the field's doc.
+    pub(super) fn h_prefill_stage(&self, slot: usize) -> Option<DevicePtr> {
+        self.h_prefill_stage_pool
+            .map(|p| p.offset(slot * self.h_bytes))
     }
 
     pub(super) fn conv_state(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
@@ -819,13 +862,17 @@ mod h_stored_geometry_tests {
     use atlas_core::config::ModelConfig;
     use spark_runtime::gpu::mock::MockGpuBackend;
 
+    /// Claimable slots in the test pool (the pool allocates `SLOTS + 1`,
+    /// the extra one being the padding dummy).
+    const SLOTS: usize = 4;
+
     /// Build the pool on the mock backend (only `alloc`/`memset` are hit).
     fn pool(h_f16_pool: bool) -> SsmStatePool {
         let config = ModelConfig::qwen3_next_80b_nvfp4();
         let gpu = MockGpuBackend::new();
         SsmStatePool::new(
             &config,
-            4,
+            SLOTS,
             true,
             4,
             3,
@@ -913,6 +960,45 @@ mod h_stored_geometry_tests {
         assert_eq!(p16.h_bytes, p32.h_bytes);
         assert_eq!(p16.h_stored_bytes * 2, p16.h_bytes);
     }
+
+    /// The FP32 prefill staging arena exists ONLY under the narrowed pool,
+    /// is FP32-wide (never `h_stored_bytes` — staging the FP32 kernels write
+    /// is the entire point), and strides ONE blob per SLOT, not per slot per
+    /// layer. A per-layer arena would be `num_ssm_layers ×` bigger and would
+    /// eat the win this mode exists for, so the stride is pinned, not
+    /// assumed.
+    #[test]
+    fn prefill_staging_is_one_fp32_blob_per_slot_and_only_when_narrowed() {
+        // Flag off: not allocated, and every slot answers `None` — the
+        // signal the prefill path takes its historical in-place arm on.
+        let p32 = pool(false);
+        assert!(p32.h_prefill_stage_pool.is_none());
+        assert!(p32.h_prefill_stage(0).is_none());
+        assert!(p32.h_prefill_stage(SLOTS - 1).is_none());
+
+        let p16 = pool(true);
+        assert!(p16.h_prefill_stage_pool.is_some());
+        let s0 = p16.h_prefill_stage(0).expect("narrowed pool stages");
+        let s1 = p16.h_prefill_stage(1).expect("narrowed pool stages");
+        // FP32 pitch — twice the (narrowed) slot pitch it feeds.
+        assert_eq!(s1.0 - s0.0, p16.h_bytes as u64);
+        assert_eq!(s1.0 - s0.0, 2 * p16.h_stored_bytes as u64);
+        // The dummy slot is staged too: `SsmStatePool::new` allocates
+        // `max_slots + 1` blobs, so `dummy_slot()` is addressable rather
+        // than one blob past the end.
+        let dummy = p16.h_prefill_stage(p16.dummy_slot()).unwrap();
+        assert_eq!(dummy.0 - s0.0, (p16.dummy_slot() * p16.h_bytes) as u64);
+
+        // SSOT with the preflight reserve: same function, same numbers.
+        assert_eq!(
+            crate::ssm_reserve::ssm_h_prefill_stage_bytes(SLOTS + 1, p16.h_bytes, true),
+            (SLOTS + 1) * p16.h_bytes
+        );
+        assert_eq!(
+            crate::ssm_reserve::ssm_h_prefill_stage_bytes(SLOTS + 1, p16.h_bytes, false),
+            0
+        );
+    }
 }
 
 #[cfg(test)]
@@ -933,6 +1019,7 @@ mod slot_guard_tests {
             conv_checkpoint_pools: Vec::new(),
             h_bytes: 0,
             h_stored_bytes: 0,
+            h_prefill_stage_pool: None,
             conv_bytes: 0,
             max_slots,
             mtp_slots: 0,
