@@ -24,6 +24,11 @@ pub(crate) struct ParsedBehavior {
     pub default_kv_dtype: String,
     pub default_num_drafts: u32,
     pub disable_tool_steering: bool,
+    /// Suppress Atlas's parser-specific tool system prompt for this model,
+    /// leaving the checkpoint's own chat template as the only description of
+    /// the tools. Per-model because the injection helps one family and hurts
+    /// another (see `api/chat/prepare.rs`).
+    pub no_tool_system_prompt: bool,
     pub disable_cwd_hint_injection: bool,
     pub use_sampling_presets_for_core: bool,
     pub tool_call_parser: String,
@@ -92,6 +97,7 @@ impl Default for ParsedBehavior {
             default_kv_dtype: String::new(),
             default_num_drafts: 0,
             disable_tool_steering: false,
+            no_tool_system_prompt: false,
             disable_cwd_hint_injection: false,
             use_sampling_presets_for_core: false,
             tool_call_parser: String::new(),
@@ -166,6 +172,10 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .unwrap_or(0);
     let disable_tool_steering = b
         .and_then(|v| v.get("disable_tool_steering"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let no_tool_system_prompt = b
+        .and_then(|v| v.get("no_tool_system_prompt"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let disable_cwd_hint_injection = b
@@ -283,6 +293,7 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         default_kv_dtype,
         default_num_drafts,
         disable_tool_steering,
+        no_tool_system_prompt,
         disable_cwd_hint_injection,
         use_sampling_presets_for_core,
         tool_call_parser,

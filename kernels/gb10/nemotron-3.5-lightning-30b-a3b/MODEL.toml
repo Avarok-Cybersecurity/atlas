@@ -108,7 +108,63 @@ thinking_default = true
 # 89-97. A client that genuinely wants an in-`<think>` tool turn can still ask
 # for one with an explicit `chat_template_kwargs.enable_thinking` — an
 # explicit directive outranks this default (api/chat/thinking.rs).
-thinking_in_tools = false
+#
+# EXPERIMENT 2026-08-17: flipped to `true`. Measured on raw `/v1/completions`
+# (no injection, no parser, byte-exact prompts), thinking OFF is what makes the
+# tool turns wrong in BOTH directions at once:
+#   thinking off + a pushy tool prompt  -> calls forever, never answers the
+#     tool result (the "re-call loop" this target was chasing)
+#   thinking off + no pushy tool prompt -> never calls at all, hallucinates
+#     ("The README.md file has 10 lines." with no read() ever issued)
+#   thinking on                         -> reasons about whether to call, then
+#     emits a well-formed <tool_call>, and answers once the result comes back
+# The token-cost argument above still holds, but 23 cheap WRONG tokens are not
+# a saving. The mid-call cut this was avoiding is what the `</think>` injector
+# deferral and the loop-watchdog guard now cover.
+thinking_in_tools = true
+
+# ── Tool steering: OFF ───────────────────────────────────────────────────
+# `jinja-templates/nemotron_h.jinja` pre-opens the assistant turn with
+# `<think></think>\n<tool_call>\n` whenever tools are active. That prefix
+# exists for Nano ("Think-Satisfy + JSON narration": it narrates JSON as plain
+# content instead of calling), and the template's own comment records the cost
+# on models that were not trained on the qwen3_coder XML format: "the prefix
+# causes a <tool_call> emission loop".
+#
+# Lightning is such a model, and the loop is exactly what it does. MEASURED
+# 2026-08-17, opencode-shaped agentic run: with the prefix the generation
+# prompt ENDS in an open `<tool_call>`, so the model can only ever complete a
+# call — it never answers, no matter what the tool result says. Every turn is
+# a tool call; the harness spins until it gives up.
+#
+# The same prefix also explains why the model's raw emission starts at
+# `<function=...` with no opener: the opener was already in the prompt, not
+# omitted by the model.
+#
+# nemotron-super-120b-a12b and nemotron-labs-3-puzzle-75b-a9b already set this
+# for the same reason. This target inherited its MODEL.toml from Nano, which
+# needs the prefix, and so inherited the missing flag with it.
+disable_tool_steering = true
+
+# ── Atlas's own tool system prompt: OFF ──────────────────────────────────
+# The nemotron_h template already renders a `# Tools` block AND the official
+# <IMPORTANT> reminder the model was tuned against. Atlas's qwen3_coder parser
+# injects a SECOND, longer description of the same tools (IMMEDIATE_TOOL_USE +
+# a 10-bullet IMPORTANT), and the two disagree — the injected copy pushes
+# "emit the <tool_call> directly" hard enough that the model re-issues a call
+# instead of answering a tool_response already in its context.
+#
+# MEASURED 2026-08-17, 5 agentic tasks x 3 reps at this target's preset
+# sampling, scoring "called a tool AND then terminated with an answer":
+#   injection ON  ->  8/15 (re-call loops; turns that emit nothing at all)
+#   injection OFF -> 13/15 (no loop, no empty turn)
+# It is also 3.5x cheaper: one two-line tool costs 1180 prompt tokens with the
+# injection and 333 without.
+#
+# Per-model, NOT global: the injection is a measured WIN on Qwen3.8-AEON, which
+# has no tool block of its own. `api/chat/prepare.rs` records both directions.
+no_tool_system_prompt = true
+
 max_thinking_budget = 2048
 # `max_thinking_budget` is the SOLE thinking cap — drop Atlas's second,
 # 90%-of-max_tokens clamp, which vLLM has no equivalent of and which

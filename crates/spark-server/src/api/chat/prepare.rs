@@ -60,7 +60,36 @@ pub(crate) fn prepare_chat_prompt(
     // don't make assumptions"), which the GDN model needs to correctly
     // DECLINE on irrelevance prompts. With it (and compact tool-JSON)
     // hallucination returns to ~96 (vs 30/64 without).
-    if tools_active && let Some(ref parser) = state.tool_call_parser {
+    //
+    // Suppressible per model. A checkpoint whose own chat template already
+    // renders a tool block gets TWO descriptions of the same tools in two
+    // different formats, and they disagree: the injected copy pushes "emit the
+    // <tool_call> directly" hard enough that the model re-issues a call instead
+    // of answering a `tool_response` already in its context. MODEL.toml
+    // `[behavior].no_tool_system_prompt` turns the injection off for exactly
+    // the models that measure better without it.
+    //
+    // NOT automatic on "does the template render tools", because the second
+    // description helps one family and hurts another. Measured 2026-08-17,
+    // 5 agentic tasks x 3 reps at each model's preset sampling, scoring
+    // "called a tool AND then terminated with an answer":
+    //
+    //   Nemotron-3.5-Lightning  ON  ->  8/15, re-call loops and empty turns
+    //                           OFF -> 13/15, no loop, no empty turn; and one
+    //                                  two-line tool costs 333 prompt tokens
+    //                                  instead of 1180
+    //   Qwen3.8-AEON            ON  -> bash("wc -l README.md") then ANSWERS
+    //                                  in 2 turns
+    //                           OFF -> loops 4+ turns, never answers
+    //
+    // So Lightning sets the flag and AEON must not. `ATLAS_NO_TOOL_SYSTEM_PROMPT=1`
+    // remains the ad-hoc lever for a model with no MODEL.toml entry of its own.
+    let skip_tool_system_prompt = state.behavior.no_tool_system_prompt
+        || std::env::var_os("ATLAS_NO_TOOL_SYSTEM_PROMPT").is_some_and(|v| v == "1");
+    if tools_active
+        && !skip_tool_system_prompt
+        && let Some(ref parser) = state.tool_call_parser
+    {
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
         let tool_prompt = parser.system_prompt(&req.tools, tool_choice, &state.chat.prompt);
