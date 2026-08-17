@@ -1,0 +1,10 @@
+{"pr":513,"head_sha":"8920977f2af3cee79a61da3f566fdffa3fae89f4","run_id":"31846838270","attempt":1,"at":1786746654,"kind":"category","value":"capability/new-model","status":"ok"}
+{"pr":513,"head_sha":"e28becce36b70fad65890e3daa966d34acabc2af","run_id":"31843485779","attempt":1,"at":1786743717,"kind":"category","value":"capability","status":"partial"}
+{"pr":513,"head_sha":"a4a0de5383f41bb4c53490c6454ba68b49f8096e","run_id":"31832313685","attempt":1,"at":1786734911,"kind":"category","value":"capability/quantization","status":"ok"}
+{"pr":513,"head_sha":"276cfb7146b03b8e209c443d93172d4b97474f68","run_id":"31831281219","attempt":1,"at":1786734094,"kind":"category","value":"capability/new-model","status":"ok"}
+{"pr":513,"head_sha":"6f3e4669e14bb0fdc7a8a316b63a5779e237ae33","run_id":"31830972301","attempt":1,"at":1786733825,"kind":"category","value":"capability/new-model","status":"ok"}
+{"pr":513,"head_sha":"ab867017537e14745f5c9aefea8c2fb0f5ca511d","run_id":"31826514562","attempt":1,"at":1786730665,"kind":"category","value":"capability","status":"partial"}
+{"pr":513,"head_sha":"6164debe16144772c363240ba3f8c7b281c88611","run_id":"31825205079","attempt":1,"at":1786729420,"kind":"category","value":"unknown","status":"abstain"}
+{"pr":513,"head_sha":"00caf3af5d25118673b6d867fad2e844bce652ec","run_id":"31823084752","attempt":1,"at":1786727719,"kind":"category","value":"unknown","status":"abstain"}
+{"pr":513,"head_sha":"50285deb4d8fe04cd4557c7376e16489cf3aacba","run_id":"31820613586","attempt":1,"at":1786725868,"kind":"category","value":"capability/new-model","status":"ok"}
+{"pr":513,"head_sha":"6a5ce31b97090852f8516ff6918b1bf82e44112f","run_id":"31819647965","attempt":1,"at":1786725116,"kind":"category","value":"unknown","status":"abstain"}
