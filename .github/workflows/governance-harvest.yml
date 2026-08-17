@@ -121,8 +121,19 @@ jobs:
             printf '%s\n' "$INPUT_RUN_ID" > runs.txt
             echo "target: dispatch-named run $INPUT_RUN_ID"
           elif [ -n "${EVENT_RUN_ID:-}" ]; then
-            printf '%s\n' "$EVENT_RUN_ID" > runs.txt
-            echo "target: completed CI run $EVENT_RUN_ID (workflow_run trigger)"
+            # The triggering run PLUS the standing sweep. Harvesting only the
+            # trigger stranded every line that arrived while a previous PR was
+            # open: the open-PR guard blocks the next sweep, so a backlog could
+            # only drain one line per CI cycle. Sweeping every time makes each
+            # PR carry everything outstanding, so the ledger self-heals.
+            since=$(date -u -d '3 days ago' +%Y-%m-%d)
+            { printf '%s\n' "$EVENT_RUN_ID"
+              gh api -X GET "repos/$REPO/actions/workflows/ci.yml/runs" \
+                -f event=pull_request -f status=completed \
+                -f "created=>=$since" -f per_page=100 \
+                --paginate --jq '.workflow_runs[].id'
+            } | sort -u > runs.txt
+            echo "target: run $EVENT_RUN_ID plus the standing sweep — $(wc -l < runs.txt) run(s)"
           else
             since=$(date -u -d '3 days ago' +%Y-%m-%d)
             # By workflow FILENAME, not display name — a rename of `name: CI`
