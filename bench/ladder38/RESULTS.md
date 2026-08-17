@@ -659,3 +659,16 @@ Still required before any of this is published: the quality gates (ssm-state-poi
 decode-floor, BFCL with draw metadata, agentic 10/10) on the final configuration — several
 of the fixes change numerics (`f16-pool`, the drafter tier), and a speed claim without an
 accuracy claim is not a result.
+
+### Round 11 — confirmation with every lever at its measured optimum
+
+Drafter small-M tier + K ladder `1:3,2:1,4:2,8:2,16:1` (C=4 now on its own optimum too):
+
+| C | round 11 | round 10 | vLLM+MTP | ratio |
+|---:|---:|---:|---:|---:|
+| 4 | **74.21** | 71.95 | 71.61 | **1.036x** |
+| 8 | **125.95** | 125.47 | 124.48 | **1.012x** |
+
+Both formerly-open rungs are now won with margin rather than by a hair — C=4 went from a
+0.5% edge to 3.6%, C=8 from 0.8% to 1.2%. Independent confirmation of round 10 on a
+separate serve.
