@@ -7,6 +7,7 @@
 
 pub mod ladder;
 pub mod tree_shape;
+pub mod verify_key;
 
 pub use ladder::{mtp_ladder_disabled, mtp_ladder_drafts, mtp_max_seqs};
 
