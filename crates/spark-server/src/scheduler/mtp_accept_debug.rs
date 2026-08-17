@@ -27,7 +27,47 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Widths tracked individually; anything wider folds into the last bucket.
-const MAX_N: usize = 17;
+///
+/// MUST cover the MTP dispatch cap ([`spark_model::speculative::mtp_max_seqs`],
+/// default 32) or the fold ALIASES distinct widths onto one bucket. It did:
+/// this was 17 while the cap was raised 16 -> 32 (`69658b873`, 2026-07-30),
+/// so every width in 16..=128 accumulated into bucket 16 and the flush
+/// reported whichever width happened to trip [`PERIOD`]. The `diag_c32`
+/// serve log shows the single bucket flushing as
+/// `n=18/25/26/28/29/30/31/32` inside one run, at a mean p1 of 0.676 —
+/// while a clean n=16 bucket reads 0.77-0.89.
+///
+/// Two consequences, both live and both on the rung controller:
+/// * the n=16 sample [`super::adaptive_rung`] steers the shipped rung from
+///   was a MIXTURE of n=16 and n>16 statistics. n>16 accepts materially
+///   worse, so the mixture biases `p1` (and through it the token ratio)
+///   DOWN, i.e. toward `k=1` — the conservative side;
+/// * a flush tripped by an n>16 caller is handed to `observe(n>16, ..)`,
+///   which the `9..=16` BAND discards outright, so under mixed-width
+///   traffic the n=16 controller silently LOSES ticks it paid for.
+///
+/// Kill switch `ATLAS_MTP_ACCEPT_FOLD_AT_16` (presence — house convention,
+/// `=0` is NOT off) restores the pre-fix fold for an A/B.
+const MAX_N: usize = 33;
+
+/// PRESENCE check for `ATLAS_MTP_ACCEPT_FOLD_AT_16`: restores the pre-fix
+/// bucket fold (every width >= 16 into one bucket) so the correction is
+/// A/B-able against the binary that measured the ladder. Read once per
+/// process.
+fn fold_at_16() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ATLAS_MTP_ACCEPT_FOLD_AT_16").is_some())
+}
+
+/// The bucket index for batch width `n` — SSOT for [`record`] and for the
+/// aliasing test. Widths above the tracked range fold onto the last bucket.
+fn bucket_idx(n: usize) -> usize {
+    if fold_at_16() {
+        n.min(16)
+    } else {
+        n.min(MAX_N - 1)
+    }
+}
 /// Verifies per flush. A flush is both a log line and one controller tick
 /// for [`super::adaptive_rung`], so it sets the rung's reaction time: 128
 /// verifies = 8 steps at n=16 ~ 1 s, which puts the probe interval (8 ticks)
@@ -96,7 +136,7 @@ static BUCKETS: [Bucket; MAX_N] = [INIT; MAX_N];
 /// telemetry happened to be switched on. The counters are relaxed atomics
 /// with no D2H and no stream sync, so always-on costs nothing measurable.
 pub(super) fn record(n: usize, k_drafts: usize, d1_match: bool, num_accepted: usize) {
-    let b = &BUCKETS[n.min(MAX_N - 1)];
+    let b = &BUCKETS[bucket_idx(n)];
     b.k.fetch_max(k_drafts as u64, Ordering::Relaxed);
     b.na.fetch_add(num_accepted as u64, Ordering::Relaxed);
     if d1_match {
@@ -243,6 +283,48 @@ impl RequestAccept {
 
 #[cfg(test)]
 mod tests {
+
+    // The bucket table must cover the MTP dispatch cap, or distinct widths
+    // alias onto one bucket and `adaptive_rung` steers the n=16 rung from a
+    // mixture of n=16 and n>16 statistics (see the MAX_N doc). Regression
+    // guard for the 2026-07-30 cap raise that MAX_N never followed.
+    #[test]
+    fn bucket_table_covers_the_mtp_dispatch_cap() {
+        assert_eq!(BUCKETS.len(), MAX_N);
+        // The compiled default cap is 32, so 32 must be individually tracked.
+        const { assert!(MAX_N > 32) };
+        // And it must cover whatever cap THIS process is configured for
+        // (CI does not set the override; an operator who raises it past the
+        // table re-introduces the documented fold).
+        if std::env::var_os("ATLAS_MTP_MAX_SEQS").is_none() {
+            assert!(
+                MAX_N > spark_model::speculative::mtp_max_seqs(),
+                "MAX_N {MAX_N} does not cover dispatch cap {}",
+                spark_model::speculative::mtp_max_seqs()
+            );
+        }
+    }
+
+    // Distinct widths must not share a bucket anywhere the scheduler can
+    // dispatch MTP. Asserted on `bucket_idx`, the SSOT `record` indexes
+    // with, so it fails for exactly the widths that aliased before the fix
+    // (17..=32 onto 16). Env-independent: CI sets neither override.
+    #[test]
+    fn widths_up_to_the_cap_do_not_alias() {
+        if std::env::var_os("ATLAS_MTP_ACCEPT_FOLD_AT_16").is_some()
+            || std::env::var_os("ATLAS_MTP_MAX_SEQS").is_some()
+        {
+            return; // the kill switch deliberately restores the fold
+        }
+        for n in 0..=spark_model::speculative::mtp_max_seqs() {
+            assert_eq!(bucket_idx(n), n, "width {n} aliases onto another bucket");
+        }
+        // Beyond the table the documented fold still applies, and it must
+        // stay inside the array.
+        assert_eq!(bucket_idx(1_000), MAX_N - 1);
+        assert!(bucket_idx(usize::MAX) < BUCKETS.len());
+    }
+
     use super::*;
 
     #[test]
