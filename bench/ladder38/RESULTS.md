@@ -756,3 +756,23 @@ A/B with the kill switches is running (`ATLAS_NO_DRAFTER_SMALL_M_TIER=1`, then
 shape as the canonical key's: **width-gate it** so the concurrency rungs keep it and the
 batch-2 agentic path does not. BFCL was deliberately killed rather than run on a
 configuration that is about to change.
+
+### Agentic wall regression — attribution A/B
+
+| leg | Σwall | correctness |
+|---|---:|---|
+| everything on (tier 1) | 1084 s | 10/10 + 10/10 |
+| everything on (tier 2) | 1068 s | 10/10 + 10/10 |
+| `ATLAS_NO_GEMV_EXACT_M_TIERS=1` | **1020 s** | 10/10 + 10/10 |
+| `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` | running | |
+| historical band / tonight's pre-stack run | 600-800 s / **773 s** | |
+
+The w4a16 exact-M GEMV tiers account for only ~5% of the regression — real but not the
+cause; 1020 s is still 30% above the band. The drafter small-M tier remains the suspect on
+mechanism (it is the only non-bit-exact change, and the gate's `--max-batch-size 2` is
+exactly the width where it activates), and its leg is running now.
+
+Two operational notes recorded so they are not rediscovered: killing a `spark serve` can
+leave the benchmark DRIVER process holding its allocation (87 GB here), which starves the
+next leg at preflight with "box is not free enough"; and `nvidia-smi --query-gpu=memory.used`
+returns `[N/A]` on GB10, so idle-guards must read `free` instead.
