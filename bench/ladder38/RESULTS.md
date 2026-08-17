@@ -396,3 +396,18 @@ PR #553's telemetry exists for precisely this question, so the next run is an A/
 kill switch (`ATLAS_NO_CANONICAL_VERIFY_KEY=1`) at C=2 and C=4, reading the graph-capture
 and GDN fast-path RATES rather than inferring them. Likely landing shape: gate the
 canonical key on width (>= 8), keeping C=8's gain without C=2/C=4's cost.
+
+### Round 7 complete — reproducibility check on the won rungs
+
+| C | round 7 | round 6 | reproducibility | vLLM+MTP | ratio |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.14 | 23.66 | -2.2% | 19.72 | 1.17x WON |
+| 16 | 203.50 | 203.44 | **0.03%** | 197.03 | 1.033x WON |
+| 32 | 291.50 | 291.52 | **0.01%** | 283.48 | 1.028x WON |
+| 64 | 387.62 | 386.99 | 0.16% | 361.39 | 1.073x WON |
+| 128 | 477.55 | 477.69 | 0.03% | 358.57 | 1.332x WON |
+
+The won rungs reproduce across two independent rounds to within 0.2% (C=16/32/128 to
+0.03%), so those margins are stable measurements, not noise-riding. C=1's -2.2% is the
+canonical key's small-n cost showing up even at single-sequence width — another vote for
+gating it.
