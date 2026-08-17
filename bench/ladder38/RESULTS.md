@@ -287,3 +287,16 @@ for BOTH engines, which is what vLLM was already doing):
 Confirms defect 3 at slightly better than the profile's +7.8% estimate, and the engines
 now do identical sampling work. Remaining rungs were not measured — the halt-on-behind
 guard stopped the run; exploratory rounds now record-and-continue instead.
+
+### Round 6 (2026-08-17) — QKVZ NVFP4 fix (PR #551)
+
+| C | round 6 | round 5 | round 4 | Δ vs r5 | cumulative | vLLM+MTP |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8 | **106.48** | 90.68 | 83.22 | **+17.4%** | **+28.0%** | 124.48 |
+
+The single dispatch-line fix (batched verify QKVZ reading the NVFP4 weight copy instead of
+the pre-dequantized FP8 one) is worth **+17.4%** at C=8 on its own, close to the profile's
++20% estimate. TTFT at that rung also fell from ~10 s to **2.39 s**, because the same
+NVFP4 arm serves the prefill shapes.
+
+Running total at C=8 tonight: 83.22 -> 106.48, **+28.0%**, against a 124.48 reference.
