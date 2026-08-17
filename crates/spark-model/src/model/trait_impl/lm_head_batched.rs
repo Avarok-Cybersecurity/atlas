@@ -119,10 +119,9 @@ impl TransformerModel {
                     stream,
                 )?;
             } else {
-                let gemv_k = if padded_n <= 4 {
-                    self.w4a16_gemv_batch4_kernel
-                } else if padded_n <= 8 {
-                    self.w4a16_gemv_batch8_kernel
+                let narrow = self.w4a16_batchm.kernel(padded_n as u32);
+                let gemv_k = if narrow.0 != 0 {
+                    narrow
                 } else if padded_n <= 16 {
                     self.w4a16_gemv_batch16_kernel
                 } else {
