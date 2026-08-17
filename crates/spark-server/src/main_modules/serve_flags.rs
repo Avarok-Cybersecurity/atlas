@@ -45,13 +45,14 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         || args.ssm_batched_recurrent.is_some()
         || args.exact_verify.is_some();
     if gdn_from_cli {
+        // SSOT decode (`gdn_flags::ssm_h_dtype_bits`) — the SAME function
+        // `validate_serve_args` rejects on, so the validator cannot approve a
+        // reading the kernels do not share. `f16-pool` publishes BOTH bits.
+        let (h_f16, h_f16_pool) =
+            spark_model::layers::qwen3_ssm::ssm_h_dtype_bits(args.ssm_h_dtype.as_deref());
         let flags = spark_model::layers::qwen3_ssm::GdnFlags {
-            h_f16: args.ssm_h_dtype.as_deref() == Some("f16"),
-            // Stage 3 (f16-SIZED pools) has NO CLI surface yet: the sizing
-            // plumbing exists and is unit-tested parameter-side, but prefill
-            // still writes the h-state FP32 in place, so no serve config may
-            // publish it. `ssm_h_fp16_preconditions` refuses it besides.
-            h_f16_pool: false,
+            h_f16,
+            h_f16_pool,
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
             batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
             exact_verify: args.exact_verify.unwrap_or(false),
