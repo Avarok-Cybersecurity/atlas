@@ -1,0 +1,163 @@
+{
+  "label": "atlas38_r4_c16",
+  "url": "http://localhost:8888",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "isl": 128,
+  "osl": 1024,
+  "reps": 3,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "driver_sha256": "6412b12d4d187efcce7764b9986949a5b8f209983ec8fb902a4283019c7a2457",
+  "started_utc": "2026-08-17T03:03:12Z",
+  "rungs": [
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "wall_s": 106.0874156359996,
+          "completion_tokens": 16231,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 152.99646902221443,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 5125.294180500077,
+          "ttft_p99_ms": 5125.973449849926,
+          "tpot_p50_ms": 96.88094283186692,
+          "e2e_p50_s": 104.23676591950016,
+          "finish_reasons": [
+            "length",
+            "stop"
+          ],
+          "completion_tokens_per_req": [
+            871,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 0,
+          "clock_sample_at_rep_start": "2411, 64.30"
+        },
+        {
+          "wall_s": 105.6630756680006,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 155.0588973150797,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 4345.009806500457,
+          "ttft_p99_ms": 4345.242497400295,
+          "tpot_p50_ms": 96.90882034555236,
+          "e2e_p50_s": 103.48568518200045,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 1,
+          "clock_sample_at_rep_start": "2483, 57.66"
+        },
+        {
+          "wall_s": 105.80006781799966,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 154.85812379803227,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 4358.843033000085,
+          "ttft_p99_ms": 4488.241269199625,
+          "tpot_p50_ms": 97.48524991886626,
+          "e2e_p50_s": 104.08907410949996,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 2,
+          "clock_sample_at_rep_start": "2476, 70.90"
+        }
+      ],
+      "tok_s_series": [
+        152.99646902221443,
+        155.0588973150797,
+        154.85812379803227
+      ],
+      "tok_s_mean": 154.30449671177544,
+      "tok_s_median": 154.85812379803227,
+      "tok_s_spread_pct": 1.3365963642120309,
+      "wall_s_series": [
+        106.0874156359996,
+        105.6630756680006,
+        105.80006781799966
+      ],
+      "wall_s_mean": 105.85018637399996,
+      "completion_tokens_series": [
+        16231,
+        16384,
+        16384
+      ],
+      "completion_tokens_mean": 16333.0,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-08-17T03:10:15Z"
+}

@@ -174,3 +174,26 @@ step, versus ~72 MB of f16 h-state (x4 verify rows = ~288 MB). **The remaining ~
 unexplained by any traffic we have accounted for — the next step is an nsys profile of the
 DECODE step at C=1 vs C=8, the decode analogue of the prefill profile that found the M=280
 launch shape.**
+
+## ROUND 4 (2026-08-17) — fp8 KV + PR #547 + PR #548, apples-to-apples
+
+Stack `b508679e4`, Atlas served at **fp8 KV** (matching the reference at last) with
+`--ssm-h-dtype f16-pool`, both marginal-cost fixes engaged (verified in the serve log:
+"h pool SIZED at 2 bytes", no contiguous-block fallback, reserve 36.6 -> **22.4 GB**).
+
+| C | round 4 | round 3 floor | Δ | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 22.44 | 21.74 | +3.2% | 19.72 | **1.14x** | **WON** |
+| 2 | 30.32 | 29.04 | +4.4% | 38.79 | 0.78x | open |
+| 4 | 52.35 | 51.55 | +1.6% | 71.61 | 0.73x | open |
+| 8 | 83.22 | 81.42 | +2.2% | 124.48 | 0.67x | open |
+| 16 | 154.30 | 150.41 | +2.6% | 197.03 | 0.78x | open |
+| 32 | 225.37 | 219.97 | +2.5% | 283.48 | 0.79x | open |
+| 64 | **373.90** | 360.02 | +3.9% | 361.39 | **1.035x** | **WON** |
+| 128 | 450.12 | — | — | 358.57 | **1.26x** | **WON** |
+
+**Zero regressions: every rung improved over its own floor.** Three rungs now won
+apples-to-apples (C=1, C=64, C=128). The two fixes were worth +1.6-4.4% each rung — real,
+but an order of magnitude short of the 30% needed at C=4/8, which is consistent with the
+acceptance study's conclusion that the marginal cost lives somewhere we have not yet
+profiled.
