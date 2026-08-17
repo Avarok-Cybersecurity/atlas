@@ -899,3 +899,30 @@ nothing in tool-calling accuracy, and the poisoning gate's byte-identical replay
 costs nothing in state fidelity either.
 
 **The result is now a certified speed claim, not just a measured one.**
+
+### Post-move re-baseline — thermal is definitively excluded
+
+Both boxes were physically moved and now idle identically (38 C GPU / 40 C chassis, versus
+52/65 on dgx1 and 78/89 on dgx2 before). Re-running the same gate with the same stack on
+dgx2:
+
+| dgx2 | idle GPU/chassis | loaded GPU | loaded SM clock | Σwall |
+|---|---:|---:|---:|---:|
+| before the move | 78 / 89 C | 78 C | 2457-2496 MHz | 1084 / 1068 s |
+| **after the move** | **38 / 40 C** | **75 C** | **2483 MHz** | **1019 s** |
+| dgx1 (reference) | 38 / 40 C | 69-74 C | 2463-2470 MHz | **662 / 692 s** |
+
+A 40 C drop in idle temperature bought **~5%** of wall (1076 -> 1019 s) and left the loaded
+temperature and clock essentially unchanged. dgx2 remains ~50% slower than dgx1 on this gate
+with identical code, identical clocks and now identical thermals. **Thermal throttling is
+excluded.**
+
+That leaves the untested hypothesis standing and now much more likely: this gate's wall is
+dominated by the sandboxed `cargo build` + test execution inside each of its 10
+trajectories, not by inference. dgx1 has been the primary build host for weeks (warm cargo
+registry, target dir, and page cache); dgx2 has not. The next cheap test is to compare
+sandbox build time directly on the two boxes rather than inferring it from the gate.
+
+Correction count for this investigation: three. "Code regression" (was cross-box),
+"thermal" (was idle-vs-loaded), and now "thermal at all" (cooling changed the temperature
+but not the wall). Each is recorded rather than dropped.
