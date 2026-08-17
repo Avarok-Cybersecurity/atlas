@@ -37,6 +37,57 @@ fn batched_norm_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_NO_BATCHED_GDN_NORM").is_err())
 }
 
+/// Row count above which the batched decode/verify GDN projections stop taking
+/// the FP8 PREFILL arm (`fp8_gemm_n128` on the single-scale FP8 copy) and read
+/// the NVFP4 twin through a tile GEMM instead. SSOT for both projections —
+/// QKVZ and out_proj make the same trade on the same rows, and the threshold
+/// has the same derivation for both.
+///
+/// DERIVED, not tuned: every weight-streaming NVFP4 GEMV in this dispatcher
+/// (`w4a16_gemv_batch2/3/4`, and `w4a16_gemv_batchm` on the batch8 handle)
+/// caps at M=8, so 8 is the last row count those arms can serve. Above it the
+/// chain reaches the tile GEMMs, and that is exactly where the choice of
+/// weight copy starts to cost bandwidth.
+pub(super) const VERIFY_TGEMM_MIN_TOKENS: usize = 8;
+
+/// Presence kill switch for the NVFP4 QKVZ arm of the batched decode/verify
+/// projection — `ATLAS_NO_QKVZ_NVFP4_DECODE` restores the FP8-prefill-copy
+/// dispatch verbatim. PRESENCE, not value, per house convention (`=0` is NOT
+/// "off"). Read ONCE: this site runs under CUDA-graph capture.
+fn qkvz_nvfp4_decode_off() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var("ATLAS_NO_QKVZ_NVFP4_DECODE").is_ok())
+}
+
+/// Should the batched decode/verify QKVZ projection read the NVFP4 transposed
+/// twin instead of the single-scale FP8 prefill copy?
+///
+/// PURE (SBIO): every input is a parameter — row count, which weight copies the
+/// layer actually holds, and the already-resolved kill switch — so the dispatch
+/// decision is decidable without a GPU, a layer, or a process-global env read.
+///
+/// `has_fp8_prefill` is a precondition, not a preference: this predicate exists
+/// only to divert the FP8 arm. When that copy is absent the chain's own NVFP4
+/// arms already run and must keep running unchanged.
+///
+/// `has_tile_gemm` is `deep_k_gemm(K).0 != 0` — the terminal handle
+/// `ms_proj_gemm` falls back to. Launching a 0 handle is the NULL-dispatch
+/// class this dispatcher has already been bitten by three times, so the arm
+/// declines rather than assuming a target carries the kernel.
+pub(super) fn qkvz_verify_nvfp4_wins(
+    num_tokens: usize,
+    has_fp8_prefill: bool,
+    has_nvfp4_t: bool,
+    has_tile_gemm: bool,
+    kill_switch: bool,
+) -> bool {
+    !kill_switch
+        && has_fp8_prefill
+        && has_nvfp4_t
+        && has_tile_gemm
+        && num_tokens > VERIFY_TGEMM_MIN_TOKENS
+}
+
 /// GDN-state routing for [`Qwen3SsmLayer::decode_batched_inner`].
 ///
 /// `Single`: today's path — `num_tokens` rows belong to ONE sequence, whose
@@ -339,6 +390,56 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
             }
+        } else if qkvz_verify_nvfp4_wins(
+            num_tokens,
+            self.qkvz_fp8.is_some(),
+            self.qkvz_nvfp4_t.is_some(),
+            self.deep_k_gemm(h as u32).0 != 0,
+            qkvz_nvfp4_decode_off(),
+        ) && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
+        {
+            // M > 8 (batched K-token verify, R = Σ ks rows; DFlash wide
+            // verify): the single-scale FP8 PREFILL arm below (`qkvz_fp8`,
+            // built by `bf16_to_fp8` at load) reads 1 byte per element where
+            // the NVFP4 twin reads 0.5625 — on THIS matrix
+            // (N=16384, K=5120) across the 48 GDN layers that is
+            // +1.762 GB/step, +77.8%, on a path already at the LPDDR5X wall.
+            // nsys, binary b508679e4, unsloth/Qwen3.8-27B-NVFP4 at C=8:
+            // `fp8_fp8_gemm_ldmab` 42.58 ms/step = 26.3% of the entire step
+            // over 48 calls, achieving 94.6 GB/s against the 203 GB/s the
+            // shape admits — its 128-row M tile is ~75% padding at the M=32
+            // a C=8 step produces. This is ~90% of the measured 1.56x
+            // GEMM-time regression from C=1 to C=8.
+            //
+            // IDENTICAL defect and identical fix to the out_proj arm below;
+            // that half was found first only because attention `o_proj` was
+            // already on the tile GEMM and fingered it. Route to the NVFP4
+            // transposed twin through `ms_proj_gemm` — the SAME call the
+            // multi-seq decode QKVZ makes on this same weight
+            // (`trait_decode_multi_seq/ssm_batched.rs`), which also picks the
+            // 128-row M tile once N fills the machine and the batch is wide
+            // enough that the 64-row tile would re-stream the weight.
+            //
+            // Numerics: `qkvz_fp8` and `qkvz_nvfp4_t` are BOTH derived from
+            // the one BF16 `qkvz_dense` at load (`qwen35_dense.rs`:
+            // `bf16_to_fp8` and `quantize_to_nvfp4`), so this changes which
+            // lossy copy is read, not what the weight means. NVFP4 is the
+            // copy every OTHER decode arm here already reads (batch2/3/4/8
+            // above, multi-seq decode, single-token decode), so this makes
+            // batched verify agree with the decode it is verifying — the FP8
+            // arm was the odd one out. BF16 activations (vs the FP8 arm's
+            // e4m3 downcast) against a 4-bit weight: not byte-identical.
+            // Kill switch ATLAS_NO_QKVZ_NVFP4_DECODE (PRESENCE check).
+            self.ms_proj_gemm(
+                ctx.gpu,
+                normed,
+                nvfp4_t,
+                proj_dst,
+                num_tokens as u32,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
         } else if let Some(fp8) = self.qkvz_fp8 {
             ops::fp8_gemm_n128(
                 ctx.gpu,
@@ -917,7 +1018,7 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
             }
-        } else if num_tokens > 8
+        } else if num_tokens > VERIFY_TGEMM_MIN_TOKENS
             && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
             && {
                 // Kill switch, PRESENCE check per house convention (`=0` is NOT
@@ -936,9 +1037,22 @@ impl Qwen3SsmLayer {
             // (`deep_k_gemm`). BF16 activations (vs the FP8 arm's e4m3
             // downcast) — equal-or-better numerics, not byte-identical.
             // Kill switch ATLAS_NO_VERIFY_OUTPROJ_TGEMM (PRESENCE check).
-            ops::w4a16_gemm_n128(
+            //
+            // 2026-08-17: the call now goes through `ms_proj_gemm` rather than
+            // `deep_k_gemm` directly. `ms_proj_gemm` IS `deep_k_gemm` plus the
+            // narrow-N twin test this arm was skipping: at THIS shape
+            // (N=h=5120, K=value_dim=6144) the wide tile launches
+            // ceil(5120/128)=40 CTAs on a 48-SM device, which is precisely the
+            // `k64_n64_wins` case — bit-identical output, measured 1.42x on
+            // the replay bench (see `layers::K64_N64_MAX_WIDE_CTAS`) and
+            // 100 GB/s -> 151 GB/s in the C=8 profile, ~2.9 ms/step. Attention
+            // `o_proj` already applies the same test to the same shape
+            // (`qwen3_attention/trait_impl/multi_seq/qkv.rs`), and the
+            // multi-seq decode out_proj already makes this exact
+            // `ms_proj_gemm` call on this exact weight — so this is one call
+            // site rejoining the other three, not a new rule.
+            self.ms_proj_gemm(
                 ctx.gpu,
-                self.deep_k_gemm(value_dim as u32),
                 normed_out_buf,
                 nvfp4_t,
                 out_proj_buf,
