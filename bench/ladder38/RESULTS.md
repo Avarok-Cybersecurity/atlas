@@ -190,9 +190,13 @@ Stack `b508679e4`, Atlas served at **fp8 KV** (matching the reference at last) w
 | 16 | 154.30 | 150.41 | +2.6% | 197.03 | 0.78x | open |
 | 32 | 225.37 | 219.97 | +2.5% | 283.48 | 0.79x | open |
 | 64 | **373.90** | 360.02 | +3.9% | 361.39 | **1.035x** | **WON** |
-| 128 | 450.12 | — | — | 358.57 | **1.26x** | **WON** |
+| 128 | **442.83** | 450.12 | -1.6% | 358.57 | **1.235x** | **WON** |
 
-**Zero regressions: every rung improved over its own floor.** Three rungs now won
+**One regression to record honestly:** C=128 came in at 442.83 with `f16-pool` versus
+450.12 without it (-1.6%) — the widen/narrow staging pair costs a little at the widest
+rung even as it frees 14 GB. The rung is still won by 1.235x, but if C=128 ever tightens,
+running that rung WITHOUT `f16-pool` is the cheaper config. Every other rung improved over
+its own floor. Three rungs now won
 apples-to-apples (C=1, C=64, C=128). The two fixes were worth +1.6-4.4% each rung — real,
 but an order of magnitude short of the 30% needed at C=4/8, which is consistent with the
 acceptance study's conclusion that the marginal cost lives somewhere we have not yet
