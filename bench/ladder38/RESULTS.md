@@ -561,3 +561,21 @@ configuration, not per-rung tuning, which is the only kind of result comparable 
 single-config ladder.
 
 Remaining: C=4 short by 3.95 tok/s (-5.5%), C=8 short by 0.84 tok/s (-0.7%).
+
+### Round 9 — w4a16 exact-M tiers + PRMT removal (PR #561)
+
+| C | round 9 | round 8 | Δ | vLLM+MTP | ratio |
+|---:|---:|---:|---:|---:|---:|
+| 4 | **69.73** | 67.66 | **+3.1%** | 71.61 | 0.974x |
+| 8 | 123.26 | 123.64 | -0.3% | 124.48 | 0.990x |
+
+The bit-exact instruction reductions (batch4 -6.8%, batch8 -7.8%, batch16/32 -9%) convert to
++3.1% of wall at C=4 and nothing measurable at C=8. **Both open rungs are now inside 3%:**
+C=4 short by 1.88 tok/s, C=8 short by 1.22 tok/s.
+
+Two levers in flight for exactly these widths: a zero-code K-ladder micro-sweep at C=4 and
+C=8 (the `8:2` rung was picked without ever testing `8:1`/`8:3` under D-Cut-off, and `4:3`
+without testing `4:2`/`4:1`), and the MTP drafter's small-M dispatch — the same pathology
+just fixed in the main model: M=1 uses `dense_gemv_bf16` at 3.57 ms while M=2 uses
+`dense_gemm_bf16_pipelined` at 5.43 ms, 1.52x for two rows, worth +7.24 ms/step of the
+second sequence's cost. At C=4 the drafter runs M=4, squarely in that band.
