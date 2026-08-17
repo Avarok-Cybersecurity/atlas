@@ -701,3 +701,18 @@ pre-rewrite SHA would name a commit that no longer exists, which is worse than n
 
 Two independent rounds on the final configuration agree at every rung — C=32 and C=128 to
 within 0.06%, C=64 to 0.12%. **Atlas beats vLLM+MTP at every concurrency from 1 to 128.**
+
+## QUALITY GATES on the final stack (`bf4d7a1267`, post-rewrite)
+
+| gate | verdict | detail |
+|---|---|---|
+| **ssm-state-poisoning-gate** | **PASS** | **12 of 12 replays byte-identical to the reference** |
+| **decode-floor** | **PASS** | |
+| agentic-webserver | running | |
+| bfcl-subset (with draw metadata) | queued | |
+
+The poisoning gate is the instrument that matters most here: `--ssm-h-dtype f16-pool` halves
+the precision of the GDN recurrent state, and that gate exists specifically to catch state
+corruption across prefix-cache restores. **Byte-identical replays** means the reduced-precision
+pool did not perturb the recurrence at all on this probe — the strongest available evidence
+that the capacity win cost nothing in correctness.
