@@ -848,3 +848,37 @@ Standing conclusion: **the concurrency campaign costs nothing on the agentic pat
 slightly improves it.** The `wall_budget_s: 1000` finding still stands and matters: it is a
 dgx1 calibration that unmodified main cannot meet on dgx2, so Σwall verdicts from dgx2 are
 meaningless until the budget is per-box or the gate is pinned to dgx1.
+
+### agentic gate — reproduced on dgx1, and a correction to the thermal story
+
+| box | build | Σwall | correctness |
+|---|---|---:|---|
+| **dgx1 rep 1** | ladder stack | **692 s** | 10/10 + 10/10 |
+| **dgx1 rep 2** | ladder stack | **662 s** | 10/10 + 10/10 |
+| dgx1 | pre-stack (historical) | 773 s | 10/10 + 10/10 |
+| dgx2 | ladder stack | 1084 / 1068 s | 10/10 + 10/10 |
+| dgx2 | unmodified `main` | 1079 s | 10/10 + 10/10 |
+
+The stack passes the gate on dgx1 twice, **10-14% faster than the pre-stack reference**.
+
+★ **Correction to the earlier thermal explanation.** The first comparison sampled dgx1 while
+IDLE against dgx2 under LOAD, which is the same class of error as the cross-box comparison
+it was trying to explain. Measured with both boxes under load, they are nearly identical:
+
+| under load | dgx1 | dgx2 |
+|---|---:|---:|
+| SM clock | 2463-2470 MHz | 2457-2496 MHz |
+| GPU die temp | 69-74 C | 76-78 C |
+| hottest chassis zones | 87 / 87 / 81 / 78 C | 89 / 88 / 82 / 74 C |
+| CPU / storage | Cortex-X925 x20 @ 3.9 GHz, NVMe | identical |
+
+**Clocks and temperatures do not explain the 692 s vs 1079 s gap.** The remaining hypothesis
+is that this gate's wall is dominated by NON-GPU work: each of its 10 trajectories spawns a
+sandbox where the model writes a Rust webserver and runs `cargo build` and tests, which is
+minutes of CPU and disk per trajectory. Cargo/target and page-cache warmth differ sharply
+between the boxes (dgx1 has been the primary build host all night). That is testable and is
+not yet tested — recorded as a hypothesis, not a conclusion.
+
+The throttle-counter difference is real (dgx2 accrues SW thermal slowdown ~96x faster) but
+is confounded by duty cycle: dgx2 ran benchmarks continuously for 16 h while dgx1 idled
+between runs.
