@@ -579,3 +579,19 @@ without testing `4:2`/`4:1`), and the MTP drafter's small-M dispatch — the sam
 just fixed in the main model: M=1 uses `dense_gemv_bf16` at 3.57 ms while M=2 uses
 `dense_gemm_bf16_pipelined` at 5.43 ms, 1.52x for two rows, worth +7.24 ms/step of the
 second sequence's cost. At C=4 the drafter runs M=4, squarely in that band.
+
+#### Round 9 complete — bit-exact kernel change disturbs nothing
+
+| C | round 9 | round 8 | vLLM+MTP | ratio |
+|---:|---:|---:|---:|---:|
+| 1 | 23.46 | 23.09 | 19.72 | **1.190x WON** |
+| 2 | (r8) 38.95 | 38.95 | 38.79 | **1.004x WON** |
+| 4 | **69.73** | 67.66 | 71.61 | 0.974x |
+| 8 | 123.26 | 123.64 | 124.48 | 0.990x |
+| 16 | 202.48 | 203.14 | 197.03 | **1.028x WON** |
+| 32 | 290.69 | 291.42 | 283.48 | **1.026x WON** |
+| 64 | 386.58 | 387.14 | 361.39 | **1.070x WON** |
+| 128 | 477.47 | 477.79 | 358.57 | **1.332x WON** |
+
+Four independent rounds now agree at the won rungs: C=32 at 291.52/291.50/291.42/290.69 and
+C=64 at 386.99/387.62/387.14/386.58. Those margins are stable measurements.
