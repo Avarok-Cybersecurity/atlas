@@ -595,3 +595,17 @@ second sequence's cost. At C=4 the drafter runs M=4, squarely in that band.
 
 Four independent rounds now agree at the won rungs: C=32 at 291.52/291.50/291.42/290.69 and
 C=64 at 386.99/387.62/387.14/386.58. Those margins are stable measurements.
+
+### K-ladder micro-sweep at the open rungs
+
+C=8 (D-Cut off, stack `6d07f5456`, 3 reps each):
+
+| ladder | C=8 |
+|---|---:|
+| `8:1` | 116.91 |
+| **`8:2` (in use)** | **123.26-123.64** |
+| `8:3` | 117.50 |
+
+A clean interior optimum — two drafts beats both one and three by ~5%. **The K-ladder lever
+is spent at C=8**; its remaining 1.0% must come from elsewhere (the drafter small-M tier,
+PR #562, is the candidate: ~-6.0 ms/step at that width).
