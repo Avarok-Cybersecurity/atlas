@@ -191,15 +191,22 @@ pub(super) fn select(
 /// the resulting per-sequence ROW count (`retained + 1`) in dispatch order.
 ///
 /// ★ The depth→slot ASSIGNMENT is canonical (`verify_key::verify_batch_order`
-/// — depths descending paired with slots ascending), not confidence-ordered.
-/// D-Cut's row saving comes from the multiset, which stays confidence-chosen;
-/// WHO gets which depth was the half that multiplied the batched-verify
-/// CUDA-graph key space (266 arrangements at n=8 against a 32-entry cache →
-/// 89% of steps re-capturing, 23.2 ms/step). It also RECONCILES the batch's
-/// two ordering demands — contiguous equal-depth runs and ascending
-/// consecutive ssm slots — which the confidence-ordered arrangement put in
-/// direct conflict. See `verify_key`'s module docs for the full argument and
-/// the kill switch `ATLAS_NO_CANONICAL_VERIFY_KEY`.
+/// — depths descending paired with slots ascending), not confidence-ordered,
+/// AT BATCH WIDTHS >= `verify_key::CANONICAL_KEY_MIN_WIDTH` (8). D-Cut's row
+/// saving comes from the multiset, which stays confidence-chosen; WHO gets
+/// which depth was the half that multiplied the batched-verify CUDA-graph key
+/// space (266 arrangements at n=8 against a 32-entry cache → 89% of steps
+/// re-capturing, 23.2 ms/step). It also RECONCILES the batch's two ordering
+/// demands — contiguous equal-depth runs and ascending consecutive ssm slots
+/// — which the confidence-ordered arrangement put in direct conflict.
+///
+/// Below that width the key space is 2 (n=2) or 10 (n=4) keys against a
+/// 32-entry cache — nothing to collapse — and the forced assignment measured
+/// NET NEGATIVE there (-2.4% at C=2, -3.7% at C=4), so this falls back to the
+/// pre-canonical assignment byte for byte. `verify_key::canonical_assignment`
+/// is the single gate (threshold + `ATLAS_CANONICAL_KEY_MIN_WIDTH` override +
+/// the `ATLAS_NO_CANONICAL_VERIFY_KEY` kill switch); see `verify_key`'s module
+/// docs and `CANONICAL_KEY_MIN_WIDTH` for the A/B table.
 ///
 /// With `ATLAS_NO_MTP_DCUT` set — or the batch wider than [`dcut_width_cap`]
 /// sequences (the D-Cut-at-depth policy: pruning at the 16:2 rung's n=16
@@ -241,7 +248,10 @@ pub(super) fn plan(
     // with the graph key. Canonical: depths descending onto slots ascending,
     // so `ks_out[p]` is the multiset's p-th deepest row count, NOT
     // necessarily the confidence-chosen depth of the sequence placed there.
-    // Kill switch: each sequence keeps its own depth, deepest-first.
+    // Below `CANONICAL_KEY_MIN_WIDTH` (or with the kill switch set): each
+    // sequence keeps its own depth, deepest-first. This is the ONE place the
+    // assignment is decided, so it is the ONE place the width gate is asked —
+    // `mtp_step` re-applies the ORDER for the same `batchable.len()`.
     let slots: Vec<usize> = batchable
         .iter()
         .map(|&idx| active[idx].seq.ssm_slot_idx().unwrap_or(usize::MAX))
@@ -249,7 +259,7 @@ pub(super) fn plan(
     let (order, ks_out) = spark_model::speculative::verify_key::verify_batch_order(
         &slots,
         &ks,
-        spark_model::speculative::verify_key::canonical_verify_key_enabled(),
+        spark_model::speculative::verify_key::canonical_assignment(batchable.len()),
     );
     // Truncate to the ASSIGNED depth. Every batchable sequence entered the
     // step with exactly `ladder_nd` drafts (`mtp_step` truncates the surplus)

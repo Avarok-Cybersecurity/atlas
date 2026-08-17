@@ -228,14 +228,18 @@ impl TransformerModel {
     ///
     /// The scheduler dispatches each chunk in the ONE canonical order
     /// (`speculative::verify_key::verify_batch_order` — depths descending
-    /// paired with slots ascending), so the key is a pure function of
-    /// (slot set, depth multiset, sentinel): at n=8 the 266 D-Cut
+    /// paired with slots ascending) at batch widths >=
+    /// `verify_key::CANONICAL_KEY_MIN_WIDTH`, so the key is a pure function of
+    /// (slot set, depth multiset, sentinel) there: at n=8 the 266 D-Cut
     /// ARRANGEMENTS that thrashed this 32-entry cache collapse onto the 3
-    /// multisets behind them. Kill switch `ATLAS_NO_CANONICAL_VERIFY_KEY`
-    /// (scheduler side) restores the arrangement-keyed behaviour. Key BYTES
-    /// live in `verify_key` so the ordering rule and the key it produces
-    /// cannot drift apart. `None` → no graph (a sequence without a pool
-    /// slot).
+    /// multisets behind them. Below that width the key stays
+    /// arrangement-shaped ON PURPOSE — the space is 2 keys at n=2 and 10 at
+    /// n=4, so there is nothing to collapse and the assignment measured net
+    /// negative (`CANONICAL_KEY_MIN_WIDTH` carries the A/B table). Kill switch
+    /// `ATLAS_NO_CANONICAL_VERIFY_KEY` (scheduler side) restores the
+    /// arrangement-keyed behaviour at every width. Key BYTES live in
+    /// `verify_key` so the ordering rule and the key it produces cannot drift
+    /// apart. `None` → no graph (a sequence without a pool slot).
     pub(super) fn verify_batched_graph_key(
         &self,
         seqs: &[&mut SequenceState],

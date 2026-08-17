@@ -197,3 +197,55 @@ fn width_two_is_inside_the_pruning_envelope_and_is_not_uniform() {
     // ...and the row saving is real: one fewer verify row than uniform.
     assert_eq!(chunk_ranges(&rows), vec![(0, 2)], "still a single chunk");
 }
+
+/// The width gate reverts the ASSIGNMENT below
+/// `verify_key::CANONICAL_KEY_MIN_WIDTH`, NOT the pruning. Composed exactly
+/// as `plan` composes it (`select` → gate → `verify_batch_order`), because
+/// `plan` itself needs GPU-backed `ActiveSeq`s.
+///
+/// At n=2 the ragged `{4, 3}` row multiset — D-Cut's whole row saving, R=7
+/// against the uniform 8 — survives untouched, and each sequence keeps the
+/// depth its own confidence earned. Under the canonical arm the deepest row
+/// count would move to the LOWEST slot instead, which at this width buys a
+/// key-space collapse from 2 keys to 1 and measured -2.4% at C=2.
+#[test]
+fn below_the_gate_the_pairing_is_legacy_but_the_pruning_is_kept() {
+    use spark_model::speculative::verify_key::{canonical_assignment, verify_batch_order};
+    let c = [vec![-0.01f32, -0.02, -0.03], vec![-0.01f32, -0.02, -0.40]];
+    let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
+    let ks: Vec<usize> = select(&refs, 3, VERIFY_ROW_BUDGET, 0.75)
+        .iter()
+        .map(|r| r + 1)
+        .collect();
+    assert_eq!(ks, vec![4, 3]);
+    // Seq 0 (the deeper one) sits on the HIGHER pool slot, so the two arms
+    // disagree — the case the gate is actually deciding.
+    let slots = [5usize, 0];
+    assert!(!canonical_assignment(slots.len()));
+
+    let (order, depths) = verify_batch_order(&slots, &ks, canonical_assignment(slots.len()));
+    let paired: Vec<(usize, usize)> = order.iter().map(|&i| (slots[i], ks[i])).collect();
+    assert_eq!(
+        depths.iter().sum::<usize>(),
+        7,
+        "the row saving must survive the gate — this is not a D-Cut kill switch"
+    );
+    assert_eq!(
+        paired,
+        vec![(5, 4), (0, 3)],
+        "each sequence keeps the depth its confidence earned"
+    );
+    assert_eq!(depths, vec![4, 3]);
+    assert_eq!(chunk_ranges(&depths), vec![(0, 2)]);
+
+    // The canonical arm re-pairs: deepest onto the lowest slot.
+    let (c_order, c_depths) = verify_batch_order(&slots, &ks, true);
+    let c_paired: Vec<(usize, usize)> = c_order
+        .iter()
+        .zip(&c_depths)
+        .map(|(&i, &k)| (slots[i], k))
+        .collect();
+    assert_eq!(c_paired, vec![(0, 4), (5, 3)]);
+    assert_ne!(c_paired, paired);
+    assert_eq!(c_depths.iter().sum::<usize>(), 7);
+}
