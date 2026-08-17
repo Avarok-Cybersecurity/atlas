@@ -955,3 +955,39 @@ but BOTH are behind dgx3 (6.17.0-1026, VBIOS 9A.0B.25), and both have NVIDIA dri
 pending — dgx1 offered 580.173.02, dgx2 offered 580.159.03, i.e. their apt sources differ
 too. Recommend updating all three to the same stack AFTER the merges land, then
 re-baselining, since every number certified today was measured on 580.126.09.
+
+## ★ RESOLVED — the agentic wall gap is trajectory shape, not hardware
+
+| box | wall | turns | **s/turn** |
+|---|---:|---:|---:|
+| dgx1 | 813 s | 115 | **7.07** |
+| dgx2 | 1019 s | 166 | **6.14** |
+
+**dgx2 is 13% FASTER per turn. It simply takes 44% more turns to complete the same ten
+tasks.** The wall difference is trajectory length, not machine speed — which is why every
+hardware hypothesis failed: there was never a slow component to find.
+
+Supporting evidence: dgx1's own three tiers on identical hardware and code measured
+**662 / 692 / 813 s — a 21% spread**. Turn count is nondeterministic run to run (MTP
+speculative decoding is not bitwise reproducible across differing batch composition and
+timing, even at temperature 0), and wall is roughly linear in turns.
+
+### Consequence for the gate
+
+`agentic-webserver`'s `Σwall <= 1000 s` bound is **not a reliable performance measure**. It
+is dominated by a quantity that varies 21% run-to-run on one box for reasons unrelated to
+engine speed: a build can fail it by drawing a longer trajectory and pass it by drawing a
+shorter one. Recommended follow-ups, in order:
+
+1. Gate on **seconds per turn** (or per emitted token) rather than total wall — that is the
+   quantity that actually measures the engine, and by it dgx2 is the faster box.
+2. If total wall must stay, widen the bound to cover the measured spread, or require two
+   consecutive over-budget tiers (the protocol already says this; it was applied tonight and
+   was right to be).
+3. The per-box `wall_budget_s` idea is now moot for the right reason: the variance is not
+   between boxes, it is between runs.
+
+Investigation record: seven hypotheses, six excluded by measurement (code, thermal, clock,
+sandbox build, software stack, inference speed), one confirmed (trajectory shape). Three of
+my own conclusions were retracted along the way — "code regression", "thermal", and
+"thermal at all" — each corrected in place rather than dropped.
