@@ -16,6 +16,7 @@ use super::super::block_mgmt::{
     apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
     extract_layer_refs, reuse_prefix_match_disk_ids,
 };
+use super::super::ssm_batched_copy::{StateCopy, run_ssm_state_copies};
 use super::super::ssm_pool::SsmStatePool;
 use super::super::ssm_snapshot::SsmSnapshotPool;
 use super::super::types::{PinnedMetaStaging, TransformerModel};
@@ -270,6 +271,8 @@ impl TransformerModel {
         use crate::layer::SsmLayerState;
 
         let stream = self.gpu.default_stream();
+        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
+        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
                 let ssm = layer_state
@@ -300,20 +303,19 @@ impl TransformerModel {
                 }
 
                 // D2D copy: state → checkpoint
-                self.gpu.copy_d2d_async(
-                    ssm.h_state,
-                    ssm.h_state_checkpoint.unwrap(),
-                    h_bytes,
-                    stream,
-                )?;
-                self.gpu.copy_d2d_async(
-                    ssm.conv_state,
-                    ssm.conv_state_checkpoint.unwrap(),
-                    conv_bytes,
-                    stream,
-                )?;
+                h_plan.push(StateCopy {
+                    src: ssm.h_state,
+                    dst: ssm.h_state_checkpoint.unwrap(),
+                    bytes: h_bytes,
+                });
+                conv_plan.push(StateCopy {
+                    src: ssm.conv_state,
+                    dst: ssm.conv_state_checkpoint.unwrap(),
+                    bytes: conv_bytes,
+                });
             }
         }
+        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         self.gpu.synchronize(stream)?;
         Ok(())
     }
@@ -357,6 +359,8 @@ impl TransformerModel {
         }
 
         let stream = self.gpu.default_stream();
+        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
+        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
                 let ssm = layer_state
@@ -377,28 +381,32 @@ impl TransformerModel {
                 if num_accepted == 0 {
                     // Restore to pre-verification checkpoint
                     if let Some(ckpt) = ssm.h_state_checkpoint {
-                        self.gpu
-                            .copy_d2d_async(ckpt, ssm.h_state, h_bytes, stream)?;
+                        h_plan.push(StateCopy {
+                            src: ckpt,
+                            dst: ssm.h_state,
+                            bytes: h_bytes,
+                        });
                     }
                     if let Some(ckpt) = ssm.conv_state_checkpoint {
-                        self.gpu
-                            .copy_d2d_async(ckpt, ssm.conv_state, conv_bytes, stream)?;
+                        conv_plan.push(StateCopy {
+                            src: ckpt,
+                            dst: ssm.conv_state,
+                            bytes: conv_bytes,
+                        });
                     }
                 } else if num_accepted <= ssm.h_state_intermediates.len() {
                     // Restore to intermediate checkpoint after the last accepted token
                     let idx = num_accepted - 1;
-                    self.gpu.copy_d2d_async(
-                        ssm.h_state_intermediates[idx],
-                        ssm.h_state,
-                        h_bytes,
-                        stream,
-                    )?;
-                    self.gpu.copy_d2d_async(
-                        ssm.conv_state_intermediates[idx],
-                        ssm.conv_state,
-                        conv_bytes,
-                        stream,
-                    )?;
+                    h_plan.push(StateCopy {
+                        src: ssm.h_state_intermediates[idx],
+                        dst: ssm.h_state,
+                        bytes: h_bytes,
+                    });
+                    conv_plan.push(StateCopy {
+                        src: ssm.conv_state_intermediates[idx],
+                        dst: ssm.conv_state,
+                        bytes: conv_bytes,
+                    });
                 } else {
                     // Unreachable: the pre-validation pass above already
                     // bailed for every `num_accepted > intermediates.len()`,
@@ -419,6 +427,11 @@ impl TransformerModel {
                 // and it would otherwise be swallowed by the branch above.
             }
         }
+        // Enqueued only after every layer validated AND planned — the
+        // pre-validation pass above already guarantees no bail can happen
+        // here, and building the plan first makes that structural rather
+        // than argued: a partially-rewound MIXED state is unrepresentable.
+        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         // No synchronize needed: rollback copies and subsequent operations
         // are on the same CUDA stream, so ordering is guaranteed.
         Ok(())
