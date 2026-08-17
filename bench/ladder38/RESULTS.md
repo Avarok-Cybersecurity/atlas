@@ -716,3 +716,18 @@ the precision of the GDN recurrent state, and that gate exists specifically to c
 corruption across prefix-cache restores. **Byte-identical replays** means the reduced-precision
 pool did not perturb the recurrence at all on this probe — the strongest available evidence
 that the capacity win cost nothing in correctness.
+
+### agentic-webserver: correctness perfect, wall budget over — repeat per protocol
+
+First tier on the final stack: **webserver_ok 10/10, followed_directions 10/10**, but
+`Σwall 1084s > 1000s`. The repo's own rule for this exact case (benchmark-pr skill): the
+Σwall bound is a blowup detector carrying +/-200-300s of noise, so *"if Σ lands 1000-1300
+with 10/10+10/10 correctness, run ONE repeat tier before declaring wall failure; two
+consecutive over-1000 tiers = FAIL (report both)."* A repeat tier is running.
+
+Worth noting what this gate does and does not exercise for tonight's changes: it serves the
+**35B** flagship at `--max-batch-size 2` with its own recipe, so `--ssm-h-dtype f16-pool` is
+not enabled and the drafter/QKVZ small-M paths (M>8 batched verify, drafter M=2..8) are
+largely not reached. It is therefore a regression check on the shared code, not a test of
+the ladder configuration — which is why BFCL on the dense 27B is the more informative gate
+for the numerics-changing fixes, and it runs next.
