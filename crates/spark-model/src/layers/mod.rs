@@ -15,6 +15,7 @@ pub mod ops;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
+pub mod w4a16_gemv_tiers;
 
 /// Minimum K at which the deep-K `w4a16_gemm_t_k64` (K_STEP_T=64) beats the
 /// K_STEP_T=32 `w4a16_gemm_t`.

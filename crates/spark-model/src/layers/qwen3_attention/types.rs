@@ -8,6 +8,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 
 use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
+use crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers;
 use crate::weight_map::{AttentionWeights, DenseWeight, QuantWeight, QuantizedWeight};
 
 pub use super::types_weights::{HcWeights, MlaWeights};
@@ -267,10 +268,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemv_qg_batch3_k: KernelHandle,
     pub(super) w4a16_gemv_dual_batch3_k: KernelHandle,
     pub(super) w4a16_gemv_batch3_k: KernelHandle,
-    /// M<=4 batched GEMV (K=4 verify q/k/v/o); 0-handle when absent.
-    pub(super) w4a16_gemv_batch4_k: KernelHandle,
-    /// M<=8 batched GEMV (chain-verify K=5..8 q/k/v/o); 0-handle when absent.
-    pub(super) w4a16_gemv_batch8_k: KernelHandle,
+    /// Narrow `w4a16_gemv_batch{M}` family (M=4..8) for the K=4 verify and the
+    /// K=5..8 chain verify q/k/v/o projections. SSOT for the M -> tier
+    /// decision; individual tiers are 0-handles when the target lacks them.
+    pub(super) w4a16_batchm: W4a16BatchmTiers,
     // Kernels — prefill (GEMM M=N + Flash Attention)
     pub(super) w4a16_gemm_k: KernelHandle,
     pub(super) w4a16_gemm_t_k: KernelHandle,

@@ -10,6 +10,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use crate::layer::ForwardContext;
 use crate::layers::ops;
+use crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers;
 use crate::weight_map::{
     DenseWeight, Fp8Weight, Fp8WeightTransposed, PackedQ2Weight, QuantizedWeight,
 };
@@ -111,10 +112,10 @@ pub struct DenseFfnLayer {
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
-    /// M<=4 batched GEMV (K=4 verify FFN); 0-handle when absent.
-    w4a16_gemv_batch4: KernelHandle,
-    /// M<=8 batched GEMV (chain-verify K=5..8 FFN); 0-handle when absent.
-    w4a16_gemv_batch8: KernelHandle,
+    /// Narrow `w4a16_gemv_batch{M}` family (M=4..8) for the K=4 verify FFN and
+    /// the K=5..8 chain verify. SSOT for the M -> tier decision; individual
+    /// tiers are 0-handles when the target did not load them.
+    w4a16_batchm: W4a16BatchmTiers,
     w4a16_gemm: KernelHandle,
     // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
     // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
@@ -337,8 +338,7 @@ impl DenseFfnLayer {
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
-            w4a16_gemv_batch4: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
-            w4a16_gemv_batch8: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_batchm: W4a16BatchmTiers::resolve(gpu),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             w4a16_gemm_t_m128_v2_k: super::w4a16_v2_kernel(gpu),
@@ -1393,14 +1393,12 @@ impl DenseFfnLayer {
         Ok(())
     }
 
-    /// Batchm-GEMV kernel for `m` verify rows: batch4 (m<=4) or batch8
-    /// (m=5..8, chain verify). 0-handle when out of range or absent.
+    /// Batchm-GEMV kernel for `m` verify rows: the narrowest resolved tier in
+    /// `w4a16_gemv_batch{4,5,6,7,8}` that covers `m`. 0-handle when out of
+    /// range or absent. See `layers::w4a16_gemv_tiers` for the decision and
+    /// the `ATLAS_NO_GEMV_EXACT_M_TIERS=1` kill switch.
     fn batchm_kernel(&self, m: u32) -> KernelHandle {
-        match m {
-            1..=4 => self.w4a16_gemv_batch4,
-            5..=8 => self.w4a16_gemv_batch8,
-            _ => KernelHandle(0),
-        }
+        self.w4a16_batchm.kernel(m)
     }
 
     /// Whether the M-row batched-GEMV verify path is available for `m` rows

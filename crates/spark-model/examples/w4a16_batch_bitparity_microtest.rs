@@ -16,8 +16,10 @@
 //! each tier can serve. A cosine gate is exactly what hid the
 //! `w8a16_gemv_batch4` fused-add defect.
 //!
-//! 3 seeds x 4 shapes x (15 templated M + 2 fixed-M kernels) = 204 legs,
-//! plus 12 negative controls.
+//! Tiers 5/6/7 (exact-M, added 2026-08-17) are checked at EVERY M they can be
+//! dispatched at, because `w4a16_gemv_tiers::select_tier` widens to the next
+//! resolved tier when one is absent. They are optional: an older target PTX
+//! set without them still runs the gate on 4/8/16 + the fixed-M kernels.
 //!
 //! Exit: 0 all legs byte-identical, 1 any leg differs,
 //! 2 kernels absent from this target's module set.
@@ -172,16 +174,24 @@ fn main() -> Result<()> {
     let g: &dyn GpuBackend = &backend;
 
     let m1_k = g.kernel("w4a16_gemv", "w4a16_gemv");
-    let tiers: Vec<(&str, KernelHandle, Vec<usize>)> = ["batch4", "batch8", "batch16"]
+    // Every M a tier can be DISPATCHED at, not just the M its width names:
+    // `w4a16_gemv_tiers::select_tier` widens to the next resolved tier when
+    // one is missing, so batch7 can legitimately serve M=5 and batch8 M=5..8.
+    // Checking a tier only at its own width would leave the widened legs
+    // unproven.
+    let tier_specs: [(&str, Vec<usize>); 6] = [
+        ("batch4", (2..=4).collect()),
+        ("batch5", (2..=5).collect()),
+        ("batch6", (2..=6).collect()),
+        ("batch7", (2..=7).collect()),
+        ("batch8", (2..=8).collect()),
+        ("batch16", (2..=16).collect()),
+    ];
+    let tiers: Vec<(&str, KernelHandle, Vec<usize>)> = tier_specs
         .iter()
-        .filter_map(|t| {
+        .filter_map(|(t, ms)| {
             let kh = g.kernel("w4a16_gemv", &format!("w4a16_gemv_{t}")).ok()?;
-            let ms = match *t {
-                "batch4" => (2..=4).collect(),
-                "batch8" => (5..=8).collect(),
-                _ => (9..=16).collect(),
-            };
-            Some((*t, kh, ms))
+            Some((*t, kh, ms.clone()))
         })
         .collect();
 
@@ -197,7 +207,19 @@ fn main() -> Result<()> {
         })
         .collect();
     let m1_k = match m1_k {
-        Ok(kh) if tiers.len() == 3 && fixed_tiers.len() == 2 => kh,
+        // 4/8/16 are the tiers every NVFP4 target has carried; 5/6/7 are newer
+        // and legitimately absent from an older target PTX set, so they are
+        // checked when present but never required to run the gate.
+        Ok(kh)
+            if tiers
+                .iter()
+                .filter(|(t, ..)| matches!(*t, "batch4" | "batch8" | "batch16"))
+                .count()
+                == 3
+                && fixed_tiers.len() == 2 =>
+        {
+            kh
+        }
         _ => {
             println!("w4a16 GEMV kernels absent from this target set — SKIP");
             std::process::exit(2);

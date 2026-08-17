@@ -231,16 +231,17 @@ impl Qwen3SsmLayer {
                 }
             }
         } else if (5..=8).contains(&num_tokens)
-            && self.w4a16_gemv_batch8_k.0 != 0
+            && self.w4a16_batchm.kernel(num_tokens as u32).0 != 0
             && let Some(ref nvfp4) = self.qkvz_nvfp4
         {
             // Chain-verify K=5..8: keep the NVFP4 QKVZ on the weight-streaming
-            // batched GEMV (batch8) instead of falling through to the tile
-            // GEMMs below (the M>4 projection cliff). FP8 checkpoints fall
-            // through unchanged (fp8_gemm arm below).
+            // batched GEMV (the narrowest tier covering these rows) instead of
+            // falling through to the tile GEMMs below (the M>4 projection
+            // cliff). FP8 checkpoints fall through unchanged (fp8_gemm arm
+            // below).
             ops::w4a16_gemv_batchm(
                 ctx.gpu,
-                self.w4a16_gemv_batch8_k,
+                self.w4a16_batchm.kernel(num_tokens as u32),
                 normed,
                 nvfp4,
                 proj_dst,
@@ -297,7 +298,7 @@ impl Qwen3SsmLayer {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                 ops::w4a16_gemv_batchm(
                     ctx.gpu,
-                    self.w4a16_gemv_batch4_k,
+                    self.w4a16_batchm.kernel(num_tokens as u32),
                     normed,
                     nvfp4,
                     proj_dst,
