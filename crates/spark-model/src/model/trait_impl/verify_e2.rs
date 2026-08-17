@@ -19,6 +19,12 @@ use crate::traits::SequenceState;
 /// the cap bounds graph memory WITHOUT ever pinning the path eager —
 /// the pre-LRU insert-only cache went permanently eager after 32 distinct
 /// vectors, which a long serve is guaranteed to produce.
+///
+/// The cap is only sane because the key space is bounded: since the
+/// canonical depth→slot assignment (`speculative::verify_key`) a step's key
+/// is (slot set, depth MULTISET), not the arrangement. Keyed on the
+/// arrangement, D-Cut alone produced 266 keys at n=8 against this 32 —
+/// 89% of steps re-captured, 23.2 ms/step of instantiate+destroy.
 pub(super) const VERIFY_BATCHED_GRAPH_CAP: usize = 32;
 
 /// Verify row-buffer capacity R = Σ ks — the exact capacity of the batched
@@ -51,23 +57,32 @@ impl TransformerModel {
     /// runs are grouped by depth) — the same slot vector at a different ladder
     /// step or a different D-Cut shape must not replay. A
     /// wy-tables-present sentinel is appended so a table-less capture can
-    /// never replay a table-full step or vice versa. The scheduler sorts
-    /// each chunk by ssm slot before dispatch, so keys are combinations,
-    /// not permutations (verify_k4_batch_step.rs). `None` → no graph (a
-    /// sequence without a pool slot).
+    /// never replay a table-full step or vice versa.
+    ///
+    /// The scheduler dispatches each chunk in the ONE canonical order
+    /// (`speculative::verify_key::verify_batch_order` — depths descending
+    /// paired with slots ascending), so the key is a pure function of
+    /// (slot set, depth multiset, sentinel): at n=8 the 266 D-Cut
+    /// ARRANGEMENTS that thrashed this 32-entry cache collapse onto the 3
+    /// multisets behind them. Kill switch `ATLAS_NO_CANONICAL_VERIFY_KEY`
+    /// (scheduler side) restores the arrangement-keyed behaviour. Key BYTES
+    /// live in `verify_key` so the ordering rule and the key it produces
+    /// cannot drift apart. `None` → no graph (a sequence without a pool
+    /// slot).
     pub(super) fn verify_batched_graph_key(
         &self,
         seqs: &[&mut SequenceState],
         ks: &[usize],
         wy_tables_null: bool,
     ) -> Option<Vec<u32>> {
-        let mut key: Vec<u32> = Vec::with_capacity(2 * seqs.len() + 1);
+        let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(seqs.len());
         for (i, s) in seqs.iter().enumerate() {
-            key.push(s.ssm_slot_idx()? as u32);
-            key.push(*ks.get(i)? as u32);
+            pairs.push((s.ssm_slot_idx()? as u32, *ks.get(i)? as u32));
         }
-        key.push(u32::MAX - u32::from(wy_tables_null));
-        Some(key)
+        Some(crate::speculative::verify_key::verify_graph_key(
+            &pairs,
+            wy_tables_null,
+        ))
     }
 
     /// Stage the per-GDN-layer WY pointer tables (`[h|Hi0|Hi1|Hi2]` ×
