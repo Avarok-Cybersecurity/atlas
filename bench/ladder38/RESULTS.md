@@ -274,3 +274,16 @@ estimate the rung lands near 110 against vLLM's 124.48.
 Refuted by the same profile: serialized drafting (3 drafter forwards at batch dim n, not
 3n). Surviving-but-secondary: h-state re-reads inside `gated_delta_rule_wy4_f16`
 (2 reads + 4 writes per step; a resident K=2 twin exists, no K=4 twin).
+
+### Round 5 (2026-08-17) — sampling parity alone
+
+Same round-4 binary, only the harness changed (presence/frequency penalties pinned to 0
+for BOTH engines, which is what vLLM was already doing):
+
+| C | round 5 | round 4 | Δ | vLLM+MTP |
+|---:|---:|---:|---:|---:|
+| 8 | **90.68** | 83.22 | **+9.0%** | 124.48 |
+
+Confirms defect 3 at slightly better than the profile's +7.8% estimate, and the engines
+now do identical sampling work. Remaining rungs were not measured — the halt-on-behind
+guard stopped the run; exploratory rounds now record-and-continue instead.
