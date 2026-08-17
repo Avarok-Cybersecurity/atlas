@@ -317,6 +317,19 @@ jobs:
             exit 0
           fi
 
+          # Nothing to do if the rolling branch already carries exactly this
+          # tree. The commit is rebuilt from scratch every run, so its sha
+          # differs even when the ledger does not; force-pushing that churn
+          # restarts the open PR's checks, and on a busy repo the restarts
+          # outrun the checks and the PR never converges.
+          if git fetch --quiet origin bot/governance-harvest 2>/dev/null; then
+            if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse FETCH_HEAD^{tree})" ]; then
+              echo "rolling branch already carries this exact ledger — leaving it and its in-flight checks alone"
+              emit_landed unchanged
+              exit 0
+            fi
+          fi
+
           # One lane, two authors. The rolling branch is force-recreated as
           # main + this one harvest commit (stale never-merged content is
           # discarded; the cron sweep re-converges anything it carried).
