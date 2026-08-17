@@ -414,20 +414,40 @@ pub fn step_mtp(
                 consumed = i + 1;
                 refs.push((a, k));
             }
-            // Canonical batch order: deepest first, then ssm-pool slot, so the
-            // graph key (verify_e2) is a combination, not a permutation — 24x
-            // fewer keys at n=4 — and the consecutive-slot batched-GDN
-            // precondition engages more often. Verdicts are index-mapped
-            // inside the step, so batch order is free to the caller. With
-            // uniform k this is the pre-D-Cut sort by slot.
-            refs.sort_by_key(|(a, k)| {
-                (
-                    std::cmp::Reverse(*k),
-                    a.seq.ssm_slot_idx().unwrap_or(usize::MAX),
-                )
-            });
-            let sorted_ks: Vec<usize> = refs.iter().map(|&(_, k)| k).collect();
-            let mut batch: Vec<&mut ActiveSeq> = refs.into_iter().map(|(a, _)| a).collect();
+            // Canonical batch order, from the ONE ordering rule shared with
+            // the graph key (`verify_key`): ssm slots ascending, which under
+            // the canonical depth assignment is ALSO deepest-first, so the
+            // key is a function of the depth MULTISET rather than its
+            // arrangement (266 keys → 3 at n=8) and each depth run owns a
+            // consecutive slot block for the batched-GDN precondition.
+            // Idempotent on `plan`'s already-canonical order; it still runs
+            // because `plan` returns the batch UNORDERED whenever D-Cut
+            // declines, and that uniform-`k` case is the pre-D-Cut sort by
+            // slot. PERMUTATION ONLY — depths stay attached to the sequence
+            // `plan` truncated for (`verify_k4_batch_step` pins
+            // `drafts + 1 == ks[i]`). Verdicts are index-mapped inside the
+            // step, so batch order is free to the caller.
+            let chunk_slots: Vec<usize> = refs
+                .iter()
+                .map(|(a, _)| a.seq.ssm_slot_idx().unwrap_or(usize::MAX))
+                .collect();
+            let chunk_depths: Vec<usize> = refs.iter().map(|&(_, k)| k).collect();
+            let order = spark_model::speculative::verify_key::verify_batch_permutation(
+                &chunk_slots,
+                &chunk_depths,
+                spark_model::speculative::verify_key::canonical_verify_key_enabled(),
+            );
+            let sorted_ks: Vec<usize> = order.iter().map(|&p| chunk_depths[p]).collect();
+            let mut slotted: Vec<Option<&mut ActiveSeq>> =
+                refs.into_iter().map(|(a, _)| Some(a)).collect();
+            let mut batch: Vec<&mut ActiveSeq> = order
+                .iter()
+                .map(|&p| {
+                    slotted[p]
+                        .take()
+                        .expect("verify_batch_permutation is a permutation")
+                })
+                .collect();
             step_verify_k4_batched(model, &mut batch, sched, &sorted_ks, ladder_nd, verify_ctx);
         } else {
             // Model can't batch this width (or a lone leftover): fall back
