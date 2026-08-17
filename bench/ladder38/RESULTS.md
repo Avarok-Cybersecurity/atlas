@@ -50,6 +50,29 @@ declared kv_cache_quant_algo; needs both engines re-baselined), and completing t
 fp16 SSM pool to cut the 36.7 GiB reserve. `--gpu-memory-utilization 0.90` was tried
 and RETIRED: it froze the box (unified memory; 0.85 is the proven ceiling on GB10).
 
+### Round 3 (IN PROGRESS) — fp8 KV cache, same stack `ab97a7f24`
+
+The C=128 rung is KV-capacity bound at bf16 KV, not correctness bound. Switching the
+KV cache to fp8 — the format this checkpoint's own `hf_quant_config.json` declares
+(`kv_cache_quant_algo: FP8`), and what vLLM's `--kv-cache-dtype auto` resolves to —
+more than doubles the pool inside the SAME 0.85 memory budget:
+
+| | bf16 KV | fp8 KV |
+|---|---:|---:|
+| KV pool | 6.2 GB / 6,377 blocks | 6.7 GB / 13,733 blocks |
+| max resident tokens | 102,032 | 219,728 |
+| demand at C=128 (128 x 1,224) | 156,672 | 156,672 |
+| sequences admitted | ~82 of 128 | **128 of 128** |
+
+Atlas C=128 @ fp8 KV: **449.47 / 449.95 tok/s** (reps 0-1, 0.1% spread), 130.7k of
+131.1k tokens delivered, zero preempt-kills. That is 1.15x the vLLM bf16 reference.
+
+⚠ **NOT YET A CLAIM.** A number measured under a different KV dtype than the reference
+is an observation, not a comparison (measurement-discipline rule 2, one-variable). The
+vLLM ladder is being re-run at fp8 KV on the same box before any C=128 win is claimed;
+if vLLM also gains, the rung may re-open. Both engines' fp8 tables will be published
+side by side with the bf16 tables above, not as a replacement for them.
+
 ### Round 1 — pre-stack `d92fc2488` (2026-08-16, superseded)
 
 | C | Atlas | vLLM | ratio |
