@@ -643,7 +643,11 @@ The MTP drafter small-M tier (PR #562) takes the last two rungs:
 | 16 | 202.48 | 197.03 | **1.028x** |
 | 32 | 290.69 | 283.48 | **1.026x** |
 | 64 | 386.58 | 361.39 | **1.070x** |
-| 128 | 477.47 | 358.57 | **1.332x** |
+| 128 | 478.07 | 358.57 | **1.333x** |
+
+Round 10's own full sweep (the table above mixes rounds; round 10 alone measured C=4 71.95,
+C=8 125.47, C=1 23.50, C=16 202.93, C=32 291.17, C=64 387.10, C=128 478.07 — and C=2 38.95
+from round 8 on the identical configuration).
 
 **Every rung, one configuration, every workload axis matched** — same box, same checkpoint,
 same harness and prompts, ISL 128 / OSL 1024, temp 0, seed 42, ctx 2048 both, batch cap 128
