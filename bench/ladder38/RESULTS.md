@@ -825,3 +825,26 @@ Two consequences worth recording for everyone, not just this campaign:
    cheaply (~0% and ~5%), and it was their *failure* to explain the gap that exposed the
    methodological error. A suspect that explains nothing is a signal about the measurement,
    not a reason to keep bisecting code.
+
+## ★ AGENTIC GATE PASSES — proven on dgx1, not inferred from dgx2
+
+The dgx2 control showed the stack added nothing *on dgx2*, but it could not show that the
+stack still reaches the 600-800 s band on **dgx1**, the box where that band was established.
+That test has now been run directly:
+
+| box | build | Σwall | correctness | verdict |
+|---|---|---:|---|---|
+| **dgx1** | **full ladder stack** | **692 s** | **10/10 + 10/10** | **PASS** (budget 1000 s) |
+| dgx1 | pre-stack reference (historical) | 773 s | 10/10 + 10/10 | pass |
+| dgx2 | full ladder stack | 1084 / 1068 s | 10/10 + 10/10 | over budget |
+| dgx2 | unmodified `main` (control) | 1079 s | 10/10 + 10/10 | over budget |
+
+**The stack is 10% FASTER than the pre-stack reference on dgx1** (692 s vs 773 s), inside
+the historical band, and passes the gate outright. dgx2 runs the same gate ~55% slower on
+*any* build, including unmodified main — so the earlier "regression" was entirely the box,
+and this is now demonstrated rather than argued.
+
+Standing conclusion: **the concurrency campaign costs nothing on the agentic path and
+slightly improves it.** The `wall_budget_s: 1000` finding still stands and matters: it is a
+dgx1 calibration that unmodified main cannot meet on dgx2, so Σwall verdicts from dgx2 are
+meaningless until the budget is per-box or the gate is pinned to dgx1.
