@@ -622,3 +622,36 @@ C=4 arms (same sweep):
 noise, but it is the best measured configuration and +2.7% over `4:3`. Combined with the
 drafter small-M tier (PR #562, ~-6.4 ms/step at that width) the rung should clear
 comfortably rather than by a hair. Both open rungs now have a measured path.
+
+## ★ ROUND 10 — ALL EIGHT RUNGS WON, APPLES-TO-APPLES
+
+The MTP drafter small-M tier (PR #562) takes the last two rungs:
+
+| C | round 10 | round 9 | Δ | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---:|---:|---|
+| 4 | **71.95** | 69.73 | +3.2% | 71.61 | **1.005x** | **WON** |
+| 8 | **125.47** | 123.26 | +1.8% | 124.48 | **1.008x** | **WON** |
+
+### THE COMPLETE LADDER
+
+| C | Atlas | vLLM+MTP | ratio |
+|---:|---:|---:|---:|
+| 1 | 23.46 | 19.72 | **1.190x** |
+| 2 | 38.95 | 38.79 | **1.004x** |
+| 4 | 71.95 | 71.61 | **1.005x** |
+| 8 | 125.47 | 124.48 | **1.008x** |
+| 16 | 202.48 | 197.03 | **1.028x** |
+| 32 | 290.69 | 283.48 | **1.026x** |
+| 64 | 386.58 | 361.39 | **1.070x** |
+| 128 | 477.47 | 358.57 | **1.332x** |
+
+**Every rung, one configuration, every workload axis matched** — same box, same checkpoint,
+same harness and prompts, ISL 128 / OSL 1024, temp 0, seed 42, ctx 2048 both, batch cap 128
+both, gpu-util 0.85 both, fp8 KV both, prefix caching on both, thinking off both, MTP K=4
+both, presence/frequency penalties pinned to 0 on both. vLLM runs its own `Qwen3_5MTP`
+speculative decoding, i.e. the reference is vLLM at its best, not a handicapped baseline.
+
+Still required before any of this is published: the quality gates (ssm-state-poisoning,
+decode-floor, BFCL with draw metadata, agentic 10/10) on the final configuration — several
+of the fixes change numerics (`f16-pool`, the drafter tier), and a speed claim without an
+accuracy claim is not a result.
