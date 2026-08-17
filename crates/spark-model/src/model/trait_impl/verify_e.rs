@@ -162,7 +162,7 @@ impl TransformerModel {
         // illegal access is attributed to the exact layer (same hatch as
         // verify_c2). Forces EAGER — per-layer syncs are illegal under
         // capture (verify_c2's gate pattern).
-        let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
+        let k4_diag = super::verify_e2::k4_diag_enabled();
 
         // Pre-graph: stage the per-GDN-layer WY pointer tables into the
         // fixed staging buffer (contents refreshed BEFORE any replay, like
@@ -650,9 +650,9 @@ impl TransformerModel {
         // ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
         if filled {
             // mapped path already read the results — no copy arm runs.
-        } else if std::env::var("ATLAS_VERIFY_D2H_DEFAULT_STREAM").as_deref() == Ok("1") {
+        } else if super::verify_e2::verify_d2h_default_stream() {
             self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
-        } else if std::env::var("ATLAS_NO_PINNED_VERIFY_D2H").as_deref() == Ok("1") {
+        } else if super::verify_e2::verify_d2h_no_pinned() {
             self.gpu
                 .copy_d2h_on_stream(self.buffers.scratch(), &mut buf, stream)?;
         } else {

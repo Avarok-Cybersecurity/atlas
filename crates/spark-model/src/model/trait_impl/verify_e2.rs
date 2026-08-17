@@ -46,6 +46,50 @@ pub(super) fn verify_graphs_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_VERIFY_GRAPHS").is_none())
 }
 
+/// House VALUE convention: a switch is armed by the literal `"1"` and by
+/// nothing else — `=0`, `=true`, `=` and mere presence all leave it OFF.
+/// SSOT for the three verify-path switches below, which the batched verify
+/// used to spell out inline as `std::env::var(..).ok().as_deref() ==
+/// Some("1")` / `== Ok("1")` at three separate sites. One expression, one
+/// test, no chance of a PRESENCE/VALUE mix-up when a site is edited.
+fn value_switch_armed(raw: Option<&str>) -> bool {
+    raw == Some("1")
+}
+
+/// Read a VALUE switch from the environment under [`value_switch_armed`].
+fn read_value_switch(name: &str) -> bool {
+    value_switch_armed(std::env::var(name).ok().as_deref())
+}
+
+/// Per-layer stream-sync diagnostic (`ATLAS_K4_DIAG=1`, VALUE check — this
+/// one predates the presence convention and `=1` is its documented form).
+///
+/// Read ONCE per process. The raw `std::env::var` sat in the batched verify
+/// hot path, so every n>=2 verify step paid a `getenv` + a `String`
+/// allocation for a switch that cannot change after launch — a cost the
+/// single-sequence path does not carry. Behaviourally identical for any
+/// process that does not mutate its own environment mid-run: nothing in the
+/// tree does, and `std::env::set_var` is `unsafe` since Rust 2024.
+pub(super) fn k4_diag_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| read_value_switch("ATLAS_K4_DIAG"))
+}
+
+/// Verify argmax D2H arm: `ATLAS_VERIFY_D2H_DEFAULT_STREAM=1` restores the
+/// original default-stream copy. Read once per process (was a per-step
+/// `std::env::var` in the D2H tail).
+pub(super) fn verify_d2h_default_stream() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| read_value_switch("ATLAS_VERIFY_D2H_DEFAULT_STREAM"))
+}
+
+/// Verify argmax D2H arm: `ATLAS_NO_PINNED_VERIFY_D2H=1` forces the pageable
+/// on-stream copy. Read once per process (was a per-step `std::env::var`).
+pub(super) fn verify_d2h_no_pinned() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| read_value_switch("ATLAS_NO_PINNED_VERIFY_D2H"))
+}
+
 impl TransformerModel {
     /// Batched-verify graph key: each sequence's ssm-pool slot in batch
     /// order — every SSM pointer the graph bakes (h/conv state, rollback
@@ -177,3 +221,7 @@ impl TransformerModel {
         Ok(self.verify_wy_tables)
     }
 }
+
+#[cfg(test)]
+#[path = "verify_e2_tests.rs"]
+mod tests;
