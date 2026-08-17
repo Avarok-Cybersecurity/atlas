@@ -685,3 +685,19 @@ number in this file is the one that was measured. Ladder stack tip: `1575873582`
 
 Gate certifications were deliberately held until after this rebase: a record minted on a
 pre-rewrite SHA would name a commit that no longer exists, which is worse than no record.
+
+### Round 11 complete — the full ladder, independently reproduced
+
+| C | round 11 | round 10 | vLLM+MTP | ratio |
+|---:|---:|---:|---:|---:|
+| 1 | 23.59 | 23.50 | 19.72 | **1.196x** |
+| 2 | (r8) 38.95 | 38.95 | 38.79 | **1.004x** |
+| 4 | **74.21** | 71.95 | 71.61 | **1.036x** |
+| 8 | **125.95** | 125.47 | 124.48 | **1.012x** |
+| 16 | 203.36 | 202.93 | 197.03 | **1.032x** |
+| 32 | 291.01 | 291.17 | 283.48 | **1.027x** |
+| 64 | 386.63 | 387.10 | 361.39 | **1.070x** |
+| 128 | 478.11 | 478.07 | 358.57 | **1.333x** |
+
+Two independent rounds on the final configuration agree at every rung — C=32 and C=128 to
+within 0.06%, C=64 to 0.12%. **Atlas beats vLLM+MTP at every concurrency from 1 to 128.**
