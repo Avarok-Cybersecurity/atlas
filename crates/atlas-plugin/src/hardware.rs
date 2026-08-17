@@ -13,7 +13,27 @@
 //! nvidia-smi's `clocks.sm` on NVIDIA and the equivalent core-clock reading
 //! anywhere else.
 
+//! # Two layers
+//!
+//! * [`Hardware`] — WHICH box, as a fingerprint. Stable across a run, fetched
+//!   from the serving endpoint, and the key a gate baseline is indexed by.
+//! * [`state::HardwareState`] — WHAT STATE that box was in, captured before
+//!   and after every benchmark. Added 2026-08-15, after two boxes with
+//!   byte-identical [`Hardware`] fingerprints produced 692 s and 1079 s on the
+//!   same gate and a "+38% regression" had to be retracted. See
+//!   [`state`] for the incident and [`policy`] for what is gated on it.
+
 use serde::{Deserialize, Serialize};
+
+pub mod collect;
+pub mod parse;
+pub mod policy;
+pub mod report;
+pub mod state;
+
+pub use policy::{Decision, Sensitivity, Validity};
+pub use report::HardwareStateReport;
+pub use state::{HardwareState, HardwareStateDelta};
 
 /// What the serving box reported about itself.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

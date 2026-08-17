@@ -50,6 +50,7 @@
 //! `ttft-warm-gate` / `ttft-cold-gate` benchmarks, which control the prefix
 //! deliberately. This probe's TTFT is the warm intra-session figure.
 
+use crate::hardware::Sensitivity;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -91,6 +92,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     intended_for: None,
     threshold_params: &[],
     needs_confirmation: false,
+    // Decode tok/s, TTFT and E2E — every headline it prints is a speed number.
+    sensitivity: Sensitivity::Speed,
     ctor: || Box::new(QuickSpeed::default()),
 };
 

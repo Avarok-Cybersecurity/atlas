@@ -40,6 +40,7 @@ pub mod report;
 pub mod schema;
 pub mod score;
 
+use crate::hardware::Sensitivity;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +87,12 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // The matrix is defined on whatever the box holds — that IS the measurement.
     intended_for: None,
     threshold_params: &[],
+    // Boot coverage, coherence, code generation and tool calling — the
+    // verdict is correctness-shaped (`threshold_params` is empty and the
+    // per-checkpoint tok/s it prints gates nothing). Classified Correctness so
+    // a warm box can never block a release boot-coverage run; the state is
+    // still captured and recorded, which is what makes that tok/s readable.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(ServeMatrix::default()),
 };
 

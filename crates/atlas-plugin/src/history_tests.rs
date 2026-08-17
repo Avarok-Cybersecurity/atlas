@@ -51,6 +51,7 @@ fn frame(phase: &str) -> BenchmarkResult {
         metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
         elapsed: std::time::Duration::from_secs(1),
+        hardware_state: None,
     }
 }
 

@@ -4,6 +4,7 @@
 
 use super::AgenticWebserver;
 use crate::benchmark::BenchmarkDescriptor;
+use crate::hardware::Sensitivity;
 use crate::metadata::PluginMetadata;
 
 const SUMMARY: &str = "N agentic runs: build a working Axum server, then verify it";
@@ -88,5 +89,12 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // The run-time Σ-wall verdict reads the SELECTED variant's committed
     // ceiling rather than a schema default one variant would contradict.
     threshold_params: &[("wall_budget_s", "sum_wall_s")],
+    // MIXED, and classified by the half that can be corrupted. The
+    // webserver_ok / followed_directions halves are correctness; the
+    // `wall_budget_s` half is a Σwall bound, and it is the exact number the
+    // 2026-08-15 retraction turned on — 692 s (dgx1) vs 1079 s (dgx2) for
+    // unmodified `main`, both 10/10 + 10/10. A gate that carries a wall bound
+    // is a speed gate for the purposes of this check.
+    sensitivity: Sensitivity::Speed,
     ctor: || Box::new(AgenticWebserver::default()),
 };

@@ -7,6 +7,7 @@
 //! the control LAST — so a vacuous run is discovered after the evidence it
 //! invalidates has been collected and can be shown alongside the verdict.
 
+use crate::hardware::Sensitivity;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -54,6 +55,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // request with a clear error rather than being silently skipped.
     intended_for: None,
     threshold_params: &[],
+    // Image fidelity does not change with clock.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(VisionFidelity::default()),
 };
 

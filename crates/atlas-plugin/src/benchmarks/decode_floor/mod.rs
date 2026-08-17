@@ -49,6 +49,7 @@
 //!   is absent or zero the run says so by name: it depends on the
 //!   accept-stats commit, or the serve is not speculating.
 
+use crate::hardware::Sensitivity;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -102,6 +103,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // gate machinery accepts nothing short of a PASS run verdict.
     threshold_params: &[("min_tok_s", "server_decode_tok_s")],
     needs_confirmation: false,
+    // The metric IS a rate. A box that throttled during the run reports a
+    // floor miss that the code did not cause.
+    sensitivity: Sensitivity::Speed,
     ctor: || Box::new(DecodeFloor::default()),
 };
 

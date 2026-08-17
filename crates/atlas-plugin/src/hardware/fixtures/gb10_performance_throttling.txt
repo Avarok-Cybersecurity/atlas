@@ -1,0 +1,18 @@
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Active
+        HW Slowdown                                    : Active
+            HW Thermal Slowdown                        : Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 51740221883 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 2914366812 us
+        HW Thermal Slowdown                            : 228104991 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A

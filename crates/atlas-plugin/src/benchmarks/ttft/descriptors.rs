@@ -7,6 +7,7 @@
 
 use super::{Mode, TtftGate};
 use crate::benchmark::BenchmarkDescriptor;
+use crate::hardware::Sensitivity;
 use crate::metadata::PluginMetadata;
 
 const WARM_SUMMARY: &str = "Cached-prefix TTFT vs the stored same-box baseline";
@@ -30,6 +31,10 @@ pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // and constrains none.
     intended_for: None,
     threshold_params: &[],
+    // TTFT median/p90 against a same-box control leg. The whole gate is a
+    // latency comparison, so a thermal event on either leg fabricates a
+    // regression — this is the shape of the 2026-08-15 retraction.
+    sensitivity: Sensitivity::Speed,
     ctor: || Box::new(TtftGate::new(Mode::Warm)),
 };
 
@@ -49,5 +54,7 @@ pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // and constrains none.
     intended_for: None,
     threshold_params: &[],
+    // Same reasoning as the warm gate.
+    sensitivity: Sensitivity::Speed,
     ctor: || Box::new(TtftGate::new(Mode::Cold)),
 };

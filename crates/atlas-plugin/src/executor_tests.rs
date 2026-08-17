@@ -32,6 +32,9 @@ const FAKE_DESC: BenchmarkDescriptor = BenchmarkDescriptor {
     needs_confirmation: false,
     intended_for: None,
     threshold_params: &[],
+    // Speed, so the hardware pre-check's REFUSE path is the one exercised
+    // here — the correctness path can never refuse and would prove nothing.
+    sensitivity: crate::hardware::Sensitivity::Speed,
     ctor: || Box::new(Fake::new(1, None, Arc::new(AtomicUsize::new(0)))),
 };
 
