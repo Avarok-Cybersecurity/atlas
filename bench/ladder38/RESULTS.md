@@ -521,3 +521,22 @@ splits into two n=1 groups below the `n < 2` guard.
 C=2 scaling 1.28x -> **1.64x**; 38.66 against vLLM's 38.79 is parity. It is a workaround
 (`tok_step/seq` falls 2.172 -> 1.695), so once the kernel is fixed, nd=3 on a repaired
 batch8 should beat it outright (~40 tok/s).
+
+## ROUND 8 (2026-08-17) — C=2 WON. Six of eight rungs.
+
+Single configuration for every rung (stack `6dba55fa0`: capacity + rollback + f16-pool +
+QKVZ-NVFP4 + width-gated canonical key + telemetry), with two engine defaults that adapt by
+width rather than per-rung tuning: D-Cut pruning off, and the width-adaptive K ladder
+`1:3,2:1,4:3,8:2,16:1` which keeps n=2 on the fast `batch4` GEMV tier.
+
+| C | round 8 | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---|
+| 2 | **38.95** | 38.79 | **1.004x** | **WON** |
+| 4 | 67.66 | 71.61 | 0.945x | open |
+
+C=2 has gone 29.04 -> **38.95** across tonight (+34%), and the last 28% of that came from
+one insight: at n=2 the batched verify lands on `w4a16_gemv_batch8`, which is 1.489x slower
+than `batch4` for the identical weight sweep. The K-ladder step-down keeps that width on
+`batch4`. The kernel repair (exact-M tiers 5/6/7, `__launch_bounds__` retune) is in flight
+and should beat this workaround outright, since it recovers the drafts the step-down gives
+up (`tok_step/seq` 2.172 -> 1.695).
