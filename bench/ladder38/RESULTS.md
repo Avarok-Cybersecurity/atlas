@@ -455,3 +455,22 @@ This is why Atlas WINS C=1 (1.20x) and loses C=2 (0.79x). n=1 and n=2 run differ
 programs (`decode_a2.rs:65` short-circuits n==1; batched verify requires n>=2), and every
 cheap explanation has been excluded by measurement. A dedicated C=1-vs-C=2 nsys profile is
 running; the earlier profile compared C=1 to C=8 and never isolated this step.
+
+#### D-Cut sweep complete — pruning is net-negative at the contested rungs
+
+| ratio | C=8 | C=4 |
+|---:|---:|---:|
+| **1.0 (pruning off)** | **117.06** | 63.24 |
+| 0.75 (shipped) | 108.85 | **66.42** |
+| 0.5 | 107.05 | 60.85 |
+| 0.25 | 104.59 | 58.72 |
+
+C=8 is monotone in "prune less": 117.06 -> 108.85 -> 107.05 -> 104.59, i.e. **+11.9% from
+pruning off versus the most aggressive setting, +7.5% versus the shipped 0.75.** C=4 peaks
+at 0.75 (66.42) with 1.0 close behind (63.24) and the aggressive settings clearly worse.
+
+D-Cut sheds verify ROWS to save work, but under the current cost model — after the QKVZ
+NVFP4 fix made those rows much cheaper and the graph key made arrangement churn expensive —
+the rows it sheds cost less than the ragged shapes it creates. Its 0.75 default and its
+recorded +2.6% both predate those changes. Like the canonical key, the right landing is a
+width-keyed policy rather than one global constant.
