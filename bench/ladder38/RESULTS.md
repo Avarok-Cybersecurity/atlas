@@ -425,3 +425,33 @@ actually explodes (n=8: 266 arrangements). At n=2 the key space was 2 and at n=4
 gate the canonical assignment on batch width (>= 8), byte-identical to the pre-canonical
 behaviour below the threshold, with an env-sweepable boundary. That keeps C=8's +3.9%
 without paying -2.4%/-3.7% at C=2/C=4.
+
+### D-Cut re-sweep (2026-08-17) — the shipped ratio is wrong at C=8
+
+D-Cut's 0.75 was calibrated on a binary from before the verify graph key existed. Re-swept
+on the current tree (same session, one fresh serve per ratio):
+
+| ratio | C=8 | C=4 |
+|---:|---:|---:|
+| 1.0 (pruning off) | **117.06** | 63.24 |
+| 0.75 (shipped) | 108.85 | 64.00 |
+
+**+7.5% at C=8 from turning D-Cut's pruning off** — it is net-negative there under the
+current cost model. At C=4 the shipped 0.75 is marginally better, so the right answer is
+width-dependent, like the canonical key. (0.5 and 0.25 legs pending.)
+
+### The C=1 -> C=2 cliff: the largest unexplained cost in the campaign
+
+| | C=1 | C=2 | scaling | TPOT C=1 | TPOT C=2 | marginal |
+|---|---:|---:|---:|---:|---:|---:|
+| vLLM+MTP | 19.72 | 38.79 | **1.97x** | 50.7 ms | 51.5 ms | **+0.8 ms/token** |
+| Atlas | 23.66 | 30.83 | 1.30x | 42.3 ms | 64.9 ms | **+22.6 ms/token** |
+
+Derived step times (TPOT x tok_step ~3): n=1 ~128 ms, n=2 ~195 ms. **The second sequence
+costs ~67 ms per step** on a workload where decode is memory-bound and both widths read
+the same ~13.5 GB of weights. vLLM pays 0.8 ms for the same sequence.
+
+This is why Atlas WINS C=1 (1.20x) and loses C=2 (0.79x). n=1 and n=2 run different
+programs (`decode_a2.rs:65` short-circuits n==1; batched verify requires n>=2), and every
+cheap explanation has been excluded by measurement. A dedicated C=1-vs-C=2 nsys profile is
+running; the earlier profile compared C=1 to C=8 and never isolated this step.
