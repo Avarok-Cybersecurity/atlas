@@ -926,3 +926,32 @@ sandbox build time directly on the two boxes rather than inferring it from the g
 Correction count for this investigation: three. "Code regression" (was cross-box),
 "thermal" (was idle-vs-loaded), and now "thermal at all" (cooling changed the temperature
 but not the wall). Each is recorded rather than dropped.
+
+### The dgx2 wall gap: six hypotheses excluded by measurement
+
+| hypothesis | test | verdict |
+|---|---|---|
+| code regression | unmodified `main` on dgx2 | ❌ 1079 s — same as the stack |
+| thermal throttling | boxes physically moved, dgx2 idle 78→38 C | ❌ wall moved only 1076 → 1019 s (~5%) |
+| clock throttling | SM clock under load, both boxes | ❌ 2483 vs 2463-2470 MHz — identical |
+| sandbox `cargo build` | identical cold-registry build both boxes | ❌ **dgx2 is FASTER** (5.87 s vs 7.91 s) |
+| software stack | kernel / VBIOS / driver | ❌ byte-identical (6.17.0-1008, 9A.0B.1E, 580.126.09) |
+| inference speed | same model + flags, C=1 x3 reps | ❌ dgx1 24.77 vs dgx2 23.59 tok/s — only **5%** |
+
+Decode is 5% faster on dgx1 and cargo is 26% faster on dgx2, yet the agentic gate wall
+differs by ~50% (662-692 s vs 1019-1084 s). **No component measured so far accounts for it.**
+
+What that leaves, and what to test next: the gate's wall is neither pure inference nor pure
+build, so the remaining candidates are the parts nobody has instrumented — per-turn agent
+overhead (tool-call round trips, sandbox process spawn, filesystem syncs) and trajectory
+SHAPE (if the model on one box takes more turns or emits more tokens per trajectory, the
+wall grows without any component being slower). The per-run `wall_time_s` distribution and
+turn counts are recorded in the gate's own run JSONs on both boxes and have not yet been
+compared — that is the cheap next step, and it should come before any further hardware
+theory.
+
+Fleet note discovered while testing: dgx1 and dgx2 are byte-identical on kernel/VBIOS/driver
+but BOTH are behind dgx3 (6.17.0-1026, VBIOS 9A.0B.25), and both have NVIDIA driver upgrades
+pending — dgx1 offered 580.173.02, dgx2 offered 580.159.03, i.e. their apt sources differ
+too. Recommend updating all three to the same stack AFTER the merges land, then
+re-baselining, since every number certified today was measured on 580.126.09.
