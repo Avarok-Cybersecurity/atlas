@@ -310,3 +310,21 @@ Running total at C=8 tonight: 83.22 -> 106.48, **+28.0%**, against a 124.48 refe
 | 32 | **291.52** | 225.37 | **+29.4%** | 283.48 | **1.028x** | **WON** |
 
 **Five of eight rungs now won apples-to-apples: C=1, C=16, C=32, C=64, C=128.**
+
+Remaining rungs after round 6:
+
+| C | round 6 | round 4 | Δ | vLLM+MTP | ratio | gap |
+|---:|---:|---:|---:|---:|---:|---|
+| 2 | 31.00 | 30.32 | +2.2% | 38.79 | 0.80x | -20% |
+| 4 | **68.11** | 52.35 | **+30.1%** | 71.61 | 0.951x | **-5%** |
+| 8 | 106.48 | 83.22 | +28.0% | 124.48 | 0.86x | -14% |
+
+Diagnostic: C=2 barely moved, and that is expected — at C=2 with K=4 the GEMM is M=8,
+which was ALREADY served by the NVFP4 batch-8 GEMV, so the QKVZ fix is structurally inert
+there, and the n=2 graph key space was only 2 so PR #552 does little either. **C=2's
+deficit is the FIXED cost of entering the n>=2 batched verify path** — consistent with the
+TPOT fit (`58.9 + 4.28n` across n=2,4,8, with n=1 sitting 30% below the line because it
+runs a different single-sequence program). Named per-step fixed costs now under repair: a
+48 KB H2D WY-table upload plus 48n host downcasts every step, three un-`OnceLock`'d
+`std::env::var` calls in the verify hot path, `stash_verify_hidden_rows`, and the D-Cut
+planner running at widths where it has nothing to prune.
