@@ -328,3 +328,24 @@ runs a different single-sequence program). Named per-step fixed costs now under 
 48 KB H2D WY-table upload plus 48n host downcasts every step, three un-`OnceLock`'d
 `std::env::var` calls in the verify hot path, `stash_verify_hidden_rows`, and the D-Cut
 planner running at widths where it has nothing to prune.
+
+### Fixed-cost audit (PR #553) — NEGATIVE, with a better instrument
+
+Microbenchmarked the five items a prior audit named as the n>=2 batched-verify fixed cost:
+
+| item | measured per step | verdict |
+|---|---:|---|
+| `upload_verify_wy_tables` (48 KB H2D + 48n downcasts) | 3-6 us | cached anyway |
+| 3x `std::env::var` in the verify hot path | <1 us | hoisted anyway |
+| `stash_verify_hidden_rows` | ~5 us @ n=2 | not worth it (a gather kernel would be a net loss at n=2/4) |
+| D-Cut plan + chunk sort | sub-us | **must NOT be skipped** — at n=2 it genuinely prunes (ks={4,3}, R=7 not 8) |
+| host sampling pipeline | 0 on this ladder | never reached at temp 0 / no grammar / thinking off |
+
+Total removed: ~0.004% of a 170 ms step at C=2. **None of these is the fixed cost.**
+
+A comparative audit left exactly two candidates of the right magnitude, neither observable
+from a ladder log: **CUDA-graph re-capture** (23.2 ms/step at an 89% recapture rate, this
+tree's own measurement) and **the batched GDN conv+WY path declining** — 2 launches/layer
+when engaged versus `n*(2k-1)` when not, i.e. 96 vs 768 launches/step at n=2, k=4 across
+48 GDN layers. Both now emit periodic RATES under `ATLAS_MTP_ACCEPT_DEBUG`, so the next
+C=2 run reads the answer directly instead of inferring it.
