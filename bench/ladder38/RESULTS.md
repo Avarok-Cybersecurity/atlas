@@ -300,3 +300,13 @@ the pre-dequantized FP8 one) is worth **+17.4%** at C=8 on its own, close to the
 NVFP4 arm serves the prefill shapes.
 
 Running total at C=8 tonight: 83.22 -> 106.48, **+28.0%**, against a 124.48 reference.
+
+**And it flips two more rungs:**
+
+| C | round 6 | round 4 | Δ | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---:|---:|---|
+| 8 | 106.48 | 83.22 | +28.0% | 124.48 | 0.86x | open |
+| 16 | **203.44** | 154.30 | **+31.9%** | 197.03 | **1.033x** | **WON** |
+| 32 | **291.52** | 225.37 | **+29.4%** | 283.48 | **1.028x** | **WON** |
+
+**Five of eight rungs now won apples-to-apples: C=1, C=16, C=32, C=64, C=128.**
