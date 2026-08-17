@@ -72,8 +72,8 @@ jobs:
     # dispatch triggers pass through and enumerate for themselves.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
     permissions:
-      # Commits governance/*.jsonl (direct push when GOVERNANCE_PUSH_TOKEN is
-      # configured with a ruleset bypass; branch push otherwise).
+      # Pushes governance/*.jsonl to the rolling bot branch. main itself is
+      # only ever written through the merge queue.
       contents: write
       # `read` covers listing/downloading run artifacts. `write` exists for ONE
       # line in the fallback landing lane: `gh workflow run ci.yml --ref
@@ -258,15 +258,34 @@ jobs:
             echo "::warning::category abstain rate over the last 30 days is ${pct}% (> 25%) — the classifier is not answering often enough for its ledger to mean much; check the free-tier endpoint and key before trusting or escalating intent data"
           fi
 
+      # A GitHub App installation token is what makes the PR lane self-driving:
+      # PRs opened with GITHUB_TOKEN deliberately do not trigger workflow runs,
+      # so the required checks never reported and every harvest needed a human
+      # push to wake CI. An App-authored PR triggers them normally, which keeps
+      # main's protection fully intact — no bypass actors, no direct pushes.
+      # Absent the App secrets this step is skipped and the lane degrades to
+      # the GITHUB_TOKEN behaviour described below.
+      - name: Mint the harvester App token
+        id: apptoken
+        if: vars.GOVERNANCE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          # The client id, not the numeric app id: v3 deprecated `app-id`.
+          # Neither is a secret (both are public App identifiers), so both live
+          # as variables; only the private key is a secret.
+          client-id: ${{ vars.GOVERNANCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GOVERNANCE_APP_PRIVATE_KEY }}
+
       - name: Land the harvest
         id: land
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          # Mode auto-selects on secret presence: configured (with a ruleset
-          # bypass actor — a one-time repo-settings step) means direct push to
-          # main; absent means the rolling-branch auto-merge PR lane.
-          GOVERNANCE_PUSH_TOKEN: ${{ secrets.GOVERNANCE_PUSH_TOKEN }}
+          # Mode auto-selects on App configuration: with the App, the PR is
+          # authored by it, so CI fires and auto-merge carries it through the
+          # queue unattended. Without it, the same lane runs on GITHUB_TOKEN
+          # and needs CI dispatched by hand (see below).
+          APP_TOKEN: ${{ steps.apptoken.outputs.token }}
           # Boolean dispatch input; empty on schedule/workflow_run triggers.
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
@@ -298,54 +317,48 @@ jobs:
             exit 0
           fi
 
-          if [ -n "${GOVERNANCE_PUSH_TOKEN:-}" ]; then
-            # Direct-push lane. Retried through a rebase because main moves
-            # fast here: losing the race is expected, silently giving up is
-            # not. governance/*.jsonl carries merge=union, so a concurrent
-            # harvest rebases clean by construction.
-            ok=""
-            for attempt in 1 2 3; do
-              git pull --rebase origin main
-              if git push "https://x-access-token:${GOVERNANCE_PUSH_TOKEN}@github.com/${REPO}.git" HEAD:refs/heads/main; then
-                ok=1; break
-              fi
-              echo "push attempt $attempt lost the race — rebasing and retrying"
-            done
-            if [ -z "$ok" ]; then
-              echo "::error::direct push to main failed 3 times — either the race is pathological or GOVERNANCE_PUSH_TOKEN lost its ruleset bypass"
-              exit 1
-            fi
-            emit_landed direct-push
+          # One lane, two authors. The rolling branch is force-recreated as
+          # main + this one harvest commit (stale never-merged content is
+          # discarded; the cron sweep re-converges anything it carried).
+          if [ -n "${APP_TOKEN:-}" ]; then
+            GH_TOKEN="$APP_TOKEN"
+            export GH_TOKEN
+            git push --force "https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git" \
+              HEAD:refs/heads/bot/governance-harvest
           else
-            # Fallback lane, no settings prerequisite: a rolling branch,
-            # force-recreated as main + this one harvest commit (stale
-            # never-merged content is discarded — the 3-day cron sweep
-            # re-converges anything it carried), plus an auto-merge PR.
             git push --force origin HEAD:refs/heads/bot/governance-harvest
+          fi
+          {
             printf '%s\n\n%s\n' \
               "Automated harvest of PR intent ledger artifacts (runs ${run_ids:-unknown})." \
-              "Opened by governance-harvest.yml because GOVERNANCE_PUSH_TOKEN is not configured. Auto-merge is requested; the workflow dispatches CI on the branch itself because GITHUB_TOKEN events never trigger pull_request runs." \
+              "Opened by governance-harvest.yml. Auto-merge is requested, so this lands through the merge queue once the required checks report." \
               > "$RUNNER_TEMP/pr-body.md"
-            existing=$(gh pr list --head bot/governance-harvest --base main --state open \
-              --json number --jq '.[0].number // empty')
-            if [ -n "$existing" ]; then
-              gh pr edit "$existing" --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md"
-              pr_number=$existing
-            else
-              gh pr create --head bot/governance-harvest --base main \
-                --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md" > /dev/null
-              pr_number=$(gh pr list --head bot/governance-harvest --base main --state open \
-                --json number --jq '.[0].number')
-            fi
-            gh pr merge --auto --squash "$pr_number" \
-              || echo "::warning::could not enable auto-merge on #$pr_number — merge it manually"
-            # CI is the only required workflow and it is dispatchable (it grew
-            # workflow_dispatch after the 2026-08-06 Actions incident). Without
-            # this, the PR's required checks never report — GITHUB_TOKEN
-            # pushes and PRs do not create pull_request runs.
+          }
+          existing=$(gh pr list --head bot/governance-harvest --base main --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md"
+            pr_number=$existing
+          else
+            gh pr create --head bot/governance-harvest --base main \
+              --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md" > /dev/null
+            pr_number=$(gh pr list --head bot/governance-harvest --base main --state open \
+              --json number --jq '.[0].number')
+          fi
+          gh pr merge --auto --squash "$pr_number" \
+            || echo "::warning::could not enable auto-merge on #$pr_number — merge it manually"
+          if [ -n "${APP_TOKEN:-}" ]; then
+            emit_landed "app-pr #$pr_number"
+          else
+            # GITHUB_TOKEN pushes and PRs never create pull_request runs, so the
+            # required checks would sit unreported forever. CI is dispatchable
+            # (it grew workflow_dispatch after the 2026-08-06 Actions incident),
+            # but a dispatched run reports against the branch and does not
+            # satisfy the PR's contexts — configure the App to end this.
             gh workflow run ci.yml --ref bot/governance-harvest \
-              || echo "::warning::could not dispatch CI on bot/governance-harvest — required checks may never report; dispatch it manually"
-            emit_landed "auto-merge-pr #$pr_number"
+              || echo "::warning::could not dispatch CI on bot/governance-harvest"
+            echo "::warning::no harvester App configured — #$pr_number will need a human push to make its required checks report. See governance/README.md."
+            emit_landed "auto-merge-pr #$pr_number (checks need a nudge)"
           fi
 
       - name: Hand off the would-be commit (dry run)

@@ -57,3 +57,37 @@ the harvest workflow publishes that histogram in its step summary every run
 and warns above 25% non-answers. An abstaining classifier that could block
 merges would convert endpoint downtime into repo downtime; an advisory one
 converts it into a recorded abstention, which is the correct failure mode.
+
+## How a harvest lands
+
+The harvester opens a pull request from the rolling branch `bot/governance-harvest`
+and requests auto-merge, so ledger commits arrive through the merge queue with
+every required check intact. `main` needs no bypass actors and no direct-push
+token.
+
+The author of that PR decides whether it can drive itself. A PR opened with
+`GITHUB_TOKEN` never triggers workflow runs (GitHub blocks that to stop
+recursion), so its required checks sit unreported and someone has to push the
+branch by hand to wake CI. A PR opened by a **GitHub App** triggers them
+normally. Configure the App once and the loop is unattended.
+
+### Configuring the harvester App
+
+1. Create the App under the organisation, at Settings, Developer settings,
+   GitHub Apps, New GitHub App.
+   - Uncheck **Active** under Webhook.
+   - Repository permissions: **Contents** read and write, **Pull requests**
+     read and write. Nothing else.
+   - Where can this GitHub App be installed: **Only on this account**.
+2. Note the **Client ID**, then **Generate a private key** and keep the
+   downloaded `.pem`.
+3. **Install App**, scoped to the `atlas` repository only.
+4. Register it with the repository:
+   ```bash
+   gh variable set GOVERNANCE_APP_CLIENT_ID --repo Avarok-Cybersecurity/atlas --body '<client id>'
+   gh secret set GOVERNANCE_APP_PRIVATE_KEY --repo Avarok-Cybersecurity/atlas < path/to/key.pem
+   ```
+
+`governance-harvest.yml` mints an installation token when
+`GOVERNANCE_APP_CLIENT_ID` is set and falls back to `GITHUB_TOKEN` when it is not, warning on the PR that its
+checks need a nudge.
