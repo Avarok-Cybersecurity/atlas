@@ -16,9 +16,11 @@
 //!
 //! Behaviors implemented here:
 //!   0. [`remap_developer_role`] — rewrite `role: "developer"` to
-//!      `"system"` (folding developer+system into one leading system;
-//!      a model's own template raises `Unexpected message
-//!      role.` on the OpenAI developer role).
+//!      `"system"`, and fold MULTIPLE system-level messages into one
+//!      leading system (a model's own template raises `Unexpected message
+//!      role.` on the OpenAI developer role, and `System message must be
+//!      at the beginning.` on a second system message — which the OpenAI
+//!      API permits and agent frameworks send).
 //!   1. [`autoclose_think_before_tool_call`] — insert a missing
 //!      `</think>` before a `<tool_call>` in assistant *history* content.
 //!   2. [`resolve_think_control`] — strip inline `<|think_on|>` /
@@ -189,20 +191,26 @@ pub(crate) fn autoclose_assistant_think(messages: &mut [Value]) {
     }
 }
 
-/// Remap any `role: "developer"` message to `role: "system"` before the
-/// model template renders.
+/// Normalize system-level messages (`system` + the OpenAI o1-style
+/// `developer` role) before the model template renders: remap
+/// `developer`→`system`, and coalesce MULTIPLE system-level messages into
+/// one.
 ///
-/// The OpenAI **developer** role (the o1-style system-instruction role) is
-/// accepted across the Atlas API surface, and the now-removed Holo override
-/// handled it in three places. But a model's OWN shipped
-/// `chat_template.jinja` does not know the role and raises
-/// `Unexpected message role.` on it — so a request carrying a developer
-/// message would hard-fail rendering. `developer` and `system` share
-/// system-instruction semantics, so remapping developer→system here (ahead
-/// of the model template, alongside the other cross-cutting behaviors) lets
-/// such requests render off the model's own template instead of erroring.
+/// The OpenAI **developer** role is accepted across the Atlas API surface,
+/// but a model's OWN shipped `chat_template.jinja` does not know the role
+/// and raises `Unexpected message role.` on it. `developer` and `system`
+/// share system-instruction semantics, so remapping developer→system here
+/// (ahead of the model template, alongside the other cross-cutting
+/// behaviors) lets such requests render off the model's own template
+/// instead of erroring.
 ///
-/// Only the `role` field is rewritten; content is untouched.
+/// Coalescing is NOT gated on the developer role: the OpenAI API permits
+/// several `system` messages, and agent frameworks send them routinely
+/// (mastra: instructions + memory as two consecutive system messages) —
+/// while most model templates raise `System message must be at the
+/// beginning.` on any system message past index 0. Folding all of them
+/// into one system message at the first system position makes every such
+/// request render regardless of the template's strictness.
 pub(crate) fn remap_developer_role(messages: Vec<Value>) -> Vec<Value> {
     let role_of = |m: &Value| -> Option<String> {
         m.get("role").and_then(|r| r.as_str()).map(str::to_string)
@@ -213,18 +221,15 @@ pub(crate) fn remap_developer_role(messages: Vec<Value>) -> Vec<Value> {
     let has_dev = messages
         .iter()
         .any(|m| role_of(m).as_deref() == Some("developer"));
-    if !has_dev {
-        return messages; // nothing to remap
+    let sys_level_count = messages.iter().filter(|m| is_sys_level(m)).count();
+    if !has_dev && sys_level_count <= 1 {
+        return messages; // nothing to remap or coalesce
     }
 
-    // Simple case: the developer message(s) are the only system-level
-    // messages — remap developer→system in place, no coalescing needed.
-    if messages.iter().filter(|m| is_sys_level(m)).count()
-        == messages
-            .iter()
-            .filter(|m| role_of(m).as_deref() == Some("developer"))
-            .count()
-    {
+    // Simple case: exactly one system-level message (a developer one, or
+    // the early return above would have fired) — remap developer→system in
+    // place, no coalescing needed.
+    if sys_level_count == 1 {
         let mut messages = messages;
         for m in messages.iter_mut() {
             if role_of(m).as_deref() == Some("developer")
@@ -236,11 +241,10 @@ pub(crate) fn remap_developer_role(messages: Vec<Value>) -> Vec<Value> {
         return messages;
     }
 
-    // A `system` message already exists alongside `developer`. Remapping
-    // both to `system` would leave two system messages, which a model's own
-    // template rejects (only a leading system is allowed). Fold all
-    // system-level (`developer` + `system`) STRING content into ONE system
-    // message at the first such position, preserving order. A (rare)
+    // Two or more system-level messages (any mix of `system`/`developer`).
+    // Leaving them separate hard-fails most model templates (only a leading
+    // system is allowed). Fold all system-level STRING content into ONE
+    // system message at the first such position, preserving order. A (rare)
     // non-string system message is kept as its own message untouched.
     let mut merged = String::new();
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());

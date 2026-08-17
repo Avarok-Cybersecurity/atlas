@@ -144,8 +144,66 @@ fn remap_noop_without_developer() {
     assert_eq!(
         remap_developer_role(messages.clone()),
         messages,
-        "no developer role → untouched"
+        "no developer role and a single system → untouched"
     );
+}
+
+#[test]
+fn remap_two_leading_systems_coalesce() {
+    // The OpenAI API permits multiple system messages, and agent
+    // frameworks send them (mastra: instructions + memory). Most model
+    // templates raise on a second system message, so they must be folded
+    // into one — no developer role involved.
+    let out = remap_developer_role(vec![
+        json!({"role": "system", "content": "You are Monet."}),
+        json!({"role": "system", "content": "Memory: user prefers Russian."}),
+        json!({"role": "user", "content": "hi"}),
+    ]);
+    let systems = out.iter().filter(|m| m["role"] == "system").count();
+    assert_eq!(systems, 1, "exactly one system message after coalesce");
+    assert_eq!(out[0]["role"], "system");
+    assert_eq!(
+        out[0]["content"],
+        "You are Monet.\n\nMemory: user prefers Russian."
+    );
+    assert_eq!(out[1]["role"], "user");
+    assert_eq!(out.len(), 2);
+}
+
+#[test]
+fn remap_two_developers_coalesce() {
+    // Two developer-only messages previously took the in-place remap
+    // branch and produced TWO system messages — the exact shape model
+    // templates reject. They must coalesce like any other multi-system
+    // request.
+    let out = remap_developer_role(vec![
+        json!({"role": "developer", "content": "Be terse."}),
+        json!({"role": "developer", "content": "Answer in French."}),
+        json!({"role": "user", "content": "hi"}),
+    ]);
+    let systems = out.iter().filter(|m| m["role"] == "system").count();
+    assert_eq!(systems, 1, "exactly one system message after coalesce");
+    assert_eq!(out[0]["content"], "Be terse.\n\nAnswer in French.");
+    assert_eq!(out.len(), 2);
+}
+
+#[test]
+fn remap_mid_dialog_system_folds_forward() {
+    // A system message AFTER the first user turn folds into the leading
+    // system slot rather than remaining mid-dialog (where templates
+    // reject it). Order among system contents is preserved.
+    let out = remap_developer_role(vec![
+        json!({"role": "system", "content": "s1"}),
+        json!({"role": "user", "content": "u1"}),
+        json!({"role": "system", "content": "s2"}),
+        json!({"role": "user", "content": "u2"}),
+    ]);
+    let systems = out.iter().filter(|m| m["role"] == "system").count();
+    assert_eq!(systems, 1);
+    assert_eq!(out[0]["content"], "s1\n\ns2");
+    assert_eq!(out[1]["role"], "user");
+    assert_eq!(out[2]["role"], "user");
+    assert_eq!(out.len(), 3);
 }
 
 // --- End-to-end: Holo renders off the MODEL's own template + Rust behaviors ---
