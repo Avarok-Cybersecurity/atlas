@@ -731,3 +731,28 @@ not enabled and the drafter/QKVZ small-M paths (M>8 batched verify, drafter M=2.
 largely not reached. It is therefore a regression check on the shared code, not a test of
 the ladder configuration — which is why BFCL on the dense 27B is the more informative gate
 for the numerics-changing fixes, and it runs next.
+
+### ⚠ AGENTIC WALL REGRESSION — a real cost of the stack, found by the gates
+
+| tier | webserver_ok | followed_directions | Σwall |
+|---|---|---|---|
+| 1 | 10/10 | 10/10 | 1084 s |
+| 2 | 10/10 | 10/10 | 1068 s |
+
+Two consecutive over-1000s tiers is a **FAIL** by the protocol. And the wall is not merely
+over budget: this gate's recorded band is 600-800 s, and tonight's own pre-stack run was
+**773 s** — so the stack costs roughly **+38% wall on the 35B agentic path** while leaving
+correctness perfect.
+
+Prime suspect, on mechanism rather than guesswork: the gate serves at `--max-batch-size 2`,
+where the drafter runs M=2 — so PR #562's small-M tier IS active, and it is the one change
+in the stack that is **not bit-exact** (it replaces a pipelined tile GEMM, altering
+proposal numerics and therefore acceptance, and acceptance drives wall). The other fixes are
+either bit-exact (#561 GEMV tiers, #547 rollback) or structurally inactive at that width
+(#551 QKVZ needs M>8, #559 canonical key gates at n>=8, #548 f16-pool is not in the recipe).
+
+A/B with the kill switches is running (`ATLAS_NO_DRAFTER_SMALL_M_TIER=1`, then
+`ATLAS_NO_GEMV_EXACT_M_TIERS=1`). If the drafter tier is confirmed, the fix is the same
+shape as the canonical key's: **width-gate it** so the concurrency rungs keep it and the
+batch-2 agentic path does not. BFCL was deliberately killed rather than run on a
+configuration that is about to change.
