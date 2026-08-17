@@ -329,6 +329,54 @@ fn f16_pool_sizing_pinned_and_flag_off_untouched() {
     );
 }
 
+/// ONE layer's FP32 h blob — what the prefill staging arena is sized by.
+/// `H_BLOB` is the across-layers per-seq total, so dividing by the 48 GDN
+/// layers is the only place these two widths may be related.
+const H_LAYER: usize = H_BLOB / 48;
+
+#[test]
+fn prefill_staging_costs_one_fp32_layer_blob_per_slot() {
+    // Flag off: ZERO, at every batch size. Nothing is allocated and nothing
+    // is reserved, which is what makes the FP32-sized pool byte-identical.
+    for bs in [1usize, 32, 64, 128] {
+        assert_eq!(ssm_h_prefill_stage_bytes(bs, H_LAYER, false), 0);
+    }
+    // Stage 3: one FP32 layer blob per slot. NOT per slot per layer — that
+    // would be `48 ×` this and would consume three quarters of the win.
+    assert_eq!(H_LAYER, 3_145_728);
+    assert_eq!(ssm_h_prefill_stage_bytes(128, H_LAYER, true), 402_653_184); // 384 MiB
+    assert_eq!(ssm_h_prefill_stage_bytes(32, H_LAYER, true), 100_663_296);
+    assert!(ssm_h_prefill_stage_bytes(128, H_LAYER, true) * 48 == 48 * 402_653_184);
+}
+
+/// The NET pool win at the reference shape, staging arena included — the
+/// number the PR quotes. Pinned because a per-layer staging arena (the
+/// tempting simplification) would turn a 9 GiB win into a 9 GiB loss, and
+/// nothing else in the suite would notice.
+#[test]
+fn f16_pool_net_win_is_the_h_saving_minus_the_staging_arena() {
+    // SERVEABLE configuration today: spec OFF (the MTP verify arms still
+    // address the h intermediate/checkpoint pools at the FP32 pitch, so
+    // `--speculative` is refused beside `--ssm-h-dtype f16-pool`).
+    let fp32 = tiered_pool_bytes(128, false);
+    let narrowed = tiered_pool_bytes_f16(128, false);
+    assert_eq!(fp32, 128 * BLOB); // 20_333_985_792 — 18.94 GiB
+    assert_eq!(narrowed, 10_670_309_376); //  9.94 GiB
+    let stage = ssm_h_prefill_stage_bytes(128, H_LAYER, true);
+    assert_eq!(fp32 - narrowed, 9_663_676_416); // 9.00 GiB of h
+    assert_eq!(fp32 - narrowed - stage, 9_261_023_232); // 8.63 GiB net
+    // The staging arena is 4.2% of what it buys back. Pinned as a RATIO so
+    // the assertion survives a shape change and still fails a design change.
+    assert!(stage * 20 < fp32 - narrowed, "staging must stay marginal");
+
+    // Spec ON (refused at serve; this pins the allocator arithmetic for when
+    // the verify strides land): the same arena, against a 14.62 GiB saving.
+    assert_eq!(
+        tiered_pool_bytes(128, true) - tiered_pool_bytes_f16(128, true) - stage,
+        15_300_820_992 // 14.25 GiB net
+    );
+}
+
 /// Replay-mode helper at the reference shape.
 fn replay_pool_bytes(bs: usize, spec_on: bool) -> usize {
     ssm_pool_reserve_bytes(

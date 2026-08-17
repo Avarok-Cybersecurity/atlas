@@ -403,6 +403,11 @@ pub struct TransformerModel {
     pub(super) ssm_norm_ptrs_buf: DevicePtr,
     /// One-shot FP32 -> FP16 h-state converter (`ATLAS_SSM_H_FP16`).
     pub(super) ssm_h_f32_to_f16_kernel: KernelHandle,
+    /// Its widening inverse. Used ONLY by the stage-3 f16-SIZED pool
+    /// (`--ssm-h-dtype f16-pool`) on the BATCHED prefill path, whose GDN
+    /// kernels take a device pointer TABLE and so cannot be wrapped inside
+    /// the layer the way the single-stream ladder is. Zero otherwise.
+    pub(super) ssm_h_f16_to_f32_kernel: KernelHandle,
     /// Staging buffer for it, one layer wide (`h_bytes / 2`). The conversion is
     /// a narrowing compaction and CANNOT be done in place: thread `2i`'s write
     /// lands inside thread `i`'s read with nothing ordering them. Allocated

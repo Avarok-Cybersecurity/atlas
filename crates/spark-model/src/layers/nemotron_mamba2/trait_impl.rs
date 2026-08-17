@@ -227,6 +227,9 @@ impl TransformerLayer for NemotronMamba2Layer {
             h_state_intermediates: Vec::new(),
             conv_state_intermediates: Vec::new(),
             h_is_f16: false,
+            // Stage-3 narrowing is GDN-only (`ssm_h_fp16_preconditions`
+            // refuses a non-GDN SSM stack), so this state is always FP32-wide.
+            h_prefill_stage: None,
         }))
     }
 }
