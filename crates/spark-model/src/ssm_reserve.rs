@@ -252,6 +252,40 @@ pub fn ssm_h_stored_bytes(h_f32_bytes: usize, f16_pool: bool) -> usize {
     }
 }
 
+/// FP32 h-state PREFILL STAGING bytes (stage 3 of `--ssm-h-dtype f16`).
+///
+/// Under the f16-SIZED pool a slot's h region is 2 bytes/element, but every
+/// GDN prefill kernel family reads and writes the running h-state as FP32 in
+/// place — over a 2-byte slot that is an overrun into the neighbouring slot.
+/// Stage 3 therefore gives each pool slot ONE FP32 staging blob, and the
+/// layer widens the slot into it before its FP32 kernels run and narrows it
+/// back after (`ssm_h_fp16::prefill_h_begin` / `prefill_h_end`).
+///
+/// ★ ONE blob per SLOT, **not** per slot per layer. The staging blob is live
+/// only for the duration of one SSM layer's prefill call: the layers of a
+/// pass are issued in order on a single stream, each narrowing back before
+/// the next widens, so layer L+1 reuses layer L's blob. Sizing it per slot
+/// (rather than per concurrently-prefilling sequence) is what makes that
+/// safe without knowing the co-dispatch width: a sequence owns exactly one
+/// slot for its whole life, so two sequences can never share a blob.
+///
+/// `h_layer_f32_bytes` is ONE layer's FP32 h blob (`ssm_h_state_bytes()`) —
+/// NOT the across-layers per-seq total the pool-reserve terms use. Zero when
+/// the pool is FP32-sized: prefill then writes the slot in place as it
+/// always has, and no staging exists to reserve.
+///
+/// SSOT for both `SsmStatePool::new` (which allocates it, passing
+/// `max_slots + 1` for the dummy slot) and the preflight reserve (which
+/// passes `max_batch_size`, matching its standing convention of not
+/// counting the dummy — the CUDA headroom term absorbs it).
+pub fn ssm_h_prefill_stage_bytes(slots: usize, h_layer_f32_bytes: usize, f16_pool: bool) -> usize {
+    if f16_pool {
+        slots * h_layer_f32_bytes
+    } else {
+        0
+    }
+}
+
 /// SSM state-pool reserve bytes for the pre-load preflight — MUST mirror
 /// what `SsmStatePool::new` allocates (modulo the +1 dummy slot per pool,
 /// which preflight has never counted; the CUDA headroom term absorbs it):

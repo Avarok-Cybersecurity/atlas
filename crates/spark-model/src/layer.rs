@@ -60,16 +60,35 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
-    /// Storage dtype of `h_state`: `false` = FP32 (the only format prefill
-    /// ever writes), `true` = FP16 packed into the first half of the same
-    /// FP32-sized pool region (`ATLAS_SSM_H_FP16`).
+    /// Storage dtype of `h_state`: `false` = FP32, `true` = FP16
+    /// (`--ssm-h-dtype f16`).
     ///
-    /// This is the single source of truth for the h-state format. The decode
-    /// mixer flips it exactly once per sequence, on the first decode step
-    /// after any FP32 writer touched the slot, so no caller has to know where
-    /// the prefill->decode edge is. It rides through swap-out/swap-in because
-    /// `state_io` mutates these states in place rather than rebuilding them.
+    /// This is the single source of truth for the h-state format. Which edge
+    /// sets it depends on the POOL width:
+    ///
+    /// * FP32-sized pool (stage 1/2, `h_prefill_stage == None`): prefill is
+    ///   the only FP32 writer and writes the slot in place, so the flag
+    ///   starts `false` and the decode mixer
+    ///   (`TransformerModel::ssm_h_to_f16_dispatch`) flips it exactly once
+    ///   per sequence, on the first decode step. No caller has to know where
+    ///   the prefill->decode edge is.
+    /// * f16-SIZED pool (stage 3, `h_prefill_stage == Some`): the slot is
+    ///   physically 2 bytes/element and can NEVER hold FP32, so the flag is
+    ///   `true` from allocation onwards and the decode mixer is a no-op.
+    ///   Prefill's FP32 kernels run over [`Self::h_prefill_stage`] instead.
+    ///
+    /// It rides through swap-out/swap-in because `state_io` mutates these
+    /// states in place rather than rebuilding them.
     pub h_is_f16: bool,
+    /// Stage-3 f16-SIZED pool ONLY (`--ssm-h-dtype f16-pool`): the FP32
+    /// staging blob for THIS sequence's slot, which the GDN prefill widens
+    /// `h_state` into before its FP32 kernels run and narrows back after.
+    ///
+    /// `None` — every configuration before stage 3 — means "the slot IS
+    /// FP32-wide": prefill writes `h_state` in place exactly as it always
+    /// has, and not one byte moves. The same blob is shared by every layer
+    /// of the sequence (see `SsmStatePool::h_prefill_stage`).
+    pub h_prefill_stage: Option<DevicePtr>,
 }
 
 impl LayerState for SsmLayerState {

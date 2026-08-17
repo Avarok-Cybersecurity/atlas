@@ -99,7 +99,8 @@ impl Qwen3SsmLayer {
                     h_base = ssm_state.h_state;
                     conv_base = ssm_state.conv_state;
                 } else {
-                    contiguous &= ssm_state.h_state.0 == h_base.0 + (i * self.h_state_bytes) as u64;
+                    contiguous &=
+                        ssm_state.h_state.0 == h_base.0 + (i * self.h_slot_stride_bytes()) as u64;
                     contiguous &=
                         ssm_state.conv_state.0 == conv_base.0 + (i * self.conv_state_bytes) as u64;
                 }
@@ -119,7 +120,7 @@ impl Qwen3SsmLayer {
                     let mut delta = 0i64;
                     for i in 1..n {
                         if let Some(st) = states[i].as_any_mut().downcast_mut::<SsmLayerState>() {
-                            let want = h_base.0 + (i * self.h_state_bytes) as u64;
+                            let want = h_base.0 + (i * self.h_slot_stride_bytes()) as u64;
                             if st.h_state.0 != want {
                                 broke_at = i;
                                 delta = st.h_state.0 as i64 - want as i64;
@@ -133,7 +134,7 @@ impl Qwen3SsmLayer {
                          expects it. The per-seq loop costs ~28% more on this block. Slots \
                          fragment as sequences finish, so this is expected to recur; count is \
                          logged at debug on every occurrence.",
-                        delta / self.h_state_bytes.max(1) as i64
+                        delta / self.h_slot_stride_bytes().max(1) as i64
                     );
                 });
                 tracing::debug!("SSM batched recurrent fallback #{n_fb} (n={n})");
@@ -270,10 +271,13 @@ impl Qwen3SsmLayer {
                     // The FP16 pool has exactly one legal reader; the FP32 arms
                     // above are unreachable in this mode (preflight refuses the
                     // flag for any env combination that could route to one).
-                    // ★ `h_state_bytes` is the FP32-SIZED pool slot stride, so
-                    // in __half elements the per-sequence stride is
-                    // `h_state_bytes / 2` — twice the dense FP16 footprint the
-                    // FP32 kernel is allowed to infer from the head dims.
+                    // ★ The stride is the POOL SLOT PITCH in __half
+                    // elements, which is NOT inferable from the head dims:
+                    // on an FP32-sized pool (stage 1/2) slots are
+                    // `h_state_bytes` apart, i.e. TWICE the dense FP16
+                    // footprint; under the stage-3 f16-SIZED pool they are
+                    // `h_state_bytes / 2` apart, i.e. exactly dense.
+                    // `h_slot_stride_bytes` is the SSOT for which.
                     ops::gdn_decode_f16_strided_norm(
                         ctx.gpu,
                         self.gdn_f16_strided_norm_half_k,
@@ -296,7 +300,7 @@ impl Qwen3SsmLayer {
                         gate_stride,
                         qkvz_size as u32,
                         value_dim as u32,
-                        (self.h_state_bytes / 2) as u64,
+                        (self.h_slot_stride_bytes() / 2) as u64,
                         eps,
                         stream,
                     )?;

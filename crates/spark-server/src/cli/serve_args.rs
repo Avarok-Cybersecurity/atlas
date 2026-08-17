@@ -180,7 +180,8 @@ pub struct ServeArgs {
     // discoverable in `--help` and visible in `ps`. The environment variables
     // remain honoured as a fallback so existing scripts keep working; the flag
     // WINS when both are given.
-    /// Storage dtype for the GDN decode h-state: `f32` (default) or `f16`.
+    /// Storage dtype for the GDN decode h-state: `f32` (default), `f16`, or
+    /// `f16-pool`.
     ///
     /// The decode scan is pure state traffic — it runs at ~90% of GB10's
     /// row-strided ceiling — so halving the state footprint halves its time:
@@ -193,9 +194,37 @@ pub struct ServeArgs {
     /// vanishes at C=64. Choose it per workload — which is precisely why it is
     /// a flag and not a default.
     ///
-    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when NONE of the three
-    /// GDN flags is given. `GdnFlags` is published as one cell, so any of them
-    /// takes the whole decision away from the environment; `warn_shadowed_env`
+    /// `f16-pool` is `f16` PLUS h pools that are SIZED at 2 bytes/element
+    /// rather than merely holding FP16 in the first half of an FP32-sized
+    /// slot. That is where the memory win is — the h-state is ~95% of a
+    /// 151.5 MiB per-sequence state blob, so the bs=128 SSM reserve on the
+    /// 27B drops from 36.7 GiB to ~25.6 GiB and the per-sequence per-step
+    /// state traffic that sets the marginal cost of a concurrent sequence
+    /// halves with it. Prefill keeps its unchanged FP32 kernels: they run
+    /// over a per-slot FP32 staging blob (`max_batch_size × one layer's h
+    /// blob`, ~256 MB at bs=128 on the 27B) which the layer widens into and
+    /// narrows back, so the pool holds FP16 at every moment outside a layer's
+    /// prefill call.
+    ///
+    /// NOT compatible with `--speculative`: the MTP verify arms still stride
+    /// and byte-copy the h intermediate/checkpoint pools at the FP32 width,
+    /// which over a narrowed pool overruns into the neighbouring slot instead
+    /// of failing. Refused at parse time.
+    ///
+    /// ★ NUMERICS. `f16-pool` puts the FP16 state on the PREFILL recurrence's
+    /// chunk boundaries as well as on decode, and a reduced-precision
+    /// recurrence accumulates rounding COHERENTLY (vLLM's fp16 mamba cache
+    /// needed stochastic rounding for exactly this; there is no published
+    /// fp8-recurrent-state accuracy study). Rounding here is
+    /// round-to-nearest-even. Default OFF, in no gate recipe, and no number
+    /// measured under it may be published without passing
+    /// `ssm-state-poisoning-gate`, `decode-floor`, `bfcl-subset` and the
+    /// agentic gate.
+    ///
+    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 — never f16-pool,
+    /// which has no environment spelling — when NONE of the three GDN flags
+    /// is given. `GdnFlags` is published as one cell, so any of them takes
+    /// the whole decision away from the environment; `warn_shadowed_env`
     /// says so when that happens rather than leaving it to be discovered in a
     /// benchmark number.
     #[arg(long)]
