@@ -349,3 +349,31 @@ tree's own measurement) and **the batched GDN conv+WY path declining** — 2 lau
 when engaged versus `n*(2k-1)` when not, i.e. 96 vs 768 launches/step at n=2, k=4 across
 48 GDN layers. Both now emit periodic RATES under `ATLAS_MTP_ACCEPT_DEBUG`, so the next
 C=2 run reads the answer directly instead of inferring it.
+
+### Round 6 complete + Round 7 (canonical verify key, PR #552)
+
+Round 6 final rungs: C=64 **386.99** (+3.5%, 1.071x) and C=128 **477.69** (+7.9%, **1.332x**)
+— the QKVZ fix lifts the top of the ladder too, and C=1 rose to **23.66** (1.20x).
+
+Round 7 adds the canonical verify key (n=8 key space 266 -> 3):
+
+| C | round 7 | round 6 | Δ | vLLM+MTP | ratio |
+|---:|---:|---:|---:|---:|---:|
+| 8 | **110.63** | 106.48 | +3.9% | 124.48 | 0.889x |
+
+Full standing after rounds 6-7:
+
+| C | Atlas | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---|
+| 1 | 23.66 | 19.72 | **1.20x** | **WON** |
+| 2 | 31.00 | 38.79 | 0.80x | open |
+| 4 | 68.11 | 71.61 | 0.951x | open |
+| 8 | 110.63 | 124.48 | 0.889x | open |
+| 16 | 203.44 | 197.03 | **1.033x** | **WON** |
+| 32 | 291.52 | 283.48 | **1.028x** | **WON** |
+| 64 | 386.99 | 361.39 | **1.071x** | **WON** |
+| 128 | 477.69 | 358.57 | **1.332x** | **WON** |
+
+Tonight's movement, apples-to-apples throughout: C=1 +5%, C=8 +33%, C=16 +32%, C=32 +29%,
+C=64 +7%, C=128 +8%. Three rungs remain, all in the C=2..8 band where the batched-verify
+path's fixed cost dominates.
