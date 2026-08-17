@@ -205,6 +205,19 @@
   letter-spacing: 0.1em; text-transform: uppercase; color: var(--t2);
 }
 .cm-sources summary:hover { color: var(--accent); }
+/* The sources footer only exists once the answer settles. It prints in rather
+   than snapping, which is what the card is doing anyway: finishing a receipt. */
+.cm-sources {
+  animation: cm-sources-in 320ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes cm-sources-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-sources { animation: none; }
+}
+
 .cm-src {
   display: flex; align-items: baseline; gap: 0.6rem; padding: 0.3rem 0;
   font-family: var(--font-mono); font-size: 0.74rem; color: var(--t2);
