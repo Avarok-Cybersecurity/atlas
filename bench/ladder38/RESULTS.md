@@ -411,3 +411,17 @@ The won rungs reproduce across two independent rounds to within 0.2% (C=16/32/12
 0.03%), so those margins are stable measurements, not noise-riding. C=1's -2.2% is the
 canonical key's small-n cost showing up even at single-sequence width — another vote for
 gating it.
+
+### Canonical-key A/B (same binary, same session, one variable)
+
+| C | canonical ON | canonical OFF | verdict |
+|---:|---:|---:|---|
+| 2 | 30.09 | **30.83** | canonical costs **-2.4%** |
+| 8 | **110.63** | 106.48 | canonical gains **+3.9%** |
+
+Clean attribution: the canonical assignment pays for itself only where the key space
+actually explodes (n=8: 266 arrangements). At n=2 the key space was 2 and at n=4 it was 10
+— nothing to collapse, and forcing the assignment costs more than it saves. Fix in flight:
+gate the canonical assignment on batch width (>= 8), byte-identical to the pre-canonical
+behaviour below the threshold, with an env-sweepable boundary. That keeps C=8's +3.9%
+without paying -2.4%/-3.7% at C=2/C=4.
