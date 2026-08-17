@@ -376,6 +376,11 @@ pub fn step_mtp(
     // ⇒ `ks` is the uniform ladder shape and everything below reduces to the
     // pre-D-Cut path exactly.
     let ks = mtp_dcut::plan(active, &mut batchable_idxs, ladder_nd, rows);
+    // The width the ASSIGNMENT was gated on (`plan` reorders `batchable_idxs`,
+    // never resizes it): the per-chunk re-ordering below must ask the gate with
+    // THIS width, never the chunk's, or a chunked batch could take the opposite
+    // arm from the one its depths were assigned under.
+    let batch_n = batchable_idxs.len();
 
     // Chunking: the 96-row buffer bound `can_batch_verify` enforces, with the
     // per-chunk sequence cap DERIVED from it (`VERIFY_ROW_BUDGET / widest
@@ -414,16 +419,19 @@ pub fn step_mtp(
                 consumed = i + 1;
                 refs.push((a, k));
             }
-            // Canonical batch order, from the ONE ordering rule shared with
-            // the graph key (`verify_key`): ssm slots ascending, which under
-            // the canonical depth assignment is ALSO deepest-first, so the
-            // key is a function of the depth MULTISET rather than its
-            // arrangement (266 keys → 3 at n=8) and each depth run owns a
-            // consecutive slot block for the batched-GDN precondition.
-            // Idempotent on `plan`'s already-canonical order; it still runs
-            // because `plan` returns the batch UNORDERED whenever D-Cut
-            // declines, and that uniform-`k` case is the pre-D-Cut sort by
-            // slot. PERMUTATION ONLY — depths stay attached to the sequence
+            // Batch order, from the ONE ordering rule shared with the graph
+            // key (`verify_key`), asked with the SAME width gate `plan` used so
+            // order and assignment can never disagree. Canonical (n >=
+            // `CANONICAL_KEY_MIN_WIDTH` = 8): ssm slots ascending = also
+            // deepest-first under the canonical assignment, so the key is a
+            // function of the depth MULTISET not its arrangement (266 keys → 3
+            // at n=8) and each depth run owns a consecutive slot block for the
+            // batched-GDN precondition; below it, deepest-first then slot — the
+            // pre-canonical order byte for byte. Idempotent on `plan`'s ordered
+            // batch under both arms; it still runs because `plan` returns the
+            // batch UNORDERED whenever D-Cut declines, and that uniform-`k`
+            // case is the pre-D-Cut sort by slot. PERMUTATION ONLY — depths
+            // stay attached to the sequence
             // `plan` truncated for (`verify_k4_batch_step` pins
             // `drafts + 1 == ks[i]`). Verdicts are index-mapped inside the
             // step, so batch order is free to the caller.
@@ -435,7 +443,7 @@ pub fn step_mtp(
             let order = spark_model::speculative::verify_key::verify_batch_permutation(
                 &chunk_slots,
                 &chunk_depths,
-                spark_model::speculative::verify_key::canonical_verify_key_enabled(),
+                spark_model::speculative::verify_key::canonical_assignment(batch_n),
             );
             let sorted_ks: Vec<usize> = order.iter().map(|&p| chunk_depths[p]).collect();
             let mut slotted: Vec<Option<&mut ActiveSeq>> =
