@@ -201,3 +201,21 @@ apples-to-apples (C=1, C=64, C=128). The two fixes were worth +1.6-4.4% each run
 but an order of magnitude short of the 30% needed at C=4/8, which is consistent with the
 acceptance study's conclusion that the marginal cost lives somewhere we have not yet
 profiled.
+
+### K-ladder A/B (2026-08-17) — NEGATIVE RESULT, hypothesis closed
+
+`ATLAS_MTP_K_LADDER="4:3,8:3,16:2,32:2"` (deeper drafts at the widths where the default
+ladder hands out only one) measured at C=16: **153.92** versus 154.30 on the default
+`16:1` — **-0.2%, i.e. nothing**, against a 28% deficit at that rung (vLLM+MTP 197.03).
+
+This closes the draft-budget hypothesis. It matches the break-even arithmetic exactly:
+on prose traffic the token-ratio gain of a second draft (~1.20) is cancelled by its cost
+ratio (~1.17-1.26). The ladder is a +/-10% lever at best and this workload sits at its
+break-even point. (`32:3` was never a candidate: 4 rows/seq x 32 = 128 > the 96-row
+`VERIFY_ROW_BUDGET`, so it serializes.)
+
+Ruled out for the mid-ladder gap, each by measurement rather than argument:
+acceptance quality (p1 flat 0.78-0.90), draft budget (this A/B), launch count (PR #547),
+state bytes (PR #548), KV dtype (round 4 at fp8). What remains is the per-sequence
+marginal cost itself — 4.28 ms/token/seq vs vLLM's 1.94 — with no traffic accounting that
+explains it. A decode-step nsys profile at C=1 vs C=8 is the next instrument.
