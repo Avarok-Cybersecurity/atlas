@@ -24,6 +24,52 @@
 
 ## Scores (mean tok/s aggregate over 3 reps)
 
+### THE APPLES-TO-APPLES REFERENCE (2026-08-17) — vLLM WITH MTP, fp8 KV
+
+The earlier vLLM reference ran **speculative decoding OFF**, which understated it badly.
+vLLM 0.27.1 registers `Qwen3_5MTP` and this checkpoint ships `mtp.*` weights, so vLLM can
+and should run MTP here. Re-measured with every workload axis matched to Atlas — same
+checkpoint/box/harness/prompts/ISL/OSL/temp/seed, ctx 2048 both, batch cap 128 both,
+util 0.85 both, **fp8 KV both**, prefix caching on both, thinking off both, and
+**MTP K=4 on both** (Atlas `--num-drafts 3`, vLLM `num_speculative_tokens: 3`):
+
+| C | vLLM+MTP fp8 | (old no-spec ref) |
+|---:|---:|---:|
+| 1 | 19.72 | 11.04 |
+| 2 | 38.79 | 21.34 |
+| 4 | 71.61 | 41.20 |
+| 8 | 124.48 | 78.18 |
+| 16 | 197.03 | 137.11 |
+| 32 | 283.48 | 219.50 |
+| 64 | 361.39 | 312.26 |
+| 128 | **358.57** | 390.36 |
+
+Two structural facts: vLLM+MTP is 1.8-1.9x its own no-spec numbers at low C (so every
+comparison against the no-spec reference is superseded), and **vLLM's C=128 is BELOW its
+own C=64** — MTP verification costs it more than it gains at 128-wide, while Atlas's
+speculation self-disables above 32 concurrent sequences and never pays that penalty.
+
+Standing (Atlas C=128 at fp8 = 450.12; other Atlas rungs still bf16 KV pending round 4):
+
+| C | Atlas | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---|
+| 1 | 21.74 | 19.72 | 1.10x | **WON** |
+| 2 | 29.04 | 38.79 | 0.75x | open |
+| 4 | 51.55 | 71.61 | 0.72x | open |
+| 8 | 81.42 | 124.48 | 0.65x | open |
+| 16 | 150.41 | 197.03 | 0.76x | open |
+| 32 | 219.97 | 283.48 | 0.78x | open |
+| 64 | 360.02 | 361.39 | 0.996x | open |
+| 128 | **450.12** | 358.57 | **1.26x** | **WON** |
+
+Measured root cause of the open rungs: Atlas's marginal cost per added concurrent sequence
+is **4.28 ms/token/seq** vs vLLM's **1.94** (TPOT fits Atlas `58.9 + 4.28n`, collinear
+across n=2,4,8; C=1 is off the line because `decode_a2.rs:65` routes n==1 to a different
+single-sequence program). The hybrid carries ~102 MB of GDN recurrent state per sequence
+per step; Atlas additionally paid 96 eager copy launches per sequence per step for SSM
+rollback (PR #547 -> 2n) and stored h-state FP32 even under `--ssm-h-dtype f16`
+(PR #548 -> `f16-pool`, halves the bytes). Round 4 measures both.
+
 ### Round 2 — full fix stack `ab97a7f24` (2026-08-17)
 
 Stack = capacity PR #533 + graph-borrow #536 + varlen-prefill #538 + preempt-resume #540,
