@@ -169,3 +169,31 @@ fn ratio_snaps_to_a_bucket() {
     assert_eq!(nearest(0.9), 1.0);
     assert_eq!(nearest(0.1), 0.25);
 }
+
+/// The C=2 rung PRUNES — so "skip the planner below a width threshold and
+/// keep the uniform shape" is NOT a hoist, it is a behaviour change.
+///
+/// At C=2 the ladder gives `ladder_nd = 3` (rows = 4), which puts the batch
+/// inside D-Cut's engagement envelope (`ladder_nd >= 2`, `n <= 8`). With the
+/// default ratio 0.75 the 2x2 = 4 prunable positions keep 3, so exactly one
+/// sequence loses its deepest draft and the plan is the RAGGED `{3, 2}`
+/// retained multiset — verify rows `{4, 3}`, R = 7 instead of the uniform 8.
+/// Anything that bypasses the planner at n = 2 therefore verifies one MORE
+/// row per step than the shipped path, and produces a different graph key.
+#[test]
+fn width_two_is_inside_the_pruning_envelope_and_is_not_uniform() {
+    // Both sequences confident, seq 1 slightly less so at its deepest draft.
+    let c = [vec![-0.01f32, -0.02, -0.03], vec![-0.01f32, -0.02, -0.40]];
+    let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
+    let retained = select(&refs, 3, VERIFY_ROW_BUDGET, 0.75);
+    assert_eq!(
+        retained,
+        vec![3, 2],
+        "ratio 0.75 drops exactly one position"
+    );
+    let rows: Vec<usize> = retained.iter().map(|r| r + 1).collect();
+    assert_ne!(rows, vec![4, 4], "the n=2 plan is NOT the uniform shape");
+    assert_eq!(rows.iter().sum::<usize>(), 7);
+    // ...and the row saving is real: one fewer verify row than uniform.
+    assert_eq!(chunk_ranges(&rows), vec![(0, 2)], "still a single chunk");
+}

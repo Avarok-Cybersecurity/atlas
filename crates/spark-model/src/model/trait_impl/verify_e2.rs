@@ -46,6 +46,173 @@ pub(super) fn verify_graphs_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_VERIFY_GRAPHS").is_none())
 }
 
+/// House VALUE convention: a switch is armed by the literal `"1"` and by
+/// nothing else — `=0`, `=true`, `=` and mere presence all leave it OFF.
+/// SSOT for the three verify-path switches below, which the batched verify
+/// used to spell out inline as `std::env::var(..).ok().as_deref() ==
+/// Some("1")` / `== Ok("1")` at three separate sites. One expression, one
+/// test, no chance of a PRESENCE/VALUE mix-up when a site is edited.
+fn value_switch_armed(raw: Option<&str>) -> bool {
+    raw == Some("1")
+}
+
+/// Read a VALUE switch from the environment under [`value_switch_armed`].
+fn read_value_switch(name: &str) -> bool {
+    value_switch_armed(std::env::var(name).ok().as_deref())
+}
+
+/// Per-layer stream-sync diagnostic (`ATLAS_K4_DIAG=1`, VALUE check — this
+/// one predates the presence convention and `=1` is its documented form).
+///
+/// Read ONCE per process. The raw `std::env::var` sat in the batched verify
+/// hot path, so every n>=2 verify step paid a `getenv` + a `String`
+/// allocation for a switch that cannot change after launch — a cost the
+/// single-sequence path does not carry. Behaviourally identical for any
+/// process that does not mutate its own environment mid-run: nothing in the
+/// tree does, and `std::env::set_var` is `unsafe` since Rust 2024.
+pub(super) fn k4_diag_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| read_value_switch("ATLAS_K4_DIAG"))
+}
+
+/// Verify argmax D2H arm: `ATLAS_VERIFY_D2H_DEFAULT_STREAM=1` restores the
+/// original default-stream copy. Read once per process (was a per-step
+/// `std::env::var` in the D2H tail).
+pub(super) fn verify_d2h_default_stream() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| read_value_switch("ATLAS_VERIFY_D2H_DEFAULT_STREAM"))
+}
+
+/// Verify argmax D2H arm: `ATLAS_NO_PINNED_VERIFY_D2H=1` forces the pageable
+/// on-stream copy. Read once per process (was a per-step `std::env::var`).
+pub(super) fn verify_d2h_no_pinned() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| read_value_switch("ATLAS_NO_PINNED_VERIFY_D2H"))
+}
+
+/// WY-table staging cache: ON by default, disabled by PRESENCE of
+/// `ATLAS_NO_VERIFY_WY_CACHE` (house convention — `=0` is NOT off).
+/// Read once per process. OFF restores the unconditional per-step re-stage.
+pub(super) fn verify_wy_cache_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_WY_CACHE").is_none())
+}
+
+/// Encode the COMPLETE input set of `upload_verify_wy_tables`'s staged bytes.
+///
+/// ★ The proof obligation for the cache is that two calls with equal keys
+/// stage byte-identical tables. Every entry the fill loops write is
+/// `SsmLayerState::h_state` / `h_state_intermediates[t]` for a batch
+/// sequence, or `ssm_pool.h_state` / `h_intermediate` for a ghost — and
+/// those four are the SAME pool accessors:
+///
+/// * `h_state` is only ever assigned `ssm_pool.h_state(ssm_layer_idx, slot)`
+///   (`meta.rs` at alloc, `sequence.rs` at compaction) or `DevicePtr(0)` on
+///   free, and `ssm_pool.h_state` is `h_state_pools[layer].offset(slot *
+///   h_stored_bytes)` — pure address arithmetic over pool bases fixed at
+///   model construction.
+/// * `h_state_intermediates[t]` is only ever
+///   `ssm_pool.h_intermediate(ssm_layer_idx, slot, t)`, and its LENGTH is
+///   `ssm_pool.h_inter_count(slot)` — slot-keyed (tiered pools) and
+///   `has_mtp`-gated, where `has_mtp` is a MODEL property
+///   (`proposer.is_some() || self_speculative`), not a per-sequence one.
+///
+/// So a table entry is a pure function of `(layer, slot, t)`, the layer set
+/// is `config.num_ssm_layers()` (fixed), and the only step-varying inputs are
+/// the ones encoded here:
+///   1. `k` — how many of the four per-layer tables are filled.
+///   2. `slots.len()` — how many batch entries are filled, hence where the
+///      zero tail of each table starts.
+///   3. `slots` — the per-sequence ssm-pool slot, IN BATCH ORDER (entry `i`
+///      of every table is sequence `i`).
+///   4. `ghosts` — the drain-tail borrow's `(slot, depth)` pairs, in order,
+///      appended after the batch entries.
+///
+/// Everything else (pool base addresses, `h_stored_bytes`, the tiered
+/// `h_inter_offsets`, the GDN layer set) is fixed for the process at model
+/// construction.
+///
+/// The encoding is injective: `[k, n, slots[0..n], (slot, depth) * g]` — `n`
+/// disambiguates the slot run from the ghost tail, and the ghost count falls
+/// out of the remaining length.
+pub(super) fn verify_wy_cache_key(slots: &[u32], k: usize, ghosts: &[(u32, u32)]) -> Vec<u64> {
+    let mut key = Vec::with_capacity(2 + slots.len() + 2 * ghosts.len());
+    key.push(k as u64);
+    key.push(slots.len() as u64);
+    key.extend(slots.iter().map(|&s| s as u64));
+    for &(slot, depth) in ghosts {
+        key.push(slot as u64);
+        key.push(depth as u64);
+    }
+    key
+}
+
+/// What the batched verify did with its CUDA graph on one step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum VerifyGraphOutcome {
+    /// Exact slot-vector hit — the whole forward replayed.
+    Replay,
+    /// Drain-tail borrow: a WIDER captured key replayed with ghost rows.
+    Borrow,
+    /// Miss: the forward ran eagerly UNDER CAPTURE and a graph was
+    /// instantiated (the expensive outcome — `verify_key`'s module docs
+    /// price instantiate+destroy at 23.2 ms/step at an 89% recapture rate).
+    Capture,
+    /// No graph at all: `ATLAS_NO_MTP_VERIFY_GRAPHS`, `ATLAS_K4_DIAG`, or a
+    /// batch with a slotless sequence.
+    Eager,
+}
+
+/// Periodic INFO summary of the batched-verify graph outcomes, under the
+/// existing `ATLAS_MTP_ACCEPT_DEBUG` gate (checked FIRST, so a default serve
+/// pays one `OnceLock` load and no atomics).
+///
+/// ★ Why this exists. The n>=2 verify path carries a per-step FIXED cost the
+/// n==1 path does not, and the two candidates of the right magnitude — graph
+/// RE-capture, and the batched GDN conv+WY fast path declining into the
+/// per-sequence loop — were both unanswerable from a ladder log. Captures
+/// only logged one INFO line each (thousands of lines, no rate) and the GDN
+/// engage/decline counters only surfaced at `debug`. A rate, and the live key
+/// count next to it, is what distinguishes "the key space collapsed and the
+/// path replays" from "this rung re-captures every step".
+pub(super) fn record_verify_graph_outcome(n: usize, live_keys: usize, outcome: VerifyGraphOutcome) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    const PERIOD: u64 = 200;
+    static STEPS: AtomicU64 = AtomicU64::new(0);
+    static REPLAY: AtomicU64 = AtomicU64::new(0);
+    static BORROW: AtomicU64 = AtomicU64::new(0);
+    static CAPTURE: AtomicU64 = AtomicU64::new(0);
+    static EAGER: AtomicU64 = AtomicU64::new(0);
+    if !crate::speculative::mtp_accept_debug() {
+        return;
+    }
+    match outcome {
+        VerifyGraphOutcome::Replay => &REPLAY,
+        VerifyGraphOutcome::Borrow => &BORROW,
+        VerifyGraphOutcome::Capture => &CAPTURE,
+        VerifyGraphOutcome::Eager => &EAGER,
+    }
+    .fetch_add(1, Ordering::Relaxed);
+    if STEPS.fetch_add(1, Ordering::Relaxed) + 1 >= PERIOD {
+        let steps = STEPS.swap(0, Ordering::Relaxed).max(1);
+        let (replay, borrow) = (
+            REPLAY.swap(0, Ordering::Relaxed),
+            BORROW.swap(0, Ordering::Relaxed),
+        );
+        let (capture, eager) = (
+            CAPTURE.swap(0, Ordering::Relaxed),
+            EAGER.swap(0, Ordering::Relaxed),
+        );
+        tracing::info!(
+            "batched-verify graphs [{steps} steps, last n={n}]: replay={replay} \
+             borrow={borrow} CAPTURE={capture} eager={eager} capture_frac={:.3} \
+             live_keys={live_keys}/{}",
+            capture as f64 / steps as f64,
+            VERIFY_BATCHED_GRAPH_CAP,
+        );
+    }
+}
+
 impl TransformerModel {
     /// Batched-verify graph key: each sequence's ssm-pool slot in batch
     /// order — every SSM pointer the graph bakes (h/conv state, rollback
@@ -88,10 +255,29 @@ impl TransformerModel {
     /// Stage the per-GDN-layer WY pointer tables (`[h|Hi0|Hi1|Hi2]` ×
     /// `VERIFY_WY_TABLE_SEQS` u64 entries per layer, batch entries filled,
     /// tail zero) into the fixed `verify_wy_tables` device buffer. Runs
-    /// PRE-graph every batched verify step so a replayed graph reads tables
-    /// refreshed for the current batch (contents are constant per slot
-    /// vector; refreshing keeps replay correct by construction, not by
-    /// invariant).
+    /// PRE-graph on every batched verify step whose table content differs
+    /// from what is already staged, so a replayed graph reads tables valid
+    /// for the current batch.
+    ///
+    /// ★ CACHED since `perf/verify-fixed-cost`. This used to re-stage
+    /// unconditionally — a 48 KB zeroed host `Vec` + `num_ssm × n`
+    /// `Any` downcasts + a 48 KB pageable H2D on EVERY n>=2 verify step,
+    /// which the single-sequence path (n==1, `verify_c2`) never pays. The
+    /// staged bytes are a pure function of `(k, slot vector, ghosts)` —
+    /// `verify_wy_cache_key` carries the enumeration and the proof — so when
+    /// that key matches `verify_wy_cache` the device buffer already holds
+    /// exactly these bytes and both the build and the copy are skipped.
+    /// Nothing else writes `verify_wy_tables` (allocation memsets it to zero
+    /// once; this is its only writer), so "same key ⇒ same device content"
+    /// holds for the buffer, not merely for the host image.
+    ///
+    /// The trade is explicit: correctness moves from "by construction"
+    /// (re-upload every step) to "by invariant" (the enumeration above).
+    /// The invariant is backstopped twice — the per-layer batched arm
+    /// re-checks each state's intermediate capacity before reading a table
+    /// (`trait_decode_batched_conv_gdn_multi.rs`), and the wy-tables-present
+    /// sentinel is in the CUDA-graph key — and `ATLAS_NO_VERIFY_WY_CACHE`
+    /// restores the unconditional re-stage for A/B.
     ///
     /// `k` is this step's verify width (rows per sequence, 2..=4 from the
     /// ladder). Exactly `k` tables are filled — `[h | Hi_0 .. Hi_{k-2}]` —
@@ -127,6 +313,22 @@ impl TransformerModel {
         let num_ssm = self.config.num_ssm_layers();
         if num_ssm == 0 {
             return Ok(DevicePtr::NULL);
+        }
+        // Cache probe. A sequence without a pool slot is unkeyable (and would
+        // fail the `h_state` gate below anyway) — such a batch simply stages
+        // uncached, exactly as before.
+        let cache_key: Option<Vec<u64>> = if verify_wy_cache_enabled() {
+            seqs.iter()
+                .map(|s| s.ssm_slot_idx().map(|v| v as u32))
+                .collect::<Option<Vec<u32>>>()
+                .map(|slots| verify_wy_cache_key(&slots, k, ghosts))
+        } else {
+            None
+        };
+        if let Some(key) = cache_key.as_deref()
+            && self.verify_wy_cache.lock().as_deref() == Some(key)
+        {
+            return Ok(self.verify_wy_tables);
         }
         let entries_per_layer = VERIFY_WY_LAYER_STRIDE_BYTES / 8;
         let mut host = vec![0u64; num_ssm * entries_per_layer];
@@ -174,6 +376,17 @@ impl TransformerModel {
             unsafe { std::slice::from_raw_parts(host.as_ptr() as *const u8, host.len() * 8) };
         self.gpu
             .copy_h2d_async(bytes, self.verify_wy_tables, stream)?;
+        // Recorded only AFTER the copy is enqueued: every early return above
+        // (downcast miss / null h_state / short intermediates) leaves the
+        // device buffer — and therefore the cache — untouched and still
+        // describing the last successful stage.
+        if let Some(key) = cache_key {
+            *self.verify_wy_cache.lock() = Some(key);
+        }
         Ok(self.verify_wy_tables)
     }
 }
+
+#[cfg(test)]
+#[path = "verify_e2_tests.rs"]
+mod tests;
