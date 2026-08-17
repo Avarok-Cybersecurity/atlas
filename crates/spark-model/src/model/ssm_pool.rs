@@ -112,6 +112,48 @@ fn h_inter_layout(counts: &[usize]) -> (Vec<usize>, usize) {
     (offsets, acc)
 }
 
+/// Allocate one zeroed region of `bytes` per SSM layer, PREFERRING a single
+/// contiguous block so `pools[l] == pools[0] + l * bytes`.
+///
+/// The uniform layer stride is what lets the verify-state copy sets collapse
+/// from `2 × num_ssm_layers` eager `copy_d2d_async` launches per sequence to
+/// two pitched 2-D copies (`model::ssm_batched_copy`). Nothing depends on the
+/// stride existing: if the single block cannot be allocated — a fragmented
+/// device, or simply a pool large enough that one VA range is not available
+/// — this falls back to the original per-layer allocations, the strided-run
+/// detector declines, and the copies run as the same per-layer loop they
+/// always did. Bytes allocated, and the addresses every accessor derives, are
+/// identical either way.
+fn alloc_layer_pools(
+    gpu: &dyn GpuBackend,
+    num_ssm_layers: usize,
+    bytes: usize,
+) -> Result<Vec<DevicePtr>> {
+    if num_ssm_layers == 0 || bytes == 0 {
+        return Ok(vec![DevicePtr::NULL; num_ssm_layers]);
+    }
+    if let Some(total) = bytes.checked_mul(num_ssm_layers)
+        && let Ok(base) = gpu.alloc(total)
+    {
+        gpu.memset(base, 0, total)?;
+        return Ok((0..num_ssm_layers)
+            .map(|l| base.offset(l * bytes))
+            .collect());
+    }
+    tracing::warn!(
+        "SSM pool: {num_ssm_layers} × {bytes} B did not fit one contiguous block — \
+         falling back to per-layer allocations (verify-state rollback keeps the \
+         per-layer copy loop)"
+    );
+    let mut pools = Vec::with_capacity(num_ssm_layers);
+    for _ in 0..num_ssm_layers {
+        let p = gpu.alloc(bytes)?;
+        gpu.memset(p, 0, bytes)?;
+        pools.push(p);
+    }
+    Ok(pools)
+}
+
 impl SsmStatePool {
     /// `h_f16_pool` is `gdn_flags::ssm_h_f16_pool_enabled()` at the one
     /// production call site (`impl_a1.rs`) — a parameter, not a flag read,
@@ -143,22 +185,13 @@ impl SsmStatePool {
         // num_ssm_layers` extra GPU memory (~kilobytes per pool).
         let total_slots = max_slots + 1;
 
-        let mut h_state_pools = Vec::with_capacity(num_ssm_layers);
-        let mut conv_state_pools = Vec::with_capacity(num_ssm_layers);
         let mut h_intermediate_pools = Vec::new();
         let mut conv_intermediate_pools = Vec::new();
         let mut h_checkpoint_pools = Vec::new();
         let mut conv_checkpoint_pools = Vec::new();
 
-        for _ in 0..num_ssm_layers {
-            let h_pool = gpu.alloc(total_slots * h_stored_bytes)?;
-            gpu.memset(h_pool, 0, total_slots * h_stored_bytes)?;
-            h_state_pools.push(h_pool);
-
-            let conv_pool = gpu.alloc(total_slots * conv_bytes)?;
-            gpu.memset(conv_pool, 0, total_slots * conv_bytes)?;
-            conv_state_pools.push(conv_pool);
-        }
+        let h_state_pools = alloc_layer_pools(gpu, num_ssm_layers, total_slots * h_stored_bytes)?;
+        let conv_state_pools = alloc_layer_pools(gpu, num_ssm_layers, total_slots * conv_bytes)?;
 
         // MTP verify pools cover only the slots spec dispatch can reach
         // (SSOT: `ssm_reserve::mtp_state_slots` — the same number preflight
@@ -212,40 +245,29 @@ impl SsmStatePool {
         if has_mtp {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
-            for _ in 0..num_ssm_layers {
-                if !replay {
-                    let h_inter = gpu.alloc(h_inter_total * h_stored_bytes)?;
-                    gpu.memset(h_inter, 0, h_inter_total * h_stored_bytes)?;
-                    h_intermediate_pools.push(h_inter);
-
-                    let conv_inter = gpu.alloc(mtp_total * ni * conv_bytes)?;
-                    gpu.memset(conv_inter, 0, mtp_total * ni * conv_bytes)?;
-                    conv_intermediate_pools.push(conv_inter);
-                } else {
-                    // Replay: verify-window INPUT rows instead of state
-                    // snapshots — (mtp_total slots incl. dummy) × (K-1)
-                    // rows of qkvz+gates per layer. Sized by the same SSOT
-                    // preflight reserves through.
-                    let row = crate::ssm_reserve::ssm_replay_row_bytes(
-                        config.ssm_qkvz_size(),
-                        config.linear_num_value_heads,
-                    );
-                    let ring = crate::ssm_reserve::ssm_replay_ring_bytes(1, row, ni, mtp_total);
-                    let r = gpu.alloc(ring)?;
-                    gpu.memset(r, 0, ring)?;
-                    replay_input_rings.push(r);
-                }
-
-                // 1 checkpoint per slot per layer (BOTH modes: replay's
-                // reconstruction base is exactly this blob).
-                let h_ckpt = gpu.alloc(mtp_total * h_stored_bytes)?;
-                gpu.memset(h_ckpt, 0, mtp_total * h_stored_bytes)?;
-                h_checkpoint_pools.push(h_ckpt);
-
-                let conv_ckpt = gpu.alloc(mtp_total * conv_bytes)?;
-                gpu.memset(conv_ckpt, 0, mtp_total * conv_bytes)?;
-                conv_checkpoint_pools.push(conv_ckpt);
+            if !replay {
+                h_intermediate_pools =
+                    alloc_layer_pools(gpu, num_ssm_layers, h_inter_total * h_stored_bytes)?;
+                conv_intermediate_pools =
+                    alloc_layer_pools(gpu, num_ssm_layers, mtp_total * ni * conv_bytes)?;
+            } else {
+                // Replay: verify-window INPUT rows instead of state
+                // snapshots — (mtp_total slots incl. dummy) × (K-1)
+                // rows of qkvz+gates per layer. Sized by the same SSOT
+                // preflight reserves through.
+                let row = crate::ssm_reserve::ssm_replay_row_bytes(
+                    config.ssm_qkvz_size(),
+                    config.linear_num_value_heads,
+                );
+                let ring = crate::ssm_reserve::ssm_replay_ring_bytes(1, row, ni, mtp_total);
+                replay_input_rings = alloc_layer_pools(gpu, num_ssm_layers, ring)?;
             }
+
+            // 1 checkpoint per slot per layer (BOTH modes: replay's
+            // reconstruction base is exactly this blob).
+            h_checkpoint_pools =
+                alloc_layer_pools(gpu, num_ssm_layers, mtp_total * h_stored_bytes)?;
+            conv_checkpoint_pools = alloc_layer_pools(gpu, num_ssm_layers, mtp_total * conv_bytes)?;
 
             let mtp_mb = num_ssm_layers
                 * (h_inter_total * h_stored_bytes
@@ -834,6 +856,65 @@ mod h_stored_geometry_tests {
             &gpu,
         )
         .unwrap()
+    }
+
+    /// Every pool family is ONE contiguous block with a uniform per-layer
+    /// stride. This is the enabling precondition for the batched verify-state
+    /// rollback (`model::ssm_batched_copy`): without it the 2 × num_ssm_layers
+    /// copy plan cannot collapse to two pitched 2-D transfers and the verify
+    /// path silently keeps its 96-launch-per-sequence loop. Pinned here
+    /// because nothing else would notice the regression — the addresses stay
+    /// correct, only the launch count changes.
+    #[test]
+    fn layer_pools_are_one_contiguous_block_per_family() {
+        let p = pool(false);
+        let families: [(&str, &[DevicePtr], usize); 6] = [
+            (
+                "h_state",
+                &p.h_state_pools,
+                (p.max_slots + 1) * p.h_stored_bytes,
+            ),
+            (
+                "conv_state",
+                &p.conv_state_pools,
+                (p.max_slots + 1) * p.conv_bytes,
+            ),
+            (
+                "h_intermediate",
+                &p.h_intermediate_pools,
+                *p.h_inter_offsets.last().unwrap() * p.h_stored_bytes,
+            ),
+            (
+                "conv_intermediate",
+                &p.conv_intermediate_pools,
+                (p.mtp_slots + 1) * p.num_intermediates * p.conv_bytes,
+            ),
+            (
+                "h_checkpoint",
+                &p.h_checkpoint_pools,
+                (p.mtp_slots + 1) * p.h_stored_bytes,
+            ),
+            (
+                "conv_checkpoint",
+                &p.conv_checkpoint_pools,
+                (p.mtp_slots + 1) * p.conv_bytes,
+            ),
+        ];
+        for (name, pools, stride) in families {
+            assert_eq!(
+                pools.len(),
+                p.num_ssm_layers,
+                "{name}: one region per layer"
+            );
+            assert!(stride > 0, "{name}: degenerate stride");
+            for (l, ptr) in pools.iter().enumerate() {
+                assert_eq!(
+                    ptr.0,
+                    pools[0].0 + (l * stride) as u64,
+                    "{name}: layer {l} is not at base + {l}*{stride}"
+                );
+            }
+        }
     }
 
     /// Replay-scaffold pool geometry: no per-token intermediates, checkpoints
