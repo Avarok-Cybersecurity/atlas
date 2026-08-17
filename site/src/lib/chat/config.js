@@ -44,6 +44,11 @@ export const WASM_PREFETCH_CACHE = 'atlas-lattice-wasm';
 // --- storage -----------------------------------------------------------------
 // localStorage key holding the visitor's OpenRouter API key.
 export const LS_OPENROUTER_KEY = 'atlas-openrouter-key';
+// The visitor may point the answer model somewhere else, e.g. at the paid twin
+// of the default when their free daily allowance is spent. Retrieval models are
+// deliberately NOT overridable: the embedder has no paid endpoint at all, and a
+// different embedder would not match the vectors the corpus was built with.
+export const LS_CHAT_MODEL = 'atlas-openrouter-chat-model';
 // OPFS file name for the decompressed corpus, keyed by corpus commit SHA.
 export const latticeFileName = (sha) => 'lattice-db-' + sha + '.jsonl';
 // Matches files produced by latticeFileName(); capture group 1 is the SHA.

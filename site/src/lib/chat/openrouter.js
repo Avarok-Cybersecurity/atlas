@@ -17,11 +17,42 @@ import {
 
 /** Error that knows whether retrying could plausibly help. */
 export class OpenRouterError extends Error {
-  constructor(message, transient) {
+  constructor(message, transient, { quota = false, resetAt = null } = {}) {
     super(message);
     this.name = 'OpenRouterError';
     this.transient = transient;
+    // A per-day allowance that no amount of backoff will clear before its
+    // reset, as opposed to a provider being momentarily saturated.
+    this.quota = quota;
+    this.resetAt = resetAt;
   }
+}
+
+// OpenRouter returns 429 for two very different situations. A saturated
+// provider clears in seconds, so it is worth retrying. A per-day free-model
+// allowance does not clear until its reset stamp, so retrying only burns time
+// and then lies to the reader about what went wrong. The daily case announces
+// itself through metadata.limit_source (e.g. "openrouter_free_tier_daily") or
+// the message text (e.g. "Rate limit exceeded: free-models-per-day-…").
+const DAILY_LIMIT_TEXT = /free-models-per-day|per-?day|daily/i;
+
+function dailyQuota(errorBody, response) {
+  const meta = errorBody?.metadata ?? {};
+  const source = String(meta.limit_source ?? '');
+  const message = String(errorBody?.message ?? '');
+  if (!DAILY_LIMIT_TEXT.test(source) && !DAILY_LIMIT_TEXT.test(message)) return null;
+
+  const stamp = meta.headers?.['X-RateLimit-Reset'] ?? response?.headers?.get?.('X-RateLimit-Reset');
+  const resetAt = Number(stamp);
+  return { resetAt: Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null };
+}
+
+/** Non-retryable, carries the reset stamp so the UI can name a real time. */
+function quotaError(what, message, quota) {
+  return new OpenRouterError(`${what} failed: ${message}`, false, {
+    quota: true,
+    resetAt: quota.resetAt
+  });
 }
 
 const headersFor = (apiKey) => ({
@@ -44,6 +75,15 @@ async function parseResponse(response, what) {
   const raw = await response.text();
 
   if (!response.ok) {
+    let body = null;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      /* not JSON — fall through to the generic message below */
+    }
+    const quota = response.status === 429 ? dailyQuota(body?.error, response) : null;
+    if (quota) throw quotaError(what, body.error.message ?? 'daily limit reached', quota);
+
     throw new OpenRouterError(
       `${what} failed: ${response.status} - ${raw}`,
       response.status === 429 || response.status >= 500
@@ -61,6 +101,8 @@ async function parseResponse(response, what) {
   if (maybeError) {
     const code = maybeError.code ?? 0;
     const message = maybeError.message ?? 'unknown error';
+    const quota = dailyQuota(maybeError, response);
+    if (quota) throw quotaError(what, message, quota);
     throw new OpenRouterError(
       `${what} failed${code ? ` (${code})` : ''}: ${message}`,
       code === 429 || code >= 500 || /ResourceExhausted|rate.?limit|overloaded/i.test(message)
@@ -187,6 +229,8 @@ async function readSseStream(bodyStream, emit) {
 
         if (chunk.error) {
           const message = chunk.error.message ?? 'unknown error';
+          const quota = dailyQuota(chunk.error, null);
+          if (quota) throw quotaError('Chat request', message, quota);
           throw new OpenRouterError(
             `Chat request failed: ${message}`,
             chunk.error.code === 429 ||

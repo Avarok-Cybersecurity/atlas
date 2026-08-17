@@ -233,6 +233,39 @@
 }
 .cc-error-retry:hover { background: var(--accent); color: #fff; }
 
+/* A spent daily allowance names its reset and offers the paid twin. The paid
+   action leads because it is the only one that helps before the reset. */
+.cc-error-reset {
+  font-family: var(--font-mono); font-size: 0.74rem; color: var(--t3);
+  margin-top: 0.4rem; font-variant-numeric: tabular-nums;
+}
+.cc-error-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.cc-error-paid {
+  margin-top: 0.6rem; padding: 0.4rem 0.85rem; cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  color: #fff; background: var(--accent);
+  border: 1px solid var(--accent-deep); border-radius: 6px;
+  transition: background 0.15s;
+}
+.cc-error-paid:hover { background: var(--accent-deep); }
+
+/* ---- answer model chip ----------------------------------------------------- */
+.cc-model {
+  display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0;
+  font-family: var(--font-mono); font-size: 0.68rem; color: var(--t3);
+}
+.cc-model-label { text-transform: uppercase; letter-spacing: 0.08em; }
+.cc-model-id {
+  color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 15rem;
+}
+.cc-model-reset {
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.66rem; font-weight: 700;
+  color: var(--accent); background: none; border: none; padding: 0;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.cc-model-reset:hover { color: var(--accent-deep); }
+
 /* ---- key entry (a pending receipt) ---------------------------------------- */
 .cc-key {
   margin: 0 1.5rem 0.9rem; padding: 0.85rem 1rem; position: relative; z-index: 1;

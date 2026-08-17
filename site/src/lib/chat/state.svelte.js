@@ -12,7 +12,9 @@ import {
   CORPUS_GZ_URL,
   CORPUS_META_URL,
   UPSERT_BATCH,
-  LS_OPENROUTER_KEY
+  LS_OPENROUTER_KEY,
+  LS_CHAT_MODEL,
+  CHAT_MODEL
 } from './config.js';
 import { initWasm, createCorpusCollection, upsertBatch, idleYield } from './lattice.js';
 import { getCachedCorpus, createCorpusWriter, pruneStale, listCached } from './opfs.js';
@@ -23,8 +25,9 @@ export const chat = $state({
   progress: { loadedBytes: 0, totalBytes: 0, indexed: 0, totalPoints: 0 },
   corpus: null, // { commit, files, chunks, dim, generatedAt, repo }
   offline: false, // serving a cached corpus because the manifest fetch failed
-  error: null, // { kind: 'wasm'|'manifest'|'corpus'|'decompress'|'rate'|'key', message }
+  error: null, // { kind: 'wasm'|'manifest'|'corpus'|'decompress'|'rate'|'quota'|'key', message, resetAt? }
   keyState: 'missing', // 'missing'|'set'
+  chatModel: CHAT_MODEL, // answer model, overridable by the visitor
   msgPhase: null, // null|'retrieving'|'reranking'|'thinking'|'writing'
   // In-flight streamed message, non-null only while ask() runs. The UI renders
   // its growing texts per animation frame; reasoningMs is stamped when the
@@ -34,6 +37,29 @@ export const chat = $state({
 
 if (browser) {
   chat.keyState = localStorage.getItem(LS_OPENROUTER_KEY) ? 'set' : 'missing';
+  chat.chatModel = localStorage.getItem(LS_CHAT_MODEL) || CHAT_MODEL;
+}
+
+// --- answer model ------------------------------------------------------------
+
+/**
+ * Point the answer model somewhere else. Spending a visitor's credits is their
+ * decision alone, so nothing here is ever called automatically — only from an
+ * explicit click.
+ */
+export function setChatModel(model) {
+  if (!browser) return;
+  const trimmed = String(model ?? '').trim();
+  if (!trimmed) return;
+  localStorage.setItem(LS_CHAT_MODEL, trimmed);
+  chat.chatModel = trimmed;
+  if (chat.error?.kind === 'quota') chat.error = null;
+}
+
+export function resetChatModel() {
+  if (!browser) return;
+  localStorage.removeItem(LS_CHAT_MODEL);
+  chat.chatModel = CHAT_MODEL;
 }
 
 // --- key management ----------------------------------------------------------
@@ -466,18 +492,23 @@ export async function ask(question, history = []) {
     const result = await askCodebase(question, history, {
       apiKey,
       corpus: chat.corpus,
+      chatModel: chat.chatModel,
       onPhase: (phase) => {
         chat.msgPhase = phase;
       },
       onDelta
     });
-    if (chat.error?.kind === 'rate' || chat.error?.kind === 'key') chat.error = null;
+    if (['rate', 'quota', 'key'].includes(chat.error?.kind)) chat.error = null;
     const reasoningMs =
       chat.stream?.reasoningMs || (thinkStart ? performance.now() - thinkStart : 0);
     return { ...result, reasoning: reasoningAll, reasoningMs };
   } catch (err) {
     const msg = String(err?.message ?? err);
-    if (/\b401\b|\b403\b|invalid.{0,20}key|no auth/i.test(msg)) failAsk('key', err);
+    // A spent daily allowance is not a momentary rate limit: it has a known
+    // reset and its own remedy, so it must never wear the "try again in a few
+    // seconds" copy.
+    if (err?.quota) failAsk('quota', err, { resetAt: err.resetAt ?? null });
+    else if (/\b401\b|\b403\b|invalid.{0,20}key|no auth/i.test(msg)) failAsk('key', err);
     else if (/dimensions but this corpus/.test(msg)) failAsk('corpus', err);
     else failAsk('rate', err);
     throw err;
@@ -490,6 +521,10 @@ export async function ask(question, history = []) {
 
 // Chat-time errors must not knock the machine out of 'ready' — the corpus is
 // still indexed and usable; only the message failed.
-function failAsk(kind, err) {
-  chat.error = { kind, message: err?.message ? String(err.message) : String(err) };
+function failAsk(kind, err, extra = {}) {
+  chat.error = {
+    kind,
+    message: err?.message ? String(err.message) : String(err),
+    ...extra
+  };
 }
