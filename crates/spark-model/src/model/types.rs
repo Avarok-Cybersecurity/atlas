@@ -309,6 +309,18 @@ pub struct TransformerModel {
     /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
     /// NULL without an MTP proposer (path self-gates).
     pub(super) verify_wy_tables: DevicePtr,
+    /// Encoded key of the bytes CURRENTLY staged in `verify_wy_tables`, or
+    /// `None` when nothing has been staged (the buffer is memset to zero at
+    /// allocation, which no key describes).
+    ///
+    /// `upload_verify_wy_tables` ran a 48 KB host build + a 48 KB H2D on
+    /// EVERY n>=2 verify step. The staged bytes are a pure function of
+    /// `(k, ssm-slot vector in batch order, ghost (slot, depth) pairs)` —
+    /// see `verify_wy_cache_key` for the enumeration and the proof — so a
+    /// step whose key matches what is already on the device may skip both.
+    /// Kill switch `ATLAS_NO_VERIFY_WY_CACHE` (PRESENCE) restores the
+    /// unconditional re-stage.
+    pub(super) verify_wy_cache: Mutex<Option<Vec<u64>>>,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
