@@ -121,3 +121,56 @@ before any conclusion. Every other rung improved or held.
   (~+2%), then prefill throughput campaign (profiled, ranked targets on file).
 - C=128: distress signatures (90k/131k tokens delivered, 38.7 s TTFT p50) —
   forensic analysis in progress.
+
+## MTP acceptance study (2026-08-17) — acceptance is NOT the gap
+
+Instrumented `MTP accept` lines across every serve log on both boxes, bucketed by width:
+
+| n | k_drafts | flushes | mean p1 | tok_step |
+|---:|---:|---:|---:|---:|
+| 1 | 3 | 68 | 0.80-0.90 | 2.75-3.26 |
+| 4 | 3 | 28 | 0.84-0.88 | 2.75-3.03 |
+| 8 | 3 | 55 | 0.78-0.87 | 2.57-2.99 |
+| 16 | 1 | 51 | 0.770 | 1.770 |
+| 16 | 2 | 31 | 0.863 | 2.582 |
+| 32 | 1 | 843 | 0.64-0.68 | 1.64-1.68 |
+
+**Per-draft acceptance (p1) is flat at 0.78-0.90 through n=16 — at or above the published
+Qwen MTP band (0.7-0.85). Atlas's drafter is not the problem.** What collapses at n>=16 is
+`tok_step`, because the K ladder (`speculative/ladder.rs:200`, `4:3,8:3,16:1,32:1`) hands
+out ONE draft at those widths while vLLM keeps 3 at every width.
+
+But the ladder cannot close the gap: break-even arithmetic bounds every admissible rung
+change at ±10% on prose traffic, against a 29-31% deficit at C=16/32. Also `32:3` is not a
+shape at all — 4 rows/seq x 32 = 128 > `VERIFY_ROW_BUDGET` 96 (`mtp_dcut.rs:55`), so it
+serializes. Valid arms are `16:2`, `16:3`, `32:2` (96 rows exactly).
+
+### Defects found while auditing the accept path (each with a proposed test)
+
+- **B1 `--mtp-vocab 100000` makes every control token undraftable.** This checkpoint's added
+  tokens are all in 248044..248076 (EOS 248046/248044, `</think>` 248069, `<tool_call>`
+  248058), and the drafter's argmax is bounded at 100000 (`mtp_head/forward.rs:448-452`).
+  Every such position is a guaranteed miss that truncates the rest of the span. Negligible on
+  the prose ladder (~1 special per 1024 tokens); **4-6% of positions on BFCL/agentic**.
+  Fix: `--mtp-vocab 0` (costs ~0.8 ms/propose — measure, don't assume).
+- **B2 drafter carry is force-disabled on every default serve** — `mtp_carry.rs:98-103`
+  requires `!mtp_multi_seq_mode()`, and that predicate is true whenever `mtp_max_seqs() > 1`
+  (default 32), so carry is off even at C=1. Recorded worth: +0.079 p1 / +0.089 p2.
+- **B5 zero-kept grammar truncation skips `trim_proposer_state`** (`mtp_step.rs:440-465`),
+  leaving drafter KV rows for tokens the target never emitted — permanent desync.
+- **B6 `--mtp-quantization bf16` does not cover the draft LM head** (`forward.rs:453-465`
+  hard-wires NVFP4), a candidate for the n>=16 vs n<=8 p1 difference.
+- **PR #549 (landed): accept-debug width buckets aliased.** `MAX_N` was 17 while the
+  dispatch cap is 32, so every width 16..128 folded onto bucket 16 — the adaptive rung
+  controller (BAND 9..=16) was steering on a mixture of n=16 and n>16 statistics.
+
+### Where the gap actually is
+
+Atlas's marginal cost per added concurrent sequence is **4.28 ms/token/seq vs vLLM's 1.94**.
+That is not acceptance (p1 flat), not launch count (PR #547: 96n -> 2n launches moved C=8 by
++2.2%), and not state bytes (PR #548: h-state halved, reserve 36.6 -> 22.4 GB, same +2.2%).
+Bandwidth arithmetic says 4.28 ms/seq at 273 GB/s implies ~1.17 GB moved per sequence per
+step, versus ~72 MB of f16 h-state (x4 verify rows = ~288 MB). **The remaining ~4x is
+unexplained by any traffic we have accounted for — the next step is an nsys profile of the
+DECODE step at C=1 vs C=8, the decode analogue of the prefill profile that found the M=280
+launch shape.**
