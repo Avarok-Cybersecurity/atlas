@@ -377,3 +377,22 @@ Full standing after rounds 6-7:
 Tonight's movement, apples-to-apples throughout: C=1 +5%, C=8 +33%, C=16 +32%, C=32 +29%,
 C=64 +7%, C=128 +8%. Three rungs remain, all in the C=2..8 band where the batched-verify
 path's fixed cost dominates.
+
+### Round 7 (canonical verify key) — helps C=8, REGRESSES C=2 and C=4
+
+| C | round 7 | round 6 | Δ | vLLM+MTP |
+|---:|---:|---:|---:|---:|
+| 2 | 29.93 | 31.00 | **-3.5%** | 38.79 |
+| 4 | 65.56 | 68.11 | **-3.7%** | 71.61 |
+| 8 | 110.63 | 106.48 | +3.9% | 124.48 |
+
+The canonical depth->slot assignment collapses the key space (which is why C=8 gains) but
+at n=2/n=4 it evidently forces an assignment that costs more than the captures it saves —
+plausibly by making the two-launch batched GDN conv+WY fast path decline (96 vs 768
+launches/step at n=2,k=4 across 48 layers). **This is exactly the trade the no-regression
+rule forbids, so the fix does not ship as-is.**
+
+PR #553's telemetry exists for precisely this question, so the next run is an A/B with the
+kill switch (`ATLAS_NO_CANONICAL_VERIFY_KEY=1`) at C=2 and C=4, reading the graph-capture
+and GDN fast-path RATES rather than inferring them. Likely landing shape: gate the
+canonical key on width (>= 8), keeping C=8's gain without C=2/C=4's cost.
