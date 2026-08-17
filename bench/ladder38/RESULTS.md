@@ -609,3 +609,16 @@ C=8 (D-Cut off, stack `6d07f5456`, 3 reps each):
 A clean interior optimum — two drafts beats both one and three by ~5%. **The K-ladder lever
 is spent at C=8**; its remaining 1.0% must come from elsewhere (the drafter small-M tier,
 PR #562, is the candidate: ~-6.0 ms/step at that width).
+
+C=4 arms (same sweep):
+
+| ladder | C=4 |
+|---|---:|
+| `4:1` | 52.17 |
+| **`4:2`** | **71.63** |
+| `4:3` (in use) | 69.73 |
+
+**`4:2` puts C=4 at 71.63 against vLLM's 71.61** — ahead by 0.02 tok/s, i.e. a tie within
+noise, but it is the best measured configuration and +2.7% over `4:3`. Combined with the
+drafter small-M tier (PR #562, ~-6.4 ms/step at that width) the rung should clear
+comfortably rather than by a hair. Both open rungs now have a measured path.
