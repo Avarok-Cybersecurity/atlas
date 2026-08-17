@@ -776,3 +776,24 @@ Two operational notes recorded so they are not rediscovered: killing a `spark se
 leave the benchmark DRIVER process holding its allocation (87 GB here), which starves the
 next leg at preflight with "box is not free enough"; and `nvidia-smi --query-gpu=memory.used`
 returns `[N/A]` on GB10, so idle-guards must read `free` instead.
+
+#### A/B complete — NEITHER suspect explains the wall, and the baseline is suspect
+
+| leg | Σwall | correctness |
+|---|---:|---|
+| everything on | 1084 / 1068 s | 10/10 + 10/10 |
+| `ATLAS_NO_GEMV_EXACT_M_TIERS=1` | 1020 s | 10/10 + 10/10 |
+| `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` | **1078 s** | 10/10 + 10/10 |
+
+The drafter tier — the mechanism-based prime suspect — accounts for **~0%**. The GEMV tiers
+account for ~5%. So the stack does not contain a single change worth +300 s here.
+
+★ **The comparison itself is the likely error.** The 773 s figure was measured on **dgx1**;
+every leg above ran on **dgx2**. The repo's own rule (benchmark-pr skill) is explicit:
+*"Walls are box-specific — record which box; compare like-for-like only."* Comparing a dgx2
+wall to a dgx1 baseline is exactly the mistake that rule exists to prevent, and it is the
+same class of error that produced a phantom -0.8% TTFT "win" once before.
+
+A same-box control is running: pre-stack `main` built on dgx2, same gate, same recipe. If it
+lands near 1000-1100 s, there is no regression — only a box difference — and the earlier
+"+38% regression" entry above is retracted rather than explained.
