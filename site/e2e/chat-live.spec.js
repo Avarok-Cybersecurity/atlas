@@ -39,9 +39,11 @@ test.describe('@live real corpus', () => {
     await page.locator('.cc-ask').click();
     const card = page.locator('.cm-card');
     await expect(card).toBeVisible({ timeout: 120_000 });
-    await expect(card.locator('.cm-body')).not.toBeEmpty();
+    // The card appears with the thinking trace alone; .cm-body only exists once
+    // answer tokens start, and a reasoning model can think for tens of seconds.
+    await expect(card.locator('.cm-body')).not.toBeEmpty({ timeout: 180_000 });
     // Free-tier models can rate-limit; sources are the part the site controls.
-    await expect(card.locator('.cm-src').first()).toBeVisible();
+    await expect(card.locator('.cm-src').first()).toBeVisible({ timeout: 120_000 });
     expect(await card.locator('.cm-src').first().getAttribute('href')).toMatch(
       /^https:\/\/github\.com\/Avarok-Cybersecurity\/atlas\/blob\/[0-9a-f]{40}\/.+#L\d+-L\d+$/
     );
