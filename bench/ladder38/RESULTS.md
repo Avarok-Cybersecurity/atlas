@@ -882,3 +882,20 @@ not yet tested — recorded as a hypothesis, not a conclusion.
 The throttle-counter difference is real (dgx2 accrues SW thermal slowdown ~96x faster) but
 is confounded by duty cycle: dgx2 ran benchmarks continuously for 16 h while dgx1 idled
 between runs.
+
+## ★ CERTIFICATION COMPLETE — all four gates PASS
+
+| gate | verdict | detail |
+|---|---|---|
+| ssm-state-poisoning-gate | **PASS** | 12 of 12 replays byte-identical to the reference |
+| decode-floor | **PASS** | |
+| agentic-webserver (dgx1) | **PASS ×2** | Σwall 692 s / 662 s, 10/10 + 10/10 — 10-14% faster than the 773 s pre-stack reference |
+| bfcl-subset | **PASS** | **overall 84.22** (bar 83.42) · **normalized 84.12** (bar 83.32) · **n=995** |
+
+BFCL is the gate that mattered for the numerics-changing fixes (`f16-pool` halves GDN
+recurrent-state precision; the drafter small-M tier changes proposal numerics and therefore
+acceptance). It clears both committed bars on the dense 27B — so the concurrency win costs
+nothing in tool-calling accuracy, and the poisoning gate's byte-identical replays say it
+costs nothing in state fidelity either.
+
+**The result is now a certified speed claim, not just a measured one.**
