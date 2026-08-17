@@ -153,7 +153,7 @@ fn min_width_from_env(raw: Option<std::ffi::OsString>) -> usize {
 /// dispatch must use that same width, not the chunk's.
 ///
 /// `n` is the batch width in SEQUENCES. All logic lives in
-/// [`canonical_assignment_at`]; this is only the env binding (SBIO).
+/// `canonical_assignment_at`; this is only the env binding (SBIO).
 pub fn canonical_assignment(n: usize) -> bool {
     canonical_assignment_at(n, canonical_key_min_width(), canonical_verify_key_enabled())
 }

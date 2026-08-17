@@ -46,8 +46,8 @@
 
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
-/// Tier widths in this family, narrowest first. Parallel to
-/// [`W4a16BatchmTiers::handles`] and to the `present` array of
+/// Tier widths in this family, narrowest first. Parallel to the `handles`
+/// field of [`W4a16BatchmTiers`] and to the `present` array of
 /// [`select_tier`].
 ///
 /// Deliberately stops at 8. `w4a16_gemv_batch16`/`_batch32` exist but are NOT
