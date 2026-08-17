@@ -135,3 +135,9 @@ bench/fp8_dgx2_drift/harness/oc
 # LoRA MVP: large fp32 reference deltas (regenerate via scripts/reference_deltas.py in seconds)
 test_data/lora-holo-tiny*/reference_deltas.safetensors
 adapters35/
+
+# bun falls back to a repo-local cache and temp dir when its default home is
+# unwritable, which is how 43 MB of @playwright/test tarballs reached main in
+# #531 (since excised from history). Never track them.
+.buncache/
+.buntmp/
