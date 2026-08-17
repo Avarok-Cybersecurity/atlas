@@ -317,6 +317,19 @@ jobs:
             exit 0
           fi
 
+          # Leave an open harvest PR alone. New ledger lines arrive whenever
+          # any PR is categorised, which on a busy day is faster than CI can
+          # finish; pushing each one restarts the open PR's checks and it never
+          # converges. Lines are never lost — the artifacts stay downloadable
+          # and the next harvest, after this PR merges, sweeps them all up.
+          open_pr=$(gh pr list --head bot/governance-harvest --base main --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$open_pr" ]; then
+            echo "harvest PR #$open_pr is still open — leaving it to converge; its successor will carry anything new"
+            emit_landed "waiting on #$open_pr"
+            exit 0
+          fi
+
           # Nothing to do if the rolling branch already carries exactly this
           # tree. The commit is rebuilt from scratch every run, so its sha
           # differs even when the ledger does not; force-pushing that churn
