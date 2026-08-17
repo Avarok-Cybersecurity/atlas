@@ -540,3 +540,24 @@ than `batch4` for the identical weight sweep. The K-ladder step-down keeps that 
 `batch4`. The kernel repair (exact-M tiers 5/6/7, `__launch_bounds__` retune) is in flight
 and should beat this workaround outright, since it recovers the drafts the step-down gives
 up (`tok_step/seq` 2.172 -> 1.695).
+
+### Round 8 complete — one configuration, all eight rungs
+
+| C | round 8 | vLLM+MTP | ratio | rung |
+|---:|---:|---:|---:|---|
+| 1 | 23.09 | 19.72 | **1.171x** | **WON** |
+| 2 | 38.95 | 38.79 | **1.004x** | **WON** |
+| 4 | 67.66 | 71.61 | 0.945x | open |
+| 8 | 123.64 | 124.48 | 0.993x | open |
+| 16 | 203.14 | 197.03 | **1.031x** | **WON** |
+| 32 | 291.42 | 283.48 | **1.028x** | **WON** |
+| 64 | 387.14 | 361.39 | **1.071x** | **WON** |
+| 128 | 477.79 | 358.57 | **1.332x** | **WON** |
+
+**Six of eight, and the two width-adaptive defaults that won C=2 cost nothing anywhere
+else** — C=1/16/32/64/128 all reproduce their prior values (C=32 to 0.03% and C=64 to 0.2%
+for the third consecutive round). That matters for publishability: this is one deployment
+configuration, not per-rung tuning, which is the only kind of result comparable to vLLM's
+single-config ladder.
+
+Remaining: C=4 short by 3.95 tok/s (-5.5%), C=8 short by 0.84 tok/s (-0.7%).
