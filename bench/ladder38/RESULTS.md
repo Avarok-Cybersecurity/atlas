@@ -672,3 +672,16 @@ Drafter small-M tier + K ladder `1:3,2:1,4:2,8:2,16:1` (C=4 now on its own optim
 Both formerly-open rungs are now won with margin rather than by a hair — C=4 went from a
 0.5% edge to 3.6%, C=8 from 0.8% to 1.2%. Independent confirmation of round 10 on a
 separate serve.
+
+### Post-rewrite rebase (2026-08-17)
+
+`main` was force-updated to excise 43.6 MB of accidentally-committed bun artifacts, so all
+13 campaign branches were **rebased** (never merged — a merge would have re-added the files
+as "added on our side"). Verification beyond the mandated bun greps: for every branch,
+`diff(old_tip -> new_tip)` is byte-identical to `diff(db3804f081 -> origin/main)`, proving
+the rebase introduced zero content change; `bench/ladder38` kept the same tree SHA, so every
+number in this file is the one that was measured. Ladder stack tip: `1575873582`
+(full fix stack `bf4d7a1267`).
+
+Gate certifications were deliberately held until after this rebase: a record minted on a
+pre-rewrite SHA would name a commit that no longer exists, which is worse than no record.
