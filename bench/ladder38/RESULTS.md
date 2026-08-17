@@ -219,3 +219,58 @@ acceptance quality (p1 flat 0.78-0.90), draft budget (this A/B), launch count (P
 state bytes (PR #548), KV dtype (round 4 at fp8). What remains is the per-sequence
 marginal cost itself — 4.28 ms/token/seq vs vLLM's 1.94 — with no traffic accounting that
 explains it. A decode-step nsys profile at C=1 vs C=8 is the next instrument.
+
+## DECODE PROFILE (2026-08-17) — the missing 4x, found
+
+nsys capture of steady-state decode at C=1 and C=8 on the round-4 binary. Artifacts:
+`dgx2:/home/claude/prof_decode_c{1,8}.{nsys-rep,sqlite}`.
+
+| | C=1 | C=8 |
+|---|---:|---:|
+| step wall | 94.0 ms | 209.7 ms |
+| **GPU busy** | **96.3%** | **77.2%** |
+| gaps > 50us | 556 | 7404 |
+
+Marginal cost per added sequence, attributed:
+
+| component | Δ/seq | share |
+|---|---:|---:|
+| main-model weight GEMM | 5.94 ms | 36% |
+| **CUDA-graph instantiate/destroy** | **3.31 ms** | **20%** |
+| GDN recurrent (wy4/3/2 + conv) | 2.42 ms | 15% |
+| host sampling pipeline | 1.34 ms | 8% |
+| MTP drafter GEMM | 1.13 ms | 7% |
+| eager launch + D2D host calls | 0.70 ms | 4% |
+| attention + elementwise | 0.60 ms | 4% |
+
+### Three independent defects, two already measured on hardware
+
+1. **GDN `in_proj_qkvz` decode reads a pre-dequantized FP8 weight copy instead of the
+   NVFP4 one** (`layers/qwen3_ssm/trait_decode_batched.rs:342`; the NVFP4 copy is right
+   there at :350, and `out_proj` ALREADY has the `num_tokens > 8 -> nvfp4` arm at
+   :920-947). `fp8_fp8_gemm_ldmab` costs **42.58 ms/step = 26.3% of the whole step** at
+   C=8, moves **+1.762 GB/step (+77.8%)** of extra weight traffic, and achieves only
+   **94.6 GB/s against 203 GB/s** on this shape (its 128-row M tile is ~75% padding at
+   M=32). ~90% of the C=1->C=8 GEMM-time regression is this one arm. The serve log
+   asserts "decode keeps NVFP4" — the profile disproves it. Estimated C=4 +26%, C=8 +20%,
+   C=16 +25%.
+2. **Verify CUDA-graph key thrash.** `verify_e2.rs:58-71` keys on the interleaved
+   (slot, depth) arrangement, and D-Cut re-ranks which slot gets which depth every step,
+   so the key space at n=8 is **266 arrangements against a 32-entry cache** — 149 captures
+   in 167 steps, **23.2 ms/step** of instantiate/destroy. Measured +6.9% at C=8 by
+   disabling D-Cut (which also loses its pruning, so the thrash alone costs more).
+   D-Cut's recorded +2.6% predates this key and is now net-negative.
+3. **`presence_penalty=1.5` in the `non_thinking` preset disables four fast-sampling
+   paths** (`fast_greedy.rs:59-70`). Measured **+7.8%** at C=8.
+   ★ This was also a LIKE-FOR-LIKE VIOLATION: Atlas injects that penalty when a request
+   omits it, while vLLM defaults to 0 — the two engines were doing different sampling work
+   and emitting different text. The harness now sends `presence_penalty: 0.0` and
+   `frequency_penalty: 0.0` explicitly to BOTH engines (`harness_w55_conc_ladder.py`),
+   which makes the comparison honest and recovers the 7.8% legitimately.
+
+Defects 2+3 measured together at C=8: **78.89 -> 91.96 tok/s (+16.6%)**. With defect 1's
+estimate the rung lands near 110 against vLLM's 124.48.
+
+Refuted by the same profile: serialized drafting (3 drafter forwards at batch dim n, not
+3n). Surviving-but-secondary: h-state re-reads inside `gated_delta_rule_wy4_f16`
+(2 reads + 4 writes per step; a resident K=2 twin exists, no K=4 twin).
