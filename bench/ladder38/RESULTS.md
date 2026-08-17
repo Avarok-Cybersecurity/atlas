@@ -797,3 +797,31 @@ same class of error that produced a phantom -0.8% TTFT "win" once before.
 A same-box control is running: pre-stack `main` built on dgx2, same gate, same recipe. If it
 lands near 1000-1100 s, there is no regression — only a box difference — and the earlier
 "+38% regression" entry above is retracted rather than explained.
+
+## ★ RETRACTION — the "agentic wall regression" was a cross-box comparison, not a regression
+
+Same-box control, pre-stack `main` (`77ec74b8`) built and run on **dgx2**, same gate, same
+recipe:
+
+| configuration (ALL on dgx2) | Σwall | correctness |
+|---|---:|---|
+| full ladder stack | 1084 s / 1068 s | 10/10 + 10/10 |
+| `ATLAS_NO_GEMV_EXACT_M_TIERS=1` | 1020 s | 10/10 + 10/10 |
+| `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` | 1078 s | 10/10 + 10/10 |
+| **pre-stack `main` (control)** | **1079 s** | **10/10 + 10/10** |
+
+**Unmodified main runs this gate at 1079 s on dgx2 — the same wall as the full stack.** The
+stack costs nothing on the agentic path. The 600-800 s band and the 773 s figure I compared
+against are **dgx1** numbers, and the repo's own rule says walls are box-specific and must
+be compared like-for-like. I violated that rule and reported a "+38% regression" that does
+not exist; it is retracted here rather than quietly dropped.
+
+Two consequences worth recording for everyone, not just this campaign:
+1. **The gate's `wall_budget_s: 1000` is a dgx1 calibration.** On dgx2 this gate fails its
+   wall bound on unmodified main, with perfect correctness. Any Σwall verdict from dgx2 is
+   currently meaningless; either the budget needs a per-box value or the gate needs to be
+   pinned to dgx1.
+2. The mechanism-first instinct was still right to test: both suspects were falsified
+   cheaply (~0% and ~5%), and it was their *failure* to explain the gap that exposed the
+   methodological error. A suspect that explains nothing is a signal about the measurement,
+   not a reason to keep bisecting code.
