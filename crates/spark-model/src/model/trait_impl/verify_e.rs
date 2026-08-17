@@ -162,7 +162,7 @@ impl TransformerModel {
         // illegal access is attributed to the exact layer (same hatch as
         // verify_c2). Forces EAGER — per-layer syncs are illegal under
         // capture (verify_c2's gate pattern).
-        let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
+        let k4_diag = super::verify_e2::k4_diag_enabled();
 
         // Pre-graph: stage the per-GDN-layer WY pointer tables into the
         // fixed staging buffer (contents refreshed BEFORE any replay, like
@@ -201,12 +201,18 @@ impl TransformerModel {
         // least-recently-replayed slot vector.
         let mut replay: Option<spark_runtime::gpu::GraphHandle> = None;
         let mut ghosts: Vec<(u32, u32)> = Vec::new();
+        // Graph outcome for the periodic ATLAS_MTP_ACCEPT_DEBUG summary
+        // (verify_e2). `Eager` until something claims otherwise — that is
+        // also the honest value when graphs are off or the batch is
+        // unkeyable.
+        let mut outcome = super::verify_e2::VerifyGraphOutcome::Eager;
         if let (Some(g), Some(key)) = (&mut graphs, &graph_key) {
             g.1 += 1;
             let tick = g.1;
             if let Some(e) = g.0.get_mut(key) {
                 e.1 = tick;
                 replay = Some(e.0);
+                outcome = super::verify_e2::VerifyGraphOutcome::Replay;
             } else if super::graph_borrow::graph_borrow_enabled() {
                 let wy_present = !wy_tables_base.is_null();
                 let borrowed =
@@ -230,6 +236,7 @@ impl TransformerModel {
                     e.1 = tick;
                     replay = Some(e.0);
                     ghosts = b.ghosts;
+                    outcome = super::verify_e2::VerifyGraphOutcome::Borrow;
                     // INFO once per transition (same cardinality as the
                     // captures this replaces); repeats of the same pair
                     // stay silent. Provable engagement: grep "graph borrow".
@@ -601,12 +608,18 @@ impl TransformerModel {
                         g.1 += 1;
                         let tick = g.1;
                         g.0.insert(key, (graph, tick));
+                        outcome = super::verify_e2::VerifyGraphOutcome::Capture;
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
             }
         }
+        // Live key count read while the guard is still held — it is the
+        // other half of the capture-rate signal (churn against the 32-entry
+        // LRU is what turns a miss into a re-capture).
+        let live_keys = graphs.as_ref().map(|g| g.0.len()).unwrap_or(0);
         drop(graphs);
+        super::verify_e2::record_verify_graph_outcome(n, live_keys, outcome);
 
         // ── Phase 5: D2H + host bookkeeping ──
         // Argmax landed at scratch row 0 (graph replay and eager both write
@@ -650,9 +663,9 @@ impl TransformerModel {
         // ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
         if filled {
             // mapped path already read the results — no copy arm runs.
-        } else if std::env::var("ATLAS_VERIFY_D2H_DEFAULT_STREAM").as_deref() == Ok("1") {
+        } else if super::verify_e2::verify_d2h_default_stream() {
             self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
-        } else if std::env::var("ATLAS_NO_PINNED_VERIFY_D2H").as_deref() == Ok("1") {
+        } else if super::verify_e2::verify_d2h_no_pinned() {
             self.gpu
                 .copy_d2h_on_stream(self.buffers.scratch(), &mut buf, stream)?;
         } else {

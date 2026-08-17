@@ -770,6 +770,9 @@ impl TransformerModel {
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
             verify_wy_tables,
+            // Nothing staged yet: the buffer was memset to zero above, and no
+            // key describes zero, so the first verify step always uploads.
+            verify_wy_cache: Mutex::new(None),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
             fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
