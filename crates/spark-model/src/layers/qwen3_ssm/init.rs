@@ -143,6 +143,16 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f16_norm",
             ),
+            ssm_h_f16_to_f32_k: super::super::try_kernel(
+                gpu,
+                "ssm_h_dtype",
+                "ssm_h_state_f16_to_f32",
+            ),
+            ssm_h_f32_to_f16_k: super::super::try_kernel(
+                gpu,
+                "ssm_h_dtype",
+                "ssm_h_state_f32_to_f16",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             l2_norm_k: gpu.kernel("norm", "l2_norm_bf16")?,

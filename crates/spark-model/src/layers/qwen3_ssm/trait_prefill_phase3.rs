@@ -102,6 +102,9 @@ impl Qwen3SsmLayer {
             h_state_intermediates: Vec::new(),
             conv_state_intermediates: Vec::new(),
             h_is_f16: false,
+            // `Layer::alloc_state` is the NON-pooled fallback — it owns a
+            // private FP32 `h_state_bytes` blob, so there is nothing to widen.
+            h_prefill_stage: None,
         }))
     }
 }

@@ -553,6 +553,8 @@ impl TransformerModel {
             .unwrap_or(KernelHandle(0));
         let ssm_h_f32_to_f16_k =
             crate::layers::try_kernel(gpu.as_ref(), "ssm_h_dtype", "ssm_h_state_f32_to_f16");
+        let ssm_h_f16_to_f32_k =
+            crate::layers::try_kernel(gpu.as_ref(), "ssm_h_dtype", "ssm_h_state_f16_to_f32");
 
         // Logit softcapping (Gemma-4: cap=30.0). Only load if model uses it.
         let logit_softcap_kernel = if config.final_logit_softcapping > 0.0 {
@@ -790,6 +792,7 @@ impl TransformerModel {
             ssm_state_norm_kernel: ssm_norm_k,
             ssm_state_norm_f16_kernel: ssm_norm_f16_k,
             ssm_h_f32_to_f16_kernel: ssm_h_f32_to_f16_k,
+            ssm_h_f16_to_f32_kernel: ssm_h_f16_to_f32_k,
             ssm_h_f16_scratch: std::sync::OnceLock::new(),
             ssm_norm_ptrs_buf: ssm_norm_ptrs,
             moe_row_adapter_buf,

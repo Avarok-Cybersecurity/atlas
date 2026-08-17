@@ -245,6 +245,16 @@ pub struct Qwen3SsmLayer {
     gdn_wy3_f16_k: KernelHandle,
     gdn_wy3_resident_f16_k: KernelHandle,
     gdn_wy4_f16_k: KernelHandle,
+    /// Stage-3 f16-SIZED pool (`--ssm-h-dtype f16-pool`): the two h-state
+    /// width converters (`ssm_h_dtype.cu`). PREFILL uses them as a matched
+    /// pair around its FP32 kernels — widen the narrow slot into the
+    /// sequence's FP32 staging blob, run, narrow back — so unlike the
+    /// decode-side one-shot conversion these launch once per SSM layer per
+    /// prefill pass and are self-cancelling. A 0 handle is a hard error at
+    /// the first prefill, never an FP32 fallback: an FP32 kernel writing a
+    /// 2-byte-sized slot is an OOB write into the neighbouring slot.
+    ssm_h_f16_to_f32_k: KernelHandle,
+    ssm_h_f32_to_f16_k: KernelHandle,
     /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
     /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
     /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
@@ -464,8 +474,8 @@ mod trait_prefill_proj;
 mod trait_prefill_recur;
 
 pub use gdn_flags::{
-    GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_f16_pool_enabled,
-    ssm_h_fp16_enabled, verify_exact_enabled,
+    GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_dtype_bits,
+    ssm_h_f16_pool_enabled, ssm_h_fp16_enabled, verify_exact_enabled,
 };
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──

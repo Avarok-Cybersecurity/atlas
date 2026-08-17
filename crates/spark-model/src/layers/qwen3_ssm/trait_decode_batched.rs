@@ -539,7 +539,11 @@ impl Qwen3SsmLayer {
         // Reuse ssm_qkvz buffer for conv output (safe: deinterleave is done)
         let conv_out_buf = ctx.buffers.ssm_qkvz();
         let gdn_out_buf = ctx.buffers.attn_output();
-        let h_bytes = self.h_state_bytes;
+        // POOL PITCH, not the FP32 width: every consumer of
+        // `ConvGdnArgs::h_bytes` uses it to stride or byte-copy pool h
+        // regions, all of which narrow under the f16-SIZED pool. Identical to
+        // `h_state_bytes` on an FP32-sized pool, so this is a no-op there.
+        let h_bytes = self.h_slot_stride_bytes();
         let conv_bytes = self.conv_state_bytes;
 
         match gdn {

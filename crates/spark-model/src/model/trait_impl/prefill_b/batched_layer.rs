@@ -186,6 +186,10 @@ impl TransformerModel {
                 ctx,
                 stream,
             )?;
+            // Stage-3 f16-SIZED pool: the table pointed at FP32 staging blobs
+            // (`stage_h_state_ptrs` widened into them); narrow them back now
+            // that the kernel has run. No-op on an FP32-sized pool.
+            self.narrow_h_state_stages(layer_idx, seqs, stream)?;
         } else {
             // Ragged lengths: try ONE varlen batched FLA call (cu_seqlens) — fills
             // chunk_delta_h's 32→32N CTAs — and fall back to the per-request loop
@@ -214,6 +218,10 @@ impl TransformerModel {
                 stream,
             )?;
             // Varlen FLA ran the whole GDN → Phase 3 continues below. Else loop.
+            if did_varlen {
+                // Stage-3: same epilogue as the uniform arm above.
+                self.narrow_h_state_stages(layer_idx, seqs, stream)?;
+            }
             if !did_varlen {
                 let nk = ctx.config.linear_num_key_heads;
                 let kd = ctx.config.linear_key_head_dim;

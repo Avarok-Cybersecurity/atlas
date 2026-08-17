@@ -70,6 +70,11 @@ pub(super) struct ConvGdnArgs {
     /// verify arm writes through this (its norm runs in-loop); the WY arms
     /// leave the norm to phase 8, which derives its own destination.
     pub normed_out: DevicePtr,
+    /// The h pool's BYTE PITCH — `Qwen3SsmLayer::h_slot_stride_bytes()`, not
+    /// the FP32 `h_state_bytes`. Every reader below strides or byte-copies
+    /// pool h memory with it (per-token intermediates, slot-to-slot bases),
+    /// and under the f16-SIZED pool those regions are 2 bytes/element. An
+    /// FP32 value here would overrun the neighbouring slot rather than fail.
     pub h_bytes: usize,
     pub conv_bytes: usize,
     pub qkvz_size: usize,
