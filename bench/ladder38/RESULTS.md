@@ -474,3 +474,50 @@ NVFP4 fix made those rows much cheaper and the graph key made arrangement churn 
 the rows it sheds cost less than the ragged shapes it creates. Its 0.75 default and its
 recorded +2.6% both predate those changes. Like the canonical key, the right landing is a
 width-keyed policy rather than one global constant.
+
+## THE C=1 -> C=2 CLIFF IS ONE KERNEL (2026-08-17)
+
+nsys at C=1 and C=2, steps anchored on the per-step argmax, GPU busy 96.00% vs 95.61%:
+
+| term | C=1 | C=2 | delta |
+|---|---:|---:|---:|
+| **main projection GEMV** (353.00 -> 355.61 launches — same weights, same count) | 72.28 | 108.46 | **+36.18** |
+| MTP drafter (gemv loop -> pipelined GEMM) | 14.22 | 21.46 | +7.24 |
+| GDN recurrence (1 wy4/layer -> wy4+wy3) | 1.47 | 3.15 | +1.69 |
+| conv1d_update_l2norm (192 -> 340 launches) | 0.56 | 1.03 | +0.47 |
+| GPU idle | 3.85 | 6.48 | +2.63 |
+
+`w4a16_gemv_batch8` = **304.98 us** vs `w4a16_gemv_batch4` = **204.76 us** for the identical
+353-launch weight sweep — **1.489x**, effective bandwidth 194 -> 129 GB/s. A microbench on
+the real 27B shapes shows the kernel is NOT DRAM-bound; its M-row scalar FMA chain is the
+critical path and `MAX_M=8` (`acc[8]`, `smem[8][8]`, `__launch_bounds__(BLOCK_SIZE, 5)`)
+degrades monotonically with M:
+
+| tier | M | time | eff. BW | % peak |
+|---|---:|---:|---:|---:|
+| batch4 | 4 | 70.5 us | 209 GB/s | 76.6% |
+| batch8 | 4 | 74.8 us | 197 GB/s | 72.3% (launch_bounds cost alone) |
+| batch8 | 8 | 106.4 us | 138 GB/s | 50.7% |
+| batch16 | 8 | 113.3 us | 130 GB/s | 47.7% |
+| gemm_m64 | 8 | 749.6 us | 20 GB/s | 7.2% (tile GEMM is not the escape) |
+
+n=2 lands at R=7 — inside the bad window. n=1 at R=4 is outside it. **That is the whole
+cliff.** All three prior suspects died on measurement: graph re-capture `capture_frac=0.000`
+over 3000+ steps (`live_keys=1/32`), host serialization (GPU busy barely moves), and the
+GDN conv+WY fast path — which is never even *attempted* at n=2 because D-Cut's `ks=[4,3]`
+splits into two n=1 groups below the `n < 2` guard.
+
+### Measured workaround, zero code: keep n=2 on `batch4`
+
+`ATLAS_MTP_K_LADDER=1:3,2:1,4:3,8:2,16:1` (same-session A/B, 2 reps each):
+
+| leg | R at n=2 | kernel | C=1 | C=2 | C=4 |
+|---|---:|---|---:|---:|---:|
+| control (nd=3) | 7 | batch8 | 23.64 | 30.15 | — |
+| nd=2 | 6 | batch8 | 23.43 | 33.64 (+11.6%) | — |
+| nd=1 | 4 | **batch4** | 23.43 | 38.42 (+27.4%) | — |
+| **n=2-only ladder** | 4 | **batch4** | — | **38.66 (+28.2%)** | 63.96 unchanged |
+
+C=2 scaling 1.28x -> **1.64x**; 38.66 against vLLM's 38.79 is parity. It is a workaround
+(`tok_step/seq` falls 2.172 -> 1.695), so once the kernel is fixed, nd=3 on a repaired
+batch8 should beat it outright (~40 tok/s).
