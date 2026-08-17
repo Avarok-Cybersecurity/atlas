@@ -25,6 +25,15 @@ pub struct MockGpuBackend {
     syncs: AtomicUsize,
     d2h_blocking: AtomicUsize,
     d2h_async: AtomicUsize,
+    /// `copy_d2d`/`copy_d2d_async` calls — one eager launch each on the real
+    /// backend. The SSM verify rollback issued 2 per SSM layer per sequence
+    /// (96 on the 27B), so this counter is what proves a batched form
+    /// actually batched rather than merely looking different.
+    d2d: AtomicUsize,
+    /// `copy_d2d_2d_async` calls — ONE `cudaMemcpy2DAsync` each on the real
+    /// backend regardless of `height`. Counted apart from `d2d` so a test can
+    /// assert the SHAPE of the transfer, not just the bytes.
+    d2d_2d: AtomicUsize,
     host_pinned_allocs: AtomicUsize,
 }
 
@@ -51,6 +60,8 @@ impl MockGpuBackend {
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
+            d2d: AtomicUsize::new(0),
+            d2d_2d: AtomicUsize::new(0),
             host_pinned_allocs: AtomicUsize::new(0),
         }
     }
@@ -80,6 +91,18 @@ impl MockGpuBackend {
         self.d2h_async.load(Ordering::Relaxed)
     }
 
+    /// `copy_d2d` + `copy_d2d_async` calls so far — one eager launch each on
+    /// the real backend.
+    pub fn d2d_count(&self) -> usize {
+        self.d2d.load(Ordering::Relaxed)
+    }
+
+    /// `copy_d2d_2d_async` calls so far — one `cudaMemcpy2DAsync` each,
+    /// whatever the row count.
+    pub fn d2d_2d_count(&self) -> usize {
+        self.d2d_2d.load(Ordering::Relaxed)
+    }
+
     /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
     /// re-allocated per event instead of reused.
     pub fn host_pinned_alloc_count(&self) -> usize {
@@ -88,6 +111,36 @@ impl MockGpuBackend {
 
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
         self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
+    }
+
+    /// `bytes` from `src` to `dst` inside the simulated device memory.
+    ///
+    /// Real byte movement, not a no-op: a D2D that silently succeeds without
+    /// moving anything lets a test "pass" while asserting the destination is
+    /// still zero — the exact shape of a rollback bug this backend exists to
+    /// catch. Source is staged through a temporary so `src` and `dst` may sit
+    /// in the same allocation (the borrow checker would otherwise reject it,
+    /// and the real `cudaMemcpyAsync` accepts it for non-overlapping ranges).
+    fn blit(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut allocs = self.allocs.lock();
+        let staged = {
+            let (offset, alloc) = find_alloc(&allocs, src)
+                .ok_or_else(|| anyhow::anyhow!("copy_d2d: src {src} not allocated"))?;
+            if offset + bytes > alloc.bytes {
+                anyhow::bail!("copy_d2d: src {src} + {bytes} overruns its allocation");
+            }
+            alloc.data[offset..offset + bytes].to_vec()
+        };
+        let (offset, alloc) = find_alloc_mut(&mut allocs, dst)
+            .ok_or_else(|| anyhow::anyhow!("copy_d2d: dst {dst} not allocated"))?;
+        if offset + bytes > alloc.bytes {
+            anyhow::bail!("copy_d2d: dst {dst} + {bytes} overruns its allocation");
+        }
+        alloc.data[offset..offset + bytes].copy_from_slice(&staged);
+        Ok(())
     }
 
     /// Every launch recorded so far, in dispatch order. Lets a test assert
@@ -183,7 +236,53 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn copy_d2d(&self, _src: DevicePtr, _dst: DevicePtr, _bytes: usize) -> Result<()> {
+    fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        self.d2d.fetch_add(1, Ordering::Relaxed);
+        self.blit(src, dst, bytes)
+    }
+
+    fn copy_d2d_async(
+        &self,
+        src: DevicePtr,
+        dst: DevicePtr,
+        bytes: usize,
+        _stream: u64,
+    ) -> Result<()> {
+        // NOT delegating to `copy_d2d`: the trait default forwards, which
+        // would make the two indistinguishable to `d2d_count` consumers only
+        // by accident. Counted here so both forms land in one counter on
+        // purpose.
+        self.d2d.fetch_add(1, Ordering::Relaxed);
+        self.blit(src, dst, bytes)
+    }
+
+    fn copy_d2d_2d_async(
+        &self,
+        src: DevicePtr,
+        src_pitch: usize,
+        dst: DevicePtr,
+        dst_pitch: usize,
+        width_bytes: usize,
+        height: usize,
+        _stream: u64,
+    ) -> Result<()> {
+        // ONE launch on the real backend (`cudaMemcpy2DAsync`), so ONE tick —
+        // the row loop below is emulation, not dispatch, and must not inflate
+        // `d2d_count` (which exists to prove a batched form batched).
+        self.d2d_2d.fetch_add(1, Ordering::Relaxed);
+        if width_bytes > src_pitch || width_bytes > dst_pitch {
+            anyhow::bail!(
+                "copy_d2d_2d_async: width {width_bytes} exceeds pitch \
+                 (src {src_pitch}, dst {dst_pitch}) — rows would overlap"
+            );
+        }
+        for r in 0..height {
+            self.blit(
+                src.offset(r * src_pitch),
+                dst.offset(r * dst_pitch),
+                width_bytes,
+            )?;
+        }
         Ok(())
     }
 
