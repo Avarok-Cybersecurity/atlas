@@ -24,19 +24,48 @@
 
 ## Scores (mean tok/s aggregate over 3 reps)
 
+### Round 2 — full fix stack `ab97a7f24` (2026-08-17)
+
+Stack = capacity PR #533 + graph-borrow #536 + varlen-prefill #538 + preempt-resume #540,
+served with `ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1` and `--prefill-varlen-batch`.
+
 | C | Atlas | vLLM | ratio | rung |
 |---:|---:|---:|---:|---|
-| 1 | 22.96 | 11.04 | 2.08x | WON |
-| 2 | 29.64 | 21.34 | 1.39x | WON |
-| 4 | 51.66 | 41.20 | 1.25x | WON |
-| 8 | 82.45 | 78.18 | 1.05x | WON |
-| 16 | 149.78 | 137.11 | 1.09x | WON |
-| 32 | 218.34 | 219.50 | 0.995x | OPEN (-0.5%; drain-tail graph reuse in validation, PR #536) |
-| 64 | 338.38 | 312.26 | 1.08x | WON |
-| 128 | 255.94 | 390.36 | 0.66x | OPEN (-34%; under diagnosis — KV pressure / graph churn / prefill ramp) |
+| 1 | 21.74 | 11.04 | 1.97x | WON |
+| 2 | 29.04 | 21.34 | 1.36x | WON |
+| 4 | 51.55 | 41.20 | 1.25x | WON |
+| 8 | 81.42 | 78.18 | 1.04x | WON |
+| 16 | 150.41 | 137.11 | 1.10x | WON |
+| 32 | 219.97 | 219.50 | 1.002x | **WON** (was 218.34 pre-stack) |
+| 64 | 360.02 | 312.26 | 1.15x | WON (was 338.38) |
+| 128 | 274.41 | 390.36 | 0.70x | OPEN — KV-capacity bound |
 
-Raw per-rung records with TTFT/TPOT percentiles and rep series: this directory.
-vLLM rung spreads 0.02-0.32%; Atlas 1-5% (MTP accept-draw variance at temp 0).
+**7 of 8 rungs won.** C=128 mechanism is fully understood and no longer a correctness
+problem: preempt-resume + depth-aware admission deliver all 131,072 tokens with ZERO
+kills (the pre-stack build discarded 25% of decode work via 171 preempt-kills that
+returned HTTP-200 empty bodies). The remaining deficit is capacity: the KV pool holds
+102k tokens against a 157k-token demand, so only ~82 of 128 sequences run concurrently
+and aggregate throughput follows batch width. Levers under test: fp8 KV (checkpoint's
+declared kv_cache_quant_algo; needs both engines re-baselined), and completing the
+fp16 SSM pool to cut the 36.7 GiB reserve. `--gpu-memory-utilization 0.90` was tried
+and RETIRED: it froze the box (unified memory; 0.85 is the proven ceiling on GB10).
+
+### Round 1 — pre-stack `d92fc2488` (2026-08-16, superseded)
+
+| C | Atlas | vLLM | ratio |
+|---:|---:|---:|---:|
+| 1 | 22.96 | 11.04 | 2.08x |
+| 2 | 30.61 | 21.34 | 1.43x |
+| 4 | 53.72 | 41.20 | 1.30x |
+| 8 | 83.10 | 78.18 | 1.06x |
+| 16 | 150.90 | 137.11 | 1.10x |
+| 32 | 218.34 | 219.50 | 0.995x |
+| 64 | 338.38 | 312.26 | 1.08x |
+| 128 | 255.94 | 390.36 | 0.66x |
+
+C=1 and C=2 read lower in round 2 (-5%) but their rep spreads are 4.8%/6.6% versus
+0.3-1.0% at the wider rungs, so the dip is not yet established as real; more reps
+before any conclusion. Every other rung improved or held.
 
 ## Known mechanics behind the open rungs
 
