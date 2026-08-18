@@ -249,6 +249,13 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemAllocHost_v2 failed: status {status}, requested {bytes} bytes");
         }
+        // A success status is not on its own a promise of a dereferenceable
+        // pointer: a zero-byte request is permitted to hand back null, and
+        // `write_bytes` below is undefined behaviour on a null pointer even
+        // for a count of zero. Refuse here rather than memset through it.
+        if ptr.is_null() {
+            bail!("cuMemAllocHost_v2 reported success but returned null for {bytes} bytes");
+        }
         // `cuMemAllocHost_v2` does NOT zero, unlike the trait's `alloc_zeroed`
         // default and the mock. Callers pack these buffers with alignment
         // padding and then form a `&[u8]` over the whole packed range — a slice
