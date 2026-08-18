@@ -289,6 +289,24 @@ fn main() -> Result<()> {
             Kind::Batchm { max_m: 4 },
         ),
         (
+            "batch5",
+            "w4a16_gemv",
+            "w4a16_gemv_batch5",
+            Kind::Batchm { max_m: 5 },
+        ),
+        (
+            "batch6",
+            "w4a16_gemv",
+            "w4a16_gemv_batch6",
+            Kind::Batchm { max_m: 6 },
+        ),
+        (
+            "batch7",
+            "w4a16_gemv",
+            "w4a16_gemv_batch7",
+            Kind::Batchm { max_m: 7 },
+        ),
+        (
             "batch8",
             "w4a16_gemv",
             "w4a16_gemv_batch8",

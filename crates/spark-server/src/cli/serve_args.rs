@@ -180,7 +180,8 @@ pub struct ServeArgs {
     // discoverable in `--help` and visible in `ps`. The environment variables
     // remain honoured as a fallback so existing scripts keep working; the flag
     // WINS when both are given.
-    /// Storage dtype for the GDN decode h-state: `f32` (default) or `f16`.
+    /// Storage dtype for the GDN decode h-state: `f32` (default), `f16`, or
+    /// `f16-pool`.
     ///
     /// The decode scan is pure state traffic — it runs at ~90% of GB10's
     /// row-strided ceiling — so halving the state footprint halves its time:
@@ -193,13 +194,57 @@ pub struct ServeArgs {
     /// vanishes at C=64. Choose it per workload — which is precisely why it is
     /// a flag and not a default.
     ///
-    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when NONE of the three
-    /// GDN flags is given. `GdnFlags` is published as one cell, so any of them
-    /// takes the whole decision away from the environment; `warn_shadowed_env`
+    /// `f16-pool` is `f16` PLUS h pools that are SIZED at 2 bytes/element
+    /// rather than merely holding FP16 in the first half of an FP32-sized
+    /// slot. That is where the memory win is — the h-state is ~95% of a
+    /// 151.5 MiB per-sequence state blob, so the bs=128 SSM reserve on the
+    /// 27B drops from 36.7 GiB to ~25.6 GiB and the per-sequence per-step
+    /// state traffic that sets the marginal cost of a concurrent sequence
+    /// halves with it. Prefill keeps its unchanged FP32 kernels: they run
+    /// over a per-slot FP32 staging blob (`max_batch_size × one layer's h
+    /// blob`, ~256 MB at bs=128 on the 27B) which the layer widens into and
+    /// narrows back, so the pool holds FP16 at every moment outside a layer's
+    /// prefill call.
+    ///
+    /// NOT compatible with `--speculative`: the MTP verify arms still stride
+    /// and byte-copy the h intermediate/checkpoint pools at the FP32 width,
+    /// which over a narrowed pool overruns into the neighbouring slot instead
+    /// of failing. Refused at parse time.
+    ///
+    /// ★ NUMERICS. `f16-pool` puts the FP16 state on the PREFILL recurrence's
+    /// chunk boundaries as well as on decode, and a reduced-precision
+    /// recurrence accumulates rounding COHERENTLY (vLLM's fp16 mamba cache
+    /// needed stochastic rounding for exactly this; there is no published
+    /// fp8-recurrent-state accuracy study). Rounding here is
+    /// round-to-nearest-even. Default OFF, in no gate recipe, and no number
+    /// measured under it may be published without passing
+    /// `ssm-state-poisoning-gate`, `decode-floor`, `bfcl-subset` and the
+    /// agentic gate.
+    ///
+    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 — never f16-pool,
+    /// which has no environment spelling — when NONE of the three GDN flags
+    /// is given. `GdnFlags` is published as one cell, so any of them takes
+    /// the whole decision away from the environment; `warn_shadowed_env`
     /// says so when that happens rather than leaving it to be discovered in a
     /// benchmark number.
     #[arg(long)]
     pub ssm_h_dtype: Option<String>,
+
+    /// EXPERIMENTAL — SSM verify-rollback mode: `snapshot` (default) or
+    /// `replay`.
+    ///
+    /// `snapshot` is the wired production path: every verify writes per-token
+    /// h/conv state snapshots and a partial accept restores from them.
+    /// `replay` is a capacity SCAFFOLD: it keeps only the pre-verify
+    /// checkpoint blob per verify slot plus a small verify-window input ring
+    /// (-18.8 GiB total reserve at bs=128/K=4 on the 27B vs the wave-47
+    /// reference), and reconstructs partial accepts by replaying accepted
+    /// tokens from the checkpoint. Its device wiring (input capture + replay)
+    /// is NOT implemented yet: a replay serve boots — the preflight reserve
+    /// shows the win — but every speculative verify step refuses loudly.
+    /// The default is explicit (PCND): published on every serve.
+    #[arg(long, default_value = "snapshot")]
+    pub ssm_rollback_mode: String,
 
     /// Fused GDN output-norm kernel on the decode path (default: off).
     ///
@@ -230,6 +275,25 @@ pub struct ServeArgs {
     /// `--gdn-fused-norm`, and `Option` for the same reason.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
+
+    /// VARLEN (ragged) batched prefill — OPT-IN (default: off).
+    ///
+    /// Concatenates concurrently queued prompts of DIFFERENT lengths into one
+    /// forward per wave (cu_seqlens geometry): every projection/FFN GEMM
+    /// launches once at M = Σ tokens instead of once per request at its own
+    /// small M, and the scheduler defers chunk-0 so late arrivals join the
+    /// next wave. Waves are capped at the `--max-prefill-tokens` budget and
+    /// iterate until every queued stream has advanced.
+    ///
+    /// Same certification caveat as `--ssm-batched-recurrent`: batching
+    /// changes GEMM row counts, and kernels selected on row count round
+    /// differently, so per-request outputs are not bitwise-identical to the
+    /// serial path. Gate recipes stay on the default (off) until certified.
+    ///
+    /// Legacy: `ATLAS_PREFILL_VARLEN=1`, on the same terms as
+    /// `--gdn-fused-norm`, and `Option` for the same reason.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub prefill_varlen_batch: Option<bool>,
 
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///

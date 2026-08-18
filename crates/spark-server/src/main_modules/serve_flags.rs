@@ -45,8 +45,14 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         || args.ssm_batched_recurrent.is_some()
         || args.exact_verify.is_some();
     if gdn_from_cli {
+        // SSOT decode (`gdn_flags::ssm_h_dtype_bits`) — the SAME function
+        // `validate_serve_args` rejects on, so the validator cannot approve a
+        // reading the kernels do not share. `f16-pool` publishes BOTH bits.
+        let (h_f16, h_f16_pool) =
+            spark_model::layers::qwen3_ssm::ssm_h_dtype_bits(args.ssm_h_dtype.as_deref());
         let flags = spark_model::layers::qwen3_ssm::GdnFlags {
-            h_f16: args.ssm_h_dtype.as_deref() == Some("f16"),
+            h_f16,
+            h_f16_pool,
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
             batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
             exact_verify: args.exact_verify.unwrap_or(false),
@@ -59,6 +65,40 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             );
         }
         warn_shadowed_env();
+    }
+    // `--ssm-rollback-mode`: explicit clap default ("snapshot"), so it is
+    // published on every serve. The value was validated by
+    // `validate_serve_args` through the SAME `FromStr` (SSOT) before this
+    // runs, so the parse cannot fail here.
+    let rollback = args
+        .ssm_rollback_mode
+        .parse::<spark_model::ssm_reserve::SsmRollbackMode>()
+        .expect("validated by validate_serve_args");
+    let rollback_in_force = spark_model::ssm_reserve::set_ssm_rollback_mode(rollback);
+    if rollback_in_force != rollback {
+        tracing::warn!(
+            "ssm-rollback-mode was already resolved ({rollback_in_force:?}); the command \
+             line's ({rollback:?}) did NOT take effect"
+        );
+    }
+    // `--prefill-varlen-batch`: its own single-value cell, so it publishes
+    // independently of the GDN trio. Absent publishes nothing and the
+    // documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
+    if let Some(varlen) = args.prefill_varlen_batch {
+        let in_force = spark_model::layers::ops::set_prefill_varlen_from_cli(varlen);
+        if in_force != varlen {
+            tracing::warn!(
+                "prefill-varlen-batch was already resolved ({in_force}); the command \
+                 line's ({varlen}) did NOT take effect"
+            );
+        }
+        if std::env::var_os("ATLAS_PREFILL_VARLEN").is_some() {
+            tracing::warn!(
+                "ATLAS_PREFILL_VARLEN is set but was OVERRIDDEN: `--prefill-varlen-batch` \
+                 on the command line owns the decision. Drop the flag to let the \
+                 environment decide."
+            );
+        }
     }
     // `None` where the flag was not given, so the documented `ATLAS_*` fallback
     // still decides. Passing the clap default instead sealed both cells on
@@ -74,7 +114,8 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
-         exact_verify={} ssm_tail_midchunk={} mtp_gate={}",
+         exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
+         prefill_varlen_batch={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -87,6 +128,9 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         } else {
             "auto"
         },
+        spark_model::ssm_reserve::ssm_rollback_mode(),
+        // RESOLVED, not the raw argument — may come from the environment.
+        spark_model::layers::ops::prefill_varlen_enabled(),
     );
 }
 

@@ -101,10 +101,22 @@ pub(super) fn drain_pending_requests(
     prefilling: &[PrefillInProgress],
     policy: &dyn SchedulingPolicy,
     max_batch_size: usize,
+    // True when spilled/requeued sequences are parked awaiting resume. They
+    // wait on KV BLOCKS, not on the request condvar — blocking here with an
+    // empty active set would strand them (their resume only runs at the end
+    // of a scheduler tick) while their clients hang.
+    have_parked: bool,
 ) -> Vec<InferenceRequest> {
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
-    if active.is_empty() && prefilling.is_empty() {
+    if active.is_empty() && prefilling.is_empty() && have_parked {
+        // Parked-only tick: wait BOUNDED so the scheduler keeps ticking
+        // toward the resume pass (blocks may already be free) without
+        // spinning hot while the pool refills.
+        if g.requests.is_empty() && g.rotations.is_empty() && !g.closed {
+            let _ = cv.wait_for(&mut g, std::time::Duration::from_millis(10));
+        }
+    } else if active.is_empty() && prefilling.is_empty() {
         // Block until signalled (no busy-wait, no polling). Also wake on a
         // pending rotation: a quiescence-applied LoraCommand (Rotate / Promote /
         // PromoteDisk) is pushed onto `g.rotations` by the rotation forwarder and

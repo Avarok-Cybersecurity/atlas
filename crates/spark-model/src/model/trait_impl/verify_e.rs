@@ -158,6 +158,124 @@ impl TransformerModel {
             )?;
         }
 
+        // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
+        // illegal access is attributed to the exact layer (same hatch as
+        // verify_c2). Forces EAGER — per-layer syncs are illegal under
+        // capture (verify_c2's gate pattern).
+        let k4_diag = super::verify_e2::k4_diag_enabled();
+
+        // Pre-graph: stage the per-GDN-layer WY pointer tables into the
+        // fixed staging buffer (contents refreshed BEFORE any replay, like
+        // the attention metadata below). NULL → per-seq WY loop. Staged for
+        // EVERY ladder width now that wy2/wy3 carry the same `state_is_table`
+        // pointer-table form as wy4: at k<4 the fast path used to decline
+        // into the per-seq conv/WY loop (n launches per layer instead of 2),
+        // which is exactly the k<4 verify-step cost the n=16 matrix measured.
+        // Staged at the batch's DEEPEST width: a sequence pruned to fewer rows
+        // simply leaves its tail slabs unread (the WY launch for its depth
+        // reads `k-1` intermediate tables), and the strides are k-independent.
+        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k_max, &[], stream)?;
+
+        // ── Graph decision: exact slot-vector hit, or drain-tail borrow ──
+        // Keyed by the ssm-slot VECTOR (verify_e2.rs): every baked SSM
+        // pointer is a function of it; meta/embeds live at fixed addresses
+        // refreshed below. can_batch already excludes EP/HSS/LoRA/DFlash.
+        // On an exact miss, `graph_borrow.rs` may pick a WIDER captured key
+        // whose (slot, k) pairs start with this batch's — its active rows
+        // are then exactly the scheduler's `off[i]` rows, and the baked tail
+        // pairs become GHOST rows this step must feed (pad metadata, pad
+        // embeds, synthesized WY entries). Tail safety: each ghost slot is
+        // currently free (pad writes land on unowned pool state, zeroed
+        // again at the next claim) and its tiered intermediate pool covers
+        // the baked depth.
+        let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
+        let graph_key = if graphs_on {
+            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
+        } else {
+            None
+        };
+        let mut graphs = graph_key
+            .as_ref()
+            .map(|_| self.verify_batched_graphs.lock());
+        // LRU touch on hit: bump the tick so eviction always removes the
+        // least-recently-replayed slot vector.
+        let mut replay: Option<spark_runtime::gpu::GraphHandle> = None;
+        let mut ghosts: Vec<(u32, u32)> = Vec::new();
+        // Graph outcome for the periodic ATLAS_MTP_ACCEPT_DEBUG summary
+        // (verify_e2). `Eager` until something claims otherwise — that is
+        // also the honest value when graphs are off or the batch is
+        // unkeyable.
+        let mut outcome = super::verify_e2::VerifyGraphOutcome::Eager;
+        if let (Some(g), Some(key)) = (&mut graphs, &graph_key) {
+            g.1 += 1;
+            let tick = g.1;
+            if let Some(e) = g.0.get_mut(key) {
+                e.1 = tick;
+                replay = Some(e.0);
+                outcome = super::verify_e2::VerifyGraphOutcome::Replay;
+            } else if super::graph_borrow::graph_borrow_enabled() {
+                let wy_present = !wy_tables_base.is_null();
+                let borrowed =
+                    super::graph_borrow::find_borrowable_verify_key(key, g.0.keys(), |s, k| {
+                        self.ssm_pool.slot_is_free(s as usize)
+                            && (!wy_present
+                                || self.ssm_pool.h_inter_count(s as usize) + 1 >= k as usize)
+                    });
+                // Every cached key was captured under `ensure!(R <= 96)`, so
+                // the borrowed total row count fits the fixed 96-row meta
+                // arrays and logits cap by construction — but that bound
+                // guards the `unsafe` upload lengths below, so it is
+                // re-checked as a hard borrow veto, never assumed.
+                if let Some(b) = borrowed
+                    && r_total + b.ghosts.iter().map(|&(_, k)| k as usize).sum::<usize>()
+                        <= super::verify_e2::VERIFY_ROW_CAP
+                {
+                    let e =
+                        g.0.get_mut(&b.key)
+                            .expect("borrowed key comes from this cache");
+                    e.1 = tick;
+                    replay = Some(e.0);
+                    ghosts = b.ghosts;
+                    outcome = super::verify_e2::VerifyGraphOutcome::Borrow;
+                    // INFO once per transition (same cardinality as the
+                    // captures this replaces); repeats of the same pair
+                    // stay silent. Provable engagement: grep "graph borrow".
+                    if super::graph_borrow::VERIFY_BORROW_LOG.should_log(key, &b.key) {
+                        tracing::info!(
+                            "verify graph borrow: n={n} R={r_total} -> replaying captured \
+                             {}-seq key with {} ghost pairs",
+                            (b.key.len() - 1) / 2,
+                            ghosts.len()
+                        );
+                    }
+                }
+            }
+        }
+        // Rows the DISPATCH must prepare: active rows plus any ghost tail.
+        // `r_up <= VERIFY_ROW_CAP` (96) holds on every path: the no-ghost
+        // case by the `ensure!` above, the borrow case by the veto at accept.
+        let r_ghost: usize = ghosts.iter().map(|&(_, k)| k as usize).sum();
+        let r_up = r_total + r_ghost;
+        if !ghosts.is_empty() {
+            // Ghost embeds: a real token's embedding (0) keeps pad lanes on
+            // finite values; their outputs are never read.
+            for r in r_total..r_up {
+                self.embed(0, hidden.offset(r * h * bf16), stream)?;
+            }
+            // Re-stage the WY tables with the ghost entries appended —
+            // synthesized from the pool, since a captured entry is a pure
+            // function of (layer, slot).
+            let k_ghost = ghosts.iter().map(|&(_, k)| k as usize).max().unwrap_or(0);
+            let restaged =
+                self.upload_verify_wy_tables(&*seqs, k_max.max(k_ghost), &ghosts, stream)?;
+            // Fail fast, never silently: a presence flip would replay the
+            // graph against tables missing its baked ghost entries.
+            ensure!(
+                restaged.is_null() == wy_tables_base.is_null(),
+                "verify graph borrow: ghost WY restage flipped table presence"
+            );
+        }
+
         // ── Phase 2: R-row attention metadata (verify_c2 layout SHAPE at
         // WIDER gaps — 96 rows: positions [0,384) | seq_slot [384,768) |
         // slots i64 [768,1536) | seq_lens [1536,1920) | bt at +2048. This
@@ -183,35 +301,47 @@ impl TransformerModel {
                 seq_lens[r] = (pos + 1) as i32;
             }
         }
+        // Ghost tail rows (borrow replay only): pad metadata, exactly the
+        // decode_a2 padding shape — position 0, the always-safe dummy KV
+        // block, causal clamp 1. Their SSM lanes are handled by the baked
+        // pool addresses + the restaged WY tables; nothing here may point at
+        // a live sequence.
+        let dummy_kv = (self.dummy_kv_block as i64) * (bs as i64);
+        for r in r_total..r_up {
+            positions[r] = 0;
+            slots[r] = dummy_kv;
+            seq_lens[r] = 1;
+        }
         // SAFETY: `positions` is the fixed `[0u32; 96]` above, so its size is
-        // 96 * 4 = 384 B; the `ensure!(r_total <= VERIFY_ROW_CAP)` guard
-        // (VERIFY_ROW_CAP == 96, verify_e2.rs) makes `r_total * 4 <= 384`.
-        // The array is zero-init at declaration and rows `0..r_total` are all
-        // written by the fill loop (`off` is the prefix sum of `ks`, so
-        // `off[i]+j` covers `0..r_total` exactly). `u32` is POD.
+        // 96 * 4 = 384 B; the `ensure!(r_total <= VERIFY_ROW_CAP)` guard plus
+        // the `debug_assert!(r_up <= VERIFY_ROW_CAP)` (r_up rows were
+        // captured under the same cap) make `r_up * 4 <= 384`.
+        // The array is zero-init at declaration and rows `0..r_up` are all
+        // written by the fill loops (`off` is the prefix sum of `ks`, so
+        // `off[i]+j` covers `0..r_total` exactly; the ghost loop covers
+        // `r_total..r_up`). `u32` is POD.
         let pos_bytes =
-            unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, r_total * 4) };
+            unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, r_up * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
         // SAFETY: `slots` is the fixed `[0i64; 96]` above (768 B); the same
-        // `ensure!(r_total <= VERIFY_ROW_CAP == 96)` bounds `r_total * 8 <=
-        // 768`. Zero-init at declaration, rows `0..r_total` written by the
-        // fill loop; `i64` is POD.
+        // bounds argument gives `r_up * 8 <= 768`. Zero-init at declaration,
+        // rows `0..r_up` written by the fill loops; `i64` is POD.
         let slot_bytes =
-            unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, r_total * 8) };
+            unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, r_up * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(768), stream)?;
         // SAFETY: `seq_lens` is the fixed `[0i32; 96]` above (384 B); the same
-        // `ensure!(r_total <= VERIFY_ROW_CAP == 96)` bounds `r_total * 4 <=
-        // 384`. Zero-init at declaration, rows `0..r_total` written by the
-        // fill loop; `i32` is POD.
+        // bounds argument gives `r_up * 4 <= 384`. Zero-init at declaration,
+        // rows `0..r_up` written by the fill loops; `i32` is POD.
         let sl_bytes =
-            unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, r_total * 4) };
+            unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, r_up * 4) };
         self.gpu
             .copy_h2d_async(sl_bytes, meta_base.offset(1536), stream)?;
 
         // Block tables: row r = seq i's table (bt staging sized for 96 rows,
-        // sizes.rs `bt_rows`).
-        let needed = r_total * mb;
+        // sizes.rs `bt_rows`). Ghost rows read only entry 0 (causal clamp 1)
+        // — point it at the dummy KV block, matching decode_a2's pad rows.
+        let needed = r_up * mb;
         let mut bt_buf = vec![0i32; needed];
         for (i, seq) in seqs.iter().enumerate() {
             for j in 0..ks[i] {
@@ -220,6 +350,9 @@ impl TransformerModel {
                     bt_buf[row * mb + bi] = block as i32;
                 }
             }
+        }
+        for row in r_total..r_up {
+            bt_buf[row * mb] = self.dummy_kv_block as i32;
         }
         // SAFETY: `bt_buf` is `vec![0i32; needed]` on the line above, so its
         // LEN is `needed` and `needed * 4 == size_of_val(&bt_buf[..])` — the
@@ -234,12 +367,12 @@ impl TransformerModel {
         // No-LoRA gate in can_batch: uniform upload returns DevicePtr(0)
         // (installed-pair path) — kept for structural parity with verify_c2.
         debug_assert!(
-            r_total <= super::verify_e2::VERIFY_ROW_CAP,
+            r_up <= super::verify_e2::VERIFY_ROW_CAP,
             "verify seq_slot [384,768) gap holds R ≤ 96"
         );
         let seq_slot = self.upload_seq_slot_uniform(
             seqs[0].adapter_slot,
-            r_total,
+            r_up,
             meta_base.offset(384),
             stream,
         )?;
@@ -252,57 +385,16 @@ impl TransformerModel {
             seq_len: meta_base.offset(1536),
             block_table: meta_base.offset(2048),
             max_blocks_per_seq: max_blocks,
-            num_seqs: r_total as u32,
+            num_seqs: r_up as u32,
             seq_slot,
             moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
-        // Pre-graph: stage the per-GDN-layer WY pointer tables into the
-        // fixed staging buffer (contents refreshed BEFORE any replay, like
-        // the attention metadata above). NULL → per-seq WY loop. Staged for
-        // EVERY ladder width now that wy2/wy3 carry the same `state_is_table`
-        // pointer-table form as wy4: at k<4 the fast path used to decline
-        // into the per-seq conv/WY loop (n launches per layer instead of 2),
-        // which is exactly the k<4 verify-step cost the n=16 matrix measured.
-        // Staged at the batch's DEEPEST width: a sequence pruned to fewer rows
-        // simply leaves its tail slabs unread (the WY launch for its depth
-        // reads `k-1` intermediate tables), and the strides are k-independent.
-        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k_max, stream)?;
-
-        // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
-        // illegal access is attributed to the exact layer (same hatch as
-        // verify_c2). Forces EAGER — per-layer syncs are illegal under
-        // capture (verify_c2's gate pattern).
-        let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
-
         // ── Phase 3: CUDA graph replay, or capture/eager forward ──
-        // Keyed by the ssm-slot VECTOR (verify_e2.rs): every baked SSM
-        // pointer is a function of it; meta/embeds live at fixed addresses
-        // refreshed above. can_batch already excludes EP/HSS/LoRA/DFlash.
-        let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
-        let graph_key = if graphs_on {
-            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
-        } else {
-            None
-        };
-        let mut graphs = graph_key
-            .as_ref()
-            .map(|_| self.verify_batched_graphs.lock());
-        // LRU touch on hit: bump the tick so eviction always removes the
-        // least-recently-replayed slot vector.
-        let cached = match (&mut graphs, &graph_key) {
-            (Some(g), Some(key)) => {
-                g.1 += 1;
-                let tick = g.1;
-                g.0.get_mut(key).map(|e| {
-                    e.1 = tick;
-                    e.0
-                })
-            }
-            _ => None,
-        };
-
-        if let Some(graph) = cached {
+        // The graph decision (exact hit / drain-tail borrow) ran above,
+        // before the metadata fill, so ghost rows were prepared with the
+        // rest of this step's fixed-address refresh.
+        if let Some(graph) = replay {
             // Replay: kernels read this step's metadata + WY tables from the
             // fixed addresses refreshed above; the ~4-5k launches of the
             // layer loop + head + argmax dispatch as one graph.
@@ -516,12 +608,18 @@ impl TransformerModel {
                         g.1 += 1;
                         let tick = g.1;
                         g.0.insert(key, (graph, tick));
+                        outcome = super::verify_e2::VerifyGraphOutcome::Capture;
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
             }
         }
+        // Live key count read while the guard is still held — it is the
+        // other half of the capture-rate signal (churn against the 32-entry
+        // LRU is what turns a miss into a re-capture).
+        let live_keys = graphs.as_ref().map(|g| g.0.len()).unwrap_or(0);
         drop(graphs);
+        super::verify_e2::record_verify_graph_outcome(n, live_keys, outcome);
 
         // ── Phase 5: D2H + host bookkeeping ──
         // Argmax landed at scratch row 0 (graph replay and eager both write
@@ -565,9 +663,9 @@ impl TransformerModel {
         // ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
         if filled {
             // mapped path already read the results — no copy arm runs.
-        } else if std::env::var("ATLAS_VERIFY_D2H_DEFAULT_STREAM").as_deref() == Ok("1") {
+        } else if super::verify_e2::verify_d2h_default_stream() {
             self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
-        } else if std::env::var("ATLAS_NO_PINNED_VERIFY_D2H").as_deref() == Ok("1") {
+        } else if super::verify_e2::verify_d2h_no_pinned() {
             self.gpu
                 .copy_d2h_on_stream(self.buffers.scratch(), &mut buf, stream)?;
         } else {

@@ -108,14 +108,10 @@ impl TransformerModel {
         };
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
-        // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
-        // 0-handle on targets that predate it; dispatch falls back).
-        let w4a16_gemv_batch4_kernel =
-            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
-        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
-        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
-        let w4a16_gemv_batch8_kernel =
-            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
+        // Narrow batched-GEMV family (M=4..8) for the K=3..8 verify lm_head
+        // (try_kernel per tier: 0-handle on targets that predate a tier;
+        // dispatch widens, then falls back to the GEMM).
+        let w4a16_batchm = crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu.as_ref());
         // M<=16 batched GEMV for the wide BATCHED-DECODE lm_head. The SSM mixer
         // already carries this handle (qwen3_ssm/mod.rs); the model level did
         // not, so the decode head had no arm above 8 and fell to the M64-tile
@@ -169,7 +165,9 @@ impl TransformerModel {
         );
 
         // Build SSM state pool (with MTP intermediate/checkpoint pools only if speculative decoding enabled)
-        // num_intermediates = K (per-token SSM h/conv state snapshots).
+        // num_intermediates = K, the verify-width ceiling. The CONV pools
+        // allocate K snapshots per slot; the H pools allocate K-1 (index
+        // K-1 is never written or read — see ssm_reserve) and tier by slot.
         // For MTP K=2/3/4 verify: K = num_drafts + 1.
         // For DFlash K=γ verify: K = γ + 1 (drafter's γ drafts + 1 verified bonus slot).
         // Pool size = max of both so DFlash and MTP can coexist on the same model.
@@ -202,6 +200,14 @@ impl TransformerModel {
             max_batch_size,
             has_mtp,
             num_intermediates,
+            num_drafts,
+            // Stage-3 f16-SIZED h pools. No CLI surface publishes this and
+            // preflight refuses it until prefill narrowing lands, so it is
+            // false on every serveable config today.
+            crate::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
+            // `--ssm-rollback-mode` (EXPERIMENTAL replay scaffold; default
+            // snapshot, published by spark-server's serve_flags).
+            crate::ssm_reserve::ssm_rollback_mode(),
             gpu.as_ref(),
         )?);
 
@@ -543,6 +549,8 @@ impl TransformerModel {
             .unwrap_or(KernelHandle(0));
         let ssm_h_f32_to_f16_k =
             crate::layers::try_kernel(gpu.as_ref(), "ssm_h_dtype", "ssm_h_state_f32_to_f16");
+        let ssm_h_f16_to_f32_k =
+            crate::layers::try_kernel(gpu.as_ref(), "ssm_h_dtype", "ssm_h_state_f16_to_f32");
 
         // Logit softcapping (Gemma-4: cap=30.0). Only load if model uses it.
         let logit_softcap_kernel = if config.final_logit_softcapping > 0.0 {
@@ -700,8 +708,7 @@ impl TransformerModel {
             w4a16_gemm_t_bf16_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
-            w4a16_gemv_batch4_kernel,
-            w4a16_gemv_batch8_kernel,
+            w4a16_batchm,
             w4a16_gemv_batch16_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
@@ -758,6 +765,9 @@ impl TransformerModel {
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
             verify_wy_tables,
+            // Nothing staged yet: the buffer was memset to zero above, and no
+            // key describes zero, so the first verify step always uploads.
+            verify_wy_cache: Mutex::new(None),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
             fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
@@ -780,6 +790,7 @@ impl TransformerModel {
             ssm_state_norm_kernel: ssm_norm_k,
             ssm_state_norm_f16_kernel: ssm_norm_f16_k,
             ssm_h_f32_to_f16_kernel: ssm_h_f32_to_f16_k,
+            ssm_h_f16_to_f32_kernel: ssm_h_f16_to_f32_k,
             ssm_h_f16_scratch: std::sync::OnceLock::new(),
             ssm_norm_ptrs_buf: ssm_norm_ptrs,
             moe_row_adapter_buf,

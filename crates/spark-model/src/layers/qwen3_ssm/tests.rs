@@ -120,6 +120,7 @@ fn mk_state(gpu: &MockGpuBackend, layer: &Qwen3SsmLayer, n_inter: usize) -> SsmL
             .map(|i| conv_slab.offset(i * conv_bytes))
             .collect(),
         h_is_f16: false,
+        h_prefill_stage: None,
     }
 }
 
@@ -261,4 +262,108 @@ fn gpu_launch_grids(gpu: &MockGpuBackend) -> Vec<([u32; 3], [u32; 3])> {
         .into_iter()
         .map(|l| (l.grid, l.block))
         .collect()
+}
+
+// ── Batched decode/verify QKVZ weight-copy dispatch (M>8) ──
+//
+// nsys on b508679e4 (unsloth/Qwen3.8-27B-NVFP4) showed the batched verify
+// QKVZ taking the pre-dequanted FP8 PREFILL copy at every M>8:
+// `fp8_fp8_gemm_ldmab` 42.58 ms/step = 26.3% of the whole step at C=8,
+// +1.762 GB/step (+77.8%) of weight traffic over the NVFP4 twin that sits at
+// the same dispatch site. The decision is a pure function of the row count,
+// which weight copies the layer holds, and the kill switch — so it is pinned
+// here directly rather than through a mock launch, whose one shared kernel
+// handle cannot tell `fp8_gemm_n128` from `w4a16_gemm_t_k64`.
+
+use super::trait_decode_batched::qkvz_verify_nvfp4_wins;
+
+/// Below and AT the threshold the FP8 arm must still win: M<=8 is exactly the
+/// range the weight-streaming NVFP4 GEMVs (`w4a16_gemv_batch2/3/4/8`) cover,
+/// and the FP8 tile GEMM is the measured-better fallback for the shapes that
+/// reach it there. This is the assertion that keeps the fix additive.
+#[test]
+fn qkvz_verify_keeps_fp8_at_and_below_the_threshold() {
+    for m in 1..=8 {
+        assert!(
+            !qkvz_verify_nvfp4_wins(m, true, true, true, false),
+            "M={m} must keep the FP8 arm"
+        );
+    }
+}
+
+/// Above the threshold, with both copies present, the NVFP4 twin wins — the
+/// C=4/8/16 verify widths (R = Σ ks) are all here.
+#[test]
+fn qkvz_verify_takes_nvfp4_above_the_threshold() {
+    for m in [9, 12, 16, 32, 64, 65, 128, 512] {
+        assert!(
+            qkvz_verify_nvfp4_wins(m, true, true, true, false),
+            "M={m} must take the NVFP4 arm"
+        );
+    }
+}
+
+/// The kill switch (`ATLAS_NO_QKVZ_NVFP4_DECODE`) restores the FP8 choice at
+/// every row count — the A/B must be able to reproduce today's behaviour
+/// verbatim, not approximately.
+#[test]
+fn qkvz_verify_kill_switch_restores_the_fp8_arm() {
+    for m in [9, 16, 32, 128, 512] {
+        assert!(
+            !qkvz_verify_nvfp4_wins(m, true, true, true, true),
+            "kill switch must restore the FP8 arm at M={m}"
+        );
+    }
+}
+
+/// No NVFP4 twin (native-FP8-GDN builds, where `qkvz_nvfp4_t` is None): the
+/// arm must decline so the chain reaches the w8a16/FP8 arms it already had.
+/// Diverting to a None weight is the NULL-slot dispatch bug this file's other
+/// tests exist for.
+#[test]
+fn qkvz_verify_declines_without_the_nvfp4_twin() {
+    for m in [9, 32, 512] {
+        assert!(!qkvz_verify_nvfp4_wins(m, true, false, true, false));
+    }
+}
+
+/// No tile GEMM linked for this target (`deep_k_gemm` resolves to a 0 handle):
+/// the arm must decline rather than hand `ms_proj_gemm` a NULL kernel. Launching
+/// a 0 handle is the sticky-context-loss class this dispatcher already carries
+/// three NULL-slot regression tests for.
+#[test]
+fn qkvz_verify_declines_without_a_tile_gemm() {
+    for m in [9, 32, 512] {
+        assert!(!qkvz_verify_nvfp4_wins(m, true, true, false, false));
+    }
+}
+
+/// No pre-dequanted FP8 copy: the predicate must decline even though NVFP4 is
+/// present. This arm exists ONLY to divert the FP8 arm; on builds without that
+/// copy the chain's own NVFP4 arm (`w4a16_gemm_n128_m128_v2` at the wide
+/// DFlash verify) is unmeasured against `ms_proj_gemm` and must not be moved.
+#[test]
+fn qkvz_verify_declines_without_the_fp8_copy() {
+    for m in [9, 17, 32, 512] {
+        assert!(
+            !qkvz_verify_nvfp4_wins(m, false, true, true, false),
+            "M={m}: no FP8 copy means nothing to divert"
+        );
+    }
+}
+
+/// The threshold is SHARED with the out_proj arm — both projections make the
+/// same trade on the same rows. Pins that the QKVZ predicate flips at exactly
+/// the row count out_proj's `num_tokens > VERIFY_TGEMM_MIN_TOKENS` flips at,
+/// so the two cannot drift apart silently.
+#[test]
+fn qkvz_and_out_proj_share_one_threshold() {
+    let flip = (1..=64)
+        .find(|&m| qkvz_verify_nvfp4_wins(m, true, true, true, false))
+        .expect("predicate must turn on somewhere in 1..=64");
+    assert_eq!(
+        flip,
+        super::trait_decode_batched::VERIFY_TGEMM_MIN_TOKENS + 1,
+        "QKVZ must flip at the shared out_proj threshold"
+    );
 }

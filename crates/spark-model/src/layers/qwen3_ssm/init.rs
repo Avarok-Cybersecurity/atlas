@@ -143,6 +143,16 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f16_norm",
             ),
+            ssm_h_f16_to_f32_k: super::super::try_kernel(
+                gpu,
+                "ssm_h_dtype",
+                "ssm_h_state_f16_to_f32",
+            ),
+            ssm_h_f32_to_f16_k: super::super::try_kernel(
+                gpu,
+                "ssm_h_dtype",
+                "ssm_h_state_f32_to_f16",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             l2_norm_k: gpu.kernel("norm", "l2_norm_bf16")?,
@@ -383,9 +393,8 @@ impl Qwen3SsmLayer {
                 "w8a16_gemv_batch4",
                 "w8a16_gemv_batch16",
             ),
-            // NVFP4 batched decode GEMV (both entries live in the w4a16_gemv module).
-            w4a16_gemv_batch4_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
-            w4a16_gemv_batch8_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            // NVFP4 batched decode GEMV (all entries live in the w4a16_gemv module).
+            w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
             per_token_group_quant_fp8_k: super::super::try_kernel(

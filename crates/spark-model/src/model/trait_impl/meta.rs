@@ -269,6 +269,9 @@ impl TransformerModel {
         let mut layer_states: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
         for (i, layer) in self.layers.iter().enumerate() {
             if self.config.layer_type(i) == LayerType::LinearAttention {
+                // Layer-independent (one FP32 staging blob per SLOT), so it is
+                // the same pointer for every SSM layer of this sequence.
+                let stage = self.ssm_pool.h_prefill_stage(slot);
                 let mut ssm_state = SsmLayerState {
                     h_state: self.ssm_pool.h_state(ssm_layer_idx, slot),
                     conv_state: self.ssm_pool.conv_state(ssm_layer_idx, slot),
@@ -277,9 +280,16 @@ impl TransformerModel {
                     h_state_intermediates: Vec::new(),
                     conv_state_intermediates: Vec::new(),
                     // A freshly allocated slot has just been zeroed, and zero
-                    // is zero in both formats — but prefill writes it as FP32,
-                    // so FP32 is the truth until the decode mixer converts.
-                    h_is_f16: false,
+                    // is zero in both formats. Which format it then HOLDS is
+                    // decided by the pool width, not by the phase: under the
+                    // stage-3 f16-SIZED pool the slot is physically 2
+                    // bytes/element and prefill stages its FP32 work
+                    // elsewhere, so the slot is FP16 from here on and the
+                    // decode mixer has nothing to do. Under an FP32-sized
+                    // pool prefill writes FP32 in place and FP32 is the truth
+                    // until the mixer converts.
+                    h_is_f16: stage.is_some(),
+                    h_prefill_stage: stage,
                 };
 
                 if has_mtp {
@@ -290,10 +300,15 @@ impl TransformerModel {
                     ssm_state.conv_state_checkpoint =
                         Some(self.ssm_pool.conv_checkpoint(ssm_layer_idx, slot));
 
-                    for t in 0..self.ssm_pool.num_intermediates {
+                    // Tiered pools: H count is per-SLOT (h_inter_count),
+                    // conv count is uniform. The vec lengths are the
+                    // capacity gates every verify arm checks before writing.
+                    for t in 0..self.ssm_pool.h_inter_count(slot) {
                         ssm_state
                             .h_state_intermediates
                             .push(self.ssm_pool.h_intermediate(ssm_layer_idx, slot, t));
+                    }
+                    for t in 0..self.ssm_pool.num_intermediates {
                         ssm_state
                             .conv_state_intermediates
                             .push(self.ssm_pool.conv_intermediate(ssm_layer_idx, slot, t));

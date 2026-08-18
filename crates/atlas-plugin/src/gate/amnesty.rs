@@ -74,19 +74,14 @@ pub struct AmnestyEntry {
 pub const AMNESTY_EPOCH: u64 = 1_786_924_800;
 
 /// The whole grant. When this table is empty the module is inert.
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 2] = [
-    AmnestyEntry {
-        path: ".github/pr-taxonomy.json",
-        head_blob_oid: "7d141f58ed5798d0b49aa44817292e049d6a6364",
-        grant: "2026-08-16 one-time, user-authorized: fill the empty _benches leaves \
-                without re-earning every standing record",
-    },
-    AmnestyEntry {
-        path: "crates/atlas-plugin/src/gate/check.rs",
-        head_blob_oid: "e85359c10a5dd78526127b3aabd872f5f8623ed4",
-        grant: "2026-08-16 one-time, user-authorized: the amnesty hook itself in \
-                invalidating_paths",
-    },
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [
+    // EMPTIED 2026-08-17. Every required gate now carries a record newer than
+    // AMNESTY_EPOCH: the ten-gate suite was re-cut at sha 4012c9b7e1 (vision,
+    // video, ttft-warm, ttft-cold, ssm-state-poisoning, decode-floor,
+    // concurrency-sweep, agentic-webserver, bfcl-subset 84.22/84.12,
+    // bfcl-subset-echolp 86.25/86.61 — all PASS). The grant has been fully
+    // re-earned by measurement, so it protects nothing and the module is inert,
+    // exactly as `amnesty_expires_once_every_gate_has_a_fresh_record` demands.
 ];
 
 /// Whether the one-time grant excuses `path` at `head`.

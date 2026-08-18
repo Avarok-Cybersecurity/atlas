@@ -1,0 +1,163 @@
+{
+  "label": "atlas38_r11_c16",
+  "url": "http://localhost:8888",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "isl": 128,
+  "osl": 1024,
+  "reps": 3,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "driver_sha256": "1c77e1d8e92648c2c4785109e9cc42c22c1a59d85364d576637a41ea338dde8d",
+  "started_utc": "2026-08-17T12:26:55Z",
+  "rungs": [
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "wall_s": 81.08560912100074,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 202.05804923473937,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 5023.065969002346,
+          "ttft_p99_ms": 5023.388036448887,
+          "tpot_p50_ms": 72.25468861925873,
+          "e2e_p50_s": 78.94150217549759,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 0,
+          "clock_sample_at_rep_start": "2437, 75.14"
+        },
+        {
+          "wall_s": 80.09262719900289,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 204.563148606567,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 4252.577780000138,
+          "ttft_p99_ms": 4253.267602196502,
+          "tpot_p50_ms": 72.666760048874,
+          "e2e_p50_s": 78.59366569649865,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 1,
+          "clock_sample_at_rep_start": "2496, 67.58"
+        },
+        {
+          "wall_s": 79.88615112900152,
+          "completion_tokens": 16253,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 203.45203480581233,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 4247.213254500821,
+          "ttft_p99_ms": 4247.7328524521,
+          "tpot_p50_ms": 72.86256894770172,
+          "e2e_p50_s": 78.44713259349737,
+          "finish_reasons": [
+            "length",
+            "stop"
+          ],
+          "completion_tokens_per_req": [
+            893,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 2,
+          "clock_sample_at_rep_start": "2496, 63.78"
+        }
+      ],
+      "tok_s_series": [
+        202.05804923473937,
+        204.563148606567,
+        203.45203480581233
+      ],
+      "tok_s_mean": 203.35774421570625,
+      "tok_s_median": 203.45203480581233,
+      "tok_s_spread_pct": 1.231868194392648,
+      "wall_s_series": [
+        81.08560912100074,
+        80.09262719900289,
+        79.88615112900152
+      ],
+      "wall_s_mean": 80.35479581633506,
+      "completion_tokens_series": [
+        16384,
+        16384,
+        16253
+      ],
+      "completion_tokens_mean": 16340.333333333334,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-08-17T12:32:18Z"
+}

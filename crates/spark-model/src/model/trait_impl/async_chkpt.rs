@@ -16,6 +16,7 @@ use super::super::block_mgmt::{
     apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
     extract_layer_refs, reuse_prefix_match_disk_ids,
 };
+use super::super::ssm_batched_copy::{StateCopy, run_ssm_state_copies};
 use super::super::ssm_pool::SsmStatePool;
 use super::super::ssm_snapshot::SsmSnapshotPool;
 use super::super::types::{PinnedMetaStaging, TransformerModel};
@@ -32,6 +33,8 @@ impl TransformerModel {
         use crate::layer::SsmLayerState;
 
         let stream = self.secondary_stream;
+        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
+        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == LayerType::LinearAttention {
                 let ssm = layer_state
@@ -43,7 +46,8 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let nk = self.config.linear_num_key_heads;
                 let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4;
+                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd;
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4;
@@ -55,20 +59,19 @@ impl TransformerModel {
                     ssm.conv_state_checkpoint = Some(self.gpu.alloc(conv_bytes)?);
                 }
 
-                self.gpu.copy_d2d_async(
-                    ssm.h_state,
-                    ssm.h_state_checkpoint.unwrap(),
-                    h_bytes,
-                    stream,
-                )?;
-                self.gpu.copy_d2d_async(
-                    ssm.conv_state,
-                    ssm.conv_state_checkpoint.unwrap(),
-                    conv_bytes,
-                    stream,
-                )?;
+                h_plan.push(StateCopy {
+                    src: ssm.h_state,
+                    dst: ssm.h_state_checkpoint.unwrap(),
+                    bytes: h_bytes,
+                });
+                conv_plan.push(StateCopy {
+                    src: ssm.conv_state,
+                    dst: ssm.conv_state_checkpoint.unwrap(),
+                    bytes: conv_bytes,
+                });
             }
         }
+        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         // Record event so default stream can wait (GPU-side, no CPU block).
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
@@ -83,6 +86,17 @@ impl TransformerModel {
 
         let stream = self.secondary_stream;
         let mut ssm_layer_idx = 0usize;
+        // Four plans in the ORIGINAL issue order: rollback h, rollback conv,
+        // then checkpoint h, checkpoint conv. The checkpoint reads the state
+        // the rollback just wrote, and both land on `stream` in that order,
+        // so the read-after-write is ordered exactly as the per-layer loop
+        // ordered it. Re-ordering ACROSS layers within one plan is sound:
+        // layer L's blobs are disjoint from layer M's.
+        let n_ssm = self.ssm_pool.num_ssm_layers;
+        let mut h_back = Vec::with_capacity(n_ssm);
+        let mut conv_back = Vec::with_capacity(n_ssm);
+        let mut h_ckpt = Vec::with_capacity(n_ssm);
+        let mut conv_ckpt = Vec::with_capacity(n_ssm);
 
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == LayerType::LinearAttention {
@@ -95,7 +109,8 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let nk = self.config.linear_num_key_heads;
                 let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4;
+                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd;
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4;
@@ -104,40 +119,58 @@ impl TransformerModel {
                 if num_accepted == 0 {
                     // No tokens accepted: restore from checkpoint (pre-verify state).
                     if let Some(ckpt) = ssm.h_state_checkpoint {
-                        self.gpu
-                            .copy_d2d_async(ckpt, ssm.h_state, h_bytes, stream)?;
+                        h_back.push(StateCopy {
+                            src: ckpt,
+                            dst: ssm.h_state,
+                            bytes: h_bytes,
+                        });
                     }
                     if let Some(ckpt) = ssm.conv_state_checkpoint {
-                        self.gpu
-                            .copy_d2d_async(ckpt, ssm.conv_state, conv_bytes, stream)?;
+                        conv_back.push(StateCopy {
+                            src: ckpt,
+                            dst: ssm.conv_state,
+                            bytes: conv_bytes,
+                        });
                     }
                 } else {
                     // Partial acceptance: restore from intermediate[num_accepted - 1].
                     let slot = seq.slot_idx;
                     let inter_idx = num_accepted - 1;
-                    let h_inter = self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx);
-                    let conv_inter =
-                        self.ssm_pool
-                            .conv_intermediate(ssm_layer_idx, slot, inter_idx);
-                    self.gpu
-                        .copy_d2d_async(h_inter, ssm.h_state, h_bytes, stream)?;
-                    self.gpu
-                        .copy_d2d_async(conv_inter, ssm.conv_state, conv_bytes, stream)?;
+                    h_back.push(StateCopy {
+                        src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
+                        dst: ssm.h_state,
+                        bytes: h_bytes,
+                    });
+                    conv_back.push(StateCopy {
+                        src: self
+                            .ssm_pool
+                            .conv_intermediate(ssm_layer_idx, slot, inter_idx),
+                        dst: ssm.conv_state,
+                        bytes: conv_bytes,
+                    });
                 }
 
                 // Checkpoint the (now rolled-back) state for the next verify.
                 if let Some(ckpt) = ssm.h_state_checkpoint {
-                    self.gpu
-                        .copy_d2d_async(ssm.h_state, ckpt, h_bytes, stream)?;
+                    h_ckpt.push(StateCopy {
+                        src: ssm.h_state,
+                        dst: ckpt,
+                        bytes: h_bytes,
+                    });
                 }
                 if let Some(ckpt) = ssm.conv_state_checkpoint {
-                    self.gpu
-                        .copy_d2d_async(ssm.conv_state, ckpt, conv_bytes, stream)?;
+                    conv_ckpt.push(StateCopy {
+                        src: ssm.conv_state,
+                        dst: ckpt,
+                        bytes: conv_bytes,
+                    });
                 }
 
                 ssm_layer_idx += 1;
             }
         }
+        run_ssm_state_copies(self.gpu.as_ref(), &h_back, &conv_back, stream)?;
+        run_ssm_state_copies(self.gpu.as_ref(), &h_ckpt, &conv_ckpt, stream)?;
         // Record event so default stream can wait (GPU-side, no CPU block).
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
@@ -250,6 +283,12 @@ impl TransformerModel {
 
         let stream = self.secondary_stream;
         let mut ssm_layer_idx = 0usize;
+        // Two plans, not one interleaved loop: h blobs and conv blobs have
+        // different widths, and a pitched 2-D copy carries ONE width. Both
+        // are built in ascending layer order — the same order, and the same
+        // (src, dst, bytes) triples, the per-layer loop issued.
+        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
+        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) != LayerType::LinearAttention {
                 continue;
@@ -263,24 +302,30 @@ impl TransformerModel {
             let vd = self.config.linear_value_head_dim;
             let nk = self.config.linear_num_key_heads;
             let kd = self.config.linear_key_head_dim;
-            let h_bytes = nv * vd * kd * 4;
+            // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+            let h_bytes = self.ssm_pool.h_stored_bytes;
             let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
 
             // Partial accept: rewind live state to the last accepted token's
             // intermediate (state after token `num_accepted-1`).
             let slot = seq.slot_idx;
             let inter_idx = num_accepted - 1;
-            let h_inter = self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx);
-            let conv_inter = self
-                .ssm_pool
-                .conv_intermediate(ssm_layer_idx, slot, inter_idx);
-            self.gpu
-                .copy_d2d_async(h_inter, ssm.h_state, h_bytes, stream)?;
-            self.gpu
-                .copy_d2d_async(conv_inter, ssm.conv_state, conv_bytes, stream)?;
+            h_plan.push(StateCopy {
+                src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
+                dst: ssm.h_state,
+                bytes: h_bytes,
+            });
+            conv_plan.push(StateCopy {
+                src: self
+                    .ssm_pool
+                    .conv_intermediate(ssm_layer_idx, slot, inter_idx),
+                dst: ssm.conv_state,
+                bytes: conv_bytes,
+            });
 
             ssm_layer_idx += 1;
         }
+        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
     }

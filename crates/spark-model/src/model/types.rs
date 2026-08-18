@@ -122,14 +122,12 @@ pub struct TransformerModel {
     pub(super) w4a16_gemm_t_bf16_kernel: KernelHandle,
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
-    /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
-    /// read for all rows; nsys 2026-07-18: the M64-tile `w4a16_gemm` at M=4
-    /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
-    /// 0-handle when the target lacks the kernel (dispatch falls back).
-    pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
-    /// M<=8 batched GEMV for the K=5..8 chain-verify lm_head (batch8 —
-    /// removes the M>4 tile-GEMM cliff). 0-handle when absent.
-    pub(super) w4a16_gemv_batch8_kernel: KernelHandle,
+    /// Narrow `w4a16_gemv_batch{M}` family (M=4..8) for the K=3..8 verify
+    /// lm_head (one weight read for all rows; nsys 2026-07-18: the M64-tile
+    /// `w4a16_gemm` at M=4 cost 19.3 ms/verify-step on the 248320-row lm_head
+    /// — 94% tile padding). Individual tiers are 0-handles when the target
+    /// lacks them (dispatch falls back).
+    pub(super) w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers,
     pub(super) w4a16_gemv_batch16_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
@@ -309,6 +307,18 @@ pub struct TransformerModel {
     /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
     /// NULL without an MTP proposer (path self-gates).
     pub(super) verify_wy_tables: DevicePtr,
+    /// Encoded key of the bytes CURRENTLY staged in `verify_wy_tables`, or
+    /// `None` when nothing has been staged (the buffer is memset to zero at
+    /// allocation, which no key describes).
+    ///
+    /// `upload_verify_wy_tables` ran a 48 KB host build + a 48 KB H2D on
+    /// EVERY n>=2 verify step. The staged bytes are a pure function of
+    /// `(k, ssm-slot vector in batch order, ghost (slot, depth) pairs)` —
+    /// see `verify_wy_cache_key` for the enumeration and the proof — so a
+    /// step whose key matches what is already on the device may skip both.
+    /// Kill switch `ATLAS_NO_VERIFY_WY_CACHE` (PRESENCE) restores the
+    /// unconditional re-stage.
+    pub(super) verify_wy_cache: Mutex<Option<Vec<u64>>>,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
@@ -403,6 +413,11 @@ pub struct TransformerModel {
     pub(super) ssm_norm_ptrs_buf: DevicePtr,
     /// One-shot FP32 -> FP16 h-state converter (`ATLAS_SSM_H_FP16`).
     pub(super) ssm_h_f32_to_f16_kernel: KernelHandle,
+    /// Its widening inverse. Used ONLY by the stage-3 f16-SIZED pool
+    /// (`--ssm-h-dtype f16-pool`) on the BATCHED prefill path, whose GDN
+    /// kernels take a device pointer TABLE and so cannot be wrapped inside
+    /// the layer the way the single-stream ladder is. Zero otherwise.
+    pub(super) ssm_h_f16_to_f32_kernel: KernelHandle,
     /// Staging buffer for it, one layer wide (`h_bytes / 2`). The conversion is
     /// a narrowing compaction and CANNOT be done in place: thread `2i`'s write
     /// lands inside thread `i`'s read with nothing ordering them. Allocated

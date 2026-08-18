@@ -210,37 +210,6 @@ impl TransformerModel {
         // `traits::padded_batch_n` (now includes 12 and 16 for the C-sweep).
         let padded_n = crate::traits::padded_batch_n(n);
 
-        // ── Phase 1: Pre-graph (runs every step, NOT captured) ──
-
-        // 1a. Embed active tokens into hidden[0..n)
-        for (i, &tok) in tokens.iter().enumerate() {
-            self.embed(tok, hidden.offset(i * h * fp32), stream)?;
-        }
-
-        // 1b. Zero padding hidden[n..padded_n)
-        for i in n..padded_n {
-            self.gpu.memset(hidden.offset(i * h * fp32), 0, h * fp32)?;
-        }
-
-        // 1c. Allocate KV blocks for active sequences
-        let mut kv_cache = self.kv_cache.lock();
-        let bs = kv_cache.block_size();
-        for seq in seqs.iter_mut() {
-            let blocks_needed = (seq.seq_len / bs) + 1;
-            ensure_blocks_through_decode(
-                seq,
-                blocks_needed - 1,
-                &mut kv_cache,
-                self.prefix_cache.as_ref(),
-                self.gpu.as_ref(),
-                stream,
-                self.levers.kv_poison,
-            )?;
-        }
-
-        // 1d. Upload metadata with fixed stride (active + padding)
-        let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
-
         // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
         //
         // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
@@ -263,6 +232,90 @@ impl TransformerModel {
             None
         };
         let use_graphs = graph_key.is_some();
+
+        // Lock order: kv_cache BEFORE the graph cache, matching verify_e.
+        let mut kv_cache = self.kv_cache.lock();
+
+        // ── Phase 2 (decision): exact CUDA-graph hit, or drain-tail borrow ──
+        let mut graphs = if use_graphs {
+            Some(self.batch_decode_graphs.lock())
+        } else {
+            None
+        };
+
+        // Exact hit (LRU-touched), else borrow a WIDER captured graph
+        // (`graph_borrow.rs`): a drain batch's slot vector is a prefix of the
+        // steady-state canonical vector, so the wider graph's active rows are
+        // exactly this batch's rows and its tail rows pad on the dummy slot
+        // or currently-free slots. `dispatch_n` is the width Phase 1 must
+        // prepare (embeds/metadata) — the borrowed graph's captured width on
+        // a borrow, `padded_n` otherwise.
+        let mut replay: Option<spark_runtime::gpu::GraphHandle> = None;
+        let mut dispatch_n = padded_n;
+        if let (Some(g), Some(key)) = (&mut graphs, &graph_key) {
+            g.1 += 1;
+            let tick = g.1;
+            if let Some(e) = g.0.get_mut(key) {
+                e.1 = tick;
+                replay = Some(e.0);
+            } else if super::graph_borrow::graph_borrow_enabled()
+                && self.comm.is_none()
+                && self.config.num_ssm_layers() > 0
+            {
+                let dummy = self.ssm_pool.dummy_slot() as u32;
+                let borrowed =
+                    super::graph_borrow::find_borrowable_decode_key(&key[..n], g.0.keys(), |s| {
+                        s == dummy || self.ssm_pool.slot_is_free(s as usize)
+                    });
+                if let Some(bk) = borrowed {
+                    dispatch_n = bk.len();
+                    let e =
+                        g.0.get_mut(&bk)
+                            .expect("borrowed key comes from this cache");
+                    e.1 = tick;
+                    replay = Some(e.0);
+                    // INFO once per transition (same cardinality as the
+                    // captures this replaces); repeats of the same pair
+                    // stay silent. Provable engagement: grep "graph borrow".
+                    if super::graph_borrow::DECODE_BORROW_LOG.should_log(key, &bk) {
+                        tracing::info!(
+                            "decode graph borrow: n={n} padded_n={padded_n} -> replaying \
+                             captured width {dispatch_n}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Phase 1: Pre-graph (runs every step, NOT captured) ──
+
+        // 1a. Embed active tokens into hidden[0..n)
+        for (i, &tok) in tokens.iter().enumerate() {
+            self.embed(tok, hidden.offset(i * h * fp32), stream)?;
+        }
+
+        // 1b. Zero padding hidden[n..dispatch_n)
+        for i in n..dispatch_n {
+            self.gpu.memset(hidden.offset(i * h * fp32), 0, h * fp32)?;
+        }
+
+        // 1c. Allocate KV blocks for active sequences
+        let bs = kv_cache.block_size();
+        for seq in seqs.iter_mut() {
+            let blocks_needed = (seq.seq_len / bs) + 1;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+                self.levers.kv_poison,
+            )?;
+        }
+
+        // 1d. Upload metadata with fixed stride (active + padding)
+        let metadata = self.upload_batch_metadata_fixed(seqs, dispatch_n, &mut kv_cache, stream)?;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -290,27 +343,7 @@ impl TransformerModel {
             midchunk_capture: None,
         };
 
-        // ── Phase 2: CUDA graph lookup / capture ──
-        let mut graphs = if use_graphs {
-            Some(self.batch_decode_graphs.lock())
-        } else {
-            None
-        };
-
-        // LRU touch on hit: bump the tick so eviction always removes the
-        // least-recently-replayed slot vector.
-        let cached = match (&mut graphs, &graph_key) {
-            (Some(g), Some(key)) => {
-                g.1 += 1;
-                let tick = g.1;
-                g.0.get_mut(key).map(|e| {
-                    e.1 = tick;
-                    e.0
-                })
-            }
-            _ => None,
-        };
-        if let Some(graph) = cached {
+        if let Some(graph) = replay {
             // Graph exists — replay (kernels use updated metadata + SSM pool addresses)
             if graph.0 != 0 {
                 self.gpu.launch_graph(graph, stream)?;
@@ -367,6 +400,11 @@ impl TransformerModel {
                             // tag them with the active mode so the decode mixer
                             // does not re-convert scratch on every single step.
                             h_is_f16: crate::layers::qwen3_ssm::ssm_h_fp16_enabled(),
+                            // Decode-only rows: never prefilled. Carried
+                            // anyway so the dummy slot's geometry matches a
+                            // real one and a stray prefill over it stages
+                            // rather than overruns.
+                            h_prefill_stage: self.ssm_pool.h_prefill_stage(dummy_ssm_slot),
                         }));
                         ssm_idx += 1;
                     } else {

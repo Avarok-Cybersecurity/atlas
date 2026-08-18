@@ -12,6 +12,14 @@ mod batched;
 // encodes.
 
 impl Qwen3SsmLayer {
+    /// Two-phase (whole-prompt) GDN prefill.
+    ///
+    /// Splits into the h-state width wrapper and the kernel ladder so the
+    /// ladder can keep its nine `return ops::...` early exits: under the
+    /// stage-3 f16-SIZED pool the narrowing has to run on EVERY one of them,
+    /// which a per-arm epilogue could not guarantee. See
+    /// `Qwen3SsmLayer::prefill_gdn_recurrence_staged` for the same pattern on
+    /// the chunked path, and `ssm_h_fp16` for why the pair is safe here.
     pub(super) fn prefill_gdn_full_inner(
         &self,
         state: &mut dyn LayerState,
@@ -23,7 +31,31 @@ impl Qwen3SsmLayer {
             .as_any_mut()
             .downcast_mut::<SsmLayerState>()
             .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+        let h = super::ssm_h_fp16::prefill_h_begin(
+            ctx.gpu,
+            self.ssm_h_f16_to_f32_k,
+            ssm_state,
+            self.h_state_bytes,
+            stream,
+        )?;
+        self.prefill_gdn_full_over(h.ptr(), gdn_bufs, ctx, stream)?;
+        super::ssm_h_fp16::prefill_h_end(
+            ctx.gpu,
+            self.ssm_h_f32_to_f16_k,
+            h,
+            self.h_state_bytes,
+            stream,
+        )
+    }
 
+    /// The GDN kernel ladder, over an explicitly supplied FP32 h-state.
+    fn prefill_gdn_full_over(
+        &self,
+        h_state: DevicePtr,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
         let nv = ctx.config.linear_num_value_heads;
@@ -69,7 +101,7 @@ impl Qwen3SsmLayer {
             return ops::gdn_prefill_split4(
                 ctx.gpu,
                 self.gdn_prefill_split4_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -108,7 +140,7 @@ impl Qwen3SsmLayer {
                 gdn_bufs.qkv,
                 gdn_bufs.gate_beta,
                 gdn_bufs.output,
-                ssm_state.h_state,
+                h_state,
                 scale,
                 total,
                 nk as u32,
@@ -144,7 +176,7 @@ impl Qwen3SsmLayer {
                 self.gdn_prefill_fla_chunk_delta_h_k,
                 self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
                 self.gdn_prefill_fla_chunk_fwd_o_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -186,7 +218,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,
                 self.gdn_prefill_wy32_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -222,7 +254,7 @@ impl Qwen3SsmLayer {
                     ops::gdn_prefill_persistent(
                         ctx.gpu,
                         self.gdn_prefill_persistent_k,
-                        ssm_state.h_state,
+                        h_state,
                         q_chunk,
                         k_chunk,
                         v_chunk,
@@ -244,7 +276,7 @@ impl Qwen3SsmLayer {
                     ops::gdn_prefill_split4(
                         ctx.gpu,
                         self.gdn_prefill_split4_k,
-                        ssm_state.h_state,
+                        h_state,
                         q_chunk,
                         k_chunk,
                         v_chunk,
@@ -270,7 +302,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,
                 self.gdn_prefill_persistent_wy4_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -293,7 +325,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_persistent(
                 ctx.gpu,
                 self.gdn_prefill_persistent_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -315,7 +347,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_split4(
                 ctx.gpu,
                 self.gdn_prefill_split4_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,

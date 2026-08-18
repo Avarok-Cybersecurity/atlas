@@ -1,0 +1,163 @@
+{
+  "label": "atlas38_r8_c16",
+  "url": "http://localhost:8888",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "isl": 128,
+  "osl": 1024,
+  "reps": 3,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "driver_sha256": "1c77e1d8e92648c2c4785109e9cc42c22c1a59d85364d576637a41ea338dde8d",
+  "started_utc": "2026-08-17T09:07:38Z",
+  "rungs": [
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "wall_s": 81.25410443099827,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 201.63904475635988,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 5032.587134499408,
+          "ttft_p99_ms": 5032.922349653018,
+          "tpot_p50_ms": 72.09941597360799,
+          "e2e_p50_s": 78.79243043150018,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 0,
+          "clock_sample_at_rep_start": "2405, 77.50"
+        },
+        {
+          "wall_s": 80.15682177199778,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 204.39932170219396,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 4251.456434998545,
+          "ttft_p99_ms": 4251.841004849848,
+          "tpot_p50_ms": 72.52776304789754,
+          "e2e_p50_s": 78.44931018800162,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 1,
+          "clock_sample_at_rep_start": "2463, 72.39"
+        },
+        {
+          "wall_s": 79.91195992299981,
+          "completion_tokens": 16253,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 203.38632684845655,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 4259.7976570014,
+          "ttft_p99_ms": 4260.426705452483,
+          "tpot_p50_ms": 72.66866178738965,
+          "e2e_p50_s": 78.26343599650136,
+          "finish_reasons": [
+            "length",
+            "stop"
+          ],
+          "completion_tokens_per_req": [
+            893,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "rep": 2,
+          "clock_sample_at_rep_start": "2476, 71.55"
+        }
+      ],
+      "tok_s_series": [
+        201.63904475635988,
+        204.39932170219396,
+        203.38632684845655
+      ],
+      "tok_s_mean": 203.14156443567012,
+      "tok_s_median": 203.38632684845655,
+      "tok_s_spread_pct": 1.3587947663503348,
+      "wall_s_series": [
+        81.25410443099827,
+        80.15682177199778,
+        79.91195992299981
+      ],
+      "wall_s_mean": 80.44096204199862,
+      "completion_tokens_series": [
+        16384,
+        16384,
+        16253
+      ],
+      "completion_tokens_mean": 16340.333333333334,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-08-17T09:13:02Z"
+}

@@ -299,8 +299,8 @@ impl Qwen3SsmLayer {
 
         // Recurrence kernel dispatch hoisted to trait_prefill_recur.rs to
         // keep this file under the 500 LoC cap; behavior identical.
-        self.prefill_gdn_recurrence(
-            ssm_state.h_state,
+        self.prefill_gdn_recurrence_staged(
+            ssm_state,
             q_ptr,
             k_ptr,
             v_ptr,

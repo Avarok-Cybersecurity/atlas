@@ -43,8 +43,8 @@ mod eligible;
 // after the eligibility cluster moved into the `eligible` submodule.
 use eligible::first_chunk_batched_enabled;
 pub(in crate::model) use eligible::{
-    cache_batch_matches_compatible, check_kernel_batched_eligible, config_is_mla,
-    varlen_prefill_enabled,
+    batched_reserve_hybrid_ssm_ok, cache_batch_matches_compatible, check_kernel_batched_eligible,
+    config_is_mla, varlen_prefill_enabled,
 };
 
 use crate::layer::{
@@ -212,8 +212,14 @@ impl TransformerModel {
             proc_off: usize,
         }
         let mut per_stream: Vec<PerStreamMeta> = Vec::with_capacity(n);
+        // VARLEN admits chunk-0 batches on its own (`allow_chunk_zero` in
+        // `check_kernel_batched_eligible` is codispatch OR varlen), so the
+        // paged upload must fire on the same predicate: without it a chunk-0
+        // stream's `block_table_dev` stays NULL, and the batched paged
+        // attention kernel dereferences `block_table_ptrs[b]` unless the
+        // opt-in FlashInfer ragged arm happens to be enabled.
         let force_paged_first_chunk = streams[0].chunk_start == 0
-            && crate::layers::ops::prefill_batched_first_chunk_enabled();
+            && (crate::layers::ops::prefill_batched_first_chunk_enabled() || varlen);
 
         // Tracks MRoPE / paged-flag agreement across streams.
         let mut use_mrope: Option<bool> = None;

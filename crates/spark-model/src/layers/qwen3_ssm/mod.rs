@@ -21,6 +21,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState};
 use crate::layers::FfnComponent;
 use crate::layers::ops;
+use crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers;
 use crate::weight_map::{DenseWeight, Fp8Weight, QuantizedWeight, SsmWeights};
 
 /// Qwen3-Next SSM/GDN layer (36 of 48 layers).
@@ -190,11 +191,10 @@ pub struct Qwen3SsmLayer {
     gdn_chunk3_k: KernelHandle,
     w4a16_gemv_batch3_k: KernelHandle,
     // NVFP4 batched decode GEMV (multi-seq concurrency + chain verify):
-    // batch4 (M<=4) / batch8 (M<=8, K=5..8 chain verify) / batch16 (M<=16) —
-    // siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ + out_proj, so FP4
-    // decode amortizes the weight read at C=4..16 like FP8.
-    w4a16_gemv_batch4_k: KernelHandle,
-    w4a16_gemv_batch8_k: KernelHandle,
+    // the narrow batch{4,5,6,7,8} family plus batch16 (M<=16) — siblings of
+    // w8a16_gemv_batch4/16 for the FP4 QKVZ + out_proj, so FP4 decode
+    // amortizes the weight read at C=4..16 like FP8.
+    w4a16_batchm: W4a16BatchmTiers,
     w4a16_gemv_batch16_k: KernelHandle,
     // Kernels — WY-chunkwise path (2-pass verification)
     gdn_wy2_k: KernelHandle,
@@ -245,6 +245,16 @@ pub struct Qwen3SsmLayer {
     gdn_wy3_f16_k: KernelHandle,
     gdn_wy3_resident_f16_k: KernelHandle,
     gdn_wy4_f16_k: KernelHandle,
+    /// Stage-3 f16-SIZED pool (`--ssm-h-dtype f16-pool`): the two h-state
+    /// width converters (`ssm_h_dtype.cu`). PREFILL uses them as a matched
+    /// pair around its FP32 kernels — widen the narrow slot into the
+    /// sequence's FP32 staging blob, run, narrow back — so unlike the
+    /// decode-side one-shot conversion these launch once per SSM layer per
+    /// prefill pass and are self-cancelling. A 0 handle is a hard error at
+    /// the first prefill, never an FP32 fallback: an FP32 kernel writing a
+    /// 2-byte-sized slot is an OOB write into the neighbouring slot.
+    ssm_h_f16_to_f32_k: KernelHandle,
+    ssm_h_f32_to_f16_k: KernelHandle,
     /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
     /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
     /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
@@ -315,15 +325,12 @@ pub struct Qwen3SsmLayer {
 }
 
 impl Qwen3SsmLayer {
-    /// W4A16 batchm-GEMV handle for `m` verify/decode rows: batch4 (m<=4) or
-    /// batch8 (m=5..8, chain verify). 0-handle when absent or out of range —
-    /// callers must check `.0 != 0` and fall back to the tile GEMMs.
+    /// W4A16 batchm-GEMV handle for `m` verify/decode rows: the narrowest
+    /// resolved tier in `w4a16_gemv_batch{4,5,6,7,8}` that covers `m`.
+    /// 0-handle when absent or out of range — callers must check `.0 != 0` and
+    /// fall back to the tile GEMMs. See `layers::w4a16_gemv_tiers`.
     fn w4a16_batchm_kernel(&self, m: usize) -> KernelHandle {
-        match m {
-            1..=4 => self.w4a16_gemv_batch4_k,
-            5..=8 => self.w4a16_gemv_batch8_k,
-            _ => KernelHandle(0),
-        }
+        self.w4a16_batchm.kernel(m as u32)
     }
 
     /// Transposed-twin tile GEMM handle for reduction depth `k`: the deep-K
@@ -464,8 +471,8 @@ mod trait_prefill_proj;
 mod trait_prefill_recur;
 
 pub use gdn_flags::{
-    GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_fp16_enabled,
-    verify_exact_enabled,
+    GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_dtype_bits,
+    ssm_h_f16_pool_enabled, ssm_h_fp16_enabled, verify_exact_enabled,
 };
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──

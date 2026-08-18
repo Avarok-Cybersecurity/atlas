@@ -54,6 +54,19 @@ pub fn step_mtp(
     } else {
         crate::scheduler::adaptive_rung::drafts_for(active.len(), num_drafts)
     };
+    // Tiered verify-pool capacity clamp (2026-08-16): the step's draft
+    // count must respect the MINIMUM slot capacity across the active
+    // sequences — a sequence in a K=2-sized slot must never receive K=4
+    // drafts. Capacities are the model's ACTUAL pool geometry
+    // (`mtp_slot_draft_capacity`); full-width pools (kill switch, DFlash-γ,
+    // pure-attention) report usize::MAX and leave the ladder untouched.
+    // See `spec_capacity` for the invariant and its two trigger shapes.
+    let ladder_nd = crate::scheduler::spec_capacity::clamp_drafts_to_slot_capacity(
+        ladder_nd,
+        active
+            .iter()
+            .map(|a| model.mtp_slot_draft_capacity(a.seq.slot_idx)),
+    );
 
     // ── Phase A: Bootstrap decode for sequences without a draft ──
     if !bootstrap_idxs.is_empty() {
@@ -363,6 +376,11 @@ pub fn step_mtp(
     // ⇒ `ks` is the uniform ladder shape and everything below reduces to the
     // pre-D-Cut path exactly.
     let ks = mtp_dcut::plan(active, &mut batchable_idxs, ladder_nd, rows);
+    // The width the ASSIGNMENT was gated on (`plan` reorders `batchable_idxs`,
+    // never resizes it): the per-chunk re-ordering below must ask the gate with
+    // THIS width, never the chunk's, or a chunked batch could take the opposite
+    // arm from the one its depths were assigned under.
+    let batch_n = batchable_idxs.len();
 
     // Chunking: the 96-row buffer bound `can_batch_verify` enforces, with the
     // per-chunk sequence cap DERIVED from it (`VERIFY_ROW_BUDGET / widest
@@ -401,20 +419,43 @@ pub fn step_mtp(
                 consumed = i + 1;
                 refs.push((a, k));
             }
-            // Canonical batch order: deepest first, then ssm-pool slot, so the
-            // graph key (verify_e2) is a combination, not a permutation — 24x
-            // fewer keys at n=4 — and the consecutive-slot batched-GDN
-            // precondition engages more often. Verdicts are index-mapped
-            // inside the step, so batch order is free to the caller. With
-            // uniform k this is the pre-D-Cut sort by slot.
-            refs.sort_by_key(|(a, k)| {
-                (
-                    std::cmp::Reverse(*k),
-                    a.seq.ssm_slot_idx().unwrap_or(usize::MAX),
-                )
-            });
-            let sorted_ks: Vec<usize> = refs.iter().map(|&(_, k)| k).collect();
-            let mut batch: Vec<&mut ActiveSeq> = refs.into_iter().map(|(a, _)| a).collect();
+            // Batch order, from the ONE ordering rule shared with the graph
+            // key (`verify_key`), asked with the SAME width gate `plan` used so
+            // order and assignment can never disagree. Canonical (n >=
+            // `CANONICAL_KEY_MIN_WIDTH` = 8): ssm slots ascending = also
+            // deepest-first under the canonical assignment, so the key is a
+            // function of the depth MULTISET not its arrangement (266 keys → 3
+            // at n=8) and each depth run owns a consecutive slot block for the
+            // batched-GDN precondition; below it, deepest-first then slot — the
+            // pre-canonical order byte for byte. Idempotent on `plan`'s ordered
+            // batch under both arms; it still runs because `plan` returns the
+            // batch UNORDERED whenever D-Cut declines, and that uniform-`k`
+            // case is the pre-D-Cut sort by slot. PERMUTATION ONLY — depths
+            // stay attached to the sequence
+            // `plan` truncated for (`verify_k4_batch_step` pins
+            // `drafts + 1 == ks[i]`). Verdicts are index-mapped inside the
+            // step, so batch order is free to the caller.
+            let chunk_slots: Vec<usize> = refs
+                .iter()
+                .map(|(a, _)| a.seq.ssm_slot_idx().unwrap_or(usize::MAX))
+                .collect();
+            let chunk_depths: Vec<usize> = refs.iter().map(|&(_, k)| k).collect();
+            let order = spark_model::speculative::verify_key::verify_batch_permutation(
+                &chunk_slots,
+                &chunk_depths,
+                spark_model::speculative::verify_key::canonical_assignment(batch_n),
+            );
+            let sorted_ks: Vec<usize> = order.iter().map(|&p| chunk_depths[p]).collect();
+            let mut slotted: Vec<Option<&mut ActiveSeq>> =
+                refs.into_iter().map(|(a, _)| Some(a)).collect();
+            let mut batch: Vec<&mut ActiveSeq> = order
+                .iter()
+                .map(|&p| {
+                    slotted[p]
+                        .take()
+                        .expect("verify_batch_permutation is a permutation")
+                })
+                .collect();
             step_verify_k4_batched(model, &mut batch, sched, &sorted_ks, ladder_nd, verify_ctx);
         } else {
             // Model can't batch this width (or a lone leftover): fall back

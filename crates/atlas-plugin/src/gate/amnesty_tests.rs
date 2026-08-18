@@ -153,32 +153,30 @@ fn invalidating_paths_drops_exactly_what_the_grant_excuses() {
     );
 }
 
-/// ★ The exact grant, pinned: two entries, these two paths, and OIDs that are
-/// real 40-hex blob names. DELIBERATELY RED while the OIDs read `"PENDING"` —
-/// the pin phase (run `git hash-object <path>` on the final landed content
-/// and write the values into `amnesty.rs`) is what turns it green. An
-/// unpinned grant matches no blob, so shipping this red test is safe; shipping
-/// it silently green with placeholders would not be.
+/// ★ RETIRED 2026-08-17 — the grant is spent and the table is empty.
+///
+/// This test used to pin the exact two paths of the 2026-08-16 grant so that
+/// adding a third was a visible, authorization-requiring act. The grant has
+/// since been fully re-earned: every required gate carries a record newer than
+/// [`AMNESTY_EPOCH`], cut at sha 4012c9b7e1 (all ten PASS, including
+/// bfcl-subset 84.22/84.12 and bfcl-subset-echolp 86.25/86.61), so
+/// `amnesty_expires_once_every_gate_has_a_fresh_record` required the table be
+/// emptied.
+///
+/// The assertion is now strictly STRONGER than the one it replaces: the table
+/// must be EMPTY. Any future entry — including a re-add of either original
+/// path — is a new grant and needs its own authorization, its own pinned blob
+/// OID, and its own expiry story.
 #[test]
-fn the_table_is_exactly_the_2026_08_16_grant() {
+#[allow(clippy::const_is_empty)]
+fn the_table_is_empty_the_grant_is_spent() {
     let paths: Vec<&str> = ONE_TIME_AMNESTY.iter().map(|e| e.path).collect();
-    assert_eq!(
-        paths,
-        vec![TAXONOMY, "crates/atlas-plugin/src/gate/check.rs"],
-        "the grant is exactly these two boundary files, in this order — \
-         adding a path is a NEW grant and needs its own authorization"
+    assert!(
+        paths.is_empty(),
+        "the one-time amnesty is spent and must stay empty; found {paths:?}. \
+         Adding a path is a NEW grant: it needs explicit authorization, a \
+         pinned 40-hex head_blob_oid, and a reason it will expire."
     );
-    for e in &ONE_TIME_AMNESTY {
-        assert!(
-            e.head_blob_oid.len() == 40 && e.head_blob_oid.chars().all(|c| c.is_ascii_hexdigit()),
-            "{}: head_blob_oid is {:?}, not a 40-hex blob OID — the pin phase \
-             has not run. Compute it with `git hash-object {}` on the final \
-             landed content and write it into gate/amnesty.rs.",
-            e.path,
-            e.head_blob_oid,
-            e.path
-        );
-    }
 }
 
 /// ★ The grant must not outlive its purpose. Once every required gate's

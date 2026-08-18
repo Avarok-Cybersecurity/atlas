@@ -34,6 +34,15 @@ static FLAGS: std::sync::OnceLock<GdnFlags> = std::sync::OnceLock::new();
 pub struct GdnFlags {
     /// `--ssm-h-dtype f16`: store the GDN decode h-state as FP16.
     pub h_f16: bool,
+    /// Stage 3 of the f16 h-state: additionally SIZE the h pools at 2 bytes
+    /// per element. Must imply `h_f16` (a narrow pool holding FP32 would be
+    /// an OOB write, not a mode). NOT serveable yet and therefore has NO
+    /// CLI surface — the CLI mapping always publishes `false`, and
+    /// `ssm_h_fp16_preconditions` refuses it besides (defense in depth) —
+    /// but the sizing plumbing keys off THIS field so the pool, preflight
+    /// and every byte-copier already agree on the storage width when
+    /// prefill narrowing lands.
+    pub h_f16_pool: bool,
     /// `--gdn-fused-norm`: fused GDN output-norm decode kernel.
     pub fused_norm: bool,
     /// `--ssm-batched-recurrent`: one strided recurrent launch per batch.
@@ -78,6 +87,10 @@ impl GdnFlags {
     fn from_env() -> Self {
         Self {
             h_f16: std::env::var("ATLAS_SSM_H_FP16").is_ok(),
+            // No environment fallback on purpose (house rule: no new env
+            // knobs) — stage 3 has no CLI surface either until prefill
+            // narrowing lands; only unit tests exercise the sizing.
+            h_f16_pool: false,
             fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
             batched_recurrent: std::env::var("ATLAS_SSM_BATCHED_RECURRENT").as_deref() == Ok("1"),
             // No legacy environment variable on purpose (house rule: CLI flags
@@ -108,6 +121,34 @@ pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16
 }
 
+/// Stage 3 of the f16 h-state: h pools SIZED at 2 bytes/element
+/// (`--ssm-h-dtype f16-pool`). Implies [`ssm_h_fp16_enabled`] — a narrow
+/// pool holding FP32 would be an OOB write, not a mode — which
+/// [`ssm_h_dtype_bits`] guarantees at the one place the value is decoded.
+pub fn ssm_h_f16_pool_enabled() -> bool {
+    flags().h_f16_pool
+}
+
+/// SSOT decode of `--ssm-h-dtype` into the two h-state bits it publishes:
+/// `(h_f16, h_f16_pool)`.
+///
+/// Both the CLI validator (which rejects the pairs the mode cannot serve)
+/// and `publish_kernel_flags` (which publishes the cell the kernels
+/// dispatch on) go through THIS, so a validator that accepted one reading
+/// while the kernels took another is not expressible. Anything that is not
+/// exactly `f16` or `f16-pool` — including `f32` and an absent flag — is
+/// FP32; `check_enum` has already rejected unknown spellings by the time
+/// this runs, and defaulting an unknown one to FP32 here is the safe arm
+/// besides.
+pub fn ssm_h_dtype_bits(dtype: Option<&str>) -> (bool, bool) {
+    match dtype {
+        Some("f16") => (true, false),
+        // f16-pool is f16 PLUS the narrow pool: never one without the other.
+        Some("f16-pool") => (true, true),
+        _ => (false, false),
+    }
+}
+
 /// `--gdn-fused-norm` (legacy `ATLAS_GDN_FUSED_NORM=1`).
 pub fn gdn_fused_norm_enabled() -> bool {
     flags().fused_norm
@@ -128,10 +169,11 @@ pub fn verify_exact_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::GdnFlags;
+    use super::{GdnFlags, ssm_h_dtype_bits};
 
     const BASE: GdnFlags = GdnFlags {
         h_f16: false,
+        h_f16_pool: false,
         fused_norm: false,
         batched_recurrent: false,
         exact_verify: false,
@@ -189,6 +231,38 @@ mod tests {
     #[test]
     fn env_fallback_never_enables_exact_verify() {
         assert!(!GdnFlags::from_env().exact_verify);
+        // Same rule for the stage-3 pool sizing: no env variable feeds it.
+        // `--ssm-h-dtype f16-pool` is the ONLY way to publish it, so a
+        // legacy `ATLAS_SSM_H_FP16=1` script keeps the FP32-sized pool.
+        assert!(!GdnFlags::from_env().h_f16_pool);
+    }
+
+    /// A narrow pool holding FP32 is an out-of-bounds write, not a mode, so
+    /// `h_f16_pool` without `h_f16` must not be expressible from any input.
+    /// This is the ONE decode both the validator and the publisher use, so
+    /// pinning it here pins it for both.
+    #[test]
+    fn the_pool_bit_is_never_set_without_the_dtype_bit() {
+        for spelling in [
+            None,
+            Some("f32"),
+            Some("f16"),
+            Some("f16-pool"),
+            Some(""),
+            Some("F16-POOL"),
+            Some("f16 "),
+        ] {
+            let (h_f16, h_f16_pool) = ssm_h_dtype_bits(spelling);
+            assert!(
+                h_f16 || !h_f16_pool,
+                "{spelling:?} produced a narrow pool with an FP32 h-state"
+            );
+        }
+        assert_eq!(ssm_h_dtype_bits(Some("f16-pool")), (true, true));
+        // Case and whitespace are NOT accepted spellings — `check_enum`
+        // rejects them upstream, and defaulting them to FP32 here is the
+        // safe arm if it ever did not.
+        assert_eq!(ssm_h_dtype_bits(Some("F16-POOL")), (false, false));
     }
 
     /// NEGATIVE: an FP16 h-state forces non-exact EVEN WHEN exact was

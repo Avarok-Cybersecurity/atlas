@@ -12,10 +12,14 @@
 //!
 //! Microbenchmarked at M=4 on the real 27B drafter shapes (GB10):
 //! `dense_gemm_bf16_pipelined` 5.1 ms vs the 4x `dense_gemv_bf16` loop
-//! 14.4 ms per draft position (scalar `dense_gemm_bf16`: 8.1 ms). The small
-//! K/V projections (N = nkv*hd) stay on the per-row GEMV (44 us vs 194 us
-//! pipelined at N=1024 — the 128-wide tile under-fills the grid). The LM
-//! head batches through `w4a16_gemv_batch{4,8,16,32}`, selected per width.
+//! 14.4 ms per draft position (scalar `dense_gemm_bf16`: 8.1 ms). At the
+//! NARROW propose widths (M in 2..=8) both of those lose to
+//! `dense_gemv_bf16_batchm`, which streams each weight once for all M rows:
+//! the pipelined GEMM cost 5.43 ms/draft-position at M=2 against 3.57 ms for
+//! the M=1 GEMV — 1.52x for two rows. [`super::row_dispatch`] holds that
+//! measurement, the 2..=8 band, both kill switches and the numerics
+//! statement. The LM head batches through `w4a16_gemv_batch{4,8,16,32}`,
+//! selected per width.
 //!
 //! WIDTH: `n` is bounded by [`super::batch_caps::MtpHead::propose_batch_max`]
 //! (up to 32 since the 32:1 rung), NOT by a hardcoded 4 — see that module for
@@ -35,6 +39,7 @@
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::DevicePtr;
 
+use super::row_dispatch;
 use super::{MtpHead, MtpProposerState, ProjectionWeight};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
@@ -49,9 +54,18 @@ use crate::layers::mtp_meta::pack_mtp_attn_meta;
 const LP_SCRATCH_OFF: usize = 256;
 
 impl MtpHead {
-    /// M=n-row BF16 GEMM dispatch: pipelined tensor-core GEMM for the large
-    /// weight-bearing shapes (reads B once for all rows), per-row GEMV for
-    /// small N where the 128-wide tile under-fills the grid (measured).
+    /// M=n-row BF16 projection dispatch. Three tiers, selected by the pure
+    /// [`row_dispatch::drafter_row_kernel`] (which carries the measurements,
+    /// the 2..=8 band and the numerics statement):
+    ///
+    /// * **batched GEMV** at m in 2..=8 — one weight pass, m accumulators;
+    /// * **pipelined tensor-core GEMM** at the wider propose widths and for
+    ///   large N, where the batched-GEMV family measured negative;
+    /// * **per-row GEMV** for small N where the 128-wide tile under-fills the
+    ///   grid, and as the `ATLAS_MTP_KV_GEMV` arm.
+    ///
+    /// All three see the same `[m, k]` contiguous `input` and write m
+    /// contiguous `[n]` output rows, so `out_stride == n`.
     fn gemm_rows(
         &self,
         gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -63,19 +77,29 @@ impl MtpHead {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        // Small-N routing re-derived for the widened propose (2026-07-30):
-        // the "per-row GEMV wins at small N" measurement was taken at M=4
-        // (4 x 44 us ~= one 194 us under-filled tile — a tie). The propose has
-        // since widened to n=16 (a83627a2), where the loop is ~16 x 44 us
-        // ~= 700 us against the SAME ~200 us tile: the crossover flipped and
-        // the loop became the 5,200-launch `dense_gemv_bf16` line in the
-        // C=16 verify-tax profile (PROGRESS_LOG 6.11). Take the tile GEMM for
-        // small N once m >= 8; keep the GEMV loop below that (the measured
-        // small-m regime) and as the ATLAS_MTP_KV_GEMV=1 kill-switch arm.
-        let small_n_tile =
-            m >= 8 && (k & 7) == 0 && std::env::var_os("ATLAS_MTP_KV_GEMV").is_none();
-        if (n >= 4096 || small_n_tile) && (k & 7) == 0 {
-            ops::dense_gemm_bf16_pipelined(
+        match row_dispatch::drafter_row_kernel(
+            m,
+            n,
+            k,
+            self.dense_gemv_batchm_k.0 != 0,
+            row_dispatch::kv_gemv_pinned(),
+            row_dispatch::small_m_tier_off(),
+        ) {
+            row_dispatch::RowKernel::Batchm => ops::dense_gemv_batchm(
+                gpu,
+                self.dense_gemv_batchm_k,
+                input,
+                w,
+                output,
+                m as u32,
+                n,
+                k,
+                // Output rows are contiguous [n] blocks; the kernel wants the
+                // stride in BF16 ELEMENTS, which is exactly n.
+                n,
+                stream,
+            ),
+            row_dispatch::RowKernel::Pipelined => ops::dense_gemm_bf16_pipelined(
                 gpu,
                 self.dense_gemm_pipelined_k,
                 input,
@@ -85,22 +109,23 @@ impl MtpHead {
                 n,
                 k,
                 stream,
-            )
-        } else {
-            let gemv_k = self.dense_gemv_k.unwrap();
-            for r in 0..m {
-                ops::dense_gemv(
-                    gpu,
-                    gemv_k,
-                    input.offset(r * k as usize * 2),
-                    w,
-                    output.offset(r * n as usize * 2),
-                    n,
-                    k,
-                    stream,
-                )?;
+            ),
+            row_dispatch::RowKernel::GemvLoop => {
+                let gemv_k = self.dense_gemv_k.unwrap();
+                for r in 0..m {
+                    ops::dense_gemv(
+                        gpu,
+                        gemv_k,
+                        input.offset(r * k as usize * 2),
+                        w,
+                        output.offset(r * n as usize * 2),
+                        n,
+                        k,
+                        stream,
+                    )?;
+                }
+                Ok(())
             }
-            Ok(())
         }
     }
 
@@ -597,6 +622,30 @@ impl MtpHead {
         Ok(())
     }
 
+    /// The arm the large-N projections (fc/q/o/ffn) actually take at this
+    /// propose width — logged once per distinct `n` so a 0-handle or
+    /// kill-switch fallback cannot hide behind a green "propose_batch active"
+    /// line. The N=1024 K/V pair follows the same arm except under
+    /// `ATLAS_MTP_KV_GEMV`.
+    fn propose_proj_arm(&self, n: usize, h: usize) -> &'static str {
+        // Probed at the `fc` shape (N = h, K = 2h) — the first weight-bearing
+        // projection of every draft position. All the other large-N ones
+        // route identically; only the N < 4096 K/V pair can split off, and
+        // only under `ATLAS_MTP_KV_GEMV`.
+        match row_dispatch::drafter_row_kernel(
+            n,
+            h as u32,
+            (2 * h) as u32,
+            self.dense_gemv_batchm_k.0 != 0,
+            row_dispatch::kv_gemv_pinned(),
+            row_dispatch::small_m_tier_off(),
+        ) {
+            row_dispatch::RowKernel::Batchm => "GEMV-BATCHM",
+            row_dispatch::RowKernel::Pipelined => "PIPELINED-GEMM",
+            row_dispatch::RowKernel::GemvLoop => "GEMV-LOOP",
+        }
+    }
+
     /// Batched propose driver: `num_drafts` chained positions, each one
     /// M=n-row forward. Draft 0 consumes the caller's per-sequence target
     /// hiddens; draft j>0 consumes the drafter's own hidden row i (written
@@ -634,16 +683,21 @@ impl MtpHead {
                 && let Some((_, ldb)) = self.lm_head_nvfp4_t
             {
                 tracing::info!(
-                    "MTP propose_batch active: n={n} pipelined_gemm={:#x} \
-                     lm_head=TILE-TWIN (handle {:#x}, ldb={ldb}) — kill switch \
-                     ATLAS_NO_MTP_LMHEAD_TGEMM (presence)",
+                    "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
+                     gemv_batchm={:#x} lm_head=TILE-TWIN (handle {:#x}, ldb={ldb}) \
+                     — kill switch ATLAS_NO_MTP_LMHEAD_TGEMM (presence)",
+                    self.propose_proj_arm(n, ctx.config.hidden_size),
                     self.dense_gemm_pipelined_k.0,
+                    self.dense_gemv_batchm_k.0,
                     self.w4a16_gemm_t_k.0,
                 );
             } else {
                 tracing::info!(
-                    "MTP propose_batch active: n={n} pipelined_gemm={:#x} lm_head_batchm={:#x}",
+                    "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
+                     gemv_batchm={:#x} lm_head_batchm={:#x}",
+                    self.propose_proj_arm(n, ctx.config.hidden_size),
                     self.dense_gemm_pipelined_k.0,
+                    self.dense_gemv_batchm_k.0,
                     self.lm_head_batch_kernel(n).0
                 );
             }

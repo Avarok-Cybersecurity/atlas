@@ -18,7 +18,11 @@
 //!                            (mixed_forward or plain prefill_chunk).
 //!  - `run_batched_prefill` — Q12 N-stream batched-prefill step.
 //!  - `run_batched_mixed`   — Q12 Phase 5 batched mixed (decode+prefill) step.
+//!  - `prefill_waves`       — pure wave planner for `run_batched_prefill`
+//!                            (VARLEN budget capping + geometry grouping).
 
+#[path = "phase_continue_prefills/prefill_waves.rs"]
+mod prefill_waves;
 #[path = "phase_continue_prefills/run_batched_mixed.rs"]
 mod run_batched_mixed;
 #[path = "phase_continue_prefills/run_batched_prefill.rs"]
@@ -204,6 +208,7 @@ pub(super) fn continue_in_progress_prefills(
             prefilling,
             &mut completed_indices,
             max_prefill_tokens,
+            max_batch_tokens,
             prefill_stream,
             prefill_event,
         );

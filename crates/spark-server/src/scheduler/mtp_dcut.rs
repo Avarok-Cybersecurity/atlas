@@ -185,9 +185,28 @@ pub(super) fn select(
     retained
 }
 
-/// Plan one verify batch: choose each batchable sequence's retained draft
-/// count, truncate its drafts to that prefix, reorder the batch deepest-first,
-/// and return the resulting per-sequence ROW count (`retained + 1`).
+/// Plan one verify batch: choose the retained draft-count MULTISET from the
+/// drafter's confidences, assign it to the batch's ssm slots in the canonical
+/// order, truncate each sequence's drafts to its assigned prefix, and return
+/// the resulting per-sequence ROW count (`retained + 1`) in dispatch order.
+///
+/// ★ The depth→slot ASSIGNMENT is canonical (`verify_key::verify_batch_order`
+/// — depths descending paired with slots ascending), not confidence-ordered,
+/// AT BATCH WIDTHS >= `verify_key::CANONICAL_KEY_MIN_WIDTH` (8). D-Cut's row
+/// saving comes from the multiset, which stays confidence-chosen; WHO gets
+/// which depth was the half that multiplied the batched-verify CUDA-graph key
+/// space (266 arrangements at n=8 against a 32-entry cache → 89% of steps
+/// re-capturing, 23.2 ms/step). It also RECONCILES the batch's two ordering
+/// demands — contiguous equal-depth runs and ascending consecutive ssm slots
+/// — which the confidence-ordered arrangement put in direct conflict.
+///
+/// Below that width the key space is 2 (n=2) or 10 (n=4) keys against a
+/// 32-entry cache — nothing to collapse — and the forced assignment measured
+/// NET NEGATIVE there (-2.4% at C=2, -3.7% at C=4), so this falls back to the
+/// pre-canonical assignment byte for byte. `verify_key::canonical_assignment`
+/// is the single gate (threshold + `ATLAS_CANONICAL_KEY_MIN_WIDTH` override +
+/// the `ATLAS_NO_CANONICAL_VERIFY_KEY` kill switch); see `verify_key`'s module
+/// docs and `CANONICAL_KEY_MIN_WIDTH` for the A/B table.
 ///
 /// With `ATLAS_NO_MTP_DCUT` set — or the batch wider than [`dcut_width_cap`]
 /// sequences (the D-Cut-at-depth policy: pruning at the 16:2 rung's n=16
@@ -222,27 +241,45 @@ pub(super) fn plan(
         })
         .collect();
     let retained = select(&confs, ladder_nd, VERIFY_ROW_BUDGET, dcut_ratio());
-    for (slot, &idx) in batchable.iter().enumerate() {
-        let keep = retained[slot].clamp(1, ladder_nd);
-        active[idx].pending_drafts.truncate(keep);
-        active[idx].pending_draft_conf.truncate(keep);
-        ks[slot] = keep + 1;
+    for (pos, r) in retained.iter().enumerate() {
+        ks[pos] = (*r).clamp(1, ladder_nd) + 1;
     }
-    record(batchable.len() * rows, ks.iter().sum(), &ks);
-    // Deepest first so equal-depth sequences form CONTIGUOUS row runs — the
-    // cross-sequence batched GDN conv+WY fast path launches once per run, so
-    // fragmenting the depths would trade verify rows for kernel launches.
-    // Secondary key stays the ssm slot (canonical graph key + the
-    // consecutive-slot precondition).
-    let mut order: Vec<(usize, usize)> = batchable.iter().copied().zip(ks).collect();
-    order.sort_by_key(|&(idx, k)| {
-        (
-            std::cmp::Reverse(k),
-            active[idx].seq.ssm_slot_idx().unwrap_or(usize::MAX),
-        )
-    });
-    *batchable = order.iter().map(|&(i, _)| i).collect();
-    order.iter().map(|&(_, k)| k).collect()
+    // Dispatch order + depth assignment, from the ONE ordering rule shared
+    // with the graph key. Canonical: depths descending onto slots ascending,
+    // so `ks_out[p]` is the multiset's p-th deepest row count, NOT
+    // necessarily the confidence-chosen depth of the sequence placed there.
+    // Below `CANONICAL_KEY_MIN_WIDTH` (or with the kill switch set): each
+    // sequence keeps its own depth, deepest-first. This is the ONE place the
+    // assignment is decided, so it is the ONE place the width gate is asked —
+    // `mtp_step` re-applies the ORDER for the same `batchable.len()`.
+    let slots: Vec<usize> = batchable
+        .iter()
+        .map(|&idx| active[idx].seq.ssm_slot_idx().unwrap_or(usize::MAX))
+        .collect();
+    let (order, ks_out) = spark_model::speculative::verify_key::verify_batch_order(
+        &slots,
+        &ks,
+        spark_model::speculative::verify_key::canonical_assignment(batchable.len()),
+    );
+    // Truncate to the ASSIGNED depth. Every batchable sequence entered the
+    // step with exactly `ladder_nd` drafts (`mtp_step` truncates the surplus)
+    // and `ks_out[p] - 1` is in `1..=ladder_nd`, so this is always a prefix
+    // of what the drafter produced — deepening a sequence past its own drafts
+    // is unrepresentable, not merely unlikely.
+    let reordered: Vec<usize> = order.iter().map(|&p| batchable[p]).collect();
+    for (idx, &k) in reordered.iter().zip(&ks_out) {
+        let a = &mut active[*idx];
+        debug_assert!(
+            k >= 2 && k - 1 <= a.pending_drafts.len(),
+            "assigned depth {k} exceeds the {} drafts proposed",
+            a.pending_drafts.len()
+        );
+        a.pending_drafts.truncate(k - 1);
+        a.pending_draft_conf.truncate(k - 1);
+    }
+    record(batchable.len() * rows, ks_out.iter().sum(), &ks_out);
+    *batchable = reordered;
+    ks_out
 }
 
 /// Split a batch into verify chunks: `[lo, hi)` index ranges over `ks`.
@@ -315,132 +352,6 @@ fn record(rows_full: usize, rows_kept: usize, ks: &[usize]) {
         );
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ratio_one_retains_full_depth() {
-        let c: Vec<Vec<f32>> = vec![vec![-0.1, -2.0, -3.0]; 4];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        assert_eq!(select(&refs, 3, 32, 1.0), vec![3, 3, 3, 3]);
-    }
-
-    #[test]
-    fn zero_ratio_keeps_the_mandatory_first_draft() {
-        let c: Vec<Vec<f32>> = vec![vec![-0.1, -0.2, -0.3]; 4];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        assert_eq!(select(&refs, 3, 32, 0.0), vec![1, 1, 1, 1]);
-    }
-
-    #[test]
-    fn budget_spent_on_the_confident_sequence() {
-        // seq 0 is confident throughout, seq 1 collapses after its first draft.
-        let c = [vec![-0.01f32, -0.02, -0.03], vec![-3.0f32, -4.0, -5.0]];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        // 2 sequences x 2 prunable depths = 4 candidates; ratio 0.5 keeps 2,
-        // both of which belong to seq 0.
-        assert_eq!(select(&refs, 3, 32, 0.5), vec![3, 1]);
-    }
-
-    #[test]
-    fn retained_set_is_always_a_prefix() {
-        let c = [vec![-0.1f32, -9.0, -0.001], vec![-0.2f32, -0.2, -0.2]];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        let r = select(&refs, 3, 32, 0.5);
-        // Depth-3 of seq 0 has a WORSE survival score than depth-2 despite its
-        // own high confidence, because survival is the prefix product.
-        assert!(r[0] <= 2, "prefix product must dominate the local value");
-        assert!(r.iter().all(|&k| (1..=3).contains(&k)));
-    }
-
-    #[test]
-    fn row_budget_is_never_exceeded() {
-        let c: Vec<Vec<f32>> = vec![vec![-0.001, -0.001, -0.001]; 8];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        // 8 sequences, budget 24 rows: 16 committed, 8 spare -> 8 extra depths.
-        let r = select(&refs, 3, 24, 1.0);
-        let rows: usize = r.iter().map(|k| k + 1).sum();
-        assert!(rows <= 24, "rows={rows}");
-    }
-
-    #[test]
-    fn missing_confidences_are_never_pruned() {
-        let empty: Vec<f32> = Vec::new();
-        let c = [vec![-5.0f32, -5.0, -5.0], empty];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        assert_eq!(select(&refs, 3, 32, 0.5), vec![1, 3]);
-    }
-
-    #[test]
-    fn chunk_ranges_reproduce_the_uniform_caps() {
-        // Every default-ladder-reachable shape is a SINGLE chunk — true under
-        // the old 64-row budget too, so the 96 widening is default-inert.
-        assert_eq!(chunk_ranges(&[4; 8]), vec![(0, 8)]);
-        assert_eq!(chunk_ranges(&[3; 8]), vec![(0, 8)]);
-        // The 16:2 default rung: [3; 16] = 48 rows, one chunk.
-        assert_eq!(chunk_ranges(&[3; 16]), vec![(0, 16)]);
-        assert_eq!(chunk_ranges(&[2; 16]), vec![(0, 16)]);
-        // The 32:1 rung: one chunk up to n=32 (R = 64).
-        assert_eq!(chunk_ranges(&[2; 17]), vec![(0, 17)]);
-        assert_eq!(chunk_ranges(&[2; 32]), vec![(0, 32)]);
-    }
-
-    #[test]
-    fn chunk_ranges_seq_cap_derives_from_the_row_budget() {
-        // Depth above n=8 (env-ladder / ragged-D-Cut shapes) is no longer
-        // serialized into 8-wide chunks: the row budget is the only bound.
-        // rows=3: 96/3 = 32 seqs — 16:2, 24:2 AND 32:2 are each ONE chunk.
-        assert_eq!(chunk_ranges(&[3; 21]), vec![(0, 21)]);
-        assert_eq!(chunk_ranges(&[3; 24]), vec![(0, 24)]);
-        assert_eq!(chunk_ranges(&[3; 32]), vec![(0, 32)]);
-        assert_eq!(chunk_ranges(&[3; 33]), vec![(0, 32), (32, 33)]);
-        // rows=4: 96/4 = 24 seqs.
-        assert_eq!(chunk_ranges(&[4; 9]), vec![(0, 9)]);
-        assert_eq!(chunk_ranges(&[4; 24]), vec![(0, 24)]);
-        assert_eq!(chunk_ranges(&[4; 25]), vec![(0, 24), (24, 25)]);
-        // rows=2: 96/2 = 48 seqs.
-        assert_eq!(chunk_ranges(&[2; 48]), vec![(0, 48)]);
-        assert_eq!(chunk_ranges(&[2; 49]), vec![(0, 48), (48, 49)]);
-        // rows=3 with 10 seqs (the old (0,8),(8,10) split): one chunk now.
-        assert_eq!(chunk_ranges(&[3; 10]), vec![(0, 10)]);
-    }
-
-    #[test]
-    fn chunk_ranges_respect_the_row_budget_when_ragged() {
-        // Deepest-first, mixed depths: rows must never exceed the budget per
-        // chunk.
-        let ks = vec![4, 4, 4, 4, 4, 3, 3, 2, 2, 2];
-        for (lo, hi) in chunk_ranges(&ks) {
-            let rows: usize = ks[lo..hi].iter().sum();
-            assert!(rows <= VERIFY_ROW_BUDGET, "rows={rows}");
-            assert!(hi > lo);
-        }
-    }
-
-    // Env-independent as long as the test process does not set
-    // ATLAS_MTP_DCUT_MAX_SEQS (CI does not) — same pattern as the ladder
-    // default-shape test.
-    #[test]
-    fn dcut_width_cap_default_is_the_measured_win_regime() {
-        // 8 = the C=8 regime where ratio 0.75 measured +2.6%; pruning at the
-        // 16:2 rung's n=16 measured -9% (fixer r2 leg D), so `plan` must
-        // return the uniform shape for any wider batch.
-        assert_eq!(dcut_width_cap(), 8);
-    }
-
-    #[test]
-    fn ratio_snaps_to_a_bucket() {
-        // Pure snapping arithmetic, no env: 0.6 is closest to 0.5.
-        let nearest = |raw: f32| {
-            *BUCKETS
-                .iter()
-                .min_by(|a, b| (*a - raw).abs().partial_cmp(&(*b - raw).abs()).unwrap())
-                .unwrap()
-        };
-        assert_eq!(nearest(0.6), 0.5);
-        assert_eq!(nearest(0.9), 1.0);
-        assert_eq!(nearest(0.1), 0.25);
-    }
-}
+#[path = "mtp_dcut_tests.rs"]
+mod tests;

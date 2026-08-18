@@ -19,6 +19,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use crate::layer::ForwardContext;
 use crate::layers::MoeLayer;
 use crate::layers::ops;
+use crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers;
 use crate::speculative::{DraftProposer, ProposerState};
 use crate::weight_map::{
     DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight, quantize_to_fp8, quantize_to_nvfp4,
@@ -233,14 +234,22 @@ pub struct MtpHead {
     /// drafter shapes: 2.7x the 4x-GEMV per-seq loop (5.1 vs 14.4 ms per
     /// draft position).
     dense_gemm_pipelined_k: KernelHandle,
-    /// `w4a16_gemv_batch{4,8,16,32}` for the batched-propose LM head (0 when
-    /// absent): reads the shared NVFP4 LM head once for up to MAX_M
-    /// sequences. Selected per batch width by
+    /// `dense_gemv_bf16_batchm` — ONE pass over each BF16 drafter weight
+    /// producing all M rows — for the batched propose at M in 2..=8 (0 when
+    /// the target's kernel set lacks it, which falls back to the pipelined
+    /// GEMM). The pipelined GEMM above is the right tool at the C=16/32
+    /// propose widths but costs 5.43 ms/draft-position at M=2 against
+    /// 3.57 ms for the M=1 GEMV — 1.52x for two rows on a path that streams
+    /// the weights once. See [`row_dispatch`] for the measurements, the
+    /// 2..=8 band and the numerics statement.
+    dense_gemv_batchm_k: KernelHandle,
+    /// `w4a16_gemv_batch{4..8}` (narrow family) and `_batch{16,32}` (wide) for
+    /// the batched-propose LM head (0 when absent): reads the shared NVFP4 LM
+    /// head once for up to MAX_M sequences. Selected per batch width by
     /// [`MtpHead::lm_head_batch_kernel`]; per-row accumulation order is
     /// identical across instantiations (one `w4a16_gemv_batchm_impl`), so
     /// output is bit-identical at matching M.
-    w4a16_gemv_batch4_k: KernelHandle,
-    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_batchm: W4a16BatchmTiers,
     w4a16_gemv_batch16_k: KernelHandle,
     w4a16_gemv_batch32_k: KernelHandle,
     /// Padded transposed twin of the SHARED main LM head for the batched
@@ -381,6 +390,7 @@ mod forward_batch;
 mod moe_forward;
 mod new;
 mod prefill;
+pub(crate) mod row_dispatch;
 
 #[cfg(test)]
 mod tests {

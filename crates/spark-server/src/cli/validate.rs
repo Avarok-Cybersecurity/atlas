@@ -73,7 +73,15 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // `!= Some(true)`, not `== Some(false)`: an ABSENT `--gdn-fused-norm` beside
     // an explicit `--ssm-h-dtype f16` publishes fused_norm OFF (the three GDN
     // flags are one cell), so absent is just as dangerous here as explicit off.
-    if args.ssm_h_dtype.as_deref() == Some("f16") && args.gdn_fused_norm != Some(true) {
+    // SSOT with what the server PUBLISHES: `f16-pool` is `f16` plus the narrow
+    // pool, so every f16 rule below has to bind on it too. Reading the pair off
+    // `ssm_h_dtype_bits` rather than matching the string twice is what stops a
+    // new spelling from silently escaping these checks.
+    // `.0` only: every rule here binds on "the h-state is FP16", which
+    // `f16-pool` also is. Nothing below is specific to the pool WIDTH — the
+    // narrowing is transparent to the flag combinations.
+    let h_f16 = spark_model::layers::qwen3_ssm::ssm_h_dtype_bits(args.ssm_h_dtype.as_deref()).0;
+    if h_f16 && args.gdn_fused_norm != Some(true) {
         v.push(Violation::new(
             "--ssm-h-dtype f16 without --gdn-fused-norm",
             "the FP16 h-state twins exist only on the fused-norm decode arm; the unfused \
@@ -82,12 +90,43 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             "add --gdn-fused-norm, or use --ssm-h-dtype f32",
         ));
     }
+    // DFlash verifies gamma+1 = 17 rows, which lands on `gated_delta_rule_wy17`
+    // — the one WY family with no FP16 h-state twin AND an explicit
+    // FP32-element intermediate stride. Both halves read an FP16 h-state as
+    // FP32: fluent garbage, not an error. Applies to plain `f16` as well as
+    // `f16-pool`, hence `h_f16`.
+    if h_f16 && args.dflash {
+        v.push(Violation::new(
+            "--dflash together with --ssm-h-dtype f16",
+            "the DFlash verify width (gamma + 1 = 17) dispatches gated_delta_rule_wy17, \
+             which has no FP16 h-state twin and strides the h intermediates in FP32 \
+             elements — an FP32 kernel over an FP16 h-state emits fluent garbage",
+            "drop --dflash, or use --ssm-h-dtype f32",
+        ));
+    }
+
+    // `--ssm-rollback-mode`: validated through the model-side `FromStr` —
+    // the SAME parse `publish_kernel_flags` uses — so what is accepted here
+    // and what is published cannot drift (mirrors the kv-cache-dtype rule).
+    if let Err(why) = args
+        .ssm_rollback_mode
+        .parse::<spark_model::ssm_reserve::SsmRollbackMode>()
+    {
+        v.push(Violation::new(
+            format!(
+                "--ssm-rollback-mode '{}' is not a valid value.",
+                args.ssm_rollback_mode
+            ),
+            why,
+            "use snapshot (default, wired) or replay (experimental scaffold).",
+        ));
+    }
     // #435: the exact-verify arm's kernels are FP32 readers, so an FP16
     // h-state pool disables it (`GdnFlags::verify_exact_active`). Honouring
     // `--ssm-h-dtype f16` by SILENTLY ignoring an explicit `--exact-verify`
     // would ship the very divergence the operator just opted out of — the
     // exact class of combination this validator exists to refuse.
-    if args.exact_verify == Some(true) && args.ssm_h_dtype.as_deref() == Some("f16") {
+    if args.exact_verify == Some(true) && h_f16 {
         v.push(Violation::new(
             "--exact-verify together with --ssm-h-dtype f16",
             "the exact MTP-verify chain (issue #435) runs FP32-reader kernels and must \

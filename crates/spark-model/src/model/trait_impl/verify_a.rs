@@ -16,6 +16,7 @@ use super::super::block_mgmt::{
     apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
     extract_layer_refs, reuse_prefix_match_disk_ids,
 };
+use super::super::ssm_batched_copy::{StateCopy, run_ssm_state_copies};
 use super::super::ssm_pool::SsmStatePool;
 use super::super::ssm_snapshot::SsmSnapshotPool;
 use super::super::types::{PinnedMetaStaging, TransformerModel};
@@ -270,6 +271,8 @@ impl TransformerModel {
         use crate::layer::SsmLayerState;
 
         let stream = self.gpu.default_stream();
+        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
+        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
                 let ssm = layer_state
@@ -282,7 +285,11 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let nk = self.config.linear_num_key_heads;
                 let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4; // FP32
+                // STORAGE width of pool h regions (SSOT: ssm_pool /
+                // ssm_reserve::ssm_h_stored_bytes) — FP32 today; halves
+                // under the stage-3 f16-sized pool so these copies can
+                // never overrun a narrow slot.
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd; // 8192
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4; // FP32
@@ -296,20 +303,19 @@ impl TransformerModel {
                 }
 
                 // D2D copy: state → checkpoint
-                self.gpu.copy_d2d_async(
-                    ssm.h_state,
-                    ssm.h_state_checkpoint.unwrap(),
-                    h_bytes,
-                    stream,
-                )?;
-                self.gpu.copy_d2d_async(
-                    ssm.conv_state,
-                    ssm.conv_state_checkpoint.unwrap(),
-                    conv_bytes,
-                    stream,
-                )?;
+                h_plan.push(StateCopy {
+                    src: ssm.h_state,
+                    dst: ssm.h_state_checkpoint.unwrap(),
+                    bytes: h_bytes,
+                });
+                conv_plan.push(StateCopy {
+                    src: ssm.conv_state,
+                    dst: ssm.conv_state_checkpoint.unwrap(),
+                    bytes: conv_bytes,
+                });
             }
         }
+        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         self.gpu.synchronize(stream)?;
         Ok(())
     }
@@ -342,8 +348,9 @@ impl TransformerModel {
                          (layer {i}): only {} per-token intermediate(s) available. \
                          With no intermediates this is the self-speculative / ngram \
                          path — use --speculative (MTP) or --num-drafts 1 for SSM \
-                         models. With too few, the MTP intermediate pool \
-                         (num_drafts + 1) is smaller than the verify width K. \
+                         models. With too few, the MTP h-intermediate pool \
+                         (num_drafts per slot, tiered — K-1 snapshots for a \
+                         K-row verify) is smaller than this rollback target. \
                          No rollback copies were enqueued.",
                         ssm.h_state_intermediates.len(),
                     );
@@ -352,6 +359,8 @@ impl TransformerModel {
         }
 
         let stream = self.gpu.default_stream();
+        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
+        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
                 let ssm = layer_state
@@ -363,7 +372,8 @@ impl TransformerModel {
                 let vd = self.config.linear_value_head_dim;
                 let kd = self.config.linear_key_head_dim;
                 let nk = self.config.linear_num_key_heads;
-                let h_bytes = nv * vd * kd * 4;
+                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+                let h_bytes = self.ssm_pool.h_stored_bytes;
                 let conv_dim = nk * kd * 2 + nv * vd; // 8192
                 let d_conv = self.config.linear_conv_kernel_dim;
                 let conv_bytes = conv_dim * d_conv * 4;
@@ -371,28 +381,32 @@ impl TransformerModel {
                 if num_accepted == 0 {
                     // Restore to pre-verification checkpoint
                     if let Some(ckpt) = ssm.h_state_checkpoint {
-                        self.gpu
-                            .copy_d2d_async(ckpt, ssm.h_state, h_bytes, stream)?;
+                        h_plan.push(StateCopy {
+                            src: ckpt,
+                            dst: ssm.h_state,
+                            bytes: h_bytes,
+                        });
                     }
                     if let Some(ckpt) = ssm.conv_state_checkpoint {
-                        self.gpu
-                            .copy_d2d_async(ckpt, ssm.conv_state, conv_bytes, stream)?;
+                        conv_plan.push(StateCopy {
+                            src: ckpt,
+                            dst: ssm.conv_state,
+                            bytes: conv_bytes,
+                        });
                     }
                 } else if num_accepted <= ssm.h_state_intermediates.len() {
                     // Restore to intermediate checkpoint after the last accepted token
                     let idx = num_accepted - 1;
-                    self.gpu.copy_d2d_async(
-                        ssm.h_state_intermediates[idx],
-                        ssm.h_state,
-                        h_bytes,
-                        stream,
-                    )?;
-                    self.gpu.copy_d2d_async(
-                        ssm.conv_state_intermediates[idx],
-                        ssm.conv_state,
-                        conv_bytes,
-                        stream,
-                    )?;
+                    h_plan.push(StateCopy {
+                        src: ssm.h_state_intermediates[idx],
+                        dst: ssm.h_state,
+                        bytes: h_bytes,
+                    });
+                    conv_plan.push(StateCopy {
+                        src: ssm.conv_state_intermediates[idx],
+                        dst: ssm.conv_state,
+                        bytes: conv_bytes,
+                    });
                 } else {
                     // Unreachable: the pre-validation pass above already
                     // bailed for every `num_accepted > intermediates.len()`,
@@ -413,6 +427,11 @@ impl TransformerModel {
                 // and it would otherwise be swallowed by the branch above.
             }
         }
+        // Enqueued only after every layer validated AND planned — the
+        // pre-validation pass above already guarantees no bail can happen
+        // here, and building the plan first makes that structural rather
+        // than argued: a partially-rewound MIXED state is unrepresentable.
+        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         // No synchronize needed: rollback copies and subsequent operations
         // are on the same CUDA stream, so ordering is guaranteed.
         Ok(())

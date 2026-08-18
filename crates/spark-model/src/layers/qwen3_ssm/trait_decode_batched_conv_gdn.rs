@@ -70,6 +70,11 @@ pub(super) struct ConvGdnArgs {
     /// verify arm writes through this (its norm runs in-loop); the WY arms
     /// leave the norm to phase 8, which derives its own destination.
     pub normed_out: DevicePtr,
+    /// The h pool's BYTE PITCH — `Qwen3SsmLayer::h_slot_stride_bytes()`, not
+    /// the FP32 `h_state_bytes`. Every reader below strides or byte-copies
+    /// pool h memory with it (per-token intermediates, slot-to-slot bases),
+    /// and under the f16-SIZED pool those regions are 2 bytes/element. An
+    /// FP32 value here would overrun the neighbouring slot rather than fail.
     pub h_bytes: usize,
     pub conv_bytes: usize,
     pub qkvz_size: usize,
@@ -375,8 +380,9 @@ impl Qwen3SsmLayer {
                 // with 1..=K-1 (impl_a2.rs:450-509, spec_step.rs:340).
                 // DFlash cannot reach these branches at all: it dispatches
                 // only at `drafts.len() >= 4` (mtp_step.rs:308), i.e. verify
-                // width >= 5, which lands on K=17 or the sequential fallback,
-                // both of which still write every intermediate.
+                // width >= 5, which lands on K=17 or the sequential fallback
+                // (which skips the dead t = K-1 write the same way since the
+                // K-1 h-intermediate shrink).
                 // Writing it cost a conv_bytes D2D per SSM layer per verify
                 // step for nothing (measured: 0.14% of decode GPU time).
                 if t + 1 < 4 {
@@ -681,18 +687,25 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
 
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.h_state,
-                    ssm_state.h_state_intermediates[t as usize],
-                    h_bytes,
-                    stream,
-                )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                // Skip t == K-1 (dead write — no reader exists; see the
+                // reader enumeration in the K=4 branch above). Required for
+                // the h side since the pool allocates K-1 h intermediates
+                // (index K-1 no longer exists); the conv skip saves the
+                // same dead copy the fused K=2/3/4 arms already skip.
+                if (t as usize) + 1 < num_tokens {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.h_state,
+                        ssm_state.h_state_intermediates[t as usize],
+                        h_bytes,
+                        stream,
+                    )?;
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
         }
 

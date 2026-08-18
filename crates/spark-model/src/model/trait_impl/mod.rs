@@ -28,6 +28,7 @@ mod decode_checkpoint;
 mod decode_graph_key;
 mod drafter_prefill;
 mod ep_misc;
+mod graph_borrow;
 mod lm_head_batched;
 mod meta;
 mod prefill_a;
@@ -82,6 +83,9 @@ impl Model for TransformerModel {
     // first propose, a concurrent sequence's prefill has already restarted it
     // and every sequence but the last-prefilled drafts blind. See
     // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
+    fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
+        self.tokens_have_vision_pad(tokens)
+    }
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;
@@ -305,6 +309,7 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         stream: u64,
     ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         let r = self.decode_verify_dispatch(tokens, seq, stream);
         if r.is_err() {
             // Same brick guard as decode_batch: a refuse mid-verify-capture
@@ -322,6 +327,9 @@ impl Model for TransformerModel {
     }
     fn has_ssm_layers(&self) -> bool {
         self.ssm_pool.num_ssm_layers > 0
+    }
+    fn mtp_slot_draft_capacity(&self, slot_idx: usize) -> usize {
+        self.ssm_pool.verify_draft_capacity(slot_idx)
     }
     fn decode_rollback_ring_slots(&self) -> usize {
         if self.ssm_snapshots.decode_rollback_enabled() {
@@ -368,6 +376,7 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         _stream: u64,
     ) -> Result<[u32; 2]> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         self.decode_verify_graphed_dispatch(tokens, seq, _stream)
     }
     fn decode_verify_graphed_k3(
@@ -376,6 +385,7 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         _stream: u64,
     ) -> Result<[u32; 3]> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream)
     }
     fn decode_verify_graphed_k4(
@@ -384,6 +394,7 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         _stream: u64,
     ) -> Result<[u32; 4]> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
@@ -396,6 +407,7 @@ impl Model for TransformerModel {
         seqs: &mut [&mut SequenceState],
         _stream: u64,
     ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
@@ -430,6 +442,7 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         _stream: u64,
     ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         self.decode_verify_graphed_kgamma_dispatch(tokens, seq, _stream)
     }
     fn decode_and_verify_fused(
@@ -438,6 +451,7 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         _stream: u64,
     ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
         self.decode_and_verify_fused_dispatch(tokens, seq, _stream)
     }
     fn save_hidden_for_catchup(&self, token_idx: usize, pos: usize) -> Result<()> {
