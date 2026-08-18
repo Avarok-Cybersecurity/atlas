@@ -804,6 +804,52 @@ next person does not re-run this sweep.
 Raw series: `c8_atlas_dgx2_20260818.json`, `c8_vllm_mtp_dgx2_20260818.json`. Same
 provenance as the C=2 block above.
 
+### SAME-DAY FULL LADDER ATTEMPT (2026-08-18) — INCOMPLETE, and its late rungs are SUSPECT
+
+After hardening C=2 and reproducing C=8, the remaining rungs were swept on merged main
+`529fcb04fa`, dgx2, both engines back-to-back. **The sweep did not finish: dgx2 stopped
+answering ping and ssh from BOTH other boxes while the vLLM leg entered C=128, and needed a
+physical powercycle.** Raw JSON was written to `/tmp` and did not survive. The numbers below
+are transcribed from the harness SERIES lines and are recorded for provenance, NOT as a
+replacement for the certified table.
+
+| C | Atlas | vLLM+MTP | same-day | certified |
+|---:|---:|---:|---:|---:|
+| 1 | 24.20 | 19.15 | **1.264x** | 1.196x |
+| 2 | 41.02 | 37.11 | **1.105x** | 1.004x |
+| 4 | 72.99 | 68.49 | **1.066x** | 1.036x |
+| 8 | 123.22 | 121.64 | 1.013x | 1.012x |
+| 16 | 195.19 | 193.99 | 1.006x | 1.032x |
+| 32 | 276.11 | 277.60 | **0.995x** | 1.027x |
+| 64 | 382.05 | (2 of 3 reps, ~355) | — | 1.070x |
+| 128 | 469.03 | (never ran — box wedged) | — | 1.333x |
+
+**C=32 inverted, and C=16 narrowed. Both are UNCONFIRMED and must not be treated as a
+regression yet.** The reason is the wedge itself: C=16 and C=32 were measured on a box that
+became unresponsive roughly twenty minutes later, so the memory pressure that eventually took
+it down was plausibly already building while those rungs ran. A measurement taken on the
+approach to a hard failure is not a measurement of steady state.
+
+What argues it might still be real: the drop is NOT symmetric. Against certified absolutes
+Atlas fell 5.1% at C=32 while vLLM fell only 2.1%, and C=1/2/4 got WIDER on the same sweep
+rather than uniformly worse. A pure box-slowness story predicts both engines falling together
+at every rung, which is what C=8 showed (both ~2.2% down, ratio held to 0.1%) and what these
+two rungs did not.
+
+**Required before any conclusion:** re-measure C=16 and C=32 alone, on a healthy box, in
+their own serve, with nothing else queued behind them. Until that exists this file's
+certified table stands on its own gate records, and no fresh "wins at every rung" claim
+should be made from this sweep.
+
+★ **Operational hazard, recorded so it is not rediscovered:** vLLM+MTP at C=128 on GB10 can
+take the whole machine down even at the "safe" `--gpu-memory-utilization 0.85`. GB10 memory
+is unified, and MTP verification widens the working set exactly where the batch is widest.
+The warning was already in this file: vLLM's certified C=128 (358.57) is BELOW its own C=64
+(361.39) — an engine going backwards at its widest rung is one already struggling there.
+Atlas never pays this because its speculation self-disables above 32 concurrent sequences,
+which is also why it wins C=128 by 1.333x. Next time: run C=128 in its own serve, drop util
+to 0.75-0.80 for that rung, and write raw JSON under `/home/claude` rather than `/tmp`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
