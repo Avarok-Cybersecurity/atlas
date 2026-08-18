@@ -306,6 +306,15 @@ jobs:
 
           if [ -z "$(git status --porcelain governance/)" ]; then
             echo "nothing new — every harvested line was already in the ledger"
+            # A PR open at this point carries nothing main does not already
+            # have. Say so rather than closing it: an artifact sweep that came
+            # back empty for a transient reason looks identical from here, and
+            # closing a legitimate PR on that guess is worse than a warning.
+            stale_pr=$(gh pr list --head bot/governance-harvest --base main --state open \
+              --json number --jq '.[0].number // empty')
+            if [ -n "$stale_pr" ]; then
+              echo "::warning::harvest PR #$stale_pr is open but its ledger is already on main — close it if the next sweep agrees"
+            fi
             emit_landed none
             exit 0
           fi
@@ -343,9 +352,32 @@ jobs:
           open_pr=$(gh pr list --head bot/governance-harvest --base main --state open \
             --json number --jq '.[0].number // empty')
           if [ -n "$open_pr" ]; then
-            echo "harvest PR #$open_pr is still open — leaving it to converge; its successor will carry anything new"
-            emit_landed "waiting on #$open_pr"
-            exit 0
+            # An open PR is left alone while it is making progress, because
+            # pushing restarts its checks. But "leave it alone" must not mean
+            # "abandon it": a hung runner (the linux CUDA build has been killed
+            # at GitHub's 6h ceiling), a cancelled job, or main moving ahead all
+            # leave a PR that will never merge on its own. Rebuilding the branch
+            # on current main refreshes it and re-triggers CI, which is the same
+            # repair a human would do by hand.
+            pr_state=$(gh pr view "$open_pr" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo UNKNOWN)
+            buckets=$(gh pr checks "$open_pr" --json bucket --jq '[.[].bucket]' 2>/dev/null || echo '[]')
+            in_flight=$(printf '%s' "$buckets" | jq '[.[]|select(.=="pending")]|length')
+            broken=$(printf '%s' "$buckets" | jq '[.[]|select(.=="fail" or .=="cancel")]|length')
+
+            if [ "${in_flight:-0}" -gt 0 ]; then
+              echo "harvest PR #$open_pr has ${in_flight} check(s) in flight — leaving it to converge"
+              emit_landed "waiting on #$open_pr"
+              exit 0
+            fi
+            if [ "${broken:-0}" -eq 0 ] && [ "$pr_state" != "BEHIND" ]; then
+              echo "harvest PR #$open_pr is idle and healthy — leaving it alone"
+              emit_landed "waiting on #$open_pr"
+              exit 0
+            fi
+            echo "::warning::harvest PR #$open_pr is stuck (mergeState=$pr_state, failed/cancelled checks=${broken:-0}) — rebuilding it on current main to re-trigger CI"
+            repair=1
+            # fall through: the rebuild below force-updates the branch, which
+            # refreshes the PR against current main and restarts its checks.
           fi
 
           # Nothing to do if the rolling branch already carries exactly this
@@ -353,7 +385,9 @@ jobs:
           # differs even when the ledger does not; force-pushing that churn
           # restarts the open PR's checks, and on a busy repo the restarts
           # outrun the checks and the PR never converges.
-          if git fetch --quiet origin bot/governance-harvest 2>/dev/null; then
+          # A repair deliberately pushes an identical tree: the point is the new
+          # parent and the fresh CI run, not the content.
+          if [ -z "${repair:-}" ] && git fetch --quiet origin bot/governance-harvest 2>/dev/null; then
             if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse FETCH_HEAD^{tree})" ]; then
               echo "rolling branch already carries this exact ledger — leaving it and its in-flight checks alone"
               emit_landed unchanged

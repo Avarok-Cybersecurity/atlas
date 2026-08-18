@@ -504,6 +504,57 @@ jobs:
           max-chars: "32000"
           api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
           fallback: unknown
+      # ── Deterministic fallback ──────────────────────────────────────────
+      # The model cannot always answer. Dependabot PRs never see repo secrets
+      # (GitHub gives them a separate store), so the descent abstains on EVERY
+      # one of them, permanently; a spent free-tier daily quota abstains too.
+      # Those runs recorded `unknown`, which implies no benchmarks and, worse,
+      # is useless as evidence later.
+      #
+      # Where the changed paths answer the question by themselves, answer it
+      # here instead. This is deliberately narrow: it fires only when EVERY
+      # changed path falls in one bucket, and it refuses to guess about engine
+      # internals — a diff touching crates/ or kernels/ can mean anything, and
+      # inventing an intent there would be fabrication, not classification.
+      # Anything it cannot answer honestly stays `unknown`, where the path
+      # rules in `gate::coverage` still apply.
+      - name: Classify from the changed paths when the model could not
+        id: fallback
+        if: steps.override.outputs.count == '0' && steps.path.outputs.status != 'ok'
+        env:
+          TAXONOMY: .github/pr-taxonomy.json
+        run: |
+          set -uo pipefail
+          total=$(grep -c . changed.txt 2>/dev/null || echo 0)
+          all_match() {  # every changed path matches the regex
+            [ "$total" -gt 0 ] && [ "$(grep -cE "$1" changed.txt || true)" -eq "$total" ]
+          }
+
+          bucket=""
+          if   all_match '^\.github/';                                      then bucket=infrastructure/ci
+          elif all_match '^(Cargo\.(toml|lock)|deny\.toml|rust-toolchain\.toml)$|/Cargo\.toml$'; then bucket=infrastructure/build-system
+          elif all_match '^\.benchmarks/';                                  then bucket=infrastructure/benchmark-gate
+          elif all_match '^(docs|book)/|\.md$';                             then bucket=documentation/reference
+          elif all_match '^(site|dez)/';                                    then bucket=documentation/reference
+          elif all_match '^tests/';                                         then bucket=infrastructure/ci
+          fi
+
+          if [ -z "$bucket" ]; then
+            echo "changed paths do not answer it on their own — leaving the classification unknown"
+            echo "path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Same shape discipline the override path applies: a bucket is only
+          # usable if it is really a node of the taxonomy.
+          if ! jq -e --arg p "$bucket" '(getpath($p|split("/"))|type) == "object"' "$TAXONOMY" >/dev/null 2>&1; then
+            echo "::warning::path-rule bucket $bucket is not a taxonomy node — ignoring it"
+            echo "path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "every changed path is $bucket — recording it beside the model's abstain"
+          echo "path=$bucket" >> "$GITHUB_OUTPUT"
+
       - name: Append the classification to the PR journey ledger
         # `crates/atlas-governance` shipped with a full event model, a grow-only
         # Journey, deduplication and 16 tests — and ZERO WRITERS. Nothing had
@@ -527,6 +578,7 @@ jobs:
           OVERRIDE_PATHS: ${{ steps.override.outputs.paths }}
           TAXON_PATH: ${{ steps.path.outputs.path }}
           TAXON_STATUS: ${{ steps.path.outputs.status }}
+          FALLBACK_PATH: ${{ steps.fallback.outputs.path }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_ID: ${{ github.run_id }}
@@ -550,7 +602,17 @@ jobs:
               append "$p" ok
             done < <(printf '%s\n' "$OVERRIDE_PATHS")
           else
+            # The model's own answer is recorded FIRST and unedited, including
+            # an abstain. The abstain rate is the only signal that the
+            # classifier is failing, and a fallback that overwrote it would
+            # hide an outage behind a healthy-looking ledger.
             append "$TAXON_PATH" "$TAXON_STATUS"
+            # A path-derived answer is a second, additive line — the union in
+            # `required::report` takes every ok|partial value, so this supplies
+            # a usable intent without erasing the evidence above it.
+            if [ -n "${FALLBACK_PATH:-}" ]; then
+              append "$FALLBACK_PATH" ok
+            fi
           fi
 
           # ★ THE LINE LEAVES BY ARTIFACT, NOT BY PUSH.
@@ -598,6 +660,7 @@ jobs:
           OVERRIDE_PATHS: ${{ steps.override.outputs.paths }}
           TAXON_PATH: ${{ steps.path.outputs.path }}
           TAXON_STATUS: ${{ steps.path.outputs.status }}
+          FALLBACK_PATH: ${{ steps.fallback.outputs.path }}
           TAXON_DEPTH: ${{ steps.path.outputs.depth }}
           TAXON_REASON: ${{ steps.path.outputs.reason }}
         run: |
@@ -619,6 +682,15 @@ jobs:
             # is the action's own fixed prose, never model-authored text.
             if [ "$TAXON_STATUS" != "ok" ]; then
               echo "::warning title=pr-categorize::classifier finished with status '$TAXON_STATUS' — $TAXON_REASON"
+            fi
+            # A path-derived answer joins the effective set, and says so. The
+            # abstain above still stands in the ledger and in the annotation,
+            # so the rate the enforcement decision waits on stays honest.
+            if [ -n "${FALLBACK_PATH:-}" ]; then
+              SOURCE="$SOURCE + changed-path rules"
+              EFFECTIVE_PATHS="$(printf '%s\n%s' "$TAXON_PATH" "$FALLBACK_PATH")"
+              STATUS_LINE="$TAXON_STATUS, then ok from the path rules"
+              DETAIL_ROWS=2
             fi
           fi
 

@@ -24,5 +24,9 @@
     "svelte-check": "^4.4.3",
     "typescript": "^5.9.3",
     "vite": "^8.2.1"
+  },
+  "overrides": {
+    "cookie": "^0.7.0",
+    "nanoid": "^3.3.18"
   }
 }

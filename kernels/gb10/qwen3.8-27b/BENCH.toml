@@ -58,10 +58,18 @@ under --pull-request-gate. ★ Note the recipe pins `num_drafts: 3` (K=4), \
 matching the reference run; the qwen3.8-27b target deliberately omits \
 `default_num_drafts`, so an unpinned run would instead take the engine \
 default K=2. When running against an operator-started endpoint pass \
-`--param wall_budget_s=2500` explicitly: threshold_params substitution \
-happens only under the gate (and in the TUI's variant step), so a plain \
-`benchmark run` keeps the schema default 1000 s and a healthy dense tier \
+`--param wall_budget_s=5000` explicitly -- 5000 is this entry's committed \
+ceiling, NOT the 2500 an earlier revision of this note named: threshold_params \
+substitution happens only under the gate (and in the TUI's variant step), so a \
+plain `benchmark run` keeps the schema default 1000 s and a healthy dense tier \
 (Sigma-wall ~1925 s) FAILS its run verdict on wall alone. \
+★ SPEED IS NOT GATED ON THIS VARIANT. `s_per_turn_budget` defaults to 0.0 = \
+non-gating and this entry commits no `[benchmarks.metrics.s_per_turn]` bound, \
+because none has been measured here. That is deliberate: the 35B's measured \
+8.5 s/turn is meaningless against the 18-40 s/turn documented below, and \
+applying it would fail every dense run on a number drawn from another model. \
+`s_per_turn`, `sum_agent_wall_s`, `sum_turns` and `decode_tps` ARE recorded on \
+every run, so a bound can be ratcheted in from real tiers when they exist. \
 The two 10/10 counts are ABSOLUTE correctness \
 bounds and take no noise, same footing as the 35B entry; `iterations` is \
 PINNED at exactly 10 for the same reason stated there — a count bound alone \

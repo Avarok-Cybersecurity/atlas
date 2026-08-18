@@ -88,13 +88,19 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     }),
     // The run-time Σ-wall verdict reads the SELECTED variant's committed
     // ceiling rather than a schema default one variant would contradict.
-    threshold_params: &[("wall_budget_s", "sum_wall_s")],
+    threshold_params: &[
+        ("wall_budget_s", "sum_wall_s"),
+        ("s_per_turn_budget", "s_per_turn"),
+    ],
     // MIXED, and classified by the half that can be corrupted. The
     // webserver_ok / followed_directions halves are correctness; the
-    // `wall_budget_s` half is a Σwall bound, and it is the exact number the
-    // 2026-08-15 retraction turned on — 692 s (dgx1) vs 1079 s (dgx2) for
-    // unmodified `main`, both 10/10 + 10/10. A gate that carries a wall bound
-    // is a speed gate for the purposes of this check.
+    // `wall_budget_s` and `s_per_turn_budget` halves are speed/blowup bounds,
+    // and the 2026-08-15 retraction turned on exactly that kind of number —
+    // 692 s (dgx1) vs 1079 s (dgx2) for unmodified `main`, both 10/10 + 10/10.
+    // That cross-box gap is the same turn-count artefact `s_per_turn` now
+    // divides out, which makes the machine state MORE worth recording here,
+    // not less: it is how a future wall anomaly gets attributed rather than
+    // re-measured by hand.
     sensitivity: Sensitivity::Speed,
     ctor: || Box::new(AgenticWebserver::default()),
 };
