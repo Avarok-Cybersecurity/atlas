@@ -836,10 +836,28 @@ rather than uniformly worse. A pure box-slowness story predicts both engines fal
 at every rung, which is what C=8 showed (both ~2.2% down, ratio held to 0.1%) and what these
 two rungs did not.
 
-**Required before any conclusion:** re-measure C=16 and C=32 alone, on a healthy box, in
-their own serve, with nothing else queued behind them. Until that exists this file's
-certified table stands on its own gate records, and no fresh "wins at every rung" claim
-should be made from this sweep.
+**RESOLVED — it cannot be a code regression, and the proof is a diff, not a GPU hour.**
+The certified ladder stack tip is `1575873582`; the sweep ran on merged main `529fcb04fa`.
+Diffing the two across `crates/` and `kernels/`:
+
+| area | changed | executable? |
+|---|---|---|
+| `kernels/**/*.cu,*.cuh,*.h` | **0 files** | — |
+| `crates/spark-model/**` | 2 files | **0 non-comment lines** (rustdoc link fixes) |
+| `crates/spark-runtime/**` | 0 files | — |
+| `crates/spark-server/{cli,tui}` | 3 files | benchmark CLI/TUI wiring only |
+| `crates/atlas-plugin/**` | 34 files | benchmark harness (#569, #581) |
+| `kernels/gb10/*/BENCH.toml` | 3 files | thresholds, not kernels |
+
+The engine binary is **functionally identical** between the certified stack and merged main —
+the only `spark-model` changes are two doc-comment link fixes with zero non-comment lines.
+So the merges cannot have moved C=16 or C=32, and the pre-wedge box state is the remaining
+explanation, consistent with those two rungs being the ones measured closest to the failure.
+
+**Still worth doing when a healthy box is free:** re-measure C=16 and C=32 alone, in their own
+serve, to confirm they return to their certified ratios. That is now a confirmation step
+rather than a regression hunt. Until it exists this file's certified table stands on its own
+gate records, and no fresh "wins at every rung" claim should be made from the aborted sweep.
 
 ★ **Operational hazard, recorded so it is not rediscovered:** vLLM+MTP at C=128 on GB10 can
 take the whole machine down even at the "safe" `--gpu-memory-utilization 0.85`. GB10 memory
