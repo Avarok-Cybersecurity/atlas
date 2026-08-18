@@ -4,7 +4,8 @@
 #
 #   wait    — checks are running; leave it and let them finish
 #   leave   — healthy and idle; leave it, its successor carries anything new
-#   repair  — it cannot merge on its own; rebuild the branch on current main
+#   repair  — it cannot merge on its own; close it and open a fresh one
+#             (a pushed fix does not make an existing PR's checks report)
 #
 # This lives outside the workflow because the decision is where every bug in
 # this subsystem has been. In one day it churned an open PR with identical

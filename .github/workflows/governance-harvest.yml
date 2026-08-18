@@ -386,10 +386,21 @@ jobs:
                 exit 1
                 ;;
             esac
-            echo "::warning::harvest PR #$open_pr is stuck (mergeState=$pr_state, in-flight=${in_flight:-0}, failed/cancelled=${broken:-0}) — rebuilding it on current main to re-trigger CI"
+            echo "::warning::harvest PR #$open_pr is stuck (mergeState=$pr_state, in-flight=${in_flight:-0}, failed/cancelled=${broken:-0}) — closing it so a fresh one can be opened"
+            # CLOSE it rather than force-push a fix onto it. Pushing to an
+            # existing PR does not make its required checks report: #593 was
+            # rebuilt cleanly, the conflict went away, and the queue still
+            # answered "19 of 19 required status checks are expected" because
+            # zero workflow runs fired on the new head. Opening a PR as the App
+            # does trigger them (#575, #576, #579, #593 all ran on creation),
+            # so the reliable repair is close-then-recreate. Nothing is lost:
+            # every line is re-derived from the run artifacts below.
+            gh pr close "$open_pr" --comment "Superseded automatically: this PR could not merge (mergeState=$pr_state, failed or cancelled checks=${broken:-0}). A pushed fix would not make its required checks report, so the harvest opens a fresh PR with the same ledger instead." \
+              || echo "::warning::could not close #$open_pr; the next harvest will try again"
             repair=1
-            # fall through: the rebuild below force-updates the branch, which
-            # refreshes the PR against current main and restarts its checks.
+            # fall through: the branch is force-recreated below and, with no
+            # open PR left on it, the create path opens a new one whose checks
+            # actually run.
           fi
 
           # Nothing to do if the rolling branch already carries exactly this
