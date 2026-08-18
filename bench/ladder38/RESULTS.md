@@ -769,6 +769,41 @@ Honest caveat that C=2 no longer has: at C=8 the two engines' rep distributions 
 (Atlas min 121.38 < vLLM max 122.40). The mean wins consistently, but a single-rep
 comparison at C=8 could go either way. Raw series in `c8_*_dgx2_20260818.json`.
 
+### C=8 REPRODUCED (2026-08-18) — 1.013x, and the K ladder there is already optimal
+
+With C=2 hardened, C=8's **1.012x** became the thinnest rung, so it got the same treatment:
+merged main `529fcb04fa`, dgx2, vLLM re-run back-to-back the same day.
+
+| engine | rep 1 | rep 2 | rep 3 | mean | spread |
+|---|---:|---:|---:|---:|---:|
+| Atlas | 123.33 | 124.94 | 121.38 | **123.22** | 2.89% |
+| vLLM+MTP | 121.92 | 120.60 | 122.40 | **121.64** | 1.49% |
+
+**Ratio 1.013x**, against the certified 1.012x — reproduced to within 0.1%.
+
+★ **Both engines measured ~2.2% BELOW their certified absolutes** (Atlas 123.22 vs 125.95,
+vLLM 121.64 vs 124.48) **while the ratio held.** That is the useful part: the ladder is
+reproducible in RATIO across days even when the box's absolute throughput drifts, which is
+exactly why every rung is quoted as a same-day A/B rather than against a stored number.
+
+**The margin is real but thin, and it is NOT a tuning oversight.** Unlike C=2, the rep
+distributions here OVERLAP (Atlas min 121.38 < vLLM max 122.40), so a single draw can
+reverse the ordering. A K-ladder sweep at C=8 confirms the shipped value is the optimum:
+
+| `8:K` | mean tok/s | vs shipped |
+|---:|---:|---:|
+| **8:2 (shipped)** | **123.22** | — |
+| 8:1 | 118.20 | -4.1% |
+| 8:3 | 116.96 | -5.1% |
+| 8:4 | 116.58 | -5.4% |
+
+Monotonically worse in both directions, so C=8's narrow margin is a property of the rung,
+not a missed setting. Widening it needs a kernel-level change, not a knob. Recorded so the
+next person does not re-run this sweep.
+
+Raw series: `c8_atlas_dgx2_20260818.json`, `c8_vllm_mtp_dgx2_20260818.json`. Same
+provenance as the C=2 block above.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
@@ -776,7 +811,7 @@ comparison at C=8 could go either way. Raw series in `c8_*_dgx2_20260818.json`.
 | 1 | 23.59 | 23.50 | 19.72 | **1.196x** |
 | 2 | **41.02** (2026-08-18, dgx2) | 38.95 | 37.11 same-day / 38.79 r8 | **1.105x** |
 | 4 | **74.21** | 71.95 | 71.61 | **1.036x** |
-| 8 | **125.95** | 125.47 | 124.48 | **1.012x** |
+| 8 | **125.95** (repro 123.22 vs 121.64 same-day) | 125.47 | 124.48 | **1.012x** (repro 1.013x) |
 | 16 | 203.36 | 202.93 | 197.03 | **1.032x** |
 | 32 | 291.01 | 291.17 | 283.48 | **1.027x** |
 | 64 | 386.63 | 387.10 | 361.39 | **1.070x** |
