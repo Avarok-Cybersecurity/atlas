@@ -108,6 +108,20 @@ jobs:
       # violation. Stdlib-only; the runner's system python3 suffices.
       - run: python3 scripts/check_kernel_shadows.py
 
+  harvest-triage:
+    name: harvest triage decision table
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # governance-harvest.yml decides whether to leave an open harvest PR
+      # alone or rebuild it. Four separate bugs have lived in that decision and
+      # every one was found on a stalled PR, never in CI: churn on identical
+      # content, churn on new content, abandoning a PR whose build hung for six
+      # hours, and calling a conflicting PR "idle and healthy". The decision is
+      # now a script with a table of those exact cases behind it. Seconds, no
+      # GPU, no network.
+      - run: bash .github/scripts/harvest-triage-test.sh
+
   test:
     name: cargo test --workspace
     runs-on: ubuntu-latest
