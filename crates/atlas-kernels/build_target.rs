@@ -19,6 +19,13 @@ use super::build_codegen::find_cuda_dir;
 pub(super) trait ComputeTarget: Send + Sync {
     fn source_extension(&self) -> &str;
     fn output_extension(&self) -> &str;
+    /// Per-source output extension override. Defaults to [`output_extension`];
+    /// NVIDIA overrides it for the frozen FlashQLA device source, which is
+    /// AOT-compiled to an ELF cubin (`.cubin`) instead of PTX text.
+    fn source_output_extension(&self, source: &std::path::Path) -> String {
+        let _ = source;
+        self.output_extension().to_string()
+    }
     /// Whether this backend exposes the CUDA module API — i.e. the
     /// runtime loads kernels via `cuModuleLoadData` and the codegen must
     /// emit the `all_ptx_sets()` registry. True for NVIDIA and for SCALE
@@ -86,6 +93,14 @@ impl ComputeTarget for NvidiaTarget {
         true
     }
 
+    fn source_output_extension(&self, source: &std::path::Path) -> String {
+        if super::build_flashqla::is_flashqla_source(source) {
+            "cubin".to_string()
+        } else {
+            self.output_extension().to_string()
+        }
+    }
+
     fn compile(
         &self,
         source: &std::path::Path,
@@ -93,7 +108,25 @@ impl ComputeTarget for NvidiaTarget {
         arch: &str,
         extra_flags: &[String],
     ) -> Result<(), String> {
-        let mut args = vec!["--ptx".into(), format!("-arch={arch}"), "-O3".into()];
+        let is_flashqla = super::build_flashqla::is_flashqla_source(source);
+        // The frozen FlashQLA device source must be AOT-compiled to an ELF
+        // cubin with the exact TileLang-toolchain configuration
+        // (`--use_fast_math`, `-arch=sm_121a`): the original PTX build without
+        // `--use_fast_math` produced SASS that hung on a GB10 TMA barrier in
+        // `cp_prepare_h`, while the fast-math cubin is byte-identical to the
+        // validated TileLang kernel.  A cubin also avoids PTX driver JIT
+        // re-scheduling.  Everything else stays on the PTX pipeline.
+        let mut args = if is_flashqla {
+            vec![
+                "--cubin".into(),
+                "-arch=sm_121a".into(),
+                "-O3".into(),
+                "--use_fast_math".into(),
+                "-std=c++17".into(),
+            ]
+        } else {
+            vec!["--ptx".into(), format!("-arch={arch}"), "-O3".into()]
+        };
         // The MSVC host compiler defaults to C++14, so nvcc on Windows rejects
         // the kernels' C++17 fold expressions and structured bindings. Force the
         // dialect there (nvcc -std=c++17 sets device + cl.exe host std). Gated to
@@ -101,7 +134,37 @@ impl ComputeTarget for NvidiaTarget {
         if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
             args.push("-std=c++17".into());
         }
-        args.extend(extra_flags.iter().cloned());
+        if is_flashqla {
+            // The model-level KERNEL.toml currently carries `--fmad=false` for
+            // legacy numerical parity; applying that switch to the native
+            // kernels changes their AOT codegen and is explicitly forbidden.
+            args.extend(
+                extra_flags
+                    .iter()
+                    .filter(|flag| flag.as_str() != "--fmad=false")
+                    .cloned(),
+            );
+        } else {
+            args.extend(extra_flags.iter().cloned());
+        }
+        // FlashQLA's device source vendors TileLang/CUTLASS headers next to
+        // it; add the dirs so angle-bracket includes stay hermetic.  The
+        // generated source triggers known nvcc 13 diagnostics (deprecated
+        // vector aliases, hex literals, temp-address) — suppress only those.
+        if let Some(parent) = source.parent() {
+            args.push(format!("-I{}", parent.display()));
+            if is_flashqla {
+                args.push(format!("-I{}", parent.join("flashqla_vendor").display()));
+                args.push(format!(
+                    "-I{}",
+                    parent.join("flashqla_vendor").join("cutlass").display()
+                ));
+                for diag in [1444, 3287, 20012, 1046, 550, 1308, 179] {
+                    args.push("-Xcudafe".into());
+                    args.push(format!("--diag_suppress={diag}"));
+                }
+            }
+        }
         // Strict kernel-compile validation — "clippy for kernels". Promote every
         // nvcc/cudafe warning (unused variables #550-D, reorder, deprecated
         // declarations, …) to a hard error so latent kernel-quality issues fail

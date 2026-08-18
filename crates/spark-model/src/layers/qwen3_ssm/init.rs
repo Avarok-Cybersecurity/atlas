@@ -20,6 +20,13 @@ impl Qwen3SsmLayer {
         let kd = config.linear_key_head_dim;
         let d_conv = config.linear_conv_kernel_dim;
 
+        // Resolve the selected FlashQLA implementation once per process
+        // before Phase-1 gate formatting is chosen. Native mode uses the
+        // embedded `flashqla_gdn` PTX module; shim mode remains available for
+        // A/B comparison. Failure is deliberately non-fatal and leaves the
+        // normal FLA/FlashInfer priority chain intact.
+        let _ = ops::gdn_flashqla::initialize(gpu);
+
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 

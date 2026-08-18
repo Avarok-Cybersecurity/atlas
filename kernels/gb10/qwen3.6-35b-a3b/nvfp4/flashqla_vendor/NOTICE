@@ -1,0 +1,11 @@
+FlashQLA source attribution
+===========================
+
+The device kernels in flashqla_gdn.cu are derived from FlashQLA 0.1.2,
+released under the MIT License.  The vendored TileLang CUDA templates are
+from TileLang 0.1.9 and the vendored CUTLASS/CuTe headers are distributed
+under their respective Apache-2.0/BSD-3-Clause notices.  These files are
+used only as compile-time device source; Atlas does not link TileLang, TVM,
+or any Python runtime when loading this kernel module.
+
+The complete upstream notices are retained in the vendored header trees.

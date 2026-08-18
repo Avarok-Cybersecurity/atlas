@@ -473,7 +473,7 @@ extern "C" __global__ void dense_gemv_ba_gates(
 // matching the decode-path dense_gemv_ba_gates but with token parallelism.
 //
 // Output layout: [gate(nv), beta(nv)] per token, interleaved, stride gate_stride:
-//   gate_out[token * gate_stride + vh]      = gate (alpha→exp transform)
+//   gate_out[token * gate_stride + vh]      = gate (alpha→exp, or log-space)
 //   gate_out[token * gate_stride + nv + vh] = beta (sigmoid)
 //
 // Grid: (ceil(N/4), M_tokens, 1)  Block: (256, 1, 1)
@@ -491,7 +491,8 @@ extern "C" __global__ void dense_gemm_ba_gates_prefill(
     unsigned int K_stride,        // BF16 elements per token in A (= K for dense)
     unsigned int gate_stride,     // FP32 elements per token in gate_out (= 2*nv)
     unsigned int nv,              // num_v_heads (32)
-    unsigned int vheads_per_group // 2
+    unsigned int vheads_per_group, // 2
+    unsigned int gate_log_space    // 1: write g=-A*dt, 0: write exp(g)
 ) {
     const unsigned int threads_per_out = 256 / 4;  // 64 (2 warps per output)
     const unsigned int local_out = threadIdx.x / threads_per_out;  // 0..3
@@ -558,7 +559,8 @@ extern "C" __global__ void dense_gemm_ba_gates_prefill(
             float dt_b = dt_bias[vh];
             float A_val = __expf(fminf(a_log_val, 20.0f));
             float dt = __logf(1.0f + __expf(fminf(result + dt_b, 20.0f)));
-            gate_tok[vh] = __expf(-A_val * dt);
+            float log_gate = -A_val * dt;
+            gate_tok[vh] = gate_log_space ? log_gate : __expf(log_gate);
         }
     }
 }

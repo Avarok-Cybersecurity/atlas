@@ -23,9 +23,8 @@ use super::{SamplingCat, Target};
 /// (Metal consumers read `metallib_modules()`).
 pub(super) fn generate_target_ptx_rs(
     targets: &[Target],
-    all_modules: &[Vec<(String, String)>],
+    all_modules: &[Vec<(String, String, String)>],
     all_drops: &[Vec<(String, String)>],
-    output_ext: &str,
     cuda_api: bool,
 ) -> String {
     let mut g = String::new();
@@ -54,11 +53,11 @@ pub(super) fn generate_target_ptx_rs(
         };
 
         // Kernel-blob constants
-        for (stem, module_name) in modules {
+        for (stem, module_name, ext) in modules {
             let const_name = format!("{}{}_{}", prefix, module_name.to_uppercase(), const_suffix);
             g.push_str(&format!(
                 "pub const {const_name}: {const_ty} = \
-                 {include_macro}(concat!(env!(\"ATLAS_PTX_DIR\"), \"/t{idx}__{stem}.{output_ext}\"));\n"
+                 {include_macro}(concat!(env!(\"ATLAS_PTX_DIR\"), \"/t{idx}__{stem}.{ext}\"));\n"
             ));
         }
         g.push('\n');
@@ -76,7 +75,7 @@ pub(super) fn generate_target_ptx_rs(
         g.push_str(&format!(
             "pub fn {fn_name}() -> {modules_ty} {{\n    vec![\n"
         ));
-        for (_, module_name) in modules {
+        for (_, module_name, _) in modules {
             let const_name = format!("{}{}_{}", prefix, module_name.to_uppercase(), const_suffix);
             g.push_str(&format!("        (\"{module_name}\", {const_name}),\n"));
         }

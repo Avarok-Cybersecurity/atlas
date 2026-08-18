@@ -14,7 +14,29 @@ use std::sync::atomic::Ordering;
 // sizing from threads with no carrier, and it is cleared at run start so a
 // second model measures against its own baseline rather than the first
 // model's pre-load free memory.
+/// Enable verbose CUDA/TMA ABI diagnostics without changing the production
+/// launch path.  This is intentionally checked at the call site so a server
+/// started without the knob pays only a single environment lookup per launch.
+fn debug_tma_abi_enabled() -> bool {
+    std::env::var("ATLAS_DEBUG_TMA_ABI").as_deref() == Ok("1")
+}
 
+fn debug_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// Free device memory (bytes) captured once at GPU-context init, BEFORE any
+/// model weights or buffers are allocated. Lets the KV-budget sizing measure
+/// *this process's own* footprint as `baseline_free - free_now`, which excludes
+/// co-tenant memory automatically (vs trusting a hardcoded
+/// `ATLAS_KV_EXTERNAL_RESERVE_GB` that goes stale as co-tenants come and go).
+/// 0 = unset (e.g. under the mock backend in tests) → callers fall back.
+///
 /// Record the free-memory baseline at GPU-context init. Call once, early,
 /// before weight loading. Idempotent-last-write; intended to be set exactly once.
 pub fn set_baseline_free_bytes(bytes: usize) {
@@ -55,6 +77,48 @@ impl DevicePtr {
 #[derive(Debug, Clone, Copy)]
 pub struct KernelHandle(pub u64);
 
+/// Opaque CUDA tensor-map descriptor passed by value to a `__grid_constant__`
+/// kernel parameter.  CUDA 12.x defines `CUtensorMap` as a 128-byte object;
+/// the explicit size/alignment keeps the Rust ABI independent of the CUDA
+/// headers while still matching the driver ABI.
+// CUDA's CUtensorMap ABI requires the descriptor object to be 64-byte
+// aligned.  TileLang's generated wrappers explicitly place these objects in
+// `alignas(64)` stack storage; matching that alignment is required once a
+// kernel executes a real TMA transaction (a zero-iteration tail can otherwise
+// hide the mistake).
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TensorMapDescriptor {
+    pub bytes: [u8; 128],
+}
+
+impl Default for TensorMapDescriptor {
+    fn default() -> Self {
+        Self { bytes: [0; 128] }
+    }
+}
+
+/// Parameters for `cuTensorMapEncodeTiled`. Dimensions are in elements;
+/// `global_strides` follows TileLang's host-wrapper convention where entry 0
+/// is the element byte width and entries 1..rank are the byte strides passed to
+/// CUDA. Arrays are fixed at rank five because that is the maximum rank
+/// supported by the driver API; only the first `rank` dimensions and rank
+/// stride entries (after the element-width entry) are read.
+#[derive(Clone, Copy, Debug)]
+pub struct TensorMapSpec {
+    pub dtype: u32,
+    pub rank: u32,
+    pub global_address: DevicePtr,
+    pub global_dims: [u64; 5],
+    pub global_strides: [u64; 5],
+    pub box_dims: [u32; 5],
+    pub element_strides: [u32; 5],
+    pub interleave: u32,
+    pub swizzle: u32,
+    pub l2_promotion: u32,
+    pub oob_fill: u32,
+}
+
 /// Handle to an instantiated CUDA graph (CUgraphExec).
 #[derive(Debug, Clone, Copy)]
 pub struct GraphHandle(pub u64);
@@ -73,10 +137,22 @@ pub enum KernelArg<'a> {
     /// resolves it to its owning `MTLBuffer` + offset via the alloc
     /// registry; the cuda backend forwards the raw `u64` to the driver.
     Buffer(DevicePtr),
-    /// Inline scalar/struct bytes, e.g. a `u32` count or an `f32` eps.
-    /// Length is forwarded to Metal's `setBytes:length:`; the cuda
-    /// backend zero-pads up to 8 bytes per slot.
+    /// Inline scalar/struct bytes, e.g. a `u32` count, an `f32` eps, or a
+    /// CUDA `CUtensorMap` descriptor.  CUDA driver launches accept an
+    /// arbitrary byte span for each parameter; keeping the full span here is
+    /// important for TMA kernels whose descriptors are 128 bytes (the old
+    /// implementation silently truncated them to one u64).
     Bytes(&'a [u8]),
+}
+
+// `cuLaunchKernel` copies each argument from the address supplied in the
+// parameter array.  A CUtensorMap parameter is a 128-byte, 64-byte-aligned
+// struct; using `Box<[u8]>` here only guarantees byte alignment and can leave
+// TMA descriptors misaligned.  Keep every inline argument in an aligned
+// scratch object (scalar arguments still use only their leading bytes).
+#[repr(C, align(64))]
+struct AlignedKernelArg {
+    bytes: [u8; 128],
 }
 
 /// GPU backend trait — SBIO IORouter for all CUDA operations.
@@ -163,26 +239,81 @@ pub trait GpuBackend: Send + Sync {
         stream: u64,
         args: &[KernelArg<'_>],
     ) -> Result<()> {
-        // CUDA-compatible default: each arg becomes one u64 slot. The
-        // storage stays alive across the launch call so the *mut c_void
-        // pointers we hand to `launch()` remain valid.
-        let mut storage: Vec<u64> = Vec::with_capacity(args.len());
+        // Keep one owned byte buffer per argument. Boxed slices have stable
+        // addresses even when the outer Vec grows, so the `void*` parameter
+        // array remains valid for the complete driver call. Buffer arguments
+        // are represented as the native 64-bit device pointer; byte
+        // arguments retain their complete payload (including 128-byte TMA
+        // descriptors).
+        let mut storage: Vec<Box<AlignedKernelArg>> = Vec::with_capacity(args.len());
         for arg in args {
             match arg {
-                KernelArg::Buffer(p) => storage.push(p.0),
+                KernelArg::Buffer(p) => {
+                    let mut slot = Box::new(AlignedKernelArg { bytes: [0; 128] });
+                    slot.bytes[..8].copy_from_slice(&p.0.to_le_bytes());
+                    storage.push(slot);
+                }
                 KernelArg::Bytes(b) => {
-                    let mut slot = [0u8; 8];
-                    let n = b.len().min(8);
-                    slot[..n].copy_from_slice(&b[..n]);
-                    storage.push(u64::from_le_bytes(slot));
+                    assert!(b.len() <= 128, "inline GPU argument exceeds 128 bytes");
+                    let mut slot = Box::new(AlignedKernelArg { bytes: [0; 128] });
+                    slot.bytes[..b.len()].copy_from_slice(b);
+                    storage.push(slot);
+                }
+            }
+        }
+        if debug_tma_abi_enabled() {
+            eprintln!(
+                "[ATLAS_DEBUG_TMA_ABI] launch func={:#x} grid={:?} block={:?} shared_mem={} stream={:#x} argc={}",
+                func.0,
+                grid,
+                block,
+                shared_mem,
+                stream,
+                args.len()
+            );
+            for (index, arg) in args.iter().enumerate() {
+                match arg {
+                    KernelArg::Buffer(ptr) => eprintln!(
+                        "[ATLAS_DEBUG_TMA_ABI] arg[{index}] buffer addr={:#x} len=8 bytes={}",
+                        ptr.0,
+                        debug_hex(&ptr.0.to_le_bytes())
+                    ),
+                    KernelArg::Bytes(bytes) => eprintln!(
+                        "[ATLAS_DEBUG_TMA_ABI] arg[{index}] inline addr={:#x} len={} bytes={}",
+                        storage[index].bytes.as_ptr() as usize,
+                        bytes.len(),
+                        debug_hex(bytes)
+                    ),
                 }
             }
         }
         let mut params: Vec<*mut std::ffi::c_void> = storage
             .iter()
-            .map(|v| v as *const u64 as *mut std::ffi::c_void)
+            .map(|v| v.bytes.as_ptr() as *mut std::ffi::c_void)
             .collect();
         self.launch(func, grid, block, shared_mem, stream, &mut params)
+    }
+
+    /// Set a CUDA function attribute, typically
+    /// `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES` (value 8). Backends
+    /// that do not expose CUDA attributes return an explicit error.
+    fn set_kernel_attribute(
+        &self,
+        _func: KernelHandle,
+        _attribute: i32,
+        _value: i32,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "kernel attributes are unsupported by this GPU backend"
+        ))
+    }
+
+    /// Encode a TMA descriptor for a device allocation. The descriptor is
+    /// returned by value and can be supplied as `KernelArg::Bytes(&desc.bytes)`.
+    fn encode_tensor_map(&self, _spec: &TensorMapSpec) -> Result<TensorMapDescriptor> {
+        Err(anyhow::anyhow!(
+            "tensor maps are unsupported by this GPU backend"
+        ))
     }
 
     /// Whether `stream` is inside an active CUDA-graph capture. Telemetry

@@ -294,11 +294,11 @@ pub fn dense_gemv_ba_gates(
 /// dimension via blockIdx.y. Skips the intermediate ba_out buffer entirely.
 ///
 /// Output layout (shared gate_out buffer):
-///   gate_out[token * gate_stride + vh]      = gate (alpha→exp transform)
+///   gate_out[token * gate_stride + vh]      = gate (alpha→exp, or log-space)
 ///   gate_out[token * gate_stride + nv + vh] = beta (sigmoid)
 ///
 /// Kernel: `dense_gemm_ba_gates_prefill(A, B, A_log, dt_bias, gate_out, M, N, K,
-///          K_stride, gate_stride, nv, vpg)`
+///          K_stride, gate_stride, nv, vpg, gate_log_space)`
 /// Grid: (ceil(N/4), M_tokens, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn dense_gemm_ba_gates_prefill(
@@ -316,6 +316,7 @@ pub fn dense_gemm_ba_gates_prefill(
     gate_stride: u32,    // FP32 elements between tokens in gate_out (= 2*nv)
     nv: u32,             // num_v_heads (32)
     vheads_per_group: u32,
+    gate_log_space: bool,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -333,6 +334,7 @@ pub fn dense_gemm_ba_gates_prefill(
         .arg_u32(gate_stride)
         .arg_u32(nv)
         .arg_u32(vheads_per_group)
+        .arg_u32(gate_log_space as u32)
         .launch(stream)
 }
 

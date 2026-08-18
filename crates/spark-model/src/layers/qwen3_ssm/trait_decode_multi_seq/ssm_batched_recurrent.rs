@@ -163,6 +163,7 @@ impl Qwen3SsmLayer {
                 gate_stride,
                 nv as u32,
                 vpg as u32,
+                false,
                 stream,
             )?;
             detail_step!("recurrent_batched_ba");

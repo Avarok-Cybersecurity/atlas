@@ -1,4 +1,9 @@
 target/
+# Dockerfile.local copies the freshly built release server for native-source
+# smoke tests. Keep the rest of target/ ignored so the build context stays small.
+!target/
+!target/release/
+!target/release/spark
 .git/
 docs/
 historical-python/

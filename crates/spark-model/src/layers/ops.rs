@@ -44,6 +44,14 @@ pub mod gdn_flashinfer;
 #[cfg(not(unix))]
 #[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
+#[path = "ops/gdn_flashqla.rs"]
+#[cfg(unix)]
+pub mod gdn_flashqla;
+#[cfg(not(unix))]
+#[path = "ops/gdn_flashqla_absent.rs"]
+pub mod gdn_flashqla;
+#[path = "ops/gdn_flashqla_native.rs"]
+pub(crate) mod gdn_flashqla_native;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]

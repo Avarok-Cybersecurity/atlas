@@ -10,6 +10,12 @@ header:
   paths-ignore:
     - 'target/**'
     - 'vendor/**'
+    # FlashQLA's checked-in TileLang/CUTLASS device headers retain their
+    # upstream MIT/BSD headers; they are third-party material, not Atlas code.
+    - 'kernels/gb10/qwen3.6-35b-a3b/nvfp4/flashqla_vendor/**'
+    # The generated FlashQLA device translation unit is MIT-licensed upstream;
+    # its provenance and third-party terms are recorded in flashqla_vendor/NOTICE.
+    - 'kernels/gb10/qwen3.6-35b-a3b/nvfp4/flashqla_gdn.cu'
     # Vendored llama.cpp/ggml CUDA MMQ sources (MIT-licensed upstream);
     # third-party material keeps its original license — never stamp AGPL here.
     - 'kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/**'

@@ -238,15 +238,10 @@ fn main() {
     //     own build.rs reading ATLAS_TARGET_HW.
     // Re-adding a HARDWARE.toml key for this would re-create the dead lever.
     let compute_target = resolve_compute_target(vendor_str);
-    let output_ext = compute_target.output_extension();
     let uses_cuda_api = compute_target.uses_cuda_module_api();
 
-    // Per-target: (target_idx, vec of (stem, module_name))
-    let mut all_target_modules: Vec<Vec<(String, String)>> = Vec::new();
-    // Per-target: (module, kernel) pairs this model's files dropped by shadowing
-    // their `common/` namesakes. Baked into the binary so the startup audit can
-    // separate "dropped by a fork" (fatal) from "never built for this target"
-    // (expected). See `shadowed_dropped_pairs`.
+    // Per-target: (stem, module_name, output_ext), plus the shadow audit list.
+    let mut all_target_modules: Vec<Vec<(String, String, String)>> = Vec::new();
     let mut all_target_drops: Vec<Vec<(String, String)>> = Vec::new();
 
     // 2026-05-24 dedup+parallel: pre-walk every (target, cu_file) pair
@@ -335,7 +330,10 @@ fn main() {
         // in parallel after the full work plan is built).
         for cu_file in &cu_files {
             let stem = cu_file.file_stem().unwrap().to_str().unwrap().to_string();
-            let out_file = out_dir.join(format!("t{idx}__{stem}.{output_ext}"));
+            // Per-source extension: NVIDIA compiles the frozen FlashQLA device
+            // source to an ELF cubin (`.cubin`); every other kernel stays PTX.
+            let out_ext = compute_target.source_output_extension(cu_file);
+            let out_file = out_dir.join(format!("t{idx}__{stem}.{out_ext}"));
 
             // HIP: compile a mask-widened MIRROR of the source (kernels/ is
             // never mutated). The whole source directory is mirrored once so
@@ -370,8 +368,8 @@ fn main() {
             println!("cargo:rerun-if-changed={}", cu_file.display());
         }
 
-        // Collect (stem, module_name) pairs sorted by module_name
-        let mut modules: Vec<(String, String)> = cu_files
+        // Collect (stem, module_name, output_ext) triples sorted by module_name
+        let mut modules: Vec<(String, String, String)> = cu_files
             .iter()
             .map(|f| {
                 let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
@@ -380,7 +378,8 @@ fn main() {
                     .get(&stem)
                     .cloned()
                     .unwrap_or_else(|| stem.clone());
-                (stem, module_name)
+                let module_ext = compute_target.source_output_extension(f);
+                (stem, module_name, module_ext)
             })
             .collect();
         modules.sort_by(|a, b| a.1.cmp(&b.1));
@@ -506,6 +505,28 @@ fn main() {
         });
     }
 
+    // ── Codegen gate: frozen FlashQLA cubin ──
+    // The `flashqla_gdn` device source is AOT-compiled to an ELF cubin whose
+    // SASS must be byte-identical to the validated TileLang kernel (the
+    // no-fast-math PTX build hung on a GB10 TMA barrier in `cp_prepare_h`).
+    // Verify ELF magic, the nine FlashQLA symbols, `cp_prepare_h`'s pinned
+    // resource attributes, and (under CUDA 13.0.88) the normalized SASS
+    // fingerprint before the cubin is embedded. NVIDIA-only: cuobjdump lives
+    // in the same toolkit bin dir as nvcc.
+    if matches!(vendor_str, Some("nvidia") | Some("cuda")) {
+        for (idx, modules) in all_target_modules.iter().enumerate() {
+            if modules
+                .iter()
+                .any(|(_, module_name, _)| module_name == "flashqla_gdn")
+            {
+                let cubin = out_dir.join(format!("t{idx}__flashqla_gdn.cubin"));
+                let cuda_bin = find_cuda_dir().join("bin");
+                verify_flashqla_cubin(&cubin, &cuda_bin);
+                break;
+            }
+        }
+    }
+
     // ── HIP: build the libcuda→HIP shim (libcuda.so) ──
     // The runtime is unchanged (cudarc links `-lcuda`); on AMD the CUDA driver
     // symbols it imports are re-exported by libcuda_hip_shim.cpp mapped onto HIP
@@ -530,7 +551,6 @@ fn main() {
         &targets,
         &all_target_modules,
         &all_target_drops,
-        output_ext,
         uses_cuda_api,
     );
     let gen_path = out_dir.join("target_ptx.rs");
@@ -1374,7 +1394,11 @@ fn find_cu_files(kernel_dir: &std::path::Path, source_ext: &str) -> Vec<PathBuf>
 
 #[path = "build_codegen.rs"]
 mod build_codegen;
-use build_codegen::generate_target_ptx_rs;
+use build_codegen::{find_cuda_dir, generate_target_ptx_rs};
+
+#[path = "build_flashqla.rs"]
+mod build_flashqla;
+use build_flashqla::verify_flashqla_cubin;
 
 #[path = "build_target.rs"]
 mod build_target;

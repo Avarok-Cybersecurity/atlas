@@ -37,10 +37,13 @@ use atlas_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
-    AtlasCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
+    AtlasCudaBackend, cuFuncSetAttribute, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2,
+    cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2,
+    cuStreamSynchronize, cuTensorMapEncodeTiled,
 };
-use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
+use crate::gpu::{
+    DevicePtr, GpuBackend, GraphHandle, KernelHandle, TensorMapDescriptor, TensorMapSpec,
+};
 
 /// D2H call counter + one-shot caller identification
 /// (`ATLAS_D2H_TRACE=<N>`: log a backtrace on the Nth call, and the running
@@ -221,6 +224,83 @@ impl GpuBackend for AtlasCudaBackend {
             super::fault_probe::note_failure("kernel launch", &e.to_string());
             anyhow::anyhow!("Kernel launch failed: {e}")
         })
+    }
+
+    fn set_kernel_attribute(&self, func: KernelHandle, attribute: i32, value: i32) -> Result<()> {
+        let status = unsafe { cuFuncSetAttribute(func.0 as *mut c_void, attribute, value) };
+        if status != 0 {
+            bail!(
+                "cuFuncSetAttribute failed (attribute={attribute}, value={value}): {}",
+                cuda_error_text(status)
+            );
+        }
+        Ok(())
+    }
+
+    fn encode_tensor_map(&self, spec: &TensorMapSpec) -> Result<TensorMapDescriptor> {
+        if !(1..=5).contains(&spec.rank) {
+            bail!(
+                "cuTensorMapEncodeTiled rank must be in 1..=5, got {}",
+                spec.rank
+            );
+        }
+        if spec.global_address.is_null() {
+            bail!("cuTensorMapEncodeTiled requires a non-null global address");
+        }
+        if std::env::var("ATLAS_DEBUG_TMA_ABI").as_deref() == Ok("1") {
+            eprintln!(
+                "[ATLAS_DEBUG_TMA_ABI] encode rank={} dtype={} address={:#x} dims={:?} raw_strides={:?} effective_strides={:?} box={:?} element_strides={:?} interleave={} swizzle={} l2={} oob={}",
+                spec.rank,
+                spec.dtype,
+                spec.global_address.0,
+                &spec.global_dims[..spec.rank as usize],
+                &spec.global_strides[..spec.rank as usize],
+                &spec.global_strides[1..spec.rank as usize],
+                &spec.box_dims[..spec.rank as usize],
+                &spec.element_strides[..spec.rank as usize],
+                spec.interleave,
+                spec.swizzle,
+                spec.l2_promotion,
+                spec.oob_fill,
+            );
+        }
+        let mut desc = TensorMapDescriptor::default();
+        let status = unsafe {
+            cuTensorMapEncodeTiled(
+                desc.bytes.as_mut_ptr(),
+                spec.dtype,
+                spec.rank,
+                spec.global_address.0,
+                spec.global_dims.as_ptr(),
+                // CUDA's tiled encoder takes strides for dimensions 1..rank-1;
+                // the first entry is the element byte width retained in the
+                // Atlas spec for parity with TileLang's host wrapper.
+                spec.global_strides.as_ptr().add(1),
+                spec.box_dims.as_ptr(),
+                spec.element_strides.as_ptr(),
+                spec.interleave,
+                spec.swizzle,
+                spec.l2_promotion,
+                spec.oob_fill,
+            )
+        };
+        if status != 0 {
+            bail!(
+                "cuTensorMapEncodeTiled failed (rank={}, address={:#x}): {}",
+                spec.rank,
+                spec.global_address.0,
+                cuda_error_text(status)
+            );
+        }
+        if std::env::var("ATLAS_DEBUG_TMA_ABI").as_deref() == Ok("1") {
+            let mut hex = String::with_capacity(desc.bytes.len() * 2);
+            for byte in desc.bytes {
+                use std::fmt::Write as _;
+                let _ = write!(hex, "{byte:02x}");
+            }
+            eprintln!("[ATLAS_DEBUG_TMA_ABI] descriptor={hex}");
+        }
+        Ok(desc)
     }
 
     fn stream_is_capturing(&self, stream: u64) -> bool {

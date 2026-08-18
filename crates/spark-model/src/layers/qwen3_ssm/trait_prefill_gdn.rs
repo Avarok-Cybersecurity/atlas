@@ -129,6 +129,31 @@ impl Qwen3SsmLayer {
         // occupancy-starved wy64 — routing per-request GDN through FLA is the
         // batching lever. Skipped on exact-replay (FLA's 64-tok regrouping drifts
         // vs a snapshot-anchored pass) and non-128-dim heads.
+        // FlashQLA GDN (opt-in, ATLAS_GDN_FLASHQLA=1): TileLang tensor-core chunked delta-rule
+        // scan, ~3× the FLA Triton kernel at the Holo shape. Single-stream only;
+        // takes Atlas's native packed-QKV + interleaved gate/beta directly (see
+        // ops::gdn_flashqla). FLA path below is the fallback when the flag/lib is absent.
+        // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1) is checked next.
+        if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashqla::available() {
+            let scale = 1.0f32 / (kd as f32).sqrt();
+            return ops::gdn_flashqla::flashqla_gdn_prefill(
+                ctx.gpu,
+                gdn_bufs.qkv,
+                gdn_bufs.gate_beta,
+                gdn_bufs.output,
+                h_state,
+                scale,
+                total,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                gb_stride,
+                1,
+                stream,
+            );
+        }
         // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. Single-stream only;
         // takes Atlas's native packed-QKV + interleaved gate/beta directly (see

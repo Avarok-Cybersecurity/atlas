@@ -597,6 +597,7 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32,
                 nv as u32,
                 vpg as u32,
+                false,
                 stream,
             )?;
         } else {

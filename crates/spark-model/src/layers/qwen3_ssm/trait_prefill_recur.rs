@@ -130,6 +130,30 @@ impl Qwen3SsmLayer {
             );
         }
 
+        // FlashQLA GDN (opt-in, ATLAS_GDN_FLASHQLA=1): TileLang tensor-core chunked delta-rule
+        // scan, ~3× the FLA Triton kernel. Single-stream only; takes Atlas's native
+        // packed-QKV + interleaved gate/beta directly (see ops::gdn_flashqla). FLA path below
+        // is the fallback when flag/lib absent. FlashInfer GDN checked next.
+        if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashqla::available() {
+            let scale = 1.0f32 / (kd as f32).sqrt();
+            return ops::gdn_flashqla::flashqla_gdn_prefill(
+                ctx.gpu,
+                q_ptr,
+                gates_buf,
+                gdn_out_buf,
+                h_state,
+                scale,
+                k,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                gb_stride,
+                1,
+                stream,
+            );
+        }
         // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. This is the live
         // single-stream prefill path (trait_prefill.rs -> prefill_gdn_recurrence). q_ptr is

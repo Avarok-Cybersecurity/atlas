@@ -127,6 +127,7 @@ impl Qwen3SsmLayer {
             gate_stride as u32,
             nv as u32,
             vpg as u32,
+            ops::gdn_flashqla::use_log_gate(ctx.gdn_exact_replay, kd, vd),
             stream,
         )?;
 
@@ -296,6 +297,7 @@ impl Qwen3SsmLayer {
             gate_stride as u32,
             nv as u32,
             vpg as u32,
+            false,
             stream,
         )?;
         ctx.gpu.copy_d2d_async(

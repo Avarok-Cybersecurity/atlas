@@ -49,6 +49,26 @@ unsafe extern "C" {
     pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
     pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
+    /// CUDA Driver API function attribute setter. Attribute 8 is
+    /// `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`.
+    pub(super) fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
+    /// CUDA 12 tensor-map encoder used by Blackwell TMA kernels. `CUtensorMap`
+    /// is an opaque 128-byte object; the pointer is passed as `*mut u8` here
+    /// to avoid depending on a particular cudarc header version.
+    pub(super) fn cuTensorMapEncodeTiled(
+        tensor_map: *mut u8,
+        tensor_data_type: u32,
+        tensor_rank: u32,
+        global_address: u64,
+        global_dim: *const u64,
+        global_stride: *const u64,
+        box_dim: *const u32,
+        element_stride: *const u32,
+        interleave: u32,
+        swizzle: u32,
+        l2_promotion: u32,
+        oob_fill: u32,
+    ) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
     // Capture-status query (telemetry taps must not sync/copy inside an
