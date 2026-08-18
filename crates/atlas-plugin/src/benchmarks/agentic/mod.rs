@@ -52,8 +52,11 @@
 //! Two further pins that must not drift (see `descriptors.rs`).
 
 pub mod agent;
+mod params;
 pub mod preflight;
+mod render;
 pub mod score;
+mod verdict;
 pub mod warm;
 
 use std::future::Future;
@@ -66,11 +69,9 @@ use crate::benchmark::{Benchmark, BenchmarkDescriptor};
 use crate::benchmarks::one_line;
 use crate::http;
 use crate::metadata::PluginMetadata;
-use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
+use crate::params::{ParamSpec, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
-use crate::result::{
-    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
-};
+use crate::result::{BenchmarkResult, LogLine, RunStatus, Verdict};
 
 /// The task, verbatim from `run_tier.sh`. Changing a word changes the
 /// benchmark, so it is a single constant and not assembled from pieces.
@@ -148,7 +149,7 @@ impl AgenticWebserver {
     }
 
     fn total_turns(&self) -> usize {
-        score::total_turns(&self.rows)
+        verdict::total_turns(&self.rows)
     }
 
     fn total_tool_calls(&self) -> usize {
@@ -159,9 +160,9 @@ impl AgenticWebserver {
         self.rows.iter().map(|r| r.completion_tokens).sum()
     }
 
-    /// `None` when the tier took no turns — see [`score::seconds_per_turn`].
+    /// `None` when the tier took no turns — see [`verdict::seconds_per_turn`].
     fn seconds_per_turn(&self) -> Option<f64> {
-        score::seconds_per_turn(self.total_agent_wall(), self.total_turns())
+        verdict::seconds_per_turn(self.total_agent_wall(), self.total_turns())
     }
 
     async fn run_iteration(&mut self, index: usize) -> Result<IterationRow> {
@@ -230,90 +231,6 @@ impl AgenticWebserver {
         })
     }
 
-    fn table(&self) -> ResultTable {
-        let mut t = ResultTable::new(
-            "ITERATIONS",
-            vec![
-                Column::right("Run", 4),
-                Column::right("wall s", 8),
-                Column::left("ws_ok", 6),
-                Column::right("steps", 6),
-                Column::right("turns", 6),
-                Column::right("tools", 6),
-                Column::left("note", 40),
-            ],
-        );
-        for r in &self.rows {
-            t.push(vec![
-                Cell::new(r.index.to_string()),
-                Cell::new(format!("{:.1}", r.wall_s)),
-                Cell::styled(
-                    if r.webserver_ok { "pass" } else { "FAIL" },
-                    if r.webserver_ok {
-                        CellStyle::Good
-                    } else {
-                        CellStyle::Bad
-                    },
-                ),
-                Cell::styled(
-                    format!("{}/6", r.directions.met()),
-                    if r.directions.overall() {
-                        CellStyle::Good
-                    } else {
-                        CellStyle::Warn
-                    },
-                ),
-                Cell::new(r.turns.to_string()),
-                Cell::new(r.tool_calls.to_string()),
-                Cell::styled(r.note.clone(), CellStyle::Dim),
-            ]);
-        }
-        t
-    }
-
-    fn summary(&self) -> Vec<Stat> {
-        let ok = self.rows.iter().filter(|r| r.webserver_ok).count();
-        let fd = self.rows.iter().filter(|r| r.directions.overall()).count();
-        let n = self.rows.len();
-        vec![
-            Stat::new("webserver_ok", format!("{ok}/{n}"), "").with_style(if n > 0 && ok == n {
-                CellStyle::Good
-            } else {
-                CellStyle::Warn
-            }),
-            Stat::new("followed_directions", format!("{fd}/{n}"), "").with_style(
-                if n > 0 && fd == n {
-                    CellStyle::Good
-                } else {
-                    CellStyle::Warn
-                },
-            ),
-            Stat::new(
-                "s/turn",
-                self.seconds_per_turn()
-                    .map_or_else(|| "n/a".to_string(), |s| format!("{s:.3}")),
-                "s",
-            )
-            .with_style(match self.seconds_per_turn() {
-                // A tier that took no turns is not fast, it is broken; a green
-                // speed cell reads as a pass at a glance.
-                None => CellStyle::Warn,
-                // Neutral for an unbounded variant: nothing to be good or bad
-                // against until one commits a measured bound.
-                Some(_) if self.s_per_turn_budget <= 0.0 => CellStyle::Neutral,
-                Some(s) if s <= self.s_per_turn_budget => CellStyle::Good,
-                Some(_) => CellStyle::Warn,
-            }),
-            Stat::new("Σ wall", format!("{:.0}", self.total_wall()), "s").with_style(
-                if self.total_wall() <= self.wall_budget_s {
-                    CellStyle::Good
-                } else {
-                    CellStyle::Warn
-                },
-            ),
-        ]
-    }
-
     /// Raw gate numbers for `--pull-request-gate` (same source the summary
     /// tiles and the verdict read from — the three cannot disagree).
     fn metrics(&self) -> std::collections::BTreeMap<String, f64> {
@@ -359,7 +276,7 @@ impl AgenticWebserver {
     }
 
     fn verdict(&self) -> Verdict {
-        score::verdict(
+        verdict::verdict(
             &self.rows,
             self.total_wall(),
             self.total_agent_wall(),
@@ -406,108 +323,7 @@ impl Benchmark for AgenticWebserver {
     }
 
     fn parameters(&self) -> Vec<ParamSpec> {
-        vec![
-            ParamSpec::new(
-                "iterations",
-                "Iterations",
-                "How many independent agent runs. The gate tier is 10; use 1 for a smoke test.",
-                ParamKind::Int { min: 1, max: 50 },
-                ParamValue::Int(10),
-            ),
-            ParamSpec::new(
-                "wall_budget_s",
-                "Σ wall budget",
-                "Total agent seconds across all iterations, scorer INCLUDED, \
-                 before the gate fails. This is a BLOWUP/DEGENERACY bound, not a \
-                 speed one — `s_per_turn_budget` is the speed bound. It stays a \
-                 schema default of 1000 s because a bare run has no variant to \
-                 read from; every MEASURED variant overrides it from its own \
-                 BENCH.toml (see threshold_params), and that committed number, \
-                 not this one, is what --pull-request-gate and the TUI enforce.",
-                ParamKind::Float {
-                    min: 1.0,
-                    max: 100_000.0,
-                },
-                ParamValue::Float(1000.0),
-            ),
-            ParamSpec::new(
-                "s_per_turn_budget",
-                "Seconds per turn",
-                "The agent's own seconds ÷ agent turns before the gate fails — \
-                 the SPEED bound. **0.0 means NON-GATING**, and that is the \
-                 schema default ON PURPOSE: per-turn cost is the most \
-                 model-dependent number this benchmark produces (6.8 s/turn on \
-                 the 35B MoE against 18-40 s/turn on the dense 27B), so a single \
-                 schema figure cannot be right for two variants and a wrong one \
-                 would fail every run of the model it was not measured on. A \
-                 variant is gated only once it commits a measured \
-                 `[benchmarks.metrics.s_per_turn]` bound to its BENCH.toml. \
-                 \
-                 Why per-turn rather than Σwall: turn count is drawn by the \
-                 agent, not the engine. Across five 10/10 tiers Σwall spanned \
-                 774-1039 s (34%) while s/turn spanned 6.83-7.22 (5.7%) on one \
-                 box, and the two tiers the old 1000 s wall bound REJECTED were \
-                 respectively the slowest and the FASTEST per turn — it ranked \
-                 them backwards. \
-                 \
-                 Why not tokens, which would be better still: `decode_tps` is \
-                 now recorded for exactly that reason, but no variant has a \
-                 measured token-rate bound yet and inventing one is the mistake \
-                 this change undoes. Ratchet to it once tiers exist.",
-                ParamKind::Float {
-                    min: 0.0,
-                    max: 10_000.0,
-                },
-                ParamValue::Float(0.0),
-            ),
-            ParamSpec::new(
-                "max_turns",
-                "Max turns",
-                "Tool-calling rounds per iteration before the agent is stopped.",
-                ParamKind::Int { min: 1, max: 200 },
-                ParamValue::Int(40),
-            ),
-            ParamSpec::new(
-                "command_timeout_s",
-                "Command timeout",
-                "Seconds a single agent shell command may run before it is killed.",
-                ParamKind::Int { min: 5, max: 3600 },
-                ParamValue::Int(180),
-            ),
-            ParamSpec::new(
-                "build_timeout_s",
-                "Scorer build timeout",
-                "Seconds the scorer's cargo build may take. A cold dependency tree is slow.",
-                ParamKind::Int { min: 30, max: 3600 },
-                ParamValue::Int(600),
-            ),
-            ParamSpec::new(
-                "serve_timeout_s",
-                "Ping timeout",
-                "Seconds to wait for /ping to answer 'pong' after the server is started. \
-                 The harness's own budget is 15s (score_run.py::webserver_test), so this is \
-                 already the looser of the two — lowering it would not match anything.",
-                ParamKind::Int { min: 5, max: 300 },
-                ParamValue::Int(30),
-            ),
-            ParamSpec::new(
-                "max_tokens",
-                "Max tokens per turn",
-                "Output budget for one model turn.",
-                ParamKind::Int {
-                    min: 256,
-                    max: 32_768,
-                },
-                ParamValue::Int(8192),
-            ),
-            ParamSpec::new(
-                "request_timeout_s",
-                "Request timeout",
-                "Seconds before a single model call is abandoned.",
-                ParamKind::Int { min: 10, max: 3600 },
-                ParamValue::Int(900),
-            ),
-        ]
+        params::parameters()
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
