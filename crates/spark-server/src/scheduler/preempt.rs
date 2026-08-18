@@ -147,7 +147,7 @@ pub(super) fn decode_batch_with_preemption(
                         Err((v, spill_err)) => {
                             tracing::warn!(
                                 "decode-preempt spill failed ({spill_err:#}); \
-                                 requeueing victim for re-prefill instead"
+                                 requeuing victim for re-prefill instead"
                             );
                             preempted.push(preempt_requeue(model, v));
                         }
