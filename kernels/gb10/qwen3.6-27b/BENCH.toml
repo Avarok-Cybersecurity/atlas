@@ -102,7 +102,10 @@ cannot inherit the 35B's ceiling: the 35B is A3B (~3B active parameters per toke
 the dense 27B activates all 27B on every token, so on a memory-bound GB10 its per-token \
 decode is several times heavier and its agentic Σwall will land substantially higher — \
 expected above the 35B's entire ceiling (>1200 s per the owner's estimate; the 35B's bound \
-in ITS entry is 1000 s, tightened from 1300 on 2026-08-09). Per this file's header, \
+in ITS entry is 1800 s: it was 1000, and was raised on 2026-08-18 once five \
+10/10 tiers measured 774-1039 s and showed 1000 sat inside the healthy band. \
+Speed there is bounded by a measured `s_per_turn` metric instead; this entry \
+has no such measurement, so it is NOT speed-gated. Per this file's header, \
 thresholds are per CHECKPOINT — the 35B's bounds simply do not apply here. || NO \
 [benchmarks.metrics] TABLE ON PURPOSE, and in particular NO Σwall floor or ceiling: this \
 repo's recurring failure mode is a plausible-looking number written down before anyone \
