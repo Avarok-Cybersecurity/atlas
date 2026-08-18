@@ -868,6 +868,45 @@ Atlas never pays this because its speculation self-disables above 32 concurrent 
 which is also why it wins C=128 by 1.333x. Next time: run C=128 in its own serve, drop util
 to 0.75-0.80 for that rung, and write raw JSON under `/home/claude` rather than `/tmp`.
 
+### C=16/C=32 CONFIRMED ON A CLEAN BOOT (2026-08-18) — and the wedge hazard corrected
+
+dgx2 was powercycled after the first wedge and the sweep re-run **five minutes from a clean
+boot**. Both suspect rungs came back up:
+
+| C | certified | pre-wedge sweep | clean boot | vLLM (clean boot) | ratio |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.59 | 24.20 | **25.49** | 19.35 | **1.317x** |
+| 4 | 74.21 | 72.99 | **75.24** | 70.13 | **1.073x** |
+| 16 | 203.36 | 195.19 | **201.32** | 198.24 | **1.016x** |
+| 32 | 291.01 | 276.11 | **282.42** | — | — |
+| 64 | 386.63 | 382.05 | **391.73** | — | — |
+| 128 | 478.11 | 469.03 | **472.70** | — | — |
+
+Atlas recovered at **every** rung that had looked soft — C=16 195.19 -> 201.32 and C=32
+276.11 -> 282.42 — with three of six rungs landing ABOVE their certified values. Combined
+with the diff proof (zero executable change in the serve path between the certified stack
+`1575873582` and merged main), the C=32 inversion is closed: it was box state, not code.
+
+The mechanism is now clearer. The pre-wedge Atlas leg ran on a box that had been serving
+benchmarks for hours; the clean-boot leg ran on a box minutes old. Atlas runs FIRST in this
+sweep, so the degradation cannot have come from the vLLM leg — it is accumulated state from
+everything that ran before.
+
+**C=16 is confirmed still won on a same-day A/B: 1.016x.** C=32's same-day vLLM number does
+not exist, because:
+
+★ **HAZARD CORRECTED — it is NOT specific to C=128.** The first wedge happened entering
+C=128, and this file originally blamed that rung. The clean-boot sweep wedged the box AGAIN
+during **vLLM C=32** — a rung whose Atlas counterpart had completed minutes earlier in the
+same sweep, on a box five minutes old, at the same "safe" util 0.85. A watcher armed to stop
+before C=128 never fired. **Treat any vLLM+MTP rung at C>=32 on GB10 as able to take the box
+down**, and do not re-run those rungs casually: they have now cost two physical powercycles
+for numbers already certified at 1.027x (C=32) and 1.333x (C=128).
+
+Atlas does not exhibit this at any rung, which is worth stating plainly: it completed
+C=1..128 twice, including C=128 at 472.70 and 469.03, on the same box and the same util that
+wedged under vLLM.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
