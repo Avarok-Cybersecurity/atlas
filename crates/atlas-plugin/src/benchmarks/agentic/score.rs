@@ -463,34 +463,3 @@ pub fn per_step_tallies(all: &[&Directions]) -> Vec<(String, f64)> {
         })
         .collect()
 }
-
-/// Gate A's verdict. Scoring, so it lives beside the other scoring — and it
-/// keeps `mod.rs` under the repo's 500-line ceiling.
-pub(super) fn verdict(
-    rows: &[super::IterationRow],
-    wall: f64,
-    wall_budget_s: f64,
-) -> crate::result::Verdict {
-    use crate::result::Verdict;
-    let n = rows.len();
-    let ok = rows.iter().filter(|r| r.webserver_ok).count();
-    let fd = rows.iter().filter(|r| r.directions.overall()).count();
-    let mut failures = Vec::new();
-    if ok < n {
-        failures.push(format!("webserver_ok {ok}/{n}"));
-    }
-    if fd < n {
-        failures.push(format!("followed_directions {fd}/{n}"));
-    }
-    if wall > wall_budget_s {
-        failures.push(format!("Σwall {wall:.0}s > {wall_budget_s:.0}s"));
-    }
-    if failures.is_empty() {
-        Verdict::pass(format!(
-            "{ok}/{n} webserver_ok · {fd}/{n} followed_directions · \
-             Σwall {wall:.0}s ≤ {wall_budget_s:.0}s"
-        ))
-    } else {
-        Verdict::fail(failures.join(" · "))
-    }
-}
