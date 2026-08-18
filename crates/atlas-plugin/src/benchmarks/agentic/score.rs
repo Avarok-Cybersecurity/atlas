@@ -470,11 +470,13 @@ pub(super) fn verdict(
     rows: &[super::IterationRow],
     wall: f64,
     wall_budget_s: f64,
+    s_per_turn_budget: f64,
 ) -> crate::result::Verdict {
     use crate::result::Verdict;
     let n = rows.len();
     let ok = rows.iter().filter(|r| r.webserver_ok).count();
     let fd = rows.iter().filter(|r| r.directions.overall()).count();
+    let turns = total_turns(rows);
     let mut failures = Vec::new();
     if ok < n {
         failures.push(format!("webserver_ok {ok}/{n}"));
@@ -482,15 +484,40 @@ pub(super) fn verdict(
     if fd < n {
         failures.push(format!("followed_directions {fd}/{n}"));
     }
+    // SPEED. Reported to 2 decimals because the on-box spread is 5.7% — a
+    // 0.1 s/turn difference is a real signal here, unlike a 100 s Σwall one.
+    if let Some(spt) = seconds_per_turn(wall, turns).filter(|s| *s > s_per_turn_budget) {
+        failures.push(format!(
+            "{spt:.2}s/turn > {s_per_turn_budget:.2}s/turn ({wall:.0}s / {turns} turns)"
+        ));
+    }
+    // DEGENERACY, not speed: catches a tier that completes every task but
+    // wanders through far more turns than the work needs. See the module doc.
     if wall > wall_budget_s {
         failures.push(format!("Σwall {wall:.0}s > {wall_budget_s:.0}s"));
     }
     if failures.is_empty() {
+        let spt = seconds_per_turn(wall, turns)
+            .map_or_else(|| "n/a".to_string(), |s| format!("{s:.2}s/turn"));
         Verdict::pass(format!(
             "{ok}/{n} webserver_ok · {fd}/{n} followed_directions · \
-             Σwall {wall:.0}s ≤ {wall_budget_s:.0}s"
+             {spt} ≤ {s_per_turn_budget:.2} · Σwall {wall:.0}s ≤ {wall_budget_s:.0}s"
         ))
     } else {
         Verdict::fail(failures.join(" · "))
     }
+}
+
+/// Agent turns summed across the tier — the denominator the speed bound needs.
+pub(super) fn total_turns(rows: &[super::IterationRow]) -> usize {
+    rows.iter().map(|r| r.turns).sum()
+}
+
+/// Seconds of wall per agent turn, or `None` when the tier took no turns.
+///
+/// `None` rather than 0.0 or infinity: a zero-turn tier means the agent never
+/// ran, which the correctness halves already fail on. Inventing a speed number
+/// for it would either mask that (0.0 passes) or double-report it (inf fails).
+pub(super) fn seconds_per_turn(wall: f64, turns: usize) -> Option<f64> {
+    (turns > 0).then(|| wall / turns as f64)
 }

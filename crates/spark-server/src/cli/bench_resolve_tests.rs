@@ -221,7 +221,7 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
     let applied =
         apply_threshold_params(descriptor, &specs, &mut values, &bare, &[]).expect("applies");
     assert!(applied.is_empty());
-    assert_eq!(values.float("wall_budget_s").unwrap(), 1000.0);
+    assert_eq!(values.float("wall_budget_s").unwrap(), 1300.0);
 }
 
 /// The `min` arm, through the REAL bfcl-subset wiring: a floor metric (BFCL's
