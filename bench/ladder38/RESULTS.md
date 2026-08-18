@@ -907,6 +907,31 @@ Atlas does not exhibit this at any rung, which is worth stating plainly: it comp
 C=1..128 twice, including C=128 at 472.70 and 469.03, on the same box and the same util that
 wedged under vLLM.
 
+### METHOD NOTE — `--max-num-seqs` is part of the comparison, not a free knob
+
+The certified table pins **batch cap 128 on BOTH engines at every rung** (Atlas
+`--max-batch-size 128`, vLLM `--max-num-seqs 128`), independently of the concurrency being
+driven. That pin is load-bearing, and it is easy to lose while working around the wedge
+hazard above.
+
+Lowering `--max-num-seqs` to match the rung (e.g. `--max-num-seqs 1` for C=1, `32` for C=32)
+is a REASONABLE mitigation for the wedge — it caps the working set exactly where the risk
+is — but the number it produces **is not comparable to this file's vLLM column**:
+
+- vLLM sizes its KV blocks and its scheduler budget from `max_num_seqs`, so a per-rung cap
+  changes block allocation, preemption behaviour and prefix-cache reuse, not just a ceiling.
+- The certified vLLM numbers were all taken at 128. A rung measured at a lower cap is a
+  different configuration, and comparing it to the 128-cap Atlas column is precisely the
+  apples-to-oranges the "APPLES-TO-APPLES REFERENCE" section exists to prevent.
+
+If a per-rung cap is used to survive the hazard, **say so beside the number and re-pin
+Atlas's `--max-batch-size` to the same value**, so the pair is at least internally
+like-for-like. Do not fold such a number into the certified column.
+
+(The same caution applies to dropping `--gpu-memory-utilization` for a hazardous rung: it is
+the right mitigation, but it must be applied to BOTH engines or reported as a separate
+configuration.)
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
