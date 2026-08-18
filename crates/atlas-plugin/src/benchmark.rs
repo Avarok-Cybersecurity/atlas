@@ -17,6 +17,7 @@ use anyhow::Result;
 use futures::Stream;
 
 use crate::dynamic::DynBenchmark;
+use crate::hardware::Sensitivity;
 use crate::params::{ParamSpec, ParamValues};
 use crate::plugin::Plugin;
 use crate::result::BenchmarkResult;
@@ -76,6 +77,16 @@ pub struct BenchmarkDescriptor {
     ///
     /// Empty for every benchmark whose verdict reads no committed threshold.
     pub threshold_params: &'static [(&'static str, &'static str)],
+    /// Whether this benchmark's number is a SPEED number, and therefore
+    /// corruptible by the state of the box that produced it.
+    ///
+    /// Declared HERE, on the descriptor, rather than as a list of ids in the
+    /// hardware policy: the registry is the SSOT for what benchmarks exist,
+    /// and a separate list would go stale the first time one is added — and
+    /// would go stale in the unsafe direction, silently treating a new speed
+    /// gate as thermally immune. Adding a benchmark now forces the author to
+    /// answer the question. See [`crate::hardware::policy`].
+    pub sensitivity: Sensitivity,
     pub ctor: fn() -> Box<dyn DynBenchmark>,
 }
 

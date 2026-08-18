@@ -38,6 +38,7 @@
 //! rather than aborting the run: a dropped connection costs one round, not
 //! the eleven that already measured.
 
+use crate::hardware::Sensitivity;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
@@ -93,6 +94,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // which runs anywhere, with its baseline measured on one checkpoint.
     intended_for: None,
     threshold_params: &[],
+    // State-poisoning is a bit-level property of the SSM rollback path; a hot
+    // box must never be able to block it.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(SsmPoison::default()),
 };
 

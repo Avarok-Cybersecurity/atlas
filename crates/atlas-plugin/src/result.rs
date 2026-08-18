@@ -240,6 +240,16 @@ pub struct BenchmarkResult {
     /// Lines appended to the run log since the previous frame (not cumulative).
     pub log: Vec<LogLine>,
     pub elapsed: Duration,
+    /// What state the box was in before and after this run.
+    ///
+    /// Stamped by [`crate::executor`] onto the TERMINAL frame only, which is
+    /// the frame [`crate::RunRecord`] keeps and the gate record is built from.
+    /// Absent on every intermediate frame, and absent from the JSON entirely
+    /// for a record written before this existed — a run with no hardware state
+    /// is unmeasured, which is not the same as a run measured on a healthy
+    /// box, and no reader should be able to confuse the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_state: Option<crate::hardware::HardwareStateReport>,
 }
 
 impl BenchmarkResult {
@@ -254,6 +264,7 @@ impl BenchmarkResult {
             metrics: BTreeMap::new(),
             log: Vec::new(),
             elapsed,
+            hardware_state: None,
         }
     }
 
@@ -300,6 +311,10 @@ impl BenchmarkResult {
     }
     pub fn log_line(mut self, line: LogLine) -> Self {
         self.log.push(line);
+        self
+    }
+    pub fn with_hardware_state(mut self, report: crate::hardware::HardwareStateReport) -> Self {
+        self.hardware_state = Some(report);
         self
     }
 }

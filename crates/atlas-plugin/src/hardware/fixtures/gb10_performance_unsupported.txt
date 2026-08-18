@@ -1,0 +1,13 @@
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : N/A
+        SW Power Cap                                   : N/A
+        HW Slowdown                                    : N/A
+            HW Thermal Slowdown                        : N/A
+            HW Power Brake Slowdown                    : N/A
+        SW Thermal Slowdown                            : N/A
+    Clocks Event Reasons Counters
+        SW Power Capping                               : N/A
+        SW Thermal Slowdown                            : N/A
+        HW Thermal Slowdown                            : N/A
+        HW Power Braking                               : N/A

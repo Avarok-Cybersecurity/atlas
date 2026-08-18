@@ -8,6 +8,7 @@
 //! discovered after the evidence it invalidates has been collected and can be
 //! shown beside the verdict.
 
+use crate::hardware::Sensitivity;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -56,6 +57,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     needs_confirmation: false,
     intended_for: None,
     threshold_params: &[],
+    // Video fidelity does not change with clock.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(VideoFidelity::default()),
 };
 

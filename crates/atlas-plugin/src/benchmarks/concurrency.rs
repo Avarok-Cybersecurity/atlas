@@ -18,6 +18,7 @@
 //! evidence is recorded, and cells below the vacuity floor are flagged
 //! non-comparable instead of silently reported.
 
+use crate::hardware::Sensitivity;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -67,6 +68,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // (C=1/4/8/16, isl 512, osl 320) arrives via the same entry's
     // `[benchmarks.param_overrides]`, not from these schema defaults.
     threshold_params: GATE_THRESHOLD_PARAMS,
+    // Latency and throughput at every rung; a thermal event mid-sweep moves
+    // the later rungs and not the earlier ones, which reads as a shape change.
+    sensitivity: Sensitivity::Speed,
     ctor: || Box::new(ConcurrencySweep::default()),
 };
 

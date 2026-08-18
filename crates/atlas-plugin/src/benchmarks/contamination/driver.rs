@@ -20,6 +20,7 @@
 //! than aborting the run — the scorer counts them as `Unmeasured`, which
 //! fails the verdict without discarding the legs that did measure.
 
+use crate::hardware::Sensitivity;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
@@ -60,6 +61,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // checkpoint; any served model is a valid subject.
     intended_for: None,
     threshold_params: &[],
+    // Cross-request state bleed is a correctness property: a throttled box
+    // produces the same tokens, slower.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(CrossContamination::default()),
 };
 

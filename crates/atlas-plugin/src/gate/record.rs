@@ -62,6 +62,21 @@ pub struct GateRecord {
     pub atlas_version: String,
     /// The box that served the model during the run.
     pub hardware: Hardware,
+    /// What STATE that box was in, captured before and after the run, with the
+    /// delta and both verdicts.
+    ///
+    /// [`Hardware`] above names the box; this says whether the box was in a
+    /// condition to produce a number worth reading. They are different
+    /// questions: on 2026-08-15 two boxes with byte-identical fingerprints
+    /// (NVIDIA GB10, driver 580.126.09) returned 692 s and 1079 s on
+    /// `agentic-webserver` for the SAME code, and a "+38% regression" was
+    /// filed and retracted because the record could not tell them apart.
+    ///
+    /// Absent from the JSON for every record written before this existed, and
+    /// for any run whose state could not be captured. Absent means UNMEASURED
+    /// — it must never be read as "the box was fine".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_state: Option<crate::hardware::HardwareStateReport>,
     /// Raw headline numbers, keyed by stable metric name.
     pub metrics: BTreeMap<String, f64>,
     /// The run's terminal status. A `Failed` frame never passes the gate,
@@ -449,6 +464,11 @@ impl GateRecord {
             serve_overrides,
             atlas_version: record.atlas_version.clone(),
             hardware,
+            // Carried through from the terminal frame the executor stamped it
+            // on, rather than probed here: this record is written minutes to
+            // hours after the run, and a state captured now would describe an
+            // idle box instead of the one that did the work.
+            hardware_state: frame.hardware_state.clone(),
             metrics: frame.metrics.clone(),
             frame_status: frame.status,
             verdict,

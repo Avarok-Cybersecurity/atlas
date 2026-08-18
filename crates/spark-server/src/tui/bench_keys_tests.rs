@@ -89,6 +89,7 @@ fn a_finished_run_stays_reachable_after_navigating_away() {
         metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
         elapsed: std::time::Duration::from_secs(1),
+        hardware_state: None,
     });
     s.on_key(key(KeyCode::Char('v')), BenchSub::Suite);
     assert_eq!(s.view, View::Run);
@@ -394,6 +395,7 @@ fn record() -> atlas_plugin::RunRecord {
             metrics: std::collections::BTreeMap::new(),
             log: Vec::new(),
             elapsed: std::time::Duration::from_secs(1),
+            hardware_state: None,
         },
     )
 }

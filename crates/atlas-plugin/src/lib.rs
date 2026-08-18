@@ -32,6 +32,8 @@
 //!   dynamic     the dyn-safe bridge
 //!   executor    drive() + BenchmarkExecutor (tokio task -> render thread)
 //!   registry    the suite, in list order
+//!   hardware    the box: WHICH one (fingerprint) and WHAT STATE it was in
+//!               (two-phase capture + the refuse/invalidate policy)
 //!   artifacts   ~/.atlas layout, asset writing, provisioning stamps
 //!   python      python/venv/pip preflight for the one benchmark that needs it
 //!   http        minimal OpenAI chat client (SSE) — no TLS, no client stack
@@ -61,6 +63,7 @@ pub use benchmark::{Benchmark, BenchmarkDescriptor};
 pub use coherence::CoherencePolicy;
 pub use dynamic::DynBenchmark;
 pub use executor::{BenchmarkExecutor, ExecutorMessage, RunHandle};
+pub use hardware::{Hardware, HardwareState, HardwareStateReport, Sensitivity};
 pub use history::{RunRecord, RunSource};
 pub use metadata::PluginMetadata;
 pub use params::{ParamKind, ParamSpec, ParamValue, ParamValues};

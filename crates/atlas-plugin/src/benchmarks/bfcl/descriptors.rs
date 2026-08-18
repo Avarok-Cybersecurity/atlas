@@ -13,6 +13,7 @@
 
 use super::{Bfcl, Variant};
 use crate::benchmark::BenchmarkDescriptor;
+use crate::hardware::Sensitivity;
 use crate::metadata::PluginMetadata;
 
 const SUBSET_SUMMARY: &str = "The golden n=995 MLPerf-edge draw, AST-scored";
@@ -70,6 +71,10 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // selected variant's committed BENCH.toml floors (min bounds), not the
     // MLPerf floor — which gates only the submission checkpoints (report.rs).
     threshold_params: GATE_THRESHOLD_PARAMS,
+    // Accuracy. A hot box scores the same and takes longer, and blocking a
+    // 3.5-hour accuracy run on chassis temperature would stop correctness work
+    // for a reason that cannot reach the number.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
@@ -100,6 +105,8 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                other checkpoint have no recorded baseline to beat.",
     }),
     threshold_params: &[],
+    // Accuracy, same as the subsets.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(Bfcl::new(Variant::Full)),
 };
 
@@ -126,5 +133,7 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // Same two gating metrics as the golden draw (its BENCH.toml entry bounds
     // overall_accuracy and normalized_single_turn_score), different bars.
     threshold_params: GATE_THRESHOLD_PARAMS,
+    // Accuracy, same as the golden draw.
+    sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(Bfcl::new(Variant::SubsetEcholp)),
 };

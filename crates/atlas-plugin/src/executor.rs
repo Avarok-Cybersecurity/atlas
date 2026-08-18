@@ -21,6 +21,9 @@ use crate::artifacts::ArtifactStore;
 use crate::benchmark::BenchmarkDescriptor;
 use crate::coherence::CoherencePolicy;
 use crate::dynamic::DynBenchmark;
+use crate::hardware::policy;
+use crate::hardware::report::HardwareStateReport;
+use crate::hardware::state::HardwareState;
 use crate::params::ParamValues;
 use crate::plugin::{PluginEvent, PluginHandle, TargetEndpoint};
 use crate::result::{BenchmarkResult, LogLine, RunStatus};
@@ -210,10 +213,97 @@ impl RunTask {
         }
     }
 
+    /// Capture the box state and decide whether this run may start.
+    ///
+    /// `None` only when the capture itself could not be scheduled (the runtime
+    /// is shutting down). That leaves the record with no hardware state at
+    /// all, which reads as UNMEASURED — never as measured-and-healthy.
+    ///
+    /// Blocking by contract, so it goes through `spawn_blocking`: `nvidia-smi`
+    /// is a synchronous subprocess and can stall on a wedged driver.
+    async fn open_hardware_report(&self) -> Option<HardwareStateReport> {
+        let sensitivity = self.descriptor.sensitivity;
+        let before = tokio::task::spawn_blocking(HardwareState::collect)
+            .await
+            .ok()?;
+        self.handle
+            .info(format!("box state: {}", before.one_line()));
+        let report = HardwareStateReport::opened(sensitivity, before);
+        if policy::PolicyOptions::from_env().kill_switch {
+            // Loud on purpose, and unconditional: an operator who set the kill
+            // switch three weeks ago and forgot must see it in the run log of
+            // every number they later quote.
+            self.handle.warn(format!(
+                "{}=1 — the hardware pre-check CANNOT refuse this run. Whatever it found is \
+                 recorded below and travels with the record.",
+                policy::KILL_SWITCH_ENV
+            ));
+        }
+        for concern in &report.precheck.concerns {
+            self.handle.warn(format!("hardware: {concern}"));
+        }
+        Some(report)
+    }
+
+    /// Take the after-capture, compute the delta and stamp both onto the
+    /// terminal frame — the frame the record is built from.
+    async fn close_hardware(
+        &self,
+        mut frame: BenchmarkResult,
+        report: Option<HardwareStateReport>,
+    ) -> BenchmarkResult {
+        let Some(mut report) = report else {
+            return frame;
+        };
+        if let Ok(after) = tokio::task::spawn_blocking(HardwareState::collect).await {
+            report.close(after);
+        }
+        if let Some(post) = &report.postcheck {
+            for concern in &post.concerns {
+                self.handle.warn(format!("hardware: {concern}"));
+            }
+        }
+        // Only on a run that produced numbers: a failed run has none to
+        // invalidate, and saying otherwise reads as blaming the box for a
+        // harness error.
+        if report.invalidated() && frame.status == RunStatus::Completed {
+            self.handle.warn(
+                "hardware: this run's SPEED numbers are marked INVALID — the box throttled \
+                 while it was measuring. Re-run on a box that does not."
+                    .to_string(),
+            );
+        }
+        frame.hardware_state = Some(report);
+        frame
+    }
+
     async fn execute(self) {
         let started = Instant::now();
         self.handle.set_glow(true);
         let mut bench = self.descriptor.build();
+
+        // Phase -1 — what state is the box in? Before the coherence probe
+        // because it is cheaper and does not touch the endpoint, and before
+        // `load()` because refusing after BFCL has built a venv wastes the
+        // minutes the refusal exists to save.
+        let hardware = self.open_hardware_report().await;
+        if let Some(report) = hardware.as_ref().filter(|r| r.refuses()) {
+            let frame = BenchmarkResult::failed(
+                "hardware precheck",
+                format!(
+                    "this box is not in a state to produce a comparable SPEED number: {}. \
+                     Set {}=1 to measure anyway.",
+                    report.precheck.concerns.join("; "),
+                    policy::KILL_SWITCH_ENV
+                ),
+                started.elapsed(),
+            );
+            // NOT closed: nothing ran, so there is no delta to report and no
+            // validity to judge. A refused run is unmeasured, not invalid.
+            let _ = self.frames.send(frame.with_hardware_state(report.clone()));
+            self.teardown(bench.as_mut()).await;
+            return;
+        }
 
         // Phase 0 — probe, then load, then configure. All pre-run steps, so a
         // failure is reported as a terminal frame rather than a silent dead pane.
@@ -231,29 +321,45 @@ impl RunTask {
         }
         .await;
         if let Err(e) = setup {
-            self.emit_failed("setup", e, started.elapsed());
+            self.emit_failed("setup", e, started.elapsed(), hardware)
+                .await;
             self.teardown(bench.as_mut()).await;
             return;
         }
 
-        // Phase 1 — drive.
+        // Phase 1 — drive. The terminal frame is HELD BACK rather than
+        // forwarded inline: the after-capture has to happen while the run is
+        // still the most recent thing the box did, and the frame it stamps is
+        // the one the record keeps.
+        let mut terminal: Option<BenchmarkResult> = None;
         {
             let stream = drive(bench.as_mut());
             futures::pin_mut!(stream);
             while let Some(item) = stream.next().await {
                 match item {
                     Ok(frame) => {
+                        if frame.status.is_terminal() {
+                            terminal = Some(frame);
+                            break;
+                        }
                         if self.frames.send(frame).is_err() {
                             break; // TUI gone
                         }
                     }
+                    // `{:#}` unrolls the anyhow context chain, which is where
+                    // the actionable half of these messages lives ("pip
+                    // install failed — needs network").
                     Err(e) => {
-                        self.emit_failed("run", e, started.elapsed());
+                        terminal = Some(BenchmarkResult::failed(
+                            "run",
+                            format!("{e:#}"),
+                            started.elapsed(),
+                        ));
                         break;
                     }
                 }
                 if self.cancel.load(Ordering::Relaxed) {
-                    let _ = self.frames.send(BenchmarkResult::failed(
+                    terminal = Some(BenchmarkResult::failed(
                         "cancelled",
                         "cancelled by user",
                         started.elapsed(),
@@ -262,18 +368,24 @@ impl RunTask {
                 }
             }
         }
+        if let Some(frame) = terminal {
+            let frame = self.close_hardware(frame, hardware).await;
+            let _ = self.frames.send(frame);
+        }
 
         self.teardown(bench.as_mut()).await;
     }
 
-    fn emit_failed(&self, phase: &str, error: anyhow::Error, elapsed: Duration) {
-        // `{:#}` unrolls the anyhow context chain, which is where the actionable
-        // half of these messages lives ("pip install failed — needs network").
-        let _ = self.frames.send(BenchmarkResult::failed(
-            phase,
-            format!("{error:#}"),
-            elapsed,
-        ));
+    async fn emit_failed(
+        &self,
+        phase: &str,
+        error: anyhow::Error,
+        elapsed: Duration,
+        hardware: Option<HardwareStateReport>,
+    ) {
+        let frame = BenchmarkResult::failed(phase, format!("{error:#}"), elapsed);
+        let frame = self.close_hardware(frame, hardware).await;
+        let _ = self.frames.send(frame);
     }
 
     async fn teardown(&self, bench: &mut dyn DynBenchmark) {

@@ -184,6 +184,20 @@ async fn write_gate_record(
             .with_closure(atlas_kernels::TARGET_CLOSURES);
     let path = gate::write_record(&root, &gate_record)?;
     eprintln!("gate record written as {}", path.display());
+    // Loud, and at the point the operator is about to commit the file. The
+    // record itself carries the verdict (`hardware_state.postcheck`), but a
+    // number is quoted from a terminal long before anyone opens the JSON, and
+    // the 2026-08-15 retraction happened because nothing said this out loud.
+    if let Some(hw) = &gate_record.hardware_state
+        && hw.invalidated()
+    {
+        eprintln!(
+            "gate: ★ that record is marked INVALID — the box throttled while it was \
+             measuring, so its SPEED numbers are not comparable and must not be quoted. \
+             Concerns: {}",
+            hw.concerns().join("; ")
+        );
+    }
     // Repeated at the end as well as the start: the start-of-run warning has
     // scrolled hours off the top of the terminal by now, and this one names the
     // file the reader is about to commit.
