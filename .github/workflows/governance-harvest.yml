@@ -311,7 +311,14 @@ jobs:
           fi
 
           run_ids=$(tr '\n' ' ' < harvested_runs.txt | sed 's/ *$//')
+          run_count=$(wc -l < harvested_runs.txt | tr -d ' ')
+          # The commit message carries every run id — git does not care how long
+          # it is, and the provenance is worth keeping. The PR TITLE cannot: the
+          # API caps it at 256 characters, and a full sweep of 47 runs blew past
+          # that and failed PR creation outright. Title states the count, body
+          # carries the ids.
           msg="chore(governance): harvest PR intent ledgers (runs ${run_ids:-unknown})"
+          title="chore(governance): harvest PR intent ledgers (${run_count:-0} run(s))"
           git config user.name  "tbraun96"
           git config user.email "tbraun96@gmail.com"
           git add governance/
@@ -366,19 +373,20 @@ jobs:
             git push --force origin HEAD:refs/heads/bot/governance-harvest
           fi
           {
-            printf '%s\n\n%s\n' \
-              "Automated harvest of PR intent ledger artifacts (runs ${run_ids:-unknown})." \
+            printf '%s\n\n%s\n\n%s\n' \
+              "Automated harvest of PR intent ledger artifacts from ${run_count:-0} run(s)." \
+              "Runs: ${run_ids:-unknown}" \
               "Opened by governance-harvest.yml. Auto-merge is requested, so this lands through the merge queue once the required checks report." \
               > "$RUNNER_TEMP/pr-body.md"
           }
           existing=$(gh pr list --head bot/governance-harvest --base main --state open \
             --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md"
+            gh pr edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md"
             pr_number=$existing
           else
             gh pr create --head bot/governance-harvest --base main \
-              --title "$msg" --body-file "$RUNNER_TEMP/pr-body.md" > /dev/null
+              --title "$title" --body-file "$RUNNER_TEMP/pr-body.md" > /dev/null
             pr_number=$(gh pr list --head bot/governance-harvest --base main --state open \
               --json number --jq '.[0].number')
           fi
