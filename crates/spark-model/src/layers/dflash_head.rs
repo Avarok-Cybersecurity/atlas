@@ -31,6 +31,11 @@ use crate::weight_map::{DenseWeight, QuantizedWeight};
 /// (which compiles target-specific PTX at startup); subsequent
 /// `propose()` calls just `KernelLaunch::new(...).launch(stream)`.
 pub struct DflashKernels {
+    /// DFlash2 grouped dynamic causal conv
+    /// (`kernels/gb10/common/dflash2_conv.cu`). Resolved via `try_kernel`
+    /// (0-sentinel when the loaded kernel set predates the kernel); only
+    /// dispatched when the layer actually carries conv weights.
+    pub dflash2_conv: KernelHandle,
     pub rms_norm: KernelHandle,
     pub residual_rms_norm: KernelHandle,
     pub dense_gemv: KernelHandle,
@@ -175,6 +180,30 @@ pub enum DflashQuantization {
 /// when `ATLAS_DFLASH_DRAFTER_FP8=1`. The BF16 fields are always present
 /// (Fp8 path falls back to them for any GEMM whose Fp8 weight is None).
 #[allow(dead_code)]
+pub struct Dflash2Conv {
+    /// `[2, conv_kernel_size, hidden]` BF16 on device.
+    pub base_kernel: DenseWeight,
+    /// `[2 * conv_kernel_size * groups, hidden]` BF16 on device.
+    pub kernel_projection: DenseWeight,
+}
+
+/// DFlash2 candidate-path selector state. The two `[vocab, rank]` codebooks
+/// are held HOST-side (bf16 as raw u16, ~127 MiB each for vocab 248320 ×
+/// rank 256): the selector walk is a per-propose, per-position chain of 16
+/// rank-256 dot products — host arithmetic on data this small beats paying
+/// VRAM + kernel round-trips for it, and it keeps the v0 integration to a
+/// single new CUDA kernel (the conv).
+pub struct Dflash2Selector {
+    /// `[rank, hidden]` BF16, host copy — projects a draft position's final
+    /// hidden state into rank space (one matvec per position).
+    pub hidden_projection: Vec<u16>,
+    /// `[vocab, rank]` BF16 host copies.
+    pub predecessor_codebook: Vec<u16>,
+    pub successor_codebook: Vec<u16>,
+    pub rank: usize,
+    pub top_k: usize,
+}
+
 pub struct DflashLayer {
     // Norms
     pub input_layernorm: DenseWeight,
@@ -201,6 +230,14 @@ pub struct DflashLayer {
     pub o_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
     pub gate_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
     pub up_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    // DFlash2: `GroupedDynamicCausalConv` around each sublayer. The
+    // `base_kernel` device tensor is `[2, ks, hidden]` (stage 0 = prepare
+    // conv on the normed sublayer input, stage 1 = finish conv on the
+    // sublayer output); `kernel_projection` is `[2*ks*groups, hidden]` and
+    // ONE GEMM of the normed input yields the dynamic kernels for both
+    // stages. `None` on DFlash1 checkpoints.
+    pub attention_conv: Option<Dflash2Conv>,
+    pub mlp_conv: Option<Dflash2Conv>,
     pub down_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
 }
 
@@ -323,6 +360,14 @@ pub struct BlockDiffusionDraftHead {
     /// Target-side hidden_size (used for the `fc` projection input width:
     /// `target_layer_ids.len() * target_hidden_size`).
     pub target_hidden_size: usize,
+
+    // === DFlash2 (None/0 on DFlash1 checkpoints) ===
+    /// Candidate-path selector (host-side; see [`Dflash2Selector`]).
+    pub dflash2_selector: Option<Dflash2Selector>,
+    /// `conv_kernel_size` (2 on Qwen3.8-27B-DFlash2).
+    pub conv_kernel_size: usize,
+    /// `conv_group_size` (16 ⇒ 320 groups at hidden 5120).
+    pub conv_group_size: usize,
 
     // === Weights shared with the target ===
     /// Target's embed_tokens GPU pointer. The drafter's checkpoint has no

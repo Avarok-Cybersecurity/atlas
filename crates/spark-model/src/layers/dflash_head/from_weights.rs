@@ -6,7 +6,7 @@
 //! [`BlockDiffusionDraftHead::from_weights`] (kernel resolution + KV
 //! cache setup) and [`BlockDiffusionDraftHead::validate_against_target`].
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
@@ -94,6 +94,13 @@ impl BlockDiffusionDraftHead {
         // `mtp_head.rs` plus the `extern "C" __global__` declarations under
         // `kernels/gb10/common/`.
         let kernels = DflashKernels {
+            // DFlash2 conv — probe-only: absent on kernel sets built before
+            // dflash2_conv.cu landed, and unused on DFlash1 drafters.
+            dflash2_conv: super::super::try_kernel(
+                gpu,
+                "dflash2_conv",
+                "dflash2_grouped_dynamic_causal_conv_bf16",
+            ),
             // DFlash drafter uses HF's vanilla RMSNorm convention
             // (`out = x * w / RMS(x)`), NOT Atlas's default offset-from-1
             // form (`out = x * (1 + w) / RMS(x)`). Atlas's standard
@@ -418,6 +425,62 @@ impl BlockDiffusionDraftHead {
             num_layers,
         );
 
+        // ── DFlash2 selector: host copies (see Dflash2Selector docs) ──
+        let (selector_rank, selector_top_k, conv_kernel_size, conv_group_size) = weights
+            .config
+            .dflash_config
+            .as_ref()
+            .map(|c| {
+                (
+                    c.selector_rank.unwrap_or(0),
+                    c.selector_top_k.unwrap_or(0),
+                    c.conv_kernel_size.unwrap_or(0),
+                    c.conv_group_size.unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
+        let dflash2_selector = match weights.candidate_selector {
+            Some(sel) if selector_rank > 0 => {
+                let d2h_u16 = |ptr: spark_runtime::gpu::DevicePtr,
+                               elems: usize,
+                               what: &str|
+                 -> Result<Vec<u16>> {
+                    let mut bytes = vec![0u8; elems * 2];
+                    gpu.copy_d2h(ptr, &mut bytes)
+                        .with_context(|| format!("DFlash2 selector D2H: {what}"))?;
+                    Ok(bytes
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect())
+                };
+                let sel = super::Dflash2Selector {
+                    hidden_projection: d2h_u16(
+                        sel.hidden_projection.weight,
+                        selector_rank * hidden_size,
+                        "hidden_projection",
+                    )?,
+                    predecessor_codebook: d2h_u16(
+                        sel.predecessor_codebook.weight,
+                        vocab_size * selector_rank,
+                        "predecessor_codebook",
+                    )?,
+                    successor_codebook: d2h_u16(
+                        sel.successor_codebook.weight,
+                        vocab_size * selector_rank,
+                        "successor_codebook",
+                    )?,
+                    rank: selector_rank,
+                    top_k: selector_top_k,
+                };
+                tracing::info!(
+                    "DFlash2 selector loaded host-side: rank={selector_rank}, top_k={selector_top_k},                      codebooks 2x[{vocab_size}, {selector_rank}] (~{} MiB host)",
+                    (2 * vocab_size * selector_rank * 2) / (1024 * 1024),
+                );
+                Some(sel)
+            }
+            _ => None,
+        };
+
         let mut head = Self {
             num_layers,
             hidden_size,
@@ -432,6 +495,9 @@ impl BlockDiffusionDraftHead {
             window_size,
             target_layer_ids,
             target_hidden_size,
+            dflash2_selector,
+            conv_kernel_size,
+            conv_group_size,
 
             embed_tokens_shared,
             lm_head_shared,
@@ -456,6 +522,15 @@ impl BlockDiffusionDraftHead {
                     gate_proj: l.gate_proj,
                     up_proj: l.up_proj,
                     down_proj: l.down_proj,
+                    // DFlash2 convs (None on DFlash1 checkpoints).
+                    attention_conv: l.attention_conv.map(|c| super::Dflash2Conv {
+                        base_kernel: c.base_kernel,
+                        kernel_projection: c.kernel_projection,
+                    }),
+                    mlp_conv: l.mlp_conv.map(|c| super::Dflash2Conv {
+                        base_kernel: c.base_kernel,
+                        kernel_projection: c.kernel_projection,
+                    }),
                     // Phase G — populated below if ATLAS_DFLASH_DRAFTER_FP8=1.
                     q_proj_fp8: None,
                     k_proj_fp8: None,
