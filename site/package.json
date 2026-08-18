@@ -14,9 +14,12 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.57.1",
-    "@sveltejs/vite-plugin-svelte": "^7.0.0",
-    "svelte": "^5.55.3",
-    "vite": "^8.0.8"
+    "@sveltejs/kit": "^2.70.2",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "svelte": "^5.56.9",
+    "vite": "^8.2.1"
+  },
+  "overrides": {
+    "cookie": "^0.7.0"
   }
 }
