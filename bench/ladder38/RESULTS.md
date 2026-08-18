@@ -686,12 +686,58 @@ number in this file is the one that was measured. Ladder stack tip: `1575873582`
 Gate certifications were deliberately held until after this rebase: a record minted on a
 pre-rewrite SHA would name a commit that no longer exists, which is worse than no record.
 
+### C=2 HARDENED (2026-08-18) — the last unreproduced rung, re-measured against a same-day vLLM
+
+C=2 was the weak point of the certified table, for two reasons that compounded: it was the
+only rung round 11 did **not** re-measure (the table carries `(r8) 38.95` from round 8), and
+at **1.004x** it was won by 0.16 tok/s — a margin smaller than the run-to-run spread of
+either engine. A claim of "wins at every rung" rests hardest on its thinnest rung.
+
+Re-measured on **merged main `529fcb04fa`** (i.e. after #572, #569 and #581 all landed),
+with vLLM re-run **back-to-back on the same box on the same day** rather than compared to a
+week-old number:
+
+| engine | rep 1 | rep 2 | rep 3 | mean | spread |
+|---|---:|---:|---:|---:|---:|
+| **Atlas** | 41.69 | 39.99 | 41.37 | **41.02** | 4.15% |
+| vLLM+MTP | 37.62 | 36.52 | 37.18 | **37.11** | 2.94% |
+
+**Ratio 1.105x**, against the recorded 1.004x. The distributions do not overlap: Atlas's
+WORST rep (39.99) beats vLLM's BEST (37.62). That is the property the old number lacked —
+1.004x could be reversed by a single unlucky draw, and this cannot.
+
+Against the recorded vLLM 38.79 instead of today's 37.11, Atlas still wins by 1.058x, so
+the conclusion does not depend on which vLLM number is used. Both are reported because
+vLLM's own C=2 moved 4.3% between two runs of the SAME image digest on the SAME box, which
+is a useful reminder that a 1.004x margin is not a result.
+
+Two configuration traps were caught and are worth recording, since both would have produced
+a wrong number that looked fine:
+
+- **This file's header block (line ~17) lists `--kv-cache-dtype bf16`**, which is the ROUND 1
+  Atlas config. The certified comparison is **fp8 KV on both** (round 4 moved Atlas to fp8
+  "matching the reference at last"). A first attempt at bf16 measured 39.55 and was discarded.
+- **The ladder was measured on dgx2, not dgx1.** Two runs were completed on dgx1 (39.55 bf16,
+  39.95 fp8) before this was noticed, and both were discarded rather than compared across
+  boxes — the same error this file already records as a retraction at "★ The comparison
+  itself is the likely error".
+
+Provenance: box dgx2 (spark-43fa), Atlas `529fcb04fa` served with the round-11 flags at
+`--kv-cache-dtype fp8`, env `ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1
+ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1`; vLLM
+`vllm/vllm-openai:latest` digest `sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`
+— the IDENTICAL digest the certified reference used — with
+`--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`, ctx 2048, batch cap
+128, util 0.85, fp8 KV, prefix caching on. Harness `harness_w55_conc_ladder.py`, ISL 128 /
+OSL 1024, temp 0, seed 42, 3 reps + 1 warmup. Raw series in
+`c2_atlas_dgx2_20260818.json` and `c2_vllm_mtp_dgx2_20260818.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
 |---:|---:|---:|---:|---:|
 | 1 | 23.59 | 23.50 | 19.72 | **1.196x** |
-| 2 | (r8) 38.95 | 38.95 | 38.79 | **1.004x** |
+| 2 | **41.02** (2026-08-18, dgx2) | 38.95 | 37.11 same-day / 38.79 r8 | **1.105x** |
 | 4 | **74.21** | 71.95 | 71.61 | **1.036x** |
 | 8 | **125.95** | 125.47 | 124.48 | **1.012x** |
 | 16 | 203.36 | 202.93 | 197.03 | **1.032x** |
