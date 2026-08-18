@@ -99,9 +99,14 @@ const series = manifest.series.map((s) => {
   return { ...s, sources: undefined, rungs };
 });
 
-const subject = series.find((s) => s.role === 'subject') ?? die('manifest has no subject series');
+// Guard-then-use, matching `rungStats` above. `die` is returnless, so
+// `x ?? die(...)` statically assigns undefined and would only fail later, at a
+// confusing place — and not at all if `die` ever stopped calling process.exit.
+const subject = series.find((s) => s.role === 'subject');
+if (!subject) die('manifest has no subject series');
 const baselines = series.filter((s) => s.role === 'baseline');
-const matched = baselines.find((s) => s.parity === 'matched') ?? die('no matched-parity baseline');
+const matched = baselines.find((s) => s.parity === 'matched');
+if (!matched) die('no matched-parity baseline');
 
 const at = (s, c) => s.rungs.find((r) => r.c === c);
 
