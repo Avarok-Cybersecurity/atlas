@@ -1,1 +1,2 @@
 {"pr":556,"head_sha":"dcc601d377ba6fe3ff49c3110b9817d16a97f2a0","run_id":"32028896864","attempt":1,"at":1786969580,"kind":"category","value":"unknown","status":"abstain"}
+{"pr":556,"head_sha":"dcc601d377ba6fe3ff49c3110b9817d16a97f2a0","run_id":"backfill-2026-08-18","attempt":0,"at":1787053242,"kind":"category","value":"infrastructure/build-system","status":"ok"}
