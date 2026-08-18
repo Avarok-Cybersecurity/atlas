@@ -66,12 +66,54 @@ min = 10.0
 max = 10.0
 
 [benchmarks.metrics.sum_wall_s]
-# Tightened 1300 -> 1000 on 2026-08-09. Two back-to-back N=10 tiers on one
-# binary measured 733.8 s and 782.9 s, and the historical range sits at
-# 600-800 s. A 1300 s ceiling therefore sat ~60% above anything ever observed:
-# it could only ever have caught a blowup, never a regression. 1000 s keeps
-# ~25% headroom over the slowest measured tier.
-max = 1000.0
+# RAISED 1000 -> 1800 on 2026-08-18, and demoted from speed bound to blowup
+# detector. Σwall is a PRODUCT — turns x per-turn cost — and turn count is
+# drawn by the agent, not the engine. The 2026-08-09 tightening to 1000 read a
+# 600-800 s window (733.8 and 782.9 back-to-back) that a five-tier sample now
+# shows was unrepresentative; every one of these was 10/10 + 10/10:
+#
+#   dgx1  774 s / 113 turns = 6.85 s/turn      dgx1 1039 s / 144 = 7.22
+#   dgx1  813 s / 115 turns = 7.07 s/turn      dgx2 1019 s / 166 = 6.14
+#   dgx1  860 s / 126 turns = 6.83 s/turn
+#
+# 1000 sat INSIDE that healthy distribution and rejected the last two — and it
+# ranked them backwards, failing dgx2's 6.14 s/turn, the fastest tier on
+# record, while passing dgx1's 7.07. Speed is now bounded by `s_per_turn`
+# below; this ceiling only has to catch a blowup.
+#
+# 1800 = the 250-turn degeneracy ceiling (`sum_turns`) x the 7.22 s/turn worst
+# measured tier. Reachable, so not vacuous: the per-iteration cap is 40 turns
+# x 10 iterations = 400 turns.
+max = 1800.0
+
+[benchmarks.metrics.sum_turns]
+# DEGENERACY, stated directly instead of being smuggled into a wall bound. An
+# agent that completes every task but wanders through far more turns than the
+# work needs is fast per turn and still a regression. 250 is ~1.5x the 166-turn
+# worst of the five tiers above, against a hard cap of 400 (max_turns 40 x 10).
+max = 250.0
+
+[benchmarks.metrics.s_per_turn]
+# SPEED. The agent's own seconds (scorer excluded) per agent turn. Five tiers
+# span 6.83-7.22 on dgx1 and 6.14 on dgx2 — a 5.7% on-box spread against
+# Σwall's 34%, i.e. six times tighter, which is the whole reason this bound
+# exists.
+#
+# 8.5 is ~18% above the worst of them and >3x the on-box noise band away, so it
+# catches a real decode regression without firing on a draw.
+#
+# ★ PROVISIONAL, and loose on purpose. Those five tiers were measured with the
+# scorer's cargo build still inside the wall; the numerator is now agent-only,
+# so recorded values will come in BELOW them and this ceiling has more headroom
+# than the 18% it was drawn for. Ratchet it after repeated back-to-back tiers
+# on the new numerator — never to the best tier.
+#
+# ★ Because this bound now EXISTS, a tier that took zero turns records no
+# `s_per_turn` at all (deliberately: a 0.0 would read as the best speed ever
+# recorded) and `check_record` reports it as "missing from the record". That is
+# fail-closed and correct, but the real fault in that case is the 0/10
+# webserver_ok beside it — read that line first.
+max = 8.5
 
 [benchmarks.metrics.webserver_ok]
 min = 10.0

@@ -134,6 +134,11 @@ pub struct Transcript {
     /// degeneration signature, and a run that needed one is worth looking at
     /// even when it passes.
     pub unparsed_call_turns: usize,
+    /// Decoded tokens across every turn, server-reported where the server
+    /// sends `usage`. The honest denominator for a speed claim — turns vary in
+    /// how much they generate, tokens do not. Recorded rather than gated: no
+    /// bound can be set before it has been measured on a variant.
+    pub completion_tokens: usize,
     pub final_text: String,
 }
 
@@ -236,6 +241,7 @@ async fn agent_loop(
         let outcome = crate::http::chat_stream(target, &body, cfg.request_timeout).await?;
         transcript.turns = turn + 1;
         transcript.final_text = outcome.text.clone();
+        transcript.completion_tokens += outcome.completion_tokens;
         trace.turn(turn, &outcome);
 
         if outcome.tool_calls.is_empty() {
