@@ -229,9 +229,21 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const int* __restrict__ sorted_token_ids,
     unsigned int num_experts,
     unsigned int N,
-    unsigned int K
+    unsigned int K,
+    const unsigned int* __restrict__ worklist,
+    const int* __restrict__ total_rows,
+    unsigned int row_capacity,
+    unsigned int n_tiles
 ) {
-    const unsigned int expert_id = blockIdx.z;
+    const bool compact = worklist != nullptr && total_rows != nullptr;
+    const unsigned int work_id = blockIdx.x;
+    if (compact && work_id >= row_capacity * n_tiles) return;
+    const unsigned int row_id = compact ? work_id / n_tiles : 0;
+    const unsigned int n_id = compact ? work_id % n_tiles : blockIdx.x;
+    if (compact && (int)row_id >= *total_rows) return;
+    const unsigned int packed = compact ? worklist[row_id * 2] : 0;
+    const unsigned int coords = compact ? worklist[row_id * 2 + 1] : 0;
+    const unsigned int expert_id = compact ? packed : blockIdx.z;
     if (expert_id >= num_experts) return;
 
     const int m_start = expert_offsets[expert_id];
@@ -239,11 +251,12 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const int M_expert = m_end - m_start;
     if (M_expert <= 0) return;
 
-    const int cta_m_local = blockIdx.y * M_TILE;
+    const int cta_m_local = compact ? (int)coords * M_TILE
+                                    : (int)blockIdx.y * M_TILE;
     if (cta_m_local >= M_expert) return;
 
     const unsigned int cta_m = m_start + cta_m_local;
-    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_n = (compact ? n_id : blockIdx.x) * N_TILE_LG;
 
     const unsigned char* B_expert = (const unsigned char*)B_packed_ptrs[expert_id];
     const unsigned char* S_expert = (const unsigned char*)B_scale_ptrs[expert_id];
@@ -456,9 +469,21 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
     const int* __restrict__ sorted_token_ids,
     unsigned int num_experts,
     unsigned int N,
-    unsigned int K
+    unsigned int K,
+    const unsigned int* __restrict__ worklist,
+    const int* __restrict__ total_rows,
+    unsigned int row_capacity,
+    unsigned int n_tiles
 ) {
-    const unsigned int expert_id = blockIdx.z;
+    const bool compact = worklist != nullptr && total_rows != nullptr;
+    const unsigned int work_id = blockIdx.x;
+    if (compact && work_id >= row_capacity * n_tiles) return;
+    const unsigned int row_id = compact ? work_id / n_tiles : 0;
+    const unsigned int n_id = compact ? work_id % n_tiles : blockIdx.x;
+    if (compact && (int)row_id >= *total_rows) return;
+    const unsigned int compact_packed = compact ? worklist[row_id * 2] : 0;
+    const unsigned int compact_coords = compact ? worklist[row_id * 2 + 1] : 0;
+    const unsigned int expert_id = compact ? compact_packed : blockIdx.z;
     if (expert_id >= num_experts) return;
 
     const int m_start = expert_offsets[expert_id];
@@ -466,11 +491,12 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
     const int M_expert = m_end - m_start;
     if (M_expert <= 0) return;
 
-    const int cta_m_local = blockIdx.y * M_TILE;
+    const int cta_m_local = compact ? (int)compact_coords * M_TILE
+                                    : (int)blockIdx.y * M_TILE;
     if (cta_m_local >= M_expert) return;
 
     const unsigned int cta_m = m_start + cta_m_local;
-    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_n = (compact ? n_id : blockIdx.x) * N_TILE_LG;
 
     const unsigned char* B_expert = (const unsigned char*)B_packed_ptrs[expert_id];
     const unsigned char* S_expert = (const unsigned char*)B_scale_ptrs[expert_id];
@@ -483,7 +509,6 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
     const unsigned int warp_m_offset = warp_id * 16;
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid = lane_id & 3;
-
     // B_fp8 padding: row stride 80 bytes (K64+16) gives zero bank conflicts.
     // Without pad: 64-byte rows (16 banks/row) → 4-way conflicts for nc spaced 2 apart.
     // With pad: 80-byte rows (20 banks/row) → nc*20 % 32 hits all distinct banks for nc=0..7.
@@ -706,9 +731,21 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
     const int* __restrict__ sorted_token_ids,
     unsigned int num_experts,
     unsigned int N,
-    unsigned int K
+    unsigned int K,
+    const unsigned int* __restrict__ worklist,
+    const int* __restrict__ total_rows,
+    unsigned int row_capacity,
+    unsigned int n_tiles
 ) {
-    const unsigned int expert_id = blockIdx.z;
+    const bool compact = worklist != nullptr && total_rows != nullptr;
+    const unsigned int work_id = blockIdx.x;
+    if (compact && work_id >= row_capacity * n_tiles) return;
+    const unsigned int row_id = compact ? work_id / n_tiles : 0;
+    const unsigned int n_id = compact ? work_id % n_tiles : blockIdx.x;
+    if (compact && (int)row_id >= *total_rows) return;
+    const unsigned int compact_packed = compact ? worklist[row_id * 2] : 0;
+    const unsigned int compact_coords = compact ? worklist[row_id * 2 + 1] : 0;
+    const unsigned int expert_id = compact ? compact_packed : blockIdx.z;
     if (expert_id >= num_experts) return;
 
     const int m_start = expert_offsets[expert_id];
@@ -716,10 +753,11 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
     const int M_expert = m_end - m_start;
     if (M_expert <= 0) return;
 
-    const int cta_m_local = blockIdx.y * M_TILE;
+    const int cta_m_local = compact ? (int)compact_coords * M_TILE
+                                    : (int)blockIdx.y * M_TILE;
     if (cta_m_local >= M_expert) return;
 
-    const unsigned int global_n = blockIdx.x * N_TILE_LG;
+    const unsigned int global_n = (compact ? n_id : blockIdx.x) * N_TILE_LG;
     const bool is_up = (global_n >= N);
     const unsigned int cta_n = is_up ? (global_n - N) : global_n;
 

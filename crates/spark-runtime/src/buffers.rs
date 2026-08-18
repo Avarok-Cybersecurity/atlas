@@ -74,6 +74,12 @@ pub struct BufferArena {
     expert_up_out: DevicePtr,
     /// Expert down projection output: [k2 * top_k, hidden_size] BF16.
     expert_down_out: DevicePtr,
+    /// Persistent compact NVFP4 MoE work-list (two u32 words per tile).
+    moe_worklist: DevicePtr,
+    /// Persistent compact NVFP4 MoE work-list tile count (one i32).
+    moe_worklist_total: DevicePtr,
+    /// Device-side compact work-list overflow diagnostic flag.
+    moe_worklist_overflow: DevicePtr,
     /// Split-K decode attention workspace: partials from split CTAs (F32).
     splitk_workspace: DevicePtr,
     /// Grouped O-projection latent: [M, o_groups*o_lora_rank] BF16 (V4-Flash).
@@ -175,6 +181,10 @@ impl BufferArena {
         let expert_gate_out = gpu.alloc(sizes.expert_gate_out)?;
         let expert_up_out = gpu.alloc(sizes.expert_up_out)?;
         let expert_down_out = gpu.alloc(sizes.expert_down_out)?;
+        let moe_worklist = gpu.alloc(sizes.moe_worklist)?;
+        let moe_worklist_total = gpu.alloc(sizes.moe_worklist_total)?;
+        let moe_worklist_overflow = gpu.alloc(sizes.moe_worklist_overflow)?;
+        gpu.memset(moe_worklist_overflow, 0, sizes.moe_worklist_overflow)?;
         let splitk_workspace = gpu.alloc(sizes.splitk_workspace)?;
         let o_latent = gpu.alloc(sizes.o_latent)?;
         // Zero-filled "weight" for unweighted RMSNorm under the offset-from-1
@@ -281,6 +291,9 @@ impl BufferArena {
             expert_gate_out,
             expert_up_out,
             expert_down_out,
+            moe_worklist,
+            moe_worklist_total,
+            moe_worklist_overflow,
             splitk_workspace,
             o_latent,
             norm_unit_w,
@@ -347,6 +360,9 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             expert_gate_out,
             expert_up_out,
             expert_down_out,
+            moe_worklist,
+            moe_worklist_total,
+            moe_worklist_overflow,
             splitk_workspace,
             o_latent,
             norm_unit_w,
@@ -390,6 +406,9 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             *expert_gate_out,
             *expert_up_out,
             *expert_down_out,
+            *moe_worklist,
+            *moe_worklist_total,
+            *moe_worklist_overflow,
             *splitk_workspace,
             *o_latent,
             *norm_unit_w,
@@ -438,6 +457,9 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
         *expert_gate_out = DevicePtr::NULL;
         *expert_up_out = DevicePtr::NULL;
         *expert_down_out = DevicePtr::NULL;
+        *moe_worklist = DevicePtr::NULL;
+        *moe_worklist_total = DevicePtr::NULL;
+        *moe_worklist_overflow = DevicePtr::NULL;
         *splitk_workspace = DevicePtr::NULL;
         *o_latent = DevicePtr::NULL;
         *norm_unit_w = DevicePtr::NULL;

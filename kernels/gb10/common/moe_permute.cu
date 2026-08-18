@@ -301,3 +301,40 @@ extern "C" __global__ void moe_build_tile_worklist(
     }
     total_tiles[0] = (int)w;
 }
+
+// NVFP4 routed-prefill row work-list.  Unlike the legacy FP8 list above this
+// emits one item per non-empty (expert, m_tile) row group; the grouped GEMM
+// expands the N dimension in its 1-D launch.  The bound
+// ceil(total_expanded/64) + num_experts - 1 is supplied by the host and is
+// sufficient for every valid non-negative expert histogram.
+extern "C" __global__ void moe_build_row_worklist(
+    const int* __restrict__ expert_offsets,
+    const unsigned long long* __restrict__ B_weight_ptrs,
+    unsigned int* __restrict__ worklist,       // [capacity * 2]
+    int* __restrict__ total_rows,              // [1]
+    unsigned int* __restrict__ overflow,       // [1]
+    unsigned int num_experts,
+    unsigned int m_tile,
+    unsigned int capacity
+) {
+    if (threadIdx.x != 0) return;
+    unsigned int w = 0;
+    unsigned int ov = 0;
+    for (unsigned int e = 0; e < num_experts; ++e) {
+        const int begin = expert_offsets[e];
+        const int rows = expert_offsets[e + 1] - begin;
+        if (rows <= 0 || B_weight_ptrs[e] == 0) continue;
+        const unsigned int tiles = ((unsigned int)rows + m_tile - 1) / m_tile;
+        for (unsigned int mt = 0; mt < tiles; ++mt) {
+            if (w < capacity) {
+                worklist[w * 2 + 0] = e;
+                worklist[w * 2 + 1] = mt;
+            } else {
+                ov = 1;
+            }
+            ++w;
+        }
+    }
+    total_rows[0] = (int)(w < capacity ? w : capacity);
+    overflow[0] = ov;
+}

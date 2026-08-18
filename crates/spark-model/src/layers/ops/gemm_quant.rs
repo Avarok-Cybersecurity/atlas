@@ -508,6 +508,37 @@ pub fn moe_build_tile_worklist(
         .launch(stream)
 }
 
+/// Build the NVFP4 row work-list: one `(expert, m_tile)` pair per non-empty
+/// expert row tile.  The capacity is a proven upper bound supplied by the
+/// caller; overflow is reported on device for diagnostics.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_build_row_worklist(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    expert_offsets: DevicePtr,
+    weight_ptrs: DevicePtr,
+    worklist: DevicePtr,
+    total_rows: DevicePtr,
+    overflow: DevicePtr,
+    num_experts: u32,
+    m_tile: u32,
+    capacity: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(expert_offsets)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(worklist)
+        .arg_ptr(total_rows)
+        .arg_ptr(overflow)
+        .arg_u32(num_experts)
+        .arg_u32(m_tile)
+        .arg_u32(capacity)
+        .launch(stream)
+}
+
 /// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over the COMPACTED
 /// work-list built by `moe_build_tile_worklist`. THE routed-expert FP8 prefill
 /// kernel.

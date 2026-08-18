@@ -354,6 +354,7 @@ impl MoeLayer {
             expert_input,
             expert_offsets,
             sorted_token_ids,
+            sorted_expert_ids,
             n,
             h,
             inter,
@@ -427,6 +428,9 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        // Full retained-path bit-exact checkpoint. This is a no-op unless the
+        // explicit validation dump environment is enabled.
+        super::dump::dump_prefill_bf16(ctx.gpu, stream, output, num_tokens * h as usize, "output")?;
         super::dump::dump_moe_out(ctx.gpu, stream, output, n, h)?;
         prof_step!("unpermute_blend");
 
