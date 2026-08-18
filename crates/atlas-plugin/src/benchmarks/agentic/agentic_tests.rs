@@ -21,17 +21,20 @@ fn defaults_are_the_gate_a_tier() {
     let b = AgenticWebserver::default();
     let v = ParamValues::defaults(&b.parameters());
     assert_eq!(v.usize("iterations").unwrap(), 10);
-    assert_eq!(v.float("wall_budget_s").unwrap(), 1300.0);
-    assert_eq!(v.float("s_per_turn_budget").unwrap(), 8.5);
+    assert_eq!(v.float("wall_budget_s").unwrap(), 1000.0);
+    // 0.0 = NON-GATING. A schema speed default cannot be right for both the
+    // 35B MoE (6.8 s/turn) and the dense 27B (18-40), so variants opt IN by
+    // committing a measured bound; see the ParamSpec note.
+    assert_eq!(v.float("s_per_turn_budget").unwrap(), 0.0);
 }
 
-/// `s_per_turn_budget` is deliberately wide open here (PCND: stated, not
-/// implied). These fixtures pin the CORRECTNESS halves and the Σwall bound,
-/// and their synthetic 3-turn rows carry no meaningful speed; a real budget
-/// would fail them for the wrong reason and stop them testing what they name.
-/// The speed bound gets its own fixtures, on measured tiers, below.
+/// Speed is left NON-GATING here (0.0), which is the shipped default and a
+/// legal `ParamKind::Float { min: 0.0 }` value — not the out-of-range
+/// `f64::INFINITY` an earlier revision used to switch the bound off. These
+/// fixtures pin the CORRECTNESS halves and the Σwall bound; the speed bound
+/// gets its own fixtures, on measured tiers, below.
 fn with_rows(rows: Vec<IterationRow>, budget: f64) -> AgenticWebserver {
-    with_budgets(rows, budget, f64::INFINITY)
+    with_budgets(rows, budget, 0.0)
 }
 
 fn with_budgets(rows: Vec<IterationRow>, budget: f64, s_per_turn: f64) -> AgenticWebserver {
@@ -44,9 +47,15 @@ fn with_budgets(rows: Vec<IterationRow>, budget: f64, s_per_turn: f64) -> Agenti
     }
 }
 
-/// One row carrying a whole tier's totals. Both bounds are aggregates over the
-/// tier (Σwall, and Σwall÷Σturns), so a tier is fully determined by its two
-/// sums — splitting them across ten rows would add fixture noise, not coverage.
+/// One row carrying a whole tier's totals. The two BOUNDS are aggregates over
+/// the tier (Σwall, and agent-Σwall÷Σturns), so for them a tier is fully
+/// determined by its sums, and splitting across ten rows would add fixture
+/// noise rather than coverage.
+///
+/// ★ It is NOT a whole gate fixture. `metrics()["iterations"]` is `rows.len()`,
+/// and both agentic BENCH.toml entries pin `iterations` to exactly 10, so a
+/// one-row tier would be rejected by `check_record` even when every bound here
+/// passes. Anything testing the RECORD rather than the verdict needs ten rows.
 fn tier(wall: f64, turns: usize) -> IterationRow {
     IterationRow {
         turns,
@@ -54,10 +63,20 @@ fn tier(wall: f64, turns: usize) -> IterationRow {
     }
 }
 
+/// A tier whose agent-only wall differs from its total — the scorer's share.
+fn tier_split(total: f64, agent: f64, turns: usize) -> IterationRow {
+    IterationRow {
+        agent_wall_s: agent,
+        ..tier(total, turns)
+    }
+}
+
 fn row(ok: bool, steps_ok: bool, wall: f64) -> IterationRow {
     IterationRow {
         index: 0,
         wall_s: wall,
+        // Equal by default: fixtures that care about the scorer's share set it.
+        agent_wall_s: wall,
         webserver_ok: ok,
         directions: score::Directions {
             steps: score::REQUIRED_STEPS
@@ -67,6 +86,7 @@ fn row(ok: bool, steps_ok: bool, wall: f64) -> IterationRow {
         },
         turns: 3,
         tool_calls: 9,
+        completion_tokens: 300,
         note: String::new(),
     }
 }
@@ -90,7 +110,7 @@ fn all_three_conditions_must_hold_to_pass() {
 /// webserver_ok 10/10, followed_directions 10/10, per-run walls below,
 /// Σ 1925.1 s. Measured, it FAILED — but only the 35B-calibrated 1000 s
 /// budget, which is the miscomparison model variants exist to remove. Under
-/// the dense variant's own committed ceiling (2500 s, the value
+/// the dense variant's own committed ceiling (5000 s, the value
 /// `--pull-request-gate`/the TUI derive from its BENCH.toml) the same tier is
 /// a PASS. Both directions pinned with the real numbers, so neither the
 /// budget nor the derivation can drift without this noticing.
@@ -120,7 +140,7 @@ fn the_measured_dense_tier_passes_its_own_budget_and_fails_the_35bs() {
         v.reason
     );
 
-    let under_own_budget = with_rows(rows(), 2500.0);
+    let under_own_budget = with_rows(rows(), 5000.0);
     assert_eq!(
         under_own_budget.verdict().kind,
         crate::result::VerdictKind::Pass
@@ -169,21 +189,26 @@ fn a_failed_iteration_names_the_directives_it_missed() {
 /// The five 10/10 + 10/10 tiers measured on the 35B flagship (2026-08-17/18),
 /// every one of them a CORRECT run of code that shipped:
 ///
-/// | box  | Σwall  | Σturns | s/turn | old Σ≤1000 | new s/turn≤8.5 |
-/// |------|--------|--------|--------|------------|----------------|
-/// | dgx1 |  774 s |    113 |  6.85  | pass       | pass           |
-/// | dgx1 |  813 s |    115 |  7.07  | pass       | pass           |
-/// | dgx1 |  860 s |    126 |  6.83  | pass       | pass           |
-/// | dgx1 | 1039 s |    144 |  7.22  | **FAIL**   | pass           |
-/// | dgx2 | 1019 s |    166 |  6.14  | **FAIL**   | pass           |
+/// | box  | Σwall  | Σturns | s/turn | old Σ≤1000 | committed 1800 + 8.5 |
+/// |------|--------|--------|--------|------------|----------------------|
+/// | dgx1 |  774 s |    113 |  6.85  | pass       | pass                 |
+/// | dgx1 |  813 s |    115 |  7.07  | pass       | pass                 |
+/// | dgx1 |  860 s |    126 |  6.83  | pass       | pass                 |
+/// | dgx1 | 1039 s |    144 |  7.22  | **FAIL**   | pass                 |
+/// | dgx2 | 1019 s |    166 |  6.14  | **FAIL**   | pass                 |
 ///
 /// The last two are the point of this change. Both were 10/10 on both
 /// correctness halves; the 1039 s tier ran on the SAME box, the SAME binary and
 /// the SAME night as the 774 s one — a 34% swing with the code held constant —
 /// and the wall bound ranked them backwards, failing dgx2's 6.14 s/turn (the
 /// FASTEST tier ever measured here) while passing dgx1's 7.07.
+///
+/// The budgets here are the 35B's COMMITTED BENCH.toml numbers, not invented
+/// ones: `sum_wall_s max = 1800`, `s_per_turn max = 8.5`. That matters because
+/// the gate substitutes those, never the schema defaults — an earlier revision
+/// of this test asserted 1300, a value the gate cannot produce.
 #[test]
-fn every_measured_correct_tier_passes_the_speed_bound() {
+fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
     const MEASURED: [(f64, usize); 5] = [
         (774.0, 113),
         (813.0, 115),
@@ -192,7 +217,7 @@ fn every_measured_correct_tier_passes_the_speed_bound() {
         (1019.0, 166),
     ];
     for (wall, turns) in MEASURED {
-        let v = with_budgets(vec![tier(wall, turns)], 1300.0, 8.5).verdict();
+        let v = with_budgets(vec![tier(wall, turns)], 1800.0, 8.5).verdict();
         assert_eq!(
             v.kind,
             crate::result::VerdictKind::Pass,
@@ -201,12 +226,74 @@ fn every_measured_correct_tier_passes_the_speed_bound() {
         );
     }
     // ...and the two that the OLD 1000 s bound rejected really were rejected,
-    // so this test proves a behaviour change rather than restating the status quo.
+    // so this proves a behaviour change rather than restating the status quo.
     for (wall, turns) in [(1039.0, 144), (1019.0, 166)] {
         let v = with_budgets(vec![tier(wall, turns)], 1000.0, 8.5).verdict();
         assert_eq!(v.kind, crate::result::VerdictKind::Fail);
         assert!(v.reason.contains("Σwall"), "{}", v.reason);
     }
+}
+
+/// WHY the schema speed default is 0.0 and not the 35B's 8.5.
+///
+/// The dense 27B's own BENCH.toml records its per-turn cost as 18 s/turn on the
+/// pre-branch nightly and ~40 s/turn on the current serve, against the 35B's
+/// 6.8. Its reference tier — Σ 1925 s, 10/10 + 10/10, a HEALTHY run — is
+/// therefore 4x the 35B's bound. Had `s_per_turn_budget` shipped defaulting to
+/// 8.5, every dense agentic run would have failed on a number measured from a
+/// different model, and `check_record` would not even have shown why: the dense
+/// entry commits no `s_per_turn` bound, so the failure would surface only as an
+/// unexplained rejected verdict.
+#[test]
+fn the_35b_speed_bound_would_fail_the_healthy_dense_tier_hence_non_gating() {
+    // 1925 s over ~107 turns, the dense reference tier's own numbers.
+    let dense = || vec![tier(1925.0, 107)];
+
+    let with_the_35bs_bound = with_budgets(dense(), 5000.0, 8.5).verdict();
+    assert_eq!(with_the_35bs_bound.kind, crate::result::VerdictKind::Fail);
+    assert!(
+        with_the_35bs_bound
+            .reason
+            .contains("17.991s/turn > 8.500s/turn"),
+        "the healthy dense tier fails a bound drawn from another model: {}",
+        with_the_35bs_bound.reason
+    );
+
+    // Shipped behaviour: no committed bound -> 0.0 -> speed is not gated.
+    let v = with_budgets(dense(), 5000.0, 0.0).verdict();
+    assert_eq!(v.kind, crate::result::VerdictKind::Pass, "{}", v.reason);
+    assert!(
+        v.reason.contains("(unbounded)"),
+        "a pass must SAY speed went unchecked rather than imply it passed: {}",
+        v.reason
+    );
+}
+
+/// The speed bound divides the AGENT's seconds, not the tier's total. The
+/// scorer's `cargo build --release` is a per-ITERATION cost, so charging it to
+/// a per-TURN ratio adds a term that shrinks as turns grow — a long trajectory
+/// would look faster per turn purely for amortising the build. With a 10 s
+/// scorer per iteration that artefact is ~0.28 s/turn between the 113- and
+/// 166-turn ends of the measured range, which is 72% of the entire 0.39 s/turn
+/// spread the 8.5 headroom is drawn against.
+#[test]
+fn the_speed_bound_excludes_the_scorers_build_from_the_numerator() {
+    // Total 874 s, of which 100 s is scorer; 113 turns.
+    let b = with_budgets(vec![tier_split(874.0, 774.0, 113)], 1800.0, 7.0);
+    let m = b.metrics();
+    assert_eq!(m["sum_wall_s"], 874.0);
+    assert_eq!(m["sum_agent_wall_s"], 774.0);
+    assert!((m["s_per_turn"] - 774.0 / 113.0).abs() < 1e-9);
+
+    // 6.85 agent-only passes a 7.0 bound; 7.73 total-wall would have failed it.
+    assert_eq!(b.verdict().kind, crate::result::VerdictKind::Pass);
+    // ...and the same tier scored on TOTAL wall would have failed the same
+    // bound, which is the whole point of splitting the two numerators.
+    let charged_the_scorer = with_budgets(vec![tier(874.0, 113)], 1800.0, 7.0);
+    assert_eq!(
+        charged_the_scorer.verdict().kind,
+        crate::result::VerdictKind::Fail
+    );
 }
 
 /// The bound has to still BITE, or it is decoration. A 20% per-turn decode
@@ -215,11 +302,11 @@ fn every_measured_correct_tier_passes_the_speed_bound() {
 /// exactly the class of regression the old wall-only gate could not see.
 #[test]
 fn a_real_per_turn_regression_fails_while_wall_stays_in_budget() {
-    let regressed = with_budgets(vec![tier(1247.0, 144)], 1300.0, 8.5);
+    let regressed = with_budgets(vec![tier(1247.0, 144)], 1800.0, 8.5);
     let v = regressed.verdict();
     assert_eq!(v.kind, crate::result::VerdictKind::Fail);
     assert!(
-        v.reason.contains("8.66s/turn > 8.50s/turn"),
+        v.reason.contains("8.660s/turn > 8.500s/turn"),
         "speed must be the named failure: {}",
         v.reason
     );
@@ -235,13 +322,19 @@ fn a_real_per_turn_regression_fails_while_wall_stays_in_budget() {
 /// dropping the wall bound in favour of s/turn would open a real hole.
 #[test]
 fn wall_still_catches_turn_degeneracy_that_is_fast_per_turn() {
-    let wandering = with_budgets(vec![tier(2000.0, 400)], 1300.0, 8.5);
+    // 220 turns at 8.30 s/turn = 1826 s. Deliberately INSIDE the reachable
+    // envelope — 220 against the 400-turn hard cap (max_turns 40 x 10) and only
+    // 33% above the 166-turn worst measured tier — rather than standing on the
+    // cap, which would require all ten iterations to exhaust max_turns while
+    // still scoring 10/10 and would prove the bound only in a corner nobody
+    // reaches.
+    let wandering = with_budgets(vec![tier(1826.0, 220)], 1800.0, 8.5);
     let v = wandering.verdict();
     assert_eq!(v.kind, crate::result::VerdictKind::Fail);
-    assert!(v.reason.contains("Σwall 2000s > 1300s"), "{}", v.reason);
+    assert!(v.reason.contains("Σwall 1826s > 1800s"), "{}", v.reason);
     assert!(
         !v.reason.contains("s/turn >"),
-        "5.00 s/turn is healthy; only the wall is wrong: {}",
+        "8.30 s/turn is inside the speed bound; only the wall is wrong: {}",
         v.reason
     );
 }

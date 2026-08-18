@@ -93,11 +93,19 @@ pub use descriptors::{DESCRIPTOR, METADATA};
 #[derive(Default)]
 struct IterationRow {
     index: usize,
+    /// Iteration wall INCLUDING the scorer's build and probe — the blowup
+    /// detector's number.
     wall_s: f64,
+    /// The agent's own wall, scorer excluded. The speed bound divides THIS by
+    /// turns: the scorer is a per-ITERATION cost, so charging it to a per-TURN
+    /// ratio adds a term that shrinks as turns grow — it would make a long
+    /// trajectory look faster per turn purely because it amortised the build.
+    agent_wall_s: f64,
     webserver_ok: bool,
     directions: score::Directions,
     turns: usize,
     tool_calls: usize,
+    completion_tokens: usize,
     note: String,
 }
 
@@ -134,13 +142,26 @@ impl AgenticWebserver {
         self.rows.iter().map(|r| r.wall_s).sum()
     }
 
+    /// The agent's own seconds, scorer excluded — the speed numerator.
+    fn total_agent_wall(&self) -> f64 {
+        self.rows.iter().map(|r| r.agent_wall_s).sum()
+    }
+
     fn total_turns(&self) -> usize {
         score::total_turns(&self.rows)
     }
 
+    fn total_tool_calls(&self) -> usize {
+        self.rows.iter().map(|r| r.tool_calls).sum()
+    }
+
+    fn total_completion_tokens(&self) -> usize {
+        self.rows.iter().map(|r| r.completion_tokens).sum()
+    }
+
     /// `None` when the tier took no turns — see [`score::seconds_per_turn`].
     fn seconds_per_turn(&self) -> Option<f64> {
-        score::seconds_per_turn(self.total_wall(), self.total_turns())
+        score::seconds_per_turn(self.total_agent_wall(), self.total_turns())
     }
 
     async fn run_iteration(&mut self, index: usize) -> Result<IterationRow> {
@@ -167,6 +188,10 @@ impl AgenticWebserver {
 
         let started = Instant::now();
         let transcript = agent::run_task(&handle, &cfg, PROMPT).await?;
+        // Taken HERE, before the scorer runs. The comment below used to claim
+        // the scorer was not charged to the model while the only wall recorded
+        // was taken after it; both numbers now exist and each says what it is.
+        let agent_wall_s = started.elapsed().as_secs_f64();
         handle.status(format!("run {index}: scoring"));
         let web = score::webserver_test(
             &sandbox,
@@ -175,8 +200,8 @@ impl AgenticWebserver {
             self.serve_timeout,
         )
         .await;
-        // The agent's own wall time is the measurement; the scorer's build and
-        // probe are harness cost and must not be charged to the model.
+        // Total, scorer included: `sum_wall_s` is a blowup detector, and a
+        // scorer build that runs away is exactly a blowup worth detecting.
         let wall_s = started.elapsed().as_secs_f64();
         let directions = score::followed_directions(&transcript.commands, &sandbox);
 
@@ -195,10 +220,12 @@ impl AgenticWebserver {
         Ok(IterationRow {
             index,
             wall_s,
+            agent_wall_s,
             webserver_ok: web.webserver_ok,
             directions,
             turns: transcript.turns,
             tool_calls: transcript.tool_calls,
+            completion_tokens: transcript.completion_tokens,
             note: one_line(note),
         })
     }
@@ -264,19 +291,19 @@ impl AgenticWebserver {
             Stat::new(
                 "s/turn",
                 self.seconds_per_turn()
-                    .map_or_else(|| "n/a".to_string(), |s| format!("{s:.2}")),
+                    .map_or_else(|| "n/a".to_string(), |s| format!("{s:.3}")),
                 "s",
             )
-            .with_style(
-                if self
-                    .seconds_per_turn()
-                    .is_none_or(|s| s <= self.s_per_turn_budget)
-                {
-                    CellStyle::Good
-                } else {
-                    CellStyle::Warn
-                },
-            ),
+            .with_style(match self.seconds_per_turn() {
+                // A tier that took no turns is not fast, it is broken; a green
+                // speed cell reads as a pass at a glance.
+                None => CellStyle::Warn,
+                // Neutral for an unbounded variant: nothing to be good or bad
+                // against until one commits a measured bound.
+                Some(_) if self.s_per_turn_budget <= 0.0 => CellStyle::Neutral,
+                Some(s) if s <= self.s_per_turn_budget => CellStyle::Good,
+                Some(_) => CellStyle::Warn,
+            }),
             Stat::new("Σ wall", format!("{:.0}", self.total_wall()), "s").with_style(
                 if self.total_wall() <= self.wall_budget_s {
                     CellStyle::Good
@@ -302,11 +329,27 @@ impl AgenticWebserver {
             self.rows.iter().filter(|r| r.directions.overall()).count() as f64,
         );
         m.insert("sum_wall_s".to_string(), self.total_wall());
+        m.insert("sum_agent_wall_s".to_string(), self.total_agent_wall());
         m.insert("sum_turns".to_string(), self.total_turns() as f64);
+        m.insert("sum_tool_calls".to_string(), self.total_tool_calls() as f64);
+        m.insert(
+            "sum_completion_tokens".to_string(),
+            self.total_completion_tokens() as f64,
+        );
         // Absent, not 0.0, for a zero-turn tier: `check_record` compares
         // numbers, and a 0.0 here would read as the best speed ever recorded.
         if let Some(spt) = self.seconds_per_turn() {
             m.insert("s_per_turn".to_string(), spt);
+        }
+        // Recorded, never gated — see the `decode_tps` note on the ParamSpec.
+        // Tokens are the denominator a speed claim should ultimately use, but
+        // no variant has a measured bound yet, and inventing one is the exact
+        // mistake this change exists to undo.
+        if self.total_agent_wall() > 0.0 {
+            m.insert(
+                "decode_tps".to_string(),
+                self.total_completion_tokens() as f64 / self.total_agent_wall(),
+            );
         }
 
         m.extend(score::per_step_tallies(
@@ -319,6 +362,7 @@ impl AgenticWebserver {
         score::verdict(
             &self.rows,
             self.total_wall(),
+            self.total_agent_wall(),
             self.wall_budget_s,
             self.s_per_turn_budget,
         )
@@ -373,42 +417,48 @@ impl Benchmark for AgenticWebserver {
             ParamSpec::new(
                 "wall_budget_s",
                 "Σ wall budget",
-                "Total agent seconds across all iterations before the gate fails. \
-                 This is a DEGENERACY bound, not a speed one — `s_per_turn_budget` \
-                 is the speed bound. The schema default is the 35B MoE flagship's \
-                 1300 s, RESTORED from the 1000 s set on 2026-08-09; that \
-                 tightening read a 600-800 s window that a later five-tier sample \
-                 (774/813/860/1039 s on dgx1, 1019 s on dgx2 — every one of them \
-                 10/10 + 10/10) shows was unrepresentative, so 1000 sat INSIDE the \
-                 healthy distribution and failed correct runs. Each model variant \
-                 carries its OWN ceiling in its BENCH.toml (the dense 27B's band is \
-                 roughly 2x), and selecting a variant — in the TUI or via \
-                 --pull-request-gate — replaces this default with that ceiling; \
-                 see threshold_params.",
+                "Total agent seconds across all iterations, scorer INCLUDED, \
+                 before the gate fails. This is a BLOWUP/DEGENERACY bound, not a \
+                 speed one — `s_per_turn_budget` is the speed bound. It stays a \
+                 schema default of 1000 s because a bare run has no variant to \
+                 read from; every MEASURED variant overrides it from its own \
+                 BENCH.toml (see threshold_params), and that committed number, \
+                 not this one, is what --pull-request-gate and the TUI enforce.",
                 ParamKind::Float {
                     min: 1.0,
                     max: 100_000.0,
                 },
-                ParamValue::Float(1300.0),
+                ParamValue::Float(1000.0),
             ),
             ParamSpec::new(
                 "s_per_turn_budget",
                 "Seconds per turn",
-                "Σwall ÷ Σturns before the gate fails — the SPEED bound. Turn \
-                 count is drawn by the agent, not the engine, and it moves far \
-                 more than engine speed does: across five 10/10 tiers, Σwall \
-                 spanned 774-1039 s (34%) while s/turn spanned 6.83-7.22 (5.7%) \
-                 on one box, and the slowest Σwall (1039 s, dgx1) and the \
-                 second-slowest (1019 s, dgx2) were respectively the SLOWEST and \
-                 the FASTEST per turn — the wall bound ranked them backwards. \
-                 The 8.50 default is 18% above the worst of those tiers and >3x \
-                 the on-box noise band away from it, so it catches a real decode \
-                 regression without firing on a draw.",
+                "The agent's own seconds ÷ agent turns before the gate fails — \
+                 the SPEED bound. **0.0 means NON-GATING**, and that is the \
+                 schema default ON PURPOSE: per-turn cost is the most \
+                 model-dependent number this benchmark produces (6.8 s/turn on \
+                 the 35B MoE against 18-40 s/turn on the dense 27B), so a single \
+                 schema figure cannot be right for two variants and a wrong one \
+                 would fail every run of the model it was not measured on. A \
+                 variant is gated only once it commits a measured \
+                 `[benchmarks.metrics.s_per_turn]` bound to its BENCH.toml. \
+                 \
+                 Why per-turn rather than Σwall: turn count is drawn by the \
+                 agent, not the engine. Across five 10/10 tiers Σwall spanned \
+                 774-1039 s (34%) while s/turn spanned 6.83-7.22 (5.7%) on one \
+                 box, and the two tiers the old 1000 s wall bound REJECTED were \
+                 respectively the slowest and the FASTEST per turn — it ranked \
+                 them backwards. \
+                 \
+                 Why not tokens, which would be better still: `decode_tps` is \
+                 now recorded for exactly that reason, but no variant has a \
+                 measured token-rate bound yet and inventing one is the mistake \
+                 this change undoes. Ratchet to it once tiers exist.",
                 ParamKind::Float {
-                    min: 0.1,
+                    min: 0.0,
                     max: 10_000.0,
                 },
-                ParamValue::Float(8.5),
+                ParamValue::Float(0.0),
             ),
             ParamSpec::new(
                 "max_turns",
