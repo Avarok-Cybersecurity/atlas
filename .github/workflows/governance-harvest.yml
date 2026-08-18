@@ -369,7 +369,16 @@ jobs:
               emit_landed "waiting on #$open_pr"
               exit 0
             fi
-            if [ "${broken:-0}" -eq 0 ] && [ "$pr_state" != "BEHIND" ]; then
+            # BEHIND means main moved; DIRTY means the branch now conflicts
+            # with it. Both are terminal for the PR — no amount of waiting
+            # clears either, and a rebuild resolves both by construction, since
+            # the branch is recreated as main plus a fresh ledger. #593 sat
+            # DIRTY while this said "idle and healthy" and walked away.
+            case "$pr_state" in
+              BEHIND | DIRTY) stuck=1 ;;
+              *) stuck="" ;;
+            esac
+            if [ "${broken:-0}" -eq 0 ] && [ -z "$stuck" ]; then
               echo "harvest PR #$open_pr is idle and healthy — leaving it alone"
               emit_landed "waiting on #$open_pr"
               exit 0
