@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-08-18T12:09:47Z",
+  "generated_utc": "2026-08-18T22:33:20Z",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
@@ -66,15 +66,15 @@
         },
         {
           "c": 2,
-          "tok_s": 38.95,
-          "tok_s_median": 38.61,
-          "spread_pct": 5.08,
+          "tok_s": 41.02,
+          "tok_s_median": 41.37,
+          "spread_pct": 4.15,
           "reps": 3,
-          "ttft_p50_ms": 805.56,
-          "tpot_p50_ms": 50.69,
-          "source": "l38_r8_c2.json",
-          "measured_utc": "2026-08-17T08:52:44Z",
-          "harness_sha256": "1c77e1d8e9"
+          "ttft_p50_ms": 795.2,
+          "tpot_p50_ms": 47.53,
+          "source": "c2_atlas_dgx2_20260818.json",
+          "measured_utc": "2026-08-18T15:05:18Z",
+          "harness_sha256": "1f10d4887b"
         },
         {
           "c": 4,
@@ -176,15 +176,15 @@
         },
         {
           "c": 2,
-          "tok_s": 38.79,
-          "tok_s_median": 38.47,
-          "spread_pct": 6.23,
+          "tok_s": 37.11,
+          "tok_s_median": 37.18,
+          "spread_pct": 2.94,
           "reps": 3,
-          "ttft_p50_ms": 387.7,
-          "tpot_p50_ms": 51.59,
-          "source": "vllm_fp8_mtp_reference.json",
-          "measured_utc": "2026-08-17T01:36:35Z",
-          "harness_sha256": "6412b12d4d"
+          "ttft_p50_ms": 390.84,
+          "tpot_p50_ms": 53.22,
+          "source": "c2_vllm_mtp_dgx2_20260818.json",
+          "measured_utc": "2026-08-18T15:20:55Z",
+          "harness_sha256": "1f10d4887b"
         },
         {
           "c": 4,
@@ -401,13 +401,13 @@
     },
     {
       "c": 2,
-      "atlas": 38.95,
+      "atlas": 41.02,
       "baselines": [
         {
           "id": "vllm-mtp",
           "label": "vLLM + MTP",
           "parity": "matched",
-          "tok_s": 38.79
+          "tok_s": 37.11
         },
         {
           "id": "vllm-nospec",
@@ -417,8 +417,8 @@
         }
       ],
       "best_baseline_id": "vllm-mtp",
-      "ratio_vs_best": 1.004,
-      "ratio_vs_matched": 1.004,
+      "ratio_vs_best": 1.105,
+      "ratio_vs_matched": 1.105,
       "wins": true
     },
     {
@@ -558,7 +558,7 @@
     "rungs": 8,
     "won": 8,
     "all_won": true,
-    "min_ratio": 1.004,
+    "min_ratio": 1.012,
     "max_ratio": 1.225
   }
 }

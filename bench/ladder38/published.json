@@ -45,7 +45,7 @@
       "speculation": "MTP, K=4 (--num-drafts 3); self-disables above 32 concurrent sequences",
       "sources": {
         "1": "l38_r11_c1.json",
-        "2": "l38_r8_c2.json",
+        "2": "c2_atlas_dgx2_20260818.json",
         "4": "l38_r11_c4.json",
         "8": "l38_r11_c8.json",
         "16": "l38_r11_c16.json",
@@ -67,7 +67,7 @@
       "speculation": "vLLM's own Qwen3_5MTP, K=4 (num_speculative_tokens=3)",
       "sources": {
         "1": "vllm_fp8_mtp_reference.json",
-        "2": "vllm_fp8_mtp_reference.json",
+        "2": "c2_vllm_mtp_dgx2_20260818.json",
         "4": "vllm_fp8_mtp_reference.json",
         "8": "vllm_fp8_mtp_reference.json",
         "16": "vllm_fp8_mtp_reference.json",
