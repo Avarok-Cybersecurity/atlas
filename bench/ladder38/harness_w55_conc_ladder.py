@@ -212,7 +212,8 @@ async def main():
 
     concs = [int(x) for x in a.concs.split(",") if x.strip()]
     chat = a.url.rstrip("/") + "/v1/chat/completions"
-    me = hashlib.sha256(open(__file__, "rb").read()).hexdigest()
+    with open(__file__, "rb") as _self_src:
+        me = hashlib.sha256(_self_src.read()).hexdigest()
 
     record = {
         "label": a.label, "url": a.url, "model": a.model,
