@@ -21,6 +21,36 @@
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
+/// Monotonic ordinal for raw per-layer prefill snapshots. A validation run
+/// starts one server process and executes a fixed prompt, so dense and compact
+/// runs receive identical names without changing the public forward API.
+static PREFILL_RAW_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Debug-only final BF16 output dump for the retained stage-1/3 comparator.
+/// Synchronization and D2H traffic are entirely absent unless
+/// `ATLAS_MOE_PREFILL_DUMP` is set.
+pub fn dump_prefill_bf16(
+    gpu: &dyn GpuBackend,
+    stream: u64,
+    ptr: DevicePtr,
+    elements: usize,
+    stage: &str,
+) -> Result<()> {
+    let dir = match std::env::var("ATLAS_MOE_PREFILL_DUMP") {
+        Ok(dir) if !dir.is_empty() => dir,
+        _ => return Ok(()),
+    };
+    gpu.synchronize(stream)?;
+    let mut bytes = vec![0u8; elements.saturating_mul(2)];
+    gpu.copy_d2h(ptr, &mut bytes)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("create dump directory {dir}: {e}"))?;
+    let layer = PREFILL_RAW_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::path::Path::new(&dir).join(format!("moe_final_L{layer:03}_{stage}.bin"));
+    std::fs::write(&path, &bytes).map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
 #[inline]
 pub fn enabled() -> bool {
     std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1")
