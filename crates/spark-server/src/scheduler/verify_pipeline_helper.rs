@@ -151,10 +151,17 @@ pub fn verify_pick_with_pipeline(
     //    advance the grammar matcher; the K-loop in
     //    `verify_pick_all_with_pipeline` owns `accept_token` / `rollback`.
     let t_proc = std::time::Instant::now();
+    // Per-position context: carry the verify index so the min-tokens EOS
+    // mask counts this position's tokens (`output_tokens.len() + verify_pos`)
+    // toward the `min_tokens` floor before it commits.
+    let pos_ctx = LogitsContext {
+        verify_pos,
+        ..ctx.clone()
+    };
     if let Some(tok) = crate::scheduler::logit_processors::process_position_logits(
         &mut f32_logits,
         a,
-        ctx,
+        &pos_ctx,
         &penalties,
         crate::scheduler::sample_step::PositionKind::Verify,
     ) {
