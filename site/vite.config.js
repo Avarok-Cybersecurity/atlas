@@ -26,6 +26,7 @@ function atlasGenerators() {
       run('gen-models.mjs');
       run('gen-benchmarks.mjs');
       run('gen-gates.mjs');
+      run('gen-ladder.mjs');
       // Vendors the sha256-pinned LatticeDB wasm into static/lattice/; a pin
       // mismatch or no-cache-and-offline is a hard failure by design.
       run('gen-lattice.mjs');

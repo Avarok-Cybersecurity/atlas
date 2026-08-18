@@ -67,6 +67,7 @@ export const nav = {
   links: [
     { text: 'News', href: '#news' },
     { text: 'Verified', href: '#verified' },
+    { text: 'Concurrency', href: '#concurrency' },
     { text: 'Hardware', href: '#hardware' },
     { text: 'Models', href: '#models' },
     { text: 'Get running', href: '#run' },
