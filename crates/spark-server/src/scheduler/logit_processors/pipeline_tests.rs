@@ -202,6 +202,9 @@ fn run_pipeline_signature_is_stable() {
         &LogitsContext,
         &spark_runtime::sampler::SamplingParams,
         crate::scheduler::sample_step::PositionKind,
+        // pending_picks (2026-08-18): the verify block's earlier picks,
+        // threaded into the penalty history for sequential parity.
+        &[u32],
     ) -> Option<u32>;
     let _pp: ProcessPositionFn = process_position_logits;
     type RunPipelineWithPathFn =

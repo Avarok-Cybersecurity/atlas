@@ -113,6 +113,7 @@ pub fn step_self_spec(
         a,
         verify_ctx,
         0,
+        Some(&draft_tokens),
     );
 
     // 6. Compare draft vs verified, count acceptances
@@ -292,6 +293,7 @@ pub fn step_ngram_verify(
         a,
         verify_ctx,
         0,
+        Some(drafts),
     );
     let v0 = processed.first().copied().unwrap_or(v0_argmax);
     let v1 = processed.get(1).copied().unwrap_or(v1_argmax);

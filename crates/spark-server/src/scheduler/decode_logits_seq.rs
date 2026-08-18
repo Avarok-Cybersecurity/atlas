@@ -124,6 +124,7 @@ pub fn process_seq_logits(
         ctx,
         &params,
         crate::scheduler::sample_step::PositionKind::FinalDecode,
+        &[],
     ) {
         let logprobs = a
             .top_logprobs

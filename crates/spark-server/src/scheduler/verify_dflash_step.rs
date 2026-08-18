@@ -81,6 +81,7 @@ pub fn step_verify_dflash(
             a,
             verify_ctx,
             0,
+            Some(drafts),
         )
     };
 

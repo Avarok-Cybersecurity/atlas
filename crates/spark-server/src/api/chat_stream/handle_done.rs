@@ -31,6 +31,16 @@ pub(super) fn handle_done(
 ) -> DeltaVec {
     let mut deltas: DeltaVec = Vec::new();
 
+    // Permanent diagnostic (RUST_LOG=...,spark::api::chat_stream=debug): the
+    // stream's full accumulated text at finalize — the streaming twin of the
+    // chat_blocking_choice response log. Needed for byte-exact A/B of gate
+    // cells (the media benches stream), e.g. the qwen3.8 spec-decode
+    // divergence hunt.
+    tracing::debug!(
+        "stream response ({finish_reason}, {completion_tokens} tok): {:?}",
+        state.accumulated_content
+    );
+
     // ── Stop-string hold-back flush ─────────────────────────────────
     // vLLM's `IncrementalDetokenizer` releases any bytes still in the
     // hold-back window when the stream finalises (see

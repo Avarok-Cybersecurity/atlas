@@ -145,7 +145,12 @@ pub(super) fn step_verify_k4_batched(
         // sequence's rows (row_base = i*rows) — same 8-stage semantics as
         // the single-seq MTP path.
         let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model, r, a, verify_ctx, off[i],
+            model,
+            r,
+            a,
+            verify_ctx,
+            off[i],
+            Some(&drafts_per_seq[i]),
         );
         let v: Vec<u32> = (0..rows)
             .map(|j| processed.get(j).copied().unwrap_or(r[j]))
