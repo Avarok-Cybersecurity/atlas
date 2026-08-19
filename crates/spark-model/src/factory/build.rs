@@ -693,5 +693,23 @@ pub fn build_model(
     // to happen — orphaned the memory: live, referenced by the layers, with
     // nothing owning the ability to release it.
     model.adopt_weight_store(store);
+
+    // ── Allocation attribution, once, at the end of load ──
+    // Everything the serve will hold is allocated by now: weights, KV, the SSM
+    // pools, the Marconi snapshots, the arenas, the vision encoder. This is
+    // the only point where the ledger describes the STEADY STATE rather than
+    // some midpoint of the build.
+    //
+    // It exists because the KV-budget line above reports `pre-KV` as one
+    // opaque number, and on a 27B that number is ~59 GB against 22 GB of
+    // weights — the rest was unattributable until the ledger learned sizes.
+    // Logged at INFO, not behind a flag: every OOM and every mis-sized-pool
+    // investigation so far has begun by wanting exactly this table, and a
+    // once-per-load table is not a cost worth flagging off.
+    if let Some(report) = model.gpu_backend().alloc_report(12, 64) {
+        for line in report.lines() {
+            tracing::info!("{line}");
+        }
+    }
     Ok(Box::new(model))
 }
