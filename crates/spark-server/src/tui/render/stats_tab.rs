@@ -175,7 +175,7 @@ fn draw_ttft_hist(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_throughput(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel("THROUGHPUT ── gen tok/s ─".into(), false);
+    let block = panel("THROUGHPUT ── gen ─ prefill ─".into(), false);
     let pts: Vec<(f64, f64)> = app
         .stats
         .gen_tps_history
@@ -185,15 +185,51 @@ fn draw_throughput(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, v)| (i as f64, *v))
         .collect();
     let max_y = pts.iter().map(|(_, v)| *v).fold(10.0_f64, f64::max) * 1.15;
-    let datasets = vec![
+
+    // Prefill on the SAME plot but its OWN scale, printed up the right edge.
+    // The two series differ by ~20x (≈890 vs ≈40 tok/s), so one shared axis
+    // buries the generation line on the baseline. Instead the prefill series
+    // is normalised onto the generation axis and the right-hand labels say
+    // what full-scale means for it — a dual-axis chart, which ratatui's
+    // `Chart` has no native support for, so the right scale is drawn by hand
+    // below.
+    let pf_raw: Vec<f64> = app
+        .stats
+        .prompt_tps_history
+        .points
+        .iter()
+        .copied()
+        .collect();
+    let pf_max = pf_raw.iter().copied().fold(0.0_f64, f64::max);
+    let pf_scale = if pf_max > 0.0 {
+        max_y / (pf_max * 1.15)
+    } else {
+        0.0
+    };
+    let pf_pts: Vec<(f64, f64)> = pf_raw
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i as f64, v * pf_scale))
+        .collect();
+
+    let mut datasets = vec![
         Dataset::default()
             .marker(symbols::Marker::Braille)
             .graph_type(ratatui::widgets::GraphType::Line)
             .style(theme::brand_cyan())
             .data(&pts),
     ];
+    if pf_max > 0.0 {
+        datasets.push(
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(ratatui::widgets::GraphType::Line)
+                .style(theme::brand_purple())
+                .data(&pf_pts),
+        );
+    }
     let caption = format!(
-        "gen {:.0} tok/s · prompt {:.0} tok/s",
+        "gen {:.0} tok/s · prefill {:.0} tok/s",
         app.stats.gen_tps, app.stats.prompt_tps
     );
     let chart = Chart::new(datasets)
@@ -204,6 +240,25 @@ fn draw_throughput(f: &mut Frame, app: &App, area: Rect) {
         ]))
         .block(block.title_bottom(Line::from(Span::styled(caption, theme::text2()))));
     f.render_widget(chart, area);
+
+    // Right-hand scale for the prefill series, in the prefill colour so it
+    // reads as "the purple line tops out here". Only drawn once prefill has
+    // been observed — an idle server gets the single-scale chart it had.
+    // Placed inside the block border, right-aligned, and only when the pane
+    // is tall/wide enough to hold it without colliding with the plot.
+    if pf_max > 0.0 && area.height >= 4 && area.width >= 24 {
+        let label = format!("{:.0} ", pf_max * 1.15);
+        let w = label.len() as u16;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(label, theme::brand_purple()))),
+            Rect {
+                x: area.right().saturating_sub(w + 1),
+                y: area.y + 1,
+                width: w,
+                height: 1,
+            },
+        );
+    }
 }
 
 fn line_gauge(f: &mut Frame, area: Rect, label: &str, used: f64, total: f64, gradient: bool) {

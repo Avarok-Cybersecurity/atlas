@@ -188,7 +188,9 @@ fn the_throughput_chart_captions_both_rates() {
     a.stats.gen_tps = 59.9;
     a.stats.prompt_tps = 1841.0;
     let rows = screen(&a, 160, 48);
-    assert!(has(&rows, "gen 60 tok/s · prompt 1841 tok/s"), "{rows:#?}");
+    // "prefill", not "prompt": the tile, the metric and the chart all name
+    // the same thing now.
+    assert!(has(&rows, "gen 60 tok/s · prefill 1841 tok/s"), "{rows:#?}");
 }
 
 #[test]
