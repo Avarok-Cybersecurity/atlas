@@ -223,7 +223,11 @@ pub(super) fn handle_done(
     // StreamCtx when the stream is dropped — not here, so a stream that ends
     // without a terminal event still decrements.)
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(ctx.prompt_len as u64);
-    crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(completion_tokens as u64);
+    // GENERATION_TOKENS_TOTAL is incremented PER TOKEN as the scheduler
+    // emits it (scheduler/emit_step.rs, decode_logits_step.rs). Adding the
+    // completion total here too would double-count — and counting only
+    // here is what made the TUI throughput graph flat-then-spiky: the
+    // counter did not move until a request finished.
     crate::metrics::TTFT_SECONDS
         .with_label_values(&[ctx.model.as_str()])
         .observe(time_to_first_token_ms / 1000.0);
