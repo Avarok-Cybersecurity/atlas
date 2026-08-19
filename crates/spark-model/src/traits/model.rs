@@ -427,6 +427,15 @@ pub trait Model: Send + Sync {
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
+    /// [`Self::alloc_sequence`] told what this request can actually reach
+    /// (`prompt_len + max_tokens`). Proposer state that scales with context is
+    /// sized to THAT instead of `--max-seq-len`; see
+    /// `DraftProposer::alloc_state_for`. Defaults to the unsized form.
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        let _ = budget_tokens;
+        self.alloc_sequence()
+    }
+
     /// Copy logits from device to host buffer (for CPU-side sampling).
     ///
     /// `logits_ptr` points to `[vocab_size]` BF16 values on device.

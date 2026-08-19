@@ -573,76 +573,15 @@ impl DraftProposer for BlockDiffusionDraftHead {
     }
 
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
-        // Per-seq ctx accumulator: `[max_seq_len, 5 * target_hidden] BF16`.
-        // Sized once, re-used across the seq's lifetime; reset on
-        // `free_state`. At max_seq_len=16384 and 5×2048 BF16: 320 MB per
-        // seq — tolerable on a single Spark with max_batch_size=1; for
-        // higher batch we may want to reduce to a smaller working window.
-        let bf16 = 2usize;
-        let ctx_slot_bytes = self.target_layer_ids.len() * self.target_hidden_size * bf16;
-        // WORKING WINDOW, not max_seq_len. This buffer is per SEQUENCE and
-        // scales with the context ceiling: at 128K x 5 layers x 5120 BF16 it
-        // is 6.7 GB EACH, so 8 concurrent sequences ask for 53.7 GB — lazily,
-        // as streams arrive, which is why it OOMs a long way past a clean
-        // boot rather than at startup. Capping the window bounds it to
-        // `cap * ctx_slot_bytes` per sequence (16K -> 839 MB, 8 seqs -> 6.7 GB).
-        //
-        // Correctness: `commit_ctx` already slides a watermark when the
-        // accumulator fills, keeping the NEWEST half and re-stamping
-        // ctx_positions, so a smaller window is an already-exercised path —
-        // the drafter conditions on recent context instead of the whole
-        // history. Raise with ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped,
-        // the pre-cap behaviour) if you have the memory and want the drafter
-        // to see further back.
-        let cap = std::env::var("ATLAS_DFLASH_CTX_CAP")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(16384);
-        let window = if cap == 0 {
-            self.max_seq_len
-        } else {
-            self.max_seq_len.min(cap)
-        };
-        if window < self.max_seq_len {
-            static LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                tracing::info!(
-                    "DFlash ctx window capped to {} of --max-seq-len {} ({} MB/seq instead of \
-                     {} MB): the accumulator is PER SEQUENCE, so the uncapped size is what \
-                     OOMs a high-concurrency long-context serve. Override with \
-                     ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped).",
-                    window,
-                    self.max_seq_len,
-                    window * ctx_slot_bytes / (1024 * 1024),
-                    self.max_seq_len * ctx_slot_bytes / (1024 * 1024),
-                );
-            }
-        }
-        let total = window * ctx_slot_bytes;
-        let ctx_hidden_acc = gpu.alloc(total)?;
-        // Initialize to zero so stale data doesn't leak between sequences.
-        gpu.memset(ctx_hidden_acc, 0, total)?;
-        Ok(Box::new(DflashProposerState {
-            block_table: Vec::with_capacity(64),
-            seq_len: 0,
-            last_num_drafted: 0,
-            prefill_done: false,
-            ctx_hidden_acc,
-            ctx_len: 0,
-            last_num_accepted: 0,
-            skip_next_decode_append: false,
-            max_ctx_len: window,
-            ctx_slot_bytes,
-            // Phase 2 Option B: lazily allocated on first propose when
-            // ATLAS_DFLASH_OPTION_B=1. None until then to keep alloc_state
-            // cheap for sequences that never use Option B.
-            block_table_dev: None,
-            ctx_count_drafter: 0,
-            max_ctx_count_drafter: 0,
-            ctx_committed: 0,
-            ctx_positions: Vec::new(),
-        }))
+        self.alloc_state_windowed(gpu, usize::MAX)
+    }
+
+    fn alloc_state_for(
+        &self,
+        gpu: &dyn GpuBackend,
+        budget_tokens: usize,
+    ) -> Result<Box<dyn ProposerState>> {
+        self.alloc_state_windowed(gpu, budget_tokens)
     }
 
     fn propose(
@@ -876,5 +815,92 @@ impl DraftProposer for BlockDiffusionDraftHead {
         dstate.last_num_accepted = 0;
         dstate.skip_next_decode_append = false;
         Ok(())
+    }
+}
+
+impl BlockDiffusionDraftHead {
+    /// Allocate proposer state with the ctx accumulator sized to the smallest
+    /// of: this request's token budget, the ATLAS_DFLASH_CTX_CAP window, and
+    /// `--max-seq-len`.
+    fn alloc_state_windowed(
+        &self,
+        gpu: &dyn GpuBackend,
+        budget_tokens: usize,
+    ) -> Result<Box<dyn ProposerState>> {
+        // Per-seq ctx accumulator: `[max_seq_len, 5 * target_hidden] BF16`.
+        // Sized once, re-used across the seq's lifetime; reset on
+        // `free_state`. At max_seq_len=16384 and 5×2048 BF16: 320 MB per
+        // seq — tolerable on a single Spark with max_batch_size=1; for
+        // higher batch we may want to reduce to a smaller working window.
+        let bf16 = 2usize;
+        let ctx_slot_bytes = self.target_layer_ids.len() * self.target_hidden_size * bf16;
+        // WORKING WINDOW, not max_seq_len. This buffer is per SEQUENCE and
+        // scales with the context ceiling: at 128K x 5 layers x 5120 BF16 it
+        // is 6.7 GB EACH, so 8 concurrent sequences ask for 53.7 GB — lazily,
+        // as streams arrive, which is why it OOMs a long way past a clean
+        // boot rather than at startup. Capping the window bounds it to
+        // `cap * ctx_slot_bytes` per sequence (16K -> 839 MB, 8 seqs -> 6.7 GB).
+        //
+        // Correctness: `commit_ctx` already slides a watermark when the
+        // accumulator fills, keeping the NEWEST half and re-stamping
+        // ctx_positions, so a smaller window is an already-exercised path —
+        // the drafter conditions on recent context instead of the whole
+        // history. Raise with ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped,
+        // the pre-cap behaviour) if you have the memory and want the drafter
+        // to see further back.
+        let cap = std::env::var("ATLAS_DFLASH_CTX_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(16384);
+        let ceiling = if cap == 0 {
+            self.max_seq_len
+        } else {
+            self.max_seq_len.min(cap)
+        };
+        // The request's own reach (prompt + max_tokens) when the caller knows
+        // it: a 2K-token turn has no use for a 16K accumulator, and this
+        // buffer is paid PER SEQUENCE. `+ gamma + 1` covers the draft block
+        // and bonus slot the ctx accumulates past the last emitted token.
+        let window = ceiling.min(budget_tokens.saturating_add(self.gamma + 1));
+        if ceiling < self.max_seq_len {
+            static LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "DFlash ctx window capped to {} of --max-seq-len {} ({} MB/seq instead of \
+                     {} MB): the accumulator is PER SEQUENCE, so the uncapped size is what \
+                     OOMs a high-concurrency long-context serve. Override with \
+                     ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped).",
+                    ceiling,
+                    self.max_seq_len,
+                    ceiling * ctx_slot_bytes / (1024 * 1024),
+                    self.max_seq_len * ctx_slot_bytes / (1024 * 1024),
+                );
+            }
+        }
+        let total = window * ctx_slot_bytes;
+        let ctx_hidden_acc = gpu.alloc(total)?;
+        // Initialize to zero so stale data doesn't leak between sequences.
+        gpu.memset(ctx_hidden_acc, 0, total)?;
+        Ok(Box::new(DflashProposerState {
+            block_table: Vec::with_capacity(64),
+            seq_len: 0,
+            last_num_drafted: 0,
+            prefill_done: false,
+            ctx_hidden_acc,
+            ctx_len: 0,
+            last_num_accepted: 0,
+            skip_next_decode_append: false,
+            max_ctx_len: window,
+            ctx_slot_bytes,
+            // Phase 2 Option B: lazily allocated on first propose when
+            // ATLAS_DFLASH_OPTION_B=1. None until then to keep alloc_state
+            // cheap for sequences that never use Option B.
+            block_table_dev: None,
+            ctx_count_drafter: 0,
+            max_ctx_count_drafter: 0,
+            ctx_committed: 0,
+            ctx_positions: Vec::new(),
+        }))
     }
 }
