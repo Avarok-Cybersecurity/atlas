@@ -447,12 +447,35 @@ impl TransformerModel {
             && mtp_quant.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled(&levers)
         {
-            let bytes = max_seq_len * config.hidden_size * 2;
+            // Bound the capture to what the drafter can actually CONSUME.
+            // `prefill_drafter` writes into the drafter's own KV, which is
+            // capped at the DFlash ctx window, so a capture longer than that
+            // window is memory nothing can read: 1342 MB at --max-seq-len
+            // 131072 against a 16K window that can hold 168 MB of it.
+            // A prompt past the window simply does not get the whole-prompt
+            // drafter prefill (the coverage check at the consume site already
+            // handles that — blind beats poisoned); it costs acceptance on
+            // very long cold turns, not correctness.
+            //
+            // Pure-MTP serves keep the full ceiling: this narrowing is only
+            // sound because the DFlash drafter's own capacity is the binding
+            // constraint, and that reasoning does not transfer.
+            let capture_rows = if dflash_kgamma > 0 {
+                let cap = crate::layers::dflash_ctx_cap();
+                if cap == 0 {
+                    max_seq_len
+                } else {
+                    max_seq_len.min(cap)
+                }
+            } else {
+                max_seq_len
+            };
+            let bytes = capture_rows * config.hidden_size * 2;
             tracing::info!(
                 "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
                  ({} x {} BF16)",
                 bytes as f64 / 1e6,
-                max_seq_len,
+                capture_rows,
                 config.hidden_size,
             );
             gpu.alloc(bytes)?

@@ -104,6 +104,24 @@ pub struct DflashKernels {
     pub fp8_gemm_n128_row_scaled_m16: KernelHandle,
 }
 
+/// The DFlash context-window bound, in tokens: the most recent target
+/// positions the drafter is allowed to accumulate and attend to.
+///
+/// SINGLE DEFINITION on purpose. Two buffers are sized from it — the
+/// per-sequence ctx accumulator here, and the model-level whole-prompt hidden
+/// capture (`impl_a1`) that feeds `prefill_drafter` — and the drafter cannot
+/// use more prompt than it can store, so capturing past this bound is dead
+/// memory. Letting the two drift is exactly the ceiling-vs-need bug this
+/// bound exists to close.
+///
+/// `ATLAS_DFLASH_CTX_CAP=<tokens>`; `0` disables the cap entirely.
+pub fn dflash_ctx_cap() -> usize {
+    std::env::var("ATLAS_DFLASH_CTX_CAP")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(16384)
+}
+
 /// Cross-sequence batch descriptor for one drafter forward.
 ///
 /// Rows are seq-major: sequence `i` owns `[i*gamma, (i+1)*gamma)` in every
@@ -848,10 +866,7 @@ impl BlockDiffusionDraftHead {
         // history. Raise with ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped,
         // the pre-cap behaviour) if you have the memory and want the drafter
         // to see further back.
-        let cap = std::env::var("ATLAS_DFLASH_CTX_CAP")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(16384);
+        let cap = dflash_ctx_cap();
         let ceiling = if cap == 0 {
             self.max_seq_len
         } else {
