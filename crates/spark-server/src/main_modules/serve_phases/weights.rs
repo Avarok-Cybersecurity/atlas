@@ -155,7 +155,11 @@ pub(crate) fn load_dflash_drafter(
         .flatten()
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "safetensors"))
-        .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+        // std::fs::metadata FOLLOWS symlinks; DirEntry::metadata does not,
+        // and HF snapshot dirs are all symlinks into blobs/ — the first
+        // live run of this gate reported 'weights 0.00 GB' for a 3.85 GB
+        // drafter because it measured the link, not the blob.
+        .filter_map(|e| std::fs::metadata(e.path()).ok().map(|m| m.len()))
         .sum();
     let c = &drafter_config;
     let kv_dim = c.num_key_value_heads * c.head_dim;
