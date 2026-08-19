@@ -1058,6 +1058,71 @@ impl BlockDiffusionDraftHead {
 
         pt_mark!("fwd");
 
+        // ── Step 5b: GPU candidate selector (ATLAS_DFLASH_GPU_SELECTOR) ──
+        //
+        // =1: run the selector chain ON DEVICE — top-16 per draft row, the
+        //     rank-space projection, and the greedy walk — rewriting
+        //     `draft_tokens_dev[1..γ]` in place so the existing pinned D2H
+        //     below returns the FINAL drafts and the ~4 MB logits D2H +
+        //     host scan (~6 ms/propose) never happens.
+        // =2: device path PLUS the host reference on the same inputs, with
+        //     a mismatch log — the parity harness for this port.
+        // unset/other: host selector (selector.rs), unchanged.
+        let gpu_selector_mode = {
+            static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+            *MODE.get_or_init(
+                || match std::env::var("ATLAS_DFLASH_GPU_SELECTOR").ok().as_deref() {
+                    Some("1") => 1,
+                    Some("2") => 2,
+                    _ => 0,
+                },
+            )
+        };
+        let gpu_selector_ready = gpu_selector_mode > 0
+            && self.dflash2_selector.is_some()
+            && self.kernels.dflash2_selector_topk16.0 != 0
+            && self.kernels.dflash2_selector_proj.0 != 0
+            && self.kernels.dflash2_selector_chain.0 != 0
+            && self.gamma >= 2;
+        if gpu_selector_ready {
+            let sel = self.dflash2_selector.as_ref().unwrap();
+            ops::dflash2_selector_topk16(
+                gpu,
+                self.kernels.dflash2_selector_topk16,
+                self.scratch.logits,
+                self.scratch.sel_cand_ids,
+                self.scratch.sel_cand_vals,
+                self.gamma as u32,
+                self.vocab_size as u32,
+                stream,
+            )?;
+            ops::dflash2_selector_proj(
+                gpu,
+                self.kernels.dflash2_selector_proj,
+                sel.hidden_projection_dev,
+                norm_noise_local,
+                self.scratch.sel_g,
+                self.gamma as u32,
+                sel.rank as u32,
+                self.hidden_size as u32,
+                stream,
+            )?;
+            ops::dflash2_selector_chain(
+                gpu,
+                self.kernels.dflash2_selector_chain,
+                self.scratch.sel_cand_ids,
+                self.scratch.sel_cand_vals,
+                self.scratch.sel_g,
+                sel.predecessor_codebook_dev,
+                sel.successor_codebook_dev,
+                self.scratch.draft_tokens_dev,
+                self.gamma as u32,
+                sel.rank as u32,
+                last_token,
+                stream,
+            )?;
+        }
+
         // ── Step 6: D2H γ × 4 bytes ──
         //
         // Phase E.2: async D2H to a pinned host buffer, recorded against a
@@ -1125,10 +1190,25 @@ impl BlockDiffusionDraftHead {
         // after graph replay too, since the tail rewrites those buffers every
         // propose and the D2H above drained the stream. Falls back to the
         // argmax drafts on any error.
-        let drafts: Vec<u32> = if self.dflash2_selector.is_some() {
+        let drafts: Vec<u32> = if gpu_selector_ready && gpu_selector_mode == 1 {
+            // Device selector already rewrote rows 1..γ; `drafts` IS final.
+            drafts
+        } else if self.dflash2_selector.is_some() {
             match self.dflash2_selector_pick(gpu, &drafts, last_token, norm_noise_local, stream)
             {
-                Ok(v) => v,
+                Ok(v) => {
+                    if gpu_selector_ready && gpu_selector_mode == 2 && v != drafts {
+                        // Parity mode: `drafts` carries the DEVICE picks
+                        // (chain kernel rewrote rows 1..γ before the D2H),
+                        // `v` the host reference on the same buffers.
+                        tracing::warn!(
+                            "DFLASH GPU_SELECTOR PARITY MISMATCH: device={:?} host={:?}",
+                            drafts,
+                            v
+                        );
+                    }
+                    v
+                }
                 Err(e) => {
                     tracing::warn!("DFlash2 selector failed ({e:#}) — argmax drafts kept");
                     drafts

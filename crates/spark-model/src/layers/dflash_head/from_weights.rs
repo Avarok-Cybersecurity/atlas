@@ -102,6 +102,21 @@ impl BlockDiffusionDraftHead {
                 "dflash2_conv",
                 "dflash2_grouped_dynamic_causal_conv_bf16",
             ),
+            dflash2_selector_topk16: super::super::try_kernel(
+                gpu,
+                "dflash2_selector",
+                "dflash2_selector_topk16",
+            ),
+            dflash2_selector_proj: super::super::try_kernel(
+                gpu,
+                "dflash2_selector",
+                "dflash2_selector_proj",
+            ),
+            dflash2_selector_chain: super::super::try_kernel(
+                gpu,
+                "dflash2_selector",
+                "dflash2_selector_chain",
+            ),
             // DFlash drafter uses HF's vanilla RMSNorm convention
             // (`out = x * w / RMS(x)`), NOT Atlas's default offset-from-1
             // form (`out = x * (1 + w) / RMS(x)`). Atlas's standard
@@ -265,6 +280,11 @@ impl BlockDiffusionDraftHead {
             // unconditionally — trivial next to the 250 MB scratch block, and
             // it keeps DflashScratch construction branch-free.
             dflash2_conv_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
+            // GPU selector scratch (tiny; allocated unconditionally so the
+            // struct stays Option-free — 16·γ·8 + γ·rank·4 bytes).
+            sel_cand_ids: gpu.alloc(gamma_val * 16 * 4)?,
+            sel_cand_vals: gpu.alloc(gamma_val * 16 * 4)?,
+            sel_g: gpu.alloc(gamma_val * selector_rank.max(1) * 4)?,
             dflash2_dyn_attn: gpu
                 .alloc(n_attn * 2 * conv_kernel_size.max(1) * (hidden_size / conv_group_size.max(1)) * bf16)?,
             dflash2_dyn_mlp: gpu
@@ -462,6 +482,9 @@ impl BlockDiffusionDraftHead {
                         .map(|c| u16::from_le_bytes([c[0], c[1]]))
                         .collect())
                 };
+                let hidden_projection_dev = sel.hidden_projection.weight;
+                let predecessor_codebook_dev = sel.predecessor_codebook.weight;
+                let successor_codebook_dev = sel.successor_codebook.weight;
                 let sel = super::Dflash2Selector {
                     hidden_projection: d2h_u16(
                         sel.hidden_projection.weight,
@@ -480,6 +503,9 @@ impl BlockDiffusionDraftHead {
                     )?,
                     rank: selector_rank,
                     top_k: selector_top_k,
+                    hidden_projection_dev,
+                    predecessor_codebook_dev,
+                    successor_codebook_dev,
                 };
                 tracing::info!(
                     "DFlash2 selector loaded host-side: rank={selector_rank}, top_k={selector_top_k},                      codebooks 2x[{vocab_size}, {selector_rank}] (~{} MiB host)",

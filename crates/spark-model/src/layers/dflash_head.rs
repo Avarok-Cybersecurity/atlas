@@ -36,6 +36,10 @@ pub struct DflashKernels {
     /// (0-sentinel when the loaded kernel set predates the kernel); only
     /// dispatched when the layer actually carries conv weights.
     pub dflash2_conv: KernelHandle,
+    // DFlash2 GPU selector (probe-only; absent on older kernel sets).
+    pub dflash2_selector_topk16: KernelHandle,
+    pub dflash2_selector_proj: KernelHandle,
+    pub dflash2_selector_chain: KernelHandle,
     pub rms_norm: KernelHandle,
     pub residual_rms_norm: KernelHandle,
     pub dense_gemv: KernelHandle,
@@ -123,6 +127,11 @@ pub struct DflashScratch {
     /// DFlash2 conv scratch: conv output `[γ, H]` (consumed immediately at
     /// each of the four sublayer sites, so one buffer serves all of them).
     pub dflash2_conv_buf: DevicePtr,
+    /// DFlash2 GPU selector scratch: top-16 ids `[γ,16]` u32, values
+    /// `[γ,16]` f32, and the rank-space projections `[γ, rank]` f32.
+    pub sel_cand_ids: DevicePtr,
+    pub sel_cand_vals: DevicePtr,
+    pub sel_g: DevicePtr,
     /// DFlash2 dynamic kernels for the ATTENTION site `[γ, 2*ks*groups]` —
     /// written in pre_attn (prepare), read again in post_attn (finish), so
     /// it must survive across the attention launch.
@@ -211,6 +220,13 @@ pub struct Dflash2Selector {
     pub successor_codebook: Vec<u16>,
     pub rank: usize,
     pub top_k: usize,
+    /// Device copies for the GPU selector path (ATLAS_DFLASH_GPU_SELECTOR).
+    /// These are the drafter store's own resident tensors (`dense()` returns
+    /// the store pointer; the drafter store is never released), so retaining
+    /// them costs nothing extra.
+    pub hidden_projection_dev: DevicePtr,
+    pub predecessor_codebook_dev: DevicePtr,
+    pub successor_codebook_dev: DevicePtr,
 }
 
 pub struct DflashLayer {

@@ -321,3 +321,81 @@ pub fn dflash2_conv(
         .arg_u32(stage)
         .launch(stream)
 }
+
+/// DFlash2 GPU selector, stage 1: per-draft-row top-16 of the tail logits.
+/// grid.x = gamma-1 (block b handles row b+1).
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_selector_topk16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    logits: DevicePtr,
+    cand_ids: DevicePtr,
+    cand_vals: DevicePtr,
+    gamma: u32,
+    vocab: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([gamma - 1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(logits)
+        .arg_ptr(cand_ids)
+        .arg_ptr(cand_vals)
+        .arg_u32(vocab)
+        .launch(stream)
+}
+
+/// DFlash2 GPU selector, stage 2: g[t] = hidden_projection @ normed[t].
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_selector_proj(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    hidden_projection: DevicePtr,
+    normed_hidden: DevicePtr,
+    g_out: DevicePtr,
+    gamma: u32,
+    rank: u32,
+    hidden: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rank, gamma - 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(hidden_projection)
+        .arg_ptr(normed_hidden)
+        .arg_ptr(g_out)
+        .arg_u32(rank)
+        .arg_u32(hidden)
+        .launch(stream)
+}
+
+/// DFlash2 GPU selector, stage 3: greedy chain walk; rewrites drafts[1..].
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_selector_chain(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    cand_ids: DevicePtr,
+    cand_vals: DevicePtr,
+    g: DevicePtr,
+    pred_cb: DevicePtr,
+    succ_cb: DevicePtr,
+    drafts: DevicePtr,
+    gamma: u32,
+    rank: u32,
+    anchor: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(cand_ids)
+        .arg_ptr(cand_vals)
+        .arg_ptr(g)
+        .arg_ptr(pred_cb)
+        .arg_ptr(succ_cb)
+        .arg_ptr(drafts)
+        .arg_u32(gamma)
+        .arg_u32(rank)
+        .arg_u32(anchor)
+        .launch(stream)
+}
