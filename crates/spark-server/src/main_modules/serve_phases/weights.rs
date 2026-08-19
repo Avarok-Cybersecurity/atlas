@@ -176,7 +176,18 @@ pub(crate) fn load_dflash_drafter(
         .map(|r| 2 * (c.vocab_size as u64) * (r as u64) * 2 + (r as u64) * (c.hidden_size as u64) * 2)
         .unwrap_or(0);
     let fp8_mirrors = if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
-        let lm_head = (c.vocab_size as u64) * (c.hidden_size as u64);
+        // The 2× lm_head term covered the runtime FP8 mirror + its quantize
+        // staging. When the TARGET checkpoint ships lm_head natively as FP8
+        // E4M3, the drafter tail SHARES those resident bytes instead
+        // (factory/lm_head_setup::native_fp8_lm_head_share) and neither
+        // allocation happens — reserving 2.54 GB that will never be used
+        // refuses serves that fit. Best-effort detection; any read failure
+        // falls back to the conservative reserve.
+        let lm_head = if target_ships_native_fp8_lm_head(args) {
+            0
+        } else {
+            (c.vocab_size as u64) * (c.hidden_size as u64)
+        };
         store_bytes / 2 + 2 * lm_head
     } else {
         0
@@ -226,6 +237,57 @@ pub(crate) fn load_dflash_drafter(
         drafter_store.total_bytes()
     );
     Ok(Some((drafter_store, drafter_config)))
+}
+
+/// Best-effort: does the TARGET checkpoint ship `lm_head.weight` natively as
+/// FP8 E4M3? Reads only the safetensors JSON header of the shard that holds
+/// the tensor (8-byte length prefix + header), never the weights. Any failure
+/// returns `false`, which keeps the pre-flight estimate conservative.
+fn target_ships_native_fp8_lm_head(args: &cli::ServeArgs) -> bool {
+    fn inner(args: &cli::ServeArgs) -> Option<bool> {
+        let dir = if let Some(p) = &args.model_from_path {
+            p.clone()
+        } else {
+            crate::model_resolver::resolve_model_dir(
+                args.model.as_deref()?,
+                args.cache_dir.as_deref(),
+            )
+            .ok()?
+        };
+        const KEYS: [&str; 3] = [
+            "lm_head.weight",
+            "language_model.lm_head.weight",
+            "model.lm_head.weight",
+        ];
+        // Multi-shard: index.json names the shard; single-file fallback.
+        let shard = if let Ok(idx) = std::fs::read(dir.join("model.safetensors.index.json")) {
+            let idx: serde_json::Value = serde_json::from_slice(&idx).ok()?;
+            let map = idx.get("weight_map")?;
+            KEYS.iter()
+                .find_map(|k| map.get(*k).and_then(|v| v.as_str()))
+                .map(|s| dir.join(s))?
+        } else {
+            dir.join("model.safetensors")
+        };
+        use std::io::Read as _;
+        let mut f = std::fs::File::open(shard).ok()?;
+        let mut len8 = [0u8; 8];
+        f.read_exact(&mut len8).ok()?;
+        let hlen = u64::from_le_bytes(len8);
+        if hlen > 64 << 20 {
+            return None; // implausible header — refuse to slurp
+        }
+        let mut hdr = vec![0u8; hlen as usize];
+        f.read_exact(&mut hdr).ok()?;
+        let hdr: serde_json::Value = serde_json::from_slice(&hdr).ok()?;
+        let dtype = KEYS
+            .iter()
+            .find_map(|k| hdr.get(*k))
+            .and_then(|t| t.get("dtype"))
+            .and_then(|d| d.as_str())?;
+        Some(dtype == "F8_E4M3")
+    }
+    inner(args).unwrap_or(false)
 }
 
 /// Startup-loaded LoRA adapter: its own WeightStore + parsed PEFT config.
