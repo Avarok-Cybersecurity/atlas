@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "title": "Qwen3.8-27B NVFP4 concurrency ladder",
+  "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
+  "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
+  "results_doc": "bench/ladder38/RESULTS.md",
+
+  "workload": {
+    "checkpoint": "unsloth/Qwen3.8-27B-NVFP4",
+    "checkpoint_note": "dense 27B hybrid, 48 GDN + 16 attention layers",
+    "isl_tokens": 128,
+    "isl_note": "~200 rendered prompt tokens after the chat template",
+    "osl_tokens": 1024,
+    "reps": 3,
+    "warmup": 1,
+    "temperature": 0.0,
+    "seed": 42,
+    "thinking": "disabled on both engines via chat_template_kwargs.enable_thinking=false",
+    "sampling_parity": "presence_penalty and frequency_penalty pinned to 0.0 on both engines",
+    "harness": "bench/ladder38/harness_w55_conc_ladder.py"
+  },
+
+  "box": {
+    "name": "dgx2 (spark-43fa)",
+    "gpu": "NVIDIA GB10 Grace Blackwell, 121.7 GB unified",
+    "note": "same box, same checkpoint, same client, back-to-back legs"
+  },
+
+  "harness_shas": {
+    "6412b12d4d": "vLLM legs. Does not send the penalty keys.",
+    "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
+    "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
+  },
+
+  "series": [
+    {
+      "id": "atlas",
+      "label": "Atlas",
+      "role": "subject",
+      "engine": "Atlas 1.0.0-beta-preview",
+      "build": "bce152b18",
+      "build_note": "Certified at 4012c9b7e1, which differs only in doc comments and gate machinery -- no executable change. Merged to main as 60370b9532.",
+      "env": "ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1 ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1",
+      "cli": "spark serve unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8888 --model-name unsloth/Qwen3.8-27B-NVFP4 --max-seq-len 2048 --max-batch-size 128 --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 --enable-prefix-caching true --ssm-cache-slots 8 --ssm-checkpoint-interval 32 --speculative --num-drafts 3 --mtp-quantization bf16 --scheduling-policy fifo --tool-call-parser qwen3_coder --disable-tool-grammar true --disable-thinking --request-timeout 0 --ssm-h-dtype f16-pool --gdn-fused-norm --ssm-batched-recurrent --ssm-tail-midchunk false --mtp-gate force --prefill-varlen-batch --no-tui",
+      "speculation": "MTP, K=4 (--num-drafts 3); self-disables above 32 concurrent sequences",
+      "sources": {
+        "1": "l38_r11_c1.json",
+        "2": "c2_atlas_dgx2_20260818.json",
+        "4": "l38_r11_c4.json",
+        "8": "l38_r11_c8.json",
+        "16": "l38_r11_c16.json",
+        "32": "l38_r11_c32.json",
+        "64": "l38_r11_c64.json",
+        "128": "l38_r11_c128.json"
+      },
+      "source_note": "Round 11 throughout. C=2 is round 8 on the identical configuration -- round 11 re-measured that rung at 40.42, and we publish the lower, older number rather than the better one."
+    },
+    {
+      "id": "vllm-mtp",
+      "label": "vLLM + MTP",
+      "role": "baseline",
+      "parity": "matched",
+      "engine": "vLLM 0.27.1",
+      "build": "vllm/vllm-openai:latest @ sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+      "env": "HF_HUB_OFFLINE=1",
+      "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype fp8 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
+      "speculation": "vLLM's own Qwen3_5MTP, K=4 (num_speculative_tokens=3)",
+      "sources": {
+        "1": "vllm_fp8_mtp_reference.json",
+        "2": "c2_vllm_mtp_dgx2_20260818.json",
+        "4": "vllm_fp8_mtp_reference.json",
+        "8": "vllm_fp8_mtp_reference.json",
+        "16": "vllm_fp8_mtp_reference.json",
+        "32": "vllm_fp8_mtp_reference.json",
+        "64": "vllm_fp8_mtp_reference.json",
+        "128": "vllm_fp8_mtp_reference.json"
+      },
+      "source_note": "The apples-to-apples reference: ctx 2048, batch cap 128, util 0.85, fp8 KV, prefix caching, thinking off and MTP K=4 -- every axis matched to Atlas. vLLM at its best, not a handicapped baseline."
+    },
+    {
+      "id": "vllm-nospec",
+      "label": "vLLM, no speculation",
+      "role": "baseline",
+      "parity": "unmatched",
+      "parity_deltas": ["bf16 KV cache (Atlas and the MTP leg use fp8)", "ctx 4096 (the matched legs use 2048)", "no speculative decoding"],
+      "engine": "vLLM 0.27.1",
+      "build": "vllm/vllm-openai:latest @ sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+      "env": "HF_HUB_OFFLINE=1",
+      "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 4096 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype bfloat16",
+      "speculation": "none",
+      "sources": {
+        "1": "vllm_latest_reference.json",
+        "2": "vllm_latest_reference.json",
+        "4": "vllm_latest_reference.json",
+        "8": "vllm_latest_reference.json",
+        "16": "vllm_latest_reference.json",
+        "32": "vllm_latest_reference.json",
+        "64": "vllm_latest_reference.json",
+        "128": "vllm_latest_reference.json"
+      },
+      "source_note": "Published because it beats vLLM+MTP at C=128 (390.42 vs 358.57): MTP verification costs vLLM more than it gains 128-wide. Quoting only the MTP leg there would overstate our margin, so the headline ratio is taken against whichever vLLM configuration is faster at each rung."
+    }
+  ]
+}

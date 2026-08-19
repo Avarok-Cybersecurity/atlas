@@ -1,12 +1,14 @@
 <script>
   // Load order matters. app.css is the desktop-first design system, news.css adds
   // the news band, dashboard.css then chat.css add the two modals (chat reuses
-  // dashboard pieces so it loads after), mobile.css is the SSOT for every
-  // viewport rule and must land last.
+  // dashboard pieces so it loads after), ladder.css styles the concurrency
+  // section (it reuses dashboard's chart primitives, so it loads after those),
+  // mobile.css is the SSOT for every viewport rule and must land last.
   import '../app.css';
   import '../styles/news.css';
   import '../styles/dashboard.css';
   import '../styles/chat.css';
+  import '../styles/ladder.css';
   import '../styles/mobile.css';
   import { tagline, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
   let { children } = $props();

@@ -310,7 +310,7 @@ fn non_kv_error_still_fails_the_whole_batch() {
 }
 
 #[test]
-fn single_sequence_exhaustion_is_not_preemptable() {
+fn single_sequence_exhaustion_is_not_preemptible() {
     // With one sequence, preemption cannot free anything the survivor
     // needs — the existing terminal path is kept.
     let model = PreemptStubModel {

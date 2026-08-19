@@ -52,8 +52,11 @@
 //! Two further pins that must not drift (see `descriptors.rs`).
 
 pub mod agent;
+mod params;
 pub mod preflight;
+mod render;
 pub mod score;
+mod verdict;
 pub mod warm;
 
 use std::future::Future;
@@ -66,11 +69,9 @@ use crate::benchmark::{Benchmark, BenchmarkDescriptor};
 use crate::benchmarks::one_line;
 use crate::http;
 use crate::metadata::PluginMetadata;
-use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
+use crate::params::{ParamSpec, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
-use crate::result::{
-    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
-};
+use crate::result::{BenchmarkResult, LogLine, RunStatus, Verdict};
 
 /// The task, verbatim from `run_tier.sh`. Changing a word changes the
 /// benchmark, so it is a single constant and not assembled from pieces.
@@ -93,11 +94,19 @@ pub use descriptors::{DESCRIPTOR, METADATA};
 #[derive(Default)]
 struct IterationRow {
     index: usize,
+    /// Iteration wall INCLUDING the scorer's build and probe — the blowup
+    /// detector's number.
     wall_s: f64,
+    /// The agent's own wall, scorer excluded. The speed bound divides THIS by
+    /// turns: the scorer is a per-ITERATION cost, so charging it to a per-TURN
+    /// ratio adds a term that shrinks as turns grow — it would make a long
+    /// trajectory look faster per turn purely because it amortised the build.
+    agent_wall_s: f64,
     webserver_ok: bool,
     directions: score::Directions,
     turns: usize,
     tool_calls: usize,
+    completion_tokens: usize,
     note: String,
 }
 
@@ -112,6 +121,7 @@ pub struct AgenticWebserver {
     serve_timeout: Duration,
     max_tokens: usize,
     wall_budget_s: f64,
+    s_per_turn_budget: f64,
     cursor: usize,
     rows: Vec<IterationRow>,
     sandbox_root: Option<PathBuf>,
@@ -131,6 +141,28 @@ impl AgenticWebserver {
 
     fn total_wall(&self) -> f64 {
         self.rows.iter().map(|r| r.wall_s).sum()
+    }
+
+    /// The agent's own seconds, scorer excluded — the speed numerator.
+    fn total_agent_wall(&self) -> f64 {
+        self.rows.iter().map(|r| r.agent_wall_s).sum()
+    }
+
+    fn total_turns(&self) -> usize {
+        verdict::total_turns(&self.rows)
+    }
+
+    fn total_tool_calls(&self) -> usize {
+        self.rows.iter().map(|r| r.tool_calls).sum()
+    }
+
+    fn total_completion_tokens(&self) -> usize {
+        self.rows.iter().map(|r| r.completion_tokens).sum()
+    }
+
+    /// `None` when the tier took no turns — see [`verdict::seconds_per_turn`].
+    fn seconds_per_turn(&self) -> Option<f64> {
+        verdict::seconds_per_turn(self.total_agent_wall(), self.total_turns())
     }
 
     async fn run_iteration(&mut self, index: usize) -> Result<IterationRow> {
@@ -157,6 +189,10 @@ impl AgenticWebserver {
 
         let started = Instant::now();
         let transcript = agent::run_task(&handle, &cfg, PROMPT).await?;
+        // Taken HERE, before the scorer runs. The comment below used to claim
+        // the scorer was not charged to the model while the only wall recorded
+        // was taken after it; both numbers now exist and each says what it is.
+        let agent_wall_s = started.elapsed().as_secs_f64();
         handle.status(format!("run {index}: scoring"));
         let web = score::webserver_test(
             &sandbox,
@@ -165,8 +201,8 @@ impl AgenticWebserver {
             self.serve_timeout,
         )
         .await;
-        // The agent's own wall time is the measurement; the scorer's build and
-        // probe are harness cost and must not be charged to the model.
+        // Total, scorer included: `sum_wall_s` is a blowup detector, and a
+        // scorer build that runs away is exactly a blowup worth detecting.
         let wall_s = started.elapsed().as_secs_f64();
         let directions = score::followed_directions(&transcript.commands, &sandbox);
 
@@ -185,80 +221,14 @@ impl AgenticWebserver {
         Ok(IterationRow {
             index,
             wall_s,
+            agent_wall_s,
             webserver_ok: web.webserver_ok,
             directions,
             turns: transcript.turns,
             tool_calls: transcript.tool_calls,
+            completion_tokens: transcript.completion_tokens,
             note: one_line(note),
         })
-    }
-
-    fn table(&self) -> ResultTable {
-        let mut t = ResultTable::new(
-            "ITERATIONS",
-            vec![
-                Column::right("Run", 4),
-                Column::right("wall s", 8),
-                Column::left("ws_ok", 6),
-                Column::right("steps", 6),
-                Column::right("turns", 6),
-                Column::right("tools", 6),
-                Column::left("note", 40),
-            ],
-        );
-        for r in &self.rows {
-            t.push(vec![
-                Cell::new(r.index.to_string()),
-                Cell::new(format!("{:.1}", r.wall_s)),
-                Cell::styled(
-                    if r.webserver_ok { "pass" } else { "FAIL" },
-                    if r.webserver_ok {
-                        CellStyle::Good
-                    } else {
-                        CellStyle::Bad
-                    },
-                ),
-                Cell::styled(
-                    format!("{}/6", r.directions.met()),
-                    if r.directions.overall() {
-                        CellStyle::Good
-                    } else {
-                        CellStyle::Warn
-                    },
-                ),
-                Cell::new(r.turns.to_string()),
-                Cell::new(r.tool_calls.to_string()),
-                Cell::styled(r.note.clone(), CellStyle::Dim),
-            ]);
-        }
-        t
-    }
-
-    fn summary(&self) -> Vec<Stat> {
-        let ok = self.rows.iter().filter(|r| r.webserver_ok).count();
-        let fd = self.rows.iter().filter(|r| r.directions.overall()).count();
-        let n = self.rows.len();
-        vec![
-            Stat::new("webserver_ok", format!("{ok}/{n}"), "").with_style(if n > 0 && ok == n {
-                CellStyle::Good
-            } else {
-                CellStyle::Warn
-            }),
-            Stat::new("followed_directions", format!("{fd}/{n}"), "").with_style(
-                if n > 0 && fd == n {
-                    CellStyle::Good
-                } else {
-                    CellStyle::Warn
-                },
-            ),
-            Stat::new("Σ wall", format!("{:.0}", self.total_wall()), "s").with_style(
-                if self.total_wall() <= self.wall_budget_s {
-                    CellStyle::Good
-                } else {
-                    CellStyle::Warn
-                },
-            ),
-        ]
     }
 
     /// Raw gate numbers for `--pull-request-gate` (same source the summary
@@ -276,6 +246,28 @@ impl AgenticWebserver {
             self.rows.iter().filter(|r| r.directions.overall()).count() as f64,
         );
         m.insert("sum_wall_s".to_string(), self.total_wall());
+        m.insert("sum_agent_wall_s".to_string(), self.total_agent_wall());
+        m.insert("sum_turns".to_string(), self.total_turns() as f64);
+        m.insert("sum_tool_calls".to_string(), self.total_tool_calls() as f64);
+        m.insert(
+            "sum_completion_tokens".to_string(),
+            self.total_completion_tokens() as f64,
+        );
+        // Absent, not 0.0, for a zero-turn tier: `check_record` compares
+        // numbers, and a 0.0 here would read as the best speed ever recorded.
+        if let Some(spt) = self.seconds_per_turn() {
+            m.insert("s_per_turn".to_string(), spt);
+        }
+        // Recorded, never gated — see the `decode_tps` note on the ParamSpec.
+        // Tokens are the denominator a speed claim should ultimately use, but
+        // no variant has a measured bound yet, and inventing one is the exact
+        // mistake this change exists to undo.
+        if self.total_agent_wall() > 0.0 {
+            m.insert(
+                "decode_tps".to_string(),
+                self.total_completion_tokens() as f64 / self.total_agent_wall(),
+            );
+        }
 
         m.extend(score::per_step_tallies(
             &self.rows.iter().map(|r| &r.directions).collect::<Vec<_>>(),
@@ -284,7 +276,13 @@ impl AgenticWebserver {
     }
 
     fn verdict(&self) -> Verdict {
-        score::verdict(&self.rows, self.total_wall(), self.wall_budget_s)
+        verdict::verdict(
+            &self.rows,
+            self.total_wall(),
+            self.total_agent_wall(),
+            self.wall_budget_s,
+            self.s_per_turn_budget,
+        )
     }
 }
 
@@ -325,78 +323,7 @@ impl Benchmark for AgenticWebserver {
     }
 
     fn parameters(&self) -> Vec<ParamSpec> {
-        vec![
-            ParamSpec::new(
-                "iterations",
-                "Iterations",
-                "How many independent agent runs. The gate tier is 10; use 1 for a smoke test.",
-                ParamKind::Int { min: 1, max: 50 },
-                ParamValue::Int(10),
-            ),
-            ParamSpec::new(
-                "wall_budget_s",
-                "Σ wall budget",
-                "Total agent seconds across all iterations before the gate fails. \
-                 The schema default is the 35B MoE flagship's ceiling (1000 s, \
-                 tightened from 1300 on 2026-08-09: measured tiers land at \
-                 600-800 s). Each model variant carries its OWN ceiling in its \
-                 BENCH.toml (the dense 27B's band is roughly 2x), and selecting a \
-                 variant — in the TUI or via --pull-request-gate — replaces this \
-                 default with that ceiling; see threshold_params.",
-                ParamKind::Float {
-                    min: 1.0,
-                    max: 100_000.0,
-                },
-                ParamValue::Float(1000.0),
-            ),
-            ParamSpec::new(
-                "max_turns",
-                "Max turns",
-                "Tool-calling rounds per iteration before the agent is stopped.",
-                ParamKind::Int { min: 1, max: 200 },
-                ParamValue::Int(40),
-            ),
-            ParamSpec::new(
-                "command_timeout_s",
-                "Command timeout",
-                "Seconds a single agent shell command may run before it is killed.",
-                ParamKind::Int { min: 5, max: 3600 },
-                ParamValue::Int(180),
-            ),
-            ParamSpec::new(
-                "build_timeout_s",
-                "Scorer build timeout",
-                "Seconds the scorer's cargo build may take. A cold dependency tree is slow.",
-                ParamKind::Int { min: 30, max: 3600 },
-                ParamValue::Int(600),
-            ),
-            ParamSpec::new(
-                "serve_timeout_s",
-                "Ping timeout",
-                "Seconds to wait for /ping to answer 'pong' after the server is started. \
-                 The harness's own budget is 15s (score_run.py::webserver_test), so this is \
-                 already the looser of the two — lowering it would not match anything.",
-                ParamKind::Int { min: 5, max: 300 },
-                ParamValue::Int(30),
-            ),
-            ParamSpec::new(
-                "max_tokens",
-                "Max tokens per turn",
-                "Output budget for one model turn.",
-                ParamKind::Int {
-                    min: 256,
-                    max: 32_768,
-                },
-                ParamValue::Int(8192),
-            ),
-            ParamSpec::new(
-                "request_timeout_s",
-                "Request timeout",
-                "Seconds before a single model call is abandoned.",
-                ParamKind::Int { min: 10, max: 3600 },
-                ParamValue::Int(900),
-            ),
-        ]
+        params::parameters()
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
@@ -404,6 +331,7 @@ impl Benchmark for AgenticWebserver {
         values.validate_against(&specs)?;
         self.iterations = values.usize("iterations")?;
         self.wall_budget_s = values.float("wall_budget_s")?;
+        self.s_per_turn_budget = values.float("s_per_turn_budget")?;
         self.max_turns = values.usize("max_turns")?;
         self.command_timeout = Duration::from_secs(values.usize("command_timeout_s")? as u64);
         self.build_timeout = Duration::from_secs(values.usize("build_timeout_s")? as u64);

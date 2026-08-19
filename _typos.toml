@@ -12,18 +12,6 @@
 
 [default]
 extend-ignore-identifiers-re = [
-    # ── DEFERRED MISSPELLINGS, not domain identifiers ────────────────────────
-    # `requeueing` (scheduler/preempt.rs, a log string) and `preemptable`
-    # (preempt_tests.rs, a test fn name) are genuine misspellings of
-    # `requeuing` and `preemptible`. They are allow-listed rather than fixed
-    # for one reason only: both live under `crates/`, which is inside the
-    # benchmark-record closure hash, so correcting them invalidates the full
-    # gate certification (ssm-state-poisoning, decode-floor, agentic, BFCL)
-    # cut on 2026-08-17 and would require re-running ~4 h of GPU work.
-    # FIX THESE in the next PR that legitimately touches those files and
-    # re-cuts records anyway, then delete these two entries.
-    "requeueing",
-    "preemptable",
     # `in_proj_ba` is the bias projection in NVIDIA's NV-FP4 Mamba/SSM
     # checkpoints (`in_proj_ba` = b + a parameters); not a typo of `by`/`be`.
     "in_proj_ba",
