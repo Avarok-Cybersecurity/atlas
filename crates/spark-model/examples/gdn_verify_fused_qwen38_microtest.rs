@@ -5,27 +5,13 @@
 //! Golden oracle (STAGE 0) + fused conv+norm equivalence (STAGE 1) for the
 //! fused K=2 GDN verify kernel (`gdn_verify_fused_k2`).
 //!
-//! ## Why
-//! K=2 MTP verify runs the projection epilogue (conv1d+L2norm, GDN gates,
-//! gated-RMS-norm) as PER-TOKEN loops — each launched/computed TWICE instead
-//! of once-fused like the single-token decode path. The fused
-//! activation-replay kernel folds those scalar GDN epilogue ops into a single
-//! launch. This oracle is the losslessness foundation:
-//!
-//!   STAGE 0 (golden): run the CURRENT K=2 path op-for-op — the
-//!     `causal_conv1d_update_l2norm` ×2 + `gated_delta_rule_wy2` +
-//!     `gated_rms_norm` ×2 sequence exactly as `decode_batched_conv_gdn`
-//!     calls them today — and capture the golden per-token gated-norm
-//!     outputs, the committed H (after token 1), the rollback H_inter (after
-//!     token 0), and the committed / intermediate conv-state. Deterministic
-//!     across two runs of the same seed.
-//!
-//!   STAGE 1 (fused conv+norm): run `gdn_verify_fused_k2`, which fuses ONLY
-//!     the conv1d+L2norm and the gated-RMS-norm for BOTH K=2 positions into
-//!     one launch each (BA-projection/gates and the WY2 recurrence stay as
-//!     their existing separate launches — Stage 2 folds BA in). GATE: fused
-//!     per-token gated-norm output cos ≥ 0.99999 vs golden AND any conv-state
-//!     it touches (committed + position-0 rollback) cos ≥ 0.99999.
+//! STAGE 0 (golden): the CURRENT K=2 path op-for-op (conv1d+L2norm ×2 +
+//! wy2 + gated_rms_norm ×2, exactly as `decode_batched_conv_gdn` calls
+//! them), capturing gated-norm outputs, committed H, rollback H_inter and
+//! conv states. STAGE 1: `gdn_verify_fused_k2` (fused conv+norm; BA/WY2
+//! stay separate). GATE: cos ≥ 0.99999 vs golden on outputs AND every
+//! conv/H state the fused kernel touches. See gdn_verify_fused_microtest.rs
+//! (the qwen3.6 original) for the long-form rationale.
 //!
 //!   cargo run -p spark-model --release --example gdn_verify_fused_microtest \
 //!       --features cuda,gpu-examples

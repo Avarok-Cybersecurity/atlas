@@ -1195,8 +1195,7 @@ impl BlockDiffusionDraftHead {
             // Device selector already rewrote rows 1..γ; `drafts` IS final.
             drafts
         } else if self.dflash2_selector.is_some() {
-            match self.dflash2_selector_pick(gpu, &drafts, last_token, norm_noise_local, stream)
-            {
+            match self.dflash2_selector_pick(gpu, &drafts, last_token, norm_noise_local, stream) {
                 Ok(v) => {
                     if gpu_selector_ready && gpu_selector_mode == 2 && v != drafts {
                         // Parity mode: `drafts` carries the DEVICE picks

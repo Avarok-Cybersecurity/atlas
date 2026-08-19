@@ -323,8 +323,7 @@ impl BlockDiffusionDraftHead {
         // .prepare on the normed input, before q/k/v). The dynamic kernels for
         // BOTH stages land in dflash2_dyn_attn; the finish half runs in
         // post_attn after o_proj.
-        let qkv_src = if let Some(conv) = self.dflash2_conv_armed(layer.attention_conv.as_ref())
-        {
+        let qkv_src = if let Some(conv) = self.dflash2_conv_armed(layer.attention_conv.as_ref()) {
             self.dflash2_conv_prepare(
                 gpu,
                 conv,

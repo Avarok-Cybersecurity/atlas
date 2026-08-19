@@ -163,17 +163,16 @@ pub(crate) fn load_dflash_drafter(
         .sum();
     let c = &drafter_config;
     let kv_dim = c.num_key_value_heads * c.head_dim;
-    let drafter_kv = (args.max_seq_len as u64)
-        * (c.num_hidden_layers as u64)
-        * 2
-        * (kv_dim as u64)
-        * 2;
+    let drafter_kv =
+        (args.max_seq_len as u64) * (c.num_hidden_layers as u64) * 2 * (kv_dim as u64) * 2;
     let fused_kv = (c.num_hidden_layers as u64) * 2 * (kv_dim as u64) * (c.hidden_size as u64) * 2;
     let selector_host = c
         .dflash_config
         .as_ref()
         .and_then(|d| d.selector_rank)
-        .map(|r| 2 * (c.vocab_size as u64) * (r as u64) * 2 + (r as u64) * (c.hidden_size as u64) * 2)
+        .map(|r| {
+            2 * (c.vocab_size as u64) * (r as u64) * 2 + (r as u64) * (c.hidden_size as u64) * 2
+        })
         .unwrap_or(0);
     let fp8_mirrors = if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
         // The 2× lm_head term covered the runtime FP8 mirror + its quantize

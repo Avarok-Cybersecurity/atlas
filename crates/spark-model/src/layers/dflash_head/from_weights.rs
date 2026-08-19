@@ -285,10 +285,20 @@ impl BlockDiffusionDraftHead {
             sel_cand_ids: gpu.alloc(gamma_val * 16 * 4)?,
             sel_cand_vals: gpu.alloc(gamma_val * 16 * 4)?,
             sel_g: gpu.alloc(gamma_val * selector_rank.max(1) * 4)?,
-            dflash2_dyn_attn: gpu
-                .alloc(n_attn * 2 * conv_kernel_size.max(1) * (hidden_size / conv_group_size.max(1)) * bf16)?,
-            dflash2_dyn_mlp: gpu
-                .alloc(n_attn * 2 * conv_kernel_size.max(1) * (hidden_size / conv_group_size.max(1)) * bf16)?,
+            dflash2_dyn_attn: gpu.alloc(
+                n_attn
+                    * 2
+                    * conv_kernel_size.max(1)
+                    * (hidden_size / conv_group_size.max(1))
+                    * bf16,
+            )?,
+            dflash2_dyn_mlp: gpu.alloc(
+                n_attn
+                    * 2
+                    * conv_kernel_size.max(1)
+                    * (hidden_size / conv_group_size.max(1))
+                    * bf16,
+            )?,
             norm_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
             q_buf: gpu.alloc(n_attn * q_dim * bf16)?,
             k_buf: gpu.alloc(n_attn * kv_dim * bf16)?,

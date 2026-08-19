@@ -531,9 +531,9 @@ mod forward_block;
 mod forward_block_layer;
 mod forward_block_layer_paged;
 mod from_weights;
-mod selector;
 mod precompute_ctx_kv;
 mod propose;
+mod selector;
 
 impl DraftProposer for BlockDiffusionDraftHead {
     fn block_gamma(&self) -> Option<usize> {

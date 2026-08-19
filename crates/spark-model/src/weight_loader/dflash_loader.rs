@@ -360,9 +360,9 @@ pub fn load_dflash_weights(
     // DFlash2 candidate selector. The codebooks ship WITHOUT a `.weight`
     // suffix (reference `from_pretrained` remaps them; we address them by
     // their on-disk names directly).
-    let candidate_selector = if drafter_store
-        .contains(&format!("{prefix}candidate_selector.hidden_projection.weight"))
-    {
+    let candidate_selector = if drafter_store.contains(&format!(
+        "{prefix}candidate_selector.hidden_projection.weight"
+    )) {
         Some(DflashSelectorWeights {
             hidden_projection: dense(
                 drafter_store,
@@ -383,11 +383,19 @@ pub fn load_dflash_weights(
     } else {
         None
     };
-    if candidate_selector.is_some() != drafter_config.dflash_config.as_ref().is_some_and(|c| c.is_dflash2()) {
+    if candidate_selector.is_some()
+        != drafter_config
+            .dflash_config
+            .as_ref()
+            .is_some_and(|c| c.is_dflash2())
+    {
         anyhow::bail!(
             "DFlash2 mismatch: config declares selector_rank/conv_kernel_size = {:?} but \
              candidate_selector tensors present = {} — checkpoint and config disagree",
-            drafter_config.dflash_config.as_ref().map(|c| c.is_dflash2()),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.is_dflash2()),
             candidate_selector.is_some(),
         );
     }

@@ -1091,9 +1091,7 @@ impl ServeArgs {
     /// trained block size (caller passes it once parsed); otherwise the
     /// legacy 16 (every pre-DFlash2 published drafter).
     pub fn resolved_dflash_gamma(&self, drafter_block_size: Option<usize>) -> usize {
-        self.dflash_gamma
-            .or(drafter_block_size)
-            .unwrap_or(16)
+        self.dflash_gamma.or(drafter_block_size).unwrap_or(16)
     }
 
     pub fn resolved_num_drafts(&self) -> usize {

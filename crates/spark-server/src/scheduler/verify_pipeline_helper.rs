@@ -487,14 +487,14 @@ pub fn verify_pick_all_with_pipeline(
             chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
                 || (!argmax_ids[..i].contains(&tok)
                     && crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
-                    crate::scheduler::fast_greedy::logit_is_positive(
-                        model,
-                        logits_base,
-                        row_base + i,
-                        vocab,
-                        tok,
-                    )
-                }))
+                        crate::scheduler::fast_greedy::logit_is_positive(
+                            model,
+                            logits_base,
+                            row_base + i,
+                            vocab,
+                            tok,
+                        )
+                    }))
         });
         ctx.timing.record(Phase::FastGreedy, t_fast);
         if all_immune {

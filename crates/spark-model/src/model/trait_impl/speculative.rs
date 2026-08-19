@@ -446,7 +446,10 @@ impl TransformerModel {
         let Some(state) = seq.layer_states.get_mut(0) else {
             return;
         };
-        let Some(ssm) = state.as_any_mut().downcast_mut::<crate::layer::SsmLayerState>() else {
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
             return;
         };
         let _ = self.gpu.synchronize(self.gpu.default_stream());

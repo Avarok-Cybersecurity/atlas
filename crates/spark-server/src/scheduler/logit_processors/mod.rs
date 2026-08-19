@@ -318,10 +318,7 @@ pub fn process_position_logits(
         apply_penalties_and_bias(
             logits,
             penalties,
-            crate::scheduler::sample_step::penalty_history_scope(
-                &hist,
-                ctx.tool_call_end_token,
-            ),
+            crate::scheduler::sample_step::penalty_history_scope(&hist, ctx.tool_call_end_token),
         );
     }
     if kind == PositionKind::Verify {
