@@ -299,6 +299,10 @@ jobs:
           APP_TOKEN: ${{ steps.apptoken.outputs.token }}
           # Boolean dispatch input; empty on schedule/workflow_run triggers.
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+          # How many PRs keep their own ledger file. PCND: stated here, not
+          # defaulted inside the script, so changing the window is a reviewable
+          # diff in the workflow rather than a constant buried in bash.
+          LEDGER_CAP: "100"
         run: |
           set -euo pipefail
           d="__ATLAS_HARVEST_EOF_$RANDOM$RANDOM"
@@ -352,6 +356,47 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           git config user.name  "tbraun96"
           git config user.email "tbraun96@gmail.com"
+
+          # ── Bounded FIFO ────────────────────────────────────────────────
+          # `governance/` had no retention rule at all and grew one file per PR
+          # forever. The newest LEDGER_CAP PRs keep their own file; older ones
+          # are removed from the tree and indexed in `archive.csv`, which
+          # records the commit that last carried each file. Nothing is
+          # destroyed — `git show <hash>:governance/pr-<n>.jsonl` still returns
+          # it verbatim. The git tree stays the store; the CSV is the index.
+          #
+          # This rides along with a real harvest by construction: the "nothing
+          # new" guard above has already exited when there is nothing to land,
+          # so eviction never manufactures a commit purely to delete files.
+          open_prs=$(gh pr list --state open --limit 200 --json number --jq '[.[].number] | join(" ")')
+          evict=$(ls governance/pr-*.jsonl 2>/dev/null \
+            | sed 's#.*/pr-\(.*\)\.jsonl#\1#' \
+            | .github/scripts/governance-evict.sh "$LEDGER_CAP" "$open_prs")
+          if [ -n "$evict" ]; then
+            [ -f governance/archive.csv ] || echo "pr,hash,merged_at" > governance/archive.csv
+            for pr in $evict; do
+              # The commit that last carried this ledger. A file created in THIS
+              # run has no such commit yet — it is also, necessarily, among the
+              # newest and so never a candidate — but an unindexable file is
+              # skipped rather than deleted with an empty hash, because an
+              # archive row that cannot be resolved is worse than no row.
+              hash=$(git log -1 --format=%H -- "governance/pr-$pr.jsonl")
+              if [ -z "$hash" ]; then
+                echo "::warning::governance/pr-$pr.jsonl has no commit yet — not evicting it"
+                continue
+              fi
+              # The PR's OWN merge date, not the harvest commit's — the commit
+              # date is already recoverable from `hash` and would say nothing
+              # new. A PR closed without merging has no merge date and records
+              # an empty field, which is the honest answer rather than a
+              # substituted one.
+              merged_at=$(gh pr view "$pr" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo "")
+              printf '%s,%s,%s\n' "$pr" "$hash" "$merged_at" >> governance/archive.csv
+              git rm -q "governance/pr-$pr.jsonl"
+            done
+            echo "archived ledger(s): $evict"
+          fi
+
           git add governance/
           git commit -m "$subject" -m "$run_note"
           git show --stat HEAD
