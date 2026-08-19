@@ -580,7 +580,46 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // higher batch we may want to reduce to a smaller working window.
         let bf16 = 2usize;
         let ctx_slot_bytes = self.target_layer_ids.len() * self.target_hidden_size * bf16;
-        let total = self.max_seq_len * ctx_slot_bytes;
+        // WORKING WINDOW, not max_seq_len. This buffer is per SEQUENCE and
+        // scales with the context ceiling: at 128K x 5 layers x 5120 BF16 it
+        // is 6.7 GB EACH, so 8 concurrent sequences ask for 53.7 GB — lazily,
+        // as streams arrive, which is why it OOMs a long way past a clean
+        // boot rather than at startup. Capping the window bounds it to
+        // `cap * ctx_slot_bytes` per sequence (16K -> 839 MB, 8 seqs -> 6.7 GB).
+        //
+        // Correctness: `commit_ctx` already slides a watermark when the
+        // accumulator fills, keeping the NEWEST half and re-stamping
+        // ctx_positions, so a smaller window is an already-exercised path —
+        // the drafter conditions on recent context instead of the whole
+        // history. Raise with ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped,
+        // the pre-cap behaviour) if you have the memory and want the drafter
+        // to see further back.
+        let cap = std::env::var("ATLAS_DFLASH_CTX_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(16384);
+        let window = if cap == 0 {
+            self.max_seq_len
+        } else {
+            self.max_seq_len.min(cap)
+        };
+        if window < self.max_seq_len {
+            static LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "DFlash ctx window capped to {} of --max-seq-len {} ({} MB/seq instead of \
+                     {} MB): the accumulator is PER SEQUENCE, so the uncapped size is what \
+                     OOMs a high-concurrency long-context serve. Override with \
+                     ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped).",
+                    window,
+                    self.max_seq_len,
+                    window * ctx_slot_bytes / (1024 * 1024),
+                    self.max_seq_len * ctx_slot_bytes / (1024 * 1024),
+                );
+            }
+        }
+        let total = window * ctx_slot_bytes;
         let ctx_hidden_acc = gpu.alloc(total)?;
         // Initialize to zero so stale data doesn't leak between sequences.
         gpu.memset(ctx_hidden_acc, 0, total)?;
@@ -593,7 +632,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
             ctx_len: 0,
             last_num_accepted: 0,
             skip_next_decode_append: false,
-            max_ctx_len: self.max_seq_len,
+            max_ctx_len: window,
             ctx_slot_bytes,
             // Phase 2 Option B: lazily allocated on first propose when
             // ATLAS_DFLASH_OPTION_B=1. None until then to keep alloc_state
