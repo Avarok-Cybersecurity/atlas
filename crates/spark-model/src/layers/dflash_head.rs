@@ -488,6 +488,12 @@ pub struct BlockDiffusionDraftHead {
     /// it's the natural sync barrier between captured subgraphs
     /// (vLLM piecewise convention). See design doc §15.
     pub propose_graphs: Mutex<Option<Vec<spark_runtime::gpu::GraphHandle>>>,
+    /// Monolithic whole-propose graph (all layers incl. the indirect-args
+    /// attention + tail in ONE capture). `None` = not yet captured;
+    /// `Some(GraphHandle(0))` = capture came back empty — piecewise forever.
+    /// Replaces 2·L+1 piecewise launches (~2.2 ms overhead each on GB10)
+    /// with one. Kill switch: ATLAS_DFLASH_MONO_GRAPH=0.
+    pub propose_mono_graph: Mutex<Option<spark_runtime::gpu::GraphHandle>>,
     /// When set, all `forward_block` calls run eagerly. Mirrors target-model
     /// `TransformerModel::suppress_graphs` so external code can disable
     /// graphs at runtime (e.g. while calibrating FP8 KV).

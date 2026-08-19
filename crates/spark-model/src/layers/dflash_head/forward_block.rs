@@ -821,7 +821,73 @@ impl BlockDiffusionDraftHead {
         // Phase F.2: piecewise capture/replay path. Only enabled for
         // option_b (paged) — legacy path stays single-shot eager since
         // it's not graph-ready and exists only for ablation.
-        if graph_eligible && option_b_on {
+        // Monolithic graph (OPT-IN: ATLAS_DFLASH_MONO_GRAPH=1):
+        // capture the WHOLE propose — every layer's pre_attn + the
+        // indirect-args attention + post_attn, plus the tail — as ONE graph.
+        // MEASURED NEUTRAL at C=1 on GB10 (36.8 tok/s either way, outputs
+        // identical): the piecewise launches pipeline, so collapsing 11
+        // launches to 1 buys no wall time single-stream. Kept as an opt-in
+        // CPU-launch-load lever for concurrency. (The 22 ms the propose
+        // timer once attributed to "graph launches" was the timer's own
+        // per-launch syncs serializing the stream — see PR #604 notes.)
+        // Every captured piece is identical to the piecewise
+        // slots; the only NEWLY-captured op is the attention launch, which
+        // reads kv_len/q_offset from `option_b_indirect_args_dev` at kernel
+        // entry (device-side), so replay picks up each propose's values.
+        // Empty capture → GraphHandle(0) sentinel → piecewise path forever.
+        let mono_graph_on = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_DFLASH_MONO_GRAPH").ok().as_deref() == Some("1")
+            })
+        };
+        let mut mono_handled = false;
+        if graph_eligible && option_b_on && mono_graph_on {
+            let mut mg = self.propose_mono_graph.lock();
+            match *mg {
+                Some(h) if h.0 != 0 => {
+                    gpu.launch_graph(h, stream)?;
+                    mono_handled = true;
+                }
+                Some(_) => {} // empty-capture sentinel: piecewise below
+                None => {
+                    let warmed = self
+                        .propose_warmup_count
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if warmed < warmup_target {
+                        // Warm-up proposes stay eager (same budget the
+                        // piecewise path uses; the counter is shared).
+                        self.propose_warmup_count
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        run_all_eager()?;
+                        mono_handled = true;
+                    } else {
+                        gpu.begin_capture(stream)?;
+                        let body = run_all_eager();
+                        let graph = gpu.end_capture(stream)?;
+                        body?;
+                        if graph.0 != 0 {
+                            tracing::info!(
+                                "DFlash MONO propose graph captured (layers={}, one launch \
+                                 replaces {} piecewise launches)",
+                                self.layers.len(),
+                                self.layers.len() * 2 + 1
+                            );
+                            gpu.launch_graph(graph, stream)?;
+                            mono_handled = true;
+                        } else {
+                            tracing::warn!(
+                                "DFlash MONO propose capture came back empty — \
+                                 falling back to the piecewise graph path"
+                            );
+                        }
+                        *mg = Some(graph);
+                    }
+                }
+            }
+        }
+
+        if graph_eligible && option_b_on && !mono_handled {
             // Subgraph slot layout: [pre_0, post_0, ..., pre_{N-1}, post_{N-1}, tail].
             // 2 × num_layers + 1 slots total.
             let num_layers = self.layers.len();
@@ -986,7 +1052,7 @@ impl BlockDiffusionDraftHead {
                     *g = Some(new_graphs);
                 }
             }
-        } else {
+        } else if !mono_handled {
             run_all_eager()?;
         }
 
