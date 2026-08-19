@@ -458,7 +458,7 @@ impl Qwen3AttentionLayer {
             w4a16_gemv_dual_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
             w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
-            w4a16_gemv_batch8_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_gemv_batch8_k: crate::layers::batch8_kernel(gpu),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
             w4a16_gemm_t_k64_k: crate::layers::k64_kernel(gpu)?,

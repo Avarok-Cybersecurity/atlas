@@ -114,8 +114,7 @@ impl TransformerModel {
             crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
         // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
         // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
-        let w4a16_gemv_batch8_kernel =
-            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
+        let w4a16_gemv_batch8_kernel = crate::layers::batch8_kernel(gpu.as_ref());
         // M<=16 batched GEMV for the wide BATCHED-DECODE lm_head. The SSM mixer
         // already carries this handle (qwen3_ssm/mod.rs); the model level did
         // not, so the decode head had no arm above 8 and fell to the M64-tile
