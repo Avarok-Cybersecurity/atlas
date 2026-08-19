@@ -164,6 +164,20 @@ impl BlockDiffusionDraftHead {
     ) -> Option<&'a super::Dflash2Conv> {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let off = *OFF.get_or_init(|| std::env::var_os("ATLAS_NO_DFLASH2_CONV").is_some());
+        // One-shot arming report: whether the conv path is actually live has
+        // already been mis-assumed once (an A/B measured byte-identical
+        // accepts with the conv 'on' vs off), so state the three gate inputs
+        // plainly the first time through.
+        static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        REPORTED.get_or_init(|| {
+            tracing::info!(
+                "DFlash2 conv gate: weights_present={} kernel_loaded={} kill_switch={} -> armed={}",
+                conv.is_some(),
+                self.kernels.dflash2_conv.0 != 0,
+                off,
+                conv.is_some() && self.kernels.dflash2_conv.0 != 0 && !off,
+            );
+        });
         conv.filter(|_| self.kernels.dflash2_conv.0 != 0 && !off)
     }
 
