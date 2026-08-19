@@ -61,7 +61,7 @@ impl BlockDiffusionDraftHead {
         let num_kv_heads = weights.config.num_key_value_heads;
         let head_dim = weights.config.head_dim;
         let vocab_size = weights.config.vocab_size;
-        let gamma_val = gamma.unwrap_or(weights.config.block_size);
+        let gamma_val = gamma.unwrap_or(weights.config.effective_block_size());
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
         // sized for `max_seq_len + γ + 1` positions (prompt + γ drafts +
@@ -304,7 +304,7 @@ impl BlockDiffusionDraftHead {
         // 64, pairs 11..26 ramped). Result: drafter Q/K rotations landed in
         // the wrong angular basis at every layer → 0% draft acceptance. Now
         // we read the drafter's own scaling block instead of guessing.
-        let rope_theta = weights.config.rope_theta;
+        let rope_theta = weights.config.effective_rope_theta();
         let rotary_dim = head_dim; // Qwen3.6-DFlash applies rope to full head_dim
         let dim_f = rotary_dim as f32;
         let n_pairs = rotary_dim / 2;

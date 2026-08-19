@@ -57,6 +57,11 @@ pub struct DflashConfig {
     /// Drafter base RoPE θ. Defaults to 10M (matches Qwen3.6-DFlash).
     #[serde(default = "default_rope_theta")]
     pub rope_theta: f32,
+    /// transformers-5.x home for rope settings (DFlash2 ships
+    /// `rope_parameters: {rope_theta, rope_type}` and NO top-level
+    /// `rope_theta`). When present, its theta wins over the field above.
+    #[serde(default)]
+    pub rope_parameters: Option<DflashRopeParameters>,
     /// HF-style `rope_scaling` block. `None` ⇒ plain RoPE (the v2 2026-04-27
     /// Qwen3.6-DFlash drafter ships `rope_scaling: null`). When present and
     /// `rope_type == "yarn"`, the drafter's YaRN parameters are used to
@@ -67,6 +72,35 @@ pub struct DflashConfig {
 
 fn default_rope_theta() -> f32 {
     10_000_000.0
+}
+
+/// transformers-5.x `rope_parameters` block (subset).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DflashRopeParameters {
+    #[serde(default)]
+    pub rope_theta: Option<f32>,
+    #[serde(default)]
+    pub rope_type: Option<String>,
+}
+
+impl DflashConfig {
+    /// Resolved RoPE θ: `rope_parameters.rope_theta` (transformers 5.x /
+    /// DFlash2) wins over the legacy top-level field.
+    pub fn effective_rope_theta(&self) -> f32 {
+        self.rope_parameters
+            .as_ref()
+            .and_then(|r| r.rope_theta)
+            .unwrap_or(self.rope_theta)
+    }
+    /// Resolved block size γ: DFlash2 ships it INSIDE `dflash_config`
+    /// (`block_size: 8`); DFlash1 ships it top-level. The top-level default
+    /// (16) must not shadow a sub-config value.
+    pub fn effective_block_size(&self) -> usize {
+        self.dflash_config
+            .as_ref()
+            .and_then(|c| c.block_size)
+            .unwrap_or(self.block_size)
+    }
 }
 
 /// Subset of HF `rope_scaling` block consumed by Atlas. Mirrors the field
@@ -119,6 +153,9 @@ pub struct DflashSubConfig {
     /// Candidates retained per draft position before the selector walk. `16`.
     #[serde(default)]
     pub selector_top_k: Option<usize>,
+    /// DFlash2 ships block size γ HERE (8), not top-level.
+    #[serde(default)]
+    pub block_size: Option<usize>,
 }
 
 impl DflashSubConfig {
@@ -374,7 +411,7 @@ pub fn load_dflash_weights(
         layers.len(),
         drafter_config.hidden_size,
         drafter_config.vocab_size,
-        drafter_config.block_size,
+        drafter_config.effective_block_size(),
         drafter_config
             .dflash_config
             .as_ref()
