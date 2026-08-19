@@ -71,11 +71,16 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
     let s = &app.stats;
     let tiles = Layout::default()
         .direction(Direction::Horizontal)
+        // Unequal on purpose: five EQUAL tiles truncated the REQUESTS row
+        // ("1007 ● 8 ↓2.0 KB/s ↑3.0 MB/s" is ~32 cols and the widest content
+        // here), which the tile test catches. Widths follow the content —
+        // REQUESTS and GPU carry two figures each, THROUGHPUT carries one.
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(24),
+            Constraint::Percentage(16),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+            Constraint::Percentage(22),
         ])
         .split(area);
     let req = Line::from(vec![
@@ -112,6 +117,31 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         tp,
         Some(&s.gen_tps_history.as_u64()),
     );
+    // Prefill ingest. Counted per chunk as it lands (see
+    // scheduler/phase_continue_prefills), so this is the rate at the moment
+    // ingest happens — not, as it used to be, the whole prompt credited to
+    // whenever the response finished. `● n` is the number of sequences
+    // currently prefilling, straight off the scheduler snapshot.
+    let pf = Line::from(vec![
+        Span::styled(
+            format!(" {:.0} tok/s", s.prompt_tps),
+            theme::text().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            match s.sched {
+                Some(x) if x.prefilling_seqs > 0 => format!("  ● {}", x.prefilling_seqs),
+                _ => String::new(),
+            },
+            theme::brand_cyan(),
+        ),
+    ]);
+    tile(
+        f,
+        tiles[2],
+        "PREFILL",
+        pf,
+        Some(&s.prompt_tps_history.as_u64()),
+    );
     let ttft = Line::from(vec![
         Span::styled(
             format!(" p50 {}", fmt_ms(s.ttft_p50_ms)),
@@ -119,7 +149,7 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(format!("  p90 {}", fmt_ms(s.ttft_p90_ms)), theme::text2()),
     ]);
-    tile(f, tiles[2], "TTFT", ttft, None);
+    tile(f, tiles[3], "TTFT", ttft, None);
     // `—`, not 0.0, when the device never answered.
     let gpu = if s.gpu_known {
         Line::from(vec![
@@ -132,7 +162,7 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Line::from(Span::styled(" —", theme::dim()))
     };
-    tile(f, tiles[3], "GPU", gpu, None);
+    tile(f, tiles[4], "GPU", gpu, None);
 }
 
 fn draw_ttft_hist(f: &mut Frame, app: &App, area: Rect) {

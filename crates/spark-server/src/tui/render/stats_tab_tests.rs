@@ -99,6 +99,26 @@ fn a_server_under_load_reports_its_measurements_in_the_tiles() {
 }
 
 #[test]
+fn the_prefill_tile_reports_ingest_rate_and_in_flight_prefills() {
+    let mut a = stats_app();
+    // Prefill runs ~20x the generation rate, which is exactly why it gets its
+    // own tile and its own sparkline instead of sharing the throughput axis.
+    a.stats.prompt_tps = 890.0;
+    a.stats.gen_tps = 40.0;
+    a.stats.sched = Some(sched());
+    let rows = screen(&a, 160, 48);
+    assert!(has(&rows, "PREFILL"), "{rows:#?}");
+    assert!(has(&rows, "890 tok/s"), "ingest rate:\n{rows:#?}");
+    // `sched()` publishes prefilling_seqs = 1.
+    assert!(has(&rows, "● 1"), "in-flight prefills:\n{rows:#?}");
+    // The other tiles must survive the narrower split.
+    assert!(
+        has(&rows, "40.0 tok/s"),
+        "throughput still there:\n{rows:#?}"
+    );
+}
+
+#[test]
 fn the_sequences_pane_shows_the_scheduler_only_once_one_has_published() {
     let mut a = stats_app();
     let bare = screen(&a, 160, 48);

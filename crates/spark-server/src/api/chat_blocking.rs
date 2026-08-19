@@ -405,7 +405,9 @@ fn finalize_response(
     };
 
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.
-    crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(prompt_len as u64);
+    // PROMPT_TOKENS_TOTAL is incremented per chunk at ingest
+    // (scheduler/phase_continue_prefills/*). Counting it here too
+    // would double-count.
     // GENERATION_TOKENS_TOTAL is incremented PER TOKEN as the scheduler
     // emits it (scheduler/emit_step.rs, decode_logits_step.rs). Adding the
     // completion total here too would double-count — and counting only
