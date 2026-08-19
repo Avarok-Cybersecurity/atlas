@@ -539,6 +539,16 @@ pub fn build_model(
     // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
     let target_lm_head_nvfp4_for_dflash = lm_head_nvfp4;
     let target_hidden_for_dflash = config.hidden_size;
+    // Native FP8 lm_head share for the DFlash drafter tail: when the
+    // checkpoint ships lm_head as FP8 E4M3 + per-row scale, the drafter's
+    // Phase-G tail reads THOSE bytes instead of building a 1.27 GB
+    // runtime-requantized mirror (see lm_head_setup::native_fp8_lm_head_share).
+    // Built here because `store` is dropped into the model right after.
+    let target_lm_head_native_fp8_for_dflash = if dflash_args.is_some() {
+        super::lm_head_setup::native_fp8_lm_head_share(&store, &config, gpu.as_ref())?
+    } else {
+        None
+    };
 
     let mut model = TransformerModel::new(
         config,
@@ -612,6 +622,7 @@ pub fn build_model(
                 target_embed_for_dflash,
                 target_lm_head_for_dflash,
                 target_lm_head_nvfp4_for_dflash,
+                target_lm_head_native_fp8_for_dflash,
                 target_hidden_for_dflash,
                 args.gamma,
                 args.window_size,

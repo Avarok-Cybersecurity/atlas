@@ -147,6 +147,57 @@ pub(crate) fn load_dflash_drafter(
     Ok(Some((drafter_store, drafter_config)))
 }
 
+/// Best-effort: does the TARGET checkpoint ship `lm_head.weight` natively as
+/// FP8 E4M3? Reads only the safetensors JSON header of the shard that holds
+/// the tensor (8-byte length prefix + header), never the weights. Any failure
+/// returns `false`, which keeps the pre-flight estimate conservative.
+fn target_ships_native_fp8_lm_head(args: &cli::ServeArgs) -> bool {
+    fn inner(args: &cli::ServeArgs) -> Option<bool> {
+        let dir = if let Some(p) = &args.model_from_path {
+            p.clone()
+        } else {
+            crate::model_resolver::resolve_model_dir(
+                args.model.as_deref()?,
+                args.cache_dir.as_deref(),
+            )
+            .ok()?
+        };
+        const KEYS: [&str; 3] = [
+            "lm_head.weight",
+            "language_model.lm_head.weight",
+            "model.lm_head.weight",
+        ];
+        // Multi-shard: index.json names the shard; single-file fallback.
+        let shard = if let Ok(idx) = std::fs::read(dir.join("model.safetensors.index.json")) {
+            let idx: serde_json::Value = serde_json::from_slice(&idx).ok()?;
+            let map = idx.get("weight_map")?;
+            KEYS.iter()
+                .find_map(|k| map.get(*k).and_then(|v| v.as_str()))
+                .map(|s| dir.join(s))?
+        } else {
+            dir.join("model.safetensors")
+        };
+        use std::io::Read as _;
+        let mut f = std::fs::File::open(shard).ok()?;
+        let mut len8 = [0u8; 8];
+        f.read_exact(&mut len8).ok()?;
+        let hlen = u64::from_le_bytes(len8);
+        if hlen > 64 << 20 {
+            return None; // implausible header — refuse to slurp
+        }
+        let mut hdr = vec![0u8; hlen as usize];
+        f.read_exact(&mut hdr).ok()?;
+        let hdr: serde_json::Value = serde_json::from_slice(&hdr).ok()?;
+        let dtype = KEYS
+            .iter()
+            .find_map(|k| hdr.get(*k))
+            .and_then(|t| t.get("dtype"))
+            .and_then(|d| d.as_str())?;
+        Some(dtype == "F8_E4M3")
+    }
+    inner(args).unwrap_or(false)
+}
+
 /// Startup-loaded LoRA adapter: its own WeightStore + parsed PEFT config.
 /// One `LoraAdapterState` per repeated `--lora-adapter NAME=PATH`; each becomes
 /// one resident pool slot. A single adapter is byte-identical to the v0 path.
