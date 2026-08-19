@@ -298,6 +298,7 @@ pub fn gdn_prefill_fla(
     // non-zero AND ATLAS_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
     // ABI; grid y = batch·num_dv_blocks, smem 81KB vs 97KB). KernelHandle(0) = off.
     k_chunk_delta_h_tc_vblock: KernelHandle,
+    k_chunk_delta_h_vtile: KernelHandle,
     k_chunk_fwd_o: KernelHandle,
     h_state: DevicePtr,
     query: DevicePtr,
@@ -391,7 +392,12 @@ pub fn gdn_prefill_fla(
     // (gated). tc_vblock is a drop-in ABI; only the grid-y extent (batch·num_dv_blocks)
     // and the dynamic smem differ. The DV axis is never a contraction axis so the
     // per-DV-block slices are independent → bit-parity with ksplit (validated isolated).
-    let use_tcvb = k_chunk_delta_h_tc_vblock.0 != 0
+    // vtile is the DEFAULT spine when it resolved: 2.15-2.18x over ksplit, bit-exact
+    // to cos=1.0000. `ATLAS_GDN_VTILE=0` is the kill switch back to ksplit.
+    let use_vtile = k_chunk_delta_h_vtile.0 != 0
+        && std::env::var("ATLAS_GDN_VTILE").ok().as_deref() != Some("0");
+    let use_tcvb = !use_vtile
+        && k_chunk_delta_h_tc_vblock.0 != 0
         && std::env::var("ATLAS_GDN_TC_VBLOCK").ok().as_deref() == Some("1");
     const DV_BLK: u32 = 64; // matches the kernel's compile-time DV_BLK
     let num_dv_blk = (vd / DV_BLK).max(1); // 2 for Holo (vd=128)
@@ -401,18 +407,24 @@ pub fn gdn_prefill_fla(
         + 2 * (C * kd + C * DV_BLK) * 2
         + 2 * C * 4
         + 2 * (C + 1) * 4;
-    let (k_cdh, cdh_grid_y, cdh_smem) = if use_tcvb {
+    // vtile stages {W,K,U} single-buffered plus one decay row; it does NOT split
+    // the DV axis, so grid.y stays `batch_size`.
+    let smem_vtile = C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4;
+    let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_vtile {
+        (k_chunk_delta_h_vtile, batch_size, smem_vtile, 512u32)
+    } else if use_tcvb {
         (
             k_chunk_delta_h_tc_vblock,
             batch_size * num_dv_blk,
             smem_tcvb,
+            256u32,
         )
     } else {
-        (k_chunk_delta_h, batch_size, smem_dh)
+        (k_chunk_delta_h, batch_size, smem_dh, 256u32)
     };
     KernelLaunch::new(gpu, k_cdh)
         .grid([num_v_heads, cdh_grid_y, 1])
-        .block([256, 1, 1])
+        .block([cdh_block, 1, 1])
         .shared_mem(cdh_smem)
         .arg_ptr(h_state)
         .arg_ptr(w_out)

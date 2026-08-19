@@ -168,6 +168,15 @@ pub struct Qwen3SsmLayer {
     /// isolation first. `allow(dead_code)` until the launch site reads it.
     #[allow(dead_code)]
     gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
+    /// Warp-dense fused GDN state spine (`gated_delta_rule_chunk_delta_h_vtile`).
+    /// 512 threads = 16 warps/CTA against ksplit's 8, with the SAME grid (one CTA
+    /// per head) so `W`/`K` global loads are not duplicated — an ncu profile put
+    /// ksplit at L2 60.6% / L1 56.2%, i.e. memory-pipeline bound, which is why the
+    /// DV-split variants (which duplicate those loads) lost. Fusing the two
+    /// per-chunk passes deletes ksplit's `duc[CHUNK]` register array, and that is
+    /// what pays for the extra warps: 118 registers, no spills. Measured 2.15-2.18x
+    /// vs ksplit at 2048/8192/16384 with cos=1.0000 (`gdn_chunk_shapetest`).
+    gdn_prefill_fla_chunk_delta_h_vtile_k: KernelHandle,
     gdn_prefill_fla_chunk_fwd_o_k: KernelHandle,
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.
