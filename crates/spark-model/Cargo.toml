@@ -197,6 +197,10 @@ name = "verify_exact_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_conv_kn_qwen38_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_conv_kn_microtest"
 required-features = ["cuda", "gpu-examples"]
 

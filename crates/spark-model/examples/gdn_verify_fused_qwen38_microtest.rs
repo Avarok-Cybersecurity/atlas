@@ -222,6 +222,11 @@ fn launch_wy2(
         .arg_u32(CONV_DIM as u32) // qk_stride
         .arg_u32(CONV_DIM as u32) // v_stride
         .arg_u32((NV * 2) as u32) // gb_stride
+        // state_is_table: the kernel grew this trailing flag for the
+        // cross-sequence batched verify (pointer-table state bases); the
+        // pre-flag arg pack launches as CUDA_ERROR_INVALID_VALUE. 0 = the
+        // contiguous single-sequence form this test exercises.
+        .arg_u32(0)
         .launch(0)
 }
 
