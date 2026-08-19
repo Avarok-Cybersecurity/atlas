@@ -264,6 +264,34 @@ impl AtlasCudaBackend {
                 folded_sites
             ));
         }
+
+        // Per-FILE rollup. The by-site view above has a blind spot: a
+        // subsystem that allocates many distinct buffers from many distinct
+        // lines is split into pieces small enough to fall below the cut and
+        // vanish into the remainder. The vision encoder is exactly that shape
+        // — ~16 buffers (scores, probs, qr/kr/vt, merge, rope, ...) each from
+        // its own line — so ~2.2 GB was invisible in a top-12 by site while
+        // being the fourth-largest consumer in the process. Rolling up by
+        // file costs one more pass over the same map and makes a subsystem
+        // legible as a subsystem.
+        let mut by_file: HashMap<&str, (usize, usize)> = HashMap::new();
+        for rec in self.live_allocs.lock().values() {
+            let e = by_file.entry(rec.site.file()).or_insert((0, 0));
+            e.0 += rec.bytes;
+            e.1 += 1;
+        }
+        let mut frows: Vec<(&str, usize, usize)> =
+            by_file.into_iter().map(|(k, v)| (k, v.0, v.1)).collect();
+        frows.sort_by(|a, b| b.1.cmp(&a.1));
+        out.push_str("  ── by file ──\n");
+        for (file, bytes, count) in frows.into_iter().take(top_n) {
+            out.push_str(&format!(
+                "  {:>9.1} MB  x{:<5} {}\n",
+                bytes as f64 / (1024.0 * 1024.0),
+                count,
+                file
+            ));
+        }
         out
     }
 
