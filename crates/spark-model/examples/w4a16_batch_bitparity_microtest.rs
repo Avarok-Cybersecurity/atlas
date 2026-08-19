@@ -44,11 +44,23 @@ const SCALE2: f32 = 0.0123_f32;
 /// rows cover the hidden-4096 Super/Puzzle backbone at the natural doubling
 /// (d_inner 8192); they are shape COVERAGE for a larger N and a deeper K, not
 /// a claim about that checkpoint's exact `in_proj_size`.
-const SHAPES: [(&str, usize, usize); 4] = [
+const SHAPES: [(&str, usize, usize); 10] = [
     ("nano  in_proj  [10304 x 2688]", 10304, 2688),
     ("nano  out_proj [ 2688 x 4096]", 2688, 4096),
     ("super in_proj  [18560 x 4096]", 18560, 4096),
     ("super out_proj [ 4096 x 8192]", 4096, 8192),
+    // qwen3.8-27b dense (hidden 5120, 24q/4kv x head_dim 256, ffn 17408,
+    // vocab 248320): the EXACT projection + LM-head shapes the MTP verify
+    // forward dispatches at M=K. Added 2026-08-19 while hunting the temp-0
+    // spec-decode divergence — the nemotron rows above all PASS on the
+    // qwen3.8 target, but the prior defects in this family were
+    // SHAPE-specific, so parity must be proven at these dims too.
+    ("qwen3.8 q_proj  [ 6144 x  5120]", 6144, 5120),
+    ("qwen3.8 kv_proj [ 1024 x  5120]", 1024, 5120),
+    ("qwen3.8 o_proj  [ 5120 x  6144]", 5120, 6144),
+    ("qwen3.8 gate/up [17408 x  5120]", 17408, 5120),
+    ("qwen3.8 down    [ 5120 x 17408]", 5120, 17408),
+    ("qwen3.8 lm_head [248320 x 5120]", 248320, 5120),
 ];
 
 struct Lcg(u64);
