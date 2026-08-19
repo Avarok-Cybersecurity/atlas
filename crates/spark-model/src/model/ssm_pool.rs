@@ -252,7 +252,17 @@ impl SsmStatePool {
         // dead K-1 snapshot on-device. `num_intermediates` remains the K
         // ceiling (conv count); the uniform H count is `num_intermediates-1`.
         let replay = rollback_mode == crate::ssm_reserve::SsmRollbackMode::Replay;
-        let uniform_h = num_intermediates != num_drafts + 1;
+        // DFlash's K=γ verify hits EVERY slot at the full width, so its
+        // pools must be uniform — and that must be stated, not inferred.
+        // The old inference (`num_intermediates != num_drafts + 1`) only
+        // held by accident while the DFlash ceiling was a hardcoded 17:
+        // once the pools sized from the real γ (config.dflash_gamma), a
+        // γ+1 at or below num_drafts+1 made the widths EQUAL, the inference
+        // flipped to the MTP ladder tiers, and slots with 3-6 h
+        // intermediates 500'd the first K=8 verify ("SSM MTP intermediate
+        // buffers not allocated", 2026-08-19 C=1/2/4 report run).
+        let uniform_h =
+            !config.dflash_capture_layers.is_empty() || num_intermediates != num_drafts + 1;
         let h_inter_counts: Vec<usize> = if has_mtp && replay {
             // Replay: no per-token snapshots exist — every slot's count is 0
             // (the vec stays populated so accessors keep their shape).
