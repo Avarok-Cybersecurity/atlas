@@ -345,7 +345,7 @@ pub fn dflash2_selector_topk16(
         .launch(stream)
 }
 
-/// DFlash2 GPU selector, stage 2: g[t] = hidden_projection @ normed[t].
+/// DFlash2 GPU selector, stage 2: `g[t] = hidden_projection @ normed[t]`.
 #[allow(clippy::too_many_arguments)]
 pub fn dflash2_selector_proj(
     gpu: &dyn GpuBackend,
@@ -369,7 +369,7 @@ pub fn dflash2_selector_proj(
         .launch(stream)
 }
 
-/// DFlash2 GPU selector, stage 3: greedy chain walk; rewrites drafts[1..].
+/// DFlash2 GPU selector, stage 3: greedy chain walk; rewrites `drafts[1..]`.
 #[allow(clippy::too_many_arguments)]
 pub fn dflash2_selector_chain(
     gpu: &dyn GpuBackend,
