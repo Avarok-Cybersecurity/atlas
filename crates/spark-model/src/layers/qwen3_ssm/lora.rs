@@ -36,3 +36,40 @@ impl Qwen3SsmLayer {
         )
     }
 }
+
+impl Qwen3SsmLayer {
+    /// Install this linear-attention layer's DENSE-FFN LoRA onto its
+    /// `FfnComponent::Dense`.
+    ///
+    /// The mirror of `set_moe_lora_weights` for dense-FFN hybrids. A
+    /// linear-attention layer carries no attention projections, but on
+    /// Qwen3.8-27B it does carry the SwiGLU FFN — all 64 layers do, only 16 of
+    /// which are full attention — and real adapters for that architecture ship
+    /// gate/up/down for every one of them. Rejecting those rejected three
+    /// quarters of the adapter, and the old message could only suggest
+    /// retraining with `layers_to_transform`.
+    ///
+    /// The component is the same `DenseFfnLayer` the full-attention layers
+    /// hold, so the delta path, its pinned dispatch arms and its refusals are
+    /// identical here — this only hands it the weights.
+    ///
+    /// Hard-rejects a non-dense FFN rather than dropping the pairs: a dense
+    /// delta arriving at a MoE or absent FFN is a loader/adapter mismatch, and
+    /// silently ignoring it would be an adapter that reports success and does
+    /// nothing — the exact failure this whole change removes.
+    pub fn set_ffn_lora_weights(
+        &mut self,
+        ffn: crate::layers::ops::lora_delta::LoraFfnWeights,
+    ) -> Result<()> {
+        match &mut self.ffn {
+            FfnComponent::Dense(d) => d.set_lora_weights(ffn),
+            FfnComponent::Moe(_) => anyhow::bail!(
+                "LoRA: dense-FFN delta on a linear-attention layer whose FFN is MoE — \
+                 routed-expert deltas belong on set_moe_lora_weights"
+            ),
+            FfnComponent::None => anyhow::bail!(
+                "LoRA: dense-FFN delta on a linear-attention layer that has no FFN"
+            ),
+        }
+    }
+}

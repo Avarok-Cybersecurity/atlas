@@ -309,6 +309,7 @@ pub fn load_lora_adapters_multi(
                 r: 1,
                 lora_alpha: 0.0,
                 target_modules: Vec::new(),
+                target_modules_pattern: None,
                 use_rslora: false,
                 layers_to_transform: None,
                 trainable_token_indices: Vec::new(),
