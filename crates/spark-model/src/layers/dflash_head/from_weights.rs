@@ -635,23 +635,42 @@ impl BlockDiffusionDraftHead {
             head.target_layer_ids,
         );
 
-        // Phase G — opt-in drafter MLP FP8. Quantize the seven dense-GEMM
-        // weights per layer (q/k/v/o/gate/up/down) BF16 → FP8 E4M3 with
-        // per-row f32 scales. One-shot at model load; runtime hot path
-        // consumes the Fp8DenseWeight via fp8_gemm_n128 in pre/post_attn
-        // (wired in G.3). Default OFF — bit-identical to F.2 baseline.
+        // Phase G — drafter MLP FP8. Quantize the seven dense-GEMM weights
+        // per layer (q/k/v/o/gate/up/down) BF16 → FP8 E4M3 with per-row f32
+        // scales. One-shot at model load; the runtime hot path consumes the
+        // Fp8DenseWeight via fp8_gemm_n128 in pre/post_attn.
         //
-        // Acceptance gate (G.4 design doc §16.7): bench must hold
-        // ≥43% accept (vs 44.9% BF16) AND ≥11.0 tok/s (vs 8.70). If hard
-        // fail, layer-by-layer ablation; skip layer 0 first.
-        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() == Some("1");
+        // DEFAULT-ON since 2026-08-19 (`ATLAS_DFLASH_DRAFTER_FP8=0` opts out).
+        // The G.4 design-doc gate (≥43% accept vs 44.9% BF16, ≥11.0 tok/s vs
+        // 8.70) predated the batched verify/propose work and could no longer
+        // decide this, so it was re-measured head-to-head on the current
+        // build, same boot shape, qwen3.8-27B + DFlash2:
+        //
+        //          BF16 (off)          FP8 (on)
+        //   C=1    34.8 tok/s @85%     37.7 @86%
+        //   C=2    33.5      @78%      47.9 @79%   (+43%)
+        //   C=4    55.5      @69%      57.1 @70%
+        //   prefill 854/840 tok/s      857/844     (unchanged)
+        //
+        // FP8 wins every leg and ACCEPTANCE IS EQUAL-OR-BETTER on all three,
+        // so the quality risk the opt-in guarded against does not appear —
+        // which is the expected shape, since a drafter is only ever a
+        // proposal the target verifies. Cost is ~1.92 GB of FP8 mirrors
+        // (footprint 5.20 → 7.12 GB).
+        //
+        // Self-disabling: the kernel probe below leaves BF16 in place on any
+        // target whose PTX lacks the Phase G kernels, so default-on cannot
+        // break a target that never had this path.
+        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
         let fp8_kernels_present = head.kernels.fp8_gemm_n128_row_scaled.0 != 0
             && head.kernels.fp8_gemm_n128_row_scaled_m16.0 != 0;
         if fp8_requested && !fp8_kernels_present {
             tracing::warn!(
-                "ATLAS_DFLASH_DRAFTER_FP8=1 but fp8_gemm_t_row_scaled(_m16) kernels are \
-                 not in this target's w4a16 PTX module — staying on the BF16 drafter path. \
-                 Port the Phase G kernels from kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu."
+                "Drafter FP8 (default-on) requested but fp8_gemm_t_row_scaled(_m16) \
+                 kernels are not in this target's w4a16 PTX module — staying on the BF16 \
+                 drafter path, which costs throughput but is otherwise correct. Port the \
+                 Phase G kernels from kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu, or set \
+                 ATLAS_DFLASH_DRAFTER_FP8=0 to silence this."
             );
         }
         if fp8_requested && fp8_kernels_present {
