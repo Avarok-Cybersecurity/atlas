@@ -364,7 +364,7 @@ pub fn gdn_prefill_fla(
     // Kernel 1: recompute_wu.
     KernelLaunch::new(gpu, k_recompute_wu)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([128, 1, 1])
+        .block([256, 1, 1])
         .shared_mem(smem_wu)
         .arg_ptr(key)
         .arg_ptr(value)

@@ -133,7 +133,9 @@ __device__ __forceinline__ void mma_gram(
 //   W_out: [.. ][CHUNK][K_DIM]   = T·(β·exp(gc)·K)
 // where T=(I+L)⁻¹ applied by forward-substitution (parallel over the V/K cols).
 // smem: sk_bf(16K) + kk(16K f32) + L(16K f32) + gc(256) ≈ 48.25KB.
-extern "C" __global__ void __launch_bounds__(128, 1)
+// 256 threads: mma_gram is fenced to the first 4 warps, and the two independent
+// forward-subs run concurrently on the two thread halves instead of back-to-back.
+extern "C" __global__ void __launch_bounds__(256, 1)
 gated_delta_rule_recompute_wu(
     const __nv_bfloat16* __restrict__ key,
     const __nv_bfloat16* __restrict__ value,
@@ -186,7 +188,7 @@ gated_delta_rule_recompute_wu(
     float* L = kk;                                     // [CHUNK*CHUNK] f32 strict-lower, aliased
     float* gc = L + CHUNK * CHUNK;                      // [CHUNK]
 
-    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += 128) {
+    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += blockDim.x) {
         unsigned int i = idx / k_dim, j = idx % k_dim;
         sk[i * K_DIM + j] = (i < ce)
             ? key[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + j]
@@ -202,11 +204,11 @@ gated_delta_rule_recompute_wu(
     }
     __syncthreads();
 
-    mma_gram<8, CHUNK, false>(sk, sk, kk);   // kk[l][i] = <k_l,k_i>
+    if (tid < 128) mma_gram<8, CHUNK, false>(sk, sk, kk);   // kk[l][i] = <k_l,k_i>
     __syncthreads();
 
     // L[i][l] = β_i·exp(gc_i-gc_l)·<k_l,k_i>  for l<i ; 0 otherwise.  (kk symmetric)
-    for (unsigned int p = tid; p < CHUNK * CHUNK; p += 128) {
+    for (unsigned int p = tid; p < CHUNK * CHUNK; p += blockDim.x) {
         unsigned int i = p / CHUNK, l = p % CHUNK;
         // Only the strict-lower half is written — the old `else` branch zeroed the
         // rest, which is both unread (every consumer loops l<i) and, under the
@@ -218,6 +220,10 @@ gated_delta_rule_recompute_wu(
     }
     __syncthreads();
 
+    // Passes 1 and 2 are INDEPENDENT: both only read L/gc/beta and they write
+    // disjoint outputs (U_out vs W_out). At 128 threads they ran back-to-back;
+    // at 256 they run concurrently on disjoint thread halves, which halves the
+    // serial triangular-solve section that dominates this kernel.
     // Pass 1: U[:,v] forward-sub (one thread per v-element).  U_i = β_i·V_i - Σ_{l<i} L[i][l]·U_l
     if (tid < v_dim) {
         float u[CHUNK];
@@ -230,14 +236,15 @@ gated_delta_rule_recompute_wu(
         }
     }
     // Pass 2: W[:,k] forward-sub (one thread per k-element).  W_i = β_i·exp(gc_i)·K_i - Σ_{l<i} L[i][l]·W_l
-    if (tid < k_dim) {
+    const unsigned int wtid = tid - 128u;   // Pass 2 runs on the upper half
+    if (tid >= 128u && wtid < k_dim) {
         float w[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float wi = bi * expf(gc[i]) * (float)sk[i * K_DIM + tid];
+            float wi = bi * expf(gc[i]) * (float)sk[i * K_DIM + wtid];
             for (unsigned int l = 0; l < i; l++) wi -= L[i * CHUNK + l] * w[l];
             w[i] = wi;
-            W_out[base * CHUNK * K_DIM + i * k_dim + tid] = __float2bfloat16(wi);
+            W_out[base * CHUNK * K_DIM + i * k_dim + wtid] = __float2bfloat16(wi);
         }
     }
 }
