@@ -104,6 +104,22 @@ pub struct DflashKernels {
     pub fp8_gemm_n128_row_scaled_m16: KernelHandle,
 }
 
+/// Cross-sequence batch descriptor for one drafter forward.
+///
+/// Rows are seq-major: sequence `i` owns `[i*gamma, (i+1)*gamma)` in every
+/// scratch buffer, and its drafts land in band `i`. Only attention and the KV
+/// slot writes are per-sequence (they touch each sequence's own paged cache);
+/// every weight-bearing op runs once over all `n * gamma` rows, which is the
+/// whole point of batching.
+pub(super) struct DflashBatch<'a> {
+    pub last_tokens: &'a [u32],
+    pub positions: &'a [usize],
+    /// Per-sequence drafter block table device pointers.
+    pub block_tables: Vec<DevicePtr>,
+    /// Per-sequence populated ctx slot counts (drives kv_len / q_offset).
+    pub ctx_counts: Vec<u32>,
+}
+
 /// Per-step scratch buffers for the γ-block forward.
 ///
 /// Sized for `n_attn_slots = ctx_window + γ` rows, where ctx_window is the
@@ -132,6 +148,16 @@ pub struct DflashScratch {
     pub sel_cand_ids: DevicePtr,
     pub sel_cand_vals: DevicePtr,
     pub sel_g: DevicePtr,
+    /// Batched-propose descriptors, `max_batch` entries each. `bt_ptrs` is the
+    /// array of per-sequence drafter block-table DEVICE POINTERS the batched
+    /// paged kernel indexes by `blockIdx.z`; `kv_lens` the per-sequence
+    /// `ctx_count + gamma`; `cu_seqlens` the packed-Q offsets (uniform gamma,
+    /// so `[0, g, 2g, ...]`); `anchors` the per-sequence `last_token` seeding
+    /// each selector chain walk. All unused on the single-sequence path.
+    pub batch_bt_ptrs: DevicePtr,
+    pub batch_kv_lens: DevicePtr,
+    pub batch_cu_seqlens: DevicePtr,
+    pub batch_anchors: DevicePtr,
     /// DFlash2 dynamic kernels for the ATTENTION site `[γ, 2*ks*groups]` —
     /// written in pre_attn (prepare), read again in post_attn (finish), so
     /// it must survive across the attention launch.
@@ -604,7 +630,141 @@ impl DraftProposer for BlockDiffusionDraftHead {
             draft_embed_target,
             grammar_bitmask,
             target_hidden_stack,
+            None,
         )
+    }
+
+    /// Widest batch one drafter forward can carry. Bounded by the scratch
+    /// bands (`max_batch`) and by the selector/attention wiring; `1` when the
+    /// batched path cannot run, which makes the caller use `propose`.
+    fn propose_batch_max(
+        &self,
+        _buffers: &spark_runtime::buffers::BufferArena,
+        _config: &atlas_core::config::ModelConfig,
+    ) -> usize {
+        if self.dflash2_selector.is_none()
+            || self.kernels.dflash2_selector_chain.0 == 0
+            || self.kernels.dflash2_conv.0 == 0
+        {
+            return 1;
+        }
+        self.max_batch.max(1)
+    }
+
+    /// Cross-sequence batched propose: ONE drafter forward over `n * gamma`
+    /// rows instead of `n` forwards.
+    ///
+    /// Per-sequence preparation (ctx append, Option-B block growth, the
+    /// incremental ctx precompute) still runs per sequence — it is cheap,
+    /// touching only the uncommitted ctx tail, typically one row per step —
+    /// and it reuses `propose_drafts`' own prep via the `collect_prep` sink so
+    /// the two paths cannot drift. The expensive part, the 8 drafter layers
+    /// plus the lm_head against a 248k vocab, runs ONCE for the whole batch:
+    /// that is the entire win (~36 ms/sequence before this).
+    ///
+    /// Returns `Ok(None)` to decline (caller falls back to the per-sequence
+    /// loop) — never a wrong answer.
+    fn propose_batch(
+        &self,
+        last_tokens: &[u32],
+        _target_hiddens: &[spark_runtime::gpu::DevicePtr],
+        positions: &[usize],
+        num_drafts: usize,
+        states: &mut [&mut dyn ProposerState],
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+        _out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let n = last_tokens.len();
+        if n < 2
+            || n > self.max_batch
+            || positions.len() != n
+            || states.len() != n
+            || self.dflash2_selector.is_none()
+        {
+            return Ok(None);
+        }
+
+        // Phase 1 — per-sequence prep, collecting each sequence's paged
+        // descriptor. Any sequence that cannot run Option B (e.g. drafter
+        // block pool exhausted) aborts the whole batch to the per-seq path
+        // rather than silently drafting one sequence blind.
+        let mut prep: Vec<(DevicePtr, u32)> = Vec::with_capacity(n);
+        for (i, st) in states.iter_mut().enumerate() {
+            let before = prep.len();
+            match self.propose_drafts(
+                last_tokens[i],
+                DevicePtr::NULL,
+                positions[i],
+                num_drafts,
+                *st,
+                ctx,
+                stream,
+                None,
+                None,
+                None,
+                Some(&mut prep),
+            ) {
+                Ok(_) if prep.len() == before + 1 => {}
+                Ok(_) => return Ok(None),
+                Err(e) => {
+                    tracing::warn!("DFlash batched propose prep (seq {i}): {e:#} — per-seq path");
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Phase 2 — ONE forward over every band.
+        let batch = DflashBatch {
+            last_tokens,
+            positions,
+            block_tables: prep.iter().map(|p| p.0).collect(),
+            ctx_counts: prep.iter().map(|p| p.1).collect(),
+        };
+        let all = match self.forward_block(
+            last_tokens[0],
+            positions[0],
+            ctx,
+            stream,
+            None,
+            Some(prep[0]),
+            Some(&batch),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("DFlash batched forward_block: {e:#} — falling back to per-seq");
+                return Ok(None);
+            }
+        };
+        if all.len() < n * self.gamma {
+            tracing::warn!(
+                "DFlash batched forward returned {} rows, expected {} — per-seq path",
+                all.len(),
+                n * self.gamma
+            );
+            return Ok(None);
+        }
+
+        // Phase 3 — split bands. Row 0 of each band is the anchor echo the
+        // single-sequence path drops too; the rest are that sequence's drafts.
+        let cap = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(self.gamma);
+        let mut out: Vec<Vec<u32>> = Vec::with_capacity(n);
+        for (i, st) in states.iter_mut().enumerate() {
+            let band = &all[i * self.gamma..(i + 1) * self.gamma];
+            let drafts: Vec<u32> = if self.mask_token_id != 0 {
+                band.iter().skip(1).copied().take(cap).collect()
+            } else {
+                band.iter().copied().take(cap).collect()
+            };
+            if let Some(d) = st.as_any_mut().downcast_mut::<DflashProposerState>() {
+                d.last_num_drafted = drafts.len();
+            }
+            out.push(drafts);
+        }
+        Ok(Some(out))
     }
 
     fn after_verify(

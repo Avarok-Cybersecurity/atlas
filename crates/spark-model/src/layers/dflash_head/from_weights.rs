@@ -291,6 +291,11 @@ impl BlockDiffusionDraftHead {
             sel_cand_ids: gpu.alloc(nb * gamma_val * 16 * 4)?,
             sel_cand_vals: gpu.alloc(nb * gamma_val * 16 * 4)?,
             sel_g: gpu.alloc(nb * gamma_val * selector_rank.max(1) * 4)?,
+            // Batched-propose descriptors (tiny: <= a few hundred bytes).
+            batch_bt_ptrs: gpu.alloc(nb * 8)?,
+            batch_kv_lens: gpu.alloc(nb * 4)?,
+            batch_cu_seqlens: gpu.alloc((nb + 1) * 4)?,
+            batch_anchors: gpu.alloc(nb * 4)?,
             dflash2_dyn_attn: gpu.alloc(
                 n_attn
                     * 2

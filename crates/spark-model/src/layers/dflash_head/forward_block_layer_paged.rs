@@ -73,6 +73,21 @@ pub(super) struct PagedLayerArgs {
     /// ATLAS_DFLASH_BLOCK_DUMP=1 upstream; forces the eager path (graph
     /// capture cannot contain the D2H/sync this dump injects).
     pub block_dump: bool,
+    /// Sequences packed into this forward. Rows are seq-major: sequence i owns
+    /// `[i*gamma, (i+1)*gamma)`. Every WEIGHT-BEARING op below runs over all
+    /// `n_seq * gamma` rows at once — that is the entire point, the drafter
+    /// weights are read once instead of n times. Attention is the exception:
+    /// it reads no weights (only Q/K/V scratch and each sequence's own KV
+    /// pages), so batching it would save nothing and it stays a per-sequence
+    /// loop over its own block table. `1` is the single-sequence path.
+    pub n_seq: u32,
+    /// Per-sequence drafter block tables and ctx counts, `n_seq` long.
+    /// Attention is the ONLY op that needs them: it reads each sequence's own
+    /// KV pages, so it runs as `n_seq` launches over row bands rather than one
+    /// batched launch. That costs only launch overhead — attention reads no
+    /// WEIGHTS, so there is nothing to amortise across sequences. Empty on the
+    /// single-sequence path, which uses `block_table_dev` / `ctx_count`.
+    pub seq_block_tables: Vec<DevicePtr>,
 }
 
 impl BlockDiffusionDraftHead {
@@ -193,6 +208,10 @@ impl BlockDiffusionDraftHead {
         normed: spark_runtime::gpu::DevicePtr,
         dyn_buf: spark_runtime::gpu::DevicePtr,
         g: u32,
+        // Causal-reset stride: rows per sequence. Equals `g` on the
+        // single-sequence path; a cross-sequence batch passes gamma so the
+        // conv's causal pad restarts at every sequence boundary.
+        block_len: u32,
         h: u32,
         stream: u64,
     ) -> Result<spark_runtime::gpu::DevicePtr> {
@@ -223,11 +242,7 @@ impl BlockDiffusionDraftHead {
             ks,
             gs,
             0,
-            // Single block today: `g` rows are ONE draft block, so the
-            // causal window spans them all (bit-identical to pre-batch).
-            // A cross-sequence batch passes gamma here so the pad resets
-            // at each sequence boundary.
-            g,
+            block_len,
             stream,
         )?;
         Ok(self.scratch.dflash2_conv_buf)
@@ -244,6 +259,10 @@ impl BlockDiffusionDraftHead {
         sublayer_out: spark_runtime::gpu::DevicePtr,
         dyn_buf: spark_runtime::gpu::DevicePtr,
         g: u32,
+        // Causal-reset stride: rows per sequence. Equals `g` on the
+        // single-sequence path; a cross-sequence batch passes gamma so the
+        // conv's causal pad restarts at every sequence boundary.
+        block_len: u32,
         h: u32,
         stream: u64,
     ) -> Result<spark_runtime::gpu::DevicePtr> {
@@ -267,7 +286,7 @@ impl BlockDiffusionDraftHead {
             ks,
             gs,
             1,
-            g,
+            block_len,
             stream,
         )?;
         Ok(self.scratch.dflash2_conv_buf)
@@ -293,8 +312,13 @@ impl BlockDiffusionDraftHead {
             ..
         } = *args;
         let gpu = ctx.gpu;
-        let g = self.gamma as u32;
-        let kv_len = ctx_count + g;
+        // `block_g` = rows per sequence (the gamma block). `g` = TOTAL rows in
+        // this forward, which is what every row-generic / weight-bearing op
+        // below wants. They coincide at n_seq = 1.
+        let block_g = self.gamma as u32;
+        let n_seq = args.n_seq.max(1);
+        let g = block_g * n_seq;
+        let kv_len = ctx_count + block_g;
 
         // 3a. input_layernorm — γ rows.
         // dflash.py:125  hidden_states = self.input_layernorm(hidden_states)
@@ -336,6 +360,7 @@ impl BlockDiffusionDraftHead {
                 self.scratch.norm_buf,
                 self.scratch.dflash2_dyn_attn,
                 g,
+                block_g,
                 h,
                 stream,
             )?
@@ -706,24 +731,44 @@ impl BlockDiffusionDraftHead {
         // as scalar args, so the captured launch survives per-call value
         // changes. Host writes the 8-byte pair in forward_block.rs
         // pre-graph; replays pick up whatever's there.
-        ops::prefill_attention_paged_dflash_bf16_indirect(
-            gpu,
-            self.kernels.prefill_attn_dflash_bf16_indirect,
-            self.scratch.q_buf,
-            k_pool,
-            v_pool,
-            self.scratch.attn_out,
-            block_table_dev,
-            g,
-            self.scratch.option_b_indirect_args_dev,
-            self.num_q_heads as u32,
-            self.num_kv_heads as u32,
-            self.head_dim as u32,
-            16, // cache_block_size
-            0,  // sliding_window — drafter not windowed for now
-            inv_sqrt_d,
-            stream,
-        )?;
+        // One launch per sequence over its own row band. `g` here is the
+        // PER-SEQUENCE block length (q_len), never the batch total: each
+        // sequence's gamma queries attend over its own ctx+gamma KV.
+        let n_seq = args.n_seq.max(1) as usize;
+        let q_dim_bytes = (self.num_q_heads * self.head_dim) * 2;
+        for i in 0..n_seq {
+            let (bt_i, args_i) = if n_seq == 1 {
+                (block_table_dev, self.scratch.option_b_indirect_args_dev)
+            } else {
+                (
+                    // Batched: sequence i's own drafter block table, and its
+                    // own [kv_len, q_offset, q_rope_pos] triple written by the
+                    // caller at slot i.
+                    *args.seq_block_tables.get(i).ok_or_else(|| {
+                        anyhow::anyhow!("dflash attn: no block table for seq {i}")
+                    })?,
+                    self.scratch.option_b_indirect_args_dev.offset(i * 12),
+                )
+            };
+            ops::prefill_attention_paged_dflash_bf16_indirect(
+                gpu,
+                self.kernels.prefill_attn_dflash_bf16_indirect,
+                self.scratch.q_buf.offset(i * g as usize * q_dim_bytes),
+                k_pool,
+                v_pool,
+                self.scratch.attn_out.offset(i * g as usize * q_dim_bytes),
+                bt_i,
+                g,
+                args_i,
+                self.num_q_heads as u32,
+                self.num_kv_heads as u32,
+                self.head_dim as u32,
+                16, // cache_block_size
+                0,  // sliding_window — drafter not windowed for now
+                inv_sqrt_d,
+                stream,
+            )?;
+        }
 
         // id259 per-layer dump: post-attention output (pre o_proj), γ × q_dim.
         if args.block_dump {
@@ -971,7 +1016,11 @@ impl BlockDiffusionDraftHead {
             ..
         } = *args;
         let gpu = ctx.gpu;
-        let g = self.gamma as u32;
+        // Same convention as pre_attn: `block_g` = rows per sequence,
+        // `g` = TOTAL rows this forward (weight-bearing ops want the total).
+        let block_g = self.gamma as u32;
+        let n_seq = args.n_seq.max(1);
+        let g = block_g * n_seq;
 
         // Phase G — same swap helper as pre_attn (q/k/v). Single call
         // site per logical GEMM; the row-scaled FP8 GEMM kernel applies
@@ -1037,6 +1086,7 @@ impl BlockDiffusionDraftHead {
                     self.scratch.stream_acc,
                     self.scratch.dflash2_dyn_attn,
                     g,
+                    block_g,
                     h,
                     stream,
                 )?
@@ -1084,6 +1134,7 @@ impl BlockDiffusionDraftHead {
                 self.scratch.norm_buf,
                 self.scratch.dflash2_dyn_mlp,
                 g,
+                block_g,
                 h,
                 stream,
             )?
@@ -1139,6 +1190,7 @@ impl BlockDiffusionDraftHead {
                 self.scratch.stream_acc,
                 self.scratch.dflash2_dyn_mlp,
                 g,
+                block_g,
                 h,
                 stream,
             )?
