@@ -38,6 +38,28 @@ impl BlockDiffusionDraftHead {
         let bf16 = 2usize;
         let inv_sqrt_d = 1.0f32 / (self.head_dim as f32).sqrt();
         let gpu = ctx.gpu;
+        // ATLAS_DFLASH_PROPOSE_TIMING=1: attribute the propose wall time to
+        // its phases (setup / forward / d2h / selector) with a stream sync at
+        // each boundary. Diagnostic only — syncs distort overlap slightly, so
+        // keep OFF for benchmarks that report totals.
+        let ptiming = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_DFLASH_PROPOSE_TIMING").ok().as_deref() == Some("1")
+            })
+        };
+        let pt0 = std::time::Instant::now();
+        let mut pt_marks: Vec<(&str, f64)> = Vec::new();
+        let mut pt_attn_ms = 0.0f64;
+        let mut pt_graphs_ms = 0.0f64;
+        macro_rules! pt_mark {
+            ($tag:expr) => {
+                if ptiming {
+                    let _ = gpu.synchronize(stream);
+                    pt_marks.push(($tag, pt0.elapsed().as_secs_f64() * 1e3));
+                }
+            };
+        }
 
         // Determine effective ctx_len: capped by the configured ctx_window
         // and the accumulator's actual fill. Use the LAST `eff_ctx` ctx
@@ -778,6 +800,8 @@ impl BlockDiffusionDraftHead {
             Ok(())
         };
 
+        pt_mark!("setup");
+
         // Run all subgraphs eagerly, no capture — used for warm-up and
         // for the non-graph-eligible path.
         let run_all_eager = || -> Result<()> {
@@ -814,6 +838,12 @@ impl BlockDiffusionDraftHead {
                 for (layer_idx, layer) in self.layers.iter().enumerate() {
                     let args = make_paged_args(layer_idx).expect("option_b args available");
 
+                    let pt_pre = if ptiming {
+                        let _ = gpu.synchronize(stream);
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     let pre_handle = graphs[layer_idx * 2];
                     if pre_handle.0 != 0 {
                         gpu.launch_graph(pre_handle, stream)?;
@@ -821,6 +851,10 @@ impl BlockDiffusionDraftHead {
                         // Empty-capture sentinel: this slot fell back to
                         // eager at capture time. Replay eager forever.
                         self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                    }
+                    if let Some(t) = pt_pre {
+                        let _ = gpu.synchronize(stream);
+                        pt_graphs_ms += t.elapsed().as_secs_f64() * 1e3;
                     }
 
                     // Attention is always eager — but we need k_pool/v_pool
@@ -831,16 +865,35 @@ impl BlockDiffusionDraftHead {
                         let cache = self.kv_cache.lock();
                         (cache.k_pool_ptr(layer_idx), cache.v_pool_ptr(layer_idx))
                     };
+                    let pt_attn = if ptiming {
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+                    if let Some(t) = pt_attn {
+                        let _ = gpu.synchronize(stream);
+                        pt_attn_ms += t.elapsed().as_secs_f64() * 1e3;
+                    }
 
+                    let pt_post = if ptiming {
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     let post_handle = graphs[layer_idx * 2 + 1];
                     if post_handle.0 != 0 {
                         gpu.launch_graph(post_handle, stream)?;
                     } else {
                         self.forward_block_layer_post_attn(layer, &args, ctx)?;
                     }
+                    if let Some(t) = pt_post {
+                        let _ = gpu.synchronize(stream);
+                        pt_graphs_ms += t.elapsed().as_secs_f64() * 1e3;
+                    }
                 }
 
+                pt_mark!("layers");
                 let tail_handle = graphs[tail_slot];
                 if tail_handle.0 != 0 {
                     gpu.launch_graph(tail_handle, stream)?;
@@ -937,6 +990,8 @@ impl BlockDiffusionDraftHead {
             run_all_eager()?;
         }
 
+        pt_mark!("fwd");
+
         // ── Step 6: D2H γ × 4 bytes ──
         //
         // Phase E.2: async D2H to a pinned host buffer, recorded against a
@@ -996,6 +1051,8 @@ impl BlockDiffusionDraftHead {
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+        pt_mark!("d2h");
+
         // DFlash2: replace rows 1..γ with the candidate-selector chain walk
         // (row 0 stays the anchor echo the caller drops). Pure host
         // post-processing over scratch.logits + the post-norm hidden — valid
@@ -1014,6 +1071,23 @@ impl BlockDiffusionDraftHead {
         } else {
             drafts
         };
+        pt_mark!("selector");
+        if ptiming {
+            let mut prev = 0.0;
+            let mut parts = String::new();
+            for (tag, t) in &pt_marks {
+                use std::fmt::Write as _;
+                let _ = write!(parts, "{tag}={:.1}ms ", t - prev);
+                prev = *t;
+            }
+            tracing::info!(
+                "DFLASH PROPOSE_TIMING: {parts}total={:.1}ms (in-layers: attn_eager={:.1}ms graphs={:.1}ms)",
+                pt0.elapsed().as_secs_f64() * 1e3,
+                pt_attn_ms,
+                pt_graphs_ms
+            );
+        }
+
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.
