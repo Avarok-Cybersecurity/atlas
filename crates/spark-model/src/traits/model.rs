@@ -545,6 +545,13 @@ pub trait Model: Send + Sync {
 
     /// Check if speculative decoding is available (MTP or self-speculative).
     fn has_proposer(&self) -> bool;
+    /// The installed DFlash drafter's block size γ, when one is installed.
+    /// The serve layer derives `num_drafts = γ - 1` from THIS (the head is
+    /// the SSOT — it resolved the drafter config's trained block size),
+    /// never from a CLI default that may not match the checkpoint.
+    fn dflash_gamma(&self) -> Option<usize> {
+        None
+    }
 
     /// Check if self-speculative decoding is enabled.
     fn has_self_speculative(&self) -> bool;

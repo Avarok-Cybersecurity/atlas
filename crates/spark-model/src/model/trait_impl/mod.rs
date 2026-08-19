@@ -355,6 +355,9 @@ impl Model for TransformerModel {
     fn has_proposer(&self) -> bool {
         self.has_proposer_dispatch()
     }
+    fn dflash_gamma(&self) -> Option<usize> {
+        self.proposer.as_ref().and_then(|p| p.block_gamma())
+    }
     fn has_self_speculative(&self) -> bool {
         self.has_self_speculative_dispatch()
     }

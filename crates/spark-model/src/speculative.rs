@@ -288,6 +288,14 @@ pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
 
+    /// The proposer's trained block size γ, when it is a block-diffusion
+    /// drafter (DFlash/DFlash2). The serve layer derives num_drafts from
+    /// this — the head resolved it from the drafter checkpoint and is the
+    /// SSOT. `None` = not a block drafter.
+    fn block_gamma(&self) -> Option<usize> {
+        None
+    }
+
     /// Chain confidence of the most recent `propose` (min top-1 softmax prob
     /// across its drafts), when the proposer computes it (`draft_conf_tau` >
     /// 0). `None` = not computed; callers must not gate on it then.

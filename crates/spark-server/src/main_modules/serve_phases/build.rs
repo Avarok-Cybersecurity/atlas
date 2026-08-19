@@ -72,7 +72,12 @@ pub(crate) fn build_model(
         comm,
         args.self_speculative || args.ngram_speculative,
         if args.dflash {
-            args.dflash_gamma.saturating_sub(1).max(1)
+            // Pre-build sizing: the head isn't constructed yet, so resolve
+            // from the flag/legacy default. serve_load re-derives the REAL
+            // num_drafts from the built head's gamma (the SSOT) afterwards;
+            // this value only sizes buffers, and legacy 16 is the upper
+            // bound of every published drafter's block size.
+            args.resolved_dflash_gamma(None).saturating_sub(1).max(1)
         } else {
             args.resolved_num_drafts()
         },

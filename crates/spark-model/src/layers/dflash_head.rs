@@ -514,6 +514,10 @@ mod precompute_ctx_kv;
 mod propose;
 
 impl DraftProposer for BlockDiffusionDraftHead {
+    fn block_gamma(&self) -> Option<usize> {
+        Some(self.gamma)
+    }
+
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
         // Per-seq ctx accumulator: `[max_seq_len, 5 * target_hidden] BF16`.
         // Sized once, re-used across the seq's lifetime; reset on
