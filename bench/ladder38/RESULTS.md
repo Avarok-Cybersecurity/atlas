@@ -732,43 +732,6 @@ ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1`; vLLM
 OSL 1024, temp 0, seed 42, 3 reps + 1 warmup. Raw series in
 `c2_atlas_dgx2_20260818.json` and `c2_vllm_mtp_dgx2_20260818.json`.
 
-### C=8 re-measured, and its K is already optimal (2026-08-18)
-
-C=8 became the thinnest rung once C=2 was hardened, so it got the same same-box/same-day
-treatment on merged main `529fcb04fa`:
-
-| engine | rep 1 | rep 2 | rep 3 | mean |
-|---|---:|---:|---:|---:|
-| Atlas | 123.33 | 124.94 | 121.38 | **123.22** |
-| vLLM+MTP | 121.92 | 120.60 | 122.40 | **121.64** |
-
-**Ratio 1.013x**, against the certified 1.012x — reproduced to within 0.1%.
-
-★ Note what did NOT reproduce: the ABSOLUTES. Atlas measured 123.22 against its certified
-125.95 (-2.2%) and vLLM 121.64 against its certified 124.48 (-2.3%). Both engines moved by
-the same amount in the same direction, and the ratio survived. That is the useful shape of
-this result — a box-day offset cancels in a ratio and does not cancel in an absolute, which
-is why every rung in this file is reported as a ratio measured back-to-back rather than as a
-tok/s number compared to a stored one.
-
-**C=8 is thin because the rung is thin, not because K is mistuned.** The K-ladder entry for
-C=8 was swept at fixed everything-else:
-
-| `8:K` | mean tok/s | vs 8:2 |
-|---|---:|---:|
-| **8:2 (shipped)** | **123.22** | — |
-| 8:1 | 118.20 | -4.1% |
-| 8:3 | 116.96 | -5.1% |
-| 8:4 | 116.58 | -5.4% |
-
-Monotonically worse in both directions from the shipped value, so the shipped K is the
-optimum and there is no tuning win available here. Recorded so the next person does not
-re-run this sweep.
-
-Honest caveat that C=2 no longer has: at C=8 the two engines' rep distributions **overlap**
-(Atlas min 121.38 < vLLM max 122.40). The mean wins consistently, but a single-rep
-comparison at C=8 could go either way. Raw series in `c8_*_dgx2_20260818.json`.
-
 ### C=8 REPRODUCED (2026-08-18) — 1.013x, and the K ladder there is already optimal
 
 With C=2 hardened, C=8's **1.012x** became the thinnest rung, so it got the same treatment:
