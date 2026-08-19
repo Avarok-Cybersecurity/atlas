@@ -245,8 +245,29 @@ impl BlockDiffusionDraftHead {
         let n_attn = g + ctx_window; // total attention slots
         let q_dim = num_q_heads * head_dim;
         let kv_dim = num_kv_heads * head_dim;
+        let (selector_rank, selector_top_k, conv_kernel_size, conv_group_size) = weights
+            .config
+            .dflash_config
+            .as_ref()
+            .map(|c| {
+                (
+                    c.selector_rank.unwrap_or(0),
+                    c.selector_top_k.unwrap_or(0),
+                    c.conv_kernel_size.unwrap_or(0),
+                    c.conv_group_size.unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
         let scratch = DflashScratch {
             stream_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
+            // DFlash2 conv scratch (~120 KB total at γ=8/h=5120): allocated
+            // unconditionally — trivial next to the 250 MB scratch block, and
+            // it keeps DflashScratch construction branch-free.
+            dflash2_conv_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
+            dflash2_dyn_attn: gpu
+                .alloc(n_attn * 2 * conv_kernel_size.max(1) * (hidden_size / conv_group_size.max(1)) * bf16)?,
+            dflash2_dyn_mlp: gpu
+                .alloc(n_attn * 2 * conv_kernel_size.max(1) * (hidden_size / conv_group_size.max(1)) * bf16)?,
             norm_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
             q_buf: gpu.alloc(n_attn * q_dim * bf16)?,
             k_buf: gpu.alloc(n_attn * kv_dim * bf16)?,
@@ -426,19 +447,6 @@ impl BlockDiffusionDraftHead {
         );
 
         // ── DFlash2 selector: host copies (see Dflash2Selector docs) ──
-        let (selector_rank, selector_top_k, conv_kernel_size, conv_group_size) = weights
-            .config
-            .dflash_config
-            .as_ref()
-            .map(|c| {
-                (
-                    c.selector_rank.unwrap_or(0),
-                    c.selector_top_k.unwrap_or(0),
-                    c.conv_kernel_size.unwrap_or(0),
-                    c.conv_group_size.unwrap_or(0),
-                )
-            })
-            .unwrap_or((0, 0, 0, 0));
         let dflash2_selector = match weights.candidate_selector {
             Some(sel) if selector_rank > 0 => {
                 let d2h_u16 = |ptr: spark_runtime::gpu::DevicePtr,

@@ -996,6 +996,24 @@ impl BlockDiffusionDraftHead {
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+        // DFlash2: replace rows 1..γ with the candidate-selector chain walk
+        // (row 0 stays the anchor echo the caller drops). Pure host
+        // post-processing over scratch.logits + the post-norm hidden — valid
+        // after graph replay too, since the tail rewrites those buffers every
+        // propose and the D2H above drained the stream. Falls back to the
+        // argmax drafts on any error.
+        let drafts: Vec<u32> = if self.dflash2_selector.is_some() {
+            match self.dflash2_selector_pick(gpu, &drafts, last_token, norm_noise_local, stream)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("DFlash2 selector failed ({e:#}) — argmax drafts kept");
+                    drafts
+                }
+            }
+        } else {
+            drafts
+        };
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.

@@ -120,6 +120,15 @@ pub struct DflashScratch {
     pub mlp_intermediate: DevicePtr,
     pub mlp_up: DevicePtr,
     pub stream_acc: DevicePtr,
+    /// DFlash2 conv scratch: conv output `[γ, H]` (consumed immediately at
+    /// each of the four sublayer sites, so one buffer serves all of them).
+    pub dflash2_conv_buf: DevicePtr,
+    /// DFlash2 dynamic kernels for the ATTENTION site `[γ, 2*ks*groups]` —
+    /// written in pre_attn (prepare), read again in post_attn (finish), so
+    /// it must survive across the attention launch.
+    pub dflash2_dyn_attn: DevicePtr,
+    /// DFlash2 dynamic kernels for the MLP site `[γ, 2*ks*groups]`.
+    pub dflash2_dyn_mlp: DevicePtr,
     /// `[ctx_window, draft_hidden]` BF16 — fc-projected + hidden_norm'd
     /// ctx for the most recent `ctx_window` target positions.
     pub fc_proj: DevicePtr,
@@ -500,6 +509,7 @@ mod forward_block;
 mod forward_block_layer;
 mod forward_block_layer_paged;
 mod from_weights;
+mod selector;
 mod precompute_ctx_kv;
 mod propose;
 

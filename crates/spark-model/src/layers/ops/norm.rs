@@ -284,3 +284,40 @@ pub fn gated_rms_norm_prefill(
 }
 
 // ── GEMM ───────────────────────────────────────────────────────────
+
+/// DFlash2 grouped dynamic causal conv (`kernels/gb10/common/dflash2_conv.cu`).
+///
+/// `out[t,c] = sum_o (base[o,c] + dyn[t, (stage*ks+o)*groups + c/G]) * x[t-o,c]`
+/// with causal zero-pad inside the block. `base` must be pre-offset to the
+/// stage (`base_ptr + stage * ks * hidden * 2` bytes); `dyn` is the FULL
+/// `[n, 2*ks*groups]` projection output — the kernel indexes the stage half.
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_conv(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    x: DevicePtr,
+    dyn_kernels: DevicePtr,
+    base_stage: DevicePtr,
+    out: DevicePtr,
+    n: u32,
+    hidden: u32,
+    conv_kernel_size: u32,
+    group_size: u32,
+    stage: u32,
+    stream: u64,
+) -> Result<()> {
+    let total = n * hidden;
+    KernelLaunch::new(gpu, kernel)
+        .grid([total.div_ceil(256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(x)
+        .arg_ptr(dyn_kernels)
+        .arg_ptr(base_stage)
+        .arg_ptr(out)
+        .arg_u32(n)
+        .arg_u32(hidden)
+        .arg_u32(conv_kernel_size)
+        .arg_u32(group_size)
+        .arg_u32(stage)
+        .launch(stream)
+}
