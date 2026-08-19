@@ -1095,6 +1095,8 @@ impl BlockDiffusionDraftHead {
                 self.scratch.sel_cand_vals,
                 self.gamma as u32,
                 self.vocab_size as u32,
+                // Single-sequence forward: one band.
+                1,
                 stream,
             )?;
             ops::dflash2_selector_proj(
@@ -1106,6 +1108,7 @@ impl BlockDiffusionDraftHead {
                 self.gamma as u32,
                 sel.rank as u32,
                 self.hidden_size as u32,
+                1,
                 stream,
             )?;
             ops::dflash2_selector_chain(
@@ -1120,6 +1123,10 @@ impl BlockDiffusionDraftHead {
                 self.gamma as u32,
                 sel.rank as u32,
                 last_token,
+                // NULL anchors + n_seq=1 => the kernel reads the scalar
+                // `last_token`, i.e. the pre-batch launch exactly.
+                spark_runtime::gpu::DevicePtr::NULL,
+                1,
                 stream,
             )?;
         }

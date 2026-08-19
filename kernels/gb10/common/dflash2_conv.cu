@@ -38,7 +38,15 @@ extern "C" __global__ void dflash2_grouped_dynamic_causal_conv_bf16(
     unsigned int hidden,
     unsigned int ks,          // conv_kernel_size (2)
     unsigned int group_size,  // channels per dynamic-kernel scalar (16)
-    unsigned int stage        // 0 = prepare, 1 = finish
+    unsigned int stage,       // 0 = prepare, 1 = finish
+    // Rows per independent block. The causal window RESETS at every
+    // multiple of this, so a cross-sequence batch ([n_seq * gamma, hidden]
+    // stacked seq-major) cannot convolve sequence i's first row with
+    // sequence i-1's tail. Pass `n` (or 0) for a single block — then
+    // t_local == t and the arithmetic is bit-identical to the pre-batch
+    // kernel. This is the one silent-corruption hazard in stacking DFlash
+    // draft blocks: every other op here is row-independent.
+    unsigned int block_len
 ) {
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n * hidden) {
@@ -48,11 +56,13 @@ extern "C" __global__ void dflash2_grouped_dynamic_causal_conv_bf16(
     unsigned int c = i % hidden;
     unsigned int groups = hidden / group_size;
     unsigned int g = c / group_size;
+    unsigned int bl = (block_len == 0u) ? n : block_len;
+    unsigned int t_local = t % bl;
 
     float acc = 0.0f;
     for (unsigned int o = 0; o < ks; ++o) {
-        if (o > t) {
-            break;  // causal zero pad: x[t - o] does not exist
+        if (o > t_local) {
+            break;  // causal zero pad: x[t - o] is outside this block
         }
         float b = __bfloat162float(base[o * hidden + c]);
         float d = __bfloat162float(

@@ -195,35 +195,91 @@ pub fn step_verify_dflash_batched(
         tracing::warn!("stash_verify_hidden_rows (dflash batched): {e:#}");
     }
 
-    // ── Phase B: per-sequence trim + re-propose ──
+    // ── Phase B: per-sequence trim, then re-propose ──
     // Safe to clobber the shared buffers from here on.
+    //
+    // Propose is now the dominant per-step term (measured 36ms/sequence:
+    // 23ms drafter layers + 13ms tail, both weight-bearing) and it is the
+    // last piece that still scales linearly with n. `run_mtp_propose_batched`
+    // amortises it across the batch when the proposer implements
+    // `propose_batch`; it returns Ok(None) otherwise, which drops us onto the
+    // per-sequence loop below with no behaviour change.
     let t_propose = std::time::Instant::now();
+    let mut proposing: Vec<usize> = Vec::with_capacity(n);
     for (i, a) in batch.iter_mut().enumerate() {
         if a.finished {
             continue;
         }
-        let num_accepted = accepted_per_seq[i];
-        if let Err(e) = model.save_hidden_for_mtp_from_stash(i, 0) {
-            tracing::warn!("save_hidden_for_mtp_from_stash (dflash batched): {e:#}");
-        }
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, num_accepted, 0) {
+        if let Err(e) = model.trim_proposer_state(&mut a.seq, accepted_per_seq[i], 0) {
             tracing::error!("trim_proposer_state (dflash batched): {e:#}");
         }
-        if !crate::scheduler::adaptive_spec::spec_allowed(a, sched) {
-            continue;
+        // `spec_allowed` MUTATES re-probe state, so it is evaluated exactly
+        // once per sequence here and its verdict reused by both arms.
+        if crate::scheduler::adaptive_spec::spec_allowed(a, sched) {
+            proposing.push(i);
         }
-        let gmask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            a.last_token,
-            a.seq.seq_len,
+    }
+
+    // The batched drafter forward carries no grammar bitmask, so a
+    // grammar-constrained sequence must take the per-sequence arm (which
+    // passes its mask) rather than be dropped from both. The caller already
+    // keeps grammar sequences out of this batch — this is the belt-and-braces
+    // that keeps that a caller CHOICE and not a silent correctness contract.
+    let grammarless = proposing.iter().all(|&i| batch[i].grammar_state.is_none());
+
+    let mut batched_ok = false;
+    if proposing.len() >= 2 && grammarless {
+        let toks: Vec<u32> = proposing.iter().map(|&i| batch[i].last_token).collect();
+        let positions: Vec<usize> = proposing.iter().map(|&i| batch[i].seq.seq_len).collect();
+        // Stash slot == batch index (Phase A stashed row i into slot i).
+        let stash_idx: Vec<usize> = proposing.clone();
+        let mut seq_refs: Vec<&mut SequenceState> = Vec::with_capacity(proposing.len());
+        for (i, a) in batch.iter_mut().enumerate() {
+            if proposing.contains(&i) {
+                seq_refs.push(&mut a.seq);
+            }
+        }
+        match model.run_mtp_propose_batched(
+            &toks,
+            &positions,
+            &stash_idx,
             num_drafts,
-            &mut a.seq,
+            &mut seq_refs,
             0,
-            gmask.as_deref(),
+            None,
         ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
+            Ok(Some(drafts)) if drafts.len() == proposing.len() => {
+                for (slot, d) in proposing.iter().zip(drafts.into_iter()) {
+                    if !d.is_empty() {
+                        batch[*slot].pending_drafts = d;
+                    }
+                }
+                batched_ok = true;
+            }
             Ok(_) => {}
-            Err(e) => tracing::error!("run_mtp_propose_multi (dflash batched): {e:#}"),
+            Err(e) => tracing::error!("run_mtp_propose_batched (dflash): {e:#}"),
+        }
+    }
+
+    if !batched_ok {
+        for &i in &proposing {
+            let a = &mut batch[i];
+            if let Err(e) = model.save_hidden_for_mtp_from_stash(i, 0) {
+                tracing::warn!("save_hidden_for_mtp_from_stash (dflash batched): {e:#}");
+            }
+            let gmask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                a.last_token,
+                a.seq.seq_len,
+                num_drafts,
+                &mut a.seq,
+                0,
+                gmask.as_deref(),
+            ) {
+                Ok(d) if !d.is_empty() => a.pending_drafts = d,
+                Ok(_) => {}
+                Err(e) => tracing::error!("run_mtp_propose_multi (dflash batched): {e:#}"),
+            }
         }
     }
 

@@ -223,6 +223,11 @@ impl BlockDiffusionDraftHead {
             ks,
             gs,
             0,
+            // Single block today: `g` rows are ONE draft block, so the
+            // causal window spans them all (bit-identical to pre-batch).
+            // A cross-sequence batch passes gamma here so the pad resets
+            // at each sequence boundary.
+            g,
             stream,
         )?;
         Ok(self.scratch.dflash2_conv_buf)
@@ -262,6 +267,7 @@ impl BlockDiffusionDraftHead {
             ks,
             gs,
             1,
+            g,
             stream,
         )?;
         Ok(self.scratch.dflash2_conv_buf)

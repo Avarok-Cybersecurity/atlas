@@ -42,13 +42,18 @@ static __device__ __forceinline__ unsigned int f32_sortable(float v) {
 // lists via 16 rounds of block-argmax over each thread's current head.
 // (The first cut re-scanned global memory once per selected candidate —
 // 16 full row reads — and measured ~6.8 ms/propose, erasing the port's win.)
+// BATCHED: grid.y = n sequences. Sequence b owns the row band
+// [b*gamma, (b+1)*gamma) of every buffer, so grid.y == 1 reduces to the
+// single-sequence launch bit-for-bit (b == 0 => all strides vanish).
 extern "C" __global__ void dflash2_selector_topk16(
-    const __nv_bfloat16* __restrict__ logits,  // [gamma, vocab]
-    unsigned int* __restrict__ cand_ids,       // [gamma, 16]
-    float* __restrict__ cand_vals,             // [gamma, 16]
-    unsigned int vocab
+    const __nv_bfloat16* __restrict__ logits,  // [n*gamma, vocab]
+    unsigned int* __restrict__ cand_ids,       // [n*gamma, 16]
+    float* __restrict__ cand_vals,             // [n*gamma, 16]
+    unsigned int vocab,
+    unsigned int gamma
 ) {
-    const unsigned int row = blockIdx.x + 1;
+    const unsigned int b = blockIdx.y;
+    const unsigned int row = b * gamma + blockIdx.x + 1;
     const unsigned int tid = threadIdx.x;
     const __nv_bfloat16* rl = logits + (size_t)row * vocab;
 
@@ -110,10 +115,13 @@ extern "C" __global__ void dflash2_selector_proj(
     const __nv_bfloat16* __restrict__ normed_hidden,      // [gamma, hidden]
     float* __restrict__ g_out,                            // [gamma, rank]
     unsigned int rank,
-    unsigned int hidden
+    unsigned int hidden,
+    unsigned int gamma
 ) {
     const unsigned int r = blockIdx.x;
-    const unsigned int row = blockIdx.y + 1;
+    // BATCHED: grid.z = n sequences; band b owns rows [b*gamma, ..).
+    const unsigned int b = blockIdx.z;
+    const unsigned int row = b * gamma + blockIdx.y + 1;
     const unsigned int tid = threadIdx.x;
     const __nv_bfloat16* w = hidden_projection + (size_t)r * hidden;
     const __nv_bfloat16* h = normed_hidden + (size_t)row * hidden;
@@ -145,19 +153,31 @@ extern "C" __global__ void dflash2_selector_chain(
     const float* __restrict__ g,                // [gamma, rank]
     const __nv_bfloat16* __restrict__ pred_cb,  // [vocab, rank]
     const __nv_bfloat16* __restrict__ succ_cb,  // [vocab, rank]
-    unsigned int* __restrict__ drafts,          // [gamma] (rows 1.. rewritten)
+    unsigned int* __restrict__ drafts,          // [n*gamma] (rows 1.. rewritten)
     unsigned int gamma,
     unsigned int rank,
-    unsigned int anchor
+    unsigned int anchor,
+    // BATCHED: grid.y = n sequences. Each block walks ITS OWN chain over
+    // band b, seeded from anchors[b] (the per-sequence last_token). NULL
+    // falls back to the scalar `anchor`, so the single-sequence launch is
+    // unchanged. The walk stays sequential WITHIN a band — that is the
+    // data dependence — but bands are independent, so n of them run
+    // concurrently instead of n kernel launches.
+    const unsigned int* __restrict__ anchors
 ) {
+    const unsigned int b = blockIdx.y;
     const unsigned int tid = threadIdx.x;
+    cand_ids += (size_t)b * gamma * SEL_TOPK;
+    cand_vals += (size_t)b * gamma * SEL_TOPK;
+    g += (size_t)b * gamma * rank;
+    drafts += (size_t)b * gamma;
     __shared__ float e[256];
     __shared__ float part[SEL_TOPK][SEL_TOPK];
     __shared__ float score[SEL_TOPK];
     __shared__ unsigned int prev;
 
     if (tid == 0) {
-        prev = anchor;
+        prev = (anchors == nullptr) ? anchor : anchors[b];
     }
     __syncthreads();
 
