@@ -1060,21 +1060,22 @@ impl BlockDiffusionDraftHead {
 
         // ── Step 5b: GPU candidate selector (ATLAS_DFLASH_GPU_SELECTOR) ──
         //
-        // =1: run the selector chain ON DEVICE — top-16 per draft row, the
-        //     rank-space projection, and the greedy walk — rewriting
-        //     `draft_tokens_dev[1..γ]` in place so the existing pinned D2H
-        //     below returns the FINAL drafts and the ~4 MB logits D2H +
-        //     host scan (~6 ms/propose) never happens.
+        // DEFAULT-ON (2026-08-19, after a zero-mismatch parity campaign and
+        // an agentic soak): the selector chain runs ON DEVICE — top-16 per
+        // draft row, the rank-space projection, and the greedy walk —
+        // rewriting `draft_tokens_dev[1..γ]` in place so the existing pinned
+        // D2H below returns the FINAL drafts and the ~4 MB logits D2H + host
+        // scan (~6 ms/propose) never happens.
+        // =0: host selector (selector.rs) — the A/B kill switch.
         // =2: device path PLUS the host reference on the same inputs, with
         //     a mismatch log — the parity harness for this port.
-        // unset/other: host selector (selector.rs), unchanged.
         let gpu_selector_mode = {
             static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
             *MODE.get_or_init(
                 || match std::env::var("ATLAS_DFLASH_GPU_SELECTOR").ok().as_deref() {
-                    Some("1") => 1,
+                    Some("0") => 0,
                     Some("2") => 2,
-                    _ => 0,
+                    _ => 1,
                 },
             )
         };
