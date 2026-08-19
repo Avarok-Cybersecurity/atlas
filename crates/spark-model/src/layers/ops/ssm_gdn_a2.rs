@@ -454,7 +454,7 @@ pub fn gdn_prefill_fla(
     // Kernel 3: chunk_fwd_o.
     KernelLaunch::new(gpu, k_chunk_fwd_o)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([128, 1, 1])
+        .block([512, 1, 1])
         .shared_mem(smem_fo)
         .arg_ptr(query)
         .arg_ptr(key)

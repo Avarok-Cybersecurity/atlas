@@ -1375,7 +1375,12 @@ gated_delta_rule_chunk_delta_h_ksplit_vblock8(
 // S_c read bf16 + o1 bf16 (TERMINAL output → no compounding, like wy4's bf16
 // output rounding → precision-safe). o1 reuses the freed sk region. Layout matches wy4.
 // smem: sq(16K)+sk/o1(16K)+kq(16K f32)+ucb(16K)+Sbᵀ(32K bf16)+gc+egc.
-extern "C" __global__ void __launch_bounds__(128, 1)
+// 512 threads: mma_gram is fenced to the first 4 warps (it hardwires M=64), while
+// the ~36K element staging/compute loops below use all 16 — an nsys steady-state
+// profile put this kernel at 9.8% of GPU time, the largest single GDN kernel once
+// the vtile spine landed, and it stages 96.5 KB of smem through what used to be
+// only 4 warps. Same grid, same traffic: only the warp count changes.
+extern "C" __global__ void __launch_bounds__(512, 1)
 gated_delta_rule_chunk_fwd_o(
     const __nv_bfloat16* __restrict__ query,
     const __nv_bfloat16* __restrict__ key,
@@ -1424,7 +1429,7 @@ gated_delta_rule_chunk_fwd_o(
     float* gc = (float*)(Sb + K_DIM * V_DIM);              // [CHUNK]
     float* egc = gc + CHUNK;                               // [CHUNK] exp(gc)
 
-    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += 128) {
+    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += blockDim.x) {
         unsigned int i = idx / k_dim, j = idx % k_dim;
         if (i < ce) {
             unsigned long long off = (unsigned long long)(cs + i) * qk_stride + kh * k_dim + j;
@@ -1435,28 +1440,28 @@ gated_delta_rule_chunk_fwd_o(
             sk[i * K_DIM + j] = __float2bfloat16(0.0f);
         }
     }
-    for (unsigned int idx = tid; idx < CHUNK * v_dim; idx += 128) {
+    for (unsigned int idx = tid; idx < CHUNK * v_dim; idx += blockDim.x) {
         unsigned int i = idx / v_dim, v = idx % v_dim;
         ucb[i * V_DIM + v] = (i < ce) ? uc_in[base * CHUNK * V_DIM + i * v_dim + v] : __float2bfloat16(0.0f);
     }
     // S_c read TRANSPOSED → Sbᵀ[v][k] = S_c[k][v], so mma_gram(q, Sbᵀ) = <q_i,S_c[:,v]>.
-    for (unsigned int idx = tid; idx < K_DIM * V_DIM; idx += 128) {
+    for (unsigned int idx = tid; idx < K_DIM * V_DIM; idx += blockDim.x) {
         unsigned int v = idx / K_DIM, k = idx % K_DIM;
         Sb[idx] = S_in[base * K_DIM * V_DIM + k * V_DIM + v];
     }
-    for (unsigned int i = tid; i < ce; i += 128) {
+    for (unsigned int i = tid; i < ce; i += blockDim.x) {
         float g = gc_in[base * CHUNK + i];
         gc[i] = g;
         egc[i] = expf(g);
     }
     __syncthreads();
 
-    mma_gram<8, CHUNK, false>(sq, sk, kq);   // kq[i][l] = <q_i, k_l>
+    if (tid < 128) mma_gram<8, CHUNK, false>(sq, sk, kq);   // kq[i][l] = <q_i, k_l>
     __syncthreads();
 
     // Fold the intra-chunk decay into the Gram ONCE: kq[i][l] ← exp(gc_i-gc_l)·<q_i,k_l>
     // (was: expf(gc_i-gc_l) recomputed per v-column = v_dim× redundant transcendentals).
-    for (unsigned int p = tid; p < CHUNK * CHUNK; p += 128) {
+    for (unsigned int p = tid; p < CHUNK * CHUNK; p += blockDim.x) {
         unsigned int i = p / CHUNK, l = p % CHUNK;
         if (i < ce && l <= i) kq[p] = expf(gc[i] - gc[l]) * kq[p];
     }
@@ -1464,7 +1469,7 @@ gated_delta_rule_chunk_fwd_o(
 
     // o1[i][v] = <q_i, S_c[:,v]>  on tensor cores (bf16 out → terminal, precision-safe).
     __nv_bfloat16* o1 = sk;                   // [CHUNK*V_DIM] bf16, reuses sk's 16KB
-    mma_gram<16, V_DIM, true>(sq, Sb, o1);
+    if (tid < 128) mma_gram<16, V_DIM, true>(sq, Sb, o1);
     __syncthreads();
 
     if (tid < v_dim) {
