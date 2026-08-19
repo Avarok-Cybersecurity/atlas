@@ -4,6 +4,7 @@
   // every chart point. Data: gates.generated.json — the union of gate records
   // across ALL branches at build time, so the newest run shows even before its
   // PR merges (provenance shown per point and in the footer).
+  import ConcurrencyLadder from './ConcurrencyLadder.svelte';
   import GateBenchSection from './GateBenchSection.svelte';
   import GatePointCard from './GatePointCard.svelte';
   import { gateData, tabs, unpublished, models, recordsFor, benchName, shortModel, colorFor } from '$lib/gates.js';
@@ -82,10 +83,13 @@
     </div>
 
     <div class="bd-body">
+      {#if activeTab === 'concurrency'}
+        <ConcurrencyLadder />
+      {/if}
       {#each sections as s (s.benchId)}
         <GateBenchSection {...s} onselect={(rec) => (selected = rec)} />
       {/each}
-      {#if sections.length === 0}
+      {#if sections.length === 0 && activeTab !== 'concurrency'}
         <p class="bd-empty">No records for this model in this benchmark family.</p>
       {/if}
       {#each hiddenByFilter as b}

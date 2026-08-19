@@ -7,7 +7,6 @@
   import StarProof from '$lib/components/StarProof.svelte';
   import Community from '$lib/components/Community.svelte';
   import Verified from '$lib/components/Verified.svelte';
-  import ConcurrencyLadder from '$lib/components/ConcurrencyLadder.svelte';
   import Hardware from '$lib/components/Hardware.svelte';
   import ModelSlider from '$lib/components/ModelSlider.svelte';
   import GetRunning from '$lib/components/GetRunning.svelte';
@@ -26,7 +25,6 @@
 <StarProof />
 <Community />
 <Verified />
-<ConcurrencyLadder />
 <Hardware />
 <ModelSlider />
 <GetRunning />

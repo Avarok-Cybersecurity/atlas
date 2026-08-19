@@ -16,7 +16,10 @@
   border-radius: 12px;
   padding: 1rem 1.1rem 0.5rem;
 }
-.cl-panel svg { width: 100%; height: auto; display: block; }
+.cl-panel svg:not(.cl-swatch) { width: 100%; height: auto; display: block; }
+/* :not(.cl-swatch) matters — `.cl-panel svg` is specificity 0,1,1 and beats the
+   swatch's own 0,1,0 rule below, so the 22x8 legend swatches were rendering at
+   the chart's full width. */
 
 .cl-legend {
   display: flex;
@@ -149,3 +152,25 @@
 .cl-details > summary::-webkit-details-marker { display: none; }
 .cl-details > summary::before { content: '▸ '; color: var(--t3); }
 .cl-details[open] > summary::before { content: '▾ '; }
+
+/* ---- inside the benchmark dashboard ---------------------------------------
+   The ladder was written as a landing-page section and now lives in the modal's
+   Concurrency tab, beside the concurrency-sweep gate chart. Strip the
+   full-bleed section dressing so it reads as a panel rather than a page: the
+   modal supplies its own background, padding and heading scale. */
+.bd-body > .section-alt {
+  background: none;
+  padding: 0 0 1.5rem;
+}
+.bd-body > .section-alt > .container {
+  max-width: none;
+  padding: 0;
+}
+.bd-body > .section-alt .stitle {
+  font-size: 1.15rem;
+  line-height: 1.3;
+  margin-bottom: 0.35rem;
+}
+.bd-body > .section-alt .ssub {
+  font-size: 0.82rem;
+}
