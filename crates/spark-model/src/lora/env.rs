@@ -92,6 +92,7 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
             max_lora_rank
         );
     }
+    let mut unsupported: Vec<&str> = Vec::new();
     for t in &peft.target_modules {
         let last = t.rsplit('.').next().unwrap_or(t);
         // `gate` is the MoE router (Feature-1), distinct from `gate_proj`. Expert
@@ -99,11 +100,48 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
         // the LoraModule allow-list already covers them.
         let ok = last == "gate" || LoraModule::ALL.iter().any(|m| m.peft_name() == last);
         if !ok {
-            bail!(
-                "REJECT[unsupported-target]: target_modules entry '{t}' \
-                 (allowed: q_proj k_proj v_proj o_proj gate_proj up_proj down_proj gate)"
-            );
+            unsupported.push(t.as_str());
         }
     }
+    if !unsupported.is_empty() {
+        if !allow_partial_targets() {
+            bail!(
+                "REJECT[unsupported-target]: target_modules {unsupported:?} \
+                 (allowed: q_proj k_proj v_proj o_proj gate_proj up_proj down_proj gate). \
+                 Set ATLAS_LORA_ALLOW_PARTIAL=1 to load anyway, applying only the \
+                 supported modules — the adapter will then be PARTIALLY applied and \
+                 will not reproduce its training behaviour."
+            );
+        }
+        // Opt-in partial load. Loud and once per adapter: a silently partial
+        // adapter reads as "the model is behaving oddly", which is a far worse
+        // debugging experience than a refused load. Real hybrid-model adapters
+        // hit this constantly — Qwen3.8-27B community LoRAs target `out_proj`
+        // (the SSM/GDN output projection, 48 of its 64 layers), which has no
+        // LoraModule variant and no wiring in the SSM layers.
+        tracing::warn!(
+            "LoRA PARTIAL LOAD (ATLAS_LORA_ALLOW_PARTIAL=1): target_modules \
+             {unsupported:?} are NOT supported and will be SKIPPED. Their \
+             trained deltas will not be applied; output will differ from the \
+             adapter's intent. Supported: q_proj k_proj v_proj o_proj \
+             gate_proj up_proj down_proj gate."
+        );
+    }
     Ok(())
+}
+
+/// `ATLAS_LORA_ALLOW_PARTIAL=1` — load an adapter that names target modules
+/// Atlas cannot apply, skipping those and applying the rest.
+///
+/// Default OFF, and it must stay that way. Refusing the load is the honest
+/// default: a partially-applied adapter is a model that quietly does not do
+/// what its author trained it to do, and nothing downstream can tell that
+/// from the model simply being bad. This exists so a user can make that
+/// trade DELIBERATELY, having been told exactly which modules were dropped.
+pub fn allow_partial_targets() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_LORA_ALLOW_PARTIAL")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
 }

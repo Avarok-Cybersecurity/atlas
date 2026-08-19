@@ -141,6 +141,18 @@ pub(crate) fn audit_adapter(
             || (last == "gate" && !router.is_empty())
             || experts.keys().any(|(_, _, p)| p.peft_name() == last);
         if !matched {
+            // Under ATLAS_LORA_ALLOW_PARTIAL the user has already been warned,
+            // by name, that these modules are skipped; `validate_peft_config`
+            // is the gate that decides. Bailing again here would make the
+            // opt-in unusable, since a module Atlas cannot apply is by
+            // definition a module that matches no pair.
+            if super::env::allow_partial_targets() {
+                tracing::warn!(
+                    "LoRA PARTIAL LOAD: target_modules entry '{t}' matched no \
+                     adapter tensor Atlas can place — skipped."
+                );
+                continue;
+            }
             bail!(
                 "REJECT[unmatched-target]: target_modules entry '{t}' matched \
                  no adapter tensor on any full-attention layer"
