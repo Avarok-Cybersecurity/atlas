@@ -202,6 +202,11 @@ pub fn emit_token(
     }
 
     a.output_tokens.push(tok);
+    // Permanent diagnostic (RUST_LOG=...,spark::scheduler::emit_step=debug):
+    // the emitted token id at the single choke point every path funnels
+    // through — the token-exact stream needed for byte-level A/B of two
+    // serve configs (e.g. the qwen3.8 spec-decode divergence hunt).
+    tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
 
     // Spec-resume guard bookkeeping: count tokens emitted after `</think>`.
     // The `</think>` token itself is not counted (think_ended is still false
