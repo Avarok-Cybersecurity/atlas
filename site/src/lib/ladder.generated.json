@@ -1,0 +1,564 @@
+{
+  "generated_utc": "2026-08-18T23:03:02Z",
+  "title": "Qwen3.8-27B NVFP4 concurrency ladder",
+  "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
+  "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
+  "results_doc": "bench/ladder38/RESULTS.md",
+  "results_doc_url": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md",
+  "workload": {
+    "checkpoint": "unsloth/Qwen3.8-27B-NVFP4",
+    "checkpoint_note": "dense 27B hybrid, 48 GDN + 16 attention layers",
+    "isl_tokens": 128,
+    "isl_note": "~200 rendered prompt tokens after the chat template",
+    "osl_tokens": 1024,
+    "reps": 3,
+    "warmup": 1,
+    "temperature": 0,
+    "seed": 42,
+    "thinking": "disabled on both engines via chat_template_kwargs.enable_thinking=false",
+    "sampling_parity": "presence_penalty and frequency_penalty pinned to 0.0 on both engines",
+    "harness": "bench/ladder38/harness_w55_conc_ladder.py"
+  },
+  "box": {
+    "name": "dgx2 (spark-43fa)",
+    "gpu": "NVIDIA GB10 Grace Blackwell, 121.7 GB unified",
+    "note": "same box, same checkpoint, same client, back-to-back legs"
+  },
+  "harness_shas": {
+    "6412b12d4d": "vLLM legs. Does not send the penalty keys.",
+    "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
+    "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
+  },
+  "concurrencies": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "series": [
+    {
+      "id": "atlas",
+      "label": "Atlas",
+      "role": "subject",
+      "engine": "Atlas 1.0.0-beta-preview",
+      "build": "bce152b18",
+      "build_note": "Certified at 4012c9b7e1, which differs only in doc comments and gate machinery -- no executable change. Merged to main as 60370b9532.",
+      "env": "ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1 ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1",
+      "cli": "spark serve unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8888 --model-name unsloth/Qwen3.8-27B-NVFP4 --max-seq-len 2048 --max-batch-size 128 --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 --enable-prefix-caching true --ssm-cache-slots 8 --ssm-checkpoint-interval 32 --speculative --num-drafts 3 --mtp-quantization bf16 --scheduling-policy fifo --tool-call-parser qwen3_coder --disable-tool-grammar true --disable-thinking --request-timeout 0 --ssm-h-dtype f16-pool --gdn-fused-norm --ssm-batched-recurrent --ssm-tail-midchunk false --mtp-gate force --prefill-varlen-batch --no-tui",
+      "speculation": "MTP, K=4 (--num-drafts 3); self-disables above 32 concurrent sequences",
+      "source_note": "Round 11 throughout. C=2 is round 8 on the identical configuration -- round 11 re-measured that rung at 40.42, and we publish the lower, older number rather than the better one.",
+      "rungs": [
+        {
+          "c": 1,
+          "tok_s": 23.59,
+          "tok_s_median": 23.55,
+          "spread_pct": 2.78,
+          "reps": 3,
+          "ttft_p50_ms": 682.54,
+          "tpot_p50_ms": 41.84,
+          "source": "l38_r11_c1.json",
+          "measured_utc": "2026-08-17T12:24:02Z",
+          "harness_sha256": "1c77e1d8e9"
+        },
+        {
+          "c": 2,
+          "tok_s": 41.02,
+          "tok_s_median": 41.37,
+          "spread_pct": 4.15,
+          "reps": 3,
+          "ttft_p50_ms": 795.2,
+          "tpot_p50_ms": 47.53,
+          "source": "c2_atlas_dgx2_20260818.json",
+          "measured_utc": "2026-08-18T15:05:18Z",
+          "harness_sha256": "1f10d4887b"
+        },
+        {
+          "c": 4,
+          "tok_s": 74.21,
+          "tok_s_median": 74.29,
+          "spread_pct": 2.79,
+          "reps": 3,
+          "ttft_p50_ms": 1296.3,
+          "tpot_p50_ms": 51.76,
+          "source": "l38_r11_c4.json",
+          "measured_utc": "2026-08-17T12:12:42Z",
+          "harness_sha256": "1c77e1d8e9"
+        },
+        {
+          "c": 8,
+          "tok_s": 125.95,
+          "tok_s_median": 125.83,
+          "spread_pct": 2.92,
+          "reps": 3,
+          "ttft_p50_ms": 2331.47,
+          "tpot_p50_ms": 59.01,
+          "source": "l38_r11_c8.json",
+          "measured_utc": "2026-08-17T12:16:22Z",
+          "harness_sha256": "1c77e1d8e9"
+        },
+        {
+          "c": 16,
+          "tok_s": 203.36,
+          "tok_s_median": 203.45,
+          "spread_pct": 1.23,
+          "reps": 3,
+          "ttft_p50_ms": 4252.58,
+          "tpot_p50_ms": 72.67,
+          "source": "l38_r11_c16.json",
+          "measured_utc": "2026-08-17T12:26:55Z",
+          "harness_sha256": "1c77e1d8e9"
+        },
+        {
+          "c": 32,
+          "tok_s": 291.01,
+          "tok_s_median": 292.5,
+          "spread_pct": 2.43,
+          "reps": 3,
+          "ttft_p50_ms": 8281.81,
+          "tpot_p50_ms": 98.91,
+          "source": "l38_r11_c32.json",
+          "measured_utc": "2026-08-17T12:32:18Z",
+          "harness_sha256": "1c77e1d8e9"
+        },
+        {
+          "c": 64,
+          "tok_s": 386.63,
+          "tok_s_median": 387.48,
+          "spread_pct": 1.68,
+          "reps": 3,
+          "ttft_p50_ms": 16052.93,
+          "tpot_p50_ms": 148.81,
+          "source": "l38_r11_c64.json",
+          "measured_utc": "2026-08-17T12:39:48Z",
+          "harness_sha256": "1c77e1d8e9"
+        },
+        {
+          "c": 128,
+          "tok_s": 478.11,
+          "tok_s_median": 480.05,
+          "spread_pct": 2.05,
+          "reps": 3,
+          "ttft_p50_ms": 31760.85,
+          "tpot_p50_ms": 234.6,
+          "source": "l38_r11_c128.json",
+          "measured_utc": "2026-08-17T12:51:08Z",
+          "harness_sha256": "1c77e1d8e9"
+        }
+      ]
+    },
+    {
+      "id": "vllm-mtp",
+      "label": "vLLM + MTP",
+      "role": "baseline",
+      "parity": "matched",
+      "engine": "vLLM 0.27.1",
+      "build": "vllm/vllm-openai:latest @ sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+      "env": "HF_HUB_OFFLINE=1",
+      "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype fp8 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
+      "speculation": "vLLM's own Qwen3_5MTP, K=4 (num_speculative_tokens=3)",
+      "source_note": "The apples-to-apples reference: ctx 2048, batch cap 128, util 0.85, fp8 KV, prefix caching, thinking off and MTP K=4 -- every axis matched to Atlas. vLLM at its best, not a handicapped baseline.",
+      "rungs": [
+        {
+          "c": 1,
+          "tok_s": 19.72,
+          "tok_s_median": 19.72,
+          "spread_pct": 1.89,
+          "reps": 3,
+          "ttft_p50_ms": 286.71,
+          "tpot_p50_ms": 50.37,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 2,
+          "tok_s": 37.11,
+          "tok_s_median": 37.18,
+          "spread_pct": 2.94,
+          "reps": 3,
+          "ttft_p50_ms": 390.84,
+          "tpot_p50_ms": 53.22,
+          "source": "c2_vllm_mtp_dgx2_20260818.json",
+          "measured_utc": "2026-08-18T15:20:55Z",
+          "harness_sha256": "1f10d4887b"
+        },
+        {
+          "c": 4,
+          "tok_s": 71.61,
+          "tok_s_median": 72.05,
+          "spread_pct": 2.82,
+          "reps": 3,
+          "ttft_p50_ms": 604.84,
+          "tpot_p50_ms": 54.51,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 8,
+          "tok_s": 124.48,
+          "tok_s_median": 124.31,
+          "spread_pct": 1.25,
+          "reps": 3,
+          "ttft_p50_ms": 936.14,
+          "tpot_p50_ms": 60.8,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 16,
+          "tok_s": 197.03,
+          "tok_s_median": 197.85,
+          "spread_pct": 3.51,
+          "reps": 3,
+          "ttft_p50_ms": 1620.35,
+          "tpot_p50_ms": 76.25,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 32,
+          "tok_s": 283.48,
+          "tok_s_median": 284.2,
+          "spread_pct": 1.27,
+          "reps": 3,
+          "ttft_p50_ms": 3066.96,
+          "tpot_p50_ms": 107.45,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 64,
+          "tok_s": 361.39,
+          "tok_s_median": 361.18,
+          "spread_pct": 0.21,
+          "reps": 3,
+          "ttft_p50_ms": 5278.74,
+          "tpot_p50_ms": 167.48,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 128,
+          "tok_s": 358.57,
+          "tok_s_median": 358.61,
+          "spread_pct": 0.44,
+          "reps": 3,
+          "ttft_p50_ms": 8500.7,
+          "tpot_p50_ms": 269.54,
+          "source": "vllm_fp8_mtp_reference.json",
+          "measured_utc": "2026-08-17T01:36:35Z",
+          "harness_sha256": "6412b12d4d"
+        }
+      ]
+    },
+    {
+      "id": "vllm-nospec",
+      "label": "vLLM, no speculation",
+      "role": "baseline",
+      "parity": "unmatched",
+      "parity_deltas": [
+        "bf16 KV cache (Atlas and the MTP leg use fp8)",
+        "ctx 4096 (the matched legs use 2048)",
+        "no speculative decoding"
+      ],
+      "engine": "vLLM 0.27.1",
+      "build": "vllm/vllm-openai:latest @ sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+      "env": "HF_HUB_OFFLINE=1",
+      "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 4096 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype bfloat16",
+      "speculation": "none",
+      "source_note": "Published because it beats vLLM+MTP at C=128 (390.42 vs 358.57): MTP verification costs vLLM more than it gains 128-wide. Quoting only the MTP leg there would overstate our margin, so the headline ratio is taken against whichever vLLM configuration is faster at each rung.",
+      "rungs": [
+        {
+          "c": 1,
+          "tok_s": 11.04,
+          "tok_s_median": 11.05,
+          "spread_pct": 0.32,
+          "reps": 3,
+          "ttft_p50_ms": 155.95,
+          "tpot_p50_ms": 90.4,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 2,
+          "tok_s": 21.34,
+          "tok_s_median": 21.34,
+          "spread_pct": 0.04,
+          "reps": 3,
+          "ttft_p50_ms": 235.35,
+          "tpot_p50_ms": 93.52,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 4,
+          "tok_s": 41.2,
+          "tok_s_median": 41.2,
+          "spread_pct": 0.03,
+          "reps": 3,
+          "ttft_p50_ms": 419.59,
+          "tpot_p50_ms": 96.77,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 8,
+          "tok_s": 78.18,
+          "tok_s_median": 78.18,
+          "spread_pct": 0.02,
+          "reps": 3,
+          "ttft_p50_ms": 729.44,
+          "tpot_p50_ms": 101.71,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 16,
+          "tok_s": 137.11,
+          "tok_s_median": 137.11,
+          "spread_pct": 0.04,
+          "reps": 3,
+          "ttft_p50_ms": 1176.06,
+          "tpot_p50_ms": 115.56,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 32,
+          "tok_s": 219.5,
+          "tok_s_median": 219.45,
+          "spread_pct": 0.09,
+          "reps": 3,
+          "ttft_p50_ms": 2240.16,
+          "tpot_p50_ms": 143.58,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 64,
+          "tok_s": 312.26,
+          "tok_s_median": 312.31,
+          "spread_pct": 0.12,
+          "reps": 3,
+          "ttft_p50_ms": 4009.21,
+          "tpot_p50_ms": 200.87,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        },
+        {
+          "c": 128,
+          "tok_s": 390.42,
+          "tok_s_median": 390.15,
+          "spread_pct": 0.31,
+          "reps": 3,
+          "ttft_p50_ms": 6710.78,
+          "tpot_p50_ms": 320.84,
+          "source": "vllm_latest_reference.json",
+          "measured_utc": "2026-08-16T14:38:29Z",
+          "harness_sha256": "6412b12d4d"
+        }
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "c": 1,
+      "atlas": 23.59,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 19.72
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 11.04
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.196,
+      "ratio_vs_matched": 1.196,
+      "wins": true
+    },
+    {
+      "c": 2,
+      "atlas": 41.02,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 37.11
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 21.34
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.105,
+      "ratio_vs_matched": 1.105,
+      "wins": true
+    },
+    {
+      "c": 4,
+      "atlas": 74.21,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 71.61
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 41.2
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.036,
+      "ratio_vs_matched": 1.036,
+      "wins": true
+    },
+    {
+      "c": 8,
+      "atlas": 125.95,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 124.48
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 78.18
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.012,
+      "ratio_vs_matched": 1.012,
+      "wins": true
+    },
+    {
+      "c": 16,
+      "atlas": 203.36,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 197.03
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 137.11
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.032,
+      "ratio_vs_matched": 1.032,
+      "wins": true
+    },
+    {
+      "c": 32,
+      "atlas": 291.01,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 283.48
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 219.5
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.027,
+      "ratio_vs_matched": 1.027,
+      "wins": true
+    },
+    {
+      "c": 64,
+      "atlas": 386.63,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 361.39
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 312.26
+        }
+      ],
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.07,
+      "ratio_vs_matched": 1.07,
+      "wins": true
+    },
+    {
+      "c": 128,
+      "atlas": 478.11,
+      "baselines": [
+        {
+          "id": "vllm-mtp",
+          "label": "vLLM + MTP",
+          "parity": "matched",
+          "tok_s": 358.57
+        },
+        {
+          "id": "vllm-nospec",
+          "label": "vLLM, no speculation",
+          "parity": "unmatched",
+          "tok_s": 390.42
+        }
+      ],
+      "best_baseline_id": "vllm-nospec",
+      "ratio_vs_best": 1.225,
+      "ratio_vs_matched": 1.333,
+      "wins": true
+    }
+  ],
+  "summary": {
+    "rungs": 8,
+    "won": 8,
+    "all_won": true,
+    "min_ratio": 1.012,
+    "max_ratio": 1.225
+  }
+}
