@@ -37,6 +37,50 @@ Consequence: never edit or delete lines. A wrong opinion is still a true
 record of what the classifier said; correcting history is exactly what a
 ledger must not do.
 
+## The bounded window, and `archive.csv`
+
+One file per PR, forever, is not a plan — it was 75 files before anything
+capped it. The directory is now a bounded FIFO queue: the newest **100** PRs
+keep their own `pr-<n>.jsonl`, and older ones are removed from the tree and
+recorded in `archive.csv`:
+
+```csv
+pr,hash,merged_at
+519,d3b8ec461c3d5257cb99479a95695ec8f512073b,2026-08-15T20:41:16Z
+```
+
+`hash` is the commit that last carried that file, so the record is not gone —
+it is one command away, byte-identical:
+
+```bash
+git show d3b8ec461c3d5257cb99479a95695ec8f512073b:governance/pr-519.jsonl
+```
+
+That is the whole design: **the git tree is still the store, and the CSV is
+the index into it.** Nothing is copied, so nothing can drift from the original.
+`merged_at` is the PR's own merge date (empty for a PR closed without merging),
+because the commit date is already recoverable from `hash` and would say
+nothing new.
+
+This does not weaken the grow-only property above. Eviction removes a whole
+FILE from the working tree; it never removes a LINE from a file, so the G-Set
+semantics within each ledger are untouched. `archive.csv` is itself append-only
+and carries `merge=union` for the same reason the ledgers do.
+
+**An open PR is never evicted.** `gate::required::intent_source()` resolves a
+ledger by bare path with no fallback, so an evicted file does not raise — the
+PR silently reports `NotRecorded` and drops to path-only gating, which is a
+wrong answer with no error attached. The window yields to this rule: when too
+many old PRs are open, the directory is allowed to run slightly over 100 rather
+than break gating, and it self-corrects as they close.
+
+The decision lives in `.github/scripts/governance-evict.sh` with a test table
+in `governance-evict-test.sh`, for the same reason the harvest triage does —
+a decision expressed in a YAML block is a decision nobody can run.
+
+⚠️ Archive rows point into git history. A history rewrite (the repo had one in
+August 2026, to purge `.buncache`) invalidates every `hash` recorded before it.
+
 ## The `intent:<path>` override label
 
 A maintainer can preempt the model entirely by applying a label of the form
