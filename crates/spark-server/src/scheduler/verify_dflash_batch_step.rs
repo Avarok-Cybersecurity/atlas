@@ -167,16 +167,17 @@ pub fn step_verify_dflash_batched(
             a.last_token = bonus;
         }
 
+        // Draft TOKENS, not steps — see verify_dflash_step.rs for why the
+        // old accept_all/accept_partial pair read as 100% in the TUI.
+        let rejected = drafts.len().saturating_sub(num_accepted);
         crate::metrics::SPEC_DECODE_VERIFY
-            .with_label_values(&[
-                "dflash",
-                if num_accepted == drafts.len() {
-                    "accept_all"
-                } else {
-                    "accept_partial"
-                },
-            ])
-            .inc();
+            .with_label_values(&["dflash", "accept"])
+            .inc_by(num_accepted as u64);
+        if rejected > 0 {
+            crate::metrics::SPEC_DECODE_VERIFY
+                .with_label_values(&["dflash", "reject"])
+                .inc_by(rejected as u64);
+        }
 
         // STree-style in-place SSM commit: h_state is canonical, a partial
         // accept restores intermediate[total_accepted-1].
