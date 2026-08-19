@@ -31,6 +31,14 @@
 //! concurrently cannot conflict semantically, and `.gitattributes` can declare
 //! `merge=union` so they do not conflict textually either.
 //!
+//! The directory holding those files is separately bounded to the newest 100
+//! PRs, with older ones removed from the tree and indexed by commit hash in
+//! `governance/archive.csv` (see that directory's README). That bounds the
+//! DIRECTORY, not the ledgers: eviction removes a whole file, never a line
+//! from one, so the G-Set property described here is unaffected — and the
+//! evicted content is still in git history, byte-identical, at the recorded
+//! hash.
+//!
 //! It is the same order-theoretic shape as the gate's required set in
 //! `atlas-plugin`'s `gate::coverage` (not linked: this crate deliberately does
 //! not depend on it, since the ledger must never be able to reach the gate):
@@ -44,6 +52,7 @@
 //! read would make it depend on a file any job can append to, which is the
 //! property the gate is careful not to have.
 
+pub mod eigenvector;
 pub mod event;
 pub mod ledger;
 
