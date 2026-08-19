@@ -134,6 +134,34 @@ fn launch_batchm(
         .launch(0)
 }
 
+/// Launch the row-parallel M=8 tier: grid ceil(N/2), block 256, same args
+/// as the batchm family (M, N, K trailing).
+#[allow(clippy::too_many_arguments)]
+fn launch_batchm_rp(
+    g: &dyn GpuBackend,
+    kh: KernelHandle,
+    a: DevicePtr,
+    b: DevicePtr,
+    bs: DevicePtr,
+    c: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+) -> Result<()> {
+    KernelLaunch::new(g, kh)
+        .grid([div_ceil(n, 2), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(b)
+        .arg_ptr(bs)
+        .arg_f32(1.0)
+        .arg_ptr(c)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(0)
+}
+
 /// Launch a tile GEMM: base w4a16_gemm grid (N/64, M/64) or transposed
 /// w4a16_gemm_t grid (N/128, M/64), block 128 — mirrors ops::w4a16_gemm /
 /// ops::w4a16_gemm_n128.
@@ -178,6 +206,8 @@ enum Kind {
     Batchm {
         max_m: u32,
     },
+    /// Row-parallel M=8 tier: grid ceil(N/2), block 256, batchm signature.
+    BatchmRp,
     /// Base w4a16_gemm: grid (N/64, M/64).
     Gemm,
     /// Transposed small-M w4a16_gemm_t: grid (N/128, M/64). Timing only —
@@ -244,6 +274,49 @@ fn correctness_gate(
         }
     }
     eprintln!("  gate 1/2 PASS: batch8 BIT-EXACT vs batch4 @M<=4 and batch16 @M=5..8");
+
+    // Gate 2b: the row-parallel tier is bit-exact vs batch8 at every M —
+    // same per-row reference chains, different thread layout.
+    if let Ok(rp) = handle("batch8rp") {
+        for &m in M_SWEEP {
+            zero_c(g)?;
+            launch_batchm(g, b8, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let reference = read_c(g, c, m as usize * n_us)?;
+            zero_c(g)?;
+            launch_batchm_rp(g, rp, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let got = read_c(g, c, m as usize * n_us)?;
+            if reference != got {
+                let bad = reference.iter().zip(&got).filter(|(x, y)| x != y).count();
+                bail!(
+                    "GATE FAIL: batch8rp != batch8 at M={m} ({bad}/{} elems differ)",
+                    got.len()
+                );
+            }
+        }
+        eprintln!("  gate 2b PASS: batch8rp BIT-EXACT vs batch8 @M in sweep");
+    }
+    if let Ok(pp) = handle("batch8pp") {
+        for &m in M_SWEEP {
+            zero_c(g)?;
+            launch_batchm(g, b8, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let reference = read_c(g, c, m as usize * n_us)?;
+            zero_c(g)?;
+            launch_batchm_rp(g, pp, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let got = read_c(g, c, m as usize * n_us)?;
+            if reference != got {
+                let bad = reference.iter().zip(&got).filter(|(x, y)| x != y).count();
+                bail!(
+                    "GATE FAIL: batch8pp != batch8 at M={m} ({bad}/{} elems differ)",
+                    got.len()
+                );
+            }
+        }
+        eprintln!("  gate 2c PASS: batch8pp BIT-EXACT vs batch8 @M in sweep");
+    }
 
     // Gate 3: batch8 @M=8 vs CPU f64 dequant reference (first CPU_CHECK_ROWS).
     zero_c(g)?;
@@ -327,6 +400,8 @@ fn main() -> Result<()> {
             "w4a16_gemv_batch16",
             Kind::Batchm { max_m: 16 },
         ),
+        ("batch8rp", "w4a16_gemv", "w4a16_gemv_batch8_rp", Kind::BatchmRp),
+        ("batch8pp", "w4a16_gemv", "w4a16_gemv_batch8_pp", Kind::BatchmRp),
         ("gemm_m64", "w4a16", "w4a16_gemm", Kind::Gemm),
         ("gemm_t", "w4a16", "w4a16_gemm_t", Kind::GemmT),
     ]
@@ -396,6 +471,7 @@ fn main() -> Result<()> {
                     let (b, bs) = b_copies[i % copies];
                     match kind {
                         Kind::Batchm { .. } => launch_batchm(g, kh, a, b, bs, c, m, n, k),
+                        Kind::BatchmRp => launch_batchm_rp(g, kh, a, b, bs, c, m, n, k),
                         Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k, None),
                         Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k, Some(n)),
                     }
