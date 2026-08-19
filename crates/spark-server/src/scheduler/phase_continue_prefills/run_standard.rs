@@ -167,6 +167,7 @@ pub(super) fn run_standard_chunk_loop(
         ) {
             Ok(result) => {
                 p.chunk_offset += chunk_len;
+                sched.snapshot.note_prefill_chunk(chunk_len, false);
                 // Prompt tokens counted AT INGEST, as each chunk lands. Counting them
                 // at request completion (the old site) credited the whole prompt to the
                 // moment the RESPONSE finished — seconds or minutes after the prefill
@@ -316,6 +317,7 @@ pub(super) fn run_standard_chunk_loop(
     match chunk_res {
         Ok(logits) => {
             p.chunk_offset += chunk_len;
+            sched.snapshot.note_prefill_chunk(chunk_len, false);
             crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_len as u64);
             tracing::info!(
                 "Prefill chunk {}/{} tokens",

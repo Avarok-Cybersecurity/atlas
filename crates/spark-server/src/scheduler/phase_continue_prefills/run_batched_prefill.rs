@@ -193,6 +193,7 @@ pub(super) fn run_batched_prefill_step(
         for (k, &i) in wave.iter().enumerate() {
             let p = &mut prefilling[i];
             p.chunk_offset += chunk_lens[i];
+            sched.snapshot.note_prefill_chunk(chunk_lens[i], true);
             // Prompt tokens counted AT INGEST, as each chunk lands. Counting them
             // at request completion (the old site) credited the whole prompt to the
             // moment the RESPONSE finished — seconds or minutes after the prefill

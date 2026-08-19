@@ -134,6 +134,21 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
             },
             theme::brand_cyan(),
         ),
+        // In-flight progress as a PERCENT: this tile is the narrowest on the
+        // row (18%) and the absolute pair "4.2k/12.6k" truncates in it. The
+        // exact numbers go to the sequences pane, which has the width.
+        // Rendered only while something is prefilling — a permanent 0% would
+        // be noise on an idle server.
+        Span::styled(
+            match s.sched {
+                Some(x) if x.prefill_tokens_total > 0 => format!(
+                    "  {:.0}%",
+                    100.0 * x.prefill_tokens_done as f64 / x.prefill_tokens_total as f64
+                ),
+                _ => String::new(),
+            },
+            theme::text2(),
+        ),
     ]);
     tile(
         f,
@@ -321,6 +336,16 @@ fn line_gauge(f: &mut Frame, area: Rect, label: &str, used: f64, total: f64, gra
     );
 }
 
+/// `12618` -> `12.6k`. The PREFILL tile is the narrowest on the row, so the
+/// progress pair has to stay short enough not to clip it.
+fn compact_tokens(n: u32) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
     let block = panel("SEQUENCES & MEMORY ─".into(), false);
     let inner = block.inner(area);
@@ -354,7 +379,23 @@ fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 format!(
-                    " active {active} · prefill {prefill} · swapped {swapped} · queue {queue} "
+                    " active {active} · prefill {prefill} · swapped {swapped} · queue {queue}{} ",
+                    // Last prefill dispatch width, and whether it took a
+                    // fused/batched large-M arm. Without this you can only
+                    // infer engagement from throughput.
+                    match s.sched {
+                        Some(x) if x.prefill_chunk_width > 0 => format!(
+                            // Width + arm ONLY. The exact token pair was here
+                            // too and pushed "fused" off the pane's right
+                            // edge; progress is already on the PREFILL tile
+                            // as a percent, whereas whether the fused arm
+                            // engaged is not visible anywhere else.
+                            " · M={}{}",
+                            x.prefill_chunk_width,
+                            if x.prefill_fused { " fused" } else { "" }
+                        ),
+                        _ => String::new(),
+                    }
                 ),
                 theme::text(),
             )])),
