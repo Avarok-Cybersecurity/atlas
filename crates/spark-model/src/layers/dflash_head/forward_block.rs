@@ -1154,21 +1154,26 @@ impl BlockDiffusionDraftHead {
             .draft_tokens_host_pinned
             .load(std::sync::atomic::Ordering::Relaxed);
         // `draft_tokens_host_pinned` is written exactly once, in
-        // `from_weights.rs` (`alloc_host_pinned(gamma_val * 4)`), and the same
-        // `gamma_val` is stored as `self.gamma` — but the two live in different
-        // files, so pin the equality here rather than trust it silently. A failed
+        // `from_weights.rs` (`alloc_host_pinned(max_batch * gamma_val * 4)`),
+        // and the same `gamma_val` / `max_batch` are stored as `self.gamma` /
+        // `self.max_batch` — but the two live in different files, so pin the
+        // relationship here rather than trust it silently. A failed
         // `alloc_host_pinned` propagates as an Err at construction, so a null here
         // would mean the field was never initialised.
         anyhow::ensure!(
-            !pinned_ptr.is_null(),
-            "DFlash draft-token pinned staging buffer is null (γ={})",
-            self.gamma
+            !pinned_ptr.is_null() && self.max_batch >= 1,
+            "DFlash draft-token pinned staging buffer is null or unsized (γ={}, max_batch={})",
+            self.gamma,
+            self.max_batch
         );
         // SAFETY: `pinned_ptr` is the page-locked allocation made by
-        // `alloc_host_pinned(gamma_val * 4)` in `DFlashHead::from_weights`, and
-        // `self.gamma == gamma_val` (both set from the same local in that
-        // constructor; `gamma` is a plain `usize` field never reassigned), so
-        // `self.gamma * 4` is exactly the allocation size — not one byte past it.
+        // `alloc_host_pinned(max_batch * gamma_val * 4)` in
+        // `DFlashHead::from_weights`, and `self.gamma == gamma_val` /
+        // `self.max_batch == max_batch` (all set from the same locals in that
+        // constructor; none is ever reassigned). This single-sequence path
+        // reads BAND 0 — the first `self.gamma * 4` bytes — which is a prefix
+        // of an allocation of `self.max_batch * self.gamma * 4` bytes and
+        // therefore in bounds for every `max_batch >= 1` (asserted above).
         // Non-null is checked immediately above; `cuMemAllocHost` returns
         // 64-byte-aligned memory, which trivially satisfies `u8`'s alignment of 1.
         //

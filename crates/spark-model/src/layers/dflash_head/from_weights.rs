@@ -28,7 +28,13 @@ impl BlockDiffusionDraftHead {
         window_size: Option<usize>,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
+        // Widest cross-sequence batch the drafter must serve in ONE forward.
+        // The gamma-sized scratch below is allocated in per-sequence BANDS of
+        // gamma rows so a batched propose can stack n sequences; n=1 keeps
+        // the original single-band sizes.
+        max_batch: usize,
     ) -> Result<Self> {
+        let nb = max_batch.max(1);
         // Drafter's `fc` is `[draft_hidden, len(target_layer_ids) * target_hidden]`.
         // We rely on the drafter config's `hidden_size` and the parsed
         // `target_layer_ids` to derive the expected target_hidden, then
@@ -282,9 +288,9 @@ impl BlockDiffusionDraftHead {
             dflash2_conv_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
             // GPU selector scratch (tiny; allocated unconditionally so the
             // struct stays Option-free — 16·γ·8 + γ·rank·4 bytes).
-            sel_cand_ids: gpu.alloc(gamma_val * 16 * 4)?,
-            sel_cand_vals: gpu.alloc(gamma_val * 16 * 4)?,
-            sel_g: gpu.alloc(gamma_val * selector_rank.max(1) * 4)?,
+            sel_cand_ids: gpu.alloc(nb * gamma_val * 16 * 4)?,
+            sel_cand_vals: gpu.alloc(nb * gamma_val * 16 * 4)?,
+            sel_g: gpu.alloc(nb * gamma_val * selector_rank.max(1) * 4)?,
             dflash2_dyn_attn: gpu.alloc(
                 n_attn
                     * 2
@@ -322,7 +328,7 @@ impl BlockDiffusionDraftHead {
             // `[u32 kv_len, u32 q_offset, u32 q_rope_pos]` that the indirect
             // paged-attention kernel reads at entry. Host writes via H2D
             // BEFORE entering the captured region.
-            option_b_indirect_args_dev: gpu.alloc(12)?,
+            option_b_indirect_args_dev: gpu.alloc(nb * 12)?,
             // Phase E.2: pinned host buffer + event for the per-propose
             // drafter D2H. Pinned memory lets cuMemcpyDtoHAsync issue a
             // true async DMA on the caller's stream (vs. the synchronous
@@ -331,14 +337,14 @@ impl BlockDiffusionDraftHead {
             // so target-model verify work issued on the same stream can
             // proceed in parallel.
             draft_tokens_host_pinned: std::sync::atomic::AtomicPtr::new(
-                gpu.alloc_host_pinned(gamma_val * 4)?,
+                gpu.alloc_host_pinned(nb * gamma_val * 4)?,
             ),
             draft_tokens_event: gpu.create_event()?,
             // γ rows only — NOT n_attn. The lm_head GEMM writes M=γ rows,
             // argmax + BLOCK_DUMP read rows 0..γ, and no path indexes logits
             // by ctx offset. Sizing at n_attn×vocab would cost 2.04 GB at
             // cw=4096 for rows nothing ever touches (γ rows ≈ 8.4 MB).
-            logits: gpu.alloc(g * vocab_size * bf16)?,
+            logits: gpu.alloc(nb * g * vocab_size * bf16)?,
             draft_tokens_dev: gpu.alloc(n_attn * 4)?,
             position_ids: gpu.alloc(n_attn * 4)?,
         };
@@ -536,6 +542,7 @@ impl BlockDiffusionDraftHead {
             vocab_size,
             draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
+            max_batch: nb,
             mask_token_id,
             window_size,
             target_layer_ids,

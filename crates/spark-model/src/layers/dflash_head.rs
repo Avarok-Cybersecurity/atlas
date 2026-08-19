@@ -376,6 +376,12 @@ pub struct BlockDiffusionDraftHead {
     pub vocab_size: usize,
     pub draft_vocab_size: usize,
     pub gamma: usize,
+    /// Widest cross-sequence batch the gamma-sized scratch was allocated for.
+    /// `scratch.logits`, `sel_*` and `draft_tokens_host_pinned` hold
+    /// `max_batch` bands of `gamma` rows; a single-sequence forward uses band
+    /// 0 only. Kept on the head so the band arithmetic and the unsafe pinned
+    /// slice can be checked against the real allocation rather than a comment.
+    pub max_batch: usize,
     pub mask_token_id: u32,
     pub window_size: Option<usize>,
     /// `target_layer_ids`. Same data as `TransformerModel::dflash_capture_layers`,
