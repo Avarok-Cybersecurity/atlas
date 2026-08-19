@@ -804,7 +804,20 @@ pub fn run(
                         .map(|a| a.post_think_emitted)
                         .min()
                         .unwrap_or(u32::MAX);
-                    if mtp_gate::entry_pin_forces_verify(min_post_think_emitted)
+                    // DFlash C<=2 pin: hold the verify arm whenever <=2
+                    // sequences are active. Arbitration is par on tok/s
+                    // there, but its serial<->batch-K forward flips fork
+                    // the temp-0 token stream mid-answer and the bad
+                    // attractor degenerates into repetition loops (see
+                    // `dflash_gate_pin_c2` lever doc for the measurements).
+                    // Pinned steps skip recording exactly like the
+                    // entry pin: charging verify walls to a Serial-mode
+                    // accumulator would corrupt the arbitration baselines
+                    // it resumes with at C>=3.
+                    let dflash_pin = dflash_verify_raw_argmax
+                        && active.len() <= 2
+                        && sched.levers.dflash_gate_pin_c2;
+                    if (dflash_pin || mtp_gate::entry_pin_forces_verify(min_post_think_emitted))
                         && gate.next_step() == mtp_gate::GateStep::MeasureDecode
                     {
                         let lens_before: Vec<usize> =

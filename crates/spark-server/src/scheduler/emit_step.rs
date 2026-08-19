@@ -18,6 +18,17 @@ pub fn emit_token(
     logprobs: Option<crate::api::TokenLogprobs>,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
+    // Per-token ledger (debug): every emission path funnels through here,
+    // so `slot + out_idx + tok` gives a diffable per-stream token stream.
+    // The C>=2 temp-0 fork forensics reads this to find the first token
+    // where a concurrent run diverges from the C=1 run of the same prompt
+    // (step type comes from adjacent CTX_VERIFY / CTX_COMMIT debug lines).
+    tracing::debug!(
+        "TOK slot={} out_idx={} tok={}",
+        a.seq.slot_idx,
+        a.output_tokens.len(),
+        tok,
+    );
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
     // perm-fail, loop-watchdog, client stop-sequence match) flip this
