@@ -319,19 +319,41 @@ jobs:
             exit 0
           fi
 
-          run_ids=$(tr '\n' ' ' < harvested_runs.txt | sed 's/ *$//')
           run_count=$(wc -l < harvested_runs.txt | tr -d ' ')
-          # The commit message carries every run id — git does not care how long
-          # it is, and the provenance is worth keeping. The PR TITLE cannot: the
-          # API caps it at 256 characters, and a full sweep of 47 runs blew past
-          # that and failed PR creation outright. Title states the count, body
-          # carries the ids.
-          msg="chore(governance): harvest PR intent ledgers (runs ${run_ids:-unknown})"
-          title="chore(governance): harvest PR intent ledgers (${run_count:-0} run(s))"
+          # ── ONE subject string, used in both places ──────────────────────
+          # GitHub's squash-merge takes the COMMIT SUBJECT, not the PR title,
+          # when a PR has exactly one commit — and every harvest PR has exactly
+          # one. So the short title was never what landed on main; the commit
+          # subject was, carrying every run id the standing sweep had ever seen.
+          # That list only grows: 110 ids on 08-17, 132 by #617, a 1.6 KB
+          # subject line that makes `git log --oneline` unreadable. Splitting
+          # them into two independently-built strings is what allowed the title
+          # to be fixed (#578) while the thing that actually lands stayed broken,
+          # so they are now one string and cannot drift apart again.
+          subject="⚖️ chore(governance): harvest PR intent ledgers (${run_count:-0} run(s))"
+          title="$subject"
+          # The ids are provenance worth keeping, but not in the subject, and not
+          # 132-at-a-time in a body either. Newest ten inline, the rest by count;
+          # the COMPLETE list goes to the job summary below, which is durable,
+          # unlimited, and costs the tree nothing.
+          run_tail=$(tail -n 10 harvested_runs.txt | tr '\n' ' ' | sed 's/ *$//')
+          run_link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "${run_count:-0}" -gt 10 ]; then
+            run_note="Newest 10 of ${run_count} harvested runs: ${run_tail} (…and $((run_count - 10)) more — the complete list is in the job summary of ${run_link})"
+          else
+            run_note="Harvested runs: ${run_tail:-unknown}"
+          fi
+          {
+            echo "### Harvested runs (${run_count:-0})"
+            echo ""
+            echo '```'
+            cat harvested_runs.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           git config user.name  "tbraun96"
           git config user.email "tbraun96@gmail.com"
           git add governance/
-          git commit -m "$msg"
+          git commit -m "$subject" -m "$run_note"
           git show --stat HEAD
 
           if [ "$DRY_RUN" = "true" ]; then
@@ -432,7 +454,7 @@ jobs:
           {
             printf '%s\n\n%s\n\n%s\n' \
               "Automated harvest of PR intent ledger artifacts from ${run_count:-0} run(s)." \
-              "Runs: ${run_ids:-unknown}" \
+              "$run_note" \
               "Opened by governance-harvest.yml. Auto-merge is requested, so this lands through the merge queue once the required checks report." \
               > "$RUNNER_TEMP/pr-body.md"
           }
