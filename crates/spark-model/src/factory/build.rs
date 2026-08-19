@@ -135,8 +135,10 @@ pub fn build_model(
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
         config.dflash_capture_layers = sub.target_layer_ids.clone();
-        config.dflash_gamma =
-            Some(args.gamma.unwrap_or(args.drafter_config.effective_block_size()));
+        config.dflash_gamma = Some(
+            args.gamma
+                .unwrap_or(args.drafter_config.effective_block_size()),
+        );
         tracing::info!(
             "DFlash: target layer capture indices = {:?} (drafter target_layer_ids, \
              used directly), γ = {:?}",
@@ -409,12 +411,11 @@ pub fn build_model(
             let drafter_kv = max_seq_len * c.num_hidden_layers * 2 * kv_dim * 2;
             let fused_kv = c.num_hidden_layers * 2 * kv_dim * c.hidden_size * 2;
             let capture = max_seq_len * config.hidden_size * 2;
-            let fp8_mirrors =
-                if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
-                    a.drafter_store.total_bytes() / 2
-                } else {
-                    0
-                };
+            let fp8_mirrors = if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
+                a.drafter_store.total_bytes() / 2
+            } else {
+                0
+            };
             drafter_kv + fused_kv + capture + fp8_mirrors + (300 << 20)
         })
         .unwrap_or(0);
@@ -429,7 +430,11 @@ pub fn build_model(
         .saturating_sub(used_so_far)
         .saturating_sub(inference_reserve)
         .saturating_sub(dflash_reserve)
-        .min(actual_free.saturating_sub(inference_reserve).saturating_sub(dflash_reserve));
+        .min(
+            actual_free
+                .saturating_sub(inference_reserve)
+                .saturating_sub(dflash_reserve),
+        );
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink
