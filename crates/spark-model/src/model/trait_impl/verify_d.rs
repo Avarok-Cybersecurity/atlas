@@ -58,6 +58,9 @@ impl TransformerModel {
         // scratch/canonical split — dual-buffer pre-verify copy eliminated.
         // Modeled on verify_b.rs (K=2 in-place).
 
+        // ATLAS_GDN_VERIFY_DUMP diagnostic: bracket the pre-layer-loop setup.
+        self.gdn_dump_probe_l0(seq, "verify_entry");
+
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -225,6 +228,10 @@ impl TransformerModel {
         if need_run {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
+
+            // ATLAS_GDN_VERIFY_DUMP diagnostic: state after phase-1 setup,
+            // immediately before the layer loop.
+            self.gdn_dump_probe_l0(seq, "verify_preloop");
 
             if use_graphs {
                 self.gpu.begin_capture(stream)?;

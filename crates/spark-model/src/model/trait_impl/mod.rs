@@ -89,7 +89,10 @@ impl Model for TransformerModel {
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;
+        // ATLAS_GDN_VERIFY_DUMP diagnostic: bracket the eager drafter prefill.
+        self.gdn_dump_probe_l0(seq, "prefill_done");
         self.try_eager_drafter_prefill(seq, true, stream);
+        self.gdn_dump_probe_l0(seq, "drafter_pf_done");
         Ok(logits)
     }
     fn prefill_chunk(
