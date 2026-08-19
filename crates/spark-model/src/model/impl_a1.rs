@@ -195,10 +195,27 @@ impl TransformerModel {
         let has_mtp = self_speculative
             || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
             || dflash_kgamma > 0;
-        let num_intermediates = if has_mtp {
-            (num_drafts + 1).max(dflash_kgamma)
-        } else {
+        let num_intermediates = if !has_mtp {
             0
+        } else if dflash_kgamma > 0 {
+            // DFlash serve: the block drafter OWNS the verify path, so the
+            // widest verify is K = gamma + 1 and `num_drafts` never reaches
+            // the pool. Taking max(num_drafts+1, kgamma) sized these pools for
+            // the MTP K=2/3/4 ladder that a DFlash serve never runs: at
+            // num_drafts=15 that is 16 wide against a real ceiling of 9, and
+            // these pools are the single largest non-weight allocation on the
+            // box — 21.9 GB at 8 slots x 48 layers, as large as the model
+            // itself. Sizing to the real ceiling reclaims ~9.6 GB
+            // (2026-08-19 128K/C8 boot ledger; observed verify widths were
+            // K=8 and ks=[8;n], never above).
+            //
+            // The K2/K3/K4 arms still reachable on a DFlash serve (when the
+            // drafter returns <4 drafts) verify at K<=4, comfortably inside
+            // this. `require_verify_rollback_supported` remains the backstop
+            // if a future path asks for more.
+            dflash_kgamma
+        } else {
+            num_drafts + 1
         };
         let ssm_pool = std::sync::Arc::new(SsmStatePool::new(
             &config,
