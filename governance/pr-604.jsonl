@@ -30,3 +30,5 @@
 {"pr":604,"head_sha":"b80fc75c35252c5974944eb04c57558388d6e98b","run_id":"32292441970","attempt":1,"at":1787167517,"kind":"category","value":"correctness/numerics","status":"ok"}
 {"pr":604,"head_sha":"3a5c3be41247077dfb21fba6feef7e3345f5647c","run_id":"32294211959","attempt":1,"at":1787168995,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":604,"head_sha":"0615ef47f11cca0c2838c1f524c35ea4c5050322","run_id":"32295223786","attempt":1,"at":1787170881,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"f7018d0434185ba9932da0409fb6c023e096c29e","run_id":"32306310420","attempt":1,"at":1787176572,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"07361cb7a41446800674e3b07684fd078d70c57e","run_id":"32309651454","attempt":1,"at":1787179208,"kind":"category","value":"correctness/ssm-state","status":"ok"}
