@@ -193,6 +193,14 @@ pub(super) fn run_batched_prefill_step(
         for (k, &i) in wave.iter().enumerate() {
             let p = &mut prefilling[i];
             p.chunk_offset += chunk_lens[i];
+            // Prompt tokens counted AT INGEST, as each chunk lands. Counting them
+            // at request completion (the old site) credited the whole prompt to the
+            // moment the RESPONSE finished — seconds or minutes after the prefill
+            // actually ran — so the Stats page's prefill rate was attributed to the
+            // wrong instant entirely. Semantics are unchanged: this is the same
+            // "prompt_tokens" the API reports (cache-hit tokens included; the
+            // computed-vs-cached split is the prefix-cache panel's job).
+            crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_lens[i] as u64);
             if !is_last_flags[i] {
                 continue;
             }
