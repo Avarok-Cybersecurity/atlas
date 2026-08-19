@@ -292,7 +292,7 @@ pub fn step_mtp(
             // so commit and propose decode-append never both cover a token.
             if !will_propose || reprobe_resume {
                 let base_pos = a.seq.seq_len.saturating_sub(1);
-                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos) {
+                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos, 0) {
                     tracing::error!("commit_ctx (mtp serial): {e:#}");
                 }
             }
