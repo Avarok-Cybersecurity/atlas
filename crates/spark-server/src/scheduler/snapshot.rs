@@ -42,6 +42,19 @@ pub struct SchedulerSnapshot {
     /// 0.0 when unmeasured.
     pub delivered_tps: f32,
     pub steps_total: u64,
+    /// In-flight prefill progress, SUMMED over the prefilling sequences:
+    /// tokens already ingested vs tokens in their prompts. Both 0 when
+    /// nothing is prefilling. Aggregated rather than per-sequence so the
+    /// snapshot stays `Copy` — a `Vec` here would allocate on the scheduler
+    /// thread once per tick, which is exactly the cost this must not have.
+    pub prefill_tokens_done: u32,
+    pub prefill_tokens_total: u32,
+    /// Token count (M) of the most recent prefill dispatch, and whether it
+    /// took a fused/batched large-M path. This is how you see from the UI
+    /// whether the fused arm actually engaged, rather than inferring it from
+    /// throughput.
+    pub prefill_chunk_width: u32,
+    pub prefill_fused: bool,
     /// For staleness detection: a snapshot older than a few seconds means the
     /// scheduler thread is wedged or the server is idle-parked.
     pub published_at: Instant,
@@ -59,17 +72,43 @@ pub struct SchedulerSnapshot {
 /// Shared as an `Arc` from `serve` — the same route `SchedLevers` takes — so
 /// the cell dies with the run and a reader attached to no run sees `None`.
 #[derive(Default)]
-pub struct SnapshotCell(Mutex<Option<SchedulerSnapshot>>);
+pub struct SnapshotCell {
+    cell: Mutex<Option<SchedulerSnapshot>>,
+    /// Last prefill dispatch width, and whether it was the fused path.
+    /// Written from the prefill dispatch sites and read once per tick by
+    /// `publish`. Relaxed atomics: this is observability, a torn read across
+    /// the two costs a single stale UI frame and nothing else — worth far
+    /// less than making the prefill path synchronise.
+    last_chunk_width: std::sync::atomic::AtomicU32,
+    last_chunk_fused: std::sync::atomic::AtomicBool,
+}
 
 impl SnapshotCell {
+    /// Record the width of a prefill dispatch. Two relaxed stores — ~1 ns
+    /// against a chunk that takes milliseconds.
+    pub fn note_prefill_chunk(&self, width: usize, fused: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.last_chunk_width.store(width as u32, Relaxed);
+        self.last_chunk_fused.store(fused, Relaxed);
+    }
+
+    /// The last recorded dispatch width + fused flag.
+    pub fn last_prefill_chunk(&self) -> (u32, bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.last_chunk_width.load(Relaxed),
+            self.last_chunk_fused.load(Relaxed),
+        )
+    }
+
     /// Publish the latest snapshot (scheduler thread, once per loop tick).
     pub fn publish(&self, s: SchedulerSnapshot) {
-        *self.0.lock() = Some(s);
+        *self.cell.lock() = Some(s);
     }
 
     /// Read the latest snapshot, if the scheduler has published one yet.
     pub fn read(&self) -> Option<SchedulerSnapshot> {
-        *self.0.lock()
+        *self.cell.lock()
     }
 }
 
@@ -92,6 +131,10 @@ mod tests {
             mtp_mode: MtpModeSnap::Mtp,
             delivered_tps: 42.5,
             steps_total: 7,
+            prefill_tokens_done: 0,
+            prefill_tokens_total: 0,
+            prefill_chunk_width: 0,
+            prefill_fused: false,
             published_at: Instant::now(),
         };
         cell.publish(s);
