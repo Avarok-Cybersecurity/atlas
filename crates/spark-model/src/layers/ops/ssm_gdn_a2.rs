@@ -338,7 +338,8 @@ pub fn gdn_prefill_fla(
     const C: u32 = 64; // CHUNK (kernel constant)
     let (kd, vd) = (k_dim, v_dim);
     // smem byte sizes — identical formulas to the GATE-B example (validated).
-    let smem_wu = C * kd * 2 + C * C * 4 + C * C * 4 + C * 4;
+    // L aliases the kk Gram (disjoint triangles) — one C*C*4 buffer, not two.
+    let smem_wu = C * kd * 2 + C * C * 4 + C * 4;
     let smem_dh = 2 * (C * (2 * kd + vd) * 2) + 2 * C * 4 + 2 * (C + 1) * 4;
     let smem_fo = C * kd * 2 + C * kd * 2 + C * C * 4 + C * vd * 2 + kd * vd * 2 + 2 * C * 4;
 

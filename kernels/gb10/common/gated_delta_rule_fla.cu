@@ -179,7 +179,11 @@ gated_delta_rule_recompute_wu(
     extern __shared__ char smem_raw[];
     __nv_bfloat16* sk = (__nv_bfloat16*)smem_raw;       // [CHUNK*K_DIM] bf16
     float* kk = (float*)(sk + CHUNK * K_DIM);           // [CHUNK*CHUNK] f32 Gram
-    float* L = kk + CHUNK * CHUNK;                      // [CHUNK*CHUNK] f32 decay-weighted strict-lower
+    // L ALIASES kk. Safe because the two live in disjoint triangles: the build below
+    // writes L only at (i,l) with l<i (strictly LOWER) and reads kk only at (l,i)
+    // with l<i (strictly UPPER, kk being symmetric), and both forward-subs consume
+    // L only for l<i. Saves 16 KB, which takes this kernel from 2 to 3 CTAs/SM.
+    float* L = kk;                                     // [CHUNK*CHUNK] f32 strict-lower, aliased
     float* gc = L + CHUNK * CHUNK;                      // [CHUNK]
 
     for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += 128) {
@@ -204,11 +208,12 @@ gated_delta_rule_recompute_wu(
     // L[i][l] = β_i·exp(gc_i-gc_l)·<k_l,k_i>  for l<i ; 0 otherwise.  (kk symmetric)
     for (unsigned int p = tid; p < CHUNK * CHUNK; p += 128) {
         unsigned int i = p / CHUNK, l = p % CHUNK;
+        // Only the strict-lower half is written — the old `else` branch zeroed the
+        // rest, which is both unread (every consumer loops l<i) and, under the
+        // alias, would clobber the upper-triangle kk values still being read.
         if (i < ce && l < i) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
             L[i * CHUNK + l] = bi * expf(gc[i] - gc[l]) * kk[l * CHUNK + i];
-        } else {
-            L[i * CHUNK + l] = 0.0f;
         }
     }
     __syncthreads();
