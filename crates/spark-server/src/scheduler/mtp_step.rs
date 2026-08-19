@@ -119,7 +119,32 @@ pub fn step_mtp(
                 _gmask.as_deref(),
             ) {
                 Ok(init) if !init.is_empty() => {
-                    if eff >= 3 && init.len() >= 3 {
+                    // Route by the ACTUAL draft count, exactly like the
+                    // Phase-B dispatch below. Before this arm existed, a
+                    // DFlash γ-block first-propose (init.len() = γ-1 ≥ 4)
+                    // fell into `step_verify_k4`, which verifies only
+                    // [last, d0..d2] but hands the FULL init slice to
+                    // `k4_apply_verdict` — so `k_rows = init.len()+1 = γ`,
+                    // the full-accept check `na == k` never fired, and a
+                    // 3/3-accept "rewound" to intermediate[3], WHICH A K=4
+                    // VERIFY NEVER WRITES (K-1 dead-write shrink). The
+                    // zero-initialized snapshot was restored over the live
+                    // SSM state — h_state AND conv_state, every GDN layer —
+                    // on the sequence's FIRST verify, and the whole DFlash
+                    // default chain decoded garbage from there (the bug that
+                    // made the recipe require --exact-verify; root-caused
+                    // via ATLAS_GDN_VERIFY_DUMP, 2026-08-19, PR #604).
+                    if init.len() >= 4 {
+                        step_verify_dflash(
+                            model,
+                            a,
+                            sched,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else if eff >= 3 && init.len() >= 3 {
                         step_verify_k4(
                             model,
                             a,

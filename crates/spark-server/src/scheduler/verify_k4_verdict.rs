@@ -70,9 +70,22 @@ pub(super) fn k4_apply_verdict(
     verify_us: u128,
 ) {
     let defer = matches!(hidden, K4Hidden::DeferPropose);
-    let nd = drafts.len();
-    let k_rows = nd + 1;
-    debug_assert_eq!(v.len(), k_rows, "verdict picks must cover every row");
+    // `v` (the verified rows) is the ground truth for the verify WIDTH —
+    // never `drafts.len()`. A caller may hold more drafts than this verify
+    // consumed (DFlash γ-block first-propose has γ-1 ≥ 4 while the K=4 step
+    // verifies 3); sizing `k_rows` from the draft slice made
+    // `commit_accepted_prefix(na+1, k_rows)` miss the full-accept no-op and
+    // rewind to an intermediate the verify never wrote (index K-1 is a
+    // dead-write on every arm), restoring zero-initialized snapshots over
+    // live SSM state. Hard assert, not debug_assert — that tripwire being
+    // compiled out of release builds is exactly how this shipped.
+    let k_rows = v.len();
+    let nd = k_rows - 1;
+    assert!(
+        drafts.len() >= nd,
+        "verdict: {} drafts for a {k_rows}-row verify",
+        drafts.len()
+    );
     let na = num_accepted.min(nd);
 
     if na == nd {
