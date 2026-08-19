@@ -61,8 +61,36 @@ pub struct DflashConfig {
     /// Qwen3.6-DFlash drafter ships `rope_scaling: null`). When present and
     /// `rope_type == "yarn"`, the drafter's YaRN parameters are used to
     /// build the inv_freq table at construction time.
-    #[serde(default)]
+    /// `alias = "rope_parameters"`: newer transformers releases (RadixArk
+    /// DSpark, incoai DFlash2) ship the block under that key — without the
+    /// alias Atlas silently drops the scaling (the RadixArk config.json had
+    /// to be hand-patched before this).
+    #[serde(default, alias = "rope_parameters")]
     pub rope_scaling: Option<DflashRopeScaling>,
+    /// DSpark Markov head rank. `0` (default) ⇒ plain DFlash drafter with no
+    /// Markov head. RadixArk `Qwen3.8-27B-DSpark` ships `markov_rank: 256`
+    /// top-level (SpecForge `DSparkConfig` convention — see the checkpoint's
+    /// `dspark.py`: DSpark fields are declared as top-level config attrs).
+    #[serde(default)]
+    pub markov_rank: usize,
+    /// DSpark Markov head flavor. Only `"vanilla"` (low-rank learned bigram
+    /// bias) is defined by the reference; anything else is rejected at load.
+    #[serde(default)]
+    pub markov_head_type: Option<String>,
+    /// DSpark confidence head (`AcceptRatePredictor`): a `Linear(input, 1)`
+    /// predicting per-draft-position acceptance probability, used for
+    /// adaptive block length. Loaded when present; consumed by the dynamic-K
+    /// scheduling phase (the Markov fixup works without it).
+    #[serde(default)]
+    pub enable_confidence_head: bool,
+    /// When true the confidence head's input is `[hidden ‖ markov_embed]`
+    /// (input_dim = hidden_size + markov_rank); when false, hidden only.
+    #[serde(default = "default_true")]
+    pub confidence_head_with_markov: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_rope_theta() -> f32 {
@@ -102,6 +130,30 @@ pub struct DflashSubConfig {
     /// `[1, 10, 19, 28, 37]` for Qwen3.6-35B-A3B-DFlash. Order matters:
     /// shallow-to-deep concatenation is what `fc` expects.
     pub target_layer_ids: Vec<usize>,
+    /// Draft flavor tag. `"dspark"` marks a SpecForge-lineage drafter, whose
+    /// row convention is SHIFTED (row j's output = token at position j+1; the
+    /// anchor row's output is draft #1) versus the z-lab convention Atlas's
+    /// forward was built for (row j predicts at j, row 0 = echo). The runtime
+    /// keys the draft-vector rotation off this tag. DFlash2 checkpoints have
+    /// no tag and keep the z-lab convention (verified against z-lab
+    /// `dflash/model.py::dflash_generate` — anchor-row output discarded,
+    /// mask rows fill in place).
+    #[serde(default)]
+    pub projector_type: Option<String>,
+
+    // ── DFlash2 fields (incoai/z-lab `DFlash2DraftModel`); absent = DFlash1 ──
+    /// Two-tap dynamic conv kernel size (2 for DFlash2).
+    #[serde(default)]
+    pub conv_kernel_size: usize,
+    /// Channels per conv group (16 for DFlash2 → hidden/16 groups).
+    #[serde(default)]
+    pub conv_group_size: usize,
+    /// Selector codebook rank (256 for DFlash2).
+    #[serde(default)]
+    pub selector_rank: usize,
+    /// Candidates kept per position for the selector walk (16 for DFlash2).
+    #[serde(default)]
+    pub selector_top_k: usize,
 }
 
 /// Raw weight bundle for the DFlash drafter, post-load.
@@ -133,6 +185,28 @@ pub struct DflashWeights {
     /// `draft_vocab_size != target_vocab_size`). Absent for
     /// Qwen3.6-35B-A3B-DFlash (both vocabs = 248320).
     pub draft_id_to_target_id: Option<Vec<i64>>,
+
+    // ── DSpark heads (optional; RadixArk Qwen3.8-27B-DSpark ships all 4) ──
+    /// Markov head `markov_w1`: `[vocab, markov_rank]` BF16 embedding table
+    /// (prev-token → latent). Present iff `config.markov_rank > 0` and the
+    /// checkpoint carries the tensor.
+    pub markov_w1: Option<DenseWeight>,
+    /// Markov head `markov_w2`: `[vocab, markov_rank]` BF16
+    /// (`nn.Linear(rank, vocab, bias=False).weight`, i.e. `[N, K]` for the
+    /// GEMV convention). Projects the latent back to a full-vocab bias.
+    pub markov_w2: Option<DenseWeight>,
+    /// Confidence head weight: `[1, hidden(+rank)]` BF16.
+    pub confidence_proj: Option<DenseWeight>,
+    /// Confidence head bias: `[1]` BF16.
+    pub confidence_bias: Option<DenseWeight>,
+
+    // ── DFlash2 candidate selector (None on DFlash1/DSpark drafters) ──
+    /// `candidate_selector.predecessor_codebook` `[vocab, selector_rank]` BF16.
+    pub selector_pred: Option<DenseWeight>,
+    /// `candidate_selector.successor_codebook` `[vocab, selector_rank]` BF16.
+    pub selector_succ: Option<DenseWeight>,
+    /// `candidate_selector.hidden_projection.weight` `[selector_rank, hidden]`.
+    pub selector_hidden_proj: Option<DenseWeight>,
 }
 
 /// Per-drafter-layer raw weights (BF16). Same shape across all 8 layers.
@@ -149,6 +223,18 @@ pub struct DflashLayerWeights {
     pub gate_proj: DenseWeight,
     pub up_proj: DenseWeight,
     pub down_proj: DenseWeight,
+
+    // ── DFlash2 grouped dynamic causal convs (None on DFlash1 drafters) ──
+    /// `attention_conv.base_kernel` `[2, kernel_size, hidden]` BF16 —
+    /// static tap weights (index 0 = prepare/pre-sublayer, 1 = finish/post).
+    pub attention_conv_base: Option<DenseWeight>,
+    /// `attention_conv.kernel_projection.weight`
+    /// `[2 * kernel_size * groups, hidden]` BF16 — dynamic tap generator.
+    pub attention_conv_proj: Option<DenseWeight>,
+    /// `mlp_conv.base_kernel`, same shape as attention_conv_base.
+    pub mlp_conv_base: Option<DenseWeight>,
+    /// `mlp_conv.kernel_projection.weight`, same shape as attention_conv_proj.
+    pub mlp_conv_proj: Option<DenseWeight>,
 }
 
 /// Probe a [`WeightStore`] for the presence of DFlash drafter weights.
@@ -231,10 +317,39 @@ pub fn load_dflash_weights(
     let norm = dense(drafter_store, &format!("{prefix}norm.weight"))
         .context("DFlash drafter: load norm.weight")?;
 
+    // DFlash2 detection: conv/selector dims declared in dflash_config AND the
+    // layer-0 conv tensor present. All four families load per layer or none.
+    let dflash2_conv = drafter_config
+        .dflash_config
+        .as_ref()
+        .map(|c| c.conv_kernel_size > 0 && c.conv_group_size > 0)
+        .unwrap_or(false)
+        && drafter_store.contains(&format!("{prefix}layers.0.attention_conv.base_kernel"));
+
     let layer_count = drafter_config.num_hidden_layers;
     let mut layers = Vec::with_capacity(layer_count);
     for i in 0..layer_count {
         let lp = format!("{prefix}layers.{i}");
+        let (attention_conv_base, attention_conv_proj, mlp_conv_base, mlp_conv_proj) =
+            if dflash2_conv {
+                (
+                    Some(dense(
+                        drafter_store,
+                        &format!("{lp}.attention_conv.base_kernel"),
+                    )?),
+                    Some(dense(
+                        drafter_store,
+                        &format!("{lp}.attention_conv.kernel_projection.weight"),
+                    )?),
+                    Some(dense(drafter_store, &format!("{lp}.mlp_conv.base_kernel"))?),
+                    Some(dense(
+                        drafter_store,
+                        &format!("{lp}.mlp_conv.kernel_projection.weight"),
+                    )?),
+                )
+            } else {
+                (None, None, None, None)
+            };
         let layer = DflashLayerWeights {
             input_layernorm: dense(drafter_store, &format!("{lp}.input_layernorm.weight"))?,
             post_attention_layernorm: dense(
@@ -250,8 +365,52 @@ pub fn load_dflash_weights(
             gate_proj: dense(drafter_store, &format!("{lp}.mlp.gate_proj.weight"))?,
             up_proj: dense(drafter_store, &format!("{lp}.mlp.up_proj.weight"))?,
             down_proj: dense(drafter_store, &format!("{lp}.mlp.down_proj.weight"))?,
+            attention_conv_base,
+            attention_conv_proj,
+            mlp_conv_base,
+            mlp_conv_proj,
         };
         layers.push(layer);
+    }
+
+    // DFlash2 candidate selector. NOTE: the two codebooks ship with NO
+    // `.weight` suffix (raw nn.Parameter-style keys — the z-lab loader
+    // key-maps them; verified against the incoai safetensors header).
+    let selector_key = format!("{prefix}candidate_selector.predecessor_codebook");
+    let (selector_pred, selector_succ, selector_hidden_proj) = if drafter_config
+        .dflash_config
+        .as_ref()
+        .map(|c| c.selector_rank > 0 && c.selector_top_k > 0)
+        .unwrap_or(false)
+        && drafter_store.contains(&selector_key)
+    {
+        (
+            Some(dense(drafter_store, &selector_key)
+                .context("DFlash2: load candidate_selector.predecessor_codebook")?),
+            Some(dense(
+                drafter_store,
+                &format!("{prefix}candidate_selector.successor_codebook"),
+            )
+            .context("DFlash2: load candidate_selector.successor_codebook")?),
+            Some(dense(
+                drafter_store,
+                &format!("{prefix}candidate_selector.hidden_projection.weight"),
+            )
+            .context("DFlash2: load candidate_selector.hidden_projection.weight")?),
+        )
+    } else {
+        (None, None, None)
+    };
+    if dflash2_conv || selector_pred.is_some() {
+        tracing::info!(
+            "DFlash2 heads loaded: convs={} (k={}, group={}), selector={} (rank={}, top_k={})",
+            dflash2_conv,
+            drafter_config.dflash_config.as_ref().map(|c| c.conv_kernel_size).unwrap_or(0),
+            drafter_config.dflash_config.as_ref().map(|c| c.conv_group_size).unwrap_or(0),
+            selector_pred.is_some(),
+            drafter_config.dflash_config.as_ref().map(|c| c.selector_rank).unwrap_or(0),
+            drafter_config.dflash_config.as_ref().map(|c| c.selector_top_k).unwrap_or(0),
+        );
     }
 
     // `d2t` (draft-id → target-id) is absent from Qwen3.6-DFlash because
@@ -271,6 +430,67 @@ pub fn load_dflash_weights(
     } else {
         None
     };
+
+    // ── DSpark heads (optional) ──────────────────────────────────────
+    // Tensor names verified against RadixArk/Qwen3.8-27B-DSpark
+    // (model.safetensors, 62 tensors): `markov_head.markov_w1.weight`
+    // [248320, 256], `markov_head.markov_w2.weight` [248320, 256],
+    // `confidence_head.proj.weight` [1, 5376], `confidence_head.proj.bias`
+    // [1] — all BF16, bare layout (same prefix convention as fc.weight).
+    let markov_key = format!("{prefix}markov_head.markov_w1.weight");
+    let (markov_w1, markov_w2) = if drafter_config.markov_rank > 0
+        && drafter_store.contains(&markov_key)
+    {
+        if let Some(kind) = drafter_config.markov_head_type.as_deref()
+            && kind != "vanilla"
+        {
+            anyhow::bail!(
+                "DSpark drafter declares markov_head_type={kind:?}; only \"vanilla\" \
+                 (low-rank bigram bias) is defined by the reference implementation"
+            );
+        }
+        let w1 = dense(drafter_store, &markov_key)
+            .context("DSpark drafter: load markov_head.markov_w1.weight")?;
+        let w2 = dense(
+            drafter_store,
+            &format!("{prefix}markov_head.markov_w2.weight"),
+        )
+        .context("DSpark drafter: load markov_head.markov_w2.weight")?;
+        (Some(w1), Some(w2))
+    } else {
+        if drafter_config.markov_rank > 0 {
+            tracing::warn!(
+                "DSpark drafter config declares markov_rank={} but the checkpoint has \
+                 no {markov_key} — running as plain DFlash (Markov bias disabled)",
+                drafter_config.markov_rank,
+            );
+        }
+        (None, None)
+    };
+    let conf_key = format!("{prefix}confidence_head.proj.weight");
+    let (confidence_proj, confidence_bias) = if drafter_config.enable_confidence_head
+        && drafter_store.contains(&conf_key)
+    {
+        let w = dense(drafter_store, &conf_key)
+            .context("DSpark drafter: load confidence_head.proj.weight")?;
+        let b = dense(
+            drafter_store,
+            &format!("{prefix}confidence_head.proj.bias"),
+        )
+        .context("DSpark drafter: load confidence_head.proj.bias")?;
+        (Some(w), Some(b))
+    } else {
+        (None, None)
+    };
+    if markov_w1.is_some() || confidence_proj.is_some() {
+        tracing::info!(
+            "DSpark heads loaded: markov={} (rank={}), confidence={} (with_markov={})",
+            markov_w1.is_some(),
+            drafter_config.markov_rank,
+            confidence_proj.is_some(),
+            drafter_config.confidence_head_with_markov,
+        );
+    }
 
     tracing::info!(
         "DFlash drafter loaded: {} layers, hidden={}, vocab={}, γ={}, target_layers={:?}",
@@ -292,6 +512,13 @@ pub fn load_dflash_weights(
         norm,
         layers,
         draft_id_to_target_id,
+        markov_w1,
+        markov_w2,
+        confidence_proj,
+        confidence_bias,
+        selector_pred,
+        selector_succ,
+        selector_hidden_proj,
     }))
 }
 
