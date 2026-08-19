@@ -2,3 +2,4 @@
 {"pr":502,"head_sha":"9077c352f94e5baf5d25933966afe5ad046f87da","run_id":"32226919323","attempt":1,"at":1787123885,"kind":"category","value":"capability/serving-api","status":"ok"}
 {"pr":502,"head_sha":"bbeb6218ec6ba231ac174eae3b7d39010bfbd562","run_id":"32240851558","attempt":1,"at":1787133970,"kind":"category","value":"capability/serving-api","status":"ok"}
 {"pr":502,"head_sha":"80c9eb506966fdc68d826ec1edfae1cfa88f689d","run_id":"32255199547","attempt":1,"at":1787144247,"kind":"category","value":"capability/serving-api","status":"ok"}
+{"pr":502,"head_sha":"4b53bb6469ce5830adf0d7c7e08c0309e1ab8e33","run_id":"32271858827","attempt":1,"at":1787155336,"kind":"category","value":"capability","status":"partial"}
