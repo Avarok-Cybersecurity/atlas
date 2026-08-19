@@ -133,15 +133,9 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
 /// `ATLAS_LORA_ALLOW_PARTIAL=1` — load an adapter that names target modules
 /// Atlas cannot apply, skipping those and applying the rest.
 ///
-/// Default OFF, and it must stay that way. Refusing the load is the honest
-/// default: a partially-applied adapter is a model that quietly does not do
-/// what its author trained it to do, and nothing downstream can tell that
-/// from the model simply being bad. This exists so a user can make that
-/// trade DELIBERATELY, having been told exactly which modules were dropped.
-pub fn allow_partial_targets() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_ALLOW_PARTIAL")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
-}
+/// Delegates to the atlas-core definition rather than re-reading the env:
+/// the parse-time allow-list down there is the FIRST gate an adapter meets,
+/// so the flag has to be defined below this layer. Two OnceLocks reading one
+/// variable is exactly the hand-synced drift this repo keeps getting bitten
+/// by (cf. the 384-vs-3072 thinking-budget bug).
+pub use atlas_core::config::allow_partial_targets;

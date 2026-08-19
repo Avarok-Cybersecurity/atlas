@@ -96,6 +96,7 @@ fn scale_table_values_per_slot_and_padded() {
             r,
             lora_alpha: alpha,
             target_modules: vec!["k_proj".into()],
+            target_modules_pattern: None,
             use_rslora: rslora,
             layers_to_transform: None,
             trainable_token_indices: Vec::new(),

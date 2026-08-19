@@ -50,6 +50,30 @@ pub fn adapter_id_hash(name: &str, generation: u64) -> u64 {
 /// (weight_prefix auto-detected server-side), but a PEFT trainer wrapping
 /// the text trunk emits `model.layers.{i}.*`; both carry the layer index
 /// right after ".layers.".
+/// Whether `key` names a GDN / linear-attention tensor — the family
+/// `classify_key` rejects outright.
+///
+/// Exists so a caller can SKIP such a tensor under
+/// `ATLAS_LORA_ALLOW_PARTIAL` instead of pattern-matching on the reject
+/// message. The prefix test is the same one `classify_key` uses; keep them
+/// together so the skip can never drift from the reject.
+pub fn is_gdn_key(key: &str) -> bool {
+    // Mirrors classify_key's own walk: PEFT prefix, then `.layers.N.`, then
+    // the module tail it matches `linear_attn.` against. Deliberately the same
+    // sequence of splits so the skip cannot recognise a different set of keys
+    // than the reject does.
+    let Some(stripped) = key.strip_prefix("base_model.model.") else {
+        return false;
+    };
+    let Some((_prefix, rest)) = stripped.split_once(".layers.") else {
+        return false;
+    };
+    let Some((_idx, tail)) = rest.split_once('.') else {
+        return false;
+    };
+    tail.starts_with("linear_attn.")
+}
+
 pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, AdapterAb)> {
     let stripped = key.strip_prefix("base_model.model.").ok_or_else(|| {
         anyhow!("REJECT[not-peft-key]: '{key}' lacks the 'base_model.model.' PEFT prefix")
@@ -116,15 +140,29 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
     // of a MoE adapter's layers. The fold runs in `MoeLayer::forward_*`, which is
     // present on all MoE layers, so no layer-type restriction applies to them.
     match target {
+        // Dense FFN on a dense-FFN model: allowed on ANY layer. The SwiGLU FFN
+        // is present on every layer of a hybrid — Qwen3.8-27B has 16
+        // full-attention and 48 linear-attention layers and all 64 carry an
+        // FFN, which is why real adapters for it ship 128 dense-mlp tensors
+        // (64 layers x A/B). Restricting these to full-attention layers
+        // rejected three quarters of such an adapter and the old message could
+        // only suggest retraining with `layers_to_transform`.
+        //
+        // `Qwen3SsmLayer` holds its FFN as `FfnComponent::Dense`, the same
+        // `DenseFfnLayer` the full-attention layers use and the same one the
+        // M1 delta path is wired into, so the fold runs identically there.
+        //
+        // Restricted to `num_experts == 0`: on a MoE model `mlp.*` on a GDN
+        // layer belongs to the routed-expert path (LoraTarget::Expert), which
+        // has its own handling below, not to a dense FFN.
+        LoraTarget::Attn(m) if m.is_dense_ffn() && cfg.num_experts == 0 => {}
         LoraTarget::Attn(_) => match cfg.layer_type(layer_idx) {
             LayerType::FullAttention => {}
             lt => bail!(
                 "REJECT[non-full-attention-layer]: '{key}' targets layer {layer_idx} \
-                 ({lt:?}); v0 applies attention/dense-mlp LoRA only on the full-attention \
-                 layers {:?}. NOTE: dense mlp.* exists on the GDN layers too — train with \
-                 layers_to_transform={:?} to produce a loadable adapter",
+                 ({lt:?}); attention-projection LoRA applies only on the full-attention \
+                 layers {:?}",
                 full_attention_layers(cfg),
-                full_attention_layers(cfg)
             ),
         },
         LoraTarget::Router | LoraTarget::Expert { .. } => {}

@@ -38,6 +38,19 @@ impl LoraModule {
         Self::DownProj,
     ];
 
+    /// Whether this module lives in the dense SwiGLU FFN rather than in
+    /// attention.
+    ///
+    /// The distinction decides which LAYERS may carry the module. Attention
+    /// projections exist only on full-attention layers. The dense FFN exists
+    /// on EVERY layer of a hybrid — Qwen3.8-27B is 16 attention + 48
+    /// linear-attention layers and all 64 have an FFN — so gating gate/up/down
+    /// to full-attention layers rejects three quarters of a real adapter for
+    /// this architecture.
+    pub fn is_dense_ffn(&self) -> bool {
+        matches!(self, Self::GateProj | Self::UpProj | Self::DownProj)
+    }
+
     /// PEFT suffix name (target_modules vocabulary).
     pub fn peft_name(&self) -> &'static str {
         match self {
