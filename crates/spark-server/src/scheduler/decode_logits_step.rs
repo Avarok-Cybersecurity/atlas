@@ -360,6 +360,7 @@ pub fn process_decode_logits(
             && tok == trs
         {
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
             // Permanent diagnostic — see emit_step::emit_token's twin log.
             tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             a.finished = true;
@@ -588,6 +589,7 @@ pub fn process_decode_logits(
                         "tool-call repetition runaway: model re-opened {MAX_POST_COMPLETION_TOOL_OPENS}+ tool-call blocks after a completed call on a tool_choice=auto turn; ending response (was burning to max_tokens). Sanitizer keeps the first valid call(s)."
                     );
                     a.output_tokens.push(tok);
+                    crate::metrics::GENERATION_TOKENS_TOTAL.inc();
                     // Permanent diagnostic — see emit_step::emit_token's twin log.
                     tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
                     a.tool_call_opened = true;
@@ -620,6 +622,7 @@ pub fn process_decode_logits(
         // that spuriously emits `</tool_call>` hard-stops here.
         if tool_call_end_token == Some(tok) && !a.inside_thinking {
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
             // Permanent diagnostic — see emit_step::emit_token's twin log.
             tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             // Fix A (2026-06-05): mark the tool call complete so the EOS-escape
@@ -773,6 +776,7 @@ pub fn process_decode_logits(
             // output_tokens for correct token count; the API layer strips the
             // decoded text for blocking responses.
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
             // Permanent diagnostic — see emit_step::emit_token's twin log.
             tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             crate::scheduler::emit_step::update_tool_param_state(a, tok);
@@ -850,6 +854,7 @@ pub fn process_decode_logits(
             );
         } else {
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
             // Permanent diagnostic — see emit_step::emit_token's twin log.
             tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             // SM1 (2026-05-26): drive the tool-body / parameter-body

@@ -69,6 +69,7 @@ pub fn emit_token(
         // The streamed-text path strips stop tokens server-side, so the
         // client never sees the literal `<|im_start|>` bytes.
         a.output_tokens.push(tok);
+        crate::metrics::GENERATION_TOKENS_TOTAL.inc();
         a.finished = true;
         tracing::debug!(
             "<|im_start|> hard-stop fired (id={ims}); ending turn before grammar/suppress_eos"
@@ -84,6 +85,7 @@ pub fn emit_token(
         && tok == trs
     {
         a.output_tokens.push(tok);
+        crate::metrics::GENERATION_TOKENS_TOTAL.inc();
         a.finished = true;
         // Name the cut -- MTP twin of the decode_logits_step site.
         a.guard_stop = Some(GUARD_STOP_TOOL_RESPONSE);
@@ -213,6 +215,7 @@ pub fn emit_token(
     }
 
     a.output_tokens.push(tok);
+    crate::metrics::GENERATION_TOKENS_TOTAL.inc();
     // Permanent diagnostic (RUST_LOG=...,spark::scheduler::emit_step=debug):
     // the emitted token id at the single choke point every path funnels
     // through — the token-exact stream needed for byte-level A/B of two
@@ -535,6 +538,7 @@ pub(crate) fn emit_grammar_close(a: &mut ActiveSeq) {
     for tok in close {
         let tok = tok as u32;
         a.output_tokens.push(tok);
+        crate::metrics::GENERATION_TOKENS_TOTAL.inc();
         if !send_stream_event(a, StreamEvent::Token(tok)) {
             break;
         }
