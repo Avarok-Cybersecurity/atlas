@@ -864,6 +864,15 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Rows per per-sequence capture BAND in the DFlash hidden scratch (γ+1).
+    /// Sequence `i` of a batched K=γ verify captures into band `i`, so its
+    /// `commit_ctx` `scratch_row` is `i * dflash_capture_band()`. Returning
+    /// the model's own stride keeps the capture and the commit from ever
+    /// disagreeing. `0` when there is no DFlash drafter.
+    fn dflash_capture_band(&self) -> usize {
+        0
+    }
+
     /// Run the MTP proposer for one draft token off the saved hidden state.
     /// `None` when no proposer is wired.
     fn run_mtp_propose(

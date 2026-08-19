@@ -437,6 +437,25 @@ impl TransformerModel {
         k: usize,
         stream: u64,
     ) -> Result<()> {
+        self.try_dflash_capture_all_at(layer_idx, 0, k, 0, stream)
+    }
+
+    /// [`Self::try_dflash_capture_all`] with explicit SOURCE and DESTINATION
+    /// row bases — the cross-sequence form.
+    ///
+    /// A batched K=γ verify packs `n` sequences seq-major into
+    /// `hidden_states`, so sequence `i`'s rows start at `src_row0 = off[i]`,
+    /// and its capture band starts at `dst_row0 = i * dflash_kgamma`. The
+    /// scheduler then hands that same `dst_row0` to `commit_ctx` as
+    /// `scratch_row`. Single-sequence callers pass 0/0 and are unchanged.
+    pub(super) fn try_dflash_capture_all_at(
+        &self,
+        layer_idx: usize,
+        src_row0: usize,
+        k: usize,
+        dst_row0: usize,
+        stream: u64,
+    ) -> Result<()> {
         let dst = match self.dflash_hidden_save {
             Some(p) => p,
             None => return Ok(()),
@@ -459,13 +478,17 @@ impl TransformerModel {
         let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
         let kmax = self.dflash_hidden_save_rows;
         debug_assert!(
-            k <= kmax,
-            "try_dflash_capture_all: k={k} exceeds dflash_hidden_save_rows={kmax}"
+            dst_row0 + k <= kmax,
+            "try_dflash_capture_all: rows {dst_row0}..{} exceed capacity {kmax}",
+            dst_row0 + k
         );
-        let k_capped = k.min(kmax);
+        let k_capped = k.min(kmax.saturating_sub(dst_row0));
         for t in 0..k_capped {
-            let src = self.buffers.hidden_states().offset(t * h * bf16);
-            let dst_slot = dst.offset(t * ctx_slot_bytes + slot * h * bf16);
+            let src = self
+                .buffers
+                .hidden_states()
+                .offset((src_row0 + t) * h * bf16);
+            let dst_slot = dst.offset((dst_row0 + t) * ctx_slot_bytes + slot * h * bf16);
             self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
         }
         Ok(())
