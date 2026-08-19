@@ -275,47 +275,28 @@ fn correctness_gate(
     }
     eprintln!("  gate 1/2 PASS: batch8 BIT-EXACT vs batch4 @M<=4 and batch16 @M=5..8");
 
-    // Gate 2b: the row-parallel tier is bit-exact vs batch8 at every M —
-    // same per-row reference chains, different thread layout.
-    if let Ok(rp) = handle("batch8rp") {
+    // Gates 2b/2c: the experimental M=8 tiers are bit-exact vs batch8 at
+    // every M — same per-row reference chains, different thread layouts.
+    for (gate, name) in [("2b", "batch8rp"), ("2c", "batch8pp")] {
+        let Ok(kh) = handle(name) else { continue };
         for &m in M_SWEEP {
             zero_c(g)?;
             launch_batchm(g, b8, a, b, bs, c, m, n, k)?;
             g.synchronize(0)?;
             let reference = read_c(g, c, m as usize * n_us)?;
             zero_c(g)?;
-            launch_batchm_rp(g, rp, a, b, bs, c, m, n, k)?;
+            launch_batchm_rp(g, kh, a, b, bs, c, m, n, k)?;
             g.synchronize(0)?;
             let got = read_c(g, c, m as usize * n_us)?;
             if reference != got {
                 let bad = reference.iter().zip(&got).filter(|(x, y)| x != y).count();
                 bail!(
-                    "GATE FAIL: batch8rp != batch8 at M={m} ({bad}/{} elems differ)",
+                    "GATE FAIL: {name} != batch8 at M={m} ({bad}/{} elems differ)",
                     got.len()
                 );
             }
         }
-        eprintln!("  gate 2b PASS: batch8rp BIT-EXACT vs batch8 @M in sweep");
-    }
-    if let Ok(pp) = handle("batch8pp") {
-        for &m in M_SWEEP {
-            zero_c(g)?;
-            launch_batchm(g, b8, a, b, bs, c, m, n, k)?;
-            g.synchronize(0)?;
-            let reference = read_c(g, c, m as usize * n_us)?;
-            zero_c(g)?;
-            launch_batchm_rp(g, pp, a, b, bs, c, m, n, k)?;
-            g.synchronize(0)?;
-            let got = read_c(g, c, m as usize * n_us)?;
-            if reference != got {
-                let bad = reference.iter().zip(&got).filter(|(x, y)| x != y).count();
-                bail!(
-                    "GATE FAIL: batch8pp != batch8 at M={m} ({bad}/{} elems differ)",
-                    got.len()
-                );
-            }
-        }
-        eprintln!("  gate 2c PASS: batch8pp BIT-EXACT vs batch8 @M in sweep");
+        eprintln!("  gate {gate} PASS: {name} BIT-EXACT vs batch8 @M in sweep");
     }
 
     // Gate 3: batch8 @M=8 vs CPU f64 dequant reference (first CPU_CHECK_ROWS).
@@ -400,8 +381,18 @@ fn main() -> Result<()> {
             "w4a16_gemv_batch16",
             Kind::Batchm { max_m: 16 },
         ),
-        ("batch8rp", "w4a16_gemv", "w4a16_gemv_batch8_rp", Kind::BatchmRp),
-        ("batch8pp", "w4a16_gemv", "w4a16_gemv_batch8_pp", Kind::BatchmRp),
+        (
+            "batch8rp",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_rp",
+            Kind::BatchmRp,
+        ),
+        (
+            "batch8pp",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_pp",
+            Kind::BatchmRp,
+        ),
         ("gemm_m64", "w4a16", "w4a16_gemm", Kind::Gemm),
         ("gemm_t", "w4a16", "w4a16_gemm_t", Kind::GemmT),
     ]
