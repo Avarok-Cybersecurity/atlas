@@ -60,6 +60,11 @@ pub struct StatsModel {
     pub bytes_out_rate: f64,
     // Histories.
     pub gen_tps_history: History,
+    /// Prefill ingest rate history. Kept SEPARATE from `gen_tps_history`
+    /// rather than sharing the throughput chart: prefill runs ~890 tok/s
+    /// against ~40 tok/s for generation, so on one axis the generation line
+    /// flattens to the baseline and stops being readable.
+    pub prompt_tps_history: History,
     pub req_history: History,
     pub queue_history: History,
     pub entropy_history: History,
@@ -119,6 +124,7 @@ impl Default for StatsModel {
             bytes_in_rate: 0.0,
             bytes_out_rate: 0.0,
             gen_tps_history: History::new(120),
+            prompt_tps_history: History::new(120),
             req_history: History::new(16),
             queue_history: History::new(24),
             entropy_history: History::new(24),
@@ -176,6 +182,7 @@ impl StatsModel {
             self.bytes_in_rate = (self.bytes_in_total.saturating_sub(prev.bytes_in)) as f64 / dt;
             self.bytes_out_rate = (self.bytes_out_total.saturating_sub(prev.bytes_out)) as f64 / dt;
             self.gen_tps_history.push(self.gen_tps);
+            self.prompt_tps_history.push(self.prompt_tps);
             self.req_history.push(self.req_rate);
         }
         self.last_sample = Some((

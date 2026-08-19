@@ -406,6 +406,13 @@ pub fn start_chunked_prefill(
         chunk_res
     })();
 
+    // FIRST chunk ingested here — the continue-prefills path only ever sees
+    // chunks 2..n, so counting solely there under-reported every request by
+    // exactly one `max_prefill_tokens` (measured: 4423 counted vs 12618
+    // API prompt_tokens on a 12.6k prompt, an 8192 shortfall).
+    if prefill_result.is_ok() {
+        crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_len as u64);
+    }
     let logits = match prefill_result {
         Ok(l) => l,
         Err(e) => {
