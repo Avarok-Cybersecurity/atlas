@@ -3,3 +3,8 @@
 {"pr":604,"head_sha":"0690563f2706a1aa68cdc31085829d8009ea4e7b","run_id":"32203150302","attempt":1,"at":1787101525,"kind":"category","value":"correctness","status":"partial"}
 {"pr":604,"head_sha":"9ca6da1e8cafbea0d298fe2ee53465cc9c20f410","run_id":"32204523214","attempt":1,"at":1787102474,"kind":"category","value":"correctness","status":"partial"}
 {"pr":604,"head_sha":"fc60343e88cebf2a2495dd502e7bb6147449715f","run_id":"32205538427","attempt":1,"at":1787103514,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"6dc86df276d75a28abab26c78fcefaa094da6c45","run_id":"32206193895","attempt":1,"at":1787104633,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"2e96867e6937328e02b07b48368bbd0c356f4c8e","run_id":"32207299621","attempt":1,"at":1787105354,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"aece4e3b0026fd95a028b6b03b1f0efa5c922951","run_id":"32209296541","attempt":1,"at":1787107252,"kind":"category","value":"correctness/kv-cache","status":"ok"}
+{"pr":604,"head_sha":"16978fd2057ae5a00249563290b5bd3b738077b6","run_id":"32209515860","attempt":1,"at":1787107443,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"7683da95d533edcae694a748758ee6501db10963","run_id":"32212978288","attempt":1,"at":1787110950,"kind":"category","value":"correctness/kv-cache","status":"ok"}
