@@ -8,3 +8,13 @@
 {"pr":604,"head_sha":"aece4e3b0026fd95a028b6b03b1f0efa5c922951","run_id":"32209296541","attempt":1,"at":1787107252,"kind":"category","value":"correctness/kv-cache","status":"ok"}
 {"pr":604,"head_sha":"16978fd2057ae5a00249563290b5bd3b738077b6","run_id":"32209515860","attempt":1,"at":1787107443,"kind":"category","value":"correctness/numerics","status":"ok"}
 {"pr":604,"head_sha":"7683da95d533edcae694a748758ee6501db10963","run_id":"32212978288","attempt":1,"at":1787110950,"kind":"category","value":"correctness/kv-cache","status":"ok"}
+{"pr":604,"head_sha":"f49d99d524faa628434a1a485c8a518e36b07b7c","run_id":"32223320800","attempt":1,"at":1787120762,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"4c8e3ccd07103f4f9ba3c2784e6ce177a240f7e3","run_id":"32225216759","attempt":1,"at":1787122377,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"0443ed7f014c719737b6edf7b16461d023db5ee6","run_id":"32226100017","attempt":1,"at":1787123111,"kind":"category","value":"correctness","status":"partial"}
+{"pr":604,"head_sha":"fbddc218798a81b08602ce0ede3c2781ba37604d","run_id":"32226301256","attempt":1,"at":1787123256,"kind":"category","value":"correctness","status":"partial"}
+{"pr":604,"head_sha":"8b9d0fb1b0fc965ceeb56595e1b5f409f579f8e3","run_id":"32227686149","attempt":1,"at":1787124377,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"18b9ca95368870fd044a9d235d6539affddcd6dd","run_id":"32228088286","attempt":1,"at":1787124687,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"785d1f6bd0f6b0b46723d56e7a48782fbfbf55ee","run_id":"32228898384","attempt":1,"at":1787125355,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"090c83d30490f869150253980e6d9f5e9ac7d5b1","run_id":"32230794677","attempt":1,"at":1787126862,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"f1e5215e787eadd4e0bbe19a6fd249d4ce5cc8d7","run_id":"32233081433","attempt":1,"at":1787128439,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"773d911cb3e48d410a148017016f31effc726de4","run_id":"32235035066","attempt":1,"at":1787129872,"kind":"category","value":"correctness/ssm-state","status":"ok"}
