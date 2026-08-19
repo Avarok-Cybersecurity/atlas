@@ -932,6 +932,44 @@ like-for-like. Do not fold such a number into the certified column.
 the right mitigation, but it must be applied to BOTH engines or reported as a separate
 configuration.)
 
+### NEGATIVE RESULT (2026-08-19) — `decode_tps` is NOT a tighter gate than `s_per_turn`
+
+atlas#581 made `s_per_turn` the agentic speed bound and recorded `decode_tps`
+(tokens / agent-wall) unbounded, with a note that tokens are "the honest denominator" and
+that a future change should ratchet onto it. Six measured tiers say **do not**.
+
+| tier | `sum_turns` | `s_per_turn` | `decode_tps` |
+|---:|---:|---:|---:|
+| 1 | 115 | 7.000 | 34.384 |
+| 2 | 127 | 7.118 | 34.229 |
+| 3 | 117 | 6.928 | 34.218 |
+| 4 | 133 | 7.018 | 33.876 |
+| 5 | 114 | 6.452 | 33.747 |
+| 6 | 111 | 7.099 | **30.966** |
+
+| metric | min | max | spread |
+|---|---:|---:|---:|
+| `sum_turns` | 111 | 133 | 19.8% |
+| `s_per_turn` | 6.452 | 7.118 | **10.3%** |
+| `decode_tps` | 30.966 | 34.384 | **11.0%** |
+
+**The two bounds are equally noisy, and `decode_tps` is marginally worse.**
+
+★ This conclusion REVERSES at five tiers, which is the trap. Through tier 5 `decode_tps`
+spanned only 1.9% against `s_per_turn`'s 10.3% — a five-times-tighter result that looked
+like a clear mandate to ratchet. Tier 6 came in at 30.966 (8% below the previous minimum)
+while its `s_per_turn` of 7.099 sat mid-range, and the advantage vanished. Anyone who stops
+at five tiers will conclude the opposite of the truth.
+
+Tier 5 is the other warning: it is the FASTEST tier per turn (6.452) and the SLOWEST per
+token of the first five (33.747). The two metrics do not even rank runs the same way, so
+"tokens are more physical" is not by itself a reason to prefer one.
+
+**Action: none.** `s_per_turn` stays the bound; `decode_tps`, `sum_turns`,
+`sum_agent_wall_s` and `sum_tool_calls` stay recorded and unbounded — they are worth having
+for diagnosis, which is what tier 6 just demonstrated. Do not re-derive this from a short
+run.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
