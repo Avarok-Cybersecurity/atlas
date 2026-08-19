@@ -445,6 +445,7 @@ pub fn run(
         snapshot_steps += 1;
         let t_loop = std::time::Instant::now();
         {
+            let last_chunk = sched.snapshot.last_prefill_chunk();
             let (mtp_mode, delivered_tps) = match mtp_gate.as_ref() {
                 Some(g) => g.observe(),
                 None => (snapshot::MtpModeSnap::Off, 0.0),
@@ -461,6 +462,15 @@ pub fn run(
                 mtp_mode,
                 delivered_tps,
                 steps_total: snapshot_steps,
+                // O(prefilling) over a list bounded by --max-num-seqs, of two
+                // field reads each, once per tick.
+                prefill_tokens_done: prefilling.iter().map(|p| p.chunk_offset as u32).sum(),
+                prefill_tokens_total: prefilling
+                    .iter()
+                    .map(|p| p.prompt_tokens.len() as u32)
+                    .sum(),
+                prefill_chunk_width: last_chunk.0,
+                prefill_fused: last_chunk.1,
                 published_at: std::time::Instant::now(),
             });
         }
