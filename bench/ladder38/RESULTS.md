@@ -970,6 +970,39 @@ token of the first five (33.747). The two metrics do not even rank runs the same
 for diagnosis, which is what tier 6 just demonstrated. Do not re-derive this from a short
 run.
 
+### C=16 K-LADDER SWEEP (2026-08-19) — the shipped value is optimal, and K=3 does not FIT
+
+After the same-day sweep left C=16 as the thinnest confirmed rung (1.016x, down from a
+certified 1.032x), its K ladder was swept the way C=8's was. Atlas-only, one box (dgx1),
+back-to-back, so only the relative ordering is claimed:
+
+| `16:K` | mean tok/s | vs shipped |
+|---:|---:|---:|
+| **16:1 (shipped)** | **194.06** | — |
+| 16:2 | 186.17 | -4.1% |
+| 16:3 | **would not start** | — |
+
+(dgx1 absolutes; the dgx2 figure for this rung is 201.32. Cross-box absolutes are not
+comparable — only the within-box ordering above is.)
+
+**16:3 is not slower, it is INFEASIBLE.** It fails at model build, and the failure was
+reproduced on a GPU verified idle beforehand (0 compute apps) so it is not residue from a
+previous serve — identical numbers both times:
+
+```
+No memory left for KV cache: total GPU = 121.7 GB, util 85% -> budget 103.4 GB,
+but 60.4 GB already consumed + 43.4 GB inference reserve = 103.8 GB
+```
+
+It misses by **0.4 GB**. The verify-pool reserve grows with K, so the K ladder at this rung
+is bounded by memory before it is bounded by throughput — a harder constraint than "we
+measured it and it was worse", and the reason no amount of tuning opens C=16 up.
+
+Together with the C=8 sweep (8:2 shipped beats 8:1 by 4.1% and 8:3 by 5.1%), **both
+mid-ladder rungs sit on their optimum in both directions.** The narrow margins there are a
+property of the rungs, not a missed setting, and widening them needs a kernel-level change.
+Recorded so neither sweep is run a third time.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
