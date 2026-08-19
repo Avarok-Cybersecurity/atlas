@@ -13,6 +13,23 @@ use crate::tui::app::{App, Section};
 use crate::tui::bench_state::View;
 use crate::tui::render::harness::{has, screen};
 
+/// A terminal tall enough to hold the whole registry on one page.
+///
+/// Derived, not hardcoded: the suite grows, and a fixed `160x48` silently
+/// stopped holding it once `mlperf-agentic-subset` joined the decode-floor /
+/// quick-speed / media-integrity additions — both tests below started failing
+/// on a registry change that had nothing to do with them.
+///
+/// A list entry is NOT one row (measured: 31 rows gave a 7-entry page, 45 rows
+/// gave 12 — about 2.8 rows apiece once the summary line and spacing are
+/// counted), so the height has to scale with `n`, not merely clear a fixed
+/// chrome. `3n + 20` keeps the page strictly larger than the registry with
+/// room to spare, and grows correctly as entries are added.
+fn tall_enough() -> u16 {
+    let n = atlas_plugin::registry::all().len();
+    u16::try_from(n * 3 + 20).expect("fits a u16 terminal")
+}
+
 fn list_app(selected: usize) -> App {
     let mut a = crate::tui::render::tests::app();
     a.section = Section::Benchmarks;
@@ -52,9 +69,10 @@ fn the_clip_indicator_appears_only_when_the_list_is_clipped() {
             .any(|r| r.contains("─ 1-") && r.contains(&format!("of {n} ─"))),
         "clipped list must name its window:\n{rows:#?}"
     );
-    // 160x48 holds every entry (`render_tests` asserts the names); an
-    // indicator over an unclipped list would claim a fold that is not there.
-    let rows = screen(&list_app(0), 160, 48);
+    // A registry-sized terminal holds every entry (`render_tests` asserts the
+    // names); an indicator over an unclipped list would claim a fold that is
+    // not there.
+    let rows = screen(&list_app(0), 160, tall_enough());
     assert!(
         !has(&rows, &format!("of {n} ─")),
         "unclipped list must not draw an indicator:\n{rows:#?}"
@@ -112,10 +130,13 @@ fn the_renderer_publishes_the_page_size_for_the_key_handler() {
         page < n,
         "80x24 is clipped, so one page is less than the suite"
     );
-    screen(&a, 160, 48);
+    let tall = tall_enough();
+    screen(&a, 160, tall);
     assert!(
         a.bench.suite_page.get() >= n,
-        "160x48 holds the whole suite on one page"
+        "a terminal sized from the registry ({n} entries, {tall} rows) holds \
+         the whole suite on one page; got {}",
+        a.bench.suite_page.get()
     );
 }
 
