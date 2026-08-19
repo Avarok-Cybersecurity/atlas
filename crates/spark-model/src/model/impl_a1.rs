@@ -172,10 +172,15 @@ impl TransformerModel {
         // For DFlash K=γ verify: K = γ + 1 (drafter's γ drafts + 1 verified bonus slot).
         // Pool size = max of both so DFlash and MTP can coexist on the same model.
         let dflash_kgamma = if !config.dflash_capture_layers.is_empty() {
-            // Drafter's γ is fixed in dflash config; use the largest known γ
-            // (16 for `Qwen3.6-DFlash`). The +1 is the prefix bonus position
-            // in the verify input `[last_token, draft_0, ..., draft_{γ-1}]`.
-            17
+            // The +1 is the prefix bonus position in the verify input
+            // `[last_token, draft_0, ..., draft_{γ-1}]`. Sized from the
+            // RESOLVED drafter γ (factory sets `config.dflash_gamma` from the
+            // drafter checkpoint / --dflash-gamma): the legacy 17-wide
+            // ceiling (γ=16-era) cost ~1.5 GB of intermediates per slot per
+            // GB at γ=8 — ~12 GB across 8 slots on qwen3.8-27B — for slots
+            // the verify never touches (2026-08-19 256K/C8 boot ledger).
+            // Unknown γ keeps the 17-wide fallback.
+            config.dflash_gamma.map(|g| g + 1).unwrap_or(17)
         } else {
             0
         };
