@@ -53,10 +53,8 @@ const DV_BLK: usize = 64;
 const NUM_DV_BLK: usize = VD / DV_BLK; // 2
 
 // ksplit reference smem (99336 B): 2×{W,K,U} db (bf16) + 2×gc + 2×decay(CHUNK+1).
-/// Challenger kernel under test, overridable so a NEW candidate can be A/B'd
-/// against the same ksplit reference without forking this harness.
-/// `ATLAS_GDN_CHALLENGER=dvsplit` selects the scalar DV-split variant
-/// (grid/block are identical to tc_vblock's — only the kernel and its smem differ).
+/// Challenger under test, overridable (`ATLAS_GDN_CHALLENGER`) so a new candidate
+/// can be A/B'd against the same ksplit reference without forking this harness.
 fn challenger_name() -> String {
     match std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() {
         Some("dvsplit") => "gated_delta_rule_chunk_delta_h_dvsplit".to_string(),
@@ -65,12 +63,10 @@ fn challenger_name() -> String {
     }
 }
 
-/// smem for the selected challenger. dvsplit is SINGLE-buffered {W,K,U-slice}
-/// plus one decay row — 41,476 B against tc_vblock's 82,952.
+/// smem for the selected challenger (dvsplit/vtile are single-buffered).
 fn challenger_smem() -> u32 {
     match std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() {
         Some("dvsplit") => (C * KD * 2 + C * KD * 2 + C * DV_BLK * 2 + (C + 1) * 4) as u32,
-        // vtile stages only W and K; U is streamed from global.
         Some("vtile") => (C * KD * 2 + C * KD * 2 + C * VD * 2 + (C + 1) * 4) as u32,
         _ => TC_VBLOCK_SMEM,
     }
@@ -288,8 +284,7 @@ fn launch_scan(
 ) -> Result<()> {
     let vtile = std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() == Some("vtile");
     let (grid, smem) = if tc && vtile {
-        // vtile deliberately does NOT split DV: one CTA per head keeps W/K loaded
-        // once, which is the point (L2 was the saturated resource).
+        // vtile does NOT split DV — one CTA per head keeps W/K loaded once.
         ([NV as u32, c.batch as u32, 1], challenger_smem())
     } else if tc {
         (
