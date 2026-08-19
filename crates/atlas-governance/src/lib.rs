@@ -44,6 +44,7 @@
 //! read would make it depend on a file any job can append to, which is the
 //! property the gate is careful not to have.
 
+pub mod eigenvector;
 pub mod event;
 pub mod ledger;
 
