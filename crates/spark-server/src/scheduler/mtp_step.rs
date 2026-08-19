@@ -368,6 +368,91 @@ pub fn step_mtp(
     // (PRESENCE check) forces the serialized loop for A/B.
     let mut serial_idxs: Vec<usize> = Vec::new();
     let mut batchable_idxs: Vec<usize> = Vec::new();
+    // ── DFlash: cross-sequence batched K=γ verify ──
+    // The block drafter has no ragged ladder, so the batch is the set of
+    // grammarless sequences carrying the SAME γ drafts; anything else falls
+    // to the per-sequence step. One R=n*(γ+1)-row forward replaces n full
+    // weight sweeps (the per-step verify wall was flat ~115ms per SEQUENCE
+    // from C=1..4 before this). Kill switch: ATLAS_DFLASH_BATCH_VERIFY=0.
+    if dflash_verify_raw_argmax
+        && verify_idxs.len() >= 2
+        && sched.levers.dflash_batch_verify
+        && !batch_verify_disabled()
+    {
+        let mut gamma = 0usize;
+        for &idx in &verify_idxs {
+            let a = &active[idx];
+            let g = a.pending_drafts.len();
+            if a.grammar_state.is_some() || g < 1 {
+                serial_idxs.push(idx);
+            } else if gamma == 0 || g == gamma {
+                gamma = g;
+                batchable_idxs.push(idx);
+            } else {
+                serial_idxs.push(idx);
+            }
+        }
+        if batchable_idxs.len() >= 2
+            && model.can_batch_verify(&vec![gamma + 1; batchable_idxs.len()])
+        {
+            let mut asc = batchable_idxs.clone();
+            asc.sort_unstable();
+            let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(asc.len());
+            let mut it = active.iter_mut();
+            let mut consumed = 0usize;
+            for &i in &asc {
+                let a = it.nth(i - consumed).expect("verify index within active");
+                consumed = i + 1;
+                refs.push(a);
+            }
+            step_verify_dflash_batched(model, &mut refs, sched, gamma, num_drafts, verify_ctx);
+        } else {
+            // Loud on the FIRST decline only: a silently-refused gate looks
+            // exactly like "the batched path is off", which cost a whole
+            // validation cycle when k=γ-1+1 failed an over-strict width check.
+            if !batchable_idxs.is_empty() && sched.stats.once("log:dflash_batch_decline") {
+                tracing::info!(
+                    "DFlash batched verify DECLINED: n={} k={} (model.can_batch_verify said no) \
+                     — running the per-sequence loop",
+                    batchable_idxs.len(),
+                    gamma + 1,
+                );
+            }
+            serial_idxs.extend_from_slice(&batchable_idxs);
+        }
+        batchable_idxs.clear();
+        for &idx in &serial_idxs {
+            let a = &mut active[idx];
+            let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+            a.pending_draft_conf.clear();
+            if drafts.is_empty() {
+                continue;
+            }
+            if let Some(ref mut gs) = a.grammar_state {
+                let kept = truncate_drafts_at_grammar_boundary(gs, &drafts);
+                drafts.truncate(kept);
+                if drafts.is_empty() {
+                    continue;
+                }
+            }
+            step_verify_dflash(
+                model,
+                a,
+                sched,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
+        }
+        // Same StepOuter record the shared tail makes — this arm returns
+        // early, and dropping it would blind the phase telemetry exactly
+        // where the batched path is meant to show its win.
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
+        return;
+    }
     if verify_idxs.len() >= 2
         && spark_model::speculative::mtp_multi_seq_mode()
         && !dflash_verify_raw_argmax

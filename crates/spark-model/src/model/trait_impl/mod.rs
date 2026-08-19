@@ -573,6 +573,10 @@ impl Model for TransformerModel {
         Ok(())
     }
 
+    fn dflash_capture_band(&self) -> usize {
+        self.dflash_kgamma
+    }
+
     fn commit_ctx(
         &self,
         seq: &mut SequenceState,

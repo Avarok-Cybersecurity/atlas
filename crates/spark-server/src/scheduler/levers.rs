@@ -54,6 +54,11 @@ pub struct SchedLevers {
     /// and completions EOS normally. C>=3 keeps arbitration — per-seq serial
     /// verify genuinely loses there (22.0 vs 28.1 tok/s at C=4).
     pub dflash_gate_pin_c2: bool,
+    /// Cross-sequence batched DFlash K=γ verify (`ATLAS_DFLASH_BATCH_VERIFY=0`
+    /// forces the per-sequence loop). One R=n*(γ+1)-row forward replaces n
+    /// full weight sweeps; the GDN body still runs per sequence, so accepts
+    /// are unchanged and only the wall moves.
+    pub dflash_batch_verify: bool,
     /// Mean accepted drafts below which adaptive speculation suspends.
     pub dflash_adaptive_min: f32,
     /// Serially-decoded tokens between adaptive re-probes.
@@ -172,6 +177,7 @@ impl SchedLevers {
             dflash_unified_ctx: on_unless_zero("ATLAS_DFLASH_UNIFIED_CTX"),
             dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
             dflash_gate_pin_c2: on_unless_zero("ATLAS_DFLASH_GATE_PIN_C2"),
+            dflash_batch_verify: on_unless_zero("ATLAS_DFLASH_BATCH_VERIFY"),
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
             dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
             dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
@@ -217,6 +223,7 @@ impl SchedLevers {
             dflash_unified_ctx: true,
             dflash_spec_think: false,
             dflash_gate_pin_c2: true,
+            dflash_batch_verify: true,
             dflash_adaptive_min: 2.0,
             dflash_adaptive_reprobe: 256,
             dflash_resume_guard: 0,
