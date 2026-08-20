@@ -81,7 +81,21 @@ impl TransformerModel {
             && shape_ok
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
             && self.comm.is_none()
-            && self.lora.is_none()
+            // LoRA is NOT a barrier here. Every weight-bearing op this path
+            // batches — QKVZ, o_proj, the dense FFN, lm_head — carries its
+            // delta on the batched variants (`forward_km` and the multi_seq
+            // qkv/o_proj), so the rows are adapted whether they are verified
+            // together or one at a time. And all rows necessarily share ONE
+            // adapter: a batch containing a sequence routed to a non-active
+            // slot is already refused upstream by the single-active guard, so
+            // a uniform delta across the batch is the correct delta.
+            //
+            // Refusing it cost the whole point of the batched path. With an
+            // adapter resident, DFlash aggregate throughput was FLAT at ~34
+            // tok/s from C=1 to C=4 (against 39 -> 71 -> 79 without one)
+            // because every sequence fell back to the per-sequence verify
+            // loop. `ATLAS_LORA_NO_BATCH_VERIFY=1` restores the refusal.
+            && !(self.lora.is_some() && crate::lora::no_batch_verify())
             && !self.verify_hidden_stash.is_null()
             // HSS: the paged-decode kernel reads HBM only, missing on-disk
             // history (see verify_c2's HSS fallback) — batched path unsupported.
