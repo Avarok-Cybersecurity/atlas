@@ -966,6 +966,52 @@ mid-ladder rungs sit on their optimum in both directions.** The narrow margins t
 property of the rungs, not a missed setting, and widening them needs a kernel-level change.
 Recorded so neither sweep is run a third time.
 
+### ⚠ C=32 DOES NOT CURRENTLY WIN (2026-08-20) — Atlas is ~4% below its certified value
+
+**This contradicts the certified table's 1.027x at C=32 and the site's published `wins=True`
+for that rung. It is reported here before any attempt to explain it away.**
+
+Two independent measurements on a HEALTHY dgx2 (the certification box), at merged main
+`635a692ca9`, with the certified serve flags and env:
+
+| config | Atlas | certified Atlas | delta |
+|---|---:|---:|---:|
+| batch cap 128 (the certified config) | **279.23** (277.48/279.65/280.55, 1.10%) | 291.01 | **-4.0%** |
+| batch cap 128, five minutes after a reboot | 282.42 (282.32/283.27/281.69, 0.56%) | 291.01 | -2.9% |
+
+Both land near 279-282, not 291, so this is NOT the box-state effect that explained the
+earlier C=16/C=32 scare — that one recovered on a clean boot and this does not.
+
+**A same-day matched pair confirms the ordering has flipped.** Both engines at batch cap
+**32** (see the METHOD NOTE below — this is a SEPARATE configuration from the certified
+table, which pins 128 on both, and it is used here because vLLM+MTP at C>=32 with cap 128 has
+wedged this box three times; the cap is matched on both engines, so the pair is internally
+like-for-like):
+
+| engine (cap 32, same box, back-to-back, same hour) | rep 1 | rep 2 | rep 3 | mean |
+|---|---:|---:|---:|---:|
+| Atlas | 275.98 | 277.78 | 278.17 | **277.31** |
+| vLLM+MTP | 283.08 | 287.54 | 283.00 | **284.54** |
+
+**Ratio 0.975x — vLLM wins.**
+
+The two views agree in direction: Atlas has moved down ~4% at this rung while vLLM has not
+(its cap-32 284.54 sits just above its cap-128 certified 283.48). Whatever changed is on our
+side.
+
+**What is NOT yet established:** vLLM at cap 128 on current main. That is the measurement the
+wedge hazard blocks, so the certified 1.027x has not been directly re-run — only bracketed.
+The honest statement is that C=32 fails to reproduce and loses a matched-cap same-day A/B,
+not that the certified number was wrong when taken.
+
+**Next step is a bisect, not a re-measurement.** Atlas C=32 was 291.01 at the certified sha
+and is 279.23 now; the shas in between are known and the rung takes ~8 minutes to measure.
+Suspects are anything touching decode at width 32 — the K-ladder entry used at C=32 is
+`16:1`, unchanged, so this is not a tuning drift.
+
+Raw series: `c32_atlas_cap128_dgx2_20260820.json`, `c32_atlas_cap32_dgx2_20260820.json`,
+`c32_vllm_mtp_cap32_dgx2_20260820.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
