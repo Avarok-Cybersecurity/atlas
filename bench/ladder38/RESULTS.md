@@ -1237,6 +1237,42 @@ box and day. The absolutes across the fleet have shifted; the same-day ratios ha
 
 Raw series: `sweep_atlas_stacktip_dgx3_20260820.json`.
 
+### C=64 and C=128 WIN under the most conservative assumption available (2026-08-20)
+
+Rather than run vLLM at cap 128 at C>=64 — the workload that has cost this fleet three
+powercycles — Atlas's own absolutes were measured there today (dgx1, idle, certified commit
+`1575873582`, Atlas-only, zero wedge risk) and compared against the CERTIFIED vLLM column.
+
+That comparison is deliberately unfair to Atlas: vLLM has demonstrably FALLEN with the fleet
+(its certified C=32 283.48 measures 277.12 today, -2.2%), so crediting it with its old number
+understates Atlas's true margin.
+
+| C | Atlas today | certified vLLM | ratio vs certified vLLM | certified ratio |
+|---:|---:|---:|---:|---:|
+| 64 | **375.68** (0.31%) | 361.39 | **1.040x** | 1.070x |
+| 128 | **460.37** (0.38%) | 358.57 | **1.284x** | 1.333x |
+
+**Both rungs win even if vLLM is credited with its full pre-shift number.** Grant vLLM the
+same -2.2% it actually took at C=32 and the ratios become ~1.063x and ~1.313x, close to
+certified. Either way the ordering is not in question, which is what the earlier
+differential-based bound argued and this now demonstrates with measured Atlas numbers at the
+rungs themselves.
+
+★ **Correcting the shape.** Earlier sections describe the deficit as "growing with
+concurrency". With C=64 and C=128 measured, that is wrong — it is a STEP at C>=4 and then
+roughly flat:
+
+| C | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| delta vs certified | **+1.1%** | **+1.5%** | -3.8% | -3.5% | -4.6% | -4.2% | **-2.8%** | **-3.7%** |
+
+C=1 and C=2 sit ABOVE certified; everything from C=4 up sits 2.8-4.6% below, with no trend
+across that range. Whatever the fleet-wide cause is, it engages once batching begins and does
+not worsen with width — which is a materially different fingerprint from the one the earlier
+text implies, and a better clue for whoever chases it next.
+
+Raw series: `atlas_c64_c128_dgx1_20260820.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
