@@ -12,8 +12,42 @@
 //   checks success and formats via cuGetErrorString (mapped to hipGetErrorString).
 #include <hip/hip_runtime.h>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 typedef unsigned long long CUdeviceptr;
+
+// Windows device-memory accounting.
+//
+// hipMemGetInfo is BROKEN on the Windows HIP runtime: it returns
+// hipErrorInvalidValue ("invalid argument") standalone, and reports free==0
+// under a live context. Atlas sizes its KV cache from cuMemGetInfo, so a bogus
+// 0-free makes serve fail with "No memory left for KV cache" even with tens of
+// GB genuinely available (measured: 64 GB allocatable via a hipMalloc ladder).
+//
+// So track what we hand out and synthesise a truthful answer when HIP won't
+// give one. Only engages when hipMemGetInfo actually fails or returns zeros,
+// so Linux/ROCm behaviour is byte-identical to before.
+static std::mutex g_mem_mu;
+static std::unordered_map<void *, size_t> g_mem_sizes;
+static size_t g_mem_used = 0;
+
+static void atlas_track_alloc(void *p, size_t n) {
+    if (!p) return;
+    std::lock_guard<std::mutex> lk(g_mem_mu);
+    g_mem_sizes[p] = n;
+    g_mem_used += n;
+}
+
+static void atlas_track_free(void *p) {
+    if (!p) return;
+    std::lock_guard<std::mutex> lk(g_mem_mu);
+    auto it = g_mem_sizes.find(p);
+    if (it == g_mem_sizes.end()) return;
+    g_mem_used = (g_mem_used > it->second) ? g_mem_used - it->second : 0;
+    g_mem_sizes.erase(it);
+}
+
 extern "C" {
 
 // ── init / context ────────────────────────────────────────────────────
@@ -28,13 +62,44 @@ int cuGetErrorName(int err, const char** s)   { *s = hipGetErrorName((hipError_t
 int cuGetErrorString(int err, const char** s) { *s = hipGetErrorString((hipError_t)err); return 0; }
 
 // ── memory ────────────────────────────────────────────────────────────
-int cuMemAlloc_v2(CUdeviceptr* dptr, size_t n)      { return hipMalloc((void**)dptr, n); }
-int cuMemFree_v2(CUdeviceptr dptr)                  { return hipFree((void*)dptr); }
+int cuMemAlloc_v2(CUdeviceptr* dptr, size_t n)      {
+    int r = hipMalloc((void**)dptr, n);
+    if (r == hipSuccess && dptr) atlas_track_alloc((void*)*dptr, n);
+    return r;
+}
+int cuMemFree_v2(CUdeviceptr dptr)                  {
+    atlas_track_free((void*)dptr);
+    return hipFree((void*)dptr);
+}
 int cuMemAllocHost_v2(void** pp, size_t n)          { return hipHostMalloc(pp, n, 0); }
 int cuMemFreeHost(void* p)                          { return hipHostFree(p); }
 int cuMemAllocManaged(CUdeviceptr* dptr, size_t n, unsigned flags)
-                                                    { return hipMallocManaged((void**)dptr, n, flags); }
-int cuMemGetInfo_v2(size_t* free, size_t* total)    { return hipMemGetInfo(free, total); }
+                                                    {
+    int r = hipMallocManaged((void**)dptr, n, flags);
+    if (r == hipSuccess && dptr) atlas_track_alloc((void*)*dptr, n);
+    return r;
+}
+// See the g_mem_used comment above: fall back to totalGlobalMem minus tracked
+// allocations whenever hipMemGetInfo errors or hands back a zero.
+int cuMemGetInfo_v2(size_t* free, size_t* total)    {
+    size_t f = 0, t = 0;
+    hipError_t e = hipMemGetInfo(&f, &t);
+    if (e == hipSuccess && t != 0 && f != 0) {
+        if (free)  *free  = f;
+        if (total) *total = t;
+        return hipSuccess;
+    }
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) return (int)e;
+    hipDeviceProp_t prop;
+    if (hipGetDeviceProperties(&prop, dev) != hipSuccess) return (int)e;
+    size_t used;
+    { std::lock_guard<std::mutex> lk(g_mem_mu); used = g_mem_used; }
+    const size_t tot = prop.totalGlobalMem;
+    if (total) *total = tot;
+    if (free)  *free  = (used < tot) ? (tot - used) : 0;
+    return hipSuccess;
+}
 
 int cuMemcpyHtoDAsync_v2(CUdeviceptr dst, const void* src, size_t n, void* s)
                               { return hipMemcpyHtoDAsync((hipDeviceptr_t)dst, (void*)src, n, (hipStream_t)s); }
@@ -68,9 +133,8 @@ int cuLaunchKernel(void* f, unsigned gx, unsigned gy, unsigned gz,
 // ── streams ───────────────────────────────────────────────────────────
 int cuStreamCreate(void** s, unsigned flags)        { return hipStreamCreateWithFlags((hipStream_t*)s, flags); }
 int cuStreamSynchronize(void* s)                    { return hipStreamSynchronize((hipStream_t)s); }
-// Non-blocking completion poll (ATLAS_D2H_SPIN_SYNC). hipErrorNotReady and
-// CUDA_ERROR_NOT_READY are both 600, so the caller's spin predicate is
-// unchanged on AMD.
+// Re-added on the merge to main: main introduced a cuStreamQuery call in
+// spark-runtime (copy_d2h_on_stream) after this shim was written.
 int cuStreamQuery(void* s)                          { return hipStreamQuery((hipStream_t)s); }
 int cuStreamWaitEvent(void* s, void* e, unsigned f) { return hipStreamWaitEvent((hipStream_t)s, (hipEvent_t)e, f); }
 int cuStreamBeginCapture(void* s, int mode)         { return hipStreamBeginCapture((hipStream_t)s, (hipStreamCaptureMode)mode); }
