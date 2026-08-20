@@ -39,3 +39,7 @@
 {"pr":604,"head_sha":"a4196092d740f09a988fa620df8d21b61c5a1f7e","run_id":"32320898873","attempt":1,"at":1787189377,"kind":"category","value":"correctness/ssm-state","status":"ok"}
 {"pr":604,"head_sha":"37ab9daeb7c3b74e256ef3caf183417ca37f43e0","run_id":"32321853447","attempt":1,"at":1787190089,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":604,"head_sha":"25062b33e1e2e16b09ed85b8712c4a622dcf763a","run_id":"32322609607","attempt":1,"at":1787190880,"kind":"category","value":"correctness","status":"partial"}
+{"pr":604,"head_sha":"3f550135316538c6ced57a8c89562c57ae515071","run_id":"32323456109","attempt":1,"at":1787191873,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"4b18d0f2c42d7af9e16847f7fdd50352848c50db","run_id":"32324688395","attempt":1,"at":1787192917,"kind":"category","value":"correctness","status":"partial"}
+{"pr":604,"head_sha":"6f5bf0d47246a9f3eb2ec2850dd62e35f3cb7cb7","run_id":"32325329575","attempt":1,"at":1787193586,"kind":"category","value":"correctness","status":"partial"}
+{"pr":604,"head_sha":"0699daebd144e7f7eb5d844a809781a0f07b9be2","run_id":"32325867012","attempt":1,"at":1787194154,"kind":"category","value":"correctness/ssm-state","status":"ok"}
