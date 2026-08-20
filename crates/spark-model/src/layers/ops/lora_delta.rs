@@ -204,15 +204,19 @@ pub fn lora_no_apply() -> bool {
 /// this makes the small-m path agree with that oracle rather than diverge
 /// from it.
 ///
-/// Default 8 covers the decode ladder (C=1..8) and the K<=8 verify widths;
-/// prefill's m is orders of magnitude larger and keeps the GEMM.
+/// Default 48 covers the plain decode ladder (C=1..8) AND the speculative
+/// verify shapes, which present n*k rows — up to 4 seqs x k=9 = 36 under
+/// cross-sequence batched DFlash verify. 8 left those on the GEMM: raising it
+/// took DFlash+LoRA from 34.8 to 48.6 tok/s at C=2 and 47.6 to 54.2 at C=4,
+/// with accepts and output unchanged. Prefill's m is orders of magnitude
+/// larger and keeps the GEMM.
 pub fn lora_gemv_max_m() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         std::env::var("ATLAS_LORA_GEMV_MAX_M")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8)
+            .unwrap_or(48)
     })
 }
 

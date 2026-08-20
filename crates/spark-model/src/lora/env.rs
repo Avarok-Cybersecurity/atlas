@@ -90,6 +90,19 @@ pub fn prefill_bgmv_forced() -> bool {
     *V.get_or_init(|| std::env::var("ATLAS_LORA_PREFILL_BGMV").as_deref() == Ok("1"))
 }
 
+/// `ATLAS_LORA_NO_BATCH_VERIFY=1` — restore the old refusal of cross-sequence
+/// batched speculative verify while a LoRA adapter is resident.
+///
+/// Default OFF: the batched path applies the deltas on every op it batches,
+/// and all rows share one adapter (mixed batches are refused upstream). The
+/// refusal used to be unconditional and undocumented, and it flattened DFlash
+/// throughput to ~34 tok/s at every concurrency. This is the bisect handle if
+/// a batched-verify numerics difference is ever suspected under an adapter.
+pub fn no_batch_verify() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_LORA_NO_BATCH_VERIFY").as_deref() == Ok("1"))
+}
+
 pub fn full_attention_layers(cfg: &ModelConfig) -> Vec<usize> {
     (0..cfg.num_hidden_layers)
         .filter(|&i| cfg.layer_type(i) == LayerType::FullAttention)
