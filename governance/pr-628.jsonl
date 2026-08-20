@@ -4,3 +4,5 @@
 {"pr":628,"head_sha":"d9d3dc19ab9074c3ae07b6e8675a8d4ac7755ce9","run_id":"32293575039","attempt":1,"at":1787168743,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":628,"head_sha":"7d398f9f3ac54bd69e2e4557ab0263a9310d1fc3","run_id":"32299073611","attempt":1,"at":1787172467,"kind":"category","value":"performance/memory-traffic","status":"ok"}
 {"pr":628,"head_sha":"5ef0461518aec685d116a2a40bb61635d6592e77","run_id":"32319540432","attempt":1,"at":1787187808,"kind":"category","value":"performance/memory-traffic","status":"ok"}
+{"pr":628,"head_sha":"f989b6c0a2db294098e820f4998ba5589cf461dc","run_id":"32329214664","attempt":1,"at":1787197455,"kind":"category","value":"performance/memory-traffic","status":"ok"}
+{"pr":628,"head_sha":"29fb0de88c70e69025e2239de40d03b7eb253476","run_id":"32330384878","attempt":1,"at":1787198605,"kind":"category","value":"performance/memory-traffic","status":"ok"}

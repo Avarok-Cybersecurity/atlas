@@ -43,3 +43,4 @@
 {"pr":604,"head_sha":"4b18d0f2c42d7af9e16847f7fdd50352848c50db","run_id":"32324688395","attempt":1,"at":1787192917,"kind":"category","value":"correctness","status":"partial"}
 {"pr":604,"head_sha":"6f5bf0d47246a9f3eb2ec2850dd62e35f3cb7cb7","run_id":"32325329575","attempt":1,"at":1787193586,"kind":"category","value":"correctness","status":"partial"}
 {"pr":604,"head_sha":"0699daebd144e7f7eb5d844a809781a0f07b9be2","run_id":"32325867012","attempt":1,"at":1787194154,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"938f6b0ee63db9afe2c120b32fb387a24e8115ec","run_id":"32326789221","attempt":1,"at":1787195059,"kind":"category","value":"unknown","status":"abstain"}
