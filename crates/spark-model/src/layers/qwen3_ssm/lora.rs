@@ -67,9 +67,9 @@ impl Qwen3SsmLayer {
                 "LoRA: dense-FFN delta on a linear-attention layer whose FFN is MoE — \
                  routed-expert deltas belong on set_moe_lora_weights"
             ),
-            FfnComponent::None => anyhow::bail!(
-                "LoRA: dense-FFN delta on a linear-attention layer that has no FFN"
-            ),
+            FfnComponent::None => {
+                anyhow::bail!("LoRA: dense-FFN delta on a linear-attention layer that has no FFN")
+            }
         }
     }
 }

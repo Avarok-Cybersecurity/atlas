@@ -469,23 +469,8 @@ impl Qwen3AttentionLayer {
                     && let Some(route) = route
                     && crate::lora::prefill_bgmv_forced()
                 {
-                    // OPT-IN ONLY since the prefill-bgmv measurement below.
-                    //
-                    // This branch is `n` row-wise GEMVs. The `else` branch is
-                    // ONE tensor-core GEMM over the same `n` rows, and this
-                    // call site is uniform-slot by construction (a prefill
-                    // walks one sequence, so every row carries that
-                    // sequence's adapter) — the branch's own comment says
-                    // "all rows = same slot". Taking the GEMV path for a 2K
-                    // -token prompt measured 176 tok/s against 841 for the
-                    // GEMM: 4.8x, and it was the ENTIRE cost of having an
-                    // adapter resident (the deltas themselves cost ~7%).
-                    //
-                    // Kept reachable because bgmv is the only form that can
-                    // honour PER-ROW slots, including base rows (slot < 0).
-                    // If a prefill ever batches rows from different
-                    // sequences, this is the correct path and the flag turns
-                    // it back on.
+                    // OPT-IN ONLY: `n` row-wise GEMVs vs ONE GEMM in `else`;
+                    // a prefill is uniform-slot. Kept for PER-ROW slots.
                     ops::lora_delta::apply_lora_bgmv(
                         ctx.gpu,
                         &lw.kernels,

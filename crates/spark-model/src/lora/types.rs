@@ -25,14 +25,8 @@ pub enum LoraModule {
     GateProj,
     UpProj,
     DownProj,
-    /// The GDN / linear-attention block's OUTPUT projection
-    /// (`linear_attn.out_proj`), value_dim -> hidden.
-    ///
-    /// Lives only on linear-attention layers, which is why it needs its own
-    /// variant rather than reusing `OProj`: the two have different input dims
-    /// (attention contracts over `heads*head_dim`, GDN over
-    /// `linear_num_value_heads*linear_value_head_dim`) and occupy disjoint
-    /// layer sets.
+    /// GDN block OUTPUT projection (`linear_attn.out_proj`), value_dim ->
+    /// hidden. Not `OProj`: different contract dim, disjoint layer set.
     OutProj,
 }
 
@@ -48,15 +42,7 @@ impl LoraModule {
         Self::OutProj,
     ];
 
-    /// Whether this module lives in the dense SwiGLU FFN rather than in
-    /// attention.
-    ///
-    /// The distinction decides which LAYERS may carry the module. Attention
-    /// projections exist only on full-attention layers. The dense FFN exists
-    /// on EVERY layer of a hybrid — Qwen3.8-27B is 16 attention + 48
-    /// linear-attention layers and all 64 have an FFN — so gating gate/up/down
-    /// to full-attention layers rejects three quarters of a real adapter for
-    /// this architecture.
+    /// Dense SwiGLU FFN module — see [`Self::applies_to_layer`].
     pub fn is_dense_ffn(&self) -> bool {
         matches!(self, Self::GateProj | Self::UpProj | Self::DownProj)
     }
@@ -66,24 +52,16 @@ impl LoraModule {
         matches!(self, Self::OutProj)
     }
 
-    /// Whether a layer of this type may carry this module.
-    ///
-    /// THE authority for both the pool layout and the packing walk, so the
-    /// bytes reserved and the bytes written cannot disagree. Before this
-    /// existed both simply iterated the full-attention layers, which silently
-    /// dropped every dense-FFN pair a hybrid adapter carries on its
-    /// linear-attention layers — loaded, never packed, never applied.
-    ///
-    /// - attention q/k/v/o: full-attention layers only (no others have them)
-    /// - dense gate/up/down: EVERY layer of a dense-FFN model — a hybrid's
-    ///   linear-attention layers carry the SwiGLU FFN too
-    /// - GDN out_proj: linear-attention layers only
+    /// Which layers may carry this module: attention q/k/v/o on full-attention
+    /// layers only; dense gate/up/down on EVERY layer of a dense-FFN model (a
+    /// hybrid's linear-attention layers carry the SwiGLU FFN too); GDN out_proj
+    /// on linear-attention layers only. THE authority for BOTH the pool layout
+    /// and the packing walk, so reserved and written bytes cannot disagree.
     pub fn applies_to_layer(&self, cfg: &atlas_core::config::ModelConfig, layer: usize) -> bool {
         use atlas_core::config::LayerType;
         let full_attn = cfg.layer_type(layer) == LayerType::FullAttention;
         if self.is_dense_ffn() {
-            // On a MoE model `mlp.*` belongs to the routed-expert path, which
-            // is packed separately, not to this pool.
+            // MoE `mlp.*` is the routed-expert path, packed separately.
             cfg.num_experts == 0
         } else if self.is_gdn_out() {
             !full_attn
@@ -154,7 +132,7 @@ pub struct LoraLayerWeights {
     pub gate_proj: Option<LoraPair>,
     pub up_proj: Option<LoraPair>,
     pub down_proj: Option<LoraPair>,
-    /// GDN block output projection delta (linear-attention layers only).
+    /// GDN out_proj delta (linear-attention layers only).
     pub out_proj: Option<LoraPair>,
     /// Feature-1: MoE router (`mlp.gate`) delta on the routing logits. `None`
     /// unless the adapter targets the router AND `ATLAS_LORA_EXPERTS=1`.

@@ -89,12 +89,6 @@ unsafe extern "C" {
     pub(super) fn cuEventDestroy_v2(hEvent: u64) -> i32;
 }
 
-/// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.
-///
-/// **Owns this model's kernel modules.** The registry used to be a process
-/// singleton reached through `AtlasRegistry::get()`; it is now loaded per model
-/// and propagated from here, so a swapped-in model cannot run the previous
-/// model's kernels. Dropping the last backend unloads them.
 /// One live device allocation: how big it is and who asked for it.
 ///
 /// `site` is the CALLER of `GpuBackend::alloc`, not this file, because both
@@ -107,6 +101,12 @@ struct AllocRecord {
     site: &'static std::panic::Location<'static>,
 }
 
+/// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.
+///
+/// **Owns this model's kernel modules.** The registry used to be a process
+/// singleton reached through `AtlasRegistry::get()`; it is now loaded per model
+/// and propagated from here, so a swapped-in model cannot run the previous
+/// model's kernels. Dropping the last backend unloads them.
 pub struct AtlasCudaBackend {
     /// This model's kernel modules. `Arc` because the backend is cloned into
     /// the layers that launch kernels.
@@ -326,7 +326,7 @@ impl AtlasCudaBackend {
                 e.1 += 1;
             }
             let mut rows: Vec<_> = by_site.into_iter().collect();
-            rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
             let top: Vec<String> = rows
                 .iter()
                 .take(5)

@@ -46,11 +46,7 @@ impl LoraKernels {
         Ok(Self {
             gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             gemm_tc_k: crate::layers::try_kernel(gpu, "gemm_tc", "dense_gemm_tc"),
-            gemm_tc_acc_k: crate::layers::try_kernel(
-                gpu,
-                "gemm_tc",
-                "dense_gemm_tc_scaled_acc",
-            ),
+            gemm_tc_acc_k: crate::layers::try_kernel(gpu, "gemm_tc", "dense_gemm_tc_scaled_acc"),
             gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             scaled_add_k: gpu.kernel("residual_add", "bf16_scaled_add")?,
             bgmv_shrink_k: gpu.kernel("lora_bgmv", "lora_bgmv_shrink")?,

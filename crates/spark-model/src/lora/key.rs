@@ -170,14 +170,15 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
         LoraTarget::Attn(m) if m.is_dense_ffn() && cfg.num_experts == 0 => {}
         // GDN out_proj: linear-attention layers only — a full-attention layer
         // has no GDN block for it to land on.
-        LoraTarget::Attn(m) if m.is_gdn_out() => match cfg.layer_type(layer_idx) {
-            LayerType::FullAttention => bail!(
+        LoraTarget::Attn(m)
+            if m.is_gdn_out() && cfg.layer_type(layer_idx) == LayerType::FullAttention =>
+        {
+            bail!(
                 "REJECT[gdn-out-on-attention-layer]: '{key}' targets layer \
-                 {layer_idx}, which is a full-attention layer with no GDN \
-                 out_proj"
-            ),
-            _ => {}
-        },
+                 {layer_idx}, which is a full-attention layer with no GDN out_proj"
+            )
+        }
+        LoraTarget::Attn(m) if m.is_gdn_out() => {}
         LoraTarget::Attn(_) => match cfg.layer_type(layer_idx) {
             LayerType::FullAttention => {}
             lt => bail!(
