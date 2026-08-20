@@ -1029,6 +1029,37 @@ Only five commits since the certified merge touch `crates/` or `kernels/` at all
 touch `spark-model` or `kernels/` — four are benchmark harness, one is a Cargo.lock bump —
 so the diff never supported a decode regression either. The measurement and the diff agree.
 
+**Two follow-up hypotheses were tested and BOTH refuted.**
+
+*Clocks/thermals:* sampled 117 times during a C=32 load on dgx2 — SM clock median **2483 MHz**
+(min 2392, max 2515), and `clocks_throttle_reasons.active` was `0x0` in 116 of 117 samples.
+dgx1 under its own load reads 2424 MHz. The GPU is running at full speed and is not
+throttled, so this is not clocks, thermals or a power cap.
+
+*Measurement method:* the certified numbers came from a sweep that walks C=1 -> 128 on ONE
+serve, whereas the alarm above was raised on C=32 measured cold and alone. Re-running the
+warming path (`--concs 1,2,4,8,16,32`, one serve, certified stack tip) gives C=32 **278.93**
+(279.32/278.45/279.02, 0.31%) — the same ~279. Isolation was not the explanation either.
+
+**What the full sweep DOES show is a deficit that grows with concurrency:**
+
+| C | in-sweep today (stack tip) | certified | delta |
+|---:|---:|---:|---:|
+| 2 | 39.65 | 38.95 | **+1.8%** |
+| 4 | 72.64 | 74.21 | -2.1% |
+| 8 | 123.93 | 125.95 | -1.6% |
+| 16 | 198.07 | 203.36 | -2.6% |
+| 32 | **278.93** | **291.01** | **-4.2%** |
+
+Same commit, same box, same flags, same harness, one serve. C=2 is FASTER than certified and
+the deficit widens monotonically from C=4 up. A uniform slowdown would not do that, and
+neither would a code change that the diff already rules out.
+
+A deficit that scales with concurrency, on a GPU that is not clock- or thermally-limited,
+points at the memory system rather than compute — higher C is where this workload becomes
+bandwidth-bound. `clocks.mem` reads `[N/A]` on GB10 so it cannot be checked directly. dgx2 was
+physically relocated and powercycled three times between the certification and these runs.
+
 **What this costs us.** The certified C=32 ratio of 1.027x rests on an Atlas number that
 cannot be reproduced, so that rung's margin is not currently defensible. `sw_power_cap_us`,
 `sw_thermal_us`, `hw_thermal_us` and `hw_power_brake_us` are all ZERO in the hardware_state
