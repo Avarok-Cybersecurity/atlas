@@ -221,7 +221,10 @@ pub fn step_verify_k2(
         // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
         // (the hidden that generated bonus). This also sets the proposer's
         // skip-flag so propose does NOT re-append row 0.
-        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (2026-08-19); `=0` is the
+        // kill switch (see verify_d.rs capture_all for the 07-09 collapse
+        // this fix closes).
+        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() != Some("0");
         if eagle_fix && let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
             tracing::error!("dflash_eagle_accept_append: {e:#}");
         }
