@@ -149,8 +149,14 @@ fn launch_gemm(
     m: u32,
     n: u32,
     k: u32,
+    // `w4a16_gemm_t` grew a trailing `ldb` param (padded-B stride; the
+    // production caller passes the twin's padded row count). Contiguous
+    // bench pack ⇒ ldb = n. `None` for kernels without the param — an
+    // extra trailing arg is a CUDA_ERROR_INVALID_VALUE, which is exactly
+    // how the drift surfaced (grid=[40,1,1] crash at the gemm_t arm).
+    ldb: Option<u32>,
 ) -> Result<()> {
-    KernelLaunch::new(g, kh)
+    let mut l = KernelLaunch::new(g, kh)
         .grid([div_ceil(n, n_tile), div_ceil(m, 64), 1])
         .block([128, 1, 1])
         .arg_ptr(a)
@@ -160,8 +166,11 @@ fn launch_gemm(
         .arg_ptr(c)
         .arg_u32(m)
         .arg_u32(n)
-        .arg_u32(k)
-        .launch(0)
+        .arg_u32(k);
+    if let Some(v) = ldb {
+        l = l.arg_u32(v);
+    }
+    l.launch(0)
 }
 
 #[derive(Clone, Copy)]
@@ -387,8 +396,8 @@ fn main() -> Result<()> {
                     let (b, bs) = b_copies[i % copies];
                     match kind {
                         Kind::Batchm { .. } => launch_batchm(g, kh, a, b, bs, c, m, n, k),
-                        Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k),
-                        Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k),
+                        Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k, None),
+                        Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k, Some(n)),
                     }
                 };
                 for i in 0..WARMUP {
