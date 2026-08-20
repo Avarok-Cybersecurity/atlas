@@ -103,10 +103,14 @@ pub(super) fn bench_hints(app: &App) -> &'static str {
         return "j/k run · PgUp/PgDn table · ⇥ Suite↔History · ? help";
     }
     match (app.bench.view, app.bench.editing) {
+        // PgUp/PgDn named for the same reason the History footer names it:
+        // it is the one binding here a user cannot guess.
         (View::List, _) if app.bench.frame.is_some() => {
-            "j/k select · ⏎ configure · v last run · ⇥ Suite↔History · ? help"
+            "j/k select · PgUp/PgDn page · ⏎ configure · v last run · ⇥ Suite↔History · ? help"
         }
-        (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-7 jump · ? help",
+        (View::List, _) => {
+            "j/k select · PgUp/PgDn page · ⏎ configure · ⇥ Suite↔History · 1-7 jump · ? help"
+        }
         (View::Variants, _) => "j/k variant · ⏎ choose model · Esc back · ? help",
         (View::Params, true) => "⏎ commit · Esc cancel",
         (View::Params, false) => "j/k move · ⏎ edit · d defaults · p probe · s START · Esc back",

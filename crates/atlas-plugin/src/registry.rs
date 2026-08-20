@@ -4,8 +4,8 @@
 
 use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{
-    agentic, bfcl, concurrency, contamination, decode_floor, quick_speed, serve_matrix, ssm_poison,
-    ttft, video, vision,
+    agentic, bfcl, concurrency, contamination, decode_floor, mlperf_agentic, quick_speed,
+    serve_matrix, ssm_poison, ttft, video, vision,
 };
 
 /// Every benchmark, list order. Cheapest and most-run first.
@@ -45,6 +45,9 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &bfcl::SUBSET_DESCRIPTOR,
     &bfcl::SUBSET_ECHOLP_DESCRIPTOR,
     &bfcl::FULL_DESCRIPTOR,
+    // Unrunnable until MLCommons publishes its dataset; listed after the BFCL
+    // legs it will eventually sit beside so the pane shows it exists.
+    &mlperf_agentic::SUBSET_DESCRIPTOR,
     // Last: the only one that REPLACES the model the box is serving, so it is
     // the one an operator should have to travel furthest to start by accident.
     &serve_matrix::DESCRIPTOR,

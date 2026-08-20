@@ -103,6 +103,12 @@ pub struct BenchState {
     /// clamped, and coming back cost as many dead keys as had been spent.
     pub table_scroll_max: std::cell::Cell<usize>,
     pub history_table_scroll_max: std::cell::Cell<usize>,
+    /// Entries one Suite-list page holds, published by the renderer — the
+    /// same contract as the ceilings above, because only `draw_list` knows
+    /// the viewport height and the row density it chose. PgUp/PgDn page the
+    /// selection by this; a hardcoded stride either dead-ends short of the
+    /// last benchmark on a short terminal or overshoots on a tall one.
+    pub suite_page: std::cell::Cell<usize>,
 
     pub history: Vec<atlas_plugin::RunRecord>,
     pub history_row: usize,

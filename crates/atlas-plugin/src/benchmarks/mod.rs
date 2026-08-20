@@ -14,6 +14,7 @@ pub mod concurrency;
 pub mod contamination;
 pub mod decode_floor;
 pub mod media_integrity;
+pub mod mlperf_agentic;
 pub mod quick_speed;
 pub mod serve_matrix;
 pub mod ssm_poison;

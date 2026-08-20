@@ -79,6 +79,16 @@ pub struct GateRecord {
     pub hardware_state: Option<crate::hardware::HardwareStateReport>,
     /// Raw headline numbers, keyed by stable metric name.
     pub metrics: BTreeMap<String, f64>,
+    /// Content identity of the dataset the run scored against, from the
+    /// terminal frame (e.g. `file-sha256:…;draw-sha256:…`). Additive and
+    /// optional — schema stays 1, older records simply lack it. It exists
+    /// because `metrics` is f64-only: an exact `samples`/`trajectories` pin
+    /// catches a draw whose SIZE drifted, and nothing before this could catch
+    /// a draw whose CONTENT did. BFCL computes exactly this digest during
+    /// provisioning and drops it; the MLPerf agentic leg is the first to
+    /// record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_fingerprint: Option<String>,
     /// The run's terminal status. A `Failed` frame never passes the gate,
     /// whatever its numbers look like.
     pub frame_status: RunStatus,
@@ -470,6 +480,7 @@ impl GateRecord {
             // idle box instead of the one that did the work.
             hardware_state: frame.hardware_state.clone(),
             metrics: frame.metrics.clone(),
+            dataset_fingerprint: frame.dataset_fingerprint.clone(),
             frame_status: frame.status,
             verdict,
             verdict_reason,
