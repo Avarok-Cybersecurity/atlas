@@ -5,7 +5,7 @@
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
-use super::super::{MergerLayer, PATCH_DIM, ViTBlock, VisionEncoder};
+use super::super::{MergerLayer, PATCH_DIM, ViTBlock, VisionEncoder, VisionScratch};
 
 /// Encoder capacity, in patches, when nothing bounds the image.
 ///
@@ -98,7 +98,6 @@ impl VisionEncoder {
                 }
             ),
         }
-        let merger_in_dim = spatial_merge_size * spatial_merge_size * hidden_size; // 4608
 
         // num_grid_per_side is the side length of the square pos_embed grid
         // (e.g. 48 for Qwen3-VL with 2304 position embeddings). Non-square
@@ -108,40 +107,6 @@ impl VisionEncoder {
             num_grid_per_side * num_grid_per_side == num_position_embeddings,
             "non-square pos_embed: {num_position_embeddings} is not a perfect square"
         );
-
-        let buf_f32 = gpu.alloc(p_max * PATCH_DIM * 4)?;
-        let buf_h1 = gpu.alloc(p_max * hidden_size * 2)?;
-        let buf_h2 = gpu.alloc(p_max * hidden_size * 2)?;
-        let buf_wide = gpu.alloc(p_max * intermediate_size * 2)?;
-        let buf_merge_in = gpu.alloc((p_max / 4) * merger_in_dim * 2)?;
-        let buf_merge_fc1 = gpu.alloc((p_max / 4) * merger_in_dim * 2)?;
-        let buf_out = gpu.alloc(p_max * out_hidden_size * 2)?;
-        let buf_pos_resampled = gpu.alloc(p_max * hidden_size * 2)?;
-        let buf_rope_cos = gpu.alloc(p_max * head_dim * 2)?;
-        let buf_rope_sin = gpu.alloc(p_max * head_dim * 2)?;
-
-        // GEMM-based ViT SDPA scratch. Q/K/V head-contiguous copies sized to
-        // p_max (~44 MB total). scores/probs are the [seq,seq] score matrix,
-        // reused across the 16-head loop.
-        //
-        // BUG FIX (2026-06-29): attn_max was hardcoded to 1024, but a single
-        // image's ViT sequence can be up to p_max (6400 patches = 1280×1280).
-        // The mona_lisa fixture produces seq=4096 → the GEMM1 launch
-        // grid=[ceil(4096/16),...] writes a [4096,4096] score matrix into a
-        // [1024,1024] buffer → CUDA-700 illegal access. (In release builds the
-        // debug_assert guard is compiled out, so smaller-than-fault overflows
-        // silently corrupted adjacent GPU memory instead of crashing — which is
-        // why it "passed" on some weight layouts.) Size to the real per-image
-        // cap p_max so any admissible image fits: 6400²·4 ≈ 164 MB scores +
-        // 6400²·2 ≈ 82 MB probs. One-time scratch, fine on GB10.
-        let attn_max = p_max;
-        let qkv_head_elems = p_max * num_heads * head_dim;
-        let buf_qr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
-        let buf_kr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
-        let buf_vt = gpu.alloc(qkv_head_elems * 2)?; // [H, D, p_max] bf16
-        let buf_scores = gpu.alloc(attn_max * attn_max * 4)?; // [seq, seq] f32
-        let buf_probs = gpu.alloc(attn_max * attn_max * 2)?; // [seq, seq] bf16
-        let buf_o_stage = gpu.alloc(p_max * head_dim * 2)?; // [seq, D] bf16
 
         // Download pos_embed weight to host as f32 so we can bilinear-
         // interpolate it per image (HF: `fast_pos_embed_interpolate`).
@@ -209,6 +174,60 @@ impl VisionEncoder {
             intermediate_size,
             p_max,
             num_grid_per_side,
+            scratch: std::sync::OnceLock::new(),
+            pos_embed_host_f32,
+            rope_inv_freq,
+        })
+    }
+}
+
+impl VisionEncoder {
+    /// Allocate the ViT scratch group. Called on the FIRST image, never at
+    /// load — see `VisionEncoder::scratch`.
+    fn build_scratch(&self, gpu: &dyn GpuBackend) -> Result<VisionScratch> {
+        let p_max = self.p_max;
+        let hidden_size = self.hidden_size;
+        let intermediate_size = self.intermediate_size;
+        let out_hidden_size = self.out_hidden_size;
+        // Same derivation `new` uses; the encoder stores the merge size, not
+        // the product.
+        let merger_in_dim = self.spatial_merge_size * self.spatial_merge_size * hidden_size;
+        let num_heads = self.num_heads;
+        let head_dim = self.head_dim;
+        let buf_f32 = gpu.alloc(p_max * PATCH_DIM * 4)?;
+        let buf_h1 = gpu.alloc(p_max * hidden_size * 2)?;
+        let buf_h2 = gpu.alloc(p_max * hidden_size * 2)?;
+        let buf_wide = gpu.alloc(p_max * intermediate_size * 2)?;
+        let buf_merge_in = gpu.alloc((p_max / 4) * merger_in_dim * 2)?;
+        let buf_merge_fc1 = gpu.alloc((p_max / 4) * merger_in_dim * 2)?;
+        let buf_out = gpu.alloc(p_max * out_hidden_size * 2)?;
+        let buf_pos_resampled = gpu.alloc(p_max * hidden_size * 2)?;
+        let buf_rope_cos = gpu.alloc(p_max * head_dim * 2)?;
+        let buf_rope_sin = gpu.alloc(p_max * head_dim * 2)?;
+
+        // GEMM-based ViT SDPA scratch. Q/K/V head-contiguous copies sized to
+        // p_max (~44 MB total). scores/probs are the [seq,seq] score matrix,
+        // reused across the 16-head loop.
+        //
+        // BUG FIX (2026-06-29): attn_max was hardcoded to 1024, but a single
+        // image's ViT sequence can be up to p_max (6400 patches = 1280×1280).
+        // The mona_lisa fixture produces seq=4096 → the GEMM1 launch
+        // grid=[ceil(4096/16),...] writes a [4096,4096] score matrix into a
+        // [1024,1024] buffer → CUDA-700 illegal access. (In release builds the
+        // debug_assert guard is compiled out, so smaller-than-fault overflows
+        // silently corrupted adjacent GPU memory instead of crashing — which is
+        // why it "passed" on some weight layouts.) Size to the real per-image
+        // cap p_max so any admissible image fits: 6400²·4 ≈ 164 MB scores +
+        // 6400²·2 ≈ 82 MB probs. One-time scratch, fine on GB10.
+        let attn_max = p_max;
+        let qkv_head_elems = p_max * num_heads * head_dim;
+        let buf_qr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
+        let buf_kr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
+        let buf_vt = gpu.alloc(qkv_head_elems * 2)?; // [H, D, p_max] bf16
+        let buf_scores = gpu.alloc(attn_max * attn_max * 4)?; // [seq, seq] f32
+        let buf_probs = gpu.alloc(attn_max * attn_max * 2)?; // [seq, seq] bf16
+        let buf_o_stage = gpu.alloc(p_max * head_dim * 2)?; // [seq, D] bf16
+        Ok(VisionScratch {
             buf_f32,
             buf_h1,
             buf_h2,
@@ -225,9 +244,36 @@ impl VisionEncoder {
             buf_scores,
             buf_probs,
             buf_o_stage,
-            pos_embed_host_f32,
-            rope_inv_freq,
         })
+    }
+
+    /// The ViT scratch, allocating it on first use.
+    ///
+    /// Every image path reaches its buffers through here, so a serve that
+    /// never sees an image never pays the ~2.2 GB. The allocation is one-shot
+    /// and racing callers converge on a single group via `OnceLock`.
+    pub(crate) fn scratch_init(&self, gpu: &dyn GpuBackend) -> Result<()> {
+        if self.scratch.get().is_none() {
+            let s = self.build_scratch(gpu)?;
+            // A racing caller may have won; theirs is equally valid and the
+            // loser's buffers are dropped by the backend ledger at teardown.
+            let _ = self.scratch.set(s);
+            tracing::info!(
+                "Vision scratch allocated on first image: {} patches",
+                self.p_max
+            );
+        }
+        Ok(())
+    }
+
+    /// Scratch accessor for the encode path. Panics if the encode entry point
+    /// did not call `scratch_init` first — that is a wiring bug, not a runtime
+    /// condition, so it fails loudly rather than allocating behind a `&self`
+    /// that cannot report an error.
+    pub(crate) fn scratch(&self) -> &VisionScratch {
+        self.scratch
+            .get()
+            .expect("vision scratch: encode entry must call scratch_init(gpu) first")
     }
 }
 

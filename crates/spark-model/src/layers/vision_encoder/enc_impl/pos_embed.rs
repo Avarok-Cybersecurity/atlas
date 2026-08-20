@@ -18,7 +18,13 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        self.resample_pos_embed_into(grid_h, grid_w, self.buf_pos_resampled, gpu, stream)
+        self.resample_pos_embed_into(
+            grid_h,
+            grid_w,
+            self.scratch().buf_pos_resampled,
+            gpu,
+            stream,
+        )
     }
 
     /// Bilinear interpolate the learned pos_embed grid
@@ -131,8 +137,8 @@ impl VisionEncoder {
         self.build_rope_cossin_into(
             grid_h,
             grid_w,
-            self.buf_rope_cos,
-            self.buf_rope_sin,
+            self.scratch().buf_rope_cos,
+            self.scratch().buf_rope_sin,
             gpu,
             stream,
         )

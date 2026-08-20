@@ -71,22 +71,22 @@ impl VisionEncoder {
         // read-only and dies at the end of this function, before `pixels`.
         let f32_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, n_f32 * 4) };
-        gpu.copy_h2d_async(f32_bytes, self.buf_f32, stream)?;
+        gpu.copy_h2d_async(f32_bytes, self.scratch().buf_f32, stream)?;
         // f32 → bf16 (result in buf_wide[0..p*PATCH_DIM])
         KernelLaunch::new(gpu, self.k_f32_bf16)
             .grid([div_ceil(n_f32 as u32, 256), 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(self.buf_f32)
-            .arg_ptr(self.buf_wide)
+            .arg_ptr(self.scratch().buf_f32)
+            .arg_ptr(self.scratch().buf_wide)
             .arg_u32(n_f32 as u32)
             .launch(stream)?;
         // patch_embed GEMM: buf_wide[p,K] @ patch_embed_w[1152,K]^T + b → buf_h1[p,1152]
         self.vit_gemm_bias(
             gpu,
-            self.buf_wide,
+            self.scratch().buf_wide,
             self.patch_embed_w,
             self.patch_embed_b,
-            self.buf_h1,
+            self.scratch().buf_h1,
             p as u32,
             self.hidden_size as u32,
             PATCH_DIM as u32,
@@ -98,8 +98,8 @@ impl VisionEncoder {
         KernelLaunch::new(gpu, self.k_add)
             .grid([div_ceil(n_pe as u32, 256), 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(self.buf_h1)
-            .arg_ptr(self.buf_pos_resampled)
+            .arg_ptr(self.scratch().buf_h1)
+            .arg_ptr(self.scratch().buf_pos_resampled)
             .arg_u32(n_pe as u32)
             .launch(stream)
     }
@@ -139,7 +139,7 @@ impl VisionEncoder {
             };
             gpu.copy_h2d_async(
                 f32_bytes,
-                self.buf_f32.offset(p_off[i] * PATCH_DIM * 4),
+                self.scratch().buf_f32.offset(p_off[i] * PATCH_DIM * 4),
                 stream,
             )?;
         }
@@ -148,17 +148,17 @@ impl VisionEncoder {
         KernelLaunch::new(gpu, self.k_f32_bf16)
             .grid([div_ceil(n_f32 as u32, 256), 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(self.buf_f32)
-            .arg_ptr(self.buf_wide)
+            .arg_ptr(self.scratch().buf_f32)
+            .arg_ptr(self.scratch().buf_wide)
             .arg_u32(n_f32 as u32)
             .launch(stream)?;
         // patch_embed GEMM over M=p_total → buf_h1
         self.vit_gemm_bias(
             gpu,
-            self.buf_wide,
+            self.scratch().buf_wide,
             self.patch_embed_w,
             self.patch_embed_b,
-            self.buf_h1,
+            self.scratch().buf_h1,
             p_total as u32,
             self.hidden_size as u32,
             PATCH_DIM as u32,
@@ -169,8 +169,8 @@ impl VisionEncoder {
         KernelLaunch::new(gpu, self.k_add)
             .grid([div_ceil(n_pe as u32, 256), 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(self.buf_h1)
-            .arg_ptr(self.buf_pos_resampled)
+            .arg_ptr(self.scratch().buf_h1)
+            .arg_ptr(self.scratch().buf_pos_resampled)
             .arg_u32(n_pe as u32)
             .launch(stream)
     }
