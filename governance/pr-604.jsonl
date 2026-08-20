@@ -32,3 +32,6 @@
 {"pr":604,"head_sha":"0615ef47f11cca0c2838c1f524c35ea4c5050322","run_id":"32295223786","attempt":1,"at":1787170881,"kind":"category","value":"correctness/numerics","status":"ok"}
 {"pr":604,"head_sha":"f7018d0434185ba9932da0409fb6c023e096c29e","run_id":"32306310420","attempt":1,"at":1787176572,"kind":"category","value":"correctness/numerics","status":"ok"}
 {"pr":604,"head_sha":"07361cb7a41446800674e3b07684fd078d70c57e","run_id":"32309651454","attempt":1,"at":1787179208,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"93de72e6b2d74cc024e0941b2a95aa7480a92297","run_id":"32311538358","attempt":1,"at":1787181259,"kind":"category","value":"correctness/ssm-state","status":"ok"}
+{"pr":604,"head_sha":"225143c49ebb8c2c15445bc73a873350a745adc3","run_id":"32314463600","attempt":1,"at":1787183076,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":604,"head_sha":"74581e3d786005dd485df393182ab3b1e22840c1","run_id":"32316851043","attempt":1,"at":1787185367,"kind":"category","value":"correctness/ssm-state","status":"ok"}
