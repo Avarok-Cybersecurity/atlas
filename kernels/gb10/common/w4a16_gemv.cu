@@ -1800,3 +1800,192 @@ extern "C" __global__ void __launch_bounds__(256, 5) w4a16_gemv_batch8_pp(
         }
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// PORTED FROM PR #648 (Ronald R. Stesiak), commit acaf9533.
+//
+// Taken on its own rather than merging that branch: #648 is 171 files and
+// conflicts with main, and most of it is a separate drafter lane. This
+// kernel is the part that stands alone — the batch-GEMV tier is shared by
+// every M<=8 verify shape, so it pays off independently of which drafter
+// sits on top.
+//
+// Only the T=2 variant and its template are taken. The sibling experiments
+// in #648 (pf / pf_free / pf2 / pf3 / rt4) are the search that found it;
+// his own notes record the weight-prefetch line as a WASH at M=8, so
+// carrying them here would be importing dead ends.
+// ════════════════════════════════════════════════════════════════════════
+// ── Register-tiled batchm (lever-1 v3: T outputs per thread) ────────────
+// provenance-id: 526f6e616c6420522e205374657369616b
+//
+// The M-sweep verdict (batchm_bench 2026-08-19, clean runs): near-peak at
+// M=1 (250 GB/s), monotonic decay to ~143 at M=8; batch16-vs-batch8 at
+// equal M shows template footprint alone costs bandwidth; both prefetch
+// families were washes. The remaining suspects — L2 activation traffic
+// (256 B per (chunk,row) re-read per output), activation load-instruction
+// count, and single-dependent-FMA-chain ILP — are ALL divided by T when
+// each thread computes T adjacent output rows from ONE set of activation
+// registers. Layout: N_PER_BLOCK lane-groups of 64 as before, each group
+// covering T ADJACENT n rows; grid shrinks to ceil(N / (N_PER_BLOCK*T)).
+// Each output row\'s chunk walk, per-chunk FMA sequence, pair-fold and
+// reduction tree are IDENTICAL to `w4a16_gemv_batchm_impl` — bit-exact by
+// construction, and batchm_bench gate 4 proves it, never assumes it.
+template <int MAX_M, int T>
+__device__ __forceinline__ void w4a16_gemv_batchm_impl_rt(
+    const __nv_bfloat16* __restrict__ A,         // [M, K]
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,    // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [M, N]
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    // This lane group covers T ADJACENT output rows n0 .. n0+T-1.
+    const unsigned int n0 = (blockIdx.x * N_PER_BLOCK + local_out) * T;
+
+    __shared__ float s_lut[16];
+    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
+    __syncthreads();
+
+    if (n0 >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    float acc[T][MAX_M];
+    // Virtual-lane slab per (row, group, OUTPUT) — the T dimension is what
+    // the first draft of this kernel missed.
+    __shared__ float s_vl[MAX_M][N_PER_BLOCK][T][2 * WARP_SIZE];
+
+    #pragma unroll 1
+    for (unsigned int phase = 0; phase < 2u; phase++) {
+        #pragma unroll
+        for (int o = 0; o < T; o++)
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) acc[o][t] = 0.0f;
+
+        for (unsigned int kk = lane + phase * threads_per_out; kk < K16;
+             kk += threads_per_out * 2u) {
+            // T weight chunks (one per adjacent output row) + T scales.
+            unsigned long long packed8[T];
+            float scale[T];
+            #pragma unroll
+            for (int o = 0; o < T; o++) {
+                const unsigned long long n = n0 + o;
+                if (n < N) {
+                    packed8[o] = *(const unsigned long long*)(B_packed + n * half_K + kk * 8);
+                    const unsigned char sb = B_scale[n * num_groups + kk];
+                    __nv_fp8_e4m3 fp8;
+                    *(unsigned char*)&fp8 = sb;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+                    scale[o] = scl_fp8(sb) * scale2;
+#else
+                    scale[o] = (float)fp8 * scale2;
+#endif
+                } else {
+                    packed8[o] = 0ull;
+                    scale[o] = 0.0f;
+                }
+            }
+            float wl[T][16];
+            #pragma unroll
+            for (int o = 0; o < T; o++) {
+                #pragma unroll
+                for (int b = 0; b < 8; b++) {
+                    unsigned char byte_val = (unsigned char)(packed8[o] >> (b * 8));
+                    wl[o][b * 2]     = s_lut[byte_val & 0xF];
+                    wl[o][b * 2 + 1] = s_lut[byte_val >> 4];
+                }
+            }
+
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                const __nv_bfloat16* At = A + (unsigned long long)t * K;
+                // ONE activation load per (chunk, row) feeding T chains.
+                uint4 a_lo = ((const uint4*)At)[kk * 2];
+                uint4 a_hi = ((const uint4*)At)[kk * 2 + 1];
+                const unsigned int ar[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+                #pragma unroll
+                for (int o = 0; o < T; o++) {
+                    // Per-output chain: the M=1 kernel\'s exact FMA order.
+                    float part = 0.0f;
+                    #pragma unroll
+                    for (int b = 0; b < 8; b++) {
+                        float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&ar[b]);
+                        part = fmaf(af.x, wl[o][b * 2], part);
+                        part = fmaf(af.y, wl[o][b * 2 + 1], part);
+                    }
+                    acc[o][t] = fmaf(scale[o], part, acc[o][t]);
+                }
+            }
+        }
+
+        // Pair-fold + virtual-lane landing, per output row — same tree.
+        #pragma unroll
+        for (int o = 0; o < T; o++) {
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                const float v = acc[o][t] + __shfl_xor_sync(0xFFFFFFFF, acc[o][t], 1);
+                if ((lane & 1u) == 0u) {
+                    s_vl[t][local_out][o][phase * WARP_SIZE + (lane >> 1)] = v;
+                }
+            }
+        }
+    }
+    __syncthreads();
+
+    __shared__ float smem[MAX_M][N_PER_BLOCK * T * 2];  // 2 warps per (out,o)
+    const unsigned int warp_in_out = lane / WARP_SIZE;
+    #pragma unroll
+    for (int o = 0; o < T; o++) {
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) {
+            if ((unsigned int)t >= M) continue;
+            float a = s_vl[t][local_out][o][lane];
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+                a += __shfl_down_sync(0xFFFFFFFF, a, offset);
+            }
+            if (lane % WARP_SIZE == 0)
+                smem[t][(local_out * T + o) * 2 + warp_in_out] = a;
+        }
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        #pragma unroll
+        for (int o = 0; o < T; o++) {
+            const unsigned int n = n0 + o;
+            if (n >= N) continue;
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                float r = smem[t][(local_out * T + o) * 2]
+                        + smem[t][(local_out * T + o) * 2 + 1];
+                C[(unsigned long long)t * N + n] = __float2bfloat16(r);
+            }
+        }
+    }
+}
+
+// Register-tiled batch8, T=2 outputs/thread. Grid: ceil(N/8).
+extern "C" __global__ void w4a16_gemv_batch8_rt2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_rt<8, 2>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
