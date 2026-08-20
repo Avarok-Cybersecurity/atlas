@@ -98,9 +98,17 @@ __device__ __forceinline__ void dense_gemm_tc_body(
             // Load B tile: B[N,K] read as B^T[K,N] → smem_B[k][n]
             // B[n, k] at offset n*K + k → store at smem_B[k][n]
             // 128 threads load 16*64 = 1024 elements → 8 per thread
+            // Thread-to-element mapping walks K fastest, NOT N. B is
+            // [N, K] row-major, so consecutive k IS contiguous in memory:
+            // this makes each warp's loads coalesce along a B row instead of
+            // striding K*2 bytes between neighbouring threads. Costs some
+            // smem bank spread on the write (TC_PAD already offsets it) and
+            // buys coalesced global reads, which is the expensive side —
+            // especially for LoRA, whose B is [n_out, max_rank] with a tiny
+            // K, so the strided form issued one transaction per element.
             for (unsigned int i = tid; i < TC_TK * TC_TN; i += TC_BLOCK) {
-                unsigned int bk = i / TC_TN;
-                unsigned int bn = i % TC_TN;
+                unsigned int bn = i / TC_TK;
+                unsigned int bk = i % TC_TK;
                 unsigned int gn = n_block + bn;
                 unsigned int gk = k_base + bk;
                 smem_B[bk][bn] = (gn < N && gk < K) ? B[(unsigned long long)gn * K + gk] : __float2bfloat16(0.0f);
