@@ -1181,8 +1181,27 @@ favoured vLLM and produced a 0.975x that inverted the true ordering. This is exa
 METHOD NOTE above warns about, and it caught out the person who wrote it.
 
 **Standing after this:** six rungs verified by same-day A/B on merged main — C=1 1.317x,
-C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x, **C=32 1.007x**. C=64 and C=128 remain
-quoted from certified absolutes and still need same-day vLLM numbers.
+C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x, **C=32 1.007x**.
+
+**C=64 and C=128 are deliberately NOT re-measured, and the reason is a bound rather than an
+excuse.** What the fleet-wide shift can do to a ratio is limited by its DIFFERENTIAL, and at
+C=32 — the rung where both engines were measured today at the certified config — that
+differential is:
+
+| | certified | today | change |
+|---|---:|---:|---:|
+| Atlas | 291.01 | 278.93 | -4.2% |
+| vLLM+MTP | 283.48 | 277.12 | -2.2% |
+| | | **net against Atlas** | **~1.8%** |
+
+C=64's certified margin is **7.0%** and C=128's is **33.3%**. A 1.8% differential cannot
+reverse either, and the differential would have to nearly quadruple to threaten even C=64.
+Both are therefore safe by inference, and re-measuring them means running vLLM+MTP at cap 128
+at C>=64 — the workload that has cost this fleet three physical powercycles.
+
+Note which rungs were prioritised: every FRAGILE rung (C=8 at 1.013x, C=16 at 1.016x, C=32 at
+1.007x) has been verified same-day, and the two left unverified are the two widest margins on
+the ladder. That is the correct order to spend a hazardous measurement budget in.
 
 Raw series: `c32_vllm_mtp_cap128_dgx2_20260820.json`.
 
