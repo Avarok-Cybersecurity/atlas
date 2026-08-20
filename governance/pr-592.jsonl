@@ -3,3 +3,4 @@
 {"pr":592,"head_sha":"17fe989ecdd3f2587a2955685623aafa1c390483","run_id":"32156125773","attempt":1,"at":1787068666,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":592,"head_sha":"55a5b136a58175014d3b14bb7a589e49351dcb72","run_id":"32182471955","attempt":1,"at":1787085296,"kind":"category","value":"capability/new-model","status":"ok"}
 {"pr":592,"head_sha":"356962d7c69a8ea87d0a9454f5f92154bb81a8df","run_id":"32184815959","attempt":1,"at":1787086535,"kind":"category","value":"unknown","status":"abstain"}
+{"pr":592,"head_sha":"db2f5af1f7eca48118ad95e2286790dfb53c15d7","run_id":"32338773986","attempt":1,"at":1787206655,"kind":"category","value":"capability/new-model","status":"ok"}
