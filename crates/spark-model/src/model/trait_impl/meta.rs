@@ -231,14 +231,14 @@ impl TransformerModel {
         // sequence-exit path (normal finish, abort/cancel, decode error,
         // swap-out failure, panic). The explicit `free_sequence`/
         // `compact_sequence` paths neutralize the guard so release is
-        // exactly-once. `slot_idx` is derived from the guard (SSOT for the
-        // owned index lives in the guard until an explicit path takes it).
+        // exactly-once; `slot_idx` derives from the guard, which is SSOT for
+        // the owned index until an explicit path takes it.
         let slot_guard = self.ssm_pool.claim_guarded()?;
         let slot = slot_guard
             .idx()
             .expect("claim_guarded returns a guard owning a slot");
-        // Zero SSM state to prevent stale h_state/conv_state from prior
-        // sequences corrupting the recurrent computation during prefill.
+        // Zero SSM state: stale h_state/conv_state from a prior sequence would
+        // corrupt the recurrence during prefill.
         // CRITICAL: use Atlas's own stream (not stream 0) because Atlas's stream
         // is CU_STREAM_NON_BLOCKING and does NOT synchronize with stream 0.
         // Using stream 0 would race with the subsequent prefill kernel.
@@ -331,8 +331,6 @@ impl TransformerModel {
 
         // Allocate MTP proposer state (owns its own KV cache block table)
         let proposer_state = match &self.proposer {
-            // Budget-aware: a proposer whose per-sequence state scales with
-            // context sizes to this request's reach, not --max-seq-len.
             Some(p) => Some(p.alloc_state_for(self.gpu.as_ref(), budget_tokens)?),
             None => None,
         };
@@ -495,8 +493,8 @@ impl TransformerModel {
         Ok(results)
     }
 
+    /// `norm_output()` holds the post-final-norm hidden state from the last decode.
     pub(super) fn hidden_after_norm_dispatch(&self) -> DevicePtr {
-        // norm_output() holds the post-final-norm hidden state from the last decode
         self.buffers.norm_output()
     }
 }
