@@ -709,9 +709,7 @@ impl DenseFfnLayer {
         // adapter is installed. Refuse here if the layer cannot take it, so
         // the pin is a guarantee rather than a hope.
         anyhow::ensure!(
-            self.activation == FfnActivation::SiLU
-                && self.act_mul.0 != 0
-                && self.w4a16_gemv.0 != 0,
+            self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 && self.w4a16_gemv.0 != 0,
             "LoRA v0 needs the split-SiLU decode path (SiLU activation + \
              act_mul + w4a16_gemv kernels); this layer resolved activation \
              {:?}, act_mul={}, w4a16_gemv={}",

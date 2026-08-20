@@ -590,8 +590,8 @@ mod tests;
 pub use dispatch::parse_config;
 pub use gguf::{GgufConfigInputs, GgufMeta, config_from_gguf};
 pub use parsers::{
-    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, allow_partial_targets,
-    parse_mistral_params, parse_peft_adapter_config, parse_quantization_config,
+    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, allow_partial_targets, parse_mistral_params,
+    parse_peft_adapter_config, parse_quantization_config,
 };
 pub(crate) use parsers::{
     parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_minimax_m2, parse_step3p7,

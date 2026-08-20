@@ -102,8 +102,7 @@ fn slot_boundaries_do_not_overlap() {
     // packing invariant.
     let (last_layer, last_module) = (0..cfg.num_hidden_layers)
         .flat_map(|l| LoraModule::ALL.iter().map(move |m| (l, *m)))
-        .filter(|(l, m)| m.applies_to_layer(&cfg, *l))
-        .next_back()
+        .rfind(|(l, m)| m.applies_to_layer(&cfg, *l))
         .expect("some module is packed");
     let (_, b_off) = module_slot_offsets(&cfg, mr, last_layer, last_module).unwrap();
     let (out, _) = last_module.dims(&cfg);

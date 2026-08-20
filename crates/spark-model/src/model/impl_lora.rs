@@ -280,10 +280,9 @@ impl TransformerModel {
                     .experts
                     .as_ref()
                     .is_some_and(|e| !e.is_empty());
-            // Hoisted above the layer downcast: the dense SwiGLU FFN exists on
-            // full-attention AND linear-attention layers of a hybrid, so both
-            // branches below install it. Built once so the two paths cannot
-            // disagree about which pairs an adapter carries for this layer.
+            // Hoisted above the downcast: the dense FFN exists on BOTH layer
+            // kinds of a hybrid, so both branches install it, and building it
+            // once keeps them from disagreeing.
             let ffn_weights = if layer_weights.gate_proj.is_some()
                 || layer_weights.up_proj.is_some()
                 || layer_weights.down_proj.is_some()
@@ -329,12 +328,9 @@ impl TransformerModel {
                     )?;
                 }
             } else if let Some(ssm) = any.downcast_mut::<crate::layers::Qwen3SsmLayer>() {
-                // A linear-attention layer carries no q/k/v/o — `classify_key`
-                // still rejects those here — but on a hybrid it DOES carry the
-                // dense SwiGLU FFN, and real adapters for this architecture
-                // target it on every layer. Install those deltas into the
-                // layer's own `FfnComponent::Dense`, which is the same
-                // `DenseFfnLayer` the full-attention layers use.
+                // No q/k/v/o here (classify_key rejects those), but a hybrid's
+                // linear-attention layer DOES carry the dense FFN, and real
+                // adapters target it on every layer.
                 let has_attn_proj = layer_weights.q_proj.is_some()
                     || layer_weights.k_proj.is_some()
                     || layer_weights.v_proj.is_some()
@@ -350,9 +346,7 @@ impl TransformerModel {
                         format!("LoRA: installing dense-FFN delta on linear-attention layer {idx}")
                     })?;
                 }
-                // The GDN block's own output projection (phase 2). Only
-                // linear-attention layers have one, which is why this lands
-                // here and not in the attention branch.
+                // GDN out_proj: only linear-attention layers have one.
                 if let Some(pair) = layer_weights.out_proj {
                     ssm.set_out_proj_lora(pair, kernels);
                 }
