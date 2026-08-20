@@ -227,6 +227,14 @@ impl BlockDiffusionDraftHead {
                 "w4a16",
                 "fp8_gemm_t_row_scaled_m16",
             ),
+            // Register-tiled M<=8 FP8 GEMV (fp8_gemv_rt.cu, common) —
+            // ported from PR #648 (acaf9533). try_kernel: targets built
+            // before that module resolve 0 and keep the tile GEMMs.
+            fp8_gemv_rt2: crate::layers::try_kernel(
+                gpu,
+                "fp8_gemv_rt",
+                "fp8_gemv_rowscale_batch8_rt2",
+            ),
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.

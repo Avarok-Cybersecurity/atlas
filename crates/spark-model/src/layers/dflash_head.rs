@@ -102,6 +102,14 @@ pub struct DflashKernels {
     /// for `fp8_gemm_n128_row_scaled` when M=γ=16. Single warp per CTA,
     /// no wasted M_TILE rows. Used by the lm_head GEMM.
     pub fp8_gemm_n128_row_scaled_m16: KernelHandle,
+    /// Register-tiled batched row-scaled FP8 GEMV (M<=8, T=2 outputs per
+    /// thread) — the FP8 twin of `w4a16_gemv_batch8_rt2`. Preferred over
+    /// BOTH tile GEMMs above at M<=8 (they pad 87%/50% of their M-tile;
+    /// ~100 GB/s measured vs 180+ for the rt family, nsys 2026-08-19).
+    /// `.0 == 0` on targets without the `fp8_gemv_rt` module → tile path.
+    /// Kill-switch: ATLAS_NO_DFLASH_FP8_RT=1. From PR #648 (acaf9533),
+    /// provenance-id: 526f6e616c6420522e205374657369616b
+    pub fp8_gemv_rt2: KernelHandle,
 }
 
 /// The DFlash context-window bound, in tokens: the most recent target
@@ -918,4 +926,12 @@ impl BlockDiffusionDraftHead {
             ctx_positions: Vec::new(),
         }))
     }
+}
+
+/// ATLAS_NO_DFLASH_FP8_RT=1 restores the tile-GEMM propose path for A/B
+/// (strict `== "1"`, matching the sibling ATLAS_NO_* levers). OnceLock so
+/// the kernel choice is stable across CUDA-graph capture.
+pub(crate) fn fp8_rt_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_DFLASH_FP8_RT").as_deref() != Ok("1"))
 }

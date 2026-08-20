@@ -382,6 +382,30 @@ impl BlockDiffusionDraftHead {
                          k_in: u32|
          -> Result<()> {
             if use_fp8 && let Some(fp8) = w_fp8 {
+                // Register-tiled M<=8 FP8 GEMV (rt2 twin, PR #648 acaf9533):
+                // the M64-tile GEMM below pads 87% of its tile at M=8. `g` is
+                // the TOTAL rows this forward (γ * n_seq), so this admits C=1
+                // and the tile keeps the wider batches, where its padding is
+                // already amortised. Drafter-side numerics are correctness-
+                // free under strict-argmax accept — only the accept RATE can
+                // move, never an output token. A/B: ATLAS_NO_DFLASH_FP8_RT=1.
+                if self.kernels.fp8_gemv_rt2.0 != 0
+                    && g <= 8
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch8_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -1034,6 +1058,30 @@ impl BlockDiffusionDraftHead {
                          k_in: u32|
          -> Result<()> {
             if use_fp8 && let Some(fp8) = w_fp8 {
+                // Register-tiled M<=8 FP8 GEMV (rt2 twin, PR #648 acaf9533):
+                // the M64-tile GEMM below pads 87% of its tile at M=8. `g` is
+                // the TOTAL rows this forward (γ * n_seq), so this admits C=1
+                // and the tile keeps the wider batches, where its padding is
+                // already amortised. Drafter-side numerics are correctness-
+                // free under strict-argmax accept — only the accept RATE can
+                // move, never an output token. A/B: ATLAS_NO_DFLASH_FP8_RT=1.
+                if self.kernels.fp8_gemv_rt2.0 != 0
+                    && g <= 8
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch8_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,

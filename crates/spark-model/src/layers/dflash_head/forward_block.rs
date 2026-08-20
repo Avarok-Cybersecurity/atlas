@@ -630,34 +630,61 @@ impl BlockDiffusionDraftHead {
             let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
             if lm_head_fp8 {
                 if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
-                    // `fp8_gemm_t_row_scaled_m16` is a single-warp M_TILE=16
-                    // kernel: valid only to M=16. One sequence (gamma+1 rows)
-                    // fits; a cross-sequence batch does not, so above the tile
-                    // use the general row-scaled GEMM.
-                    let (k_lm, h_lm) = if rows_total <= 16 {
-                        (
-                            self.kernels.fp8_gemm_n128_row_scaled_m16,
-                            ops::fp8_gemm_n128_row_scaled_m16
-                                as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
-                        )
+                    // Register-tiled M<=8 FP8 GEMV (rt2 twin, PR #648
+                    // acaf9533) over the vocab. The m16 tile pads 50% of
+                    // its rows at γ=8 and measured ~104 GB/s in his node
+                    // trace; the rt family streams 180+ on this shape.
+                    // Drafter-side numerics are correctness-free under
+                    // strict-argmax accept — a worse draft costs accept
+                    // RATE, never an output token. Batched propose puts
+                    // rows_total = γ * n_seq here, so this admits C=1 and
+                    // the tiles keep C>=2. ATLAS_NO_DFLASH_FP8_RT=1 → tile.
+                    if self.kernels.fp8_gemv_rt2.0 != 0
+                        && rows_total <= 8
+                        && h_local.is_multiple_of(16)
+                        && super::fp8_rt_enabled()
+                    {
+                        ops::fp8_gemv_rowscale_batch8_rt2(
+                            gpu,
+                            self.kernels.fp8_gemv_rt2,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            rows_total as u32,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
                     } else {
-                        (
-                            self.kernels.fp8_gemm_n128_row_scaled,
-                            ops::fp8_gemm_n128_row_scaled
-                                as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
-                        )
-                    };
-                    h_lm(
-                        gpu,
-                        k_lm,
-                        norm_noise_local,
-                        fp8,
-                        self.scratch.logits,
-                        rows_total as u32,
-                        self.vocab_size as u32,
-                        h_local,
-                        stream,
-                    )?;
+                        // `fp8_gemm_t_row_scaled_m16` is a single-warp M_TILE=16
+                        // kernel: valid only to M=16. One sequence (gamma+1 rows)
+                        // fits; a cross-sequence batch does not, so above the tile
+                        // use the general row-scaled GEMM.
+                        let (k_lm, h_lm) = if rows_total <= 16 {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled_m16,
+                                ops::fp8_gemm_n128_row_scaled_m16
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        } else {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled,
+                                ops::fp8_gemm_n128_row_scaled
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        };
+                        h_lm(
+                            gpu,
+                            k_lm,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            rows_total as u32,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    }
                 } else {
                     ops::dense_gemm_bf16_pipelined(
                         gpu,
