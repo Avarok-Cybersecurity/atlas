@@ -98,6 +98,9 @@ impl Qwen3SsmLayer {
         m: u32,
         stream: u64,
     ) -> Result<()> {
+        if crate::layers::ops::lora_delta::lora_no_ffn() {
+            return Ok(());
+        }
         let Some((ref pair, ref kernels)) = self.lora_out_proj else {
             return Ok(());
         };
