@@ -1080,9 +1080,25 @@ dgx2. So the earlier framing (dgx2 degraded by its relocation and powercycles) i
 certified high-C numbers do not currently reproduce anywhere in the fleet, at the commit they
 were taken on.
 
-dgx1's spreads are 3.8-4.7% against dgx2's 0.3-0.6% — it had been serving another session
-minutes earlier — so its absolutes are the noisier pair. The SHAPE is what both boxes agree
-on, and the shape is the finding.
+dgx1's spreads were 3.8-4.7% against dgx2's 0.3-0.6% — it had been serving another session
+minutes earlier — so that pair was re-run on a genuinely IDLE dgx1, in an isolated worktree,
+with load logged either side:
+
+| C | dgx1 CONTENDED | dgx1 IDLE | dgx2 | certified | idle delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.59 | 23.85 | — | 23.59 | **+1.1%** |
+| 2 | 39.53 | 39.54 | 39.65 | 38.95 | **+1.5%** |
+| 4 | 71.92 | 71.37 | 72.64 | 74.21 | -3.8% |
+| 8 | 120.93 | 121.59 | 123.93 | 125.95 | -3.5% |
+| 16 | 186.12 | 193.93 | 198.07 | 203.36 | -4.6% |
+| 32 | 268.01 | **275.12** | 278.93 | 291.01 | **-5.5%** |
+
+Idling the box recovered part of it (C=16 186.12 -> 193.93, C=32 268.01 -> 275.12) and the
+spreads tightened to 0.35-1.8%, so host contention is real and worth controlling for — but it
+is NOT the cause. On a clean, idle box at the certified commit, C>=4 still lands 3.5-5.5%
+below the certified absolutes while C=1 and C=2 come in slightly ABOVE them.
+
+That is the finding, and it now rests on clean data from two boxes.
 
 ★ **This does NOT invalidate the same-day A/B results.** Each of those compared Atlas against
 vLLM on the SAME day and box, so a fleet-wide shift affecting both engines cancels in the
