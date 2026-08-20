@@ -199,11 +199,10 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     assert_eq!(lw.slot_ref_count(99), 0);
 }
 
-/// Real Qwen3.8-27B community adapters (e.g. MuXodious/absolute-heresy,
-/// nico248000000000/cyber) target `out_proj` — the SSM/GDN output projection
-/// on 48 of the model's 64 layers. Atlas has no `LoraModule` variant and no
-/// SSM wiring for it, so the load must REFUSE by default rather than apply
-/// a fraction of the adapter and let the user think they got the whole thing.
+/// An adapter naming a module Atlas cannot apply must REFUSE by default,
+/// rather than apply a fraction of itself and let the user think they got the
+/// whole thing. `in_proj_qkv` is such a module: it feeds the GDN recurrence
+/// and has no delta path.
 ///
 /// Pinned because the failure this guards is silent: drop the check and such
 /// an adapter loads, applies its attention and FFN tensors, silently discards
@@ -213,7 +212,9 @@ fn unsupported_target_modules_are_refused_and_name_the_escape_hatch() {
     let peft = PeftAdapterConfig {
         r: 32,
         lora_alpha: 32.0,
-        target_modules: vec!["down_proj".into(), "o_proj".into(), "out_proj".into()],
+        // `out_proj` was the example here until it became SUPPORTED; the
+        // input-side GDN projections are the ones still without a delta path.
+        target_modules: vec!["down_proj".into(), "o_proj".into(), "in_proj_qkv".into()],
         target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
@@ -230,7 +231,7 @@ fn unsupported_target_modules_are_refused_and_name_the_escape_hatch() {
         "wrong reject class: {msg}"
     );
     assert!(
-        msg.contains("out_proj"),
+        msg.contains("in_proj_qkv"),
         "the reject must NAME the offending module: {msg}"
     );
     assert!(

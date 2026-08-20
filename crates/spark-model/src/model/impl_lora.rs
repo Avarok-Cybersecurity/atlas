@@ -350,6 +350,12 @@ impl TransformerModel {
                         format!("LoRA: installing dense-FFN delta on linear-attention layer {idx}")
                     })?;
                 }
+                // The GDN block's own output projection (phase 2). Only
+                // linear-attention layers have one, which is why this lands
+                // here and not in the attention branch.
+                if let Some(pair) = layer_weights.out_proj {
+                    ssm.set_out_proj_lora(pair, kernels);
+                }
                 if has_moe {
                     ssm.set_moe_lora_weights(
                         layer_weights.router,

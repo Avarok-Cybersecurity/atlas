@@ -25,10 +25,19 @@ pub enum LoraModule {
     GateProj,
     UpProj,
     DownProj,
+    /// The GDN / linear-attention block's OUTPUT projection
+    /// (`linear_attn.out_proj`), value_dim -> hidden.
+    ///
+    /// Lives only on linear-attention layers, which is why it needs its own
+    /// variant rather than reusing `OProj`: the two have different input dims
+    /// (attention contracts over `heads*head_dim`, GDN over
+    /// `linear_num_value_heads*linear_value_head_dim`) and occupy disjoint
+    /// layer sets.
+    OutProj,
 }
 
 impl LoraModule {
-    pub const ALL: [LoraModule; 7] = [
+    pub const ALL: [LoraModule; 8] = [
         Self::QProj,
         Self::KProj,
         Self::VProj,
@@ -36,6 +45,7 @@ impl LoraModule {
         Self::GateProj,
         Self::UpProj,
         Self::DownProj,
+        Self::OutProj,
     ];
 
     /// Whether this module lives in the dense SwiGLU FFN rather than in
@@ -51,6 +61,37 @@ impl LoraModule {
         matches!(self, Self::GateProj | Self::UpProj | Self::DownProj)
     }
 
+    /// Whether this module is the GDN block's output projection.
+    pub fn is_gdn_out(&self) -> bool {
+        matches!(self, Self::OutProj)
+    }
+
+    /// Whether a layer of this type may carry this module.
+    ///
+    /// THE authority for both the pool layout and the packing walk, so the
+    /// bytes reserved and the bytes written cannot disagree. Before this
+    /// existed both simply iterated the full-attention layers, which silently
+    /// dropped every dense-FFN pair a hybrid adapter carries on its
+    /// linear-attention layers — loaded, never packed, never applied.
+    ///
+    /// - attention q/k/v/o: full-attention layers only (no others have them)
+    /// - dense gate/up/down: EVERY layer of a dense-FFN model — a hybrid's
+    ///   linear-attention layers carry the SwiGLU FFN too
+    /// - GDN out_proj: linear-attention layers only
+    pub fn applies_to_layer(&self, cfg: &atlas_core::config::ModelConfig, layer: usize) -> bool {
+        use atlas_core::config::LayerType;
+        let full_attn = cfg.layer_type(layer) == LayerType::FullAttention;
+        if self.is_dense_ffn() {
+            // On a MoE model `mlp.*` belongs to the routed-expert path, which
+            // is packed separately, not to this pool.
+            cfg.num_experts == 0
+        } else if self.is_gdn_out() {
+            !full_attn
+        } else {
+            full_attn
+        }
+    }
+
     /// PEFT suffix name (target_modules vocabulary).
     pub fn peft_name(&self) -> &'static str {
         match self {
@@ -61,6 +102,7 @@ impl LoraModule {
             Self::GateProj => "gate_proj",
             Self::UpProj => "up_proj",
             Self::DownProj => "down_proj",
+            Self::OutProj => "out_proj",
         }
     }
 
@@ -83,6 +125,9 @@ impl LoraModule {
             Self::OProj => (h, cfg.num_attention_heads * cfg.head_dim),
             Self::GateProj | Self::UpProj => (cfg.intermediate_size, h),
             Self::DownProj => (h, cfg.intermediate_size),
+            // GDN out_proj contracts over the SSM value width, NOT over
+            // hidden or over the attention head width.
+            Self::OutProj => (h, cfg.linear_num_value_heads * cfg.linear_value_head_dim),
         }
     }
 }
@@ -109,6 +154,8 @@ pub struct LoraLayerWeights {
     pub gate_proj: Option<LoraPair>,
     pub up_proj: Option<LoraPair>,
     pub down_proj: Option<LoraPair>,
+    /// GDN block output projection delta (linear-attention layers only).
+    pub out_proj: Option<LoraPair>,
     /// Feature-1: MoE router (`mlp.gate`) delta on the routing logits. `None`
     /// unless the adapter targets the router AND `ATLAS_LORA_EXPERTS=1`.
     pub router: Option<LoraPair>,
@@ -134,6 +181,7 @@ impl LoraLayerWeights {
             gate_proj: None,
             up_proj: None,
             down_proj: None,
+            out_proj: None,
             router: None,
             experts: None,
         }
@@ -280,6 +328,7 @@ impl LoraLayerWeights {
             LoraModule::GateProj => self.gate_proj.as_ref(),
             LoraModule::UpProj => self.up_proj.as_ref(),
             LoraModule::DownProj => self.down_proj.as_ref(),
+            LoraModule::OutProj => self.out_proj.as_ref(),
         }
     }
 }
@@ -409,6 +458,7 @@ impl LoraWeights {
                     LoraModule::GateProj => lw.gate_proj.as_ref(),
                     LoraModule::UpProj => lw.up_proj.as_ref(),
                     LoraModule::DownProj => lw.down_proj.as_ref(),
+                    LoraModule::OutProj => lw.out_proj.as_ref(),
                 });
             let (a_ptr, b_ptr) = pair.map(|p| (p.a.weight.0, p.b.weight.0)).unwrap_or((0, 0));
             gpu.copy_h2d(&a_ptr.to_le_bytes(), DevicePtr(a_dev.0 + (slot * 8) as u64))?;

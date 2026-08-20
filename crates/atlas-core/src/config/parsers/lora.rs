@@ -33,6 +33,8 @@ pub const PEFT_SUPPORTED_TARGET_MODULES: &[&str] = &[
     "gate_proj",
     "up_proj",
     "down_proj",
+    // GDN / linear-attention block output projection (value_dim -> hidden).
+    "out_proj",
 ];
 
 /// Parsed subset of a PEFT `adapter_config.json` that Atlas consumes.
@@ -425,8 +427,12 @@ fn validate_target_module(entry: &str) -> Result<()> {
         // GDN / linear-attention projections — reject both the fused
         // (`in_proj_qkvz`/`in_proj_ba`) and split (`in_proj_qkv`/`in_proj_z`/
         // `in_proj_a`/`in_proj_b`) spellings, plus `out_proj`/`conv1d`.
+        // `out_proj` is NO LONGER here: the GDN block's output projection is
+        // supported (it is downstream of the recurrence, so it needs no
+        // exact-replay parity harness). The remaining names all feed the
+        // recurrence, where an error compounds across timesteps.
         "in_proj_qkvz" | "in_proj_ba" | "in_proj_qkv" | "in_proj_z" | "in_proj_a" | "in_proj_b"
-        | "out_proj" | "conv1d"
+        | "conv1d"
             if !allow_partial_targets() =>
         {
             bail!(
@@ -437,7 +443,7 @@ fn validate_target_module(entry: &str) -> Result<()> {
             )
         }
         "in_proj_qkvz" | "in_proj_ba" | "in_proj_qkv" | "in_proj_z" | "in_proj_a" | "in_proj_b"
-        | "out_proj" | "conv1d" => Ok(()),
+        | "conv1d" => Ok(()),
         "embed_tokens" | "lm_head" => {
             bail!("REJECT(embedding): target module '{leaf}' is unsupported in v0")
         }
