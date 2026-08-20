@@ -75,6 +75,21 @@ pub fn max_lora_expert_rank() -> usize {
     })
 }
 
+/// `ATLAS_LORA_PREFILL_BGMV=1` — force prefill LoRA through the per-row BGMV
+/// instead of the tensor-core GEMM.
+///
+/// Default OFF because the GEMM is ~4.8x faster on a 2K prompt (841 vs 176
+/// tok/s measured on qwen3.8-27B) and the prefill call site is uniform-slot by
+/// construction. The BGMV is the only form that can honour per-row slots
+/// (including base rows), so this exists for the day a prefill batches rows
+/// from different sequences — and as the bisect handle if the GEMM path is
+/// ever suspected of a numerics difference, since the two are NOT bit-identical
+/// (GEMV-per-row vs one GEMM).
+pub fn prefill_bgmv_forced() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_LORA_PREFILL_BGMV").as_deref() == Ok("1"))
+}
+
 pub fn full_attention_layers(cfg: &ModelConfig) -> Vec<usize> {
     (0..cfg.num_hidden_layers)
         .filter(|&i| cfg.layer_type(i) == LayerType::FullAttention)
