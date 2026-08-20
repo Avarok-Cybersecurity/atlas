@@ -966,6 +966,190 @@ mid-ladder rungs sit on their optimum in both directions.** The narrow margins t
 property of the rungs, not a missed setting, and widening them needs a kernel-level change.
 Recorded so neither sweep is run a third time.
 
+### ⚠ C=32 DOES NOT CURRENTLY WIN (2026-08-20) — Atlas is ~4% below its certified value
+
+**This contradicts the certified table's 1.027x at C=32 and the site's published `wins=True`
+for that rung. It is reported here before any attempt to explain it away.**
+
+Two independent measurements on a HEALTHY dgx2 (the certification box), at merged main
+`635a692ca9`, with the certified serve flags and env — and see the BISECT below, which shows
+the same numbers at the certified commit itself:
+
+| config | Atlas | certified Atlas | delta |
+|---|---:|---:|---:|
+| batch cap 128 (the certified config) | **279.23** (277.48/279.65/280.55, 1.10%) | 291.01 | **-4.0%** |
+| batch cap 128, five minutes after a reboot | 282.42 (282.32/283.27/281.69, 0.56%) | 291.01 | -2.9% |
+
+Both land near 279-282, not 291, so this is NOT the box-state effect that explained the
+earlier C=16/C=32 scare — that one recovered on a clean boot and this does not.
+
+**A same-day matched pair confirms the ordering has flipped.** Both engines at batch cap
+**32** (see the METHOD NOTE below — this is a SEPARATE configuration from the certified
+table, which pins 128 on both, and it is used here because vLLM+MTP at C>=32 with cap 128 has
+wedged this box three times; the cap is matched on both engines, so the pair is internally
+like-for-like):
+
+| engine (cap 32, same box, back-to-back, same hour) | rep 1 | rep 2 | rep 3 | mean |
+|---|---:|---:|---:|---:|
+| Atlas | 275.98 | 277.78 | 278.17 | **277.31** |
+| vLLM+MTP | 283.08 | 287.54 | 283.00 | **284.54** |
+
+**Ratio 0.975x — vLLM wins.**
+
+The two views agree in direction: Atlas has moved down ~4% at this rung. (vLLM's cap-32
+284.54 sits just above its cap-128 certified 283.48, but those are different caps and cannot
+be compared directly — no claim is made that vLLM is unchanged.)
+
+**What is NOT yet established:** vLLM at cap 128 on current main. That is the measurement the
+wedge hazard blocks, so the certified 1.027x has not been directly re-run — only bracketed.
+The honest statement is that C=32 fails to reproduce and loses a matched-cap same-day A/B,
+not that the certified number was wrong when taken.
+
+**BISECTED — THE CODE IS EXONERATED. Correcting the paragraph that stood here.**
+
+The bisect was three measurements, and it ended the search immediately:
+
+| commit measured today | C=32 | what it is |
+|---|---:|---|
+| `1575873582` | **277.17** (275.85/277.50/278.17, 0.84%) | **the exact stack tip the 291.01 was taken on** |
+| `60370b9532` | 277.86 (277.50/278.35/277.74, 0.31%) | the merge that squashed that stack (#572) |
+| `635a692ca9` | 279.23 (277.48/279.65/280.55, 1.10%) | current main |
+
+**All three agree at ~277-279.** The commit that produced 291.01 now produces 277.17 on the
+same box with the same flags and env. There is no regression to bisect: every commit in the
+range behaves identically, including the certified one.
+
+So the earlier claim here — "whatever changed is on our side" — was WRONG in the way it
+mattered, and it is retracted. It read as a code regression. The code is unchanged in
+behaviour across the entire range; what does not reproduce is the ENVIRONMENT the 291.01 was
+measured in. Between then (2026-08-17) and now, dgx2 was physically relocated and
+powercycled three times.
+
+Only five commits since the certified merge touch `crates/` or `kernels/` at all, and none
+touch `spark-model` or `kernels/` — four are benchmark harness, one is a Cargo.lock bump —
+so the diff never supported a decode regression either. The measurement and the diff agree.
+
+**Two follow-up hypotheses were tested and BOTH refuted.**
+
+*Clocks/thermals:* sampled 117 times during a C=32 load on dgx2 — SM clock median **2483 MHz**
+(min 2392, max 2515), and `clocks_throttle_reasons.active` was `0x0` in 116 of 117 samples.
+dgx1 under its own load reads 2424 MHz. The GPU is running at full speed and is not
+throttled, so this is not clocks, thermals or a power cap.
+
+*Measurement method:* the certified numbers came from a sweep that walks C=1 -> 128 on ONE
+serve, whereas the alarm above was raised on C=32 measured cold and alone. Re-running the
+warming path (`--concs 1,2,4,8,16,32`, one serve, certified stack tip) gives C=32 **278.93**
+(279.32/278.45/279.02, 0.31%) — the same ~279. Isolation was not the explanation either.
+
+**What the full sweep DOES show is a deficit that grows with concurrency:**
+
+| C | in-sweep today (stack tip) | certified | delta |
+|---:|---:|---:|---:|
+| 2 | 39.65 | 38.95 | **+1.8%** |
+| 4 | 72.64 | 74.21 | -2.1% |
+| 8 | 123.93 | 125.95 | -1.6% |
+| 16 | 198.07 | 203.36 | -2.6% |
+| 32 | **278.93** | **291.01** | **-4.2%** |
+
+Same commit, same box, same flags, same harness, one serve. C=2 is FASTER than certified and
+the deficit widens monotonically from C=4 up. A uniform slowdown would not do that, and
+neither would a code change that the diff already rules out.
+
+**The cause is NOT identified, and an earlier revision of this section overreached by saying
+it "points at the memory system... higher C is where this workload becomes bandwidth-bound".
+That reasoning is backwards and is withdrawn:** at high C the weight sweep is AMORTISED
+across the batch, so low C is the more weight-bandwidth-bound regime — and low C is the part
+that still matches (C=2 is +1.8%). A simple loss of memory bandwidth would have hurt C=2
+first, and it did not.
+
+★ **CROSS-BOX: THE DEFICIT IS FLEET-WIDE, NOT dgx2.** The same sweep, same commit
+(`1575873582`), same flags, run on **dgx1**:
+
+| C | dgx1 today | dgx2 today | certified | dgx1 delta | dgx2 delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | **23.59** | — | **23.59** | **0.0%** | — |
+| 2 | 39.53 | 39.65 | 38.95 | +1.5% | +1.8% |
+| 4 | 71.92 | 72.64 | 74.21 | -3.1% | -2.1% |
+| 8 | 120.93 | 123.93 | 125.95 | -4.0% | -1.6% |
+| 16 | 186.12 | 198.07 | 203.36 | -8.5% | -2.6% |
+| 32 | 268.01 | 278.93 | 291.01 | **-7.9%** | **-4.2%** |
+
+**C=1 reproduces its certified value EXACTLY (23.59 vs 23.59)**, C=2 lands slightly ABOVE
+certified on both boxes, and from C=4 up both fall progressively behind — dgx1 MORE than
+dgx2. So the earlier framing (dgx2 degraded by its relocation and powercycles) is wrong: the
+certified high-C numbers do not currently reproduce anywhere in the fleet, at the commit they
+were taken on.
+
+dgx1's spreads were 3.8-4.7% against dgx2's 0.3-0.6% — it had been serving another session
+minutes earlier — so that pair was re-run on a genuinely IDLE dgx1, in an isolated worktree,
+with load logged either side:
+
+| C | dgx1 CONTENDED | dgx1 IDLE | dgx2 | certified | idle delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.59 | 23.85 | — | 23.59 | **+1.1%** |
+| 2 | 39.53 | 39.54 | 39.65 | 38.95 | **+1.5%** |
+| 4 | 71.92 | 71.37 | 72.64 | 74.21 | -3.8% |
+| 8 | 120.93 | 121.59 | 123.93 | 125.95 | -3.5% |
+| 16 | 186.12 | 193.93 | 198.07 | 203.36 | -4.6% |
+| 32 | 268.01 | **275.12** | 278.93 | 291.01 | **-5.5%** |
+
+Idling the box recovered part of it (C=16 186.12 -> 193.93, C=32 268.01 -> 275.12) and the
+spreads tightened to 0.35-1.8%, so host contention is real and worth controlling for — but it
+is NOT the cause. On a clean, idle box at the certified commit, C>=4 still lands 3.5-5.5%
+below the certified absolutes while C=1 and C=2 come in slightly ABOVE them.
+
+That is the finding, and it now rests on clean data from two boxes.
+
+**★ UNTESTED LEAD — the two boxes showing the deficit share the OLDER driver.**
+
+| box | driver | libcuda dated | shows the deficit? |
+|---|---|---|---|
+| dgx1 | 580.126.09 | 2026-01-12 | **yes** (-5.5% at C=32, idle) |
+| dgx2 | 580.126.09 | 2026-01-12 | **yes** (-4.2% at C=32) |
+| dgx3 | **580.159.03** | **2026-05-05** | **NOT MEASURED** |
+
+dgx1 and dgx2 are on an identical, older driver and both show the same shape; dgx3 carries a
+newer one and has not been swept. That does NOT make the driver the cause — dgx2's driver has
+not changed since January, so it cannot by itself explain a shift between 2026-08-17 and
+2026-08-20 — but it is the one cheap discriminator left, and it is the concrete answer to
+"do the boxes need a system update?": run this sweep on dgx3.
+
+If dgx3 reproduces the certified absolutes, the fleet has a driver-shaped problem and the
+fix is an update on dgx1/dgx2. If dgx3 shows the same 4-5% high-C deficit, the driver is
+excluded too and the cause is environmental in a way nothing measured here reaches.
+
+The sweep is ~30 minutes, Atlas-only, and carries no wedge risk. It needs dgx3 idle; it has
+been serving another session throughout this investigation.
+
+★ **This does NOT invalidate the same-day A/B results.** Each of those compared Atlas against
+vLLM on the SAME day and box, so a fleet-wide shift affecting both engines cancels in the
+ratio. What it does mean is that the certified ABSOLUTES are stale, and a rung quoted from
+them cannot be checked against a fresh Atlas number without a fresh vLLM number beside it.
+
+Ruled out so far: code (three commits measured, all ~279, and no `spark-model` or `kernels/`
+change in the diff range), clocks and thermals (2483 MHz median, unthrottled in 116/117
+samples), measurement method (in-sweep reproduces isolated), memory capacity (dgx2 idles with
+115 GB of 121 GB free), CPU governor (all three boxes `performance`, 20 cores), and
+single-box degradation. What remains implicates something that scales with
+BATCH rather than with per-step weight streaming — KV traffic, scheduler behaviour, or the
+SSM/verify pools — but nothing here isolates which, and no measurement in this file
+distinguishes them. `clocks.mem` reads `[N/A]` on GB10.
+
+Context, not conclusion: dgx2 was physically relocated and powercycled three times between
+the certification and these runs.
+
+**What this costs us.** The certified C=32 ratio of 1.027x rests on an Atlas number that
+cannot be reproduced, so that rung's margin is not currently defensible. `sw_power_cap_us`,
+`sw_thermal_us`, `hw_thermal_us` and `hw_power_brake_us` are all ZERO in the hardware_state
+of tonight's dgx2 records, so simple throttling is ruled out; the cause is not yet identified.
+
+**What is still true.** Seven rungs were re-measured same-day on merged main and every one
+held or widened (C=1 1.317x, C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x). The C=32
+finding does not touch them — each is its own same-day A/B.
+
+Raw series: `c32_atlas_cap128_dgx2_20260820.json`, `c32_atlas_cap32_dgx2_20260820.json`,
+`c32_vllm_mtp_cap32_dgx2_20260820.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
