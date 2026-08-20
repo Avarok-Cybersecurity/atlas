@@ -1205,6 +1205,38 @@ the ladder. That is the correct order to spend a hazardous measurement budget in
 
 Raw series: `c32_vllm_mtp_cap128_dgx2_20260820.json`.
 
+### DRIVER EXCLUDED — three boxes, two drivers, one shape (2026-08-20)
+
+The open lead from the staleness investigation was that both deficit-showing boxes ran the
+older driver. dgx3 carries a newer one, so the same sweep was run there at the same commit
+(`1575873582`), Atlas-only, isolated worktree:
+
+| C | dgx1 (idle) | dgx2 | **dgx3 (new driver)** | certified | dgx3 delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.85 | — | **24.39** | 23.59 | **+3.4%** |
+| 2 | 39.54 | 39.65 | **40.98** | 38.95 | **+5.2%** |
+| 4 | 71.37 | 72.64 | 72.53 | 74.21 | -2.3% |
+| 8 | 121.59 | 123.93 | 123.33 | 125.95 | -2.1% |
+| 16 | 193.93 | 198.07 | 196.35 | 203.36 | -3.4% |
+| 32 | 275.12 | 278.93 | **278.29** | 291.01 | **-4.4%** |
+
+drivers: dgx1/dgx2 `580.126.09` (libcuda 2026-01-12) · dgx3 `580.159.03` (2026-05-05)
+
+**dgx3 shows the same shape on a different driver.** It is the FASTEST box at C=1 and C=2
+(+3.4%, +5.2% over certified) and still lands 4.4% below at C=32 — the identical
+low-C-fine / high-C-short signature dgx1 and dgx2 produce. Three boxes, two driver versions,
+one shape.
+
+**So the answer to "do the boxes need a system update?" is: an update will not recover this.**
+The driver is excluded as the cause, and the newer one does not restore the certified high-C
+absolutes. That closes the last cheap hypothesis.
+
+★ **And it does not threaten the result**, because vLLM moved with it — see the C=32 block
+above, where vLLM's certified 283.48 measures 277.12 today against Atlas's 278.93 on the same
+box and day. The absolutes across the fleet have shifted; the same-day ratios have not.
+
+Raw series: `sweep_atlas_stacktip_dgx3_20260820.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
