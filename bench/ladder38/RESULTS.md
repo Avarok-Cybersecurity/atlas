@@ -1055,10 +1055,22 @@ Same commit, same box, same flags, same harness, one serve. C=2 is FASTER than c
 the deficit widens monotonically from C=4 up. A uniform slowdown would not do that, and
 neither would a code change that the diff already rules out.
 
-A deficit that scales with concurrency, on a GPU that is not clock- or thermally-limited,
-points at the memory system rather than compute — higher C is where this workload becomes
-bandwidth-bound. `clocks.mem` reads `[N/A]` on GB10 so it cannot be checked directly. dgx2 was
-physically relocated and powercycled three times between the certification and these runs.
+**The cause is NOT identified, and an earlier revision of this section overreached by saying
+it "points at the memory system... higher C is where this workload becomes bandwidth-bound".
+That reasoning is backwards and is withdrawn:** at high C the weight sweep is AMORTISED
+across the batch, so low C is the more weight-bandwidth-bound regime — and low C is the part
+that still matches (C=2 is +1.8%). A simple loss of memory bandwidth would have hurt C=2
+first, and it did not.
+
+Ruled out so far: code (three commits measured, all ~279), clocks and thermals (2483 MHz
+median, unthrottled), measurement method (in-sweep reproduces isolated), and memory capacity
+(dgx2 idles with 115 GB of 121 GB free). What remains implicates something that scales with
+BATCH rather than with per-step weight streaming — KV traffic, scheduler behaviour, or the
+SSM/verify pools — but nothing here isolates which, and no measurement in this file
+distinguishes them. `clocks.mem` reads `[N/A]` on GB10.
+
+Context, not conclusion: dgx2 was physically relocated and powercycled three times between
+the certification and these runs.
 
 **What this costs us.** The certified C=32 ratio of 1.027x rests on an Atlas number that
 cannot be reproduced, so that rung's margin is not currently defensible. `sw_power_cap_us`,
