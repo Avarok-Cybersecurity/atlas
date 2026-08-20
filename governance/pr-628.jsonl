@@ -6,3 +6,4 @@
 {"pr":628,"head_sha":"5ef0461518aec685d116a2a40bb61635d6592e77","run_id":"32319540432","attempt":1,"at":1787187808,"kind":"category","value":"performance/memory-traffic","status":"ok"}
 {"pr":628,"head_sha":"f989b6c0a2db294098e820f4998ba5589cf461dc","run_id":"32329214664","attempt":1,"at":1787197455,"kind":"category","value":"performance/memory-traffic","status":"ok"}
 {"pr":628,"head_sha":"29fb0de88c70e69025e2239de40d03b7eb253476","run_id":"32330384878","attempt":1,"at":1787198605,"kind":"category","value":"performance/memory-traffic","status":"ok"}
+{"pr":628,"head_sha":"cc852951276c78ed34476c282efdee12ed4c9bb1","run_id":"32331117173","attempt":1,"at":1787199320,"kind":"category","value":"performance/memory-traffic","status":"ok"}
