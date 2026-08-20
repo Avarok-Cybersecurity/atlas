@@ -123,6 +123,8 @@ mod sampling;
 mod ssm_gdn_a;
 #[path = "ops/ssm_gdn_a2.rs"]
 mod ssm_gdn_a2;
+#[path = "ops/ssm_gdn_a3.rs"]
+mod ssm_gdn_a3;
 #[path = "ops/ssm_gdn_b.rs"]
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
@@ -187,6 +189,7 @@ pub use quant_dispatch::*;
 pub use sampling::*;
 pub use ssm_gdn_a::*;
 pub use ssm_gdn_a2::*;
+pub use ssm_gdn_a3::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_gdn_snap::*;
