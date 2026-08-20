@@ -795,7 +795,8 @@ __device__ __forceinline__ void cdh_vtile_core(
             #pragma unroll
             for (int vt = 0; vt < VT; vt++)
                 #pragma unroll
-                for (int s = 1; s < SPLIT; s <<= 1) wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], s);
+                for (int s = 1; s < SPLIT; s <<= 1)
+                    wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], s);
             const float dc = decs[1 + i];
             float d[VT];
             #pragma unroll
@@ -841,6 +842,51 @@ gated_delta_rule_chunk_delta_h_vtile(
     unsigned int is_varlen
 ) {
     cdh_vtile_core<4, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
+                         num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
+                         gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
+}
+
+// Identical geometry to `..._vtile` above (512 threads, SPLIT=4, grid [nv, batch]) with
+// the k-reduction accumulated in Neumaier-compensated form. `..._vtile` is 2.10x on the
+// spine but costs -0.60 BFCL on both models, because SPLIT=4 reassociates a sum that
+// SPLIT=2 folds in one round; this variant keeps the warp density and pays a handful of
+// pure-ALU ops to make the sum order-independent. Same ABI, same smem — the launcher
+// picks between them, nothing else changes.
+// ── KERNEL 2-VFUSED: chunk_delta_h_vfused = cdh_vtile_core<2,1> ──────────────
+// THE SHIPPING SPINE. Same fused single-pass core as `..._vtile` below, but at
+// ksplit's own thread geometry: SPLIT=2, 256 threads.
+//
+// The fusion is where the speed is. Folding the two per-chunk passes into one
+// collapses `duc` from a CHUNK-long array to a scalar, which drops smem from
+// ksplit's 99,336 B to 49,412 B — and that, not warp count, is what buys 2.01x
+// on the spine (measured, gdn_chunk_shapetest, t in {2048,8192,16384}).
+//
+// `..._vtile` raises this to SPLIT=4 / 512 threads for 2.15x — only 7% more —
+// and that 7% costs -0.60 BFCL on both models. Bisected on the ssm-poisoning
+// tripwire, which is decisive and takes 4 minutes:
+//     ksplit  (unfused, SPLIT=2)  12/12 replays byte-identical
+//     vfused  (fused,   SPLIT=2)  12/12   <- this kernel
+//     vtile   (fused,   SPLIT=4)   1/12
+// So the fusion is innocent and SPLIT=4 is implicated. The mechanism is NOT
+// reassociation of the k-sum: compensating the SPLIT-way butterfly fold in
+// Neumaier form scored 0/12, i.e. no better, so that hypothesis is refuted and
+// the real cause of SPLIT=4's drift is still unknown. Do not promote SPLIT=4
+// on the strength of a cosine check — it reads 1.0000 while failing two
+// accuracy gates.
+extern "C" __global__ void __launch_bounds__(256, 1)
+gated_delta_rule_chunk_delta_h_vfused(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int k_dim,
+    unsigned int v_dim, unsigned int qk_stride, unsigned int gb_stride,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_vtile_core<2, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
                          num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
                          gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
 }

@@ -214,10 +214,20 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_chunk_delta_h_tc_vblock",
             ),
-            gdn_prefill_fla_chunk_delta_h_vtile_k: super::super::try_kernel(
+            // ONE handle for the fused GDN state spine. DEFAULT is `..._vfused`
+            // (SPLIT=2 / 256 threads): 2.01x over ksplit and 12/12 byte-identical on
+            // the ssm-poisoning tripwire. `ATLAS_GDN_VTILE=1` swaps in the SPLIT=4 /
+            // 512-thread build, which is 2.15x but scores 1/12 there and fails two
+            // accuracy gates — kept reachable for whoever diagnoses it, never default.
+            // The two are ABI-identical apart from block size, which the launcher
+            // derives from the same env, so nothing else downstream changes.
+            gdn_prefill_fla_chunk_delta_h_fused_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",
-                "gated_delta_rule_chunk_delta_h_vtile",
+                match std::env::var("ATLAS_GDN_VTILE").ok().as_deref() {
+                    Some("1") => "gated_delta_rule_chunk_delta_h_vtile",
+                    _ => "gated_delta_rule_chunk_delta_h_vfused",
+                },
             ),
             gdn_prefill_fla_chunk_fwd_o_k: super::super::try_kernel(
                 gpu,

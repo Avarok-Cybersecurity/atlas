@@ -38,7 +38,7 @@ pub fn gdn_prefill_fla(
     // non-zero AND ATLAS_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
     // ABI; grid y = batch·num_dv_blocks, smem 81KB vs 97KB). KernelHandle(0) = off.
     k_chunk_delta_h_tc_vblock: KernelHandle,
-    k_chunk_delta_h_vtile: KernelHandle,
+    k_chunk_delta_h_fused: KernelHandle,
     k_chunk_fwd_o: KernelHandle,
     h_state: DevicePtr,
     query: DevicePtr,
@@ -129,39 +129,41 @@ pub fn gdn_prefill_fla(
         .launch(stream)?;
     prof!("gdn_fla_recompute_wu", &mut t0);
 
-    // Kernel 2: chunk_delta_h — scalar ksplit OR the wmma + DV-block-split tc_vblock
-    // (gated). tc_vblock is a drop-in ABI; only the grid-y extent (batch·num_dv_blocks)
-    // and the dynamic smem differ. The DV axis is never a contraction axis so the
-    // per-DV-block slices are independent → bit-parity with ksplit (validated isolated).
-    // vtile is the DEFAULT spine when it resolved: 2.15-2.18x over ksplit, bit-exact
-    // to cos=1.0000. `ATLAS_GDN_VTILE=0` is the kill switch back to ksplit.
-    // vtile is OPT-IN (`ATLAS_GDN_VTILE=1`), NOT the default, despite being
-    // 2.15-2.18x over ksplit with cos=1.0000 on the isolated tensors.
+    // Kernel 2: chunk_delta_h — the fused spine OR the wmma + DV-block-split
+    // tc_vblock (gated). Both are drop-in ABI; only grid-y extent, block size and
+    // dynamic smem differ.
     //
-    // It regresses tool-calling accuracy below the gate floors on BOTH models,
-    // measured by a full record campaign:
+    // DEFAULT is `..._vfused` (SPLIT=2, 256 threads): the two per-chunk passes are
+    // folded into one, which collapses `duc` from a CHUNK-long array to a scalar and
+    // drops smem 99,336 -> 49,412 B. That is worth 2.01x over ksplit on the isolated
+    // spine and ~68 ms of cold TTFT (one-variable A/B, same binary, 10 reps/leg).
+    //
+    // `ATLAS_GDN_VTILE=1` raises the same core to SPLIT=4 / 512 threads for 2.15x.
+    // It is NOT the default: it regressed tool-calling accuracy below the gate
+    // floors on BOTH models in a full record campaign —
     //   bfcl-subset (27B)  83.62 / 82.72  vs floors 83.42 / 83.32  FAIL
     //   bfcl-echolp (35B)  85.96 / 86.09  vs floors 86.10 / 86.50  FAIL
-    //   same binary, ATLAS_GDN_VTILE=0    84.22 / 84.12            PASS
-    // The bisect is one-variable and decisive: disabling only the spine restores
-    // the historical numbers EXACTLY, which also clears chunk_fwd_o, the
-    // recompute_wu pass split and the kk/L alias — all three were active in the
-    // passing run.
+    //   same binary, spine off             84.22 / 84.12            PASS
     //
-    // The cause is structural, not a bug. vtile reaches 512 threads only via
-    // SPLIT=4 (threads = (V_DIM/VT)*SPLIT, V_DIM=128), and SPLIT=4 reduces k in
-    // FOUR partial sums through a 2-round shfl butterfly where ksplit uses two.
-    // That reassociates the f32 accumulation of <W_i, S[:,v]> on every token of
-    // every chunk. At SPLIT=2 the design caps at 256 threads — which IS ksplit.
-    // The warp-density win and the accumulation order are therefore inseparable
-    // as written: recovering it needs an order-PRESERVING way to add warps.
+    // ★ WHAT IS AND IS NOT KNOWN. The ssm-poisoning gate is the 4-minute tripwire
+    // that separates these, and it bisects the two changes vtile made at once:
+    //     ksplit  (unfused, SPLIT=2)  12/12 replays byte-identical
+    //     vfused  (fused,   SPLIT=2)  12/12   <- shipped
+    //     vtile   (fused,   SPLIT=4)   1/12
+    // So the FUSION is innocent and SPLIT=4 is implicated. The mechanism is NOT
+    // reassociation of the k-sum, which an earlier revision of this comment claimed:
+    // accumulating the SPLIT-way butterfly fold in Neumaier-compensated form scored
+    // 0/12 — no better — so that hypothesis is refuted and the true cause of
+    // SPLIT=4's drift is UNKNOWN. Since SPLIT=4 buys only 7% over SPLIT=2, the
+    // warp-density half was never where the win was.
     //
     // ★ Neither cos>=0.99 on the isolated spine NOR a byte-identical greedy
     // comparison on a single prompt caught this. A drift too small to change one
-    // trajectory still moved BFCL by 1.4 points across 995 samples.
-    let use_vtile = k_chunk_delta_h_vtile.0 != 0
-        && std::env::var("ATLAS_GDN_VTILE").ok().as_deref() == Some("1");
-    let use_tcvb = !use_vtile
+    // trajectory still moved BFCL by 1.4 points across 995 samples. Use the
+    // ssm-poisoning tripwire before trusting any change to this kernel.
+    let use_fused = k_chunk_delta_h_fused.0 != 0
+        && std::env::var("ATLAS_GDN_VTILE").ok().as_deref() != Some("0");
+    let use_tcvb = !use_fused
         && k_chunk_delta_h_tc_vblock.0 != 0
         && std::env::var("ATLAS_GDN_TC_VBLOCK").ok().as_deref() == Some("1");
     const DV_BLK: u32 = 64; // matches the kernel's compile-time DV_BLK
@@ -172,11 +174,17 @@ pub fn gdn_prefill_fla(
         + 2 * (C * kd + C * DV_BLK) * 2
         + 2 * C * 4
         + 2 * (C + 1) * 4;
-    // vtile stages {W,K,U} single-buffered plus one decay row; it does NOT split
-    // the DV axis, so grid.y stays `batch_size`.
-    let smem_vtile = C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4;
-    let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_vtile {
-        (k_chunk_delta_h_vtile, batch_size, smem_vtile, 512u32)
+    // The fused spine stages {W,K,U} single-buffered plus one decay row; it does NOT
+    // split the DV axis, so grid.y stays `batch_size`. smem is identical for both
+    // members — only the thread count differs, and it must match the kernel that
+    // init.rs actually loaded for the same env value.
+    let smem_fused = C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4;
+    let fused_block = match std::env::var("ATLAS_GDN_VTILE").ok().as_deref() {
+        Some("1") => 512u32, // SPLIT=4 build
+        _ => 256u32,         // SPLIT=2 build (default)
+    };
+    let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_fused {
+        (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)
     } else if use_tcvb {
         (
             k_chunk_delta_h_tc_vblock,

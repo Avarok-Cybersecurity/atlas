@@ -176,7 +176,7 @@ pub struct Qwen3SsmLayer {
     /// per-chunk passes deletes ksplit's `duc[CHUNK]` register array, and that is
     /// what pays for the extra warps: 118 registers, no spills. Measured 2.15-2.18x
     /// vs ksplit at 2048/8192/16384 with cos=1.0000 (`gdn_chunk_shapetest`).
-    gdn_prefill_fla_chunk_delta_h_vtile_k: KernelHandle,
+    gdn_prefill_fla_chunk_delta_h_fused_k: KernelHandle,
     gdn_prefill_fla_chunk_fwd_o_k: KernelHandle,
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.

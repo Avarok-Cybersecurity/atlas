@@ -58,7 +58,7 @@ const NUM_DV_BLK: usize = VD / DV_BLK; // 2
 fn challenger_name() -> String {
     match std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() {
         Some("dvsplit") => "gated_delta_rule_chunk_delta_h_dvsplit".to_string(),
-        Some("vtile") => "gated_delta_rule_chunk_delta_h_vtile".to_string(),
+        Some(v) if v.starts_with('v') => format!("gated_delta_rule_chunk_delta_h_{v}"),
         _ => "gated_delta_rule_chunk_delta_h_tc_vblock".to_string(),
     }
 }
@@ -67,7 +67,7 @@ fn challenger_name() -> String {
 fn challenger_smem() -> u32 {
     match std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() {
         Some("dvsplit") => (C * KD * 2 + C * KD * 2 + C * DV_BLK * 2 + (C + 1) * 4) as u32,
-        Some("vtile") => (C * KD * 2 + C * KD * 2 + C * VD * 2 + (C + 1) * 4) as u32,
+        Some(v) if v.starts_with('v') => (C * (KD * 4 + VD * 2) + (C + 1) * 4) as u32,
         _ => TC_VBLOCK_SMEM,
     }
 }
@@ -282,9 +282,8 @@ fn launch_scan(
     tc: bool,
     stream: u64,
 ) -> Result<()> {
-    let vtile = std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() == Some("vtile");
-    let (grid, smem) = if tc && vtile {
-        // vtile does NOT split DV — one CTA per head keeps W/K loaded once.
+    let (grid, smem) = if tc && challenger_name().contains("_delta_h_v") {
+        // the fused spine does NOT split DV — one CTA per head keeps W/K loaded once.
         ([NV as u32, c.batch as u32, 1], challenger_smem())
     } else if tc {
         (
@@ -294,7 +293,8 @@ fn launch_scan(
     } else {
         ([NV as u32, c.batch as u32, 1], KSPLIT_SMEM)
     };
-    let block = if tc && vtile { 512u32 } else { 256u32 };
+    let wide = challenger_name().ends_with("vtile"); // only SPLIT=4 runs 512 threads
+    let block = if tc && wide { 512u32 } else { 256u32 };
     KernelLaunch::new(g, k)
         .grid(grid)
         .block([block, 1, 1])
