@@ -1100,6 +1100,27 @@ below the certified absolutes while C=1 and C=2 come in slightly ABOVE them.
 
 That is the finding, and it now rests on clean data from two boxes.
 
+**★ UNTESTED LEAD — the two boxes showing the deficit share the OLDER driver.**
+
+| box | driver | libcuda dated | shows the deficit? |
+|---|---|---|---|
+| dgx1 | 580.126.09 | 2026-01-12 | **yes** (-5.5% at C=32, idle) |
+| dgx2 | 580.126.09 | 2026-01-12 | **yes** (-4.2% at C=32) |
+| dgx3 | **580.159.03** | **2026-05-05** | **NOT MEASURED** |
+
+dgx1 and dgx2 are on an identical, older driver and both show the same shape; dgx3 carries a
+newer one and has not been swept. That does NOT make the driver the cause — dgx2's driver has
+not changed since January, so it cannot by itself explain a shift between 2026-08-17 and
+2026-08-20 — but it is the one cheap discriminator left, and it is the concrete answer to
+"do the boxes need a system update?": run this sweep on dgx3.
+
+If dgx3 reproduces the certified absolutes, the fleet has a driver-shaped problem and the
+fix is an update on dgx1/dgx2. If dgx3 shows the same 4-5% high-C deficit, the driver is
+excluded too and the cause is environmental in a way nothing measured here reaches.
+
+The sweep is ~30 minutes, Atlas-only, and carries no wedge risk. It needs dgx3 idle; it has
+been serving another session throughout this investigation.
+
 ★ **This does NOT invalidate the same-day A/B results.** Each of those compared Atlas against
 vLLM on the SAME day and box, so a fleet-wide shift affecting both engines cancels in the
 ratio. What it does mean is that the certified ABSOLUTES are stale, and a rung quoted from
