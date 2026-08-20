@@ -1062,9 +1062,38 @@ across the batch, so low C is the more weight-bandwidth-bound regime — and low
 that still matches (C=2 is +1.8%). A simple loss of memory bandwidth would have hurt C=2
 first, and it did not.
 
-Ruled out so far: code (three commits measured, all ~279), clocks and thermals (2483 MHz
-median, unthrottled), measurement method (in-sweep reproduces isolated), and memory capacity
-(dgx2 idles with 115 GB of 121 GB free). What remains implicates something that scales with
+★ **CROSS-BOX: THE DEFICIT IS FLEET-WIDE, NOT dgx2.** The same sweep, same commit
+(`1575873582`), same flags, run on **dgx1**:
+
+| C | dgx1 today | dgx2 today | certified | dgx1 delta | dgx2 delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | **23.59** | — | **23.59** | **0.0%** | — |
+| 2 | 39.53 | 39.65 | 38.95 | +1.5% | +1.8% |
+| 4 | 71.92 | 72.64 | 74.21 | -3.1% | -2.1% |
+| 8 | 120.93 | 123.93 | 125.95 | -4.0% | -1.6% |
+| 16 | 186.12 | 198.07 | 203.36 | -8.5% | -2.6% |
+| 32 | 268.01 | 278.93 | 291.01 | **-7.9%** | **-4.2%** |
+
+**C=1 reproduces its certified value EXACTLY (23.59 vs 23.59)**, C=2 lands slightly ABOVE
+certified on both boxes, and from C=4 up both fall progressively behind — dgx1 MORE than
+dgx2. So the earlier framing (dgx2 degraded by its relocation and powercycles) is wrong: the
+certified high-C numbers do not currently reproduce anywhere in the fleet, at the commit they
+were taken on.
+
+dgx1's spreads are 3.8-4.7% against dgx2's 0.3-0.6% — it had been serving another session
+minutes earlier — so its absolutes are the noisier pair. The SHAPE is what both boxes agree
+on, and the shape is the finding.
+
+★ **This does NOT invalidate the same-day A/B results.** Each of those compared Atlas against
+vLLM on the SAME day and box, so a fleet-wide shift affecting both engines cancels in the
+ratio. What it does mean is that the certified ABSOLUTES are stale, and a rung quoted from
+them cannot be checked against a fresh Atlas number without a fresh vLLM number beside it.
+
+Ruled out so far: code (three commits measured, all ~279, and no `spark-model` or `kernels/`
+change in the diff range), clocks and thermals (2483 MHz median, unthrottled in 116/117
+samples), measurement method (in-sweep reproduces isolated), memory capacity (dgx2 idles with
+115 GB of 121 GB free), CPU governor (all three boxes `performance`, 20 cores), and
+single-box degradation. What remains implicates something that scales with
 BATCH rather than with per-step weight streaming — KV traffic, scheduler behaviour, or the
 SSM/verify pools — but nothing here isolates which, and no measurement in this file
 distinguishes them. `clocks.mem` reads `[N/A]` on GB10.
