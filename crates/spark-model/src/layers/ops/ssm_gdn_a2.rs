@@ -395,8 +395,32 @@ pub fn gdn_prefill_fla(
     // per-DV-block slices are independent → bit-parity with ksplit (validated isolated).
     // vtile is the DEFAULT spine when it resolved: 2.15-2.18x over ksplit, bit-exact
     // to cos=1.0000. `ATLAS_GDN_VTILE=0` is the kill switch back to ksplit.
+    // vtile is OPT-IN (`ATLAS_GDN_VTILE=1`), NOT the default, despite being
+    // 2.15-2.18x over ksplit with cos=1.0000 on the isolated tensors.
+    //
+    // It regresses tool-calling accuracy below the gate floors on BOTH models,
+    // measured by a full record campaign:
+    //   bfcl-subset (27B)  83.62 / 82.72  vs floors 83.42 / 83.32  FAIL
+    //   bfcl-echolp (35B)  85.96 / 86.09  vs floors 86.10 / 86.50  FAIL
+    //   same binary, ATLAS_GDN_VTILE=0    84.22 / 84.12            PASS
+    // The bisect is one-variable and decisive: disabling only the spine restores
+    // the historical numbers EXACTLY, which also clears chunk_fwd_o, the
+    // recompute_wu pass split and the kk/L alias — all three were active in the
+    // passing run.
+    //
+    // The cause is structural, not a bug. vtile reaches 512 threads only via
+    // SPLIT=4 (threads = (V_DIM/VT)*SPLIT, V_DIM=128), and SPLIT=4 reduces k in
+    // FOUR partial sums through a 2-round shfl butterfly where ksplit uses two.
+    // That reassociates the f32 accumulation of <W_i, S[:,v]> on every token of
+    // every chunk. At SPLIT=2 the design caps at 256 threads — which IS ksplit.
+    // The warp-density win and the accumulation order are therefore inseparable
+    // as written: recovering it needs an order-PRESERVING way to add warps.
+    //
+    // ★ Neither cos>=0.99 on the isolated spine NOR a byte-identical greedy
+    // comparison on a single prompt caught this. A drift too small to change one
+    // trajectory still moved BFCL by 1.4 points across 995 samples.
     let use_vtile = k_chunk_delta_h_vtile.0 != 0
-        && std::env::var("ATLAS_GDN_VTILE").ok().as_deref() != Some("0");
+        && std::env::var("ATLAS_GDN_VTILE").ok().as_deref() == Some("1");
     let use_tcvb = !use_vtile
         && k_chunk_delta_h_tc_vblock.0 != 0
         && std::env::var("ATLAS_GDN_TC_VBLOCK").ok().as_deref() == Some("1");
