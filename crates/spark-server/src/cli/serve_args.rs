@@ -538,14 +538,15 @@ pub struct ServeArgs {
     /// only for ablation. Higher γ increases per-step verify cost but
     /// raises peak speedup.
     ///
-    /// NOTE: because of this clap default the drafter-`config.json`
-    /// `block_size` fallback downstream (`DflashBuildArgs.gamma: None`) is
-    /// currently unreachable — the served γ is always this flag. Fine while
-    /// every published drafter uses 16; a drafter with a different
-    /// block_size needs this flag made `Option` first (same resolution
-    /// pattern as `--num-drafts`).
-    #[arg(long, default_value_t = 16)]
-    pub dflash_gamma: usize,
+    /// Unset = the drafter's trained block size (`dflash_config.block_size`,
+    /// via `effective_block_size()`), which is the only correct value for a
+    /// block-diffusion drafter: serving Qwen3.8-27B-DFlash2 (block 8) at the
+    /// old clap default of 16 corrupted every draft row (bidirectional block
+    /// attention shares softmax with the 8 phantom rows) — accept measured
+    /// 1.1% at 16 vs 3.2%+ at 8. An explicit value remains an override for
+    /// ablation only.
+    #[arg(long)]
+    pub dflash_gamma: Option<usize>,
 
     /// DFlash drafter sliding-window size for long context. The drafter
     /// runs full-prefix attention by default; at Atlas's typical 16K
@@ -1086,6 +1087,13 @@ impl ServeArgs {
     /// is a startup-ordering bug: fail fast rather than size a pool off a
     /// guessed value. Pre-resolution readers (CLI validation, TUI badges)
     /// must match on the `Option` directly instead.
+    /// The served DFlash γ: explicit flag wins; otherwise the drafter's
+    /// trained block size (caller passes it once parsed); otherwise the
+    /// legacy 16 (every pre-DFlash2 published drafter).
+    pub fn resolved_dflash_gamma(&self, drafter_block_size: Option<usize>) -> usize {
+        self.dflash_gamma.or(drafter_block_size).unwrap_or(16)
+    }
+
     pub fn resolved_num_drafts(&self) -> usize {
         self.num_drafts
             .expect("num_drafts read before apply_model_default_num_drafts resolved it")

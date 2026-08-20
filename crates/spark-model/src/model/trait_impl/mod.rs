@@ -283,7 +283,11 @@ impl Model for TransformerModel {
         self.bind_gpu_to_thread_dispatch()
     }
     fn alloc_sequence(&self) -> Result<SequenceState> {
-        self.alloc_sequence_dispatch()
+        self.alloc_sequence_dispatch(usize::MAX)
+    }
+
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        self.alloc_sequence_dispatch(budget_tokens)
     }
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
         self.copy_logits_to_host_dispatch(logits_ptr, dst)
@@ -354,6 +358,9 @@ impl Model for TransformerModel {
     }
     fn has_proposer(&self) -> bool {
         self.has_proposer_dispatch()
+    }
+    fn dflash_gamma(&self) -> Option<usize> {
+        self.proposer.as_ref().and_then(|p| p.block_gamma())
     }
     fn has_self_speculative(&self) -> bool {
         self.has_self_speculative_dispatch()

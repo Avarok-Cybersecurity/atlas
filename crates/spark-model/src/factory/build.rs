@@ -135,9 +135,17 @@ pub fn build_model(
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
         config.dflash_capture_layers = sub.target_layer_ids.clone();
+        // gamma for the pool sizing below. The base layer owns how gamma is
+        // RESOLVED (its `DflashSubConfig` carries no `block_size`, so a
+        // DFlash2 checkpoint's own value is reached via --dflash-gamma); this
+        // PR only consumes whatever it resolves to, rather than re-deciding
+        // it underneath that layer.
+        config.dflash_gamma = Some(args.gamma.unwrap_or(args.drafter_config.block_size));
         tracing::info!(
-            "DFlash: target layer capture indices = {:?} (drafter target_layer_ids, used directly)",
+            "DFlash: target layer capture indices = {:?} (drafter target_layer_ids, \
+             used directly), γ = {:?}",
             config.dflash_capture_layers,
+            config.dflash_gamma,
         );
     }
 
@@ -388,11 +396,47 @@ pub fn build_model(
             );
         }
     }
+    // DFlash drafter head allocations happen at Step 7 — AFTER this sizing —
+    // so without a reserve they land OUTSIDE the util pledge (the documented
+    // dflash-oom hazard; 2026-08-19 256K/C8 boot ledger measured ~10.5 GB of
+    // post-sizing drafter allocs on a boot whose planner believed it had
+    // honored a 79 GB budget, leaving 14 GB on the whole box before the first
+    // request). Estimate mirrors serve's load_dflash_drafter pre-flight:
+    // drafter KV (max_seq_len·L·2·kv_dim·bf16) + fused_kv + prompt-hidden
+    // capture + FP8 MLP mirrors (~store/2; the lm_head mirror is shared) +
+    // scratch.
+    let dflash_reserve: usize = dflash_args
+        .as_ref()
+        .map(|a| {
+            let c = &a.drafter_config;
+            let kv_dim = c.num_key_value_heads * c.head_dim;
+            let drafter_kv = max_seq_len * c.num_hidden_layers * 2 * kv_dim * 2;
+            let fused_kv = c.num_hidden_layers * 2 * kv_dim * c.hidden_size * 2;
+            let capture = max_seq_len * config.hidden_size * 2;
+            let fp8_mirrors = if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
+                a.drafter_store.total_bytes() / 2
+            } else {
+                0
+            };
+            drafter_kv + fused_kv + capture + fp8_mirrors + (300 << 20)
+        })
+        .unwrap_or(0);
+    if dflash_reserve > 0 {
+        tracing::info!(
+            "KV budget: reserving {:.1} GB for post-sizing DFlash drafter allocations",
+            gib(dflash_reserve),
+        );
+    }
     let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
     let kv_budget = total_budget
         .saturating_sub(used_so_far)
         .saturating_sub(inference_reserve)
-        .min(actual_free.saturating_sub(inference_reserve));
+        .saturating_sub(dflash_reserve)
+        .min(
+            actual_free
+                .saturating_sub(inference_reserve)
+                .saturating_sub(dflash_reserve),
+        );
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink
@@ -650,5 +694,23 @@ pub fn build_model(
     // to happen — orphaned the memory: live, referenced by the layers, with
     // nothing owning the ability to release it.
     model.adopt_weight_store(store);
+
+    // ── Allocation attribution, once, at the end of load ──
+    // Everything the serve will hold is allocated by now: weights, KV, the SSM
+    // pools, the Marconi snapshots, the arenas, the vision encoder. This is
+    // the only point where the ledger describes the STEADY STATE rather than
+    // some midpoint of the build.
+    //
+    // It exists because the KV-budget line above reports `pre-KV` as one
+    // opaque number, and on a 27B that number is ~59 GB against 22 GB of
+    // weights — the rest was unattributable until the ledger learned sizes.
+    // Logged at INFO, not behind a flag: every OOM and every mis-sized-pool
+    // investigation so far has begun by wanting exactly this table, and a
+    // once-per-load table is not a cost worth flagging off.
+    if let Some(report) = model.gpu_backend().alloc_report(12, 64) {
+        for line in report.lines() {
+            tracing::info!("{line}");
+        }
+    }
     Ok(Box::new(model))
 }

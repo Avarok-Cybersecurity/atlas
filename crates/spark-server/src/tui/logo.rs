@@ -146,7 +146,10 @@ pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
     });
     if a.dflash {
         out.push(Badge {
-            text: format!("DFlash γ={}", a.dflash_gamma),
+            text: match a.dflash_gamma {
+                Some(g) => format!("DFlash γ={g}"),
+                None => "DFlash γ=auto".to_string(),
+            },
             tint: BadgeTint::Quant,
         });
     } else if a.speculative || a.self_speculative || a.ngram_speculative {

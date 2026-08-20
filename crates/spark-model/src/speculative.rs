@@ -288,6 +288,32 @@ pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
 
+    /// [`Self::alloc_state`] with the sequence's KNOWN token budget
+    /// (`prompt_len + max_tokens`), so a proposer whose per-sequence state
+    /// scales with context can size to what this request can actually reach
+    /// instead of the global `--max-seq-len` ceiling. That distinction is what
+    /// OOMs a high-concurrency long-context serve: the ceiling is per-sequence
+    /// and paid n times, while a typical request needs a fraction of it.
+    ///
+    /// `usize::MAX` means "unknown, use the ceiling". Defaults to
+    /// `alloc_state`, so proposers with fixed-size state need not implement it.
+    fn alloc_state_for(
+        &self,
+        gpu: &dyn GpuBackend,
+        budget_tokens: usize,
+    ) -> Result<Box<dyn ProposerState>> {
+        let _ = budget_tokens;
+        self.alloc_state(gpu)
+    }
+
+    /// The proposer's trained block size γ, when it is a block-diffusion
+    /// drafter (DFlash/DFlash2). The serve layer derives num_drafts from
+    /// this — the head resolved it from the drafter checkpoint and is the
+    /// SSOT. `None` = not a block drafter.
+    fn block_gamma(&self) -> Option<usize> {
+        None
+    }
+
     /// Chain confidence of the most recent `propose` (min top-1 softmax prob
     /// across its drafts), when the proposer computes it (`draft_conf_tau` >
     /// 0). `None` = not computed; callers must not gate on it then.
