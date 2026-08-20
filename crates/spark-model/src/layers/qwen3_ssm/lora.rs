@@ -73,3 +73,44 @@ impl Qwen3SsmLayer {
         }
     }
 }
+
+impl Qwen3SsmLayer {
+    /// Install this layer's GDN `out_proj` delta.
+    ///
+    /// Separate from `set_ffn_lora_weights`: that one targets the block's FFN,
+    /// this one the linear-attention block's own output projection.
+    pub fn set_out_proj_lora(&mut self, pair: LoraPair, kernels: LoraKernels) {
+        self.lora_out_proj = Some((pair, kernels));
+    }
+
+    /// `out += scale * (normed_out @ A^T) @ B^T`.
+    ///
+    /// No-op without an adapter, so the base path stays byte-identical.
+    ///
+    /// The caller must invoke this AFTER any TP reduce: `out` is a partial
+    /// row-parallel product until then, and a delta added to a partial would
+    /// be summed once per rank.
+    pub(super) fn apply_lora_out_proj(
+        &self,
+        ctx: &crate::layers::ForwardContext,
+        normed_out: spark_runtime::gpu::DevicePtr,
+        out: spark_runtime::gpu::DevicePtr,
+        m: u32,
+        stream: u64,
+    ) -> Result<()> {
+        let Some((ref pair, ref kernels)) = self.lora_out_proj else {
+            return Ok(());
+        };
+        crate::layers::ops::lora_delta::apply_lora_delta(
+            ctx.gpu,
+            kernels,
+            pair,
+            normed_out,
+            out,
+            m,
+            ctx.buffers.lora_xa(),
+            ctx.buffers.lora_delta(),
+            stream,
+        )
+    }
+}

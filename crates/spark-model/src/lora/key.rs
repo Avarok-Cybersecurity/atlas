@@ -44,12 +44,6 @@ pub fn adapter_id_hash(name: &str, generation: u64) -> u64 {
     if h == 0 { 1 } else { h }
 }
 
-/// PEFT key → (layer, module, A|B). Every unsupported shape is a NAMED
-/// hard rejection — never a skip. Prefix-agnostic on purpose: the Holo
-/// base checkpoint keys are `model.language_model.layers.{i}.*`
-/// (weight_prefix auto-detected server-side), but a PEFT trainer wrapping
-/// the text trunk emits `model.layers.{i}.*`; both carry the layer index
-/// right after ".layers.".
 /// Whether `key` names a GDN / linear-attention tensor — the family
 /// `classify_key` rejects outright.
 ///
@@ -71,9 +65,18 @@ pub fn is_gdn_key(key: &str) -> bool {
     let Some((_idx, tail)) = rest.split_once('.') else {
         return false;
     };
-    tail.starts_with("linear_attn.")
+    // `linear_attn.out_proj` is SUPPORTED, so it is not skippable — skipping
+    // it would silently drop a delta Atlas can actually apply. Only the
+    // input-side projections, which still have no delta path, are skippable.
+    tail.starts_with("linear_attn.") && tail != "linear_attn.out_proj"
 }
 
+/// PEFT key → (layer, module, A|B). Every unsupported shape is a NAMED
+/// hard rejection — never a skip. Prefix-agnostic on purpose: the Holo
+/// base checkpoint keys are `model.language_model.layers.{i}.*`
+/// (weight_prefix auto-detected server-side), but a PEFT trainer wrapping
+/// the text trunk emits `model.layers.{i}.*`; both carry the layer index
+/// right after ".layers.".
 pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, AdapterAb)> {
     let stripped = key.strip_prefix("base_model.model.").ok_or_else(|| {
         anyhow!("REJECT[not-peft-key]: '{key}' lacks the 'base_model.model.' PEFT prefix")
@@ -124,10 +127,19 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
         t if t.starts_with("mlp.experts.") => {
             classify_expert_tail(key, &t["mlp.experts.".len()..], cfg)?
         }
+        // The GDN block's OUTPUT projection is supported. It is the block's
+        // last stage (value_dim -> hidden), downstream of the recurrence: a
+        // delta there is an ordinary per-token linear delta on the block's
+        // output and never enters the state update. That is why it does not
+        // need the exact-replay parity harness the rest of this family waits
+        // on — `in_proj_*` and `conv1d` DO feed the recurrence, so an error in
+        // them compounds across timesteps, and they stay rejected.
+        "linear_attn.out_proj" => LoraTarget::Attn(LoraModule::OutProj),
         t if t.starts_with("linear_attn.") => bail!(
-            "REJECT[gdn-target]: '{key}' — GDN/linear-attention projections \
-             (in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / out_proj) are \
-             rejected until an exact-replay parity harness exists"
+            "REJECT[gdn-target]: '{key}' — GDN/linear-attention INPUT-side \
+             projections (in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / \
+             conv1d) feed the recurrence and stay rejected until an \
+             exact-replay parity harness exists. `out_proj` IS supported."
         ),
         other => bail!("REJECT[unsupported-module]: '{key}' targets '{other}'"),
     };
@@ -156,6 +168,16 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
         // layer belongs to the routed-expert path (LoraTarget::Expert), which
         // has its own handling below, not to a dense FFN.
         LoraTarget::Attn(m) if m.is_dense_ffn() && cfg.num_experts == 0 => {}
+        // GDN out_proj: linear-attention layers only — a full-attention layer
+        // has no GDN block for it to land on.
+        LoraTarget::Attn(m) if m.is_gdn_out() => match cfg.layer_type(layer_idx) {
+            LayerType::FullAttention => bail!(
+                "REJECT[gdn-out-on-attention-layer]: '{key}' targets layer \
+                 {layer_idx}, which is a full-attention layer with no GDN \
+                 out_proj"
+            ),
+            _ => {}
+        },
         LoraTarget::Attn(_) => match cfg.layer_type(layer_idx) {
             LayerType::FullAttention => {}
             lt => bail!(
