@@ -972,7 +972,8 @@ Recorded so neither sweep is run a third time.
 for that rung. It is reported here before any attempt to explain it away.**
 
 Two independent measurements on a HEALTHY dgx2 (the certification box), at merged main
-`635a692ca9`, with the certified serve flags and env:
+`635a692ca9`, with the certified serve flags and env — and see the BISECT below, which shows
+the same numbers at the certified commit itself:
 
 | config | Atlas | certified Atlas | delta |
 |---|---:|---:|---:|
@@ -995,19 +996,47 @@ like-for-like):
 
 **Ratio 0.975x — vLLM wins.**
 
-The two views agree in direction: Atlas has moved down ~4% at this rung while vLLM has not
-(its cap-32 284.54 sits just above its cap-128 certified 283.48). Whatever changed is on our
-side.
+The two views agree in direction: Atlas has moved down ~4% at this rung. (vLLM's cap-32
+284.54 sits just above its cap-128 certified 283.48, but those are different caps and cannot
+be compared directly — no claim is made that vLLM is unchanged.)
 
 **What is NOT yet established:** vLLM at cap 128 on current main. That is the measurement the
 wedge hazard blocks, so the certified 1.027x has not been directly re-run — only bracketed.
 The honest statement is that C=32 fails to reproduce and loses a matched-cap same-day A/B,
 not that the certified number was wrong when taken.
 
-**Next step is a bisect, not a re-measurement.** Atlas C=32 was 291.01 at the certified sha
-and is 279.23 now; the shas in between are known and the rung takes ~8 minutes to measure.
-Suspects are anything touching decode at width 32 — the K-ladder entry used at C=32 is
-`16:1`, unchanged, so this is not a tuning drift.
+**BISECTED — THE CODE IS EXONERATED. Correcting the paragraph that stood here.**
+
+The bisect was three measurements, and it ended the search immediately:
+
+| commit measured today | C=32 | what it is |
+|---|---:|---|
+| `1575873582` | **277.17** (275.85/277.50/278.17, 0.84%) | **the exact stack tip the 291.01 was taken on** |
+| `60370b9532` | 277.86 (277.50/278.35/277.74, 0.31%) | the merge that squashed that stack (#572) |
+| `635a692ca9` | 279.23 (277.48/279.65/280.55, 1.10%) | current main |
+
+**All three agree at ~277-279.** The commit that produced 291.01 now produces 277.17 on the
+same box with the same flags and env. There is no regression to bisect: every commit in the
+range behaves identically, including the certified one.
+
+So the earlier claim here — "whatever changed is on our side" — was WRONG in the way it
+mattered, and it is retracted. It read as a code regression. The code is unchanged in
+behaviour across the entire range; what does not reproduce is the ENVIRONMENT the 291.01 was
+measured in. Between then (2026-08-17) and now, dgx2 was physically relocated and
+powercycled three times.
+
+Only five commits since the certified merge touch `crates/` or `kernels/` at all, and none
+touch `spark-model` or `kernels/` — four are benchmark harness, one is a Cargo.lock bump —
+so the diff never supported a decode regression either. The measurement and the diff agree.
+
+**What this costs us.** The certified C=32 ratio of 1.027x rests on an Atlas number that
+cannot be reproduced, so that rung's margin is not currently defensible. `sw_power_cap_us`,
+`sw_thermal_us`, `hw_thermal_us` and `hw_power_brake_us` are all ZERO in the hardware_state
+of tonight's dgx2 records, so simple throttling is ruled out; the cause is not yet identified.
+
+**What is still true.** Seven rungs were re-measured same-day on merged main and every one
+held or widened (C=1 1.317x, C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x). The C=32
+finding does not touch them — each is its own same-day A/B.
 
 Raw series: `c32_atlas_cap128_dgx2_20260820.json`, `c32_atlas_cap32_dgx2_20260820.json`,
 `c32_vllm_mtp_cap32_dgx2_20260820.json`.
