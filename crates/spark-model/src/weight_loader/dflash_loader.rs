@@ -385,18 +385,24 @@ pub fn load_dflash_weights(
         && drafter_store.contains(&selector_key)
     {
         (
-            Some(dense(drafter_store, &selector_key)
-                .context("DFlash2: load candidate_selector.predecessor_codebook")?),
-            Some(dense(
-                drafter_store,
-                &format!("{prefix}candidate_selector.successor_codebook"),
-            )
-            .context("DFlash2: load candidate_selector.successor_codebook")?),
-            Some(dense(
-                drafter_store,
-                &format!("{prefix}candidate_selector.hidden_projection.weight"),
-            )
-            .context("DFlash2: load candidate_selector.hidden_projection.weight")?),
+            Some(
+                dense(drafter_store, &selector_key)
+                    .context("DFlash2: load candidate_selector.predecessor_codebook")?,
+            ),
+            Some(
+                dense(
+                    drafter_store,
+                    &format!("{prefix}candidate_selector.successor_codebook"),
+                )
+                .context("DFlash2: load candidate_selector.successor_codebook")?,
+            ),
+            Some(
+                dense(
+                    drafter_store,
+                    &format!("{prefix}candidate_selector.hidden_projection.weight"),
+                )
+                .context("DFlash2: load candidate_selector.hidden_projection.weight")?,
+            ),
         )
     } else {
         (None, None, None)
@@ -405,11 +411,27 @@ pub fn load_dflash_weights(
         tracing::info!(
             "DFlash2 heads loaded: convs={} (k={}, group={}), selector={} (rank={}, top_k={})",
             dflash2_conv,
-            drafter_config.dflash_config.as_ref().map(|c| c.conv_kernel_size).unwrap_or(0),
-            drafter_config.dflash_config.as_ref().map(|c| c.conv_group_size).unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.conv_kernel_size)
+                .unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.conv_group_size)
+                .unwrap_or(0),
             selector_pred.is_some(),
-            drafter_config.dflash_config.as_ref().map(|c| c.selector_rank).unwrap_or(0),
-            drafter_config.dflash_config.as_ref().map(|c| c.selector_top_k).unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.selector_rank)
+                .unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.selector_top_k)
+                .unwrap_or(0),
         );
     }
 
@@ -438,50 +460,45 @@ pub fn load_dflash_weights(
     // `confidence_head.proj.weight` [1, 5376], `confidence_head.proj.bias`
     // [1] — all BF16, bare layout (same prefix convention as fc.weight).
     let markov_key = format!("{prefix}markov_head.markov_w1.weight");
-    let (markov_w1, markov_w2) = if drafter_config.markov_rank > 0
-        && drafter_store.contains(&markov_key)
-    {
-        if let Some(kind) = drafter_config.markov_head_type.as_deref()
-            && kind != "vanilla"
-        {
-            anyhow::bail!(
-                "DSpark drafter declares markov_head_type={kind:?}; only \"vanilla\" \
+    let (markov_w1, markov_w2) =
+        if drafter_config.markov_rank > 0 && drafter_store.contains(&markov_key) {
+            if let Some(kind) = drafter_config.markov_head_type.as_deref()
+                && kind != "vanilla"
+            {
+                anyhow::bail!(
+                    "DSpark drafter declares markov_head_type={kind:?}; only \"vanilla\" \
                  (low-rank bigram bias) is defined by the reference implementation"
-            );
-        }
-        let w1 = dense(drafter_store, &markov_key)
-            .context("DSpark drafter: load markov_head.markov_w1.weight")?;
-        let w2 = dense(
-            drafter_store,
-            &format!("{prefix}markov_head.markov_w2.weight"),
-        )
-        .context("DSpark drafter: load markov_head.markov_w2.weight")?;
-        (Some(w1), Some(w2))
-    } else {
-        if drafter_config.markov_rank > 0 {
-            tracing::warn!(
-                "DSpark drafter config declares markov_rank={} but the checkpoint has \
+                );
+            }
+            let w1 = dense(drafter_store, &markov_key)
+                .context("DSpark drafter: load markov_head.markov_w1.weight")?;
+            let w2 = dense(
+                drafter_store,
+                &format!("{prefix}markov_head.markov_w2.weight"),
+            )
+            .context("DSpark drafter: load markov_head.markov_w2.weight")?;
+            (Some(w1), Some(w2))
+        } else {
+            if drafter_config.markov_rank > 0 {
+                tracing::warn!(
+                    "DSpark drafter config declares markov_rank={} but the checkpoint has \
                  no {markov_key} — running as plain DFlash (Markov bias disabled)",
-                drafter_config.markov_rank,
-            );
-        }
-        (None, None)
-    };
+                    drafter_config.markov_rank,
+                );
+            }
+            (None, None)
+        };
     let conf_key = format!("{prefix}confidence_head.proj.weight");
-    let (confidence_proj, confidence_bias) = if drafter_config.enable_confidence_head
-        && drafter_store.contains(&conf_key)
-    {
-        let w = dense(drafter_store, &conf_key)
-            .context("DSpark drafter: load confidence_head.proj.weight")?;
-        let b = dense(
-            drafter_store,
-            &format!("{prefix}confidence_head.proj.bias"),
-        )
-        .context("DSpark drafter: load confidence_head.proj.bias")?;
-        (Some(w), Some(b))
-    } else {
-        (None, None)
-    };
+    let (confidence_proj, confidence_bias) =
+        if drafter_config.enable_confidence_head && drafter_store.contains(&conf_key) {
+            let w = dense(drafter_store, &conf_key)
+                .context("DSpark drafter: load confidence_head.proj.weight")?;
+            let b = dense(drafter_store, &format!("{prefix}confidence_head.proj.bias"))
+                .context("DSpark drafter: load confidence_head.proj.bias")?;
+            (Some(w), Some(b))
+        } else {
+            (None, None)
+        };
     if markov_w1.is_some() || confidence_proj.is_some() {
         tracing::info!(
             "DSpark heads loaded: markov={} (rank={}), confidence={} (with_markov={})",

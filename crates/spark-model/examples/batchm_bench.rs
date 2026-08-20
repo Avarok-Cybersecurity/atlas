@@ -285,7 +285,10 @@ fn correctness_gate(
 
     // Gate 4: pipelined batch8 variants must be BIT-EXACT vs shipping batch8
     // at every M — same virtual-lane order by construction; this proves it.
-    for &(kn, kh, _) in kernels.iter().filter(|(kn, _, _)| kn.starts_with("batch8_pf") || kn.starts_with("batch8_rt")) {
+    for &(kn, kh, _) in kernels
+        .iter()
+        .filter(|(kn, _, _)| kn.starts_with("batch8_pf") || kn.starts_with("batch8_rt"))
+    {
         for &m in M_SWEEP {
             zero_c(g)?;
             launch_batchm(g, b8, a, b, bs, c, m, n, k)?;

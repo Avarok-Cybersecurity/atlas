@@ -651,8 +651,7 @@ impl BlockDiffusionDraftHead {
                 self.markov_argmax_block(ctx, norm_noise_local, stream)?;
             } else {
                 for i in 0..self.gamma {
-                    let logits_row =
-                        self.scratch.logits.offset(i * self.vocab_size * bf16_local);
+                    let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
                     let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
                     ops::argmax_bf16(
                         gpu,
@@ -1082,7 +1081,10 @@ impl BlockDiffusionDraftHead {
                 tracing::info!(
                     "DSPARK CONF logits (pos={position}, tau={tau}): {:?} sigmoids: {:?}",
                     logits,
-                    logits.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect::<Vec<f32>>(),
+                    logits
+                        .iter()
+                        .map(|x| 1.0 / (1.0 + (-x).exp()))
+                        .collect::<Vec<f32>>(),
                 );
             }
             // sigmoid(x) < τ  ⇔  x < logit(τ) — compare in logit space.
