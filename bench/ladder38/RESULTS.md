@@ -1150,6 +1150,42 @@ finding does not touch them — each is its own same-day A/B.
 Raw series: `c32_atlas_cap128_dgx2_20260820.json`, `c32_atlas_cap32_dgx2_20260820.json`,
 `c32_vllm_mtp_cap32_dgx2_20260820.json`.
 
+### ✅ C=32 DOES WIN — the cap-32 comparison was the flawed one (2026-08-20)
+
+**Correcting the alarm raised earlier today.** vLLM measured at the CERTIFIED configuration
+(batch cap 128, util 0.85, fp8 KV, MTP K=4) at C=32, same box, same day as the Atlas number:
+
+| engine (cap 128, C=32, dgx2, same day) | rep 1 | rep 2 | rep 3 | mean | spread |
+|---|---:|---:|---:|---:|---:|
+| **Atlas** | 279.32 | 278.45 | 279.02 | **278.93** | 0.31% |
+| vLLM+MTP | 275.10 | 278.02 | 278.24 | **277.12** | 1.13% |
+
+**Ratio 1.007x — Atlas wins, and the distributions do not overlap** (Atlas's worst rep 278.45
+beats vLLM's best 278.24).
+
+**vLLM fell too.** Its certified 283.48 is now 277.12, down 2.2% — so the fleet-wide shift
+documented above is not Atlas-specific. It costs Atlas ~4% and vLLM ~2.2% at this rung, which
+narrows the margin from the certified 1.027x to 1.007x but does not reverse it.
+
+★ **The earlier "C=32 does not currently win" rested on a cap-32 pair, and cap 32 is not a
+neutral mitigation.** Measured both ways on the same box today:
+
+| engine | cap 32 | cap 128 (certified) | effect of the cap |
+|---|---:|---:|---|
+| Atlas | 277.31 | 278.93 | roughly flat (+0.6%) |
+| vLLM+MTP | 284.54 | 277.12 | **+2.7% for vLLM at cap 32** |
+
+vLLM gains materially from the smaller cap; Atlas does not. So the matched-cap-32 pair —
+adopted in good faith to avoid the wedge hazard, and internally like-for-like — systematically
+favoured vLLM and produced a 0.975x that inverted the true ordering. This is exactly what the
+METHOD NOTE above warns about, and it caught out the person who wrote it.
+
+**Standing after this:** six rungs verified by same-day A/B on merged main — C=1 1.317x,
+C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x, **C=32 1.007x**. C=64 and C=128 remain
+quoted from certified absolutes and still need same-day vLLM numbers.
+
+Raw series: `c32_vllm_mtp_cap128_dgx2_20260820.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
