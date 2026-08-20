@@ -64,10 +64,17 @@ impl MoeLayer {
         // Holo experiments trade that safety margin for fewer empty expert
         // tiles after validating the router histogram.
         let worst_case_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
+        // DEFAULT-ON (`ATLAS_MOE_PREFILL_EXACT_TILES=0` disables). Worth 120.7 ms of
+        // cold TTFT on the 35B NVFP4 measured leave-one-out; without it the rest of
+        // the fast-MoE stack buys nothing (690.94 ms vs 688.12 with no flags at all).
+        // It reads the REAL expert offsets rather than estimating, so it cannot
+        // truncate — the worst-case bound above exists only to avoid this D2H sync,
+        // and that sync's cost is already inside the measured win. Still off under
+        // graph capture, where a D2H sync is not legal.
         let exact_tiles = std::env::var("ATLAS_MOE_PREFILL_EXACT_TILES")
             .ok()
             .as_deref()
-            == Some("1")
+            != Some("0")
             && !ctx.graph_capture;
         let max_m_tiles = if exact_tiles {
             let mut offsets = vec![0u8; (ne + 1) * 4];
