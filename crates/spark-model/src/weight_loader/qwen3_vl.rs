@@ -45,6 +45,15 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
             variant
         );
 
+        // MoE prefill copies. This loader used to build NONE of them, so every
+        // prefill took the fallback `moe_w4a16_grouped_gemm` — measured 695 ms in
+        // `grouped_gate_up` + 351 ms in `grouped_silu_down` on
+        // ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4, i.e. 59 % of a 1798 ms cold TTFT,
+        // against 98.9 / 69.5 ms for a model that does build them. Decided once
+        // here rather than per layer: `free_memory()` shrinks as layers load, so
+        // a per-layer probe transposes the early layers and silently skips the
+        // late ones, leaving prefill on a mix of both paths.
+        let moe_prefill_copies = super::moe_prefill_copies_fit(config, gpu);
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
         let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
         let stream = gpu.default_stream();
@@ -67,13 +76,18 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
                 quantize_k,
                 stream,
             )?;
-            let ffn = FfnComponent::Moe(MoeLayer::new(
+            let mut moe_layer = MoeLayer::new(
                 moe_weights,
                 config.num_experts,
                 Some(gate_nvfp4),
                 gpu,
                 config,
-            )?);
+            )?;
+            if moe_prefill_copies {
+                moe_layer.transpose_for_prefill(gpu, config)?;
+                moe_layer.predequant_for_prefill(gpu, config, stream)?;
+            }
+            let ffn = FfnComponent::Moe(moe_layer);
 
             // All layers are FullAttention with ungated Q projection.
             //
