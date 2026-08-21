@@ -21,6 +21,91 @@
 // proves this exact instruction and operand mapping against the CUTLASS Sm120
 // collective at cos = 1.000000 (see examples/fp4_mma_microproof.rs).
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ⛔ PARKED — DO NOT WIRE INTO ANY DISPATCH PATH WITHOUT AN EXPLICIT DECISION.
+//
+// This file is CORRECT and UNUSED. It is kept as a proven building block plus a
+// continuation plan, so whoever resumes starts at 1.77x rather than at zero.
+//
+// ── WHY IT IS PARKED ──────────────────────────────────────────────────────
+// Enabling it moves the flagship NVFP4 path from W4A16 to W4A4: activations go
+// bf16 -> e2m1. That is a NUMERICS change on a shipping model, and at the
+// current 1.77x it would buy only ~15 ms of cold TTFT (574 -> ~559, -2.6%).
+// A precision change is not worth 2.6%. It becomes worth discussing at ~1.1x or
+// better, where the prize is the full ~71 ms.
+//
+// ── WHAT IS ALREADY ESTABLISHED (do not re-derive) ────────────────────────
+// 1. The gap to CUTLASS is PRECISION, not engineering. An add-one-in survey of
+//    all 8 CUTLASS-selectable paths (35B NVFP4, cold TTFT, n=8/arm, one binary):
+//        nvfp4-qkvz   -35.5 ms     moe-grouped  -38.7 ms
+//        dense-gemm     0.0 ms     attn-kv/-o   +1.3/+1.4 ms (WE are faster)
+//        ssm-out/attn-q -5.0/-4.4 ms (marginal)
+//    Only qkvz and grouped-MoE carry a gap, and both route through the
+//    `w4a16_gemm*` family.
+// 2. IT IS NOT MISSING PIPELINING. `moe_w4a16_grouped_gemm_ptrtable_t_k64` — the
+//    kernel `grouped_silu_down` actually runs — ALREADY has K_STEP_T64=64,
+//    double buffering, 45 cp.async uses, PAD_T64/BP_PAD bank padding and
+//    N_TILE_LG=128. Checked, not assumed. There is no structural work left at
+//    W4A16, which is why W4A4 is the only route.
+// 3. The MMA and its operand/scale layout are PROVEN: cos = 1.000000 against the
+//    CUTLASS Sm120 collective at every shape tried. See
+//    `examples/fp4_mma_microproof.rs` and `fp4_mma_microtest.cu`.
+//
+// ── MEASURED LADDER (M=2048 N=12288 K=2048, the real qkvz shape; like-for-like
+//    including the activation pack) ──────────────────────────────────────────
+//        naive (no reuse)          15.254 ms   24.8x    ~4.7 GB redundant reads
+//        tiled 64x128               1.353 ms    2.24x
+//        pipelined 64x128           1.437 ms    2.40x   NO HELP at large M
+//        128x128                    1.117 ms    1.87x
+//        256x128                    1.173 ms    1.83x   REGRESSED: 209 regs -> 1 CTA/SM
+//        128x128 + bank padding     1.115 ms    1.77x   <- best, this file
+//        CUTLASS                    ~0.63  ms   1.00x   <- target
+//        w4a16 (derived)            ~1.5   ms   2.4x    <- the bar to beat
+//
+// ── THE MULTI-DAY PLAN, IN ORDER ──────────────────────────────────────────
+// Three consecutive structural fixes each delivered far LESS than their model
+// predicted (pipelining, bigger tile, bank padding). That pattern says the
+// remaining 1.77x is not reachable by more of the same. DO NOT START WITH TILE
+// SIZE SWEEPS — that ground is covered above.
+//
+// Day 1 — measure where the 1.77x actually goes.
+//   ncu the 128x128 kernel and CUTLASS's collective on the SAME shape and diff
+//   them: sm__throughput, dram__throughput, warp stall reasons, achieved
+//   occupancy, smem bank conflicts. Every optimisation above was chosen from a
+//   traffic model; none was chosen from a stall profile, and the models kept
+//   over-predicting. ★ Do NOT ncu a live serve on GB10: kernel replay snapshots
+//   the working set and unified memory has no headroom — it hard-froze this box
+//   twice. Profile `examples/w4a4_bench.rs` instead (~6 GB).
+//
+// Day 2 — multi-stage async pipeline (3-4 deep), not 2.
+//   The 2-stage attempt here hurt at large M because 3072 CTAs already hide the
+//   load latency between CTAs. A deeper pipeline only pays alongside a LARGER
+//   tile, where CTA count drops and intra-CTA overlap starts to matter. These
+//   two must be tried TOGETHER; separately they cancel (that is exactly what the
+//   256x128 row above shows).
+//
+// Day 3 — warp specialisation.
+//   Split producer (cp.async staging) from consumer (MMA) warps, as the CUTLASS
+//   collective does. This is the single biggest structural difference remaining
+//   and the reason its 128x128x128 tile sustains what ours cannot.
+//
+// Day 4 — swizzled smem layout.
+//   The `W4A4_KBP 48` padding here is a crude stand-in for a real XOR swizzle.
+//   Padding cost smem and bought ~0 absolute time, so a swizzle is worth doing
+//   properly rather than widening the pad further.
+//
+// Day 5 — grouped variant for the MoE path.
+//   qkvz is a dense GEMM; `grouped_silu_down`/`grouped_gate_up` need per-expert
+//   pointer tables. Do this only AFTER the dense kernel is within ~1.1x, or the
+//   grouped version inherits the same deficit with more moving parts.
+//
+// ── GATE BEFORE ANY CLAIM ─────────────────────────────────────────────────
+// cos >= 0.999 vs the CUTLASS oracle is NECESSARY BUT NOT SUFFICIENT. The
+// shelved SPLIT=4 GDN spine read cos 1.0000 and still failed two accuracy gates.
+// Run the 4-minute ssm-poisoning tripwire (12/12 byte-identical) and then the
+// FULL accuracy suite before treating any speed number as shippable.
+// ═══════════════════════════════════════════════════════════════════════════
+
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
