@@ -24,7 +24,7 @@ fn test_qwen3_default_config() {
 }
 
 #[test]
-fn test_parse_actual_config() {
+fn qwen3_next_fixture_parses_layout_routing_and_quantization() {
     let json = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test_data/qwen3_config.json"
@@ -32,6 +32,7 @@ fn test_parse_actual_config() {
     let cfg = parse_config(json).unwrap();
     assert_eq!(cfg.hidden_size, 2048);
     assert_eq!(cfg.num_experts, 512);
+    assert_eq!(cfg.num_experts_per_tok, 10);
     assert_eq!(cfg.num_hidden_layers, 48);
     assert_eq!(cfg.layer_types.len(), 48);
     assert_eq!(cfg.layer_types[0], LayerType::LinearAttention);
@@ -44,6 +45,18 @@ fn test_parse_actual_config() {
     assert_eq!(cfg.partial_rotary_factor, 0.25);
     assert_eq!(cfg.model_type, "qwen3_next");
     assert!(cfg.weight_prefix.is_empty());
+
+    let quant = cfg
+        .quantization_config
+        .expect("NVIDIA NVFP4 fixture must retain quantization metadata");
+    assert_eq!(quant.quant_method, "modelopt");
+    assert_eq!(quant.quant_algo, "NVFP4");
+    assert!(
+        quant
+            .ignore_modules
+            .iter()
+            .any(|module| module == "lm_head")
+    );
 }
 
 #[test]
