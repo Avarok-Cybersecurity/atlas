@@ -97,6 +97,13 @@ export ATLAS_GDN_LIB=/home/ms/atlas-gdn-libs/libatlasgdn.so
 # every leg (85->86%, 78->79%, 69->70%). Costs ~1.9 GB of FP8 mirrors.
 # `ATLAS_DFLASH_DRAFTER_FP8=0` opts back out.
 
+# SimHash semantic-loop guard OFF for this serve: it is ONE-STRIKE at
+# Jaccard 0.55 over a 16-sentence ring and kills the stream mid-reply, which
+# legitimate structured output (per-method docstrings, enumerations) crosses
+# easily. Post-#699 its fires skew false-positive — observed killing a
+# healthy TUI session 2026-08-21. Remove this line to re-arm it.
+export ATLAS_SIMHASH_LOOP=0
+
 # Serve at INFO so the log is useful if something misbehaves.
 export RUST_LOG=info
 
@@ -186,7 +193,7 @@ fi
 
 if [ "$MODE" = "small" ]; then
   MAX_SEQ_LEN=32768
-  SEQS=4
+  SEQS=16
 else
   MAX_SEQ_LEN=131072
   SEQS=8
