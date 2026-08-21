@@ -25,15 +25,23 @@ checkpoint a gate scores. The gate's numbers are NOT the cold_ttft.py numbers \
 (1580.5 vs 4974.6 ms); different harness, different prompt ladder, not \
 interchangeable.
 
-★ THE p90 IS PATHOLOGICAL AND THIS CEILING ENSHRINES IT DELIBERATELY. The three \
-legs measure 261.4 ms @256 tok, 1580.5 ms @1024, and 23324.6 ms @4096 — 4x the \
-tokens for 14.7x the time, sharply superlinear, and the 4096 leg alone sets the \
-aggregate p90. 23 SECONDS of cold TTFT at 4096 tokens is a defect, not a \
-baseline, and it should be investigated and RATCHETED DOWN rather than accepted. \
-It is committed at the measured value only so a regression from here is visible; \
-a gate that refuses to record a bad number protects nothing. The run was clean \
-(0 serve errors, all three legs produced samples), so this is real work, not a \
-harness artifact.
+★ RATCHETED 2026-08-21, and this is what the previous note asked for. The \
+ceilings were median 1627.96 / p90 24490.81, cut from a baseline whose 4096-token \
+leg took 23,324.6 ms. That note said plainly: "23 SECONDS of cold TTFT at 4096 \
+tokens is a defect, not a baseline... it should be RATCHETED DOWN rather than \
+accepted." The cause was found — the 5 global (512-wide) attention layers ran a \
+SCALAR kernel with no tensor cores at 3296.9 ms/layer, while the 25 sliding \
+(256-wide) layers took the tiled tensor-core path at 2.0 ms/layer — and fixed by \
+instantiating that same tensor-core kernel at HDIM=512.
+
+    cold  256 tok:   261.4 ->  ~89 ms
+    cold 1024 tok:  1580.5 -> 538.3 ms   (-65.9%)
+    cold 4096 tok: 23324.6 -> 1893.5 ms  (-91.9%, 12.3x)
+
+New ceilings = the gate's own dgx1 baseline x the gate limits: median 538.308 ms \
+x +3%, p90 1897.641 ms x +5%. Run was clean (0 serve errors, all three legs \
+sampled). Recording the bad number instead of declining to gate it is what made \
+this ratchet a one-line change against a committed reference.
 
 ★ NO ttft-warm-gate ENTRY, AND ONE CANNOT BE ADDED TODAY. This model cannot use \
 prefix caching at all: `enable_prefix_caching` makes partial hits take the \
@@ -47,7 +55,7 @@ the HDIM=512 chunked path (kernel work); it is a PRODUCTION gap, not only a gate
 gap, since Gemma-4 pays full cold prefill on every request."""
 
 [benchmarks.metrics.median_ms]
-max = 1627.96
+max = 554.46
 
 [benchmarks.metrics.p90_ms]
-max = 24490.81
+max = 1992.52
