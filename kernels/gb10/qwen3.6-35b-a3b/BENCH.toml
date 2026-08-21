@@ -192,6 +192,46 @@ max = 1728.27
 [benchmarks.metrics.p90_ms]
 max = 4809.76
 
+# ── NVFP4-MoE VARIANT of the cold-TTFT guard ────────────────────────────────
+# The FP8 entry above is the DEFAULT subject, and until this entry existed it
+# was the ONLY one: no gate anywhere exercised an NVFP4 MoE checkpoint. That
+# mattered — the fast-MoE default-on work (#654) is gated on
+# `modelopt_mixed_precision || nvfp4_moe`, so it is INERT on FP8, and the whole
+# 10-gate suite passed it while never touching the path it changed.
+#
+# `default` is deliberately absent: this is a variant, so its records are named
+# `YYYY-MM-DD-<sha>-<slug>.json` and cannot collide with the FP8 record cut from
+# the same commit on the same day.
+#
+# CEILINGS = same-box baseline (dgx1, 2026-08-21, this recipe) x the gate limits,
+# derived exactly as the FP8 entries above are. Measured against a SELF-DRIVEN
+# server, because the machinery deliberately refuses to let an unmeasured entry
+# bootstrap itself: `status = "unmeasured"` entries are DROPPED rather than given
+# empty thresholds, so `resolve()` fails loudly instead of an unbounded entry
+# passing every check it is handed. A new variant is therefore always
+# measure-then-declare, never gate-then-fill-in.
+#   cold  median 442.3 ms  p90 1314.3 ms   (256/1024/4096 tok: 244.8 / 442.3 / 1310.7)
+#   warm  median 439.6 ms  p90 1291.1 ms   (256/1024/4096 tok: 230.7 / 439.6 / 1290.9)
+# TTFT is box-local — a different box must re-record these, not reuse them.
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+gate = "ttft-cold-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-nvfp4"
+status = "measured"
+note = """\
+Cold-TTFT guard for the NVFP4 MoE checkpoint — the path fast-MoE default-on \
+actually changes, and which no gate exercised before this entry. Ceilings = \
+dgx1 baseline 442.3 ms median x +3%, 1314.3 ms p90 x +5%."""
+
+[benchmarks.metrics.median_ms]
+max = 455.57
+
+[benchmarks.metrics.p90_ms]
+max = 1380.02
+
+
+
 [[benchmarks]]
 quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
@@ -209,6 +249,25 @@ max = 1647.98
 
 [benchmarks.metrics.p90_ms]
 max = 4814.44
+
+# ── NVFP4-MoE VARIANT of the warm-TTFT guard (see the cold note above) ──────
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+gate = "ttft-warm-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-nvfp4"
+status = "measured"
+note = """\
+Warm-TTFT guard for the NVFP4 MoE checkpoint. Ceilings = dgx1 baseline \
+439.6 ms median x +3%, 1291.1 ms p90 x +5%."""
+
+[benchmarks.metrics.median_ms]
+max = 452.79
+
+[benchmarks.metrics.p90_ms]
+max = 1355.65
+
+
 
 [[benchmarks]]
 quant = "nvfp4"
