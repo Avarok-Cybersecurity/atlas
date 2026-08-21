@@ -50,10 +50,13 @@ fn explicit_target_modules_are_preserved_verbatim() {
 }
 
 #[test]
-fn rslora_scaling_alpha_over_sqrt_r() {
+fn rslora_scaling_preserves_inputs_and_uses_alpha_over_sqrt_rank() {
     let mut j = base_json();
     j["use_rslora"] = serde_json::json!(true);
     let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert_eq!(cfg.r, 16);
+    assert_eq!(cfg.lora_alpha, 32.0);
+    assert!(cfg.use_rslora);
     assert_eq!(cfg.scaling(), 8.0); // 32 / sqrt(16)
 }
 
