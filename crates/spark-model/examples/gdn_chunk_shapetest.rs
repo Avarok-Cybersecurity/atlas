@@ -234,10 +234,10 @@ fn run_wu(
     up: DevicePtr,
     gcp: DevicePtr,
 ) -> Result<()> {
-    let smem1 = (C * KD * 2 + C * C * 4 + C * C * 4 + C * 4) as u32;
+    let smem1 = (C * KD * 2 + C * C * 4 + C * 4) as u32; // post-alias, as production
     KernelLaunch::new(g, k_wu)
         .grid([c.nt as u32, NV as u32, c.batch as u32])
-        .block([128, 1, 1])
+        .block([256, 1, 1]) // pass 2 (W) is guarded tid>=128: at 128, W_out is unwritten
         .shared_mem(smem1)
         .arg_ptr(kp)
         .arg_ptr(vp)

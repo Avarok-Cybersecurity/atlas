@@ -64,11 +64,29 @@ impl MoeLayer {
         // Holo experiments trade that safety margin for fewer empty expert
         // tiles after validating the router histogram.
         let worst_case_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
-        let exact_tiles = std::env::var("ATLAS_MOE_PREFILL_EXACT_TILES")
+        // Default-on for NVFP4 experts ONLY; opt-in ("=1") everywhere else.
+        //
+        // Reads the REAL expert offsets instead of the worst-case bound above, so it
+        // cannot truncate — that bound exists only to avoid this D2H copy+sync. On
+        // NVFP4 the trade is strongly positive: 120.7 ms of cold TTFT on the 35B by
+        // leave-one-out, and without it the rest of the fast-MoE stack buys nothing
+        // at all (690.94 ms vs 688.12 with no flags set).
+        //
+        // ★ On FP8 experts the same sync is a LOSS, and defaulting it on globally
+        // regressed the ttft-warm gate's TAIL — measured on that gate's own recipe
+        // (qwen3.6-35b-a3b-fp8-bf16head), one variable:
+        //     exact_tiles on   p90 +4.9%  (limit +5.0%)  <- 0.1% from failing
+        //     exact_tiles off  p90 -5.0%
+        // Median barely moved either way (+0.1% vs -0.9%), so only the tail shows it.
+        // The win was measured on NVFP4; scope the default to where it was measured.
+        let exact_tiles = match std::env::var("ATLAS_MOE_PREFILL_EXACT_TILES")
             .ok()
             .as_deref()
-            == Some("1")
-            && !ctx.graph_capture;
+        {
+            Some("0") => false,
+            Some("1") => true,
+            _ => self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Nvfp4,
+        } && !ctx.graph_capture;
         let max_m_tiles = if exact_tiles {
             let mut offsets = vec![0u8; (ne + 1) * 4];
             ctx.gpu

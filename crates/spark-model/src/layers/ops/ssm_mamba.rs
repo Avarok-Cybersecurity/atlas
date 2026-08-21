@@ -357,6 +357,7 @@ pub fn gdn_verify_fused_norm_k2(
 pub fn conv1d_update_prefill(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
+    conv1d_prefill_tp_k: KernelHandle,
     conv_state: DevicePtr,
     input: DevicePtr,
     weight: &DenseWeight,
@@ -369,9 +370,34 @@ pub fn conv1d_update_prefill(
     output_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(d_inner, 256), 1, 1])
-        .block([256, 1, 1])
+    // TOKEN-PARALLEL prefill conv1d is the default (`ATLAS_CONV1D_TP=0` disables).
+    //
+    // The serial kernel runs one thread per channel walking `for t in 0..seq_len`,
+    // so it launches only ceil(dim/256) CTAs — tens of blocks on a 48-SM part —
+    // with each thread doing a seq_len-long loop. It measured 30.6 ms of the 35B
+    // cold-prefill budget.
+    //
+    // There is no recurrence to serialize: `s[0..3]` is a sliding window over
+    // INPUTS, so output[t] = b + sum_k w[k]*x[t-3+k] depends on no prior output.
+    // Parallelising over (channel, token) is 3.32x on the isolated kernel and
+    // BIT-IDENTICAL — 0 of 22,118,400 elements differ, because the accumulation
+    // order is unchanged. Block (32,8) keeps a warp spanning channels so the
+    // [t*stride + ch] loads stay coalesced; 8 tokens per thread give a rolling
+    // window (11 input reads per 8 outputs instead of 32).
+    let tp =
+        std::env::var("ATLAS_CONV1D_TP").ok().as_deref() != Some("0") && conv1d_prefill_tp_k.0 != 0;
+    let (k, grid, block) = if tp {
+        (
+            conv1d_prefill_tp_k,
+            [div_ceil(d_inner, 32), div_ceil(seq_len, 64), 1],
+            [32u32, 8u32, 1u32],
+        )
+    } else {
+        (kernel, [div_ceil(d_inner, 256), 1, 1], [256u32, 1u32, 1u32])
+    };
+    KernelLaunch::new(gpu, k)
+        .grid(grid)
+        .block(block)
         .arg_ptr(conv_state)
         .arg_ptr(input)
         .arg_ptr(weight.weight)

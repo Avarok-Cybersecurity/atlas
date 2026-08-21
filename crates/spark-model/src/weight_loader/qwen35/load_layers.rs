@@ -113,15 +113,40 @@ pub(super) fn load_layers(
     // mixed-precision-specific handling (fp8 experts, native-modelopt SSM/attn)
     // stays gated on `modelopt_mixed_precision` and simply doesn't fire otherwise.
     let nvfp4_moe = config.num_experts > 0 && quant_format == QuantFormat::Nvfp4;
-    let low_memory_modelopt_moe = (modelopt_mixed_precision || nvfp4_moe)
-        && std::env::var("ATLAS_HOLO_LOW_MEMORY_MOE").ok().as_deref() == Some("1");
-    let holo_fast_moe_mode = if low_memory_modelopt_moe {
-        holo_fast_moe_mode()
+    // FAST-MoE IS DEFAULT-ON for qualifying checkpoints. Measured on
+    // nvidia/Qwen3.6-35B-A3B-NVFP4, 2048-word cold prompts, n=8 per arm:
+    //     no flags at all                     688.12 ms
+    //     fast-MoE + exact-tiles              570.22 ms   <- this default
+    // A leave-one-out sweep over 13 candidate flags found only these carry the
+    // win; the other ten were worth <=4.1 ms each, inside the ~1.2% spread.
+    //
+    // ★ THE THREE MOVE AS ONE, and that is not a style choice. `LOW_MEMORY_MOE`
+    // GATES the other two, so the low-memory expert layout with NO fast-MoE mode
+    // selects a slow path that measured 1148.83 ms — nearly 2x WORSE than setting
+    // no flags at all. That state is reachable today by anyone who sets one env
+    // var and not the others. It is made unreachable below: the layout is only
+    // enabled when a mode actually resolved.
+    let moe_qualifies = modelopt_mixed_precision || nvfp4_moe;
+    let low_memory_requested =
+        moe_qualifies && std::env::var("ATLAS_HOLO_LOW_MEMORY_MOE").ok().as_deref() != Some("0");
+    // Unset => Full. An explicitly-set value still goes through the parser, so a
+    // typo warns rather than being silently upgraded to the default.
+    let holo_fast_moe_mode = if low_memory_requested {
+        if std::env::var_os("ATLAS_HOLO_FAST_MOE_MODE").is_some() {
+            holo_fast_moe_mode()
+        } else {
+            Some(HoloFastMoeMode::Full)
+        }
     } else {
         None
     };
+    // Never the 1148 ms combination: no mode => no low-memory layout either.
+    let low_memory_modelopt_moe = low_memory_requested && holo_fast_moe_mode.is_some();
     let holo_fast_moe_spec = if low_memory_modelopt_moe {
-        std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS").ok()
+        // Unset => every layer. `parse_layer_ranges` takes inclusive ranges, and
+        // the predicate is a plain bounds test, so a wide upper bound means "all"
+        // without the loader needing the layer count here.
+        Some(std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS").unwrap_or_else(|_| "0-99999".to_string()))
     } else {
         None
     };
@@ -312,7 +337,9 @@ pub(super) fn load_layers(
         // ATLAS_FORCE_NVFP4_MOE=1 inverts: do the prep so NVFP4 path is usable.
         let fast_holo_moe_layer = low_memory_modelopt_moe
             && holo_fast_moe_mode.is_some()
-            && holo_fast_moe_layer_selected(i);
+            && holo_fast_moe_spec
+                .as_deref()
+                .is_some_and(|spec| holo_fast_moe_layer_selected(spec, i));
         let skip_moe_prefill_copies = low_memory_modelopt_moe && !fast_holo_moe_layer;
         if fast_holo_moe_layer {
             tracing::info!(
@@ -958,15 +985,18 @@ fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
     })()
 }
 
-fn holo_fast_moe_layer_selected(layer: usize) -> bool {
-    // Per call — see `layer_dequant_selected`.
-    let ranges = {
-        let Ok(spec) = std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS") else {
-            return false;
-        };
-        parse_layer_ranges(&spec)
-    };
-    ranges.iter().any(|&(a, b)| layer >= a && layer <= b)
+/// Is `layer` inside the resolved fast-MoE layer spec?
+///
+/// SSOT: takes the spec the CALLER resolved (`holo_fast_moe_spec`) rather than
+/// re-reading `ATLAS_HOLO_FAST_MOE_LAYERS` here. It used to read the env itself and
+/// `return false` when unset, so once the spec gained a default the two disagreed:
+/// the caller enabled the low-memory expert layout while this predicate selected NO
+/// layers, which is the slow path — measured 1144 ms vs 574 with them agreeing, and
+/// 688 with the layout off entirely. One config, one reader.
+fn holo_fast_moe_layer_selected(spec: &str, layer: usize) -> bool {
+    parse_layer_ranges(spec)
+        .iter()
+        .any(|&(a, b)| layer >= a && layer <= b)
 }
 
 fn parse_layer_ranges(spec: &str) -> Vec<(usize, usize)> {
