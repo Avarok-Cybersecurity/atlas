@@ -275,7 +275,7 @@ fn test_layer_prefix() {
 }
 
 #[test]
-fn test_parse_nemotron_h_config() {
+fn nemotron_h_fixture_maps_mamba_moe_and_weight_layout() {
     let json = r#"{
         "model_type": "nemotron_h",
         "hidden_size": 2688,
@@ -310,6 +310,10 @@ fn test_parse_nemotron_h_config() {
     assert_eq!(cfg.shared_expert_intermediate_size, 3712);
     assert_eq!(cfg.rms_norm_eps, 1e-5);
     assert_eq!(cfg.linear_conv_kernel_dim, 4);
+    assert_eq!(cfg.mamba_num_heads, 64);
+    assert_eq!(cfg.mamba_head_dim, 64);
+    assert_eq!(cfg.ssm_state_size, 128);
+    assert_eq!(cfg.n_groups, 8);
     assert_eq!(cfg.mamba2_d_inner(), 4096); // 64*64, NOT expand*hidden
     // Pattern: 23 M + 23 E + 6 * = 52
     assert_eq!(cfg.layer_types.len(), 52);
@@ -322,6 +326,8 @@ fn test_parse_nemotron_h_config() {
     assert_eq!(cfg.gqa_ratio(), 16); // 32/2
     assert_eq!(cfg.rotary_dim(), 128); // partial_rotary_factor=1.0
     assert_eq!(cfg.routed_scaling_factor, 2.5);
+    assert!(cfg.norm_topk_prob);
+    assert_eq!(cfg.weight_prefix, "backbone");
 }
 
 #[test]
