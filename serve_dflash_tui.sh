@@ -22,7 +22,7 @@
 #
 # Measured on the LEAN profile (32K ctx, 8 seqs, no prefix cache), which is
 # the one with a clean baseline, aggregate tok/s at C=1/2/4/8:
-#   base   54.6 / 84.7 / 98.7 / 124.1   accept 84/84/78/74%
+#   base   54.6 / 84.2 / 114.4 / 149.9  accept 84/84/77/74%
 #
 # Cross-sequence batched verify IS engaging here (it was not until the
 # eligibility contradiction in can_batch_verify was removed — before that the
@@ -32,9 +32,13 @@
 # which prints raw_argmax / n_verify / lever / kill-switch once, plus a
 # "batched verify DECLINED" line when can_batch_verify refuses.
 #
-# Still missing vs the WIP branch: batched PROPOSE, which needs the gamma
-# scratch banded per sequence on this base's conv/selector kernels. That is
-# the remaining gap to the WIP branch's 93.6 / 131.3 / 164.6.
+# Both cross-sequence batched VERIFY and batched PROPOSE are engaging here.
+# If throughput ever goes flat across concurrency again, the two gates say why
+# at RUST_LOG=info,spark::scheduler::mtp_step=debug — and if ACCEPTANCE drops
+# while throughput holds, suspect a row-count bound rather than the drafter:
+# `ATLAS_DFLASH_BATCH_PROPOSE=2` caps the batch at 2 sequences, and if that
+# restores acceptance the fault is width-dependent (that bisect is what found
+# the lm_head M_TILE=16 bound).
 #
 # Verified at C=8: ZERO "batched verify DECLINED" lines, i.e. the cross-
 # sequence batched verify — the thing that makes concurrency amortise — is
