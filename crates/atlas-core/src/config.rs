@@ -629,5 +629,20 @@ pub(crate) fn validate_config(config: &ModelConfig) -> Result<()> {
         );
     }
 
+    if config.mamba_num_heads > 0 {
+        if config.mamba_head_dim == 0 {
+            anyhow::bail!("mamba_head_dim must be greater than zero");
+        }
+        if config.ssm_state_size == 0 {
+            anyhow::bail!("ssm_state_size must be greater than zero");
+        }
+        if config.n_groups == 0 {
+            anyhow::bail!("n_groups must be greater than zero");
+        }
+        if !config.mamba2_d_inner().is_multiple_of(config.n_groups) {
+            anyhow::bail!("mamba_num_heads * mamba_head_dim must be divisible by n_groups");
+        }
+    }
+
     Ok(())
 }

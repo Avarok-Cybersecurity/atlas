@@ -331,6 +331,41 @@ fn nemotron_h_fixture_maps_mamba_moe_and_weight_layout() {
 }
 
 #[test]
+fn nemotron_h_rejects_invalid_mamba_geometry() {
+    let base = serde_json::json!({
+        "model_type": "nemotron_h",
+        "hidden_size": 2688,
+        "num_hidden_layers": 1,
+        "hybrid_override_pattern": "M",
+        "mamba_num_heads": 64,
+        "mamba_head_dim": 64,
+        "ssm_state_size": 128,
+        "n_groups": 8,
+        "conv_kernel": 4
+    });
+    let mut accepted = Vec::new();
+
+    for (field, value) in [
+        ("mamba_head_dim", 0),
+        ("ssm_state_size", 0),
+        ("n_groups", 0),
+        ("n_groups", 7),
+    ] {
+        let mut raw = base.clone();
+        raw[field] = serde_json::json!(value);
+        match parse_config(&raw.to_string()) {
+            Ok(_) => accepted.push(field),
+            Err(error) => assert!(
+                error.to_string().contains(field),
+                "error for {field} did not name the invalid field: {error}"
+            ),
+        }
+    }
+
+    assert!(accepted.is_empty(), "parser accepted invalid {accepted:?}");
+}
+
+#[test]
 fn test_parse_nemotron_h_puzzle_config() {
     // Minimal Puzzle-shaped schedule: 4 layers with heterogeneous MoE dims.
     // Full checkpoint has 88 layers; this covers dispatch + per-layer lookup.
