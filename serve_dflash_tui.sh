@@ -22,7 +22,9 @@
 #
 # Measured on the LEAN profile (32K ctx, 8 seqs, no prefix cache), which is
 # the one with a clean baseline, aggregate tok/s at C=1/2/4/8:
-#   base   54.6 / 84.2 / 114.4 / 149.9  accept 84/84/77/74%
+#   base   54.6 / 65.5 / 105.3 / 130.5  accept 84/83/79/73%   (fp8 head)
+# Drop --lm-head-dtype fp8 for the nvfp4 head: 54.6 / 84.2 / 114.4 / 149.9,
+# faster but it does not reproduce the BF16 answer (see the flag note below).
 #
 # Cross-sequence batched verify IS engaging here (it was not until the
 # eligibility contradiction in can_batch_verify was removed — before that the
@@ -117,6 +119,26 @@ export RUST_LOG=info
 # per-sequence pools for twice the block they will ever hold (which is what
 # pushed the 128K x 8 profile under 8 GB free on boot). If you see γ=16,
 # either the branch is wrong or pass --dflash-gamma 8 explicitly.
+# --lm-head-dtype fp8: serve the vocab projection at the precision the
+# CHECKPOINT actually stores. This model ships `lm_head.weight` as FP8 E4M3
+# with a per-row scale; `default` re-quantizes it down to NVFP4, which is
+# FP8 -> dequant BF16 -> NVFP4 — a double quantization of the single most
+# precision-sensitive projection in the model. Measured here: the FP8 head
+# reproduces the full-BF16 greedy answer BYTE-FOR-BYTE, while NVFP4 walks a
+# different one.
+#
+# It costs throughput, and the cost is real — aggregate tok/s at C=1/2/4/8 on
+# the lean profile:
+#     nvfp4   54.7 / 84.1 / 122.7 / 152.2   (different answer)
+#     fp8     54.6 / 65.5 / 105.3 / 130.5   (BF16's answer, half the memory)
+#     bf16    46.4 / 71.4 /  70.5 / 116.4
+# So fp8 beats bf16 at C=1/4/8 for half the memory, and trails nvfp4 by
+# ~15% at C=4/8. Drop this flag to get nvfp4 back.
+#
+# The gap used to be far worse: the FP8 decode path fell to a PER-TOKEN loop
+# above M=2, re-reading the whole 1.27 GB head once per token (64 times at a
+# C=8 cross-sequence verify). `dense_gemv_fp8w_batchm` reads it once per
+# chunk of 8, bit-identically — that is where C=8 77.5 -> 130.5 came from.
 TARGET=$(ls -d /mnt/gx10-hf-hub/models--unsloth--Qwen3.8-27B-NVFP4/snapshots/*/ | head -1)
 DRAFT=$(ls -d /mnt/gx10-hf-hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/*/ | head -1)
 
@@ -254,4 +276,5 @@ exec ./target/release/spark serve \
   --video-allow-ffmpeg \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
+  --lm-head-dtype fp8 \
   "${TUI_ARGS[@]}"
