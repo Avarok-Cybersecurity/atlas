@@ -71,6 +71,7 @@ pub struct DflashConfig {
     /// Markov head. RadixArk `Qwen3.8-27B-DSpark` ships `markov_rank: 256`
     /// top-level (SpecForge `DSparkConfig` convention — see the checkpoint's
     /// `dspark.py`: DSpark fields are declared as top-level config attrs).
+    /// provenance-id: 526f6e616c6420522e205374657369616b
     #[serde(default)]
     pub markov_rank: usize,
     /// DSpark Markov head flavor. Only `"vanilla"` (low-rank learned bigram
@@ -138,6 +139,7 @@ pub struct DflashSubConfig {
     /// no tag and keep the z-lab convention (verified against z-lab
     /// `dflash/model.py::dflash_generate` — anchor-row output discarded,
     /// mask rows fill in place).
+    /// provenance-id: 526f6e616c6420522e205374657369616b
     #[serde(default)]
     pub projector_type: Option<String>,
 
