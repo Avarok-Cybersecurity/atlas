@@ -14,9 +14,10 @@ result: their only changed files are either
 `crates/atlas-core/src/config/gguf/tests.rs`, yet all ten GPU records are
 invalidated.
 
-The files are not merely named `tests.rs`. Their parent modules declare them
-directly beneath `#[cfg(test)]`, so they are absent from non-test builds. A
-benchmark cannot observe code that is not part of the benchmarked program.
+The files are not merely named like tests. Their parent modules declare them
+through module edges guarded by `#[cfg(test)]`, so they are absent from
+non-test builds. A benchmark cannot observe code that is not part of the
+benchmarked program.
 
 A glob such as `**/tests.rs` would still be unsafe. Rust permits arbitrary
 module names and explicit `#[path]` or `include!` edges, and a production file
@@ -28,7 +29,8 @@ Maintain an exact registry of test-only Rust module files. Each entry records:
 
 * the exact file path;
 * the exact parent module path;
-* the module name declared by that parent.
+* the module name declared by that parent;
+* the exact `#[path]` value when the module uses one.
 
 An exact registry match does not invalidate benchmark records. No prefix,
 suffix, basename, or directory matching is permitted.
@@ -37,7 +39,8 @@ CI validates every registry entry against the repository:
 
 * the file and parent both exist;
 * the parent contains exactly one module declaration for that name;
-* the declaration is directly guarded by `#[cfg(test)]`;
+* the registered declaration, including any explicit path, is guarded by
+  `#[cfg(test)]`;
 * repository Rust sources do not create an explicit `include!` or `#[path]`
   edge to the registered file.
 

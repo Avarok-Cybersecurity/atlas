@@ -42,10 +42,13 @@ fn assert_guarded(root: &Path, module: &TestOnlyRustModule) {
     assert!(parent_path.is_file(), "{} is not a file", module.parent);
 
     let parent = std::fs::read_to_string(&parent_path).expect("parent module is readable");
-    let guarded_declaration = format!("#[cfg(test)]\nmod {};", module.name);
+    let guarded_declaration = match module.declared_path {
+        Some(path) => format!("#[cfg(test)]\n#[path = \"{path}\"]\nmod {};", module.name),
+        None => format!("#[cfg(test)]\nmod {};", module.name),
+    };
     assert!(
         parent.contains(&guarded_declaration),
-        "{} must declare `{}` directly beneath #[cfg(test)]",
+        "{} must declare `{}` through its registered #[cfg(test)] edge",
         module.parent,
         module.name
     );

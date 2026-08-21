@@ -159,6 +159,7 @@ pub struct TestOnlyRustModule {
     pub path: &'static str,
     pub parent: &'static str,
     pub name: &'static str,
+    pub declared_path: Option<&'static str>,
 }
 
 pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
@@ -166,11 +167,19 @@ pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
         path: "crates/atlas-core/src/config/tests.rs",
         parent: "crates/atlas-core/src/config.rs",
         name: "tests",
+        declared_path: None,
     },
     TestOnlyRustModule {
         path: "crates/atlas-core/src/config/gguf/tests.rs",
         parent: "crates/atlas-core/src/config/gguf.rs",
         name: "tests",
+        declared_path: None,
+    },
+    TestOnlyRustModule {
+        path: "crates/atlas-core/src/config/parsers/lora_tests.rs",
+        parent: "crates/atlas-core/src/config/parsers/lora.rs",
+        name: "tests",
+        declared_path: Some("lora_tests.rs"),
     },
 ];
 
