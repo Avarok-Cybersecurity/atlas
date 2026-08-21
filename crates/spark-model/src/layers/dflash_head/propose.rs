@@ -507,6 +507,9 @@ impl BlockDiffusionDraftHead {
                     None
                 },
                 option_b_arg,
+                // Single-sequence propose. `propose_drafts_batched` is the
+                // cross-sequence entry.
+                None,
             )
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");

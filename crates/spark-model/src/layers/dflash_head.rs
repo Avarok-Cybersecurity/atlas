@@ -110,6 +110,22 @@ pub struct DflashKernels {
     pub dflash2_selector_walk: KernelHandle,
 }
 
+/// Cross-sequence batch descriptor for one drafter forward.
+///
+/// Rows are seq-major: sequence `i` owns `[i*gamma, (i+1)*gamma)` in every
+/// scratch buffer, and its drafts land in band `i`. Only attention, the KV
+/// slot writes and the selector's chain seed are per-sequence; every
+/// weight-bearing op runs once over all `n * gamma` rows, which is the whole
+/// point of batching.
+pub(super) struct DflashBatch<'a> {
+    pub last_tokens: &'a [u32],
+    pub positions: &'a [usize],
+    /// Per-sequence drafter block table device pointers.
+    pub block_tables: Vec<DevicePtr>,
+    /// Per-sequence populated ctx slot counts (drives kv_len / q_offset).
+    pub ctx_counts: Vec<u32>,
+}
+
 /// Per-step scratch buffers for the γ-block forward.
 ///
 /// Sized for `n_attn_slots = ctx_window + γ` rows, where ctx_window is the

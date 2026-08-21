@@ -27,10 +27,20 @@ impl BlockDiffusionDraftHead {
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
         option_b: Option<(DevicePtr, u32)>,
+        // `Some` => cross-sequence batch. `last_token` / `position` /
+        // `option_b` then describe sequence 0 only and the batch supplies the
+        // rest; `None` is the single-sequence path, unchanged.
+        batch: Option<&super::DflashBatch<'_>>,
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
-        let g = self.gamma as u32;
+        let n_seq = batch.map_or(1usize, |b| b.last_tokens.len().max(1));
+        // Rows per SEQUENCE vs TOTAL rows in this forward. Weight-bearing ops
+        // take the total; per-sequence things (attention, KV slot writes, the
+        // selector's chain seed) index by band.
+        let block_g = self.gamma as u32;
+        let g = block_g * n_seq as u32;
+        let rows_total = self.gamma * n_seq;
         let h = self.hidden_size as u32;
         let q_dim = (self.num_q_heads * self.head_dim) as u32;
         let kv_dim = (self.num_kv_heads * self.head_dim) as u32;
@@ -286,7 +296,11 @@ impl BlockDiffusionDraftHead {
         let ctx_start = position.saturating_sub(eff_ctx);
         let pos_host: Vec<i32> = (0..eff_ctx)
             .map(|i| (ctx_start + i) as i32)
-            .chain((0..self.gamma).map(|i| (position + i) as i32))
+            .chain((0..n_seq).flat_map(|b| {
+                // Each sequence ropes from ITS OWN absolute position.
+                let base = batch.map_or(position, |x| x.positions[b]);
+                (0..self.gamma).map(move |i| (base + i) as i32)
+            }))
             .collect();
         let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&pos_bytes, self.scratch.position_ids)?;
@@ -317,11 +331,14 @@ impl BlockDiffusionDraftHead {
             )?;
         }
         let token_ids_host: Vec<i32> = std::iter::repeat_n(0i32, eff_ctx)
-            .chain(std::iter::once(last_token as i32))
-            .chain(std::iter::repeat_n(
-                self.mask_token_id as i32,
-                self.gamma - 1,
-            ))
+            .chain((0..n_seq).flat_map(|b| {
+                // Band b: that sequence's own anchor, then gamma-1 masks.
+                let anchor = batch.map_or(last_token, |x| x.last_tokens[b]);
+                std::iter::once(anchor as i32).chain(std::iter::repeat_n(
+                    self.mask_token_id as i32,
+                    self.gamma - 1,
+                ))
+            }))
             .collect();
         if debug_dump {
             tracing::info!(
@@ -395,33 +412,45 @@ impl BlockDiffusionDraftHead {
         // once and reused across all drafter layers.
         let slot_mapping_gamma_opt = if option_b_on {
             let bt = option_b_block_table.unwrap();
-            // Build γ slot indices starting at logical position ctx_count.
-            ops::fill_slots_from_block_table(
-                gpu,
-                self.kernels.fill_slots,
-                self.scratch.slot_mapping_dev,
-                bt,
-                option_b_ctx_count,
-                self.gamma as u32,
-                16,
-                stream,
-            )?;
+            // Build γ slot indices per sequence, each starting at ITS OWN
+            // ctx_count and addressed through ITS OWN block table, packed
+            // seq-major so the layer body's single reshape_and_cache over
+            // `n*γ` rows writes every sequence's K/V to the right pages.
+            for b in 0..n_seq {
+                let (bt_b, cc_b) = match batch {
+                    Some(x) => (x.block_tables[b], x.ctx_counts[b]),
+                    None => (bt, option_b_ctx_count),
+                };
+                ops::fill_slots_from_block_table(
+                    gpu,
+                    self.kernels.fill_slots,
+                    self.scratch.slot_mapping_dev.offset(b * self.gamma * 8),
+                    bt_b,
+                    cc_b,
+                    self.gamma as u32,
+                    16,
+                    stream,
+                )?;
+            }
             // Phase 5 (CUDA graph) pre-graph write: stash the per-propose
             // dynamic `[kv_len, q_offset, q_rope_pos]` triple into the
             // indirect-args buffer (12 bytes). The graph-captured paged-
             // attention launch reads from this pointer at kernel entry.
             // q_offset = ctx_count (cache-block addressing).
             // q_rope_pos = position (true decode position for query RoPE).
-            let kv_len = option_b_ctx_count + self.gamma as u32;
-            let q_offset = option_b_ctx_count;
-            let q_rope_pos = position as u32;
-            let indirect_bytes: [u8; 12] = {
-                let mut b = [0u8; 12];
-                b[0..4].copy_from_slice(&kv_len.to_ne_bytes());
-                b[4..8].copy_from_slice(&q_offset.to_ne_bytes());
-                b[8..12].copy_from_slice(&q_rope_pos.to_ne_bytes());
-                b
-            };
+            // One triple per sequence — attention launches per band and reads
+            // the triple at its own slot (`+ b*12`).
+            let mut indirect_bytes: Vec<u8> = Vec::with_capacity(n_seq * 12);
+            for b in 0..n_seq {
+                let cc_b = match batch {
+                    Some(x) => x.ctx_counts[b],
+                    None => option_b_ctx_count,
+                };
+                let pos_b = batch.map_or(position, |x| x.positions[b]) as u32;
+                indirect_bytes.extend_from_slice(&(cc_b + block_g).to_ne_bytes());
+                indirect_bytes.extend_from_slice(&cc_b.to_ne_bytes());
+                indirect_bytes.extend_from_slice(&pos_b.to_ne_bytes());
+            }
             gpu.copy_h2d(&indirect_bytes, self.scratch.option_b_indirect_args_dev)?;
             Some(self.scratch.slot_mapping_dev)
         } else {
@@ -523,8 +552,8 @@ impl BlockDiffusionDraftHead {
                     block_dump: block_dump_armed,
                     // Single-sequence propose. The batched entry builds its
                     // own args with n_seq > 1 and per-sequence tables.
-                    n_seq: 1,
-                    seq_block_tables: Vec::new(),
+                    n_seq: n_seq as u32,
+                    seq_block_tables: batch.map(|x| x.block_tables.clone()).unwrap_or_default(),
                 })
             };
 
@@ -558,7 +587,7 @@ impl BlockDiffusionDraftHead {
                 stream_noise_local,
                 &self.norm,
                 norm_noise_local,
-                self.gamma as u32,
+                g,
                 h_local,
                 self.rms_norm_eps,
                 stream,
@@ -581,7 +610,7 @@ impl BlockDiffusionDraftHead {
                     // numerics are correctness-free under strict-argmax
                     // accept. ATLAS_NO_DFLASH_FP8_RT=1 restores the tile.
                     if self.kernels.fp8_gemv_rt2.0 != 0
-                        && self.gamma as u32 <= 8
+                        && g <= 8
                         && h_local.is_multiple_of(16)
                         && super::fp8_rt_enabled()
                     {
@@ -591,7 +620,7 @@ impl BlockDiffusionDraftHead {
                             norm_noise_local,
                             fp8,
                             self.scratch.logits,
-                            self.gamma as u32,
+                            g,
                             self.vocab_size as u32,
                             h_local,
                             stream,
@@ -603,7 +632,7 @@ impl BlockDiffusionDraftHead {
                             norm_noise_local,
                             fp8,
                             self.scratch.logits,
-                            self.gamma as u32,
+                            g,
                             self.vocab_size as u32,
                             h_local,
                             stream,
@@ -618,7 +647,7 @@ impl BlockDiffusionDraftHead {
                             weight: self.lm_head_shared,
                         },
                         self.scratch.logits,
-                        self.gamma as u32,
+                        g,
                         self.vocab_size as u32,
                         h_local,
                         stream,
@@ -633,7 +662,7 @@ impl BlockDiffusionDraftHead {
                         weight: self.lm_head_shared,
                     },
                     self.scratch.logits,
-                    self.gamma as u32,
+                    g,
                     self.vocab_size as u32,
                     h_local,
                     stream,
@@ -1012,7 +1041,7 @@ impl BlockDiffusionDraftHead {
         // would mean the field was never initialised.
         anyhow::ensure!(
             !pinned_ptr.is_null(),
-            "DFlash draft-token pinned staging buffer is null (γ={})",
+            "DFlash draft-token pinned staging buffer is null (γ={}, rows={rows_total})",
             self.gamma
         );
         // SAFETY: `pinned_ptr` is the page-locked allocation made by
@@ -1032,8 +1061,12 @@ impl BlockDiffusionDraftHead {
         // code path, and `host_buf` is the sole live reference to it (dropped
         // before the next propose). `copy_d2h_on_stream` drains `stream` before
         // returning, so no DMA is in flight against it when we read below.
+        // `rows_total * 4` bytes: one u32 per drafted row across every band.
+        // The allocation is `nb * gamma * 4` (from_weights) and n_seq <= nb,
+        // so this span is within it; at n_seq == 1 it is exactly `gamma * 4`
+        // as before.
         let host_buf: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, self.gamma * 4) };
+            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, rows_total * 4) };
         gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;
         gpu.record_event(self.scratch.draft_tokens_event, stream)?;
         gpu.event_synchronize(self.scratch.draft_tokens_event)?;
