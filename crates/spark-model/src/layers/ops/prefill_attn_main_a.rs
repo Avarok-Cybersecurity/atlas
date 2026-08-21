@@ -23,6 +23,23 @@ use super::*;
 ///         K/V [batch, seq_len, num_kv_heads, head_dim] BF16
 ///         O [batch, seq_len, num_q_heads, head_dim] BF16
 #[allow(clippy::too_many_arguments)]
+
+/// The HDIM>256 prefill kernel: its module/entry name and the BR its grid must
+/// be built for. ONE reader, because the name is chosen in `qwen3_attention::init`
+/// and the grid here, and a mismatch is silent.
+///
+/// Default is the tensor-core instantiation (`BR=32`). `ATLAS_ATTN_512_TC=0`
+/// selects the scalar reference (`BR=16`) — kept reachable because it is the
+/// oracle the TC path was validated against (cosine 0.999998, 64.7x faster on
+/// S=1024/4q/2kv/causal).
+pub fn wide_prefill_kernel() -> (&'static str, u32) {
+    if std::env::var("ATLAS_ATTN_512_TC").ok().as_deref() == Some("0") {
+        ("inferspark_prefill_512", 16)
+    } else {
+        ("inferspark_prefill_512tc", 32)
+    }
+}
+
 pub fn prefill_attention(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
@@ -40,8 +57,15 @@ pub fn prefill_attention(
     sliding_window: u32, // 0 = no sliding limit; >0 = mask keys where q - k >= window
     stream: u64,
 ) -> Result<()> {
-    // BR=16 for HDIM=512 (Gemma-4 full attention), BR=32 otherwise
-    let br = if head_dim > 256 { 16u32 } else { 32u32 };
+    // ★ SSOT: the kernel NAME and its BR must agree, and they are chosen in two
+    // different files — `init.rs` resolves the handle, this launches it. A grid
+    // computed from the wrong BR does not fail, it silently computes the wrong
+    // q-tiles. `wide_prefill_kernel()` is the one reader of that decision.
+    let br = if head_dim > 256 {
+        wide_prefill_kernel().1
+    } else {
+        32u32
+    };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(seq_len, br), batch])
         .block([128, 1, 1])
