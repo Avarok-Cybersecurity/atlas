@@ -318,17 +318,23 @@ pub struct ServeArgs {
     /// so a smoke test that only asks small questions will not see this.
     /// Fastest repro is a prompt whose correct answer is a short ordered list.
     ///
-    /// ★ AND THE COST CAN BE NEGATIVE. The ~+22-36% below is a per-decode-STEP
-    /// figure; end-to-end throughput also depends on how many drafts survive
-    /// verification, which is precisely what the divergence damages. Corrupted
-    /// verify logits REJECT CORRECT DRAFTS — the drafter proposes roughly what
-    /// the true model would say and a verifier reading wrong logits disagrees.
-    /// Measured at C=1 on the config above (one prompt, n=3 after a warm
-    /// request): 27.29 tok/s and 35.0% mean acceptance by default, versus
-    /// 32.45 tok/s and 45.5% acceptance with this flag on — +18.9% throughput
-    /// for turning exactness ON. Where the divergence actually bites, this is
-    /// not a tradeoff. The crossover against the concurrency rungs, where the
-    /// step costs below were measured, still needs its own sweep.
+    /// ★ THE COST IS REAL, and measuring it needs a validated serve profile.
+    /// Measured on the LEAN profile (32K ctx, 8 seqs, NO prefix caching — the
+    /// profile this project's recorded baselines were taken on), code prompt,
+    /// aggregate tok/s at C=1/2/4/8:
+    ///
+    ///     default   56 /  88 / 113 / 123    accept 85 / 86 / 80 / 74 %
+    ///     exact     52 /  72 /  78 /  98    accept 81 / 76 / 58 / 64 %
+    ///
+    /// i.e. -7% to -31%. An earlier measurement of this same flag reported it
+    /// as a THROUGHPUT WIN; that was taken on a serve with prefix caching on
+    /// at 128K, where the default arm was pathologically bad for an unrelated
+    /// reason, and it is withdrawn. Benchmark a correctness flag only on a
+    /// profile you have separately validated for throughput.
+    ///
+    /// It does not buy reproducibility either. On the pinned `decode-floor`
+    /// benchmark this flag returned 943/553/943 tokens across three IDENTICAL
+    /// runs — the row-count residual below, showing up directly.
     ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
     /// GDN/SSM verify chain exact. It does NOT make speculative output
