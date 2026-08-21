@@ -215,10 +215,14 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         config.embed_scale = (hidden_size as f32).sqrt();
         // Logit softcap: honor the GGUF key if present (gemma2), else 0.0
         // (disabled). gemma3+ dropped softcapping.
-        config.final_logit_softcapping = meta
-            .get_f64(&k("final_logit_softcapping"))
-            .map(|v| v as f32)
-            .unwrap_or(0.0);
+        config.final_logit_softcapping = match meta.get_f64(&k("final_logit_softcapping")) {
+            Some(v) if v >= 0.0 && v <= f32::MAX as f64 => v as f32,
+            Some(v) => bail!(
+                "GGUF metadata key '{}.final_logit_softcapping' must be non-negative and representable as a finite f32 (got {v})",
+                arch
+            ),
+            None => 0.0,
+        };
     }
 
     // Reuse the shared quantization-config + validation pass.

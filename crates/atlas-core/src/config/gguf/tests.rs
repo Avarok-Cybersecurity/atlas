@@ -54,6 +54,22 @@ fn llama_meta() -> Meta {
         .f("llama.rope.freq_base", 10000.0)
 }
 
+fn gemma2_meta() -> Meta {
+    Meta::default()
+        .s("general.architecture", "gemma2")
+        .u("gemma2.embedding_length", 2304)
+        .u("gemma2.block_count", 26)
+        .u("gemma2.feed_forward_length", 9216)
+        .u("gemma2.attention.head_count", 8)
+        .u("gemma2.attention.head_count_kv", 4)
+        .u("gemma2.attention.key_length", 256)
+        .u("gemma2.context_length", 8192)
+        .u("gemma2.vocab_size", 256000)
+        .u("gemma2.attention.sliding_window", 4096)
+        .f("gemma2.attention.layer_norm_rms_epsilon", 1e-6)
+        .f("gemma2.final_logit_softcapping", 30.0)
+}
+
 #[test]
 fn llama_dense_maps_to_mistral() {
     let m = llama_meta();
@@ -199,19 +215,7 @@ fn qwen3_moe_populates_expert_fields() {
 
 #[test]
 fn gemma_sets_embed_scale_and_softcap() {
-    let m = Meta::default()
-        .s("general.architecture", "gemma2")
-        .u("gemma2.embedding_length", 2304)
-        .u("gemma2.block_count", 26)
-        .u("gemma2.feed_forward_length", 9216)
-        .u("gemma2.attention.head_count", 8)
-        .u("gemma2.attention.head_count_kv", 4)
-        .u("gemma2.attention.key_length", 256)
-        .u("gemma2.context_length", 8192)
-        .u("gemma2.vocab_size", 256000)
-        .u("gemma2.attention.sliding_window", 4096)
-        .f("gemma2.attention.layer_norm_rms_epsilon", 1e-6)
-        .f("gemma2.final_logit_softcapping", 30.0);
+    let m = gemma2_meta();
     let inp = GgufConfigInputs {
         meta: &m,
         token_embd_vocab: None,
@@ -223,6 +227,39 @@ fn gemma_sets_embed_scale_and_softcap() {
     assert_eq!(c.sliding_window, 4096);
     assert!((c.embed_scale - (2304f32).sqrt()).abs() < 1e-3);
     assert!((c.final_logit_softcapping - 30.0).abs() < 1e-3);
+}
+
+#[test]
+fn gemma_validates_logit_softcap_domain() {
+    let mut accepted = Vec::new();
+    for value in [-30.0, f64::NAN, f64::INFINITY, f64::MAX] {
+        let mut m = gemma2_meta();
+        m.f.insert("gemma2.final_logit_softcapping".into(), value);
+        let inp = GgufConfigInputs {
+            meta: &m,
+            token_embd_vocab: None,
+            has_output_weight: false,
+        };
+        match config_from_gguf(&inp) {
+            Ok(_) => accepted.push(value),
+            Err(err) => assert!(err.to_string().contains("gemma2.final_logit_softcapping")),
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "accepted invalid softcaps: {accepted:?}"
+    );
+
+    let mut disabled = gemma2_meta();
+    disabled
+        .f
+        .insert("gemma2.final_logit_softcapping".into(), 0.0);
+    let inp = GgufConfigInputs {
+        meta: &disabled,
+        token_embd_vocab: None,
+        has_output_weight: false,
+    };
+    assert_eq!(config_from_gguf(&inp).unwrap().final_logit_softcapping, 0.0);
 }
 
 #[test]
