@@ -521,6 +521,10 @@ impl BlockDiffusionDraftHead {
                     block_table_dev: bt,
                     stream,
                     block_dump: block_dump_armed,
+                    // Single-sequence propose. The batched entry builds its
+                    // own args with n_seq > 1 and per-sequence tables.
+                    n_seq: 1,
+                    seq_block_tables: Vec::new(),
                 })
             };
 
