@@ -135,12 +135,14 @@ pub fn build_model(
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
         config.dflash_capture_layers = sub.target_layer_ids.clone();
-        // gamma for the pool sizing below. The base layer owns how gamma is
-        // RESOLVED (its `DflashSubConfig` carries no `block_size`, so a
-        // DFlash2 checkpoint's own value is reached via --dflash-gamma); this
-        // PR only consumes whatever it resolves to, rather than re-deciding
-        // it underneath that layer.
-        config.dflash_gamma = Some(args.gamma.unwrap_or(args.drafter_config.block_size));
+        // gamma for the pool sizing below, resolved from the drafter itself:
+        // a DFlash2 checkpoint states its trained block size inside
+        // `dflash_config`, and the top-level field's default of 16 must not
+        // shadow it. --dflash-gamma still wins over both.
+        config.dflash_gamma = Some(
+            args.gamma
+                .unwrap_or(args.drafter_config.effective_block_size()),
+        );
         tracing::info!(
             "DFlash: target layer capture indices = {:?} (drafter target_layer_ids, \
              used directly), γ = {:?}",
