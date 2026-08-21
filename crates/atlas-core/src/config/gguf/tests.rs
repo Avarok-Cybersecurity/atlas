@@ -142,7 +142,7 @@ fn tied_embeddings_when_no_output_tensor() {
 }
 
 #[test]
-fn qwen3_dense_routes_to_qwen35_dense() {
+fn qwen3_dense_maps_attention_controls() {
     let m = Meta::default()
         .s("general.architecture", "qwen3")
         .u("qwen3.embedding_length", 2048)
@@ -164,7 +164,9 @@ fn qwen3_dense_routes_to_qwen35_dense() {
     assert_eq!(c.model_type, "qwen3_5");
     assert_eq!(c.num_experts, 0);
     assert!(c.is_qwen35_dense());
+    assert!(!c.attn_gated);
     assert_eq!(c.head_dim, 128);
+    assert!((c.rms_norm_eps - 1e-6).abs() < 1e-12);
     assert!((c.rope_theta - 1_000_000.0).abs() < 1e-3);
 }
 
