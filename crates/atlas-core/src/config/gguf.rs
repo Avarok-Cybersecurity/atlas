@@ -111,6 +111,10 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     // head_dim: explicit key_length if present, else hidden_size / head_count.
     // Erroring on a non-divisible fallback avoids a silently-wrong head_dim.
     let head_dim = match meta.get_u64(&k("attention.key_length")) {
+        Some(0) => bail!(
+            "GGUF metadata key '{}.attention.key_length' must be greater than zero",
+            arch
+        ),
         Some(v) => v as usize,
         None => {
             if num_attention_heads == 0 || !hidden_size.is_multiple_of(num_attention_heads) {

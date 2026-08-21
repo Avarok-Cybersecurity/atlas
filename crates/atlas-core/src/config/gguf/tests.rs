@@ -104,6 +104,18 @@ fn explicit_key_length_wins() {
 }
 
 #[test]
+fn explicit_key_length_must_be_nonzero() {
+    let m = llama_meta().u("llama.attention.key_length", 0);
+    let inp = GgufConfigInputs {
+        meta: &m,
+        token_embd_vocab: None,
+        has_output_weight: true,
+    };
+    let err = config_from_gguf(&inp).unwrap_err();
+    assert!(err.to_string().contains("llama.attention.key_length"));
+}
+
+#[test]
 fn kv_heads_default_to_mha() {
     let mut m = llama_meta();
     m.u.remove("llama.attention.head_count_kv");
