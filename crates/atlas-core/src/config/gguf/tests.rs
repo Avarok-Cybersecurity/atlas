@@ -227,13 +227,15 @@ fn gemma_sets_embed_scale_and_softcap() {
 
 #[test]
 fn missing_architecture_errors() {
-    let m = Meta::default().u("llama.embedding_length", 4096);
+    let mut m = llama_meta();
+    m.s.remove("general.architecture");
     let inp = GgufConfigInputs {
         meta: &m,
         token_embd_vocab: None,
         has_output_weight: true,
     };
-    assert!(config_from_gguf(&inp).is_err());
+    let err = config_from_gguf(&inp).unwrap_err().to_string();
+    assert!(err.contains("general.architecture"), "unexpected: {err}");
 }
 
 #[test]
