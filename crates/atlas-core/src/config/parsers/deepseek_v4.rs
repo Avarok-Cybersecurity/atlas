@@ -393,11 +393,35 @@ mod mscale_contract_tests {
         assert_eq!(c.rope_theta, 234567.0);
     }
 
-    // Test 6: no unrelated YaRN defaults changed — factor/beta/original_max_pos
-    // still parse from the checkpoint exactly as before.
+    // These fields come from the checkpoint. The second partition keeps them
+    // distinct from the runtime fallback values.
     #[test]
-    fn ds4f_other_yarn_params_unchanged() {
+    fn ds4f_reads_checkpoint_yarn_scaling_parameters() {
         let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
+        assert_eq!(c.yarn_factor, 16.0);
+        assert_eq!(c.yarn_beta_fast, 32.0);
+        assert_eq!(c.yarn_beta_slow, 1.0);
+        assert_eq!(c.yarn_original_max_position_embeddings, 65536);
+
+        let alternate = DS4F_CONFIG
+            .replace("\"factor\": 16", "\"factor\": 12.5")
+            .replace("\"beta_fast\": 32", "\"beta_fast\": 40")
+            .replace("\"beta_slow\": 1", "\"beta_slow\": 2")
+            .replace(
+                "\"original_max_position_embeddings\": 65536",
+                "\"original_max_position_embeddings\": 32768",
+            );
+        let c = parse_deepseek_v4(&alternate).expect("parse alternate YaRN parameters");
+        assert_eq!(c.yarn_factor, 12.5);
+        assert_eq!(c.yarn_beta_fast, 40.0);
+        assert_eq!(c.yarn_beta_slow, 2.0);
+        assert_eq!(c.yarn_original_max_position_embeddings, 32768);
+    }
+
+    #[test]
+    fn pre_release_rope_parameters_alias_is_supported() {
+        let pre_release = DS4F_CONFIG.replacen("\"rope_scaling\"", "\"rope_parameters\"", 1);
+        let c = parse_deepseek_v4(&pre_release).expect("parse pre-release YaRN parameters");
         assert_eq!(c.yarn_factor, 16.0);
         assert_eq!(c.yarn_beta_fast, 32.0);
         assert_eq!(c.yarn_beta_slow, 1.0);
