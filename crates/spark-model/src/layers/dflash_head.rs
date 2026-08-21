@@ -385,6 +385,8 @@ pub struct BlockDiffusionDraftHead {
     pub vocab_size: usize,
     pub draft_vocab_size: usize,
     pub gamma: usize,
+    /// Widest cross-sequence batch the scratch bands can hold.
+    pub(super) max_batch: usize,
     pub mask_token_id: u32,
     pub window_size: Option<usize>,
     /// `target_layer_ids`. Same data as `TransformerModel::dflash_capture_layers`,
@@ -613,7 +615,155 @@ impl DraftProposer for BlockDiffusionDraftHead {
             draft_embed_target,
             grammar_bitmask,
             target_hidden_stack,
+            None,
         )
+    }
+
+    /// Widest batch one drafter forward can carry. Bounded by the scratch
+    /// bands (`max_batch`); `1` means the batched path cannot run and the
+    /// caller stays on `propose`.
+    fn propose_batch_max(
+        &self,
+        _buffers: &spark_runtime::buffers::BufferArena,
+        _config: &atlas_core::config::ModelConfig,
+    ) -> usize {
+        if !self.dflash2_active() {
+            return 1;
+        }
+        // OPT-IN (ATLAS_DFLASH_BATCH_PROPOSE=1) and OFF by default: the
+        // batched forward is wired end to end and produces the correct
+        // ANSWER — output is byte-identical, because a bad draft is rejected
+        // and the target's own token is emitted — but the drafts themselves
+        // are wrong at n > 1 and acceptance collapses (84/78/72% per-sequence
+        // vs 77/63/24% batched at C=2/4/8), which makes it a net LOSS: 54
+        // tok/s against 127 at C=8. Shipping it default-on would trade a
+        // measured win for a measured loss.
+        //
+        // Ruled out so far: the conv/selector band width (both now take the
+        // real n_seq), CUDA-graph replay of an n=1 capture (gated to
+        // n_seq == 1), and the shared slot-0 hidden staging (moved back to
+        // the per-sequence arm). The remaining suspect list is in the commit
+        // message; the per-sequence path is untouched and stays the default.
+        if std::env::var("ATLAS_DFLASH_BATCH_PROPOSE").ok().as_deref() != Some("1") {
+            return 1;
+        }
+        self.max_batch.max(1)
+    }
+
+    /// Cross-sequence batched propose: ONE drafter forward over `n * gamma`
+    /// rows instead of `n` forwards.
+    ///
+    /// Per-sequence preparation (ctx append, Option-B block growth, the
+    /// incremental ctx precompute) still runs per sequence — it is cheap,
+    /// touching only the uncommitted ctx tail — and it reuses
+    /// `propose_drafts`' own prep through the `collect_prep` sink so the two
+    /// paths cannot drift. The expensive part, the drafter layers plus an
+    /// lm_head against a 248k vocab, runs ONCE for the whole batch. That is
+    /// the entire win.
+    ///
+    /// Returns `Ok(None)` to decline, and the caller falls back to the
+    /// per-sequence loop — never a wrong answer.
+    fn propose_batch(
+        &self,
+        last_tokens: &[u32],
+        _target_hiddens: &[spark_runtime::gpu::DevicePtr],
+        positions: &[usize],
+        num_drafts: usize,
+        states: &mut [&mut dyn ProposerState],
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+        _out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let n = last_tokens.len();
+        if n < 2
+            || n > self.max_batch
+            || positions.len() != n
+            || states.len() != n
+            || !self.dflash2_active()
+        {
+            return Ok(None);
+        }
+
+        // Phase 1 — per-sequence prep, collecting each sequence's paged
+        // descriptor. A sequence that cannot run Option B (drafter block pool
+        // exhausted, say) aborts the WHOLE batch to the per-sequence path
+        // rather than letting the rest draft against a missing band.
+        let mut prep: Vec<(spark_runtime::gpu::DevicePtr, u32)> = Vec::with_capacity(n);
+        for (i, st) in states.iter_mut().enumerate() {
+            let before = prep.len();
+            match self.propose_drafts(
+                last_tokens[i],
+                spark_runtime::gpu::DevicePtr::NULL,
+                positions[i],
+                num_drafts,
+                *st,
+                ctx,
+                stream,
+                None,
+                None,
+                None,
+                Some(&mut prep),
+            ) {
+                Ok(_) if prep.len() == before + 1 => {}
+                Ok(_) => return Ok(None),
+                Err(e) => {
+                    tracing::warn!("DFlash batched propose prep (seq {i}): {e:#} — per-seq path");
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Phase 2 — ONE forward over every band.
+        let batch = DflashBatch {
+            last_tokens,
+            positions,
+            block_tables: prep.iter().map(|p| p.0).collect(),
+            ctx_counts: prep.iter().map(|p| p.1).collect(),
+        };
+        let all = match self.forward_block(
+            last_tokens[0],
+            positions[0],
+            ctx,
+            stream,
+            None,
+            Some(prep[0]),
+            Some(&batch),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("DFlash batched forward_block: {e:#} — falling back to per-seq");
+                return Ok(None);
+            }
+        };
+        if all.len() < n * self.gamma {
+            tracing::warn!(
+                "DFlash batched forward returned {} rows, expected {} — per-seq path",
+                all.len(),
+                n * self.gamma
+            );
+            return Ok(None);
+        }
+
+        // Phase 3 — split bands. Row 0 of each band is the anchor echo the
+        // single-sequence path drops too; the rest are that sequence's drafts.
+        let cap = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(self.gamma);
+        let mut out: Vec<Vec<u32>> = Vec::with_capacity(n);
+        for (i, st) in states.iter_mut().enumerate() {
+            let band = &all[i * self.gamma..(i + 1) * self.gamma];
+            let drafts: Vec<u32> = if self.mask_token_id != 0 {
+                band.iter().skip(1).copied().take(cap).collect()
+            } else {
+                band.iter().copied().take(cap).collect()
+            };
+            if let Some(d) = st.as_any_mut().downcast_mut::<DflashProposerState>() {
+                d.last_num_drafted = drafts.len();
+            }
+            out.push(drafts);
+        }
+        Ok(Some(out))
     }
 
     fn after_verify(

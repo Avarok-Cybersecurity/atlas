@@ -25,6 +25,13 @@ impl BlockDiffusionDraftHead {
         _draft_embed_target: Option<DevicePtr>,
         _grammar_bitmask: Option<&[i32]>,
         target_hidden_stack: Option<DevicePtr>,
+        // `Some` => run only the per-sequence PREP (ctx append, Option-B block
+        // growth, the incremental ctx precompute), push this sequence's
+        // `(block_table, ctx_count)` and return without a forward. The batched
+        // entry collects n of these and runs ONE forward over all the bands.
+        // Sharing the prep this way is deliberate: the batched and
+        // single-sequence paths cannot drift apart if only one of them exists.
+        collect_prep: Option<&mut Vec<(DevicePtr, u32)>>,
     ) -> Result<Vec<u32>> {
         let dstate = state
             .as_any_mut()
@@ -492,6 +499,17 @@ impl BlockDiffusionDraftHead {
         } else {
             None
         };
+
+        if let Some(sink) = collect_prep {
+            let arg = option_b_arg.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "batched DFlash propose requires Option B (paged drafter KV); \
+                     set ATLAS_DFLASH_OPTION_B=1 or let the batched path decline"
+                )
+            })?;
+            sink.push(arg);
+            return Ok(Vec::new());
+        }
 
         let drafts = self
             .forward_block(

@@ -515,6 +515,7 @@ impl BlockDiffusionDraftHead {
             vocab_size,
             draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
+            max_batch: nb,
             mask_token_id,
             window_size,
             target_layer_ids,

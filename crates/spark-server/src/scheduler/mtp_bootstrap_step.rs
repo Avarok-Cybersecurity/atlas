@@ -301,6 +301,21 @@ pub(super) fn step_mtp_bootstrap_batched(
     // per-position and the batched path is grammarless by contract). ──
     if stash_ok {
         let group_cap = model.mtp_propose_batch_max().max(1);
+        // One-shot attribution for "why is propose not batching": each of
+        // these can individually keep every sequence on the per-sequence
+        // propose, which looks like missing amortisation rather than a
+        // declined feature.
+        {
+            static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WHY.get_or_init(|| {
+                tracing::debug!(
+                    group_cap,
+                    proposing = proposing.len(),
+                    ladder_nd,
+                    "DFlash batched propose gate (first tick)"
+                );
+            });
+        }
         let batchable: Vec<usize> = (0..proposing.len())
             .filter(|&s| {
                 let a = &refs[proposing[s]];

@@ -234,7 +234,10 @@ impl BlockDiffusionDraftHead {
             layer,
             super::dflash2::ConvSite::Attention,
             self.scratch.norm_buf,
-            ctx, 1, stream)?;
+            ctx,
+            args.n_seq.max(1),
+            stream,
+        )?;
 
         // Phase G: when self.quant == Fp8Weights, swap each dense_gemm
         // for fp8_gemm_n128_row_scaled against the FP8 mirror weight.
@@ -1004,7 +1007,10 @@ impl BlockDiffusionDraftHead {
             layer,
             super::dflash2::ConvSite::Attention,
             self.scratch.stream_acc,
-            ctx, 1, stream)?;
+            ctx,
+            args.n_seq.max(1),
+            stream,
+        )?;
 
         // 3h. First residual add: hidden = residual + attn_output.
         // dflash.py:138  hidden_states = residual + hidden_states
@@ -1044,7 +1050,10 @@ impl BlockDiffusionDraftHead {
             layer,
             super::dflash2::ConvSite::Mlp,
             self.scratch.norm_buf,
-            ctx, 1, stream)?;
+            ctx,
+            args.n_seq.max(1),
+            stream,
+        )?;
 
         // 3j. MLP: gate_proj + up_proj + silu_mul + down_proj — γ rows.
         // dflash.py:141  hidden_states = self.mlp(hidden_states)
@@ -1091,7 +1100,10 @@ impl BlockDiffusionDraftHead {
             layer,
             super::dflash2::ConvSite::Mlp,
             self.scratch.stream_acc,
-            ctx, 1, stream)?;
+            ctx,
+            args.n_seq.max(1),
+            stream,
+        )?;
 
         // 3k. Second residual add: hidden = (residual + attn) + mlp_output.
         // dflash.py:142  hidden_states = residual + hidden_states

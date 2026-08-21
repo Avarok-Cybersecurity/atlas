@@ -144,7 +144,15 @@ impl BlockDiffusionDraftHead {
             h,
             stream,
         )?;
-        self.conv_apply(ctx, hidden_in, base, self.scratch.conv_tmp, 0, n_seq, stream)?;
+        self.conv_apply(
+            ctx,
+            hidden_in,
+            base,
+            self.scratch.conv_tmp,
+            0,
+            n_seq,
+            stream,
+        )?;
         Ok(self.scratch.conv_tmp)
     }
 
@@ -166,7 +174,15 @@ impl BlockDiffusionDraftHead {
         let Some((base, _proj)) = self.conv_weights(layer, site) else {
             return Ok(sublayer_out);
         };
-        self.conv_apply(ctx, sublayer_out, base, self.scratch.conv_tmp, 1, n_seq, stream)?;
+        self.conv_apply(
+            ctx,
+            sublayer_out,
+            base,
+            self.scratch.conv_tmp,
+            1,
+            n_seq,
+            stream,
+        )?;
         Ok(self.scratch.conv_tmp)
     }
 

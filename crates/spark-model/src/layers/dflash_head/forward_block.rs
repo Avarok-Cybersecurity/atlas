@@ -472,6 +472,12 @@ impl BlockDiffusionDraftHead {
         // ramp, and L2 warming all happen eagerly before capture freezes
         // a steady-state SASS pick.
         let graph_eligible = option_b_on
+            // A captured graph bakes in the row count, the per-band pointers
+            // and the attention launch count. Replaying an n=1 capture for a
+            // batch runs one sequence's shapes over n sequences' rows, which
+            // shows up as a silent accept collapse rather than an error. The
+            // batched path is a different shape per width, so it stays eager.
+            && n_seq == 1
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -673,7 +679,7 @@ impl BlockDiffusionDraftHead {
             // subgraph. Row 0 keeps holding last_token (the walk's anchor
             // predecessor), which the propose echo-drop discards anyway.
             if self.dflash2_active() {
-                self.dflash2_select_block(ctx, norm_noise_local, 1, stream)?;
+                self.dflash2_select_block(ctx, norm_noise_local, n_seq as u32, stream)?;
             } else
             // DSpark: when the drafter ships a Markov head, sample the block
             // left-to-right with the low-rank bigram bias (markov.rs). The
