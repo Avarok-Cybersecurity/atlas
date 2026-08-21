@@ -107,6 +107,14 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         .get_u64(&k("attention.head_count_kv"))
         .map(|v| v as usize)
         .unwrap_or(num_attention_heads);
+    if num_attention_heads > 0
+        && (num_key_value_heads == 0 || !num_attention_heads.is_multiple_of(num_key_value_heads))
+    {
+        bail!(
+            "GGUF metadata key '{}.attention.head_count_kv' ({num_key_value_heads}) must be a non-zero divisor of attention.head_count ({num_attention_heads})",
+            arch
+        );
+    }
 
     // head_dim: explicit key_length if present, else hidden_size / head_count.
     // Erroring on a non-divisible fallback avoids a silently-wrong head_dim.

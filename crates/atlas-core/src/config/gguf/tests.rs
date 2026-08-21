@@ -117,6 +117,28 @@ fn kv_heads_default_to_mha() {
 }
 
 #[test]
+fn explicit_kv_heads_must_form_valid_gqa_groups() {
+    let mut accepted = Vec::new();
+    for kv_heads in [0, 7, 64] {
+        let mut m = llama_meta();
+        m.u.insert("llama.attention.head_count_kv".into(), kv_heads);
+        let inp = GgufConfigInputs {
+            meta: &m,
+            token_embd_vocab: None,
+            has_output_weight: true,
+        };
+        match config_from_gguf(&inp) {
+            Ok(_) => accepted.push(kv_heads),
+            Err(err) => assert!(err.to_string().contains("llama.attention.head_count_kv")),
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "accepted invalid KV head counts: {accepted:?}"
+    );
+}
+
+#[test]
 fn vocab_from_token_embd_rows() {
     let mut m = llama_meta();
     m.u.remove("llama.vocab_size");
