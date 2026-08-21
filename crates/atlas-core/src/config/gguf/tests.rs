@@ -50,8 +50,8 @@ fn llama_meta() -> Meta {
         .u("llama.attention.head_count_kv", 8)
         .u("llama.context_length", 4096)
         .u("llama.vocab_size", 32000)
-        .f("llama.attention.layer_norm_rms_epsilon", 1e-5)
-        .f("llama.rope.freq_base", 10000.0)
+        .f("llama.attention.layer_norm_rms_epsilon", 1e-6)
+        .f("llama.rope.freq_base", 500_000.0)
 }
 
 #[test]
@@ -72,7 +72,8 @@ fn llama_dense_maps_to_mistral() {
     assert_eq!(c.head_dim, 128); // 4096/32
     assert_eq!(c.vocab_size, 32000);
     assert_eq!(c.max_position_embeddings, 4096);
-    assert!((c.rms_norm_eps - 1e-5).abs() < 1e-12);
+    assert!((c.rms_norm_eps - 1e-6).abs() < 1e-12);
+    assert!((c.rope_theta - 500_000.0).abs() < 1e-3);
     assert!(!c.attn_gated);
     assert!(!c.tie_word_embeddings); // has_output_weight = true
     assert_eq!(c.weight_prefix, "model"); // HF-name prefix the GGUF loader emits
