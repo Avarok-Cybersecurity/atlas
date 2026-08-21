@@ -47,7 +47,7 @@ fn test_parse_actual_config() {
 }
 
 #[test]
-fn test_parse_qwen35_nested_config() {
+fn qwen35_moe_nested_config_maps_attention_ssm_and_layout_controls() {
     let json = r#"{
         "model_type": "qwen3_5_moe",
         "text_config": {
@@ -102,7 +102,13 @@ fn test_parse_qwen35_nested_config() {
     assert_eq!(cfg.eos_token_id, 248044);
     assert_eq!(cfg.rope_theta, 10_000_000.0);
     assert!(cfg.is_qwen35());
+    assert!(cfg.nested_config);
+    assert!(cfg.attn_gated);
+    assert!(cfg.weight_prefix.is_empty());
     assert!(cfg.norm_topk_prob); // Qwen3.5 unconditionally normalizes
+    assert_eq!(cfg.partial_rotary_factor, 0.25);
+    assert_eq!(cfg.rotary_dim(), 64);
+    assert_eq!(cfg.linear_conv_kernel_dim, 4);
     assert_eq!(cfg.ssm_qkv_size(), 2048 + 2048 + 4096); // 8192
     assert_eq!(cfg.ssm_z_size(), 4096);
     assert_eq!(cfg.mtp_num_hidden_layers, 1);
