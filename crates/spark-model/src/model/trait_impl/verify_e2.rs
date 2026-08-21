@@ -28,15 +28,20 @@ use crate::traits::SequenceState;
 pub(super) const VERIFY_BATCHED_GRAPH_CAP: usize = 32;
 
 /// Verify row-buffer capacity R = Σ ks — the exact capacity of the batched
-/// verify's metadata gaps (verify_e.rs layout: positions 384 B | seq_slot
-/// 384 B | slots 768 B | seq_lens 384 B | bt at +2048), the `bt_rows`
-/// staging and the logits rows (`sizes.rs`). 96 = the wave-11 depth-at-width
-/// envelope: 32:2 = n=32 × k=3 rows hits it dead on (24:2 = 72); previously
-/// 64 (the 32:1 rung's n=32 × k=2), 32 before that (n=16 × k=2). Sequence
-/// count stays bounded at `VERIFY_WY_TABLE_SEQS` = 32 — this cap widens
-/// ROWS (depth at width), not width. The scheduler-side `VERIFY_ROW_BUDGET`
-/// (`mtp_dcut.rs`) mirrors this bound — keep them in lock-step.
-pub(in crate::model) const VERIFY_ROW_CAP: usize = 96;
+/// verify's metadata gaps (verify_e.rs layout, every offset DERIVED from
+/// this constant: positions 4R | seq_slot 4R | slots 8R | seq_lens 4R | bt
+/// at 24R), the `bt_rows` staging and the logits rows (`sizes.rs`). History:
+/// 32 (n=16 × k=2), 64 (32:1), 96 (wave-11 depth-at-width, 32:2 = n=32 × k=3
+/// dead on), now 160: the DFlash uniform K=γ+1=8 shape needs n×8 rows, and
+/// 96 capped the batched verify at n=12 — a C=16 serve chunked 12+4 (better
+/// than the serial-all it did before, still one extra weight sweep per step)
+/// and C=20 fits exactly at 160. Cost is the logits arena: rows × vocab × 2 B
+/// = ~79.5 MB at vocab 248320, +32 MB over the 96-row arena. Sequence count
+/// stays bounded at `VERIFY_WY_TABLE_SEQS` = 32 — this cap widens ROWS
+/// (depth at width), not width. The scheduler-side `VERIFY_ROW_BUDGET`
+/// (`mtp_dcut.rs`) and `bt_rows`/`logits_tokens` (`sizes.rs`) mirror this
+/// bound — keep all four in lock-step.
+pub(in crate::model) const VERIFY_ROW_CAP: usize = 160;
 
 /// Batched-verify CUDA graphs: ON by default, disabled by PRESENCE of
 /// `ATLAS_NO_MTP_VERIFY_GRAPHS` (house convention — `=0` is NOT off).

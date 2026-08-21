@@ -8,7 +8,7 @@
 //! and made RAGGED per sequence by D-Cut) so the n weight-reading verify
 //! forwards collapse into one — the structural fix for the measured MTP
 //! serialization at C>1 (cap=4 at C=4: 25.8 vs 48.5 tok/s; see
-//! BATCHED_MTP_SPEC.md). R is capped at 96 = the exact capacity of the
+//! BATCHED_MTP_SPEC.md). R is capped at `VERIFY_ROW_CAP` = the exact capacity of the
 //! logits rows / meta gaps / bt staging (sizes.rs), reached at n=32 × k=3
 //! rows (the 32:2 depth-at-width shape, wave 11; previously 64 at n=32 ×
 //! k=2, 32 at n=16 × k=2).
@@ -31,6 +31,21 @@
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
 use anyhow::{Result, bail, ensure};
+
+/// Batched-verify metadata overlay, every offset derived from
+/// [`super::verify_e2::VERIFY_ROW_CAP`] so the cap and the layout cannot
+/// drift apart (they once lived as a literal 96 and 384/768/1536/2048-byte
+/// offsets that had to be moved in lock-step by hand):
+///   positions  u32 × R at [0, 4R)
+///   seq_slot   u32 × R at [4R, 8R)
+///   slots      i64 × R at [8R, 16R)   (8-byte aligned: R is even)
+///   seq_lens   i32 × R at [16R, 20R)
+///   bt         i32 × R × max_blocks at [24R, …)  (4R of slack before it)
+const VMETA_R: usize = super::verify_e2::VERIFY_ROW_CAP;
+const VMETA_SEQ_SLOT: usize = VMETA_R * 4;
+const VMETA_SLOTS: usize = VMETA_R * 8;
+const VMETA_SEQ_LENS: usize = VMETA_R * 16;
+const VMETA_BT: usize = VMETA_R * 24;
 use atlas_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
@@ -50,7 +65,7 @@ impl TransformerModel {
     /// carries ONE adapter slot), MTP proposer present (stash allocated,
     /// `VERIFY_WY_TABLE_SEQS` = 32 slots ⇒ n ≤ 32), EVERY `ks[i]` in 2..=4
     /// (the MTP ladder range; intermediates pools are sized for the
-    /// configured max K), and R = Σ ks ≤ `VERIFY_ROW_CAP` = 96 (the exact
+    /// configured max K), and R = Σ ks ≤ `VERIFY_ROW_CAP` (the exact
     /// logits-rows / meta-gap / bt-staging capacity — sizes.rs). Everything
     /// outside falls back to the per-seq loop.
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
@@ -175,10 +190,10 @@ impl TransformerModel {
             "batched verify: n={n} ks={ks:?} tokens={} dflash_k={dflash_k:?}",
             tokens.len()
         );
-        // R ≤ VERIFY_ROW_CAP (96): the exact capacity of the meta gaps below
-        // (positions 384 B at +0, seq_slot at +384, slots 768 B at +768,
-        // seq_lens 384 B at +1536, bt at +2048 staged for 96 rows in
-        // sizes.rs) and the 96-row logits cap. Reached at n=32 × k=3 rows
+        // R ≤ VERIFY_ROW_CAP: the exact capacity of the meta gaps (the
+        // VMETA_* derived offsets at the top of this file), the bt staging
+        // and the logits rows (both sized in sizes.rs from the same cap —
+        // keep them in lock-step). Historically reached at n=32 × k=3 rows
         // (the 32:2 depth-at-width shape).
         ensure!(
             r_total <= super::verify_e2::VERIFY_ROW_CAP,
@@ -273,8 +288,8 @@ impl TransformerModel {
                             && (!wy_present
                                 || self.ssm_pool.h_inter_count(s as usize) + 1 >= k as usize)
                     });
-                // Every cached key was captured under `ensure!(R <= 96)`, so
-                // the borrowed total row count fits the fixed 96-row meta
+                // Every cached key was captured under the VERIFY_ROW_CAP
+                // ensure!, so the borrowed total row count fits the meta
                 // arrays and logits cap by construction — but that bound
                 // guards the `unsafe` upload lengths below, so it is
                 // re-checked as a hard borrow veto, never assumed.
@@ -304,7 +319,7 @@ impl TransformerModel {
             }
         }
         // Rows the DISPATCH must prepare: active rows plus any ghost tail.
-        // `r_up <= VERIFY_ROW_CAP` (96) holds on every path: the no-ghost
+        // `r_up <= VERIFY_ROW_CAP` holds on every path: the no-ghost
         // case by the `ensure!` above, the borrow case by the veto at accept.
         let r_ghost: usize = ghosts.iter().map(|&(_, k)| k as usize).sum();
         let r_up = r_total + r_ghost;
@@ -329,8 +344,8 @@ impl TransformerModel {
         }
 
         // ── Phase 2: R-row attention metadata (verify_c2 layout SHAPE at
-        // WIDER gaps — 96 rows: positions [0,384) | seq_slot [384,768) |
-        // slots i64 [768,1536) | seq_lens [1536,1920) | bt at +2048. This
+        // WIDER gaps — VERIFY_ROW_CAP rows at the VMETA_* derived
+        // offsets (positions | seq_slot | slots | seq_lens | bt). This
         // path's own layout only: every metadata consumer receives absolute
         // pointers via `AttnMetadataDev`, and each step (and each graph's
         // replay) re-uploads its own layout pre-dispatch, so verify_c2 /
@@ -339,9 +354,9 @@ impl TransformerModel {
         let max_blocks = self.max_blocks_per_seq;
         let mb = max_blocks as usize;
 
-        let mut positions = [0u32; 96];
-        let mut slots = [0i64; 96];
-        let mut seq_lens = [0i32; 96];
+        let mut positions = [0u32; VMETA_R];
+        let mut slots = [0i64; VMETA_R];
+        let mut seq_lens = [0i32; VMETA_R];
         for (i, seq) in seqs.iter().enumerate() {
             for j in 0..ks[i] {
                 let r = off[i] + j;
@@ -364,10 +379,10 @@ impl TransformerModel {
             slots[r] = dummy_kv;
             seq_lens[r] = 1;
         }
-        // SAFETY: `positions` is the fixed `[0u32; 96]` above, so its size is
-        // 96 * 4 = 384 B; the `ensure!(r_total <= VERIFY_ROW_CAP)` guard plus
-        // the `debug_assert!(r_up <= VERIFY_ROW_CAP)` (r_up rows were
-        // captured under the same cap) make `r_up * 4 <= 384`.
+        // SAFETY: `positions` is the fixed `[0u32; VMETA_R]` above, so its
+        // size is VMETA_R * 4 bytes; the `ensure!(r_total <= VERIFY_ROW_CAP)`
+        // guard plus the `debug_assert!(r_up <= VERIFY_ROW_CAP)` (r_up rows
+        // were captured under the same cap) make `r_up * 4` fit.
         // The array is zero-init at declaration and rows `0..r_up` are all
         // written by the fill loops (`off` is the prefix sum of `ks`, so
         // `off[i]+j` covers `0..r_total` exactly; the ghost loop covers
@@ -375,20 +390,20 @@ impl TransformerModel {
         let pos_bytes =
             unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, r_up * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
-        // SAFETY: `slots` is the fixed `[0i64; 96]` above (768 B); the same
-        // bounds argument gives `r_up * 8 <= 768`. Zero-init at declaration,
+        // SAFETY: `slots` is the fixed `[0i64; VMETA_R]` above (VMETA_R * 8
+        // bytes); the same bounds argument fits `r_up * 8`. Zero-init at declaration,
         // rows `0..r_up` written by the fill loops; `i64` is POD.
         let slot_bytes =
             unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, r_up * 8) };
         self.gpu
-            .copy_h2d_async(slot_bytes, meta_base.offset(768), stream)?;
-        // SAFETY: `seq_lens` is the fixed `[0i32; 96]` above (384 B); the same
-        // bounds argument gives `r_up * 4 <= 384`. Zero-init at declaration,
+            .copy_h2d_async(slot_bytes, meta_base.offset(VMETA_SLOTS), stream)?;
+        // SAFETY: `seq_lens` is the fixed `[0i32; VMETA_R]` above (VMETA_R *
+        // 4 bytes); the same bounds argument fits `r_up * 4`. Zero-init at declaration,
         // rows `0..r_up` written by the fill loops; `i32` is POD.
         let sl_bytes =
             unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, r_up * 4) };
         self.gpu
-            .copy_h2d_async(sl_bytes, meta_base.offset(1536), stream)?;
+            .copy_h2d_async(sl_bytes, meta_base.offset(VMETA_SEQ_LENS), stream)?;
 
         // Block tables: row r = seq i's table (bt staging sized for 96 rows,
         // sizes.rs `bt_rows`). Ghost rows read only entry 0 (causal clamp 1)
@@ -414,18 +429,18 @@ impl TransformerModel {
         let bt_bytes =
             unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu
-            .copy_h2d_async(bt_bytes, meta_base.offset(2048), stream)?;
+            .copy_h2d_async(bt_bytes, meta_base.offset(VMETA_BT), stream)?;
 
         // No-LoRA gate in can_batch: uniform upload returns DevicePtr(0)
         // (installed-pair path) — kept for structural parity with verify_c2.
         debug_assert!(
             r_up <= super::verify_e2::VERIFY_ROW_CAP,
-            "verify seq_slot [384,768) gap holds R ≤ 96"
+            "verify seq_slot gap holds R ≤ VERIFY_ROW_CAP"
         );
         let seq_slot = self.upload_seq_slot_uniform(
             seqs[0].adapter_slot,
             r_up,
-            meta_base.offset(384),
+            meta_base.offset(VMETA_SEQ_SLOT),
             stream,
         )?;
 
@@ -433,9 +448,9 @@ impl TransformerModel {
             positions: meta_base,
             positions_h: meta_base,
             positions_w: meta_base,
-            slot: meta_base.offset(768),
-            seq_len: meta_base.offset(1536),
-            block_table: meta_base.offset(2048),
+            slot: meta_base.offset(VMETA_SLOTS),
+            seq_len: meta_base.offset(VMETA_SEQ_LENS),
+            block_table: meta_base.offset(VMETA_BT),
             max_blocks_per_seq: max_blocks,
             num_seqs: r_up as u32,
             seq_slot,
