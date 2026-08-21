@@ -144,3 +144,134 @@ fn the_rounding_mode_is_pinned() {
     assert_eq!(snap(720, 32), 736, "22.5 rounds away from zero");
     assert_eq!(snap(854, 32), 864, "26.69 rounds up");
 }
+
+// ── the declared area bound ──────────────────────────────────────────────
+//
+// These pin the mirror of the engine's `target_size_for`. A benchmark that
+// predicts geometry from a COPY of the engine's arithmetic is only as good as
+// the copy, so the copy is asserted against figures the engine's own source
+// documents rather than against itself.
+
+/// Every fixture in the committed ladder, as `(w, h)`.
+const LADDER: [(u32, u32); 14] = [
+    (224, 224),
+    (336, 336),
+    (512, 384),
+    (640, 360),
+    (768, 768),
+    (1024, 576),
+    (1280, 720),
+    (480, 854),
+    (1600, 900),
+    (8, 8),
+    (64, 2048),
+    (224, 224),
+    (224, 224),
+    (224, 224),
+];
+
+#[test]
+fn the_mirror_matches_the_engines_anchors() {
+    // Both figures are quoted in `provision::FIXTURES` for the 1600x900 rung,
+    // which exists precisely to tell these two apart:
+    //   * a correct engine honours the checkpoint's large declared bound and
+    //     leaves it alone                                   -> 1400 tokens
+    //   * the retired long-side clamp scales it to 1280x720 ->  920 tokens
+    assert_eq!(
+        expected_vision_tokens(1600, 900, 16, 2),
+        1400,
+        "unbounded: the checkpoint's own bound is far above 1.44M px"
+    );
+    let (tw, th) = served_size(1600, 900, 32, None);
+    assert_eq!((tw, th), (1280, 736), "the 1280px fallback clamp");
+    assert_eq!(
+        (tw / 16) * (th / 16) / 4,
+        920,
+        "the figure the fallback clamp produces, per provision::FIXTURES"
+    );
+}
+
+#[test]
+fn zero_means_nothing_was_declared() {
+    // The param default. It must be EXACTLY the historical behaviour, or
+    // adding the parameter would silently re-baseline every existing record.
+    for (w, h) in LADDER {
+        assert_eq!(
+            expected_vision_tokens_bounded(w, h, 16, 2, 0),
+            expected_vision_tokens(w, h, 16, 2),
+            "{w}x{h} moved when no bound was declared"
+        );
+    }
+}
+
+#[test]
+fn a_declared_bound_moves_exactly_the_fixtures_above_it() {
+    // The 2026-08-21 case: a serve started with `--vision-max-pixels 262144`
+    // scored 9/14 because five fixtures exceed that area and were silently
+    // downscaled. Predicting under the bound must move those five and ONLY
+    // those five — if it moved a sixth, the mirror would be manufacturing
+    // failures of its own.
+    const CAP: u64 = 262_144;
+    let moved: Vec<(u32, u32)> = LADDER
+        .iter()
+        .copied()
+        .filter(|&(w, h)| {
+            expected_vision_tokens_bounded(w, h, 16, 2, CAP) != expected_vision_tokens(w, h, 16, 2)
+        })
+        .collect();
+    assert_eq!(
+        moved,
+        vec![
+            (768, 768),
+            (1024, 576),
+            (1280, 720),
+            (480, 854),
+            (1600, 900)
+        ],
+        "exactly the five fixtures whose area exceeds {CAP}"
+    );
+    for &(w, h) in &moved {
+        assert!(
+            (w as u64) * (h as u64) > CAP,
+            "{w}x{h} moved but is inside the bound"
+        );
+    }
+}
+
+#[test]
+fn a_declared_bound_never_upscales() {
+    // A bound is a CEILING. The 8x8 and 64x2048 rungs are far inside 262144,
+    // and a `sqrt(bound/area)` scale factor is greater than 1 for both — so
+    // this is the arm where a missing `.min(1.0)` would inflate a fixture
+    // instead of leaving it alone.
+    assert_eq!(expected_vision_tokens_bounded(8, 8, 16, 2, 262_144), 1);
+    assert_eq!(
+        expected_vision_tokens_bounded(64, 2048, 16, 2, 262_144),
+        128
+    );
+}
+
+#[test]
+fn the_discriminating_rung_stays_discriminating_under_a_bound() {
+    // The reason the fix predicts rather than skips. Declaring a bound must
+    // not blunt the one rung the ladder exists for: under a 262144 bound the
+    // correct answer is 252, and an engine that ignored the declared bound and
+    // fell back to the 1280px clamp would still answer 920 and still FAIL.
+    let honoured = expected_vision_tokens_bounded(1600, 900, 16, 2, 262_144);
+    assert_eq!(honoured, 252);
+    let (tw, th) = served_size(1600, 900, 32, None);
+    assert_ne!(
+        honoured,
+        (tw / 16) * (th / 16) / 4,
+        "a declared bound must not make the fallback-clamp defect indistinguishable"
+    );
+}
+
+#[test]
+fn the_absolute_long_side_ceiling_still_applies_under_a_bound() {
+    // A generous AREA bound cannot license an unbounded long side: 64x8192 is
+    // only 512K px, but 8192 is past the 4096 ceiling, so the strip is scaled
+    // by the ceiling rather than by the area.
+    let (_, th) = served_size(64, 8192, 32, Some(16_777_216));
+    assert!(th <= ABS_MAX_DIM, "{th} exceeds the absolute ceiling");
+}
