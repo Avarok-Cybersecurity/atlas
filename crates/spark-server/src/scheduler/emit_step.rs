@@ -12,6 +12,7 @@ use super::*;
 ///
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
+#[track_caller]
 pub fn emit_token(
     a: &mut ActiveSeq,
     tok: u32,
@@ -21,13 +22,16 @@ pub fn emit_token(
     // Per-token ledger (debug): every emission path funnels through here,
     // so `slot + out_idx + tok` gives a diffable per-stream token stream.
     // The C>=2 temp-0 fork forensics reads this to find the first token
-    // where a concurrent run diverges from the C=1 run of the same prompt
-    // (step type comes from adjacent CTX_VERIFY / CTX_COMMIT debug lines).
+    // where a concurrent run diverges from the C=1 run of the same prompt.
+    // `from` is the CALLER (`#[track_caller]`): the 2026-08-21 phantom-burst
+    // hunt needed to know WHICH step emitted four of another stream's tokens
+    // onto a fresh sequence, and adjacent CTX_VERIFY lines could not say.
     tracing::debug!(
-        "TOK slot={} out_idx={} tok={}",
+        "TOK slot={} out_idx={} tok={} from={}",
         a.seq.slot_idx,
         a.output_tokens.len(),
         tok,
+        std::panic::Location::caller(),
     );
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
