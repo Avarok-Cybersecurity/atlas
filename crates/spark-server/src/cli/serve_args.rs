@@ -297,10 +297,35 @@ pub struct ServeArgs {
 
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
+    /// ★ WHAT THE DEFAULT COSTS IN PRACTICE, because "a flipped argmax" reads
+    /// milder than it behaves (measured 2026-08-21, qwen3.8-27B-NVFP4 + DFlash2
+    /// on GB10, one binary, this flag the only variable):
+    ///
+    ///     prompt "count from 1 to 10"   default: `1, 2, 100, 100, 100, ...`
+    ///                                   exact:   `1, 2, 3, 4, 5, ..., 10`
+    ///     video-fidelity C=1/C=2/C=4    default: 1/1, 0/2, 0/4 correct
+    ///                                   exact:   1/1, 2/2, 4/4 correct
+    ///
+    /// A flipped token does not stay one wrong token. It lands the sequence in
+    /// a repetition attractor, and the DRAFTER THEN AGREES with it — verify
+    /// steps go 7/7 accepted — so the loop is locked in and the reply
+    /// degenerates into repetition or unrelated text until the token cap. This
+    /// is why the symptom looks like a broken drafter while acceptance
+    /// telemetry looks healthy: the accepts are honest, the logits they check
+    /// against are not the ones sequential decode would have produced.
+    ///
+    /// A short reply can hide it entirely — a 2-token "Paris" answer survives —
+    /// so a smoke test that only asks small questions will not see this.
+    /// Fastest repro is a prompt whose correct answer is a short ordered list.
+    ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
     /// GDN/SSM verify chain exact. It does NOT make speculative output
     /// bitwise-equal to non-speculative output end to end, and setting it
-    /// will not give you a reproducible spec-on serve.
+    /// will not give you a reproducible spec-on serve. Measured with the flag
+    /// ON, the residual is still visible: an occasional single wrong token,
+    /// and the same request at temperature 0 answering with 45 tokens once and
+    /// 50 the next time — because the accepted-row COUNT varies with runtime
+    /// scheduling, so the row-count-selected projection kernel varies with it.
     ///
     /// Why not (measured on GB10, issue #459): every FFN and attention
     /// projection is computed by a kernel selected on ROW COUNT. A token

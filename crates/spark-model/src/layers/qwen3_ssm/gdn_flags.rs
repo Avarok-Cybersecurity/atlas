@@ -59,6 +59,15 @@ pub struct GdnFlags {
     /// implementations round differently — ~5e-5 of lanes by 1 ULP, on every
     /// shape measured (#459). Closing that needs single-row routing for the
     /// whole verify forward, which is future work.
+    ///
+    /// ★ Do not read "default off" as "default harmless". The divergence this
+    /// closes is not a cosmetic one-token difference at temperature 0: the
+    /// flipped token lands in a repetition attractor that the drafter then
+    /// AGREES with (7/7 accepted), so replies collapse into repetition or
+    /// unrelated text. Measured 2026-08-21 on qwen3.8-27B-NVFP4 + DFlash2,
+    /// `video-fidelity` went 0/2 and 0/4 correct at C=2/C=4 by default and
+    /// 2/2, 4/4 with this flag on. The operator-facing consequences and a
+    /// repro live on `ServeArgs::exact_verify`.
     pub exact_verify: bool,
 }
 
