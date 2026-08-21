@@ -78,19 +78,41 @@ pub(super) fn setup_lm_heads(
         // Runtime FP8 head. `quantize_bf16_to_fp8` (module `gemv_fp8w`) writes
         // FP8 E4M3 bytes + per-row f32 scales, consumed by `w8a16_gemv` at
         // decode. The NVFP4 head stays `None` on this path.
-        let quantize_fp8_k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
-        let q = quantize_to_fp8(
-            lm_head,
-            config.vocab_size,
-            config.hidden_size,
-            gpu,
-            quantize_fp8_k,
-            stream,
-        )?;
-        tracing::info!(
-            "LM head quantized to FP8 (w8a16, vocab={})",
-            config.vocab_size
-        );
+        // Prefer the checkpoint's OWN FP8 bytes when it ships them. This
+        // family (unsloth/Qwen3.8-27B-NVFP4) stores `lm_head.weight` as FP8
+        // E4M3 with a per-row BF16 scale, so re-quantizing means
+        // FP8 -> dequant BF16 -> FP8: a lossy round trip that lands back at
+        // the precision we started from, plus a duplicate ~1.27 GB copy of a
+        // tensor already resident. Same share the DFlash drafter tail uses.
+        //
+        // Padded rows are fine: the tensor is row-major [rows, hidden] and
+        // unsloth pads 248077 -> 248320 at the END, so reading the first
+        // `vocab_size` rows is a prefix and the padding is never touched.
+        let native = native_fp8_lm_head_share(store, config, gpu)?;
+        let q = if let Some((shared, rows)) = native {
+            tracing::info!(
+                "LM head served from the checkpoint's NATIVE FP8 (w8a16, vocab={}, \
+                 tensor rows={rows}) — no requantize, no second copy",
+                config.vocab_size
+            );
+            shared
+        } else {
+            let quantize_fp8_k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
+            let q = quantize_to_fp8(
+                lm_head,
+                config.vocab_size,
+                config.hidden_size,
+                gpu,
+                quantize_fp8_k,
+                stream,
+            )?;
+            tracing::info!(
+                "LM head quantized to FP8 (w8a16, vocab={}) — checkpoint is not \
+                 natively FP8, so this is a runtime mirror",
+                config.vocab_size
+            );
+            q
+        };
         lm_head_fp8 = Some(q);
         None
     } else {
