@@ -366,11 +366,6 @@ mod mscale_contract_tests {
       "compress_ratios": [0,0,4,128,4,128,4,0,0,0]
     }"#;
 
-    // Mirrors compute.rs `const MAIN_ROPE_THETA: f32 = 10000.0` — the sliding
-    // (compressor-absent) rope theta. This diff does not touch compute.rs, so the
-    // value is unchanged; asserted here as the sliding-theta contract.
-    const SLIDING_ROPE_THETA_CONTRACT: f32 = 10000.0;
-
     // The parser owns the DS4F field override. The spark-model helper tests own
     // the resulting runtime ratio.
     #[test]
@@ -396,13 +391,6 @@ mod mscale_contract_tests {
         );
         let c = parse_deepseek_v4(&alternate).expect("parse alternate compress theta");
         assert_eq!(c.rope_theta, 234567.0);
-    }
-
-    // Test 3: sliding-path theta contract is 10000 (compute.rs MAIN_ROPE_THETA,
-    // untouched by this diff).
-    #[test]
-    fn sliding_theta_contract_is_10000() {
-        assert_eq!(SLIDING_ROPE_THETA_CONTRACT, 10000.0);
     }
 
     // Test 6: no unrelated YaRN defaults changed — factor/beta/original_max_pos
