@@ -102,7 +102,15 @@ fn q_proj_accepted() {
 fn gdn_module_rejected_named() {
     // `out_proj` is deliberately NOT in this list any more — see
     // `gdn_out_proj_is_accepted` below. Everything here feeds the recurrence.
-    for m in ["in_proj_qkvz", "in_proj_qkv", "in_proj_z", "conv1d"] {
+    for m in [
+        "in_proj_qkvz",
+        "in_proj_ba",
+        "in_proj_qkv",
+        "in_proj_z",
+        "in_proj_a",
+        "in_proj_b",
+        "conv1d",
+    ] {
         let mut j = base_json();
         j["target_modules"] = serde_json::json!([m]);
         let err = parse_peft_adapter_config(&j.to_string())
