@@ -305,13 +305,30 @@ fn unknown_trainable_token_module_rejected() {
 }
 
 #[test]
-fn trainable_token_indices_negative_rejected() {
-    let mut j = base_json();
-    j["trainable_token_indices"] = serde_json::json!([-1]);
-    let err = parse_peft_adapter_config(&j.to_string())
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+fn invalid_trainable_token_entries_rejected_by_name() {
+    for (value, detail) in [
+        (
+            serde_json::json!(-1),
+            "entries must be non-negative integers",
+        ),
+        (
+            serde_json::json!(1.5),
+            "entries must be non-negative integers",
+        ),
+        (
+            serde_json::json!("7"),
+            "entries must be non-negative integers",
+        ),
+        (serde_json::json!(4_294_967_296_u64), "exceeds u32 range"),
+    ] {
+        let mut j = base_json();
+        j["trainable_token_indices"] = serde_json::json!([value]);
+        let err = parse_peft_adapter_config(&j.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+        assert!(err.contains(detail), "{err}");
+    }
 }
 
 #[test]
