@@ -178,10 +178,19 @@ pub fn gdn_prefill_fla(
     // split the DV axis, so grid.y stays `batch_size`. smem is identical for both
     // members — only the thread count differs, and it must match the kernel that
     // init.rs actually loaded for the same env value.
-    let smem_fused = C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4;
+    // `..._pipe` double-buffers {W,K,U} through `cp.async`, so it needs the SAME
+    // footprint the original (also double-buffered) spine uses — `smem_dh`. Under-
+    // sizing this reads the second slot out of bounds, so the selector has to agree
+    // with the kernel `init.rs` loaded for the same env value.
+    let pipe = std::env::var("ATLAS_GDN_PIPE").ok().as_deref() == Some("1");
+    let smem_fused = if pipe {
+        smem_dh
+    } else {
+        C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4
+    };
     let fused_block = match std::env::var("ATLAS_GDN_VTILE").ok().as_deref() {
-        Some("1") => 512u32, // SPLIT=4 build
-        _ => 256u32,         // SPLIT=2 build (default)
+        Some("1") if !pipe => 512u32, // SPLIT=4 build
+        _ => 256u32,                  // SPLIT=2 build (default, and the pipe build)
     };
     let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_fused {
         (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)
