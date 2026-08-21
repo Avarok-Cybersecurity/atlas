@@ -65,8 +65,17 @@ __device__ __forceinline__ void mac4(float& acc, unsigned int a32_lo, unsigned i
     *(unsigned short*)&a1 = (unsigned short)(a32_lo >> 16);
     *(unsigned short*)&a2 = (unsigned short)(a32_hi & 0xFFFF);
     *(unsigned short*)&a3 = (unsigned short)(a32_hi >> 16);
-    acc += __bfloat162float(a0) * wf0 + __bfloat162float(a1) * wf1
-         + __bfloat162float(a2) * wf2 + __bfloat162float(a3) * wf3;
+    // ONE product per statement, matching `dense_gemv_fp8w`'s chain. The
+    // previous 4-term form contracted each group before accumulating, which
+    // is a different rounding: measured 78 differing logits (max|delta| 2.0)
+    // against 2x M=1 at the [248320 x 5120] LM head. This kernel serves the
+    // K=2 verify while serial decode takes the M=1 path, so that difference
+    // is a spec-on vs spec-off divergence on the final projection before the
+    // argmax. See dense_gemv_fp8w_bitparity_microtest.
+    acc += __bfloat162float(a0) * wf0;
+    acc += __bfloat162float(a1) * wf1;
+    acc += __bfloat162float(a2) * wf2;
+    acc += __bfloat162float(a3) * wf3;
 }
 
 extern "C" __global__ void dense_gemv_fp8w_batch2(
