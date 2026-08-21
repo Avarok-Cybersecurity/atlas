@@ -434,7 +434,7 @@ mod mscale_contract_tests {
     fn ds4f_explicit_checkpoint_mscale_is_overridden() {
         let with_mscale = DS4F_CONFIG.replace(
             "\"type\": \"yarn\"",
-            "\"type\": \"yarn\", \"mscale\": 1.0, \"mscale_all_dim\": 0.0",
+            "\"type\": \"yarn\", \"mscale\": 1.0, \"mscale_all_dim\": 0.5",
         );
         let c = parse_deepseek_v4(&with_mscale).expect("parse DS4F w/ explicit mscale");
         assert_eq!(c.yarn_mscale, 0.0);
