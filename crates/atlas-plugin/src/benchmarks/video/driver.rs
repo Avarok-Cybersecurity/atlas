@@ -449,6 +449,46 @@ impl Benchmark for VideoFidelity {
             }
 
             // ── Mixed: an image and a video in one request ───────────────
+            //
+            // TWO cells, because one question could not tell two failures
+            // apart and for a while was read as accusing the wrong component.
+            //
+            //   * `mixed-media` asks for the clip's colors as a LIST. That is
+            //     a question about the ENGINE (are the clip's frames all
+            //     there?) only if the model cooperates, and qwen3.8-27B does
+            //     not: it treats the still as FRAME 1 OF THE VIDEO, so it
+            //     enumerates from the image and the clip's last color falls
+            //     off the end of a four-item list. What this cell really
+            //     measures is whether the CHECKPOINT keeps two media items
+            //     apart. qwen3.6 does; qwen3.8 does not. Kept strict, because
+            //     that difference is worth catching — but read as a model
+            //     property, not as an engine defect.
+            //
+            //   * `mixed-media-pads` MEASURES the contract instead of asking
+            //     about it: t(image+video) must equal t(image) + t(video) -
+            //     t(text), in the server's own `usage.prompt_tokens`. A pad
+            //     run of the wrong length cannot satisfy that, and no model
+            //     opinion enters. It is the cell whose failure should be
+            //     believed, and the only one entitled to accuse the contract.
+            //
+            // A content question was tried here first and does NOT work. On
+            // the failing pair every wording ("ends on", "final frame", "name
+            // the fourth", "the still is not part of the video") returned the
+            // same wrong color 5/5 — but swapping the grayscale still for a
+            // solid magenta one returned the RIGHT one, while the served rows
+            // were the identical 4 groups / 196 tokens in both cases. Whatever
+            // a still's colour can move is the model, not the splice.
+            //
+            // Measured on 2026-08-21 against a serve where `mixed-media` was
+            // red: the contract was INTACT. The clip's own allocation was
+            // identical in every ordering (4 temporal groups, 14x14 patches,
+            // 196 vision tokens), asked for the fourth frame the model said
+            // "Yellow", asked to describe the frames it called the still
+            // "Frame 1", and swapping the grayscale still for a solid magenta
+            // one returned all four clip colors from the plain list question.
+            // Beware when re-testing: this model's answers move across
+            // paraphrases (3, 4 and 6 colors for one clip), so a single
+            // wording is not evidence in either direction.
             Phase::Mixed => {
                 self.phase = Phase::Integrity;
                 let h = self.handle()?;
@@ -489,9 +529,10 @@ impl Benchmark for VideoFidelity {
                             CountCell::Mismatch {
                                 id: "mixed-media",
                                 detail: format!(
-                                    "image + video together: wanted [{}], got [{}] — the \
-                                     ordering contract between collection, markers and pad \
-                                     expansion is off",
+                                    "image + video together: wanted [{}], got [{}]. This cell \
+                                     does NOT localise the cause: see mixed-media-pads, which \
+                                     asks for the LAST frame directly and is the one that \
+                                     accuses the pad/marker contract",
                                     vid.colors.join(", "),
                                     super::score::colors_in_order(reply, PALETTE).join(", ")
                                 ),
@@ -513,20 +554,107 @@ impl Benchmark for VideoFidelity {
                         }
                     }
                 };
-                let line = match &cell {
-                    CountCell::Match { detail, .. } => {
-                        LogLine::info(format!("mixed-media: {detail}"))
+                // The contract cell: PAD ARITHMETIC, not a question about
+                // pixels. Four short requests, and the identity
+                //
+                //     t(image + video) == t(image) + t(video) - t(text)
+                //
+                // must hold exactly. Every term is a `usage.prompt_tokens`
+                // the server reports, so a pad run of the wrong length shows
+                // up as a non-zero delta and no model opinion is involved.
+                //
+                // It is a MEASUREMENT, not a probe, on purpose. A content
+                // question cannot do this job here: swapping the grayscale
+                // still for a solid magenta one changes whether the model
+                // reports the clip's last color, while the served rows are
+                // byte-for-byte the same 4 groups / 196 tokens either way. A
+                // desync is content-independent; anything a still's colour can
+                // move is the model, not the contract (measured 2026-08-21).
+                let model = h.target().model.clone();
+                let short = 16;
+                let b_text = request::text_array_body(&model, request::ORDER_PROMPT, short);
+                let b_img =
+                    request::image_body(&model, "image/png", png, request::ORDER_PROMPT, short);
+                let b_vid =
+                    request::video_body(&model, vid.mime, vid.bytes, request::ORDER_PROMPT, short);
+                let b_both = request::mixed_body(
+                    &model,
+                    png,
+                    vid.mime,
+                    vid.bytes,
+                    request::ORDER_PROMPT,
+                    short,
+                );
+                let t_text = http::chat_stream(h.target(), &b_text, self.timeout()).await;
+                let t_img = http::chat_stream(h.target(), &b_img, self.timeout()).await;
+                let t_vid = http::chat_stream(h.target(), &b_vid, self.timeout()).await;
+                let t_both = http::chat_stream(h.target(), &b_both, self.timeout()).await;
+                let tail_cell = match (t_text, t_img, t_vid, t_both) {
+                    (Ok(tx), Ok(ti), Ok(tv), Ok(tb)) => {
+                        let predicted =
+                            (ti.prompt_tokens + tv.prompt_tokens).saturating_sub(tx.prompt_tokens);
+                        if tb.prompt_tokens == predicted {
+                            CountCell::Match {
+                                id: "mixed-media-pads",
+                                detail: format!(
+                                    "pad arithmetic exact: image {} + video {} - text {} = {} \
+                                     served",
+                                    ti.prompt_tokens,
+                                    tv.prompt_tokens,
+                                    tx.prompt_tokens,
+                                    tb.prompt_tokens
+                                ),
+                            }
+                        } else {
+                            CountCell::Mismatch {
+                                id: "mixed-media-pads",
+                                detail: format!(
+                                    "pad run is the WRONG LENGTH in a mixed request: image {} + \
+                                     video {} - text {} predicts {predicted}, server charged {} \
+                                     (off by {}) — this IS the collection/marker/pad-expansion \
+                                     contract",
+                                    ti.prompt_tokens,
+                                    tv.prompt_tokens,
+                                    tx.prompt_tokens,
+                                    tb.prompt_tokens,
+                                    tb.prompt_tokens as i64 - predicted as i64
+                                ),
+                            }
+                        }
                     }
-                    CountCell::Mismatch { detail, .. } => {
-                        LogLine::warn(format!("mixed-media: {detail}"))
+                    (tx, ti, tv, tb) => {
+                        let msg = [tx.err(), ti.err(), tv.err(), tb.err()]
+                            .into_iter()
+                            .flatten()
+                            .map(|e| one_line(format!("{e:#}")))
+                            .next()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        if request::is_decoder_unavailable(&msg) {
+                            CountCell::Skipped {
+                                id: "mixed-media-pads",
+                                why: msg,
+                            }
+                        } else {
+                            CountCell::Error {
+                                id: "mixed-media-pads",
+                                msg,
+                            }
+                        }
                     }
-                    CountCell::Skipped { why, .. } => {
-                        LogLine::info(format!("mixed-media: skipped — {why}"))
-                    }
-                    CountCell::Error { msg, .. } => LogLine::warn(format!("mixed-media: {msg}")),
                 };
+                let describe = |c: &CountCell, id: &str| match c {
+                    CountCell::Match { detail, .. } => LogLine::info(format!("{id}: {detail}")),
+                    CountCell::Mismatch { detail, .. } => LogLine::warn(format!("{id}: {detail}")),
+                    CountCell::Skipped { why, .. } => {
+                        LogLine::info(format!("{id}: skipped — {why}"))
+                    }
+                    CountCell::Error { msg, .. } => LogLine::warn(format!("{id}: {msg}")),
+                };
+                let line = describe(&cell, "mixed-media");
+                let tail_line = describe(&tail_cell, "mixed-media-pads");
                 self.counts.push(cell);
-                Ok(self.frame("mixed", vec![line]))
+                self.counts.push(tail_cell);
+                Ok(self.frame("mixed", vec![line, tail_line]))
             }
 
             // ── Integrity: the shapes that need MORE THAN ONE video item ─

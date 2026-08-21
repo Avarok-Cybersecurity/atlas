@@ -80,6 +80,43 @@ pub fn text_only_body(model: &str, prompt: &str, max_tokens: usize) -> Value {
     })
 }
 
+/// One request carrying a single IMAGE, and one carrying only text — the two
+/// baselines the pad-arithmetic cell subtracts.
+///
+/// Both send `content` as an ARRAY, matching [`video_body`] and [`mixed_body`].
+/// [`text_only_body`] sends a bare string instead, which renders through a
+/// different template branch and costs a different number of tokens: using it
+/// as the baseline makes the arithmetic disagree by a constant that has
+/// nothing to do with pad runs. That is why these exist rather than reusing it.
+pub fn image_body(model: &str, mime: &str, png: &[u8], prompt: &str, max_tokens: usize) -> Value {
+    json!({
+        "model": model,
+        "stream": true,
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "chat_template_kwargs": {"enable_thinking": false},
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": data_uri(mime, png)}},
+            {"type": "text", "text": prompt},
+        ]}],
+    })
+}
+
+/// Text only, as a content ARRAY. See [`image_body`] for why this is not
+/// [`text_only_body`].
+pub fn text_array_body(model: &str, prompt: &str, max_tokens: usize) -> Value {
+    json!({
+        "model": model,
+        "stream": true,
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "chat_template_kwargs": {"enable_thinking": false},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+        ]}],
+    })
+}
+
 /// Does this error read as "the server cannot decode that container"?
 ///
 /// A server without ffmpeg is a DEPLOYMENT choice, not a defect, so those legs
