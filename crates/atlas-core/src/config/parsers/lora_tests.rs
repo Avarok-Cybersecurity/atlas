@@ -25,13 +25,28 @@ fn base_json() -> serde_json::Value {
 }
 
 #[test]
-fn happy_path_scaling_alpha_over_r() {
+fn standard_lora_scaling_preserves_inputs_and_uses_alpha_over_rank() {
     let cfg = parse_peft_adapter_config(&base_json().to_string()).unwrap();
     assert_eq!(cfg.r, 16);
     assert_eq!(cfg.lora_alpha, 32.0);
     assert!(!cfg.use_rslora);
     assert_eq!(cfg.scaling(), 2.0);
-    assert_eq!(cfg.target_modules.len(), 6);
+}
+
+#[test]
+fn explicit_target_modules_are_preserved_verbatim() {
+    let cfg = parse_peft_adapter_config(&base_json().to_string()).unwrap();
+    assert_eq!(
+        cfg.target_modules,
+        [
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
+    );
 }
 
 #[test]
