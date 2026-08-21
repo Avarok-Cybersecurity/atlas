@@ -183,32 +183,7 @@ impl TransformerModel {
             // once for both K=2 verify tokens — bit-identical to two M=1 GEMVs
             // but halves the full-vocab weight bandwidth. Falls back to the
             // per-token loop for K!=2 or when the kernel is absent.
-            let bf16 = 2usize;
-            if num_tokens == 2 && self.dense_gemv_fp8w_batch2_kernel.0 != 0 {
-                ops::dense_gemv_fp8w_batch2(
-                    self.gpu.as_ref(),
-                    self.dense_gemv_fp8w_batch2_kernel,
-                    hidden,
-                    fp8,
-                    logits,
-                    v,
-                    h,
-                    stream,
-                )?;
-            } else {
-                for i in 0..num_tokens as usize {
-                    ops::dense_gemv_fp8w(
-                        self.gpu.as_ref(),
-                        self.dense_gemv_fp8w_kernel,
-                        hidden.offset(i * h as usize * bf16),
-                        fp8,
-                        logits.offset(i * v as usize * bf16),
-                        v,
-                        h,
-                        stream,
-                    )?;
-                }
-            }
+            self.fp8_vocab_project(fp8, hidden, logits, num_tokens, v, h, stream)?;
         } else if num_tokens == 2 {
             // Double-GEMV: reads weights once, computes 2 outputs.
             // GEMM M=2 with 64×64 tiles wastes 97% of M-dimension → ~3× slower.
