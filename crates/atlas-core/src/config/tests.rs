@@ -7,10 +7,14 @@
 use super::*;
 
 #[test]
-fn test_qwen3_default_config() {
+fn qwen3_next_factory_preserves_attention_ssm_and_routing_shape() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    assert_eq!(cfg.hidden_size, 2048);
     assert_eq!(cfg.num_hidden_layers, 48);
+    assert_eq!(cfg.num_attention_heads, 16);
+    assert_eq!(cfg.num_key_value_heads, 2);
     assert_eq!(cfg.num_experts, 512);
+    assert_eq!(cfg.num_experts_per_tok, 10);
     assert_eq!(cfg.num_attention_layers(), 12);
     assert_eq!(cfg.num_ssm_layers(), 36);
     assert_eq!(cfg.gqa_ratio(), 8);
@@ -19,6 +23,9 @@ fn test_qwen3_default_config() {
     assert_eq!(cfg.layer_type(2), LayerType::LinearAttention);
     assert_eq!(cfg.layer_type(3), LayerType::FullAttention);
     assert_eq!(cfg.layer_type(47), LayerType::FullAttention);
+    assert_eq!(cfg.linear_num_key_heads, 16);
+    assert_eq!(cfg.linear_key_head_dim, 128);
+    assert_eq!(cfg.linear_conv_kernel_dim, 4);
     assert_eq!(cfg.ssm_qkvz_size(), 2048 + 2048 + 4096 + 4096);
     assert_eq!(cfg.ssm_ba_size(), 64);
 }
