@@ -855,12 +855,54 @@ impl Benchmark for VisionFidelity {
                         "{asserted} geometry cells matched, {passed}/{} probes, control held",
                         self.probes.len()
                     )),
-                    VisionVerdict::Fail => RunVerdict::fail(format!(
-                        "{}/{} geometry cells asserted, {passed}/{} probes passed",
-                        asserted,
-                        self.geom.len(),
-                        self.probes.len()
-                    )),
+                    VisionVerdict::Fail => {
+                        // Name WHAT failed. The old reason recited two
+                        // green-looking counts ("14/14 asserted, 3/3 probes
+                        // passed") on a FAIL, and twice in one day a reader
+                        // took it for a pass while the real story — 5
+                        // geometry mismatches — lived only in the scrollback.
+                        let mism: Vec<String> = self
+                            .geom
+                            .iter()
+                            .filter_map(|c| match c {
+                                GeomCell::Mismatch { fixture, want, got } => {
+                                    Some(format!("{fixture} want {want} got {got}"))
+                                }
+                                GeomCell::Error { fixture, msg } => {
+                                    Some(format!("{fixture} ERROR {msg}"))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        let mut reason = format!(
+                            "{matched}/{asserted} geometry matched, {passed}/{} probes",
+                            self.probes.len()
+                        );
+                        if !mism.is_empty() {
+                            reason.push_str(": ");
+                            reason.push_str(&mism[..mism.len().min(5)].join("; "));
+                            if mism.len() > 5 {
+                                reason.push_str(&format!(" (+{} more)", mism.len() - 5));
+                            }
+                        }
+                        // Every observed count LOWER than predicted with no
+                        // declared bound is the --vision-max-pixels shape:
+                        // the serve silently downscales, this benchmark
+                        // predicts native geometry, and the operator must
+                        // declare the bound (see the param's help).
+                        let all_low = self.geom.iter().all(|c| match c {
+                            GeomCell::Mismatch { want, got, .. } => got < want,
+                            _ => true,
+                        });
+                        if self.vision_max_pixels == 0 && !mism.is_empty() && all_low {
+                            reason.push_str(
+                                " — every mismatch reads LOW: if the target serve passes \
+                                 --vision-max-pixels, set the vision_max_pixels param to the \
+                                 same value",
+                            );
+                        }
+                        RunVerdict::fail(reason)
+                    }
                     VisionVerdict::Vacuous => RunVerdict::fail(
                         "VACUOUS: the no-image control answered as though it saw one, so the \
                          capability probes are not evidence"
