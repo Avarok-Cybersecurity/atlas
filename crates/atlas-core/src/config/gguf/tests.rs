@@ -174,7 +174,7 @@ fn qwen3_moe_populates_expert_fields() {
         .s("general.architecture", "qwen3moe")
         .u("qwen3moe.embedding_length", 2048)
         .u("qwen3moe.block_count", 48)
-        .u("qwen3moe.feed_forward_length", 768)
+        .u("qwen3moe.feed_forward_length", 6144)
         .u("qwen3moe.attention.head_count", 32)
         .u("qwen3moe.attention.head_count_kv", 4)
         .u("qwen3moe.attention.key_length", 128)
@@ -192,6 +192,7 @@ fn qwen3_moe_populates_expert_fields() {
     };
     let c = config_from_gguf(&inp).unwrap();
     assert_eq!(c.model_type, "qwen3_5_moe");
+    assert_eq!(c.intermediate_size, 6144);
     assert_eq!(c.num_experts, 128);
     assert_eq!(c.num_experts_per_tok, 8);
     assert_eq!(c.moe_intermediate_size, 768);
