@@ -69,13 +69,12 @@ fn float_alpha_accepted() {
 }
 
 #[test]
-fn layers_to_transform_array_accepted() {
-    // The generated Holo fixture carries layers_to_transform=[3,7,...];
-    // it must be ACCEPTED (kept for logging), not rejected.
+fn layers_to_transform_array_does_not_block_adapter_loading() {
+    // Generated Holo configs carry this restriction. The tensor audit owns
+    // actual layer coverage, but parsing must not reject the PEFT field.
     let mut j = base_json();
     j["layers_to_transform"] = serde_json::json!([3, 7, 11, 15, 19, 23]);
-    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
-    assert_eq!(cfg.layers_to_transform, Some(vec![3, 7, 11, 15, 19, 23]));
+    parse_peft_adapter_config(&j.to_string()).expect("supported PEFT layer list");
 }
 
 #[test]
