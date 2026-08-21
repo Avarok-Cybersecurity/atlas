@@ -182,15 +182,23 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
-recipe) × the gate limits: median 1677.93 ms × +3% and p90 4580.73 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it."""
+Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
+recipe) × the gate limits: median 1576.3 ms × +3% and p90 4268.6 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it.
+
+RE-CUT 2026-08-21. The prior ceilings came from a 2026-08-04 baseline and were never \
+re-derived, so they had drifted to 9.6% (median) and 12.7% (p90) of slack against a \
+gate designed for 3%/5% — a backstop 3x looser than intended cannot catch the \
+regression it exists for. Note `update_baseline = true` means the gate compares each \
+run to the PREVIOUS run, so it tracks drift while these committed values are the only \
+ABSOLUTE bound; they therefore have to be re-cut whenever the path gets materially \
+faster, which it did (shared-kernel wins: fused GDN spine + token-parallel conv1d)."""
 
 [benchmarks.metrics.median_ms]
-max = 1728.27
+max = 1623.59
 
 [benchmarks.metrics.p90_ms]
-max = 4809.76
+max = 4482.03
 
 # ── NVFP4-MoE VARIANT of the cold-TTFT guard ────────────────────────────────
 # The FP8 entry above is the DEFAULT subject, and until this entry existed it
@@ -240,15 +248,18 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
-recipe) × the gate limits: median 1599.98 ms × +3% and p90 4585.18 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it."""
+Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
+recipe) × the gate limits: median 1513.9 ms × +3% and p90 4292.8 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it.
+
+RE-CUT 2026-08-21, same reasoning as the cold entry above: the 2026-08-04 ceilings had \
+drifted to 8.9%/12.2% of slack on a 3%/5% gate."""
 
 [benchmarks.metrics.median_ms]
-max = 1647.98
+max = 1559.32
 
 [benchmarks.metrics.p90_ms]
-max = 4814.44
+max = 4507.44
 
 # ── NVFP4-MoE VARIANT of the warm-TTFT guard (see the cold note above) ──────
 [[benchmarks]]
