@@ -383,20 +383,43 @@ pub fn step_mtp(
                 serial_idxs.push(idx);
             }
         }
-        if batchable_idxs.len() >= 2
-            && model.can_batch_verify(&vec![gamma + 1; batchable_idxs.len()])
-        {
+        // Widest group the model accepts. `can_batch_verify` bounds R = n*k
+        // by the verify row budget (96 rows), so at γ=7 the cap is 12
+        // sequences — and this gate used to be ALL-OR-NOTHING: a C=16 tick
+        // asked for 16×8 = 128 rows, was refused, and every sequence fell to
+        // the per-sequence serial loop, which is exactly the flat
+        // no-amortization wall the batched path exists to remove (measured
+        // 2026-08-21: the C=16 sweep cell ROLLED OVER below C=8, 63.5 vs
+        // 65.9 aggregate). Chunking to the widest accepted group batches
+        // 12 + 4 instead of serializing 16 — the same shape the batched
+        // PROPOSE already uses (`pending.chunks(group_cap)`).
+        let k_rows = gamma + 1;
+        let mut m_max = batchable_idxs.len();
+        while m_max >= 2 && !model.can_batch_verify(&vec![k_rows; m_max]) {
+            m_max -= 1;
+        }
+        if batchable_idxs.len() >= 2 && m_max >= 2 {
             let mut asc = batchable_idxs.clone();
             asc.sort_unstable();
-            let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(asc.len());
-            let mut it = active.iter_mut();
-            let mut consumed = 0usize;
-            for &i in &asc {
-                let a = it.nth(i - consumed).expect("verify index within active");
-                consumed = i + 1;
-                refs.push(a);
+            for chunk in asc.chunks(m_max) {
+                if chunk.len() >= 2 {
+                    let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(chunk.len());
+                    let mut it = active.iter_mut();
+                    let mut consumed = 0usize;
+                    for &i in chunk {
+                        let a = it.nth(i - consumed).expect("verify index within active");
+                        consumed = i + 1;
+                        refs.push(a);
+                    }
+                    step_verify_dflash_batched(
+                        model, &mut refs, sched, gamma, num_drafts, verify_ctx,
+                    );
+                } else {
+                    // A trailing single cannot batch — it takes the serial
+                    // loop below, same as before this gate existed.
+                    serial_idxs.extend_from_slice(chunk);
+                }
             }
-            step_verify_dflash_batched(model, &mut refs, sched, gamma, num_drafts, verify_ctx);
         } else {
             // Loud on the FIRST decline only: a silently-refused gate looks
             // exactly like "the batched path is off", which cost a whole
