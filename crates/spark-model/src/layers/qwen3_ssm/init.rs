@@ -241,7 +241,6 @@ impl Qwen3SsmLayer {
                     tracing::info!("GDN state spine: {name}");
                     name
                 },
-
             ),
             gdn_prefill_fla_chunk_fwd_o_k: super::super::try_kernel(
                 gpu,
