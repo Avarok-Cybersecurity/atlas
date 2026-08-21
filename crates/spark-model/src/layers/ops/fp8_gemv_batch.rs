@@ -10,7 +10,7 @@
 //! weights but have distinct activations (lm_head, attention Q/K/V/O, SSM
 //! out_proj).
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
