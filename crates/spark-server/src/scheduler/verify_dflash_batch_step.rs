@@ -228,8 +228,16 @@ pub fn step_verify_dflash_batched(
     // applied to a shared forward).
     let prop_idx: Vec<usize> = (0..batch.len()).filter(|&i| eligible[i]).collect();
     let group_cap = model.mtp_propose_batch_max().max(1);
-    let mut batched_done = false;
-    if group_cap >= 2 && prop_idx.len() >= 2 {
+    // Chunk by the width the proposer DECLARED, not by however many
+    // sequences happen to be eligible: handing it more than it said it can
+    // carry is how a declared cap becomes a silent lie.
+    let mut batched_done = !prop_idx.is_empty();
+    for group in prop_idx.chunks(group_cap.max(1)) {
+        if group_cap < 2 || group.len() < 2 {
+            batched_done = false;
+            break;
+        }
+        let prop_idx: Vec<usize> = group.to_vec();
         let tokens: Vec<u32> = prop_idx.iter().map(|&i| batch[i].last_token).collect();
         let positions: Vec<usize> = prop_idx.iter().map(|&i| batch[i].seq.seq_len).collect();
         let stash_idx: Vec<usize> = prop_idx.clone();
@@ -257,11 +265,15 @@ pub fn step_verify_dflash_batched(
                         batch[row].pending_drafts = all[g].clone();
                     }
                 }
-                batched_done = true;
             }
-            Ok(_) => {}
+            Ok(_) => {
+                batched_done = false;
+                break;
+            }
             Err(e) => {
                 tracing::warn!("DFlash batched propose: {e:#} — per-sequence path");
+                batched_done = false;
+                break;
             }
         }
     }

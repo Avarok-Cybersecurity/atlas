@@ -84,7 +84,12 @@ impl BlockDiffusionDraftHead {
         let option_b_on = option_b_block_table.is_some();
         let eff_ctx = if option_b_on { 0 } else { eff_ctx };
         let _ = ctx_base_ptr; // Option B doesn't read ctx from this path
-        let n_attn = (eff_ctx + self.gamma) as u32;
+        // Rows this forward actually touches: the ctx window (legacy path)
+        // plus gamma rows PER SEQUENCE. This is the row count the embed and
+        // every row-bounded op take, so leaving it at one band's worth means
+        // only band 0 gets embedded and every other sequence drafts from
+        // whatever the previous propose left in stream_buf.
+        let n_attn = (eff_ctx + self.gamma * n_seq) as u32;
         let target_hidden_dim = self.target_layer_ids.len() * self.target_hidden_size;
         let ctx_slot_bytes = target_hidden_dim * bf16;
 
@@ -632,9 +637,33 @@ impl BlockDiffusionDraftHead {
                             stream,
                         )?;
                     } else {
-                        ops::fp8_gemm_n128_row_scaled_m16(
+                        // `fp8_gemm_t_row_scaled_m16` is a single-warp
+                        // M_TILE=16 kernel: valid only to M=16. One sequence
+                        // (gamma rows) always fits, which is why the
+                        // single-sequence path can call it unconditionally —
+                        // but a cross-sequence batch does NOT: at n=4 this is
+                        // 32 rows and at n=8 it is 64, and past the tile the
+                        // kernel silently returns garbage for the rows it
+                        // never covered. That reads as a drafter that has
+                        // stopped guessing well (accept 73% -> 24% at C=8),
+                        // not as a kernel used out of contract. Above the
+                        // tile, take the general row-scaled GEMM.
+                        let (k_lm, h_lm) = if g <= 16 {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled_m16,
+                                ops::fp8_gemm_n128_row_scaled_m16
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        } else {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled,
+                                ops::fp8_gemm_n128_row_scaled
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        };
+                        h_lm(
                             gpu,
-                            self.kernels.fp8_gemm_n128_row_scaled_m16,
+                            k_lm,
                             norm_noise_local,
                             fp8,
                             self.scratch.logits,

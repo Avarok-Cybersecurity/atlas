@@ -630,24 +630,20 @@ impl DraftProposer for BlockDiffusionDraftHead {
         if !self.dflash2_active() {
             return 1;
         }
-        // OPT-IN (ATLAS_DFLASH_BATCH_PROPOSE=1) and OFF by default: the
-        // batched forward is wired end to end and produces the correct
-        // ANSWER — output is byte-identical, because a bad draft is rejected
-        // and the target's own token is emitted — but the drafts themselves
-        // are wrong at n > 1 and acceptance collapses (84/78/72% per-sequence
-        // vs 77/63/24% batched at C=2/4/8), which makes it a net LOSS: 54
-        // tok/s against 127 at C=8. Shipping it default-on would trade a
-        // measured win for a measured loss.
-        //
-        // Ruled out so far: the conv/selector band width (both now take the
-        // real n_seq), CUDA-graph replay of an n=1 capture (gated to
-        // n_seq == 1), and the shared slot-0 hidden staging (moved back to
-        // the per-sequence arm). The remaining suspect list is in the commit
-        // message; the per-sequence path is untouched and stays the default.
-        if std::env::var("ATLAS_DFLASH_BATCH_PROPOSE").ok().as_deref() != Some("1") {
+        // DEFAULT-ON. `ATLAS_DFLASH_BATCH_PROPOSE=<width>` overrides: `1`
+        // (or `0`) disables and restores the per-sequence loop, `N` caps the
+        // batch at N sequences. Numeric rather than boolean because
+        // bisecting the WIDTH against acceptance is what localises a banding
+        // bug — "correct at 2 bands, wrong at 4" is the observation that
+        // found the lm_head tile bound, and an on/off flag cannot ask it.
+        let want: usize = std::env::var("ATLAS_DFLASH_BATCH_PROPOSE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(usize::MAX);
+        if want < 2 {
             return 1;
         }
-        self.max_batch.max(1)
+        want.min(self.max_batch.max(1))
     }
 
     /// Cross-sequence batched propose: ONE drafter forward over `n * gamma`
