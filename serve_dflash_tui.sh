@@ -215,6 +215,38 @@ export ATLAS_KV_OVERCOMMIT=1
 # from that). Pass --max-lora-rank explicitly only to reserve headroom for a
 # LARGER adapter staged in later, since the pool layout freezes at startup.
 
+# ── PREFIX CACHING IS OFF, and that is a THROUGHPUT decision ───────────
+# Measured 2026-08-21 on this build, code prompt, aggregate tok/s C=1/2/4/8:
+#   prefix cache ON, 128K ctx   ~53 /  52 /  56 /  74   accept 33-78%
+#   prefix cache OFF, 32K ctx     56 /  88 / 113 / 123   accept 74-86%
+# and on the pinned decode-floor benchmark, ON gives 621 tokens (below the
+# harness's 750-token vacuity floor -> INCONCLUSIVE) while OFF gives 1266
+# tokens at 39.9 tok/s, accept_len 4.96. The header's recorded baseline
+# (54.6 / 65.5 / 105.3 / 130.5) was taken on this LEAN profile, which is why
+# it could not be reproduced with the cache on. Turn it back on only with a
+# measurement in hand.
+
+# --exact-verify: a CORRECTNESS-vs-THROUGHPUT choice, and both sides are real.
+# Without it the MTP-verify pass runs the WY-chunkwise / fused BF16-conv arms
+# instead of the chain sequential decode runs, so verify logits differ from
+# decode's. A flipped temp-0 argmax lands in a repetition attractor the drafter
+# then AGREES with (7/7 accepted), and the reply collapses. Measured on the LEAN
+# profile above, same build, this flag the only variable:
+#
+#   correctness   "count from 1 to 10"  default `1, 2, 100, 100, ...`
+#                                       exact   `1, 2, 3, ..., 10`
+#                 video-fidelity C=2/4  default 0/2, 0/4   exact 2/2, 4/4
+#   throughput    C=1/2/4/8 tok/s       default 56 / 88 / 113 / 123
+#                                       exact   52 / 72 /  78 /  98  (-7..-31%)
+#   decode-floor  default 1266 tok @ 39.9 tok/s, deterministic across 3 runs
+#                 exact    943/553/943 tok — INCONCLUSIVE, and NOT deterministic
+#
+# So exact is NOT free here, and it does not buy reproducibility either: it
+# makes only the GDN/SSM chain exact, while every FFN/attention projection still
+# dispatches on ROW COUNT, and the accepted-row count varies run to run (#459).
+# Kept ON because an interactive serve should not emit repetition loops; drop it
+# when chasing throughput numbers and say so next to them. See #667.
+
 # Vision input bound: --vision-max-pixels is an AREA in pixels, so 256K =
 # 262144 (512x512, or any same-area shape). 0 would mean "use the
 # checkpoint's own bound". Note the cost model: vision tokens grow with AREA,
@@ -269,7 +301,7 @@ exec ./target/release/spark serve \
   --gpu-memory-utilization 0.65 \
   --request-timeout 900 \
   --max-prefill-tokens 8192 \
-  --enable-prefix-caching true \
+  --enable-prefix-caching false \
   --ssm-cache-slots 16 \
   --scheduling-policy slai \
   --tbt-deadline-ms 100 \
@@ -277,4 +309,5 @@ exec ./target/release/spark serve \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
   --lm-head-dtype fp8 \
+  --exact-verify \
   "${TUI_ARGS[@]}"
