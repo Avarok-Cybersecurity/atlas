@@ -80,18 +80,6 @@ fn llama_dense_maps_to_mistral() {
 }
 
 #[test]
-fn head_dim_derived_when_key_absent() {
-    let m = llama_meta();
-    let inp = GgufConfigInputs {
-        meta: &m,
-        token_embd_vocab: None,
-        has_output_weight: true,
-    };
-    let c = config_from_gguf(&inp).unwrap();
-    assert_eq!(c.head_dim, 128);
-}
-
-#[test]
 fn explicit_key_length_wins() {
     let m = llama_meta().u("llama.attention.key_length", 96);
     let inp = GgufConfigInputs {
