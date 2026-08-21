@@ -130,6 +130,13 @@ impl TransformerModel {
             "dense_gemv_fp8w_batch2",
             "dense_gemv_fp8w_batch2",
         );
+        // M<=8 batched FP8 vocab GEMV, bit-identical to the M=1 chain. Handle
+        // stays 0 on kernel sets that predate it and dispatch falls back.
+        let dense_gemv_fp8w_batchm_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemv_fp8w_batchm",
+            "dense_gemv_fp8w_batchm",
+        );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let dense_gemv_batchm_kernel = gpu
             .kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")
@@ -712,6 +719,7 @@ impl TransformerModel {
             w4a16_gemv_batch16_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
+            dense_gemv_fp8w_batchm_kernel,
             dense_gemm_kernel,
             dense_gemv_batchm_kernel,
             argmax_kernel,

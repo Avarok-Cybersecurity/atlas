@@ -137,6 +137,7 @@ pub struct TransformerModel {
     /// verify tokens. Bit-identical to two `dense_gemv_fp8w` calls; halves the
     /// FP8 weight bandwidth for the lm_head on the MTP verify path.
     pub(super) dense_gemv_fp8w_batch2_kernel: KernelHandle,
+    pub(super) dense_gemv_fp8w_batchm_kernel: KernelHandle,
     pub(super) dense_gemm_kernel: KernelHandle,
     /// Batched BF16 GEMV (M rows, one weight pass). Used for the BF16 lm_head
     /// at decode: reads the ~617 MB vocab weight once with coalesced uint4
