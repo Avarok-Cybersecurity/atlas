@@ -371,22 +371,15 @@ mod mscale_contract_tests {
     // value is unchanged; asserted here as the sliding-theta contract.
     const SLIDING_ROPE_THETA_CONTRACT: f32 = 10000.0;
 
-    // Test 1 + Test 4: the DS4F config makes yarn_rope_mscale == 1.0 for EVERY
-    // runtime call site. All nine sites call `yarn_rope_mscale(ctx.config)` with
-    // this parsed config; the helper (spark-model) is unit-tested separately to
-    // return exactly 1.0 when the two mscale terms are equal. Here we prove the
-    // parser produces terms that force that: yarn_mscale == yarn_mscale_all_dim.
+    // The parser owns the DS4F field override. The spark-model helper tests own
+    // the resulting runtime ratio.
     #[test]
-    fn ds4f_forces_mscale_terms_equal_so_ratio_is_one() {
+    fn ds4f_parser_forces_both_mscale_terms_to_zero() {
         let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
         assert_eq!(c.yarn_mscale, 0.0, "yarn_mscale must be forced to 0.0");
         assert_eq!(
             c.yarn_mscale_all_dim, 0.0,
             "yarn_mscale_all_dim must be forced to 0.0"
-        );
-        assert_eq!(
-            c.yarn_mscale, c.yarn_mscale_all_dim,
-            "equal terms => yarn_rope_mscale ratio == 1.0 (no 1.2772589 amplitude)"
         );
     }
 
