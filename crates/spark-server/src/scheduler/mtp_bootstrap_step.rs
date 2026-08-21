@@ -272,6 +272,19 @@ pub(super) fn step_mtp_bootstrap_batched(
             None
         };
         emit_token(a, tok, lp, sched);
+        // Provenance for cross-sequence token hunts: which row this sequence
+        // sampled from, and what it got. The 2026-08-21 derailment showed a
+        // fresh sequence entering its first verify carrying ANOTHER stream's
+        // next token as `last_token` — this line is where that either happens
+        // or is exonerated.
+        tracing::debug!(
+            "BOOT_EMIT j={} slot={} seq_len={} in_tok={} out_tok={}",
+            j,
+            a.seq.slot_idx,
+            a.seq.seq_len,
+            tokens[j],
+            tok,
+        );
         if a.finished {
             continue;
         }

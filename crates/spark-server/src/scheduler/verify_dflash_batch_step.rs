@@ -57,6 +57,22 @@ pub fn step_verify_dflash_batched(
     // Flat seq-major token rows + the per-sequence drafts they encode.
     let mut tokens: Vec<u32> = Vec::with_capacity(n * k);
     let mut drafts_all: Vec<Vec<u32>> = Vec::with_capacity(n);
+    for (band, a) in batch.iter().enumerate() {
+        // Provenance twin of DFV_TOKENS below: what each band CLAIMS its
+        // context is at submit time. A band whose verify output continues a
+        // DIFFERENT band's text (the 2026-08-21 hunt) is disambiguated here —
+        // either its inputs were already wrong (upstream) or they were right
+        // and the forward read across bands (kernel-side).
+        tracing::debug!(
+            "DFV_IN band={} slot={} seq_len={} last_token={} tokens_tail={:?} bt_tail={:?}",
+            band,
+            a.seq.slot_idx,
+            a.seq.seq_len,
+            a.last_token,
+            a.seq.tokens.iter().rev().take(4).collect::<Vec<_>>(),
+            a.seq.block_table.iter().rev().take(3).collect::<Vec<_>>(),
+        );
+    }
     for a in batch.iter_mut() {
         let drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
         a.pending_draft_conf.clear();
@@ -119,6 +135,19 @@ pub fn step_verify_dflash_batched(
         }
         accepted_per_seq.push(num_accepted);
         crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
+        // Token-level provenance for a divergence hunt: which side is wrong —
+        // the DRAFTS (drafter state) or the VERIFIED row (the target's own
+        // argmax in this batched forward)? Gated at debug; the 2026-08-21
+        // prefix-cache derailment was only attributable once this existed.
+        tracing::debug!(
+            "DFV_TOKENS slot={} band={} plen={} na={} drafts={:?} verified={:?}",
+            a.seq.slot_idx,
+            i,
+            a.seq.seq_len.saturating_sub(k),
+            num_accepted,
+            drafts,
+            verified,
+        );
 
         // Rewind the forward's unconditional +k to the accepted prefix plus
         // the bonus slot (identical arithmetic to the single-seq path).
