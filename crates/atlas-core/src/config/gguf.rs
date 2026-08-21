@@ -124,15 +124,25 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     };
 
     // vocab_size: explicit key → token_embd rows → tokenizer token list length.
-    let vocab_size = meta
-        .get_u64(&k("vocab_size"))
-        .map(|v| v as usize)
+    let metadata_vocab = meta.get_u64(&k("vocab_size")).map(|v| v as usize);
+    if let (Some(metadata_vocab), Some(tensor_vocab)) = (metadata_vocab, inputs.token_embd_vocab)
+        && metadata_vocab != tensor_vocab
+    {
+        bail!(
+            "GGUF: '{arch}.vocab_size' ({metadata_vocab}) does not match token_embd.weight rows \
+             ({tensor_vocab})"
+        );
+    }
+    let vocab_size = metadata_vocab
         .or(inputs.token_embd_vocab)
         .or_else(|| meta.get_arr_len("tokenizer.ggml.tokens"))
         .context(
             "GGUF: could not determine vocab_size (no '{arch}.vocab_size', no token_embd rows, \
              no 'tokenizer.ggml.tokens')",
         )?;
+    if vocab_size == 0 {
+        bail!("GGUF: vocab_size must be non-zero");
+    }
 
     // ── Normalization / RoPE / context (documented explicit defaults) ──
     // rms_norm_eps: ggml default is 1e-5 when the key is absent (differs from

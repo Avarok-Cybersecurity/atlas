@@ -130,6 +130,44 @@ fn vocab_from_token_embd_rows() {
 }
 
 #[test]
+fn vocab_sources_must_be_nonzero_and_consistent() {
+    let mut zero_tensor_rows = llama_meta();
+    zero_tensor_rows.u.remove("llama.vocab_size");
+
+    let mut zero_token_list = llama_meta();
+    zero_token_list.u.remove("llama.vocab_size");
+    zero_token_list
+        .arr
+        .insert("tokenizer.ggml.tokens".into(), 0);
+
+    let cases = [
+        (
+            "zero metadata vocab",
+            llama_meta().u("llama.vocab_size", 0),
+            None,
+        ),
+        ("zero token embedding rows", zero_tensor_rows, Some(0)),
+        ("zero tokenizer list", zero_token_list, None),
+        ("metadata/tensor mismatch", llama_meta(), Some(128256)),
+    ];
+    let mut accepted = Vec::new();
+    for (name, meta, token_embd_vocab) in cases {
+        let inputs = GgufConfigInputs {
+            meta: &meta,
+            token_embd_vocab,
+            has_output_weight: true,
+        };
+        if config_from_gguf(&inputs).is_ok() {
+            accepted.push(name);
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "invalid vocab sources accepted: {accepted:?}"
+    );
+}
+
+#[test]
 fn tied_embeddings_when_no_output_tensor() {
     let m = llama_meta();
     let inp = GgufConfigInputs {
