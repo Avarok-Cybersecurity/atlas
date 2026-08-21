@@ -175,7 +175,12 @@ pub(crate) fn load_dflash_drafter(
             2 * (c.vocab_size as u64) * (r as u64) * 2 + (r as u64) * (c.hidden_size as u64) * 2
         })
         .unwrap_or(0);
-    let fp8_mirrors = if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
+    // Same predicate as the gate that actually allocates them
+    // (from_weights: `!= Some("0")`), NOT `.is_some()`. FP8 drafter
+    // weights are DEFAULT-ON, so testing "is the variable set" counted
+    // the mirrors as zero on exactly the default path — the pre-flight
+    // printed `fp8-mirrors 0.00` while the mirrors were resident.
+    let fp8_mirrors = if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
         let lm_head = (c.vocab_size as u64) * (c.hidden_size as u64);
         store_bytes / 2 + 2 * lm_head
     } else {

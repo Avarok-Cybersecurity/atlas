@@ -415,11 +415,15 @@ pub fn build_model(
             let drafter_kv = max_seq_len * c.num_hidden_layers * 2 * kv_dim * 2;
             let fused_kv = c.num_hidden_layers * 2 * kv_dim * c.hidden_size * 2;
             let capture = max_seq_len * config.hidden_size * 2;
-            let fp8_mirrors = if std::env::var_os("ATLAS_DFLASH_DRAFTER_FP8").is_some() {
-                a.drafter_store.total_bytes() / 2
-            } else {
-                0
-            };
+            // Same predicate as the allocating gate (`!= Some("0")`).
+            // FP8 drafter weights are default-ON, so `.is_some()` made the
+            // KV budget under-reserve by the mirror size on the default path.
+            let fp8_mirrors =
+                if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
+                    a.drafter_store.total_bytes() / 2
+                } else {
+                    0
+                };
             drafter_kv + fused_kv + capture + fp8_mirrors + (300 << 20)
         })
         .unwrap_or(0);
