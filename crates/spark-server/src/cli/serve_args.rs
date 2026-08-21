@@ -318,6 +318,18 @@ pub struct ServeArgs {
     /// so a smoke test that only asks small questions will not see this.
     /// Fastest repro is a prompt whose correct answer is a short ordered list.
     ///
+    /// ★ AND THE COST CAN BE NEGATIVE. The ~+22-36% below is a per-decode-STEP
+    /// figure; end-to-end throughput also depends on how many drafts survive
+    /// verification, which is precisely what the divergence damages. Corrupted
+    /// verify logits REJECT CORRECT DRAFTS — the drafter proposes roughly what
+    /// the true model would say and a verifier reading wrong logits disagrees.
+    /// Measured at C=1 on the config above (one prompt, n=3 after a warm
+    /// request): 27.29 tok/s and 35.0% mean acceptance by default, versus
+    /// 32.45 tok/s and 45.5% acceptance with this flag on — +18.9% throughput
+    /// for turning exactness ON. Where the divergence actually bites, this is
+    /// not a tradeoff. The crossover against the concurrency rungs, where the
+    /// step costs below were measured, still needs its own sweep.
+    ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
     /// GDN/SSM verify chain exact. It does NOT make speculative output
     /// bitwise-equal to non-speculative output end to end, and setting it
