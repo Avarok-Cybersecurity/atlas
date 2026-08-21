@@ -153,10 +153,16 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     let tie_word_embeddings = !inputs.has_output_weight;
 
     // ── MoE (only for MoE arches) ──
-    let num_experts = meta
-        .get_u64(&k("expert_count"))
-        .map(|v| v as usize)
-        .unwrap_or(0);
+    let num_experts = if arch == "qwen3moe" {
+        req_u64("expert_count")? as usize
+    } else {
+        meta.get_u64(&k("expert_count"))
+            .map(|v| v as usize)
+            .unwrap_or(0)
+    };
+    if arch == "qwen3moe" && num_experts == 0 {
+        bail!("GGUF metadata key '{arch}.expert_count' must be greater than zero");
+    }
 
     let mut body: Map<String, Value> = json!({
         "hidden_size": hidden_size,
@@ -185,6 +191,17 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         let moe_ffn = req_u64("expert_feed_forward_length").with_context(|| {
             format!("GGUF: MoE arch '{arch}' missing '{arch}.expert_feed_forward_length'")
         })? as usize;
+        if experts_per_tok == 0 || experts_per_tok > num_experts {
+            bail!(
+                "GGUF metadata key '{arch}.expert_used_count' must be in 1..={num_experts}, \
+                 found {experts_per_tok}"
+            );
+        }
+        if moe_ffn == 0 {
+            bail!(
+                "GGUF metadata key '{arch}.expert_feed_forward_length' must be greater than zero"
+            );
+        }
         body.insert("num_experts".into(), json!(num_experts));
         body.insert("num_experts_per_tok".into(), json!(experts_per_tok));
         body.insert("moe_intermediate_size".into(), json!(moe_ffn));

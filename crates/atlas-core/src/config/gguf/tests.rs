@@ -249,9 +249,8 @@ fn missing_required_dim_errors() {
     assert!(err.contains("embedding_length"), "unexpected: {err}");
 }
 
-#[test]
-fn moe_without_used_count_errors() {
-    let m = Meta::default()
+fn qwen3_moe_meta() -> Meta {
+    Meta::default()
         .s("general.architecture", "qwen3moe")
         .u("qwen3moe.embedding_length", 2048)
         .u("qwen3moe.block_count", 48)
@@ -259,14 +258,52 @@ fn moe_without_used_count_errors() {
         .u("qwen3moe.attention.head_count", 32)
         .u("qwen3moe.context_length", 32768)
         .u("qwen3moe.vocab_size", 151936)
-        .u("qwen3moe.expert_count", 128);
-    // expert_used_count / expert_feed_forward_length intentionally absent.
-    let inp = GgufConfigInputs {
-        meta: &m,
-        token_embd_vocab: None,
-        has_output_weight: true,
-    };
-    assert!(config_from_gguf(&inp).is_err());
+        .u("qwen3moe.expert_count", 128)
+        .u("qwen3moe.expert_used_count", 8)
+        .u("qwen3moe.expert_feed_forward_length", 768)
+}
+
+#[test]
+fn qwen3_moe_requires_each_expert_dimension() {
+    for suffix in [
+        "expert_count",
+        "expert_used_count",
+        "expert_feed_forward_length",
+    ] {
+        let mut m = qwen3_moe_meta();
+        let key = format!("qwen3moe.{suffix}");
+        m.u.remove(&key);
+        let inp = GgufConfigInputs {
+            meta: &m,
+            token_embd_vocab: None,
+            has_output_weight: true,
+        };
+        let err = config_from_gguf(&inp).unwrap_err().to_string();
+        assert!(err.contains(&key), "missing {key} failed for: {err}");
+    }
+}
+
+#[test]
+fn qwen3_moe_rejects_invalid_expert_geometry() {
+    for (suffix, value) in [
+        ("expert_count", 0),
+        ("expert_used_count", 0),
+        ("expert_used_count", 129),
+        ("expert_feed_forward_length", 0),
+    ] {
+        let key = format!("qwen3moe.{suffix}");
+        let m = qwen3_moe_meta().u(&key, value);
+        let inp = GgufConfigInputs {
+            meta: &m,
+            token_embd_vocab: None,
+            has_output_weight: true,
+        };
+        let err = config_from_gguf(&inp).unwrap_err().to_string();
+        assert!(
+            err.contains(&key),
+            "invalid {key}={value} failed for: {err}"
+        );
+    }
 }
 
 #[test]
