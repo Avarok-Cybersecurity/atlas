@@ -215,37 +215,26 @@ export ATLAS_KV_OVERCOMMIT=1
 # from that). Pass --max-lora-rank explicitly only to reserve headroom for a
 # LARGER adapter staged in later, since the pool layout freezes at startup.
 
-# ── PREFIX CACHING IS OFF, and that is a THROUGHPUT decision ───────────
-# Measured 2026-08-21 on this build, code prompt, aggregate tok/s C=1/2/4/8:
-#   prefix cache ON, 128K ctx   ~53 /  52 /  56 /  74   accept 33-78%
-#   prefix cache OFF, 32K ctx     56 /  88 / 113 / 123   accept 74-86%
-# and on the pinned decode-floor benchmark, ON gives 621 tokens (below the
-# harness's 750-token vacuity floor -> INCONCLUSIVE) while OFF gives 1266
-# tokens at 39.9 tok/s, accept_len 4.96. The header's recorded baseline
-# (54.6 / 65.5 / 105.3 / 130.5) was taken on this LEAN profile, which is why
-# it could not be reproduced with the cache on. Turn it back on only with a
-# measurement in hand.
-
-# --exact-verify: a CORRECTNESS-vs-THROUGHPUT choice, and both sides are real.
-# Without it the MTP-verify pass runs the WY-chunkwise / fused BF16-conv arms
-# instead of the chain sequential decode runs, so verify logits differ from
-# decode's. A flipped temp-0 argmax lands in a repetition attractor the drafter
-# then AGREES with (7/7 accepted), and the reply collapses. Measured on the LEAN
-# profile above, same build, this flag the only variable:
+# ── POST-#699: prefix caching ON, --exact-verify dropped ───────────────
+# Both prior pins were workarounds for ONE bug, fixed in 8867c6de / PR #699:
+# k4_apply_verdict rewound the sequence by drafts.len() instead of the
+# forward's row count, so a K=4 verify dispatched onto a γ=7-draft DFlash
+# sequence EMITTED its accepted tokens and then erased them from history.
+# That single defect was: the temp-0 degeneration ("1, 2, 100, 100...", the
+# markdown-table garbage), the temp-0 NON-determinism, the video-fidelity
+# 0/2 / 0/4 at C=2/C=4, the concurrent shared-prefix derailment, and the
+# apparent prefix-cache throughput collapse (the cache only changed when the
+# gate's lane flips triggered the collision).
 #
-#   correctness   "count from 1 to 10"  default `1, 2, 100, 100, ...`
-#                                       exact   `1, 2, 3, ..., 10`
-#                 video-fidelity C=2/4  default 0/2, 0/4   exact 2/2, 4/4
-#   throughput    C=1/2/4/8 tok/s       default 56 / 88 / 113 / 123
-#                                       exact   52 / 72 /  78 /  98  (-7..-31%)
-#   decode-floor  default 1266 tok @ 39.9 tok/s, deterministic across 3 runs
-#                 exact    943/553/943 tok — INCONCLUSIVE, and NOT deterministic
+# Post-fix, measured on this binary (default verify chain, cache ON):
+#   count/colors/two-sentences  correct AND deterministic at temp 0
+#   video-fidelity              1/1, 2/2, 4/4 at C=1/2/4
+#   MinHeap x4 shared prefix    4/4 coherent, accept 79%
 #
-# So exact is NOT free here, and it does not buy reproducibility either: it
-# makes only the GDN/SSM chain exact, while every FFN/attention projection still
-# dispatches on ROW COUNT, and the accepted-row count varies run to run (#459).
-# Kept ON because an interactive serve should not emit repetition loops; drop it
-# when chasing throughput numbers and say so next to them. See #667.
+# --exact-verify remains available for the #459 1-ULP row-count residual
+# (wording-level divergence), but it is no longer needed for correctness.
+# Prefix caching is back on because agentic flows depend on it and it is
+# no longer implicated in anything.
 
 # Vision input bound: --vision-max-pixels is an AREA in pixels, so 256K =
 # 262144 (512x512, or any same-area shape). 0 would mean "use the
@@ -301,7 +290,7 @@ exec ./target/release/spark serve \
   --gpu-memory-utilization 0.65 \
   --request-timeout 900 \
   --max-prefill-tokens 8192 \
-  --enable-prefix-caching false \
+  --enable-prefix-caching true \
   --ssm-cache-slots 16 \
   --scheduling-policy slai \
   --tbt-deadline-ms 100 \
@@ -309,5 +298,4 @@ exec ./target/release/spark serve \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
   --lm-head-dtype fp8 \
-  --exact-verify \
   "${TUI_ARGS[@]}"
