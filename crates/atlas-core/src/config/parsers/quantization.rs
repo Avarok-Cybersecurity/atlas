@@ -210,7 +210,7 @@ mod tests {
     /// ModelOpt mixed-precision sidecar (Super-120B) — nested, no
     /// `exclude_modules`. Must still resolve `quant_method = modelopt`.
     #[test]
-    fn modelopt_mixed_precision_sidecar_parses() {
+    fn modelopt_mixed_precision_sidecar_parses_without_exclusions() {
         let raw = serde_json::json!({
             "quantization_config": {
                 "producer": { "name": "modelopt", "version": "0.43.0" },
@@ -224,5 +224,6 @@ mod tests {
             .expect("mixed-precision sidecar must yield a QuantizationConfig");
         assert_eq!(qc.quant_method, "modelopt");
         assert_eq!(qc.quant_algo, "MIXED_PRECISION");
+        assert!(qc.ignore_modules.is_empty());
     }
 }
