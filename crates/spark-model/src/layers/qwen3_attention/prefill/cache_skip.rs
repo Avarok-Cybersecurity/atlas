@@ -699,10 +699,10 @@ impl Qwen3AttentionLayer {
         // sliding layers. Two successive root-cause hypotheses were built on that
         // label and both were wrong. Name the kernel that actually ran.
         aprof!(
-            if wide_head_path {
-                "flash_attn_512_scalar"
-            } else {
-                "flash_attn_64"
+            match (wide_head_path, self.prefill_attn_512_is_tc) {
+                (true, true) => "flash_attn_512_tc",
+                (true, false) => "flash_attn_512_scalar",
+                _ => "flash_attn_64",
             },
             t0
         );
