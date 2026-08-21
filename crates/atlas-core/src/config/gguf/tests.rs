@@ -270,14 +270,23 @@ fn moe_without_used_count_errors() {
 }
 
 #[test]
-fn unmapped_arch_errors() {
+fn mamba_architecture_is_rejected_before_dimension_parsing() {
     let m = Meta::default()
         .s("general.architecture", "mamba")
-        .u("mamba.embedding_length", 4096);
+        .u("mamba.embedding_length", 4096)
+        .u("mamba.block_count", 32)
+        .u("mamba.feed_forward_length", 11008)
+        .u("mamba.attention.head_count", 32)
+        .u("mamba.context_length", 4096)
+        .u("mamba.vocab_size", 32000);
     let inp = GgufConfigInputs {
         meta: &m,
         token_embd_vocab: None,
         has_output_weight: true,
     };
-    assert!(config_from_gguf(&inp).is_err());
+    let err = config_from_gguf(&inp).unwrap_err().to_string();
+    assert!(
+        err.contains("GGUF general.architecture 'mamba' has no Atlas model_type mapping"),
+        "unexpected: {err}"
+    );
 }
