@@ -239,25 +239,69 @@ fn modules_to_save_unknown_leaf_rejected() {
 }
 
 #[test]
-fn trainable_token_indices_list_form_parsed() {
+fn trainable_token_indices_list_form_preserves_row_order() {
     let mut j = base_json();
-    j["trainable_token_indices"] = serde_json::json!([256205, 42, 42, 7]);
+    j["trainable_token_indices"] = serde_json::json!([7, 42, 256205]);
     let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
-    // deduped, first-occurrence order preserved (delta rows align to it)
-    assert_eq!(cfg.trainable_token_indices, vec![256205, 42, 7]);
+    assert_eq!(cfg.trainable_token_indices, vec![7, 42, 256205]);
 }
 
 #[test]
-fn trainable_token_indices_dict_form_unioned() {
+fn duplicate_trainable_token_index_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!([7, 42, 42, 256205]);
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("duplicate id 42"), "{err}");
+}
+
+#[test]
+fn nonascending_trainable_token_indices_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!([42, 7, 256205]);
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("ids must be ascending"), "{err}");
+}
+
+#[test]
+fn trainable_token_indices_dict_form_accepts_shared_order() {
     let mut j = base_json();
     j["trainable_token_indices"] = serde_json::json!({
-        "embed_tokens": [256205, 10],
-        "lm_head": [10, 99]
+        "embed_tokens": [10, 99, 256205],
+        "lm_head": [10, 99, 256205]
     });
-    let mut cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
-    // Order across dict values is object-iteration dependent; compare as a set.
-    cfg.trainable_token_indices.sort_unstable();
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
     assert_eq!(cfg.trainable_token_indices, vec![10, 99, 256205]);
+}
+
+#[test]
+fn differing_per_module_trainable_token_indices_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!({
+        "embed_tokens": [10, 99],
+        "lm_head": [10, 256205]
+    });
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("per-module token lists differ"), "{err}");
+}
+
+#[test]
+fn unknown_trainable_token_module_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!({"classifier": [10]});
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("unsupported module 'classifier'"), "{err}");
 }
 
 #[test]
