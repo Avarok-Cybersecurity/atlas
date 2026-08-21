@@ -435,7 +435,7 @@ fn test_tensor_parallelism_range() {
 }
 
 #[test]
-fn test_parse_gemma4_config() {
+fn gemma4_legacy_config_maps_attention_and_embedding_controls() {
     let json = r#"{
         "model_type": "gemma4",
         "tie_word_embeddings": true,
@@ -476,8 +476,10 @@ fn test_parse_gemma4_config() {
     assert_eq!(cfg.vocab_size, 262144);
     assert_eq!(cfg.rms_norm_eps, 1e-6);
     assert_eq!(cfg.max_position_embeddings, 262144);
+    assert_eq!(cfg.sliding_window, 1024);
     assert_eq!(cfg.rope_theta, 10000.0); // sliding theta
     assert_eq!(cfg.partial_rotary_factor, 0.25);
+    assert_eq!(cfg.embed_scale, 5376_f32.sqrt());
     assert!(cfg.tie_word_embeddings);
     assert!(!cfg.attn_gated);
     assert!(cfg.nested_config);
