@@ -158,7 +158,7 @@ mod tests {
     /// `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4`, wrapped by
     /// `merge_sidecar_quant_config` into the `quantization_config` slot.
     #[test]
-    fn modelopt_sidecar_nested_schema_parses() {
+    fn modelopt_sidecar_nested_schema_preserves_exclusions() {
         let raw = serde_json::json!({
             "quantization_config": {
                 "producer": { "name": "modelopt", "version": "0.29.0" },
@@ -184,6 +184,11 @@ mod tests {
             qc.ignore_modules
                 .iter()
                 .any(|m| m == "backbone.layers.4.mixer.in_proj")
+        );
+        assert!(
+            qc.ignore_modules
+                .iter()
+                .any(|m| m == "backbone.layers.0.mixer.conv1d")
         );
     }
 
