@@ -383,11 +383,19 @@ mod mscale_contract_tests {
         );
     }
 
-    // Test 2: compress-path theta stays 160000.
+    // The compress path uses the checkpoint field, not the top-level theta or
+    // a memorized value from the published DS4F config.
     #[test]
-    fn ds4f_compress_theta_is_160000() {
+    fn ds4f_reads_checkpoint_compress_theta() {
         let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
         assert_eq!(c.rope_theta, 160000.0, "compress rope_theta must be 160000");
+
+        let alternate = DS4F_CONFIG.replace(
+            "\"compress_rope_theta\": 160000",
+            "\"compress_rope_theta\": 234567",
+        );
+        let c = parse_deepseek_v4(&alternate).expect("parse alternate compress theta");
+        assert_eq!(c.rope_theta, 234567.0);
     }
 
     // Test 3: sliding-path theta contract is 10000 (compute.rs MAIN_ROPE_THETA,
