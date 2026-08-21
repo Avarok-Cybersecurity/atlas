@@ -22,18 +22,19 @@
 #
 # Measured on the LEAN profile (32K ctx, 8 seqs, no prefix cache), which is
 # the one with a clean baseline, aggregate tok/s at C=1/2/4/8:
-#   base   54.7 / 54.8 / 54.1 / 52.8    accept 84/84/77/62%
+#   base   54.6 / 84.7 / 98.7 / 124.1   accept 84/84/78/74%
 #
-# Note the shape: accept is healthy but aggregate is FLAT. Per-sequence verify
-# costs the same at any width, so N streams cost N times one stream. The work
-# that amortises it — cross-sequence batched verify and batched propose — is
-# NOT on this branch: it was written against the WIP branch's own drafter head
-# and #649 supplies a different head for the same lane, so it needs porting
-# rather than picking. On the WIP branch it took C=2 from 25 to 47.8 tok/s.
+# Cross-sequence batched verify IS engaging here (it was not until the
+# eligibility contradiction in can_batch_verify was removed — before that the
+# same build read 54.7 / 54.4 / 51.7 / 55.5, i.e. completely flat). If you
+# ever see that flat shape again, the gate says why at
+#   RUST_LOG=info,spark::scheduler::mtp_step=debug
+# which prints raw_argmax / n_verify / lever / kill-switch once, plus a
+# "batched verify DECLINED" line when can_batch_verify refuses.
 #
-# The older numbers this header used to carry (39.7 / 72.1 / 76.8 / 101.4)
-# came from that WIP branch WITH the batched work, on the 128K profile. They
-# are not comparable and are not what this branch does.
+# Still missing vs the WIP branch: batched PROPOSE, which needs the gamma
+# scratch banded per sequence on this base's conv/selector kernels. That is
+# the remaining gap to the WIP branch's 93.6 / 131.3 / 164.6.
 #
 # Verified at C=8: ZERO "batched verify DECLINED" lines, i.e. the cross-
 # sequence batched verify — the thing that makes concurrency amortise — is
