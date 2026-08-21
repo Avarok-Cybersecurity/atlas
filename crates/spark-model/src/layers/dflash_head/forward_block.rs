@@ -640,7 +640,7 @@ impl BlockDiffusionDraftHead {
             // subgraph. Row 0 keeps holding last_token (the walk's anchor
             // predecessor), which the propose echo-drop discards anyway.
             if self.dflash2_active() {
-                self.dflash2_select_block(ctx, norm_noise_local, stream)?;
+                self.dflash2_select_block(ctx, norm_noise_local, 1, stream)?;
             } else
             // DSpark: when the drafter ships a Markov head, sample the block
             // left-to-right with the low-rank bigram bias (markov.rs). The
