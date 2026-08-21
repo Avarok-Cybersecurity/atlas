@@ -107,7 +107,6 @@ pub(crate) fn parse_gemma4_params(raw: &serde_json::Value) -> Result<ModelConfig
         config.num_experts = num_experts;
         config.num_experts_per_tok = top_k_experts;
         config.moe_intermediate_size = moe_intermediate_size;
-        config.norm_topk_prob = true;
         config.shared_expert_intermediate_size = 0; // dense MLP is separate, not a shared expert
     } else {
         config.num_experts = 0;
@@ -155,7 +154,8 @@ pub(crate) fn parse_gemma4_params(raw: &serde_json::Value) -> Result<ModelConfig
     config.model_type = "gemma4".to_string();
     config.attn_gated = false;
     config.nested_config = true;
-    config.norm_topk_prob = false; // No MoE
+    // Gemma-4 MoE renormalizes the selected top-K router probabilities.
+    config.norm_topk_prob = num_experts > 0;
 
     // Embedding scale: embeddings *= sqrt(hidden_size) — Gemma family convention
     config.embed_scale = (hidden_size as f32).sqrt();

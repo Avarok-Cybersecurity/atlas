@@ -500,6 +500,47 @@ fn gemma4_legacy_config_maps_attention_and_embedding_controls() {
 }
 
 #[test]
+fn gemma4_moe_config_preserves_routing_and_canonical_rope_controls() {
+    let json = r#"{
+        "model_type": "gemma4",
+        "tie_word_embeddings": true,
+        "text_config": {
+            "hidden_size": 2304,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "intermediate_size": 9216,
+            "vocab_size": 262144,
+            "sliding_window": 512,
+            "attention_pattern": ["full_attention"],
+            "rope_parameters": {
+                "full_attention": {
+                    "rope_theta": 1000000.0,
+                    "partial_rotary_factor": 0.25
+                },
+                "sliding_attention": {"rope_theta": 10000.0}
+            },
+            "num_experts": 128,
+            "top_k_experts": 8,
+            "moe_intermediate_size": 704,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 131072
+        }
+    }"#;
+
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_experts, 128);
+    assert_eq!(cfg.num_experts_per_tok, 8);
+    assert_eq!(cfg.moe_intermediate_size, 704);
+    assert!(cfg.norm_topk_prob);
+    assert_eq!(cfg.head_dim, 512);
+    assert_eq!(cfg.rope_theta, 10000.0);
+    assert_eq!(cfg.partial_rotary_factor, 0.25);
+}
+
+#[test]
 fn test_parse_deepseek_v4_config() {
     let json = r#"{
         "model_type": "deepseek_v4",
