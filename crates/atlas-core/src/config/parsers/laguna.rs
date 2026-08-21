@@ -52,7 +52,6 @@ pub(crate) fn parse_laguna(raw: &Value) -> Result<ModelConfig> {
         config.num_experts_per_tok > 0,
         "laguna num_experts_per_tok must be non-zero"
     );
-
     let max_heads = config
         .num_attention_heads_per_layer
         .iter()
@@ -162,25 +161,51 @@ mod tests {
         }
     }"#;
 
+    fn parse_fixture() -> crate::config::ModelConfig {
+        crate::config::parse_config(CONFIG).expect("parse laguna")
+    }
+
     #[test]
-    fn parses_heterogeneous_attention_and_moe() {
-        let config = crate::config::parse_config(CONFIG).expect("parse laguna");
+    fn parses_heterogeneous_attention_layout() {
+        let config = parse_fixture();
         assert_eq!(config.model_type, "laguna");
         assert_eq!(config.num_attention_heads, 72);
         assert_eq!(config.num_attention_heads_per_layer, [48, 72]);
+        assert_eq!(config.num_key_value_heads, 8);
+        assert_eq!(config.head_dim, 128);
         assert_eq!(
             config.layer_types,
             [LayerType::FullAttention, LayerType::SlidingAttention]
         );
-        assert_eq!(config.num_attention_layers(), 2);
-        assert_eq!(config.num_ssm_layers(), 0);
+        assert_eq!(config.sliding_window, 512);
+        assert_eq!(config.qk_norm_type, "per_head");
+    }
+
+    #[test]
+    fn parses_laguna_moe_contract() {
+        let config = parse_fixture();
         assert_eq!(config.mlp_only_layers, [0]);
-        assert_eq!(config.rotary_dim(), 64);
-        assert_eq!(config.yarn_factor, 32.0);
-        assert_eq!(config.yarn_attention_factor, 1.3465736);
+        assert_eq!(config.num_experts, 256);
+        assert_eq!(config.num_experts_per_tok, 10);
+        assert_eq!(config.moe_intermediate_size, 1024);
+        assert_eq!(config.shared_expert_intermediate_size, 1024);
+        assert!(config.norm_topk_prob);
         assert_eq!(config.scoring_func, "sigmoid");
         assert!(config.use_routing_bias);
         assert_eq!(config.routed_scaling_factor, 2.5);
+    }
+
+    #[test]
+    fn parses_laguna_rope_and_eos_contract() {
+        let config = parse_fixture();
+        assert_eq!(config.rope_theta, 500000.0);
+        assert_eq!(config.partial_rotary_factor, 0.5);
+        assert_eq!(config.rotary_dim(), 64);
+        assert_eq!(config.yarn_factor, 32.0);
+        assert_eq!(config.yarn_beta_slow, 1.0);
+        assert_eq!(config.yarn_beta_fast, 32.0);
+        assert_eq!(config.yarn_original_max_position_embeddings, 8192);
+        assert_eq!(config.yarn_attention_factor, 1.3465736);
         assert_eq!(config.eos_token_id, 2);
     }
 
