@@ -182,15 +182,63 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
-recipe) × the gate limits: median 1677.93 ms × +3% and p90 4580.73 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it."""
+Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
+recipe) × the gate limits: median 1576.3 ms × +3% and p90 4268.6 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it.
+
+RE-CUT 2026-08-21. The prior ceilings came from a 2026-08-04 baseline and were never \
+re-derived, so they had drifted to 9.6% (median) and 12.7% (p90) of slack against a \
+gate designed for 3%/5% — a backstop 3x looser than intended cannot catch the \
+regression it exists for. Note `update_baseline = true` means the gate compares each \
+run to the PREVIOUS run, so it tracks drift while these committed values are the only \
+ABSOLUTE bound; they therefore have to be re-cut whenever the path gets materially \
+faster, which it did (shared-kernel wins: fused GDN spine + token-parallel conv1d)."""
 
 [benchmarks.metrics.median_ms]
-max = 1728.27
+max = 1623.59
 
 [benchmarks.metrics.p90_ms]
-max = 4809.76
+max = 4482.03
+
+# ── NVFP4-MoE VARIANT of the cold-TTFT guard ────────────────────────────────
+# The FP8 entry above is the DEFAULT subject, and until this entry existed it
+# was the ONLY one: no gate anywhere exercised an NVFP4 MoE checkpoint. That
+# mattered — the fast-MoE default-on work (#654) is gated on
+# `modelopt_mixed_precision || nvfp4_moe`, so it is INERT on FP8, and the whole
+# 10-gate suite passed it while never touching the path it changed.
+#
+# `default` is deliberately absent: this is a variant, so its records are named
+# `YYYY-MM-DD-<sha>-<slug>.json` and cannot collide with the FP8 record cut from
+# the same commit on the same day.
+#
+# CEILINGS = same-box baseline (dgx1, 2026-08-21, this recipe) x the gate limits,
+# derived exactly as the FP8 entries above are. Measured against a SELF-DRIVEN
+# server, because the machinery deliberately refuses to let an unmeasured entry
+# bootstrap itself: `status = "unmeasured"` entries are DROPPED rather than given
+# empty thresholds, so `resolve()` fails loudly instead of an unbounded entry
+# passing every check it is handed. A new variant is therefore always
+# measure-then-declare, never gate-then-fill-in.
+#   cold  median 442.3 ms  p90 1314.3 ms   (256/1024/4096 tok: 244.8 / 442.3 / 1310.7)
+#   warm  median 439.6 ms  p90 1291.1 ms   (256/1024/4096 tok: 230.7 / 439.6 / 1290.9)
+# TTFT is box-local — a different box must re-record these, not reuse them.
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+gate = "ttft-cold-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-nvfp4"
+status = "measured"
+note = """\
+Cold-TTFT guard for the NVFP4 MoE checkpoint — the path fast-MoE default-on \
+actually changes, and which no gate exercised before this entry. Ceilings = \
+dgx1 baseline 442.3 ms median x +3%, 1314.3 ms p90 x +5%."""
+
+[benchmarks.metrics.median_ms]
+max = 455.57
+
+[benchmarks.metrics.p90_ms]
+max = 1380.02
+
+
 
 [[benchmarks]]
 quant = "nvfp4"
@@ -200,15 +248,37 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
-recipe) × the gate limits: median 1599.98 ms × +3% and p90 4585.18 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it."""
+Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
+recipe) × the gate limits: median 1513.9 ms × +3% and p90 4292.8 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it.
+
+RE-CUT 2026-08-21, same reasoning as the cold entry above: the 2026-08-04 ceilings had \
+drifted to 8.9%/12.2% of slack on a 3%/5% gate."""
 
 [benchmarks.metrics.median_ms]
-max = 1647.98
+max = 1559.32
 
 [benchmarks.metrics.p90_ms]
-max = 4814.44
+max = 4507.44
+
+# ── NVFP4-MoE VARIANT of the warm-TTFT guard (see the cold note above) ──────
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+gate = "ttft-warm-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-nvfp4"
+status = "measured"
+note = """\
+Warm-TTFT guard for the NVFP4 MoE checkpoint. Ceilings = dgx1 baseline \
+439.6 ms median x +3%, 1291.1 ms p90 x +5%."""
+
+[benchmarks.metrics.median_ms]
+max = 452.79
+
+[benchmarks.metrics.p90_ms]
+max = 1355.65
+
+
 
 [[benchmarks]]
 quant = "nvfp4"

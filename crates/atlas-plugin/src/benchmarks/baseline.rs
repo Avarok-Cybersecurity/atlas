@@ -55,17 +55,84 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn path(store: &ArtifactStore, benchmark_id: &str) -> Result<std::path::PathBuf> {
-    Ok(store.runs_dir(benchmark_id)?.join("baseline.json"))
+/// Where ONE MODEL's baseline for `benchmark_id` lives.
+///
+/// Keyed by model, mirroring `gate::record::record_path_for`. A gate can carry
+/// several checkpoints (BENCH.toml `hw.models`), and one shared `baseline.json`
+/// per gate means the variants overwrite each other: run the NVFP4 variant with
+/// `update_baseline = true` and the next default-FP8 run finds a baseline from
+/// another target, correctly declines to compare, and emits `info` instead of a
+/// verdict — so the gate cannot pass. Observed on ttft-cold/warm within hours of
+/// the first variant being added.
+///
+/// The detection was already right (`Baseline::target`/`model` are recorded and
+/// a mismatch is reported, never silently compared); only the storage was not
+/// keyed to match. `None` keeps the historical name for single-model gates.
+fn path(
+    store: &ArtifactStore,
+    benchmark_id: &str,
+    model: Option<&str>,
+) -> Result<std::path::PathBuf> {
+    let name = match model {
+        Some(m) => format!("baseline-{}.json", crate::gate::record::variant_slug(m)),
+        None => "baseline.json".to_string(),
+    };
+    Ok(store.runs_dir(benchmark_id)?.join(name))
 }
 
 /// Read the stored baseline, if any. A corrupt file is treated as absent —
 /// running without a baseline is a degraded but correct mode, while refusing to
 /// start because of an unreadable cache file is not.
 pub fn load(store: &ArtifactStore, benchmark_id: &str) -> Option<Baseline> {
-    let p = path(store, benchmark_id).ok()?;
+    // No model named: legacy `baseline.json` first, else the sole model-keyed
+    // file if exactly one exists. With two or more we refuse to guess — picking
+    // one would be the silent cross-target comparison this keying prevents.
+    if let Ok(p) = path(store, benchmark_id, None)
+        && let Ok(text) = std::fs::read_to_string(p)
+        && let Ok(b) = serde_json::from_str::<Baseline>(&text)
+    {
+        return Some(b);
+    }
+    let dir = store.runs_dir(benchmark_id).ok()?;
+    let mut found: Option<Baseline> = None;
+    for e in std::fs::read_dir(dir).ok()? {
+        let path = e.ok()?.path();
+        let name = path.file_name()?.to_string_lossy().to_string();
+        if !(name.starts_with("baseline-") && name.ends_with(".json")) {
+            continue;
+        }
+        if found.is_some() {
+            return None; // ambiguous
+        }
+        found = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Baseline>(&t).ok());
+    }
+    found
+}
+
+/// Load the baseline for one model. Falls back to the legacy unkeyed file only
+/// when it belongs to the SAME model, so upgrading keeps history without ever
+/// inheriting another checkpoint's numbers.
+pub fn load_for(
+    store: &ArtifactStore,
+    benchmark_id: &str,
+    model: Option<&str>,
+) -> Option<Baseline> {
+    if let Some(m) = model
+        && let Ok(p) = path(store, benchmark_id, Some(m))
+        && let Ok(text) = std::fs::read_to_string(p)
+        && let Ok(b) = serde_json::from_str::<Baseline>(&text)
+    {
+        return Some(b);
+    }
+    let p = path(store, benchmark_id, None).ok()?;
     let text = std::fs::read_to_string(p).ok()?;
-    serde_json::from_str(&text).ok()
+    let b: Baseline = serde_json::from_str(&text).ok()?;
+    match model {
+        Some(m) if b.model != m => None,
+        _ => Some(b),
+    }
 }
 
 /// Record a new baseline. Call only after a run that is trustworthy — a gate
@@ -83,7 +150,7 @@ pub fn save(
         model: model.to_string(),
         metrics,
     };
-    let p = path(store, benchmark_id)?;
+    let p = path(store, benchmark_id, Some(model))?;
     std::fs::write(&p, serde_json::to_string_pretty(&baseline)?)
         .with_context(|| format!("writing {}", p.display()))
 }
@@ -96,6 +163,51 @@ mod tests {
         let d = std::env::temp_dir().join(format!("atlas-baseline-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         ArtifactStore::with_root(d)
+    }
+
+    /// Two checkpoints of ONE gate must not clobber each other's baseline.
+    ///
+    /// Regression pin: ttft-cold-gate gained an NVFP4 variant, the variant ran
+    /// with `update_baseline = true`, and the next default-FP8 run found NVFP4
+    /// numbers under a shared `baseline.json`. It correctly refused to compare —
+    /// and therefore produced `info`, not a verdict, so the gate could not pass.
+    #[test]
+    fn two_models_of_one_gate_keep_separate_baselines() {
+        let s = store("variants");
+        let mut a = BTreeMap::new();
+        a.insert("median_ms".into(), 1677.9);
+        save(&s, "ttft-cold", "http://h:1", "Qwen/Qwen3.6-35B-A3B-FP8", a).unwrap();
+        let mut b = BTreeMap::new();
+        b.insert("median_ms".into(), 442.3);
+        save(
+            &s,
+            "ttft-cold",
+            "http://h:1",
+            "nvidia/Qwen3.6-35B-A3B-NVFP4",
+            b,
+        )
+        .unwrap();
+        let fp8 = load_for(&s, "ttft-cold", Some("Qwen/Qwen3.6-35B-A3B-FP8")).unwrap();
+        assert_eq!(fp8.get("median_ms"), Some(1677.9));
+        let nv = load_for(&s, "ttft-cold", Some("nvidia/Qwen3.6-35B-A3B-NVFP4")).unwrap();
+        assert_eq!(nv.get("median_ms"), Some(442.3));
+    }
+
+    /// A model with no baseline of its own reads as ABSENT rather than
+    /// inheriting the legacy shared file from a different checkpoint.
+    #[test]
+    fn legacy_shared_baseline_is_not_inherited_by_another_model() {
+        let s = store("legacy");
+        let p = s.runs_dir("ttft-warm").unwrap().join("baseline.json");
+        let legacy = Baseline {
+            recorded_at: now_secs(),
+            target: "http://h:1".into(),
+            model: "Qwen/Qwen3.6-35B-A3B-FP8".into(),
+            metrics: BTreeMap::from([("median_ms".to_string(), 1600.0)]),
+        };
+        std::fs::write(&p, serde_json::to_string(&legacy).unwrap()).unwrap();
+        assert!(load_for(&s, "ttft-warm", Some("Qwen/Qwen3.6-35B-A3B-FP8")).is_some());
+        assert!(load_for(&s, "ttft-warm", Some("nvidia/Qwen3.6-35B-A3B-NVFP4")).is_none());
     }
 
     #[test]

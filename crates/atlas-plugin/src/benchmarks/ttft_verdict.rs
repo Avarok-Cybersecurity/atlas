@@ -33,7 +33,12 @@ impl TtftGate {
             Err(_) => return (Verdict::info("no handle"), Vec::new()),
         };
         let id = self.mode.descriptor().id;
-        let stored = baseline::load(&store, id);
+        // Model-keyed: a gate with several checkpoints (BENCH.toml `hw.models`)
+        // otherwise has its variants overwrite one shared baseline.json, and the
+        // run after every variant switch finds another target's numbers,
+        // declines to compare, and reports `info` instead of a verdict.
+        let model_now = self.handle().ok().map(|h| h.target().model.clone());
+        let stored = baseline::load_for(&store, id, model_now.as_deref());
         let mut summary = vec![
             Stat::new("Median TTFT", stats::fmt_ms(median), "ms").with_style(CellStyle::Accent),
             Stat::new("p90 TTFT", stats::fmt_ms(p90), "ms"),
