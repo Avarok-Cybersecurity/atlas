@@ -384,7 +384,7 @@ fn test_parse_nemotron_h_puzzle_config() {
 }
 
 #[test]
-fn test_expert_parallelism_range() {
+fn expert_parallelism_partitions_experts_without_dropping_remainder() {
     let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
     // Single GPU: all experts local
     assert_eq!(cfg.local_expert_range(), (0, 512));
@@ -407,6 +407,11 @@ fn test_expert_parallelism_range() {
     assert!(!cfg.is_local_expert(255));
     assert!(cfg.is_local_expert(256));
     assert!(cfg.is_local_expert(511));
+
+    // EP=2 with an uneven split: the final expert belongs to the last rank.
+    cfg.num_experts = 513;
+    assert_eq!(cfg.local_expert_range(), (256, 513));
+    assert!(cfg.is_local_expert(512));
 }
 
 #[test]
