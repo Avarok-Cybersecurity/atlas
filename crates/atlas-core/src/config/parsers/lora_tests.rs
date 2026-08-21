@@ -146,7 +146,7 @@ fn all_linear_rejected_named() {
 }
 
 #[test]
-fn dora_bias_rank_pattern_rejected_named() {
+fn unsupported_inference_controls_are_rejected_by_name() {
     for (key, val, tag) in [
         ("use_dora", serde_json::json!(true), "REJECT(use_dora)"),
         ("bias", serde_json::json!("lora_only"), "REJECT(bias)"),
@@ -156,11 +156,9 @@ fn dora_bias_rank_pattern_rejected_named() {
             "REJECT(rank_pattern)",
         ),
         (
-            // `lm_head`/`embed_tokens` now ACCEPT (token overlay); an
-            // arbitrary module still rejects.
-            "modules_to_save",
-            serde_json::json!(["classifier"]),
-            "REJECT(modules_to_save)",
+            "alpha_pattern",
+            serde_json::json!({"k_proj": 8.0}),
+            "REJECT(alpha_pattern)",
         ),
         (
             "target_parameters",
