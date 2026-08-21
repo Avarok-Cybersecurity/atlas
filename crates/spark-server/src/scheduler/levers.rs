@@ -89,6 +89,14 @@ fn opt_in(var: &str) -> bool {
     std::env::var(var).ok().as_deref() == Some("1")
 }
 
+/// `ATLAS_FOO=0` DISABLES — a default-ON lever whose kill-switch is an
+/// explicit zero. NOT interchangeable with [`on_unless`]: swapping them
+/// inverts the switch, so `=0` would leave the lever on and `=1` would turn
+/// it off.
+fn on_unless_zero(var: &str) -> bool {
+    std::env::var(var).ok().as_deref() != Some("0")
+}
+
 /// `ATLAS_FOO=1` DISABLES — the flag names a negative, the field stores the
 /// positive, so the inversion happens here instead of at every read site.
 fn on_unless(var: &str) -> bool {
