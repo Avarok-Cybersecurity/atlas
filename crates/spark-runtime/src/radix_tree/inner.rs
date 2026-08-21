@@ -68,10 +68,21 @@ pub(super) struct RadixTreeInner {
     /// the pre-LoRA single-root tree.
     roots: HashMap<u64, NodeId>,
     access_counter: u64,
+    /// Whether `walk` may match a PARTIAL tail block (the sub-block arm).
+    /// Default FALSE — that arm is unsound for a block the requester will
+    /// write into; see the comment at the match site. `ATLAS_PREFIX_PARTIAL_TAIL=1`
+    /// restores the old behaviour for A/B only.
+    allow_partial_tail: bool,
 }
 
 impl RadixTreeInner {
     pub(super) fn new() -> Self {
+        Self::with_partial_tail_sharing(
+            std::env::var("ATLAS_PREFIX_PARTIAL_TAIL").as_deref() == Ok("1"),
+        )
+    }
+
+    pub(super) fn with_partial_tail_sharing(allow_partial_tail: bool) -> Self {
         let root = RadixNode {
             children: HashMap::new(),
             block_idx: u32::MAX,     // sentinel — root has no block
@@ -90,6 +101,7 @@ impl RadixTreeInner {
             free_nodes: Vec::new(),
             roots,
             access_counter: 0,
+            allow_partial_tail,
         }
     }
 
@@ -185,8 +197,42 @@ impl RadixTreeInner {
         // 2. A partial suffix stored on the current node.
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
+        //
+        // ★ DEFAULT OFF (`allow_partial_tail`), because both arms hand the
+        // caller a block it will WRITE INTO while another owner still maps it.
+        // The matched partial block becomes the requester's TAIL: its very
+        // next KV rows (positions matched..block_end) are written into that
+        // shared physical block. Arm 2's donor is a LIVE sequence still
+        // decoding into the same rows; arm 1's donor block is full, but the
+        // requester's tail writes clobber committed rows other sequences map
+        // read-only. There is no copy-on-write anywhere in the paged KV
+        // manager, so this is two writers, one block.
+        //
+        // Measured consequence (2026-08-21, qwen3.8-27B + DFlash2, GB10):
+        // with identical prompts in flight the writers stay byte-identical in
+        // lockstep and the tear is BENIGN — which is why serial decode looked
+        // clean — but any desync (the batched verify's band-dependent
+        // rounding was the trigger) makes the writes differ, the block holds
+        // a mix of two streams, and every reader derails mid-token at the
+        // block boundary: C=4 went 0/4 with three sequences emitting
+        // IDENTICAL wrong text (all reading the same torn block).
+        //
+        // The same arm also has a refcount hole: `inc_refs` walks full-block
+        // NODES only, so a matched partial block is pushed into the
+        // requester's block_table WITHOUT a ref — the eventual free
+        // underflows the donor's count.
+        //
+        // Cost of OFF: up to block_size-1 tokens of prefill recompute per
+        // hit, and non-block-aligned exact-repeat prompts no longer reach the
+        // Marconi exact-leaf shortcut (matched < total). Correct first;
+        // a copy-on-write tail (fresh block + per-layer D2D of the matched
+        // rows, event-ordered against the donor's stream) is the way to win
+        // the tokens back if anyone wants them.
         let remainder = tokens.len() - matched_tokens;
-        if remainder > 0 && remainder < block_size && matched_tokens == num_full_blocks * block_size
+        if self.allow_partial_tail
+            && remainder > 0
+            && remainder < block_size
+            && matched_tokens == num_full_blocks * block_size
         {
             let suffix = &tokens[matched_tokens..];
             let mut found = false;
