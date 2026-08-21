@@ -215,7 +215,7 @@ pub fn check_gates(root: &Path, sha: &str) -> BTreeMap<String, GateStatus> {
 ///
 /// Records were located by DIRECTORY and their own `benchmark_id` was never
 /// read back. Nothing stopped one gate's record from satisfying another's, and
-/// two of the five gates make that a one-command forgery:
+/// two of the required gates make that a one-command forgery:
 /// `ttft-warm-gate` and `ttft-cold-gate` share a checkpoint, a hardware key and
 /// their metric names (`median_ms`, `p90_ms`). On `main` today the committed
 /// WARM record reads 1562.58 / 4478.42 against the COLD ceilings of
