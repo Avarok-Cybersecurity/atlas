@@ -65,14 +65,23 @@ mod tests {
     }
 
     #[test]
-    fn targets_are_comparable() {
+    fn target_equality_observes_each_dispatch_dimension() {
         let a = KernelTarget::GB10_QWEN3_NVFP4;
-        let b = KernelTarget {
-            arch: "sm_100a",
-            model: "llama-70b",
-            quant: "fp8",
-        };
-        assert_ne!(a, b);
         assert_eq!(a, KernelTarget::GB10_QWEN3_NVFP4);
+        assert_ne!(
+            a,
+            KernelTarget {
+                arch: "sm_100a",
+                ..a
+            }
+        );
+        assert_ne!(
+            a,
+            KernelTarget {
+                model: "llama-70b",
+                ..a
+            }
+        );
+        assert_ne!(a, KernelTarget { quant: "fp8", ..a });
     }
 }
