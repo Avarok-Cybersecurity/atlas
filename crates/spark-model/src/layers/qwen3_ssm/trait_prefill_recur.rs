@@ -391,6 +391,7 @@ impl Qwen3SsmLayer {
                     ops::conv1d_update_prefill(
                         ctx.gpu,
                         self.conv1d_prefill_k,
+                        self.conv1d_prefill_tp_k,
                         conv_state,
                         input.offset(start * qkvz_size * bf16),
                         &self.ssm.conv1d,
@@ -428,6 +429,7 @@ impl Qwen3SsmLayer {
         ops::conv1d_update_prefill(
             ctx.gpu,
             self.conv1d_prefill_k,
+            self.conv1d_prefill_tp_k,
             conv_state,
             input,
             &self.ssm.conv1d,
