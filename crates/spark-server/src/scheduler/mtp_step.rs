@@ -349,6 +349,22 @@ pub fn step_mtp(
     // to the per-sequence step. One R=n*(γ+1)-row forward replaces n full
     // weight sweeps (the per-step verify wall was flat ~115ms per SEQUENCE
     // from C=1..4 before this). Kill switch: ATLAS_DFLASH_BATCH_VERIFY=0.
+    // One-shot attribution for "why is the batched path not running": each
+    // of these four is individually capable of silently keeping every
+    // sequence on the per-sequence verify, which reads as "no concurrency
+    // amortisation" rather than as a disabled feature.
+    {
+        static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WHY.get_or_init(|| {
+            tracing::debug!(
+                raw_argmax = dflash_verify_raw_argmax,
+                n_verify = verify_idxs.len(),
+                lever = sched.levers.dflash_batch_verify,
+                killed = batch_verify_disabled(),
+                "DFlash batched verify gate (first tick with drafts)"
+            );
+        });
+    }
     if dflash_verify_raw_argmax
         && verify_idxs.len() >= 2
         && sched.levers.dflash_batch_verify

@@ -96,7 +96,15 @@ impl TransformerModel {
             // because every sequence fell back to the per-sequence verify
             // loop. `ATLAS_LORA_NO_BATCH_VERIFY=1` restores the refusal.
             && !(self.lora.is_some() && crate::lora::no_batch_verify())
-            && self.dflash_hidden_save.is_none()
+            // NOT `dflash_hidden_save.is_none()`. That guard predates the
+            // DFlash gamma-block path and meant "batched verify is for plain
+            // MTP only". `shape_ok` above now branches on exactly that field:
+            // Some => the DFlash branch (uniform k, rows within
+            // dflash_hidden_save_rows), None => the K=2..4 ladder. Re-testing
+            // it here contradicts the Some arm and makes the DFlash batched
+            // verify unreachable — the whole path silently falls back to the
+            // per-sequence loop, which reads as "concurrency does not
+            // amortise" rather than as a disabled feature.
             && !self.verify_hidden_stash.is_null()
             // HSS: the paged-decode kernel reads HBM only, missing on-disk
             // history (see verify_c2's HSS fallback) — batched path unsupported.
