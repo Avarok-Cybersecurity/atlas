@@ -310,10 +310,23 @@ fn the_hash_does_not_depend_on_the_checkout_location() {
 
     write(&d1.join("common/x.cu"), "__global__ void k() {}\n");
     write(&d2.join("common/x.cu"), "__global__ void k() {}\n");
+    write(&d1.join("model/MODEL.toml"), "[model]\nname = \"same\"\n");
+    std::fs::create_dir_all(d2.join("model")).unwrap();
+    write(&d2.join("model/MODEL.toml"), "[model]\nname = \"same\"\n");
+
+    // Use a lexical alias for one checkout root. `expand` canonicalizes source
+    // files, so the root must be normalized to the same form before paths are
+    // made relative. This reproduces aliases such as macOS `/var` ->
+    // `/private/var` without depending on the host platform.
+    let aliased_d1 = d1.join("model/..");
+    let mut first = inputs(vec![aliased_d1.join("common/x.cu")]);
+    first.configs.push(aliased_d1.join("model/MODEL.toml"));
+    let mut second = inputs(vec![d2.join("common/x.cu")]);
+    second.configs.push(d2.join("model/MODEL.toml"));
 
     assert_eq!(
-        hash(&d1, &inputs(vec![d1.join("common/x.cu")])).unwrap(),
-        hash(&d2, &inputs(vec![d2.join("common/x.cu")])).unwrap(),
+        hash(&aliased_d1, &first).unwrap(),
+        hash(&d2, &second).unwrap(),
         "the same commit checked out twice must hash the same"
     );
 }
