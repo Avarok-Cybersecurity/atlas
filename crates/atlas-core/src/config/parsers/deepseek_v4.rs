@@ -442,28 +442,36 @@ mod mscale_contract_tests {
     }
 
     #[test]
-    fn incomplete_dspark_contract_is_rejected() {
-        let incomplete = DS4F_CONFIG.replace(
-            "\"compress_rope_theta\": 160000,",
-            "\"compress_rope_theta\": 160000, \"dspark_block_size\": 5,",
+    fn each_dspark_field_is_required_when_contract_is_present() {
+        let mut complete: serde_json::Value =
+            serde_json::from_str(DS4F_CONFIG).expect("parse DS4F fixture");
+        let object = complete.as_object_mut().expect("DS4F fixture is an object");
+        object.insert("dspark_block_size".into(), serde_json::json!(5));
+        object.insert("dspark_noise_token_id".into(), serde_json::json!(128799));
+        object.insert(
+            "dspark_target_layer_ids".into(),
+            serde_json::json!([40, 41, 42]),
         );
-        let err = parse_deepseek_v4(&incomplete).expect_err("incomplete DSpark config");
-        assert!(
-            err.to_string().contains("dspark_noise_token_id"),
-            "unexpected error: {err:#}"
-        );
-    }
+        object.insert("dspark_markov_rank".into(), serde_json::json!(256));
 
-    #[test]
-    fn dspark_fields_without_block_size_are_rejected() {
-        let incomplete = DS4F_CONFIG.replace(
-            "\"compress_rope_theta\": 160000,",
-            "\"compress_rope_theta\": 160000, \"dspark_markov_rank\": 256,",
-        );
-        let err = parse_deepseek_v4(&incomplete).expect_err("incomplete DSpark config");
-        assert!(
-            err.to_string().contains("dspark_block_size"),
-            "unexpected error: {err:#}"
-        );
+        for missing in [
+            "dspark_block_size",
+            "dspark_noise_token_id",
+            "dspark_target_layer_ids",
+            "dspark_markov_rank",
+        ] {
+            let mut incomplete = complete.clone();
+            incomplete
+                .as_object_mut()
+                .expect("DS4F fixture is an object")
+                .remove(missing);
+            let err =
+                parse_deepseek_v4(&incomplete.to_string()).expect_err("incomplete DSpark config");
+            let expected = format!("DSpark config is missing `{missing}`");
+            assert!(
+                err.to_string().contains(&expected),
+                "missing {missing} produced unexpected error: {err:#}"
+            );
+        }
     }
 }
