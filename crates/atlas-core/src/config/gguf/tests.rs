@@ -237,16 +237,24 @@ fn missing_architecture_errors() {
 }
 
 #[test]
-fn missing_required_dim_errors() {
-    let mut m = llama_meta();
-    m.u.remove("llama.embedding_length");
-    let inp = GgufConfigInputs {
-        meta: &m,
-        token_embd_vocab: None,
-        has_output_weight: true,
-    };
-    let err = config_from_gguf(&inp).unwrap_err().to_string();
-    assert!(err.contains("embedding_length"), "unexpected: {err}");
+fn missing_required_dimensions_name_each_key() {
+    for key in [
+        "embedding_length",
+        "block_count",
+        "feed_forward_length",
+        "attention.head_count",
+        "context_length",
+    ] {
+        let mut m = llama_meta();
+        m.u.remove(&format!("llama.{key}"));
+        let inp = GgufConfigInputs {
+            meta: &m,
+            token_embd_vocab: None,
+            has_output_weight: true,
+        };
+        let err = config_from_gguf(&inp).unwrap_err().to_string();
+        assert!(err.contains(key), "missing {key}, unexpected: {err}");
+    }
 }
 
 #[test]
