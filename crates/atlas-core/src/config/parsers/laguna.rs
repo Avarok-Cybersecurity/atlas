@@ -211,11 +211,17 @@ mod tests {
 
     #[test]
     fn rejects_missing_per_layer_heads() {
-        let invalid = CONFIG.replace(
-            "\"num_attention_heads_per_layer\": [48, 72]",
-            "\"num_attention_heads_per_layer\": []",
+        let mut invalid: serde_json::Value =
+            serde_json::from_str(CONFIG).expect("parse Laguna fixture");
+        invalid
+            .as_object_mut()
+            .expect("Laguna fixture is an object")
+            .remove("num_attention_heads_per_layer");
+        let error = crate::config::parse_config(&invalid.to_string())
+            .expect_err("must reject missing heads");
+        assert_eq!(
+            error.to_string(),
+            "laguna num_attention_heads_per_layer must not be empty"
         );
-        let error = crate::config::parse_config(&invalid).expect_err("must reject missing heads");
-        assert!(error.to_string().contains("must not be empty"));
     }
 }
