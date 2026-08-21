@@ -189,10 +189,25 @@ fn full_path_target_validates_on_leaf() {
 }
 
 #[test]
-fn zero_rank_rejected() {
+fn zero_rank_rejected_by_name() {
     let mut j = base_json();
     j["r"] = serde_json::json!(0);
-    assert!(parse_peft_adapter_config(&j.to_string()).is_err());
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(r)"), "{err}");
+}
+
+#[test]
+fn nonpositive_alpha_rejected_by_name() {
+    for alpha in [0.0, -1.0] {
+        let mut j = base_json();
+        j["lora_alpha"] = serde_json::json!(alpha);
+        let err = parse_peft_adapter_config(&j.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("REJECT(lora_alpha)"), "{alpha}: {err}");
+    }
 }
 
 // ---- Feature 2: token overlay (embed / lm_head / vocab-extension) ----
