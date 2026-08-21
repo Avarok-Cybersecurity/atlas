@@ -31,9 +31,18 @@
 #include <cuda_bf16.h>
 
 #define BR 32
+// Overridable so a target can instantiate this kernel at another shape without
+// forking 500 lines. Gemma-4's global layers are HDIM=512, which at BC=32 needs
+// 132.8 KB of shared memory (cap is 101,376 B); BC=16 fits in 84,992 B. BR must
+// stay 32 — the warp mapping (`(warp_id & 1) * 16`, `warp_id < 2`) splits a
+// 32-row tile across two warp pairs.
+#ifndef BC
 #define BC 32
+#endif
+#ifndef HDIM
 #ifndef HDIM
 #define HDIM 256
+#endif
 #endif
 #define PAD_KV 8           // 16-byte row alignment: (256+8)*2 = 528 bytes
 #define HDIM_PAD (HDIM + PAD_KV)  // 264
@@ -61,7 +70,12 @@
 #define ATLAS_KB(x) (x)
 #endif
 
-extern "C" __global__ void inferspark_prefill(
+// Entry name is overridable alongside the shape, so the two instantiations do
+// not collide when both are compiled into one module.
+#ifndef ATLAS_PREFILL_ENTRY
+#define ATLAS_PREFILL_ENTRY inferspark_prefill
+#endif
+extern "C" __global__ void ATLAS_PREFILL_ENTRY(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
     const __nv_bfloat16* __restrict__ V,
@@ -542,6 +556,9 @@ extern "C" __global__ void inferspark_prefill(
 #define TILE_CHUNKS_Q64 (BR64 * (HDIM / 8))  // 2048
 #define TILE_CHUNKS_KV  (BC * (HDIM / 8))     // 1024
 
+// Skipped by the HDIM=512 instantiation: this variant needs 120,064 B of shared
+// memory at that shape, over the 101,376 B cap. The 512 path does not use it.
+#ifndef ATLAS_SKIP_PREFILL_64
 extern "C" __global__ void inferspark_prefill_64(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
@@ -970,3 +987,4 @@ extern "C" __global__ void inferspark_prefill_64(
         }
     }
 }
+#endif  // ATLAS_SKIP_PREFILL_64

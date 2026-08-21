@@ -477,12 +477,13 @@ impl Qwen3AttentionLayer {
                 "dense_gemm_bf16_pipelined",
             ),
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
-            prefill_attn_512_k: gate(
-                probes.wide_head_dim,
-                gpu,
-                "inferspark_prefill_512",
-                "inferspark_prefill_512",
-            ),
+            // Name comes from the SSOT helper that also supplies the BR the
+            // launcher builds its grid from — see `ops::wide_prefill_kernel`.
+            // Module and entry share a name for both variants.
+            prefill_attn_512_k: {
+                let (name, _br) = crate::layers::ops::wide_prefill_kernel();
+                gate(probes.wide_head_dim, gpu, name, name)
+            },
             // DeepSeek-V4 sparse-attention compressor + compressed-KV prefill.
             csa_compress_k: gate(probes.compressed_attn, gpu, "csa_compress", "csa_compress"),
             prefill_attn_compressed_k: gate(
