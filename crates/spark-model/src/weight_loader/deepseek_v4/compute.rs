@@ -6,6 +6,8 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use crate::weight_map::DenseWeight;
 
+const MAIN_ROPE_THETA: f32 = 10000.0;
+
 fn alloc_or_managed(gpu: &dyn GpuBackend, bytes: usize) -> Result<DevicePtr> {
     // Latched on the BACKEND, not in a static: after a model is unloaded the
     // memory pressure that caused the fallback is gone, and the next load
@@ -323,17 +325,38 @@ pub fn ensure_yarn_inv_freq(
 /// Atlas's dispatch overrides to compress_rope_theta=160000 for the shared yarn
 /// table — so the 10000 base is hardcoded here to match the reference). Cheap
 /// (~32 floats); computed per compressor-less layer, no shared cache needed.
-pub fn main_inv_freq(config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<DevicePtr> {
-    const MAIN_ROPE_THETA: f32 = 10000.0; // reference rope_theta for sliding layers
-    let rope = config.qk_rope_head_dim;
+fn main_inv_freq_values(rope: usize) -> Vec<f32> {
     let n_pairs = rope / 2;
     let dim_f = rope as f32;
     let mut inv_freq = vec![0.0f32; n_pairs];
     for (j, f) in inv_freq.iter_mut().enumerate() {
         *f = 1.0 / MAIN_ROPE_THETA.powf((2 * j) as f32 / dim_f);
     }
+    inv_freq
+}
+
+pub fn main_inv_freq(config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<DevicePtr> {
+    let inv_freq = main_inv_freq_values(config.qk_rope_head_dim);
     let bytes: Vec<u8> = inv_freq.iter().flat_map(|v| v.to_le_bytes()).collect();
     let ptr = alloc_or_managed(gpu, bytes.len())?;
     gpu.copy_h2d(&bytes, ptr)?;
     Ok(ptr)
+}
+
+#[cfg(test)]
+mod main_inv_freq_tests {
+    use super::main_inv_freq_values;
+
+    #[test]
+    fn sliding_rope_table_uses_theta_10000() {
+        let values = main_inv_freq_values(64);
+        assert_eq!(values.len(), 32);
+        for (index, expected) in [(0, 1.0), (8, 0.1), (16, 0.01), (24, 0.001)] {
+            assert!(
+                (values[index] - expected).abs() < 1e-7,
+                "frequency {index} was {}, expected {expected}",
+                values[index]
+            );
+        }
+    }
 }
