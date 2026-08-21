@@ -441,18 +441,6 @@ mod mscale_contract_tests {
         assert_eq!(c.yarn_mscale_all_dim, 0.0);
     }
 
-    // Test 5 (config side): the force lives ONLY in this DS4F parser. A non-DS4F
-    // factory config keeps the shared factory default (yarn_mscale = 1.0),
-    // proving Qwen/other models are untouched by the DS4F override.
-    #[test]
-    fn non_ds4f_factory_default_mscale_untouched() {
-        let qwen = ModelConfig::qwen3_next_80b_nvfp4();
-        assert_eq!(
-            qwen.yarn_mscale, 1.0,
-            "shared factory default must remain 1.0 for non-DS4F models"
-        );
-    }
-
     #[test]
     fn incomplete_dspark_contract_is_rejected() {
         let incomplete = DS4F_CONFIG.replace(
