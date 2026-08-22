@@ -53,7 +53,7 @@ jobs:
       # SSOT for the allowlist: both the pinned action's `allowlist` input
       # below and the merge-queue mirror step read this one value. Keep it
       # here, nowhere else.
-      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],atlas-governance-harvester[bot],google-labs-jules,claude,AzeezIsh,tbraun96,cursoragent
+      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],atlas-governance-harvester[bot],google-labs-jules,claude,tbraun96,cursoragent
     # Scoped to what contributor-assistant actually calls (verified against the
     # action source at the pinned sha):
     #   contents      — git refs/commits that persist signatures/version1/cla.json
