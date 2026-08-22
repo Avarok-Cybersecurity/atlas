@@ -146,16 +146,40 @@ mod tests {
     #[test]
     fn rejects_offset_that_overflows_u64() {
         let err = tensor_span("w", &json!([u64::MAX, u64::MAX]), 72, 4096).unwrap_err();
-        assert!(err.to_string().contains("overflows"), "{err}");
+        assert!(
+            err.to_string().contains("data_offsets[0]") && err.to_string().contains("overflows"),
+            "{err}"
+        );
+    }
+
+    /// A valid absolute start can still overflow when its nonzero length is added.
+    #[test]
+    fn rejects_span_end_that_overflows_u64() {
+        let err = tensor_span("w", &json!([u64::MAX - 1, u64::MAX]), 1, u64::MAX).unwrap_err();
+        assert!(
+            err.to_string().contains("span") && err.to_string().contains("overflows"),
+            "{err}"
+        );
     }
 
     /// Malformed `data_offsets` shapes are named, not indexed into blindly.
     #[test]
     fn rejects_malformed_offsets() {
-        assert!(tensor_span("w", &json!("nope"), 8, 4096).is_err());
-        assert!(tensor_span("w", &json!([0]), 8, 4096).is_err());
-        assert!(tensor_span("w", &json!([0, 1, 2]), 8, 4096).is_err());
-        assert!(tensor_span("w", &json!([-1, 16]), 8, 4096).is_err());
-        assert!(tensor_span("w", &json!([0.5, 16]), 8, 4096).is_err());
+        let cases = [
+            (json!("nope"), "not an array"),
+            (json!([0]), "1 entries"),
+            (json!([0, 1, 2]), "3 entries"),
+            (json!([-1, 16]), "data_offsets[0]"),
+            (json!([0.5, 16]), "data_offsets[0]"),
+            (json!([0, -1]), "data_offsets[1]"),
+            (json!([0, 16.5]), "data_offsets[1]"),
+            (json!([0, "16"]), "data_offsets[1]"),
+        ];
+        for (offsets, cause) in cases {
+            let err = tensor_span("w", &offsets, 8, 4096).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("tensor w"), "{msg}");
+            assert!(msg.contains(cause), "expected {cause} in: {msg}");
+        }
     }
 }
