@@ -75,7 +75,13 @@ fn main() -> Result<()> {
     let backend = AtlasCudaBackend::new(0, &set.modules)?;
     let g: &dyn GpuBackend = &backend;
     let k_wu: KernelHandle = g.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;
-    let k_dh: KernelHandle = g.kernel("gated_delta_rule_fla", "gated_delta_rule_chunk_delta_h")?;
+    // `_ksplit`, NOT the bare `gated_delta_rule_chunk_delta_h`: production
+    // resolves only `_ksplit` / `_vfused` / `_vtile` / `_tc_vblock`, so the bare
+    // kernel this gate used to target is one no serve has ever run.
+    let k_dh: KernelHandle = g.kernel(
+        "gated_delta_rule_fla",
+        "gated_delta_rule_chunk_delta_h_ksplit",
+    )?;
 
     let mut all_ok = true;
     for &t in &[64usize, 128, 200] {
@@ -182,10 +188,14 @@ fn main() -> Result<()> {
         let bp = up_f32(g, &beta)?;
         let wp = g.alloc(nt * NV * C * KD * 2)?;
         let up = g.alloc(nt * NV * C * VD * 2)?;
-        let smem1 = (C * KD * 2 + C * C * 4 + C * C * 4 + C * 4) as u32;
+        let gcp1 = g.alloc(nt * NV * C * 4)?;
+        // Must match production `smem_wu`; the extra C*C*4 predates `L` being
+        // aliased onto `kk` and over-allocated by 16 KB.
+        let smem1 = (C * KD * 2 + C * C * 4 + C * 4) as u32;
         KernelLaunch::new(g, k_wu)
             .grid([nt as u32, NV as u32, 1])
-            .block([128, 1, 1])
+            // 256: pass 2 (the W forward-sub) is fenced to `tid >= 128`.
+            .block([256, 1, 1])
             .shared_mem(smem1)
             .arg_ptr(kp)
             .arg_ptr(vp)
@@ -193,6 +203,7 @@ fn main() -> Result<()> {
             .arg_ptr(bp)
             .arg_ptr(wp)
             .arg_ptr(up)
+            .arg_ptr(gcp1)
             .arg_u32(1)
             .arg_u32(t as u32)
             .arg_u32(nt as u32)
@@ -203,20 +214,33 @@ fn main() -> Result<()> {
             .arg_u32((NK * KD) as u32)
             .arg_u32((NV * VD) as u32)
             .arg_u32(NV as u32)
+            // cu_seqlens / cu_chunks / is_varlen — without these the launch read
+            // past the argument array (16 passed, 20 declared) and the whole
+            // harness died at CUDA_ERROR_INVALID_VALUE before reaching its gate.
+            .arg_ptr(DevicePtr(0))
+            .arg_ptr(DevicePtr(0))
+            .arg_u32(0)
             .launch(0)?;
         let hp = up_f32(g, &h0)?; // chunk_delta_h mutates this → final S
         let scp = g.alloc(nt * NV * KD * VD * 2)?;
         let ucp = g.alloc(nt * NV * C * VD * 2)?;
-        let smem2 = (2 * (C * (2 * KD + VD) * 2) + 2 * C * 4) as u32; // 2×{W,K,U} double-buffer + 2×gc
+        // Must match production `smem_dh`. The trailing 2*(C+1)*4 term was
+        // missing, so the kernel wrote past its shared allocation ->
+        // CUDA_ERROR_ILLEGAL_ADDRESS.
+        let smem2 = (2 * (C * (2 * KD + VD) * 2) + 2 * C * 4 + 2 * (C + 1) * 4) as u32; // 2×{W,K,U} double-buffer + 2×gc
         KernelLaunch::new(g, k_dh)
             .grid([NV as u32, 1, 1])
-            .block([128, 1, 1])
+            // 256: production launches this kernel at 256 threads.
+            .block([256, 1, 1])
             .shared_mem(smem2)
             .arg_ptr(hp)
             .arg_ptr(wp)
             .arg_ptr(up)
             .arg_ptr(kp)
             .arg_ptr(gp)
+            // gc_in: the cumulative log-gate scan produced by recompute_wu.
+            // Absent here, the launch passed 16 args against 17 parameters.
+            .arg_ptr(gcp1)
             .arg_ptr(scp)
             .arg_ptr(ucp)
             .arg_u32(1)
@@ -228,6 +252,10 @@ fn main() -> Result<()> {
             .arg_u32(VD as u32)
             .arg_u32((NK * KD) as u32)
             .arg_u32(NV as u32)
+            .arg_u32(0) // h_state_is_table
+            .arg_ptr(DevicePtr::NULL) // cu_seqlens
+            .arg_ptr(DevicePtr::NULL) // cu_chunks
+            .arg_u32(0) // is_varlen
             .launch(0)?;
         g.synchronize(0)?;
         let sc_gpu = dn_bf16(g, scp, nt * NV * KD * VD)?;
