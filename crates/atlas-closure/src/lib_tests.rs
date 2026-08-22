@@ -303,12 +303,13 @@ fn non_source_inputs_each_move_the_hash() {
     assert_ne!(with_cfg, hash(&d, &cfg).unwrap(), "config CONTENT");
 }
 
-/// ★ Identical bytes at a different stem is a different compile.
+/// ★ Identical bytes at a different repo-relative path are a different input.
 ///
-/// The stem decides which common file a source shadows, so content alone is not
-/// the identity — the name is hashed too.
+/// The stem decides which common file a source shadows, and the directory
+/// distinguishes a common source from a model override. Content alone is not
+/// the identity, so the full repo-relative path is hashed too.
 #[test]
-fn identical_content_under_a_different_name_hashes_differently() {
+fn identical_content_under_a_different_path_hashes_differently() {
     let d = tmp();
     let a = d.join("common/one.cu");
     let b = d.join("common/two.cu");
@@ -316,7 +317,18 @@ fn identical_content_under_a_different_name_hashes_differently() {
     write(&b, "__global__ void k() {}\n");
     assert_ne!(
         hash(&d, &inputs(vec![a])).unwrap(),
-        hash(&d, &inputs(vec![b])).unwrap()
+        hash(&d, &inputs(vec![b])).unwrap(),
+        "different stems"
+    );
+
+    let common = d.join("common/same.cu");
+    let model = d.join("model/nvfp4/same.cu");
+    write(&common, "__global__ void same() {}\n");
+    write(&model, "__global__ void same() {}\n");
+    assert_ne!(
+        hash(&d, &inputs(vec![common])).unwrap(),
+        hash(&d, &inputs(vec![model])).unwrap(),
+        "same stem in different source directories"
     );
 }
 
