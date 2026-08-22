@@ -226,16 +226,28 @@ fn angle_bracket_includes_are_not_followed() {
     );
 }
 
-/// A commented-out include is not compiled, so hashing it would make a comment
-/// edit look like a source change.
+/// A commented-out include is not compiled, so a same-named local header must
+/// remain outside the closure and must not be reported as unresolved.
 #[test]
 fn commented_out_includes_are_ignored() {
     let d = tmp();
     let src = d.join("common/x.cu");
-    write(&src, "// #include \"absent.cuh\"\n__global__ void k() {}\n");
-    assert!(
-        hash(&d, &inputs(vec![src])).is_ok(),
-        "a commented include must not be resolved, let alone demanded"
+    let commented_header = d.join("common/commented.cuh");
+    write(
+        &src,
+        "// #include \"commented.cuh\"\n__global__ void k() {}\n",
+    );
+    write(&commented_header, "#define COMMENTED_VALUE 1\n");
+
+    let before = hash_with_report(&d, &inputs(vec![src.clone()])).unwrap();
+    assert!(before.unresolved.is_empty(), "{:?}", before.unresolved);
+
+    write(&commented_header, "#define COMMENTED_VALUE 2\n");
+    let after = hash_with_report(&d, &inputs(vec![src])).unwrap();
+    assert!(after.unresolved.is_empty(), "{:?}", after.unresolved);
+    assert_eq!(
+        before.digest, after.digest,
+        "a header named only by a commented include must stay outside the closure"
     );
 }
 
