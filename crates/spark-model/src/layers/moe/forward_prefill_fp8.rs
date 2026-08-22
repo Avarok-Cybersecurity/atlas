@@ -385,7 +385,7 @@ impl MoeLayer {
             top_k,
             stream,
         )?;
-            mprof!("sort_by_expert");
+        mprof!("sort_by_expert");
 
         // 4. Max M tiles — sized for worst-case expert skew, not 2× avg.
         // The `(avg * 2)` heuristic silently truncated heavy experts:
@@ -859,7 +859,7 @@ impl MoeLayer {
             top_k,
             stream,
         )?;
-            mprof!("unpermute_reduce");
+        mprof!("unpermute_reduce");
 
         // EP all-reduce of routed-expert output FIRST.
         // Shared experts are NOT EP-sharded (every rank loads the full
