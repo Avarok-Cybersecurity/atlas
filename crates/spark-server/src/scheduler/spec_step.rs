@@ -472,7 +472,13 @@ pub fn truncate_drafts_at_grammar_boundary(gs: &mut GrammarState, drafts: &[u32]
         gs.rollback(advanced);
     }
     if accepted < drafts.len() {
-        tracing::warn!(
+        // Expected steady-state during grammar-constrained spans (tool-call
+        // JSON): the drafter proposes unconstrained, and drafts that would
+        // cross into grammar-illegal tokens are trimmed BEFORE verify so an
+        // illegal token can never be emitted. Costs acceptance inside tool
+        // calls, never correctness — debug, not warn (it fired per spec
+        // step through every tool call and drowned real warnings).
+        tracing::debug!(
             kept = accepted,
             dropped = drafts.len() - accepted,
             "spec-decode boundary: truncated drafts crossing grammar transition"
