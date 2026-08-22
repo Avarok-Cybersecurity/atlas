@@ -146,7 +146,7 @@ fn exact_verify_snap_lookups_resolve_or_are_declared_on_every_gdn_target() {
 fn ptx_for_model_lookup() {
     let found = ptx_for_model("qwen3-next-80b").expect("compiled qwen3-next target");
     assert_eq!(
-        found.target.model, "qwen3-next-80b",
+        found.target.model, "qwen3-next-80b-a3b",
         "lookup returned a different compiled target"
     );
 }
