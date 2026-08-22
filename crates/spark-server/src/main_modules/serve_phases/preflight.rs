@@ -114,11 +114,7 @@ pub(crate) fn preflight_reserve(
     } else {
         0
     };
-    let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.resolved_num_drafts() + 2
-    } else {
-        1
-    };
+    let spec_tokens_pre = spec_reserve_tokens(args);
     // B4 (chunked-prefill BF16 KV cliff): the prior `.min(8192)` cap forced
     // every prompt > 8 k to chunk, which compounds K-side BF16 rounding noise
     // at chunk boundaries (per the 4-agent audit 2026-05-27). When the user
@@ -440,4 +436,31 @@ fn peek_dflash_block_size(draft_model: Option<&str>) -> Option<usize> {
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let g = v.get("dflash_config")?.get("block_size")?.as_u64()? as usize;
     (g > 0).then_some(g)
+}
+
+/// SSOT for "how many rows can one sequence's speculative step occupy" —
+/// the term the batch-token floors (`max_batch_tokens_pre` here,
+/// `resolve_prefill_budget` in `kv_cache.rs`) take a max against.
+///
+/// It was the same three-flag expression copy-pasted in both files, and
+/// both copies omitted `--dflash` (returning 1 for a serve whose verify
+/// step is γ+1 rows wide). Inert today only because the prefill budget's
+/// 8192 floor dominates the max — this exists so the two sites cannot
+/// drift and so the DFlash width is stated, not defaulted.
+///
+/// MTP ladder: `num_drafts + 2` (the K = drafts+1 verify rows plus the
+/// bonus row — the historical constant, unchanged). DFlash: γ + 1 verify
+/// rows (`[last_token, draft_0..γ-1]`), which is the same arithmetic at
+/// the effective `num_drafts = γ - 1` the scheduler runs with; γ comes
+/// from the drafter's checkpoint via the same peek the pool reserve uses.
+pub(crate) fn spec_reserve_tokens(args: &cli::ServeArgs) -> usize {
+    if args.dflash {
+        let gamma = peek_dflash_block_size(args.draft_model.as_deref())
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None));
+        gamma + 1
+    } else if args.speculative || args.self_speculative || args.ngram_speculative {
+        args.resolved_num_drafts() + 2
+    } else {
+        1
+    }
 }
