@@ -142,14 +142,14 @@ fn an_unclassified_change_gets_no_invented_intent() {
 ///
 /// The module docs originally argued the union was vacuous because
 /// "`PERF_PATHS` contains a bare `crates`, so any code change already
-/// invalidates all five gates". An audit refuted it: `GATE_MACHINERY` excludes
-/// the whole `crates/atlas-plugin/src/gate` prefix from **all five** gates, so
+/// invalidates all ten gates". An audit refuted it: `GATE_MACHINERY` excludes
+/// the whole `crates/atlas-plugin/src/gate` prefix from **all ten** gates, so
 /// paths under it invalidate nothing and intent is the only source of coverage
 /// there. The original test passed only because it happened to pick
 /// `spark-server/scheduler`, one of the paths where the claim does hold.
 ///
 /// Both halves are pinned here so the distinction cannot quietly collapse
-/// again. If the first case ever stops owing all five, `by_path` narrowed —
+/// again. If the first case ever stops owing all ten, `by_path` narrowed —
 /// likely the closure-hash work landing, which is GOOD NEWS. Do not "fix" it by
 /// widening paths; confirm the narrowing was intended and update this test.
 #[test]
@@ -173,7 +173,7 @@ fn crates_paths_split_into_fully_covered_and_not_covered_at_all() {
         engine.intent_only()
     );
 
-    // The gate's own machinery: excluded from all five by GATE_MACHINERY, so
+    // The gate's own machinery: excluded from all ten by GATE_MACHINERY, so
     // the union is LIVE inside crates/ — not waiting on the closure hash.
     let machinery = required_for(
         &["crates/atlas-plugin/src/gate/telemetry.rs".to_string()],
