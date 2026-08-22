@@ -156,7 +156,7 @@ fn ctx() -> Result<&'static Ctx> {
 
 /// Force cuBLASLt's one-time costs at MODEL LOAD instead of on request 1.
 ///
-/// The lazy [`ctx`] means the first GEMM pays `cublasLtCreate`, the 64 MB
+/// The lazy `ctx()` means the first GEMM pays `cublasLtCreate`, the 64 MB
 /// workspace alloc, and — the expensive part — the library's kernel-image
 /// load and heuristic warm-up. Measured on the 35B flagship (2026-08-22,
 /// dgx1): the first in-serve request read ~0.9 s slower than warm requests
