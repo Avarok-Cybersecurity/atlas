@@ -556,6 +556,7 @@ fn test_parse_deepseek_v4_config() {
     assert_eq!(cfg.kv_lora_rank, 512); // fallback default
     assert_eq!(cfg.qk_nope_head_dim, 448); // head_dim - qk_rope_head_dim
     assert_eq!(cfg.v_head_dim, 512); // fallback to head_dim
+    assert_eq!(cfg.partial_rotary_factor, 0.125); // 64 / 512
     assert_eq!(cfg.num_experts, 256);
     assert_eq!(cfg.num_experts_per_tok, 6);
     assert_eq!(cfg.moe_intermediate_size, 2048);
@@ -563,6 +564,7 @@ fn test_parse_deepseek_v4_config() {
     assert!(cfg.norm_topk_prob);
     assert_eq!(cfg.scoring_func, "sqrtsoftplus"); // preserved, no fallback
     assert!(cfg.use_routing_bias);
+    assert_eq!(cfg.routed_scaling_factor, 1.5);
     assert_eq!(cfg.num_mtp_modules, 1);
     assert_eq!(cfg.mtp_transformer_layers, 1);
     assert_eq!(cfg.dspark_block_size, 5);
@@ -586,6 +588,9 @@ fn test_parse_deepseek_v4_config() {
     assert_eq!(cfg.index_head_dim, 128);
     assert_eq!(cfg.index_topk, 512);
     assert_eq!(cfg.num_hash_layers, 3);
+    assert_eq!(cfg.hc_mult, 4);
+    assert_eq!(cfg.hc_sinkhorn_iters, 20);
+    assert_eq!(cfg.hc_eps, 1e-6);
     // Fallback: all layers treated as FullAttention
     assert_eq!(cfg.num_attention_layers(), 43);
     assert_eq!(cfg.num_ssm_layers(), 0);
