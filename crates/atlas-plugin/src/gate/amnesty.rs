@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! A one-time, content-pinned amnesty for the 2026-08-16 governance PR.
+//! Content-pinned amnesty for a boundary-policy bootstrap.
 //!
 //! # The grant
 //!
-//! `.github/pr-taxonomy.json` and `check.rs` are
-//! `coverage::BOUNDARY_FILES` entries: touching either invalidates every
-//! standing gate record, at ~4h19m of GPU to re-earn. The 2026-08-16
-//! governance PR has to touch exactly those two files — the taxonomy to fill
-//! its empty `_benches` leaves, `check.rs` to add the hook that consults this
-//! table — and the user authorized a one-time bypass for that landing alone
-//! ("just this one time", 2026-08-16). This module is that bypass, made
-//! auditable: a table anyone can read, a pin nobody can stretch, a test that
-//! demands its own removal.
+//! PR #701 changes the benchmark coverage policy so exact Rust modules proven
+//! to be reachable only through `#[cfg(test)]` no longer invalidate GPU
+//! records. The policy, coverage check, and required-set documentation are all
+//! verdict-defining boundary files, so the change invalidates all ten records
+//! before its narrower rule can help later PRs.
+//!
+//! The grant below covers only the final reviewed blobs of those three files.
+//! It is the same mechanism accepted for the 2026-08-16 governance bootstrap:
+//! a table anyone can read, a pin no later edit can inherit, and a test that
+//! demands removal after all ten records have been re-earned.
 //!
 //! # Why content-pinned rather than waived
 //!
@@ -37,7 +38,7 @@
 //! own landing would then invalidate everything it exists to protect. It is
 //! covered only by `GATE_MACHINERY`'s cargo-test rationale, like the rest of
 //! the gate bookkeeping. Compensations: the table's exact contents are pinned
-//! by `the_table_is_exactly_the_2026_08_16_grant` (entry count, paths, OID
+//! by `the_table_is_exactly_the_pr_701_grant` (entry count, paths, OID
 //! format), every application is logged loudly by `check.rs`, CODEOWNERS
 //! review covers the gate directory, and the gate already executes
 //! PR-checkout code — so this adds no new attack class, only a reviewed
@@ -46,7 +47,7 @@
 //! # Removal condition
 //!
 //! EMPTY THE TABLE once every required gate has a record newer than
-//! `AMNESTY_EPOCH`. At that point the grant protects nothing — every
+//! `AMNESTY_EPOCH`. At that point the grant protects nothing because every
 //! record postdates the grant day and was earned against the amnestied
 //! content. `amnesty_expires_once_every_gate_has_a_fresh_record` fails with
 //! instructions when that day arrives, so the table cannot quietly outlive
@@ -66,22 +67,29 @@ pub struct AmnestyEntry {
     pub grant: &'static str,
 }
 
-/// When the grant was made: end of 2026-08-16 UTC (`1786924800` =
-/// 2026-08-17T00:00:00Z). End of day rather than midnight because the
-/// standing records this amnesty protects were themselves earned earlier on
-/// 2026-08-16 — a record only counts as "fresh" against the grant if it
-/// postdates the whole grant day.
-pub const AMNESTY_EPOCH: u64 = 1_786_924_800;
+/// End of the PR #701 grant day: 2026-08-22T00:00:00Z. A record counts as
+/// fresh only when it postdates the whole grant day.
+pub const AMNESTY_EPOCH: u64 = 1_787_356_800;
 
-/// The whole grant. When this table is empty the module is inert.
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [
-    // EMPTIED 2026-08-17. Every required gate now carries a record newer than
-    // AMNESTY_EPOCH: the ten-gate suite was re-cut at sha 4012c9b7e1 (vision,
-    // video, ttft-warm, ttft-cold, ssm-state-poisoning, decode-floor,
-    // concurrency-sweep, agentic-webserver, bfcl-subset 84.22/84.12,
-    // bfcl-subset-echolp 86.25/86.61 — all PASS). The grant has been fully
-    // re-earned by measurement, so it protects nothing and the module is inert,
-    // exactly as `amnesty_expires_once_every_gate_has_a_fresh_record` demands.
+/// The whole PR #701 grant. `PENDING` deliberately matches no blob. The grant
+/// becomes active only after the final files are hashed and these values are
+/// pinned in a separate commit.
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 3] = [
+    AmnestyEntry {
+        path: "crates/atlas-plugin/src/gate/check.rs",
+        head_blob_oid: "2dd3bed0103d38009e82de8d507d26320a1cb307",
+        grant: "PR #701 test-only Rust module coverage bootstrap",
+    },
+    AmnestyEntry {
+        path: "crates/atlas-plugin/src/gate/coverage.rs",
+        head_blob_oid: "6aef608fab0d120096d3b55eaed3095155e2beeb",
+        grant: "PR #701 test-only Rust module coverage bootstrap",
+    },
+    AmnestyEntry {
+        path: "crates/atlas-plugin/src/gate/required.rs",
+        head_blob_oid: "c8b8311abbb88bceb844710e6443e28ce843f236",
+        grant: "PR #701 test-only Rust module coverage bootstrap",
+    },
 ];
 
 /// Whether the one-time grant excuses `path` at `head`.
