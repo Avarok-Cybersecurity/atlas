@@ -341,6 +341,12 @@ pub struct MoeLayer {
     // W8A8 + FP32 epilogue MoE GEMM (vLLM-equivalent). Opt-in via
     // ATLAS_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
     moe_w8a8_grouped_gemm_k: KernelHandle,
+    // PM4-geometry W8A8 grouped GEMM over the compacted work-list (kernel
+    // `moe_w8a8_grouped_gemm_pm4`, same module). Bit-identical numerics to
+    // the dense kernel; preferred when present (gb10). Handle may be 0 on
+    // targets/images that don't ship it — dispatch falls back to the dense
+    // 3D-grid `moe_w8a8_grouped_gemm_k`.
+    moe_w8a8_grouped_gemm_pm4_k: KernelHandle,
     per_token_group_quant_fp8_k: KernelHandle,
     // Dense W8A8 (same kernel used by attention QKV/O proj) for shared-expert path.
     fp8_gemm_t_blockscaled_k: KernelHandle,

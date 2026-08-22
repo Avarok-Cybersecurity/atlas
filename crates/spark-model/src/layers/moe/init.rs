@@ -201,6 +201,13 @@ impl MoeLayer {
                 "moe_w8a8_grouped_gemm",
                 "moe_w8a8_grouped_gemm",
             ),
+            // PM4-geometry W8A8 grouped GEMM (same module). Handle may be 0 on
+            // targets/images without it; dispatch falls back to the dense grid.
+            moe_w8a8_grouped_gemm_pm4_k: super::super::try_kernel(
+                gpu,
+                "moe_w8a8_grouped_gemm",
+                "moe_w8a8_grouped_gemm_pm4",
+            ),
             per_token_group_quant_fp8_k: super::super::try_kernel(
                 gpu,
                 "per_token_group_quant_fp8",

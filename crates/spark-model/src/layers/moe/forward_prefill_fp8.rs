@@ -428,41 +428,109 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
-            ops::moe_w8a8_grouped_gemm(
-                ctx.gpu,
-                self.moe_w8a8_grouped_gemm_k,
-                input_fp8,
-                input_a_scale,
-                gp.weight_ptrs,
-                gp.scale_ptrs,
-                expert_gate_out,
-                expert_offsets,
-                sorted_token_ids,
-                num_experts,
-                inter,
-                h,
-                max_m_tiles,
-                stream,
-            )?;
-            mprof!("grouped_gemm_w8a8");
-            ops::moe_w8a8_grouped_gemm(
-                ctx.gpu,
-                self.moe_w8a8_grouped_gemm_k,
-                input_fp8,
-                input_a_scale,
-                up.weight_ptrs,
-                up.scale_ptrs,
-                expert_up_out,
-                expert_offsets,
-                sorted_token_ids,
-                num_experts,
-                inter,
-                h,
-                max_m_tiles,
-                stream,
-            )?;
-            mprof!("grouped_gemm_w8a8");
-            ctx.gpu.synchronize(stream)?;
+            if self.moe_w8a8_grouped_gemm_pm4_k.0 != 0 && self.moe_build_tile_worklist_k.0 != 0 {
+                // PM4-geometry W8A8 over the compacted work-list (bit-identical
+                // numerics to the dense kernel, ~4.8× at the 36080-row prod
+                // shape). Build the work-list ONCE (gate and up share
+                // expert_offsets / NULL-ness / N=inter tiling), reuse for both.
+                // Builder + GEMMs on the SAME stream (read-after-write of
+                // total_tiles/worklist).
+                let n_tiles_gu = inter.div_ceil(PM4_N_TILE);
+                let wl_cap_items =
+                    (te.div_ceil(PM4_M_TILE as usize) + ne + 1) * n_tiles_gu as usize;
+                let wl_gu = ctx.gpu.alloc(wl_cap_items * 2 * 4)?;
+                let tt_gu = ctx.gpu.alloc(4)?;
+                ops::moe_build_tile_worklist(
+                    ctx.gpu,
+                    self.moe_build_tile_worklist_k,
+                    expert_offsets,
+                    gp.weight_ptrs,
+                    wl_gu,
+                    tt_gu,
+                    num_experts,
+                    n_tiles_gu,
+                    PM4_M_TILE,
+                    stream,
+                )?;
+                mprof!("tile_worklist");
+                ops::moe_w8a8_grouped_gemm_pm4(
+                    ctx.gpu,
+                    self.moe_w8a8_grouped_gemm_pm4_k,
+                    input_fp8,
+                    input_a_scale,
+                    gp.weight_ptrs,
+                    gp.scale_ptrs,
+                    expert_gate_out,
+                    expert_offsets,
+                    sorted_token_ids,
+                    num_experts,
+                    inter,
+                    h,
+                    wl_gu,
+                    tt_gu,
+                    wl_cap_items as u32,
+                    stream,
+                )?;
+                mprof!("grouped_gemm_w8a8");
+                ops::moe_w8a8_grouped_gemm_pm4(
+                    ctx.gpu,
+                    self.moe_w8a8_grouped_gemm_pm4_k,
+                    input_fp8,
+                    input_a_scale,
+                    up.weight_ptrs,
+                    up.scale_ptrs,
+                    expert_up_out,
+                    expert_offsets,
+                    sorted_token_ids,
+                    num_experts,
+                    inter,
+                    h,
+                    wl_gu,
+                    tt_gu,
+                    wl_cap_items as u32,
+                    stream,
+                )?;
+                mprof!("grouped_gemm_w8a8");
+                ctx.gpu.synchronize(stream)?;
+                ctx.gpu.free(wl_gu)?;
+                ctx.gpu.free(tt_gu)?;
+            } else {
+                ops::moe_w8a8_grouped_gemm(
+                    ctx.gpu,
+                    self.moe_w8a8_grouped_gemm_k,
+                    input_fp8,
+                    input_a_scale,
+                    gp.weight_ptrs,
+                    gp.scale_ptrs,
+                    expert_gate_out,
+                    expert_offsets,
+                    sorted_token_ids,
+                    num_experts,
+                    inter,
+                    h,
+                    max_m_tiles,
+                    stream,
+                )?;
+                mprof!("grouped_gemm_w8a8");
+                ops::moe_w8a8_grouped_gemm(
+                    ctx.gpu,
+                    self.moe_w8a8_grouped_gemm_k,
+                    input_fp8,
+                    input_a_scale,
+                    up.weight_ptrs,
+                    up.scale_ptrs,
+                    expert_up_out,
+                    expert_offsets,
+                    sorted_token_ids,
+                    num_experts,
+                    inter,
+                    h,
+                    max_m_tiles,
+                    stream,
+                )?;
+                mprof!("grouped_gemm_w8a8");
+                ctx.gpu.synchronize(stream)?;
+            }
             ctx.gpu.free(input_fp8)?;
             ctx.gpu.free(input_a_scale)?;
         } else if max_m_tiles > 0 {
@@ -582,24 +650,71 @@ impl MoeLayer {
                 inter,
                 stream,
             )?;
-            ops::moe_w8a8_grouped_gemm(
-                ctx.gpu,
-                self.moe_w8a8_grouped_gemm_k,
-                down_in_fp8,
-                down_in_scale,
-                dp.weight_ptrs,
-                dp.scale_ptrs,
-                expert_down_out,
-                expert_offsets,
-                spark_runtime::gpu::DevicePtr(0),
-                num_experts,
-                h,
-                inter,
-                max_m_tiles,
-                stream,
-            )?;
-            mprof!("grouped_gemm_w8a8");
-            ctx.gpu.synchronize(stream)?;
+            if self.moe_w8a8_grouped_gemm_pm4_k.0 != 0 && self.moe_build_tile_worklist_k.0 != 0 {
+                // PM4-geometry W8A8 down-proj: separate work-list (N=h, K=inter
+                // → different n_tiles than gate/up). sorted_token_ids=NULL keeps
+                // the direct-index A-prefetch branch. Builder + GEMM on the SAME
+                // stream (read-after-write of total_tiles/worklist).
+                let n_tiles_dn = h.div_ceil(PM4_N_TILE);
+                let wl_cap_items =
+                    (te.div_ceil(PM4_M_TILE as usize) + ne + 1) * n_tiles_dn as usize;
+                let wl_dn = ctx.gpu.alloc(wl_cap_items * 2 * 4)?;
+                let tt_dn = ctx.gpu.alloc(4)?;
+                ops::moe_build_tile_worklist(
+                    ctx.gpu,
+                    self.moe_build_tile_worklist_k,
+                    expert_offsets,
+                    dp.weight_ptrs,
+                    wl_dn,
+                    tt_dn,
+                    num_experts,
+                    n_tiles_dn,
+                    PM4_M_TILE,
+                    stream,
+                )?;
+                mprof!("tile_worklist");
+                ops::moe_w8a8_grouped_gemm_pm4(
+                    ctx.gpu,
+                    self.moe_w8a8_grouped_gemm_pm4_k,
+                    down_in_fp8,
+                    down_in_scale,
+                    dp.weight_ptrs,
+                    dp.scale_ptrs,
+                    expert_down_out,
+                    expert_offsets,
+                    spark_runtime::gpu::DevicePtr(0),
+                    num_experts,
+                    h,
+                    inter,
+                    wl_dn,
+                    tt_dn,
+                    wl_cap_items as u32,
+                    stream,
+                )?;
+                mprof!("grouped_gemm_w8a8");
+                ctx.gpu.synchronize(stream)?;
+                ctx.gpu.free(wl_dn)?;
+                ctx.gpu.free(tt_dn)?;
+            } else {
+                ops::moe_w8a8_grouped_gemm(
+                    ctx.gpu,
+                    self.moe_w8a8_grouped_gemm_k,
+                    down_in_fp8,
+                    down_in_scale,
+                    dp.weight_ptrs,
+                    dp.scale_ptrs,
+                    expert_down_out,
+                    expert_offsets,
+                    spark_runtime::gpu::DevicePtr(0),
+                    num_experts,
+                    h,
+                    inter,
+                    max_m_tiles,
+                    stream,
+                )?;
+                mprof!("grouped_gemm_w8a8");
+                ctx.gpu.synchronize(stream)?;
+            }
             ctx.gpu.free(down_in_fp8)?;
             ctx.gpu.free(down_in_scale)?;
         } else if max_m_tiles > 0 {
@@ -633,6 +748,7 @@ impl MoeLayer {
                 PM4_M_TILE,
                 stream,
             )?;
+            mprof!("tile_worklist");
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
                 self.moe_fp8_grouped_gemm_k,
