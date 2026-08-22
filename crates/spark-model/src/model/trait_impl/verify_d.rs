@@ -213,10 +213,30 @@ impl TransformerModel {
         };
 
         let cache_key = (seq.slot_idx, k);
+        // Occupant check: the capture bakes the LoRA bgmv-vs-installed-pair
+        // branch of the sequence that captured it, so a retained graph is
+        // only replayable by an occupant with the SAME adapter_slot (-1 =
+        // base, the constant on every non-LoRA serve). A mismatch destroys
+        // the stale entry and recaptures below — this replay-time gate is
+        // what lets `free_sequence` retain these graphs across occupants.
         let cached_for_slot = graph_cache
             .as_ref()
             .and_then(|c| c.get(&cache_key).copied());
-        if let Some(graph) = cached_for_slot
+        let cached_for_slot = match cached_for_slot {
+            Some((graph, baked_adapter)) if baked_adapter != seq.adapter_slot => {
+                if let Some(cache) = graph_cache.as_mut()
+                    && let Some((old, _)) = cache.remove(&cache_key)
+                    && old.0 != 0
+                    && let Err(e) = self.gpu.destroy_graph(old)
+                {
+                    tracing::error!("kgamma graph adapter-mismatch destroy: {e:#}");
+                }
+                let _ = graph;
+                None
+            }
+            other => other,
+        };
+        if let Some((graph, _)) = cached_for_slot
             && graph.0 != 0
         {
             self.gpu.launch_graph(graph, stream)?;
@@ -353,7 +373,7 @@ impl TransformerModel {
                         k
                     );
                     if let Some(ref mut cache) = graph_cache {
-                        cache.insert(cache_key, graph);
+                        cache.insert(cache_key, (graph, seq.adapter_slot));
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
