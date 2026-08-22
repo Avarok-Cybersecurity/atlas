@@ -87,6 +87,17 @@ pub(super) fn strip_bare_role_literal(delta: &mut String, inside_tool_call: bool
 /// stream of orphan `<tool_call>` openers) uncaught.
 pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> DeltaVec {
     let result = handle_token_inner(state, ctx, tok);
+    // TTFT forensics companion to the stable-delta line inside the body:
+    // brackets everything after it (sanitizer, detector, watchdogs) so a
+    // first-delta latency bisects to inside-handle_token vs downstream.
+    if !state.first_result_logged && !result.is_empty() {
+        state.first_result_logged = true;
+        tracing::debug!(
+            "stream: first delta batch leaves handle_token ({} deltas, {} tokens seen)",
+            result.len(),
+            state.all_toks.len(),
+        );
+    }
 
     // Orphan-suppression streak watchdog. The sanitizer flips
     // `suppressing_param_leak=true` when it sees an orphan
@@ -433,7 +444,10 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
         // token" and the client's first-delta wall time to attribute any
         // emission-path latency (task: first-delta gap).
         if state.emitted == 0 {
-            tracing::debug!("stream: first stable content delta ({stable_end} bytes)");
+            tracing::debug!(
+                "stream: first stable content delta ({stable_end} bytes: {:?})",
+                &state.content_decoded[..stable_end.min(24)],
+            );
         }
         let raw = state.content_decoded[state.emitted..stable_end].to_string();
         state.emitted = stable_end;
