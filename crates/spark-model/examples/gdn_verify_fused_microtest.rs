@@ -219,6 +219,11 @@ fn launch_wy2(
         .arg_u32(CONV_DIM as u32) // qk_stride
         .arg_u32(CONV_DIM as u32) // v_stride
         .arg_u32((NV * 2) as u32) // gb_stride
+        // state_is_table: 0 = the two state args are contiguous bases. This
+        // parameter was added to the kernel and never to this harness, leaving
+        // it passing 16 args against 17 — every run died at
+        // CUDA_ERROR_INVALID_VALUE before reaching a single assertion.
+        .arg_u32(0)
         .launch(0)
 }
 
