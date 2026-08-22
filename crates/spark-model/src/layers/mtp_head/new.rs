@@ -244,7 +244,9 @@ impl MtpHead {
         // drafter cannot need more live tokens than the main KV can hold, so
         // the cap keeps a 128K `--max-seq-len` config from blindly allocating
         // seqs x 8K blocks. Cost at the 16K/16-seq bench config: 15,203 blocks
-        // x 64 KB = ~0.97 GB, well inside the serve reserve.
+        // x 64 KB = ~0.97 GB — pre-charged against the KV budget by
+        // `factory::build`'s MTP propose-pool reserve, which mirrors THIS
+        // arithmetic; change one and change both.
         let per_seq_blocks = max_seq_len / kv_config.block_size + 1;
         let mtp_num_blocks = per_seq_blocks
             .saturating_mul(crate::speculative::mtp_max_seqs())

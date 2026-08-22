@@ -443,6 +443,44 @@ pub fn build_model(
                 .saturating_sub(inference_reserve)
                 .saturating_sub(dflash_reserve),
         );
+    // ── MTP propose-pool pre-charge ──
+    // `MtpHead::new` allocates its own paged KV pool AFTER this sizing
+    // (per-seq blocks × the MTP concurrency cap, bounded by the MAIN pool's
+    // block count) and its comment's "well inside the serve reserve" named a
+    // reserve that never existed — ~0.97 GB at 128K/bs8 landed OUTSIDE the
+    // util pledge (the last tracked allocation that did, 2026-08-22 ledger).
+    // Mirror the pool arithmetic here and charge it. Two-pass on the cap:
+    // the bound uses the PRE-charge block count, which is >= the final one,
+    // so the miss direction is a slightly larger reserve, never a smaller
+    // pool than reserved. Gate matches `build_mtp_proposer` minus the
+    // LM-head-dtype refusal — if that refusal fires the head is skipped and
+    // this over-reserves one pool, which is the safe direction.
+    let mtp_pool_reserve: usize = if use_speculative && !mtp_weights.is_empty() {
+        // Mirrors the head's kv_config: block 16, target attention dims,
+        // K+V, BF16 KV for Bf16/Fp8 heads and FP8 KV for NVFP4
+        // (`kv_bf16` in mtp_head/new.rs).
+        let block = 16usize;
+        let per_seq_blocks = max_seq_len / block + 1;
+        let elem = match mtp_quant {
+            MtpQuantization::Nvfp4 => 1usize,
+            MtpQuantization::Fp8 | MtpQuantization::Bf16 => 2,
+        };
+        let mtp_block_bytes = block * config.num_key_value_heads * config.head_dim * elem * 2;
+        let blocks0 = PagedKvCache::compute_num_blocks(&kv_config, kv_budget).unwrap_or(0);
+        let pool_blocks = per_seq_blocks
+            .saturating_mul(crate::speculative::mtp_max_seqs())
+            .min(blocks0.max(per_seq_blocks));
+        pool_blocks * mtp_block_bytes
+    } else {
+        0
+    };
+    let kv_budget = kv_budget.saturating_sub(mtp_pool_reserve);
+    if mtp_pool_reserve > 0 {
+        tracing::info!(
+            "KV budget: reserving {:.1} GB for the MTP propose pool (post-sizing alloc in MtpHead::new)",
+            gib(mtp_pool_reserve),
+        );
+    }
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink
