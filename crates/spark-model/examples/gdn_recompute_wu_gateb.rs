@@ -73,7 +73,14 @@ fn main() -> Result<()> {
     eprintln!("recompute_wu handle={}", k.0);
 
     let mut all_ok = true;
-    for &t in &[64usize, 128, 200] {
+    // Production runs nt=16-64 (seq 1024-4096). The small shapes alone cannot
+    // see an occupancy-bound regression, because at nt=1 the grid is 32 CTAs
+    // over ~48 SMs and occupancy never binds.
+    let shapes: Vec<usize> = match std::env::var("ATLAS_WU_SHAPES") {
+        Ok(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+        Err(_) => vec![64usize, 128, 200],
+    };
+    for &t in &shapes {
         let nt = t.div_ceil(C);
         let mut r = Lcg(0xC0FFEE ^ t as u64);
         let key: Vec<bf16> = (0..t * NK * KD)

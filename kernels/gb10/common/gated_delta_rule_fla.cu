@@ -133,6 +133,48 @@ __device__ __forceinline__ void mma_gram(
 //   W_out: [.. ][CHUNK][K_DIM]   = T·(β·exp(gc)·K)
 // where T=(I+L)⁻¹ applied by forward-substitution (parallel over the V/K cols).
 // smem: sk_bf(16K) + kk(16K f32) + L(16K f32) + gc(256) ≈ 48.25KB.
+// ── MEASURED (2026-08-22) ───────────────────────────────────────────────────
+// ★ MEASURE THIS KERNEL AT nt=16 AND nt=64. Nothing measured at nt<=4 is
+// trustworthy: at nt=1 the grid is 32 CTAs over ~48 SMs, so the GPU is
+// UNDERFILLED and occupancy never binds. One candidate below read 1.60x at
+// nt=1 and 0.92x at nt=64 — the sign flipped. Use
+// `ATLAS_WU_SHAPES=1024,4096` with `WU_BENCH_ITERS` in
+// `examples/gdn_recompute_wu_gateb.rs`.
+//
+// WHERE THE TIME GOES. Against a solve-removed probe, the prologue (gc scan,
+// K load, mma_gram, L build) is 14.3/16.4/20.5 us vs 68.9/96.6/140.8 for the
+// whole kernel: the two forward-substitution passes are 79-85% of it.
+//
+// SHARED-MEMORY ACCUMULATOR — REJECTED, and the first attempt to reject it was
+// itself wrong, so both halves are recorded.
+//   ptxas reports `256 bytes stack frame` here: `u[l]` is indexed by a runtime
+//   `l`, so the array cannot live in registers and goes to LOCAL memory. The
+//   obvious fix is shared memory.
+//   * First probe laid it out [tid][l] — stride CHUNK floats = 256 B between
+//     threads. Shared memory has 32 banks of 4 B, so every thread of a pass
+//     hit the SAME bank: a 32-way conflict. It measured 0.59-0.81x and that was
+//     read as "local memory is fine". It measured a bad LAYOUT.
+//   * Second probe laid it out [l][tid] — conflict-free — and measured
+//         nt=1  1.60x   nt=4  1.30x   nt=16 1.09x   nt=64  0.92x
+//     The win is real only where the GPU is underfilled. The extra 64 KB takes
+//     occupancy from 3 CTAs/SM to 1, and once the grid fills, that dominates.
+//     At the PRODUCTION shape it is an 8% REGRESSION.
+//   ⇒ Keep the local-memory accumulator. And note WHY: not because local memory
+//     is cheap, but because 64 KB of smem costs more at nt>=64. Any
+//     reformulation that buys speed with a materially larger smem footprint
+//     has to clear that bar — which is why a blocked triangular solve holding
+//     the solved rows in smem was drafted and rejected.
+//
+// FMA DEPENDENCY CHAIN — not the constraint. `for (l<i) ui -= L*u[l]` is a
+// dependent chain the compiler cannot reassociate, ~2048 deep per thread.
+// Splitting it into four independent partial sums (same FMA count, traffic,
+// smem and occupancy) measured NEUTRAL: 72.2/103.1/151.3 vs 71.8/100.1/151.1.
+//
+// What WAS a win: the serial gc prefix scan in the prologue, fixed below and
+// confirmed at production shapes (nt=16 9.7%, nt=64 7.0%).
+//
+// ⚠ The gate harness for this kernel could not run at all until 2026-08-22, so
+// any pre-existing claim that something here "was tested" is suspect.
 // 256 threads: mma_gram is fenced to the first 4 warps, and the two independent
 // forward-subs run concurrently on the two thread halves instead of back-to-back.
 extern "C" __global__ void __launch_bounds__(256, 1)
@@ -194,12 +236,39 @@ gated_delta_rule_recompute_wu(
             ? key[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + j]
             : __float2bfloat16(0.0f);
     }
-    if (tid == 0) {
-        float acc = 0.0f;
-        for (unsigned int i = 0; i < ce; i++) {
-            acc += logf(fmaxf(gate[(unsigned long long)(cs + i) * gb_stride + vh], GATE_FLOOR));
-            gc[i] = acc;
-            gc_out[base * CHUNK + i] = acc;
+    // PARALLEL gc scan. This was a CHUNK-long serial prefix sum on tid 0 — a
+    // global load and a `logf` per step — with the other 255 threads parked at
+    // the barrier below, so every thread in the CTA paid for it. Measured at
+    // nt=4 with `WU_BENCH_ITERS` (n=3): 151.0/151.3/151.1 us serial vs
+    // 137.4/139.5 us here, i.e. ~8.5% against a 0.3 us spread.
+    //
+    // Two other candidates measured NEGATIVE first, and are recorded above so
+    // they are not retried: moving the accumulator out of local memory (0.81x /
+    // 0.59x / 0.75x) and splitting the inner accumulation four ways (neutral).
+    for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
+        gc[idx] = (idx < ce)
+            ? logf(fmaxf(gate[(unsigned long long)(cs + idx) * gb_stride + vh], GATE_FLOOR))
+            : 0.0f;
+    }
+    __syncthreads();
+    // Hillis-Steele inclusive scan: log2(CHUNK)=6 barrier-separated steps
+    // instead of CHUNK serial ones. The read is staged into a register before
+    // the write so the two halves cannot race on `gc`.
+    for (unsigned int off = 1; off < CHUNK; off <<= 1) {
+        float add = (tid < CHUNK && tid >= off) ? gc[tid - off] : 0.0f;
+        __syncthreads();
+        if (tid < CHUNK && tid >= off) gc[tid] += add;
+        __syncthreads();
+    }
+    // Publish, and zero the tail the scan filled with the running total. The
+    // serial version left gc[ce..CHUNK] as whatever was in shared memory; the
+    // L build below reads gc[i] up to CHUNK, so defined zeros are strictly
+    // safer (beta is 0 there, and 0 * expf(garbage) can be NaN).
+    for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
+        if (idx >= ce) {
+            gc[idx] = 0.0f;
+        } else {
+            gc_out[base * CHUNK + idx] = gc[idx];
         }
     }
     __syncthreads();
@@ -248,6 +317,7 @@ gated_delta_rule_recompute_wu(
         }
     }
 }
+
 
 // chunk_delta_h double-buffer: per-buffer smem holds {W,K,U} bf16 for one chunk.
 #define CDH_BUFSZ (CHUNK * (2 * K_DIM + V_DIM))   // 24576 bf16 = 48KB
