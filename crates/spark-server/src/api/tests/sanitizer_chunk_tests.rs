@@ -173,20 +173,25 @@ fn sanitizer_fuses_tag_across_chunks() {
     let mut suppress = false;
     let out1 = sanitize_content_chunk("abc<param", &mut buf, &mut suppress, &markers);
     assert!(!suppress, "partial tag must not trigger suppression");
-    assert_eq!(out1, "", "short chunk stays in tail buffer awaiting fusion");
+    // Since the marker-prefix holdback (first-delta latency fix), the
+    // marker-INCOMPATIBLE prose emits immediately; only the `<param`
+    // suffix — a genuine tag prefix — stays buffered awaiting fusion.
+    assert_eq!(out1, "abc", "prose before a partial tag emits immediately");
+    assert_eq!(
+        buf, "<param",
+        "the tag prefix alone stays in the tail buffer"
+    );
     let out2 = sanitize_content_chunk(
         "eter=x>body</parameter>tail",
         &mut buf,
         &mut suppress,
         &markers,
     );
-    // Fusion: `<parameter=x>` found in the combined buffer.
-    // "abc" prefix emits; body suppressed; `</parameter>` ends
-    // suppression; "tail" stays buffered (too short to flush).
-    assert!(
-        out2.starts_with("abc"),
-        "prefix emits after fusion: {out2:?}"
-    );
+    // Fusion: `<parameter=x>` found in the combined buffer. "abc"
+    // already emitted in the first call (marker-prefix holdback); the
+    // body is suppressed; `</parameter>` ends suppression; "tail" emits
+    // (it is marker-incompatible, so nothing holds it back).
+    assert_eq!(out2, "tail", "only the post-close prose emits: {out2:?}");
     assert!(
         !out2.contains("body"),
         "suppressed body must not leak: {out2:?}"
@@ -301,3 +306,44 @@ fn flush_before_tool_boundary_recovers_from_stuck_suppression() {
 // similarity over assistant text. See `loop_detector.rs` tests
 // (`three_identical_intros_fire_loop`,
 // `slightly_varied_intros_still_fire`).
+
+/// First-delta latency (task: first-delta gap, 2026-08-22): the no-match
+/// holdback must retain ONLY a suffix that is a byte-prefix of some marker.
+/// The old flat `tag_max - 1` retention withheld the first ~tag_max bytes
+/// of EVERY stream — measured 250-500 ms of first-token latency on every
+/// response, because "An" is not a prefix of "<tool_call>" yet waited for
+/// 3-5 more decode steps to push it out of the window.
+#[test]
+fn marker_incompatible_first_chunk_emits_immediately() {
+    let markers = Qwen3CoderParser.leak_markers();
+    let mut buf = String::new();
+    let mut sup = false;
+    // Plain prose openers must pass through in full on the FIRST call.
+    for text in ["An", "The", "A", "Certainly, here is"] {
+        buf.clear();
+        let out = sanitize_content_chunk(text, &mut buf, &mut sup, &markers);
+        assert_eq!(out, *text, "marker-incompatible chunk was withheld");
+        assert!(
+            buf.is_empty(),
+            "nothing marker-compatible to hold for {text:?}"
+        );
+    }
+}
+
+#[test]
+fn marker_prefix_suffix_is_still_held_for_fusion() {
+    let markers = Qwen3CoderParser.leak_markers();
+    let mut buf = String::new();
+    let mut sup = false;
+    // A chunk ending in a genuine marker prefix emits the prose and holds
+    // exactly the compatible tail, so straddled tags still fuse.
+    let out = sanitize_content_chunk("done.<tool_c", &mut buf, &mut sup, &markers);
+    assert_eq!(out, "done.");
+    assert_eq!(buf, "<tool_c");
+    // The completion of the tag across the boundary must still suppress.
+    let out2 = sanitize_content_chunk("all>leaked</tool_call>after", &mut buf, &mut sup, &markers);
+    assert!(
+        !out2.contains("leaked") && out2.ends_with("after"),
+        "straddled marker fusion regressed: {out2:?}"
+    );
+}
