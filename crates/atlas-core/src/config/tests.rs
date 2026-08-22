@@ -742,10 +742,11 @@ fn test_parse_nllb_m2m100_config() {
 }
 
 #[test]
-fn test_parse_nllb_rejects_missing_required_dimension() {
+fn test_parse_nllb_rejects_missing_required_fields() {
     let json = r#"{
         "bos_token_id": 0,
         "d_model": 2048,
+        "decoder_attention_heads": 16,
         "decoder_ffn_dim": 8192,
         "decoder_layers": 24,
         "eos_token_id": 2,
@@ -754,11 +755,25 @@ fn test_parse_nllb_rejects_missing_required_dimension() {
         "vocab_size": 256206
     }"#;
 
-    let err = parse_config(json).unwrap_err().to_string();
-    assert!(
-        err.contains("nllb config missing required field `decoder_attention_heads`"),
-        "{err}"
-    );
+    let valid: serde_json::Value = serde_json::from_str(json).unwrap();
+    for field in [
+        "d_model",
+        "decoder_layers",
+        "decoder_ffn_dim",
+        "vocab_size",
+        "decoder_attention_heads",
+        "max_position_embeddings",
+        "bos_token_id",
+        "eos_token_id",
+    ] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        let err = parse_config(&missing.to_string()).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("nllb config missing required field `{field}`")),
+            "missing {field}: {err}"
+        );
+    }
 }
 
 #[test]
