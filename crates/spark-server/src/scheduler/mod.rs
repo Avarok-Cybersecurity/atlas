@@ -456,8 +456,20 @@ pub fn run(
                 pending_len: new_reqs.len() as u32,
                 kv_blocks_free: model.num_free_blocks() as u32,
                 kv_blocks_total: model.num_total_blocks() as u32,
-                ssm_slots_used: session_manager.session_count() as u32,
-                ssm_slots_total: session_manager.total_slots() as u32,
+                // The REAL Marconi pool occupancy. This used to read
+                // `session_manager.{session_count,total_slots}` — but
+                // `SessionSsmManager::save_snapshot` has no callers, so both
+                // were 0 forever and the TUI's SSM gauge rendered 0/0 on
+                // every serve (user-reported 2026-08-22). Fall back to the
+                // orphaned counters only when the model has no pool.
+                ssm_slots_used: model
+                    .ssm_snapshot_occupancy()
+                    .map(|(u, _)| u)
+                    .unwrap_or(session_manager.session_count() as u32),
+                ssm_slots_total: model
+                    .ssm_snapshot_occupancy()
+                    .map(|(_, t)| t)
+                    .unwrap_or(session_manager.total_slots() as u32),
                 mtp_mode,
                 delivered_tps,
                 steps_total: snapshot_steps,

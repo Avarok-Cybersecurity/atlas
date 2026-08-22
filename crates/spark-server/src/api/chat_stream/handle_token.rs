@@ -419,6 +419,13 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
     let stable_end = state.content_decoded.len();
     let _ = tok; // tok already in state.all_toks via line 86
     let mut delta = if stable_end > state.emitted {
+        // TTFT forensics: the moment the FIRST stable content bytes exist
+        // stream-side. Compare against the scheduler's "Prefill first
+        // token" and the client's first-delta wall time to attribute any
+        // emission-path latency (task: first-delta gap).
+        if state.emitted == 0 {
+            tracing::debug!("stream: first stable content delta ({stable_end} bytes)");
+        }
         let raw = state.content_decoded[state.emitted..stable_end].to_string();
         state.emitted = stable_end;
         raw
