@@ -1,0 +1,61 @@
+# Benchmarks for this model, and the thresholds its gate records must meet.
+#
+# Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path. Read by `atlas_plugin::gate::bench`.
+#
+# Deliberately OUTSIDE the closure hash, so ratcheting a threshold does not
+# invalidate the record that justified the ratchet.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16"
+gate = "ttft-cold-gate"
+recipe = "gemma4/gemma-4-26b-a4b-nvfp4"
+label = "Gemma-4-26B-A4B MoE (NVFP4A16)"
+status = "measured"
+note = """\
+FIRST gate for this target — it had no BENCH.toml, so building the MoE prefill \
+copies in the gemma4 loader (cold TTFT 5705.61 -> 4974.56 ms, -12.8%, \
+cold_ttft.py n=8) had nothing holding it.
+
+Ceilings = the GATE's own dgx1 baseline x the gate limits: median 1580.547 ms \
+x +3%, p90 23324.582 ms x +5%. `default` is UNSET — qwen3.6-35b-a3b claims the \
+default for this gate on gb10, and two defaults is a silent coin-flip over which \
+checkpoint a gate scores. The gate's numbers are NOT the cold_ttft.py numbers \
+(1580.5 vs 4974.6 ms); different harness, different prompt ladder, not \
+interchangeable.
+
+★ RATCHETED 2026-08-21, and this is what the previous note asked for. The \
+ceilings were median 1627.96 / p90 24490.81, cut from a baseline whose 4096-token \
+leg took 23,324.6 ms. That note said plainly: "23 SECONDS of cold TTFT at 4096 \
+tokens is a defect, not a baseline... it should be RATCHETED DOWN rather than \
+accepted." The cause was found — the 5 global (512-wide) attention layers ran a \
+SCALAR kernel with no tensor cores at 3296.9 ms/layer, while the 25 sliding \
+(256-wide) layers took the tiled tensor-core path at 2.0 ms/layer — and fixed by \
+instantiating that same tensor-core kernel at HDIM=512.
+
+    cold  256 tok:   261.4 ->  ~89 ms
+    cold 1024 tok:  1580.5 -> 538.3 ms   (-65.9%)
+    cold 4096 tok: 23324.6 -> 1893.5 ms  (-91.9%, 12.3x)
+
+New ceilings = the gate's own dgx1 baseline x the gate limits: median 538.308 ms \
+x +3%, p90 1897.641 ms x +5%. Run was clean (0 serve errors, all three legs \
+sampled). Recording the bad number instead of declining to gate it is what made \
+this ratchet a one-line change against a committed reference.
+
+★ NO ttft-warm-gate ENTRY, AND ONE CANNOT BE ADDED TODAY. This model cannot use \
+prefix caching at all: `enable_prefix_caching` makes partial hits take the \
+chunked-prefill path, which refuses on this architecture — "Gemma-4 HDIM=512 \
+chunked prefill only supports BF16 KV cache (kv_dtype=Fp8)" \
+(qwen3_attention/prefill/paged_attn.rs). Measured: 46 serve errors with the flag \
+and 0 without, with 2 of 3 warm legs returning NO samples while the surviving \
+1024-tok leg read 74.7 ms — i.e. it looks 20x FASTER precisely because it \
+mostly did not run. Fixing this needs bf16 KV (a memory cost) or fp8 support in \
+the HDIM=512 chunked path (kernel work); it is a PRODUCTION gap, not only a gate \
+gap, since Gemma-4 pays full cold prefill on every request."""
+
+[benchmarks.metrics.median_ms]
+max = 554.46
+
+[benchmarks.metrics.p90_ms]
+max = 1992.52

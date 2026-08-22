@@ -62,6 +62,9 @@ pub(super) fn load_layers_impl(
     let variant = detect_nvfp4_variant(store, config);
     tracing::info!("Gemma-4 NVFP4 variant: {:?}", variant);
 
+    // Decided once, before any layer allocates — see the doc on the parameter.
+    let moe_prefill_copies =
+        config.num_experts > 0 && crate::weight_loader::moe_prefill_copies_fit(config, gpu);
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
     let stream = gpu.default_stream();
@@ -438,7 +441,18 @@ pub(super) fn load_layers_impl(
 
         // ── MoE experts (Gemma-4 26B) — extracted to loader_b ──
         let moe_ffn = build_moe_ffn(
-            store, &lp, i, config, gpu, variant, qctx, h, absmax_k, quantize_k, stream,
+            store,
+            &lp,
+            i,
+            config,
+            gpu,
+            variant,
+            qctx,
+            h,
+            absmax_k,
+            quantize_k,
+            moe_prefill_copies,
+            stream,
         )?;
 
         tracing::info!("L{i}: building attention layer...");

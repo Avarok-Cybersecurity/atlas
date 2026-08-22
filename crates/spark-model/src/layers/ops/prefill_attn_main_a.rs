@@ -40,8 +40,15 @@ pub fn prefill_attention(
     sliding_window: u32, // 0 = no sliding limit; >0 = mask keys where q - k >= window
     stream: u64,
 ) -> Result<()> {
-    // BR=16 for HDIM=512 (Gemma-4 full attention), BR=32 otherwise
-    let br = if head_dim > 256 { 16u32 } else { 32u32 };
+    // ★ SSOT: the kernel NAME and its BR must agree, and they are chosen in two
+    // different files — `init.rs` resolves the handle, this launches it. A grid
+    // computed from the wrong BR does not fail, it silently computes the wrong
+    // q-tiles. `wide_prefill_kernel()` is the one reader of that decision.
+    let br = if head_dim > 256 {
+        wide_prefill_kernel(gpu).1
+    } else {
+        32u32
+    };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(seq_len, br), batch])
         .block([128, 1, 1])

@@ -23,6 +23,11 @@ pub(super) fn build_moe_ffn(
     h: usize,
     absmax_k: spark_runtime::gpu::KernelHandle,
     quantize_k: spark_runtime::gpu::KernelHandle,
+    // Whether to build the transposed [K/2, N] prefill copies. Decided ONCE by
+    // the caller from `gpu.free_memory()`, not per layer: that probe shrinks as
+    // layers load, so a per-layer decision transposes the early layers and
+    // skips the late ones, leaving prefill straddling both paths.
+    moe_prefill_copies: bool,
     stream: u64,
 ) -> Result<Option<(FfnComponent, DenseWeight, DenseWeight, DenseWeight)>> {
     if config.num_experts == 0 {
@@ -53,6 +58,13 @@ pub(super) fn build_moe_ffn(
         config,
     )?;
     moe_layer.set_gelu_activation(gpu)?;
+    // MoE prefill copies. This loader built NONE, so every prefill took the
+    // fallback `moe_w4a16_grouped_gemm` over N-major weights. The same gap on
+    // the Qwen3-VL loader was 59% of that model's cold TTFT.
+    if moe_prefill_copies {
+        moe_layer.transpose_for_prefill(gpu, config)?;
+        moe_layer.predequant_for_prefill(gpu, config, stream)?;
+    }
     // Set pre-expert norm: router sees raw input, experts see normed input.
     let pre_expert_norm = dense(store, &format!("{lp}.pre_feedforward_layernorm_2.weight"))?;
     moe_layer.set_pre_expert_norm(pre_expert_norm);
