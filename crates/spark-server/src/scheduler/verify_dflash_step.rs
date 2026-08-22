@@ -137,8 +137,15 @@ pub fn step_verify_dflash(
     // Unified ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1): ONE unconditional
     // commit at the K=gamma point — rows 0..=num_accepted at RoPE base
     // pre_verify_len. Structural replacement for dflash_eagle_kgamma_append.
+    tracing::debug!(
+        "CTX_VERIFY slot={} pre_verify_len={} na={} k={}",
+        a.seq.slot_idx,
+        pre_verify_len,
+        num_accepted,
+        drafts.len() + 1,
+    );
     if sched.levers.dflash_unified_ctx {
-        if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len) {
+        if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len, 0) {
             tracing::error!("commit_ctx (kgamma): {e:#}");
         }
     } else {

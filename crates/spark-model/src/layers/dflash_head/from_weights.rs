@@ -28,7 +28,13 @@ impl BlockDiffusionDraftHead {
         window_size: Option<usize>,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
+        // Widest cross-sequence batch the drafter must serve in ONE forward.
+        // The gamma-sized scratch below is allocated in per-sequence BANDS of
+        // gamma rows so a batched propose can stack n sequences; nb == 1 keeps
+        // the original single-band sizes byte for byte.
+        max_batch: usize,
     ) -> Result<Self> {
+        let nb = max_batch.max(1);
         // Drafter's `fc` is `[draft_hidden, len(target_layer_ids) * target_hidden]`.
         // We rely on the drafter config's `hidden_size` and the parsed
         // `target_layer_ids` to derive the expected target_hidden, then
@@ -259,18 +265,21 @@ impl BlockDiffusionDraftHead {
             ctx_window
         );
         let n_attn = g + ctx_window; // total attention slots
+        // Rows the scratch must hold: the legacy ctx+gamma window, or nb
+        // bands of gamma for a batched propose, whichever is larger.
+        let rows_max = n_attn.max(nb * gamma_val);
         let q_dim = num_q_heads * head_dim;
         let kv_dim = num_kv_heads * head_dim;
         let scratch = DflashScratch {
-            stream_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
-            norm_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
-            q_buf: gpu.alloc(n_attn * q_dim * bf16)?,
-            k_buf: gpu.alloc(n_attn * kv_dim * bf16)?,
-            v_buf: gpu.alloc(n_attn * kv_dim * bf16)?,
-            attn_out: gpu.alloc(n_attn * q_dim * bf16)?,
-            mlp_intermediate: gpu.alloc(n_attn * intermediate_size * bf16)?,
-            mlp_up: gpu.alloc(n_attn * intermediate_size * bf16)?,
-            stream_acc: gpu.alloc(n_attn * hidden_size * bf16)?,
+            stream_buf: gpu.alloc(rows_max * hidden_size * bf16)?,
+            norm_buf: gpu.alloc(rows_max * hidden_size * bf16)?,
+            q_buf: gpu.alloc(rows_max * q_dim * bf16)?,
+            k_buf: gpu.alloc(rows_max * kv_dim * bf16)?,
+            v_buf: gpu.alloc(rows_max * kv_dim * bf16)?,
+            attn_out: gpu.alloc(rows_max * q_dim * bf16)?,
+            mlp_intermediate: gpu.alloc(rows_max * intermediate_size * bf16)?,
+            mlp_up: gpu.alloc(rows_max * intermediate_size * bf16)?,
+            stream_acc: gpu.alloc(rows_max * hidden_size * bf16)?,
             fc_proj: gpu.alloc(ctx_window * hidden_size * bf16)?,
             // Phase 2 (Option B) precompute scratch. Worst-case the
             // first propose runs precompute over the whole captured
@@ -286,7 +295,7 @@ impl BlockDiffusionDraftHead {
             // `[u32 kv_len, u32 q_offset, u32 q_rope_pos]` that the indirect
             // paged-attention kernel reads at entry. Host writes via H2D
             // BEFORE entering the captured region.
-            option_b_indirect_args_dev: gpu.alloc(12)?,
+            option_b_indirect_args_dev: gpu.alloc(nb * 12)?,
             // Phase E.2: pinned host buffer + event for the per-propose
             // drafter D2H. Pinned memory lets cuMemcpyDtoHAsync issue a
             // true async DMA on the caller's stream (vs. the synchronous
@@ -295,16 +304,16 @@ impl BlockDiffusionDraftHead {
             // so target-model verify work issued on the same stream can
             // proceed in parallel.
             draft_tokens_host_pinned: std::sync::atomic::AtomicPtr::new(
-                gpu.alloc_host_pinned(gamma_val * 4)?,
+                gpu.alloc_host_pinned(nb * gamma_val * 4)?,
             ),
             draft_tokens_event: gpu.create_event()?,
             // γ rows only — NOT n_attn. The lm_head GEMM writes M=γ rows,
             // argmax + BLOCK_DUMP read rows 0..γ, and no path indexes logits
             // by ctx offset. Sizing at n_attn×vocab would cost 2.04 GB at
             // cw=4096 for rows nothing ever touches (γ rows ≈ 8.4 MB).
-            logits: gpu.alloc(g * vocab_size * bf16)?,
-            draft_tokens_dev: gpu.alloc(n_attn * 4)?,
-            position_ids: gpu.alloc(n_attn * 4)?,
+            logits: gpu.alloc(nb * g * vocab_size * bf16)?,
+            draft_tokens_dev: gpu.alloc(rows_max * 4)?,
+            position_ids: gpu.alloc(rows_max * 4)?,
             // DSpark Markov scratch. Only allocated when the drafter config
             // declares a Markov head; `DevicePtr(0)` otherwise so the plain
             // DFlash path costs nothing.
@@ -329,22 +338,22 @@ impl BlockDiffusionDraftHead {
                 let cfg = weights.config.dflash_config.as_ref();
                 let ksz = cfg.map(|c| c.conv_kernel_size).unwrap_or(0).max(1);
                 let gsz = cfg.map(|c| c.conv_group_size).unwrap_or(0).max(1);
-                gpu.alloc(g * 2 * ksz * (hidden_size / gsz) * bf16)?
+                gpu.alloc(nb * g * 2 * ksz * (hidden_size / gsz) * bf16)?
             } else {
                 DevicePtr(0)
             },
             conv_tmp: if weights.selector_pred.is_some() {
-                gpu.alloc(g * hidden_size * bf16)?
+                gpu.alloc(nb * g * hidden_size * bf16)?
             } else {
                 DevicePtr(0)
             },
             sel_vals: if weights.selector_pred.is_some() {
-                gpu.alloc(g * 16 * 4)?
+                gpu.alloc(nb * g * 16 * 4)?
             } else {
                 DevicePtr(0)
             },
             sel_idx: if weights.selector_pred.is_some() {
-                gpu.alloc(g * 16 * 4)?
+                gpu.alloc(nb * g * 16 * 4)?
             } else {
                 DevicePtr(0)
             },
@@ -356,7 +365,7 @@ impl BlockDiffusionDraftHead {
                     .map(|c| c.selector_rank)
                     .unwrap_or(256)
                     .max(1);
-                gpu.alloc(g * rank * bf16)?
+                gpu.alloc(nb * g * rank * bf16)?
             } else {
                 DevicePtr(0)
             },
@@ -506,6 +515,7 @@ impl BlockDiffusionDraftHead {
             vocab_size,
             draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
+            max_batch: nb,
             mask_token_id,
             window_size,
             target_layer_ids,

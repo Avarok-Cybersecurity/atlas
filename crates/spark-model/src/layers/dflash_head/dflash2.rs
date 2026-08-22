@@ -79,9 +79,11 @@ impl BlockDiffusionDraftHead {
         base: DevicePtr,
         out: DevicePtr,
         application: u32, // 0 = prepare, 1 = finish
+        n_seq: u32,       // sequences packed seq-major; 1 = the single-seq path
         stream: u64,
     ) -> Result<()> {
-        let g = self.gamma as u32;
+        let block_g = self.gamma as u32;
+        let g = block_g * n_seq.max(1);
         let h = self.hidden_size as u32;
         let groups = h / self.conv_group_size as u32;
         let k = self.conv_kernel_size as u32;
@@ -101,6 +103,8 @@ impl BlockDiffusionDraftHead {
             .arg_u32(self.conv_group_size as u32)
             .arg_u32(dyn_stride)
             .arg_u32(app_off)
+            // Rows per band, so row 0 of each sequence has no predecessor.
+            .arg_u32(block_g)
             .launch(stream)
     }
 
@@ -115,6 +119,7 @@ impl BlockDiffusionDraftHead {
         site: ConvSite,
         hidden_in: DevicePtr,
         ctx: &ForwardContext,
+        n_seq: u32,
         stream: u64,
     ) -> Result<DevicePtr> {
         if !self.dflash2_active() {
@@ -123,7 +128,7 @@ impl BlockDiffusionDraftHead {
         let Some((base, proj)) = self.conv_weights(layer, site) else {
             return Ok(hidden_in);
         };
-        let g = self.gamma as u32;
+        let g = self.gamma as u32 * n_seq.max(1);
         let h = self.hidden_size as u32;
         let groups = h / self.conv_group_size as u32;
         let dyn_cols = 2 * self.conv_kernel_size as u32 * groups;
@@ -139,7 +144,15 @@ impl BlockDiffusionDraftHead {
             h,
             stream,
         )?;
-        self.conv_apply(ctx, hidden_in, base, self.scratch.conv_tmp, 0, stream)?;
+        self.conv_apply(
+            ctx,
+            hidden_in,
+            base,
+            self.scratch.conv_tmp,
+            0,
+            n_seq,
+            stream,
+        )?;
         Ok(self.scratch.conv_tmp)
     }
 
@@ -152,6 +165,7 @@ impl BlockDiffusionDraftHead {
         site: ConvSite,
         sublayer_out: DevicePtr,
         ctx: &ForwardContext,
+        n_seq: u32,
         stream: u64,
     ) -> Result<DevicePtr> {
         if !self.dflash2_active() {
@@ -160,7 +174,15 @@ impl BlockDiffusionDraftHead {
         let Some((base, _proj)) = self.conv_weights(layer, site) else {
             return Ok(sublayer_out);
         };
-        self.conv_apply(ctx, sublayer_out, base, self.scratch.conv_tmp, 1, stream)?;
+        self.conv_apply(
+            ctx,
+            sublayer_out,
+            base,
+            self.scratch.conv_tmp,
+            1,
+            n_seq,
+            stream,
+        )?;
         Ok(self.scratch.conv_tmp)
     }
 
@@ -172,10 +194,13 @@ impl BlockDiffusionDraftHead {
         &self,
         ctx: &ForwardContext,
         norm_noise: DevicePtr,
+        n_seq: u32,
         stream: u64,
     ) -> Result<()> {
         let gpu = ctx.gpu;
+        let n = n_seq.max(1);
         let g = self.gamma as u32;
+        let rows = g * n;
         let vocab = self.vocab_size as u32;
         let rank = self.selector_rank as u32;
         let hproj = self
@@ -198,7 +223,7 @@ impl BlockDiffusionDraftHead {
         // topk (non-destructive to tokens) → hproj → WALK (reads tokens[0] =
         // last_token) → row-0 argmax LAST.
         KernelLaunch::new(gpu, self.kernels.dflash2_topk16)
-            .grid([g, 1, 1])
+            .grid([rows, 1, 1])
             .block([1024, 1, 1])
             .arg_ptr(self.scratch.logits)
             .arg_ptr(self.scratch.sel_vals)
@@ -213,7 +238,7 @@ impl BlockDiffusionDraftHead {
             norm_noise,
             hproj,
             self.scratch.sel_hproj,
-            g,
+            rows,
             rank,
             self.hidden_size as u32,
             stream,
@@ -221,7 +246,8 @@ impl BlockDiffusionDraftHead {
 
         // Chain walk: rows 1..γ, prev_1 = tokens[0] (= last_token).
         KernelLaunch::new(gpu, self.kernels.dflash2_selector_walk)
-            .grid([1, 1, 1])
+            // One block per sequence; each chains from its own anchor row.
+            .grid([n, 1, 1])
             .block([512, 1, 1])
             .arg_ptr(self.scratch.sel_vals)
             .arg_ptr(self.scratch.sel_idx)
