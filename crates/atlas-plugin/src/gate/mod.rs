@@ -51,11 +51,11 @@ pub use record::{
     variant_slug, write_record,
 };
 
-/// The five benches whose records must pass for the branch to be gated.
+/// The ten benches whose records must pass for the branch to be gated.
 ///
-/// Gate A (agentic webserver), Gate C (warm + cold TTFT), and the two BFCL
-/// gates. Every id is a registered benchmark, and registration is tested
-/// against this list.
+/// Agentic webserver, vision and video fidelity, warm and cold TTFT, two BFCL
+/// draws, SSM state poisoning, decode floor, and concurrency sweep. Every id
+/// is a registered benchmark, and registration is tested against this list.
 ///
 /// ★ **There are two BFCL entries because there are two draws, and a score from
 /// one is not comparable to a threshold from the other.** The dense 27B is
@@ -224,6 +224,11 @@ mod fixture_baseline;
 #[cfg(test)]
 #[path = "coverage_map_tests.rs"]
 mod coverage_map_tests;
+
+/// Proofs for the exact, `#[cfg(test)]`-guarded Rust module exemption.
+#[cfg(test)]
+#[path = "test_only_coverage_tests.rs"]
+mod test_only_coverage_tests;
 
 #[cfg(test)]
 #[path = "coverage_promotion_tests.rs"]
