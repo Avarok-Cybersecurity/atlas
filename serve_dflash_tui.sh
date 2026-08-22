@@ -104,6 +104,27 @@ export ATLAS_GDN_LIB=/home/ms/atlas-gdn-libs/libatlasgdn.so
 # healthy TUI session 2026-08-21. Remove this line to re-arm it.
 export ATLAS_SIMHASH_LOOP=0
 
+# ── Agentic guard family OFF (2026-08-22) ─────────────────────────────────
+# Loop-detector <tool_call> HARD-MASK off: the detector trips after ~3
+# similar turns, and legitimate agentic iteration (ls / cargo check / cargo
+# run while fixing) crosses that constantly — the mask then BLOCKS the next
+# tool call and forces a content fast-fail ("Loop detector -> SUPPRESS:
+# hard-mask <tool_call> for one turn" in the log). Detection is still
+# logged and metered; only the mask is disabled. vLLM applies no such mask.
+export ATLAS_LOOP_NO_SUPPRESS=1
+# ALL auto-watchdogs off: content-loop, inter-tool prose, F2 confidence
+# early-stop, mid-word </think> defer, thinking-loop. User-set
+# max_thinking_budget and safety masks are unaffected. CAVEAT: this family
+# exists because the dense-27B siblings DO loop on long code prompts — with
+# everything off, a genuinely degenerate stream burns to max_tokens instead
+# of being cut. Re-arm by deleting these lines if you see runaway streams.
+export ATLAS_DISABLE_WATCHDOGS=1
+# Tool-envelope watchdog off — it measurably throttles agentic flows
+# (memory: atlas-tool-generation-caps). Note --tool-max-tokens stays at its
+# 8192 default below; raise it via TOOL_MAX_TOKENS if Write calls with big
+# file bodies get cut.
+export ATLAS_TOOL_ENVELOPE_WATCHDOG=0
+
 # Serve at INFO so the log is useful if something misbehaves.
 export RUST_LOG="${RUST_LOG:-info}"
 
@@ -299,6 +320,7 @@ export ATLAS_KV_OVERCOMMIT=1
 # fit and the boot refuses; 0.80 pledges 97 GB, which covers the same real
 # footprint WITH the pools inside it and gives KV more than the old boot had.
 # 0.80 is the hard ceiling for this box — never raise it further.
+export ATLAS_LOOP_NO_SUPPRESS=1
 exec ./target/release/spark serve \
   --model-from-path "$TARGET" \
   --model-name unsloth/Qwen3.8-27B-NVFP4 \
@@ -311,11 +333,11 @@ exec ./target/release/spark serve \
   --request-timeout 900 \
   --max-prefill-tokens 8192 \
   --enable-prefix-caching true \
-  --ssm-cache-slots 16 \
+  --ssm-cache-slots 64 \
   --scheduling-policy slai \
   --tbt-deadline-ms 100 \
   --video-allow-ffmpeg \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
-  --lm-head-dtype fp8 \
+  --lm-head-dtype fp8 --disable-thinking --default-top-n-sigma 0 \
   "${TUI_ARGS[@]}"
