@@ -276,11 +276,16 @@ export ATLAS_KV_OVERCOMMIT=1
 #  * Costs ~1.7% aggregate throughput at C=8 on this profile (101.4 -> 103.1
 #    with it off) — within run-to-run noise, so it is NOT the reason to keep
 #    or drop it. The 2.4 GB is.
-#  * MEASURED on this build: the radix tree DOES hit (full 1561-token
-#    prompt matched on a repeat) but the warm turn was NOT faster
-#    (2.13s -> 2.12s) and usage reported cached_prompt_tokens=0. So today
-#    you get the block-table reuse and the hit-rate telemetry, not a TTFT
-#    win. That matches the known chunk-alignment gap, not a misconfig.
+#  * MEASURED 2026-08-22: multi-turn warm hits WORK — 2.2K-token system
+#    prompt, TTFT 2.80s cold -> 1.00s/0.89s on turns 2/3 (~3x), Marconi
+#    checkpoint restored, only the new suffix replayed, cached_tokens
+#    reported correctly. The earlier "no TTFT win (2.13s -> 2.12s)" note
+#    was measured on an IDENTICAL-repeat full-prompt hit, whose exact-leaf
+#    snapshot shortcut is deliberately bypassed as unsound — that case
+#    recomputes by design and says nothing about real conversations.
+#    Remaining warm-turn budget: ~0.36s suffix prefill + snapshots, ~0.41s
+#    DFlash drafter bootstrap (no cross-turn drafter carry yet — also why
+#    warm turns open with 0/7 accepts), ~0.2s first steps.
 #  * Prefix caching is the feature with the most correctness history in
 #    this codebase — cross-request contamination and block aliasing have
 #    both been real bugs on other model families. If you see a reply that
