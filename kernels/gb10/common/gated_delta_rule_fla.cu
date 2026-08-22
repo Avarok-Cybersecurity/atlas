@@ -133,6 +133,32 @@ __device__ __forceinline__ void mma_gram(
 //   W_out: [.. ][CHUNK][K_DIM]   = T·(β·exp(gc)·K)
 // where T=(I+L)⁻¹ applied by forward-substitution (parallel over the V/K cols).
 // smem: sk_bf(16K) + kk(16K f32) + L(16K f32) + gc(256) ≈ 48.25KB.
+// ── MEASURED (2026-08-22): the LOCAL-memory accumulator is not the problem ──
+// ptxas reports `256 bytes stack frame` here — exactly `float u[CHUNK]`, which
+// cannot live in registers because `u[l]` is indexed by a runtime `l`, so it is
+// placed in local memory. That looks like ~2048 local loads per thread and an
+// obvious thing to "fix". It is not.
+//
+// A/B against an otherwise byte-identical kernel with the accumulator moved to
+// shared memory (0-byte stack frame, same 82 registers), measured with the
+// `WU_BENCH_ITERS` loop in `examples/gdn_recompute_wu_gateb.rs`:
+//
+//     nt=1   71.7 us  ->  88.3 us   (0.81x)
+//     nt=2  101.1 us  -> 170.7 us   (0.59x)
+//     nt=4  149.5 us  -> 199.3 us   (0.75x)
+//
+// SLOWER at every shape. Local memory here is per-thread interleaved, so reads
+// at a fixed `l` across threads coalesce and stay in L1; the accumulator was
+// never costing much. What the shared-memory version DOES cost is 256x64 floats
+// = 64 KB of extra smem, taking occupancy from 3 CTAs/SM to 1.
+//
+// Two conclusions, both load-bearing for anyone optimising this kernel:
+//   1. The cost is the 64-step SERIAL chain in `i`, not memory. Only a blocked
+//      or tensor-core reformulation can touch it.
+//   2. Shared memory is NOT free here. Any reformulation that buys speed with a
+//      materially larger smem footprint has to beat a measured 0.59-0.81x
+//      occupancy penalty before it is even at parity. A blocked solve holding
+//      the solved rows in smem was drafted and rejected on exactly this ground.
 // 256 threads: mma_gram is fenced to the first 4 warps, and the two independent
 // forward-subs run concurrently on the two thread halves instead of back-to-back.
 extern "C" __global__ void __launch_bounds__(256, 1)
