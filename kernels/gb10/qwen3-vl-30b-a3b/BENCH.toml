@@ -1,0 +1,53 @@
+# Benchmarks for this model, and the thresholds its gate records must meet.
+#
+# Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path and cannot disagree with the
+# contents. Read by `atlas_plugin::gate::bench`.
+#
+# This file is deliberately OUTSIDE the closure hash (`taxon::configs` does not
+# list it), so ratcheting a threshold does not invalidate the record that
+# justified the ratchet.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4"
+gate = "ttft-cold-gate"
+recipe = "qwen3-vl/qwen3-vl-30b-a3b-nvfp4"
+label = "Qwen3-VL-30B-A3B vision MoE (NVFP4)"
+status = "measured"
+note = """\
+FIRST gate for this target — it had no BENCH.toml at all, so nothing held its \
+cold TTFT in place. That mattered: building the MoE prefill copies in \
+Qwen3VLWeightLoader took this model's cold TTFT from 1797.20 ms to 982.95 ms \
+(-45.3%, cold_ttft.py n=8), and an unguarded win is one silent loader change \
+away from being given back.
+
+Ceilings = the GATE's own dgx1 baseline x the gate limits: median 552.2 ms x \
++3% and p90 2203.7 ms x +5%. Measured through `--url` against a hand-served \
+endpoint, which is the only way to bootstrap a target with no entry yet: \
+`baseline_for` DROPS status="unmeasured" rows, so an unmeasured row cannot be \
+written first and then filled in — the gate simply refuses to resolve. NOTE the \
+gate's numbers are NOT the cold_ttft.py numbers (552.2 vs 982.95); different \
+harness, different prompt ladder, not interchangeable. Only the gate's own \
+figures may be cut into ceilings.
+
+TTFT is box-local by nature — a different box must re-record this baseline \
+rather than reuse it."""
+
+[benchmarks.metrics.median_ms]
+max = 568.77
+
+[benchmarks.metrics.p90_ms]
+max = 2313.89
+
+
+# ── ttft-warm-gate: DELIBERATELY ABSENT until atlas-recipes#24 lands ──────────
+# This recipe does not set `enable_prefix_caching`, so the gate serves it, every
+# warm leg returns `cached 0 tok`, and it re-measures COLD prefill under a warm
+# label. Measured on dgx1: warm 1024 tok 546.1 ms vs cold 1024 tok 549.1 ms —
+# 0.5% apart because they are the same work. With the flag the same box measures
+# warm at 21.8 ms with 1136 tokens cached, 25x apart.
+#
+# An entry here would therefore either fail every run, or be cut from the
+# cold-prefill numbers and gate nothing. Absence is the honest state; the entry
+# lands with the recipe fix.
