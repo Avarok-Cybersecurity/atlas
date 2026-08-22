@@ -78,6 +78,7 @@ fn ptx_param_count(ptx: &str, kernel: &str) -> Option<usize> {
 }
 
 #[test]
+#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
 fn w4a16_launch_family_arity_pins() {
     // `ATLAS_SKIP_BUILD=1` (the CI environment, and any host without nvcc)
     // makes build.rs emit a STUB `target_ptx.rs` with no compiled kernels.
