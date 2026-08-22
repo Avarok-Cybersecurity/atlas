@@ -29,7 +29,7 @@ pub(super) struct LoopDetectOut {
 /// verdict is still detected, logged, and metered, but the `<tool_call>`
 /// hard-mask is NOT applied (the benign Hint path is unaffected). Default OFF
 /// ⇒ byte-identical to today; additive, model-agnostic.
-fn loop_suppress_disabled() -> bool {
+pub(super) fn loop_suppress_disabled() -> bool {
     std::env::var("ATLAS_LOOP_NO_SUPPRESS").as_deref() == Ok("1")
 }
 
@@ -207,12 +207,22 @@ pub(super) fn check_loops(messages: &[Message], tools_active: bool) -> LoopDetec
                      SKIPPED (escape action stays available); soft bias decay only"
                 );
             } else {
-                tracing::warn!(
-                    score = *score,
-                    run_length = *run_length,
-                    channel = channel.name(),
-                    "Loop detector → SUPPRESS: hard-mask <tool_call> for one turn"
-                );
+                if loop_suppress_disabled() {
+                    tracing::warn!(
+                        score = *score,
+                        run_length = *run_length,
+                        channel = channel.name(),
+                        "Loop detector → SUPPRESS verdict (ATLAS_LOOP_NO_SUPPRESS=1: \
+                         hard-mask AND soft bias decay NOT applied)"
+                    );
+                } else {
+                    tracing::warn!(
+                        score = *score,
+                        run_length = *run_length,
+                        channel = channel.name(),
+                        "Loop detector → SUPPRESS: hard-mask <tool_call> for one turn"
+                    );
+                }
             }
             suppress_tool_call = !failing_repeat && !progressing && !loop_suppress_disabled();
             tool_call_repeat_count = *run_length;
@@ -268,10 +278,17 @@ pub(super) fn check_loops(messages: &[Message], tools_active: bool) -> LoopDetec
     }
 
     if spinning {
-        tracing::warn!(
-            recent_short,
-            "Spinning detection fired — suppressing <tool_call>"
-        );
+        if loop_suppress_disabled() {
+            tracing::warn!(
+                recent_short,
+                "Spinning detection fired (ATLAS_LOOP_NO_SUPPRESS=1: not suppressing)"
+            );
+        } else {
+            tracing::warn!(
+                recent_short,
+                "Spinning detection fired — suppressing <tool_call>"
+            );
+        }
         suppress_tool_call = !loop_suppress_disabled();
     }
 

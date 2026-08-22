@@ -233,9 +233,15 @@ pub(super) fn build_sampling(
 
     // Exponential `<tool_call>` bias decay. Skipped under ATLAS_FORCE_TEMP_ZERO
     // so the argmax is determined purely by raw logits (matches vLLM's path).
+    // ALSO skipped under ATLAS_LOOP_NO_SUPPRESS=1: the env promised "no
+    // loop-detector interference", but this decay survived it — and a logit
+    // bias forces the host sampling path where it applies EVEN AT TEMP 0
+    // (-5/-10 on <tool_call> at repeat>=3 flips the argmax away from tool
+    // calls — user-observed as the detector still "firing on tools").
     if !force_temp_zero
         && tools_active
         && !suppress_tool_call
+        && !super::loop_detect::loop_suppress_disabled()
         && let Some(tc_id) = state.tool_call_start_token_id
     {
         let bias = match tool_call_repeat_count {
