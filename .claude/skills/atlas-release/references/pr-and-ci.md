@@ -83,16 +83,16 @@ signature on `synchronize`/push so re-pushes don't wipe it.
   automation the maintainer owns.
 - The `allowlist` originally covered only **bots** (`dependabot[bot]`,
   `renovate[bot]`, `google-labs-jules[bot]`, `claude[bot]`, plus bare
-  `google-labs-jules`/`claude`). The maintainer's own human accounts (`AzeezIsh`,
-  `tbraun96`) were **not** on it — so their AI PRs depended on the mutable
-  signature-state file rather than a stable rule.
+  `google-labs-jules`/`claude`). The maintainer's own human account (`tbraun96`)
+  was **not** on it — so their AI PRs depended on the mutable signature-state
+  file rather than a stable rule.
 - The dynamic-signature bolt-on is a maintenance smell: it papers over the
   ceremony not persisting across re-pushes, depends on comment order (`.[-1]`) and
   heredoc delimiters, and `cla.json` was hand-seeded with synthetic timestamps.
 
 ### The cleanup
 1. **✅ Applied — allowlist the maintainer-controlled identities.** This pass added
-   `AzeezIsh,tbraun96` to `cla.yml`'s `allowlist` so their (AI-generated) PRs never
+   `tbraun96` to `cla.yml`'s `allowlist` so their (AI-generated) PRs never
    touch the CLA path. Rationale: the maintainers already own the copyright and have
    signed — the gate adds nothing on their own PRs, and the allowlist is a stable
    rule where the `cla.json` state is a mutable file on a side branch. (Left in the
