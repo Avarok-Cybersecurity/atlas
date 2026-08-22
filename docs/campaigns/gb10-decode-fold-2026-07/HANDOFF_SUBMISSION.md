@@ -1,6 +1,6 @@
 # Submission handoff — chain-widened decode (K=4), GB10 dense-27B
 
-**For:** Azeez (submission owner). **Code:** folded + pushed. **E2E:** golden config, full both-phase.
+**For:** the submission owner. **Code:** folded + pushed. **E2E:** golden config, full both-phase.
 
 ## 1. What changed (all folded, pushed, gated)
 
