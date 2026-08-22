@@ -31,7 +31,6 @@
 
 use anyhow::{Result, bail};
 
-use super::cuTensorMapEncodeTiled;
 use crate::gpu::DevicePtr;
 
 /// Verified against `/usr/local/cuda/include/cuda.h` (CUDA 13.0). Note
@@ -43,6 +42,42 @@ const CU_TENSOR_MAP_INTERLEAVE_NONE: u32 = 0;
 const CU_TENSOR_MAP_SWIZZLE_NONE: u32 = 0;
 const CU_TENSOR_MAP_L2_PROMOTION_L2_128B: u32 = 2;
 const CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE: u32 = 0;
+
+/// `cuTensorMapEncodeTiled`, looked up once in the already-loaded libcuda.
+///
+/// `RTLD_DEFAULT` searches the global scope, so this finds the driver the
+/// process has already loaded rather than opening a second copy. Cached in a
+/// `OnceLock`: the lookup is cheap but not free, and descriptor construction sits
+/// on the prefill path.
+type EncodeTiledFn = unsafe extern "C" fn(
+    *mut u8,
+    u32,
+    u32,
+    u64,
+    *const u64,
+    *const u64,
+    *const u32,
+    *const u32,
+    u32,
+    u32,
+    u32,
+    u32,
+) -> i32;
+
+fn tensor_map_encode_tiled() -> Option<EncodeTiledFn> {
+    static CACHED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let addr = (*CACHED.get_or_init(|| {
+        unsafe extern "C" {
+            fn dlsym(handle: *mut std::ffi::c_void, symbol: *const i8) -> *mut std::ffi::c_void;
+        }
+        let name = c"cuTensorMapEncodeTiled";
+        let p = unsafe { dlsym(std::ptr::null_mut(), name.as_ptr().cast::<i8>()) };
+        if p.is_null() { None } else { Some(p as usize) }
+    }))?;
+    // SAFETY: the symbol resolved from libcuda has exactly this signature; it is
+    // the documented prototype for cuTensorMapEncodeTiled.
+    Some(unsafe { std::mem::transmute::<usize, EncodeTiledFn>(addr) })
+}
 
 /// A 128-byte TMA descriptor, aligned as the driver requires.
 #[repr(C, align(64))]
@@ -106,9 +141,24 @@ impl TensorMap {
         let box_dim: [u32; 2] = [box_cols, box_rows];
         let element_strides: [u32; 2] = [1, 1];
 
+        // ★ RESOLVED AT RUNTIME, NOT LINKED. `cuTensorMapEncodeTiled` is a CUDA
+        // 12.0+ driver entry point, and a link-time `extern "C"` makes the whole
+        // workspace fail to LINK anywhere the available libcuda stub predates it:
+        //
+        //   rust-lld: error: undefined symbol: cuTensorMapEncodeTiled
+        //
+        // which is what CI hit while a local build with CUDA 13.0 linked fine.
+        // `dlsym` also degrades honestly — a driver without the symbol yields a
+        // clear error here and the caller falls back to its non-TMA path, rather
+        // than the binary refusing to build for everyone.
+        let f = tensor_map_encode_tiled().ok_or_else(|| {
+            anyhow::anyhow!(
+                "cuTensorMapEncodeTiled not present in libcuda — TMA needs a CUDA 12.0+ driver"
+            )
+        })?;
         let mut map = TensorMap([0u8; 128]);
         let rc = unsafe {
-            cuTensorMapEncodeTiled(
+            f(
                 map.0.as_mut_ptr(),
                 CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
                 2,
