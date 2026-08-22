@@ -115,7 +115,7 @@ pub fn dense_gemm(
 /// Same math AND the same per-output FP32 accumulation order (strict
 /// k = 0..K-1) as the scalar `dense_gemm` — bit-identical output under the
 /// kernel dir's `--fmad=false` build (verified 0 differing elements at the
-/// router shapes M=4510/M=2255, [M,2048]x[2048,256]) — at ~2x the speed via
+/// router shapes M=4510/M=2255, `[M,2048]x[2048,256]`) — at ~2x the speed via
 /// register blocking + vectorized smem staging. This is the ONLY fast GEMM
 /// that satisfies the 2026-08-12 router-numerics pin (see
 /// `router_gate_gemm_dense`); tensor-core kernels reassociate and stay
