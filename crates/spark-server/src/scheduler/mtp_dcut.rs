@@ -286,7 +286,7 @@ pub(super) fn plan(
 
 /// Split a batch into verify chunks: `[lo, hi)` index ranges over `ks`.
 ///
-/// ONE cap: the row-buffer bound (`VERIFY_ROW_BUDGET` = 96) — the audited
+/// ONE cap: the row-buffer bound (`VERIFY_ROW_BUDGET` = 160) — the audited
 /// verify envelope (meta gaps / logits rows / bt staging, sizes.rs). The
 /// sequence-count cap is DERIVED from it per chunk (`budget / widest rows`:
 /// rows=4 → 24 seqs, rows=3 → 32 = the 32:2 shape in one chunk, rows=2 → 48;
