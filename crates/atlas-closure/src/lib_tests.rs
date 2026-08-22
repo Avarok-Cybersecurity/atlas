@@ -275,6 +275,16 @@ fn non_source_inputs_each_move_the_hash() {
     flags.flags.push("-O3".into());
     assert_ne!(base, hash(&d, &flags).unwrap(), "nvcc flags");
 
+    let mut define_then_undefine = inputs(vec![src.clone()]);
+    define_then_undefine.flags = vec!["-DSELECTED=1".into(), "-USELECTED".into()];
+    let mut undefine_then_define = inputs(vec![src.clone()]);
+    undefine_then_define.flags = vec!["-USELECTED".into(), "-DSELECTED=1".into()];
+    assert_ne!(
+        hash(&d, &define_then_undefine).unwrap(),
+        hash(&d, &undefine_then_define).unwrap(),
+        "nvcc flag order"
+    );
+
     let mut arch = inputs(vec![src.clone()]);
     arch.arch = "sm_120a".into();
     assert_ne!(base, hash(&d, &arch).unwrap(), "arch");
