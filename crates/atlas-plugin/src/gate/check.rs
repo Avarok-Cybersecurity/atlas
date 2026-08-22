@@ -181,7 +181,7 @@ pub fn invalidating_paths(
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .filter(|p| super::coverage::invalidates(gate, p))
-            // ★ The one-time 2026-08-16 amnesty: a surviving path whose blob
+            // ★ A one-time content-pinned amnesty: a surviving path whose blob
             // at `head` is exactly the grant's pinned content is excused,
             // loudly. Content-pinned, so any later edit to the file changes
             // the OID and invalidates as before. See `amnesty.rs` for the
@@ -190,7 +190,7 @@ pub fn invalidating_paths(
                 if super::amnesty::excused(root, head, p) {
                     tracing::warn!(
                         "amnesty: {p} would re-open {} but its content at {head} is the \
-                         pinned one-time 2026-08-16 grant — excused (see gate/amnesty.rs)",
+                         pinned one-time grant; excused (see gate/amnesty.rs)",
                         gate.id
                     );
                     return false;
@@ -215,7 +215,7 @@ pub fn check_gates(root: &Path, sha: &str) -> BTreeMap<String, GateStatus> {
 ///
 /// Records were located by DIRECTORY and their own `benchmark_id` was never
 /// read back. Nothing stopped one gate's record from satisfying another's, and
-/// two of the five gates make that a one-command forgery:
+/// two of the required gates make that a one-command forgery:
 /// `ttft-warm-gate` and `ttft-cold-gate` share a checkpoint, a hardware key and
 /// their metric names (`median_ms`, `p90_ms`). On `main` today the committed
 /// WARM record reads 1562.58 / 4478.42 against the COLD ceilings of
