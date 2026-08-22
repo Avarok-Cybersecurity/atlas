@@ -286,6 +286,13 @@ export ATLAS_KV_OVERCOMMIT=1
 #    both been real bugs on other model families. If you see a reply that
 #    belongs to a DIFFERENT conversation, or output that degenerates only
 #    on repeat prompts, drop --enable-prefix-caching first and tell me.
+# Util 0.80 (was 0.65), 2026-08-22: the preflight now reserves the DFlash
+# SSM verify pools honestly (they were allocated OUTSIDE the pledge before —
+# 13.7 GB tracked vs a 1.3 GB reserve; the old 0.65 serve actually consumed
+# ~95 GB against its 79 GB promise). At an honest 0.65 this profile does not
+# fit and the boot refuses; 0.80 pledges 97 GB, which covers the same real
+# footprint WITH the pools inside it and gives KV more than the old boot had.
+# 0.80 is the hard ceiling for this box — never raise it further.
 exec ./target/release/spark serve \
   --model-from-path "$TARGET" \
   --model-name unsloth/Qwen3.8-27B-NVFP4 \
@@ -294,7 +301,7 @@ exec ./target/release/spark serve \
   --bind 0.0.0.0 --port 8888 \
   --max-seq-len "$MAX_SEQ_LEN" \
   --max-num-seqs "$SEQS" --max-batch-size "$SEQS" \
-  --gpu-memory-utilization 0.65 \
+  --gpu-memory-utilization 0.80 \
   --request-timeout 900 \
   --max-prefill-tokens 8192 \
   --enable-prefix-caching true \
