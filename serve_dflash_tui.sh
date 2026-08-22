@@ -270,7 +270,8 @@ export ATLAS_KV_OVERCOMMIT=1
 #    so you get block-table reuse but NO TTFT win. The Marconi snapshot
 #    slots are what make a warm turn fast — but they are EXPENSIVE here:
 #    ~151 MB per slot, so 16 slots ~= 2.4 GB and 64 slots ~= 9.7 GB of GPU
-#    memory. At --gpu-memory-utilization 0.65 that is a big bite, so this
+#    memory. Even at util 0.80 (pledge headroom ~4 GB) that is a big bite,
+#    so this
 #    stays at the default 16. Raise it only if you have headroom, and NOT
 #    together with 128K ctx unless you have checked free memory.
 #  * Costs ~1.7% aggregate throughput at C=8 on this profile (101.4 -> 103.1
