@@ -28,7 +28,7 @@ MODEL_NAME="${MODEL_NAME:-nvidia/DeepSeek-V4-Flash-NVFP4}"
 MODEL_DIR="${MODEL_DIR:-v4-nvfp4-mtp}"
 # Explicit per-node host paths (avoids the $HOME footgun: $HOME resolves to
 # /workspace in some shells, whose cache dir is empty).
-MODEL_HOST_HEAD="${MODEL_HOST_HEAD:-/home/azeez/.cache/huggingface/hub/${MODEL_DIR}}"
+MODEL_HOST_HEAD="${MODEL_HOST_HEAD:-/home/$(id -un)/.cache/huggingface/hub/${MODEL_DIR}}"
 MODEL_HOST_WORKER="${MODEL_HOST_WORKER:-/raid/hf-cache/hub/${MODEL_DIR}}"
 IMAGE="${IMAGE:-atlas-deepseek-v4:latest}"
 HEAD_IP="${HEAD_IP:-127.0.0.1}"
@@ -93,7 +93,7 @@ NCCL_ENV="\
   -e NCCL_DEBUG_SUBSYS=INIT,NET"
 
 # Volume mounts for model weights (host paths differ per node).
-# DGX1 (head):   /home/azeez/.cache/huggingface/hub/<MODEL_DIR>
+# DGX1 (head):   /home/<user>/.cache/huggingface/hub/<MODEL_DIR>
 # DGX2 (worker): /raid/hf-cache/hub/<MODEL_DIR>
 VOL_HEAD="-v ${MODEL_HOST_HEAD}:/model"
 VOL_WORKER="-v ${MODEL_HOST_WORKER}:/model"

@@ -74,28 +74,10 @@ impl ModelWeightLoader for Qwen3WeightLoader {
 
         let h = config.hidden_size;
 
-        // Estimate MoE transpose memory — skip if GPU can't hold all layers' transposed copies.
-        let skip_moe_transpose = {
-            let inter = config.moe_intermediate_size;
-            let h = config.hidden_size;
-            let group_size = 16usize;
-            let gu_bytes = inter * h / 2 + inter * h / group_size;
-            let d_bytes = h * inter / 2 + h * inter / group_size;
-            let per_layer = config.num_experts * (2 * gu_bytes + d_bytes);
-            let total = per_layer * config.num_hidden_layers;
-            let available = gpu.free_memory().unwrap_or(0);
-            let headroom = 2 * 1024 * 1024 * 1024;
-            let skip = total > available.saturating_sub(headroom);
-            if skip {
-                tracing::warn!(
-                    "Skipping MoE weight transposition ({:.1} GB needed, {:.1} GB available). \
-                     Prefill will use fallback grouped GEMM.",
-                    total as f64 / (1024.0 * 1024.0 * 1024.0),
-                    available as f64 / (1024.0 * 1024.0 * 1024.0),
-                );
-            }
-            skip
-        };
+        // SSOT: the budget arithmetic and the `ATLAS_MOE_PREFILL_COPIES` lever
+        // live in `super::moe_prefill_copies_fit` — shared with every other MoE
+        // loader instead of one inline copy per family.
+        let skip_moe_transpose = !super::moe_prefill_copies_fit(config, gpu);
 
         for (i, lt) in layer_types.iter().enumerate() {
             let lp = config.layer_prefix(i);
