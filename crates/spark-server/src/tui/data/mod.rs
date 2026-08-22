@@ -8,6 +8,7 @@ pub mod catalogue;
 pub mod kernels;
 pub mod library;
 pub mod metrics_poll;
+pub mod thermal;
 
 /// Free GPU memory in bytes, or `None` where no such query exists.
 ///

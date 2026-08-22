@@ -36,7 +36,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
         .split(rows[2]);
     draw_sequences(f, app, bottom[0]);
-    draw_spec_cache(f, app, bottom[1]);
+    // Thermal sits under speculation & cache rather than taking a column of its
+    // own: it is a small fixed-height panel, and splitting the bottom row three
+    // ways would squeeze the two that carry per-sequence detail.
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(6)])
+        .split(bottom[1]);
+    draw_spec_cache(f, app, right[0]);
+    super::stats_thermal::draw(f, app, right[1]);
 }
 
 fn tile(f: &mut Frame, area: Rect, title: &str, value: Line, spark: Option<&[u64]>) {
