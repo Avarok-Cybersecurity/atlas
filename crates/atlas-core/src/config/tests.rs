@@ -379,7 +379,10 @@ fn test_parse_nemotron_h_puzzle_config() {
     // Non-MoE layers fall back to scalar max
     assert_eq!(cfg.moe_intermediate_size, 2688);
     assert_eq!(cfg.num_experts_per_tok, 22);
+    assert_eq!(cfg.moe_intermediate_size_for(0), 2688);
+    assert_eq!(cfg.num_experts_per_tok_for(0), 22);
     assert_eq!(cfg.max_moe_intermediate_size(), 2688);
+    assert_eq!(cfg.moe_input_size(), 1024);
     assert_eq!(cfg.weight_prefix, "backbone");
 }
 
