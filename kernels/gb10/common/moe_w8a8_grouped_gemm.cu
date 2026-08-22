@@ -4,19 +4,20 @@
 //
 // Same shape/layout as `moe_fp8_grouped_gemm.cu` but:
 //   - A is FP8 E4M3 (one byte per element), pre-quantized per-token-per-128
-//     via `per_token_group_quant_fp8`. Dequanted to BF16 in smem via LUT
-//     (lossless: FP8 3-bit mantissa fits in BF16 7-bit).
+//     via `per_token_group_quant_fp8`. Dequanted to BF16 in smem via exact
+//     bit arithmetic (lossless: FP8 3-bit mantissa fits in BF16 7-bit).
 //   - a_scale[M_total, K/128] FP32 — looked up via sorted_token_ids[m_start + m_idx].
 //   - b_scale[N/128, K/128] FP32 — scale_inv widened to FP32 at load (read once per fold).
 //   - Two-level FP32 accumulation: inner_acc over K=128 block (4× K_STEP=16),
 //     then outer_acc += inner_acc × (a_scale[row, kb] × b_scale[col, kb]).
 //
-//   C[M_expert, N] = bf16( Σ_kb ( Σ_(k∈kb) bf16(LUT[A_fp8[m,k]]) * bf16(LUT[B_fp8[n,k]]) )
+//   C[M_expert, N] = bf16( Σ_kb ( Σ_(k∈kb) bf16(e4m3(A_fp8[m,k])) * bf16(e4m3(B_fp8[n,k])) )
 //                       * a_scale[orig_token(m), kb] * b_scale[n/128, kb] )
 //
 // Grid: (ceil(N/64), max_m_tiles, num_experts)  Block: (128, 1, 1)
 
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 
 #define M_TILE 64
 #define N_TILE 64
@@ -25,72 +26,21 @@
 #define FP8_BLOCK 128
 #define K_PROMOTE 64
 
-__device__ __constant__ float E4M3_LUT_W8A8[256] = {
-    0.0f, 0.001953125f, 0.00390625f, 0.005859375f,
-    0.0078125f, 0.009765625f, 0.01171875f, 0.013671875f,
-    0.015625f, 0.017578125f, 0.01953125f, 0.021484375f,
-    0.0234375f, 0.025390625f, 0.02734375f, 0.029296875f,
-    0.03125f, 0.03515625f, 0.0390625f, 0.04296875f,
-    0.046875f, 0.05078125f, 0.0546875f, 0.05859375f,
-    0.0625f, 0.0703125f, 0.078125f, 0.0859375f,
-    0.09375f, 0.1015625f, 0.109375f, 0.1171875f,
-    0.125f, 0.140625f, 0.15625f, 0.171875f,
-    0.1875f, 0.203125f, 0.21875f, 0.234375f,
-    0.25f, 0.28125f, 0.3125f, 0.34375f,
-    0.375f, 0.40625f, 0.4375f, 0.46875f,
-    0.5f, 0.5625f, 0.625f, 0.6875f,
-    0.75f, 0.8125f, 0.875f, 0.9375f,
-    1.0f, 1.125f, 1.25f, 1.375f,
-    1.5f, 1.625f, 1.75f, 1.875f,
-    2.0f, 2.25f, 2.5f, 2.75f,
-    3.0f, 3.25f, 3.5f, 3.75f,
-    4.0f, 4.5f, 5.0f, 5.5f,
-    6.0f, 6.5f, 7.0f, 7.5f,
-    8.0f, 9.0f, 10.0f, 11.0f,
-    12.0f, 13.0f, 14.0f, 15.0f,
-    16.0f, 18.0f, 20.0f, 22.0f,
-    24.0f, 26.0f, 28.0f, 30.0f,
-    32.0f, 36.0f, 40.0f, 44.0f,
-    48.0f, 52.0f, 56.0f, 60.0f,
-    64.0f, 72.0f, 80.0f, 88.0f,
-    96.0f, 104.0f, 112.0f, 120.0f,
-    128.0f, 144.0f, 160.0f, 176.0f,
-    192.0f, 208.0f, 224.0f, 240.0f,
-    256.0f, 288.0f, 320.0f, 352.0f,
-    384.0f, 416.0f, 448.0f, 0.0f,
-    -0.0f, -0.001953125f, -0.00390625f, -0.005859375f,
-    -0.0078125f, -0.009765625f, -0.01171875f, -0.013671875f,
-    -0.015625f, -0.017578125f, -0.01953125f, -0.021484375f,
-    -0.0234375f, -0.025390625f, -0.02734375f, -0.029296875f,
-    -0.03125f, -0.03515625f, -0.0390625f, -0.04296875f,
-    -0.046875f, -0.05078125f, -0.0546875f, -0.05859375f,
-    -0.0625f, -0.0703125f, -0.078125f, -0.0859375f,
-    -0.09375f, -0.1015625f, -0.109375f, -0.1171875f,
-    -0.125f, -0.140625f, -0.15625f, -0.171875f,
-    -0.1875f, -0.203125f, -0.21875f, -0.234375f,
-    -0.25f, -0.28125f, -0.3125f, -0.34375f,
-    -0.375f, -0.40625f, -0.4375f, -0.46875f,
-    -0.5f, -0.5625f, -0.625f, -0.6875f,
-    -0.75f, -0.8125f, -0.875f, -0.9375f,
-    -1.0f, -1.125f, -1.25f, -1.375f,
-    -1.5f, -1.625f, -1.75f, -1.875f,
-    -2.0f, -2.25f, -2.5f, -2.75f,
-    -3.0f, -3.25f, -3.5f, -3.75f,
-    -4.0f, -4.5f, -5.0f, -5.5f,
-    -6.0f, -6.5f, -7.0f, -7.5f,
-    -8.0f, -9.0f, -10.0f, -11.0f,
-    -12.0f, -13.0f, -14.0f, -15.0f,
-    -16.0f, -18.0f, -20.0f, -22.0f,
-    -24.0f, -26.0f, -28.0f, -30.0f,
-    -32.0f, -36.0f, -40.0f, -44.0f,
-    -48.0f, -52.0f, -56.0f, -60.0f,
-    -64.0f, -72.0f, -80.0f, -88.0f,
-    -96.0f, -104.0f, -112.0f, -120.0f,
-    -128.0f, -144.0f, -160.0f, -176.0f,
-    -192.0f, -208.0f, -224.0f, -240.0f,
-    -256.0f, -288.0f, -320.0f, -352.0f,
-    -384.0f, -416.0f, -448.0f, -0.0f,
-};
+// Exact FP8 E4M3 -> BF16 dequant via bit arithmetic (replaces a 256-entry
+// __constant__ LUT: 32 lanes indexing 32 different __constant__ addresses
+// serialize the warp; this is pure ALU and issues at full width).
+// An e4m3 magnitude placed in a half's bit layout ((b&0x7f)<<7) has bias 15
+// instead of 7 and the same mantissa alignment, so value = half(bits) * 2^8.
+// Denormals map to half denormals with the same 2^8 offset — exact for all
+// codes. The NaN codes 0x7F/0xFF must be guarded to +/-0.0f to match the
+// historical LUT mapping (otherwise they dequant to +/-480).
+__device__ __forceinline__ __nv_bfloat16 e4m3_to_bf16_w8a8(unsigned char b) {
+    unsigned short h = (unsigned short)((b & 0x7f) << 7);
+    float f = __half2float(__ushort_as_half(h)) * 256.0f;
+    if ((b & 0x7f) == 0x7f) f = 0.0f;
+    f = (b & 0x80) ? -f : f;
+    return __float2bfloat16(f);
+}
 
 __device__ __forceinline__ void fp8_w8a8_mma(
     __nv_bfloat16 smem_A[][K_STEP + PAD],
@@ -223,7 +173,7 @@ extern "C" __global__ void moe_w8a8_grouped_gemm(
                     int token_id = smem_token_id[row];
                     if (token_id >= 0) {
                         unsigned char a_byte = A_fp8[(unsigned long long)token_id * K + gc];
-                        smem_A[row][col] = __float2bfloat16(E4M3_LUT_W8A8[a_byte]);
+                        smem_A[row][col] = e4m3_to_bf16_w8a8(a_byte);
                     } else {
                         smem_A[row][col] = __float2bfloat16(0.0f);
                     }
@@ -233,21 +183,26 @@ extern "C" __global__ void moe_w8a8_grouped_gemm(
             }
         }
 
-        // Dequant B tile: FP8 E4M3 → BF16 via LUT (lossless).
-        {
-            #pragma unroll
-            for (unsigned int i = 0; i < 8; i++) {
-                unsigned int idx = threadIdx.x * 8 + i;
-                unsigned int k = idx / N_TILE;
-                unsigned int n = idx % N_TILE;
-                unsigned int gk = k_base + k;
-                unsigned int gn = cta_n + n;
-
-                if (gk < K && gn < N) {
-                    unsigned char b_byte = B_exp[(unsigned long long)gn * K + gk];
-                    smem_B[k][n] = __float2bfloat16(E4M3_LUT_W8A8[b_byte]);
-                } else {
-                    smem_B[k][n] = __float2bfloat16(0.0f);
+        // Dequant B tile: FP8 E4M3 → BF16 (lossless). Thread t < N_TILE loads
+        // the 16 consecutive K bytes of row n = t as ONE 16-byte uint4 (fully
+        // coalesced along K) instead of 8 single-byte loads strided by K
+        // (32x sector amplification). Scalar tail for K % 16 != 0 or N edges
+        // (production K = 2048 / 512 are both multiples of K_STEP = 16).
+        if (threadIdx.x < N_TILE) {
+            unsigned int n = threadIdx.x;
+            unsigned int gn = cta_n + n;
+            if (gn < N && k_base + K_STEP <= K) {
+                uint4 v = *(const uint4*)&B_exp[(unsigned long long)gn * K + k_base];
+                const unsigned char* b = (const unsigned char*)&v;
+                #pragma unroll
+                for (int k = 0; k < 16; k++)
+                    smem_B[k][n] = e4m3_to_bf16_w8a8(b[k]);
+            } else {
+                for (int k = 0; k < K_STEP; k++) {
+                    unsigned int gk = k_base + k;
+                    smem_B[k][n] = (gk < K && gn < N)
+                        ? e4m3_to_bf16_w8a8(B_exp[(unsigned long long)gn * K + gk])
+                        : __float2bfloat16(0.0f);
                 }
             }
         }
