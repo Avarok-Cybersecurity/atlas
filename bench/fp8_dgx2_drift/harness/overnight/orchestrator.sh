@@ -40,12 +40,9 @@ for l in open('$H/prompts/graduated.jsonl'):
   git add -A bench/fp8_dgx2_drift/harness >/dev/null 2>&1 || true
   # include any source the agent fixed for this iteration
   git add -A crates kernels 2>/dev/null || true
-  git -c user.name='Azeez Ishaqui' -c user.email='debaterishaqui@gmail.com' \
-    commit -q -m "overnight L${lvl} ${name}: PASS [opencode+claude-code]
+  git commit -q -m "overnight L${lvl} ${name}: PASS [opencode+claude-code]
 
-Prompt: ${pfirst}
-
-Co-Authored-By: Azeez Ishaqui <debaterishaqui@gmail.com>" >/dev/null 2>&1 \
+Prompt: ${pfirst}" >/dev/null 2>&1 \
     && log "committed L${lvl} ${name} PASS ($(git rev-parse --short HEAD))" \
     || log "nothing to commit for L${lvl} (clean tree)"
 }
