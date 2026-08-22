@@ -297,26 +297,24 @@ pub struct ServeArgs {
 
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
-    /// ★ WHAT THE DEFAULT COSTS IN PRACTICE, because "a flipped argmax" reads
-    /// milder than it behaves (measured 2026-08-21, qwen3.8-27B-NVFP4 + DFlash2
-    /// on GB10, one binary, this flag the only variable):
+    /// ★ THIS FLAG IS NOT A CORRECTNESS SWITCH. A 2026-08-21 measurement on
+    /// this doc's earlier revision showed the default chain degenerating
+    /// ("count from 1 to 10" → `1, 2, 100, 100, ...`; video-fidelity 0/2 and
+    /// 0/4 at C=2/C=4) and this flag fixing all of it. That attribution was
+    /// WRONG. The degeneration was a scheduler bug — the K=4 verdict rewound
+    /// a sequence by its pending-draft count instead of the forward's row
+    /// count, erasing committed tokens (fixed in #699) — and this flag only
+    /// changed the gate's dispatch pattern so the bug stopped firing. With
+    /// #699 in place every one of those repros passes with the flag OFF.
     ///
-    ///     prompt "count from 1 to 10"   default: `1, 2, 100, 100, 100, ...`
-    ///                                   exact:   `1, 2, 3, 4, 5, ..., 10`
-    ///     video-fidelity C=1/C=2/C=4    default: 1/1, 0/2, 0/4 correct
-    ///                                   exact:   1/1, 2/2, 4/4 correct
-    ///
-    /// A flipped token does not stay one wrong token. It lands the sequence in
-    /// a repetition attractor, and the DRAFTER THEN AGREES with it — verify
-    /// steps go 7/7 accepted — so the loop is locked in and the reply
-    /// degenerates into repetition or unrelated text until the token cap. This
-    /// is why the symptom looks like a broken drafter while acceptance
-    /// telemetry looks healthy: the accepts are honest, the logits they check
-    /// against are not the ones sequential decode would have produced.
-    ///
-    /// A short reply can hide it entirely — a 2-token "Paris" answer survives —
-    /// so a smoke test that only asks small questions will not see this.
-    /// Fastest repro is a prompt whose correct answer is a short ordered list.
+    /// What the default chain actually does is what #435/#459 measured: ~5e-5
+    /// of lanes differ by 1 ULP against sequential decode, which can flip an
+    /// occasional argmax at temperature 0. No case of that flip causing gross
+    /// degeneration has survived root-causing; every "the default chain broke
+    /// my output" report so far has traced to a different bug that this flag
+    /// happened to perturb. If this flag ever appears to fix a correctness
+    /// problem, treat that as a dispatch-sensitivity SYMPTOM and go find the
+    /// real bug before pinning the flag.
     ///
     /// ★ THE COST IS REAL, and measuring it needs a validated serve profile.
     /// Measured on the LEAN profile (32K ctx, 8 seqs, NO prefix caching — the
@@ -328,9 +326,9 @@ pub struct ServeArgs {
     ///
     /// i.e. -7% to -31%. An earlier measurement of this same flag reported it
     /// as a THROUGHPUT WIN; that was taken on a serve with prefix caching on
-    /// at 128K, where the default arm was pathologically bad for an unrelated
-    /// reason, and it is withdrawn. Benchmark a correctness flag only on a
-    /// profile you have separately validated for throughput.
+    /// at 128K, where the default arm was degenerating under the #699 bug,
+    /// and it is withdrawn. Benchmark a numerics flag only on a profile you
+    /// have separately validated for throughput — and for correctness.
     ///
     /// It does not buy reproducibility either. On the pinned `decode-floor`
     /// benchmark this flag returned 943/553/943 tokens across three IDENTICAL

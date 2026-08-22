@@ -60,14 +60,14 @@ pub struct GdnFlags {
     /// shape measured (#459). Closing that needs single-row routing for the
     /// whole verify forward, which is future work.
     ///
-    /// ★ Do not read "default off" as "default harmless". The divergence this
-    /// closes is not a cosmetic one-token difference at temperature 0: the
-    /// flipped token lands in a repetition attractor that the drafter then
-    /// AGREES with (7/7 accepted), so replies collapse into repetition or
-    /// unrelated text. Measured 2026-08-21 on qwen3.8-27B-NVFP4 + DFlash2,
-    /// `video-fidelity` went 0/2 and 0/4 correct at C=2/C=4 by default and
-    /// 2/2, 4/4 with this flag on. The operator-facing consequences and a
-    /// repro live on `ServeArgs::exact_verify`.
+    /// ★ Attribution warning, learned the hard way: a 2026-08-21 measurement
+    /// showed gross output degeneration (video-fidelity 0/2, 0/4 at C=2/C=4)
+    /// that this flag appeared to fix. The real cause was the K=4 verdict
+    /// rewind bug (#699); this flag only changed dispatch so the bug stopped
+    /// firing. The 1-ULP divergence this flag actually closes has never been
+    /// shown to cause more than an occasional flipped token at temperature 0.
+    /// If flipping this flag changes gross behavior, suspect a dispatch-
+    /// sensitive scheduler bug first. Details on `ServeArgs::exact_verify`.
     pub exact_verify: bool,
 }
 
