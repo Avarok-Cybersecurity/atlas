@@ -41,7 +41,7 @@ weights are provably dead, so GB10 benefits as well.
 
 ---
 
-## #D1 — Why a BF16 hop / dead fallback at all? 💭 design question (raised by Azeez)
+## #D1 — Why a BF16 hop / dead fallback at all? 💭 design question
 Today: FP8-on-disk → dequant to **BF16** (GPU) → quantize to **NVFP4** → keep
 NVFP4 for compute. The BF16 hop exists because `quantize_to_nvfp4` takes BF16
 input, and historically prefill used a BF16 GEMM while decode used the NVFP4
@@ -93,7 +93,7 @@ image is immediately attributable. (NVIDIA returns `CUDA_ERROR_NOT_FOUND` here.)
 ## #4 — memlock default too low for large-model pinning 🩹 environment
 Bare-metal Strix default `memlock` = 8 GB; weight-load host pinning needs more.
 The DGX container used `--ulimit memlock=-1`. Worked around with a
-`limits.d` drop-in (`azeez - memlock unlimited`). Not an Atlas bug, but Atlas
+`limits.d` drop-in (`<user> - memlock unlimited`). Not an Atlas bug, but Atlas
 docs should call out the requirement for non-container hosts. (Was not the real
 OOM cause — see #A1 — but would have bitten regardless.)
 

@@ -30,7 +30,7 @@ export const discussionsUrl = 'https://github.com/Avarok-Cybersecurity/atlas/dis
 export const goodFirstIssuesUrl =
   'https://github.com/Avarok-Cybersecurity/atlas/labels/good%20first%20issue';
 // Single source of truth for contact addresses (footer + reach-out section).
-export const contactEmails = ['thomas@atlasinference.io', 'azeez@atlasinference.io'];
+export const contactEmails = ['thomas@atlasinference.io'];
 
 // third-party artifacts (link-or-cut, each verified live July 2026)
 export const transformersPrUrl = 'https://github.com/huggingface/transformers/pull/46423';

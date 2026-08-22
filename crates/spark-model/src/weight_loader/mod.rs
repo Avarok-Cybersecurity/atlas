@@ -53,6 +53,53 @@ use crate::layer::TransformerLayer;
 use crate::layers::VisionEncoder;
 use crate::weight_map::{DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_variant};
 
+/// Can this box hold the transposed `[K/2, N]` MoE prefill copies for EVERY
+/// layer, and does the operator want them?
+///
+/// The MoE prefill GEMMs read weights K-major; the checkpoint stores them
+/// N-major. Without the transposed copies prefill falls back to the plain
+/// `moe_w4a16_grouped_gemm` path, which on Qwen3-VL-30B measured **695 ms in
+/// `grouped_gate_up` + 351 ms in `grouped_silu_down`** — 59 % of a 1798 ms cold
+/// TTFT — versus 98.9 / 69.5 ms for the same phases on a model that does build
+/// them. So this is not a micro-optimization; skipping it is the slow path.
+///
+/// SSOT: the budget arithmetic used to live inline in `qwen3.rs` only, so every
+/// other MoE loader either hard-coded its own copy or (qwen3_vl, gemma4,
+/// step3p7) silently never transposed at all. One reader, one lever.
+///
+/// `ATLAS_MOE_PREFILL_COPIES=0` forces the fallback — an A/B lever and an
+/// escape hatch for a box under external memory pressure that the free-memory
+/// probe cannot see. Any other value (or unset) means "build them if they fit":
+/// PCND-wise the decision is *derived* from measured free memory, never a
+/// silent constant.
+pub(crate) fn moe_prefill_copies_fit(config: &ModelConfig, gpu: &dyn GpuBackend) -> bool {
+    if std::env::var("ATLAS_MOE_PREFILL_COPIES").ok().as_deref() == Some("0") {
+        tracing::info!("ATLAS_MOE_PREFILL_COPIES=0: MoE prefill uses the fallback grouped GEMM");
+        return false;
+    }
+    let inter = config.moe_intermediate_size;
+    let h = config.hidden_size;
+    // NVFP4 group_size — one ue4m3 scale per 16 elements, alongside the packed
+    // e2m1 pairs. Matches `shard_quantized_nvfp4`'s group_size for this family.
+    let group_size = 16usize;
+    let gu_bytes = inter * h / 2 + inter * h / group_size;
+    let d_bytes = h * inter / 2 + h * inter / group_size;
+    let per_layer = config.num_experts * (2 * gu_bytes + d_bytes);
+    let total = per_layer * config.num_hidden_layers;
+    let available = gpu.free_memory().unwrap_or(0);
+    let headroom = 2 * 1024 * 1024 * 1024;
+    let fits = total <= available.saturating_sub(headroom);
+    if !fits {
+        tracing::warn!(
+            "Skipping MoE weight transposition ({:.1} GB needed, {:.1} GB available). \
+             Prefill will use fallback grouped GEMM.",
+            total as f64 / (1024.0 * 1024.0 * 1024.0),
+            available as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
+    fits
+}
+
 /// Runtime quantization format for weight dispatch.
 ///
 /// Determines which GEMV/GEMM kernels are used for decode, prefill, and
