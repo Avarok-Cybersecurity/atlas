@@ -107,6 +107,17 @@ pub(crate) struct SsmSnapshotPool {
 }
 
 impl SsmSnapshotPool {
+    /// Marconi occupancy: `(slots holding a live snapshot, total LRU
+    /// slots)`. The decode-rollback ring region is deliberately excluded —
+    /// it is deterministically addressed per sequence, not a cache whose
+    /// fullness means anything.
+    pub(super) fn occupancy(&self) -> (usize, usize) {
+        (
+            self.num_slots - self.free_slots.lock().len().min(self.num_slots),
+            self.num_slots,
+        )
+    }
+
     /// Build the snapshot pool.
     ///
     /// `num_slots` sizes the Marconi LRU region; `decode_ring_slots` ×
