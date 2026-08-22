@@ -16,6 +16,9 @@ impl MoeLayer {
     ///
     /// Same pipeline as NVFP4 forward_prefill but uses moe_fp8_grouped_gemm
     /// with FP8 pointer tables instead of NVFP4 pointer tables.
+    // `mt` is re-armed by the last mprof! and not read again; that is the
+    // macro working as intended, not a bug.
+    #[allow(unused_assignments)]
     pub(super) fn forward_prefill_fp8(
         &self,
         input: DevicePtr,
@@ -31,6 +34,33 @@ impl MoeLayer {
         let n = num_tokens as u32;
         let total_expanded = n * top_k;
         let ne = num_experts as usize;
+
+        // ── Profiling (PCND: inert unless `--profile`) ─────────────────────
+        // This path had NO instrumentation, and it is 71.6% of cold prefill
+        // (2204 ms of 3078 ms measured on the 35B at 4k tokens) while the GDN
+        // spine beside it — 6.8% — carries thirteen timers. Every large win
+        // this session came from somewhere the instruments were missing.
+        let profile = ctx.profile;
+        let mut mt = if profile {
+            ctx.gpu.synchronize(stream)?;
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        macro_rules! mprof {
+            ($label:expr) => {
+                if let Some(t) = mt.take() {
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "  MOE prefill [{}] N={}: {}\u{b5}s",
+                        $label,
+                        n,
+                        t.elapsed().as_micros()
+                    );
+                    mt = Some(std::time::Instant::now());
+                }
+            };
+        }
 
         let (gp, up, dp, sh) = match (
             &self.fp8_gate_weight_ptrs,
@@ -119,6 +149,7 @@ impl MoeLayer {
                 n * shared_inter,
                 stream,
             )?;
+            mprof!("silu_mul");
             let shared_down_out = ctx.buffers.attn_output();
             // Quant the post-silu intermediate (K=shared_inter)
             let a2_bytes: usize = m_us * shared_inter as usize;
@@ -220,6 +251,7 @@ impl MoeLayer {
                 n * shared_inter,
                 stream,
             )?;
+            mprof!("silu_mul");
             let shared_down_out = ctx.buffers.attn_output();
             sh_gemm(
                 shared_gate_out,
@@ -284,6 +316,7 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+            mprof!("routing_topk");
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,
@@ -320,6 +353,7 @@ impl MoeLayer {
             top_k,
             stream,
         )?;
+            mprof!("sort_by_expert");
 
         // 4. Max M tiles — sized for worst-case expert skew, not 2× avg.
         // The `(avg * 2)` heuristic silently truncated heavy experts:
@@ -410,6 +444,7 @@ impl MoeLayer {
                 max_m_tiles,
                 stream,
             )?;
+            mprof!("grouped_gemm_w8a8");
             ops::moe_w8a8_grouped_gemm(
                 ctx.gpu,
                 self.moe_w8a8_grouped_gemm_k,
@@ -426,6 +461,7 @@ impl MoeLayer {
                 max_m_tiles,
                 stream,
             )?;
+            mprof!("grouped_gemm_w8a8");
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(input_fp8)?;
             ctx.gpu.free(input_a_scale)?;
@@ -456,6 +492,7 @@ impl MoeLayer {
                 PM4_M_TILE,
                 stream,
             )?;
+            mprof!("tile_worklist");
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
                 self.moe_fp8_grouped_gemm_k,
@@ -473,6 +510,7 @@ impl MoeLayer {
                 wl_cap_items as u32,
                 stream,
             )?;
+            mprof!("grouped_gemm_fp8");
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
                 self.moe_fp8_grouped_gemm_k,
@@ -490,6 +528,7 @@ impl MoeLayer {
                 wl_cap_items as u32,
                 stream,
             )?;
+            mprof!("grouped_gemm_fp8");
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(wl_gu)?;
             ctx.gpu.free(tt_gu)?;
@@ -525,6 +564,7 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
+            mprof!("silu_mul");
             // Quant the permuted post-silu intermediate. Length is
             // total_expanded, K is `inter` (down_proj input dim).
             let m: usize = total_expanded as usize;
@@ -558,6 +598,7 @@ impl MoeLayer {
                 max_m_tiles,
                 stream,
             )?;
+            mprof!("grouped_gemm_w8a8");
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(down_in_fp8)?;
             ctx.gpu.free(down_in_scale)?;
@@ -571,6 +612,7 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
+            mprof!("silu_mul");
             // ── down-proj: separate work-list (N=h, K=inter → different
             // n_tiles than gate/up). sorted_token_ids=NULL keeps the
             // direct-index A-prefetch branch (R6). Builder + grouped GEMM on the
@@ -608,6 +650,7 @@ impl MoeLayer {
                 wl_cap_items as u32,
                 stream,
             )?;
+            mprof!("grouped_gemm_fp8");
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(wl_dn)?;
             ctx.gpu.free(tt_dn)?;
@@ -641,6 +684,7 @@ impl MoeLayer {
             top_k,
             stream,
         )?;
+            mprof!("unpermute_reduce");
 
         // EP all-reduce of routed-expert output FIRST.
         // Shared experts are NOT EP-sharded (every rank loads the full
@@ -681,6 +725,7 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+            mprof!("blend");
         }
 
         super::dump::dump_moe_out(ctx.gpu, stream, output, n, h)?;
