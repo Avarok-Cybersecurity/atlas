@@ -105,7 +105,7 @@ pub const BOUNDARY_FILES: [&str; 8] = [
     // `invalidates` checks BOUNDARY_FILES *before* `on_boundary`, so an
     // off-PERF_PATHS entry works here; a test pins that.
     //
-    // ★ THE COST IS REAL: a taxonomy edit now re-opens all five gates (~4h19m
+    // ★ THE COST IS REAL: a taxonomy edit now re-opens all ten gates (~4h19m
     // of GPU). That is deliberate. The alternative is that removing a `_benches`
     // line silently reduces coverage with nothing to notice — and a cheap edit
     // that quietly weakens the gate is worse than an expensive one that cannot.
@@ -146,6 +146,48 @@ pub const BOUNDARY_FILES: [&str; 8] = [
 /// Matched on the exact file NAME, so a directory or source file that merely
 /// ends with the same characters is unaffected.
 const NON_COMPILED_KERNEL_FILES: [&str; 1] = ["BENCH.toml"];
+
+/// A Rust source file whose only module edge is guarded by `#[cfg(test)]`.
+///
+/// This is an exact registry, not a naming rule. Each entry identifies the
+/// parent declaration that proves the file is absent from release builds, and
+/// `test_only_coverage_tests` fails if that declaration loses its guard or a
+/// second source edge appears. A new file remains fail-closed until it is
+/// registered with the same proof.
+#[derive(Debug, Clone, Copy)]
+pub struct TestOnlyRustModule {
+    pub path: &'static str,
+    pub parent: &'static str,
+    pub name: &'static str,
+    pub declared_path: Option<&'static str>,
+}
+
+pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
+    TestOnlyRustModule {
+        path: "crates/atlas-core/src/config/tests.rs",
+        parent: "crates/atlas-core/src/config.rs",
+        name: "tests",
+        declared_path: None,
+    },
+    TestOnlyRustModule {
+        path: "crates/atlas-core/src/config/gguf/tests.rs",
+        parent: "crates/atlas-core/src/config/gguf.rs",
+        name: "tests",
+        declared_path: None,
+    },
+    TestOnlyRustModule {
+        path: "crates/atlas-core/src/config/parsers/lora_tests.rs",
+        parent: "crates/atlas-core/src/config/parsers/lora.rs",
+        name: "tests",
+        declared_path: Some("lora_tests.rs"),
+    },
+];
+
+fn is_test_only_rust_module(path: &str) -> bool {
+    TEST_ONLY_RUST_MODULES
+        .iter()
+        .any(|entry| path == entry.path)
+}
 
 /// Whether `path` is one of the gate-read, never-compiled files above.
 fn is_non_compiled_kernel_file(path: &str) -> bool {
@@ -574,6 +616,9 @@ pub fn on_boundary(path: &str) -> bool {
 pub fn invalidates(gate: &GateCoverage, path: &str) -> bool {
     if BOUNDARY_FILES.iter().any(|f| under(path, f)) {
         return true;
+    }
+    if is_test_only_rust_module(path) {
+        return false;
     }
     // After the boundary-file check, so a `BENCH.toml` could never exempt the
     // rules that exempt it, and before the per-gate excludes, since this holds
