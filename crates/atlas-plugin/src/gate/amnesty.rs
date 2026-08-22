@@ -77,17 +77,17 @@ pub const AMNESTY_EPOCH: u64 = 1_787_356_800;
 pub const ONE_TIME_AMNESTY: [AmnestyEntry; 3] = [
     AmnestyEntry {
         path: "crates/atlas-plugin/src/gate/check.rs",
-        head_blob_oid: "PENDING",
+        head_blob_oid: "2dd3bed0103d38009e82de8d507d26320a1cb307",
         grant: "PR #701 test-only Rust module coverage bootstrap",
     },
     AmnestyEntry {
         path: "crates/atlas-plugin/src/gate/coverage.rs",
-        head_blob_oid: "PENDING",
+        head_blob_oid: "6aef608fab0d120096d3b55eaed3095155e2beeb",
         grant: "PR #701 test-only Rust module coverage bootstrap",
     },
     AmnestyEntry {
         path: "crates/atlas-plugin/src/gate/required.rs",
-        head_blob_oid: "PENDING",
+        head_blob_oid: "c8b8311abbb88bceb844710e6443e28ce843f236",
         grant: "PR #701 test-only Rust module coverage bootstrap",
     },
 ];
