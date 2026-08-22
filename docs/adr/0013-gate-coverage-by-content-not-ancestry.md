@@ -100,6 +100,12 @@ inventing one on the basis of "this diff looks test-only" would be a static
 analysis nobody could trust. The honest cost of a host-side change remains one
 gate run.
 
+ADR-0016 later narrows this statement for explicitly registered external test
+modules. It does not classify diffs or infer safety from a filename. Each
+exempt file has a pinned parent module edge guarded by `#[cfg(test)]`, with CI
+proofs that keep production neighbours fail-closed. Tests embedded in a
+production source file remain covered by the coarse host-code rule.
+
 ## Tests
 
 Three, on a real git fixture that reproduces the squash shape — and asserts
