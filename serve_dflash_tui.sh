@@ -105,7 +105,7 @@ export ATLAS_GDN_LIB=/home/ms/atlas-gdn-libs/libatlasgdn.so
 export ATLAS_SIMHASH_LOOP=0
 
 # Serve at INFO so the log is useful if something misbehaves.
-export RUST_LOG=info
+export RUST_LOG="${RUST_LOG:-info}"
 
 # Everything else that matters is DEFAULT-ON as of this branch and needs no
 # env var: Option B paged drafter KV, unified ctx commit, GPU candidate
