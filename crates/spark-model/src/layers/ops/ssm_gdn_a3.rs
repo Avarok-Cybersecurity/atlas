@@ -228,6 +228,11 @@ pub fn gdn_prefill_fla(
     if tma_ok {
         tracing::info!("GDN state spine: gated_delta_rule_chunk_delta_h_tma");
     }
+    // `cuda_backend` (and with it `TensorMap`) only exists under the cuda
+    // feature; the metal build has no TMA and must not reference it. The guard
+    // above already resolves to false there via the absent kernel handle, but a
+    // `use` is resolved at compile time regardless of the branch being taken.
+    #[cfg(feature = "cuda")]
     if tma_ok {
         use spark_runtime::cuda_backend::tensormap::TensorMap;
         // W/U are [total_blocks][CHUNK][tile] flattened; as a 2-D tensor that is
