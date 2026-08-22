@@ -5,6 +5,20 @@
 use super::*;
 
 impl MoeLayer {
+    /// Whether the fused `silu_mul_quant_fp8` kernel may replace the
+    /// `silu_mul` → `per_token_group_quant_fp8` pair for a K-dim of `k`
+    /// (bit-identical when it does). Requires: the kernel handle (a model
+    /// shadowing `moe_silu_mul.cu` without the entry point gets handle 0),
+    /// the SiLU activation (the fused kernel bakes SiLU — GeGLU models keep
+    /// the pair), and `k` within the kernel's per-thread register cap
+    /// (`K % 128 == 0`, `K/128 <= SILU_QUANT_MAX_GROUPS = 16`).
+    fn fused_silu_quant_ok(&self, k: u32) -> bool {
+        self.silu_mul_quant_fp8_k.0 != 0
+            && !self.gelu_activation
+            && k.is_multiple_of(128)
+            && k / 128 <= 16
+    }
+
     /// EP token dispatch/combine forward pass (Workstream 3A scaffold).
     ///
     /// Instead of dense all-reduce, this:
@@ -140,32 +154,50 @@ impl MoeLayer {
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(input_fp8)?;
             ctx.gpu.free(input_scale)?;
-            ops::silu_mul(
-                ctx.gpu,
-                self.moe_act_mul,
-                shared_gate_out,
-                shared_up_out,
-                shared_gate_out,
-                n * shared_inter,
-                stream,
-            )?;
-            mprof!("silu_mul");
             let shared_down_out = ctx.buffers.attn_output();
             // Quant the post-silu intermediate (K=shared_inter)
             let a2_bytes: usize = m_us * shared_inter as usize;
             let a2_scale_bytes: usize = m_us * (shared_inter as usize / 128) * 4;
             let down_in_fp8 = ctx.gpu.alloc(a2_bytes)?;
             let down_in_scale = ctx.gpu.alloc(a2_scale_bytes)?;
-            ops::per_token_group_quant_fp8(
-                ctx.gpu,
-                self.per_token_group_quant_fp8_k,
-                shared_gate_out,
-                down_in_fp8,
-                down_in_scale,
-                n,
-                shared_inter,
-                stream,
-            )?;
+            if self.fused_silu_quant_ok(shared_inter) {
+                // Nothing downstream reads the post-SiLU BF16 shared
+                // intermediate (no shared-expert LoRA fold), so skip the
+                // BF16 write entirely.
+                ops::silu_mul_quant_fp8(
+                    ctx.gpu,
+                    self.silu_mul_quant_fp8_k,
+                    shared_gate_out,
+                    shared_up_out,
+                    down_in_fp8,
+                    down_in_scale,
+                    spark_runtime::gpu::DevicePtr::NULL,
+                    n,
+                    shared_inter,
+                    stream,
+                )?;
+            } else {
+                ops::silu_mul(
+                    ctx.gpu,
+                    self.moe_act_mul,
+                    shared_gate_out,
+                    shared_up_out,
+                    shared_gate_out,
+                    n * shared_inter,
+                    stream,
+                )?;
+                ops::per_token_group_quant_fp8(
+                    ctx.gpu,
+                    self.per_token_group_quant_fp8_k,
+                    shared_gate_out,
+                    down_in_fp8,
+                    down_in_scale,
+                    n,
+                    shared_inter,
+                    stream,
+                )?;
+            }
+            mprof!("silu_mul_quant");
             ops::fp8_gemm_t_blockscaled(
                 ctx.gpu,
                 self.fp8_gemm_t_blockscaled_k,
@@ -623,16 +655,6 @@ impl MoeLayer {
         // 6. Activation+mul + down GEMM
         let expert_down_out = ctx.buffers.expert_down_out();
         if force_w8a8 && max_m_tiles > 0 {
-            ops::silu_mul(
-                ctx.gpu,
-                self.moe_act_mul,
-                expert_gate_out,
-                expert_up_out,
-                expert_gate_out,
-                total_expanded * inter,
-                stream,
-            )?;
-            mprof!("silu_mul");
             // Quant the permuted post-silu intermediate. Length is
             // total_expanded, K is `inter` (down_proj input dim).
             let m: usize = total_expanded as usize;
@@ -640,16 +662,53 @@ impl MoeLayer {
             let a_scale_bytes: usize = m * (inter as usize / 128) * 4;
             let down_in_fp8 = ctx.gpu.alloc(a_fp8_bytes)?;
             let down_in_scale = ctx.gpu.alloc(a_scale_bytes)?;
-            ops::per_token_group_quant_fp8(
-                ctx.gpu,
-                self.per_token_group_quant_fp8_k,
-                expert_gate_out,
-                down_in_fp8,
-                down_in_scale,
-                m as u32,
-                inter,
-                stream,
-            )?;
+            if self.fused_silu_quant_ok(inter) {
+                // `apply_expert_lora_prefill_down` below consumes the
+                // post-SiLU BF16 `expert_gate_out`. When ANY MoE LoRA is
+                // installed, also write the BF16 rows (exact `moe_silu_mul`
+                // output, in place — group g's slice is fully written before
+                // group g+1's is read, so aliasing gate is safe) rather than
+                // silently dropping the fold's input. Base runs skip the
+                // extra write entirely.
+                let lora_bf16_out = if self.lora.is_some() {
+                    expert_gate_out
+                } else {
+                    spark_runtime::gpu::DevicePtr::NULL
+                };
+                ops::silu_mul_quant_fp8(
+                    ctx.gpu,
+                    self.silu_mul_quant_fp8_k,
+                    expert_gate_out,
+                    expert_up_out,
+                    down_in_fp8,
+                    down_in_scale,
+                    lora_bf16_out,
+                    m as u32,
+                    inter,
+                    stream,
+                )?;
+            } else {
+                ops::silu_mul(
+                    ctx.gpu,
+                    self.moe_act_mul,
+                    expert_gate_out,
+                    expert_up_out,
+                    expert_gate_out,
+                    total_expanded * inter,
+                    stream,
+                )?;
+                ops::per_token_group_quant_fp8(
+                    ctx.gpu,
+                    self.per_token_group_quant_fp8_k,
+                    expert_gate_out,
+                    down_in_fp8,
+                    down_in_scale,
+                    m as u32,
+                    inter,
+                    stream,
+                )?;
+            }
+            mprof!("silu_mul_quant");
             if self.moe_w8a8_grouped_gemm_pm4_k.0 != 0 && self.moe_build_tile_worklist_k.0 != 0 {
                 // PM4-geometry W8A8 down-proj: separate work-list (N=h, K=inter
                 // → different n_tiles than gate/up). sorted_token_ids=NULL keeps

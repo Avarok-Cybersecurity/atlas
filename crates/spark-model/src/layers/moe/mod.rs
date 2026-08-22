@@ -353,6 +353,11 @@ pub struct MoeLayer {
     // 3D-grid `moe_w8a8_grouped_gemm_k`.
     moe_w8a8_grouped_gemm_pm4_k: KernelHandle,
     per_token_group_quant_fp8_k: KernelHandle,
+    /// Fused SiLU·mul + per-token-group FP8 quant (bit-identical replacement
+    /// for the `silu_mul` → `per_token_group_quant_fp8` pair on the W8A8
+    /// prefill down-path). Optional: handle 0 (e.g. a model shadowing
+    /// moe_silu_mul.cu without this entry point) falls back to the pair.
+    silu_mul_quant_fp8_k: KernelHandle,
     // Dense W8A8 (same kernel used by attention QKV/O proj) for shared-expert path.
     fp8_gemm_t_blockscaled_k: KernelHandle,
     // BF16 grouped GEMM — for FP8-source models dequanted to BF16 at load.

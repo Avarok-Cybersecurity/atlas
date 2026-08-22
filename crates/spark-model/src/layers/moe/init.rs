@@ -214,6 +214,14 @@ impl MoeLayer {
                 "per_token_group_quant_fp8",
                 "per_token_group_quant_fp8",
             ),
+            // Fused silu_mul + per-token-group quant. Same module as
+            // moe_silu_mul, so a model that shadows moe_silu_mul.cu without
+            // this entry point gets handle 0 → unfused fallback.
+            silu_mul_quant_fp8_k: super::super::try_kernel(
+                gpu,
+                "moe_silu_mul",
+                "silu_mul_quant_fp8",
+            ),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 "fp8_gemm_t_blockscaled",
