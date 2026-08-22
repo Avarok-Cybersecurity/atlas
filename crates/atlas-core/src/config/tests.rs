@@ -677,6 +677,35 @@ fn test_parse_holo31_vlm_config() {
     assert_eq!(vision.image_pad_token_id, 248056);
 }
 
+#[test]
+fn test_holo31_discriminator_requires_all_signals() {
+    let mut wrong_image_token: serde_json::Value = serde_json::from_str(HOLO31_VLM_CONFIG).unwrap();
+    wrong_image_token["image_token_id"] = serde_json::json!(248_055);
+    assert_eq!(
+        parse_config(&wrong_image_token.to_string())
+            .unwrap()
+            .model_type,
+        "qwen3_6_moe",
+        "the Holo rewrite requires its checkpoint image token"
+    );
+
+    let mut no_vision: serde_json::Value = serde_json::from_str(HOLO31_VLM_CONFIG).unwrap();
+    no_vision.as_object_mut().unwrap().remove("vision_config");
+    assert_eq!(
+        parse_config(&no_vision.to_string()).unwrap().model_type,
+        "qwen3_6_moe",
+        "a text-only config is not Holo-3.1 VLM"
+    );
+
+    let mut other_family: serde_json::Value = serde_json::from_str(HOLO31_VLM_CONFIG).unwrap();
+    other_family["model_type"] = serde_json::json!("qwen3_vl_moe");
+    assert_eq!(
+        parse_config(&other_family.to_string()).unwrap().model_type,
+        "qwen3_6_moe",
+        "the Holo rewrite is limited to its qwen3_5_moe source family"
+    );
+}
+
 // Regression: the FLAGSHIP Qwen/Qwen3.6-35B-A3B-FP8 checkpoint carries the
 // SAME vision tower + image_token_id 248056 as Holo-3.1 but ships an MTP
 // head (mtp_num_hidden_layers=1). It must stay qwen3_6_moe — the Holo
