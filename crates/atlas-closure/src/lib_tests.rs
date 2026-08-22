@@ -174,7 +174,13 @@ fn unresolved_entries_are_keyed_by_the_including_file() {
     write(&a, "#include \"gone.cuh\"\n");
     write(&b, "#include \"gone.cuh\"\n");
     let closure = hash_with_report(&d, &inputs(vec![a, b])).unwrap();
-    assert_eq!(closure.unresolved.len(), 2, "{:?}", closure.unresolved);
+    assert_eq!(
+        closure.unresolved,
+        BTreeSet::from([
+            "common/a.cu -> gone.cuh".to_string(),
+            "common/b.cu -> gone.cuh".to_string(),
+        ])
+    );
 }
 
 /// A preprocessor conditional is not evaluated, so an include in a branch this
