@@ -156,13 +156,37 @@ mod tests {
     #[test]
     fn write_asset_rewrites_only_on_change() {
         let dir = tmp("asset");
+        let path = dir.join("s.py");
         assert!(write_asset(&dir, "s.py", "print(1)").unwrap());
+
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let pinned_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
         assert!(!write_asset(&dir, "s.py", "print(1)").unwrap());
-        assert!(write_asset(&dir, "s.py", "print(2)").unwrap());
         assert_eq!(
-            std::fs::read_to_string(dir.join("s.py")).unwrap(),
-            "print(2)"
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            pinned_mtime,
+            "unchanged contents must not rewrite the asset"
         );
+        assert!(write_asset(&dir, "s.py", "print(2)").unwrap());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "print(2)");
+    }
+
+    #[test]
+    fn binary_assets_are_compared_as_bytes() {
+        let dir = tmp("binary-asset");
+        let path = dir.join("image.bin");
+        let bytes = [0xff, 0x00, 0xfe];
+
+        assert!(write_asset_bytes(&dir, "image.bin", &bytes).unwrap());
+        assert!(!write_asset_bytes(&dir, "image.bin", &bytes).unwrap());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
     #[test]
