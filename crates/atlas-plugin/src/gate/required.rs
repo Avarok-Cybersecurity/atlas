@@ -17,7 +17,7 @@
 //! `intent ⊆ REQUIRED` for any tree.
 //!
 //! **The second was wrong.** It read: "`PERF_PATHS` contains a bare `crates`,
-//! so any code change already invalidates all five gates." It does not.
+//! so any code change already invalidates all ten gates." It does not.
 //! `GATE_MACHINERY` excludes the whole `crates/atlas-plugin/src/gate` prefix
 //! from **every** gate, and each benchmark driver is excluded from the other
 //! gates — so plenty of `crates/` paths invalidate nothing at all and intent is
@@ -33,9 +33,9 @@
 //! `crates_paths_split_into_fully_covered_and_not_covered_at_all` pin those.
 //!
 //! ★★ **The union is NOT the loop set.** [`super::check::check_gates`] iterates
-//! the five-element `REQUIRED_GATES` constant unconditionally, and
+//! the ten-element `REQUIRED_GATES` constant unconditionally, and
 //! `union() ⊊ REQUIRED_GATES` for most real PRs. Swapping the constant for the
-//! union would *reduce* coverage — an unclassified docs PR would go from five
+//! union would *reduce* coverage — an unclassified docs PR would go from ten
 //! gates checked to none. The add-only property holds against `by_path`; it
 //! says nothing about the constant. Whatever consumes this must keep the
 //! constant as the loop set and use the union to ESCALATE — to widen what
