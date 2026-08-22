@@ -97,7 +97,7 @@ async fn a_timed_out_command_takes_the_children_it_forked_with_it() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_setsid_server_is_left_for_the_reaper() {
     // The counterpart: the prompt tells the model to detach its server, so the
