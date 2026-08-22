@@ -730,6 +730,13 @@ fn test_parse_nllb_m2m100_config() {
     assert_eq!(cfg.head_dim, 128);
     assert_eq!(cfg.max_position_embeddings, 1024);
     assert_eq!(cfg.vocab_size, 256206);
+    assert_eq!(cfg.bos_token_id, 0);
+    assert_eq!(cfg.eos_token_id, 2);
+    assert!(cfg.tie_word_embeddings);
+    assert_eq!(cfg.num_experts, 0);
+    assert_eq!(cfg.mtp_num_hidden_layers, 0);
+    assert_eq!(cfg.num_attention_layers(), 24);
+    assert_eq!(cfg.num_ssm_layers(), 0);
     assert_eq!(cfg.weight_prefix, "model.decoder");
     assert!(!cfg.attn_gated);
 }
