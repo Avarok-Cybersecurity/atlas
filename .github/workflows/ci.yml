@@ -792,15 +792,16 @@ jobs:
     # ENFORCING as of this commit. The `continue-on-error: true` that used to
     # sit here was justified by a bootstrap gap — "no bench record is committed
     # yet, and the PR that introduces the gate cannot commit one". That gap is
-    # closed: `.benchmarks/` now carries a BASELINE plus records for all five
+    # closed: `.benchmarks/` now carries a BASELINE plus records for all ten
     # required gates, so the precondition its own comment named for removal is
     # met, and keeping the line would leave a check that cannot fail.
     #
     # What a red here means: this branch has no record that still COVERS its
-    # head. `record_covers` invalidates every earlier record once the diff
-    # touches a PERF_PATH (crates, kernels, Cargo.*, vendor, jinja-templates,
-    # rust-toolchain.toml) — which is the point. Fix it by measuring on a GPU
-    # box and committing the record, not by re-adding continue-on-error.
+    # head. `record_covers` invalidates earlier records when the diff touches a
+    # measured input (crates, kernels, Cargo.*, vendor, jinja-templates, or the
+    # toolchain), except for exact paths with a reviewed coverage exclusion.
+    # Fix a real invalidation by measuring on a GPU box and committing the
+    # record.
     #
     # It is deliberately NOT in `release-matrix`'s `needs`: a missing GPU
     # measurement must show as red without wedging the image path. It IS a
