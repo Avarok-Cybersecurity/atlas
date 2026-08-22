@@ -1110,6 +1110,16 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// Marconi SSM snapshot-pool occupancy `(used, total)`. `None` for
+    /// models without a snapshot pool (non-SSM, CPU backends) — so metrics
+    /// consumers can fall back instead of rendering a fake 0/0. The TUI's
+    /// SSM gauge read the orphaned `SessionSsmManager` (whose
+    /// `save_snapshot` was never called anywhere) and showed 0/0 forever;
+    /// this accessor is the truth it now reads.
+    fn ssm_snapshot_occupancy(&self) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Reclaim up to `num_blocks` blocks from the prefix cache, returning how
     /// many actually became free.
     ///
