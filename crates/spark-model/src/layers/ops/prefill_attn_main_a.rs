@@ -23,7 +23,6 @@ use super::*;
 ///         K/V [batch, seq_len, num_kv_heads, head_dim] BF16
 ///         O [batch, seq_len, num_q_heads, head_dim] BF16
 #[allow(clippy::too_many_arguments)]
-
 pub fn prefill_attention(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
