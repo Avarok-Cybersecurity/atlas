@@ -511,17 +511,52 @@ impl TransformerModel {
                     self.gpu.synchronize(stream)?;
                     std::mem::swap(&mut c.ctx_hidden_acc, &mut f.ctx_hidden_acc);
                     std::mem::swap(&mut c.max_ctx_len, &mut f.max_ctx_len);
-                    // Drop the carried paged ctx KV (old-capacity block
-                    // table); the accumulator rows above are the carry.
-                    let blocks = std::mem::take(&mut c.block_table);
-                    proposer.free_drafter_kv(&blocks);
-                    if let Some(bt) = c.block_table_dev.take() {
-                        self.gpu.free(bt)?;
+                    // KV-PRESERVING growth: the paged ctx KV itself lives in
+                    // pool blocks that never move — only the DEVICE block
+                    // table was capacity-sized from the old max_ctx_len
+                    // (propose derives `max_blocks` from the CURRENT max, so
+                    // a grown max would overflow the old table on the next
+                    // incremental grab). Re-allocate the table at the new
+                    // capacity and re-upload the host-side table (the source
+                    // of truth, a few hundred bytes); the committed
+                    // watermark and every precomputed K/V slot survive, so a
+                    // growth-turn adopt keeps the same ~0.17 s precompute
+                    // saving as a non-growth one. `+17` covers the widest
+                    // gamma the pools ever size for (`gamma + 1 <= 17`,
+                    // matching propose's `max_ctx_len + gamma + 1` bound;
+                    // the head's own gamma is not reachable from here).
+                    // An allocation failure falls back to dropping the KV —
+                    // the accumulator rows above are still the carry.
+                    if let Some(old_bt) = c.block_table_dev.take() {
+                        const BLOCK_SIZE: usize = 16;
+                        let new_max_blocks = (c.max_ctx_len + 17).div_ceil(BLOCK_SIZE);
+                        match self.gpu.alloc(new_max_blocks * std::mem::size_of::<u32>()) {
+                            Ok(new_bt) => {
+                                if !c.block_table.is_empty() {
+                                    let bytes: Vec<u8> = c
+                                        .block_table
+                                        .iter()
+                                        .flat_map(|b| b.to_le_bytes())
+                                        .collect();
+                                    self.gpu.copy_h2d(&bytes, new_bt)?;
+                                }
+                                c.block_table_dev = Some(new_bt);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "DFLASH_CARRY: block-table realloc failed ({e:#}); \
+                                     dropping carried paged KV (accumulator rows kept)"
+                                );
+                                let blocks = std::mem::take(&mut c.block_table);
+                                proposer.free_drafter_kv(&blocks);
+                                c.max_ctx_count_drafter = 0;
+                                c.ctx_count_drafter = 0;
+                                c.ctx_committed = 0;
+                                c.seq_len = 0;
+                            }
+                        }
+                        self.gpu.free(old_bt)?;
                     }
-                    c.max_ctx_count_drafter = 0;
-                    c.ctx_count_drafter = 0;
-                    c.ctx_committed = 0;
-                    c.seq_len = 0;
                     true
                 } else {
                     false
