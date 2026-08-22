@@ -2306,6 +2306,35 @@ impl DenseFfnLayer {
                 stream,
             )?;
         }
+        // Per-projection timers. `dense_total` localised 23.7 s of a 28.2 s
+        // Gemma-4-31B prefill to this function; these say WHICH of the three
+        // projections it is. Roofline for that shape: 3 x 5376 x 21504 x 4012 tok
+        // x 60 layers = 167 TFLOP, so 23.7 s is ~7 TFLOP/s against a bf16
+        // tensor-core peak two orders higher — a hypothesis these numbers test
+        // rather than assume.
+        // ★ PER-STEP, NOT CUMULATIVE. The first version of this timer measured
+        // elapsed-since-one-start at each of the three call sites, so `up_proj`
+        // included `gate_proj` and `down_proj` included both — and the summed
+        // "total profiled" then exceeded the wall clock, which is the tell.
+        macro_rules! ffn_step {
+            ($label:expr, $t0:expr) => {
+                if ctx.profile {
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "  FFN prefill [{}] N={}: {}µs",
+                        $label,
+                        num_tokens,
+                        $t0.elapsed().as_micros()
+                    );
+                    #[allow(unused_assignments)]
+                    {
+                        $t0 = std::time::Instant::now();
+                    }
+                }
+            };
+        }
+        #[allow(unused_mut, unused_assignments)]
+        let mut t_ffn = std::time::Instant::now();
         // gate_proj GEMM: [M, H] → [M, inter]
         w4_gemm!(
             &self.weights.gate_proj,
@@ -2320,6 +2349,7 @@ impl DenseFfnLayer {
             h,
             true
         );
+        ffn_step!("gate_proj", t_ffn);
         // up_proj GEMM: [M, H] → [M, inter]
         w4_gemm!(
             &self.weights.up_proj,
@@ -2334,6 +2364,7 @@ impl DenseFfnLayer {
             h,
             true
         );
+        ffn_step!("up_proj", t_ffn);
 
         // activation(gate) * up for all M tokens (SiLU or GELU)
         let fused_down_quant = fp4mmq_down && self.nvfp4_silu_quant_k.0 != 0;
@@ -2436,6 +2467,7 @@ impl DenseFfnLayer {
             inter,
             false
         );
+        ffn_step!("down_proj", t_ffn);
         // FP4-MMQ down: fold the down-projection's per-tensor scale2 (no SiLU-mul here;
         // the consumer is the residual add).
         if fp4mmq_down {
