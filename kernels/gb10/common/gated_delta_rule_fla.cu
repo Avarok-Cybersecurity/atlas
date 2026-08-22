@@ -133,6 +133,8 @@ __device__ __forceinline__ void mma_gram(
 //   W_out: [.. ][CHUNK][K_DIM]   = T·(β·exp(gc)·K)
 // where T=(I+L)⁻¹ applied by forward-substitution (parallel over the V/K cols).
 // smem: sk_bf(16K) + kk(16K f32) + L(16K f32) + gc(256) ≈ 48.25KB.
+#define RL_BLK 16   // right-looking block width; see the note below
+
 // ── MEASURED (2026-08-22) ───────────────────────────────────────────────────
 // ★ MEASURE THIS KERNEL AT nt=16 AND nt=64. Nothing measured at nt<=4 is
 // trustworthy: at nt=1 the grid is 32 CTAs over ~48 SMs, so the GPU is
@@ -170,8 +172,21 @@ __device__ __forceinline__ void mma_gram(
 // Splitting it into four independent partial sums (same FMA count, traffic,
 // smem and occupancy) measured NEUTRAL: 72.2/103.1/151.3 vs 71.8/100.1/151.1.
 //
-// What WAS a win: the serial gc prefix scan in the prologue, fixed below and
-// confirmed at production shapes (nt=16 9.7%, nt=64 7.0%).
+// WHAT WAS A WIN, both confirmed at production shapes:
+//   1. The serial gc prefix scan in the prologue (nt=16 9.7%, nt=64 7.0%).
+//   2. RIGHT-LOOKING blocked substitution in the two solve passes — 1.95x at
+//      nt=64 (n=3: 2408.6/2418.0/2427.1 -> 1238.2/1255.3/1233.2 us).
+//      The left-looking form re-read every earlier u[l] for each output,
+//      ~CHUNK^2/2 = 2048 local reads per thread. Right-looking keeps a running
+//      accumulator per row and pushes each solved block into the remaining rows
+//      ONCE: ~320 accesses, 6-8x fewer, with the block's solved values in
+//      REGISTERS. This is what the smem probe above was reaching for — it cut
+//      the same traffic but paid 64 KB and 3 CTAs/SM -> 1, a net loss at nt=64.
+//      This costs ~25 registers (3 -> 2 CTAs/SM) and no shared memory, and wins
+//      at EVERY shape: 2.28x/2.47x/2.03x/2.04x/2.12x at nt=1/2/4/16/64.
+//      ★ `r` in the diagonal-block loop MUST stay compile-time. With a runtime
+//      bound, `xb` is dynamically indexed and lands in LOCAL memory (ptxas: 320
+//      vs 256 byte stack frame), which is the exact traffic this exists to cut.
 //
 // ⚠ The gate harness for this kernel could not run at all until 2026-08-22, so
 // any pre-existing claim that something here "was tested" is suspect.
@@ -293,30 +308,76 @@ gated_delta_rule_recompute_wu(
     // disjoint outputs (U_out vs W_out). At 128 threads they ran back-to-back;
     // at 256 they run concurrently on disjoint thread halves, which halves the
     // serial triangular-solve section that dominates this kernel.
-    // Pass 1: U[:,v] forward-sub (one thread per v-element).  U_i = β_i·V_i - Σ_{l<i} L[i][l]·U_l
+    // Pass 1 (RIGHT-LOOKING): U[:,v], one thread per v-element.
     if (tid < v_dim) {
-        float u[CHUNK];
+        float acc[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float ui = bi * (float)value[(unsigned long long)(cs + i) * v_stride + vh * v_dim + tid];
-            for (unsigned int l = 0; l < i; l++) ui -= L[i * CHUNK + l] * u[l];
-            u[i] = ui;
-            U_out[base * CHUNK * V_DIM + i * v_dim + tid] = __float2bfloat16(ui);
+            acc[i] = bi * (float)value[(unsigned long long)(cs + i) * v_stride + vh * v_dim + tid];
+        }
+        for (unsigned int jb = 0; jb < ce; jb += RL_BLK) {
+            float xb[RL_BLK];
+            // r MUST be compile-time or `xb` is dynamically indexed and lands in
+            // local memory — which is the very traffic this variant exists to cut.
+            #pragma unroll
+            for (unsigned int r = 0; r < RL_BLK; r++) {
+                if (jb + r >= ce) continue;
+                float x = acc[jb + r];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (q < r) x -= L[(jb + r) * CHUNK + jb + q] * xb[q];
+                }
+                xb[r] = x;
+                acc[jb + r] = x;
+                U_out[base * CHUNK * V_DIM + (jb + r) * v_dim + tid] = __float2bfloat16(x);
+            }
+            // Push this block's contribution into every remaining row ONCE.
+            for (unsigned int i = jb + RL_BLK; i < ce; i++) {
+                float a = acc[i];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (jb + q < ce) a -= L[i * CHUNK + jb + q] * xb[q];
+                }
+                acc[i] = a;
+            }
         }
     }
-    // Pass 2: W[:,k] forward-sub (one thread per k-element).  W_i = β_i·exp(gc_i)·K_i - Σ_{l<i} L[i][l]·W_l
-    const unsigned int wtid = tid - 128u;   // Pass 2 runs on the upper half
+    // Pass 2 (RIGHT-LOOKING): W[:,k], upper thread half.
+    const unsigned int wtid = tid - 128u;
     if (tid >= 128u && wtid < k_dim) {
-        float w[CHUNK];
+        float acc[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float wi = bi * expf(gc[i]) * (float)sk[i * K_DIM + wtid];
-            for (unsigned int l = 0; l < i; l++) wi -= L[i * CHUNK + l] * w[l];
-            w[i] = wi;
-            W_out[base * CHUNK * K_DIM + i * k_dim + wtid] = __float2bfloat16(wi);
+            acc[i] = bi * expf(gc[i]) * (float)sk[i * K_DIM + wtid];
+        }
+        for (unsigned int jb = 0; jb < ce; jb += RL_BLK) {
+            float xb[RL_BLK];
+            // r MUST be compile-time or `xb` is dynamically indexed and lands in
+            // local memory — which is the very traffic this variant exists to cut.
+            #pragma unroll
+            for (unsigned int r = 0; r < RL_BLK; r++) {
+                if (jb + r >= ce) continue;
+                float x = acc[jb + r];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (q < r) x -= L[(jb + r) * CHUNK + jb + q] * xb[q];
+                }
+                xb[r] = x;
+                acc[jb + r] = x;
+                W_out[base * CHUNK * K_DIM + (jb + r) * k_dim + wtid] = __float2bfloat16(x);
+            }
+            for (unsigned int i = jb + RL_BLK; i < ce; i++) {
+                float a = acc[i];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (jb + q < ce) a -= L[i * CHUNK + jb + q] * xb[q];
+                }
+                acc[i] = a;
+            }
         }
     }
 }
+
 
 
 // chunk_delta_h double-buffer: per-buffer smem holds {W,K,U} bf16 for one chunk.
