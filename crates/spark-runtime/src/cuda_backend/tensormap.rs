@@ -67,12 +67,27 @@ type EncodeTiledFn = unsafe extern "C" fn(
 fn tensor_map_encode_tiled() -> Option<EncodeTiledFn> {
     static CACHED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     let addr = (*CACHED.get_or_init(|| {
-        unsafe extern "C" {
-            fn dlsym(handle: *mut std::ffi::c_void, symbol: *const i8) -> *mut std::ffi::c_void;
+        // `dlsym` exists only on unix — on Windows this symbol has no libc
+        // provider and the build DIED AT LINK (LNK2019 unresolved external
+        // `dlsym`, seen on the windows-x86_64 release-matrix builds
+        // 2026-08-22). TMA is opt-in (`ATLAS_GDN_TMA=1`), measured neutral,
+        // and unresolved here just routes callers to their non-TMA path — so
+        // Windows reporting "unavailable" is the honest and cheap behaviour,
+        // not a loss of function.
+        #[cfg(unix)]
+        {
+            unsafe extern "C" {
+                fn dlsym(handle: *mut std::ffi::c_void, symbol: *const i8)
+                -> *mut std::ffi::c_void;
+            }
+            let name = c"cuTensorMapEncodeTiled";
+            let p = unsafe { dlsym(std::ptr::null_mut(), name.as_ptr().cast::<i8>()) };
+            if p.is_null() { None } else { Some(p as usize) }
         }
-        let name = c"cuTensorMapEncodeTiled";
-        let p = unsafe { dlsym(std::ptr::null_mut(), name.as_ptr().cast::<i8>()) };
-        if p.is_null() { None } else { Some(p as usize) }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }))?;
     // SAFETY: the symbol resolved from libcuda has exactly this signature; it is
     // the documented prototype for cuTensorMapEncodeTiled.
