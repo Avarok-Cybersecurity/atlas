@@ -177,6 +177,12 @@ pub struct Qwen3SsmLayer {
     /// what pays for the extra warps: 118 registers, no spills. Measured 2.15-2.18x
     /// vs ksplit at 2048/8192/16384 with cos=1.0000 (`gdn_chunk_shapetest`).
     gdn_prefill_fla_chunk_delta_h_fused_k: KernelHandle,
+    /// TMA (`cp.async.bulk.tensor`) build of the state spine, behind
+    /// `ATLAS_GDN_TMA=1`. `try_kernel` => 0 on images that lack it, and the
+    /// launcher additionally refuses varlen and any head narrower than the
+    /// compile-time tile — the descriptors encode that tile, and a mismatched
+    /// shape loads the wrong columns without erroring.
+    gdn_prefill_fla_chunk_delta_h_tma_k: KernelHandle,
     gdn_prefill_fla_chunk_fwd_o_k: KernelHandle,
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.
