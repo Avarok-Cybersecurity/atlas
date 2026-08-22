@@ -210,8 +210,20 @@ fn includes_inside_untaken_conditionals_are_still_walked() {
 fn angle_bracket_includes_are_not_followed() {
     let d = tmp();
     let src = d.join("common/x.cu");
+    let toolchain_header = d.join("common/cuda_fp16.h");
     write(&src, "#include <cuda_fp16.h>\n__global__ void k() {}\n");
-    assert!(hash(&d, &inputs(vec![src])).is_ok());
+    write(&toolchain_header, "#define TOOLCHAIN_VALUE 1\n");
+
+    let before = hash_with_report(&d, &inputs(vec![src.clone()])).unwrap();
+    assert!(before.unresolved.is_empty(), "{:?}", before.unresolved);
+
+    write(&toolchain_header, "#define TOOLCHAIN_VALUE 2\n");
+    let after = hash_with_report(&d, &inputs(vec![src])).unwrap();
+    assert!(after.unresolved.is_empty(), "{:?}", after.unresolved);
+    assert_eq!(
+        before.digest, after.digest,
+        "angle-bracket headers are represented by compiler provenance, not local content"
+    );
 }
 
 /// A commented-out include is not compiled, so hashing it would make a comment
