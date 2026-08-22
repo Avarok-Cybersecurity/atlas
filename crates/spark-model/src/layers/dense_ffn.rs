@@ -1571,7 +1571,45 @@ impl DenseFfnLayer {
         ops::w4a16_gemm(ctx.gpu, self.w4a16_gemm, input, w, output, m, n, k, stream)
     }
 
+    /// Timed wrapper around the dense-FFN prefill.
+    ///
+    /// ★ THIS PATH HAD NO TIMERS AT ALL, and that hid the largest unexplained
+    /// number on the board. Profiling nvidia/Gemma-4-31B-IT-NVFP4 at a
+    /// 4096-token prompt: wall 28,180 ms, while EVERY profiled phase across
+    /// `ATTN prefill [...]` and `MoE prefill [...]` summed to 3,269.8 ms. 88% of
+    /// the prefill was invisible — not attributed to something slow, simply not
+    /// instrumented. `forward_prefill` dispatches ~20 quantization arms and none
+    /// of them reported elapsed time; only one-shot "which arm was chosen" INFO
+    /// lines existed.
+    ///
+    /// One coarse timer first, deliberately: it answers whether the missing time
+    /// is here at all before anyone threads timers through twenty arms. Same
+    /// `<AREA> prefill [phase] N=<n>: <us>µs` shape the attention and MoE paths
+    /// already emit, so the existing log-summing one-liners pick it up unchanged.
     pub fn forward_prefill(
+        &self,
+        input: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if !ctx.profile {
+            return self.forward_prefill_inner(input, num_tokens, ctx, stream);
+        }
+        let t0 = std::time::Instant::now();
+        let r = self.forward_prefill_inner(input, num_tokens, ctx, stream);
+        // Sync so the figure is the kernel's, not the launch queue's — the
+        // attention and MoE timers do the same under `ctx.profile`.
+        ctx.gpu.synchronize(stream)?;
+        tracing::info!(
+            "  FFN prefill [dense_total] N={}: {}µs",
+            num_tokens,
+            t0.elapsed().as_micros()
+        );
+        r
+    }
+
+    fn forward_prefill_inner(
         &self,
         input: DevicePtr,
         num_tokens: usize,
