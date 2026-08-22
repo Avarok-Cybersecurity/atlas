@@ -718,5 +718,34 @@ pub fn build_model(
             tracing::info!("{line}");
         }
     }
+    // ── Pledge reconciliation, same place, same reason ──
+    // The table above attributes the spend; this line judges it against the
+    // promise. Tracked-live > budget means some allocation family was never
+    // modeled by the preflight/KV sizing (the 2026-08-22 case: the DFlash
+    // verify pools, 13.7 GB against a 1.3 GB reserve) — capacity the
+    // scheduler will happily promise to requests it cannot actually fund.
+    // WARN, not error: the serve is already up, and the operator's fix is a
+    // sizing/reserve change, not a restart loop.
+    if let Some(live) = model.gpu_backend().live_bytes() {
+        if live > total_budget {
+            tracing::warn!(
+                "util pledge exceeded: {:.1} GB tracked live vs {:.1} GB pledged \
+                 (--gpu-memory-utilization {:.0}% of {:.1} GB) — an allocation \
+                 family above is missing from the preflight reserve",
+                gib(live),
+                gib(total_budget),
+                gpu_memory_utilization * 100.0,
+                gib(total_mem),
+            );
+        } else {
+            tracing::info!(
+                "util pledge honored: {:.1} GB tracked live within the {:.1} GB \
+                 budget ({:.1} GB pledge headroom)",
+                gib(live),
+                gib(total_budget),
+                gib(total_budget - live),
+            );
+        }
+    }
     Ok(Box::new(model))
 }
