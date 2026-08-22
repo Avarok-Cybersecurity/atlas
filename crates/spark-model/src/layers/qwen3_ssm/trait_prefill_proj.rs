@@ -212,6 +212,38 @@ impl Qwen3SsmLayer {
                     "ssm prefill: QKVZ BF16 cuBLASLt GEMM failed (M={k}, N={qkvz_size}): {e}"
                 )
             })?;
+        } else if ctx.dispatch.ssm_qkvz_cublas_bf16
+            && let Some(ref fp8w) = self.qkvz_fp8w
+        {
+            // Default QKVZ prefill route since 2026-08-22 (P3_ssm_cublas_route):
+            // FP8→BF16 dequant once (cached in `ctx.derived`, ~50 MB/layer,
+            // fail-fast alloc) + cuBLASLt BF16 GEMM. Measured at the production
+            // shape [4510×2048]×[2048×12288]: 2.52 ms vs 6.97 ms for the W8A8
+            // arm below (2.8×), and max-abs error vs the f64 reference 0.019
+            // vs 0.135 — the W8A8 arm quantises the ACTIVATIONS per-128-block,
+            // this route does not, so it is strictly more accurate. Also skips
+            // the per-layer `per_token_group_quant_fp8` pass entirely.
+            // Deliberately ahead of the shadowing `force_w8a8` arm; opt out
+            // with `ATLAS_SSM_QKVZ_W8A8=1` (see `GemmDispatch`).
+            tracing::debug!(
+                "ssm prefill: QKVZ via cuBLASLt BF16 W16A16 (dequant-once cache, M={k} K={h} N={qkvz_size})"
+            );
+            ops::cublas_bf16_proj(
+                ctx.gpu,
+                ctx.derived,
+                normed,
+                fp8w,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "ssm prefill: QKVZ cuBLASLt W16A16 GEMM failed (M={k}, N={qkvz_size}): {e}"
+                )
+            })?;
         } else if force_w8a8
             && let Some(ref fp8w) = self.qkvz_fp8w
             && self.per_token_group_quant_fp8_k.0 != 0
