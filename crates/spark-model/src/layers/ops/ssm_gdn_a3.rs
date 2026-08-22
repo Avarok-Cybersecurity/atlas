@@ -216,7 +216,7 @@ pub fn gdn_prefill_fla(
         )
     } else if kd != 128 || vd != 128 || C != 64 {
         Some("head/chunk differs from the compile-time tile the descriptors encode")
-    } else if qk_stride % 8 != 0 {
+    } else if !qk_stride.is_multiple_of(8) {
         Some("qk_stride is not a multiple of 8 (bf16 row pitch must be 16-byte aligned)")
     } else {
         None
