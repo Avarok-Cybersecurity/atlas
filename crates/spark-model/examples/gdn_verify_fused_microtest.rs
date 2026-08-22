@@ -219,6 +219,7 @@ fn launch_wy2(
         .arg_u32(CONV_DIM as u32) // qk_stride
         .arg_u32(CONV_DIM as u32) // v_stride
         .arg_u32((NV * 2) as u32) // gb_stride
+        .arg_u32(0) // state_is_table=0 (contiguous, batch_size==1)
         .launch(0)
 }
 
@@ -400,7 +401,7 @@ struct FusedStage1 {
 /// separate launch), then fused gated-RMS-norm ×2 in one launch.
 ///
 /// Drives `gdn_verify_fused_k2` the same way `decode_batched_conv_gdn` does
-/// under `ATLAS_GDN_FUSED_VERIFY`: the conv phase advances state 0→1 in
+/// on the default-ON fused K=2 path: the conv phase advances state 0→1 in
 /// registers and writes the position-0 conv-state snapshot once; WY2 consumes
 /// its conv output (unchanged); the norm phase produces the gated-norm output.
 fn run_fused_stage1(g: &dyn GpuBackend, ins: &Inputs) -> Result<FusedStage1> {

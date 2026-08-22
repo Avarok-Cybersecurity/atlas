@@ -267,9 +267,9 @@ pub struct Qwen3SsmLayer {
     ssm_h_f16_to_f32_k: KernelHandle,
     ssm_h_f32_to_f16_k: KernelHandle,
     /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
-    /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
-    /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
-    /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
+    /// gated-RMS-norm ×2 each folded into a single launch. Default ON when
+    /// the kernels are present; kill switch `ATLAS_NO_GDN_FUSED_VERIFY=1`.
+    /// Bit-identical (cos == 1.0).
     gdn_verify_fused_conv_k2_k: KernelHandle,
     gdn_verify_fused_norm_k2_k: KernelHandle,
     /// Fused generic-K verify conv1d+L2norm (one launch for all K positions,
@@ -458,6 +458,7 @@ fn ssm_m128_min_m() -> Option<u32> {
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
 pub mod gdn_flags;
+mod gdn_fused_verify_k2;
 mod init;
 mod init_fp8;
 mod init_q2;
