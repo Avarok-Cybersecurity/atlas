@@ -45,8 +45,12 @@ CI validates every registry entry against the repository:
   edge to the registered file.
 
 The coverage map remains a verdict-defining boundary file. Editing the
-registry or its matching logic therefore invalidates all ten records and
-requires the usual bootstrap measurement.
+registry or its matching logic therefore invalidates all ten records. For the
+initial landing only, the existing content-pinned amnesty mechanism covers the
+exact final blobs of `coverage.rs`, `check.rs`, and `required.rs`. The latter
+two carry the bootstrap hook and corrected ten-gate documentation. Any later
+edit changes its blob OID and invalidates normally. The grant expires by test
+once every required gate has a record newer than 2026-08-21.
 
 ## Fail-closed behavior
 
@@ -75,7 +79,7 @@ precondition for correcting the two demonstrated false invalidations.
 
 ## Tests
 
-The policy tests pin six properties:
+The policy tests pin seven properties:
 
 1. every registered file has its guarded parent edge;
 2. registered files invalidate no GPU records;
@@ -83,4 +87,6 @@ The policy tests pin six properties:
 4. a production change cannot hide beside an exempt test change;
 5. no gate boundary file appears in the test-only registry.
 6. a real git fixture keeps an existing record across a test-only commit and
-   invalidates it after a production-parent commit.
+   invalidates it after a production-parent commit;
+7. the bootstrap grant contains exactly three content-pinned boundary blobs,
+   fails closed for every other blob, and demands removal after fresh records.
