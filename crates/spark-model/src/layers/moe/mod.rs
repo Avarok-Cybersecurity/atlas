@@ -122,6 +122,11 @@ pub struct MoeLayer {
     w4a16_gemv_sw: KernelHandle,
     w4a16_gemm: KernelHandle,
     dense_gemm: KernelHandle,
+    /// Order-preserving register-blocked router GEMM (`dense_gemm_bf16_router`):
+    /// bit-identical to the scalar `dense_gemm` (same per-output FP32 k-order,
+    /// `--fmad=false` build) at ~2x speed. `KernelHandle(0)` on miss → the
+    /// pinned scalar kernel. Used ONLY by `router_gate_gemm_dense`.
+    dense_gemm_router: KernelHandle,
     dense_gemm_pipelined: KernelHandle,
     /// FP32-output router GEMM + FP32-input top-K for the ATLAS_FP32_GATE path.
     /// Zero (unresolved) when the kernels are absent; dispatch falls back to BF16.
