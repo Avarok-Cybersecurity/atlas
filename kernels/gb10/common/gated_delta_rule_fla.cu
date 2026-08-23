@@ -251,34 +251,41 @@ gated_delta_rule_recompute_wu(
             ? key[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + j]
             : __float2bfloat16(0.0f);
     }
-    // PARALLEL gc scan. This was a CHUNK-long serial prefix sum on tid 0 — a
-    // global load and a `logf` per step — with the other 255 threads parked at
-    // the barrier below, so every thread in the CTA paid for it. Measured at
-    // nt=4 with `WU_BENCH_ITERS` (n=3): 151.0/151.3/151.1 us serial vs
-    // 137.4/139.5 us here, i.e. ~8.5% against a 0.3 us spread.
+    // ORDER-STABLE parallel gc scan (v2 — replaces the Hillis-Steele tree).
     //
-    // Two other candidates measured NEGATIVE first, and are recorded above so
-    // they are not retried: moving the accumulator out of local memory (0.81x /
-    // 0.59x / 0.75x) and splitting the inner accumulation four ways (neutral).
+    // ★ THE TREE SCAN COST 2.6 BFCL POINTS AND WAS REVERTED (2026-08-23).
+    // Bisect on the golden n=995 draw: full branch 83.02/80.72 vs floors
+    // 83.42/83.32, and the pscan-only build scored IDENTICALLY — while the
+    // clean base passed at 84.22/84.12 the same night. A tree scan
+    // re-associates this log-space cumulative sum, and gc feeds
+    // exp(gc_i - gc_l) across the whole L matrix: femto-scale association
+    // differences get amplified multiplicatively. cos 0.999999 with identical
+    // max-abs DID NOT catch it — the second such miss on this file (vfused
+    // SPLIT=4 was the first). Task-level gates are the only trustworthy
+    // verdict for numerics changes here.
+    //
+    // This version keeps the EXPENSIVE parts parallel — the 64 global gate
+    // loads and 64 logf calls, which are element-independent and order-free —
+    // and does the 64 ADDITIONS sequentially on one thread over smem-resident
+    // values, in the SAME order as the original serial scan. The summation is
+    // bit-identical to the pre-pscan kernel by construction; only the logf
+    // computation moved off the critical path.
     for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
         gc[idx] = (idx < ce)
             ? logf(fmaxf(gate[(unsigned long long)(cs + idx) * gb_stride + vh], GATE_FLOOR))
             : 0.0f;
     }
     __syncthreads();
-    // Hillis-Steele inclusive scan: log2(CHUNK)=6 barrier-separated steps
-    // instead of CHUNK serial ones. The read is staged into a register before
-    // the write so the two halves cannot race on `gc`.
-    for (unsigned int off = 1; off < CHUNK; off <<= 1) {
-        float add = (tid < CHUNK && tid >= off) ? gc[tid - off] : 0.0f;
-        __syncthreads();
-        if (tid < CHUNK && tid >= off) gc[tid] += add;
-        __syncthreads();
+    if (tid == 0) {
+        float acc = 0.0f;
+        for (unsigned int i = 0; i < ce; i++) {
+            acc += gc[i];
+            gc[i] = acc;
+        }
     }
-    // Publish, and zero the tail the scan filled with the running total. The
-    // serial version left gc[ce..CHUNK] as whatever was in shared memory; the
-    // L build below reads gc[i] up to CHUNK, so defined zeros are strictly
-    // safer (beta is 0 there, and 0 * expf(garbage) can be NaN).
+    __syncthreads();
+    // Publish, and zero the tail (defined zeros: the L build reads gc[i] up to
+    // CHUNK, and 0 * expf(garbage) can be NaN).
     for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
         if (idx >= ce) {
             gc[idx] = 0.0f;
