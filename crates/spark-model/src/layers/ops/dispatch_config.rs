@@ -33,16 +33,6 @@ pub struct GemmDispatch {
     /// gauge ~1400 → ~100 once block-scaled prefill is on).
     /// Opt out with `ATLAS_FP8_SINGLE_SCALE=1` — diagnostic/fallback only.
     pub fp8_blockscaled_prefill: bool,
-    /// SSM QKVZ prefill through the dequant-once-cached cuBLASLt BF16 GEMM
-    /// (W16A16) instead of the block-scaled W8A8 path. Default ON since
-    /// 2026-08-22 (candidate P3_ssm_cublas_route): 2.8× at the production
-    /// shape [4510×2048]×[2048×12288] AND ~7× lower max-abs error vs the f64
-    /// reference (0.019 vs 0.135 — W8A8 quantises the activations, W16A16
-    /// does not). Costs +50 MB BF16 weight cache per GDN layer, allocated
-    /// fail-fast on first prefill. NOTE: deliberately departs from
-    /// "vLLM-equivalent W8A8" parity on this projection; opt out with
-    /// `ATLAS_SSM_QKVZ_W8A8=1` to restore the previous route for A/B.
-    pub ssm_qkvz_cublas_bf16: bool,
     /// cuBLASLt BF16 GEMM. The hand-written mma.sync projection GEMMs reach
     /// only ~30% of the cuBLAS bf16 ceiling on GB10.
     pub cublas_gemm: bool,
@@ -86,8 +76,6 @@ impl GemmDispatch {
             },
             // Note the inverted sense: this one is on unless opted out.
             fp8_blockscaled_prefill: !on("ATLAS_FP8_SINGLE_SCALE"),
-            // Also inverted: on unless opted out (see the field doc).
-            ssm_qkvz_cublas_bf16: !on("ATLAS_SSM_QKVZ_W8A8"),
             cublas_gemm: on("ATLAS_CUBLAS_GEMM"),
             cublas_fp8: on("ATLAS_CUBLAS_FP8"),
             cutlass_gemm: on("ATLAS_CUTLASS_GEMM"),
@@ -109,7 +97,6 @@ impl GemmDispatch {
         Self {
             w4a16_variant: 0,
             fp8_blockscaled_prefill: true,
-            ssm_qkvz_cublas_bf16: true,
             cublas_gemm: false,
             cublas_fp8: false,
             cutlass_gemm: false,
@@ -146,7 +133,6 @@ mod tests {
     fn defaults_have_only_blockscaled_prefill_on() {
         let d = GemmDispatch::defaults();
         assert!(d.fp8_blockscaled_prefill, "on unless opted out");
-        assert!(d.ssm_qkvz_cublas_bf16, "on unless opted out");
         assert!(!d.cublas_gemm && !d.cutlass_gemm && !d.cutlass_nvfp4_gemm);
     }
 
