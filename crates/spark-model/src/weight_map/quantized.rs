@@ -260,6 +260,10 @@ impl QuantizedWeight {
         if let Some(tk) = Self::host_transpose_kernel(gpu) {
             let new_weight = gpu.alloc(packed_size)?;
             let new_scale = gpu.alloc(scale_size)?;
+            // Layer-owned (issue #736): transposed GEMM twins live in layer
+            // structs; released by the teardown sweep by design.
+            gpu.tag_alloc_owner(new_weight, "weight_map/transpose_for_gemm");
+            gpu.tag_alloc_owner(new_scale, "weight_map/transpose_for_gemm");
             crate::layers::ops::transpose_u8(
                 gpu,
                 tk,
@@ -503,6 +507,9 @@ impl QuantizedWeight {
         stream: u64,
     ) -> Result<DevicePtr> {
         let fp8_buf = gpu.alloc(n * k)?;
+        // Layer-owned (issue #736): FP8 predequant mirrors live in layer
+        // structs; released by the teardown sweep by design.
+        gpu.tag_alloc_owner(fp8_buf, "weight_map/predequant_fp8");
         crate::layers::ops::predequant_nvfp4_to_fp8(
             gpu,
             predequant_kernel,
@@ -547,6 +554,10 @@ impl DenseWeight {
     ) -> Result<Fp8DenseWeight> {
         let fp8_buf = gpu.alloc(n * k)?;
         let row_scale_buf = gpu.alloc(n * std::mem::size_of::<f32>())?;
+        // Layer-owned (issue #736): Fp8DenseWeight lives in layer structs;
+        // released by the teardown sweep by design.
+        gpu.tag_alloc_owner(fp8_buf, "weight_map/quantize_fp8");
+        gpu.tag_alloc_owner(row_scale_buf, "weight_map/quantize_fp8");
         crate::layers::ops::quantize_bf16_to_fp8(
             gpu,
             quantize_kernel,

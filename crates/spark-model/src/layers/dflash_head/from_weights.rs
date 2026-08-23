@@ -97,6 +97,10 @@ impl BlockDiffusionDraftHead {
         };
         let num_blocks = (max_seq_len + gamma_val + 1) / block_size + 1;
         let kv_cache = PagedKvCache::new(kv_config, num_blocks, gpu)?;
+        // Layer-owned (issue #736): the drafter's KV pools belong to this
+        // head, not to any ModelResource — the teardown sweep is their
+        // designed release path (they were the paged_impl rows in its WARN).
+        kv_cache.tag_pools_layer_owned(gpu, "dflash_drafter/kv_pool");
 
         // Resolve kernel handles. All BF16 paths since drafter weights are
         // BF16 (DflashQuantization::Bf16); FP8 cache uses the FP8 reshape +

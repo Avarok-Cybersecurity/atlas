@@ -77,6 +77,20 @@ impl PagedKvCache {
 
     /// Allocate a free block. Returns block index.
     #[track_caller]
+    /// Declare this cache's per-layer pools as layer-owned in the alloc
+    /// ledger (issue #736). For SECONDARY caches only — e.g. the DFlash
+    /// drafter's KV, which is owned by the drafter head rather than
+    /// registered as a `ModelResource`, so the teardown sweep is its
+    /// designed release path. The model's main KV cache is a
+    /// `ModelResource` and must NOT be tagged: tagging would reclassify a
+    /// failed release from a leak WARN into a by-design INFO row.
+    pub fn tag_pools_layer_owned(&self, gpu: &dyn GpuBackend, owner: &'static str) {
+        for layer in &self.layers {
+            gpu.tag_alloc_owner(layer.k_pool, owner);
+            gpu.tag_alloc_owner(layer.v_pool, owner);
+        }
+    }
+
     pub fn alloc_block(&mut self) -> Result<u32> {
         let idx = self
             .free_blocks
