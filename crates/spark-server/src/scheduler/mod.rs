@@ -798,11 +798,24 @@ pub fn run(
                             .is_some_and(|b| {
                                 a.thinking_tokens.saturating_add(spec_window) >= b
                             });
+                        // A NEGATIVE logit bias on `<tool_call>` (the loop
+                        // detector's soft decay at repeat>=3, or a client's
+                        // own bias) is a host-sampling construct — the DFlash
+                        // raw-argmax verify path skips the sampling pipeline,
+                        // so under speculation the bias silently never
+                        // applies (measured: a restart-verify loop rode
+                        // mtp=0.99 to the 40-turn cap through 20 score=1.0
+                        // verdicts while the -10 decay sat unused). Decode
+                        // such a sequence serially: bias with teeth, still
+                        // no hard-mask.
+                        let negative_tool_call_bias = tool_call_start_token.is_some_and(|t| {
+                            a.logit_bias.iter().any(|&(id, b)| id == t && b < 0.0)
+                        });
                         mtp_gate::spec_dispatch_eligible(
                             a.inside_thinking,
                             a.post_think_emitted,
                             a.output_tokens.len() as u32,
-                            a.suppress_tool_call,
+                            a.suppress_tool_call || negative_tool_call_bias,
                             a.disable_mtp,
                             dflash_spec_think,
                             dflash_resume_guard,

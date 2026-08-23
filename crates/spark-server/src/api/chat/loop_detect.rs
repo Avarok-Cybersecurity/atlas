@@ -227,13 +227,25 @@ pub(super) fn check_loops(messages: &[Message], tools_active: bool) -> LoopDetec
                 );
             } else {
                 if loop_suppress_disabled() {
-                    tracing::warn!(
-                        score = *score,
-                        run_length = *run_length,
-                        channel = channel.name(),
-                        "Loop detector → SUPPRESS verdict (ATLAS_LOOP_NO_SUPPRESS=1: \
-                         hard-mask AND soft bias decay NOT applied)"
-                    );
+                    if loop_soft_bias_rearmed() {
+                        tracing::warn!(
+                            score = *score,
+                            run_length = *run_length,
+                            channel = channel.name(),
+                            "Loop detector → SUPPRESS verdict (ATLAS_LOOP_NO_SUPPRESS=1 + \
+                             ATLAS_LOOP_SOFT_BIAS=1: hard-mask NOT applied; soft bias decay \
+                             applies, and the biased turn decodes serially so speculation \
+                             cannot bypass it)"
+                        );
+                    } else {
+                        tracing::warn!(
+                            score = *score,
+                            run_length = *run_length,
+                            channel = channel.name(),
+                            "Loop detector → SUPPRESS verdict (ATLAS_LOOP_NO_SUPPRESS=1: \
+                             hard-mask AND soft bias decay NOT applied)"
+                        );
+                    }
                 } else {
                     tracing::warn!(
                         score = *score,
