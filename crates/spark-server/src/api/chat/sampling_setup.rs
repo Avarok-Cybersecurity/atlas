@@ -238,10 +238,14 @@ pub(super) fn build_sampling(
     // bias forces the host sampling path where it applies EVEN AT TEMP 0
     // (-5/-10 on <tool_call> at repeat>=3 flips the argmax away from tool
     // calls — user-observed as the detector still "firing on tools").
+    // ATLAS_LOOP_SOFT_BIAS=1 re-arms JUST this decay under that env — the
+    // bias-only posture that breaks verbatim restart-verify loops without
+    // the hard-mask's false positives (see loop_detect for the measurement).
     if !force_temp_zero
         && tools_active
         && !suppress_tool_call
-        && !super::loop_detect::loop_suppress_disabled()
+        && (!super::loop_detect::loop_suppress_disabled()
+            || super::loop_detect::loop_soft_bias_rearmed())
         && let Some(tc_id) = state.tool_call_start_token_id
     {
         let bias = match tool_call_repeat_count {

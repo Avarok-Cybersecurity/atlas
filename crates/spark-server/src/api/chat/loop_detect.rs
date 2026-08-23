@@ -33,6 +33,25 @@ pub(super) fn loop_suppress_disabled() -> bool {
     std::env::var("ATLAS_LOOP_NO_SUPPRESS").as_deref() == Ok("1")
 }
 
+/// `ATLAS_LOOP_SOFT_BIAS=1`: re-arm ONLY the soft `<tool_call>` bias decay
+/// while `ATLAS_LOOP_NO_SUPPRESS=1` keeps the hard-mask off.
+///
+/// The two actions fail differently and deserve separate switches
+/// (2026-08-23, agentic N=10 at tools-preset 0.6): the HARD-MASK's failure
+/// mode is false positives — it blocks the next tool call outright after ~3
+/// similar turns, which legitimate ls/check/fix iteration crosses constantly.
+/// The SOFT BIAS (+3/0/-5/-10 by repeat count, sampling_setup) only leans on
+/// the distribution after 3+ near-identical calls and never blocks — and
+/// with both off, a completed task was observed restart-verify looping the
+/// IDENTICAL bash call 8x to the turn cap while the detector logged a
+/// score=1.0 verdict it was forbidden to act on (a second run escaped the
+/// same loop on sampling luck after 7 repeats). Bias-only is the posture
+/// that breaks that fixed point without the mask's false-positive cost.
+/// No effect unless the mask is disabled; the mask path never reads this.
+pub(super) fn loop_soft_bias_rearmed() -> bool {
+    std::env::var("ATLAS_LOOP_SOFT_BIAS").as_deref() == Ok("1")
+}
+
 pub(super) fn check_loops(messages: &[Message], tools_active: bool) -> LoopDetectOut {
     let mut suppress_tool_call = false;
     let mut tool_call_repeat_count: usize = 0;

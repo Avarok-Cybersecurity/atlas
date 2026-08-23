@@ -128,6 +128,14 @@ if [ "${GUARDS_DEFAULT:-0}" != "1" ]; then
   # exceeded one sub-threshold HINT over 20 agentic runs — the false-positive
   # case against the mask is much weaker at card settings than it was.
   export ATLAS_LOOP_NO_SUPPRESS=1
+  # ...but the SOFT BIAS comes back (2026-08-23, non-thinking v2 arm): with
+  # both actions off, a COMPLETED task restart-verify looped the identical
+  # bash call 8x to the 40-turn cap (detector logged score=1.0, forbidden to
+  # act); a second run escaped the same loop on sampling luck after 7
+  # repeats. The bias (+3/0/-5/-10 by repeat count) only leans on the
+  # distribution after 3+ near-identical calls and never blocks — it breaks
+  # that fixed point without the mask's false positives.
+  export ATLAS_LOOP_SOFT_BIAS=1
   # Watchdog family ON, content-loop OFF individually (2026-08-23 surgical
   # rework). The wholesale ATLAS_DISABLE_WATCHDOGS=1 posture cost real wall:
   # ~2% of agentic turns completed their tool call and kept generating to
