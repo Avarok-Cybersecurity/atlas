@@ -132,21 +132,8 @@ pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
 /// stays on that path). DFlash raw-argmax stays serial-in-think unless
 /// `ATLAS_DFLASH_SPEC_THINK=1`.
 ///
-/// The two `spec_think`-era refusals (2026-08-23, from the field notes
-/// behind the original 8-9/10 verdict):
-///
-/// * `drafts_cross_think_end` — the pending draft block contains
-///   `</think>`. Without this refusal a single γ-token verify step crosses
-///   the think boundary and emits the ANSWER'S OPENING TOKENS on the
-///   verify path in the same step: at dispatch time the sequence is still
-///   `inside_thinking`, so the post-think resume guard never evaluates —
-///   the guard is structurally bypassed at exactly the transition it
-///   protects (T=0 verify-vs-decode low-margin flips concentrate in the
-///   answer's first ~7 tokens, and a flipped opening token is what
-///   malforms a tool call). Refusing dispatch makes the crossing happen
-///   on serial decode, so the guard then binds on `post_think_emitted`
-///   for every opening token. Only enforced when the guard is armed:
-///   guard 0 keeps the prior cross-freely behavior.
+/// The `spec_think`-era refusal (2026-08-23, from the field notes behind
+/// the original 8-9/10 verdict):
 ///
 /// * `think_budget_imminent` — the next verify step could reach the
 ///   thinking budget. The raw-argmax verify path does not run
@@ -155,7 +142,19 @@ pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
 ///   max_tokens 1500, think uncapped). Refusing dispatch hands the
 ///   budget boundary to the serial path, which enforces it. Applies
 ///   whether or not the resume guard is armed — it is a correctness
-///   bound, not an entry-window preference.
+///   bound, not an entry-window preference. This is a bounded refusal:
+///   it can only fire within one draft block of the budget.
+///
+/// The OTHER hole from those notes — a verify step crossing `</think>`
+/// and emitting the answer's opening tokens past the resume guard — is
+/// NOT closed here. A dispatch-time refusal ("pending drafts contain
+/// `</think>`") was tried and starved speculation wholesale: a brief-
+/// thinking drafter proposes `</think>` in nearly every block, measured
+/// serial fraction 0.78-0.99 vs 0.00 unguarded. It is closed at the
+/// verify VERDICT instead (verify_dflash_step / verify_dflash_batch_step):
+/// acceptance is capped at the `</think>` position, so only the crossing
+/// step's post-boundary tail is dropped and the guard binds from the
+/// next step.
 #[allow(clippy::too_many_arguments)]
 pub fn spec_dispatch_eligible(
     inside_thinking: bool,
@@ -166,7 +165,6 @@ pub fn spec_dispatch_eligible(
     spec_think: bool,
     resume_guard: u32,
     dflash_raw_argmax: bool,
-    drafts_cross_think_end: bool,
     think_budget_imminent: bool,
 ) -> bool {
     if suppress_tool_call || disable_mtp {
@@ -184,9 +182,6 @@ pub fn spec_dispatch_eligible(
         return false;
     }
     if inside_thinking && think_budget_imminent {
-        return false;
-    }
-    if inside_thinking && resume_guard > 0 && drafts_cross_think_end {
         return false;
     }
     if dflash_raw_argmax && !spec_think {

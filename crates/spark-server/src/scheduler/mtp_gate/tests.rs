@@ -331,62 +331,37 @@ fn stale_other_baseline_cannot_steal_mode() {
 #[test]
 fn standard_mtp_stays_serial_in_think() {
     assert!(!spec_dispatch_eligible(
-        true, 0, 0, false, false, false, 0, false, false, false
+        true, 0, 0, false, false, false, 0, false, false
     ));
     assert!(!spec_dispatch_eligible(
-        true, 0, 50, false, false, false, 0, false, false, false
+        true, 0, 50, false, false, false, 0, false, false
     ));
     assert!(spec_dispatch_eligible(
-        false, 0, 50, false, false, false, 0, false, false, false
+        false, 0, 50, false, false, false, 0, false, false
     ));
 }
 
 #[test]
 fn standard_mtp_spec_think_opts_in() {
     assert!(spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 0, false, false, false
+        true, 0, 50, false, false, true, 0, false, false
     ));
 }
 
 #[test]
 fn dflash_raw_argmax_stays_serial_in_think() {
     assert!(!spec_dispatch_eligible(
-        true, 0, 50, false, false, false, 0, true, false, false
+        true, 0, 50, false, false, false, 0, true, false
     ));
     assert!(spec_dispatch_eligible(
-        false, 0, 50, false, false, false, 0, true, false, false
+        false, 0, 50, false, false, false, 0, true, false
     ));
 }
 
 #[test]
 fn dflash_spec_think_opts_in() {
     assert!(spec_dispatch_eligible(
-        true, 0, 0, false, false, true, 0, true, false, false
-    ));
-}
-
-/// A pending draft block containing `</think>` must fall back to serial
-/// WHEN THE RESUME GUARD IS ARMED — otherwise the verify step crosses the
-/// boundary and emits the answer's opening tokens past the guard (the
-/// structural bypass behind the historical trajectory failures). With the
-/// guard off (0), crossing stays allowed: prior behavior preserved.
-#[test]
-fn spec_think_boundary_crossing_defers_to_serial_when_guard_armed() {
-    // Guard armed + drafts cross `</think>` → refuse.
-    assert!(!spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 8, true, true, false
-    ));
-    // Guard armed, drafts do NOT cross → eligible (past the output window).
-    assert!(spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 8, true, false, false
-    ));
-    // Guard OFF + crossing drafts → prior behavior, still eligible.
-    assert!(spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 0, true, true, false
-    ));
-    // Outside think the crossing flag is meaningless.
-    assert!(spec_dispatch_eligible(
-        false, 50, 50, false, false, true, 8, true, true, false
+        true, 0, 0, false, false, true, 0, true, false
     ));
 }
 
@@ -394,23 +369,30 @@ fn spec_think_boundary_crossing_defers_to_serial_when_guard_armed() {
 /// could reach the thinking budget must be refused REGARDLESS of the
 /// resume guard — the serial path owns the budget boundary (this is the
 /// fix for the observed 2479-token completion against max_tokens 1500).
+/// A bounded refusal: it can only fire within one draft block of the cap,
+/// unlike the retracted "drafts contain </think>" refusal that starved
+/// speculation wholesale (serial fraction 0.78-0.99 measured).
 #[test]
 fn spec_think_budget_boundary_defers_to_serial() {
     // Budget imminent inside think → refuse, guard armed or not.
     assert!(!spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 0, true, false, true
+        true, 0, 50, false, false, true, 0, true, true
     ));
     assert!(!spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 8, true, false, true
+        true, 0, 50, false, false, true, 8, true, true
     ));
     // Standard-MTP lane inside think is refused too — the flag says the
     // budget could be crossed by a verify-emitted run.
     assert!(!spec_dispatch_eligible(
-        true, 0, 50, false, false, true, 0, false, false, true
+        true, 0, 50, false, false, true, 0, false, true
     ));
     // Outside think the budget flag is meaningless.
     assert!(spec_dispatch_eligible(
-        false, 50, 50, false, false, true, 0, true, false, true
+        false, 50, 50, false, false, true, 0, true, true
+    ));
+    // Not imminent inside think → eligible as before.
+    assert!(spec_dispatch_eligible(
+        true, 0, 50, false, false, true, 8, true, false
     ));
 }
 

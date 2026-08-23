@@ -38,7 +38,7 @@ pub fn step_verify_dflash_batched(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts_per_seq: usize,
     num_drafts: usize,
-    _verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
     let n = batch.len();
     let k = drafts_per_seq + 1;
@@ -133,8 +133,24 @@ pub fn step_verify_dflash_batched(
             }
             num_accepted += 1;
         }
-        accepted_per_seq.push(num_accepted);
+        // Adaptive-spec telemetry sees the UNCAPPED prefix (drafter accuracy);
+        // everything downstream — rewind, ctx commit, emit, SSM commit, and
+        // Phase B's trim via accepted_per_seq — uses the capped value.
         crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
+        // Think-boundary acceptance cap (resume-guard integrity): identical
+        // to the single-seq path — with the guard armed, a verify dispatched
+        // inside `<think>` keeps nothing past `</think>`; the bonus emits the
+        // target's pick for that slot (normally `</think>`), the guard binds
+        // next step, and zero verify-path answer tokens leak. See
+        // verify_dflash_step.rs for why dispatch-time refusal was wrong.
+        if sched.levers.dflash_resume_guard > 0
+            && a.inside_thinking
+            && let Some(t) = verify_ctx.think_end_token
+            && let Some(pos) = drafts[..num_accepted].iter().position(|&d| d == t)
+        {
+            num_accepted = pos;
+        }
+        accepted_per_seq.push(num_accepted);
         // Token-level provenance for a divergence hunt: which side is wrong —
         // the DRAFTS (drafter state) or the VERIFIED row (the target's own
         // argmax in this batched forward)? Gated at debug; the 2026-08-21

@@ -108,7 +108,31 @@ pub fn step_verify_dflash(
 
     // Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): feed the rolling
     // accept window; may suspend this seq's speculation (see adaptive_spec).
+    // Fed the UNCAPPED prefix on purpose: it measures drafter accuracy, and
+    // the think-boundary cap below is policy, not a drafter miss.
     crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
+
+    // Think-boundary acceptance cap (resume-guard integrity, 2026-08-23):
+    // with the resume guard armed, a verify step dispatched inside `<think>`
+    // must not keep tokens PAST `</think>` — the answer's opening tokens are
+    // exactly the low-margin window the guard serial-decodes. Capping at the
+    // `</think>` position (EXCLUSIVE) reuses the natural partial-accept
+    // shape: the bonus token then emits the target's pick for that slot —
+    // `</think>` itself whenever the draft was going to be accepted — so
+    // zero verify-path answer tokens leak, and the guard binds on
+    // `post_think_emitted` from the very next step. A dispatch-time refusal
+    // ("pending drafts contain </think>") was tried first and starved
+    // speculation wholesale: a brief-thinking drafter proposes `</think>`
+    // in nearly every block (measured serial fraction 0.78-0.99 vs 0.00
+    // unguarded). Only the crossing STEP needs intervention, and only its
+    // post-boundary tail.
+    if sched.levers.dflash_resume_guard > 0
+        && a.inside_thinking
+        && let Some(t) = verify_ctx.think_end_token
+        && let Some(pos) = drafts[..num_accepted].iter().position(|&d| d == t)
+    {
+        num_accepted = pos;
+    }
 
     // Roll back the over-extended `seq_len` and `seq.tokens`. The verify
     // advanced both by `tokens.len() = γ+1` (all γ drafts + the prefix
