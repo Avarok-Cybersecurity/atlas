@@ -131,6 +131,32 @@ pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
 /// second gate. Standard MTP verifies during `<think>` (ForcedThinkEnd
 /// stays on that path). DFlash raw-argmax stays serial-in-think unless
 /// `ATLAS_DFLASH_SPEC_THINK=1`.
+///
+/// The two `spec_think`-era refusals (2026-08-23, from the field notes
+/// behind the original 8-9/10 verdict):
+///
+/// * `drafts_cross_think_end` — the pending draft block contains
+///   `</think>`. Without this refusal a single γ-token verify step crosses
+///   the think boundary and emits the ANSWER'S OPENING TOKENS on the
+///   verify path in the same step: at dispatch time the sequence is still
+///   `inside_thinking`, so the post-think resume guard never evaluates —
+///   the guard is structurally bypassed at exactly the transition it
+///   protects (T=0 verify-vs-decode low-margin flips concentrate in the
+///   answer's first ~7 tokens, and a flipped opening token is what
+///   malforms a tool call). Refusing dispatch makes the crossing happen
+///   on serial decode, so the guard then binds on `post_think_emitted`
+///   for every opening token. Only enforced when the guard is armed:
+///   guard 0 keeps the prior cross-freely behavior.
+///
+/// * `think_budget_imminent` — the next verify step could reach the
+///   thinking budget. The raw-argmax verify path does not run
+///   ForcedThinkEnd, so speculation inside `<think>` can sail straight
+///   past the budget (observed: a 2479-token completion against
+///   max_tokens 1500, think uncapped). Refusing dispatch hands the
+///   budget boundary to the serial path, which enforces it. Applies
+///   whether or not the resume guard is armed — it is a correctness
+///   bound, not an entry-window preference.
+#[allow(clippy::too_many_arguments)]
 pub fn spec_dispatch_eligible(
     inside_thinking: bool,
     post_think_emitted: u32,
@@ -140,6 +166,8 @@ pub fn spec_dispatch_eligible(
     spec_think: bool,
     resume_guard: u32,
     dflash_raw_argmax: bool,
+    drafts_cross_think_end: bool,
+    think_budget_imminent: bool,
 ) -> bool {
     if suppress_tool_call || disable_mtp {
         return false;
@@ -149,8 +177,16 @@ pub fn spec_dispatch_eligible(
     // numerics floor can flip a low-margin token mid-reasoning), and the
     // agentic-webserver gate measured the damage as deterministic 8-9/10
     // trajectory failures (2026-08-16 bisect: main+this-hunk fails, main
-    // without it passes 10/10).
+    // without it passes 10/10). RETESTED 2026-08-23 at serving temperature
+    // (tools 0.6, reasoning low, post-#699): 10/10 — but the two refusals
+    // below are temperature-insensitive and stay enforced regardless.
     if inside_thinking && !spec_think {
+        return false;
+    }
+    if inside_thinking && think_budget_imminent {
+        return false;
+    }
+    if inside_thinking && resume_guard > 0 && drafts_cross_think_end {
         return false;
     }
     if dflash_raw_argmax && !spec_think {

@@ -783,6 +783,22 @@ pub fn run(
                     // serial-decodes the spec-entry window. EVERY active
                     // sequence must be eligible, not just active[0].
                     active.iter().all(|a| {
+                        // A verify step that crosses `</think>` would emit
+                        // the answer's opening tokens past the resume guard
+                        // (see spec_dispatch_eligible); a step that could
+                        // reach the thinking budget would sail past a cap
+                        // the raw-argmax path cannot enforce. Both are
+                        // decided here from the pending draft block.
+                        let drafts_cross_think_end = think_end_token
+                            .is_some_and(|t| a.pending_drafts.contains(&t));
+                        let spec_window = a.pending_drafts.len() as u32 + 1;
+                        let think_budget_imminent = a
+                            .thinking_budget
+                            .or((!a.enable_thinking && spontaneous_think_budget > 0)
+                                .then_some(spontaneous_think_budget))
+                            .is_some_and(|b| {
+                                a.thinking_tokens.saturating_add(spec_window) >= b
+                            });
                         mtp_gate::spec_dispatch_eligible(
                             a.inside_thinking,
                             a.post_think_emitted,
@@ -792,6 +808,8 @@ pub fn run(
                             dflash_spec_think,
                             dflash_resume_guard,
                             dflash_verify_raw_argmax,
+                            drafts_cross_think_end,
+                            think_budget_imminent,
                         )
                     })
                 )
