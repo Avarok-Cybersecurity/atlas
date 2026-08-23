@@ -248,18 +248,27 @@ pub(super) fn build_sampling(
             || super::loop_detect::loop_soft_bias_rearmed())
         && let Some(tc_id) = state.tool_call_start_token_id
     {
-        // ESCALATING decay (2026-08-23): the flat -10 floor LOST the argmax
-        // fight at temp 0 — a deep greedy groove holds a <tool_call> margin
-        // above 10 nats, and a no-op-edit loop rode straight through two
-        // SUPPRESS-biased serial turns to the 40-turn cap. Doubling per
-        // identical round beats any finite margin within a couple more
-        // rounds while keeping the early steps a nudge: -5, -10, -20, -40,
-        // then -80 (effectively masking — deserved by round seven of a
-        // byte-identical call, and still not a hard block).
+        // ESCALATING decay with a masking top rung (2026-08-23). Two
+        // measured lessons behind this shape:
+        //  * a flat -10 LOST the argmax fight at temp 0 (no-op-edit loop
+        //    rode two biased serial turns to the 40-turn cap);
+        //  * a doubling ramp (-5..-80) never got past -20, because the
+        //    detector's run_length SATURATES AT 5 (fourteen score=1.0
+        //    run_length=5 verdicts in one capped run) — and a 40-turn
+        //    byte-identical greedy groove holds a margin above even 20
+        //    nats.
+        // So: repeat 3 and 4 stay nudges (-5, -10); the saturated rung is
+        // an EFFECTIVE mask (-1e9). That rung is only reachable by a plain
+        // SUPPRESS verdict — the P1-5 failing-repeat and progressing-cycle
+        // exemptions bypass the verdict entirely for corrective or
+        // productive iteration — so it fires precisely on the certified
+        // verbatim-infinite-loop case (BW1/SPINFIX) and nowhere else.
         let bias = match tool_call_repeat_count {
             0 | 1 => 3.0,
             2 => 0.0,
-            n => -(5.0 * f32::powi(2.0, (n as i32 - 3).min(4))),
+            3 => -5.0,
+            4 => -10.0,
+            _ => -1e9,
         };
         if bias != 0.0 {
             logit_bias.push((tc_id, bias));
