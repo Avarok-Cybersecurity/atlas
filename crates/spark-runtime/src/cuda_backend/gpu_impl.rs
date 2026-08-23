@@ -174,6 +174,10 @@ impl GpuBackend for AtlasCudaBackend {
         AtlasCudaBackend::sweep_unreleased(self)
     }
 
+    fn tag_alloc_owner(&self, ptr: DevicePtr, owner: &'static str) {
+        AtlasCudaBackend::tag_alloc_owner(self, ptr, owner);
+    }
+
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
         AtlasCudaBackend::copy_h2d_impl(self, src, dst)
     }

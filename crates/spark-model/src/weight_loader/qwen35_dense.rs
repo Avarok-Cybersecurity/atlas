@@ -1361,6 +1361,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         if let Some(b2f_k) = bf16_to_fp8_k {
                             let qkvz_total = (qkvz_size * h) as u32;
                             let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
+                            // Layer-owned (issue #736): FP8 prefill twins of
+                            // the SSM projections live in the layer structs.
+                            gpu.tag_alloc_owner(qkvz_fp8, "qwen35_dense/ssm_fp8_prefill");
                             crate::layers::ops::bf16_to_fp8(
                                 gpu,
                                 b2f_k,
@@ -1371,6 +1374,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             )?;
                             let out_total = (h * value_dim) as u32;
                             let out_fp8 = gpu.alloc(h * value_dim)?;
+                            gpu.tag_alloc_owner(out_fp8, "qwen35_dense/ssm_fp8_prefill");
                             crate::layers::ops::bf16_to_fp8(
                                 gpu,
                                 b2f_k,

@@ -96,6 +96,10 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
 
         // Allocate BF16 output on device (2 bytes/element).
         let out = gpu.alloc(total * 2)?;
+        // Layer-owned (issue #736): the dequanted BF16 weight is returned to
+        // loaders that park it in layer structs (or feed a further quantize,
+        // whose caller frees this — the tag is then moot with the entry).
+        gpu.tag_alloc_owner(out, "weight_map/fp8_dequant_bf16");
 
         // GPU dequant: bf16_out[n,k] = E4M3_LUT[fp8[n,k]] * scale_inv[n/block_n, k/block_k].
         // Block (64, 4, 1) → each thread does one element; grid covers [K, N].

@@ -225,6 +225,17 @@ pub(crate) fn load_dflash_drafter(
     let drafter_store = loader
         .load(&drafter_dir, gpu, 0)
         .context("Failed to load DFlash drafter weights")?;
+    // Layer-owned (issue #736): this store is dropped after the drafter head
+    // is built, but the head keeps pointers into its tensors — no
+    // ModelResource ever releases them, the teardown sweep does. Tag them so
+    // the sweep reports them as designed layer-owned memory rather than a
+    // leak (they were the whole 3.67 GB `load_fns.rs` row in the sweep WARN).
+    let names: Vec<String> = drafter_store.names().map(str::to_string).collect();
+    for name in names {
+        if let Ok(t) = drafter_store.get(&name) {
+            gpu.tag_alloc_owner(t.ptr, "dflash_drafter/checkpoint");
+        }
+    }
     tracing::info!(
         "DFlash drafter store: {} tensors, {} bytes",
         drafter_store.len(),

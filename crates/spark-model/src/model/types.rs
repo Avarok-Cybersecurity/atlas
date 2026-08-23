@@ -633,16 +633,19 @@ impl TransformerModel {
         if let Some(mut store) = self.weight_store.take() {
             attempt("weight store", store.release(gpu));
         }
-        // LAST: whatever the owners above did not cover. Chiefly the loaders'
-        // fused weights, which live in layer structs and belong to no pool.
-        // Every pointer freed above has already left the ledger, so this
-        // cannot double-free — it only ever sees what was missed.
+        // LAST: whatever the owners above did not cover. Layer-owned weights
+        // (fused/derived/adopted; tagged via `tag_alloc_owner`, issue #736)
+        // are released here BY DESIGN and reported as an INFO table by the
+        // sweep itself; the count returned — and warned about below — is
+        // only the UNTAGGED remainder, whose owner is genuinely unaccounted
+        // for. Every pointer freed above has already left the ledger, so
+        // this cannot double-free — it only ever sees what was missed.
         let swept = gpu.sweep_unreleased();
         if swept > 0 {
             tracing::warn!(
                 "teardown swept {swept} allocation(s) that no ModelResource \
-                 released — they are reclaimed, but each one is memory whose \
-                 owner is unaccounted for"
+                 released and no owner tag claimed — reclaimed, but each one \
+                 is memory whose owner is unaccounted for"
             );
         }
 

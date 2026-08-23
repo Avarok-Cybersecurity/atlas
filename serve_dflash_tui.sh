@@ -128,18 +128,29 @@ if [ "${GUARDS_DEFAULT:-0}" != "1" ]; then
   # exceeded one sub-threshold HINT over 20 agentic runs — the false-positive
   # case against the mask is much weaker at card settings than it was.
   export ATLAS_LOOP_NO_SUPPRESS=1
-  # ALL auto-watchdogs off: content-loop, inter-tool prose, F2 confidence
-  # early-stop, mid-word </think> defer, thinking-loop. User-set
-  # max_thinking_budget and safety masks are unaffected. CAVEAT: this family
-  # exists because the dense-27B siblings DO loop on long code prompts — with
-  # everything off, a genuinely degenerate stream burns to max_tokens instead
-  # of being cut.
-  export ATLAS_DISABLE_WATCHDOGS=1
-  # Tool-envelope watchdog off — it measurably throttles agentic flows
-  # (memory: atlas-tool-generation-caps). Note --tool-max-tokens stays at its
-  # 8192 default below; raise it via TOOL_MAX_TOKENS if Write calls with big
-  # file bodies get cut.
-  export ATLAS_TOOL_ENVELOPE_WATCHDOG=0
+  # Watchdog family ON, content-loop OFF individually (2026-08-23 surgical
+  # rework). The wholesale ATLAS_DISABLE_WATCHDOGS=1 posture cost real wall:
+  # ~2% of agentic turns completed their tool call and kept generating to
+  # the full 8192-token cap (~160s/burn; both ~240s outliers in the guarded
+  # spec-think arm) because the INTER-TOOL PROSE cap (3072, #328) that ends
+  # a tool-armed response is part of the disabled family. Meanwhile the only
+  # watchdog with MEASURED false positives is content-loop (10/10 kills were
+  # legitimate summaries: `├──` file trees and the literal string `0.0.0.0`,
+  # an end-anchored period-2 token repeat), and it has its own flag.
+  # (Historical note: ATLAS_TOOL_ENVELOPE_WATCHDOG was exported here for a
+  # while — nothing in the codebase reads it; the in-envelope guard is
+  # unconditional and was never the burn mechanism.)
+  #
+  # Content-loop watchdog ON with a RAISED repeat threshold instead of off:
+  # off wholesale, a degenerate loop INSIDE a Write parameter body has no
+  # guard at all (2026-08-23, surgical-v1 run 2: 8192-token burn at 100%
+  # draft accept inside `content`, salvaged as an EMPTY write) — the prose
+  # cap can't see in-parameter tokens and the envelope guard exempts them
+  # by design. Every measured false positive fired at 3-4 end-anchored
+  # repeats (`0.0.0.0` is four `0.`s; `├──` tree lines similar); a real
+  # runaway repeats hundreds of times. 12 keeps the false-positive classes
+  # structurally impossible and still cuts a runaway within a dozen periods.
+  export ATLAS_CONTENT_LOOP_MIN_REPEATS=12
 fi
 
 # Serve at INFO so the log is useful if something misbehaves.

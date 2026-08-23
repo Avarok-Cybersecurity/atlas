@@ -651,6 +651,9 @@ impl DenseFfnLayer {
             return Ok(*w);
         }
         let w = gpu.alloc(ops::nvfp4_mmq_weight_bytes(n, k))?;
+        // Layer-owned (issue #736): cached in the layer's OnceLock for model
+        // lifetime, released by the teardown sweep by design.
+        gpu.tag_alloc_owner(w, "dense_ffn/nvfp4_mmq");
         ops::nvfp4_mmq_repack(
             gpu,
             self.nvfp4_repack_k,

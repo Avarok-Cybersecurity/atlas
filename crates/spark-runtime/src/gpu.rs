@@ -103,7 +103,10 @@ pub trait GpuBackend: Send + Sync {
     fn free(&self, ptr: DevicePtr) -> Result<()>;
 
     /// Free every allocation this backend made that nobody released, and
-    /// report how many there were.
+    /// report how many of them were UNTAGGED — memory that neither a
+    /// `ModelResource` nor a [`Self::tag_alloc_owner`] declaration accounts
+    /// for. Tagged layer-owned memory is freed too but is not counted:
+    /// the sweep is its designed release path (issue #736).
     ///
     /// The teardown backstop. Enumerating owners does not scale: the loaders
     /// fuse weights into fresh allocations owned by layer structs, which no
@@ -122,6 +125,16 @@ pub trait GpuBackend: Send + Sync {
     fn live_bytes(&self) -> Option<usize> {
         None
     }
+
+    /// Declare that `ptr`'s owner is a LAYER STRUCT (fused/derived/adopted
+    /// weight) rather than any `ModelResource` pool, under a short label
+    /// (e.g. `"dense_ffn/nvfp4_mmq"`). Tagged memory is released by the
+    /// teardown sweep BY DESIGN and reports as an INFO table there; only
+    /// untagged survivors keep the sweep's leak WARN (issue #736 — 43.57 GB
+    /// of layer-owned weights had drowned that signal out). No-op for
+    /// backends with no ledger, and for a pointer already freed or never
+    /// allocated through the backend.
+    fn tag_alloc_owner(&self, _ptr: DevicePtr, _owner: &'static str) {}
 
     /// Attribution of live device memory by allocating call site, biggest
     /// first. `None` for backends with no ledger.

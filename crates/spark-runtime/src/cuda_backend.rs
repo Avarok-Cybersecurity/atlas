@@ -99,6 +99,13 @@ unsafe extern "C" {
 struct AllocRecord {
     bytes: usize,
     site: &'static std::panic::Location<'static>,
+    /// `Some(label)` marks memory whose owner is a LAYER STRUCT (fused/
+    /// derived/adopted weights) rather than a `ModelResource` pool — freed by
+    /// design in the teardown sweep, which the label lets the sweep say
+    /// out loud instead of warning about it. `None` after a clean teardown
+    /// is a leak, which is the signal the sweep exists to preserve
+    /// (issue #736: 43.57 GB of layer-owned weights drowned it out).
+    owner: Option<&'static str>,
 }
 
 /// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.
@@ -199,13 +206,29 @@ impl AtlasCudaBackend {
         bytes: usize,
         site: &'static std::panic::Location<'static>,
     ) {
-        self.live_allocs
-            .lock()
-            .insert(ptr.0, AllocRecord { bytes, site });
+        self.live_allocs.lock().insert(
+            ptr.0,
+            AllocRecord {
+                bytes,
+                site,
+                owner: None,
+            },
+        );
     }
 
     pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
         self.live_allocs.lock().remove(&ptr.0);
+    }
+
+    /// Mark a live allocation as deliberately layer-owned (issue #736).
+    ///
+    /// A no-op for a pointer the ledger does not hold — either it was never
+    /// allocated through this backend or it has already been freed; both are
+    /// caller bookkeeping this method must not turn into a crash.
+    pub(crate) fn tag_alloc_owner(&self, ptr: crate::gpu::DevicePtr, owner: &'static str) {
+        if let Some(rec) = self.live_allocs.lock().get_mut(&ptr.0) {
+            rec.owner = Some(owner);
+        }
     }
 
     /// Total live device bytes this backend has allocated and not freed.
@@ -299,26 +322,64 @@ impl AtlasCudaBackend {
     ///
     /// The backstop for allocations no `ModelResource` covers — chiefly the
     /// loaders' fused weights, which are owned by layer structs rather than by
-    /// any pool. Returns how many were reclaimed; since 2026-08-19 the ledger
-    /// also carries each one's size and call site, so the sweep can say how
-    /// many BYTES had no owner and name the sites they came from instead of
-    /// only counting them. A non-zero count after a clean teardown is a leak,
-    /// and the log line now points at the code that made it.
+    /// any pool. Since 2026-08-19 the ledger carries each one's size and call
+    /// site; since issue #736 layer-owned allocations DECLARE themselves via
+    /// [`Self::tag_alloc_owner`] and report as an INFO table here, so the
+    /// WARN names only genuinely unaccounted memory. Returns the UNTAGGED
+    /// count: non-zero after a clean teardown is a leak, and the log line
+    /// points at the code that made it.
     ///
     /// Runs LAST in teardown, after every `ModelResource::release`, so it only
     /// ever sees what those missed — and each `free` here has already been
     /// removed from the ledger by `forget_alloc`, so it cannot double-free.
     pub fn sweep_unreleased(&self) -> usize {
         let outstanding: Vec<(u64, AllocRecord)> = self.live_allocs.lock().drain().collect();
-        let count = outstanding.len();
-        if count > 0 {
-            let bytes: usize = outstanding.iter().map(|(_, r)| r.bytes).sum();
+        // Layer-owned memory (issue #736): fused/derived/adopted weights whose
+        // owner is a layer struct DECLARE that via `tag_alloc_owner`, and the
+        // sweep freeing them is the designed release path, not a leak — so
+        // they report as an INFO table by owner. The WARN below is reserved
+        // for what remains untagged, restoring its meaning: after a clean
+        // teardown, an untagged survivor is memory nobody accounted for.
+        let tagged: Vec<&AllocRecord> = outstanding
+            .iter()
+            .map(|(_, r)| r)
+            .filter(|r| r.owner.is_some())
+            .collect();
+        if !tagged.is_empty() {
+            let bytes: usize = tagged.iter().map(|r| r.bytes).sum();
+            let mut by_owner: std::collections::HashMap<&'static str, (usize, usize)> =
+                std::collections::HashMap::new();
+            for r in &tagged {
+                let e = by_owner.entry(r.owner.unwrap_or("?")).or_insert((0, 0));
+                e.0 += r.bytes;
+                e.1 += 1;
+            }
+            let mut rows: Vec<_> = by_owner.into_iter().collect();
+            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            let table: Vec<String> = rows
+                .iter()
+                .map(|(owner, (b, n))| format!("{owner} {:.2} GB x{n}", *b as f64 / 1e9))
+                .collect();
+            tracing::info!(
+                "sweep: released {} layer-owned allocation(s) totalling {:.2} GB (by design): {}",
+                tagged.len(),
+                bytes as f64 / 1e9,
+                table.join(", ")
+            );
+        }
+        let untagged: Vec<&AllocRecord> = outstanding
+            .iter()
+            .map(|(_, r)| r)
+            .filter(|r| r.owner.is_none())
+            .collect();
+        if !untagged.is_empty() {
+            let bytes: usize = untagged.iter().map(|r| r.bytes).sum();
             // Aggregate before logging: an unreleased pool is hundreds of
             // per-layer allocations from ONE site, and hundreds of lines
             // would bury the site that actually needs fixing.
             let mut by_site: std::collections::HashMap<String, (usize, usize)> =
                 std::collections::HashMap::new();
-            for (_, r) in &outstanding {
+            for r in &untagged {
                 let e = by_site
                     .entry(format!("{}:{}", r.site.file(), r.site.line()))
                     .or_insert((0, 0));
@@ -335,12 +396,14 @@ impl AtlasCudaBackend {
                 })
                 .collect();
             tracing::warn!(
-                "sweep: {count} allocation(s) totalling {:.2} GB had no owner; \
+                "sweep: {} allocation(s) totalling {:.2} GB had no owner; \
                  largest sites: {}",
+                untagged.len(),
                 bytes as f64 / 1e9,
                 top.join(", ")
             );
         }
+        let untagged_count = untagged.len();
         for (raw, _) in outstanding {
             // Bypass `free`: the ledger is already drained, and a failure here
             // must not abort the rest of the sweep.
@@ -349,7 +412,11 @@ impl AtlasCudaBackend {
                 tracing::warn!("sweep: cuMemFree failed for {raw:#x}: status {status}");
             }
         }
-        count
+        // Everything was freed either way; only the UNTAGGED count goes back
+        // to the caller — that is the number whose non-zeroness means "leak",
+        // and it is what release_pools warns about. The tagged total is
+        // already fully reported above.
+        untagged_count
     }
 
     pub fn registry(&self) -> &Arc<AtlasRegistry> {

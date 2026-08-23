@@ -209,6 +209,10 @@ pub(crate) fn quantize_to_nvfp4(
     // Phase 2: Quantize
     let packed_buf = gpu.alloc(n * k / 2)?;
     let scale_buf = gpu.alloc(n * k / 16)?;
+    // Layer-owned (issue #736): the QuantizedWeight built from these is
+    // stored in layer structs; released by the teardown sweep by design.
+    gpu.tag_alloc_owner(packed_buf, "weight_map/quantize_nvfp4");
+    gpu.tag_alloc_owner(scale_buf, "weight_map/quantize_nvfp4");
 
     KernelLaunch::new(gpu, quantize_kernel)
         .grid([n as u32, 1, 1])
