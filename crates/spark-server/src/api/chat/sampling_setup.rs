@@ -248,11 +248,18 @@ pub(super) fn build_sampling(
             || super::loop_detect::loop_soft_bias_rearmed())
         && let Some(tc_id) = state.tool_call_start_token_id
     {
+        // ESCALATING decay (2026-08-23): the flat -10 floor LOST the argmax
+        // fight at temp 0 — a deep greedy groove holds a <tool_call> margin
+        // above 10 nats, and a no-op-edit loop rode straight through two
+        // SUPPRESS-biased serial turns to the 40-turn cap. Doubling per
+        // identical round beats any finite margin within a couple more
+        // rounds while keeping the early steps a nudge: -5, -10, -20, -40,
+        // then -80 (effectively masking — deserved by round seven of a
+        // byte-identical call, and still not a hard block).
         let bias = match tool_call_repeat_count {
             0 | 1 => 3.0,
             2 => 0.0,
-            3 => -5.0,
-            _ => -10.0,
+            n => -(5.0 * f32::powi(2.0, (n as i32 - 3).min(4))),
         };
         if bias != 0.0 {
             logit_bias.push((tc_id, bias));
