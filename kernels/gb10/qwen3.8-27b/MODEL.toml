@@ -192,6 +192,19 @@ dry_multiplier = 0.0
 # until 3.8 evidence says otherwise. The watchdog's false-positive modes
 # (structured-output repetition) are documented at lib.rs::enable_loop_watchdog.
 enable_loop_watchdog = true
+# 2026-08-23: the [sampling.*] presets above now drive CORE sampling
+# (temperature/top_k/top_p), not just penalties. Without this opt-in the
+# tools preset's temperature 0.6 was DEAD CONFIG: a tools request with no
+# explicit temperature fell through to the serve-wide boot default —
+# generation_config's 1.0 — and the family's own anti-loop recommendation
+# ("temperature=0.6, NOT greedy, to avoid repetition loops") never applied
+# anywhere. Measured motivation on 3.8 weights: agentic-webserver N=10 at
+# pinned greedy lost a run to a byte-identical no-op edit repeated from
+# turn 24 to the turn-40 cap — the exact fixed point 0.6 exists to escape.
+# Blast radius beyond tools: non-thinking prose moves from the boot default
+# to the card's 0.7/0.8, thinking stays at the card's 1.0 either way.
+# Explicit request values still win over every preset.
+use_sampling_presets_for_core = true
 # 3.8 is a hybrid-thinking reasoning model (the card ships thinking AND
 # non-thinking presets); clients that send no enable_thinking flag get
 # reasoning by default, same as every Qwen reasoning-tier target.
