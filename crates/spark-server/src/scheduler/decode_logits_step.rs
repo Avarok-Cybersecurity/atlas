@@ -444,6 +444,19 @@ pub fn process_decode_logits(
             gs.accept_token(tok);
         }
 
+        // Post-think token counter for the spec-resume guard / entry pin —
+        // the SERIAL lane's twin of the emit_step increment (#313 shipped
+        // only the emit-path half; added 2026-08-23). Without it the guard
+        // DEADLOCKS by construction: dispatch refuses spec while the counter
+        // is below the guard, the refused step decodes HERE, and this path
+        // never advanced the counter — so `ATLAS_DFLASH_RESUME_GUARD>0`
+        // serial-decoded every post-think token of every request (measured
+        // serial fraction 0.84-1.00 vs 0.00 with the guard off) and the
+        // spec-entry pin was permanently forced.
+        if a.think_ended && !a.inside_thinking {
+            a.post_think_emitted += 1;
+        }
+
         // §C-1 (DS4F hard-limit lane, 2026-07-21): thinking tokens draw down
         // the SAME completion budget (`remaining`) as content tokens, so a long
         // `<think>` block can no longer run the request past its declared

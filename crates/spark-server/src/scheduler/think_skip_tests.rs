@@ -245,3 +245,45 @@ fn strays_inside_thinking_are_not_counted_as_strays() {
     assert_eq!(a.think_skip_count, 0, "a legitimate close is not a stray");
     assert!(!a.finished);
 }
+
+#[test]
+fn post_think_counter_increments_for_the_resume_guard() {
+    // The spec-resume guard (`ATLAS_DFLASH_RESUME_GUARD`) and the spec-entry
+    // pin both compare `post_think_emitted` against a threshold. #313
+    // shipped only the emit-path increment; the SERIAL lane
+    // (`process_decode_logits`) had none, so the guard deadlocked by
+    // construction — it refused spec below the threshold, the refused steps
+    // decoded on the serial lane, and nothing ever advanced the counter
+    // (measured serial fraction 0.84-1.00 vs 0.00 guard-off, 2026-08-23).
+    // This pins the emit-path half; the serial twin lives in
+    // decode_logits_step and is exercised end-to-end.
+    let sched = SchedCtx::for_test();
+    let mut a = content_phase_seq();
+    assert_eq!(a.post_think_emitted, 0);
+    for i in 0..5 {
+        emit_token(&mut a, content_token(i), None, &sched);
+    }
+    assert_eq!(a.post_think_emitted, 5);
+}
+
+#[test]
+fn think_tokens_do_not_advance_the_post_think_counter() {
+    // In-think tokens are pre-guard, and `</think>` itself is the boundary,
+    // not a post-think token: the guard window is exactly the N tokens
+    // AFTER the close.
+    let sched = SchedCtx::for_test();
+    let mut a = content_phase_seq();
+    a.inside_thinking = true;
+    a.think_ended = false;
+    for i in 0..5 {
+        emit_token(&mut a, content_token(i), None, &sched);
+    }
+    assert_eq!(a.post_think_emitted, 0, "in-think tokens are pre-guard");
+    emit_token(&mut a, THINK_END, None, &sched);
+    assert!(!a.inside_thinking);
+    assert_eq!(a.post_think_emitted, 0, "`</think>` itself is the boundary");
+    for i in 5..8 {
+        emit_token(&mut a, content_token(i), None, &sched);
+    }
+    assert_eq!(a.post_think_emitted, 3);
+}
