@@ -122,6 +122,9 @@ pub struct AgenticWebserver {
     max_tokens: usize,
     wall_budget_s: f64,
     s_per_turn_budget: f64,
+    /// `Sampling::ModelCard` when `sampling=model-card`; each iteration then
+    /// draws with its own seed. Default (false) is the gate's pinned greedy.
+    model_card_sampling: bool,
     cursor: usize,
     rows: Vec<IterationRow>,
     sandbox_root: Option<PathBuf>,
@@ -185,6 +188,13 @@ impl AgenticWebserver {
             request_timeout: self.request_timeout,
             max_tokens: self.max_tokens,
             cargo_target_dir: self.cargo_target_dir.clone(),
+            sampling: if self.model_card_sampling {
+                agent::Sampling::ModelCard {
+                    seed: index as u64,
+                }
+            } else {
+                agent::Sampling::PinnedGreedy
+            },
         };
 
         let started = Instant::now();
@@ -338,6 +348,8 @@ impl Benchmark for AgenticWebserver {
         self.serve_timeout = Duration::from_secs(values.usize("serve_timeout_s")? as u64);
         self.max_tokens = values.usize("max_tokens")?;
         self.request_timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        // validate_against has already confined this to the Choice set.
+        self.model_card_sampling = values.text("sampling")? == "model-card";
         self.cursor = 0;
         self.rows.clear();
         Ok(())

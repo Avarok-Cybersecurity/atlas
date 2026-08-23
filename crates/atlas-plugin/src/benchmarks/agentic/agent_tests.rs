@@ -20,6 +20,7 @@ pub fn cfg(sandbox: PathBuf) -> AgentConfig {
         request_timeout: Duration::from_secs(1),
         max_tokens: 16,
         cargo_target_dir: None,
+        sampling: Sampling::PinnedGreedy,
     }
 }
 
@@ -176,6 +177,7 @@ fn the_gate_samples_greedily_and_pins_it_on_the_wire() {
         &[json!({"role": "user", "content": "hi"})],
         &tool_schema(),
         8192,
+        Sampling::PinnedGreedy,
     );
     assert_eq!(body["temperature"], 0.0);
     assert_eq!(body["seed"], SEED);
@@ -184,6 +186,31 @@ fn the_gate_samples_greedily_and_pins_it_on_the_wire() {
     assert_eq!(body["max_tokens"], 8192);
     assert_eq!(body["tool_choice"], "auto");
     assert_eq!(body["tools"], tool_schema());
+}
+
+#[test]
+fn model_card_sampling_sends_no_sampling_fields_and_a_per_iteration_seed() {
+    // The whole point of the mode is ABSENCE: any temperature/top_p/etc. this
+    // body carried would override the serve's resolved model-card defaults,
+    // which is exactly the behaviour the mode exists to measure. The seed is
+    // the one sampling-adjacent field allowed on the wire — it makes the draw
+    // reproducible without changing its distribution.
+    let body = request_body(
+        "unsloth/Qwen3.8-27B-NVFP4",
+        &[json!({"role": "user", "content": "hi"})],
+        &tool_schema(),
+        8192,
+        Sampling::ModelCard { seed: 7 },
+    );
+    for field in ["temperature", "top_p", "top_k", "min_p", "top_n_sigma", "repetition_penalty"] {
+        assert!(
+            body.get(field).is_none(),
+            "{field} must be absent so the serve resolves the model card's value"
+        );
+    }
+    assert_eq!(body["seed"], 7);
+    assert_eq!(body["max_tokens"], 8192);
+    assert_eq!(body["tool_choice"], "auto");
 }
 
 // ── context compaction ─────────────────────────────────────────────

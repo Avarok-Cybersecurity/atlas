@@ -118,5 +118,23 @@ pub(super) fn parameters() -> Vec<ParamSpec> {
             ParamKind::Int { min: 10, max: 3600 },
             ParamValue::Int(900),
         ),
+        ParamSpec::new(
+            "sampling",
+            "Sampling",
+            "How the agent's requests are sampled. `pinned-greedy` (the \
+             default, and the only mode a gate tier should record) sends \
+             temperature 0 + seed 0 — the deterministic instrument the exact \
+             10-of-10 bars require. `model-card` sends NO sampling fields, so \
+             the serve resolves the checkpoint's own generation defaults \
+             (generation_config → MODEL.toml preset → CLI default) — the \
+             behaviour a real client gets, and the mode that can escape the \
+             greedy fixed-point failure (a byte-identical tool call repeated \
+             to the turn cap) that temperature 0 cannot. Each iteration draws \
+             with its own seed (= its index) so the spread is reproducible. \
+             The two modes measure different things; numbers do not compare \
+             across them.",
+            ParamKind::Choice(&["pinned-greedy", "model-card"]),
+            ParamValue::Text("pinned-greedy".to_string()),
+        ),
     ]
 }

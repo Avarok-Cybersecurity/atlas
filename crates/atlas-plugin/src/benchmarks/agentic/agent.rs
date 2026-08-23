@@ -82,6 +82,32 @@ const TEMPERATURE: f64 = 0.0;
 /// this gate just removed.
 const SEED: u64 = 0;
 
+/// How the agent's requests are sampled.
+///
+/// `PinnedGreedy` is the gate instrument: `temperature: 0, seed: 0` on the
+/// wire, per the rationale at [`TEMPERATURE`]. `ModelCard` is the behaviour
+/// instrument: the request carries NO sampling fields at all, so the serve
+/// resolves the checkpoint's own generation defaults (generation_config →
+/// MODEL.toml preset → CLI default) — which is what a real client sending a
+/// bare request gets, and the only mode that measures the model at the
+/// settings its card recommends. Greedy argmax has a failure mode all its own
+/// — a byte-identical tool call is a fixed point the sampler can never leave —
+/// so the two modes genuinely measure different things, and neither number
+/// substitutes for the other.
+///
+/// The seed IS still sent in `ModelCard`, one per iteration, so the spread is
+/// a reproducible draw rather than an unrepeatable one: re-running iteration k
+/// replays iteration k's trajectory (modulo serve-side nondeterminism), while
+/// distinct iterations still sample distinct trajectories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Sampling {
+    #[default]
+    PinnedGreedy,
+    ModelCard {
+        seed: u64,
+    },
+}
+
 /// Grace for the output pumps once the process is gone. Only a grace: a pipe
 /// inherited by a detached child never reaches EOF at all.
 pub(super) const DRAIN_GRACE: Duration = Duration::from_secs(2);
@@ -152,6 +178,7 @@ pub struct AgentConfig {
     /// Without it every `cargo test` cold-compiles the axum/tokio tree and the
     /// wall time measures dependency compilation, not the model.
     pub cargo_target_dir: Option<PathBuf>,
+    pub sampling: Sampling,
 }
 
 /// opencode's environment block, appended to the agent prompt inside one system
@@ -237,7 +264,7 @@ async fn agent_loop(
         handle.check_cancelled()?;
         handle.status(format!("agent turn {}/{}", turn + 1, cfg.max_turns));
         compact(&mut messages);
-        let body = request_body(&target.model, &messages, &tools, cfg.max_tokens);
+        let body = request_body(&target.model, &messages, &tools, cfg.max_tokens, cfg.sampling);
         let outcome = crate::http::chat_stream(target, &body, cfg.request_timeout).await?;
         transcript.turns = turn + 1;
         transcript.final_text = outcome.text.clone();
@@ -354,12 +381,29 @@ fn emitted_unparsed_call(outcome: &crate::http::ChatOutcome) -> bool {
             .any(|m| outcome.text.contains(m))
 }
 
-fn request_body(model: &str, messages: &[Value], tools: &Value, max_tokens: usize) -> Value {
-    json!({
-        "model": model, "stream": true, "temperature": TEMPERATURE, "seed": SEED,
-        "max_tokens": max_tokens, "messages": messages,
-        "tools": tools, "tool_choice": "auto",
-    })
+fn request_body(
+    model: &str,
+    messages: &[Value],
+    tools: &Value,
+    max_tokens: usize,
+    sampling: Sampling,
+) -> Value {
+    match sampling {
+        Sampling::PinnedGreedy => json!({
+            "model": model, "stream": true, "temperature": TEMPERATURE, "seed": SEED,
+            "max_tokens": max_tokens, "messages": messages,
+            "tools": tools, "tool_choice": "auto",
+        }),
+        // No sampling fields on purpose — see [`Sampling`]: absent fields are
+        // what lets the serve resolve the checkpoint's own generation
+        // defaults, and writing any value here (even the card's) would pin a
+        // copy that drifts when the card changes.
+        Sampling::ModelCard { seed } => json!({
+            "model": model, "stream": true, "seed": seed,
+            "max_tokens": max_tokens, "messages": messages,
+            "tools": tools, "tool_choice": "auto",
+        }),
+    }
 }
 
 /// The `tool_call_id` this conversation carries — **ours, never the server's.**
