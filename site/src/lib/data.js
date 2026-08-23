@@ -13,7 +13,7 @@
 
 // --- canonical links ---------------------------------------------------------
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
-export const discordUrl = 'https://discord.gg/6vDbKaKrKD';
+export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const xUrl = 'https://x.com/atlasinference';
 export const xHandle = '@atlasinference';
 export const redditUrl = 'https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/';
