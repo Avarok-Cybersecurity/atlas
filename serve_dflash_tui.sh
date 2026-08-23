@@ -83,6 +83,16 @@ ADAPTER="${2:-}"
 TUI_ARGS=()
 [ "${HEADLESS:-0}" = "1" ] && TUI_ARGS=(--no-tui)
 
+# THINKING=1 serves with reasoning ON (drops --disable-thinking; MODEL.toml
+# thinking_default + thinking_in_tools then apply), and REASONING sets the
+# served default effort tier for silent clients (minimal|low|medium|high|
+# xhigh; low = 1/2 of max_thinking_budget 2048 = 1024 thinking tokens).
+# Default stays thinking OFF, matching the interactive TUI preference.
+THINK_ARGS=(--disable-thinking)
+if [ "${THINKING:-0}" = "1" ]; then
+  THINK_ARGS=(--default-chat-template-kwargs "{\"reasoning_effort\":\"${REASONING:-medium}\"}")
+fi
+
 # GDN FlashInfer: worth ~25% of prefill (715 -> 895 tok/s). It fails OPEN —
 # without ATLAS_GDN_LIB on LD_LIBRARY_PATH it silently falls back and you
 # just lose the speed, no error. Keep both together.
@@ -97,33 +107,40 @@ export ATLAS_GDN_LIB=/home/ms/atlas-gdn-libs/libatlasgdn.so
 # every leg (85->86%, 78->79%, 69->70%). Costs ~1.9 GB of FP8 mirrors.
 # `ATLAS_DFLASH_DRAFTER_FP8=0` opts back out.
 
-# SimHash semantic-loop guard OFF for this serve: it is ONE-STRIKE at
-# Jaccard 0.55 over a 16-sentence ring and kills the stream mid-reply, which
-# legitimate structured output (per-method docstrings, enumerations) crosses
-# easily. Post-#699 its fires skew false-positive — observed killing a
-# healthy TUI session 2026-08-21. Remove this line to re-arm it.
-export ATLAS_SIMHASH_LOOP=0
-
-# ── Agentic guard family OFF (2026-08-22) ─────────────────────────────────
-# Loop-detector <tool_call> HARD-MASK off: the detector trips after ~3
-# similar turns, and legitimate agentic iteration (ls / cargo check / cargo
-# run while fixing) crosses that constantly — the mask then BLOCKS the next
-# tool call and forces a content fast-fail ("Loop detector -> SUPPRESS:
-# hard-mask <tool_call> for one turn" in the log). Detection is still
-# logged and metered; only the mask is disabled. vLLM applies no such mask.
-export ATLAS_LOOP_NO_SUPPRESS=1
-# ALL auto-watchdogs off: content-loop, inter-tool prose, F2 confidence
-# early-stop, mid-word </think> defer, thinking-loop. User-set
-# max_thinking_budget and safety masks are unaffected. CAVEAT: this family
-# exists because the dense-27B siblings DO loop on long code prompts — with
-# everything off, a genuinely degenerate stream burns to max_tokens instead
-# of being cut. Re-arm by deleting these lines if you see runaway streams.
-export ATLAS_DISABLE_WATCHDOGS=1
-# Tool-envelope watchdog off — it measurably throttles agentic flows
-# (memory: atlas-tool-generation-caps). Note --tool-max-tokens stays at its
-# 8192 default below; raise it via TOOL_MAX_TOKENS if Write calls with big
-# file bodies get cut.
-export ATLAS_TOOL_ENVELOPE_WATCHDOG=0
+# ── Guard family (default OFF here; GUARDS_DEFAULT=1 re-arms everything) ──
+# GUARDS_DEFAULT=1 serves with every guard at its stock production position
+# (SimHash, loop-detector mask+bias, auto-watchdogs, tool envelope) — used
+# for A/B runs against this script's usual guards-off posture.
+if [ "${GUARDS_DEFAULT:-0}" != "1" ]; then
+  # SimHash semantic-loop guard OFF for this serve: it is ONE-STRIKE at
+  # Jaccard 0.55 over a 16-sentence ring and kills the stream mid-reply, which
+  # legitimate structured output (per-method docstrings, enumerations) crosses
+  # easily. Post-#699 its fires skew false-positive — observed killing a
+  # healthy TUI session 2026-08-21.
+  export ATLAS_SIMHASH_LOOP=0
+  # Loop-detector <tool_call> HARD-MASK off: the detector trips after ~3
+  # similar turns, and legitimate agentic iteration (ls / cargo check / cargo
+  # run while fixing) crosses that constantly — the mask then BLOCKS the next
+  # tool call and forces a content fast-fail ("Loop detector -> SUPPRESS:
+  # hard-mask <tool_call> for one turn" in the log). Detection is still
+  # logged and metered; only the mask is disabled. vLLM applies no such mask.
+  # NOTE 2026-08-23: measured at tools-preset temp 0.6, the detector never
+  # exceeded one sub-threshold HINT over 20 agentic runs — the false-positive
+  # case against the mask is much weaker at card settings than it was.
+  export ATLAS_LOOP_NO_SUPPRESS=1
+  # ALL auto-watchdogs off: content-loop, inter-tool prose, F2 confidence
+  # early-stop, mid-word </think> defer, thinking-loop. User-set
+  # max_thinking_budget and safety masks are unaffected. CAVEAT: this family
+  # exists because the dense-27B siblings DO loop on long code prompts — with
+  # everything off, a genuinely degenerate stream burns to max_tokens instead
+  # of being cut.
+  export ATLAS_DISABLE_WATCHDOGS=1
+  # Tool-envelope watchdog off — it measurably throttles agentic flows
+  # (memory: atlas-tool-generation-caps). Note --tool-max-tokens stays at its
+  # 8192 default below; raise it via TOOL_MAX_TOKENS if Write calls with big
+  # file bodies get cut.
+  export ATLAS_TOOL_ENVELOPE_WATCHDOG=0
+fi
 
 # Serve at INFO so the log is useful if something misbehaves.
 export RUST_LOG="${RUST_LOG:-info}"
@@ -320,7 +337,6 @@ export ATLAS_KV_OVERCOMMIT=1
 # fit and the boot refuses; 0.80 pledges 97 GB, which covers the same real
 # footprint WITH the pools inside it and gives KV more than the old boot had.
 # 0.80 is the hard ceiling for this box — never raise it further.
-export ATLAS_LOOP_NO_SUPPRESS=1
 exec ./target/release/spark serve \
   --model-from-path "$TARGET" \
   --model-name unsloth/Qwen3.8-27B-NVFP4 \
@@ -339,5 +355,5 @@ exec ./target/release/spark serve \
   --video-allow-ffmpeg \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
-  --lm-head-dtype fp8 --disable-thinking --default-top-n-sigma 0 \
+  --lm-head-dtype fp8 "${THINK_ARGS[@]}" --default-top-n-sigma 0 \
   "${TUI_ARGS[@]}"
