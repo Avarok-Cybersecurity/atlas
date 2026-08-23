@@ -16,7 +16,7 @@
     <a href="LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
     <a href="#quick-start"><img alt="Pure Rust" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square"></a>
     <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Fatlas--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
-    <a href="https://discord.gg/6vDbKaKrKD"><img alt="Discord" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2F6vDbKaKrKD%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
+    <a href="https://discord.gg/RQcGakU2jW"><img alt="Discord" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FRQcGakU2jW%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
   </p>
 </p>
 
@@ -27,7 +27,6 @@
 <p align="center">
   <a href="#quick-start"><img alt="Quick Start — under 2 minutes" src="https://img.shields.io/badge/%E2%9A%A1%20Quick%20Start%20%E2%80%94%20%3C%202%20min-2EA44F?style=for-the-badge&logo=docker&logoColor=white"></a>
   <a href="https://atlasinference.io"><img alt="atlasinference.io" src="https://img.shields.io/badge/%F0%9F%8C%90%20atlasinference.io-F48C06?style=for-the-badge"></a>
-  <a href="https://x.com/AIshaqui81766/status/2052121270506930276"><img alt="Launch announcement on X" src="https://img.shields.io/badge/%F0%9D%95%8F%20Launch%20Announcement-000000?style=for-the-badge&logo=x&logoColor=white"></a>
 </p>
 
 ---

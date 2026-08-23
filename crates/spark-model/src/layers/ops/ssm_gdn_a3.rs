@@ -39,6 +39,7 @@ pub fn gdn_prefill_fla(
     // ABI; grid y = batch·num_dv_blocks, smem 81KB vs 97KB). KernelHandle(0) = off.
     k_chunk_delta_h_tc_vblock: KernelHandle,
     k_chunk_delta_h_fused: KernelHandle,
+    k_chunk_delta_h_tma: KernelHandle,
     k_chunk_fwd_o: KernelHandle,
     h_state: DevicePtr,
     query: DevicePtr,
@@ -178,50 +179,148 @@ pub fn gdn_prefill_fla(
     // split the DV axis, so grid.y stays `batch_size`. smem is identical for both
     // members — only the thread count differs, and it must match the kernel that
     // init.rs actually loaded for the same env value.
-    let smem_fused = C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4;
-    let fused_block = match std::env::var("ATLAS_GDN_VTILE").ok().as_deref() {
-        Some("1") => 512u32, // SPLIT=4 build
-        _ => 256u32,         // SPLIT=2 build (default)
-    };
-    let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_fused {
-        (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)
-    } else if use_tcvb {
-        (
-            k_chunk_delta_h_tc_vblock,
-            batch_size * num_dv_blk,
-            smem_tcvb,
-            256u32,
-        )
+    // `..._pipe` double-buffers {W,K,U} through `cp.async`, so it needs the SAME
+    // footprint the original (also double-buffered) spine uses — `smem_dh`. Under-
+    // sizing this reads the second slot out of bounds, so the selector has to agree
+    // with the kernel `init.rs` loaded for the same env value.
+    let pipe = std::env::var("ATLAS_GDN_PIPE").ok().as_deref() == Some("1");
+    let smem_fused = if pipe {
+        smem_dh
     } else {
-        (k_chunk_delta_h, batch_size, smem_dh, 256u32)
+        C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4
     };
-    KernelLaunch::new(gpu, k_cdh)
-        .grid([num_v_heads, cdh_grid_y, 1])
-        .block([cdh_block, 1, 1])
-        .shared_mem(cdh_smem)
-        .arg_ptr(h_state)
-        .arg_ptr(w_out)
-        .arg_ptr(u_out)
-        .arg_ptr(key)
-        .arg_ptr(gate)
-        .arg_ptr(gc_out)
-        .arg_ptr(s_out)
-        .arg_ptr(uc_out)
-        .arg_u32(batch_size)
-        .arg_u32(seq_len)
-        .arg_u32(num_chunks)
-        .arg_u32(num_k_heads)
-        .arg_u32(num_v_heads)
-        .arg_u32(kd)
-        .arg_u32(vd)
-        .arg_u32(qk_stride)
-        .arg_u32(gb_stride)
-        .arg_u32(h_state_is_table as u32)
-        .arg_ptr(cu_seqlens)
-        .arg_ptr(cu_chunks)
-        .arg_u32(is_varlen as u32)
-        .launch(stream)?;
-    prof!("gdn_fla_chunk_delta_h", &mut t0);
+    let fused_block = match std::env::var("ATLAS_GDN_VTILE").ok().as_deref() {
+        Some("1") if !pipe => 512u32, // SPLIT=4 build
+        _ => 256u32,                  // SPLIT=2 build (default, and the pipe build)
+    };
+    // ── TMA path (ATLAS_GDN_TMA=1) ───────────────────────────────────────────
+    // Every precondition is CHECKED, not assumed. The descriptors are encoded
+    // from the compile-time tile (K_DIM/V_DIM = 128, CHUNK = 64), so a runtime
+    // head narrower than the tile would load the wrong columns SILENTLY — TMA
+    // reports no error for a well-formed descriptor pointed at the wrong shape.
+    // Varlen is excluded because `choff` then comes from `cu_chunks` and the
+    // flat row count the descriptor needs is not known on the host.
+    let tma_requested = std::env::var("ATLAS_GDN_TMA").ok().as_deref() == Some("1");
+    // ★ NAME THE GUARD THAT REJECTED. A perf path that asks to be enabled and
+    // silently is not measures as "no effect" — PR #296 shipped exactly that
+    // (an ldmatrix GEMM that fell back with no error while both gates stayed
+    // green), and this path reproduced it during bring-up: an A/B ran with the
+    // env set, fell back to `vfused`, and the two arms differed by noise.
+    let tma_reject: Option<&str> = if !tma_requested {
+        Some("not requested")
+    } else if k_chunk_delta_h_tma.0 == 0 {
+        Some("kernel absent from this image")
+    } else if is_varlen {
+        Some(
+            "varlen: choff comes from cu_chunks, so the descriptor's flat row count is unknown host-side",
+        )
+    } else if kd != 128 || vd != 128 || C != 64 {
+        Some("head/chunk differs from the compile-time tile the descriptors encode")
+    } else if !qk_stride.is_multiple_of(8) {
+        Some("qk_stride is not a multiple of 8 (bf16 row pitch must be 16-byte aligned)")
+    } else {
+        None
+    };
+    if tma_requested && let Some(why) = tma_reject {
+        tracing::warn!("ATLAS_GDN_TMA=1 but the TMA spine is NOT running: {why}");
+    }
+    let tma_ok = tma_reject.is_none();
+    if tma_ok {
+        tracing::info!("GDN state spine: gated_delta_rule_chunk_delta_h_tma");
+    }
+    // `cuda_backend` (and with it `TensorMap`) only exists under the cuda
+    // feature; the metal build has no TMA and must not reference it. The guard
+    // above already resolves to false there via the absent kernel handle, but a
+    // `use` is resolved at compile time regardless of the branch being taken.
+    #[cfg(feature = "cuda")]
+    if tma_ok {
+        use spark_runtime::cuda_backend::tensormap::TensorMap;
+        // W/U are [total_blocks][CHUNK][tile] flattened; as a 2-D tensor that is
+        // (total_blocks * CHUNK) rows of `tile` columns, contiguous.
+        let blocks = (batch_size as u64) * (num_chunks as u64) * (num_v_heads as u64);
+        let w_map =
+            TensorMap::tiled_2d_bf16(w_out, blocks * C as u64, kd as u64, kd as u64, C, kd)?;
+        let u_map =
+            TensorMap::tiled_2d_bf16(u_out, blocks * C as u64, vd as u64, vd as u64, C, vd)?;
+        // K is a VIEW into the packed qkvz tensor: rows are tokens at a
+        // `qk_stride` pitch, and the kernel supplies `kh * K_DIM` as the column
+        // origin. This is the gather `cdh_prefetch` does one row at a time.
+        let k_map = TensorMap::tiled_2d_bf16(
+            key,
+            (batch_size as u64) * (seq_len as u64),
+            qk_stride as u64,
+            qk_stride as u64,
+            C,
+            kd,
+        )?;
+        KernelLaunch::new(gpu, k_chunk_delta_h_tma)
+            .grid([num_v_heads, batch_size, 1])
+            .block([256, 1, 1])
+            .shared_mem(smem_dh)
+            .arg_ptr(h_state)
+            .arg_tensormap(w_map.bytes())
+            .arg_tensormap(u_map.bytes())
+            .arg_tensormap(k_map.bytes())
+            .arg_ptr(gc_out)
+            .arg_ptr(s_out)
+            .arg_ptr(uc_out)
+            .arg_u32(batch_size)
+            .arg_u32(seq_len)
+            .arg_u32(num_chunks)
+            .arg_u32(num_k_heads)
+            .arg_u32(num_v_heads)
+            .arg_u32(vd)
+            .arg_u32(h_state_is_table as u32)
+            .arg_ptr(cu_seqlens)
+            .arg_ptr(cu_chunks)
+            .arg_u32(is_varlen as u32)
+            .launch(stream)?;
+        prof!("gdn_fla_chunk_delta_h", &mut t0);
+    }
+
+    // Kernel 2 (non-TMA). Both paths write s_out/uc_out and fall through to
+    // kernel 3, which is identical either way.
+    if !tma_ok {
+        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_fused {
+            (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)
+        } else if use_tcvb {
+            (
+                k_chunk_delta_h_tc_vblock,
+                batch_size * num_dv_blk,
+                smem_tcvb,
+                256u32,
+            )
+        } else {
+            (k_chunk_delta_h, batch_size, smem_dh, 256u32)
+        };
+        KernelLaunch::new(gpu, k_cdh)
+            .grid([num_v_heads, cdh_grid_y, 1])
+            .block([cdh_block, 1, 1])
+            .shared_mem(cdh_smem)
+            .arg_ptr(h_state)
+            .arg_ptr(w_out)
+            .arg_ptr(u_out)
+            .arg_ptr(key)
+            .arg_ptr(gate)
+            .arg_ptr(gc_out)
+            .arg_ptr(s_out)
+            .arg_ptr(uc_out)
+            .arg_u32(batch_size)
+            .arg_u32(seq_len)
+            .arg_u32(num_chunks)
+            .arg_u32(num_k_heads)
+            .arg_u32(num_v_heads)
+            .arg_u32(kd)
+            .arg_u32(vd)
+            .arg_u32(qk_stride)
+            .arg_u32(gb_stride)
+            .arg_u32(h_state_is_table as u32)
+            .arg_ptr(cu_seqlens)
+            .arg_ptr(cu_chunks)
+            .arg_u32(is_varlen as u32)
+            .launch(stream)?;
+        prof!("gdn_fla_chunk_delta_h", &mut t0);
+    }
 
     // Kernel 3: chunk_fwd_o.
     KernelLaunch::new(gpu, k_chunk_fwd_o)

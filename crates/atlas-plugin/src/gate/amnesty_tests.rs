@@ -160,15 +160,22 @@ fn invalidating_paths_drops_exactly_what_the_grant_excuses() {
 #[test]
 fn the_table_is_exactly_the_pr_701_grant() {
     let paths: Vec<&str> = ONE_TIME_AMNESTY.iter().map(|e| e.path).collect();
-    assert_eq!(
-        paths,
-        vec![
-            "crates/atlas-plugin/src/gate/check.rs",
-            "crates/atlas-plugin/src/gate/coverage.rs",
-            "crates/atlas-plugin/src/gate/required.rs",
-        ],
-        "the grant must not grow beyond PR #701's boundary files"
-    );
+    // The grant has exactly two legal shapes: the three PR #701 boundary files,
+    // or EMPTY once `amnesty_expires_once_every_gate_has_a_fresh_record` has
+    // demanded its removal. Anything else is the grant growing, which is what
+    // this test exists to prevent. Removal is the designed end of a one-time
+    // grant, so it must not read as a violation of it.
+    if !paths.is_empty() {
+        assert_eq!(
+            paths,
+            vec![
+                "crates/atlas-plugin/src/gate/check.rs",
+                "crates/atlas-plugin/src/gate/coverage.rs",
+                "crates/atlas-plugin/src/gate/required.rs",
+            ],
+            "the grant must not grow beyond PR #701's boundary files"
+        );
+    }
     for entry in &ONE_TIME_AMNESTY {
         assert_eq!(
             entry.head_blob_oid.len(),

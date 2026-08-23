@@ -138,6 +138,8 @@ mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
 pub mod token_overlay;
+#[path = "ops/wide_prefill.rs"]
+mod wide_prefill;
 
 pub use activations::*;
 pub use derived_weights::{Derivation, DerivedWeights};
@@ -196,3 +198,4 @@ pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use wide_prefill::*;

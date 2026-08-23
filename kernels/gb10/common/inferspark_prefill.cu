@@ -31,9 +31,18 @@
 #include <cuda_bf16.h>
 
 #define BR 32
+// Overridable so a target can instantiate this kernel at another shape without
+// forking 500 lines. Gemma-4's global layers are HDIM=512, which at BC=32 needs
+// 132.8 KB of shared memory (cap is 101,376 B); BC=16 fits in 84,992 B. BR must
+// stay 32 — the warp mapping (`(warp_id & 1) * 16`, `warp_id < 2`) splits a
+// 32-row tile across two warp pairs.
+#ifndef BC
 #define BC 32
+#endif
+#ifndef HDIM
 #ifndef HDIM
 #define HDIM 256
+#endif
 #endif
 #define PAD_KV 8           // 16-byte row alignment: (256+8)*2 = 528 bytes
 #define HDIM_PAD (HDIM + PAD_KV)  // 264
@@ -42,6 +51,12 @@
 
 // Number of 16-byte (8-element) chunks per tile: 32 rows * (256/8) = 32*32 = 1024
 #define TILE_CHUNKS (BR * (HDIM / 8))
+// K and V tiles are BC rows, not BR. Identical while BR == BC (the only shape
+// this file has ever been built at), so the three K/V load loops below used the
+// BR-sized bound and were never wrong. At BC != BR that bound walks rows
+// BC..BR-1 of a BC-row tile and writes OUT OF BOUNDS in shared memory —
+// confirmed with compute-sanitizer at BR=32/BC=16.
+#define TILE_CHUNKS_KV_TILE (BC * (HDIM / 8))
 
 // SCALE/gfx1151: RDNA3.5 hard 64 KB/workgroup LDS cap. This file is
 // COMPILE-ONLY on AMD (non-paged contiguous prefill — not dispatched for
@@ -55,7 +70,12 @@
 #define ATLAS_KB(x) (x)
 #endif
 
-extern "C" __global__ void inferspark_prefill(
+// Entry name is overridable alongside the shape, so the two instantiations do
+// not collide when both are compiled into one module.
+#ifndef ATLAS_PREFILL_ENTRY
+#define ATLAS_PREFILL_ENTRY inferspark_prefill
+#endif
+extern "C" __global__ void ATLAS_PREFILL_ENTRY(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
     const __nv_bfloat16* __restrict__ V,
@@ -160,7 +180,7 @@ extern "C" __global__ void inferspark_prefill(
 
         // K[kv_block_lo] tile (same commit group — no extra sync)
         if (num_kv_blocks > 0) {
-            for (unsigned int idx = tid; idx < TILE_CHUNKS; idx += 128) {
+            for (unsigned int idx = tid; idx < TILE_CHUNKS_KV_TILE; idx += 128) {
                 unsigned int row = idx / chunks_per_row;
                 unsigned int chunk = idx % chunks_per_row;
                 unsigned int col = chunk * 8;
@@ -190,7 +210,7 @@ extern "C" __global__ void inferspark_prefill(
         // === Start async V load into smem_V (overlaps with QK^T below) ===
         {
             const unsigned int chunks_per_row = HDIM / 8;
-            for (unsigned int idx = tid; idx < TILE_CHUNKS; idx += 128) {
+            for (unsigned int idx = tid; idx < TILE_CHUNKS_KV_TILE; idx += 128) {
                 unsigned int row = idx / chunks_per_row;
                 unsigned int chunk = idx % chunks_per_row;
                 unsigned int col = chunk * 8;
@@ -210,7 +230,10 @@ extern "C" __global__ void inferspark_prefill(
         // K[kv_block] already in smem_K[ATLAS_KB(buf)] (preloaded or from prev iteration)
 
         // === QK^T (warps 0-1, register-based) ===
-        float acc_s[4][4];  // [n_tile][{row0_c0, row0_c1, row1_c0, row1_c1}]
+        // BC/8 n-tiles: each `mma.sync.m16n8k16` yields 8 score columns. `4` was
+        // BC/8 at BC=32; at BC=16 the GEMM produced 32 columns into a
+        // (BC + PAD_P)=24-wide smem_P row.
+        float acc_s[BC / 8][4];  // [n_tile][{row0_c0, row0_c1, row1_c0, row1_c1}]
         if (warp_id < 2) {
             #pragma unroll
             for (int i = 0; i < 4; i++) {
@@ -239,7 +262,7 @@ extern "C" __global__ void inferspark_prefill(
                 // (ldmatrix.trans produces incorrect results on GB10)
                 const unsigned short* sK_u16 = (const unsigned short*)smem_K[ATLAS_KB(buf)];
                 #pragma unroll
-                for (int nt = 0; nt < 4; nt++) {
+                for (int nt = 0; nt < (int)(BC / 8); nt++) {
                     unsigned int n_col = nt * 8 + group_id;
                     unsigned int k0 = k_base + tid_in_group * 2;
                     unsigned int k1 = k_base + tid_in_group * 2 + 8;
@@ -270,7 +293,7 @@ extern "C" __global__ void inferspark_prefill(
 
             // Scale + causal mask + boundary checks (in registers)
             #pragma unroll
-            for (int nt = 0; nt < 4; nt++) {
+            for (int nt = 0; nt < (int)(BC / 8); nt++) {
                 acc_s[nt][0] *= inv_sqrt_d;
                 acc_s[nt][1] *= inv_sqrt_d;
                 acc_s[nt][2] *= inv_sqrt_d;
@@ -305,7 +328,7 @@ extern "C" __global__ void inferspark_prefill(
             // Row max: local max then warp shuffle across tid_in_group (4 threads)
             float rmax0 = -1e30f, rmax1 = -1e30f;
             #pragma unroll
-            for (int nt = 0; nt < 4; nt++) {
+            for (int nt = 0; nt < (int)(BC / 8); nt++) {
                 rmax0 = fmaxf(rmax0, fmaxf(acc_s[nt][0], acc_s[nt][1]));
                 rmax1 = fmaxf(rmax1, fmaxf(acc_s[nt][2], acc_s[nt][3]));
             }
@@ -336,7 +359,7 @@ extern "C" __global__ void inferspark_prefill(
             // Compute P = exp(s - m) in registers, write to smem_P
             float sum0 = 0.0f, sum1 = 0.0f;
             #pragma unroll
-            for (int nt = 0; nt < 4; nt++) {
+            for (int nt = 0; nt < (int)(BC / 8); nt++) {
                 float p00 = __expf(acc_s[nt][0] - m_r0);
                 float p01 = __expf(acc_s[nt][1] - m_r0);
                 float p10 = __expf(acc_s[nt][2] - m_r1);
@@ -390,7 +413,7 @@ extern "C" __global__ void inferspark_prefill(
         if (kv_block + 1 < num_kv_blocks) {
             unsigned int next_kv_start = (kv_block + 1) * BC;
             const unsigned int chunks_per_row_k = HDIM / 8;
-            for (unsigned int idx = tid; idx < TILE_CHUNKS; idx += 128) {
+            for (unsigned int idx = tid; idx < TILE_CHUNKS_KV_TILE; idx += 128) {
                 unsigned int row = idx / chunks_per_row_k;
                 unsigned int chunk = idx % chunks_per_row_k;
                 unsigned int col = chunk * 8;
@@ -410,7 +433,10 @@ extern "C" __global__ void inferspark_prefill(
         // === PV MMA (all 4 warps, 16 n-tiles each, V from smem_V) ===
         {
             #pragma unroll
-            for (unsigned int ks = 0; ks < 2; ks++) {
+            // BC/16 k-steps: each `mma.sync.m16n8k16` contracts 16 of the BC
+            // kv rows. `2` was BC/16 at BC=32; at BC=16 it read a second,
+            // nonexistent 16-row half of smem_V.
+            for (unsigned int ks = 0; ks < (BC / 16); ks++) {
                 unsigned int k_off = ks * 16;
 
                 // SM121 workaround: manual P register loading
@@ -530,6 +556,9 @@ extern "C" __global__ void inferspark_prefill(
 #define TILE_CHUNKS_Q64 (BR64 * (HDIM / 8))  // 2048
 #define TILE_CHUNKS_KV  (BC * (HDIM / 8))     // 1024
 
+// Skipped by the HDIM=512 instantiation: this variant needs 120,064 B of shared
+// memory at that shape, over the 101,376 B cap. The 512 path does not use it.
+#ifndef ATLAS_SKIP_PREFILL_64
 extern "C" __global__ void inferspark_prefill_64(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
@@ -705,7 +734,7 @@ extern "C" __global__ void inferspark_prefill_64(
                 unsigned int a3 = *(const unsigned int*)&sQ[ar1 * HDIM_PAD + ac1];
 
                 #pragma unroll
-                for (int nt = 0; nt < 4; nt++) {
+                for (int nt = 0; nt < (int)(BC / 8); nt++) {
                     unsigned int n_col = nt * 8 + group_id;
                     unsigned int k0 = k_off + tid_in_group * 2;
                     unsigned int k1 = k_off + tid_in_group * 2 + 8;
@@ -736,7 +765,7 @@ extern "C" __global__ void inferspark_prefill_64(
             unsigned int row1 = row0 + 8;
 
             #pragma unroll
-            for (int nt = 0; nt < 4; nt++) {
+            for (int nt = 0; nt < (int)(BC / 8); nt++) {
                 acc_s[nt][0] *= inv_sqrt_d;
                 acc_s[nt][1] *= inv_sqrt_d;
                 acc_s[nt][2] *= inv_sqrt_d;
@@ -770,7 +799,7 @@ extern "C" __global__ void inferspark_prefill_64(
 
             float rmax0 = -1e30f, rmax1 = -1e30f;
             #pragma unroll
-            for (int nt = 0; nt < 4; nt++) {
+            for (int nt = 0; nt < (int)(BC / 8); nt++) {
                 rmax0 = fmaxf(rmax0, fmaxf(acc_s[nt][0], acc_s[nt][1]));
                 rmax1 = fmaxf(rmax1, fmaxf(acc_s[nt][2], acc_s[nt][3]));
             }
@@ -799,7 +828,7 @@ extern "C" __global__ void inferspark_prefill_64(
 
             float sum0 = 0.0f, sum1 = 0.0f;
             #pragma unroll
-            for (int nt = 0; nt < 4; nt++) {
+            for (int nt = 0; nt < (int)(BC / 8); nt++) {
                 float p00 = __expf(acc_s[nt][0] - m_r0);
                 float p01 = __expf(acc_s[nt][1] - m_r0);
                 float p10 = __expf(acc_s[nt][2] - m_r1);
@@ -958,3 +987,4 @@ extern "C" __global__ void inferspark_prefill_64(
         }
     }
 }
+#endif  // ATLAS_SKIP_PREFILL_64
