@@ -71,26 +71,21 @@ pub struct AmnestyEntry {
 /// fresh only when it postdates the whole grant day.
 pub const AMNESTY_EPOCH: u64 = 1_787_356_800;
 
-/// The whole PR #701 grant. `PENDING` deliberately matches no blob. The grant
-/// becomes active only after the final files are hashed and these values are
-/// pinned in a separate commit.
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 3] = [
-    AmnestyEntry {
-        path: "crates/atlas-plugin/src/gate/check.rs",
-        head_blob_oid: "2dd3bed0103d38009e82de8d507d26320a1cb307",
-        grant: "PR #701 test-only Rust module coverage bootstrap",
-    },
-    AmnestyEntry {
-        path: "crates/atlas-plugin/src/gate/coverage.rs",
-        head_blob_oid: "6aef608fab0d120096d3b55eaed3095155e2beeb",
-        grant: "PR #701 test-only Rust module coverage bootstrap",
-    },
-    AmnestyEntry {
-        path: "crates/atlas-plugin/src/gate/required.rs",
-        head_blob_oid: "c8b8311abbb88bceb844710e6443e28ce843f236",
-        grant: "PR #701 test-only Rust module coverage bootstrap",
-    },
-];
+/// The PR #701 grant, now EMPTY — it has been fully re-earned and removed.
+///
+/// It covered three boundary files whose landing invalidated all ten GPU
+/// records before the narrower test-only rule could help. Every required gate
+/// has since been re-recorded at 2026-08-22, past `AMNESTY_EPOCH`, so the table
+/// protects nothing; `amnesty_expires_once_every_gate_has_a_fresh_record`
+/// asserts exactly that and demands this removal, which is the designed end of
+/// a one-time grant rather than a change of policy.
+///
+/// The mechanism is deliberately kept rather than deleted: the module docs
+/// record why a content-pinned grant was preferred to a path waiver, and
+/// `excused_by` plus its tests stay exercised so the next bootstrap does not
+/// have to re-derive it. An empty table is fail-closed by construction — every
+/// lookup falls through to "not excused".
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [];
 
 /// Whether the one-time grant excuses `path` at `head`.
 pub fn excused(root: &Path, head: &str, path: &str) -> bool {

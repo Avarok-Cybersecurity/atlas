@@ -111,6 +111,9 @@ fn main() -> Result<()> {
         // vtile handle: 0 = absent, so this cross-impl A/B keeps comparing the
         // ksplit spine FlashInfer was originally diffed against.
         spark_runtime::gpu::KernelHandle(0),
+        // TMA spine handle: 0 for the same reason — this example exists to diff
+        // one specific spine against FlashInfer, not to pick the fastest one.
+        spark_runtime::gpu::KernelHandle(0),
         k_fo,
         h_state,
         q_ptr,

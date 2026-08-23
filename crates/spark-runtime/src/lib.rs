@@ -26,6 +26,8 @@ pub mod flashinfer;
 #[path = "flashinfer_metal_stub.rs"]
 pub mod flashinfer;
 pub mod gpu;
+#[path = "gpu_args.rs"]
+mod gpu_args;
 pub mod kernel_args;
 pub mod kernel_audit;
 pub mod kv_cache;

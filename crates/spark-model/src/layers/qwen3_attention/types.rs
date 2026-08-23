@@ -297,6 +297,11 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_k: KernelHandle,
     /// HDIM=512 contiguous prefill for Gemma-4 full-attention layers
     pub(super) prefill_attn_512_k: KernelHandle,
+    /// Did `prefill_attn_512_k` resolve to the TENSOR-CORE instantiation, or the
+    /// scalar reference? Only affects the profile label — but that label has now
+    /// been wrong twice, each time sending an investigation at the wrong kernel,
+    /// so which one ran is recorded rather than assumed.
+    pub(super) prefill_attn_512_is_tc: bool,
     /// DeepSeek-V4 CSA compressor: window softmax-gated KV compression.
     pub(super) csa_compress_k: KernelHandle,
     /// DeepSeek-V4 CSA prefill attention over [raw | compressed] KV + sink.

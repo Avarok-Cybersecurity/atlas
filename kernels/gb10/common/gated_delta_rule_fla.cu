@@ -17,6 +17,7 @@
 // GB10 sm_121: mma.sync.m16n8k16 BF16 (no wgmma/TMA, ldmatrix broken).
 
 #include <cuda_bf16.h>
+#include <cuda.h>
 #include <mma.h>   // nvcuda::wmma fragment types (tc_vblock variant; mma_gram itself
                    // stays raw mma.sync PTX — ldmatrix is broken on sm_121).
 
@@ -57,10 +58,76 @@ struct GdnGeom { unsigned int seqlen, nchunks, choff; unsigned long long tokoff;
         g.nchunks = num_chunks;                                                \
     }
 
-// GB10 sm_121 has cp.async.cg (NO TMA). 16-byte async global→shared copy + group
+// 16-byte async global→shared copy + group
+// ★ The line that used to be here said "GB10 sm_121 has cp.async.cg (NO TMA)".
+// That is FALSE and it cost real time: `cp.async.bulk.tensor` + `mbarrier`
+// COMPILE AND RUN on sm_121a with our own CUDA 13.0 nvcc (probe: a 2D tile load
+// with `__grid_constant__ CUtensorMap`, no external headers), and the FlashQLA
+// GDN spine measured on THIS box at 15.0 ms uses exactly that. Our whole
+// `kernels/` tree still uses zero TMA and zero mbarrier — that gap, not tile
+// shape, is why our spine is 119.8 ms against its 15.0 ms. Do not re-derive
+// "no TMA" from this file.
 // commit/wait — used to double-buffer the per-chunk W/U/K loads in chunk_delta_h
 // so the serial state spine overlaps the next chunk's load with the current
 // chunk's compute (it was global-load-LATENCY bound at 4 warps, not FLOP bound).
+// ── TMA (cp.async.bulk.tensor) + mbarrier primitives ─────────────────────────
+// The copy engine generates addresses, tiles, AND bounds-checks: a tile that
+// hangs off the end of the tensor is ZERO-FILLED in hardware, so the per-row
+// `i < ce` predication `cdh_prefetch` needs disappears, and nothing round-trips
+// through the register file the way a `cp.async` still does.
+//
+// Sequencing per stage: `bar_init` once, then per tile
+//   expect_tx(bytes) -> tma_load_2d(...) -> bar_wait(parity)
+// The barrier counts BYTES, not arrivals: `expect_tx` states the transaction
+// size up front and the copy engine completes it, which is why the consumer can
+// wait without the producer arriving explicitly.
+//
+// `__grid_constant__ const CUtensorMap` is a 128-byte BY-VALUE parameter — see
+// `KernelLaunch::arg_tensormap`, which had to learn to pass an argument wider
+// than one 8-byte slot for this to be expressible at all.
+__device__ __forceinline__ void mbar_init(uint64_t* bar, unsigned int count) {
+    asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" ::
+                 "r"((unsigned int)__cvta_generic_to_shared(bar)), "r"(count));
+}
+__device__ __forceinline__ void mbar_expect_tx(uint64_t* bar, unsigned int bytes) {
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" ::
+                 "r"((unsigned int)__cvta_generic_to_shared(bar)), "r"(bytes) : "memory");
+}
+// Spin until the barrier flips to `parity`. `try_wait.parity` is the documented
+// pairing for a transaction barrier; a plain `test_wait` races the phase flip.
+__device__ __forceinline__ void mbar_wait(uint64_t* bar, unsigned int parity) {
+    asm volatile(
+        "{\n"
+        ".reg .pred P;\n"
+        "WAIT_%=:\n"
+        "mbarrier.try_wait.parity.shared::cta.b64 P, [%0], %1;\n"
+        "@P bra DONE_%=;\n"
+        "bra WAIT_%=;\n"
+        "DONE_%=:\n"
+        "}\n" ::
+        "r"((unsigned int)__cvta_generic_to_shared(bar)), "r"(parity) : "memory");
+}
+// The descriptor lives in the (read-only) param space while the barrier lives in
+// shared; the async proxy needs a fence between a generic-space write and a TMA
+// that observes it.
+__device__ __forceinline__ void tma_fence() {
+    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+}
+// One 2-D tile. `c0` is the fastest-varying coordinate (columns), `c1` the row —
+// the same fastest-first ordering `TensorMap::tiled_2d_bf16` encodes, and
+// reversing it silently transposes rather than failing.
+__device__ __forceinline__ void tma_load_2d(
+    const CUtensorMap* desc, uint64_t* bar, void* dst_smem, int c0, int c1
+) {
+    asm volatile(
+        "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
+        " [%0], [%1, {%3, %4}], [%2];\n" ::
+        "r"((unsigned int)__cvta_generic_to_shared(dst_smem)),
+        "l"((const void*)desc),
+        "r"((unsigned int)__cvta_generic_to_shared(bar)),
+        "r"(c0), "r"(c1) : "memory");
+}
+
 __device__ __forceinline__ void cp_async16(void* dst_smem, const void* src_gmem) {
     unsigned int s = (unsigned int)__cvta_generic_to_shared(dst_smem);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(s), "l"(src_gmem));
@@ -287,13 +354,17 @@ __device__ __forceinline__ void cdh_prefetch(
             cp_async16(&Kp[i * K_DIM + c16],
                        key + (unsigned long long)(cs + i) * qk_stride + kh * k_dim + c16);
     }
-    if (tid == 0) {
-        float dl = gc_in[base * CHUNK + ce - 1];
-        decb[p * (CHUNK + 1)] = expf(dl);
-        for (unsigned int i = 0; i < ce; i++) {
-            float g = gc_in[base * CHUNK + i];
-            gcb[p * CHUNK + i] = g;
-            decb[p * (CHUNK + 1) + 1 + i] = expf(dl - g);
+    // Decay table, ONE THREAD PER ENTRY. This used to be a `tid == 0` loop of up
+    // to CHUNK serial `expf` calls while every other thread idled at the next
+    // barrier — per chunk, on the serial state spine. Each entry depends only on
+    // its own `gc_in`, so there was never a reason to serialize it.
+    {
+        const float dl = gc_in[base * CHUNK + ce - 1];
+        if (tid == 0) decb[p * (CHUNK + 1)] = expf(dl);
+        for (unsigned int i = tid; i < ce; i += nthr) {
+            const float gv = gc_in[base * CHUNK + i];
+            gcb[p * CHUNK + i] = gv;
+            decb[p * (CHUNK + 1) + 1 + i] = expf(dl - gv);
         }
     }
     cp_commit();
@@ -889,6 +960,364 @@ gated_delta_rule_chunk_delta_h_vfused(
     cdh_vtile_core<2, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
                          num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
                          gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
+}
+
+// ── KERNEL 2-PIPE: chunk_delta_h_pipe<SPLIT,VT> ──────────────────────────────
+// `cdh_vtile_core`'s fused single-pass compute, but with the ASYNC DOUBLE BUFFER
+// that core dropped.
+//
+// The shipping `vfused` spine loads each chunk with plain scalar copies
+// (`Wp[e] = Wsrc[e]`) behind a bare `__syncthreads()`. That routes every byte
+// global→register→shared and, worse, leaves the load of chunk c+1 strictly after
+// the compute of chunk c on a spine that is SERIAL in c. The original
+// `chunk_delta_h` already had the fix — `cdh_prefetch`, a 16-byte `cp.async`
+// double buffer — and it was simply not carried over when the fused core was
+// written. This reuses that same helper rather than growing a second one.
+//
+// Two buffers of {W,K,U} = 2 * CDH_BUFSZ bf16 = 98,304 B, plus the gc/decay
+// tables = 99,336 B, which is exactly the footprint `ksplit` already proved fits
+// at 1 CTA/SM on GB10. Occupancy is therefore unchanged; only the overlap is new.
+//
+// SPLIT is deliberately 2, NOT 4. SPLIT=4 measures faster and fails the
+// ssm-state-poisoning tripwire 1/12 (see the vfused note); that verdict is about
+// the thread geometry, which this kernel does not change, so it carries over.
+//
+// This is a STAGING POST, not the destination. The measured reference
+// (FlashQLA, 15.0 ms vs our 119.8 ms on the same box) gets its speed from TMA
+// (`cp.async.bulk.tensor` + `CUtensorMap`) and an `mbarrier` producer/consumer
+// pipeline, neither of which appears anywhere in this tree yet. `cp.async` +
+// double buffering is the part reachable without that machinery.
+template <int SPLIT, int VT>
+__device__ __forceinline__ void cdh_pipe_core(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int seq_len, unsigned int num_chunks, unsigned int num_k_heads,
+    unsigned int num_v_heads, unsigned int k_dim, unsigned int v_dim,
+    unsigned int qk_stride, unsigned int gb_stride, unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    constexpr int KH = K_DIM / SPLIT;
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads) return;
+    GDN_GEOM(g);
+    const unsigned int t = threadIdx.x;
+    const unsigned int v0 = (t / SPLIT) * VT;
+    const unsigned int sub = t % SPLIT;
+    const unsigned int k0 = sub * KH;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    extern __shared__ char smem_raw_pipe[];
+    __nv_bfloat16* bufs = (__nv_bfloat16*)smem_raw_pipe;      // 2 x CDH_BUFSZ
+    float* gcb  = (float*)(bufs + 2 * CDH_BUFSZ);             // 2 x CHUNK
+    float* decb = gcb + 2 * CHUNK;                            // 2 x (CHUNK+1)
+
+    float* H = h_state_is_table
+        ? ((float* const*)h_state)[b] + (unsigned long long)vh * K_DIM * V_DIM
+        : h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * V_DIM);
+    float Sold[KH][VT];
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = H[(k0 + kk) * V_DIM + v0 + vt];
+
+    if (g.nchunks == 0) return;
+    // Prologue: chunk 0 into slot 0, then each iteration issues c+1 before
+    // consuming c, so the copy engine is busy across the whole compute body.
+    cdh_prefetch(bufs, gcb, decb, 0, W_in, U_in, key, gate, gc_in, 0, b, vh, seq_len,
+                 num_chunks, num_v_heads, k_dim, kh, qk_stride, gb_stride,
+                 cu_seqlens, cu_chunks, is_varlen);
+
+    for (unsigned int c = 0; c < g.nchunks; c++) {
+        const unsigned int p = c & 1u;
+        const unsigned int ce = (g.seqlen - c * CHUNK) < CHUNK ? (g.seqlen - c * CHUNK) : CHUNK;
+        const unsigned long long base = ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+
+        if (c + 1 < g.nchunks) {
+            cdh_prefetch(bufs, gcb, decb, p ^ 1u, W_in, U_in, key, gate, gc_in, c + 1, b, vh,
+                         seq_len, num_chunks, num_v_heads, k_dim, kh, qk_stride, gb_stride,
+                         cu_seqlens, cu_chunks, is_varlen);
+            cp_wait<1>();   // slot p landed; slot p^1 may still be in flight
+        } else {
+            cp_wait<0>();
+        }
+        __syncthreads();
+
+        const __nv_bfloat16* Wp = bufs + (unsigned long long)p * CDH_BUFSZ;
+        const __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;
+        const __nv_bfloat16* Up = Kp + CHUNK * K_DIM;
+        const float* decs = decb + p * (CHUNK + 1);
+
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                S_out[base * K_DIM * V_DIM + (k0 + kk) * V_DIM + v0 + vt] =
+                    __float2bfloat16(Sold[kk][vt]);
+
+        const float edl = decs[0];
+        float Snew[KH][VT];
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Snew[kk][vt] = edl * Sold[kk][vt];
+
+        for (unsigned int i = 0; i < ce; i++) {
+            float wsp[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) wsp[vt] = 0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float w = (float)Wp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) wsp[vt] += w * Sold[kk][vt];
+            }
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                #pragma unroll
+                for (int sft = 1; sft < SPLIT; sft <<= 1)
+                    wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], sft);
+            const float dc = decs[1 + i];
+            float d[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) {
+                const float uci = (float)Up[i * V_DIM + v0 + vt] - wsp[vt];
+                if (sub == 0) uc_out[base * CHUNK * V_DIM + i * v_dim + v0 + vt] = __float2bfloat16(uci);
+                d[vt] = dc * uci;
+            }
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float kv = (float)Kp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) Snew[kk][vt] += d[vt] * kv;
+            }
+        }
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = Snew[kk][vt];
+        // The next iteration overwrites slot p; nothing may still be reading it.
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) H[(k0 + kk) * V_DIM + v0 + vt] = Sold[kk][vt];
+}
+
+// 256 threads, SPLIT=2 — the geometry the ssm-poisoning tripwire cleared.
+extern "C" __global__ void __launch_bounds__(256, 1)
+gated_delta_rule_chunk_delta_h_pipe(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int k_dim,
+    unsigned int v_dim, unsigned int qk_stride, unsigned int gb_stride,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_pipe_core<2, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
+                        num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
+                        gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
+}
+
+// ── KERNEL 2-TMA: chunk_delta_h_tma<SPLIT,VT> ────────────────────────────────
+// `cdh_pipe_core`'s compute and double buffer, with the staging moved from
+// `cp.async` to TMA + `mbarrier`.
+//
+// This is the first TMA in this tree. The measured reference (FlashQLA, 15.0 ms
+// against our 105.7 ms on the same box) gets its speed from TMA plus a fused,
+// warp-specialised spine; this kernel takes only the first half, so it isolates
+// "TMA vs cp.async" as ONE variable against `..._pipe`. Fusing the three FLA
+// kernels is the other half and is not attempted here.
+//
+// What the copy engine takes over:
+//   * address generation and tiling for all three tensors;
+//   * the K gather. `cdh_prefetch` walks K row by row (`i < ce` predicated,
+//     16 `cp_async16` per row) because K lives at a `qk_stride` pitch with a
+//     `kh * k_dim` column offset. That is exactly a strided 2-D tile, so one
+//     `tma_load_2d` at (col = kh*k_dim, row = tokoff + cs) replaces the loop;
+//   * the ragged tail. A tile overhanging the tensor is ZERO-FILLED in
+//     hardware, which is the same value the predicated path wrote by hand.
+//
+// The barrier counts BYTES: one `expect_tx` per stage covering all three tiles,
+// so the consumer waits once rather than per tensor. Stage p is reused every
+// second chunk, so its phase parity is `(c >> 1) & 1`.
+//
+// REQUIRES k_dim == K_DIM and v_dim == V_DIM: the descriptors are encoded from
+// the compile-time tile, and a narrower runtime head would silently load the
+// wrong columns. The launcher checks this and falls back rather than trusting it.
+template <int SPLIT, int VT>
+__device__ __forceinline__ void cdh_tma_core(
+    float* __restrict__ h_state, const CUtensorMap* w_desc, const CUtensorMap* u_desc,
+    const CUtensorMap* k_desc, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int seq_len, unsigned int num_chunks, unsigned int num_k_heads,
+    unsigned int num_v_heads, unsigned int v_dim, unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    constexpr int KH = K_DIM / SPLIT;
+    constexpr unsigned int STAGE_BYTES =
+        (unsigned int)(CHUNK * K_DIM * 2 + CHUNK * K_DIM * 2 + CHUNK * V_DIM * 2);
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads) return;
+    GDN_GEOM(g);
+    const unsigned int t = threadIdx.x;
+    const unsigned int v0 = (t / SPLIT) * VT;
+    const unsigned int sub = t % SPLIT;
+    const unsigned int k0 = sub * KH;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+    const unsigned int nthr = blockDim.x;
+
+    // TMA writes into shared, so the destinations must be 128-byte aligned.
+    extern __shared__ __align__(128) char smem_raw_tma[];
+    __nv_bfloat16* bufs = (__nv_bfloat16*)smem_raw_tma;   // 2 x {W,K,U}
+    float* decb = (float*)(bufs + 2 * CDH_BUFSZ);         // 2 x (CHUNK+1)
+    __shared__ __align__(8) uint64_t bar[2];
+
+    if (t == 0) {
+        mbar_init(&bar[0], 1);
+        mbar_init(&bar[1], 1);
+    }
+    __syncthreads();
+
+    float* H = h_state_is_table
+        ? ((float* const*)h_state)[b] + (unsigned long long)vh * K_DIM * V_DIM
+        : h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * V_DIM);
+    float Sold[KH][VT];
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = H[(k0 + kk) * V_DIM + v0 + vt];
+
+    if (g.nchunks == 0) return;
+
+    // Issue every tile for chunk `c` into slot `p` behind one transaction count.
+    auto issue = [&](unsigned int c, unsigned int p) {
+        const unsigned long long base =
+            ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+        __nv_bfloat16* Wp = bufs + (unsigned long long)p * CDH_BUFSZ;
+        __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;
+        __nv_bfloat16* Up = Kp + CHUNK * K_DIM;
+        if (t == 0) {
+            mbar_expect_tx(&bar[p], STAGE_BYTES);
+            tma_fence();
+            tma_load_2d(w_desc, &bar[p], Wp, 0, (int)(base * CHUNK));
+            tma_load_2d(u_desc, &bar[p], Up, 0, (int)(base * CHUNK));
+            tma_load_2d(k_desc, &bar[p], Kp, (int)(kh * K_DIM),
+                        (int)(g.tokoff + (unsigned long long)c * CHUNK));
+        }
+        // The decay table is a scalar-load reduction, not a tile; it stays on
+        // the ordinary path, one thread per entry.
+        const unsigned int cs = c * CHUNK;
+        const unsigned int ce = (g.seqlen - cs) < CHUNK ? (g.seqlen - cs) : CHUNK;
+        const float dl = gc_in[base * CHUNK + ce - 1];
+        if (t == 0) decb[p * (CHUNK + 1)] = expf(dl);
+        for (unsigned int i = t; i < ce; i += nthr)
+            decb[p * (CHUNK + 1) + 1 + i] = expf(dl - gc_in[base * CHUNK + i]);
+    };
+
+    issue(0, 0);
+
+    for (unsigned int c = 0; c < g.nchunks; c++) {
+        const unsigned int p = c & 1u;
+        const unsigned int ce = (g.seqlen - c * CHUNK) < CHUNK ? (g.seqlen - c * CHUNK) : CHUNK;
+        const unsigned long long base = ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+
+        if (c + 1 < g.nchunks) issue(c + 1, p ^ 1u);
+        mbar_wait(&bar[p], (c >> 1) & 1u);
+        __syncthreads();
+
+        const __nv_bfloat16* Wp = bufs + (unsigned long long)p * CDH_BUFSZ;
+        const __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;
+        const __nv_bfloat16* Up = Kp + CHUNK * K_DIM;
+        const float* decs = decb + p * (CHUNK + 1);
+
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                S_out[base * K_DIM * V_DIM + (k0 + kk) * V_DIM + v0 + vt] =
+                    __float2bfloat16(Sold[kk][vt]);
+
+        const float edl = decs[0];
+        float Snew[KH][VT];
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Snew[kk][vt] = edl * Sold[kk][vt];
+
+        for (unsigned int i = 0; i < ce; i++) {
+            float wsp[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) wsp[vt] = 0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float w = (float)Wp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) wsp[vt] += w * Sold[kk][vt];
+            }
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                #pragma unroll
+                for (int sft = 1; sft < SPLIT; sft <<= 1)
+                    wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], sft);
+            const float dc = decs[1 + i];
+            float d[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) {
+                const float uci = (float)Up[i * V_DIM + v0 + vt] - wsp[vt];
+                if (sub == 0) uc_out[base * CHUNK * V_DIM + i * v_dim + v0 + vt] = __float2bfloat16(uci);
+                d[vt] = dc * uci;
+            }
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float kv = (float)Kp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) Snew[kk][vt] += d[vt] * kv;
+            }
+        }
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = Snew[kk][vt];
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) H[(k0 + kk) * V_DIM + v0 + vt] = Sold[kk][vt];
+}
+
+extern "C" __global__ void __launch_bounds__(256, 1)
+gated_delta_rule_chunk_delta_h_tma(
+    float* __restrict__ h_state,
+    const __grid_constant__ CUtensorMap w_desc,
+    const __grid_constant__ CUtensorMap u_desc,
+    const __grid_constant__ CUtensorMap k_desc,
+    const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int v_dim,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_tma_core<2, 1>(h_state, &w_desc, &u_desc, &k_desc, gc_in, S_out, uc_out, seq_len,
+                       num_chunks, num_k_heads, num_v_heads, v_dim, h_state_is_table,
+                       cu_seqlens, cu_chunks, is_varlen);
 }
 
 // ── KERNEL 2-DVSPLIT: chunk_delta_h_dvsplit<SPLIT,DVB> ───────────────────────

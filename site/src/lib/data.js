@@ -13,9 +13,9 @@
 
 // --- canonical links ---------------------------------------------------------
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
-export const discordUrl = 'https://discord.gg/6vDbKaKrKD';
-export const xUrl = 'https://x.com/atlasinference';
-export const xHandle = '@atlasinference';
+export const discordUrl = 'https://discord.gg/RQcGakU2jW';
+export const xUrl = 'https://x.com/AtlasInferenceX';
+export const xHandle = '@AtlasInferenceX';
 export const redditUrl = 'https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/';
 export const firstPostUrl =
   'https://www.reddit.com/r/LocalLLaMA/comments/1rkefjw/solved_the_dgx_spark_102_stable_toks_qwen3535ba3b/';
