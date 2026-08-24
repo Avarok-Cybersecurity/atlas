@@ -138,7 +138,56 @@ mod tests {
     /// foreign canary and is styled Bad. Negative: the clean cell is NOT
     /// rendered as a finding.
     #[test]
-    fn contaminated_cells_name_the_canary_and_read_bad() {
+    fn every_class_renders_its_evidence_and_severity() {
+        for (class, expected) in [
+            (Class::Identical, ("identical", CellStyle::Good, "")),
+            (
+                Class::Diverged {
+                    at: 4,
+                    detail: "streams differ".into(),
+                },
+                ("DIVERGED @ char 4", CellStyle::Bad, "streams differ"),
+            ),
+            (
+                Class::Contaminated {
+                    foreign: "FOREIGN".into(),
+                },
+                (
+                    "CONTAMINATED",
+                    CellStyle::Bad,
+                    "carries foreign canary FOREIGN",
+                ),
+            ),
+            (
+                Class::Persistent { at: 7 },
+                (
+                    "PERSISTENT @ char 7",
+                    CellStyle::Bad,
+                    "state survived into solo execution",
+                ),
+            ),
+            (
+                Class::AloneUnstable,
+                (
+                    "alone-unstable",
+                    CellStyle::Warn,
+                    "two solo runs disagree (#435) — contamination unattributable",
+                ),
+            ),
+            (
+                Class::Unmeasured {
+                    why: "timeout".into(),
+                },
+                ("unmeasured", CellStyle::Warn, "timeout"),
+            ),
+        ] {
+            let rendered = render_class(&class);
+            assert_eq!(
+                (rendered.0.as_str(), rendered.1, rendered.2.as_str()),
+                expected
+            );
+        }
+
         let s = score_with(vec![
             ((0, "c2"), Class::Identical),
             (
@@ -196,12 +245,30 @@ mod tests {
                     detail: "streams differ".into(),
                 },
             ),
+            (
+                (0, "c4"),
+                Class::Contaminated {
+                    foreign: "foreign".into(),
+                },
+            ),
+            ((1, "post"), Class::Persistent { at: 9 }),
         ]);
-        let tiles = summary(&dirty);
-        assert_eq!(tiles[0].style, CellStyle::Bad, "1/2 identical is not green");
-        let diverged = tiles.iter().find(|t| t.label == "Diverged").unwrap();
-        assert_eq!(diverged.value, "1");
-        assert_eq!(diverged.style, CellStyle::Bad);
+        let mut dirty = dirty;
+        dirty.tokens_compared = 42;
+        let tiles: Vec<_> = summary(&dirty)
+            .into_iter()
+            .map(|tile| (tile.label, tile.value, tile.style))
+            .collect();
+        assert_eq!(
+            tiles,
+            vec![
+                ("Identical".into(), "1/4".into(), CellStyle::Bad),
+                ("Contaminated".into(), "1".into(), CellStyle::Bad),
+                ("Persistent".into(), "1".into(), CellStyle::Bad),
+                ("Diverged".into(), "1".into(), CellStyle::Bad),
+                ("Tokens compared".into(), "42".into(), CellStyle::Accent),
+            ]
+        );
     }
 
     /// Every class is a metric key even at zero — absence and zero must stay
@@ -227,18 +294,31 @@ mod tests {
 
         // And the values TRACK the score, rather than being present-but-frozen
         // — a metric that always reads 0 is indistinguishable from a clean run.
-        let dirty = score_with(vec![
-            (
-                (0, "c2"),
-                Class::Contaminated {
-                    foreign: "QJ-CRIMSON-OTTER-77".into(),
-                },
-            ),
-            ((1, "post"), Class::Persistent { at: 3 }),
-        ]);
-        let m = metrics(&dirty);
-        assert_eq!(m["contaminated"], 1.0, "the leak must reach the record");
-        assert_eq!(m["persistent"], 1.0);
-        assert_eq!(m["identical"], 0.0);
+        let dirty = Score {
+            compared: 8,
+            identical: 7,
+            diverged: 6,
+            contaminated: 5,
+            persistent: 4,
+            alone_unstable: 3,
+            unmeasured: 2,
+            tokens_compared: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            metrics(&dirty),
+            [
+                ("alone_unstable".to_string(), 3.0),
+                ("compared".to_string(), 8.0),
+                ("contaminated".to_string(), 5.0),
+                ("diverged".to_string(), 6.0),
+                ("identical".to_string(), 7.0),
+                ("persistent".to_string(), 4.0),
+                ("tokens_compared".to_string(), 1.0),
+                ("unmeasured".to_string(), 2.0),
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 }
