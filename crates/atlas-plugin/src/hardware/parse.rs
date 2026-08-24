@@ -42,7 +42,11 @@ pub fn gpu_query(text: &str) -> GpuQuery {
     };
     let cells: Vec<&str> = line.split(',').collect();
     let cell = |i: usize| cells.get(i).copied().and_then(value);
-    let num = |i: usize| cell(i).and_then(|c| c.parse::<f64>().ok());
+    let num = |i: usize| {
+        cell(i)
+            .and_then(|c| c.parse::<f64>().ok())
+            .filter(|n| n.is_finite())
+    };
     GpuQuery {
         name: cell(0).map(str::to_string),
         driver: cell(1).map(str::to_string),
@@ -189,7 +193,11 @@ pub fn meminfo(text: &str) -> MemInfo {
 
 /// A `/sys/class/thermal/thermal_zone*/temp` file: milli-degrees Celsius.
 pub fn milli_celsius(text: &str) -> Option<f64> {
-    text.trim().parse::<f64>().ok().map(|m| m / 1000.0)
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|m| m.is_finite())
+        .map(|m| m / 1000.0)
 }
 
 /// Assemble one zone from its `type` and `temp` file contents.

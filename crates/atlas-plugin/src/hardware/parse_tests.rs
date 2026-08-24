@@ -56,10 +56,14 @@ fn no_output_at_all_is_every_field_unknown() {
 /// does have into the wrong slots.
 #[test]
 fn a_short_row_does_not_shift_values_left() {
-    let q = gpu_query("NVIDIA GB10, 580.126.09");
-    assert_eq!(q.driver.as_deref(), Some("580.126.09"));
-    assert_eq!(q.sm_clock_mhz, None);
-    assert_eq!(q.gpu_temp_c, None);
+    assert_eq!(
+        gpu_query("NVIDIA GB10, 580.126.09"),
+        GpuQuery {
+            name: Some("NVIDIA GB10".into()),
+            driver: Some("580.126.09".into()),
+            ..GpuQuery::default()
+        }
+    );
 }
 
 #[test]
@@ -87,9 +91,21 @@ fn compute_apps_reads_pid_name_and_memory() {
 /// every `--query-gpu` reading.
 #[test]
 fn compute_apps_sees_the_leftover_allocation() {
-    let apps = compute_apps(COMPUTE_APPS_LEFTOVER);
-    assert_eq!(apps.len(), 2);
-    assert_eq!(apps[1].used_mib, Some(87_014));
+    assert_eq!(
+        compute_apps(COMPUTE_APPS_LEFTOVER),
+        vec![
+            GpuComputeApp {
+                pid: 2_392_883,
+                name: "./target/release/spark".into(),
+                used_mib: Some(109_281),
+            },
+            GpuComputeApp {
+                pid: 2_118_440,
+                name: "./target/release/spark".into(),
+                used_mib: Some(87_014),
+            },
+        ]
+    );
 }
 
 #[test]
@@ -129,8 +145,25 @@ fn performance_keeps_the_two_sections_apart() {
 #[test]
 fn performance_reads_the_degraded_box() {
     let (counters, active) = performance(PERFORMANCE_HOT);
-    assert_eq!(counters.sw_thermal_us, Some(2_914_366_812));
-    assert_eq!(counters.hw_thermal_us, Some(228_104_991));
+    assert_eq!(
+        counters,
+        ThrottleCounters {
+            sw_power_cap_us: Some(51_740_221_883),
+            sw_thermal_us: Some(2_914_366_812),
+            hw_thermal_us: Some(228_104_991),
+            hw_power_brake_us: Some(0),
+            sync_boost_us: Some(0),
+        }
+    );
+    assert_eq!(
+        active,
+        ThrottleActive {
+            sw_power_cap: Some(true),
+            sw_thermal: Some(true),
+            hw_thermal: Some(true),
+            hw_power_brake: Some(false),
+        }
+    );
     assert_eq!(active.thermal(), Some(true));
 }
 
@@ -148,9 +181,10 @@ fn performance_that_reports_na_is_unknown_not_zero() {
 
 #[test]
 fn performance_of_empty_output_is_unknown() {
-    let (counters, active) = performance("");
-    assert_eq!(counters, ThrottleCounters::default());
-    assert_eq!(active.thermal(), None);
+    assert_eq!(
+        performance(""),
+        (ThrottleCounters::default(), ThrottleActive::default())
+    );
 }
 
 /// SW power cap is asserted for 16,130 s of an 11.2-day uptime on the HEALTHY
@@ -196,6 +230,23 @@ fn thermal_zone_temp_is_milli_celsius() {
     assert_eq!(milli_celsius("82700\n"), Some(82.7));
     assert_eq!(milli_celsius(""), None);
     assert_eq!(milli_celsius("warm"), None);
+}
+
+#[test]
+fn non_finite_measurements_are_unknown() {
+    assert_eq!(milli_celsius("NaN"), None);
+    assert_eq!(milli_celsius("inf"), None);
+    assert_eq!(milli_celsius("-inf"), None);
+    assert_eq!(
+        gpu_query("NVIDIA GB10, 580, NaN, inf, -inf, Enabled"),
+        GpuQuery {
+            name: Some("NVIDIA GB10".into()),
+            driver: Some("580".into()),
+            persistence_mode: Some(true),
+            ..GpuQuery::default()
+        }
+    );
+    assert_eq!(thermal_zone(Some("gpu"), "NaN"), None);
 }
 
 #[test]
