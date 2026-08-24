@@ -43,16 +43,23 @@ fn a_common_kernel_change_reopens_every_target_on_that_hardware() {
 }
 
 #[test]
-fn a_model_specific_change_reopens_only_that_model() {
+fn a_source_owner_change_reopens_the_owner_and_redirected_consumer() {
     let root = repo_root();
     let v = &views(&root, &[pr(2, &[FLAGSHIP])])[0];
     assert_eq!(
         v.targets,
-        BTreeSet::from([taxon::Target {
-            hardware: "gb10".into(),
-            model: "qwen3.6-27b".into(),
-            quant: "nvfp4".into(),
-        }])
+        BTreeSet::from([
+            taxon::Target {
+                hardware: "gb10".into(),
+                model: "qwen3.6-27b".into(),
+                quant: "nvfp4".into(),
+            },
+            taxon::Target {
+                hardware: "gb10".into(),
+                model: "qwen3.8-27b".into(),
+                quant: "nvfp4".into(),
+            },
+        ])
     );
 }
 
@@ -93,14 +100,19 @@ fn codeowners_are_resolved_from_the_changed_paths() {
 // Collisions — the reason this exists
 // ---------------------------------------------------------------------------
 
-/// ★ Two PRs on one target are each green against a baseline the other moves.
+/// ★ Two PRs on one source owner collide on it and every redirected consumer.
 #[test]
 fn two_prs_touching_one_target_collide() {
     let root = repo_root();
     let v = views(&root, &[pr(1, &[FLAGSHIP]), pr(2, &[FLAGSHIP])]);
     let c = collisions(&v);
-    assert_eq!(c.len(), 1);
-    assert_eq!(c["gb10/qwen3.6-27b/nvfp4"], vec![1, 2]);
+    assert_eq!(
+        c,
+        BTreeMap::from([
+            ("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2]),
+            ("gb10/qwen3.8-27b/nvfp4".into(), vec![1, 2]),
+        ])
+    );
 }
 
 #[test]
@@ -125,8 +137,11 @@ fn a_shared_kernel_pr_collides_with_every_model_pr_beneath_it() {
     let c = collisions(&v);
     assert_eq!(
         c,
-        BTreeMap::from([("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2])]),
-        "the shared change and model change meet only on the flagship"
+        BTreeMap::from([
+            ("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2]),
+            ("gb10/qwen3.8-27b/nvfp4".into(), vec![1, 2]),
+        ]),
+        "the shared change meets both the source owner and its consumer"
     );
 }
 
@@ -142,7 +157,10 @@ fn a_whole_repo_pr_collides_with_a_kernel_pr() {
     );
     assert_eq!(
         collisions(&v),
-        BTreeMap::from([("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2])])
+        BTreeMap::from([
+            ("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2]),
+            ("gb10/qwen3.8-27b/nvfp4".into(), vec![1, 2]),
+        ])
     );
 }
 
@@ -163,7 +181,11 @@ fn a_merged_pr_does_not_remain_in_the_open_collision_map() {
 fn the_narrowest_pr_is_suggested_first() {
     let root = repo_root();
     let v = views(&root, &[pr(1, &[COMMON]), pr(2, &[FLAGSHIP])]);
-    assert_eq!(merge_order(&v), vec![2, 1], "1 target before 22");
+    assert_eq!(
+        merge_order(&v),
+        vec![2, 1],
+        "2 targets before all gb10 targets"
+    );
 }
 
 /// The order must be total and reproducible, or the comment churns on every
@@ -188,7 +210,10 @@ fn every_target_appears_even_when_no_pr_touches_it() {
     let root = repo_root();
     let body = render(&root, &[pr(1, &[FLAGSHIP])]);
     for target in taxon::walk(&root) {
-        let reopened = if target.to_string() == "gb10/qwen3.6-27b/nvfp4" {
+        let reopened = if matches!(
+            target.to_string().as_str(),
+            "gb10/qwen3.6-27b/nvfp4" | "gb10/qwen3.8-27b/nvfp4"
+        ) {
             "#1"
         } else {
             "—"
@@ -238,7 +263,7 @@ fn pr_titles_cannot_break_the_table() {
         .expect("the row rendered");
     assert_eq!(
         row,
-        "| #9 evil \\| row injection | gb10 | 1 | @SeedSource @rsafier @tbraun96 |"
+        "| #9 evil \\| row injection | gb10 | 2 | @SeedSource @rsafier @tbraun96 |"
     );
 }
 
@@ -254,7 +279,7 @@ fn a_draft_is_marked_as_one() {
         .to_string();
     assert_eq!(
         row,
-        "| #5 (draft) pr 5 | gb10 | 1 | @SeedSource @rsafier @tbraun96 |"
+        "| #5 (draft) pr 5 | gb10 | 2 | @SeedSource @rsafier @tbraun96 |"
     );
 }
 
