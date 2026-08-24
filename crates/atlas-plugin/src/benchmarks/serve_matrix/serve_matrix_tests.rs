@@ -52,20 +52,39 @@ fn the_defaults_run_everything_the_box_can_serve() {
     let mut b = ServeMatrix::default();
     configured(&mut b, |_| {}).unwrap();
     assert_eq!(b.include, "", "`all` means no filter");
-    assert!(!b.options().unwrap().speculative);
-    assert_eq!(b.options().unwrap().max_seq_len, 32_768);
+    assert_eq!(
+        b.options().unwrap(),
+        ServeOptions {
+            max_seq_len: 32_768,
+            speculative: false,
+        }
+    );
+    assert_eq!(b.long_ctx_tokens, 16_384);
+    assert_eq!(b.tps_tokens, 256);
+    assert_eq!(b.probe_budget, 512);
+    assert_eq!(b.timeout, Duration::from_secs(300));
+    assert!(!b.update_baselines);
 }
 
 #[test]
 fn a_long_context_probe_that_cannot_fit_is_rejected_before_the_run() {
-    let mut b = ServeMatrix::default();
-    let err = configured(&mut b, |v| {
+    let mut exact_fit = ServeMatrix::default();
+    configured(&mut exact_fit, |v| {
         v.set("max_seq_len", ParamValue::Int(4096));
-        v.set("long_ctx_tokens", ParamValue::Int(16_384));
+        v.set("long_ctx_tokens", ParamValue::Int(3840));
     })
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("does not fit"), "{err}");
+    .unwrap();
+
+    let mut overflow = ServeMatrix::default();
+    let err = configured(&mut overflow, |v| {
+        v.set("max_seq_len", ParamValue::Int(4096));
+        v.set("long_ctx_tokens", ParamValue::Int(3841));
+    })
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Long-context probe: 3841 tokens plus 256 tokens of needle, question and answer does not fit in a 4096-token context"
+    );
 }
 
 #[test]
@@ -87,9 +106,25 @@ fn the_plan_comes_from_the_box_not_from_a_list_in_this_file() {
     let mut b = ServeMatrix::with_host(host);
     configured(&mut b, |_| {}).unwrap();
     b.build_plan().unwrap();
-    assert_eq!(b.plan.planned_count(), 1);
-    assert_eq!(b.plan.planned().next().unwrap().label(), "org/a · nvfp4");
-    assert_eq!(b.plan.skipped().count(), 1);
+    assert_eq!(
+        b.plan,
+        Plan {
+            rounds: vec![
+                Round {
+                    model: "org/a".into(),
+                    quant: "nvfp4".into(),
+                    skipped: None,
+                    excluded: false,
+                },
+                Round {
+                    model: "org/b".into(),
+                    quant: "fp8".into(),
+                    skipped: Some(Absence::NoKernels),
+                    excluded: false,
+                },
+            ],
+        }
+    );
 }
 
 #[test]
@@ -103,10 +138,35 @@ fn reconfiguring_discards_a_previous_plan_and_its_results() {
         outcome: Outcome::NotReached,
         baseline_tps: None,
     });
-    configured(&mut b, |_| {}).unwrap();
-    assert!(
-        b.results.is_empty() && b.plan.planned_count() == 0 && !b.planned_built && b.cursor == 0
+    b.cursor = 7;
+    configured(&mut b, |v| {
+        v.set("include", ParamValue::Text("  ORG/B  ".into()));
+        v.set("max_seq_len", ParamValue::Int(8192));
+        v.set("long_ctx_tokens", ParamValue::Int(1024));
+        v.set("tps_tokens", ParamValue::Int(128));
+        v.set("probe_budget", ParamValue::Int(64));
+        v.set("speculative", ParamValue::Bool(true));
+        v.set("request_timeout_s", ParamValue::Int(15));
+        v.set("update_baselines", ParamValue::Bool(true));
+    })
+    .unwrap();
+    assert_eq!(b.include, "ORG/B");
+    assert_eq!(
+        b.options().unwrap(),
+        ServeOptions {
+            max_seq_len: 8192,
+            speculative: true,
+        }
     );
+    assert_eq!(b.long_ctx_tokens, 1024);
+    assert_eq!(b.tps_tokens, 128);
+    assert_eq!(b.probe_budget, 64);
+    assert_eq!(b.timeout, Duration::from_secs(15));
+    assert!(b.update_baselines);
+    assert_eq!(b.plan, Plan::default());
+    assert!(!b.planned_built);
+    assert_eq!(b.cursor, 0);
+    assert!(b.results.is_empty());
 }
 
 #[tokio::test]
@@ -131,8 +191,11 @@ async fn cleanup_restores_the_box_once_a_plan_exists() {
 fn without_a_host_the_benchmark_says_what_is_missing() {
     // `Plugin::load`'s contract: the message lands where the Start button
     // would be, so it has to name the thing that is absent.
-    assert!(host::NO_HOST.contains("Atlas server"));
-    assert!(ServeMatrix::default().host().is_err());
+    let err = ServeMatrix::default()
+        .host()
+        .err()
+        .expect("a default matrix has no installed host");
+    assert_eq!(err.to_string(), host::NO_HOST);
 }
 
 #[test]
