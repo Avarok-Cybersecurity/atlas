@@ -178,15 +178,29 @@ fn q2_dequant_scratch_covers_largest_projection() {
 }
 
 #[test]
-fn q2_dequant_scratch_zero_without_flag() {
-    // Flag off (default): from_config must NOT size the buffer, so non-Q2
-    // models allocate nothing extra (BufferArena skips the alloc on 0 → NULL).
-    if std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1") {
-        return; // flag on in this environment — the sized path is covered above
-    }
+fn q2_scratch_flags_are_explicit_partitions() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
-    let sizes = BufferSizes::from_config(&cfg, 1, 4096, 16, 32);
-    assert_eq!(sizes.q2_dequant_scratch, 0);
+    let m = 3;
+    let h = cfg.hidden_size;
+    let hd = cfg.head_dim;
+    let dequant_bytes = q2_dequant_scratch_bytes(&cfg);
+    let kmax = h
+        .max(cfg.intermediate_size)
+        .max(cfg.num_attention_heads * hd);
+    let mmq_bytes = m * kmax.div_ceil(256) * 256 * 4 + (1 << 20);
+
+    assert_eq!(
+        sizes_q2::q2_scratch_sizes_for(&cfg, m, h, hd, false, false),
+        (0, 0)
+    );
+    assert_eq!(
+        sizes_q2::q2_scratch_sizes_for(&cfg, m, h, hd, true, false),
+        (dequant_bytes, 0)
+    );
+    assert_eq!(
+        sizes_q2::q2_scratch_sizes_for(&cfg, m, h, hd, false, true),
+        (0, mmq_bytes)
+    );
 }
 
 #[test]
