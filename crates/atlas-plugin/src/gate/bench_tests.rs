@@ -324,13 +324,11 @@ min = 85.0
 "#,
     );
     let baseline = baseline_for(&root, "bfcl-subset").unwrap();
-    let (_, entry) = baseline.resolve("gb10", None).unwrap();
+    let (checkpoint, entry) = baseline.resolve("gb10", None).unwrap();
+    assert_eq!(checkpoint, "org/A");
     assert_eq!(
-        entry
-            .serve_overrides
-            .get("ssm_cache_slots")
-            .map(String::as_str),
-        Some("256")
+        entry.serve_overrides,
+        std::collections::BTreeMap::from([("ssm_cache_slots".to_string(), "256".to_string())])
     );
 }
 
@@ -354,7 +352,13 @@ min = 85.0
 "#,
     );
     let err = load_all(&root).unwrap_err().to_string();
-    assert!(err.contains("cannot set `port`"), "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "{}: bfcl-subset / org/A serve_overrides cannot set `port`: self-start binds a free port itself, so a pin here would name a listener that is not there",
+            root.join("kernels/gb10/modelA/BENCH.toml").display()
+        )
+    );
 }
 
 /// The committed tree's pins, exactly where the gates need them — and nowhere
@@ -463,6 +467,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
 #[test]
 fn every_committed_param_override_parses_against_its_gates_schema() {
     let root = repo_root();
+    let mut observed = Vec::new();
     for (target, entry) in load_all(&root).expect("tree loads") {
         if entry.param_overrides.is_empty() {
             continue;
@@ -475,6 +480,13 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
         });
         let specs = descriptor.build().parameters();
         for (key, raw) in &entry.param_overrides {
+            observed.push((
+                target.hardware.clone(),
+                target.model.clone(),
+                entry.gate.clone(),
+                key.clone(),
+                raw.clone(),
+            ));
             assert!(
                 !descriptor.threshold_params.iter().any(|(p, _)| p == key),
                 "{}/{}/{}: pin {key:?} names a threshold-coupled param",
@@ -499,4 +511,31 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
             });
         }
     }
+    assert_eq!(
+        observed,
+        vec![
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep".into(),
+                "concurrencies".into(),
+                "1,4,8,16".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep".into(),
+                "isls".into(),
+                "512".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep".into(),
+                "osl".into(),
+                "320".into(),
+            ),
+        ],
+        "the committed override validation must not pass vacuously or skip a pin"
+    );
 }
