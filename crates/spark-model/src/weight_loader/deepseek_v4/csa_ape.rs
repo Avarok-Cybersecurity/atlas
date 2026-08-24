@@ -50,78 +50,73 @@ pub(super) fn load_ape_f32(
 
 #[cfg(test)]
 mod csa_ape_dtype_tests {
-    //! Regression tests for the DS4F `compressor.ape` FP32 contract. The checkpoint
-    //! ships `ape` as F32; `csa_compress` indexes it as `const float*`. The historical
-    //! defect (this fix) indexed the same fp32 buffer as bf16 (2-byte stride), reading
-    //! the low half of the wrong element and decoding to non-physical magnitudes that
-    //! corrupted the window softmax gate. These tests lock the true fp32 read and
-    //! reproduce the old bf16-misread's garbage.
-    use super::super::attn_sink::bf16_bytes_to_f32_bytes;
+    use std::collections::HashMap;
 
-    /// A representative F32 ape row (checkpoint-native values, slot0/dim0 = 0.074).
-    const APE_TRUE: [f32; 8] = [0.074, 1.5, -2.3, 0.5, 0.031, -1.1, 3.25, -0.008];
+    use spark_runtime::gpu::{DevicePtr, GpuBackend, mock::MockGpuBackend};
+    use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
 
-    /// bf16 → f32 (bf16 is the high 16 bits of the f32 word).
-    fn bf16_to_f32(bits: u16) -> f32 {
-        f32::from_bits((bits as u32) << 16)
+    use super::load_ape_f32;
+
+    const KEY: &str = "layers.2.attn.compressor.ape";
+
+    fn store_with(ptr: DevicePtr, dtype: WeightDtype, shape: Vec<usize>) -> WeightStore {
+        WeightStore::from_map(HashMap::from([(
+            KEY.to_string(),
+            WeightTensor { ptr, shape, dtype },
+        )]))
     }
 
-    /// The kernel-arg fix: reading the fp32 buffer as fp32 returns the true values.
     #[test]
-    fn fp32_read_returns_true_ape() {
-        let mut bytes = Vec::new();
-        for &v in &APE_TRUE {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        for (i, &t) in APE_TRUE.iter().enumerate() {
-            let v = f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
-            assert!((v - t).abs() < 1e-6, "elem {i}: fp32 read {v} != true {t}");
-        }
+    fn fp32_checkpoint_pointer_passes_through_unchanged() {
+        let gpu = MockGpuBackend::new();
+        let ptr = gpu.alloc(32).unwrap();
+        let store = store_with(ptr, WeightDtype::FP32, vec![2, 4]);
+
+        assert_eq!(load_ape_f32(&store, KEY, &gpu).unwrap(), ptr);
     }
 
-    /// The bug: indexing that same fp32 byte stream as bf16 (2-byte stride) reads across
-    /// the 4-byte element boundaries, so the decoded sequence diverges grossly from the
-    /// true F32 values — exactly why an fp32 ape must never be read as bf16. (The runtime
-    /// tap saw magnitudes to ±1e38 at the specific straddles; here we only require gross
-    /// divergence, which is robust.)
     #[test]
-    fn bf16_misread_of_fp32_diverges_grossly() {
-        let mut bytes = Vec::new();
-        for &v in &APE_TRUE {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        // bf16 element i = bytes[2i..2i+2] (little-endian), the kernel's stride.
-        let n_bf16 = bytes.len() / 2;
-        let misread: Vec<f32> = (0..n_bf16)
-            .map(|i| bf16_to_f32(u16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]])))
+    fn bf16_checkpoint_is_widened_into_a_new_exact_fp32_buffer() {
+        let gpu = MockGpuBackend::new();
+        let bf16 = [0x3d97u16, 0xbfc0, 0x3f00, 0x4140];
+        let source: Vec<u8> = bf16.iter().flat_map(|bits| bits.to_le_bytes()).collect();
+        let source_ptr = gpu.alloc(source.len()).unwrap();
+        gpu.copy_h2d(&source, source_ptr).unwrap();
+        let store = store_with(source_ptr, WeightDtype::BF16, vec![2, 2]);
+
+        let widened_ptr = load_ape_f32(&store, KEY, &gpu).unwrap();
+        assert_ne!(widened_ptr, source_ptr);
+        let mut widened = vec![0u8; bf16.len() * 4];
+        gpu.copy_d2h(widened_ptr, &mut widened).unwrap();
+        let actual: Vec<u32> = widened
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
             .collect();
-        // Compare the first APE_TRUE.len() bf16 reads (what the kernel indexed as ape[0..8])
-        // against the true F32 values — a majority must differ materially.
-        let wrong = APE_TRUE
-            .iter()
-            .zip(&misread)
-            .filter(|(t, m)| (**t - **m).abs() > 1e-2)
-            .count();
-        assert!(
-            wrong > APE_TRUE.len() / 2,
-            "bf16 misread must corrupt most elements; only {wrong} of {} diverged",
-            APE_TRUE.len()
+        assert_eq!(
+            actual,
+            bf16.iter()
+                .map(|bits| (*bits as u32) << 16)
+                .collect::<Vec<_>>()
         );
     }
 
-    /// BF16-checkpoint fallback path: widening is the exact high-half embedding.
     #[test]
-    fn bf16_widen_roundtrip_exact() {
-        for &v in &[0.074f32, -1.5, 0.5, 12.0] {
-            let hi = (v.to_bits() >> 16) as u16;
-            let widened_bytes = bf16_bytes_to_f32_bytes(&hi.to_le_bytes());
-            let widened = f32::from_le_bytes([
-                widened_bytes[0],
-                widened_bytes[1],
-                widened_bytes[2],
-                widened_bytes[3],
-            ]);
-            assert_eq!(widened.to_bits(), (hi as u32) << 16);
-        }
+    fn missing_required_ape_names_the_tensor() {
+        let gpu = MockGpuBackend::new();
+        let error = load_ape_f32(&WeightStore::empty(), KEY, &gpu)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(KEY), "{error}");
+    }
+
+    #[test]
+    fn unsupported_checkpoint_dtype_names_the_tensor_and_contract() {
+        let gpu = MockGpuBackend::new();
+        let store = store_with(DevicePtr::NULL, WeightDtype::FP8E4M3, vec![2, 2]);
+        let error = load_ape_f32(&store, KEY, &gpu).unwrap_err().to_string();
+
+        assert!(error.contains(KEY), "{error}");
+        assert!(error.contains("FP8E4M3"), "{error}");
+        assert!(error.contains("indexes ape as F32"), "{error}");
     }
 }
