@@ -33,10 +33,87 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::NemotronMamba2Layer;
-use crate::layer::{ForwardContext, LayerState, SsmLayerState};
+use crate::layer::{ForwardContext, LayerState, SsmLayerState, TransformerLayer};
 use crate::layers::ops;
 
+/// `ATLAS_NEMOTRON_VERIFY_BATCHED=1` opts the K-token verify into the
+/// batched-phase body below. DEFAULT OFF: the batched projection arms are
+/// bit-parity-proven for the multi-seq rungs (#545) but NOT yet for the
+/// K-row verify shapes on this target, and with 0 accepts the committed
+/// stream IS the verify body's row 0 — any non-parity there rewrites the
+/// model's output (measured 2026-08-25: batched-unconditional verify
+/// degenerated long generations that the sequential path serves at 75.0
+/// tok/s). Sequential-with-snapshots is byte-identical to serial decode
+/// by construction; flip this only with a measured A/B against it.
+fn verify_batched_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NEMOTRON_VERIFY_BATCHED").as_deref() == Ok("1"))
+}
+
 impl NemotronMamba2Layer {
+    /// K-token verify dispatch: sequential (default, byte-identical to
+    /// serial `decode()`) or the batched-phase body under the A/B env.
+    /// Both write the per-token snapshots the rollback contract reads.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn decode_verify_k(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut spark_runtime::kv_cache::PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if verify_batched_enabled() && num_tokens >= 2 {
+            return self.decode_batched_k(hidden, residual, num_tokens, state, ctx, stream);
+        }
+        // Sequential body: the same per-token `decode()` loop the trait
+        // default runs (same offsets, same scratch reuse), plus the
+        // snapshot after each token that the default loop lacks.
+        let h = ctx.config.hidden_size;
+        for t in 0..num_tokens {
+            let off = t * h * 2;
+            self.decode(
+                hidden.offset(off),
+                residual.offset(off),
+                state,
+                kv_cache,
+                seq_len + t,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+            )?;
+            let ssm = state
+                .as_any_mut()
+                .downcast_mut::<SsmLayerState>()
+                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+            if t < ssm.h_state_intermediates.len() {
+                ctx.gpu.copy_d2d_async(
+                    ssm.h_state,
+                    ssm.h_state_intermediates[t],
+                    self.h_state_bytes,
+                    stream,
+                )?;
+            }
+            if t < ssm.conv_state_intermediates.len() {
+                ctx.gpu.copy_d2d_async(
+                    ssm.conv_state,
+                    ssm.conv_state_intermediates[t],
+                    self.conv_state_bytes,
+                    stream,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// K-token verify body: batched norms + projections, sequential
     /// conv + scan with per-token state snapshots.
     #[allow(clippy::too_many_arguments)]

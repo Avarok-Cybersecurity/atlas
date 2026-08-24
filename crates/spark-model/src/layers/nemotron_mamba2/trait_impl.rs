@@ -245,15 +245,27 @@ impl TransformerLayer for NemotronMamba2Layer {
         residual: DevicePtr,
         num_tokens: usize,
         state: &mut dyn LayerState,
-        _kv_cache: &mut PagedKvCache,
-        _seq_len: usize,
-        _block_table: &mut Vec<u32>,
-        _disk_block_ids: &mut Vec<u32>,
-        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.decode_batched_k(hidden, residual, num_tokens, state, ctx, stream)
+        self.decode_verify_k(
+            hidden,
+            residual,
+            num_tokens,
+            state,
+            kv_cache,
+            seq_len,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            ctx,
+            stream,
+        )
     }
 
     fn prefill(
