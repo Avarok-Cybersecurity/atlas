@@ -377,12 +377,13 @@ async fn output_past_the_pipe_buffer_does_not_deadlock_the_writer() {
     let c = cfg(std::env::temp_dir());
     let out = run_shell(
         &c,
-        "head -c 400000 /dev/zero | tr '\\0' 'a'",
-        Duration::from_secs(10),
+        "head -c 8000000 /dev/zero | tr '\\0' 'a'",
+        Duration::from_secs(2),
     )
     .await
     .unwrap();
     assert!(!out.contains("timed out"), "{}", &out[..80.min(out.len())]);
+    assert!(!out.contains("[exit"), "the writer did not finish: {out}");
     assert!(out.contains("elided"), "the cap still applies");
 }
 
