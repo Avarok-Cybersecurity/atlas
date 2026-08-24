@@ -232,16 +232,13 @@ mod tests {
                 .expect("generic layer load unexpectedly succeeded"),
             loader
                 .load_embedding(&store, &config, &gpu)
-                .err()
-                .expect("generic embedding load unexpectedly succeeded"),
+                .expect_err("generic embedding load unexpectedly succeeded"),
             loader
                 .load_final_norm(&store, &config, &gpu)
-                .err()
-                .expect("generic final-norm load unexpectedly succeeded"),
+                .expect_err("generic final-norm load unexpectedly succeeded"),
             loader
                 .load_lm_head(&store, &config, &gpu)
-                .err()
-                .expect("generic LM-head load unexpectedly succeeded"),
+                .expect_err("generic LM-head load unexpectedly succeeded"),
         ];
         for err in errors {
             assert!(

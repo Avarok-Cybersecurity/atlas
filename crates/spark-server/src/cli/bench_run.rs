@@ -97,7 +97,7 @@ fn capture_provenance() -> Result<(String, Vec<String>)> {
 }
 
 fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)> {
-    let sha = gate::git_sha(&root)?;
+    let sha = gate::git_sha(root)?;
     let dirty = gate::dirty_perf_paths(root)
         .context("reading the working tree state before the gate run")?;
     if !dirty.is_empty() {

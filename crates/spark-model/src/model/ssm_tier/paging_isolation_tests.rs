@@ -213,7 +213,7 @@ fn decode_and_marconi_tiers_do_not_cross_serve_on_one_peer() {
     let peer = Arc::new(MockPagingPeer::new(BLOB, 8));
     let fp = ModelFingerprint::derive_with_id(&hybrid(), BLOB, "").unwrap();
     let marconi = store(&peer, fp.nonzero());
-    let decode = store(&peer, derive_decode_ns_salted(fp.get(), 0xC11E_17));
+    let decode = store(&peer, derive_decode_ns_salted(fp.get(), 0x00C1_1E17));
     marconi.put(K, &[0xAA; BLOB]).unwrap();
     let mut out = [0u8; BLOB];
     assert!(
