@@ -425,8 +425,10 @@ pub fn step_mtp(
             // `CANONICAL_KEY_MIN_WIDTH` = 8): ssm slots ascending = also
             // deepest-first under the canonical assignment, so the key is a
             // function of the depth MULTISET not its arrangement (266 keys → 3
-            // at n=8) and each depth run owns a consecutive slot block for the
-            // batched-GDN precondition; below it, deepest-first then slot — the
+            // at n=8). When the selected pool slots have no gaps, each depth
+            // run owns a consecutive slot block for the batched-GDN fast path;
+            // fragmented runs are checked and declined by the model. Below the
+            // gate, deepest-first then slot — the
             // pre-canonical order byte for byte. Idempotent on `plan`'s ordered
             // batch under both arms; it still runs because `plan` returns the
             // batch UNORDERED whenever D-Cut declines, and that uniform-`k`

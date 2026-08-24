@@ -42,13 +42,15 @@
 //! depths descending (equal depths must form contiguous runs — the batched
 //! conv+WY fast path launches once per run,
 //! `trait_decode_batched_conv_gdn_multi.rs`) and the SSM batched arms need
-//! slots ascending and consecutive in batch order (`ssm_batched_recurrent.rs`,
+//! slots ascending in batch order (`ssm_batched_recurrent.rs`,
 //! `decode_step.rs`, `mtp_step.rs`). Under the confidence-chosen arrangement
 //! those two demands are in direct conflict: a ragged batch sorted
 //! deepest-first scrambles the slot order, so each depth run gets an
 //! arbitrary SUBSET of the pool slots and the consecutive-slot precondition
 //! fails. Pairing depths-descending with slots-ascending makes the two orders
-//! THE SAME order, and each depth run then owns a consecutive slot block.
+//! THE SAME order. A depth run owns a consecutive slot block only when the
+//! selected pool slots are themselves consecutive; the model checks actual
+//! pointers and declines the batched fast path when fragmentation leaves gaps.
 //!
 //! Correctness: which sequence gets which depth is a pure PERFORMANCE choice.
 //! Every batchable sequence enters the step with exactly `ladder_nd` drafts
@@ -189,7 +191,7 @@ fn canonical_assignment_at(n: usize, min_width: usize, kill_switch_clear: bool) 
 /// Idempotent under `canonical = true`, so a chunked caller may re-apply it
 /// to a contiguous sub-range of an already-ordered batch.
 pub fn verify_batch_permutation(slots: &[usize], ks: &[usize], canonical: bool) -> Vec<usize> {
-    debug_assert_eq!(
+    assert_eq!(
         slots.len(),
         ks.len(),
         "verify_batch_permutation: slots/ks mismatch"
