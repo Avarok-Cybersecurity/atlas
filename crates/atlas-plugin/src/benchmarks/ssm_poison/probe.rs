@@ -307,7 +307,7 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
             ],
         )
         || !t3.contains("excludes payload")
-        || !t3.contains("recomput")
+        || !t3.contains("recompute")
         || !t3.contains("quarantin")
     {
         violations.push("turn 3: does not preserve Section 4 in exactly two sentences".into());
@@ -324,7 +324,7 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
         ],
     ) || !t4.contains("excluded")
         || !t4.contains("payload")
-        || !t4.contains("recomput")
+        || !t4.contains("recompute")
         || !t4.contains("quarantin")
     {
         violations.push("turn 4: does not answer every checksum question".into());
