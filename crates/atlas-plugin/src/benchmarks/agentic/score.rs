@@ -66,6 +66,16 @@ impl Directions {
     }
 }
 
+/// Return an OS-assigned ephemeral port for a caller that will spawn immediately.
+///
+/// Gate self-start uses this after all fallible resolution work and directly
+/// before spawning the model server. The scorer has a longer Cargo-build gap,
+/// so it uses [`reserve_port`] below and retains the listener through that gap.
+pub fn free_port() -> Result<u16> {
+    let listener = reserve_port()?;
+    Ok(listener.local_addr()?.port())
+}
+
 /// Hold an OS-assigned ephemeral port until the scored project is ready to run.
 ///
 /// A fresh OS-assigned port per iteration is what makes this self-isolating: a
