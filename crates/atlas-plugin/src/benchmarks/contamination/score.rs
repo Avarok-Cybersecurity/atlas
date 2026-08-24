@@ -170,7 +170,27 @@ pub fn score(legs: &Legs) -> Score {
             legs.ref_b.get(i).and_then(RequestOutcome::transcript),
         );
         let reference = match (a, b) {
-            (Some(a), Some(b)) if a.canonical() == b.canonical() => a,
+            (Some(a), Some(b))
+                if a.completion_tokens < legs.min_completion_tokens
+                    || b.completion_tokens < legs.min_completion_tokens =>
+            {
+                s.unmeasured += 1;
+                s.cells.insert(
+                    (i, "ref".into()),
+                    Class::Unmeasured {
+                        why: format!(
+                            "a solo reference was below the {} completion-token floor",
+                            legs.min_completion_tokens
+                        ),
+                    },
+                );
+                continue;
+            }
+            (Some(a), Some(b))
+                if a.canonical() == b.canonical() && a.completion_tokens == b.completion_tokens =>
+            {
+                a
+            }
             (Some(_), Some(_)) => {
                 s.alone_unstable += 1;
                 s.cells.insert((i, "ref".into()), Class::AloneUnstable);

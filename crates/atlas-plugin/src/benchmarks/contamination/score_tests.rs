@@ -96,7 +96,7 @@ fn foreign_canary_is_contamination_not_divergence() {
 }
 
 #[test]
-fn alone_instability_disqualifies_attribution() {
+fn solo_stream_or_usage_instability_disqualifies_attribution() {
     let c = canaries(1);
     let a = vec![t("alpha", 20)];
     let b = vec![t("beta", 20)]; // the two SOLO runs already disagree
@@ -112,6 +112,16 @@ fn alone_instability_disqualifies_attribution() {
         "an unattributable prompt contributes no comparisons"
     );
     assert!(!matches!(verdict(&s).kind, VerdictKind::Pass));
+
+    let a = vec![t("stable", 20)];
+    let b = vec![t("stable", 21)];
+    let rungs = vec![("c2".to_string(), vec![t("stable", 20)])];
+    let s = score(&legs(&a, &b, &rungs, &[], &c));
+    assert_eq!(s.alone_unstable, 1, "solo usage counts disagree");
+    assert_eq!(
+        s.compared, 0,
+        "an unstable reference cannot attribute a rung"
+    );
 }
 
 #[test]
@@ -149,6 +159,24 @@ fn short_reply_below_floor_is_unmeasured() {
     let s = score(&legs(&r, &r.clone(), &rungs, &[], &c));
     assert_eq!(s.unmeasured, 1, "3 tokens cannot witness contamination");
     assert_eq!(s.identical, 0, "equal-but-empty is not evidence");
+
+    let reference = vec![t("enough", 16)];
+    let rungs = vec![("c2".to_string(), vec![t("enough", 16)])];
+    let s = score(&legs(&reference, &reference.clone(), &rungs, &[], &c));
+    assert_eq!(s.identical, 1, "exactly at the floor is measurable");
+    assert_eq!(s.unmeasured, 0);
+
+    let short_reference = vec![t("same stream", 3)];
+    let rungs = vec![("c2".to_string(), vec![t("same stream", 20)])];
+    let s = score(&legs(
+        &short_reference,
+        &short_reference.clone(),
+        &rungs,
+        &[],
+        &c,
+    ));
+    assert_eq!(s.unmeasured, 1, "the solo reference is below the floor");
+    assert_eq!(s.compared, 0, "an empty reference cannot measure a rung");
 }
 
 #[test]
