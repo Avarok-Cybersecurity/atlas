@@ -426,13 +426,10 @@ async fn the_file_reader_returns_at_the_cap_without_waiting_for_eof() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_symlink_cycle_does_not_wedge_the_search_tools() {
-    // One bash call: `ln -s . a; ln -s . b; ln -s . c`. `is_dir()` resolves the
-    // link, so the walk explored 3^40 paths — bounded in depth by the kernel's
-    // ELOOP limit and not at all in breadth — and nothing times out a tool
-    // call, so `glob` never returned and the iteration was lost. The link to
-    // /etc is the other half: `grep` reads what the walk hands it without
-    // consulting `resolve`, so a followed link is an exfiltration path too.
+async fn search_tools_neither_follow_symlink_directories_nor_read_symlink_files() {
+    // A finite directory alias makes a follow-symlinks mutant fail promptly
+    // instead of expanding a cycle until the CI job times out. Skipping this
+    // link is the same policy that makes `ln -s . loop` harmless.
     let c = cfg(sandbox("cycle"));
     tool(
         &c,
@@ -441,9 +438,7 @@ async fn a_symlink_cycle_does_not_wedge_the_search_tools() {
     )
     .await
     .unwrap();
-    for name in ["a", "b", "c"] {
-        std::os::unix::fs::symlink(".", c.sandbox.join(name)).unwrap();
-    }
+    std::os::unix::fs::symlink("src", c.sandbox.join("alias")).unwrap();
     std::os::unix::fs::symlink("/etc/hostname", c.sandbox.join("host.rs")).unwrap();
     assert_eq!(
         tool(&c, "glob", json!({"pattern": "**/*.rs"}))
@@ -465,7 +460,7 @@ async fn an_unknown_tool_tells_the_model_what_it_may_call() {
 }
 
 #[test]
-fn glob_patterns_behave_like_the_shell() {
+fn glob_patterns_cover_basenames_segments_and_recursive_paths() {
     let m = |p: &str, t: &str| glob_match(p.as_bytes(), t.as_bytes());
     assert!(m("**/*.rs", "src/main.rs"));
     assert!(m("**/*.rs", "main.rs"));
