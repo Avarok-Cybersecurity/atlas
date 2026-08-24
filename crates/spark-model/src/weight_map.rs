@@ -40,10 +40,6 @@ mod ssm_qwen35;
 #[path = "weight_map/ssm_qwen35_more.rs"]
 mod ssm_qwen35_more;
 
-#[cfg(test)]
-#[path = "weight_map/tests.rs"]
-mod tests;
-
 pub use expert::*;
 pub(crate) use fp8_dequant::*;
 pub use loaders_fp8::*;
