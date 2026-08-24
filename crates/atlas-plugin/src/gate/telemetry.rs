@@ -89,6 +89,7 @@ pub struct PrView {
 /// Derive every PR's view. Pure: the tree supplies the taxonomy, nothing else.
 pub fn views(root: &Path, prs: &[PrFacts]) -> Vec<PrView> {
     let rules = codeowners::load(root);
+    let all_targets: BTreeSet<taxon::Target> = taxon::walk(root).into_iter().collect();
     prs.iter()
         .map(|facts| {
             let kernel_paths: Vec<String> = facts
@@ -97,12 +98,17 @@ pub fn views(root: &Path, prs: &[PrFacts]) -> Vec<PrView> {
                 .filter(|p| taxon::hardware_of(p).is_some())
                 .cloned()
                 .collect();
+            let whole_repo = facts.changed_paths.len() > kernel_paths.len();
             PrView {
                 hardware: taxon::hardware_span(&kernel_paths),
                 models: taxon::model_span(&kernel_paths),
-                targets: taxon::affected(root, &kernel_paths),
+                targets: if whole_repo {
+                    all_targets.clone()
+                } else {
+                    taxon::affected(root, &kernel_paths)
+                },
                 owners: codeowners::owners_for_paths(&rules, &facts.changed_paths),
-                whole_repo: facts.changed_paths.len() > kernel_paths.len(),
+                whole_repo,
                 promotion_debt: coverage::promotion_debt(
                     facts.changed_paths.iter().map(String::as_str),
                 ),
@@ -119,7 +125,7 @@ pub fn views(root: &Path, prs: &[PrFacts]) -> Vec<PrView> {
 /// on a number that no longer describes the tree.
 pub fn collisions(views: &[PrView]) -> BTreeMap<String, Vec<u64>> {
     let mut by_target: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-    for view in views {
+    for view in views.iter().filter(|view| !view.facts.merged) {
         for target in &view.targets {
             by_target
                 .entry(target.to_string())

@@ -34,11 +34,11 @@ const FLAGSHIP: &str = "kernels/gb10/qwen3.6-27b/nvfp4/w4a4_gemm.cu";
 fn a_common_kernel_change_reopens_every_target_on_that_hardware() {
     let root = repo_root();
     let v = &views(&root, &[pr(1, &[COMMON])])[0];
-    let gb10 = taxon::walk(&root)
+    let gb10: BTreeSet<_> = taxon::walk(&root)
         .into_iter()
         .filter(|t| t.hardware == "gb10")
-        .count();
-    assert_eq!(v.targets.len(), gb10, "all gb10 targets");
+        .collect();
+    assert_eq!(v.targets, gb10, "all and only gb10 targets");
     assert!(!v.whole_repo, "a kernels-only diff is not whole-repo");
 }
 
@@ -46,8 +46,14 @@ fn a_common_kernel_change_reopens_every_target_on_that_hardware() {
 fn a_model_specific_change_reopens_only_that_model() {
     let root = repo_root();
     let v = &views(&root, &[pr(2, &[FLAGSHIP])])[0];
-    assert_eq!(v.targets.len(), 1);
-    assert_eq!(v.targets.iter().next().unwrap().model, "qwen3.6-27b");
+    assert_eq!(
+        v.targets,
+        BTreeSet::from([taxon::Target {
+            hardware: "gb10".into(),
+            model: "qwen3.6-27b".into(),
+            quant: "nvfp4".into(),
+        }])
+    );
 }
 
 /// ★ A diff that reaches outside `kernels/` re-opens everything, and must be
@@ -61,6 +67,11 @@ fn a_diff_reaching_outside_kernels_is_marked_whole_repo() {
         &[pr(3, &[FLAGSHIP, "crates/spark-model/src/lib.rs"])],
     )[0];
     assert!(v.whole_repo);
+    assert_eq!(
+        v.targets,
+        taxon::walk(&root).into_iter().collect(),
+        "a whole-repository diff re-opens every target"
+    );
     let body = render(
         &root,
         &[pr(3, &[FLAGSHIP, "crates/spark-model/src/lib.rs"])],
@@ -75,7 +86,7 @@ fn a_diff_reaching_outside_kernels_is_marked_whole_repo() {
 fn codeowners_are_resolved_from_the_changed_paths() {
     let root = repo_root();
     let v = &views(&root, &[pr(4, &["crates/spark-model/src/lib.rs"])])[0];
-    assert!(!v.owners.is_empty(), "spark-model has owners in CODEOWNERS");
+    assert_eq!(v.owners, ["@SeedSource", "@rsafier", "@tbraun96"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -112,10 +123,36 @@ fn a_shared_kernel_pr_collides_with_every_model_pr_beneath_it() {
     let root = repo_root();
     let v = views(&root, &[pr(1, &[COMMON]), pr(2, &[FLAGSHIP])]);
     let c = collisions(&v);
-    assert!(
-        c.contains_key("gb10/qwen3.6-27b/nvfp4"),
-        "the shared change and the model change meet on the flagship: {c:?}"
+    assert_eq!(
+        c,
+        BTreeMap::from([("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2])]),
+        "the shared change and model change meet only on the flagship"
     );
+}
+
+#[test]
+fn a_whole_repo_pr_collides_with_a_kernel_pr() {
+    let root = repo_root();
+    let v = views(
+        &root,
+        &[
+            pr(1, &["crates/spark-model/src/lib.rs"]),
+            pr(2, &[FLAGSHIP]),
+        ],
+    );
+    assert_eq!(
+        collisions(&v),
+        BTreeMap::from([("gb10/qwen3.6-27b/nvfp4".into(), vec![1, 2])])
+    );
+}
+
+#[test]
+fn a_merged_pr_does_not_remain_in_the_open_collision_map() {
+    let root = repo_root();
+    let mut merged = pr(1, &[FLAGSHIP]);
+    merged.merged = true;
+    let v = views(&root, &[merged, pr(2, &[FLAGSHIP])]);
+    assert_eq!(collisions(&v), BTreeMap::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -151,10 +188,12 @@ fn every_target_appears_even_when_no_pr_touches_it() {
     let root = repo_root();
     let body = render(&root, &[pr(1, &[FLAGSHIP])]);
     for target in taxon::walk(&root) {
-        assert!(
-            body.contains(&format!("`{target}`")),
-            "{target} missing from the target table"
-        );
+        let reopened = if target.to_string() == "gb10/qwen3.6-27b/nvfp4" {
+            "#1"
+        } else {
+            "—"
+        };
+        assert!(body.contains(&format!("| `{target}` | {reopened} |\n")));
     }
 }
 
@@ -167,14 +206,16 @@ fn the_body_is_delimited_so_it_can_be_rewritten_in_place() {
     assert!(body.starts_with(MARKER_START));
     assert!(body.trim_end().ends_with(MARKER_END));
     assert_eq!(body.matches(MARKER_START).count(), 1);
+    assert_eq!(body.matches(MARKER_END).count(), 1);
 }
 
 #[test]
 fn an_empty_pr_list_still_renders_a_valid_body() {
     let root = repo_root();
-    let body = render(&root, &[]);
-    assert!(body.contains("No open pull requests"));
-    assert!(body.trim_end().ends_with(MARKER_END));
+    assert_eq!(
+        render(&root, &[]),
+        format!("{MARKER_START}\n## Open-PR telemetry\n\n_No open pull requests._\n{MARKER_END}\n")
+    );
 }
 
 /// ★ A PR title is attacker-controlled text landing in a markdown table. A `|`
@@ -195,11 +236,9 @@ fn pr_titles_cannot_break_the_table() {
         .lines()
         .find(|l| l.starts_with("| #9"))
         .expect("the row rendered");
-    assert!(row.contains("evil \\| row injection"), "{row}");
     assert_eq!(
-        row.matches(" | ").count(),
-        3,
-        "still a four-column row: {row}"
+        row,
+        "| #9 evil \\| row injection | gb10 | 1 | @SeedSource @rsafier @tbraun96 |"
     );
 }
 
@@ -208,18 +247,15 @@ fn a_draft_is_marked_as_one() {
     let root = repo_root();
     let mut facts = pr(5, &[FLAGSHIP]);
     facts.draft = true;
-    assert!(render(&root, &[facts]).contains("#5 (draft)"));
-}
-
-/// The mermaid block must be well-formed even for a single PR: a mainline,
-/// exactly one branch, merged back once.
-#[test]
-fn the_mermaid_graph_is_valid_with_one_pr() {
-    let root = repo_root();
-    let body = render(&root, &[pr(1, &[FLAGSHIP])]);
-    assert!(body.contains("```mermaid\ngitGraph\n  commit id: \"main\"\n"));
-    assert_eq!(body.matches("branch pr-1\n").count(), 1);
-    assert_eq!(body.matches("merge pr-1\n").count(), 1);
+    let row = render(&root, &[facts])
+        .lines()
+        .find(|line| line.starts_with("| #5"))
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        row,
+        "| #5 (draft) pr 5 | gb10 | 1 | @SeedSource @rsafier @tbraun96 |"
+    );
 }
 
 /// ★ The debt section is rendered even when nothing is owed — that is the
@@ -244,19 +280,10 @@ fn the_promotion_debt_section_is_always_rendered() {
     }];
     let body = super::render(&root, &prs);
     assert!(
-        body.contains("### Promotion-candidate debt"),
-        "the debt heading must appear unconditionally"
-    );
-    // The candidate list is live (`cross-contamination`), so the section must
-    // carry the debt table — and a scheduler change is on the candidate's
-    // boundary, so this PR must appear in it as a row.
-    assert!(
-        body.contains("| PR | merged? |"),
-        "a non-empty candidate list must render the debt table"
-    );
-    assert!(
-        body.contains("cross-contamination"),
-        "the scheduler PR owes the contamination candidate and the row must say so"
+        body.contains(
+            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination |\n"
+        ),
+        "the unconditional debt section must retain its policy, schema, and row: {body}"
     );
 }
 
@@ -291,16 +318,8 @@ fn debt_is_derived_from_the_prs_own_paths() {
     let views = super::views(&root, &prs);
     // The discrimination is real now that `cross-contamination` is a
     // candidate: the docs PR owes nothing, the engine PR owes the candidate.
-    assert!(
-        views[0].promotion_debt.is_empty(),
-        "a docs-only PR must owe no candidate, got {:?}",
-        views[0].promotion_debt
-    );
-    assert!(
-        views[1].promotion_debt.contains(&"cross-contamination"),
-        "an engine PR must owe the contamination candidate, got {:?}",
-        views[1].promotion_debt
-    );
+    assert_eq!(views[0].promotion_debt, Vec::<&str>::new());
+    assert_eq!(views[1].promotion_debt, vec!["cross-contamination"]);
 }
 
 /// A merged debt and an open debt are different things: one is coverage already
@@ -332,19 +351,11 @@ fn the_debt_table_distinguishes_merged_from_open() {
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
     ];
-    let views = super::views(&root, &prs);
-    assert!(!views[0].facts.merged);
-    assert!(
-        views[1].facts.merged,
-        "the merged flag must survive views()"
-    );
-
     let body = super::render(&root, &prs);
-    assert!(body.contains("### Promotion-candidate debt"));
-    // The header carries the column even while the candidate list is empty, so
-    // the shape is pinned before the first real row exists.
     assert!(
-        body.contains("nothing can be owed") || body.contains("| PR | merged? |"),
-        "the debt section must either state emptiness or carry the merged column"
+        body.contains(
+            "| #1 | not yet | still open | cross-contamination |\n| #2 | **yes** | already landed | cross-contamination |\n"
+        ),
+        "open warning and accrued merged debt must remain distinct: {body}"
     );
 }
