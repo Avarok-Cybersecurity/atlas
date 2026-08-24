@@ -136,7 +136,7 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
                     entry.checkpoint
                 );
             }
-            if entry.status == "measured" && entry.metrics.is_none() {
+            if entry.status == "measured" && entry.metrics.as_ref().is_none_or(BTreeMap::is_empty) {
                 bail!(
                     "{}: {} / {} claims to be measured but declares no metrics",
                     path.display(),

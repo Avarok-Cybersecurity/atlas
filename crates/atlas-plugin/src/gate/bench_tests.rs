@@ -109,24 +109,42 @@ min = 85.0
 "#,
     );
     let err = load_all(&root).unwrap_err().to_string();
-    assert!(err.contains("unmeasured but carries thresholds"), "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "{}: bfcl-subset / org/M is unmeasured but carries thresholds. A guessed number a run can clear is worse than no number — it reports PASS for something nobody measured.",
+            root.join("kernels/gb10/modelA/BENCH.toml").display()
+        )
+    );
 }
 
 /// The mirror: claiming `measured` without numbers is equally a lie.
 #[test]
 fn a_measured_entry_without_thresholds_is_rejected() {
-    let root = fixture(
-        "empty-measured",
-        r#"
+    for (name, metrics) in [("absent", ""), ("empty", "[benchmarks.metrics]")] {
+        let root = fixture(
+            name,
+            &format!(
+                r#"
 [[benchmarks]]
 quant = "nvfp4"
 checkpoint = "org/M"
 gate = "bfcl-subset"
 status = "measured"
-"#,
-    );
-    let err = load_all(&root).unwrap_err().to_string();
-    assert!(err.contains("declares no metrics"), "{err}");
+{metrics}
+"#
+            ),
+        );
+        let err = load_all(&root).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "{}: bfcl-subset / org/M claims to be measured but declares no metrics",
+                root.join("kernels/gb10/modelA/BENCH.toml").display()
+            ),
+            "partition {name}"
+        );
+    }
 }
 
 #[test]
@@ -141,11 +159,12 @@ gate = "bfcl-subset"
 status = "probably-fine"
 "#,
     );
-    assert!(
-        load_all(&root)
-            .unwrap_err()
-            .to_string()
-            .contains("status must be")
+    assert_eq!(
+        load_all(&root).unwrap_err().to_string(),
+        format!(
+            "{}: status must be \"measured\" or \"unmeasured\", got \"probably-fine\"",
+            root.join("kernels/gb10/modelA/BENCH.toml").display()
+        )
     );
 }
 
@@ -167,11 +186,12 @@ status = "unmeasured"
     // to check a default on. What matters is the next step: resolving against
     // it must fail loudly, never read as "nothing to check".
     let baseline = baseline_for(&root, "bfcl-subset").unwrap();
+    assert_eq!(baseline.schema, 2);
     assert!(baseline.hardware.is_empty(), "{baseline:?}");
     let err = baseline.resolve("gb10", None).unwrap_err().to_string();
-    assert!(
-        err.contains("no baseline for hardware"),
-        "an unmeasured entry must produce a loud miss, not a silent pass: {err}"
+    assert_eq!(
+        err,
+        "no baseline for hardware \"gb10\"; this benchmark has entries for []"
     );
 }
 
