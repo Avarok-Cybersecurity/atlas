@@ -319,15 +319,6 @@ pub fn preprocess_image_with_max_pixels(
     Ok((pixels, grid_h, grid_w))
 }
 
-/// Number of image pad tokens produced per image after the vision
-/// encoder's spatial merger. Qwen3-VL / Qwen3.6 fold a 2×2 patch block
-/// into a single token, so the embedding stream has
-/// `(grid_h / sms) * (grid_w / sms)` rows — not `grid_h * grid_w`.
-pub fn image_pad_count(grid_h: usize, grid_w: usize, spatial_merge_size: usize) -> usize {
-    let sms = spatial_merge_size.max(1);
-    (grid_h / sms) * (grid_w / sms)
-}
-
 #[cfg(test)]
 #[path = "vision_preprocess_tests.rs"]
 mod tests;
