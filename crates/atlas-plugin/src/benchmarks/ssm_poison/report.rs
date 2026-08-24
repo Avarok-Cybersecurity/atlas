@@ -55,7 +55,7 @@ pub(super) fn table(s: &Score) -> ResultTable {
         } else if let Some(reason) = unmeasured_map.get(&round) {
             (
                 "unmeasured".into(),
-                CellStyle::Warn,
+                CellStyle::Bad,
                 format!("invariant not proven this round — {reason}"),
             )
         } else {
@@ -95,7 +95,7 @@ pub(super) fn summary(s: &Score) -> Vec<Stat> {
         Stat::new("Unmeasured", s.unmeasured.to_string(), "").with_style(if s.unmeasured == 0 {
             CellStyle::Good
         } else {
-            CellStyle::Warn
+            CellStyle::Bad
         }),
         // The vacuity tile. Zero means the replays never touched the restore
         // path under test, so every other tile on this row is decorative.
