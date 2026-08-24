@@ -62,23 +62,11 @@ fn defaults_are_the_campaign_sweep() {
     // from these, so a descriptor blurb saying "1 → 32" proves nothing on
     // its own. This assertion is the only thing that pins the sweep.
     assert_eq!(v.int_list("concurrencies").unwrap(), &[1, 2, 4, 8, 16, 32]);
+    assert_eq!(v.int_list("isls").unwrap(), &[128, 512, 1024, 2048]);
     assert_eq!(v.usize("osl").unwrap(), 128);
-}
-
-/// The top rung must be 32: below it the sweep only covers the regime
-/// where Atlas trails vLLM, and omits the C=32 inversion that is the
-/// point of running the curve at all.
-#[test]
-fn the_sweep_reaches_the_inversion_rung() {
-    let b = ConcurrencySweep::default();
-    let v = ParamValues::defaults(&b.parameters());
-    let cs = v.int_list("concurrencies").unwrap();
-    assert!(
-        cs.contains(&32),
-        "C=32 missing from the default sweep ({cs:?}) — that is the rung where \
-         time-to-answer inverts (-4.47% vs vLLM); a curve that stops at 16 \
-         reports only the losing regime"
-    );
+    assert_eq!(v.usize("warmup").unwrap(), 1);
+    assert_eq!(v.text("prompt_mode").unwrap(), "natural");
+    assert_eq!(v.usize("request_timeout_s").unwrap(), 600);
 }
 
 #[test]
@@ -115,6 +103,12 @@ fn default_prompt_mode_is_the_code_generation_fixture() {
     assert!(
         p.contains("MinHeap"),
         "natural mode must pose the code task"
+    );
+    assert!(p.ends_with(CODE_TASK));
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(CODE_TASK.as_bytes())),
+        "7f51f5f271897f32801928c01b59f49472ad3e1880366fccb3cef4cb79db56cd"
     );
     // Padding still tracks the ISL: a bigger request means a longer prompt.
     assert!(b.cell_prompt(2048, "c0").len() > p.len());
@@ -202,6 +196,9 @@ fn metrics_map_reports_the_comparable_curve_and_the_evidence_floor() {
         .push(row(1, 30.0, Some(120.0), vec![evidence(128)], osl));
     b.rows
         .push(row(4, 100.0, Some(150.0), vec![evidence(128); 4], osl));
+    // A later, lower comparable row must not replace the best C=4 cell.
+    b.rows
+        .push(row(4, 80.0, Some(300.0), vec![evidence(128); 4], osl));
     // A vacuous C=4 cell with a huge bogus rate: must not win the rung.
     b.rows
         .push(row(4, 900.0, Some(5.0), vec![evidence(1); 4], osl));
@@ -247,6 +244,40 @@ fn ladder(entries: &[(&str, f64)]) -> BTreeMap<String, f64> {
     entries.iter().map(|(k, v)| (k.to_string(), *v)).collect()
 }
 
+fn committed_floors() -> Floors {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace layout");
+    let (_, entry) = crate::gate::bench::load_all(root)
+        .expect("committed BENCH.toml files must load")
+        .into_iter()
+        .find(|(target, entry)| {
+            target.hardware == "gb10"
+                && target.model == "qwen3.8-27b"
+                && entry.checkpoint == "unsloth/Qwen3.8-27B-NVFP4"
+                && entry.gate == "concurrency-sweep"
+        })
+        .expect("the measured Qwen3.8 concurrency gate must be committed");
+    let metrics = entry
+        .metrics
+        .expect("the measured concurrency gate must have bounds");
+    let min = |metric: &str| {
+        metrics[metric]
+            .min
+            .unwrap_or_else(|| panic!("{metric} must have a minimum"))
+    };
+    Floors {
+        per_c: vec![
+            (1, min("c1_aggregate_tok_s")),
+            (4, min("c4_aggregate_tok_s")),
+            (8, min("c8_aggregate_tok_s")),
+            (16, min("c16_aggregate_tok_s")),
+        ],
+        peak: min("peak_aggregate_tok_s"),
+    }
+}
+
 /// The calibrated ladder against its committed floors — the PASS the gate
 /// machinery requires now that the sweep is REQUIRED. The reason names every
 /// gated rung so the record reads as evidence, not a bare verdict.
@@ -259,7 +290,13 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
         ("c16_aggregate_tok_s", 98.9),
         ("peak_aggregate_tok_s", 98.9),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    let floors = committed_floors();
+    assert_eq!(
+        floors.per_c,
+        vec![(1, 17.0), (4, 35.0), (8, 52.0), (16, 73.5)]
+    );
+    assert_eq!(floors.peak, 73.5);
+    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors);
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
     for rung in ["C1", "C4", "C8", "C16", "peak"] {
         assert!(v.reason.contains(rung), "{}", v.reason);
@@ -271,24 +308,26 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
 /// value + noise >= min.
 #[test]
 fn a_sweep_below_one_floor_fails_naming_the_cell() {
+    let committed = committed_floors();
+    let c8_floor = committed.per_c[2].1;
     let m = ladder(&[
         ("c1_aggregate_tok_s", 25.5),
         ("c4_aggregate_tok_s", 47.5),
-        ("c8_aggregate_tok_s", 61.2),
+        ("c8_aggregate_tok_s", 51.2),
         ("c16_aggregate_tok_s", 98.9),
         ("peak_aggregate_tok_s", 98.9),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &committed);
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=8"), "{}", v.reason);
     assert!(
-        v.reason.contains("61.2") && v.reason.contains("63.0"),
+        v.reason.contains("51.2") && v.reason.contains("52.0"),
         "{}",
         v.reason
     );
     // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
-    let m = ladder(&[("c8_aggregate_tok_s", 63.0)]);
-    let v = sweep_verdict(&m, 1, 0, 0, 80.0, &floors(0.0, 0.0, 63.0, 0.0, 0.0));
+    let m = ladder(&[("c8_aggregate_tok_s", c8_floor)]);
+    let v = sweep_verdict(&m, 1, 0, 0, 80.0, &floors(0.0, 0.0, c8_floor, 0.0, 0.0));
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
 }
 
