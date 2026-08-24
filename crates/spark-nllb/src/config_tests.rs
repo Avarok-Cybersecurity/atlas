@@ -4,6 +4,55 @@
 
 use super::*;
 
+fn config_json(d_model: usize, encoder_heads: usize, decoder_heads: usize) -> String {
+    format!(
+        r#"{{
+            "d_model": {d_model}, "encoder_layers": 24, "decoder_layers": 24,
+            "encoder_attention_heads": {encoder_heads}, "decoder_attention_heads": {decoder_heads},
+            "encoder_ffn_dim": 8192, "decoder_ffn_dim": 8192,
+            "vocab_size": 256205, "max_position_embeddings": 1024
+        }}"#
+    )
+}
+
+#[test]
+fn rejects_attention_geometry_the_runtime_cannot_execute() {
+    for (name, json, expected) in [
+        (
+            "zero model width",
+            config_json(0, 16, 16),
+            "d_model must be greater than zero",
+        ),
+        (
+            "zero heads",
+            config_json(1024, 0, 16),
+            "encoder_attention_heads must be greater than zero",
+        ),
+        (
+            "zero decoder heads",
+            config_json(1024, 16, 0),
+            "decoder_attention_heads must be greater than zero",
+        ),
+        (
+            "fractional head width",
+            config_json(1025, 16, 16),
+            "d_model (1025) must be divisible by encoder_attention_heads (16)",
+        ),
+        (
+            "different decoder layout",
+            config_json(1024, 16, 8),
+            "decoder_attention_heads (8) must equal encoder_attention_heads (16)",
+        ),
+    ] {
+        let error = NllbConfig::from_json(&json).expect_err(name);
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(expected),
+            "{name}: expected {expected:?}, got {message}"
+        );
+    }
+}
+
 #[test]
 fn parses_minimal_config() {
     let json = r#"{
