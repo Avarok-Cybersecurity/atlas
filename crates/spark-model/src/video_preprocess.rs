@@ -127,9 +127,9 @@ pub fn sample_indices(
     // Clamp to the checkpoint's band, but never ask for more frames than
     // exist — upsampling a short clip by repeating frames would inflate the
     // token count with no new information.
-    let wanted = wanted
-        .clamp(min_frames.max(1), max_frames.max(1))
-        .min(n_frames);
+    let max_frames = max_frames.max(1);
+    let min_frames = min_frames.max(1).min(max_frames);
+    let wanted = wanted.clamp(min_frames, max_frames).min(n_frames);
 
     // Round DOWN to a whole number of temporal groups; a partial group has no
     // representation. Never below one group, or there is nothing to encode.
