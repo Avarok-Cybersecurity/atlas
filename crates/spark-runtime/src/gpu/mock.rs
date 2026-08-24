@@ -42,6 +42,16 @@ pub struct MockLaunch {
     pub func: u64,
     pub grid: [u32; 3],
     pub block: [u32; 3],
+    pub shared_mem: u32,
+    pub stream: u64,
+    pub args: Vec<MockArg>,
+}
+
+/// Owned copy of a typed kernel argument at mock dispatch time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockArg {
+    Buffer(DevicePtr),
+    Bytes(Vec<u8>),
 }
 
 impl Default for MockGpuBackend {
@@ -291,14 +301,44 @@ impl GpuBackend for MockGpuBackend {
         func: KernelHandle,
         grid: [u32; 3],
         block: [u32; 3],
-        _shared_mem: u32,
-        _stream: u64,
+        shared_mem: u32,
+        stream: u64,
         _params: &mut [*mut std::ffi::c_void],
     ) -> Result<()> {
         self.launches.lock().push(MockLaunch {
             func: func.0,
             grid,
             block,
+            shared_mem,
+            stream,
+            args: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn launch_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        let args = args
+            .iter()
+            .map(|arg| match arg {
+                KernelArg::Buffer(ptr) => MockArg::Buffer(*ptr),
+                KernelArg::Bytes(bytes) => MockArg::Bytes(bytes.to_vec()),
+            })
+            .collect();
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            args,
         });
         Ok(())
     }

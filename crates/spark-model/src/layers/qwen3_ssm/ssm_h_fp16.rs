@@ -274,7 +274,7 @@ impl Qwen3SsmLayer {
 #[cfg(test)]
 mod prefill_narrowing_tests {
     use super::*;
-    use spark_runtime::gpu::mock::MockGpuBackend;
+    use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 
     /// One layer's h blob at the 27B GDN shape (48 v-heads × 128 × 128 FP32).
     const H_F32: usize = 48 * 128 * 128 * 4;
@@ -327,8 +327,9 @@ mod prefill_narrowing_tests {
         let gpu = MockGpuBackend::new();
         let stage = DevicePtr(0x9000);
         let st = state(Some(stage), true);
+        let stream = 0xCAFE;
 
-        let h = prefill_h_begin(&gpu, K, &st, H_F32, 0).unwrap();
+        let h = prefill_h_begin(&gpu, K, &st, H_F32, stream).unwrap();
         assert_eq!(h.ptr().0, stage.0, "the kernels must run over the stage");
         assert!(matches!(
             h,
@@ -337,7 +338,7 @@ mod prefill_narrowing_tests {
         let after_begin = gpu.launches_snapshot();
         assert_eq!(after_begin.len(), 1, "one widen");
 
-        prefill_h_end(&gpu, K, h, H_F32, 0).unwrap();
+        prefill_h_end(&gpu, K, h, H_F32, stream).unwrap();
         let all = gpu.launches_snapshot();
         assert_eq!(all.len(), 2, "one widen + one narrow, no more");
 
@@ -346,9 +347,20 @@ mod prefill_narrowing_tests {
         // count — a widen sized off the storage width would halve this.
         let n = (H_F32 / 4) as u32;
         assert_eq!(n, 786_432);
-        for l in &all {
-            assert_eq!(l.block, [256, 1, 1]);
-            assert_eq!(l.grid, [n.div_ceil(256).clamp(1, 4096), 1, 1]);
+        for (launch, src, dst) in [(&all[0], st.h_state, stage), (&all[1], stage, st.h_state)] {
+            let expected_n = (n as u64).to_ne_bytes().to_vec();
+            assert_eq!(
+                launch.args,
+                vec![
+                    MockArg::Buffer(src),
+                    MockArg::Buffer(dst),
+                    MockArg::Bytes(expected_n),
+                ]
+            );
+            assert_eq!(launch.stream, stream);
+            assert_eq!(launch.shared_mem, 0);
+            assert_eq!(launch.block, [256, 1, 1]);
+            assert_eq!(launch.grid, [n.div_ceil(256).clamp(1, 4096), 1, 1]);
         }
     }
 
