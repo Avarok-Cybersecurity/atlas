@@ -59,6 +59,21 @@ pub fn unique_prefix_tag(prefix: &str, run_id: u64) -> String {
     format!("{prefix}-{}-{run_id}", std::process::id())
 }
 
+/// Content-derived identity for a named set of committed benchmark assets.
+pub(crate) fn content_stamp<'a>(
+    prefix: &str,
+    assets: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+) -> String {
+    let mut acc: u64 = 1469598103934665603; // FNV-1a offset basis
+    for (name, bytes) in assets {
+        for byte in name.as_bytes().iter().chain(bytes) {
+            acc ^= *byte as u64;
+            acc = acc.wrapping_mul(1099511628211);
+        }
+    }
+    format!("{prefix}-{acc:016x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

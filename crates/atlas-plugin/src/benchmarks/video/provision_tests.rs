@@ -160,13 +160,13 @@ fn the_stamp_is_deterministic_and_named() {
     assert_eq!(a, "video-fixtures-v1-a3d8f9d4cd8e9ed5");
     assert_eq!(a, stamp_value());
     assert_ne!(
-        stamp_value_from([("clip", b"one".as_slice())]),
-        stamp_value_from([("clip", b"two".as_slice())]),
+        crate::benchmarks::content_stamp("video-fixtures-v1", [("clip", b"one".as_slice())]),
+        crate::benchmarks::content_stamp("video-fixtures-v1", [("clip", b"two".as_slice())]),
         "fixture bytes must affect the provisioning stamp"
     );
     assert_ne!(
-        stamp_value_from([("first", b"same".as_slice())]),
-        stamp_value_from([("second", b"same".as_slice())]),
+        crate::benchmarks::content_stamp("video-fixtures-v1", [("first", b"same".as_slice())]),
+        crate::benchmarks::content_stamp("video-fixtures-v1", [("second", b"same".as_slice())]),
         "fixture names must affect the provisioning stamp"
     );
 }
