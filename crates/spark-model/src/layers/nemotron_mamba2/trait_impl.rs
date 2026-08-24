@@ -234,6 +234,28 @@ impl TransformerLayer for NemotronMamba2Layer {
         self.decode_multi_seq_inner(hidden, residual, num_seqs, states, ctx, stream)
     }
 
+    /// K-token verify body (DFlash K=γ+1 / MTP K=2..4): batched stateless
+    /// phases, sequential conv+scan with the per-token state snapshots the
+    /// rollback contract reads. Without this override the trait default
+    /// loops single-token `decode()` and never snapshots — a partial
+    /// accept then cannot rewind the Mamba-2 state (see decode_batched_k).
+    fn decode_batched(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        _kv_cache: &mut PagedKvCache,
+        _seq_len: usize,
+        _block_table: &mut Vec<u32>,
+        _disk_block_ids: &mut Vec<u32>,
+        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.decode_batched_k(hidden, residual, num_tokens, state, ctx, stream)
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,

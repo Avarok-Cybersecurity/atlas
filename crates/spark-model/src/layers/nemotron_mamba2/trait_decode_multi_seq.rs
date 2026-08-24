@@ -156,7 +156,7 @@ impl NemotronMamba2Layer {
     }
 
     /// Batched in_proj: `[m, h] → [m, in_proj_size]`, arm order = `decode()`.
-    fn batched_in_proj(
+    pub(super) fn batched_in_proj(
         &self,
         input: DevicePtr,
         output: DevicePtr,
@@ -176,7 +176,7 @@ impl NemotronMamba2Layer {
     }
 
     /// Batched out_proj: `[m, d_inner] → [m, h]`, arm order = `decode()`.
-    fn batched_out_proj(
+    pub(super) fn batched_out_proj(
         &self,
         input: DevicePtr,
         output: DevicePtr,

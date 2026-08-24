@@ -611,6 +611,26 @@ impl BlockDiffusionDraftHead {
             // kernel (fixed: 2-round A-load covers all 32 K-cols).
             // BF16 path (default, or Fp8 mirror missing) unchanged.
             let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
+            // Target ships an NVFP4-PACKED lm_head (Lightning: U8 [vocab,
+            // h/2] + F8 scales): `lm_head_shared` then points at PACKED
+            // bytes and a BF16 GEMM on it reads 4x past the allocation —
+            // exactly the OOB this field's declaration warns about (it was
+            // stored but never consumed until the Lightning DFlash port,
+            // 2026-08-24; the fault fingerprint was grid=[vocab/128,1,1]).
+            // The w4a16 tile GEMM consumes the packed form directly.
+            if let Some(q) = self.lm_head_nvfp4.as_ref() {
+                ops::w4a16_gemm(
+                    gpu,
+                    self.kernels.w4a16_gemm,
+                    norm_noise_local,
+                    q,
+                    self.scratch.logits,
+                    g,
+                    self.vocab_size as u32,
+                    h_local,
+                    stream,
+                )?;
+            } else
             // Drafter NVFP4 head (ATLAS_DFLASH_DRAFTER_NVFP4): W4A4 MMQ over
             // the vocab — TC compute on 0.56 B/weight vs the rt16 GEMV's
             // ALU-bound ~140 GB/s. Takes precedence over the FP8/BF16 chains

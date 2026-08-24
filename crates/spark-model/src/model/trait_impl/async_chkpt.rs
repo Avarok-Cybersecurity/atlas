@@ -42,15 +42,13 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let kd = self.config.linear_key_head_dim;
+                // Sizes from the SSM pool SSOT (covers GDN AND Mamba-2 — the
+                // old inline conv math read GDN `linear_*` fields that are 0
+                // on Nemotron-H, making every conv checkpoint copy a silent
+                // 0-byte no-op; found porting Lightning DFlash).
                 // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
                 let h_bytes = self.ssm_pool.h_stored_bytes;
-                let conv_dim = nk * kd * 2 + nv * vd;
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4;
+                let conv_bytes = self.ssm_pool.conv_bytes;
 
                 if ssm.h_state_checkpoint.is_none() {
                     ssm.h_state_checkpoint = Some(self.gpu.alloc(h_bytes)?);
@@ -105,15 +103,13 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let kd = self.config.linear_key_head_dim;
+                // Sizes from the SSM pool SSOT (covers GDN AND Mamba-2 — the
+                // old inline conv math read GDN `linear_*` fields that are 0
+                // on Nemotron-H, making every conv checkpoint copy a silent
+                // 0-byte no-op; found porting Lightning DFlash).
                 // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
                 let h_bytes = self.ssm_pool.h_stored_bytes;
-                let conv_dim = nk * kd * 2 + nv * vd;
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4;
+                let conv_bytes = self.ssm_pool.conv_bytes;
 
                 // Rollback: restore h_state and conv_state from the appropriate source.
                 if num_accepted == 0 {
@@ -306,13 +302,10 @@ impl TransformerModel {
                 .downcast_mut::<SsmLayerState>()
                 .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-            let nv = self.config.linear_num_value_heads;
-            let vd = self.config.linear_value_head_dim;
-            let nk = self.config.linear_num_key_heads;
-            let kd = self.config.linear_key_head_dim;
-            // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
+            // Pool SSOT sizes (GDN AND Mamba-2) — the GDN `linear_*` conv
+            // math is 0 on Nemotron-H (0-byte no-op commit copies).
             let h_bytes = self.ssm_pool.h_stored_bytes;
-            let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
+            let conv_bytes = self.ssm_pool.conv_bytes;
 
             // Partial accept: rewind live state to the last accepted token's
             // intermediate (state after token `num_accepted-1`).
@@ -352,6 +345,12 @@ impl TransformerModel {
                     "wy17 lazy commit: dispatch retained but layer {i} has \
                      no replay kernel"
                 );
+                // GDN dims — this replay path is GDN-only (wy17_retained is
+                // never set by the Mamba-2 layers).
+                let nv = self.config.linear_num_value_heads;
+                let vd = self.config.linear_value_head_dim;
+                let nk = self.config.linear_num_key_heads;
+                let kd = self.config.linear_key_head_dim;
                 let conv_dim = nk * kd * 2 + nv * vd;
                 let key_dim = nk * kd;
                 crate::layers::ops::gdn_wy17_replay(
