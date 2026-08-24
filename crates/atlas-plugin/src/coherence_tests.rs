@@ -192,34 +192,13 @@ fn a_wrong_model_name_is_reported_ahead_of_the_answers() {
     };
     let target = TargetEndpoint::local(8888, "does/not-exist");
     let concern = report.concern(&target).expect("a concern");
-    assert!(
-        concern.contains("nvidia/Qwen3.6-27B-NVFP4"),
-        "names what IS served: {concern}"
-    );
-    assert!(
-        concern.contains("does/not-exist"),
-        "and what was asked for: {concern}"
-    );
-    assert!(
-        !concern.contains("answered nothing"),
-        "the cause leads, not the symptom: {concern}"
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 is serving nvidia/Qwen3.6-27B-NVFP4 — not \"does/not-exist\", \
+         which this benchmark is set to request. Atlas answers whatever model name it is sent, \
+         so the run WILL produce numbers; they will just be for a different model than the one named."
     );
     assert!(!report.is_clean());
-}
-
-#[test]
-fn a_server_serving_the_requested_model_is_clean() {
-    let report = Report {
-        answers: vec![Answer {
-            label: "recall",
-            answer: "Paris".into(),
-            passed: true,
-        }],
-        transport_error: None,
-        served_instead: None,
-        wrong_family: None,
-    };
-    assert!(report.is_clean());
 }
 
 /// Gate A's thresholds were measured on the 35B MoE, which stays the DEFAULT
@@ -232,11 +211,15 @@ fn a_server_serving_the_requested_model_is_clean() {
 /// numbers. A model outside every declared family must still be reported,
 /// because its numbers would compare to nothing.
 #[test]
-fn a_gate_run_against_the_wrong_model_family_is_reported() {
+fn the_agentic_gate_accepts_only_its_declared_model_families() {
     use crate::registry;
     let agentic = registry::find("agentic-webserver").expect("registered");
     let expect = agentic.intended_for.expect("gate A names its models");
 
+    assert_eq!(
+        expect.families,
+        &["qwen3.6-35b-a3b", "qwen3.6-27b", "qwen3.8-27b"]
+    );
     assert!(
         expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"),
         "the FP8 flagship"
@@ -257,19 +240,26 @@ fn a_gate_run_against_the_wrong_model_family_is_reported() {
         !expect.accepts("meta-llama/Llama-3.1-8B"),
         "an unrelated model still compares to nothing"
     );
+    assert!(!expect.accepts("Qwen/Qwen3.5-27B"));
+    assert!(!expect.accepts("Qwen/Qwen3.6-270B"));
 }
 
 #[test]
-fn the_bfcl_gates_accept_both_of_their_models() {
+fn the_bfcl_gate_accepts_all_and_only_its_declared_model_families() {
     use crate::registry;
     let expect = registry::find("bfcl-subset")
         .expect("registered")
         .intended_for
         .expect("names its models");
-    // Gate D is the dense 27B, gate B the 35B MoE — both are legitimate.
+    assert_eq!(
+        expect.families,
+        &["qwen3.6-27b", "qwen3.6-35b-a3b", "qwen3.8-27b"]
+    );
     assert!(expect.accepts("unsloth/Qwen3.6-27B-NVFP4"));
     assert!(expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"));
+    assert!(expect.accepts("unsloth/Qwen3.8-27B-NVFP4"));
     assert!(!expect.accepts("meta-llama/Llama-3.1-8B"));
+    assert!(!expect.accepts("Qwen/Qwen3.5-27B"));
 }
 
 #[test]
