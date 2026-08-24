@@ -224,6 +224,21 @@ fn declared_area_bound_still_downscales_when_exceeded() {
 }
 
 #[test]
+fn declared_area_bound_survives_grid_rounding() {
+    // The continuous scale lands just below a grid boundary on both axes.
+    // Rounding both sides to nearest used to return 96x2752 = 264,192 pixels,
+    // exceeding the operator's 262,144-pixel cap.
+    let max_pixels = 512 * 512;
+    let (h, w) = target_size_with_max_pixels(85, 2740, GU, Some(max_pixels));
+    assert_eq!((h, w), (96, 2720));
+    assert!(
+        (h as usize) * (w as usize) <= max_pixels,
+        "grid-rounded area {} exceeds the declared bound {max_pixels}",
+        (h as usize) * (w as usize)
+    );
+}
+
+#[test]
 fn operator_override_can_lower_below_the_fallback() {
     let (h, w) = target_size_with_max_pixels(1344, 1344, GU, Some(256 * 256));
     assert!((h as u64) * (w as u64) <= 256 * 256);
