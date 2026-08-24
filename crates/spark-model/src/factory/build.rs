@@ -340,17 +340,28 @@ pub fn build_model(
     // We want the KV pool sized against Atlas's OWN footprint (weights +
     // buffers), excluding co-tenants. Two ways to find that footprint:
     //
-    //   1. AUTO (default, preferred): free-at-context-init minus free-now =
-    //      exactly what THIS process allocated since startup. Co-tenants that
-    //      were already resident at init are in the baseline, so they cancel
-    //      out — and it self-corrects as co-tenants come and go (no stale
-    //      constant). Requires `set_baseline_free_bytes` to have run (it does
-    //      under the real server; absent under the mock backend → we skip it).
+    //   1. AUTO via LEDGER (default, preferred): the alloc ledger's live
+    //      bytes — every allocation this backend made and hasn't freed
+    //      (issue #740). The former free-memory delta (baseline-at-init
+    //      minus free-now) counted OS page cache against us on unified
+    //      memory: streaming ~20 GB of safetensors depresses MemFree
+    //      without being an allocation Atlas owns, inflating "Atlas-own"
+    //      by tens of GB on a cold-cache boot and refusing serves with
+    //      >100 GB actually available. The ledger is immune to page-cache
+    //      noise, co-tenant churn, and mid-load sampling by construction.
+    //      Slight undercount (driver context, cuBLAS workspaces are not
+    //      ledgered) is absorbed by the inference reserve and the physical
+    //      `.min(actual_free - reserve)` clamp below.
     //
-    //   2. MANUAL override: ATLAS_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
+    //   2. AUTO via FREE-DELTA (fallback when the backend has no ledger):
+    //      free-at-context-init minus free-now. Requires
+    //      `set_baseline_free_bytes` to have run (it does under the real
+    //      server; absent under the mock backend → we skip it).
+    //
+    //   3. MANUAL override: ATLAS_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
     //      wins when explicitly set (>0), for operators who want to RESERVE
-    //      headroom for co-tenants that will arrive LATER (the auto measure
-    //      only sees current state).
+    //      headroom for co-tenants that will arrive LATER (the auto measures
+    //      only see current state).
     //
     // The `.min(actual_free - reserve)` clamp below still guarantees a physical
     // fit regardless of which path set `used_so_far`.
@@ -369,6 +380,29 @@ pub fn build_model(
             gib(discounted),
         );
         used_so_far = discounted;
+    } else if let Some(ledger_live) = gpu.live_bytes() {
+        // AUTO via LEDGER: what this backend actually allocated and still
+        // holds. Sanity-gate mirrors the free-delta path: the ledger can
+        // only be a subset of total used (it can't see co-tenants), so a
+        // value above `used_so_far` means the ledger and the device
+        // disagree — fall through to raw rather than oversize the pool.
+        if ledger_live > 0 && ledger_live <= used_so_far {
+            tracing::info!(
+                "KV budget self-relative (ledger): Atlas-own {:.1} GB live in \
+                 the alloc ledger; {:.1} GB of co-tenant/page-cache use \
+                 excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
+                gib(ledger_live),
+                gib(used_so_far - ledger_live),
+            );
+            used_so_far = ledger_live;
+        } else {
+            tracing::warn!(
+                "KV budget ledger implausible (ledger {:.1} GB, used {:.1} \
+                 GB) — using raw used_so_far",
+                gib(ledger_live),
+                gib(used_so_far),
+            );
+        }
     } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
         // AUTO: bytes this process consumed since context init.
         let atlas_own = baseline.saturating_sub(actual_free);
