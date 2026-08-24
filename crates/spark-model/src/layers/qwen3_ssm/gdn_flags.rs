@@ -243,26 +243,17 @@ mod tests {
     /// pinning it here pins it for both.
     #[test]
     fn the_pool_bit_is_never_set_without_the_dtype_bit() {
-        for spelling in [
-            None,
-            Some("f32"),
-            Some("f16"),
-            Some("f16-pool"),
-            Some(""),
-            Some("F16-POOL"),
-            Some("f16 "),
+        for (spelling, expected) in [
+            (None, (false, false)),
+            (Some("f32"), (false, false)),
+            (Some("f16"), (true, false)),
+            (Some("f16-pool"), (true, true)),
+            (Some(""), (false, false)),
+            (Some("F16-POOL"), (false, false)),
+            (Some("f16 "), (false, false)),
         ] {
-            let (h_f16, h_f16_pool) = ssm_h_dtype_bits(spelling);
-            assert!(
-                h_f16 || !h_f16_pool,
-                "{spelling:?} produced a narrow pool with an FP32 h-state"
-            );
+            assert_eq!(ssm_h_dtype_bits(spelling), expected, "{spelling:?}");
         }
-        assert_eq!(ssm_h_dtype_bits(Some("f16-pool")), (true, true));
-        // Case and whitespace are NOT accepted spellings — `check_enum`
-        // rejects them upstream, and defaulting them to FP32 here is the
-        // safe arm if it ever did not.
-        assert_eq!(ssm_h_dtype_bits(Some("F16-POOL")), (false, false));
     }
 
     /// NEGATIVE: an FP16 h-state forces non-exact EVEN WHEN exact was
