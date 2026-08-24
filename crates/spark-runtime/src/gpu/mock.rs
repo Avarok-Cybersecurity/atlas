@@ -17,6 +17,7 @@ pub struct MockGpuBackend {
     op_cache: crate::op_cache::OpCache,
     allocs: Mutex<HashMap<u64, MockAlloc>>,
     next_ptr: Mutex<u64>,
+    max_allocation_bytes: AtomicUsize,
     launches: Mutex<Vec<MockLaunch>>,
     kernel_lookups: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
@@ -72,6 +73,7 @@ impl MockGpuBackend {
             op_cache: crate::op_cache::OpCache::new(),
             allocs: Mutex::new(HashMap::new()),
             next_ptr: Mutex::new(0x1000_0000),
+            max_allocation_bytes: AtomicUsize::new(usize::MAX),
             launches: Mutex::new(Vec::new()),
             kernel_lookups: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
@@ -87,6 +89,12 @@ impl MockGpuBackend {
 
     pub fn alloc_count(&self) -> usize {
         self.allocs.lock().len()
+    }
+
+    /// Reject individual allocations above `bytes`, for exercising
+    /// production fallback paths without exhausting host memory.
+    pub fn set_max_allocation_bytes(&self, bytes: usize) {
+        self.max_allocation_bytes.store(bytes, Ordering::Relaxed);
     }
 
     pub fn launch_count(&self) -> usize {
@@ -215,6 +223,10 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
+        let limit = self.max_allocation_bytes.load(Ordering::Relaxed);
+        if bytes > limit {
+            anyhow::bail!("alloc: requested {bytes} bytes exceeds mock limit {limit}");
+        }
         let mut next = self.next_ptr.lock();
         let ptr = *next;
         *next += bytes as u64;
@@ -235,7 +247,12 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn free(&self, ptr: DevicePtr) -> Result<()> {
-        self.allocs.lock().remove(&ptr.0);
+        if ptr.is_null() {
+            return Ok(());
+        }
+        if self.allocs.lock().remove(&ptr.0).is_none() {
+            anyhow::bail!("free: ptr {ptr} is not an allocation base or is already free");
+        }
         Ok(())
     }
 
