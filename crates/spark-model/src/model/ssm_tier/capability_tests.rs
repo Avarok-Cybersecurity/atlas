@@ -55,6 +55,20 @@ fn dense_model_with_ssm_tier_var_is_rejected() {
 }
 
 #[test]
+fn attention_only_moe_with_ssm_tier_var_is_rejected() {
+    let mut moe = dense();
+    moe.model_type = "attention-moe".to_string();
+    moe.num_experts = 512;
+    let err = ensure_ssm_tier_capability_from(&moe, &["ATLAS_SSM_TIER"]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("attention-moe"), "names the model: {msg}");
+    assert!(
+        msg.contains("no recurrent state"),
+        "rejects by SSM capability: {msg}"
+    );
+}
+
+#[test]
 fn dense_model_rejects_every_tier_selector_var() {
     for var in [
         "ATLAS_SSM_TIER",
