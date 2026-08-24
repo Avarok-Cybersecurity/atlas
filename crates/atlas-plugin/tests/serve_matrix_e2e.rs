@@ -199,10 +199,36 @@ async fn a_round_the_endpoint_serves_under_another_name_is_not_scored_as_that_mo
         .last()
         .and_then(|f| f.verdict.as_ref())
         .expect("a verdict");
+    assert_eq!(frames.len(), 3, "plan, selected round, done");
+    let table = frames
+        .last()
+        .and_then(|frame| frame.table.as_ref())
+        .expect("a results table");
+    let selected = table
+        .rows
+        .iter()
+        .find(|row| row[0].text.starts_with("org/never-loaded"))
+        .expect("the selected round remains visible in the roster table");
+    assert!(
+        selected
+            .last()
+            .expect("a verdict cell")
+            .text
+            .contains("wrong-model"),
+        "the identity bar belongs to the requested round: {}",
+        selected.last().expect("a verdict cell").text
+    );
     assert_eq!(verdict.kind, VerdictKind::Fail, "{}", verdict.reason);
     assert!(
-        verdict.reason.contains("wrong-model"),
+        verdict.reason.contains("0/1 planned checkpoints verified")
+            && verdict.reason.contains("org/never-loaded")
+            && verdict.reason.contains("wrong-model"),
         "the round must be attributed to the identity check: {}",
         verdict.reason
+    );
+    assert_eq!(
+        mock.requests.load(Ordering::Relaxed),
+        5,
+        "only the selected round reaches the endpoint"
     );
 }
