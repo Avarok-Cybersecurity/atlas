@@ -214,4 +214,8 @@ fn pack_into_r16_layout_is_unpadded() {
     assert_eq!(off, sized);
     let rp = layers[3].as_ref().unwrap().router.as_ref().unwrap();
     assert_eq!((rp.rank, rp.max_rank), (16, 16));
+    let mut packed_b = vec![0u8; r_out * peft.r * 2];
+    gpu.copy_d2h(rp.b.weight, &mut packed_b).unwrap();
+    let source_b: Vec<u8> = (0..packed_b.len()).map(|i| (i % 251) as u8).collect();
+    assert_eq!(packed_b, source_b, "aligned B must be byte-identical");
 }
