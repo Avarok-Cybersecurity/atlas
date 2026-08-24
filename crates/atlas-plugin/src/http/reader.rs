@@ -4,7 +4,9 @@
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{MAX_ERROR_BODY, content_length, find, is_chunked, message_from_body};
+use super::{
+    MAX_ERROR_BODY, content_length, find, is_chunked, message_from_body, status_is_success,
+};
 
 /// Incremental HTTP response reader: status/header parse, chunked decode, then
 /// complete lines out. Owns the only place framing can go wrong.
@@ -38,7 +40,7 @@ impl Reader {
             };
             let head = String::from_utf8_lossy(&self.raw[..pos]).into_owned();
             let status = head.lines().next().unwrap_or_default().to_string();
-            if !status.contains(" 200") {
+            if !status_is_success(&status) {
                 // Do NOT bail here. The body carries the server's own
                 // explanation — including the actionable hint — and at this
                 // point it may not have arrived yet: headers can land in a read
@@ -85,7 +87,9 @@ impl Reader {
                 return self.fail();
             }
         } else {
-            self.body.extend_from_slice(&self.raw[self.consumed..]);
+            let incoming = &self.raw[self.consumed..];
+            let keep = (MAX_ERROR_BODY - self.body.len().min(MAX_ERROR_BODY)).min(incoming.len());
+            self.body.extend_from_slice(&incoming[..keep]);
             self.consumed = self.raw.len();
         }
         let have = self.body.len();
@@ -131,7 +135,13 @@ impl Reader {
             if rest.len() < end + 2 {
                 return Ok(());
             }
-            self.body.extend_from_slice(&rest[start..end]);
+            let data = &rest[start..end];
+            let keep = if self.error_status.is_some() {
+                (MAX_ERROR_BODY - self.body.len().min(MAX_ERROR_BODY)).min(data.len())
+            } else {
+                data.len()
+            };
+            self.body.extend_from_slice(&data[..keep]);
             self.consumed += end + 2;
             if size == 0 {
                 self.chunks_done = true;
