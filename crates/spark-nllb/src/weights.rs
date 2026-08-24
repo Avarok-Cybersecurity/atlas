@@ -161,7 +161,14 @@ pub fn map_gguf_name(name: &str) -> Option<String> {
     let block = |side: &str, name: &str| -> Option<String> {
         let rest = name.strip_prefix(&format!("{side}.blk."))?;
         let (n, tail) = rest.split_once('.')?;
-        let (module, suffix) = tail.rsplit_once('.')?; // strip .weight/.bias
+        let layer = n.parse::<usize>().ok()?;
+        let (module, suffix) = tail.rsplit_once('.')?;
+        if suffix != "weight" && suffix != "bias" {
+            return None;
+        }
+        if side == "enc" && module.starts_with("cross_attn") {
+            return None;
+        }
         let hf_side = if side == "enc" { "encoder" } else { "decoder" };
         let hf_module = match module {
             "attn_q" => "self_attn.q_proj",
@@ -179,7 +186,9 @@ pub fn map_gguf_name(name: &str) -> Option<String> {
             "ffn_norm" => "final_layer_norm",
             _ => return None,
         };
-        Some(format!("model.{hf_side}.layers.{n}.{hf_module}.{suffix}"))
+        Some(format!(
+            "model.{hf_side}.layers.{layer}.{hf_module}.{suffix}"
+        ))
     };
 
     match name {
@@ -270,6 +279,17 @@ mod name_map_tests {
         ];
         for (gguf, hf) in cases {
             assert_eq!(map_gguf_name(gguf).as_deref(), hf, "mapping {gguf}");
+        }
+    }
+
+    #[test]
+    fn rejects_names_outside_the_nllb_gguf_grammar() {
+        for name in [
+            "enc.blk.0.cross_attn_q.weight",
+            "enc.blk.not-a-layer.attn_q.weight",
+            "dec.blk.0.attn_q.scale",
+        ] {
+            assert_eq!(map_gguf_name(name), None, "unexpected mapping for {name}");
         }
     }
 }
