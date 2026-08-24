@@ -117,6 +117,11 @@ fn editing_an_included_header_is_not_excused() {
     )
     .unwrap();
     let header = "kernels/gb10/common/tune.cuh".to_string();
+    assert_eq!(
+        changed_targets(&root, std::slice::from_ref(&header), &a),
+        ["gb10/modelB/nvfp4"],
+        "the inheriting target compiles the header through shared.cu"
+    );
     assert!(
         !excuses(&root, &[header], &a),
         "a header edit must re-open the targets that include it"
@@ -214,9 +219,9 @@ fn a_vanished_header_re_opens_the_gate() {
 
     std::fs::remove_file(root.join("kernels/gb10/common/tune.cuh")).unwrap();
     assert!(!excuses(&root, &[SHARED.to_string()], &a));
-    assert!(
-        changed_targets(&root, &[SHARED.to_string()], &a)
-            .contains(&"gb10/modelB/nvfp4".to_string()),
+    assert_eq!(
+        changed_targets(&root, &[SHARED.to_string()], &a),
+        ["gb10/modelB/nvfp4"],
         "the target that included it is REPORTED, not silently dropped"
     );
 }
