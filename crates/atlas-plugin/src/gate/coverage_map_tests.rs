@@ -30,7 +30,7 @@ fn repo_root() -> std::path::PathBuf {
 /// `invalidated_by` has no branch that removes an element.
 #[test]
 fn adding_a_changed_file_never_removes_a_required_gate() {
-    let base = ["docs/adr/0011-ep-batched-decode-optimization.md"];
+    let base = ["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"];
     let additions = [
         "kernels/gb10/common/paged_decode_attn_fp8.cu",
         "crates/spark-model/src/layers/ops/fp8_moe.rs",
@@ -40,6 +40,7 @@ fn adding_a_changed_file_never_removes_a_required_gate() {
         "some/unclassified/new/subsystem.rs",
     ];
     let before: Vec<_> = coverage::invalidated_by(base);
+    assert!(!before.is_empty(), "the monotonicity oracle must execute");
     for extra in additions {
         let mut with = base.to_vec();
         with.push(extra);
@@ -65,8 +66,7 @@ fn adding_a_changed_file_never_removes_a_required_gate() {
 fn replacing_the_aot_gdn_library_invalidates_every_gate() {
     let hit = coverage::invalidated_by(["3rdparty_patches/gdn_aot/libatlasgdn.so"]);
     assert_eq!(
-        hit.len(),
-        REQUIRED.len(),
+        hit, REQUIRED_GATES,
         "an AOT kernel swap must re-open every gate, got {hit:?}"
     );
 }
@@ -85,11 +85,7 @@ fn an_unclassified_path_on_the_boundary_invalidates_everything() {
         "rust-toolchain.toml",
     ] {
         let hit = coverage::invalidated_by([path]);
-        assert_eq!(
-            hit.len(),
-            REQUIRED.len(),
-            "{path} under-invalidated: {hit:?}"
-        );
+        assert_eq!(hit, REQUIRED_GATES, "{path} under-invalidated: {hit:?}");
     }
 }
 
@@ -166,8 +162,7 @@ fn editing_the_coverage_map_invalidates_every_gate() {
     for boundary in BOUNDARY_FILES {
         let hit = coverage::invalidated_by([boundary]);
         assert_eq!(
-            hit.len(),
-            REQUIRED.len(),
+            hit, REQUIRED_GATES,
             "changing {boundary} must re-open everything, got {hit:?}"
         );
     }
@@ -184,7 +179,7 @@ fn every_exclusion_states_why() {
         for ex in gate.excludes {
             assert!(!ex.prefix.is_empty(), "{}: empty prefix", gate.id);
             assert!(
-                ex.rationale.len() > 20,
+                ex.rationale.trim().len() > 20,
                 "{} excludes {} with no real rationale: {:?}",
                 gate.id,
                 ex.prefix,
@@ -228,68 +223,8 @@ fn every_exclusion_is_actually_on_the_boundary() {
     }
 }
 
-/// ★ The cross-import precondition behind the per-benchmark exclusions.
-///
-/// TTFT excludes the BFCL driver on the grounds that one cannot affect the
-/// other. That holds only while the drivers do not import each other. Asserting
-/// it here turns a future cross-import into a failing test instead of a
-/// silently false exclusion.
-#[test]
-fn benchmark_drivers_do_not_import_each_other() {
-    let root = repo_root().join("crates/atlas-plugin/src/benchmarks");
-    // One rule for every driver namespace, directory and single-file alike.
-    // `decode_floor` (a directory since the C1 verdict split) in particular
-    // must not borrow quick-speed's fixtures or helpers: its exclusion lists
-    // (and quick-speed's excusal) assume the two are independent, and its
-    // pinned prompt is part of its metric's identity.
-    let names = [
-        "ttft",
-        "bfcl",
-        "agentic",
-        "contamination",
-        "ssm_poison",
-        "decode_floor",
-        "quick_speed",
-        "concurrency",
-    ];
-    for driver in names {
-        let dir = root.join(driver);
-        let sources: Vec<std::path::PathBuf> = if dir.is_dir() {
-            std::fs::read_dir(&dir)
-                .expect("driver directory reads")
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-                .collect()
-        } else {
-            // Single-file driver: the file itself (must exist) plus optional
-            // `_tests` and `_verdict` siblings (the concurrency driver keeps
-            // its pure self-verdict in a `_verdict` file for the 500-LoC cap,
-            // and that file must obey the same no-cross-import rule).
-            let main = root.join(format!("{driver}.rs"));
-            assert!(main.exists(), "driver file {} is missing", main.display());
-            [
-                main,
-                root.join(format!("{driver}_tests.rs")),
-                root.join(format!("{driver}_verdict.rs")),
-            ]
-            .into_iter()
-            .filter(|p| p.exists())
-            .collect()
-        };
-        for path in sources {
-            let src = std::fs::read_to_string(&path).unwrap_or_default();
-            for other in names.iter().filter(|o| **o != driver) {
-                let needle = format!("benchmarks::{other}");
-                assert!(
-                    !src.contains(&needle),
-                    "{} imports {other}; the per-driver exclusions assume they are independent",
-                    path.display()
-                );
-            }
-        }
-    }
-}
+#[path = "coverage_driver_tests.rs"]
+mod coverage_driver_tests;
 
 /// `REQUIRED_GATES` is now a view over the coverage table rather than a second
 /// hand-maintained list — the two can no longer disagree.
@@ -322,12 +257,17 @@ fn every_registered_benchmark_is_either_required_or_explicitly_excused() {
 
 #[test]
 fn every_excusal_names_a_real_benchmark_and_a_reason() {
+    let mut seen = std::collections::BTreeSet::new();
     for (id, why) in NOT_REQUIRED {
+        assert!(seen.insert(id), "{id} is excused more than once");
         assert!(
             crate::registry::find(id).is_some(),
             "{id} is excused but not registered"
         );
-        assert!(why.len() > 20, "{id} is excused without a real reason");
+        assert!(
+            why.trim().len() > 20,
+            "{id} is excused without a real reason"
+        );
     }
 }
 
@@ -336,10 +276,7 @@ fn every_excusal_names_a_real_benchmark_and_a_reason() {
 #[test]
 fn a_driver_change_invalidates_only_its_own_gate() {
     let hit = coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"]);
-    assert!(hit.contains(&"bfcl-subset"));
-    assert!(hit.contains(&"bfcl-subset-echolp"));
-    assert!(!hit.contains(&"ttft-warm-gate"), "{hit:?}");
-    assert!(!hit.contains(&"agentic-webserver"), "{hit:?}");
+    assert_eq!(hit, ["bfcl-subset", "bfcl-subset-echolp"]);
 }
 
 /// Gate BOOKKEEPING does not re-open GPU measurements — the change that
@@ -357,24 +294,6 @@ fn gate_bookkeeping_changes_cost_no_gpu_hours() {
         hit.is_empty(),
         "record IO, telemetry rendering and CODEOWNERS parsing cannot move a \
          measurement; they should not re-open any gate, got {hit:?}"
-    );
-}
-
-/// ★ …but PR #389's real file list still owes both accuracy legs.
-///
-/// The system must not be able to excuse the change that introduced it. This
-/// pins the actual paths that PR touches.
-#[test]
-fn pr_389s_own_diff_still_requires_both_bfcl_legs() {
-    let hit = coverage::invalidated_by([
-        "crates/atlas-plugin/src/gate/coverage.rs",
-        "crates/spark-model/src/layers/ops/fp8_moe.rs",
-        "kernels/gb10/common/paged_decode_attn_fp8.cu",
-    ]);
-    assert_eq!(
-        hit.len(),
-        REQUIRED.len(),
-        "the PR that adds this floor must still owe every gate, got {hit:?}"
     );
 }
 
@@ -486,13 +405,4 @@ fn the_bench_toml_exemption_is_scoped_to_the_kernel_tree() {
         coverage::invalidates(gate, "crates/spark-model/BENCH.toml"),
         "the exemption must not apply outside kernels/"
     );
-}
-
-/// The exemption cannot be used to escape the rules that grant it: editing the
-/// boundary file still invalidates everything.
-#[test]
-fn the_boundary_file_still_wins_over_the_exemption() {
-    for gate in REQUIRED.iter() {
-        assert!(coverage::invalidates(gate, BOUNDARY_FILES[0]));
-    }
 }
