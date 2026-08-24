@@ -291,6 +291,7 @@ impl Benchmark for CrossContamination {
         self.min_completion_tokens = floor;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
         self.phase = Phase::Prime;
+        self.probed = false;
         self.rung_cursor = 0;
         self.ref_a.clear();
         self.ref_b.clear();
