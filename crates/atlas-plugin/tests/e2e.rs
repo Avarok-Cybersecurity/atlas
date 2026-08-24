@@ -76,6 +76,15 @@ async fn concurrency_sweep_measures_a_real_stream_end_to_end() {
 
     let table = last.table.as_ref().expect("a results table");
     assert_eq!(table.rows.len(), 2, "one row per (isl x conc) cell");
+    assert_eq!(
+        table
+            .rows
+            .iter()
+            .map(|row| (row[0].text.as_str(), row[1].text.as_str()))
+            .collect::<Vec<_>>(),
+        [("64", "1"), ("64", "4")],
+        "each row retains its configured input length and concurrency"
+    );
     // 1 + 4 requests, and the mock counts every one of them.
     assert_eq!(mock.requests.load(Ordering::Relaxed), 5);
 
@@ -172,6 +181,11 @@ async fn the_warm_gate_records_a_baseline_then_gates_against_it() {
     // The mock reports 40 cached prompt tokens, so the warm gate can prove the
     // cache actually hit — a warm leg reading 0 measured a cold path.
     assert_eq!(table.rows[0][5].text, "40");
+    assert_eq!(
+        mock.requests.load(Ordering::Relaxed),
+        6,
+        "each of three warm samples requires a priming request and a measured request"
+    );
 
     // Leg 2: the baseline is on disk. This endpoint is an order of magnitude
     // faster than the one that recorded it, so the verdict must be PASS by a
@@ -192,10 +206,15 @@ async fn the_warm_gate_records_a_baseline_then_gates_against_it() {
         verdict.reason
     );
     assert!(verdict.reason.contains("limit +3.0%"), "{}", verdict.reason);
+    assert_eq!(
+        fast.requests.load(Ordering::Relaxed),
+        6,
+        "the gating leg must also measure the warmed path"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_cold_gate_never_reuses_a_prompt() {
+async fn the_cold_gate_issues_one_request_per_sample_without_priming() {
     // 6 samples, no priming request: the cold gate must issue exactly one
     // request per sample. (The warm gate issues two — prime then measure.)
     let mock = mock_endpoint::start(2, Duration::from_millis(5), Duration::from_millis(1)).await;
