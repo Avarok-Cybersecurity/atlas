@@ -86,7 +86,7 @@ pub(crate) enum Evaluation {
         /// MEDIAN server decode tok/s across the runs — THE metric.
         median_decode_tok_s: f64,
         /// Minimum `completion_tokens` across runs, so the BENCH.toml
-        /// `output_tokens >= 800` bound means "every run", not "on average".
+        /// `output_tokens >= 750` bound means "every run", not "on average".
         min_output_tokens: usize,
         /// Mean of the per-run derived accept lengths.
         accept_len_mean: f64,
@@ -149,12 +149,22 @@ pub(crate) fn evaluate(samples: &[RunObs]) -> Evaluation {
                 s.completion_tokens
             ));
         }
-        if s.server_tps.is_none() {
-            return Evaluation::Inconclusive(format!(
-                "run {} reported no server decode rate (usage.\"response_token/s\") — without \
-                 the server's own clock there is no defensible per-token number",
-                i + 1
-            ));
+        match s.server_tps {
+            None => {
+                return Evaluation::Inconclusive(format!(
+                    "run {} reported no server decode rate (usage.\"response_token/s\") — without \
+                     the server's own clock there is no defensible per-token number",
+                    i + 1
+                ));
+            }
+            Some(rate) if !rate.is_finite() || rate <= 0.0 => {
+                return Evaluation::Inconclusive(format!(
+                    "run {} reported server decode rate {rate}, which is not a finite positive \
+                     per-token measurement",
+                    i + 1
+                ));
+            }
+            Some(_) => {}
         }
         match s.accepted_prediction_tokens {
             None => {
