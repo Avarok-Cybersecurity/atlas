@@ -264,6 +264,15 @@ impl ParamValues {
     /// implementations before touching any of them, so a bad field is reported
     /// against the field rather than as a mid-run failure.
     pub fn validate_against(&self, specs: &[ParamSpec]) -> Result<()> {
+        for key in self.0.keys() {
+            if !specs.iter().any(|spec| spec.key == key) {
+                let known = specs.iter().map(|spec| spec.key).collect::<Vec<_>>();
+                bail!(
+                    "unknown parameter {key:?} — this benchmark takes: {}",
+                    known.join(", ")
+                );
+            }
+        }
         for spec in specs {
             let value = self.require(spec.key)?;
             // Round-trip through the kind: the domain check lives in exactly
