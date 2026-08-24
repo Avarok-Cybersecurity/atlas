@@ -65,16 +65,23 @@ mod tests {
 
     #[test]
     fn one_line_squashes_and_truncates() {
-        assert_eq!(one_line("a\n b\t\tc "), "a b c");
-        let long = one_line("x".repeat(1000));
-        assert_eq!(long.chars().count(), 300);
-        assert!(long.ends_with('…'));
+        assert_eq!(one_line(" a\n b\r\t\tc \u{a0} d "), "a b c d");
+        assert_eq!(one_line("é".repeat(299)), "é".repeat(299));
+        assert_eq!(one_line("é".repeat(300)), "é".repeat(300));
+        assert_eq!(
+            one_line("é".repeat(301)),
+            "é".repeat(299) + "…",
+            "the ellipsis is the 300th character"
+        );
     }
 
     #[test]
     fn prefix_tags_never_repeat() {
         let a = unique_prefix_tag("cold", 1);
         let b = unique_prefix_tag("cold", 2);
+        let c = unique_prefix_tag("warm", 1);
+        assert_eq!(a, format!("cold-{}-1", std::process::id()));
         assert_ne!(a, b);
+        assert_ne!(a, c);
     }
 }
