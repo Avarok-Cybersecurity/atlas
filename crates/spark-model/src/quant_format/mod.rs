@@ -214,7 +214,11 @@ pub(crate) fn module_matches_pattern(path: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::module_matches_pattern as m;
+    use super::{
+        CompressedTensorsFormat, Fp8BlockScaledFormat, ModeloptFormat, QuantFormat,
+        module_matches_pattern as m,
+    };
+    use crate::weight_map::Nvfp4Variant;
 
     #[test]
     fn exact_match() {
@@ -239,13 +243,57 @@ mod tests {
     }
 
     #[test]
-    fn suffix_star() {
+    fn trailing_star_matches_a_prefix() {
         assert!(m("lm_head.weight", "lm_head*"));
+        assert!(!m("model.lm_head.weight", "lm_head*"));
+    }
+
+    #[test]
+    fn leading_and_all_star_patterns() {
+        assert!(m("model.layers.7.lm_head.weight", "*.lm_head.weight"));
+        assert!(!m("model.layers.7.lm_head.bias", "*.lm_head.weight"));
+        assert!(m("anything.at.all", "*"));
     }
 
     #[test]
     fn middle_star() {
         assert!(m("model.layers.0.mlp.gate", "model.layers.*.mlp.gate"));
         assert!(!m("model.layers.0.attn.gate", "model.layers.*.mlp.gate"));
+        assert!(m("a.left.middle.right.z", "a.*.middle.*.z"));
+        assert!(!m("a.right.middle.left.z", "a.*.left.*.z"));
+    }
+
+    #[test]
+    fn ignore_patterns_drive_effective_variants_for_every_format() {
+        let formats: Vec<(Box<dyn QuantFormat>, Nvfp4Variant)> = vec![
+            (
+                Box::new(ModeloptFormat::new(
+                    "NVFP4".into(),
+                    vec!["model.layers.*.self_attn*".into()],
+                )),
+                Nvfp4Variant::Standard,
+            ),
+            (
+                Box::new(CompressedTensorsFormat::new(
+                    "nvfp4-pack-quantized".into(),
+                    vec!["model.layers.*.self_attn*".into()],
+                )),
+                Nvfp4Variant::CompressedTensors,
+            ),
+            (
+                Box::new(Fp8BlockScaledFormat::new(vec![
+                    "model.layers.*.self_attn*".into(),
+                ])),
+                Nvfp4Variant::Fp8Dequanted,
+            ),
+        ];
+        for (format, base) in formats {
+            assert_eq!(format.base_variant(), base);
+            assert_eq!(
+                format.variant_for("model.layers.5.self_attn.q_proj"),
+                Nvfp4Variant::Bf16Raw
+            );
+            assert_eq!(format.variant_for("model.layers.5.mlp.gate_proj"), base);
+        }
     }
 }
