@@ -95,9 +95,13 @@ pub fn clip(name: &str) -> Option<&'static Clip> {
 /// Content-derived, so a regenerated clip re-provisions without anyone
 /// remembering to bump a version.
 fn stamp_value() -> String {
+    stamp_value_from(CLIPS.iter().map(|c| (c.name, c.bytes)))
+}
+
+fn stamp_value_from<'a>(fixtures: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> String {
     let mut acc: u64 = 1469598103934665603; // FNV-1a offset basis
-    for c in CLIPS {
-        for b in c.name.as_bytes().iter().chain(c.bytes.iter()) {
+    for (name, bytes) in fixtures {
+        for b in name.as_bytes().iter().chain(bytes.iter()) {
             acc ^= *b as u64;
             acc = acc.wrapping_mul(1099511628211);
         }
