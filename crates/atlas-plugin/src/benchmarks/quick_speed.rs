@@ -159,14 +159,16 @@ impl RunSample {
     /// Client-observed rate INCLUDING prefill and transport — never the
     /// headline, see the module docs.
     pub(crate) fn client_e2e_tok_s(&self) -> Option<f64> {
-        (self.completion_tokens > 0 && self.e2e_ms > 0.0)
+        (self.completion_tokens > 0 && self.e2e_ms.is_finite() && self.e2e_ms > 0.0)
             .then(|| self.completion_tokens as f64 / (self.e2e_ms / 1000.0))
     }
 
     /// Per-token decode latency derived from the SERVER's decode rate — the
     /// only TPOT this benchmark reports (module docs, "Which tok/s to quote").
     pub(crate) fn server_tpot_ms(&self) -> Option<f64> {
-        self.server_tps.filter(|t| *t > 0.0).map(|t| 1000.0 / t)
+        self.server_tps
+            .filter(|t| t.is_finite() && *t > 0.0)
+            .map(|t| 1000.0 / t)
     }
 }
 
@@ -193,11 +195,26 @@ impl Averages {
         Self {
             prompt_tokens: mean(samples.iter().map(|s| s.prompt_tokens as f64)),
             output_tokens: mean(samples.iter().map(|s| s.completion_tokens as f64)),
-            server_decode_tok_s: mean(samples.iter().filter_map(|s| s.server_tps)),
+            server_decode_tok_s: mean(
+                samples
+                    .iter()
+                    .filter_map(|s| s.server_tps)
+                    .filter(|v| v.is_finite() && *v > 0.0),
+            ),
             client_e2e_tok_s: mean(samples.iter().filter_map(RunSample::client_e2e_tok_s)),
-            server_ttft_ms: mean(samples.iter().filter_map(|s| s.server_ttft_ms)),
+            server_ttft_ms: mean(
+                samples
+                    .iter()
+                    .filter_map(|s| s.server_ttft_ms)
+                    .filter(|v| v.is_finite() && *v >= 0.0),
+            ),
             server_tpot_ms: mean(samples.iter().filter_map(RunSample::server_tpot_ms)),
-            e2e_ms: mean(samples.iter().map(|s| s.e2e_ms)),
+            e2e_ms: mean(
+                samples
+                    .iter()
+                    .map(|s| s.e2e_ms)
+                    .filter(|v| v.is_finite() && *v >= 0.0),
+            ),
         }
     }
 }
@@ -222,6 +239,16 @@ pub struct QuickSpeed {
 }
 
 impl QuickSpeed {
+    fn request_body(&self, model: &str) -> serde_json::Value {
+        json!({
+            "model": model,
+            "stream": true,
+            "max_tokens": self.osl,
+            "temperature": 0.0,
+            "messages": [{"role": "user", "content": prompt_for(self.isl)}],
+        })
+    }
+
     fn handle(&self) -> Result<&PluginHandle> {
         self.handle.as_ref().context("benchmark was not loaded")
     }
@@ -233,13 +260,7 @@ impl QuickSpeed {
     async fn one_run(&self) -> Result<http::ChatOutcome> {
         let handle = self.handle()?;
         let target = handle.target();
-        let body = json!({
-            "model": target.model,
-            "stream": true,
-            "max_tokens": self.osl,
-            "temperature": 0.0,
-            "messages": [{"role": "user", "content": prompt_for(self.isl)}],
-        });
+        let body = self.request_body(&target.model);
         http::chat_stream(target, &body, self.timeout).await
     }
 
@@ -391,6 +412,7 @@ impl Benchmark for QuickSpeed {
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
         self.warmups_done = 0;
         self.samples.clear();
+        self.probed = false;
         Ok(())
     }
 
