@@ -797,19 +797,25 @@ impl Benchmark for VideoFidelity {
                 let is_correct = |reply: &str| order_matches(reply, &want, PALETTE);
                 let r = run_level(self.handle()?, &body, level, self.timeout(), &is_correct).await;
 
-                let line = if r.ok() {
+                let baseline_prompt_tokens = self
+                    .conc_results
+                    .first()
+                    .and_then(|baseline| baseline.prompt_tokens);
+                let clean = baseline_prompt_tokens
+                    .map_or_else(|| r.ok(), |baseline| r.ok_against(baseline));
+                let geometry = r.geometry_detail(baseline_prompt_tokens);
+                let line = if clean {
                     LogLine::info(format!(
-                        "C={level}: {}/{} correct, one geometry, {} ms",
-                        r.correct, r.conc, r.wall_ms
+                        "C={level}: {}/{} correct, {geometry}, {} ms",
+                        r.correct, r.conc, r.wall_ms,
                     ))
                 } else {
                     LogLine::warn(format!(
-                        "C={level}: {}/{} returned, {}/{} CORRECT, {} distinct token counts, {} ms{}",
+                        "C={level}: {}/{} returned, {}/{} CORRECT, {geometry}, {} ms{}",
                         r.returned,
                         r.conc,
                         r.correct,
                         r.conc,
-                        r.distinct_token_counts,
                         r.wall_ms,
                         if r.errors.is_empty() {
                             String::new()
@@ -823,7 +829,7 @@ impl Benchmark for VideoFidelity {
                         id: "concurrency",
                         why: format!("C={level}: no video decoder"),
                     }
-                } else if r.ok() {
+                } else if clean {
                     CountCell::Match {
                         id: "concurrency",
                         detail: format!("C={level} clean in {} ms", r.wall_ms),
@@ -831,10 +837,7 @@ impl Benchmark for VideoFidelity {
                 } else {
                     CountCell::Mismatch {
                         id: "concurrency",
-                        detail: format!(
-                            "C={level}: {}/{} correct, {} distinct token counts",
-                            r.correct, r.conc, r.distinct_token_counts
-                        ),
+                        detail: format!("C={level}: {}/{} correct, {geometry}", r.correct, r.conc),
                     }
                 };
                 self.counts.push(cell);

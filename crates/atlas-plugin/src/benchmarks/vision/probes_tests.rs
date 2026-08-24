@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::benchmarks::vision::provision::FIXTURES;
+use crate::benchmarks::vision::score::reply_matches;
 
 #[test]
 fn every_referenced_fixture_exists() {
@@ -88,4 +89,19 @@ fn probe_ids_are_unique_and_filename_safe() {
             p.id
         );
     }
+}
+
+#[test]
+fn the_concurrency_probe_requires_image_specific_evidence() {
+    let probe = concurrency_probe();
+    assert_eq!(probe.images, &["07_hd_1280x720.png"]);
+    assert!(
+        !reply_matches("OK", probe.want_all, probe.want_none),
+        "a generic non-empty reply does not show that concurrent vision worked"
+    );
+    assert!(reply_matches(
+        "The label reads 1280 x 720.",
+        probe.want_all,
+        probe.want_none
+    ));
 }

@@ -117,3 +117,27 @@ fn errors_count_as_failures_not_as_absences() {
     }];
     assert_eq!(verdict(&[], &p, true), Verdict::Fail);
 }
+
+#[test]
+fn runtime_integrity_and_concurrency_are_part_of_the_final_verdict() {
+    assert_eq!(
+        with_runtime_checks(Verdict::Pass, false, true),
+        Verdict::Pass,
+        "clean runtime legs must preserve a pass"
+    );
+    assert_eq!(
+        with_runtime_checks(Verdict::Pass, true, true),
+        Verdict::Fail,
+        "an integrity failure must demote a pass"
+    );
+    assert_eq!(
+        with_runtime_checks(Verdict::Pass, false, false),
+        Verdict::Fail,
+        "an incomplete or inconsistent concurrency sweep must demote a pass"
+    );
+    assert_eq!(
+        with_runtime_checks(Verdict::Vacuous, true, false),
+        Verdict::Vacuous,
+        "a broken control remains the more precise diagnosis"
+    );
+}

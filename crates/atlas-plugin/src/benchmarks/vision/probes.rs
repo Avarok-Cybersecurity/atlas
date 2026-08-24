@@ -81,6 +81,16 @@ pub const CONTROL: Probe = Probe {
     want_none: &["1280"],
 };
 
+/// The image-specific probe reused by the concurrency leg. Keeping this tied
+/// to a normal capability probe prevents the load test from substituting a
+/// stimulus such as "reply OK" that can pass without observing the image.
+pub fn concurrency_probe() -> &'static Probe {
+    PROBES
+        .iter()
+        .find(|probe| probe.id == "reads-the-size-label")
+        .expect("reads-the-size-label probe is part of the fixed probe set")
+}
+
 #[cfg(test)]
 #[path = "probes_tests.rs"]
 mod probes_tests;

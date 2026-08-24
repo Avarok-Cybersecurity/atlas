@@ -93,6 +93,19 @@ pub fn verdict(geom: &[GeomCell], probes: &[ProbeCell], control_held: bool) -> V
     Verdict::Pass
 }
 
+/// Fold the runtime integrity legs into the geometry/capability verdict.
+/// A broken control remains `Vacuous`; the extra legs cannot rehabilitate it.
+pub fn with_runtime_checks(
+    base: Verdict,
+    integrity_failed: bool,
+    concurrency_clean: bool,
+) -> Verdict {
+    match base {
+        Verdict::Pass if integrity_failed || !concurrency_clean => Verdict::Fail,
+        other => other,
+    }
+}
+
 /// How many geometry cells actually asserted something.
 ///
 /// Reported alongside the verdict because a run where every cell came back
