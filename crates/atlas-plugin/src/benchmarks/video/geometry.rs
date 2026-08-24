@@ -62,22 +62,17 @@ pub struct Ratio {
 pub fn check_proportional(t1: usize, t2: usize, t4: usize, plane: usize) -> Option<Ratio> {
     let d21 = t2.checked_sub(t1)?;
     let d42 = t4.checked_sub(t2)?;
-    if d21 == 0 || d42 != 2 * d21 {
+    if d21 == 0 || d42 != d21.checked_mul(2)? {
         return None;
     }
     if plane == 0 || d21 % plane != 0 {
         return None;
     }
     let unit_groups = d21 / plane;
-    if unit_groups == 0 {
-        return None;
-    }
     // The overhead the shortest clip implies must also explain the other two,
     // or the three points are not one line and the inference is meaningless.
-    let overhead = t1.checked_sub(unit_groups * plane)?;
-    if overhead + 2 * unit_groups * plane != t2 || overhead + 4 * unit_groups * plane != t4 {
-        return None;
-    }
+    let step = unit_groups.checked_mul(plane)?;
+    let overhead = t1.checked_sub(step)?;
     Some(Ratio {
         unit_groups,
         overhead,
