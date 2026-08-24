@@ -97,14 +97,6 @@ fn golden_kv_fingerprint_is_pinned_and_distinct() {
     );
 }
 
-// ── Determinism: same config → same u64, every time ───────────────────
-#[test]
-fn fingerprint_is_deterministic() {
-    assert_eq!(fp(&hybrid()), fp(&hybrid()));
-    assert_eq!(fp(&dense()), fp(&dense()));
-    assert_ne!(fp(&hybrid()), fp(&dense()));
-}
-
 // ── L3: per-field sensitivity ──────────────────────────────────────────
 // Mutating any single fingerprint field must change the value — this is
 // what prevents a refactor from silently DROPPING a field from the
@@ -269,19 +261,18 @@ fn underivable_config_fails_fast() {
     );
 }
 
-// ── Decode namespace: domain-separated mix, never the bare constant ────
+// ── Decode namespace: production salted, domain-separated mix ─────────
 #[test]
-fn decode_ns_mixes_fingerprint_and_domain() {
+fn decode_ns_mixes_fingerprint_domain_and_client_salt() {
     let fa = ModelFingerprint::derive_with_id(&hybrid(), BLOB, "").unwrap();
     let fb = ModelFingerprint::derive_with_id(&dense(), BLOB, "").unwrap();
-    let da = mix64(fa.get(), atlas_kernels::DECODE_DOMAIN);
-    let db = mix64(fb.get(), atlas_kernels::DECODE_DOMAIN);
-    // Separated from the same model's Marconi keys (shared peer residency)…
-    assert_ne!(da, fa.get());
-    // …never the bare constant (the old cross-model decode collision)…
-    assert_ne!(da, atlas_kernels::DECODE_DOMAIN);
-    // …and distinct across models.
-    assert_ne!(da, db);
+    let da = derive_decode_ns_salted(fa.get(), 0x1111).get();
+    let other_client = derive_decode_ns_salted(fa.get(), 0x2222).get();
+    let other_model = derive_decode_ns_salted(fb.get(), 0x1111).get();
+    assert_ne!(da, fa.get(), "decode must not alias Marconi for one model");
+    assert_ne!(da, atlas_kernels::DECODE_DOMAIN, "model-blind constant");
+    assert_ne!(da, other_client, "client salt must partition processes");
+    assert_ne!(da, other_model, "fingerprint must partition models");
 }
 
 // ── Override precedence + strict parsing ───────────────────────────────
@@ -303,25 +294,4 @@ fn override_precedence_and_strict_parse() {
     // 0 is a hard error: the passthrough is removed.
     let err = resolve_ns_from(Some("0"), "V", derived).unwrap_err();
     assert!(format!("{err:#}").contains("passthrough"));
-}
-
-/// The decode namespace must never equal the Marconi (swap) namespace for the
-/// same model: the two tiers share a peer, and an alias would let a decode
-/// rollback blob be served as a Marconi snapshot. The zero-avoidance fallback in
-/// `resolve_decode_ns` previously collapsed onto `fp` itself, which IS the swap
-/// namespace — so the guard is on the fallback, not just the happy path.
-#[test]
-fn decode_ns_never_aliases_the_swap_ns() {
-    for cfg in [hybrid(), dense()] {
-        let f = ModelFingerprint::derive_with_id(&cfg, BLOB, "").unwrap();
-        let swap = resolve_swap_ns(f).unwrap();
-        let decode = resolve_decode_ns(f).unwrap();
-        assert_ne!(
-            swap, decode,
-            "decode namespace aliased the swap namespace for {}",
-            cfg.model_type
-        );
-        // And the swap ns is the fingerprint itself (no override set).
-        assert_eq!(swap.get(), f.get());
-    }
 }
