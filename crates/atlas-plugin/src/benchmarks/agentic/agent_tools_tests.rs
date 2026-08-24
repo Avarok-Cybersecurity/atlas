@@ -345,7 +345,7 @@ async fn glob_and_grep_see_the_project_but_not_the_build_tree() {
 }
 
 #[tokio::test]
-async fn a_file_bigger_than_read_can_return_is_not_loaded_whole() {
+async fn read_and_grep_do_not_return_content_past_the_file_cap() {
     // Nothing bounds what ends up in the sandbox — a server redirected to
     // `./server.log` instead of `/tmp/server.log`, a `dd`, a looping
     // `println!`. `read` and `grep` used to load whatever they found in one
@@ -386,6 +386,42 @@ async fn a_file_bigger_than_read_can_return_is_not_loaded_whole() {
         .await
         .unwrap();
     assert!(!read.contains('\u{fffd}'), "a cut character was mangled");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_file_reader_returns_at_the_cap_without_waiting_for_eof() {
+    use std::io::Write;
+
+    let fifo = sandbox("read-fifo").join("stream");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (release, held) = std::sync::mpsc::channel();
+    let writer_path = fifo.clone();
+    let writer = std::thread::spawn(move || {
+        let mut stream = std::fs::OpenOptions::new()
+            .write(true)
+            .open(writer_path)
+            .unwrap();
+        stream
+            .write_all(&vec![b'x'; READ_LINES * READ_LINE_CHARS])
+            .unwrap();
+        let _ = held.recv_timeout(Duration::from_secs(8));
+    });
+    let read = tokio::task::spawn_blocking(move || read_capped(&fifo));
+    let result = tokio::time::timeout(Duration::from_secs(4), read).await;
+    let _ = release.send(());
+    writer.join().unwrap();
+    let text = result
+        .expect("reader waited for EOF after reaching its cap")
+        .unwrap()
+        .unwrap();
+    assert!(text.contains("(file truncated at this point)"));
 }
 
 #[cfg(unix)]
