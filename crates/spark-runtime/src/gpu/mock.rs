@@ -35,6 +35,11 @@ pub struct MockGpuBackend {
     /// backend regardless of `height`. Counted apart from `d2d` so a test can
     /// assert the SHAPE of the transfer, not just the bytes.
     d2d_2d: AtomicUsize,
+    /// Streams supplied to asynchronous D2D copies, in dispatch order. Byte
+    /// movement alone cannot expose an ordering bug caused by enqueuing a copy
+    /// on the wrong stream, so stream-sensitive tests inspect this trace.
+    d2d_async_streams: Mutex<Vec<u64>>,
+    d2d_2d_async_streams: Mutex<Vec<u64>>,
     host_pinned_allocs: AtomicUsize,
 }
 
@@ -74,6 +79,8 @@ impl MockGpuBackend {
             d2h_async: AtomicUsize::new(0),
             d2d: AtomicUsize::new(0),
             d2d_2d: AtomicUsize::new(0),
+            d2d_async_streams: Mutex::new(Vec::new()),
+            d2d_2d_async_streams: Mutex::new(Vec::new()),
             host_pinned_allocs: AtomicUsize::new(0),
         }
     }
@@ -113,6 +120,16 @@ impl MockGpuBackend {
     /// whatever the row count.
     pub fn d2d_2d_count(&self) -> usize {
         self.d2d_2d.load(Ordering::Relaxed)
+    }
+
+    /// Streams supplied to `copy_d2d_async`, in dispatch order.
+    pub fn d2d_async_streams(&self) -> Vec<u64> {
+        self.d2d_async_streams.lock().clone()
+    }
+
+    /// Streams supplied to `copy_d2d_2d_async`, in dispatch order.
+    pub fn d2d_2d_async_streams(&self) -> Vec<u64> {
+        self.d2d_2d_async_streams.lock().clone()
     }
 
     /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
@@ -263,13 +280,14 @@ impl GpuBackend for MockGpuBackend {
         src: DevicePtr,
         dst: DevicePtr,
         bytes: usize,
-        _stream: u64,
+        stream: u64,
     ) -> Result<()> {
         // NOT delegating to `copy_d2d`: the trait default forwards, which
         // would make the two indistinguishable to `d2d_count` consumers only
         // by accident. Counted here so both forms land in one counter on
         // purpose.
         self.d2d.fetch_add(1, Ordering::Relaxed);
+        self.d2d_async_streams.lock().push(stream);
         self.blit(src, dst, bytes)
     }
 
@@ -281,12 +299,13 @@ impl GpuBackend for MockGpuBackend {
         dst_pitch: usize,
         width_bytes: usize,
         height: usize,
-        _stream: u64,
+        stream: u64,
     ) -> Result<()> {
         // ONE launch on the real backend (`cudaMemcpy2DAsync`), so ONE tick —
         // the row loop below is emulation, not dispatch, and must not inflate
         // `d2d_count` (which exists to prove a batched form batched).
         self.d2d_2d.fetch_add(1, Ordering::Relaxed);
+        self.d2d_2d_async_streams.lock().push(stream);
         if width_bytes > src_pitch || width_bytes > dst_pitch {
             anyhow::bail!(
                 "copy_d2d_2d_async: width {width_bytes} exceeds pitch \

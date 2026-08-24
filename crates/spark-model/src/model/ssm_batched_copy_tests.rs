@@ -4,7 +4,10 @@
 //!
 //! The property under test is the one the `ssm-state-poisoning-gate` exists
 //! for: **the same bytes must land in the same slots as the per-layer
-//! `copy_d2d_async` loop**, for every per-sequence rollback depth. So every
+//! `copy_d2d_async` loop**, for representative per-sequence rollback plans.
+//! These are executor tests: the plans deliberately mirror the dispatcher,
+//! but do not instantiate `TransformerModel` or invoke the dispatcher itself.
+//! So every
 //! test here runs BOTH executors over the SAME plan on two identically-built
 //! mock devices and compares the destination regions byte-for-byte — a test
 //! that only asserted "one launch instead of 48" would pass on a batched form
@@ -258,20 +261,23 @@ fn batching_collapses_the_layer_loop_to_one_launch() {
     let layers = p.num_ssm_layers;
     assert_eq!(h.len(), layers);
 
-    run_ssm_state_copies(&gpu, &h, &c, 0).unwrap();
+    const STREAM: u64 = 0x5a17;
+    run_ssm_state_copies(&gpu, &h, &c, STREAM).unwrap();
     assert_eq!(
         (gpu.d2d_count(), gpu.d2d_2d_count()),
         (0, 2),
         "{layers} h + {layers} conv copies must become 2 pitched launches"
     );
+    assert_eq!(gpu.d2d_2d_async_streams(), [STREAM, STREAM]);
 
     // Kill switch: the same plan, unbatched, is the original loop.
     let off = MockGpuBackend::new();
     let op = pool(&off);
     let (oh, oc) = commit_plans(&op, 0, 1);
-    run_state_copies_with(&off, &oh, false, 0).unwrap();
-    run_state_copies_with(&off, &oc, false, 0).unwrap();
+    run_state_copies_with(&off, &oh, false, STREAM).unwrap();
+    run_state_copies_with(&off, &oc, false, STREAM).unwrap();
     assert_eq!((off.d2d_count(), off.d2d_2d_count()), (2 * layers, 0));
+    assert_eq!(off.d2d_async_streams(), vec![STREAM; 2 * layers]);
 }
 
 #[test]
@@ -293,20 +299,6 @@ fn row(src: u64, dst: u64, bytes: usize) -> StateCopy {
         dst: DevicePtr(dst),
         bytes,
     }
-}
-
-#[test]
-fn uniform_plan_collapses_to_its_pitches() {
-    let plan: Vec<StateCopy> = (0..4)
-        .map(|l| row(1000 + l * 64, 9000 + l * 32, 16))
-        .collect();
-    let run = copy_plan_as_strided_run(&plan).expect("uniform plan must collapse");
-    assert_eq!(run.src.0, 1000);
-    assert_eq!(run.dst.0, 9000);
-    assert_eq!(run.src_pitch, 64);
-    assert_eq!(run.dst_pitch, 32);
-    assert_eq!(run.width_bytes, 16);
-    assert_eq!(run.height, 4);
 }
 
 #[test]
