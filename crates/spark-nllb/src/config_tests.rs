@@ -69,17 +69,40 @@ fn rejects_activation_the_runtime_does_not_implement() {
 }
 
 #[test]
-fn parses_minimal_config() {
-    let json = r#"{
-        "d_model": 1024, "encoder_layers": 24, "decoder_layers": 24,
-        "encoder_attention_heads": 16, "decoder_attention_heads": 16,
-        "encoder_ffn_dim": 8192, "decoder_ffn_dim": 8192,
-        "vocab_size": 256205, "max_position_embeddings": 1024
-    }"#;
-    let cfg = NllbConfig::from_json(json).unwrap();
+fn parses_runtime_dimensions_and_defaults() {
+    let cfg = NllbConfig::from_json(&config_json(1024, 16, 16)).unwrap();
+
     assert_eq!(cfg.d_model, 1024);
     assert_eq!(cfg.head_dim(), 64);
-    assert_eq!(cfg.max_length, 200); // default when absent
+    assert_eq!(cfg.encoder_layers, 24);
+    assert_eq!(cfg.decoder_layers, 24);
+    assert_eq!(cfg.encoder_ffn_dim, 8192);
+    assert_eq!(cfg.decoder_ffn_dim, 8192);
+    assert_eq!(cfg.vocab_size, 256205);
+    assert_eq!(cfg.pad_token_id, 1);
+    assert_eq!(cfg.eos_token_id, 2);
+    assert_eq!(cfg.decoder_start_token_id, 2);
+    assert_eq!(cfg.embed_scale(), 32.0);
+    assert_eq!(cfg.max_length, 200);
+}
+
+#[test]
+fn honors_explicit_runtime_controls() {
+    let json = config_json(1024, 16, 16).replace(
+        "\n        }",
+        r#",
+            "pad_token_id": 7,
+            "eos_token_id": 9,
+            "decoder_start_token_id": 11,
+            "scale_embedding": false
+        }"#,
+    );
+    let cfg = NllbConfig::from_json(&json).unwrap();
+
+    assert_eq!(cfg.pad_token_id, 7);
+    assert_eq!(cfg.eos_token_id, 9);
+    assert_eq!(cfg.decoder_start_token_id, 11);
+    assert_eq!(cfg.embed_scale(), 1.0);
 }
 
 #[test]
