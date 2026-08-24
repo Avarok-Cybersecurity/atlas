@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use super::*;
 use crate::benchmark::Benchmark;
@@ -53,6 +54,26 @@ impl Fake {
 // borrows as `&'static`.
 const FAKE_META: PluginMetadata = PluginMetadata::atlas("test double");
 
+static LIFECYCLE: LazyLock<Mutex<Vec<&'static str>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+struct LifecycleFake {
+    seen: usize,
+}
+
+const LIFECYCLE_DESC: BenchmarkDescriptor = BenchmarkDescriptor {
+    id: "lifecycle-fake",
+    name: "Lifecycle Fake",
+    summary: "test double",
+    detail: "test double",
+    duration_hint: "instant",
+    updated: "2026-08-24",
+    needs_confirmation: false,
+    intended_for: None,
+    threshold_params: &[],
+    sensitivity: crate::hardware::Sensitivity::Correctness,
+    ctor: || Box::new(LifecycleFake { seen: 0 }),
+};
+
 impl Plugin for Fake {
     fn metadata(&self) -> &'static PluginMetadata {
         &FAKE_META
@@ -94,6 +115,50 @@ impl Benchmark for Fake {
     }
 }
 
+impl Plugin for LifecycleFake {
+    fn metadata(&self) -> &'static PluginMetadata {
+        &FAKE_META
+    }
+
+    async fn load(&mut self, _handle: PluginHandle) -> Result<()> {
+        LIFECYCLE.lock().unwrap().push("load");
+        Ok(())
+    }
+}
+
+impl Benchmark for LifecycleFake {
+    fn descriptor(&self) -> &'static BenchmarkDescriptor {
+        &LIFECYCLE_DESC
+    }
+
+    fn parameters(&self) -> Vec<ParamSpec> {
+        Vec::new()
+    }
+
+    fn configure(&mut self, _values: &ParamValues) -> Result<()> {
+        LIFECYCLE.lock().unwrap().push("configure");
+        Ok(())
+    }
+
+    fn next(&mut self) -> impl Future<Output = Result<BenchmarkResult>> + Send {
+        self.seen += 1;
+        let seen = self.seen;
+        LIFECYCLE.lock().unwrap().push("next");
+        async move {
+            Ok(if seen == 1 {
+                BenchmarkResult::running("working", Duration::from_millis(1))
+            } else {
+                BenchmarkResult::completed("done", Duration::from_millis(2))
+            })
+        }
+    }
+
+    fn cleanup(&mut self) -> impl Future<Output = Result<()>> + Send {
+        LIFECYCLE.lock().unwrap().push("cleanup");
+        async { Ok(()) }
+    }
+}
+
 async fn collect(b: &mut Fake) -> Vec<Result<BenchmarkResult>> {
     let stream = b.run();
     futures::pin_mut!(stream);
@@ -125,29 +190,48 @@ async fn an_error_terminates_the_stream() {
     let mut b = Fake::new(9, Some(2), Arc::new(AtomicUsize::new(0)));
     let frames = collect(&mut b).await;
     assert_eq!(frames.len(), 2);
-    assert!(frames[1].is_err());
+    assert_eq!(
+        frames[1].as_ref().unwrap_err().to_string(),
+        "step 2 exploded"
+    );
     assert_eq!(b.seen, 2, "no further steps after the error");
 }
 
 #[tokio::test]
 async fn executor_runs_the_lifecycle_and_always_cleans_up() {
-    let cleanups = Arc::new(AtomicUsize::new(0));
-    let counter = cleanups.clone();
-    // A descriptor whose ctor closes over the shared counter is not possible
-    // with a plain `fn` pointer, so drive the dyn object directly here — the
-    // executor's own teardown is covered by `cleanup_runs_after_a_setup_error`.
-    let mut b: Box<dyn DynBenchmark> = Box::new(Fake::new(2, None, counter));
-    let mut n = 0;
-    {
-        let stream = drive(b.as_mut());
-        futures::pin_mut!(stream);
-        while stream.next().await.is_some() {
-            n += 1;
+    LIFECYCLE.lock().unwrap().clear();
+    let store = ArtifactStore::with_root(
+        std::env::temp_dir().join(format!("atlas-executor-lifecycle-{}", std::process::id())),
+    );
+    let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
+    let run = executor.start(
+        &LIFECYCLE_DESC,
+        ParamValues::default(),
+        TargetEndpoint::local(1, "unused"),
+        CoherencePolicy::Skip,
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !run.is_finished() {
+            tokio::task::yield_now().await;
         }
-    }
-    b.cleanup().await.unwrap();
-    assert_eq!(n, 3);
-    assert_eq!(cleanups.load(Ordering::Relaxed), 1);
+    })
+    .await
+    .expect("the real executor completes and tears down");
+
+    let statuses = run
+        .drain()
+        .into_iter()
+        .filter_map(|message| match message {
+            ExecutorMessage::Frame(frame) => Some(frame.status),
+            ExecutorMessage::Event(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, [RunStatus::Running, RunStatus::Completed]);
+    assert_eq!(
+        *LIFECYCLE.lock().unwrap(),
+        ["load", "configure", "next", "next", "cleanup"]
+    );
 }
 
 #[tokio::test]
