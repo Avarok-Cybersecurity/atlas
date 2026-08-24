@@ -351,6 +351,13 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
             // commit is not in this clone (a shallow fetch). Say that, rather
             // than reporting an empty path list as if nothing had changed.
             Some(newest_record) => {
+                if newest_record.benchmark_id != benchmark_id {
+                    return GateStatus::Missing(format!(
+                        "latest record belongs to {}, not {benchmark_id} ({})",
+                        newest_record.benchmark_id,
+                        paths[0].file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
                 // A newest record that is another VARIANT's is not stale — it
                 // is off-subject, and saying "build inputs do not match" would
                 // send the reader diffing commits instead of reading the
@@ -374,10 +381,7 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
                         "latest record is for {newest} ({}) — git cannot diff that commit \
                          against this one; is it in this clone? (the gate job needs \
                          `fetch-depth: 0`)",
-                        paths[0]
-                            .file_name()
-                            .map(|n| n.to_string_lossy())
-                            .unwrap_or_default()
+                        paths[0].file_name().unwrap_or_default().to_string_lossy()
                     ));
                 };
                 let because = if why.is_empty() {
@@ -403,10 +407,7 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
                 };
                 format!(
                     "latest record is for {newest} ({}) — {because}",
-                    paths[0]
-                        .file_name()
-                        .map(|n| n.to_string_lossy())
-                        .unwrap_or_default()
+                    paths[0].file_name().unwrap_or_default().to_string_lossy()
                 )
             }
             None => "latest record is unreadable".to_string(),

@@ -48,11 +48,14 @@ fn a_record_from_another_gate_does_not_satisfy_this_one() {
     assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 1);
 
     let status = check_gates(root, "abc1234567");
-    assert!(
-        matches!(&status["ttft-cold-gate"], GateStatus::Missing(_)),
-        "a ttft-warm-gate record must not satisfy ttft-cold-gate, got {:?}",
-        status["ttft-cold-gate"]
-    );
+    match &status["ttft-cold-gate"] {
+        GateStatus::Missing(reason) => assert_eq!(
+            reason,
+            "latest record belongs to ttft-warm-gate, not ttft-cold-gate \
+             (2026-08-05-abc1234567.json)"
+        ),
+        other => panic!("a warm record must not satisfy the cold gate: {other:?}"),
+    }
 }
 
 // ── 2. The files that decide a verdict are inside the boundary ─────────────
@@ -125,7 +128,13 @@ fn every_verdict_symbol_is_defined_inside_the_boundary() {
                 continue;
             }
             let src = std::fs::read_to_string(&path).expect("gate source readable");
-            if src.contains(symbol) {
+            let declares_symbol = src.lines().any(|line| {
+                let line = line.trim_start();
+                line.starts_with(symbol)
+                    || line.starts_with(&format!("pub {symbol}"))
+                    || line.starts_with(&format!("pub(crate) {symbol}"))
+            });
+            if declares_symbol {
                 let rel = format!(
                     "crates/atlas-plugin/src/gate/{}",
                     path.file_name().unwrap().to_str().unwrap()
@@ -190,7 +199,15 @@ fn an_absurd_noise_allowance_is_refused() {
         "[benchmarks.metrics.overall_accuracy]\nmin = 87.44\nnoise = 1000.0\n",
     );
     let err = super::bench::load_all(root).unwrap_err().to_string();
-    assert!(err.contains("exceeds"), "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "{}: bfcl-subset / x/y metric overall_accuracy: noise 1000 exceeds 5% of the bound \
+             (87.44) — that is a threshold change wearing a measurement-noise label. Move the \
+             bound instead, so the ratchet is visible in review.",
+            root.join("kernels/gb10/qwen3.6-27b/BENCH.toml").display()
+        )
+    );
 }
 
 /// The values actually in the tree (0.4 against floors of 83-89, ~0.46%) must
@@ -204,7 +221,13 @@ fn the_real_noise_values_still_load() {
         root,
         "[benchmarks.metrics.overall_accuracy]\nmin = 87.44\nnoise = 0.4\n",
     );
-    super::bench::load_all(root).expect("0.4 on an 87.44 floor is real measurement noise");
+    let loaded =
+        super::bench::load_all(root).expect("0.4 on an 87.44 floor is real measurement noise");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(
+        loaded[0].1.metrics.as_ref().unwrap()["overall_accuracy"].noise,
+        Some(0.4)
+    );
 }
 
 /// `min == max` is how the BFCL draw size is pinned. `check::compare` applies
@@ -221,18 +244,35 @@ fn noise_on_an_exact_pin_is_refused() {
         "[benchmarks.metrics.samples]\nmin = 995.0\nmax = 995.0\nnoise = 1.0\n",
     );
     let err = super::bench::load_all(root).unwrap_err().to_string();
-    assert!(err.contains("EXACT pin"), "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "{}: bfcl-subset / x/y metric samples is an EXACT pin (min == max == Some(995.0)) \
+             and carries noise 1. Noise on a pin disables it — and a pin is used for things \
+             like the BFCL draw size, where a changed draw is undetectable after the fact.",
+            root.join("kernels/gb10/qwen3.6-27b/BENCH.toml").display()
+        )
+    );
 }
 
 /// Negative and non-finite slack are nonsense; refuse rather than propagate.
 #[test]
-fn negative_noise_is_refused() {
-    let dir = tempdir::Dir::new();
-    let root = dir.path();
-    bench_toml(
-        root,
-        "[benchmarks.metrics.overall_accuracy]\nmin = 87.44\nnoise = -5.0\n",
-    );
-    let err = super::bench::load_all(root).unwrap_err().to_string();
-    assert!(err.contains("non-negative"), "{err}");
+fn negative_and_non_finite_noise_are_refused() {
+    for (literal, rendered) in [("-5.0", "-5"), ("nan", "NaN"), ("inf", "inf")] {
+        let dir = tempdir::Dir::new();
+        let root = dir.path();
+        bench_toml(
+            root,
+            &format!("[benchmarks.metrics.overall_accuracy]\nmin = 87.44\nnoise = {literal}\n"),
+        );
+        let err = super::bench::load_all(root).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "{}: bfcl-subset / x/y metric overall_accuracy: noise must be finite and \
+                 non-negative, got {rendered}",
+                root.join("kernels/gb10/qwen3.6-27b/BENCH.toml").display()
+            )
+        );
+    }
 }
