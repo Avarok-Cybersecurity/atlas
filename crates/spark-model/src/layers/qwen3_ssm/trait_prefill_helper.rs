@@ -29,9 +29,23 @@ impl Qwen3SsmLayer {
     ///
     /// No-op when `tp_world_size == 1` or no communicator is present (single
     /// GPU, or a path that already holds the complete output).
+    ///
+    /// ALSO applies the `out_proj` LoRA delta, and does so AFTER the reduce.
+    /// The two belong together: before the reduce `out_proj_buf` holds only
+    /// this rank's partial row-parallel product, and a delta added there would
+    /// be summed once per rank and scaled by the TP width.
+    ///
+    /// Folding the delta into this helper rather than into each caller is
+    /// deliberate. Every SSM dispatch path — single-token decode, prefill,
+    /// prefill phase-3, batched decode, multi-seq batched — finishes its
+    /// output projection by calling exactly this function, so applying here
+    /// makes it structurally impossible to wire the adapter into some paths
+    /// and forget others. An adapter that applies in prefill but not decode is
+    /// a model that contradicts itself mid-sequence.
     pub(super) fn ssm_tp_all_reduce(
         &self,
         out_proj_buf: DevicePtr,
+        normed_out: DevicePtr,
         num_tokens: usize,
         ctx: &ForwardContext,
         stream: u64,
@@ -44,7 +58,7 @@ impl Qwen3SsmLayer {
             let bytes = num_tokens * ctx.config.hidden_size * 2;
             comm.all_reduce_async(out_proj_buf.0, bytes, stream)?;
         }
-        Ok(())
+        self.apply_lora_out_proj(ctx, normed_out, out_proj_buf, num_tokens as u32, stream)
     }
 
     pub(super) fn prefill_out_proj_dispatch(

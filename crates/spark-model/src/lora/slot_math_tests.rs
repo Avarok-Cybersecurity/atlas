@@ -23,14 +23,25 @@ fn slot_base_is_k_times_slot_bytes() {
 
 #[test]
 fn pool_slot_bytes_absolute_golden() {
-    // Absolute byte count for the factory config @ max_rank=16: 12
-    // full-attention layers × Σ_modules (max_rank·(in+out))·2. Pins the
+    // Absolute byte count for the factory config @ max_rank=16. Pins the
     // layout absolutely (a dims/pad change is caught), not just the
-    // slot_base == k·slot_bytes relation. q_proj adds 32·(2048+8192)=327680
-    // B/layer (gated out = 2·16·256 = 8192), ×12 = 3_932_160 over the prior
-    // k/v/o/gate/up/down-only 12_582_912.
+    // slot_base == k·slot_bytes relation.
+    //
+    // CHANGED from 16_515_072 when the pool stopped being "full-attention
+    // layers × ALL modules". That shape reserved q/k/v/o on the layers that
+    // have them but reserved NOTHING for the dense FFN a hybrid carries on
+    // its linear-attention layers, so those pairs had nowhere to land and
+    // were silently dropped — loaded, never packed, never applied. The pool
+    // is now Σ over EVERY layer of the modules that layer can actually carry
+    // (`LoraModule::applies_to_layer`), which also makes room for the GDN
+    // `out_proj` on linear-attention layers.
+    //
+    // Smaller, not larger, on this config: the linear-attention layers gain
+    // gate/up/down + out_proj but the full-attention layers no longer reserve
+    // out_proj space they cannot use, and the old shape was reserving all
+    // seven modules on all twelve attention layers.
     let cfg = cfg();
-    assert_eq!(pool_slot_bytes(&cfg, 16), 16_515_072);
+    assert_eq!(pool_slot_bytes(&cfg, 16), 15_335_424);
 }
 
 #[test]
@@ -41,8 +52,17 @@ fn module_offsets_walk_matches_pack_loop_and_fill_exactly_one_slot() {
     let cfg = cfg();
     let mr = 16;
     let mut off = 0usize;
-    for layer in full_attention_layers(&cfg) {
+    for layer in 0..cfg.num_hidden_layers {
         for module in LoraModule::ALL {
+            if !module.applies_to_layer(&cfg, layer) {
+                // The offset table must agree that this module is absent here.
+                assert_eq!(
+                    module_slot_offsets(&cfg, mr, layer, module),
+                    None,
+                    "layer {layer} {module:?} is not applicable and must have no slot"
+                );
+                continue;
+            }
             let (out, inp) = module.dims(&cfg);
             let a_off = off;
             let b_off = off + mr * inp * BF16_BYTES;
@@ -74,11 +94,18 @@ fn slot_boundaries_do_not_overlap() {
     let cfg = cfg();
     let mr = 16;
     let sb = pool_slot_bytes(&cfg, mr);
-    // Last module (down_proj on the last full-attn layer) ends exactly at
-    // slot_bytes, i.e. flush against slot 1's base.
-    let last = *full_attention_layers(&cfg).last().unwrap();
-    let (_, b_off) = module_slot_offsets(&cfg, mr, last, LoraModule::DownProj).unwrap();
-    let (out, _) = LoraModule::DownProj.dims(&cfg);
+    // The LAST module in the walk ends exactly at slot_bytes, i.e. flush
+    // against slot 1's base. Derived rather than hardcoded: which module comes
+    // last depends on the last layer's type (a linear-attention tail layer
+    // ends on out_proj, an attention one on down_proj), and hardcoding it
+    // would make this test a statement about one config instead of about the
+    // packing invariant.
+    let (last_layer, last_module) = (0..cfg.num_hidden_layers)
+        .flat_map(|l| LoraModule::ALL.iter().map(move |m| (l, *m)))
+        .rfind(|(l, m)| m.applies_to_layer(&cfg, *l))
+        .expect("some module is packed");
+    let (_, b_off) = module_slot_offsets(&cfg, mr, last_layer, last_module).unwrap();
+    let (out, _) = last_module.dims(&cfg);
     assert_eq!(b_off + out * mr * BF16_BYTES, sb);
     assert_eq!(slot_base_offset(1, &cfg, mr), sb);
 }
@@ -96,6 +123,7 @@ fn scale_table_values_per_slot_and_padded() {
             r,
             lora_alpha: alpha,
             target_modules: vec!["k_proj".into()],
+            target_modules_pattern: None,
             use_rslora: rslora,
             layers_to_transform: None,
             trainable_token_indices: Vec::new(),

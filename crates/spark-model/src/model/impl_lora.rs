@@ -280,13 +280,22 @@ impl TransformerModel {
                     .experts
                     .as_ref()
                     .is_some_and(|e| !e.is_empty());
-            let has_attn_ffn = layer_weights.q_proj.is_some()
-                || layer_weights.k_proj.is_some()
-                || layer_weights.v_proj.is_some()
-                || layer_weights.o_proj.is_some()
-                || layer_weights.gate_proj.is_some()
+            // Hoisted above the downcast: the dense FFN exists on BOTH layer
+            // kinds of a hybrid, so both branches install it, and building it
+            // once keeps them from disagreeing.
+            let ffn_weights = if layer_weights.gate_proj.is_some()
                 || layer_weights.up_proj.is_some()
-                || layer_weights.down_proj.is_some();
+                || layer_weights.down_proj.is_some()
+            {
+                Some(ops::lora_delta::LoraFfnWeights {
+                    gate: layer_weights.gate_proj,
+                    up: layer_weights.up_proj,
+                    down: layer_weights.down_proj,
+                    kernels,
+                })
+            } else {
+                None
+            };
             let any = layer
                 .as_any_mut()
                 .ok_or_else(|| anyhow::anyhow!("LoRA: adapted layer {idx} is not downcastable"))?;
@@ -309,19 +318,6 @@ impl TransformerModel {
                     v_route: mk_route(idx, LoraModule::VProj, &layer_weights.v_proj),
                     o_route: mk_route(idx, LoraModule::OProj, &layer_weights.o_proj),
                 };
-                let ffn_weights = if layer_weights.gate_proj.is_some()
-                    || layer_weights.up_proj.is_some()
-                    || layer_weights.down_proj.is_some()
-                {
-                    Some(ops::lora_delta::LoraFfnWeights {
-                        gate: layer_weights.gate_proj,
-                        up: layer_weights.up_proj,
-                        down: layer_weights.down_proj,
-                        kernels,
-                    })
-                } else {
-                    None
-                };
                 attn.set_lora_weights(attn_weights, ffn_weights)?;
                 if has_moe {
                     attn.set_moe_lora_weights(
@@ -332,12 +328,27 @@ impl TransformerModel {
                     )?;
                 }
             } else if let Some(ssm) = any.downcast_mut::<crate::layers::Qwen3SsmLayer>() {
-                if has_attn_ffn {
+                // No q/k/v/o here (classify_key rejects those), but a hybrid's
+                // linear-attention layer DOES carry the dense FFN, and real
+                // adapters target it on every layer.
+                let has_attn_proj = layer_weights.q_proj.is_some()
+                    || layer_weights.k_proj.is_some()
+                    || layer_weights.v_proj.is_some()
+                    || layer_weights.o_proj.is_some();
+                if has_attn_proj {
                     anyhow::bail!(
-                        "LoRA: attention/dense-FFN delta on linear-attention layer {idx} — \
-                         classify should have rejected this (only MoE router/experts are \
-                         valid on GDN layers)"
+                        "LoRA: attention-projection delta on linear-attention layer {idx} — \
+                         classify should have rejected this (that layer has no q/k/v/o)"
                     );
+                }
+                if let Some(ffn) = ffn_weights {
+                    ssm.set_ffn_lora_weights(ffn).with_context(|| {
+                        format!("LoRA: installing dense-FFN delta on linear-attention layer {idx}")
+                    })?;
+                }
+                // GDN out_proj: only linear-attention layers have one.
+                if let Some(pair) = layer_weights.out_proj {
+                    ssm.set_out_proj_lora(pair, kernels);
                 }
                 if has_moe {
                     ssm.set_moe_lora_weights(

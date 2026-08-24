@@ -35,6 +35,12 @@ pub struct Qwen3SsmLayer {
     ssm: SsmWeights,
     post_attn_norm: DenseWeight,
     ffn: FfnComponent,
+    /// GDN `out_proj` LoRA delta for this layer, with the kernels to apply it.
+    /// `None` on every base serve, which keeps the base path byte-identical.
+    lora_out_proj: Option<(
+        crate::layers::ops::lora_delta::LoraPair,
+        crate::layers::ops::lora_delta::LoraKernels,
+    )>,
     // NVFP4-quantized QKVZ weight (quarters bandwidth vs BF16)
     qkvz_nvfp4: Option<QuantizedWeight>,
     // Transposed [K/2, N] copy for coalesced w4a16_gemm reads (prefill)

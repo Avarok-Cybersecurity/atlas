@@ -44,6 +44,33 @@ pub fn adapter_id_hash(name: &str, generation: u64) -> u64 {
     if h == 0 { 1 } else { h }
 }
 
+/// Whether `key` names a GDN / linear-attention tensor — the family
+/// `classify_key` rejects outright.
+///
+/// Exists so a caller can SKIP such a tensor under
+/// `ATLAS_LORA_ALLOW_PARTIAL` instead of pattern-matching on the reject
+/// message. The prefix test is the same one `classify_key` uses; keep them
+/// together so the skip can never drift from the reject.
+pub fn is_gdn_key(key: &str) -> bool {
+    // Mirrors classify_key's own walk: PEFT prefix, then `.layers.N.`, then
+    // the module tail it matches `linear_attn.` against. Deliberately the same
+    // sequence of splits so the skip cannot recognise a different set of keys
+    // than the reject does.
+    let Some(stripped) = key.strip_prefix("base_model.model.") else {
+        return false;
+    };
+    let Some((_prefix, rest)) = stripped.split_once(".layers.") else {
+        return false;
+    };
+    let Some((_idx, tail)) = rest.split_once('.') else {
+        return false;
+    };
+    // `linear_attn.out_proj` is SUPPORTED, so it is not skippable — skipping
+    // it would silently drop a delta Atlas can actually apply. Only the
+    // input-side projections, which still have no delta path, are skippable.
+    tail.starts_with("linear_attn.") && tail != "linear_attn.out_proj"
+}
+
 /// PEFT key → (layer, module, A|B). Every unsupported shape is a NAMED
 /// hard rejection — never a skip. Prefix-agnostic on purpose: the Holo
 /// base checkpoint keys are `model.language_model.layers.{i}.*`
@@ -100,10 +127,19 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
         t if t.starts_with("mlp.experts.") => {
             classify_expert_tail(key, &t["mlp.experts.".len()..], cfg)?
         }
+        // The GDN block's OUTPUT projection is supported. It is the block's
+        // last stage (value_dim -> hidden), downstream of the recurrence: a
+        // delta there is an ordinary per-token linear delta on the block's
+        // output and never enters the state update. That is why it does not
+        // need the exact-replay parity harness the rest of this family waits
+        // on — `in_proj_*` and `conv1d` DO feed the recurrence, so an error in
+        // them compounds across timesteps, and they stay rejected.
+        "linear_attn.out_proj" => LoraTarget::Attn(LoraModule::OutProj),
         t if t.starts_with("linear_attn.") => bail!(
-            "REJECT[gdn-target]: '{key}' — GDN/linear-attention projections \
-             (in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / out_proj) are \
-             rejected until an exact-replay parity harness exists"
+            "REJECT[gdn-target]: '{key}' — GDN/linear-attention INPUT-side \
+             projections (in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / \
+             conv1d) feed the recurrence and stay rejected until an \
+             exact-replay parity harness exists. `out_proj` IS supported."
         ),
         other => bail!("REJECT[unsupported-module]: '{key}' targets '{other}'"),
     };
@@ -116,15 +152,40 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
     // of a MoE adapter's layers. The fold runs in `MoeLayer::forward_*`, which is
     // present on all MoE layers, so no layer-type restriction applies to them.
     match target {
+        // Dense FFN on a dense-FFN model: allowed on ANY layer. The SwiGLU FFN
+        // is present on every layer of a hybrid — Qwen3.8-27B has 16
+        // full-attention and 48 linear-attention layers and all 64 carry an
+        // FFN, which is why real adapters for it ship 128 dense-mlp tensors
+        // (64 layers x A/B). Restricting these to full-attention layers
+        // rejected three quarters of such an adapter and the old message could
+        // only suggest retraining with `layers_to_transform`.
+        //
+        // `Qwen3SsmLayer` holds its FFN as `FfnComponent::Dense`, the same
+        // `DenseFfnLayer` the full-attention layers use and the same one the
+        // M1 delta path is wired into, so the fold runs identically there.
+        //
+        // Restricted to `num_experts == 0`: on a MoE model `mlp.*` on a GDN
+        // layer belongs to the routed-expert path (LoraTarget::Expert), which
+        // has its own handling below, not to a dense FFN.
+        LoraTarget::Attn(m) if m.is_dense_ffn() && cfg.num_experts == 0 => {}
+        // GDN out_proj: linear-attention layers only — a full-attention layer
+        // has no GDN block for it to land on.
+        LoraTarget::Attn(m)
+            if m.is_gdn_out() && cfg.layer_type(layer_idx) == LayerType::FullAttention =>
+        {
+            bail!(
+                "REJECT[gdn-out-on-attention-layer]: '{key}' targets layer \
+                 {layer_idx}, which is a full-attention layer with no GDN out_proj"
+            )
+        }
+        LoraTarget::Attn(m) if m.is_gdn_out() => {}
         LoraTarget::Attn(_) => match cfg.layer_type(layer_idx) {
             LayerType::FullAttention => {}
             lt => bail!(
                 "REJECT[non-full-attention-layer]: '{key}' targets layer {layer_idx} \
-                 ({lt:?}); v0 applies attention/dense-mlp LoRA only on the full-attention \
-                 layers {:?}. NOTE: dense mlp.* exists on the GDN layers too — train with \
-                 layers_to_transform={:?} to produce a loadable adapter",
+                 ({lt:?}); attention-projection LoRA applies only on the full-attention \
+                 layers {:?}",
                 full_attention_layers(cfg),
-                full_attention_layers(cfg)
             ),
         },
         LoraTarget::Router | LoraTarget::Expert { .. } => {}

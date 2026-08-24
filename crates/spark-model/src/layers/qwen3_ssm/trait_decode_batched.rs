@@ -1164,7 +1164,7 @@ impl Qwen3SsmLayer {
 
         // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
         // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
-        self.ssm_tp_all_reduce(out_proj_buf, num_tokens, ctx, stream)?;
+        self.ssm_tp_all_reduce(out_proj_buf, normed_out_buf, num_tokens, ctx, stream)?;
 
         k4_diag_checkpoint(ctx, "9:out_proj", stream)?;
 

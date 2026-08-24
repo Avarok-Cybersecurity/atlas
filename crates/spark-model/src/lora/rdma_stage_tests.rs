@@ -100,6 +100,7 @@ fn rebuild_slot_layers_sets_rank_and_pointers() {
         r: 4,
         lora_alpha: 8.0,
         target_modules: vec!["k_proj".into()],
+        target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
         trainable_token_indices: Vec::new(),

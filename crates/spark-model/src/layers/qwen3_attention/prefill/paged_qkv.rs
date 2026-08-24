@@ -467,7 +467,10 @@ impl Qwen3AttentionLayer {
                     )?;
                 } else if seq_slot.0 != 0
                     && let Some(route) = route
+                    && crate::lora::prefill_bgmv_forced()
                 {
+                    // OPT-IN ONLY: `n` row-wise GEMVs vs ONE GEMM in `else`;
+                    // a prefill is uniform-slot. Kept for PER-ROW slots.
                     ops::lora_delta::apply_lora_bgmv(
                         ctx.gpu,
                         &lw.kernels,

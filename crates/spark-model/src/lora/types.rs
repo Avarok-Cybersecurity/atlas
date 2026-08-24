@@ -25,10 +25,13 @@ pub enum LoraModule {
     GateProj,
     UpProj,
     DownProj,
+    /// GDN block OUTPUT projection (`linear_attn.out_proj`), value_dim ->
+    /// hidden. Not `OProj`: different contract dim, disjoint layer set.
+    OutProj,
 }
 
 impl LoraModule {
-    pub const ALL: [LoraModule; 7] = [
+    pub const ALL: [LoraModule; 8] = [
         Self::QProj,
         Self::KProj,
         Self::VProj,
@@ -36,7 +39,36 @@ impl LoraModule {
         Self::GateProj,
         Self::UpProj,
         Self::DownProj,
+        Self::OutProj,
     ];
+
+    /// Dense SwiGLU FFN module — see [`Self::applies_to_layer`].
+    pub fn is_dense_ffn(&self) -> bool {
+        matches!(self, Self::GateProj | Self::UpProj | Self::DownProj)
+    }
+
+    /// Whether this module is the GDN block's output projection.
+    pub fn is_gdn_out(&self) -> bool {
+        matches!(self, Self::OutProj)
+    }
+
+    /// Which layers may carry this module: attention q/k/v/o on full-attention
+    /// layers only; dense gate/up/down on EVERY layer of a dense-FFN model (a
+    /// hybrid's linear-attention layers carry the SwiGLU FFN too); GDN out_proj
+    /// on linear-attention layers only. THE authority for BOTH the pool layout
+    /// and the packing walk, so reserved and written bytes cannot disagree.
+    pub fn applies_to_layer(&self, cfg: &atlas_core::config::ModelConfig, layer: usize) -> bool {
+        use atlas_core::config::LayerType;
+        let full_attn = cfg.layer_type(layer) == LayerType::FullAttention;
+        if self.is_dense_ffn() {
+            // MoE `mlp.*` is the routed-expert path, packed separately.
+            cfg.num_experts == 0
+        } else if self.is_gdn_out() {
+            !full_attn
+        } else {
+            full_attn
+        }
+    }
 
     /// PEFT suffix name (target_modules vocabulary).
     pub fn peft_name(&self) -> &'static str {
@@ -48,6 +80,7 @@ impl LoraModule {
             Self::GateProj => "gate_proj",
             Self::UpProj => "up_proj",
             Self::DownProj => "down_proj",
+            Self::OutProj => "out_proj",
         }
     }
 
@@ -70,6 +103,9 @@ impl LoraModule {
             Self::OProj => (h, cfg.num_attention_heads * cfg.head_dim),
             Self::GateProj | Self::UpProj => (cfg.intermediate_size, h),
             Self::DownProj => (h, cfg.intermediate_size),
+            // GDN out_proj contracts over the SSM value width, NOT over
+            // hidden or over the attention head width.
+            Self::OutProj => (h, cfg.linear_num_value_heads * cfg.linear_value_head_dim),
         }
     }
 }
@@ -96,6 +132,8 @@ pub struct LoraLayerWeights {
     pub gate_proj: Option<LoraPair>,
     pub up_proj: Option<LoraPair>,
     pub down_proj: Option<LoraPair>,
+    /// GDN out_proj delta (linear-attention layers only).
+    pub out_proj: Option<LoraPair>,
     /// Feature-1: MoE router (`mlp.gate`) delta on the routing logits. `None`
     /// unless the adapter targets the router AND `ATLAS_LORA_EXPERTS=1`.
     pub router: Option<LoraPair>,
@@ -121,6 +159,7 @@ impl LoraLayerWeights {
             gate_proj: None,
             up_proj: None,
             down_proj: None,
+            out_proj: None,
             router: None,
             experts: None,
         }
@@ -267,6 +306,7 @@ impl LoraLayerWeights {
             LoraModule::GateProj => self.gate_proj.as_ref(),
             LoraModule::UpProj => self.up_proj.as_ref(),
             LoraModule::DownProj => self.down_proj.as_ref(),
+            LoraModule::OutProj => self.out_proj.as_ref(),
         }
     }
 }
@@ -396,6 +436,7 @@ impl LoraWeights {
                     LoraModule::GateProj => lw.gate_proj.as_ref(),
                     LoraModule::UpProj => lw.up_proj.as_ref(),
                     LoraModule::DownProj => lw.down_proj.as_ref(),
+                    LoraModule::OutProj => lw.out_proj.as_ref(),
                 });
             let (a_ptr, b_ptr) = pair.map(|p| (p.a.weight.0, p.b.weight.0)).unwrap_or((0, 0));
             gpu.copy_h2d(&a_ptr.to_le_bytes(), DevicePtr(a_dev.0 + (slot * 8) as u64))?;
