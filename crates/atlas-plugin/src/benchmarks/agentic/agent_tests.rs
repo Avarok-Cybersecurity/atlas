@@ -80,13 +80,25 @@ fn truncation_keeps_both_ends() {
 }
 
 #[test]
-fn short_output_is_untouched() {
+fn output_at_or_below_the_cap_is_untouched() {
     assert_eq!(truncate("hello"), "hello");
+    let at_cap = "x".repeat(MAX_TOOL_OUTPUT);
+    assert_eq!(truncate(&at_cap), at_cap);
 }
 
 #[test]
 fn truncation_caps_at_the_harness_output_cap_and_never_splits_a_char() {
-    let t = truncate(&"é".repeat(20_000));
+    let text = "€".repeat(20_000);
+    let cut = (MAX_TOOL_OUTPUT - shell::TEST_ELISION_NOTE) / 2;
+    assert!(
+        !text.is_char_boundary(cut),
+        "fixture head cut is a character boundary"
+    );
+    assert!(
+        !text.is_char_boundary(text.len() - cut),
+        "fixture tail cut is a character boundary"
+    );
+    let t = truncate(&text);
     assert!(t.len() < MAX_TOOL_OUTPUT + 200, "{}", t.len());
     assert!(t.contains("characters elided from the middle"));
 }
