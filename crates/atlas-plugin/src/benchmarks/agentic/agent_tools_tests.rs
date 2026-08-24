@@ -122,12 +122,19 @@ async fn read_lists_a_directory_so_a_missing_src_is_visible() {
     tool(
         &c,
         "write",
+        json!({"filePath": "z.txt", "content": "created first\n"}),
+    )
+    .await
+    .unwrap();
+    tool(
+        &c,
+        "write",
         json!({"filePath": "src/main.rs", "content": "fn main() {}\n"}),
     )
     .await
     .unwrap();
     let listing = tool(&c, "read", json!({"filePath": "."})).await.unwrap();
-    assert_eq!(listing, "Cargo.toml\nsrc/");
+    assert_eq!(listing, "Cargo.toml\nsrc/\nz.txt");
 }
 
 #[tokio::test]
