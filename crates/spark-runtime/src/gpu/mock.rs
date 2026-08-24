@@ -27,6 +27,9 @@ pub struct MockGpuBackend {
     syncs: AtomicUsize,
     d2h_blocking: AtomicUsize,
     d2h_async: AtomicUsize,
+    d2h_async_streams: Mutex<Vec<u64>>,
+    /// `(stream, completed D2H enqueue count)` at every synchronize call.
+    sync_d2h_async_counts: Mutex<Vec<(u64, usize)>>,
     /// `copy_d2d`/`copy_d2d_async` calls — one eager launch each on the real
     /// backend. The SSM verify rollback issued 2 per SSM layer per sequence
     /// (96 on the 27B), so this counter is what proves a batched form
@@ -79,6 +82,8 @@ impl MockGpuBackend {
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
+            d2h_async_streams: Mutex::new(Vec::new()),
+            sync_d2h_async_counts: Mutex::new(Vec::new()),
             d2d: AtomicUsize::new(0),
             d2d_2d: AtomicUsize::new(0),
             d2d_async_streams: Mutex::new(Vec::new()),
@@ -116,6 +121,14 @@ impl MockGpuBackend {
     /// `copy_d2h_async` calls (enqueue-only).
     pub fn d2h_async_count(&self) -> usize {
         self.d2h_async.load(Ordering::Relaxed)
+    }
+
+    pub fn d2h_async_streams(&self) -> Vec<u64> {
+        self.d2h_async_streams.lock().clone()
+    }
+
+    pub fn sync_d2h_async_counts(&self) -> Vec<(u64, usize)> {
+        self.sync_d2h_async_counts.lock().clone()
     }
 
     /// `copy_d2d` + `copy_d2d_async` calls so far — one eager launch each on
@@ -275,11 +288,12 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], _stream: u64) -> Result<()> {
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
         // Counted separately from `copy_d2h` and NOT delegating to it, so a
         // test can distinguish the batched shape from the blocking one (the
         // trait's default impl forwards, which would make them indistinguishable).
         self.d2h_async.fetch_add(1, Ordering::Relaxed);
+        self.d2h_async_streams.lock().push(stream);
         let allocs = self.allocs.lock();
         let (offset, alloc) = find_alloc(&allocs, src)
             .ok_or_else(|| anyhow::anyhow!("copy_d2h_async: ptr {src} not allocated"))?;
@@ -386,7 +400,10 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn synchronize(&self, _stream: u64) -> Result<()> {
+    fn synchronize(&self, stream: u64) -> Result<()> {
+        self.sync_d2h_async_counts
+            .lock()
+            .push((stream, self.d2h_async.load(Ordering::Relaxed)));
         self.syncs.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
