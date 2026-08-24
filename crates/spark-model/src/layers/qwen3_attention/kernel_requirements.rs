@@ -166,45 +166,82 @@ mod tests {
     /// `required_optional_kernels_for_dtype`).
     #[test]
     fn required_optional_kernels_cover_turbo_variants() {
-        const TURBO: &[(KvCacheDtype, &str)] = &[
-            (KvCacheDtype::Turbo2, "prefill_paged_turbo2"),
-            (KvCacheDtype::Turbo3, "prefill_paged_turbo3"),
-            (KvCacheDtype::Turbo4, "prefill_paged_turbo4"),
-            (KvCacheDtype::Turbo8, "prefill_paged_turbo8"),
-            (KvCacheDtype::Bf16KTurbo3V, "prefill_paged_bf16k_turbo3v"),
-            (KvCacheDtype::Bf16KTurbo4V, "prefill_paged_bf16k_turbo4v"),
-            (KvCacheDtype::Bf16KTurbo2V, "prefill_paged_bf16k_turbo2v"),
-            (KvCacheDtype::Fp8KTurbo3V, "prefill_paged_fp8k_turbo3v"),
-            (KvCacheDtype::Fp8KTurbo4V, "prefill_paged_fp8k_turbo4v"),
-            (KvCacheDtype::Fp8KTurbo2V, "prefill_paged_fp8k_turbo2v"),
+        const TURBO: &[(KvCacheDtype, &str, &str)] = &[
+            (
+                KvCacheDtype::Turbo2,
+                "prefill_paged_turbo2",
+                "inferspark_prefill_paged_turbo2",
+            ),
+            (
+                KvCacheDtype::Turbo3,
+                "prefill_paged_turbo3",
+                "inferspark_prefill_paged_turbo3_64",
+            ),
+            (
+                KvCacheDtype::Turbo4,
+                "prefill_paged_turbo4",
+                "inferspark_prefill_paged_turbo4_64",
+            ),
+            (
+                KvCacheDtype::Turbo8,
+                "prefill_paged_turbo8",
+                "inferspark_prefill_paged_turbo8_64",
+            ),
+            (
+                KvCacheDtype::Bf16KTurbo3V,
+                "prefill_paged_bf16k_turbo3v",
+                "inferspark_prefill_paged_bf16k_turbo3v_64",
+            ),
+            (
+                KvCacheDtype::Bf16KTurbo4V,
+                "prefill_paged_bf16k_turbo4v",
+                "inferspark_prefill_paged_bf16k_turbo4v_64",
+            ),
+            (
+                KvCacheDtype::Bf16KTurbo2V,
+                "prefill_paged_bf16k_turbo2v",
+                "inferspark_prefill_paged_bf16k_turbo2v_64",
+            ),
+            (
+                KvCacheDtype::Fp8KTurbo3V,
+                "prefill_paged_fp8k_turbo3v",
+                "inferspark_prefill_paged_fp8k_turbo3v_64",
+            ),
+            (
+                KvCacheDtype::Fp8KTurbo4V,
+                "prefill_paged_fp8k_turbo4v",
+                "inferspark_prefill_paged_fp8k_turbo4v_64",
+            ),
+            (
+                KvCacheDtype::Fp8KTurbo2V,
+                "prefill_paged_fp8k_turbo2v",
+                "inferspark_prefill_paged_fp8k_turbo2v_64",
+            ),
             (
                 KvCacheDtype::Turbo4KTurbo3V,
                 "prefill_paged_turbo4k_turbo3v",
+                "inferspark_prefill_paged_turbo4k_turbo3v_64",
             ),
             (
                 KvCacheDtype::Turbo4KTurbo8V,
                 "prefill_paged_turbo4k_turbo8v",
+                "inferspark_prefill_paged_turbo4k_turbo8v_64",
             ),
             (
                 KvCacheDtype::Turbo3KTurbo8V,
                 "prefill_paged_turbo3k_turbo8v",
+                "inferspark_prefill_paged_turbo3k_turbo8v_64",
             ),
         ];
-        for &(d, prefill_mod) in TURBO {
-            let req = required_optional_kernels_for_dtype(d, 256);
-            assert!(
-                req.iter().any(|(m, _)| *m == prefill_mod),
-                "{d:?}: requirement list missing prefill module {prefill_mod}"
-            );
-            assert!(
-                req.iter()
-                    .any(|(m, f)| *m == "wht_bf16" && *f == "wht_bf16_inplace"),
-                "{d:?}: requirement list missing wht_bf16_inplace"
-            );
-            assert!(
-                req.iter()
-                    .any(|(m, f)| *m == "wht_bf16" && *f == "wht_bf16_inplace_inv"),
-                "{d:?}: requirement list missing wht_bf16_inplace_inv"
+        for &(d, prefill_mod, prefill_fn) in TURBO {
+            assert_eq!(
+                required_optional_kernels_for_dtype(d, 256),
+                vec![
+                    (prefill_mod, prefill_fn),
+                    ("wht_bf16", "wht_bf16_inplace"),
+                    ("wht_bf16", "wht_bf16_inplace_inv"),
+                ],
+                "{d:?}"
             );
         }
         for d in [KvCacheDtype::Bf16, KvCacheDtype::Fp8, KvCacheDtype::Nvfp4] {
@@ -213,6 +250,22 @@ mod tests {
                 "{d:?}: plain dtype should require no optional kernels"
             );
         }
+        assert_eq!(
+            required_optional_kernels_for_dtype(KvCacheDtype::Turbo2, 64),
+            vec![("prefill_paged_turbo2", "inferspark_prefill_paged_turbo2")]
+        );
+        assert_eq!(
+            required_optional_kernels_for_dtype(KvCacheDtype::Turbo2, 128).len(),
+            3
+        );
+        assert_eq!(
+            required_optional_kernels_for_dtype(KvCacheDtype::Turbo2, 512).len(),
+            3
+        );
+        assert_eq!(
+            required_optional_kernels_for_dtype(KvCacheDtype::Turbo2, 513).len(),
+            1
+        );
     }
 
     /// Turbo2 is WHT-rotated by the write path like Turbo3/4/8 — the decode
