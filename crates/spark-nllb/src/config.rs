@@ -76,12 +76,12 @@ impl NllbConfig {
         let config: Self =
             serde_json::from_str(json).context("failed to parse NLLB config.json")?;
         config
-            .validate_attention_geometry()
+            .validate_runtime_contract()
             .context("invalid NLLB config.json")?;
         Ok(config)
     }
 
-    fn validate_attention_geometry(&self) -> Result<()> {
+    fn validate_runtime_contract(&self) -> Result<()> {
         ensure!(self.d_model > 0, "d_model must be greater than zero");
         ensure!(
             self.encoder_attention_heads > 0,
@@ -102,6 +102,11 @@ impl NllbConfig {
             "d_model ({}) must be divisible by encoder_attention_heads ({})",
             self.d_model,
             self.encoder_attention_heads
+        );
+        ensure!(
+            self.activation_function == "relu",
+            "unsupported activation_function {:?}; spark-nllb implements only \"relu\"",
+            self.activation_function
         );
         Ok(())
     }

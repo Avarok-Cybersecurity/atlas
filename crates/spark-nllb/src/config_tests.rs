@@ -54,6 +54,21 @@ fn rejects_attention_geometry_the_runtime_cannot_execute() {
 }
 
 #[test]
+fn rejects_activation_the_runtime_does_not_implement() {
+    let json = config_json(1024, 16, 16).replace(
+        "\n        }",
+        r#",
+            "activation_function": "gelu"
+        }"#,
+    );
+    let error = NllbConfig::from_json(&json).expect_err("the runtime only implements ReLU");
+    assert_eq!(
+        format!("{error:#}"),
+        "invalid NLLB config.json: unsupported activation_function \"gelu\"; spark-nllb implements only \"relu\""
+    );
+}
+
+#[test]
 fn parses_minimal_config() {
     let json = r#"{
         "d_model": 1024, "encoder_layers": 24, "decoder_layers": 24,
