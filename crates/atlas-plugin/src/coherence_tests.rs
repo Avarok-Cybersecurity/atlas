@@ -5,11 +5,9 @@
 
 use super::*;
 
-/// Does the answer text satisfy the check? Mirrors `ask`'s decision so the
-/// matching rule can be tested without a server.
+/// Exercise the same decision seam as `ask`, without a server.
 fn accepts(check: &Check, answer: &str) -> bool {
-    let lowered = answer.to_lowercase();
-    check.accept.iter().any(|a| lowered.contains(a))
+    super::judge(answer, "", check.accept).0
 }
 
 fn check(label: &str) -> &'static Check {
@@ -34,37 +32,42 @@ fn a_model_answering_correctly_passes_however_it_phrases_it() {
 #[test]
 fn a_wrong_or_empty_answer_fails() {
     let arith = check("arithmetic");
-    for answer in ["5", "", "I cannot help with that", "twenty-two"] {
+    for answer in [
+        "5",
+        "",
+        "I cannot help with that",
+        "twenty-two",
+        "14",
+        "404",
+        "fourteen",
+    ] {
         assert!(!accepts(arith, answer), "should reject {answer:?}");
     }
-    // "22" contains no "4" — a garbled quantization producing digits is not a pass.
     assert!(!accepts(arith, "22"));
     assert!(!accepts(check("recall"), "London"));
 }
 
 #[test]
 fn the_checks_cover_two_different_faculties() {
-    // Arithmetic and recall fail independently; a probe made of two arithmetic
-    // questions would be one signal counted twice.
-    assert_eq!(CHECKS.len(), 2);
-    assert!(CHECKS.iter().any(|c| c.label == "arithmetic"));
-    assert!(CHECKS.iter().any(|c| c.label == "recall"));
-}
-
-#[test]
-fn every_accept_pattern_is_lower_case() {
-    // `accepts` lower-cases the answer, so an upper-case pattern could never
-    // match and the check would silently always fail.
-    for c in CHECKS {
-        for pattern in c.accept {
-            assert_eq!(
-                *pattern,
-                pattern.to_lowercase(),
-                "{}: {pattern:?} must be lower-case",
-                c.label
-            );
-        }
-    }
+    assert_eq!(
+        CHECKS
+            .iter()
+            .map(|check| (check.label, check.prompt, check.accept))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "arithmetic",
+                "What is 2+2? Reply with only the number.",
+                &["4", "four"][..],
+            ),
+            (
+                "recall",
+                "What is the capital of France? Reply with only the city name.",
+                &["paris"][..],
+            ),
+        ],
+        "the two probes must retain distinct faculties and their measured prompts"
+    );
 }
 
 #[test]
