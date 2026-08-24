@@ -84,12 +84,7 @@ pub fn colors_in_order(reply: &str, palette: &[&str]) -> Vec<String> {
     let lower = reply.to_lowercase();
     let mut hits: Vec<(usize, String)> = Vec::new();
     for c in palette {
-        if let Some(at) = lower.match_indices(c).find_map(|(at, _)| {
-            let before = lower[..at].chars().next_back();
-            let after = lower[at + c.len()..].chars().next();
-            let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
-            (!before.is_some_and(is_word) && !after.is_some_and(is_word)).then_some(at)
-        }) {
+        if let Some(at) = crate::benchmarks::first_standalone_term(&lower, c) {
             hits.push((at, (*c).to_string()));
         }
     }

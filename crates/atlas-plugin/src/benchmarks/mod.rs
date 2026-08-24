@@ -74,6 +74,27 @@ pub(crate) fn content_stamp<'a>(
     format!("{prefix}-{acc:016x}")
 }
 
+/// First occurrence of a lowercased term outside an identifier-like word.
+pub(crate) fn first_standalone_term(haystack: &str, term: &str) -> Option<usize> {
+    let first = term.chars().next()?;
+    let last = term.chars().next_back()?;
+    let continues = |edge: char, adjacent: char| {
+        adjacent == '_'
+            || if edge.is_numeric() {
+                adjacent.is_numeric()
+            } else {
+                adjacent.is_alphanumeric()
+            }
+    };
+    haystack.match_indices(term).find_map(|(at, _)| {
+        let before = haystack[..at].chars().next_back();
+        let after = haystack[at + term.len()..].chars().next();
+        (!before.is_some_and(|adjacent| continues(first, adjacent))
+            && !after.is_some_and(|adjacent| continues(last, adjacent)))
+        .then_some(at)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
