@@ -28,7 +28,7 @@ export const LINKS = {
   atlasRepo: 'https://github.com/Avarok-Cybersecurity/atlas',
   atlasSite: 'https://atlasinference.io',
   atlasLicense: 'https://github.com/Avarok-Cybersecurity/atlas/blob/main/LICENSE',
-  discord: 'https://discord.gg/6vDbKaKrKD',
+  discord: 'https://discord.gg/RQcGakU2jW',
   webgpu: 'https://www.w3.org/TR/webgpu/'
 } as const;
 

@@ -79,6 +79,8 @@ pub enum KernelArg<'a> {
     Bytes(&'a [u8]),
 }
 
+pub use crate::gpu_args::pack_kernel_args;
+
 /// GPU backend trait — SBIO IORouter for all CUDA operations.
 ///
 /// Implementations: `AtlasCudaBackend` (production), `MockGpuBackend` (tests).
@@ -166,21 +168,10 @@ pub trait GpuBackend: Send + Sync {
         // CUDA-compatible default: each arg becomes one u64 slot. The
         // storage stays alive across the launch call so the *mut c_void
         // pointers we hand to `launch()` remain valid.
-        let mut storage: Vec<u64> = Vec::with_capacity(args.len());
-        for arg in args {
-            match arg {
-                KernelArg::Buffer(p) => storage.push(p.0),
-                KernelArg::Bytes(b) => {
-                    let mut slot = [0u8; 8];
-                    let n = b.len().min(8);
-                    slot[..n].copy_from_slice(&b[..n]);
-                    storage.push(u64::from_le_bytes(slot));
-                }
-            }
-        }
-        let mut params: Vec<*mut std::ffi::c_void> = storage
+        let (storage, starts) = pack_kernel_args(args);
+        let mut params: Vec<*mut std::ffi::c_void> = starts
             .iter()
-            .map(|v| v as *const u64 as *mut std::ffi::c_void)
+            .map(|&i| &storage[i] as *const u64 as *mut std::ffi::c_void)
             .collect();
         self.launch(func, grid, block, shared_mem, stream, &mut params)
     }

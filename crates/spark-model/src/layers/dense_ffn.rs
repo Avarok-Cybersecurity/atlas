@@ -1571,7 +1571,45 @@ impl DenseFfnLayer {
         ops::w4a16_gemm(ctx.gpu, self.w4a16_gemm, input, w, output, m, n, k, stream)
     }
 
+    /// Timed wrapper around the dense-FFN prefill.
+    ///
+    /// ★ THIS PATH HAD NO TIMERS AT ALL, and that hid the largest unexplained
+    /// number on the board. Profiling nvidia/Gemma-4-31B-IT-NVFP4 at a
+    /// 4096-token prompt: wall 28,180 ms, while EVERY profiled phase across
+    /// `ATTN prefill [...]` and `MoE prefill [...]` summed to 3,269.8 ms. 88% of
+    /// the prefill was invisible — not attributed to something slow, simply not
+    /// instrumented. `forward_prefill` dispatches ~20 quantization arms and none
+    /// of them reported elapsed time; only one-shot "which arm was chosen" INFO
+    /// lines existed.
+    ///
+    /// One coarse timer first, deliberately: it answers whether the missing time
+    /// is here at all before anyone threads timers through twenty arms. Same
+    /// `<AREA> prefill [phase] N=<n>: <us>µs` shape the attention and MoE paths
+    /// already emit, so the existing log-summing one-liners pick it up unchanged.
     pub fn forward_prefill(
+        &self,
+        input: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if !ctx.profile {
+            return self.forward_prefill_inner(input, num_tokens, ctx, stream);
+        }
+        let t0 = std::time::Instant::now();
+        let r = self.forward_prefill_inner(input, num_tokens, ctx, stream);
+        // Sync so the figure is the kernel's, not the launch queue's — the
+        // attention and MoE timers do the same under `ctx.profile`.
+        ctx.gpu.synchronize(stream)?;
+        tracing::info!(
+            "  FFN prefill [dense_total] N={}: {}µs",
+            num_tokens,
+            t0.elapsed().as_micros()
+        );
+        r
+    }
+
+    fn forward_prefill_inner(
         &self,
         input: DevicePtr,
         num_tokens: usize,
@@ -2268,6 +2306,35 @@ impl DenseFfnLayer {
                 stream,
             )?;
         }
+        // Per-projection timers. `dense_total` localised 23.7 s of a 28.2 s
+        // Gemma-4-31B prefill to this function; these say WHICH of the three
+        // projections it is. Roofline for that shape: 3 x 5376 x 21504 x 4012 tok
+        // x 60 layers = 167 TFLOP, so 23.7 s is ~7 TFLOP/s against a bf16
+        // tensor-core peak two orders higher — a hypothesis these numbers test
+        // rather than assume.
+        // ★ PER-STEP, NOT CUMULATIVE. The first version of this timer measured
+        // elapsed-since-one-start at each of the three call sites, so `up_proj`
+        // included `gate_proj` and `down_proj` included both — and the summed
+        // "total profiled" then exceeded the wall clock, which is the tell.
+        macro_rules! ffn_step {
+            ($label:expr, $t0:expr) => {
+                if ctx.profile {
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "  FFN prefill [{}] N={}: {}µs",
+                        $label,
+                        num_tokens,
+                        $t0.elapsed().as_micros()
+                    );
+                    #[allow(unused_assignments)]
+                    {
+                        $t0 = std::time::Instant::now();
+                    }
+                }
+            };
+        }
+        #[allow(unused_mut, unused_assignments)]
+        let mut t_ffn = std::time::Instant::now();
         // gate_proj GEMM: [M, H] → [M, inter]
         w4_gemm!(
             &self.weights.gate_proj,
@@ -2282,6 +2349,7 @@ impl DenseFfnLayer {
             h,
             true
         );
+        ffn_step!("gate_proj", t_ffn);
         // up_proj GEMM: [M, H] → [M, inter]
         w4_gemm!(
             &self.weights.up_proj,
@@ -2296,6 +2364,7 @@ impl DenseFfnLayer {
             h,
             true
         );
+        ffn_step!("up_proj", t_ffn);
 
         // activation(gate) * up for all M tokens (SiLU or GELU)
         let fused_down_quant = fp4mmq_down && self.nvfp4_silu_quant_k.0 != 0;
@@ -2398,6 +2467,7 @@ impl DenseFfnLayer {
             inter,
             false
         );
+        ffn_step!("down_proj", t_ffn);
         // FP4-MMQ down: fold the down-projection's per-tensor scale2 (no SiLU-mul here;
         // the consumer is the residual add).
         if fp4mmq_down {

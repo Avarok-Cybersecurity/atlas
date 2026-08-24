@@ -56,3 +56,10 @@ hyper_connection = "hyper_connection"
 csa_compress = "csa_compress"
 # CSA prefill attention over [raw causal | compressed windowed] KV + sink.
 prefill_attn_compressed = "prefill_attn_compressed"
+
+# The fused silu_mul_quant_fp8 entry point is deliberately absent from this
+# swiglu_limit shadow of moe_silu_mul.cu: the launch site checks the kernel
+# handle and falls back to the unfused silu_mul → per_token_group_quant_fp8
+# pair (see fused_silu_quant_ok in forward_prefill_fp8.rs).
+[shadow_exempt]
+moe_silu_mul = ["silu_mul_quant_fp8"]

@@ -477,12 +477,19 @@ impl Qwen3AttentionLayer {
                 "dense_gemm_bf16_pipelined",
             ),
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
-            prefill_attn_512_k: gate(
-                probes.wide_head_dim,
-                gpu,
-                "inferspark_prefill_512",
-                "inferspark_prefill_512",
-            ),
+            // Name comes from the SSOT helper that also supplies the BR the
+            // launcher builds its grid from — see `ops::wide_prefill_kernel`.
+            // Module and entry share a name for both variants.
+            // Resolved WITH FALLBACK — see `ops::wide_prefill_kernel`. A target
+            // that ships only the scalar HDIM=512 kernel must still get it.
+            prefill_attn_512_k: if probes.wide_head_dim {
+                crate::layers::ops::wide_prefill_kernel(gpu).0
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            },
+            // BR=32 is the tensor-core instantiation; BR=16 the scalar reference.
+            prefill_attn_512_is_tc: probes.wide_head_dim
+                && crate::layers::ops::wide_prefill_kernel(gpu).1 == 32,
             // DeepSeek-V4 sparse-attention compressor + compressed-KV prefill.
             csa_compress_k: gate(probes.compressed_attn, gpu, "csa_compress", "csa_compress"),
             prefill_attn_compressed_k: gate(

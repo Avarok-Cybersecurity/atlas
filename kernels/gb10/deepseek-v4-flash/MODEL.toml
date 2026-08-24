@@ -92,6 +92,23 @@ fp8_kv_calibration_tokens = 256
 # that probes the handle and the resolved fallback it falls back to; none
 # are silenced speculatively.
 
+[expected_absent.prefill_attn]
+inferspark_prefill_512tc = """
+Tensor-core HDIM=512 prefill, an instantiation of the shared
+`inferspark_prefill` at BC=16. `ops::wide_prefill_kernel` probes for it on every
+target whose `wide_head_dim` gate is on, and this model trips that gate through
+`kv_lora_rank = 512` rather than through genuinely 512-wide attention heads.
+
+NOT APPLICABLE HERE, and not merely unshipped. This target's 512 path is MLA with
+a per-head attention sink, launched by `prefill_attention_512_sink` against a
+TWELVE-parameter `inferspark_prefill_512` (the shared tensor-core kernel takes
+eleven, and a signature mismatch makes cuLaunchKernel read past the caller's
+argument array — a host segfault with no CUDA error). Wiring the TC kernel into
+the MLA path is separate work with its own correctness argument.
+
+The probe falls back to the scalar `inferspark_prefill_512`, which IS shipped
+here, so behaviour is unchanged."""
+
 [expected_absent.w4a16]
 w4a16_gemm_t_p3 = """
 3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.

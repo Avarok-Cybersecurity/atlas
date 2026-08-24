@@ -105,6 +105,8 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     fn cuMemAlloc_v2(dptr: *mut u64, bytesize: usize) -> i32;
+    fn cuMemFree_v2(dptr: u64) -> i32;
+    fn cuStreamSynchronize(stream: u64) -> i32;
 }
 
 struct Ctx {
@@ -150,6 +152,44 @@ fn ctx() -> Result<&'static Ctx> {
         ws_size,
     });
     Ok(CTX.get().unwrap())
+}
+
+/// Force cuBLASLt's one-time costs at MODEL LOAD instead of on request 1.
+///
+/// The lazy `ctx()` means the first GEMM pays `cublasLtCreate`, the 64 MB
+/// workspace alloc, and — the expensive part — the library's kernel-image
+/// load and heuristic warm-up. Measured on the 35B flagship (2026-08-22,
+/// dgx1): the first in-serve request read ~0.9 s slower than warm requests
+/// once QKVZ routed through cuBLASLt, and cold TTFT is a headline metric.
+/// One 64x64x64 BF16 GEMM here is trivial GPU work and moves that cost to
+/// load time, where it overlaps the operator's mental model of "loading".
+///
+/// Never fails the serve: a pre-warm failure is logged and swallowed — the
+/// lazy path remains and request 1 simply pays the old cost.
+pub fn prewarm(stream: u64) {
+    let r = (|| -> Result<()> {
+        let bytes = 64usize * 64 * 2;
+        let mut a = 0u64;
+        let mut b = 0u64;
+        let mut d = 0u64;
+        unsafe {
+            chk(cuMemAlloc_v2(&mut a, bytes), "prewarm alloc a")?;
+            chk(cuMemAlloc_v2(&mut b, bytes), "prewarm alloc b")?;
+            chk(cuMemAlloc_v2(&mut d, bytes), "prewarm alloc d")?;
+        }
+        let res = bf16_gemm_act_weight_t(a, b, d, 64, 64, 64, stream);
+        unsafe {
+            chk(cuStreamSynchronize(stream), "prewarm sync")?;
+            let _ = cuMemFree_v2(a);
+            let _ = cuMemFree_v2(b);
+            let _ = cuMemFree_v2(d);
+        }
+        res
+    })();
+    match r {
+        Ok(()) => tracing::info!("cuBLASLt pre-warmed (handle + workspace + kernel images)"),
+        Err(e) => tracing::warn!("cuBLASLt pre-warm failed (request 1 pays lazy init): {e}"),
+    }
 }
 
 fn chk(status: i32, what: &str) -> Result<()> {

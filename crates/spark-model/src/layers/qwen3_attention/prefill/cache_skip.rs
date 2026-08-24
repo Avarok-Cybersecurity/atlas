@@ -625,7 +625,8 @@ impl Qwen3AttentionLayer {
                 .arg_u32(hd)
                 .launch(stream)?;
         }
-        if hd > 256 && self.prefill_attn_512_k.0 != 0 {
+        let wide_head_path = hd > 256 && self.prefill_attn_512_k.0 != 0;
+        if wide_head_path {
             // HDIM=512: use scalar reference kernel (BR=16, correct for any head_dim)
             // Full-attention layers (this path) always pass sliding_window=0.
             ops::prefill_attention(
@@ -690,7 +691,21 @@ impl Qwen3AttentionLayer {
                 .arg_u32(hd)
                 .launch(stream)?;
         }
-        aprof!("flash_attn_64", t0);
+        // ★ The two branches above run DIFFERENT kernels — `inferspark_prefill_512`
+        // for wide heads, `prefill_attention_64` otherwise — and this label named
+        // the second for BOTH. Profiling Gemma-4, whose 5 global layers are
+        // 512-wide, therefore attributed 16,484 ms of an 18,078 ms prefill to
+        // "flash_attn_64" — a kernel that accounts for 49.7 ms across its 25
+        // sliding layers. Two successive root-cause hypotheses were built on that
+        // label and both were wrong. Name the kernel that actually ran.
+        aprof!(
+            match (wide_head_path, self.prefill_attn_512_is_tc) {
+                (true, true) => "flash_attn_512_tc",
+                (true, false) => "flash_attn_512_scalar",
+                _ => "flash_attn_64",
+            },
+            t0
+        );
         t0 = if ctx.profile {
             ctx.gpu.synchronize(stream)?;
             Some(std::time::Instant::now())

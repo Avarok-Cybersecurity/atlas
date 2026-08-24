@@ -219,6 +219,8 @@ fn launch_wy2(
         .arg_u32(CONV_DIM as u32) // qk_stride
         .arg_u32(CONV_DIM as u32) // v_stride
         .arg_u32((NV * 2) as u32) // gb_stride
+        // state_is_table=0. Absent, this passed 16 args against 17 and died.
+        .arg_u32(0)
         .launch(0)
 }
 
