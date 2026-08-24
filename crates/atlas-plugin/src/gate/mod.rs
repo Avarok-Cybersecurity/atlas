@@ -210,6 +210,11 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[path = "tests.rs"]
 mod tests;
 
+/// Construction and replay contracts split from `tests.rs` for its LoC cap.
+#[cfg(test)]
+#[path = "record_contract_tests.rs"]
+mod record_contract_tests;
+
 #[cfg(test)]
 #[path = "variant_tests.rs"]
 mod variant_tests;

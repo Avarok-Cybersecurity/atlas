@@ -127,174 +127,31 @@ pub(super) fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> Gat
 }
 
 #[test]
-fn date_of_matches_the_utc_civil_calendar() {
-    assert_eq!(date_of(0), "1970-01-01");
-    assert_eq!(date_of(1_785_891_382), "2026-08-05");
-    // Leap-year boundary.
-    assert_eq!(date_of(1_709_251_200), "2024-03-01");
-    // The last second of a year.
-    assert_eq!(date_of(1_735_689_599), "2024-12-31");
-}
-
-#[test]
-fn the_record_path_is_date_and_sha_and_replaces_a_same_day_rerun() {
-    let dir = tempdir::Dir::new();
-    let p1 = record_path(dir.path(), "bfcl-subset", 1_785_891_382, SHA);
-    assert!(p1.ends_with(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json"));
-    let p2 = record_path(dir.path(), "bfcl-subset", 1_785_891_382 + 3_600, SHA);
-    assert_eq!(p1, p2, "same sha + UTC day = same file");
-}
-
-#[test]
-fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
-    let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
-    assert!(
-        GateRecord::from_run(
-            &record,
-            hw(),
-            String::new(),
-            Vec::new(),
-            None,
-            Default::default()
-        )
-        .is_err()
-    );
-
-    let mut running = record.clone();
-    running.frame.status = RunStatus::Running;
-    assert!(
-        GateRecord::from_run(
-            &running,
-            hw(),
-            SHA.into(),
-            Vec::new(),
-            None,
-            Default::default()
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn from_run_reconstructs_the_exact_cli_command() {
-    let mut metrics = BTreeMap::new();
-    metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
-    let joined = gate.command.join(" ");
-    assert!(
-        joined.starts_with("spark benchmark run bfcl-subset"),
-        "{joined}"
-    );
-    assert!(
-        joined.contains("--model Qwen/Qwen3.6-35B-A3B-FP8"),
-        "{joined}"
-    );
-    assert!(joined.contains("--param repeats=12"), "{joined}");
-    assert!(joined.ends_with("--pull-request-gate"), "{joined}");
-    assert_eq!(gate.verdict.as_deref(), Some("PASS"));
-    assert_eq!(gate.frame_status, RunStatus::Completed);
-}
-
-#[test]
-fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
-    // The gate served this itself on an ephemeral port. Naming that port would
-    // give a command that drives nothing (or, worse, whatever else is on 8888
-    // later), and a --model the caller never chose. What actually determined
-    // the config is the recipe, so that is what the record carries — and the
-    // command replays by asking for the same benchmark again.
-    let mut metrics = BTreeMap::new();
-    metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
-        Default::default(),
-    )
-    .unwrap();
-    let joined = gate.command.join(" ");
-    assert!(!joined.contains("--url"), "no dead endpoint: {joined}");
-    assert!(!joined.contains("--model"), "the recipe chose it: {joined}");
-    assert!(joined.ends_with("--pull-request-gate"), "{joined}");
-    assert_eq!(
-        gate.served_by.as_deref(),
-        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth")
-    );
-    // The model is still recorded on its own field — the run must always be
-    // able to say what it measured, however the endpoint was obtained.
-    assert_eq!(gate.target_model, MODEL);
-}
-
-#[test]
-fn the_agentic_bench_needs_yes_in_its_command() {
-    let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
-    record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
-    assert!(gate.command.contains(&"--yes".to_string()));
-}
-
-#[test]
-fn a_failed_frame_is_recorded_but_never_passes() {
-    let record = RunRecord {
-        frame: frame(
-            RunStatus::Failed,
-            BTreeMap::new(),
-            Verdict::fail("scoring crashed"),
-        ),
-        ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
-    };
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
-    assert!(gate.frame_status_failed());
-    assert!(!gate.verdict_passes());
-}
-
-#[test]
 fn compare_enforces_min_max_and_noise() {
     let floor = Bound {
         min: Some(83.64),
         noise: Some(0.4),
         ..Bound::default()
     };
-    assert!(matches!(compare("x", 84.0, &floor), Comparison::Pass));
-    assert!(
-        matches!(compare("x", 83.3, &floor), Comparison::Pass),
-        "noise covers the dip"
-    );
-    assert!(matches!(compare("x", 83.0, &floor), Comparison::Fail(_)));
+    assert!(matches!(compare("x", 83.24, &floor), Comparison::Pass));
+    assert!(matches!(
+        compare("x", 83.23, &floor),
+        Comparison::Fail(reason)
+            if reason == "x 83.23 is below the floor 83.64 (noise 0.40)"
+    ));
 
     let ceiling = Bound {
         max: Some(1300.0),
         ..Bound::default()
     };
-    assert!(matches!(compare("wall", 978.0, &ceiling), Comparison::Pass));
     assert!(matches!(
-        compare("wall", 1400.0, &ceiling),
-        Comparison::Fail(_)
+        compare("wall", 1300.0, &ceiling),
+        Comparison::Pass
+    ));
+    assert!(matches!(
+        compare("wall", 1300.01, &ceiling),
+        Comparison::Fail(reason)
+            if reason == "wall 1300.01 is above the ceiling 1300.00 (noise 0.00)"
     ));
 
     // A two-sided bound is a RANGE, not a malformed entry. It used to be
@@ -308,12 +165,20 @@ fn compare_enforces_min_max_and_noise() {
         max: Some(2.0),
         ..Bound::default()
     };
-    assert!(matches!(compare("x", 1.5, &range), Comparison::Pass));
-    assert!(matches!(compare("x", 2.5, &range), Comparison::Fail(_)));
+    assert!(matches!(compare("x", 1.0, &range), Comparison::Pass));
+    assert!(matches!(compare("x", 2.0, &range), Comparison::Pass));
+    assert!(matches!(
+        compare("x", 2.01, &range),
+        Comparison::Fail(reason)
+            if reason == "x 2.01 is outside [1.00, 2.00] (noise 0.00)"
+    ));
 
     // A bound with NO side is the genuinely malformed case.
     let no_side = Bound::default();
-    assert!(matches!(compare("x", 1.5, &no_side), Comparison::Skip(_)));
+    assert!(matches!(
+        compare("x", 1.5, &no_side),
+        Comparison::Skip(reason) if reason == "x has no bound"
+    ));
 }
 
 #[test]
@@ -338,9 +203,12 @@ fn check_record_refuses_a_cross_checkpoint_comparison() {
         },
     );
     let baseline = baseline_for("some-other-model", metrics);
-    let problems = check_record(&gate, &baseline).expect("refused");
-    assert!(problems[0].contains(MODEL), "{}", problems[0]);
-    assert!(problems[0].contains("some-other-model"), "{}", problems[0]);
+    assert_eq!(
+        check_record(&gate, &baseline),
+        Some(vec![format!(
+            "no baseline for model {MODEL:?} on \"gb10\"; it has [some-other-model]"
+        )])
+    );
 }
 
 #[test]
@@ -361,9 +229,13 @@ fn check_record_refuses_a_cross_hardware_comparison() {
         gpu: "AMD Instinct MI300X".to_string(),
         ..Hardware::default()
     };
-    let problems = check_record(&gate, &bfcl_baseline()).expect("refused");
-    assert!(problems[0].contains("instinctmi300x"), "{}", problems[0]);
-    assert!(problems[0].contains(TEST_HW), "{}", problems[0]);
+    assert_eq!(
+        check_record(&gate, &bfcl_baseline()),
+        Some(vec![
+            "no baseline for hardware \"instinctmi300x\"; this benchmark has entries for [gb10]"
+                .into()
+        ])
+    );
 }
 
 #[test]
@@ -382,8 +254,12 @@ fn an_unknown_fingerprint_never_silently_matches() {
     .unwrap();
     gate.hardware = Hardware::unknown();
     assert_eq!(gate.hardware.gate_key(), "unknown");
-    let problems = check_record(&gate, &bfcl_baseline()).expect("refused");
-    assert!(problems[0].contains("unknown"), "{}", problems[0]);
+    assert_eq!(
+        check_record(&gate, &bfcl_baseline()),
+        Some(vec![
+            "no baseline for hardware \"unknown\"; this benchmark has entries for [gb10]".into()
+        ])
+    );
 }
 
 #[test]
@@ -415,14 +291,21 @@ fn check_record_scores_every_bound_and_missing_metric() {
         },
     );
     let baseline = baseline_for(MODEL, metrics);
-    let problems = check_record(&gate, &baseline).expect("samples missing");
-    assert!(
-        problems.iter().any(|p| p.starts_with("samples")),
-        "{problems:?}"
+    assert_eq!(
+        check_record(&gate, &baseline),
+        Some(vec!["samples: missing from the record".into()])
     );
 
     let passing = bfcl_baseline();
     assert!(check_record(&gate, &passing).is_none());
+    let mut below_floor = gate;
+    below_floor.metrics.insert("overall_accuracy".into(), 80.0);
+    assert_eq!(
+        check_record(&below_floor, &passing),
+        Some(vec![
+            "overall_accuracy 80.00 is below the floor 83.64 (noise 0.00)".into()
+        ])
+    );
 }
 
 #[test]
@@ -440,10 +323,17 @@ fn write_and_read_round_trip_through_the_repo_layout() {
     )
     .unwrap();
     let path = write_record(dir.path(), &gate).unwrap();
-    assert!(path.starts_with(dir.path().join(".benchmarks")));
+    assert_eq!(
+        path,
+        dir.path()
+            .join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json")
+    );
     let back = read_record(&path).unwrap();
-    assert_eq!(back.git_sha, SHA);
-    assert_eq!(back.metrics["overall_accuracy"], 87.74);
+    assert_eq!(
+        serde_json::to_value(&back).unwrap(),
+        serde_json::to_value(&gate).unwrap()
+    );
+    assert!(std::fs::read_to_string(path).unwrap().ends_with("\n"));
 }
 
 pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) {
@@ -482,15 +372,27 @@ fn check_gates_reports_each_required_bench() {
     // ttft-cold-gate: nothing planted at all.
 
     let gates = check_gates(root, SHA);
-    assert!(matches!(gates["bfcl-subset"], GateStatus::Pass));
-    assert!(
-        matches!(&gates["ttft-warm-gate"], GateStatus::Missing(m) if m.contains("aaaaaaaaaa")),
-        "{:?}",
-        gates["ttft-warm-gate"]
-    );
-    assert!(matches!(gates["ttft-cold-gate"], GateStatus::Missing(_)));
-    match &gates["agentic-webserver"] {
-        GateStatus::Fail(reasons) => assert!(reasons.iter().any(|r| r.contains("not PASS"))),
-        other => panic!("wanted Fail, got {other:?}"),
-    }
+    let actual: BTreeMap<_, _> = gates
+        .iter()
+        .map(|(id, status)| {
+            let class = match status {
+                GateStatus::Pass => "Pass",
+                GateStatus::Fail(_) => "Fail",
+                GateStatus::Missing(_) => "Missing",
+            };
+            (id.as_str(), class)
+        })
+        .collect();
+    let mut expected: BTreeMap<_, _> = REQUIRED_GATES.map(|id| (id, "Missing")).into();
+    expected.insert("bfcl-subset", "Pass");
+    expected.insert("agentic-webserver", "Fail");
+    assert_eq!(actual, expected);
+    assert!(matches!(
+        &gates["ttft-warm-gate"],
+        GateStatus::Missing(reason) if reason.contains("aaaaaaaaaa")
+    ));
+    assert!(matches!(
+        &gates["agentic-webserver"],
+        GateStatus::Fail(reasons) if reasons == &["run verdict is not PASS: ok"]
+    ));
 }

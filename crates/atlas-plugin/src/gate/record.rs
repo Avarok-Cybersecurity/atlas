@@ -396,7 +396,7 @@ impl GateRecord {
         served_by: Option<String>,
         serve_overrides: BTreeMap<String, String>,
     ) -> Result<Self> {
-        if git_sha.is_empty() {
+        if git_sha.trim().is_empty() {
             bail!("a gate record needs the commit sha it was measured from");
         }
         let frame = &record.frame;
