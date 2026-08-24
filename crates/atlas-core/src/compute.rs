@@ -255,24 +255,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vendor_from_str() {
+    fn vendor_parse_accepts_supported_names() {
         assert_eq!(Vendor::parse("nvidia"), Some(Vendor::Nvidia));
         assert_eq!(Vendor::parse("CUDA"), Some(Vendor::Nvidia));
         assert_eq!(Vendor::parse("amd"), Some(Vendor::Amd));
         assert_eq!(Vendor::parse("rocm"), Some(Vendor::Amd));
+        assert_eq!(Vendor::parse("hip"), Some(Vendor::Amd));
         assert_eq!(Vendor::parse("apple"), Some(Vendor::Apple));
         assert_eq!(Vendor::parse("metal"), Some(Vendor::Apple));
         assert_eq!(Vendor::parse("intel"), Some(Vendor::Intel));
+        assert_eq!(Vendor::parse("oneapi"), Some(Vendor::Intel));
+        assert_eq!(Vendor::parse("sycl"), Some(Vendor::Intel));
         assert_eq!(Vendor::parse("unknown"), None);
     }
 
     #[test]
-    fn nvidia_target_extensions() {
-        if let Some(target) = NvidiaTarget::new() {
-            assert_eq!(target.source_extension(), "cu");
-            assert_eq!(target.output_extension(), "ptx");
-            assert!(target.output_is_text());
-            assert_eq!(target.vendor(), Vendor::Nvidia);
-        }
+    fn nvidia_target_metadata() {
+        let target = NvidiaTarget::with_compiler(PathBuf::from("nvcc"));
+        assert_eq!(target.source_extension(), "cu");
+        assert_eq!(target.output_extension(), "ptx");
+        assert!(target.output_is_text());
+        assert_eq!(target.vendor(), Vendor::Nvidia);
     }
 }

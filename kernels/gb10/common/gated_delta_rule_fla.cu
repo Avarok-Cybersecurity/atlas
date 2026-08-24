@@ -200,6 +200,63 @@ __device__ __forceinline__ void mma_gram(
 //   W_out: [.. ][CHUNK][K_DIM]   = T·(β·exp(gc)·K)
 // where T=(I+L)⁻¹ applied by forward-substitution (parallel over the V/K cols).
 // smem: sk_bf(16K) + kk(16K f32) + L(16K f32) + gc(256) ≈ 48.25KB.
+#define RL_BLK 16   // right-looking block width; see the note below
+
+// ── MEASURED (2026-08-22) ───────────────────────────────────────────────────
+// ★ MEASURE THIS KERNEL AT nt=16 AND nt=64. Nothing measured at nt<=4 is
+// trustworthy: at nt=1 the grid is 32 CTAs over ~48 SMs, so the GPU is
+// UNDERFILLED and occupancy never binds. One candidate below read 1.60x at
+// nt=1 and 0.92x at nt=64 — the sign flipped. Use
+// `ATLAS_WU_SHAPES=1024,4096` with `WU_BENCH_ITERS` in
+// `examples/gdn_recompute_wu_gateb.rs`.
+//
+// WHERE THE TIME GOES. Against a solve-removed probe, the prologue (gc scan,
+// K load, mma_gram, L build) is 14.3/16.4/20.5 us vs 68.9/96.6/140.8 for the
+// whole kernel: the two forward-substitution passes are 79-85% of it.
+//
+// SHARED-MEMORY ACCUMULATOR — REJECTED, and the first attempt to reject it was
+// itself wrong, so both halves are recorded.
+//   ptxas reports `256 bytes stack frame` here: `u[l]` is indexed by a runtime
+//   `l`, so the array cannot live in registers and goes to LOCAL memory. The
+//   obvious fix is shared memory.
+//   * First probe laid it out [tid][l] — stride CHUNK floats = 256 B between
+//     threads. Shared memory has 32 banks of 4 B, so every thread of a pass
+//     hit the SAME bank: a 32-way conflict. It measured 0.59-0.81x and that was
+//     read as "local memory is fine". It measured a bad LAYOUT.
+//   * Second probe laid it out [l][tid] — conflict-free — and measured
+//         nt=1  1.60x   nt=4  1.30x   nt=16 1.09x   nt=64  0.92x
+//     The win is real only where the GPU is underfilled. The extra 64 KB takes
+//     occupancy from 3 CTAs/SM to 1, and once the grid fills, that dominates.
+//     At the PRODUCTION shape it is an 8% REGRESSION.
+//   ⇒ Keep the local-memory accumulator. And note WHY: not because local memory
+//     is cheap, but because 64 KB of smem costs more at nt>=64. Any
+//     reformulation that buys speed with a materially larger smem footprint
+//     has to clear that bar — which is why a blocked triangular solve holding
+//     the solved rows in smem was drafted and rejected.
+//
+// FMA DEPENDENCY CHAIN — not the constraint. `for (l<i) ui -= L*u[l]` is a
+// dependent chain the compiler cannot reassociate, ~2048 deep per thread.
+// Splitting it into four independent partial sums (same FMA count, traffic,
+// smem and occupancy) measured NEUTRAL: 72.2/103.1/151.3 vs 71.8/100.1/151.1.
+//
+// WHAT WAS A WIN, both confirmed at production shapes:
+//   1. The serial gc prefix scan in the prologue (nt=16 9.7%, nt=64 7.0%).
+//   2. RIGHT-LOOKING blocked substitution in the two solve passes — 1.95x at
+//      nt=64 (n=3: 2408.6/2418.0/2427.1 -> 1238.2/1255.3/1233.2 us).
+//      The left-looking form re-read every earlier u[l] for each output,
+//      ~CHUNK^2/2 = 2048 local reads per thread. Right-looking keeps a running
+//      accumulator per row and pushes each solved block into the remaining rows
+//      ONCE: ~320 accesses, 6-8x fewer, with the block's solved values in
+//      REGISTERS. This is what the smem probe above was reaching for — it cut
+//      the same traffic but paid 64 KB and 3 CTAs/SM -> 1, a net loss at nt=64.
+//      This costs ~25 registers (3 -> 2 CTAs/SM) and no shared memory, and wins
+//      at EVERY shape: 2.28x/2.47x/2.03x/2.04x/2.12x at nt=1/2/4/16/64.
+//      ★ `r` in the diagonal-block loop MUST stay compile-time. With a runtime
+//      bound, `xb` is dynamically indexed and lands in LOCAL memory (ptxas: 320
+//      vs 256 byte stack frame), which is the exact traffic this exists to cut.
+//
+// ⚠ The gate harness for this kernel could not run at all until 2026-08-22, so
+// any pre-existing claim that something here "was tested" is suspect.
 // 256 threads: mma_gram is fenced to the first 4 warps, and the two independent
 // forward-subs run concurrently on the two thread halves instead of back-to-back.
 extern "C" __global__ void __launch_bounds__(256, 1)
@@ -261,12 +318,46 @@ gated_delta_rule_recompute_wu(
             ? key[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + j]
             : __float2bfloat16(0.0f);
     }
+    // ORDER-STABLE parallel gc scan (v2 — replaces the Hillis-Steele tree).
+    //
+    // ★ THE TREE SCAN COST 2.6 BFCL POINTS AND WAS REVERTED (2026-08-23).
+    // Bisect on the golden n=995 draw: full branch 83.02/80.72 vs floors
+    // 83.42/83.32, and the pscan-only build scored IDENTICALLY — while the
+    // clean base passed at 84.22/84.12 the same night. A tree scan
+    // re-associates this log-space cumulative sum, and gc feeds
+    // exp(gc_i - gc_l) across the whole L matrix: femto-scale association
+    // differences get amplified multiplicatively. cos 0.999999 with identical
+    // max-abs DID NOT catch it — the second such miss on this file (vfused
+    // SPLIT=4 was the first). Task-level gates are the only trustworthy
+    // verdict for numerics changes here.
+    //
+    // This version keeps the EXPENSIVE parts parallel — the 64 global gate
+    // loads and 64 logf calls, which are element-independent and order-free —
+    // and does the 64 ADDITIONS sequentially on one thread over smem-resident
+    // values, in the SAME order as the original serial scan. The summation is
+    // bit-identical to the pre-pscan kernel by construction; only the logf
+    // computation moved off the critical path.
+    for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
+        gc[idx] = (idx < ce)
+            ? logf(fmaxf(gate[(unsigned long long)(cs + idx) * gb_stride + vh], GATE_FLOOR))
+            : 0.0f;
+    }
+    __syncthreads();
     if (tid == 0) {
         float acc = 0.0f;
         for (unsigned int i = 0; i < ce; i++) {
-            acc += logf(fmaxf(gate[(unsigned long long)(cs + i) * gb_stride + vh], GATE_FLOOR));
+            acc += gc[i];
             gc[i] = acc;
-            gc_out[base * CHUNK + i] = acc;
+        }
+    }
+    __syncthreads();
+    // Publish, and zero the tail (defined zeros: the L build reads gc[i] up to
+    // CHUNK, and 0 * expf(garbage) can be NaN).
+    for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
+        if (idx >= ce) {
+            gc[idx] = 0.0f;
+        } else {
+            gc_out[base * CHUNK + idx] = gc[idx];
         }
     }
     __syncthreads();
@@ -291,30 +382,77 @@ gated_delta_rule_recompute_wu(
     // disjoint outputs (U_out vs W_out). At 128 threads they ran back-to-back;
     // at 256 they run concurrently on disjoint thread halves, which halves the
     // serial triangular-solve section that dominates this kernel.
-    // Pass 1: U[:,v] forward-sub (one thread per v-element).  U_i = β_i·V_i - Σ_{l<i} L[i][l]·U_l
+    // Pass 1 (RIGHT-LOOKING): U[:,v], one thread per v-element.
     if (tid < v_dim) {
-        float u[CHUNK];
+        float acc[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float ui = bi * (float)value[(unsigned long long)(cs + i) * v_stride + vh * v_dim + tid];
-            for (unsigned int l = 0; l < i; l++) ui -= L[i * CHUNK + l] * u[l];
-            u[i] = ui;
-            U_out[base * CHUNK * V_DIM + i * v_dim + tid] = __float2bfloat16(ui);
+            acc[i] = bi * (float)value[(unsigned long long)(cs + i) * v_stride + vh * v_dim + tid];
+        }
+        for (unsigned int jb = 0; jb < ce; jb += RL_BLK) {
+            float xb[RL_BLK];
+            // r MUST be compile-time or `xb` is dynamically indexed and lands in
+            // local memory — which is the very traffic this variant exists to cut.
+            #pragma unroll
+            for (unsigned int r = 0; r < RL_BLK; r++) {
+                if (jb + r >= ce) continue;
+                float x = acc[jb + r];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (q < r) x -= L[(jb + r) * CHUNK + jb + q] * xb[q];
+                }
+                xb[r] = x;
+                acc[jb + r] = x;
+                U_out[base * CHUNK * V_DIM + (jb + r) * v_dim + tid] = __float2bfloat16(x);
+            }
+            // Push this block's contribution into every remaining row ONCE.
+            for (unsigned int i = jb + RL_BLK; i < ce; i++) {
+                float a = acc[i];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (jb + q < ce) a -= L[i * CHUNK + jb + q] * xb[q];
+                }
+                acc[i] = a;
+            }
         }
     }
-    // Pass 2: W[:,k] forward-sub (one thread per k-element).  W_i = β_i·exp(gc_i)·K_i - Σ_{l<i} L[i][l]·W_l
-    const unsigned int wtid = tid - 128u;   // Pass 2 runs on the upper half
+    // Pass 2 (RIGHT-LOOKING): W[:,k], upper thread half.
+    const unsigned int wtid = tid - 128u;
     if (tid >= 128u && wtid < k_dim) {
-        float w[CHUNK];
+        float acc[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float wi = bi * expf(gc[i]) * (float)sk[i * K_DIM + wtid];
-            for (unsigned int l = 0; l < i; l++) wi -= L[i * CHUNK + l] * w[l];
-            w[i] = wi;
-            W_out[base * CHUNK * K_DIM + i * k_dim + wtid] = __float2bfloat16(wi);
+            acc[i] = bi * expf(gc[i]) * (float)sk[i * K_DIM + wtid];
+        }
+        for (unsigned int jb = 0; jb < ce; jb += RL_BLK) {
+            float xb[RL_BLK];
+            // r MUST be compile-time or `xb` is dynamically indexed and lands in
+            // local memory — which is the very traffic this variant exists to cut.
+            #pragma unroll
+            for (unsigned int r = 0; r < RL_BLK; r++) {
+                if (jb + r >= ce) continue;
+                float x = acc[jb + r];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (q < r) x -= L[(jb + r) * CHUNK + jb + q] * xb[q];
+                }
+                xb[r] = x;
+                acc[jb + r] = x;
+                W_out[base * CHUNK * K_DIM + (jb + r) * k_dim + wtid] = __float2bfloat16(x);
+            }
+            for (unsigned int i = jb + RL_BLK; i < ce; i++) {
+                float a = acc[i];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (jb + q < ce) a -= L[i * CHUNK + jb + q] * xb[q];
+                }
+                acc[i] = a;
+            }
         }
     }
 }
+
+
 
 // chunk_delta_h double-buffer: per-buffer smem holds {W,K,U} bf16 for one chunk.
 #define CDH_BUFSZ (CHUNK * (2 * K_DIM + V_DIM))   // 24576 bf16 = 48KB

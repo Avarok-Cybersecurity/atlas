@@ -254,10 +254,12 @@ fn every_colliding_target_declares_match_names() {
                 .push(t);
         }
     }
+    let mut colliding_groups = 0usize;
     for ((model_type, hidden), group) in by_pair {
         if group.len() < 2 {
             continue;
         }
+        colliding_groups += 1;
         for t in group {
             assert!(
                 !t.match_names.is_empty(),
@@ -267,6 +269,10 @@ fn every_colliding_target_declares_match_names() {
             );
         }
     }
+    assert!(
+        colliding_groups >= 2,
+        "expected the Nemotron and dense-27B collision groups, saw {colliding_groups}"
+    );
 }
 
 /// Mirror of build.rs's dominated-needle check: within a colliding
@@ -291,7 +297,11 @@ fn no_colliding_target_is_needle_dominated() {
                 .push(t);
         }
     }
+    let mut colliding_groups = 0usize;
     for ((model_type, hidden), group) in by_pair {
+        if group.len() >= 2 {
+            colliding_groups += 1;
+        }
         for a in &group {
             for b in &group {
                 if a.name == b.name {
@@ -312,6 +322,10 @@ fn no_colliding_target_is_needle_dominated() {
             }
         }
     }
+    assert!(
+        colliding_groups >= 2,
+        "expected the Nemotron and dense-27B collision groups, saw {colliding_groups}"
+    );
 }
 
 /// The (qwen3_6_moe, 5120) belt-and-braces tier — the hypothetical MoE
@@ -339,10 +353,12 @@ fn qwen36_moe_beltandbraces_tier_resolves_uncontested() {
 fn kernel_source_redirects_are_wellformed() {
     let parsed = parse_targets();
     let names: Vec<&str> = parsed.iter().map(|t| t.name).collect();
+    let mut redirects = 0usize;
     for t in &parsed {
         let Some(src) = &t.kernel_source else {
             continue;
         };
+        redirects += 1;
         assert!(
             names.contains(&src.as_str()),
             "{}: kernel_source '{src}' names no gb10 target",
@@ -360,6 +376,7 @@ fn kernel_source_redirects_are_wellformed() {
             t.name
         );
     }
+    assert!(redirects > 0, "no kernel_source redirects were checked");
 }
 
 /// qwen3.8-27b exists, reuses qwen3.6-27b's kernels, and keeps the

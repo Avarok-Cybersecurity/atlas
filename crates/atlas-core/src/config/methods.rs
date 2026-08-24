@@ -382,12 +382,14 @@ mod tests {
     use super::ModelConfig;
 
     #[test]
-    fn compressed_deepseek_v4_requires_auxiliary_prefix_state() {
+    fn any_compressed_deepseek_v4_layer_is_not_kv_cache_complete() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
         config.model_type = "deepseek_v4".to_string();
-        config.compress_ratios = vec![0, 4, 128];
 
-        assert!(!config.kv_only_prefix_cache_is_safe());
+        for ratios in [vec![4, 0, 0], vec![0, 4, 0], vec![0, 0, 128]] {
+            config.compress_ratios = ratios;
+            assert!(!config.kv_only_prefix_cache_is_safe());
+        }
     }
 
     #[test]

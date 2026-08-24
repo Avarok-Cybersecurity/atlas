@@ -45,9 +45,13 @@ fn the_capture_keeps_both_ends_and_says_what_it_dropped() {
 fn a_character_split_across_the_seam_is_not_mangled() {
     // Head and tail decoded separately would each see half of the two-byte `é`
     // and emit a replacement character.
+    let text = format!("x{}y", "é".repeat(CAPTURE_END - 1));
+    assert_eq!(text.len(), 2 * CAPTURE_END);
+    assert!(!text.is_char_boundary(CAPTURE_END));
+
     let mut capture = Capture::default();
-    capture.push(&"é".repeat(CAPTURE_END).into_bytes());
-    assert!(!capture.text().contains('\u{fffd}'));
+    capture.push(text.as_bytes());
+    assert_eq!(capture.text(), text);
 }
 
 // ── truncation ─────────────────────────────────────────────────────
@@ -97,7 +101,7 @@ async fn a_timed_out_command_takes_the_children_it_forked_with_it() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_setsid_server_is_left_for_the_reaper() {
     // The counterpart: the prompt tells the model to detach its server, so the

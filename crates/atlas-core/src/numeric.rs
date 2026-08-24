@@ -113,15 +113,15 @@ mod tests {
 
     #[test]
     fn fp8_lut_reference_values() {
-        assert_eq!(fp8_e4m3_to_f32(0x00), 0.0); // +0
-        assert_eq!(fp8_e4m3_to_f32(0x80), -0.0); // -0
+        assert_eq!(fp8_e4m3_to_f32(0x00).to_bits(), 0x0000_0000); // +0
+        assert_eq!(fp8_e4m3_to_f32(0x80).to_bits(), 0x8000_0000); // -0
         assert_eq!(fp8_e4m3_to_f32(0x38), 1.0); // exp=7, mant=0
         assert_eq!(fp8_e4m3_to_f32(0xB8), -1.0);
         assert_eq!(fp8_e4m3_to_f32(0x3C), 1.5); // exp=7, mant=4
         assert_eq!(fp8_e4m3_to_f32(0x7E), 448.0); // max finite
         assert_eq!(fp8_e4m3_to_f32(0xFE), -448.0); // min finite
-        assert_eq!(fp8_e4m3_to_f32(0x7F), 0.0); // NaN -> 0
-        assert_eq!(fp8_e4m3_to_f32(0xFF), 0.0); // -NaN -> 0
+        assert_eq!(fp8_e4m3_to_f32(0x7F).to_bits(), 0x0000_0000); // NaN -> +0
+        assert_eq!(fp8_e4m3_to_f32(0xFF).to_bits(), 0x8000_0000); // -NaN -> -0
 
         // Subnormals: 2^(-6) * mant/8.
         let eps = 1e-10;
@@ -131,30 +131,31 @@ mod tests {
 
     #[test]
     #[allow(clippy::if_same_then_else)]
-    fn fp8_lut_matches_the_spec_for_all_256_bytes() {
-        // Re-derived from the OCP definition with float math, independently
-        // of the bit-assembly the table is built with.
+    fn fp8_lut_matches_ocp_values_and_atlas_nan_policy_for_all_bytes() {
+        // Re-derived from the OCP finite-value definition with float math,
+        // independently of the table's bit assembly. Atlas deliberately maps
+        // the two OCP NaN encodings to signed zero, matching its CUDA decoder.
         for i in 0u16..256 {
             let bits = i as u8;
             let sign = (bits >> 7) & 1;
             let exp = (bits >> 3) & 0x0F;
             let mant = bits & 0x07;
 
-            let expected = if exp == 0x0F && mant == 0x07 {
+            let magnitude = if exp == 0x0F && mant == 0x07 {
                 0.0f32
             } else if exp == 0 && mant == 0 {
                 0.0f32
             } else if exp == 0 {
-                let v = (mant as f32 / 8.0) * 2.0f32.powi(-6);
-                if sign == 1 { -v } else { v }
+                (mant as f32 / 8.0) * 2.0f32.powi(-6)
             } else {
-                let v = (1.0 + mant as f32 / 8.0) * 2.0f32.powi(exp as i32 - 7);
-                if sign == 1 { -v } else { v }
+                (1.0 + mant as f32 / 8.0) * 2.0f32.powi(exp as i32 - 7)
             };
+            let expected = if sign == 1 { -magnitude } else { magnitude };
             let actual = fp8_e4m3_to_f32(bits);
-            assert!(
-                (actual - expected).abs() < 1e-10 || (actual == 0.0 && expected == 0.0),
-                "LUT mismatch at {i:#04x}: expected {expected}, got {actual}"
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "LUT mismatch at {i:#04x}: expected {expected:?}, got {actual:?}"
             );
         }
     }
@@ -245,13 +246,52 @@ mod tests {
     }
 
     #[test]
-    fn bf16_widening_round_trips_every_bf16_value() {
-        // BF16 is the top half of an f32, so widening then narrowing must
-        // be the identity for all 65536 patterns except the NaN space,
-        // which `f32_to_bf16` canonicalises on purpose.
+    fn disable_rne_presence_uses_truncation() {
+        const THIS_TEST: &str = "numeric::tests::disable_rne_presence_uses_truncation";
+        const CHILD_MARKER: &str = "ATLAS_NUMERIC_RNE_CHILD";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            assert_eq!(
+                f32_to_bf16(f32::from_bits(0x3F80_8001)),
+                0x3F80,
+                "the escape hatch must truncate an above-half-ULP value"
+            );
+            return;
+        }
+
+        for value in ["0", "1"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", THIS_TEST])
+                .env(CHILD_MARKER, "1")
+                .env("ATLAS_DISABLE_RNE", value)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "ATLAS_DISABLE_RNE={value} child failed:\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_widening_is_byte_exact_for_every_pattern() {
         for bits in 0u32..=0xFFFF {
             let bf16 = bits as u16;
             let widened = bf16_bytes_to_f32(bf16.to_le_bytes());
+            assert_eq!(
+                widened.to_bits(),
+                bits << 16,
+                "widening moved bits for bf16 {bf16:#06x}"
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_narrowing_preserves_every_non_nan_bf16_value() {
+        for bits in 0u32..=0xFFFF {
+            let bf16 = bits as u16;
+            let widened = f32::from_bits(bits << 16);
             if widened.is_nan() {
                 continue;
             }

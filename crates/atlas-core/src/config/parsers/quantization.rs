@@ -152,13 +152,13 @@ fn normalize_modelopt_sidecar(qc_raw: &serde_json::Value) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_quantization_config;
+    use super::{normalize_modelopt_sidecar, parse_quantization_config};
 
     /// The exact `hf_quant_config.json` schema shipped by
     /// `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4`, wrapped by
     /// `merge_sidecar_quant_config` into the `quantization_config` slot.
     #[test]
-    fn modelopt_sidecar_nested_schema_parses() {
+    fn modelopt_sidecar_nested_schema_preserves_exclusions() {
         let raw = serde_json::json!({
             "quantization_config": {
                 "producer": { "name": "modelopt", "version": "0.29.0" },
@@ -185,12 +185,17 @@ mod tests {
                 .iter()
                 .any(|m| m == "backbone.layers.4.mixer.in_proj")
         );
+        assert!(
+            qc.ignore_modules
+                .iter()
+                .any(|m| m == "backbone.layers.0.mixer.conv1d")
+        );
     }
 
     /// An already-flat HF-standard block (compressed-tensors) must be
     /// unaffected by the ModelOpt normalization.
     #[test]
-    fn flat_compressed_tensors_block_unchanged() {
+    fn flat_compressed_tensors_block_is_not_normalized() {
         let raw = serde_json::json!({
             "quantization_config": {
                 "quant_method": "compressed-tensors",
@@ -198,6 +203,9 @@ mod tests {
                 "ignore": ["lm_head"]
             }
         });
+        let flat = &raw["quantization_config"];
+        assert_eq!(normalize_modelopt_sidecar(flat), flat.clone());
+
         let qc = parse_quantization_config(&raw).expect("flat block must still parse");
         assert_eq!(qc.quant_method, "compressed-tensors");
         assert_eq!(qc.format, "nvfp4-pack-quantized");
@@ -207,7 +215,7 @@ mod tests {
     /// ModelOpt mixed-precision sidecar (Super-120B) — nested, no
     /// `exclude_modules`. Must still resolve `quant_method = modelopt`.
     #[test]
-    fn modelopt_mixed_precision_sidecar_parses() {
+    fn modelopt_mixed_precision_sidecar_parses_without_exclusions() {
         let raw = serde_json::json!({
             "quantization_config": {
                 "producer": { "name": "modelopt", "version": "0.43.0" },
@@ -221,5 +229,6 @@ mod tests {
             .expect("mixed-precision sidecar must yield a QuantizationConfig");
         assert_eq!(qc.quant_method, "modelopt");
         assert_eq!(qc.quant_algo, "MIXED_PRECISION");
+        assert!(qc.ignore_modules.is_empty());
     }
 }

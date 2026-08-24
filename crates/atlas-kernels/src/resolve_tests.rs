@@ -277,6 +277,7 @@ fn empty_match_names_never_matches() {
 fn pin_overrides_the_tie_break() {
     let c = dense_27b_fixture();
     assert_eq!(resolve_pinned(&c, "qwen3.8-27b", "qwen3_5", 5120), Ok(2));
+    assert_eq!(resolve_pinned(&c, "QWEN3.8-27B", "qwen3_5", 5120), Ok(2));
     // Pin selects even a target whose needles would NOT have matched.
     assert_eq!(resolve_pinned(&c, "qwen3.6-27b", "qwen3_5", 5120), Ok(1));
     // Wildcard declarations satisfy a pin.

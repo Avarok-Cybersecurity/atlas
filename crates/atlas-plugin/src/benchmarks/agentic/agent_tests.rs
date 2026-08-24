@@ -347,6 +347,7 @@ async fn shell_output_is_normalised_before_it_is_truncated() {
     assert_eq!(out.len(), 8001);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_detached_survivor_in_the_sandbox_is_reaped() {
     // The prompt tells the model to use `setsid`, so the server it leaves

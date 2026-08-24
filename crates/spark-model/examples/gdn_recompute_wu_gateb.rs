@@ -73,7 +73,14 @@ fn main() -> Result<()> {
     eprintln!("recompute_wu handle={}", k.0);
 
     let mut all_ok = true;
-    for &t in &[64usize, 128, 200] {
+    // Production runs nt=16-64 (seq 1024-4096). The small shapes alone cannot
+    // see an occupancy-bound regression, because at nt=1 the grid is 32 CTAs
+    // over ~48 SMs and occupancy never binds.
+    let shapes: Vec<usize> = match std::env::var("ATLAS_WU_SHAPES") {
+        Ok(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+        Err(_) => vec![64usize, 128, 200],
+    };
+    for &t in &shapes {
         let nt = t.div_ceil(C);
         let mut r = Lcg(0xC0FFEE ^ t as u64);
         let key: Vec<bf16> = (0..t * NK * KD)
@@ -148,32 +155,78 @@ fn main() -> Result<()> {
         let bp = up_f32(gpu, &beta)?;
         let wp = gpu.alloc(nt * NV * C * KD * 2)?;
         let up = gpu.alloc(nt * NV * C * VD * 2)?;
-        let smem = (C * KD * 2 + C * C * 4 + C * C * 4 + C * 4) as u32; // 49408
-        KernelLaunch::new(gpu, k)
-            .grid([nt as u32, NV as u32, 1])
-            .block([128, 1, 1])
-            .shared_mem(smem)
-            .arg_ptr(kp)
-            .arg_ptr(vp)
-            .arg_ptr(gp)
-            .arg_ptr(bp)
-            .arg_ptr(wp)
-            .arg_ptr(up)
-            .arg_u32(1)
-            .arg_u32(t as u32)
-            .arg_u32(nt as u32)
-            .arg_u32(NK as u32)
-            .arg_u32(NV as u32)
-            .arg_u32(KD as u32)
-            .arg_u32(VD as u32)
-            .arg_u32((NK * KD) as u32)
-            .arg_u32((NV * VD) as u32)
-            .arg_u32(NV as u32)
-            .launch(0)?;
+        let gcp = gpu.alloc(nt * NV * C * 4)?;
+        // MUST match the production launch in `ssm_gdn_a3::gdn_prefill_fla`
+        // (`smem_wu`). The old value carried a second C*C*4 block from before
+        // `L` was aliased onto `kk`, so it over-allocated by 16 KB.
+        let smem = (C * KD * 2 + C * C * 4 + C * 4) as u32;
+        // ONE launch definition, used by both the correctness compare and the
+        // timed replay. Two copies of a 20-argument list is how this harness
+        // silently drifted out of sync with the kernel in the first place.
+        let launch_wu = || -> Result<()> {
+            KernelLaunch::new(gpu, k)
+                .grid([nt as u32, NV as u32, 1])
+                // 256, NOT 128: pass 2 (the W forward-sub) is fenced to `tid >= 128`,
+                // so a 128-thread launch silently leaves W_out UNWRITTEN and the
+                // comparison below then "passes" against uninitialised memory.
+                .block([256, 1, 1])
+                .shared_mem(smem)
+                .arg_ptr(kp)
+                .arg_ptr(vp)
+                .arg_ptr(gp)
+                .arg_ptr(bp)
+                .arg_ptr(wp)
+                .arg_ptr(up)
+                .arg_ptr(gcp)
+                .arg_u32(1)
+                .arg_u32(t as u32)
+                .arg_u32(nt as u32)
+                .arg_u32(NK as u32)
+                .arg_u32(NV as u32)
+                .arg_u32(KD as u32)
+                .arg_u32(VD as u32)
+                .arg_u32((NK * KD) as u32)
+                .arg_u32((NV * VD) as u32)
+                .arg_u32(NV as u32)
+                // cu_seqlens / cu_chunks / is_varlen. Omitting these left the launch
+                // reading PAST the argument array — 16 args passed, 20 declared.
+                .arg_ptr(DevicePtr(0))
+                .arg_ptr(DevicePtr(0))
+                .arg_u32(0)
+                .launch(0)?;
+            Ok(())
+        };
+        launch_wu()?;
         gpu.synchronize(0)?;
+        // Timed replay of the SAME launch. This kernel is the largest phase of
+        // the GDN prefill spine (41.2 ms of 105.7 ms measured in-serve), and a
+        // full serve run costs ~30 min — far too slow to iterate a kernel
+        // against. Timing it here turns the correctness gate into a
+        // seconds-level loop, so a change can be checked for BOTH correctness
+        // and speed before it costs a campaign.
+        //
+        // These are ISOLATED per-launch numbers on synthetic inputs: use them to
+        // rank variants against each other, never as an in-serve figure.
+        let iters = std::env::var("WU_BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        if iters > 0 {
+            for _ in 0..8 {
+                launch_wu()?; // warm-up: first launch pays JIT + cache cold
+            }
+            gpu.synchronize(0)?;
+            let t_start = std::time::Instant::now();
+            for _ in 0..iters {
+                launch_wu()?;
+            }
+            gpu.synchronize(0)?;
+            let us = t_start.elapsed().as_secs_f64() * 1e6 / f64::from(iters);
+            eprintln!("  recompute_wu t={t} nt={nt}: {us:.1} us/launch ({iters} iters)");
+        }
         let u_gpu = down_bf16(gpu, up, nt * NV * C * VD)?;
         let w_gpu = down_bf16(gpu, wp, nt * NV * C * KD)?;
-        for p in [kp, vp, gp, bp, wp, up] {
+        for p in [kp, vp, gp, bp, wp, up, gcp] {
             let _ = gpu.free(p);
         }
 
