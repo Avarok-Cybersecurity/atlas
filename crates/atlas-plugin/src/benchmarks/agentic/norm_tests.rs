@@ -210,6 +210,18 @@ fn clocks_and_dates_are_erased() {
 }
 
 #[test]
+fn timestamps_and_dates_inside_identifiers_are_not_erased() {
+    for raw in [
+        "build-2026-08-06T21:09:12abc",
+        "build_2026-08-06T21:09:12",
+        "build-2026-08-06T21:09:12_suffix",
+        "artifact-Aug  6  2025suffix",
+    ] {
+        assert_eq!(normalize(raw), raw);
+    }
+}
+
+#[test]
 fn pids_are_erased_where_they_are_pids() {
     assert_eq!(
         normalize("3001/tcp:            1417733"),

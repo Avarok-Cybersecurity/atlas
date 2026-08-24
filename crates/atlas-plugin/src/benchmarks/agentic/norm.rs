@@ -135,20 +135,24 @@ fn replace_spans(line: &str) -> String {
     let mut i = 0;
     while i < line.len() {
         let rest = &line[i..];
-        let boundary = !line[..i]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric());
+        let boundary = !line[..i].chars().next_back().is_some_and(identifier_char);
         if boundary && let Some((len, replacement)) = span_at(rest) {
-            out.push_str(replacement);
-            i += len;
-            continue;
+            let ends_at_boundary = !rest[len..].chars().next().is_some_and(identifier_char);
+            if ends_at_boundary {
+                out.push_str(replacement);
+                i += len;
+                continue;
+            }
         }
         let c = rest.chars().next().unwrap_or('\0');
         out.push(c);
         i += c.len_utf8();
     }
     out
+}
+
+fn identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
 }
 
 fn span_at(s: &str) -> Option<(usize, &'static str)> {
