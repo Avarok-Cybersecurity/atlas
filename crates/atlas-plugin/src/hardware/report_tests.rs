@@ -87,14 +87,17 @@ fn concerns_come_out_in_phase_order() {
     after.captured_at = 1_692;
     r.close(after);
     let all = r.concerns();
-    assert!(all.len() > pre);
+    let expected: Vec<&str> = r
+        .precheck
+        .concerns
+        .iter()
+        .chain(r.postcheck.as_ref().unwrap().concerns.iter())
+        .map(String::as_str)
+        .collect();
+    assert!(expected.len() > pre);
     assert_eq!(
-        &all[..pre],
-        &r.precheck
-            .concerns
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()[..]
+        all, expected,
+        "preflight concerns must precede post-run concerns without loss"
     );
 }
 
