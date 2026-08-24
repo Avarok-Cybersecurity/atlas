@@ -2,9 +2,9 @@
 
 //! End-to-end validation against HuggingFace `M2M100ForConditionalGeneration`.
 //!
-//! Requires a local safetensors NLLB checkpoint; set `NLLB_MODEL_DIR` to run
-//! (e.g. a clone of `MonumentalSystems/nllb-200-3.3B`). Skips silently when
-//! unset so CPU-only CI without the weights stays green.
+//! Requires a local safetensors NLLB checkpoint. Set `NLLB_MODEL_DIR` and run
+//! this ignored test target explicitly (e.g. with a clone of
+//! `MonumentalSystems/nllb-200-3.3B`).
 //!
 //! Ground truth captured from `transformers` 4.x on
 //! `facebook/nllb-200-3.3B` (fp32), input "Hello, world. How are you today?"
@@ -21,8 +21,10 @@ use std::path::{Path, PathBuf};
 use safetensors::tensor::{Dtype, TensorView};
 use spark_nllb::NllbModel;
 
-fn model_dir() -> Option<PathBuf> {
-    std::env::var("NLLB_MODEL_DIR").ok().map(PathBuf::from)
+fn model_dir() -> PathBuf {
+    std::env::var("NLLB_MODEL_DIR")
+        .map(PathBuf::from)
+        .expect("NLLB_MODEL_DIR must name a local NLLB checkpoint")
 }
 
 /// Write a synthetic PEFT adapter (rank `r`, alpha `2r`) targeting encoder
@@ -80,11 +82,9 @@ const EXPECTED_BEAM5: &[u32] = &[
 ];
 
 #[test]
+#[ignore = "requires a local NLLB checkpoint in NLLB_MODEL_DIR"]
 fn nllb_greedy_matches_reference() {
-    let Some(dir) = model_dir() else {
-        eprintln!("NLLB_MODEL_DIR not set — skipping");
-        return;
-    };
+    let dir = model_dir();
     let model = NllbModel::load_dir(&dir).expect("load model");
 
     // Encoder numerics: sum of the encoder hidden state.
@@ -101,11 +101,9 @@ fn nllb_greedy_matches_reference() {
 }
 
 #[test]
+#[ignore = "requires a local NLLB checkpoint in NLLB_MODEL_DIR"]
 fn nllb_beam5_matches_reference() {
-    let Some(dir) = model_dir() else {
-        eprintln!("NLLB_MODEL_DIR not set — skipping");
-        return;
-    };
+    let dir = model_dir();
     let model = NllbModel::load_dir(&dir).expect("load model");
     // NLLB defaults: num_beams=5, length_penalty=1.0, early_stopping=false.
     let out = model.generate_beam(INPUT_IDS, FORCED_BOS, 5, 64, 1.0, false);
@@ -116,11 +114,9 @@ fn nllb_beam5_matches_reference() {
 /// is `scale·(x·Aᵀ)·Bᵀ`, so `B == 0` adds nothing, and the adapted model must
 /// reproduce the base encoder output and greedy tokens exactly.
 #[test]
+#[ignore = "requires a local NLLB checkpoint in NLLB_MODEL_DIR"]
 fn nllb_lora_zero_b_is_noop() {
-    let Some(dir) = model_dir() else {
-        eprintln!("NLLB_MODEL_DIR not set — skipping");
-        return;
-    };
+    let dir = model_dir();
     let base = NllbModel::load_dir(&dir).expect("load base");
     let enc_base = base.encode(INPUT_IDS);
     let gen_base = base.generate(INPUT_IDS, FORCED_BOS, 16);
@@ -147,11 +143,9 @@ fn nllb_lora_zero_b_is_noop() {
 /// live on every adapted projection), confirming the routing is wired, not
 /// silently dropped.
 #[test]
+#[ignore = "requires a local NLLB checkpoint in NLLB_MODEL_DIR"]
 fn nllb_lora_nonzero_changes_output() {
-    let Some(dir) = model_dir() else {
-        eprintln!("NLLB_MODEL_DIR not set — skipping");
-        return;
-    };
+    let dir = model_dir();
     let base = NllbModel::load_dir(&dir).expect("load base");
     let enc_base = base.encode(INPUT_IDS);
 
