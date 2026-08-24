@@ -50,6 +50,11 @@ fn workitems_skip_empty_and_out_of_range() {
             rows: 5
         }]
     );
+    // A malformed decreasing pair must not underflow into a huge row count.
+    assert!(expert_delta_workitems(&[0, 7, 3], &[1]).is_empty());
+    // Missing the E+1 sentinel describes no experts, even for expert zero.
+    assert!(expert_delta_workitems(&[], &[0]).is_empty());
+    assert!(expert_delta_workitems(&[0], &[0]).is_empty());
 }
 
 #[test]
