@@ -19,13 +19,37 @@ use super::*;
 /// unchanged — `parse_one_call` already contains truncated JSON via its
 /// balanced-prefix repair.
 pub(super) fn contain_unterminated_call_tail(rest: &str) -> &str {
-    if let Some(p) = rest.rfind("</parameter>") {
+    let kept = if let Some(p) = rest.rfind("</parameter>") {
         &rest[..p + "</parameter>".len()]
     } else if let Some(p) = rest.find("<parameter=") {
         &rest[..p]
     } else {
         rest
+    };
+    // Burn forensics (2026-08-23, permanent): a LARGE dropped tail here is
+    // the 8192-token in-parameter runaway class — the salvaged call reports
+    // `content:""`, so this dropped text is the only evidence of WHAT the
+    // model generated (needed to tell a long-period repetition attractor
+    // from state corruption at the think boundary; the class appears ONLY
+    // in thinking + resume-guard serves). Head and tail samples, one line,
+    // debug level: RUST_LOG=...,spark_server::tool_parser=debug (or the
+    // spark:: alias) to capture.
+    let dropped = &rest[kept.len()..];
+    if dropped.len() > 2000 {
+        let head: String = dropped.chars().take(300).collect();
+        let tail: String = {
+            let mut cut = dropped.len().saturating_sub(300);
+            while cut > 0 && !dropped.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            dropped[cut..].to_string()
+        };
+        tracing::debug!(
+            dropped_len = dropped.len(),
+            "unterminated-parameter salvage dropped a large tail; head={head:?} tail={tail:?}"
+        );
     }
+    kept
 }
 
 /// Parse tool calls from completed model output.
