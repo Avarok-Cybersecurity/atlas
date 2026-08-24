@@ -9,7 +9,38 @@
 //! index space the consumer walks, so it reads in-bounds garbage instead of
 //! faulting.
 
-use super::scale_is_per_row;
+use std::collections::HashMap;
+
+use spark_runtime::gpu::DevicePtr;
+use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
+
+use super::{proj_is_fp8_per_row, scale_is_per_row};
+
+fn projection_store(
+    weight_dtype: WeightDtype,
+    weight_shape: Vec<usize>,
+    scale_shape: Option<Vec<usize>>,
+) -> WeightStore {
+    let mut tensors = HashMap::from([(
+        "proj.weight".to_string(),
+        WeightTensor {
+            ptr: DevicePtr::NULL,
+            shape: weight_shape,
+            dtype: weight_dtype,
+        },
+    )]);
+    if let Some(shape) = scale_shape {
+        tensors.insert(
+            "proj.weight_scale".to_string(),
+            WeightTensor {
+                ptr: DevicePtr::NULL,
+                shape,
+                dtype: WeightDtype::BF16,
+            },
+        );
+    }
+    WeightStore::from_map(tensors)
+}
 
 /// `[N]` and `[N,1]` are the two spellings a per-channel export uses.
 #[test]
@@ -40,14 +71,22 @@ fn a_column_vector_is_rejected_even_with_n_elements() {
     assert!(!scale_is_per_row(4096, &[1, 4096], 4096));
 }
 
-/// The GDN shapes this actually fires on, from unsloth/Qwen3.8-27B-NVFP4:
-/// in_proj_qkv and in_proj_z are concatenated into qkvz, out_proj is separate.
 #[test]
-fn the_real_gdn_projection_shapes_are_per_row() {
-    for n in [16384_usize, 5120, 6144, 4096] {
-        assert!(
-            scale_is_per_row(n, &[n, 1], n),
-            "n={n} is a real GDN/attention row count on this checkpoint"
-        );
-    }
+fn projection_metadata_gates_the_rowwise_loader_path() {
+    assert!(proj_is_fp8_per_row(
+        &projection_store(WeightDtype::FP8E4M3, vec![4, 8], Some(vec![4, 1])),
+        "proj"
+    ));
+    assert!(!proj_is_fp8_per_row(
+        &projection_store(WeightDtype::BF16, vec![4, 8], Some(vec![4, 1])),
+        "proj"
+    ));
+    assert!(!proj_is_fp8_per_row(
+        &projection_store(WeightDtype::FP8E4M3, vec![32], Some(vec![4, 1])),
+        "proj"
+    ));
+    assert!(!proj_is_fp8_per_row(
+        &projection_store(WeightDtype::FP8E4M3, vec![4, 8], None),
+        "proj"
+    ));
 }
