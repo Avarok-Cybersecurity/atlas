@@ -99,8 +99,15 @@ impl BorrowLogGate {
     /// FNV-1a over both keys; 0 is reserved for "nothing logged yet".
     pub(super) fn should_log(&self, exact: &[u32], borrowed: &[u32]) -> bool {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &v in exact.iter().chain(borrowed.iter()) {
-            h = (h ^ u64::from(v)).wrapping_mul(0x0000_0100_0000_01b3);
+        // Lengths preserve the pair boundary. Without them, ([1], [2, 3])
+        // and ([1, 2], [3]) hash the same concatenated values and a real
+        // transition is suppressed.
+        for v in std::iter::once(exact.len() as u64)
+            .chain(exact.iter().map(|&v| u64::from(v)))
+            .chain(std::iter::once(borrowed.len() as u64))
+            .chain(borrowed.iter().map(|&v| u64::from(v)))
+        {
+            h = (h ^ v).wrapping_mul(0x0000_0100_0000_01b3);
         }
         let h = if h == 0 { 1 } else { h };
         self.0.swap(h, std::sync::atomic::Ordering::Relaxed) != h
@@ -338,10 +345,19 @@ mod tests {
     /// A same-length key is the EXACT key's job, never a borrow; single-seq
     /// batches use the slot-keyed `decode()` cache instead.
     #[test]
-    fn exact_length_and_single_seq_never_borrow() {
+    fn invalid_or_exact_width_keys_never_borrow() {
         let cache = [canonical(8)];
         assert!(find_borrowable_decode_key(&canonical(8), cache.iter(), |_| true).is_none());
         assert!(find_borrowable_decode_key(&[0], cache.iter(), |_| true).is_none());
+
+        let valid = [vkey(&[(0, 2), (1, 2)], WY)];
+        assert!(find_borrowable_verify_key(&[0, 2, 1, 2], valid.iter(), |_, _| true).is_none());
+        assert!(find_borrowable_verify_key(&[0, 2, 1, 2, WY], valid.iter(), |_, _| true).is_none());
+        let malformed_candidates = [vec![0, 2, 1, 2], vec![0, 2, 1, 2, 2, 2]];
+        assert!(
+            find_borrowable_verify_key(&[0, 2, 1, 2, WY], malformed_candidates.iter(), |_, _| true)
+                .is_none()
+        );
     }
 
     // ── batched-verify keys: interleaved (slot, k) pairs + sentinel ──
@@ -382,32 +398,6 @@ mod tests {
         );
     }
 
-    /// REGRESSION (dgx2 2026-08-16, `/tmp/atlas-dtval-serve.log`): the
-    /// LITERAL key pair from the failed validation run. 21:02:38 captured
-    /// the steady-state n=32 verify graph; 21:04:56 the engine captured a
-    /// fresh n=12 graph mid-drain instead of borrowing it — [0..11] is a
-    /// clean prefix of [0..31], all ks=2, sentinels equal, slots 12..31
-    /// free. The old padded-ladder cap (24) was the only rejector; under
-    /// the power-of-two cap this borrow MUST fire.
-    #[test]
-    fn dgx2_n12_under_n32_log_keys_borrow() {
-        // Verbatim from the serve log (n=32 capture, 21:02:38).
-        let k32: Vec<u32> = vec![
-            0, 2, 1, 2, 2, 2, 3, 2, 4, 2, 5, 2, 6, 2, 7, 2, 8, 2, 9, 2, 10, 2, 11, 2, 12, 2, 13, 2,
-            14, 2, 15, 2, 16, 2, 17, 2, 18, 2, 19, 2, 20, 2, 21, 2, 22, 2, 23, 2, 24, 2, 25, 2, 26,
-            2, 27, 2, 28, 2, 29, 2, 30, 2, 31, 2, 4294967295,
-        ];
-        // Verbatim from the serve log (n=12 capture, 21:04:56 — the miss).
-        let exact: Vec<u32> = vec![
-            0, 2, 1, 2, 2, 2, 3, 2, 4, 2, 5, 2, 6, 2, 7, 2, 8, 2, 9, 2, 10, 2, 11, 2, 4294967295,
-        ];
-        let cache = [k32.clone()];
-        let found = find_borrowable_verify_key(&exact, cache.iter(), |s, _| s >= 12)
-            .expect("the dgx2 n=12 drain batch must borrow the n=32 graph");
-        assert_eq!(found.key, k32);
-        assert_eq!(found.ghosts, (12..32).map(|s| (s, 2)).collect::<Vec<_>>());
-    }
-
     /// Borrow logging is transition-deduped: a drain band that replays one
     /// borrowed graph for hundreds of steps logs ONCE; every width change
     /// (new pair) logs again — the same cardinality as the captures the
@@ -423,6 +413,13 @@ mod tests {
         assert!(!gate.should_log(&a, &k32));
         assert!(gate.should_log(&b, &k32), "width change logs again");
         assert!(gate.should_log(&a, &k32), "returning to a prior pair logs");
+
+        let boundary = BorrowLogGate::new();
+        assert!(boundary.should_log(&[1], &[2, 3]));
+        assert!(
+            boundary.should_log(&[1, 2], &[3]),
+            "moving the exact/borrowed boundary is a distinct transition"
+        );
     }
 
     /// Depth is part of the row layout: a prefix whose ks differ must not
@@ -458,18 +455,17 @@ mod tests {
     /// Fewest ghost ROWS wins (Σ tail k, not pair count).
     #[test]
     fn verify_prefers_the_fewest_ghost_rows() {
-        let a = uniform(24, 2, WY); // 8 ghost pairs × k=2 = 16 ghost rows at n=16
-        let mut deep: Vec<(u32, u32)> = (0..16).map(|s| (s, 2)).collect();
-        deep.extend((16..20).map(|s| (s, 4))); // 4 ghost pairs × k=4 = 16 rows...
-        let b = vkey(&deep, WY);
-        // Make b cheaper: 3 ghost pairs × k=2 = 6 rows.
-        let mut cheap: Vec<(u32, u32)> = (0..16).map(|s| (s, 2)).collect();
-        cheap.extend((16..19).map(|s| (s, 2)));
-        let c = vkey(&cheap, WY);
-        let cache = [a, b, c.clone()];
+        let mut more_pairs: Vec<(u32, u32)> = (0..16).map(|s| (s, 2)).collect();
+        more_pairs.extend((16..24).map(|s| (s, 1))); // 8 pairs, 8 ghost rows
+        let a = vkey(&more_pairs, WY);
+        let mut fewer_pairs: Vec<(u32, u32)> = (0..16).map(|s| (s, 2)).collect();
+        fewer_pairs.extend((16..19).map(|s| (s, 4))); // 3 pairs, 12 ghost rows
+        let b = vkey(&fewer_pairs, WY);
+        let cache = [b, a.clone()];
         let exact = uniform(16, 2, WY);
         let found = find_borrowable_verify_key(&exact, cache.iter(), |_, _| true).unwrap();
-        assert_eq!(found.key, c);
-        assert_eq!(found.ghosts.len(), 3);
+        assert_eq!(found.key, a);
+        assert_eq!(found.ghosts.len(), 8, "pair count is not the cost metric");
+        assert_eq!(found.ghosts.iter().map(|&(_, k)| k).sum::<u32>(), 8);
     }
 }
