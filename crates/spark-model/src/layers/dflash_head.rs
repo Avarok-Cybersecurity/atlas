@@ -93,6 +93,21 @@ pub struct DflashKernels {
     /// for `fp8_gemm_n128_row_scaled` when M=γ=16. Single warp per CTA,
     /// no wasted M_TILE rows. Used by the lm_head GEMM.
     pub fp8_gemm_n128_row_scaled_m16: KernelHandle,
+    /// Split-K partial for the m16 kernel above (`gridDim.z` K-slices,
+    /// FP32 bands). The drafter's projection widths field 8-40 CTAs on a
+    /// grid that needs ~256 to saturate; K is the only axis with slack.
+    /// Gated by `ATLAS_DFLASH_DRAFT_SPLITK`; reassociated FP32 — drafter
+    /// numerics are not a parity contract (strict-argmax accept), same
+    /// as `fp8_gemv_rt2`. `.0 == 0` on stale kernel builds → base path.
+    pub fp8_gemm_row_scaled_m16_splitk: KernelHandle,
+    /// FP32-band sum for the split-K partial (shared with the BF16
+    /// split-K pair in `gemm_splitk`).
+    pub dense_gemm_splitk_reduce: KernelHandle,
+    /// BF16 two-phase split-K partial (`gemm_splitk` module) — the
+    /// plumbing-test arm: with `ATLAS_DFLASH_DRAFTER_FP8` unset the same
+    /// `ATLAS_DFLASH_DRAFT_SPLITK` gate routes the BF16 drafter GEMMs
+    /// through it.
+    pub dense_gemm_splitk_partial: KernelHandle,
     /// Register-tiled batched row-scaled FP8 GEMV (M<=8, T=2 outputs per
     /// thread) — the FP8 twin of `w4a16_gemv_batch8_rt2`. Preferred over
     /// BOTH tile GEMMs above at M<=8 (they pad 87%/50% of their M-tile;
@@ -101,6 +116,12 @@ pub struct DflashKernels {
     /// Kill-switch: ATLAS_NO_DFLASH_FP8_RT=1. provenance-id:
     /// 526f6e616c6420522e205374657369616b
     pub fp8_gemv_rt2: KernelHandle,
+    /// M<=16 instantiation of the rt2 GEMV for block-16 drafters (γ=16).
+    /// The tile family's ~100 GB/s on GB10 is structural (split-K,
+    /// 4-warp, and full-line-fetch revisions all measured pinned there);
+    /// the rt K-major stream is what escapes it. Same gate and
+    /// kill-switch as `fp8_gemv_rt2`.
+    pub fp8_gemv_rt16: KernelHandle,
     /// DFlash2 two-tap grouped dynamic conv (`kernels/gb10/common/dflash2.cu`).
     /// `.0 == 0` on targets without the module (DFlash2 then refuses to arm).
     pub dflash2_conv2: KernelHandle,
@@ -375,6 +396,11 @@ impl ProposerState for DflashProposerState {
 /// `hidden_norm`, `norm`, and per-layer weights.
 #[allow(dead_code)]
 pub struct BlockDiffusionDraftHead {
+    /// Split-K FP32 workspace `[k_splits, M, N]`, lazily allocated at the
+    /// first split dispatch (`DRAFT_SPLITK_WS_BYTES`, ledger-tagged
+    /// "dflash/draft_splitk_ws"). GEMMs on the propose stream run
+    /// serially, so one workspace serves every projection.
+    pub(super) draft_splitk_ws: std::sync::OnceLock<spark_runtime::gpu::DevicePtr>,
     // Drafter-architecture config (mirrors the drafter's HF config.json).
     pub num_layers: usize,
     pub hidden_size: usize,
@@ -849,6 +875,67 @@ pub(crate) fn fp8_rt_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_NO_DFLASH_FP8_RT").as_deref() != Ok("1"))
 }
 
+/// Split-K workspace bytes: covers the widest drafter band actually
+/// produced. The layer projections all need ≤ 2.3 MB (`slices × 16 × N ×
+/// 4` peaks at o/down: 7 × 16 × 5120 × 4); the lm_head at vocab 248320
+/// dispatches with splits=1 for the 4-warp tiling and needs 15.9 MB.
+/// The dispatch guard falls back to the base kernel for anything larger
+/// rather than trusting this constant.
+pub(super) const DRAFT_SPLITK_WS_BYTES: usize = 32 << 20;
+
+/// `ATLAS_DFLASH_DRAFT_SPLITK=<budget>` — max K-slices for the drafter's
+/// occupancy-starved propose GEMMs (M ≤ 16). `0`/unset disables; values
+/// below 2 are off; capped at 32. OnceLock: stable across graph capture.
+///
+/// Drafter-side only and reassociated (see the split-K kernel's contract):
+/// the temp-0 output text is invariant, acceptance may move — A/B before
+/// changing any default.
+pub(crate) fn draft_splitk_budget() -> u32 {
+    static BUDGET: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let v = std::env::var("ATLAS_DFLASH_DRAFT_SPLITK")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .map(|v| if v < 2 { 0 } else { v.min(32) })
+            .unwrap_or(0);
+        if v > 0 {
+            tracing::info!(
+                "DFlash drafter split-K ENABLED (ATLAS_DFLASH_DRAFT_SPLITK={v}): \
+                 M<=16 propose GEMMs slice K across gridDim.z. Reassociated FP32 \
+                 partials — proposals may shift, temp-0 commits cannot (target \
+                 argmax verifies)."
+            );
+        }
+        v
+    })
+}
+
+/// K-slices for one propose GEMM of output width `n`, or 0 to keep the
+/// base kernel. Saturation anchor: the splitk grid is `ceil(N/128)` CTAs
+/// and the measured bandwidth curve flattens only past ~256 CTAs (fork
+/// table + our nsys trace agree). A shape already past that (the lm_head)
+/// still dispatches with splits=1: the splitk kernel is 4 warps/CTA vs
+/// the base m16 kernel's 1, and that tiling alone is the win there. The
+/// slice count is bounded by the K_STEP granularity (`k / 32`) so no
+/// slice is empty, and by the caller's budget.
+pub(super) fn draft_splitk_slices(n: u32, k: u32, budget: u32) -> u32 {
+    // The splitk kernel walks K in whole 64-byte chunks (the full-DRAM-line
+    // fetch that lifts it off the ~100 GB/s half-line wall) — K % 64 shapes
+    // only.
+    if budget < 2 || !k.is_multiple_of(64) {
+        return 0;
+    }
+    let ctas = n.div_ceil(128);
+    if ctas >= 256 {
+        return 1;
+    }
+    256u32
+        .div_ceil(ctas)
+        .min(budget)
+        .min((k / 64).max(1))
+        .max(1)
+}
+
 /// The DFlash context-window bound, in tokens: the most recent target
 /// positions the drafter is allowed to accumulate and attend to.
 ///
@@ -868,6 +955,35 @@ pub fn dflash_ctx_cap() -> usize {
 }
 
 impl BlockDiffusionDraftHead {
+    /// Get-or-allocate the split-K FP32 workspace (`DRAFT_SPLITK_WS_BYTES`,
+    /// ledger-tagged). `None` on allocation failure — the caller then keeps
+    /// the single-slice kernel, so a full pool degrades speed, never
+    /// correctness. Propose GEMMs run serially on one stream, so a single
+    /// workspace serves every projection.
+    pub(super) fn draft_splitk_workspace(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+    ) -> Option<spark_runtime::gpu::DevicePtr> {
+        if let Some(p) = self.draft_splitk_ws.get() {
+            return Some(*p);
+        }
+        match gpu.alloc(DRAFT_SPLITK_WS_BYTES) {
+            Ok(p) => {
+                gpu.tag_alloc_owner(p, "dflash/draft_splitk_ws");
+                if self.draft_splitk_ws.set(p).is_err() {
+                    // Lost a set race (propose is single-threaded today, but
+                    // don't leak if that ever changes): free ours, use theirs.
+                    let _ = gpu.free(p);
+                }
+                self.draft_splitk_ws.get().copied()
+            }
+            Err(e) => {
+                tracing::warn!("draft split-K workspace alloc failed ({e:#}); keeping single-slice kernels");
+                None
+            }
+        }
+    }
+
     /// Allocate proposer state with the ctx accumulator sized to the smallest
     /// of: this request's token budget, the ATLAS_DFLASH_CTX_CAP window, and
     /// `--max-seq-len`.

@@ -648,30 +648,89 @@ impl BlockDiffusionDraftHead {
                         // stopped guessing well (accept 73% -> 24% at C=8),
                         // not as a kernel used out of contract. Above the
                         // tile, take the general row-scaled GEMM.
-                        let (k_lm, h_lm) = if g <= 16 {
-                            (
-                                self.kernels.fp8_gemm_n128_row_scaled_m16,
-                                ops::fp8_gemm_n128_row_scaled_m16
-                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
-                            )
+                        // M<=16: rt16 over the vocab — the tile family
+                        // (base m16 AND its split-K/4-warp/full-line
+                        // revisions) is structurally pinned at ~100-107
+                        // GB/s on GB10; the rt K-major stream escapes it.
+                        // Same gate and kill-switch as rt2 above.
+                        if self.kernels.fp8_gemv_rt16.0 != 0
+                            && g <= 16
+                            && h_local.is_multiple_of(16)
+                            && super::fp8_rt_enabled()
+                        {
+                            ops::fp8_gemv_rowscale_batch16_rt2(
+                                gpu,
+                                self.kernels.fp8_gemv_rt16,
+                                norm_noise_local,
+                                fp8,
+                                self.scratch.logits,
+                                g,
+                                self.vocab_size as u32,
+                                h_local,
+                                stream,
+                            )?;
                         } else {
-                            (
-                                self.kernels.fp8_gemm_n128_row_scaled,
-                                ops::fp8_gemm_n128_row_scaled
-                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
-                            )
+                        // Split-K/4-warp variant (ATLAS_DFLASH_DRAFT_SPLITK):
+                        // the vocab grid is CTA-saturated so slices resolve
+                        // to 1, but the splitk kernel's 4 warps/CTA replace
+                        // this kernel's single warp — the ~104 GB/s here is
+                        // a latency-hiding gap, not an occupancy one. Same
+                        // drafter-side reassociation contract as the layer
+                        // sites.
+                        let budget = super::draft_splitk_budget();
+                        let splits = if budget >= 2 && g <= 16 {
+                            super::draft_splitk_slices(self.vocab_size as u32, h_local, budget)
+                        } else {
+                            0
                         };
-                        h_lm(
-                            gpu,
-                            k_lm,
-                            norm_noise_local,
-                            fp8,
-                            self.scratch.logits,
-                            g,
-                            self.vocab_size as u32,
-                            h_local,
-                            stream,
-                        )?;
+                        if splits >= 1
+                            && self.kernels.fp8_gemm_row_scaled_m16_splitk.0 != 0
+                            && self.kernels.dense_gemm_splitk_reduce.0 != 0
+                            && (splits as usize * g as usize * self.vocab_size * 4)
+                                <= super::DRAFT_SPLITK_WS_BYTES
+                            && let Some(ws) = self.draft_splitk_workspace(gpu)
+                        {
+                            ops::fp8_gemm_row_scaled_m16_splitk(
+                                gpu,
+                                self.kernels.fp8_gemm_row_scaled_m16_splitk,
+                                self.kernels.dense_gemm_splitk_reduce,
+                                norm_noise_local,
+                                fp8,
+                                self.scratch.logits,
+                                ws,
+                                g,
+                                self.vocab_size as u32,
+                                h_local,
+                                splits,
+                                stream,
+                            )?;
+                        } else {
+                            let (k_lm, h_lm) = if g <= 16 {
+                                (
+                                    self.kernels.fp8_gemm_n128_row_scaled_m16,
+                                    ops::fp8_gemm_n128_row_scaled_m16
+                                        as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                                )
+                            } else {
+                                (
+                                    self.kernels.fp8_gemm_n128_row_scaled,
+                                    ops::fp8_gemm_n128_row_scaled
+                                        as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                                )
+                            };
+                            h_lm(
+                                gpu,
+                                k_lm,
+                                norm_noise_local,
+                                fp8,
+                                self.scratch.logits,
+                                g,
+                                self.vocab_size as u32,
+                                h_local,
+                                stream,
+                            )?;
+                        }
+                        }
                     }
                 } else {
                     ops::dense_gemm_bf16_pipelined(

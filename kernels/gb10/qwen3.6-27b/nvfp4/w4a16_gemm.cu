@@ -7088,3 +7088,177 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_m16(
         if (r1 < M && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3] * sc1);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Split-K small-M row-scaled FP8 GEMM — the DFlash drafter's occupancy fix.
+//
+// fp8_gemm_t_row_scaled_m16 fields ceil(N/128) CTAs and nothing else: at
+// the drafter's projection widths (kv 1024 → 8 CTAs, q 4096 → 32,
+// o/down 5120 → 40) the grid cannot fill the machine, and the measured
+// bandwidth sits at 30-100 GB/s against a ~232 GB/s floor (nsys node
+// trace, 2026-08-24: 42 layer GEMMs = 24.3 ms/step of a 177 ms step).
+// The N dimension alone decides occupancy; K is the only axis with slack.
+//
+// This kernel is the m16 kernel with blockIdx.z slicing the K loop:
+// slice z covers the K_STEP_T-aligned range [k_lo, k_hi), accumulates
+// the same FP8 MMA chain, applies the per-column row_scale, and stores
+// an FP32 partial band C_partial[z][M][N]. `dense_gemm_splitk_reduce`
+// (kernels/gb10/common/dense_gemm_splitk.cu) sums the bands into BF16 —
+// scale-per-band then sum equals sum then scale distributively; only
+// FP32 rounding placement differs.
+//
+// Numerical contract: split-K is REASSOCIATED, not bit-identical — the
+// K-loop summation order changes, so drafter logits can move in the
+// last ULP and a proposal may flip. Commits cannot: the target verifies
+// every draft by strict argmax, so at temp 0 the OUTPUT TEXT is
+// invariant and only the acceptance rate can move (the same contract
+// fp8_gemv_rowscale_batch8_rt2 ships under). Drafter-side only — never
+// dispatch this for target-side math.
+//
+// K must be a multiple of K_STEP_T (32) — true of every drafter shape
+// (5120 / 17408); the launcher guards it. Empty slices (k_lo >= k_hi
+// when gridDim.z over-splits a small K) store a zero band, which the
+// reduce sums harmlessly.
+//
+// 4 WARPS PER CTA and a 64-BYTE K-CHUNK. Two measured dead ends shaped
+// this revision: the single-warp z-sliced version moved 584 → 499
+// us/call, and the 4-warp/32B-chunk version was a wash on top — every
+// shape from kv (1 K warps) to the lm_head (7.7 K warps) pinned at
+// ~90-104 GB/s. The wall is the B fetch pattern, not occupancy: at a
+// 32-byte K-chunk each row fetches half of every 64-byte DRAM line and
+// the other half is refetched a chunk later (~2× traffic ≈ the
+// measured half-bandwidth). rt2 — which streams 180+ GB/s on the same
+// weights — consumes whole lines. Here each thread owns one B row per
+// chunk and fetches its full 64 contiguous bytes (4 × 16B cp.async),
+// so every touched line is fully consumed; compute runs the same MMA
+// chain as the m16 kernel twice per buffer (two 32-col halves), with
+// each warp owning 4 of the 16 nt N-subtiles.
+//
+// Grid: (ceil(N/128), 1, K_splits)  Block: (128, 1, 1)
+// K must be a multiple of 64 (every drafter shape is; the dispatch
+// checks) — the slice bounds and load predicates assume whole chunks.
+// ═══════════════════════════════════════════════════════════════════
+#define SK_KSTEP 64
+extern "C" __global__ void fp8_gemm_t_row_scaled_m16_splitk(
+    const __nv_bfloat16* __restrict__ A,        // [M, K] BF16, M<=16
+    const unsigned char* __restrict__ B_fp8,    // [N, K] FP8 E4M3
+    const float* __restrict__ row_scale,         // [N] f32
+    float* __restrict__ C_partial,               // [K_splits, M, N] f32
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    // SK_KSTEP-aligned slice bounds. steps_per rounds up so the union of
+    // slices covers K exactly; trailing slices may be empty.
+    const unsigned int total_steps = K / SK_KSTEP;
+    const unsigned int steps_per = (total_steps + gridDim.z - 1) / gridDim.z;
+    const unsigned int k_lo = blockIdx.z * steps_per * SK_KSTEP;
+    const unsigned int k_hi = min(K, k_lo + steps_per * SK_KSTEP);
+
+    __shared__ __nv_bfloat16 smem_A[2][16][SK_KSTEP + PAD_T];
+    __shared__ unsigned char smem_B[2][N_TILE_LG][SK_KSTEP];
+
+    // Each warp accumulates its 4 nt subtiles: nt = warp_id*4 + j.
+    float acc[4][4];
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        acc[i][0] = 0.0f; acc[i][1] = 0.0f;
+        acc[i][2] = 0.0f; acc[i][3] = 0.0f;
+    }
+
+    const unsigned int a_stride = SK_KSTEP + PAD_T;
+
+    // Cooperative loads across all 128 threads.
+    // A tile: 16 rows × 64 cols BF16 = 128B/row = 8 chunks/row → one
+    // chunk per thread (row = t>>3, col = (t&7)*8).
+    // B tile: 128 rows × 64 bytes → one ROW per thread, 4 contiguous
+    // 16-byte cp.asyncs = the full 64-byte line consumed.
+    #define FP8_LOADS_M16SK(buf, kb) do { \
+        { \
+            unsigned int row = threadIdx.x >> 3; \
+            unsigned int a_col = (threadIdx.x & 7) * 8; \
+            unsigned int gc = (kb) + a_col; \
+            cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                &A[(unsigned long long)row * K + gc], \
+                (row < M) && (gc + 7 < k_hi)); \
+        } \
+        { \
+            unsigned int my_n = threadIdx.x; \
+            unsigned int gn = cta_n + my_n; \
+            bool valid = (gn < N) && ((kb) + SK_KSTEP - 1 < k_hi); \
+            const unsigned char* brow = \
+                &B_fp8[(unsigned long long)gn * K + (kb)]; \
+            _Pragma("unroll") \
+            for (int c = 0; c < 4; c++) { \
+                cp_async_pred_16(&smem_B[(buf)][my_n][c * 16], \
+                    brow + c * 16, valid); \
+            } \
+        } \
+    } while(0)
+
+    // One 32-col half of the buffer: half*32 is the column base.
+    #define FP8_COMPUTE_M16SK(a_buf, b_buf, half) do { \
+        const unsigned short* sA = (const unsigned short*)smem_A[(a_buf)]; \
+        const unsigned int hb = (half) * 32; \
+        unsigned int fr0 = group_id, fr1 = fr0 + 8; \
+        unsigned int a0 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + hb + tid * 4]); \
+        unsigned int a1 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + hb + tid * 4]); \
+        unsigned int a2 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + hb + 16 + tid * 4]); \
+        unsigned int a3 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + hb + 16 + tid * 4]); \
+        _Pragma("unroll") \
+        for (int j = 0; j < 4; j++) { \
+            unsigned int nc = (warp_id * 4 + j) * 8 + group_id; \
+            unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][hb + 4 * tid]; \
+            unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][hb + 16 + 4 * tid]; \
+            atlas_mma_e4m3(acc[j], a0, a1, a2, a3, b0, b1); \
+        } \
+    } while(0)
+
+    if (k_lo < k_hi) {
+        FP8_LOADS_M16SK(0, k_lo);
+        cp_async_commit();
+        cp_async_wait_all();
+        __syncthreads();
+
+        int cur = 0;
+        for (unsigned int k_base = k_lo + SK_KSTEP; k_base < k_hi; k_base += SK_KSTEP) {
+            int nxt = 1 - cur;
+            FP8_LOADS_M16SK(nxt, k_base);
+            cp_async_commit();
+            FP8_COMPUTE_M16SK(cur, cur, 0);
+            FP8_COMPUTE_M16SK(cur, cur, 1);
+            cp_async_wait_all();
+            __syncthreads();
+            cur = nxt;
+        }
+        FP8_COMPUTE_M16SK(cur, cur, 0);
+        FP8_COMPUTE_M16SK(cur, cur, 1);
+    }
+    // Empty slice: acc is all zeros — the band store below writes the
+    // zeros the reduce expects, so no separate clear pass is needed.
+
+    #undef FP8_LOADS_M16SK
+    #undef FP8_COMPUTE_M16SK
+    #undef SK_KSTEP
+
+    // Row-scale applied at partial store; the reduce is a plain sum.
+    // Each warp writes its own 4 nt subtiles — no cross-warp overlap.
+    float* band = C_partial + (unsigned long long)blockIdx.z * M * N;
+    #pragma unroll
+    for (int j = 0; j < 4; j++) {
+        unsigned int c0 = cta_n + (warp_id * 4 + j) * 8 + tid * 2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = group_id;        // 0..7
+        unsigned int r1 = r0 + 8;          // 8..15
+        float sc0 = (c0 < N) ? row_scale[c0] : 0.0f;
+        float sc1 = (c1 < N) ? row_scale[c1] : 0.0f;
+        if (r0 < M && c0 < N) band[r0*N+c0] = acc[j][0] * sc0;
+        if (r0 < M && c1 < N) band[r0*N+c1] = acc[j][1] * sc1;
+        if (r1 < M && c0 < N) band[r1*N+c0] = acc[j][2] * sc0;
+        if (r1 < M && c1 < N) band[r1*N+c1] = acc[j][3] * sc1;
+    }
+}

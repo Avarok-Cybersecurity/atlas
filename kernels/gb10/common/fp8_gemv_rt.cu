@@ -15,6 +15,15 @@
 // activation load feeds both FMA chains (activation traffic, load
 // instructions, and chain ILP all improved 2x vs one-output-per-group).
 //
+// The MAXM=16 instantiation exists because the tile family's ~100 GB/s is
+// STRUCTURAL on GB10, not a tuning problem (2026-08-24): a z-sliced
+// split-K variant of the m16 tile kernel was measured at 256+ CTAs, at 4
+// warps/CTA, and with full-64-byte-line row fetches — every revision and
+// every shape from kv(1024) to the vocab head stayed pinned at 90-107
+// GB/s. The K-major lane-striped LDG stream here is the pattern that
+// doesn't hit that wall, so a block-16 drafter (γ=16) wants this GEMV,
+// not a wider tile.
+//
 // DRAFTER-SIDE NUMERICS ARE CORRECTNESS-FREE: under strict-argmax accept,
 // draft quality only moves the accept RATE, never the output tokens. So
 // unlike the w4a16 verify family there is NO bit-order contract here; this
@@ -26,7 +35,8 @@
 // cvt.rn.satfinite dependency on SM121 — same rationale as w8a16_gemv).
 //
 // Grid: (ceil(N/8), 1, 1)  Block: (256, 1, 1). Requires K % 16 == 0
-// (holds for h=5120 and inter=17408). M clamped to 8 by the Rust launcher.
+// (holds for h=5120 and inter=17408). M clamped to the instantiation's
+// MAXM by the Rust launcher (batch8 → 8, batch16 → 16).
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -34,9 +44,9 @@
 #define RT_BLOCK 256
 #define RT_GROUPS 4
 #define RT_T 2
-#define RT_MAXM 8
 
-extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
+template <int MAXM>
+__device__ __forceinline__ void fp8_gemv_rowscale_rt2_impl(
     const __nv_bfloat16* __restrict__ A,   // [M, K] bf16
     const unsigned char* __restrict__ B,   // [N, K] fp8 e4m3
     const float* __restrict__ row_scale,   // [N] f32
@@ -61,11 +71,11 @@ extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
 
     const unsigned int K16 = K / 16;
 
-    float acc[RT_T][RT_MAXM];
+    float acc[RT_T][MAXM];
     #pragma unroll
     for (int o = 0; o < RT_T; o++)
         #pragma unroll
-        for (int t = 0; t < RT_MAXM; t++) acc[o][t] = 0.0f;
+        for (int t = 0; t < MAXM; t++) acc[o][t] = 0.0f;
 
     for (unsigned int kk = lane; kk < K16; kk += tpo) {
         // T weight chunks: 16 FP8 bytes each, one uint4 load per output.
@@ -88,7 +98,7 @@ extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
         }
 
         #pragma unroll
-        for (int t = 0; t < RT_MAXM; t++) {
+        for (int t = 0; t < MAXM; t++) {
             if ((unsigned int)t >= M) continue;
             const __nv_bfloat16* At = A + (unsigned long long)t * K;
             // ONE activation load per (chunk, row) feeding both chains.
@@ -111,12 +121,12 @@ extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
     }
 
     // 64-lane reduce: 32-lane shuffle tree per warp, cross-warp via smem.
-    __shared__ float s_red[RT_MAXM][RT_GROUPS * RT_T * 2];
+    __shared__ float s_red[MAXM][RT_GROUPS * RT_T * 2];
     const unsigned int warp_in_out = lane / 32u;
     #pragma unroll
     for (int o = 0; o < RT_T; o++) {
         #pragma unroll
-        for (int t = 0; t < RT_MAXM; t++) {
+        for (int t = 0; t < MAXM; t++) {
             if ((unsigned int)t >= M) continue;
             float a = acc[o][t];
             #pragma unroll
@@ -135,7 +145,7 @@ extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
             if (n >= N) continue;
             const float rs = row_scale[n];
             #pragma unroll
-            for (int t = 0; t < RT_MAXM; t++) {
+            for (int t = 0; t < MAXM; t++) {
                 if ((unsigned int)t >= M) continue;
                 float r = s_red[t][(local_out * RT_T + o) * 2]
                         + s_red[t][(local_out * RT_T + o) * 2 + 1];
@@ -143,4 +153,31 @@ extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
             }
         }
     }
+}
+
+extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    fp8_gemv_rowscale_rt2_impl<8>(A, B, row_scale, C, M, N, K);
+}
+
+// Block-16 drafter propose (γ=16: the Apathy v2 drafter class). Doubles
+// the register tile (acc 32 floats/thread) and the per-chunk activation
+// loads; weight traffic — the term that matters — is unchanged.
+extern "C" __global__ void fp8_gemv_rowscale_batch16_rt2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    fp8_gemv_rowscale_rt2_impl<16>(A, B, row_scale, C, M, N, K);
 }

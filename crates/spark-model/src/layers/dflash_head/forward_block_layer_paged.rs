@@ -275,6 +275,61 @@ impl BlockDiffusionDraftHead {
                         stream,
                     );
                 }
+                // M<=16: the rt16 instantiation (block-16 drafters, γ=16).
+                // The tile family — including its split-K/4-warp/full-line
+                // revisions below — is structurally pinned at ~100 GB/s on
+                // GB10; the rt K-major stream is not. Same default-on gate
+                // and ATLAS_NO_DFLASH_FP8_RT kill-switch as rt2.
+                if self.kernels.fp8_gemv_rt16.0 != 0
+                    && g <= 16
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch16_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt16,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
+                // Split-K occupancy fix (ATLAS_DFLASH_DRAFT_SPLITK): the
+                // m16 grid is ceil(N/128) CTAs — 8-40 at these widths on a
+                // machine that saturates near 256. K-slices via gridDim.z,
+                // FP32 bands, reduce to BF16. Drafter-side reassociation:
+                // temp-0 output text invariant, acceptance may move.
+                let budget = super::draft_splitk_budget();
+                if budget >= 2
+                    && g <= 16
+                    && self.kernels.fp8_gemm_row_scaled_m16_splitk.0 != 0
+                    && self.kernels.dense_gemm_splitk_reduce.0 != 0
+                {
+                    let splits = super::draft_splitk_slices(n_out, k_in, budget);
+                    if splits >= 1
+                        && (splits as usize * g as usize * n_out as usize * 4)
+                            <= super::DRAFT_SPLITK_WS_BYTES
+                        && let Some(ws) = self.draft_splitk_workspace(gpu)
+                    {
+                        return ops::fp8_gemm_row_scaled_m16_splitk(
+                            gpu,
+                            self.kernels.fp8_gemm_row_scaled_m16_splitk,
+                            self.kernels.dense_gemm_splitk_reduce,
+                            src,
+                            fp8,
+                            dst,
+                            ws,
+                            g,
+                            n_out,
+                            k_in,
+                            splits,
+                            stream,
+                        );
+                    }
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -286,6 +341,45 @@ impl BlockDiffusionDraftHead {
                     k_in,
                     stream,
                 );
+            }
+            // BF16 plumbing-test arm of the same gate: the base tile here is
+            // 16×16 so only the narrow shapes (kv 1024) are CTA-starved —
+            // the arm exists to validate dispatch/workspace/reduce, and its
+            // probe must reproduce the byte-identical output text.
+            let budget = super::draft_splitk_budget();
+            if budget >= 2
+                && self.kernels.dense_gemm_splitk_partial.0 != 0
+                && self.kernels.dense_gemm_splitk_reduce.0 != 0
+            {
+                let ctas = n_out.div_ceil(16) * g.div_ceil(16);
+                let splits = if ctas >= 256 {
+                    0
+                } else {
+                    256u32
+                        .div_ceil(ctas.max(1))
+                        .min(budget)
+                        .min((k_in / 16).max(1))
+                };
+                if splits >= 2
+                    && (splits as usize * g as usize * n_out as usize * 4)
+                        <= super::DRAFT_SPLITK_WS_BYTES
+                    && let Some(ws) = self.draft_splitk_workspace(gpu)
+                {
+                    return ops::dense_gemm_splitk(
+                        gpu,
+                        self.kernels.dense_gemm_splitk_partial,
+                        self.kernels.dense_gemm_splitk_reduce,
+                        src,
+                        w_bf16,
+                        dst,
+                        ws,
+                        g,
+                        n_out,
+                        k_in,
+                        splits,
+                        stream,
+                    );
+                }
             }
             ops::dense_gemm_bf16_pipelined(
                 gpu,
@@ -960,6 +1054,59 @@ impl BlockDiffusionDraftHead {
                         stream,
                     );
                 }
+                // M<=16: the rt16 instantiation (block-16 drafters, γ=16).
+                // The tile family — including its split-K/4-warp/full-line
+                // revisions below — is structurally pinned at ~100 GB/s on
+                // GB10; the rt K-major stream is not. Same default-on gate
+                // and ATLAS_NO_DFLASH_FP8_RT kill-switch as rt2.
+                if self.kernels.fp8_gemv_rt16.0 != 0
+                    && g <= 16
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch16_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt16,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
+                // Split-K occupancy fix — same gate and contract as the
+                // pre_attn site (see that comment); single-sequence only
+                // (g <= 16), the batched path keeps its tile kernel.
+                let budget = super::draft_splitk_budget();
+                if budget >= 2
+                    && g <= 16
+                    && self.kernels.fp8_gemm_row_scaled_m16_splitk.0 != 0
+                    && self.kernels.dense_gemm_splitk_reduce.0 != 0
+                {
+                    let splits = super::draft_splitk_slices(n_out, k_in, budget);
+                    if splits >= 1
+                        && (splits as usize * g as usize * n_out as usize * 4)
+                            <= super::DRAFT_SPLITK_WS_BYTES
+                        && let Some(ws) = self.draft_splitk_workspace(gpu)
+                    {
+                        return ops::fp8_gemm_row_scaled_m16_splitk(
+                            gpu,
+                            self.kernels.fp8_gemm_row_scaled_m16_splitk,
+                            self.kernels.dense_gemm_splitk_reduce,
+                            src,
+                            fp8,
+                            dst,
+                            ws,
+                            g,
+                            n_out,
+                            k_in,
+                            splits,
+                            stream,
+                        );
+                    }
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -971,6 +1118,42 @@ impl BlockDiffusionDraftHead {
                     k_in,
                     stream,
                 );
+            }
+            // BF16 plumbing-test arm — same gate as the pre_attn site.
+            let budget = super::draft_splitk_budget();
+            if budget >= 2
+                && self.kernels.dense_gemm_splitk_partial.0 != 0
+                && self.kernels.dense_gemm_splitk_reduce.0 != 0
+            {
+                let ctas = n_out.div_ceil(16) * g.div_ceil(16);
+                let splits = if ctas >= 256 {
+                    0
+                } else {
+                    256u32
+                        .div_ceil(ctas.max(1))
+                        .min(budget)
+                        .min((k_in / 16).max(1))
+                };
+                if splits >= 2
+                    && (splits as usize * g as usize * n_out as usize * 4)
+                        <= super::DRAFT_SPLITK_WS_BYTES
+                    && let Some(ws) = self.draft_splitk_workspace(gpu)
+                {
+                    return ops::dense_gemm_splitk(
+                        gpu,
+                        self.kernels.dense_gemm_splitk_partial,
+                        self.kernels.dense_gemm_splitk_reduce,
+                        src,
+                        w_bf16,
+                        dst,
+                        ws,
+                        g,
+                        n_out,
+                        k_in,
+                        splits,
+                        stream,
+                    );
+                }
             }
             ops::dense_gemm_bf16_pipelined(
                 gpu,

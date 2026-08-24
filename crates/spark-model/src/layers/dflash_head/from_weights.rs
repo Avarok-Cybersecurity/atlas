@@ -213,6 +213,26 @@ impl BlockDiffusionDraftHead {
                 "w4a16",
                 "fp8_gemm_t_row_scaled_m16",
             ),
+            // Split-K partial for the m16 kernel — the drafter's
+            // occupancy fix (ATLAS_DFLASH_DRAFT_SPLITK). try_kernel:
+            // absent on stale kernel builds → base single-slice path.
+            fp8_gemm_row_scaled_m16_splitk: crate::layers::try_kernel(
+                gpu,
+                "w4a16",
+                "fp8_gemm_t_row_scaled_m16_splitk",
+            ),
+            // FP32-band sum shared with the BF16 split-K pair; the BF16
+            // partial is the plumbing-test arm of the same gate.
+            dense_gemm_splitk_reduce: crate::layers::try_kernel(
+                gpu,
+                "gemm_splitk",
+                "dense_gemm_splitk_reduce",
+            ),
+            dense_gemm_splitk_partial: crate::layers::try_kernel(
+                gpu,
+                "gemm_splitk",
+                "dense_gemm_splitk_partial",
+            ),
             // Register-tiled M<=8 FP8 GEMV (fp8_gemv_rt.cu, common) —
             // preferred over both tile GEMMs above for the M=γ propose
             // GEMMs; try_kernel so targets without the module fall back.
@@ -220,6 +240,13 @@ impl BlockDiffusionDraftHead {
                 gpu,
                 "fp8_gemv_rt",
                 "fp8_gemv_rowscale_batch8_rt2",
+            ),
+            // M<=16 rt instantiation for block-16 drafters — the escape
+            // from the tile family's structural ~100 GB/s wall on GB10.
+            fp8_gemv_rt16: crate::layers::try_kernel(
+                gpu,
+                "fp8_gemv_rt",
+                "fp8_gemv_rowscale_batch16_rt2",
             ),
             // DFlash2 kernels (kernels/gb10/common/dflash2.cu). try_kernel:
             // absent on stale kernel builds — DFlash2 then refuses to arm
@@ -510,6 +537,7 @@ impl BlockDiffusionDraftHead {
         );
 
         let mut head = Self {
+            draft_splitk_ws: std::sync::OnceLock::new(),
             num_layers,
             hidden_size,
             intermediate_size,

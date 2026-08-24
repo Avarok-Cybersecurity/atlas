@@ -309,3 +309,57 @@ pub fn fp8_gemm_n128_row_scaled(
         .arg_u32(k)
         .launch(stream)
 }
+
+/// Split-K variant of [`fp8_gemm_n128_row_scaled_m16`] for the DFlash
+/// drafter's occupancy-starved projections: `k_splits` K-slices across
+/// `gridDim.z` store FP32 partial bands (row-scale already applied) into
+/// `workspace [k_splits, M, N]`, then `dense_gemm_splitk_reduce`
+/// (`kernels/gb10/common/dense_gemm_splitk.cu`) sums them to BF16.
+///
+/// Reassociated FP32, NOT bit-identical to the single-slice kernel —
+/// drafter-side only (target argmax verify makes the temp-0 output text
+/// invariant; only acceptance can move). The caller guarantees
+/// `k % 32 == 0`, `m <= 16`, and a workspace of at least
+/// `k_splits * m * n * 4` bytes.
+///
+/// Kernel: `fp8_gemm_t_row_scaled_m16_splitk` — same file as the m16
+/// kernel. Grid: (ceil(N/128), 1, k_splits)  Block: (128, 1, 1) —
+/// 4 warps each owning 4 of the 16 nt N-subtiles (the single-warp
+/// revision measured only 584→499 us: one warp serializes the MMA and
+/// convert chain against the loads).
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemm_row_scaled_m16_splitk(
+    gpu: &dyn GpuBackend,
+    partial_kernel: KernelHandle,
+    reduce_kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &Fp8DenseWeight,
+    output: DevicePtr,
+    workspace: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    k_splits: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, partial_kernel)
+        .grid([div_ceil(n, 128), 1, k_splits])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.row_scale)
+        .arg_ptr(workspace)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)?;
+    KernelLaunch::new(gpu, reduce_kernel)
+        .grid([div_ceil(n, 256), m, 1])
+        .block([256, 1, 1])
+        .arg_ptr(workspace)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k_splits)
+        .launch(stream)
+}

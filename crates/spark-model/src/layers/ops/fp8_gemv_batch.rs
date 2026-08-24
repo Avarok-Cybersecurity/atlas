@@ -58,6 +58,48 @@ pub fn fp8_gemv_rowscale_batch8_rt2(
         .launch(stream)
 }
 
+/// M<=16 instantiation of the register-tiled FP8 GEMV above, for block-16
+/// drafters (γ=16, the Apathy-v2 class). Same K-major lane-striped LDG
+/// stream — the pattern that does NOT hit the ~100 GB/s wall every tile
+/// revision measured (z-sliced split-K, 4 warps/CTA, 64-byte-line row
+/// fetches all stayed pinned at 90-107 GB/s on GB10, 2026-08-24). Weight
+/// traffic per pass is unchanged from batch8; only the register tile and
+/// activation reads double.
+/// Kernel: `fp8_gemv_rowscale_batch16_rt2` (module `fp8_gemv_rt`).
+/// Grid: (ceil(N/8), 1, 1)  Block: (256, 1, 1). Requires K % 16 == 0.
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemv_rowscale_batch16_rt2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &Fp8DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=16).contains(&m),
+        "fp8_gemv_rowscale_batch16_rt2: m={m} outside 1..=16 (kernel MAX_M)"
+    );
+    ensure!(
+        k.is_multiple_of(16),
+        "fp8_gemv_rowscale_batch16_rt2: K={k} not a multiple of 16"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 8), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.row_scale)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// FP8-weight dual-GEMV. `input` is `[2, K]` BF16, `output` is `[2, N]` BF16.
 /// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
 pub fn dense_gemv_fp8w_batch2(
