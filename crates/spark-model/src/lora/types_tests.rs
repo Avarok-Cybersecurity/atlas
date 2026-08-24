@@ -42,7 +42,7 @@ fn adapter_names_and_slot_resolve() {
         pool_bytes: 0,
         expert_pool: None,
         expert_pool_bytes: 0,
-        slots: vec![mk_slot("alpha"), mk_slot("beta")],
+        slots: vec![mk_slot("alpha"), mk_slot("beta"), mk_slot("")],
         active: 0,
         tables: BTreeMap::new(),
         scale_table: DevicePtr(0),
@@ -55,6 +55,7 @@ fn adapter_names_and_slot_resolve() {
     assert_eq!(lw.adapter_names(), vec!["alpha", "beta"]);
     assert_eq!(lw.slot_of("beta"), Some(1));
     assert_eq!(lw.slot_of("missing"), None);
+    assert_eq!(lw.slot_of(""), None, "empty cache slots are not resident");
 
     // Task #24: stable adapter_id resolution. Name-derived, `-1 -> active`.
     // Task #25: gen 0 keeps these byte-identical to the #24 name-only value.
@@ -68,6 +69,7 @@ fn adapter_names_and_slot_resolve() {
     // slot >= 0 keys under that slot's name.
     assert_eq!(lw.adapter_id_for_slot(0), id_alpha);
     assert_eq!(lw.adapter_id_for_slot(1), id_beta);
+    assert_eq!(lw.adapter_id_for_slot(2), 0, "empty cache slot is base");
     // slot == -1 defers to the active adapter (slot 0 = alpha here).
     assert_eq!(lw.adapter_id_for_slot(-1), id_alpha);
     // Out-of-range slot falls back to the base sentinel.
