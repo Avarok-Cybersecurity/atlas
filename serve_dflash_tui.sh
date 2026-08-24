@@ -33,6 +33,11 @@
 # its byte-parity-to-BF16 anchor (every drafter A/B leans on sha
 # invariance) and because the committed gate records baseline on it.
 # Opt in with LM_HEAD=nvfp4.
+# THINKING gate (same day, thinking-low + spec + guard, model-card N=10):
+# 10/10+10/10, Σ939 vs fp8's 1146 (−18%, matching greedy's margin), 87
+# turns vs 116 (different-answer trajectories — compare Σ, not s/turn),
+# and ZERO burns (first clean-burn thinking arm; n=1, may be trajectory
+# luck). nvfp4 head is now gated-valid on this model in BOTH modes.
 #
 # Cross-sequence batched verify IS engaging here (it was not until the
 # eligibility contradiction in can_batch_verify was removed — before that the
