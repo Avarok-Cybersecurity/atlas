@@ -37,7 +37,7 @@ use super::super::types::TransformerModel;
 /// while the tuned tail-clustered checkpoints (near the ~15 K prompt tail) sit
 /// far above it and always fault in. A low threshold minimises wrongly skipping
 /// a beneficial deep fault. Tune per template via the miss-depth histogram.
-const DEFAULT_FAULT_MIN_TOKENS: usize = 256;
+pub(in crate::model) const DEFAULT_FAULT_MIN_TOKENS: usize = 256;
 
 /// Visible to `model::ssm_spill_gate`, which clamps the SPILL gate to never sit
 /// below this one (spilling what the fault-in gate would refuse to read back is
