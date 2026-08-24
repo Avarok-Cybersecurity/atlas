@@ -215,7 +215,9 @@ export RUST_LOG="${RUST_LOG:-info,spark::tool_parser=debug}"
 # C=8 cross-sequence verify). `dense_gemv_fp8w_batchm` reads it once per
 # chunk of 8, bit-identically — that is where C=8 77.5 -> 130.5 came from.
 TARGET=$(ls -d /mnt/gx10-hf-hub/models--unsloth--Qwen3.8-27B-NVFP4/snapshots/*/ | head -1)
-DRAFT=$(ls -d /mnt/gx10-hf-hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/*/ | head -1)
+# DRAFT_DIR overrides the drafter (e.g. the Apathy v2 block-16 drafter for
+# acceptance A/Bs — γ resolves from the drafter config, so no gamma flag).
+DRAFT="${DRAFT_DIR:-$(ls -d /mnt/gx10-hf-hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/*/ | head -1)}"
 
 # ── LoRA (optional second argument) ────────────────────────────────────
 # All three tested adapters load with NO opt-in flag: dense-FFN deltas are
