@@ -147,9 +147,27 @@ pub fn handle_content_token(
     // `--content-loop-min-repeats` / `ATLAS_CONTENT_LOOP_MIN_REPEATS`;
     // both outrank the built-in constants.
     let loop_params = sched.watchdog.content_loop_params(a.repetition_detection);
+    // In-body: RAISED threshold instead of blind — twin of the emit_step
+    // change (2026-08-24). The 2026-05-24 exemption's xgrammar argument
+    // bounds the body's STRUCTURE, not a parameter value's CONTENT, and the
+    // 8192-token burn class is in-value verbatim repetition. 4x threshold
+    // (floor 48): untouchable by real files, instant on runaways.
+    let loop_params = if a.inside_tool_body {
+        let base =
+            loop_params.unwrap_or(crate::api::inference_types::RepetitionDetectionParams {
+                min_pattern_size: CONTENT_LOOP_PERIOD_MIN as u32,
+                max_pattern_size: CONTENT_LOOP_PERIOD_MAX as u32,
+                min_count: CONTENT_LOOP_MIN_REPEATS as u32,
+            });
+        Some(crate::api::inference_types::RepetitionDetectionParams {
+            min_count: (base.min_count * 4).max(48),
+            ..base
+        })
+    } else {
+        loop_params
+    };
     if !sched.levers.disable_watchdogs
         && sched.levers.loop_watchdog()
-        && !a.inside_tool_body
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
         && (detect_content_token_loop_with(&a.output_tokens, loop_params)

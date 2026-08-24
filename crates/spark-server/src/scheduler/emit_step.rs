@@ -346,9 +346,34 @@ pub fn emit_token(
         // request `repetition_detection` → operator min-repeats override →
         // built-in constants.
         let loop_params = sched.watchdog.content_loop_params(a.repetition_detection);
+        // Inside a tool body: RAISED threshold instead of blind (2026-08-24,
+        // replacing the 2026-05-24 `!inside_tool_body` exemption). That
+        // exemption reasoned xgrammar bounds the body — STRUCTURALLY true,
+        // but a parameter VALUE's content is unbounded by the grammar, and
+        // the 8192-token burn class lives exactly there (captured: 26 KB of
+        // a byte-identical 13-token `use …;` line inside
+        // `<parameter=content>`, invisible to every other guard by
+        // construction). No real file holds 48+ consecutive identical
+        // lines; a runaway holds hundreds, so 4x-the-operator-threshold
+        // (floor 48) keeps legitimate repetitive code untouchable while
+        // cutting a burn ~650 tokens in instead of at the 8192 cap.
+        let loop_params = if a.inside_tool_body {
+            let base = loop_params.unwrap_or(
+                crate::api::inference_types::RepetitionDetectionParams {
+                    min_pattern_size: CONTENT_LOOP_PERIOD_MIN as u32,
+                    max_pattern_size: CONTENT_LOOP_PERIOD_MAX as u32,
+                    min_count: CONTENT_LOOP_MIN_REPEATS as u32,
+                },
+            );
+            Some(crate::api::inference_types::RepetitionDetectionParams {
+                min_count: (base.min_count * 4).max(48),
+                ..base
+            })
+        } else {
+            loop_params
+        };
         if !sched.levers.disable_watchdogs
             && sched.levers.loop_watchdog()
-            && !a.inside_tool_body
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
             && (detect_content_token_loop_with(&a.output_tokens, loop_params)
