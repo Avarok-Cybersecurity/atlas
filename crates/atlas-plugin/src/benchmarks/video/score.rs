@@ -84,7 +84,12 @@ pub fn colors_in_order(reply: &str, palette: &[&str]) -> Vec<String> {
     let lower = reply.to_lowercase();
     let mut hits: Vec<(usize, String)> = Vec::new();
     for c in palette {
-        if let Some(at) = lower.find(c) {
+        if let Some(at) = lower.match_indices(c).find_map(|(at, _)| {
+            let before = lower[..at].chars().next_back();
+            let after = lower[at + c.len()..].chars().next();
+            let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+            (!before.is_some_and(is_word) && !after.is_some_and(is_word)).then_some(at)
+        }) {
             hits.push((at, (*c).to_string()));
         }
     }
@@ -98,21 +103,30 @@ pub fn order_matches(reply: &str, want: &[&str], palette: &[&str]) -> bool {
     got.len() == want.len() && got.iter().zip(want).all(|(g, w)| g == w)
 }
 
-/// Legs that produced an actual reading — the denominator that says whether
-/// the run measured anything at all.
+/// Legs that were attempted and produced a pass/fail classification. A
+/// deployment skip is not asserted; a request or decode error is a failed
+/// assertion and must not masquerade as an all-skipped run.
 pub fn asserted(order: &[OrderCell], counts: &[CountCell]) -> usize {
     order
         .iter()
         .filter(|c| {
             matches!(
                 c,
-                OrderCell::Match { .. } | OrderCell::WrongOrder { .. } | OrderCell::NotSeen { .. }
+                OrderCell::Match { .. }
+                    | OrderCell::WrongOrder { .. }
+                    | OrderCell::NotSeen { .. }
+                    | OrderCell::Error { .. }
             )
         })
         .count()
         + counts
             .iter()
-            .filter(|c| matches!(c, CountCell::Match { .. } | CountCell::Mismatch { .. }))
+            .filter(|c| {
+                matches!(
+                    c,
+                    CountCell::Match { .. } | CountCell::Mismatch { .. } | CountCell::Error { .. }
+                )
+            })
             .count()
 }
 

@@ -55,12 +55,6 @@ fn the_reversed_sequence_is_a_different_answer() {
     );
 }
 
-#[test]
-fn a_reply_naming_nothing_reads_as_empty() {
-    assert!(colors_in_order("I cannot see any video.", PAL).is_empty());
-    assert!(colors_in_order("gray, gray, gray", PAL).is_empty());
-}
-
 /// The exact wording the splice defect produced. It named no palette color,
 /// so it must read as NOT SEEN rather than as some partial credit.
 #[test]
@@ -72,6 +66,14 @@ fn the_grey_field_answer_names_no_colors() {
         &["red", "green", "blue", "yellow"],
         PAL
     ));
+}
+
+#[test]
+fn color_names_inside_other_words_are_not_evidence() {
+    assert!(
+        colors_in_order("hundred evergreen blueprints yellowish", PAL).is_empty(),
+        "substring hits do not show that the model named a color"
+    );
 }
 
 #[test]
@@ -113,6 +115,28 @@ fn all_legs_passing_with_a_held_control_is_a_pass() {
 #[test]
 fn any_failing_leg_fails_the_run() {
     assert_eq!(verdict(&[bad_order()], &[ok_count()], true), Verdict::Fail);
+    assert_eq!(
+        verdict(
+            &[OrderCell::NotSeen {
+                clip: "c",
+                reply: "no idea".into(),
+            }],
+            &[ok_count()],
+            true
+        ),
+        Verdict::Fail
+    );
+    assert_eq!(
+        verdict(
+            &[ok_order()],
+            &[CountCell::Mismatch {
+                id: "x",
+                detail: "wrong geometry".into(),
+            }],
+            true
+        ),
+        Verdict::Fail
+    );
 }
 
 /// ★ Every leg green and the control ALSO green is not a pass. This is the
@@ -159,11 +183,29 @@ fn a_partial_skip_still_judges_the_rest() {
 
 #[test]
 fn a_leg_that_errored_counts_as_asserted_and_fails() {
-    let order = vec![OrderCell::NotSeen {
+    let order = vec![OrderCell::Error {
         clip: "c",
-        reply: "no idea".into(),
+        msg: "request reset".into(),
     }];
-    assert_eq!(asserted(&order, &[]), 1);
-    assert_eq!(passed(&order, &[]), 0);
-    assert_eq!(verdict(&order, &[], true), Verdict::Fail);
+    let counts = vec![CountCell::Error {
+        id: "x",
+        msg: "decode failed".into(),
+    }];
+    assert_eq!(asserted(&order, &counts), 2);
+    assert_eq!(passed(&order, &counts), 0);
+    assert_eq!(verdict(&order, &counts, true), Verdict::Fail);
+}
+
+#[test]
+fn every_verdict_has_an_exact_operator_label() {
+    assert_eq!(
+        [
+            Verdict::Pass,
+            Verdict::Fail,
+            Verdict::Vacuous,
+            Verdict::Inconclusive,
+        ]
+        .map(|verdict| verdict.to_string()),
+        ["PASS", "FAIL", "VACUOUS", "INCONCLUSIVE"]
+    );
 }
