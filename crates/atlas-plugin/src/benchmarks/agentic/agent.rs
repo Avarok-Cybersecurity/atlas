@@ -431,5 +431,8 @@ fn assistant_message(outcome: &crate::http::ChatOutcome, turn: usize) -> Value {
 /// Resolve `path` inside `sandbox`, rejecting anything that escapes it.
 ///
 #[cfg(test)]
+#[path = "agent_loop_tests.rs"]
+mod loop_tests;
+#[cfg(test)]
 #[path = "agent_tests.rs"]
 mod tests;
