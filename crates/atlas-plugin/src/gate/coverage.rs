@@ -446,10 +446,8 @@ pub const REQUIRED: [GateCoverage; 10] = [
         id: "vision-fidelity",
         excludes: VISION_EXCLUDES,
     },
-    // Video models only, and narrower than the vision gate: declared on
-    // qwen3.8-27b alone, the target this workstream validated video against.
-    // The same BENCH.toml mechanism carries the constraint — a target with no
-    // `gate = "video-fidelity"` entry has nothing to run.
+    // Video models only. The BENCH.toml mechanism carries the constraint: a
+    // target with no `gate = "video-fidelity"` entry has nothing to run.
     //
     // It shares the vision excludes: the question "did the frames reach the
     // model, in order" is answered by the same preprocessing, encoder and

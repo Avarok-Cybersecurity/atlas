@@ -21,7 +21,7 @@
 //! reverse with it. Same geometry, same prompt, same token count — only the
 //! order differs. No amount of language prior gets that right twice.
 //!
-//! ## The other legs
+//! ## The other checks
 //!
 //! * **Geometry** as a RATIO: a clip of twice the duration must cost twice the
 //!   temporal groups. Stated as a ratio because the absolute count depends on
@@ -33,6 +33,10 @@
 //! * **Mixed media**: an image and a video in one request, which is where the
 //!   ordering contract between collection, template markers and pad expansion
 //!   would show a desync.
+//! * **Integrity**: media order, history, and two opposite clips in flight,
+//!   which expose request-specific offset and conversation-state defects.
+//! * **Concurrency**: C = 1, 2, 4 of the same request, requiring correct
+//!   replies and prompt-token geometry equal to the single-stream baseline.
 //!
 //! ## Skipping, not failing
 //!
@@ -42,8 +46,8 @@
 //! capacity. A run where everything skipped reports INCONCLUSIVE rather than
 //! PASS — measuring nothing must never read as green.
 //!
-//! Registered in `registry.rs` and deliberately NOT in the required gate set:
-//! runnable today, gate-able once it has reference runs per target.
+//! Registered in `registry.rs` and required on the model targets whose
+//! `BENCH.toml` files carry a `video-fidelity` gate entry.
 
 pub mod concurrency;
 pub mod driver;

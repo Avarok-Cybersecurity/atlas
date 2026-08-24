@@ -38,7 +38,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "video-fidelity",
     name: "Video Fidelity",
     summary: SUMMARY,
-    detail: "Four legs over clips of solid colors, one per second. ORDER sends the same \
+    detail: "Seven check groups over clips of solid colors, one per second. ORDER sends the same \
              sequence forwards and REVERSED and requires the answer to reverse with it — the \
              only assertion that separates 'the frames arrived in order' from 'something \
              arrived', and the one that caught the splice defect where video pad tokens \
@@ -48,12 +48,15 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              --video-fps the server was started with. PARITY requires an MP4 and an identical \
              GIF to produce the same geometry, one through ffmpeg and one through the \
              in-process decoder. MIXED sends an image and a video together, exercising the \
-             ordering contract between collection, template markers and pad expansion. A \
+             ordering contract between collection, template markers and pad expansion. \
+             INTEGRITY varies media order, request history, and opposite clips in flight. \
+             CONCURRENCY requires correct replies and the same prompt-token geometry at \
+             C=1, C=2, and C=4. A \
              no-video CONTROL runs last: if it describes a clip it never received, the run is \
              VACUOUS rather than PASS. Legs needing a decoder the server lacks are SKIPPED, \
              never failed — that is a deployment choice.",
     duration_hint: "~1-2 min",
-    updated: "2026-08-14",
+    updated: "2026-08-24",
     needs_confirmation: false,
     intended_for: None,
     threshold_params: &[],
