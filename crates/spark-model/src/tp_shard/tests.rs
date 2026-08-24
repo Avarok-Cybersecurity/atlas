@@ -1,62 +1,73 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
+use spark_runtime::gpu::{GpuBackend, mock::MockGpuBackend};
 // Internal slice-plan helpers live in the `gdn` submodule (pub(crate));
 // import them directly rather than re-exporting from the lib surface.
 use super::gdn::{CopyOp, segment_copy_plan};
 
-/// Validate the slice-offset math without exercising the GPU.
 #[test]
 fn column_parallel_offsets() {
-    // Out=4096, in=3072, BF16, tp=4, rank=2.
-    // local_out = 1024; row_bytes = 6144; local_bytes = 6_291_456;
-    // src_offset = 2 * 1024 * 6144 = 12_582_912.
-    let out_dim = 4096usize;
-    let in_dim = 3072usize;
-    let tp_size = 4usize;
-    let tp_rank = 2usize;
-    let local_out = out_dim / tp_size;
-    let row_bytes = in_dim * BF16_BYTES;
-    let local_bytes = local_out * row_bytes;
-    let src_offset = tp_rank * local_out * row_bytes;
-    assert_eq!(local_out, 1024);
-    assert_eq!(row_bytes, 6144);
-    assert_eq!(local_bytes, 6_291_456);
-    assert_eq!(src_offset, 12_582_912);
+    let gpu = MockGpuBackend::new();
+    let values: Vec<u16> = (0..12).collect();
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let src = gpu.alloc(bytes.len()).unwrap();
+    gpu.copy_h2d(&bytes, src).unwrap();
+
+    let (dst, local_out, local_in) =
+        shard_dense_bf16(src, 4, 3, TpShardKind::ColumnParallel, 1, 2, &gpu).unwrap();
+    let mut got = vec![0u8; 6 * BF16_BYTES];
+    gpu.copy_d2h(dst, &mut got).unwrap();
+
+    assert_eq!((local_out, local_in), (2, 3));
+    assert_eq!(got, bytes[6 * BF16_BYTES..].to_vec());
+    assert_eq!(gpu.d2d_count(), 1);
 }
 
 #[test]
 fn row_parallel_offsets() {
-    // Out=3072, in=4096, BF16, tp=2, rank=1.
-    // local_in = 2048; local_row_bytes = 4096;
-    // col_offset_bytes = 1 * 4096 = 4096.
-    // For row 0: src_off = 0*8192 + 4096 = 4096; dst_off = 0.
-    let _out_dim = 3072usize;
-    let in_dim = 4096usize;
-    let tp_size = 2usize;
-    let tp_rank = 1usize;
-    let local_in = in_dim / tp_size;
-    let local_row_bytes = local_in * BF16_BYTES;
-    let src_row_bytes = in_dim * BF16_BYTES;
-    let col_offset_bytes = tp_rank * local_row_bytes;
-    assert_eq!(local_in, 2048);
-    assert_eq!(local_row_bytes, 4096);
-    assert_eq!(src_row_bytes, 8192);
-    assert_eq!(col_offset_bytes, 4096);
+    let gpu = MockGpuBackend::new();
+    let values: Vec<u16> = (0..12).collect();
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let src = gpu.alloc(bytes.len()).unwrap();
+    gpu.copy_h2d(&bytes, src).unwrap();
 
-    // Row 5: src_off = 5*8192 + 4096 = 45_056; dst_off = 5*4096 = 20_480.
-    let r = 5usize;
-    assert_eq!(r * src_row_bytes + col_offset_bytes, 45_056);
-    assert_eq!(r * local_row_bytes, 20_480);
+    let (dst, local_out, local_in) =
+        shard_dense_bf16(src, 3, 4, TpShardKind::RowParallel, 1, 2, &gpu).unwrap();
+    let mut got = vec![0u8; 6 * BF16_BYTES];
+    gpu.copy_d2h(dst, &mut got).unwrap();
+    let got: Vec<u16> = got
+        .chunks_exact(2)
+        .map(|v| u16::from_le_bytes(v.try_into().unwrap()))
+        .collect();
+
+    assert_eq!((local_out, local_in), (3, 2));
+    assert_eq!(got, [2, 3, 6, 7, 10, 11]);
+    assert_eq!(gpu.d2d_count(), 3);
 }
 
 #[test]
 fn divisibility_check() {
-    // The non-divisible cases are caught by `ensure!` at runtime, not at
-    // compile time — verify the math fails the precondition.
-    let out_dim = 4097usize;
-    let tp_size = 4usize;
-    assert_ne!(out_dim % tp_size, 0);
+    let gpu = MockGpuBackend::new();
+    let src = gpu.alloc(64).unwrap();
+    let column = shard_dense_bf16(src, 5, 4, TpShardKind::ColumnParallel, 0, 2, &gpu)
+        .unwrap_err()
+        .to_string();
+    let row = shard_dense_bf16(src, 4, 5, TpShardKind::RowParallel, 0, 2, &gpu)
+        .unwrap_err()
+        .to_string();
+    let rank = shard_dense_bf16(src, 4, 4, TpShardKind::ColumnParallel, 2, 2, &gpu)
+        .unwrap_err()
+        .to_string();
+
+    assert!(column.contains("out_dim 5 not divisible by tp_size 2"));
+    assert!(row.contains("in_dim 5 not divisible by tp_size 2"));
+    assert!(rank.contains("tp_rank 2 >= tp_size 2"));
+    assert_eq!(
+        gpu.alloc_count(),
+        1,
+        "invalid plans must not allocate output"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -151,27 +162,22 @@ fn qkvz_two_rank_reconcat_tiles_full() {
     let full: Vec<u16> = (0..full_rows)
         .flat_map(|r| std::iter::repeat_n(r as u16, h))
         .collect();
-
-    // CPU reference slice using the plan (byte offsets → row indices).
-    let cpu_slice = |d: &TpGdnDims| -> Vec<u16> {
-        let row_bytes = h * BF16_BYTES;
-        let (ops, local_rows) = segment_copy_plan(&segs, row_bytes, d.tp_rank, d.tp_size).unwrap();
-        let mut out = vec![0u16; local_rows * h];
-        for op in &ops {
-            let src_row = op.src_off / row_bytes;
-            let dst_row = op.dst_off / row_bytes;
-            let nrows = op.len / row_bytes;
-            for i in 0..nrows {
-                let s = (src_row + i) * h;
-                let dd = (dst_row + i) * h;
-                out[dd..dd + h].copy_from_slice(&full[s..s + h]);
-            }
-        }
-        out
+    let bytes: Vec<u8> = full.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let gpu = MockGpuBackend::new();
+    let src = gpu.alloc(bytes.len()).unwrap();
+    gpu.copy_h2d(&bytes, src).unwrap();
+    let gpu_slice = |d: &TpGdnDims| -> Vec<u16> {
+        let (dst, rows, cols) = shard_gdn_qkvz_rows(src, d, &gpu).unwrap();
+        assert_eq!((rows, cols), (d.local_qkvz_out(), h));
+        let mut out = vec![0u8; rows * cols * BF16_BYTES];
+        gpu.copy_d2h(dst, &mut out).unwrap();
+        out.chunks_exact(2)
+            .map(|v| u16::from_le_bytes(v.try_into().unwrap()))
+            .collect()
     };
 
-    let r0 = cpu_slice(&d0);
-    let r1 = cpu_slice(&d1);
+    let r0 = gpu_slice(&d0);
+    let r1 = gpu_slice(&d1);
 
     // Expected per-segment source rows for each rank.
     // Q: r0=[0..16]  r1=[16..32]
@@ -202,6 +208,7 @@ fn qkvz_two_rank_reconcat_tiles_full() {
     union.sort_unstable();
     let all: Vec<u16> = (0..full_rows as u16).collect();
     assert_eq!(union, all);
+    assert_eq!(gpu.d2d_count(), 8, "four segments per rank");
 }
 
 /// conv1d uses the SAME [Q|K|V] 3-segment split but with row width = d_conv.
@@ -259,17 +266,29 @@ fn ba_single_segment_group_aligned() {
 #[test]
 fn value_vector_offsets() {
     let d = synth_dims(1);
-    // norm: unit = vd = 16, bf16. full = 8*16 = 128, local = 4*16 = 64.
-    let full_norm = d.full_nv * d.vd;
-    let local_norm = d.local_nv * d.vd;
-    assert_eq!(full_norm, 128);
-    assert_eq!(local_norm, 64);
-    let norm_src_off = d.tp_rank * local_norm * BF16_BYTES; // rank1 = 64*2
-    assert_eq!(norm_src_off, 128);
-    // a_log: unit = 1, fp32. full = 8, local = 4.
-    let f32_bytes = 4usize;
-    let a_log_src_off = d.tp_rank * d.local_nv * f32_bytes; // rank1 = 4*4
-    assert_eq!(a_log_src_off, 16);
+    let gpu = MockGpuBackend::new();
+
+    let norm: Vec<u16> = (0..128).collect();
+    let norm_bytes: Vec<u8> = norm.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let norm_src = gpu.alloc(norm_bytes.len()).unwrap();
+    gpu.copy_h2d(&norm_bytes, norm_src).unwrap();
+    let (norm_dst, norm_len) =
+        shard_gdn_value_vector(norm_src, &d, d.vd, BF16_BYTES, &gpu).unwrap();
+    let mut norm_got = vec![0u8; norm_len * BF16_BYTES];
+    gpu.copy_d2h(norm_dst, &mut norm_got).unwrap();
+    assert_eq!(norm_len, 64);
+    assert_eq!(norm_got, norm_bytes[64 * BF16_BYTES..]);
+
+    let a_log: Vec<u32> = (100..108).collect();
+    let a_log_bytes: Vec<u8> = a_log.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let a_log_src = gpu.alloc(a_log_bytes.len()).unwrap();
+    gpu.copy_h2d(&a_log_bytes, a_log_src).unwrap();
+    let (a_log_dst, a_log_len) = shard_gdn_value_vector(a_log_src, &d, 1, 4, &gpu).unwrap();
+    let mut a_log_got = vec![0u8; a_log_len * 4];
+    gpu.copy_d2h(a_log_dst, &mut a_log_got).unwrap();
+    assert_eq!(a_log_len, 4);
+    assert_eq!(a_log_got, a_log_bytes[4 * 4..]);
+    assert_eq!(gpu.d2d_count(), 2);
 }
 
 /// Dense-Holo dims (Holo-3.1-0.8B, kernels/gb10/holo-3.1-0.8b/MODEL.toml):
