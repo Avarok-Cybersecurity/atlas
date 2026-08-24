@@ -46,9 +46,10 @@ fn real_paths_resolve_to_real_owners() {
         "docs/adr/0012-closure-hash-cascade.md",
         "Cargo.toml",
     ] {
-        assert!(
-            !owners_of(&rules, path).is_empty(),
-            "{path} matched no CODEOWNERS rule"
+        assert_eq!(
+            owners_of(&rules, path),
+            ["@tbraun96", "@rsafier", "@SeedSource"],
+            "{path} must retain the committed owner set"
         );
     }
 }
@@ -100,6 +101,14 @@ fn a_star_matches_within_one_segment_only() {
     );
 }
 
+#[test]
+fn multiple_stars_within_one_segment_are_matched() {
+    let rules = parse("/docs/a*b*.md @a\n");
+    assert_eq!(owners_of(&rules, "docs/atlas-bench-check.md"), ["@a"]);
+    assert!(owners_of(&rules, "docs/atlas-bench-check.txt").is_empty());
+    assert!(owners_of(&rules, "docs/a/b/c.md").is_empty());
+}
+
 /// ★ Last match wins, as GitHub does. A catch-all first and a specific rule
 /// after it is the normal shape of the file, and getting the order backwards
 /// would give everything to the catch-all.
@@ -128,6 +137,7 @@ fn a_pattern_with_no_owners_clears_ownership() {
 fn comments_and_blank_lines_are_ignored() {
     let rules = parse("# a comment\n\n  \n* @a # trailing comment\n");
     assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].pattern, "*");
     assert_eq!(rules[0].owners, ["@a"]);
 }
 
@@ -149,11 +159,18 @@ fn a_missing_codeowners_file_yields_no_rules_rather_than_failing() {
     assert!(load(&empty).is_empty());
 }
 
-/// `**` is deliberately unimplemented. It must report unsupported rather than
-/// quietly matching nothing while looking like it works.
+/// Unsupported gitignore constructs must report unsupported rather than
+/// quietly matching nothing while looking like they work.
 #[test]
-fn double_star_is_reported_unsupported_not_silently_wrong() {
-    assert!(!is_supported("docs/**/notes.md"));
-    let rules = parse("docs/**/notes.md @a\n");
-    assert!(owners_of(&rules, "docs/x/notes.md").is_empty());
+fn unsupported_globs_are_reported_not_silently_wrong() {
+    for pattern in [
+        "docs/**/notes.md",
+        "docs/note?.md",
+        "docs/note[12].md",
+        r"docs/note\*.md",
+    ] {
+        assert!(!is_supported(pattern), "{pattern}");
+        let rules = parse(&format!("{pattern} @a\n"));
+        assert!(owners_of(&rules, "docs/note1.md").is_empty(), "{pattern}");
+    }
 }
