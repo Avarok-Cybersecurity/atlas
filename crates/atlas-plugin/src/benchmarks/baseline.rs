@@ -94,21 +94,20 @@ pub fn load(store: &ArtifactStore, benchmark_id: &str) -> Option<Baseline> {
         return Some(b);
     }
     let dir = store.runs_dir(benchmark_id).ok()?;
-    let mut found: Option<Baseline> = None;
+    let mut candidate = None;
     for e in std::fs::read_dir(dir).ok()? {
         let path = e.ok()?.path();
         let name = path.file_name()?.to_string_lossy().to_string();
         if !(name.starts_with("baseline-") && name.ends_with(".json")) {
             continue;
         }
-        if found.is_some() {
+        if candidate.is_some() {
             return None; // ambiguous
         }
-        found = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Baseline>(&t).ok());
+        candidate = Some(path);
     }
-    found
+    let text = std::fs::read_to_string(candidate?).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// Load the baseline for one model. Falls back to the legacy unkeyed file only
@@ -123,6 +122,7 @@ pub fn load_for(
         && let Ok(p) = path(store, benchmark_id, Some(m))
         && let Ok(text) = std::fs::read_to_string(p)
         && let Ok(b) = serde_json::from_str::<Baseline>(&text)
+        && b.model == m
     {
         return Some(b);
     }
@@ -219,8 +219,42 @@ mod tests {
         save(&s, "ttft-warm", "http://127.0.0.1:8888", "qwen", m).unwrap();
         let b = load(&s, "ttft-warm").unwrap();
         assert_eq!(b.get("median_ms"), Some(812.5));
+        assert_eq!(b.target, "http://127.0.0.1:8888");
         assert_eq!(b.model, "qwen");
         assert_eq!(b.age_text(), "just now");
+    }
+
+    #[test]
+    fn a_model_keyed_file_must_belong_to_the_model_in_its_name() {
+        let s = store("misfiled");
+        let p = path(&s, "ttft-warm", Some("wanted-model")).unwrap();
+        let wrong = Baseline {
+            recorded_at: now_secs(),
+            target: "http://h:1".into(),
+            model: "another-model".into(),
+            metrics: BTreeMap::from([("median_ms".to_string(), 1.0)]),
+        };
+        std::fs::write(p, serde_json::to_string(&wrong).unwrap()).unwrap();
+        assert!(load_for(&s, "ttft-warm", Some("wanted-model")).is_none());
+    }
+
+    #[test]
+    fn an_unkeyed_load_never_guesses_among_multiple_model_files() {
+        let s = store("ambiguous");
+        let corrupt = path(&s, "ttft-warm", Some("created-first")).unwrap();
+        std::fs::write(corrupt, "{ not json").unwrap();
+        save(
+            &s,
+            "ttft-warm",
+            "http://h:1",
+            "created-second",
+            BTreeMap::from([("median_ms".to_string(), 1.0)]),
+        )
+        .unwrap();
+        assert!(
+            load(&s, "ttft-warm").is_none(),
+            "two model-keyed files are ambiguous even when only one parses"
+        );
     }
 
     #[test]
