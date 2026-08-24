@@ -69,13 +69,18 @@ fn classifies_modules_to_save_full_weight() {
 
 #[test]
 fn classifies_lora_embedding_tier2() {
-    assert_eq!(
-        classify_overlay_key("base_model.model.model.embed_tokens.lora_embedding_A"),
-        Some(OverlayTensor {
-            module: OverlayModule::EmbedTokens,
-            kind: OverlayTensorKind::LoraEmbedA
-        })
-    );
+    for (suffix, kind) in [
+        ("lora_embedding_A", OverlayTensorKind::LoraEmbedA),
+        ("lora_embedding_B", OverlayTensorKind::LoraEmbedB),
+    ] {
+        assert_eq!(
+            classify_overlay_key(&format!("base_model.model.model.embed_tokens.{suffix}")),
+            Some(OverlayTensor {
+                module: OverlayModule::EmbedTokens,
+                kind,
+            })
+        );
+    }
 }
 
 #[test]
@@ -153,11 +158,13 @@ fn clamp_rejects_index_beyond_adapter() {
 }
 
 #[test]
-fn clamp_rejects_descending_kept_prefix() {
-    let err = clamp_trainable_to_vocab(&[42, 10], 200, 200)
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("REJECT[trainable-order]"), "{err}");
+fn clamp_rejects_nonascending_or_nontrailing_ids() {
+    for ids in [&[42, 10][..], &[42, 42][..], &[10, 100, 20][..]] {
+        let err = clamp_trainable_to_vocab(ids, 105, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("REJECT[trainable-order]"), "{ids:?}: {err}");
+    }
 }
 
 // ---- build_override_set / override_source ----
