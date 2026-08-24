@@ -69,6 +69,7 @@ mod tests {
     fn ids_are_unique_and_filename_safe() {
         let mut seen = std::collections::BTreeSet::new();
         for d in all() {
+            assert!(!d.id.is_empty(), "benchmark ids address history files");
             assert!(seen.insert(d.id), "duplicate benchmark id {}", d.id);
             assert!(
                 d.id.chars()
