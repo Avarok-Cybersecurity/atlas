@@ -180,6 +180,21 @@ if [ "${GUARDS_DEFAULT:-0}" != "1" ]; then
   export ATLAS_CONTENT_LOOP_MIN_REPEATS=12
 fi
 
+# Vision area bound: VISION_MAX pixels (default 262144, the profile's
+# historical cap). VISION_MAX=0 omits the flag entirely — the checkpoint's
+# own bound applies and fixtures reach the model at native resolution
+# (bench runs must then pass vision_max_pixels=0).
+# MEASURED COST OF THE CAP (2026-08-24): at 262144 the vision-fidelity OCR
+# probe fails — a 1280×720 label downscales ~1.9× linear and BOTH head
+# dtypes (fp8 AND nvfp4) misread "1280" as "1380" identically. Uncapped,
+# the same build passes 14/14 + 3/3 and video 14/14 (nvfp4 head). The cap
+# is a prefill-cost lever, not free: it costs fine-text legibility on
+# large images. Raise VISION_MAX for OCR-heavy workloads.
+VISION_ARGS=(--vision-max-pixels "${VISION_MAX:-262144}")
+if [ "${VISION_MAX:-262144}" = "0" ]; then
+  VISION_ARGS=()
+fi
+
 # Drafter NVFP4 propose (24a96047): W4A4 MMQ on block_nvfp4 drafter weights.
 # Gate evidence: MinHeap probe incoai 48.49→51.68 / v2 44.86→52.50 with
 # byte-identical output, and the agentic-webserver model-card arm passed
@@ -412,6 +427,6 @@ exec ./target/release/spark serve \
   --tbt-deadline-ms 100 \
   --video-allow-ffmpeg \
   --video-ffmpeg-path /usr/bin/ffmpeg \
-  --vision-max-pixels 262144 \
+  "${VISION_ARGS[@]}" \
   --lm-head-dtype "${LM_HEAD:-fp8}" "${THINK_ARGS[@]}" "${LAZY_ARGS[@]}" --default-top-n-sigma 0 \
   "${TUI_ARGS[@]}"
