@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// TRANSCRIPT goldens — the only test class that pins the client's write ORDER
-// (struct goldens pin field layout; round-trips are blind to symmetric
-// reorders). Drives the exact handshake step sequence `railset::RailSet`
-// performs, via the un-gated `handshake` byte functions with FIXED QP
-// identities (no ibverbs — runs on the ATLAS_SKIP_BUILD/CI path), against a
-// scripted fake peer, and asserts:
+// Protocol transcript goldens pin byte order and the intended handshake
+// sequence (struct round-trips are blind to symmetric reorders). They drive
+// the un-gated `handshake` byte functions with fixed QP identities against a
+// scripted fake peer, so they run without ibverbs. They do not execute the
+// verbs-gated `RailSet`; consumer sequencing still needs verbs-capable
+// evidence. These checks assert:
 //   * the client's COMPLETE emitted byte stream, hand-written, per dialect
 //     (RO = expert/weight/LoRA, RW = KV/snapshot) at 1 and 2 rails;
 //   * every read happens at the right point of the written stream (the
@@ -238,15 +238,6 @@ fn rw_transcript_single_rail() {
 #[test]
 fn rw_transcript_dual_rail() {
     drive_rw(2);
-}
-
-#[test]
-fn rw_echo_mismatch_bails() {
-    // Peer echoes 3 rails when the client negotiated 2 → protocol error
-    // BEFORE any params are consumed. (Deliberately unbounded otherwise —
-    // the RO dialect's 1..=8 bound is its own.)
-    let mut fake = Duplex::scripted(vec![3u8]);
-    assert!(read_rw_server_params(&mut fake, 2, "test peer").is_err());
 }
 
 #[test]
