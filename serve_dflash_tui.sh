@@ -275,6 +275,12 @@ else
   MAX_SEQ_LEN=131072
   SEQS=8
 fi
+# Explicit geometry overrides: the Apathy v2 block-16 drafter (4.26 GB +
+# 8-capture-layer ctx accumulators + γ=16 pools) does not fit 128K×8 at
+# util 0.80 — MAX_SEQ=32768 SEQS_N=4 serves it with the SAME flag set,
+# only the pool geometry shrunk (apples-to-apples vs the incoai arms).
+MAX_SEQ_LEN="${MAX_SEQ:-$MAX_SEQ_LEN}"
+SEQS="${SEQS_N:-$SEQS}"
 
 # KV OVERCOMMIT — this is what makes 128K x 8 boot at all. The KV pool cannot
 # hold 8 sequences at the FULL 128K ceiling, and without overcommit that is a

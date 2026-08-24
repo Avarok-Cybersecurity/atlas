@@ -20,6 +20,13 @@ export ATLAS_DFLASH_SPEC_THINK=1
 export ATLAS_DFLASH_RESUME_GUARD=8
 export RUST_LOG="${RUST_LOG:-info}"
 
+# THINKING=1 REASONING=low|medium|xhigh mirrors serve_dflash_tui.sh: drops
+# --disable-thinking and sets the template's reasoning_effort.
+THINK_ARGS=(--disable-thinking)
+if [ "${THINKING:-0}" = "1" ]; then
+  THINK_ARGS=(--default-chat-template-kwargs "{\"reasoning_effort\":\"${REASONING:-medium}\"}")
+fi
+
 TARGET=$(ls -d /mnt/gx10-hf-hub/models--unsloth--Qwen3.8-27B-NVFP4/snapshots/*/ | head -1)
 # DRAFT_DIR overrides the drafter (e.g. incoai, for a same-profile control A/B).
 DRAFT="${DRAFT_DIR:-/mnt/gx10-hf-hub/models--onewhosighs--Apathy-Qwen3.8-27B-DFlash-drafter-v2/snapshots/64f3e67ce7531279636964a253763482765789fa/}"
@@ -41,6 +48,6 @@ exec ./target/release/spark serve \
   --ssm-cache-slots 16 \
   --scheduling-policy slai \
   --tbt-deadline-ms 100 \
-  --lm-head-dtype fp8 --disable-thinking --default-top-n-sigma 0 \
+  --lm-head-dtype fp8 "${THINK_ARGS[@]}" --default-top-n-sigma 0 \
   "${LAZY_ARGS[@]}" \
   --no-tui
