@@ -147,27 +147,96 @@ impl Qwen3SsmLayer {
         let gate_ptr = gates_buf;
         let beta_ptr = gates_buf.offset(nv * fp32);
         let inter_stride_floats = (h_bytes / 4) as u32;
-        ops::gdn_decode_wyn(
-            ctx.gpu,
-            wy_kernel,
-            ssm_state.h_state,
-            q_ptr,
-            k_ptr,
-            v_ptr,
-            gate_ptr,
-            beta_ptr,
-            gdn_out_buf,
-            ssm_state.h_state_intermediates[0],
-            inter_stride_floats,
-            1, // batch_size
-            nk as u32,
-            nv as u32,
-            kd as u32,
-            vd as u32,
-            conv_dim as u32, // qk_stride
-            conv_dim as u32, // v_stride
-            (nv * 2) as u32, // gb_stride
-            stream,
-        )
+
+        // wy17 LAZY writes (task #33, `--gdn-wy17-lazy J`): predicate MUST
+        // match `TransformerLayer::wy17_lazy_engaged` — the commit path
+        // evaluates the same one to decide replay vs plain copy, and a
+        // disagreement reads stale retention or a garbage slot. Retention
+        // buffers are required: the replay's inputs (pre-verify ROOT plus
+        // this block's q/k/v and gate/beta rows) outlive this call's scratch.
+        use crate::layer::TransformerLayer as _;
+        let lazy = self.wy17_lazy_engaged(num_tokens)
+            && ssm_state.wy17_root_retain.is_some()
+            && ssm_state.wy17_kv_retain.is_some()
+            && ssm_state.wy17_gate_retain.is_some();
+        if lazy {
+            // ROOT retention BEFORE the launch — h_state is pre-verify here.
+            // Full h_state width (this path is FP32-pool only; the f16-sized
+            // pool is not serveable and the exact arm bypasses wyn anyway).
+            ctx.gpu.copy_d2d_async(
+                ssm_state.h_state,
+                ssm_state.wy17_root_retain.expect("checked above"),
+                self.h_state_bytes,
+                stream,
+            )?;
+        }
+        if lazy {
+            let lazy_j = super::gdn_flags::flags().wy17_lazy_j;
+            ops::gdn_decode_wy17_lazy(
+                ctx.gpu,
+                self.gdn_wy17_lazy_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                ssm_state.h_state_intermediates[0],
+                inter_stride_floats,
+                1, // batch_size
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32, // qk_stride
+                conv_dim as u32, // v_stride
+                (nv * 2) as u32, // gb_stride
+                lazy_j,
+                stream,
+            )?;
+            // Retain the replay inputs AFTER the launch (same stream —
+            // ordered after the kernel's reads, before any later layer
+            // reuses the scratch buffers).
+            ctx.gpu.copy_d2d_async(
+                conv_out_buf,
+                ssm_state.wy17_kv_retain.expect("checked above"),
+                num_tokens * conv_dim * bf16,
+                stream,
+            )?;
+            ctx.gpu.copy_d2d_async(
+                gates_buf,
+                ssm_state.wy17_gate_retain.expect("checked above"),
+                num_tokens * 2 * nv * fp32,
+                stream,
+            )?;
+            // The dispatch half of the dispatch/commit agreement contract:
+            // the paired commit consumes this flag to choose replay.
+            ssm_state.wy17_retained = true;
+            Ok(())
+        } else {
+            ops::gdn_decode_wyn(
+                ctx.gpu,
+                wy_kernel,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                ssm_state.h_state_intermediates[0],
+                inter_stride_floats,
+                1, // batch_size
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32, // qk_stride
+                conv_dim as u32, // v_stride
+                (nv * 2) as u32, // gb_stride
+                stream,
+            )
+        }
     }
 }

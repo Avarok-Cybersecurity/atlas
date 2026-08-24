@@ -43,7 +43,8 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     let gdn_from_cli = args.ssm_h_dtype.is_some()
         || args.gdn_fused_norm.is_some()
         || args.ssm_batched_recurrent.is_some()
-        || args.exact_verify.is_some();
+        || args.exact_verify.is_some()
+        || args.gdn_wy17_lazy.is_some();
     if gdn_from_cli {
         // SSOT decode (`gdn_flags::ssm_h_dtype_bits`) — the SAME function
         // `validate_serve_args` rejects on, so the validator cannot approve a
@@ -56,6 +57,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
             batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
             exact_verify: args.exact_verify.unwrap_or(false),
+            wy17_lazy_j: args.gdn_wy17_lazy.unwrap_or(1).max(1),
         };
         let in_force = spark_model::layers::qwen3_ssm::gdn_flags::set_from_cli(flags);
         if in_force != flags {

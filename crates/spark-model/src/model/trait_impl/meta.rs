@@ -279,6 +279,21 @@ impl TransformerModel {
                     conv_state_checkpoint: None,
                     h_state_intermediates: Vec::new(),
                     conv_state_intermediates: Vec::new(),
+                    // wy17 LAZY retention (task #33): layer-indexed model
+                    // buffers, same pointers for every slot by design.
+                    wy17_root_retain: self
+                        .wy17_retention
+                        .as_ref()
+                        .map(|r| r.root[ssm_layer_idx]),
+                    wy17_kv_retain: self
+                        .wy17_retention
+                        .as_ref()
+                        .map(|r| r.kv[ssm_layer_idx]),
+                    wy17_gate_retain: self
+                        .wy17_retention
+                        .as_ref()
+                        .map(|r| r.gates[ssm_layer_idx]),
+                    wy17_retained: false,
                     // A freshly allocated slot has just been zeroed, and zero
                     // is zero in both formats. Which format it then HOLDS is
                     // decided by the pool width, not by the phase: under the

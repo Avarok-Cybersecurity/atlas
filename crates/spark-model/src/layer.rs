@@ -60,6 +60,25 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// wy17 LAZY verify retention (task #33, `--gdn-wy17-lazy`): this SSM
+    /// layer's retained pre-verify ROOT h_state, the verify block's
+    /// conv-out (q/k/v rows) and its gates/beta rows — everything the
+    /// bit-exact replay of a skipped intermediate slot needs at commit
+    /// time. `None` when the lever is off. LAYER-scoped, not slot-scoped:
+    /// valid because a lazy verify's dispatch and its commit happen within
+    /// one `step_verify_dflash` call (C=1 wyn arm only — the batched arm
+    /// never engages lazy and the commit takes the plain-copy path there).
+    pub wy17_root_retain: Option<DevicePtr>,
+    /// See [`Self::wy17_root_retain`]. K×conv_dim BF16 rows.
+    pub wy17_kv_retain: Option<DevicePtr>,
+    /// See [`Self::wy17_root_retain`]. K×2·nv FP32 rows (gate then beta).
+    pub wy17_gate_retain: Option<DevicePtr>,
+    /// Set by a LAZY wy17 dispatch after it fills the retention buffers;
+    /// CONSUMED (cleared) by the commit that pairs with it. The batched
+    /// multi arm never sets it, so a batch-step commit structurally takes
+    /// the plain-copy path even with the lever armed — this flag is the
+    /// dispatch/commit agreement contract, not an optimization.
+    pub wy17_retained: bool,
     /// Storage dtype of `h_state`: `false` = FP32, `true` = FP16
     /// (`--ssm-h-dtype f16`).
     ///

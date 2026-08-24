@@ -299,6 +299,12 @@ pub struct Qwen3SsmLayer {
     /// in which case decode_batched(K=17) falls through to the sequential
     /// per-token path.
     gdn_wy17_k: KernelHandle,
+    /// LAZY wy17 (task #33): same recurrence with a `lazy_j` checkpoint
+    /// stride, plus the root-replay kernel its commit path needs. NULL on
+    /// targets whose wy17 module lacks the entries; the shared engaged
+    /// predicate ([`wy17_lazy_engaged`]) requires both non-NULL.
+    gdn_wy17_lazy_k: KernelHandle,
+    gdn_wy17_replay_k: KernelHandle,
     /// WY-Chunkwise K∈{5..8} GDN verify (chain-verify widths between the
     /// dedicated wy4 and the DFlash wy17). One K-templated source
     /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy8 with

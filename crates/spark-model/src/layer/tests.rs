@@ -18,6 +18,10 @@ fn test_ssm_layer_state_downcast() {
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        wy17_root_retain: None,
+        wy17_kv_retain: None,
+        wy17_gate_retain: None,
+        wy17_retained: false,
         h_is_f16: false,
         h_prefill_stage: None,
     });
@@ -35,6 +39,10 @@ fn test_ssm_layer_state_mut() {
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        wy17_root_retain: None,
+        wy17_kv_retain: None,
+        wy17_gate_retain: None,
+        wy17_retained: false,
         h_is_f16: false,
         h_prefill_stage: None,
     });

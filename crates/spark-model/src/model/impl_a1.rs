@@ -245,6 +245,28 @@ impl TransformerModel {
         // silent no-op. No-op when the tier is unset (default path).
         super::ssm_tier::ensure_ssm_tier_capability(&config)?;
 
+        // wy17 LAZY verify retention (task #33): allocated only when the
+        // `--gdn-wy17-lazy` lever is armed AND the model has SSM layers.
+        // ~165 MB on the 27B (48 layers x ~3.4 MB), owner-tagged.
+        let wy17_retention = if crate::layers::qwen3_ssm::gdn_flags::flags().wy17_lazy_j > 1
+            && config.num_ssm_layers() > 0
+        {
+            let nv = config.linear_num_value_heads;
+            let vd = config.linear_value_head_dim;
+            let nk = config.linear_num_key_heads;
+            let kd = config.linear_key_head_dim;
+            let conv_dim = nk * kd * 2 + nv * vd;
+            Some(super::ssm_pool::Wy17Retention::new(
+                config.num_ssm_layers(),
+                config.ssm_h_state_bytes(),
+                conv_dim,
+                nv,
+                gpu.as_ref(),
+            )?)
+        } else {
+            None
+        };
+
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
@@ -796,6 +818,7 @@ impl TransformerModel {
                     || std::env::var("ATLAS_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
             ),
             ssm_pool,
+            wy17_retention,
             ssm_snapshots,
             ssm_tier_store,
             max_blocks_per_seq,

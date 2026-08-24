@@ -396,6 +396,10 @@ impl TransformerModel {
                             conv_state_checkpoint: None,
                             h_state_intermediates: Vec::new(),
                             conv_state_intermediates: Vec::new(),
+                            wy17_root_retain: None,
+                            wy17_kv_retain: None,
+                            wy17_gate_retain: None,
+                            wy17_retained: false,
                             // Padding rows point at the write-only dummy slot;
                             // tag them with the active mode so the decode mixer
                             // does not re-convert scratch on every single step.

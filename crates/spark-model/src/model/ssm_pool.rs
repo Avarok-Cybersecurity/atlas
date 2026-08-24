@@ -163,6 +163,59 @@ fn alloc_layer_pools(
     Ok(pools)
 }
 
+/// Per-SSM-layer retention buffers for the wy17 LAZY verify (task #33,
+/// `--gdn-wy17-lazy`). LAYER-indexed only — no slot dimension: a lazy
+/// verify's dispatch and its commit both happen inside one
+/// `step_verify_dflash` call (the C=1 wyn arm; the batched arm never
+/// engages lazy), so at most one verify's retention is live at a time.
+/// Holds, per layer: the pre-verify ROOT h_state (FP32, `h_bytes`), the
+/// verify block's conv-out q/k/v rows (K×conv_dim BF16) and its
+/// gate/beta rows (K×2·nv FP32) — everything the bit-exact replay of a
+/// skipped intermediate slot needs at commit time.
+pub(super) struct Wy17Retention {
+    pub(super) root: Vec<DevicePtr>,
+    pub(super) kv: Vec<DevicePtr>,
+    pub(super) gates: Vec<DevicePtr>,
+}
+
+impl Wy17Retention {
+    /// Allocate one buffer triple per SSM layer. Owner-tagged (issue #736):
+    /// these are layer-lifetime buffers released by the teardown sweep.
+    pub(super) fn new(
+        num_ssm_layers: usize,
+        h_bytes: usize,
+        conv_dim: usize,
+        nv: usize,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Self> {
+        const K: usize = 17;
+        let kv_bytes = K * conv_dim * 2;
+        let gate_bytes = K * 2 * nv * 4;
+        let mut root = Vec::with_capacity(num_ssm_layers);
+        let mut kv = Vec::with_capacity(num_ssm_layers);
+        let mut gates = Vec::with_capacity(num_ssm_layers);
+        for _ in 0..num_ssm_layers {
+            let r = gpu.alloc(h_bytes)?;
+            let k = gpu.alloc(kv_bytes)?;
+            let g = gpu.alloc(gate_bytes)?;
+            gpu.tag_alloc_owner(r, "gdn/wy17_lazy_retention");
+            gpu.tag_alloc_owner(k, "gdn/wy17_lazy_retention");
+            gpu.tag_alloc_owner(g, "gdn/wy17_lazy_retention");
+            root.push(r);
+            kv.push(k);
+            gates.push(g);
+        }
+        tracing::info!(
+            "wy17 LAZY retention: {num_ssm_layers} layers x ({:.1} MB root + {:.1} KB kv + \
+             {:.1} KB gates)",
+            h_bytes as f64 / 1e6,
+            kv_bytes as f64 / 1e3,
+            gate_bytes as f64 / 1e3,
+        );
+        Ok(Self { root, kv, gates })
+    }
+}
+
 impl SsmStatePool {
     /// `h_f16_pool` is `gdn_flags::ssm_h_f16_pool_enabled()` at the one
     /// production call site (`impl_a1.rs`) — a parameter, not a flag read,

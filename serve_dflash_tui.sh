@@ -78,6 +78,12 @@ fi
 MODE="${1:-default}"
 ADAPTER="${2:-}"
 
+# WY17_LAZY=J arms the lazy intermediate-H writes in the K=17 DFlash GDN
+# verify (--gdn-wy17-lazy, task #33, apathy port). Bit-exact by design;
+# J=8 is the fork's validated stride. Unset = historical write-all.
+LAZY_ARGS=()
+[ -n "${WY17_LAZY:-}" ] && LAZY_ARGS=(--gdn-wy17-lazy "$WY17_LAZY")
+
 # HEADLESS=1 runs the identical config with --no-tui, so a benchmark measures
 # exactly what the TUI serves rather than a hand-retyped approximation.
 TUI_ARGS=()
@@ -379,5 +385,5 @@ exec ./target/release/spark serve \
   --video-allow-ffmpeg \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
-  --lm-head-dtype fp8 "${THINK_ARGS[@]}" --default-top-n-sigma 0 \
+  --lm-head-dtype fp8 "${THINK_ARGS[@]}" "${LAZY_ARGS[@]}" --default-top-n-sigma 0 \
   "${TUI_ARGS[@]}"

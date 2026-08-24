@@ -349,6 +349,133 @@ pub fn gdn_decode_wyn(
         .launch(stream)
 }
 
+/// `gated_delta_rule_wy17_lazy` — the K=17 verify with LAZY Hi writes
+/// (ported from the apathy fork, task #33). Identical recurrence and ABI to
+/// `gdn_decode_wyn`'s wy17 arm plus a trailing `lazy_j`: 1 writes all 16
+/// intermediate slots (bit-identical to the historical kernel), J>1 writes
+/// only checkpoint slots (0, K-2, every J-th) — the skipped slots are
+/// reconstructed bit-exactly by [`gdn_wy17_replay`] on the rare partial
+/// accept that targets one. Outputs and the final `h_state` are
+/// byte-identical for every `lazy_j`; only intermediate DRAM traffic
+/// (~86% of the kernel's writes) shrinks.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_wy17_lazy(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    h_state_inter_base: DevicePtr,
+    inter_stride_floats: u32,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    lazy_j: u32,
+    stream: u64,
+) -> Result<()> {
+    // Same contiguous-stride hazard as `gdn_decode_wyn`: batch 1 only.
+    anyhow::ensure!(
+        batch_size == 1,
+        "gdn_decode_wy17_lazy: contiguous state addressing is only valid at \
+         batch_size==1 (got {batch_size})"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_state)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_ptr(h_state_inter_base)
+        .arg_u32(inter_stride_floats)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .arg_u32(lazy_j)
+        .launch(stream)
+}
+
+/// `gated_delta_rule_wy17_replay` — reconstruct ONE skipped intermediate H
+/// slot from the pre-verify ROOT state. Commit-path companion of
+/// [`gdn_decode_wy17_lazy`]: re-runs the identical FP32 WY recurrence for
+/// tokens `[0..=target_slot]` seeded from `h_root` and writes the
+/// reconstructed state to `out_h` (the caller points this at the live
+/// `h_state`). Bit-exact by construction: same clamp, same reduction, same
+/// strict token order as the main kernel. `ckpt_first_token` MUST be 0
+/// (root replay — the WY correction is computed against the ROOT for the
+/// full prefix, so replay from a mid-block checkpoint would NOT be exact).
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_wy17_replay(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_root: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    out_h: DevicePtr,
+    ckpt_first_token: u32,
+    target_slot: u32,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        ckpt_first_token == 0,
+        "gdn_wy17_replay: only root replay (ckpt_first_token==0) is bit-exact"
+    );
+    anyhow::ensure!(
+        batch_size == 1,
+        "gdn_wy17_replay: contiguous state addressing is only valid at \
+         batch_size==1 (got {batch_size})"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_root)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(out_h)
+        .arg_u32(ckpt_first_token)
+        .arg_u32(target_slot)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// Fused 2-token conv1d sliding window update + SiLU.
 ///
 /// Each thread handles one channel independently. The 2-token dependency

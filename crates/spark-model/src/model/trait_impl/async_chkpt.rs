@@ -255,8 +255,16 @@ impl TransformerModel {
         }
 
         // Full accept: the verify kernel's final h_state/conv_state is
-        // already the canonical committed state — nothing to do.
+        // already the canonical committed state — nothing to copy. The wy17
+        // LAZY retained flags are still CONSUMED here (task #33): leaving
+        // one set would let a later batch-arm commit (which never retains)
+        // replay from this verify's stale retention.
         if num_accepted == k {
+            for layer_state in seq.layer_states.iter_mut() {
+                if let Some(ssm) = layer_state.as_any_mut().downcast_mut::<SsmLayerState>() {
+                    ssm.wy17_retained = false;
+                }
+            }
             return Ok(());
         }
 
@@ -310,11 +318,71 @@ impl TransformerModel {
             // intermediate (state after token `num_accepted-1`).
             let slot = seq.slot_idx;
             let inter_idx = num_accepted - 1;
-            h_plan.push(StateCopy {
-                src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
-                dst: ssm.h_state,
-                bytes: h_bytes,
-            });
+
+            // wy17 LAZY verify (task #33): when the PAIRED dispatch ran the
+            // lazy kernel (`wy17_retained` — set by the dispatch, consumed
+            // here; the batched multi arm never sets it), non-checkpoint H
+            // slots were never written. A checkpoint target still takes the
+            // plain pool copy below; a skipped target is reconstructed
+            // bit-exactly by the root-replay kernel from the retained
+            // pre-verify state and this block's retained q/k/v/gate rows.
+            // The conv intermediates are ALWAYS fully written (the fused
+            // conv kernel is untouched by lazy), so the conv copy is
+            // unconditional either way.
+            let lazy_paired = ssm.wy17_retained;
+            ssm.wy17_retained = false; // consume — one commit per dispatch
+            let lazy_j = crate::layers::qwen3_ssm::gdn_flags::flags().wy17_lazy_j;
+            let is_checkpoint = inter_idx == 0
+                || inter_idx == k - 2
+                || (lazy_j > 1 && (inter_idx as u32 + 1) % lazy_j == 0);
+            if lazy_paired && !is_checkpoint {
+                let replay_k = self.layers[i].wy17_replay_kernel();
+                let (Some(root), Some(kv), Some(gates)) = (
+                    ssm.wy17_root_retain,
+                    ssm.wy17_kv_retain,
+                    ssm.wy17_gate_retain,
+                ) else {
+                    anyhow::bail!(
+                        "wy17 lazy commit: dispatch retained but retention \
+                         buffers are missing at layer {i}"
+                    );
+                };
+                anyhow::ensure!(
+                    replay_k.0 != 0,
+                    "wy17 lazy commit: dispatch retained but layer {i} has \
+                     no replay kernel"
+                );
+                let conv_dim = nk * kd * 2 + nv * vd;
+                let key_dim = nk * kd;
+                crate::layers::ops::gdn_wy17_replay(
+                    self.gpu.as_ref(),
+                    replay_k,
+                    root,
+                    kv, // query row base (unused by the kernel; ABI symmetry)
+                    kv.offset(key_dim * 2),
+                    kv.offset(key_dim * 2 * 2),
+                    gates,
+                    gates.offset(nv * 4),
+                    ssm.h_state,
+                    0,
+                    inter_idx as u32,
+                    1,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    stream,
+                )?;
+            } else {
+                h_plan.push(StateCopy {
+                    src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
+                    dst: ssm.h_state,
+                    bytes: h_bytes,
+                });
+            }
             conv_plan.push(StateCopy {
                 src: self
                     .ssm_pool

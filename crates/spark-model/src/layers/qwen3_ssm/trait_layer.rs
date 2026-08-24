@@ -314,4 +314,18 @@ impl TransformerLayer for Qwen3SsmLayer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         self.alloc_state_inner(gpu)
     }
+
+    /// wy17 LAZY verify (task #33). MUST agree with the dispatch decision
+    /// in `decode_batched_conv_gdn_wyn` — same flags read, same handle
+    /// checks, K=17 only (the wyn K∈{5..8} widths always write all slots).
+    fn wy17_lazy_engaged(&self, num_tokens: usize) -> bool {
+        num_tokens == 17
+            && super::gdn_flags::flags().wy17_lazy_j > 1
+            && self.gdn_wy17_lazy_k.0 != 0
+            && self.gdn_wy17_replay_k.0 != 0
+    }
+
+    fn wy17_replay_kernel(&self) -> spark_runtime::gpu::KernelHandle {
+        self.gdn_wy17_replay_k
+    }
 }

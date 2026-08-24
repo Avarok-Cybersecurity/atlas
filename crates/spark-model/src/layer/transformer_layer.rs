@@ -571,4 +571,22 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// wy17 LAZY verify (task #33): whether THIS layer's K=`num_tokens`
+    /// verify dispatch will run the lazy kernel. The SAME predicate must be
+    /// evaluated by the commit path — a commit that replays when the
+    /// dispatch wrote full intermediates (or vice versa) reads stale
+    /// retention or garbage slots. Default `false`: only the GDN layer with
+    /// the lazy+replay kernels present and `--gdn-wy17-lazy > 1` engages.
+    fn wy17_lazy_engaged(&self, _num_tokens: usize) -> bool {
+        false
+    }
+
+    /// wy17 LAZY verify (task #33): the root-replay kernel handle, NULL
+    /// (`KernelHandle(0)`) by default. The commit path launches it with
+    /// dims from the model config and pointers from the layer state's
+    /// retention fields.
+    fn wy17_replay_kernel(&self) -> spark_runtime::gpu::KernelHandle {
+        spark_runtime::gpu::KernelHandle(0)
+    }
 }

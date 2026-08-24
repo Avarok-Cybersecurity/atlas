@@ -388,6 +388,18 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub exact_verify: Option<bool>,
 
+    /// LAZY intermediate-H writes in the K=17 DFlash GDN verify (task #33,
+    /// ported from the apathy fork). Takes the checkpoint stride J: only
+    /// slots 0, K-2 and every J-th are written; a partial accept targeting
+    /// a skipped slot replays it bit-exactly from a retained pre-verify
+    /// root. J=1 (default) is the historical write-all behavior; J=8 is
+    /// the fork's validated setting (~86% of the verify kernel's DRAM
+    /// writes skipped; outputs byte-identical). One flag arms both the
+    /// kernel and the replay-aware commit — they are only correct together.
+    /// No legacy environment variable — CLI-only (GDN house rule).
+    #[arg(long)]
+    pub gdn_wy17_lazy: Option<u32>,
+
     /// Mid-chunk SSM tail capture on the prefill path (default: on).
     ///
     /// Captures GDN recurrent + conv state in-pass at the block-floored

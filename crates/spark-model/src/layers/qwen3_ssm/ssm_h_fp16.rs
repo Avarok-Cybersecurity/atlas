@@ -288,6 +288,10 @@ mod prefill_narrowing_tests {
             conv_state_checkpoint: None,
             h_state_intermediates: Vec::new(),
             conv_state_intermediates: Vec::new(),
+            wy17_root_retain: None,
+            wy17_kv_retain: None,
+            wy17_gate_retain: None,
+            wy17_retained: false,
             h_is_f16,
             h_prefill_stage: stage,
         }

@@ -383,6 +383,19 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
+            // LAZY variants live in the same module (task #33, apathy port).
+            // NULL on targets whose wy17.cu predates the lazy entries — the
+            // engaged predicate requires BOTH non-NULL before lazy dispatch.
+            gdn_wy17_lazy_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy17",
+                "gated_delta_rule_wy17_lazy",
+            ),
+            gdn_wy17_replay_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy17",
+                "gated_delta_rule_wy17_replay",
+            ),
             // Chain-verify K=5..8 WY kernels (one templated gb10-common
             // module). Index = K-5; NULL on targets lacking the module, in
             // which case those widths keep the sequential per-token path.

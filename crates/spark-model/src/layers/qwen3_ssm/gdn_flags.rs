@@ -69,6 +69,19 @@ pub struct GdnFlags {
     /// 2/2, 4/4 with this flag on. The operator-facing consequences and a
     /// repro live on `ServeArgs::exact_verify`.
     pub exact_verify: bool,
+    /// `--gdn-wy17-lazy J`: LAZY intermediate-H writes in the K=17 DFlash
+    /// verify (task #33, ported from the apathy fork's WY17-lazy family).
+    /// 1 = off (write all 16 Hi slots — the historical, bit-identical
+    /// behavior); J>=2 = write only checkpoint slots (0, K-2, every J-th)
+    /// and reconstruct a skipped slot bit-exactly from a retained root on
+    /// the partial accepts that target it. ONE switch arms BOTH the lazy
+    /// kernel and the replay-aware commit on purpose: lazy writes with a
+    /// replay-unaware commit would copy a garbage non-checkpoint slot into
+    /// the live H state on the first partial accept. Outputs and the final
+    /// H are byte-identical for every J (fork validation: 7/7 identical
+    /// output hashes); only intermediate DRAM write traffic shrinks (~86%
+    /// of the verify kernel's writes at J=8).
+    pub wy17_lazy_j: u32,
 }
 
 impl GdnFlags {
@@ -106,6 +119,9 @@ impl GdnFlags {
             // or defaults, no new env knobs). Default = the legacy WY arms;
             // exact verify is CLI-opt-in only (`--exact-verify`).
             exact_verify: false,
+            // Same house rule: `--gdn-wy17-lazy` is the only way in;
+            // 1 = historical write-all behavior.
+            wy17_lazy_j: 1,
         }
     }
 }
@@ -186,6 +202,7 @@ mod tests {
         fused_norm: false,
         batched_recurrent: false,
         exact_verify: false,
+        wy17_lazy_j: 1,
     };
 
     /// POSITIVE (the default): with no flags the verify pass runs the legacy

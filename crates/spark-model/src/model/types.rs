@@ -175,6 +175,9 @@ pub struct TransformerModel {
     /// panic/unwind), not just the explicit `free_sequence`/`compact_sequence`
     /// sites. See `SsmStatePool::claim_guarded` / `SlotGuard`.
     pub(super) ssm_pool: Arc<SsmStatePool>,
+    /// wy17 LAZY verify retention (task #33, `--gdn-wy17-lazy`); `None`
+    /// when the lever is off. See [`super::ssm_pool::Wy17Retention`].
+    pub(super) wy17_retention: Option<super::ssm_pool::Wy17Retention>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
     /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
