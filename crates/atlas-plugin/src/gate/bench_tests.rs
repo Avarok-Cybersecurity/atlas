@@ -222,7 +222,10 @@ min = 86.0
 "#,
     );
     let err = baseline_for(&root, "bfcl-subset").unwrap_err().to_string();
-    assert!(err.contains("claim to be the default"), "{err}");
+    assert_eq!(
+        err,
+        "bfcl-subset: both org/A (in modelA) and org/B (in modelA) claim to be the default on gb10"
+    );
 }
 
 /// No implicit "the only entry wins": a second checkpoint added later would
@@ -241,11 +244,9 @@ status = "measured"
 min = 85.0
 "#,
     );
-    assert!(
-        baseline_for(&root, "bfcl-subset")
-            .unwrap_err()
-            .to_string()
-            .contains("`default = true`")
+    assert_eq!(
+        baseline_for(&root, "bfcl-subset").unwrap_err().to_string(),
+        "bfcl-subset: no checkpoint on gb10 sets `default = true`; one must, or the gate has no defined subject"
     );
 }
 
@@ -272,11 +273,9 @@ status = "measured"
 min = 90.0
 "#,
     );
-    assert!(
-        baseline_for(&root, "bfcl-subset")
-            .unwrap_err()
-            .to_string()
-            .contains("declared twice")
+    assert_eq!(
+        baseline_for(&root, "bfcl-subset").unwrap_err().to_string(),
+        "bfcl-subset: org/A is declared twice on gb10"
     );
 }
 
