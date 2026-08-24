@@ -41,18 +41,28 @@ struct Counting {
     events: usize,
     frames: usize,
     terminal_frames: usize,
+    glows: Vec<bool>,
+    statuses: Vec<String>,
+    terminal: Option<BenchmarkResult>,
 }
 impl RunReporter for Counting {
     fn started(&mut self, _r: &RunRequest) {
         self.started += 1;
     }
-    fn event(&mut self, _e: &PluginEvent) {
+    fn event(&mut self, e: &PluginEvent) {
         self.events += 1;
+        if let PluginEvent::Glow(on) = e {
+            self.glows.push(*on);
+        }
+        if let PluginEvent::Status(status) = e {
+            self.statuses.push(status.clone());
+        }
     }
     fn frame(&mut self, f: &BenchmarkResult) {
         self.frames += 1;
         if f.status.is_terminal() {
             self.terminal_frames += 1;
+            self.terminal = Some(f.clone());
         }
     }
 }
@@ -103,6 +113,7 @@ fn a_run_produces_a_record_and_writes_it() {
     assert_eq!(reporter.started, 1);
     assert!(reporter.frames >= 1, "the caller saw the run happen");
     assert_eq!(reporter.terminal_frames, 1, "exactly one terminal frame");
+    assert_eq!(reporter.glows, [true, false], "run lifecycle events");
 
     let path = outcome.saved_to.as_ref().expect("saved");
     assert!(path.exists(), "the file is really on disk");
@@ -110,6 +121,19 @@ fn a_run_produces_a_record_and_writes_it() {
     assert_eq!(outcome.record.source, RunSource::Cli);
     assert_eq!(outcome.record.atlas_version, "1.0.0-beta-preview");
     assert!(!outcome.record.run_id.is_empty(), "stamped by save");
+    let reported = reporter.terminal.as_ref().expect("reported terminal frame");
+    assert_eq!(reported.status, outcome.record.frame.status);
+    assert_eq!(reported.phase, outcome.record.frame.phase);
+    assert_eq!(
+        reported.verdict.as_ref().map(|v| v.reason.as_str()),
+        outcome
+            .record
+            .frame
+            .verdict
+            .as_ref()
+            .map(|v| v.reason.as_str()),
+        "the persisted record keeps the terminal frame the caller saw"
+    );
 
     // Re-read through the public reader: writer and reader must agree.
     let store = ArtifactStore::with_root(&dir.0);
@@ -142,6 +166,37 @@ fn no_save_leaves_nothing_on_disk() {
 }
 
 #[test]
+fn cancellation_is_recorded_and_returns_a_harness_failure() {
+    let dir = Dir::new();
+    let store = ArtifactStore::with_root(&dir.0);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let executor = BenchmarkExecutor::new(rt.handle().clone(), store);
+    let mut reporter = Counting::default();
+
+    let outcome = run_blocking(
+        &executor,
+        request(HeadlessOptions::cli("v")),
+        &mut reporter,
+        &|| true,
+    )
+    .expect("drives cancellation");
+
+    assert!(outcome.cancelled, "the cancellation reaches the run handle");
+    assert_eq!(outcome.exit_code(), 1, "a cancelled result is not usable");
+    assert!(
+        reporter
+            .statuses
+            .iter()
+            .any(|s| s == "cancelling — stopping after the request in flight"),
+        "the caller sees cancellation progress: {:?}",
+        reporter.statuses
+    );
+}
+
+#[test]
 fn an_invalid_parameter_fails_before_anything_runs() {
     // Validation must happen before a run directory exists, so a typo does not
     // leave a half-run behind.
@@ -157,6 +212,7 @@ fn an_invalid_parameter_fails_before_anything_runs() {
     let mut values = ParamValues::defaults(&descriptor.build().parameters());
     values.set("osl", crate::params::ParamValue::Int(-5)); // below the spec's min
 
+    let mut reporter = Counting::default();
     let err = run_blocking(
         &executor,
         RunRequest {
@@ -165,7 +221,7 @@ fn an_invalid_parameter_fails_before_anything_runs() {
             target: TargetEndpoint::new("http://127.0.0.1:1", "m"),
             options: HeadlessOptions::cli("v"),
         },
-        &mut SilentReporter,
+        &mut reporter,
         &|| false,
     )
     .expect_err("rejected");
@@ -174,6 +230,9 @@ fn an_invalid_parameter_fails_before_anything_runs() {
         "says which: {err}"
     );
     assert!(crate::history::load(&store, "concurrency-sweep").is_empty());
+    assert_eq!(reporter.started, 0, "validation precedes start reporting");
+    assert_eq!(reporter.events, 0, "validation precedes executor events");
+    assert_eq!(reporter.frames, 0, "validation precedes benchmark frames");
 }
 
 #[test]
@@ -202,4 +261,15 @@ fn exit_codes_separate_a_broken_harness_from_a_failed_gate() {
 
     let broken = BenchmarkResult::failed("run", "endpoint refused", std::time::Duration::ZERO);
     assert_eq!(mk(broken).exit_code(), 1, "the harness could not measure");
+
+    let mut cancelled = mk(BenchmarkResult::completed(
+        "done",
+        std::time::Duration::ZERO,
+    ));
+    cancelled.cancelled = true;
+    assert_eq!(
+        cancelled.exit_code(),
+        1,
+        "a cancelled measurement is unusable"
+    );
 }
