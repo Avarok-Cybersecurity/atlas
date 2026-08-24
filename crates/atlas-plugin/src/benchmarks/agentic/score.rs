@@ -70,7 +70,8 @@ impl Directions {
 ///
 /// Gate self-start uses this after all fallible resolution work and directly
 /// before spawning the model server. The scorer has a longer Cargo-build gap,
-/// so it uses [`reserve_port`] below and retains the listener through that gap.
+/// so it uses the private reservation path below and retains the listener
+/// through that gap.
 pub fn free_port() -> Result<u16> {
     let listener = reserve_port()?;
     Ok(listener.local_addr()?.port())
