@@ -24,15 +24,26 @@ fn tree_err(json: &str) -> String {
 #[test]
 fn a_bare_string_benches_is_rejected_not_silently_dropped() {
     let err = tree_err(r#"{ "a": { "_benches": "bfcl-subset" }, "b": {} }"#);
-    assert!(err.contains("must be an ARRAY"), "{err}");
+    assert_eq!(
+        err,
+        "a: _benches must be an ARRAY of benchmark ids, got \"bfcl-subset\". A bare string \
+         parses as empty here while jq reads it, so the two halves would disagree — in the \
+         removing direction."
+    );
 }
 
 #[test]
 fn a_non_string_benches_entry_is_rejected() {
     let err = tree_err(r#"{ "a": { "_benches": [1, "bfcl-subset"] }, "b": {} }"#);
-    assert!(err.contains("non-string entry"), "{err}");
+    assert_eq!(
+        err,
+        "a: _benches contains a non-string entry (1). A silently-dropped entry removes a benchmark."
+    );
     let err = tree_err(r#"{ "a": { "_benches": [["bfcl-subset"]] }, "b": {} }"#);
-    assert!(err.contains("non-string entry"), "{err}");
+    assert_eq!(
+        err,
+        "a: _benches contains a non-string entry ([\"bfcl-subset\"]). A silently-dropped entry removes a benchmark."
+    );
 }
 
 // ── The real file ──────────────────────────────────────────────────────────
@@ -47,77 +58,54 @@ fn the_real_taxonomy_is_valid() {
         .unwrap()
         .to_path_buf();
     let roots = load(&root).expect("`.github/pr-taxonomy.json` loads and validates");
-    assert!(
-        roots.len() >= 5,
-        "expected a handful of roots, got {}",
-        roots.len()
-    );
-    assert!(
-        roots.iter().any(|r| r.name == "unknown"),
-        "the tree must offer `unknown`, or an unclassifiable PR has no honest home"
-    );
-}
-
-/// Every `_benches` entry names a benchmark that actually runs. A path
-/// selecting an unregistered id is a silent no-op — the worst kind of bug in a
-/// gate, because it reads as coverage.
-#[test]
-fn every_declared_bench_is_a_required_gate() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let roots = load(&root).unwrap();
-    let known: std::collections::BTreeSet<&str> = super::super::coverage::REQUIRED
-        .iter()
-        .map(|g| g.id)
-        .collect();
-    fn walk(nodes: &[Node], known: &std::collections::BTreeSet<&str>) {
-        for n in nodes {
-            for b in &n.benches {
-                assert!(
-                    known.contains(b.as_str()),
-                    "{}: unknown bench {b:?}",
-                    n.name
-                );
-            }
-            walk(&n.children, known);
+    fn project(nodes: &[Node], parent: &str, out: &mut Vec<String>) {
+        for node in nodes {
+            let path = if parent.is_empty() {
+                node.name.clone()
+            } else {
+                format!("{parent}/{}", node.name)
+            };
+            out.push(format!("{path}={}", node.benches.join(",")));
+            project(&node.children, &path, out);
         }
     }
-    walk(&roots, &known);
-}
-
-/// ★ `unknown` is the abstain arm. If its subtree ever gained `_benches`, a
-/// classifier outage or a 429 could manufacture GPU spend out of nothing —
-/// `required.rs` skips `error`/`abstain` rows for exactly this reason, and
-/// this pins the other half: even a CONFIDENT `unknown` implies no spend.
-#[test]
-fn the_unknown_root_and_its_descendants_carry_no_benches() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let roots = load(&root).unwrap();
-    let unknown = roots
-        .iter()
-        .find(|r| r.name == "unknown")
-        .expect("the tree offers `unknown`");
-    fn walk(node: &Node, trail: &str) {
-        assert!(
-            node.benches.is_empty(),
-            "{trail}/{} carries _benches {:?} — an abstention must never cost GPU",
-            node.name,
-            node.benches
-        );
-        for child in &node.children {
-            walk(child, &format!("{trail}/{}", node.name));
-        }
-    }
-    walk(unknown, "");
+    let mut projection = Vec::new();
+    project(&roots, "", &mut projection);
+    assert_eq!(
+        projection,
+        [
+            "correctness=bfcl-subset",
+            "correctness/numerics=bfcl-subset-echolp",
+            "correctness/loader=bfcl-subset-echolp,ttft-cold-gate",
+            "correctness/tool-calling=bfcl-subset-echolp",
+            "correctness/ssm-state=ttft-warm-gate,ssm-state-poisoning-gate",
+            "correctness/kv-cache=ttft-warm-gate,ttft-cold-gate,ssm-state-poisoning-gate",
+            "correctness/sampling=bfcl-subset-echolp,agentic-webserver",
+            "performance=agentic-webserver",
+            "performance/decode=bfcl-subset,ttft-warm-gate,decode-floor",
+            "performance/prefill=ttft-cold-gate,ttft-warm-gate",
+            "performance/kernel-dispatch=bfcl-subset,decode-floor",
+            "performance/memory-traffic=bfcl-subset,ttft-warm-gate,decode-floor",
+            "performance/scheduling=ttft-warm-gate,concurrency-sweep",
+            "performance/speculation=bfcl-subset,decode-floor",
+            "capability=bfcl-subset,agentic-webserver",
+            "capability/new-model=ttft-cold-gate",
+            "capability/new-hardware=ttft-cold-gate,ttft-warm-gate",
+            "capability/quantization=bfcl-subset-echolp",
+            "capability/adapters=bfcl-subset-echolp,ttft-cold-gate",
+            "capability/serving-api=concurrency-sweep,ttft-warm-gate",
+            "infrastructure=",
+            "infrastructure/ci=",
+            "infrastructure/benchmark-gate=",
+            "infrastructure/release=",
+            "infrastructure/observability=",
+            "infrastructure/build-system=",
+            "documentation=",
+            "documentation/reference=",
+            "documentation/design-record=",
+            "unknown=",
+        ]
+    );
 }
 
 /// The 2026-08-16 fill: `correctness/ssm-state` names the gate built for the
@@ -137,11 +125,21 @@ fn ssm_state_intent_implies_the_poison_gate() {
         vec!["correctness".to_string(), "ssm-state".into()],
         vec!["correctness".to_string(), "kv-cache".into()],
     ] {
-        assert!(
-            benches_for(&roots, &path).contains("ssm-state-poisoning-gate"),
-            "{path:?} must imply the poison gate — restored-state bugs are \
-             exactly what these intents describe"
-        );
+        let got = benches_for(&roots, &path);
+        let expected: std::collections::BTreeSet<String> = match path[1].as_str() {
+            "ssm-state" => &["bfcl-subset", "ssm-state-poisoning-gate", "ttft-warm-gate"][..],
+            "kv-cache" => &[
+                "bfcl-subset",
+                "ssm-state-poisoning-gate",
+                "ttft-cold-gate",
+                "ttft-warm-gate",
+            ][..],
+            _ => unreachable!(),
+        }
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(got, expected, "{path:?}");
     }
 }
 
@@ -253,28 +251,41 @@ fn a_lone_child_is_followed_not_asked() {
 fn a_single_child_node_is_rejected() {
     let roots = tree(r#"{ "a": { "only": {} }, "b": {} }"#);
     let err = validate(&roots).unwrap_err().to_string();
-    assert!(err.contains("exactly one child"), "{err}");
+    assert_eq!(
+        err,
+        "a has exactly one child (only). Either give it a sibling or make a a leaf."
+    );
 }
 
 #[test]
 fn a_non_kebab_key_is_rejected() {
     let roots = tree(r#"{ "Perf Stuff": {}, "b": {} }"#);
     let err = validate(&roots).unwrap_err().to_string();
-    assert!(err.contains("kebab-case"), "{err}");
+    assert_eq!(
+        err,
+        "Perf Stuff: keys must be lowercase kebab-case so a path is a safe label"
+    );
 }
 
 #[test]
 fn a_bench_that_is_not_a_required_gate_is_rejected() {
     let roots = tree(r#"{ "a": { "_benches": ["no-such-bench"] }, "b": {} }"#);
     let err = validate(&roots).unwrap_err().to_string();
-    assert!(err.contains("not a required benchmark"), "{err}");
+    assert_eq!(
+        err,
+        "a: _benches names \"no-such-bench\", which is not a required benchmark. A path that \
+         selects a benchmark nobody runs is a silent no-op."
+    );
 }
 
 #[test]
 fn a_one_root_tree_is_rejected() {
     let roots = tree(r#"{ "only": {} }"#);
     let err = validate(&roots).unwrap_err().to_string();
-    assert!(err.contains("not a choice"), "{err}");
+    assert_eq!(
+        err,
+        "the taxonomy needs at least two roots; one root is not a choice"
+    );
 }
 
 /// `_doc` and `_benches` are metadata, not categories. If they leaked into the
@@ -284,6 +295,7 @@ fn reserved_keys_are_not_categories() {
     let roots = tree(r#"{ "_doc": ["notes"], "a": { "_benches": ["bfcl-subset"] }, "b": {} }"#);
     let names: Vec<&str> = roots.iter().map(|n| n.name.as_str()).collect();
     assert_eq!(names, vec!["a", "b"]);
+    assert_eq!(roots[0].benches, ["bfcl-subset"]);
     assert!(roots[0].is_leaf(), "_benches must not count as a child");
 }
 
@@ -318,10 +330,33 @@ fn a_replayed_ledger_event_collapses_on_read() {
     let raw = atlas_governance::ledger::read_all(&path).unwrap();
     let deduped = raw.deduplicated();
     assert_eq!(
-        deduped.events.len(),
-        2,
+        deduped
+            .events
+            .iter()
+            .map(|event| {
+                let atlas_governance::event::EventKind::Category { value, status } = &event.kind
+                else {
+                    panic!("fixture contains only category events")
+                };
+                (
+                    event.run_id.as_str(),
+                    event.at,
+                    value.as_str(),
+                    status.as_str(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            (
+                "31300000",
+                1_786_280_000,
+                "infrastructure/benchmark-gate",
+                "ok",
+            ),
+            ("31300001", 1_786_280_100, "tooling", "ok"),
+        ],
         "a replayed event must collapse; identity excludes `at` precisely so that \
-         re-running a job does not inflate the journey"
+         re-running a job does not inflate the journey, and the first observation survives"
     );
 }
 
