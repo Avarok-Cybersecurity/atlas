@@ -11,10 +11,24 @@ fn configured(variant: Variant) -> Bfcl {
 }
 
 #[test]
-fn the_two_variants_are_distinct_benchmarks() {
-    assert_ne!(SUBSET_DESCRIPTOR.id, FULL_DESCRIPTOR.id);
+fn all_three_variants_are_distinct_benchmarks() {
     assert_eq!(Bfcl::new(Variant::Subset).descriptor().id, "bfcl-subset");
+    assert_eq!(
+        Bfcl::new(Variant::SubsetEcholp).descriptor().id,
+        "bfcl-subset-echolp"
+    );
     assert_eq!(Bfcl::new(Variant::Full).descriptor().id, "bfcl-full");
+    let ids = [
+        SUBSET_DESCRIPTOR.id,
+        SUBSET_ECHOLP_DESCRIPTOR.id,
+        FULL_DESCRIPTOR.id,
+    ];
+    assert_eq!(
+        ids.into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
 }
 
 #[test]
@@ -101,7 +115,9 @@ fn the_verdict_always_states_the_measured_values_and_the_floor() {
     let mut b = on_model(Variant::Subset, "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf");
     b.scores = Some(scores(87.44, 88.53));
     let reason = b.verdict().reason;
-    assert!(reason.contains("87.44") && reason.contains("83.64"));
+    for value in ["87.44", "83.64", "88.53", "85.32"] {
+        assert!(reason.contains(value), "missing {value}: {reason}");
+    }
     assert!(reason.contains("n=995"));
 }
 
@@ -155,6 +171,34 @@ fn with_mins(overall: f64, normalized: f64) -> Bfcl {
     b
 }
 
+fn qwen38_committed_mins() -> (f64, f64) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace layout");
+    let (_, entry) = crate::gate::bench::load_all(root)
+        .expect("committed BENCH.toml files must load")
+        .into_iter()
+        .find(|(target, entry)| {
+            target.hardware == "gb10"
+                && target.model == "qwen3.8-27b"
+                && entry.checkpoint == "unsloth/Qwen3.8-27B-NVFP4"
+                && entry.gate == "bfcl-subset"
+        })
+        .expect("the Qwen3.8 BFCL gate must be committed");
+    let metrics = entry
+        .metrics
+        .expect("the measured BFCL gate must have bounds");
+    (
+        metrics["overall_accuracy"]
+            .min
+            .expect("overall_accuracy must have a minimum"),
+        metrics["normalized_single_turn_score"]
+            .min
+            .expect("normalized score must have a minimum"),
+    )
+}
+
 /// ★ Review C1: a required bfcl-subset run on a non-MLPerf checkpoint that
 /// CLEARS its own BENCH.toml bars must produce a PASS run verdict — the gate
 /// machinery (`GateRecord::verdict_passes`, check.rs "run verdict is not
@@ -163,7 +207,9 @@ fn with_mins(overall: f64, normalized: f64) -> Bfcl {
 /// the run that motivated this.
 #[test]
 fn a_qwen38_run_clearing_its_own_bars_passes() {
-    let mut b = with_mins(83.82, 83.72);
+    let (overall_min, normalized_min) = qwen38_committed_mins();
+    assert_eq!((overall_min, normalized_min), (83.82, 83.72));
+    let mut b = with_mins(overall_min, normalized_min);
     b.scores = Some(scores(84.22, 84.12));
     let v = b.verdict();
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
@@ -182,7 +228,8 @@ fn a_qwen38_run_clearing_its_own_bars_passes() {
 
 #[test]
 fn a_qwen38_run_below_its_own_bars_fails() {
-    let mut b = with_mins(83.82, 83.72);
+    let (overall_min, normalized_min) = qwen38_committed_mins();
+    let mut b = with_mins(overall_min, normalized_min);
     b.scores = Some(scores(83.50, 84.12));
     let v = b.verdict();
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
@@ -352,6 +399,7 @@ fn the_committed_baselines_pin_the_draw_each_variant_makes() {
 #[test]
 fn the_mlperf_floors_are_the_recorded_thresholds() {
     // 86.23 / 87.96 × 0.97, the `mlperf-edge-current` numbers for qwen3.6-27b.
-    assert!((MLPERF_FLOOR_OVERALL - 86.23 * 0.97).abs() < 0.01);
-    assert!((MLPERF_FLOOR_NORMALIZED - 87.96 * 0.97).abs() < 0.01);
+    let rounded = |value: f64| (value * 100.0).round() / 100.0;
+    assert_eq!(MLPERF_FLOOR_OVERALL, rounded(86.23 * 0.97));
+    assert_eq!(MLPERF_FLOOR_NORMALIZED, rounded(87.96 * 0.97));
 }
