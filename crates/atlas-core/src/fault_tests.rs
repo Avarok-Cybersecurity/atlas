@@ -33,10 +33,15 @@ fn failed_probe_means_context_lost() {
     );
     match v {
         Fatality::ContextLost(reason) => {
-            // The message must name BOTH the originating op and the probe, or
-            // an operator reading only the log cannot tell which call died.
+            // The message must preserve the originating operation and error,
+            // plus the probe failure. An operator reading only the log needs
+            // all three to distinguish the first failure from its sticky echo.
             assert!(reason.contains("w4a16_gemm_t launch"), "reason: {reason}");
-            assert!(reason.contains("cuStreamSynchronize"), "reason: {reason}");
+            assert!(reason.contains(STICKY_716), "reason: {reason}");
+            assert!(
+                reason.contains("cuStreamSynchronize returned 716"),
+                "reason: {reason}"
+            );
         }
         Fatality::Isolated => panic!("a failed probe must be fatal"),
     }
@@ -48,10 +53,9 @@ fn failed_probe_means_context_lost() {
 /// This is the test that forbids re-implementing classification as a
 /// string/code match. Any such implementation returns ContextLost here.
 ///
-/// PROVEN BY: replacing the body of `classify` with
-/// `if err.contains("716") { ContextLost } else { Isolated }` — the
-/// error-code allowlist an author would naturally reach for — turns this red
-/// while leaving every other test in this file green.
+/// PROVEN BY: adding a pre-match guard that returns `ContextLost` when a
+/// healthy probe accompanies error text containing `716` turns only this
+/// partition red. The failed-probe and ordinary-OOM partitions stay green.
 #[test]
 fn scary_error_text_with_a_healthy_probe_is_not_fatal() {
     assert_eq!(
@@ -62,7 +66,8 @@ fn scary_error_text_with_a_healthy_probe_is_not_fatal() {
 
 /// NEGATIVE: an ordinary recoverable failure is never fatal.
 ///
-/// PROVEN BY: the same match-arm swap as the positive case.
+/// PROVEN BY: treating `OUT_OF_MEMORY` as fatal even when the probe is healthy
+/// turns this red while the sticky-716 and failed-probe partitions stay green.
 #[test]
 fn isolated_failure_with_healthy_probe_is_not_fatal() {
     assert_eq!(
@@ -123,20 +128,26 @@ fn latch_is_first_writer_wins() {
 /// once when a context dies. Exactly one caller may be told it was first —
 /// that is what gates "log once, shut down once".
 ///
-/// PROVEN BY: replacing `self.reason.set(..).is_ok()` with a
-/// get-then-set-then-`true` sequence (i.e. every caller returns `true`) turns
-/// this red with `winners = 8`.
+/// PROVEN BY: replacing the atomic set result with `get().is_none()`, then a
+/// yield, set, and unconditional `true` lets multiple callers report first.
+/// The sequential first-writer test stays green while this test turns red.
 #[test]
 fn exactly_one_caller_wins_the_race() {
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
     let l = Arc::new(FaultLatch::new());
+    let start = Arc::new(Barrier::new(9));
     let winners: usize = std::thread::scope(|s| {
         let handles: Vec<_> = (0..8)
             .map(|i| {
                 let l = Arc::clone(&l);
-                s.spawn(move || usize::from(l.latch(format!("thread {i}"))))
+                let start = Arc::clone(&start);
+                s.spawn(move || {
+                    start.wait();
+                    usize::from(l.latch(format!("thread {i}")))
+                })
             })
             .collect();
+        start.wait();
         handles.into_iter().map(|h| h.join().unwrap()).sum()
     });
     assert_eq!(winners, 1, "exactly one latch call may report first");

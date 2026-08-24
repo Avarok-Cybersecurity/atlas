@@ -309,6 +309,7 @@ async fn shell_output_reaches_the_model_normalised() {
     assert!(out.contains("kill: (<pid>)"), "{out}");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_detached_survivor_in_the_sandbox_is_reaped() {
     // The prompt tells the model to use `setsid`, so the server it leaves

@@ -107,10 +107,22 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         .get_u64(&k("attention.head_count_kv"))
         .map(|v| v as usize)
         .unwrap_or(num_attention_heads);
+    if num_attention_heads > 0
+        && (num_key_value_heads == 0 || !num_attention_heads.is_multiple_of(num_key_value_heads))
+    {
+        bail!(
+            "GGUF metadata key '{}.attention.head_count_kv' ({num_key_value_heads}) must be a non-zero divisor of attention.head_count ({num_attention_heads})",
+            arch
+        );
+    }
 
     // head_dim: explicit key_length if present, else hidden_size / head_count.
     // Erroring on a non-divisible fallback avoids a silently-wrong head_dim.
     let head_dim = match meta.get_u64(&k("attention.key_length")) {
+        Some(0) => bail!(
+            "GGUF metadata key '{}.attention.key_length' must be greater than zero",
+            arch
+        ),
         Some(v) => v as usize,
         None => {
             if num_attention_heads == 0 || !hidden_size.is_multiple_of(num_attention_heads) {
@@ -124,15 +136,25 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     };
 
     // vocab_size: explicit key → token_embd rows → tokenizer token list length.
-    let vocab_size = meta
-        .get_u64(&k("vocab_size"))
-        .map(|v| v as usize)
+    let metadata_vocab = meta.get_u64(&k("vocab_size")).map(|v| v as usize);
+    if let (Some(metadata_vocab), Some(tensor_vocab)) = (metadata_vocab, inputs.token_embd_vocab)
+        && metadata_vocab != tensor_vocab
+    {
+        bail!(
+            "GGUF: '{arch}.vocab_size' ({metadata_vocab}) does not match token_embd.weight rows \
+             ({tensor_vocab})"
+        );
+    }
+    let vocab_size = metadata_vocab
         .or(inputs.token_embd_vocab)
         .or_else(|| meta.get_arr_len("tokenizer.ggml.tokens"))
         .context(
             "GGUF: could not determine vocab_size (no '{arch}.vocab_size', no token_embd rows, \
              no 'tokenizer.ggml.tokens')",
         )?;
+    if vocab_size == 0 {
+        bail!("GGUF: vocab_size must be non-zero");
+    }
 
     // ── Normalization / RoPE / context (documented explicit defaults) ──
     // rms_norm_eps: ggml default is 1e-5 when the key is absent (differs from
@@ -153,10 +175,16 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     let tie_word_embeddings = !inputs.has_output_weight;
 
     // ── MoE (only for MoE arches) ──
-    let num_experts = meta
-        .get_u64(&k("expert_count"))
-        .map(|v| v as usize)
-        .unwrap_or(0);
+    let num_experts = if arch == "qwen3moe" {
+        req_u64("expert_count")? as usize
+    } else {
+        meta.get_u64(&k("expert_count"))
+            .map(|v| v as usize)
+            .unwrap_or(0)
+    };
+    if arch == "qwen3moe" && num_experts == 0 {
+        bail!("GGUF metadata key '{arch}.expert_count' must be greater than zero");
+    }
 
     let mut body: Map<String, Value> = json!({
         "hidden_size": hidden_size,
@@ -185,6 +213,17 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         let moe_ffn = req_u64("expert_feed_forward_length").with_context(|| {
             format!("GGUF: MoE arch '{arch}' missing '{arch}.expert_feed_forward_length'")
         })? as usize;
+        if experts_per_tok == 0 || experts_per_tok > num_experts {
+            bail!(
+                "GGUF metadata key '{arch}.expert_used_count' must be in 1..={num_experts}, \
+                 found {experts_per_tok}"
+            );
+        }
+        if moe_ffn == 0 {
+            bail!(
+                "GGUF metadata key '{arch}.expert_feed_forward_length' must be greater than zero"
+            );
+        }
         body.insert("num_experts".into(), json!(num_experts));
         body.insert("num_experts_per_tok".into(), json!(experts_per_tok));
         body.insert("moe_intermediate_size".into(), json!(moe_ffn));
@@ -215,10 +254,14 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         config.embed_scale = (hidden_size as f32).sqrt();
         // Logit softcap: honor the GGUF key if present (gemma2), else 0.0
         // (disabled). gemma3+ dropped softcapping.
-        config.final_logit_softcapping = meta
-            .get_f64(&k("final_logit_softcapping"))
-            .map(|v| v as f32)
-            .unwrap_or(0.0);
+        config.final_logit_softcapping = match meta.get_f64(&k("final_logit_softcapping")) {
+            Some(v) if v >= 0.0 && v <= f32::MAX as f64 => v as f32,
+            Some(v) => bail!(
+                "GGUF metadata key '{}.final_logit_softcapping' must be non-negative and representable as a finite f32 (got {v})",
+                arch
+            ),
+            None => 0.0,
+        };
     }
 
     // Reuse the shared quantization-config + validation pass.

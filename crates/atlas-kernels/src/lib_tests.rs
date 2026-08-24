@@ -7,6 +7,7 @@
 use super::*;
 
 #[test]
+#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
 fn all_ptx_modules_non_empty() {
     for (name, blob) in ptx_modules() {
         assert!(
@@ -33,13 +34,6 @@ fn all_ptx_modules_non_empty() {
 // `cargo test` is green; they're still exercised on a developer
 // machine via `cargo test -p atlas-kernels -- --ignored` after a
 // real PTX build.
-
-#[test]
-#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
-fn module_count_matches_cu_files() {
-    let count = ptx_modules().len();
-    assert!(count >= 31, "Expected at least 31 PTX modules, got {count}");
-}
 
 #[test]
 #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
@@ -150,10 +144,10 @@ fn exact_verify_snap_lookups_resolve_or_are_declared_on_every_gdn_target() {
 #[test]
 #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
 fn ptx_for_model_lookup() {
-    let found = ptx_for_model("qwen3-next-80b");
-    assert!(
-        found.is_some(),
-        "ptx_for_model('qwen3-next-80b') should find the default target"
+    let found = ptx_for_model("qwen3-next-80b").expect("compiled qwen3-next target");
+    assert_eq!(
+        found.target.model, "qwen3-next-80b-a3b",
+        "lookup returned a different compiled target"
     );
 }
 

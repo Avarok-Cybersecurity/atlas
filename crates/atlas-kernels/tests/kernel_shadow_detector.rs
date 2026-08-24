@@ -153,12 +153,18 @@ fn every_common_source_declares_at_least_one_entry_point() {
     let mut checked = 0usize;
     let mut empty = Vec::new();
     for (hw, ext) in HW_SOURCE_EXT {
+        let mut hardware_checked = 0usize;
         for file in sources(&root.join(hw).join("common"), ext) {
             checked += 1;
+            hardware_checked += 1;
             if entry_points(&file).is_empty() {
                 empty.push(file.strip_prefix(&root).unwrap().display().to_string());
             }
         }
+        assert!(
+            hardware_checked > 0,
+            "no {ext} common sources found for {hw}: wrong extension or root?"
+        );
     }
     assert!(
         checked > 100,

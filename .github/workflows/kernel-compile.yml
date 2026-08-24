@@ -153,11 +153,9 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$PATH_CUDA:$PATH"
-          # `atlas-kernels`'s four `#[ignore]`d tests are marked
-          # "requires nvcc and ATLAS_SKIP_BUILD unset" — which, until this
-          # workflow, described no machine in CI. They have therefore never
-          # run anywhere but a developer's box. They assert more than the
-          # file count above: every module non-empty, every module carrying a
-          # `.version` directive, >= 31 modules per resolved target, and the
-          # default-model lookup resolving.
+          # Run every registry test marked "requires nvcc and ATLAS_SKIP_BUILD
+          # unset". They assert more than the file count above: every module
+          # is non-empty, every module carries a `.version` directive, each
+          # resolved target has at least 31 modules, and default-model lookup
+          # resolves.
           cargo test -p atlas-kernels -- --ignored

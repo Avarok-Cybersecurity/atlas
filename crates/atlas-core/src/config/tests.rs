@@ -7,10 +7,14 @@
 use super::*;
 
 #[test]
-fn test_qwen3_default_config() {
+fn qwen3_next_factory_preserves_attention_ssm_and_routing_shape() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    assert_eq!(cfg.hidden_size, 2048);
     assert_eq!(cfg.num_hidden_layers, 48);
+    assert_eq!(cfg.num_attention_heads, 16);
+    assert_eq!(cfg.num_key_value_heads, 2);
     assert_eq!(cfg.num_experts, 512);
+    assert_eq!(cfg.num_experts_per_tok, 10);
     assert_eq!(cfg.num_attention_layers(), 12);
     assert_eq!(cfg.num_ssm_layers(), 36);
     assert_eq!(cfg.gqa_ratio(), 8);
@@ -19,12 +23,15 @@ fn test_qwen3_default_config() {
     assert_eq!(cfg.layer_type(2), LayerType::LinearAttention);
     assert_eq!(cfg.layer_type(3), LayerType::FullAttention);
     assert_eq!(cfg.layer_type(47), LayerType::FullAttention);
+    assert_eq!(cfg.linear_num_key_heads, 16);
+    assert_eq!(cfg.linear_key_head_dim, 128);
+    assert_eq!(cfg.linear_conv_kernel_dim, 4);
     assert_eq!(cfg.ssm_qkvz_size(), 2048 + 2048 + 4096 + 4096);
     assert_eq!(cfg.ssm_ba_size(), 64);
 }
 
 #[test]
-fn test_parse_actual_config() {
+fn qwen3_next_fixture_parses_layout_routing_and_quantization() {
     let json = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test_data/qwen3_config.json"
@@ -32,6 +39,7 @@ fn test_parse_actual_config() {
     let cfg = parse_config(json).unwrap();
     assert_eq!(cfg.hidden_size, 2048);
     assert_eq!(cfg.num_experts, 512);
+    assert_eq!(cfg.num_experts_per_tok, 10);
     assert_eq!(cfg.num_hidden_layers, 48);
     assert_eq!(cfg.layer_types.len(), 48);
     assert_eq!(cfg.layer_types[0], LayerType::LinearAttention);
@@ -44,10 +52,22 @@ fn test_parse_actual_config() {
     assert_eq!(cfg.partial_rotary_factor, 0.25);
     assert_eq!(cfg.model_type, "qwen3_next");
     assert!(cfg.weight_prefix.is_empty());
+
+    let quant = cfg
+        .quantization_config
+        .expect("NVIDIA NVFP4 fixture must retain quantization metadata");
+    assert_eq!(quant.quant_method, "modelopt");
+    assert_eq!(quant.quant_algo, "NVFP4");
+    assert!(
+        quant
+            .ignore_modules
+            .iter()
+            .any(|module| module == "lm_head")
+    );
 }
 
 #[test]
-fn test_parse_qwen35_nested_config() {
+fn qwen35_moe_nested_config_maps_attention_ssm_and_layout_controls() {
     let json = r#"{
         "model_type": "qwen3_5_moe",
         "text_config": {
@@ -102,14 +122,20 @@ fn test_parse_qwen35_nested_config() {
     assert_eq!(cfg.eos_token_id, 248044);
     assert_eq!(cfg.rope_theta, 10_000_000.0);
     assert!(cfg.is_qwen35());
+    assert!(cfg.nested_config);
+    assert!(cfg.attn_gated);
+    assert!(cfg.weight_prefix.is_empty());
     assert!(cfg.norm_topk_prob); // Qwen3.5 unconditionally normalizes
+    assert_eq!(cfg.partial_rotary_factor, 0.25);
+    assert_eq!(cfg.rotary_dim(), 64);
+    assert_eq!(cfg.linear_conv_kernel_dim, 4);
     assert_eq!(cfg.ssm_qkv_size(), 2048 + 2048 + 4096); // 8192
     assert_eq!(cfg.ssm_z_size(), 4096);
     assert_eq!(cfg.mtp_num_hidden_layers, 1);
 }
 
 #[test]
-fn test_parse_qwen3_vl_config() {
+fn qwen3_vl_moe_config_maps_attention_and_routing_controls() {
     let json = r#"{
         "model_type": "qwen3_vl_moe",
         "text_config": {
@@ -137,7 +163,10 @@ fn test_parse_qwen3_vl_config() {
     assert_eq!(cfg.num_attention_heads, 32);
     assert_eq!(cfg.num_key_value_heads, 4);
     assert_eq!(cfg.num_experts, 128);
+    assert_eq!(cfg.num_experts_per_tok, 8);
+    assert_eq!(cfg.moe_intermediate_size, 768);
     assert_eq!(cfg.num_hidden_layers, 48);
+    assert!(!cfg.attn_gated);
     // Pure attention: all layers are FullAttention (full_attention_interval defaults to 1)
     assert_eq!(cfg.num_attention_layers(), 48);
     assert_eq!(cfg.num_ssm_layers(), 0);
@@ -275,7 +304,7 @@ fn test_layer_prefix() {
 }
 
 #[test]
-fn test_parse_nemotron_h_config() {
+fn nemotron_h_fixture_maps_mamba_moe_and_weight_layout() {
     let json = r#"{
         "model_type": "nemotron_h",
         "hidden_size": 2688,
@@ -310,6 +339,10 @@ fn test_parse_nemotron_h_config() {
     assert_eq!(cfg.shared_expert_intermediate_size, 3712);
     assert_eq!(cfg.rms_norm_eps, 1e-5);
     assert_eq!(cfg.linear_conv_kernel_dim, 4);
+    assert_eq!(cfg.mamba_num_heads, 64);
+    assert_eq!(cfg.mamba_head_dim, 64);
+    assert_eq!(cfg.ssm_state_size, 128);
+    assert_eq!(cfg.n_groups, 8);
     assert_eq!(cfg.mamba2_d_inner(), 4096); // 64*64, NOT expand*hidden
     // Pattern: 23 M + 23 E + 6 * = 52
     assert_eq!(cfg.layer_types.len(), 52);
@@ -322,6 +355,43 @@ fn test_parse_nemotron_h_config() {
     assert_eq!(cfg.gqa_ratio(), 16); // 32/2
     assert_eq!(cfg.rotary_dim(), 128); // partial_rotary_factor=1.0
     assert_eq!(cfg.routed_scaling_factor, 2.5);
+    assert!(cfg.norm_topk_prob);
+    assert_eq!(cfg.weight_prefix, "backbone");
+}
+
+#[test]
+fn nemotron_h_rejects_invalid_mamba_geometry() {
+    let base = serde_json::json!({
+        "model_type": "nemotron_h",
+        "hidden_size": 2688,
+        "num_hidden_layers": 1,
+        "hybrid_override_pattern": "M",
+        "mamba_num_heads": 64,
+        "mamba_head_dim": 64,
+        "ssm_state_size": 128,
+        "n_groups": 8,
+        "conv_kernel": 4
+    });
+    let mut accepted = Vec::new();
+
+    for (field, value) in [
+        ("mamba_head_dim", 0),
+        ("ssm_state_size", 0),
+        ("n_groups", 0),
+        ("n_groups", 7),
+    ] {
+        let mut raw = base.clone();
+        raw[field] = serde_json::json!(value);
+        match parse_config(&raw.to_string()) {
+            Ok(_) => accepted.push(field),
+            Err(error) => assert!(
+                error.to_string().contains(field),
+                "error for {field} did not name the invalid field: {error}"
+            ),
+        }
+    }
+
+    assert!(accepted.is_empty(), "parser accepted invalid {accepted:?}");
 }
 
 #[test]
@@ -379,12 +449,15 @@ fn test_parse_nemotron_h_puzzle_config() {
     // Non-MoE layers fall back to scalar max
     assert_eq!(cfg.moe_intermediate_size, 2688);
     assert_eq!(cfg.num_experts_per_tok, 22);
+    assert_eq!(cfg.moe_intermediate_size_for(0), 2688);
+    assert_eq!(cfg.num_experts_per_tok_for(0), 22);
     assert_eq!(cfg.max_moe_intermediate_size(), 2688);
+    assert_eq!(cfg.moe_input_size(), 1024);
     assert_eq!(cfg.weight_prefix, "backbone");
 }
 
 #[test]
-fn test_expert_parallelism_range() {
+fn expert_parallelism_partitions_experts_without_dropping_remainder() {
     let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
     // Single GPU: all experts local
     assert_eq!(cfg.local_expert_range(), (0, 512));
@@ -407,6 +480,11 @@ fn test_expert_parallelism_range() {
     assert!(!cfg.is_local_expert(255));
     assert!(cfg.is_local_expert(256));
     assert!(cfg.is_local_expert(511));
+
+    // EP=2 with an uneven split: the final expert belongs to the last rank.
+    cfg.num_experts = 513;
+    assert_eq!(cfg.local_expert_range(), (256, 513));
+    assert!(cfg.is_local_expert(512));
 }
 
 #[test]
@@ -435,7 +513,7 @@ fn test_tensor_parallelism_range() {
 }
 
 #[test]
-fn test_parse_gemma4_config() {
+fn gemma4_legacy_config_maps_attention_and_embedding_controls() {
     let json = r#"{
         "model_type": "gemma4",
         "tie_word_embeddings": true,
@@ -476,8 +554,10 @@ fn test_parse_gemma4_config() {
     assert_eq!(cfg.vocab_size, 262144);
     assert_eq!(cfg.rms_norm_eps, 1e-6);
     assert_eq!(cfg.max_position_embeddings, 262144);
+    assert_eq!(cfg.sliding_window, 1024);
     assert_eq!(cfg.rope_theta, 10000.0); // sliding theta
     assert_eq!(cfg.partial_rotary_factor, 0.25);
+    assert_eq!(cfg.embed_scale, 5376_f32.sqrt());
     assert!(cfg.tie_word_embeddings);
     assert!(!cfg.attn_gated);
     assert!(cfg.nested_config);
@@ -495,6 +575,47 @@ fn test_parse_gemma4_config() {
     assert_eq!(cfg.gqa_ratio(), 2); // 32/16
     // Rotary dim
     assert_eq!(cfg.rotary_dim(), 64); // 0.25 * 256
+}
+
+#[test]
+fn gemma4_moe_config_preserves_routing_and_canonical_rope_controls() {
+    let json = r#"{
+        "model_type": "gemma4",
+        "tie_word_embeddings": true,
+        "text_config": {
+            "hidden_size": 2304,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "intermediate_size": 9216,
+            "vocab_size": 262144,
+            "sliding_window": 512,
+            "attention_pattern": ["full_attention"],
+            "rope_parameters": {
+                "full_attention": {
+                    "rope_theta": 1000000.0,
+                    "partial_rotary_factor": 0.25
+                },
+                "sliding_attention": {"rope_theta": 10000.0}
+            },
+            "num_experts": 128,
+            "top_k_experts": 8,
+            "moe_intermediate_size": 704,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 131072
+        }
+    }"#;
+
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_experts, 128);
+    assert_eq!(cfg.num_experts_per_tok, 8);
+    assert_eq!(cfg.moe_intermediate_size, 704);
+    assert!(cfg.norm_topk_prob);
+    assert_eq!(cfg.head_dim, 512);
+    assert_eq!(cfg.rope_theta, 10000.0);
+    assert_eq!(cfg.partial_rotary_factor, 0.25);
 }
 
 #[test]
@@ -556,6 +677,7 @@ fn test_parse_deepseek_v4_config() {
     assert_eq!(cfg.kv_lora_rank, 512); // fallback default
     assert_eq!(cfg.qk_nope_head_dim, 448); // head_dim - qk_rope_head_dim
     assert_eq!(cfg.v_head_dim, 512); // fallback to head_dim
+    assert_eq!(cfg.partial_rotary_factor, 0.125); // 64 / 512
     assert_eq!(cfg.num_experts, 256);
     assert_eq!(cfg.num_experts_per_tok, 6);
     assert_eq!(cfg.moe_intermediate_size, 2048);
@@ -563,6 +685,7 @@ fn test_parse_deepseek_v4_config() {
     assert!(cfg.norm_topk_prob);
     assert_eq!(cfg.scoring_func, "sqrtsoftplus"); // preserved, no fallback
     assert!(cfg.use_routing_bias);
+    assert_eq!(cfg.routed_scaling_factor, 1.5);
     assert_eq!(cfg.num_mtp_modules, 1);
     assert_eq!(cfg.mtp_transformer_layers, 1);
     assert_eq!(cfg.dspark_block_size, 5);
@@ -586,6 +709,9 @@ fn test_parse_deepseek_v4_config() {
     assert_eq!(cfg.index_head_dim, 128);
     assert_eq!(cfg.index_topk, 512);
     assert_eq!(cfg.num_hash_layers, 3);
+    assert_eq!(cfg.hc_mult, 4);
+    assert_eq!(cfg.hc_sinkhorn_iters, 20);
+    assert_eq!(cfg.hc_eps, 1e-6);
     // Fallback: all layers treated as FullAttention
     assert_eq!(cfg.num_attention_layers(), 43);
     assert_eq!(cfg.num_ssm_layers(), 0);
@@ -677,6 +803,35 @@ fn test_parse_holo31_vlm_config() {
     assert_eq!(vision.image_pad_token_id, 248056);
 }
 
+#[test]
+fn test_holo31_discriminator_requires_all_signals() {
+    let mut wrong_image_token: serde_json::Value = serde_json::from_str(HOLO31_VLM_CONFIG).unwrap();
+    wrong_image_token["image_token_id"] = serde_json::json!(248_055);
+    assert_eq!(
+        parse_config(&wrong_image_token.to_string())
+            .unwrap()
+            .model_type,
+        "qwen3_6_moe",
+        "the Holo rewrite requires its checkpoint image token"
+    );
+
+    let mut no_vision: serde_json::Value = serde_json::from_str(HOLO31_VLM_CONFIG).unwrap();
+    no_vision.as_object_mut().unwrap().remove("vision_config");
+    assert_eq!(
+        parse_config(&no_vision.to_string()).unwrap().model_type,
+        "qwen3_6_moe",
+        "a text-only config is not Holo-3.1 VLM"
+    );
+
+    let mut other_family: serde_json::Value = serde_json::from_str(HOLO31_VLM_CONFIG).unwrap();
+    other_family["model_type"] = serde_json::json!("qwen3_vl_moe");
+    assert_eq!(
+        parse_config(&other_family.to_string()).unwrap().model_type,
+        "qwen3_6_moe",
+        "the Holo rewrite is limited to its qwen3_5_moe source family"
+    );
+}
+
 // Regression: the FLAGSHIP Qwen/Qwen3.6-35B-A3B-FP8 checkpoint carries the
 // SAME vision tower + image_token_id 248056 as Holo-3.1 but ships an MTP
 // head (mtp_num_hidden_layers=1). It must stay qwen3_6_moe — the Holo
@@ -730,15 +885,23 @@ fn test_parse_nllb_m2m100_config() {
     assert_eq!(cfg.head_dim, 128);
     assert_eq!(cfg.max_position_embeddings, 1024);
     assert_eq!(cfg.vocab_size, 256206);
+    assert_eq!(cfg.bos_token_id, 0);
+    assert_eq!(cfg.eos_token_id, 2);
+    assert!(cfg.tie_word_embeddings);
+    assert_eq!(cfg.num_experts, 0);
+    assert_eq!(cfg.mtp_num_hidden_layers, 0);
+    assert_eq!(cfg.num_attention_layers(), 24);
+    assert_eq!(cfg.num_ssm_layers(), 0);
     assert_eq!(cfg.weight_prefix, "model.decoder");
     assert!(!cfg.attn_gated);
 }
 
 #[test]
-fn test_parse_nllb_rejects_missing_required_dimension() {
+fn test_parse_nllb_rejects_missing_required_fields() {
     let json = r#"{
         "bos_token_id": 0,
         "d_model": 2048,
+        "decoder_attention_heads": 16,
         "decoder_ffn_dim": 8192,
         "decoder_layers": 24,
         "eos_token_id": 2,
@@ -747,11 +910,25 @@ fn test_parse_nllb_rejects_missing_required_dimension() {
         "vocab_size": 256206
     }"#;
 
-    let err = parse_config(json).unwrap_err().to_string();
-    assert!(
-        err.contains("nllb config missing required field `decoder_attention_heads`"),
-        "{err}"
-    );
+    let valid: serde_json::Value = serde_json::from_str(json).unwrap();
+    for field in [
+        "d_model",
+        "decoder_layers",
+        "decoder_ffn_dim",
+        "vocab_size",
+        "decoder_attention_heads",
+        "max_position_embeddings",
+        "bos_token_id",
+        "eos_token_id",
+    ] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        let err = parse_config(&missing.to_string()).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("nllb config missing required field `{field}`")),
+            "missing {field}: {err}"
+        );
+    }
 }
 
 #[test]

@@ -44,23 +44,19 @@ fn tmpdir() -> std::path::PathBuf {
 fn appending_then_reading_round_trips() {
     let dir = tmpdir();
     let path = path_for(&dir, 389);
-    append(&path, &ev("aaa", 0, gate("bfcl-subset", Verdict::Missing))).unwrap();
-    append(
-        &path,
-        &ev(
-            "bbb",
-            0,
-            EventKind::State {
-                to: "gates".to_string(),
-            },
-        ),
-    )
-    .unwrap();
+    let first = ev("aaa", 0, gate("bfcl-subset", Verdict::Missing));
+    let second = ev(
+        "bbb",
+        0,
+        EventKind::State {
+            to: "gates".to_string(),
+        },
+    );
+    append(&path, &first).unwrap();
+    append(&path, &second).unwrap();
 
     let journey = read_all(&path).unwrap();
-    assert_eq!(journey.events.len(), 2);
-    assert_eq!(journey.events[0].head_sha, "aaa");
-    assert_eq!(journey.events[1].pr, 389);
+    assert_eq!(journey.events, vec![first, second]);
 }
 
 #[test]
@@ -131,6 +127,36 @@ fn different_kinds_do_not_collide() {
     assert_ne!(a.identity(), c.identity());
 }
 
+#[test]
+fn gate_identity_includes_verdict_and_diagnostics() {
+    let pass = ev("aaa", 0, gate("bfcl-subset", Verdict::Pass));
+    let fail = ev("aaa", 0, gate("bfcl-subset", Verdict::Fail));
+    let invalidated = ev(
+        "aaa",
+        0,
+        EventKind::Gate {
+            id: "bfcl-subset".into(),
+            verdict: Verdict::Pass,
+            invalidated_by: vec!["kernels/common.cu".into()],
+            detail: None,
+        },
+    );
+    let detailed = ev(
+        "aaa",
+        0,
+        EventKind::Gate {
+            id: "bfcl-subset".into(),
+            verdict: Verdict::Pass,
+            invalidated_by: Vec::new(),
+            detail: Some("record expired".into()),
+        },
+    );
+
+    for other in [&fail, &invalidated, &detailed] {
+        assert_ne!(pass.identity(), other.identity());
+    }
+}
+
 /// ★ Dedup is order-independent — the property that makes concurrent appends
 /// safe. Two CI jobs writing in either order must yield the same set, which is
 /// what "grow-only set" buys and why `merge=union` is sound.
@@ -185,6 +211,7 @@ fn blank_lines_are_tolerated() {
             .open(&path)
             .unwrap();
         writeln!(f).unwrap();
+        writeln!(f, " \t ").unwrap();
     }
     assert_eq!(read_all(&path).unwrap().events.len(), 1);
 }
