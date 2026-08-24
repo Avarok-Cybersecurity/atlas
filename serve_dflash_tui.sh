@@ -167,6 +167,13 @@ if [ "${GUARDS_DEFAULT:-0}" != "1" ]; then
   export ATLAS_CONTENT_LOOP_MIN_REPEATS=12
 fi
 
+# Drafter NVFP4 propose (24a96047): W4A4 MMQ on block_nvfp4 drafter weights.
+# Gate evidence: MinHeap probe incoai 48.49→51.68 / v2 44.86→52.50 with
+# byte-identical output, and the agentic-webserver model-card arm passed
+# 10/10+10/10 at s/turn 6.83 vs the fp8-twin's 7.28 (2026-08-24) — e2m1
+# drafting is agentically invisible. NVFP4=0 reverts to the FP8 twin.
+export ATLAS_DFLASH_DRAFTER_NVFP4="${NVFP4:-1}"
+
 # Serve at INFO so the log is useful if something misbehaves. The
 # tool_parser debug filter arms the burn-forensics capture (42f0b85b):
 # when an 8192-token in-parameter runaway is salvaged as an empty tool
