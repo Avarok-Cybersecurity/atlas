@@ -177,23 +177,20 @@ fn the_system_prompt_is_the_harness_agent_prompt_plus_the_environment() {
 }
 
 #[test]
-fn the_gate_samples_greedily_and_pins_it_on_the_wire() {
+fn the_gate_request_pins_sampling_messages_and_tools() {
     // This asserted `TEMPERATURE == 0.3` — opencode's own setting — until the
     // gate's bar (an exact 10/10 on two counts) made a sampled instrument
     // useless: the same binary measured 10/10 then 8/10. The deviation from the
     // ported harness is deliberate and is documented at the constant.
     const { assert!(TEMPERATURE == 0.0) };
-    let body = request_body(
-        "Qwen/Qwen3.6-35B-A3B-FP8",
-        &[json!({"role": "user", "content": "hi"})],
-        &tool_schema(),
-        8192,
-    );
+    let messages = [json!({"role": "user", "content": "hi"})];
+    let body = request_body("Qwen/Qwen3.6-35B-A3B-FP8", &messages, &tool_schema(), 8192);
     assert_eq!(body["temperature"], 0.0);
     assert_eq!(body["seed"], SEED);
     assert_eq!(body["model"], "Qwen/Qwen3.6-35B-A3B-FP8");
     assert_eq!(body["stream"], true);
     assert_eq!(body["max_tokens"], 8192);
+    assert_eq!(body["messages"], json!(messages));
     assert_eq!(body["tool_choice"], "auto");
     assert_eq!(body["tools"], tool_schema());
 }
