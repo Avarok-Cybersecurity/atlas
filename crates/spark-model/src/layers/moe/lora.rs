@@ -317,10 +317,7 @@ impl MoeLayer {
         // xa reuse). `off=0, end=te` (te <= cap) is a single window ≡ the
         // pre-chunk kernel; rows have no cross-row reduction, so which window a
         // row lands in cannot change its folded result.
-        let cap = l.cap;
-        let mut off = 0u32;
-        while off < te {
-            let end = off.saturating_add(cap).min(te);
+        for (off, end) in ops::grouped_down_windows(te, l.cap) {
             // Incr-1: single active adapter -> moe_row_adapter NULL (the device
             // per-row base skip via ForwardContext.moe_row_adapter is Incr-2; the
             // request-level opt-out above already handles a pure base request).
@@ -339,7 +336,6 @@ impl MoeLayer {
                 0, // x_gather=0: down x is already sorted (x-row == sorted row)
                 stream,
             )?;
-            off = end;
         }
         Ok(())
     }
