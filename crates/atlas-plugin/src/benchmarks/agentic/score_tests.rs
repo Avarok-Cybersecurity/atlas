@@ -175,17 +175,37 @@ fn the_walk_skips_target_so_build_output_is_not_evidence() {
     assert!(!has_tests(&d), "a #[test] under target/ must not count");
 }
 
-#[test]
-fn free_port_returns_a_usable_ephemeral_port() {
-    // What `free_port` actually promises: a port the OS handed out as free at
-    // the moment of the call. It does NOT promise the port is still free
-    // afterwards — nothing can, since any process may take it — so this asserts
-    // the range and does not re-bind. An earlier version of this test did
-    // re-bind and flaked under a parallel `cargo test`.
-    for _ in 0..4 {
-        let p = free_port().unwrap();
-        assert!(p > 1024, "expected an ephemeral port, got {p}");
-    }
+#[tokio::test]
+async fn the_ephemeral_port_stays_reserved_while_the_project_builds() {
+    let d = sandbox("port-reservation");
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"port-reservation\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(
+        d.join("build.rs"),
+        r#"fn main() {
+    let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap().parse().unwrap();
+    assert!(
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_err(),
+        "the scorer released its selected port before the build"
+    );
+}
+"#,
+    )
+    .unwrap();
+
+    let result = webserver_test(
+        &d,
+        None,
+        Duration::from_secs(30),
+        Duration::from_millis(100),
+    )
+    .await;
+    assert!(result.build_ok, "{}", result.error);
+    let _ = std::fs::remove_dir_all(d);
 }
 
 #[tokio::test]
