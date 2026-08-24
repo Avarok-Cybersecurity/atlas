@@ -57,8 +57,21 @@ fn a_present_dataset_is_hashed_and_a_wrong_pin_refuses_to_run() {
     std::fs::write(plugin_dir.join("dataset.jsonl"), b"{}\n").unwrap();
 
     let a = provision::ensure(h.artifacts(), &h, "").unwrap();
-    assert_eq!(a.file_sha256.len(), 64);
-    assert!(plugin_dir.join("dataset_summary.json").is_file());
+    assert_eq!(
+        a.file_sha256,
+        "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    );
+    let summary: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(plugin_dir.join("dataset_summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        summary,
+        json!({
+            "file_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+            "bytes": 3,
+        })
+    );
 
     // The right pin passes (case-insensitively), the wrong one refuses.
     provision::ensure(h.artifacts(), &h, &a.file_sha256.to_uppercase()).unwrap();
@@ -79,45 +92,42 @@ fn the_request_body_is_the_official_immutable_set_plus_seed() {
     let messages = vec![json!({"role": "user", "content": "hi"})];
     let tools = json!([{"type": "function"}]);
     let body = request_body("m", &messages, Some(&tools), 42);
-    let mut keys: Vec<&str> = body
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
     assert_eq!(
-        keys,
-        vec![
-            "chat_template_kwargs",
-            "max_tokens",
-            "messages",
-            "model",
-            "presence_penalty",
-            "repetition_penalty",
-            "seed",
-            "stream",
-            "temperature",
-            "tools",
-            "top_k",
-            "top_p",
-        ]
-    );
-    assert_eq!(body["temperature"], 1.0);
-    assert_eq!(body["top_k"], 20);
-    assert_eq!(body["top_p"], 0.95);
-    assert_eq!(body["repetition_penalty"], 1.0);
-    assert_eq!(body["presence_penalty"], 1.5);
-    assert_eq!(body["max_tokens"], 8192);
-    assert_eq!(body["seed"], 42);
-    assert_eq!(
-        body["chat_template_kwargs"],
-        json!({"preserve_thinking": true})
+        body,
+        json!({
+            "model": "m",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 1.0,
+            "top_k": 20,
+            "top_p": 0.95,
+            "repetition_penalty": 1.0,
+            "presence_penalty": 1.5,
+            "max_tokens": 8192,
+            "seed": 42,
+            "chat_template_kwargs": {"preserve_thinking": true},
+            "tools": [{"type": "function"}],
+        })
     );
 
     // No tools → no tools key, not tools: null.
     let body = request_body("m", &messages, None, 42);
-    assert!(body.get("tools").is_none());
+    assert_eq!(
+        body,
+        json!({
+            "model": "m",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 1.0,
+            "top_k": 20,
+            "top_p": 0.95,
+            "repetition_penalty": 1.0,
+            "presence_penalty": 1.5,
+            "max_tokens": 8192,
+            "seed": 42,
+            "chat_template_kwargs": {"preserve_thinking": true},
+        })
+    );
 }
 
 /// No temperature (or any sampling) parameter is exposed — verified against
@@ -126,22 +136,18 @@ fn the_request_body_is_the_official_immutable_set_plus_seed() {
 #[test]
 fn sampling_is_not_parameterizable() {
     let b = MlperfAgentic::new();
-    for spec in b.parameters() {
-        for forbidden in [
-            "temperature",
-            "top_p",
-            "top_k",
-            "penalty",
-            "max_new",
-            "max_tokens",
-        ] {
-            assert!(
-                !spec.key.contains(forbidden),
-                "{} must not be a parameter on this leg",
-                spec.key
-            );
-        }
-    }
+    let keys: Vec<&str> = b.parameters().iter().map(|spec| spec.key).collect();
+    assert_eq!(
+        keys,
+        [
+            "coding_trajectories",
+            "workflow_trajectories",
+            "seed",
+            "expected_sha256",
+            "request_timeout_s",
+        ],
+        "only draw identity, transport, and provisioning may be configurable"
+    );
 }
 
 #[test]
@@ -152,10 +158,15 @@ fn model_turns_mirror_the_upstream_message_shape() {
         ..Default::default()
     };
     let turn = model_turn(&outcome);
-    assert_eq!(turn["role"], "assistant");
-    assert_eq!(turn["content"], "done");
-    assert_eq!(turn["reasoning_content"], "thinking");
-    assert!(turn["tool_calls"].is_null(), "no calls is null, not []");
+    assert_eq!(
+        turn,
+        json!({
+            "role": "assistant",
+            "content": "done",
+            "reasoning_content": "thinking",
+            "tool_calls": null,
+        })
+    );
 
     outcome.tool_calls = vec![crate::http::ToolCall {
         id: "c1".into(),
@@ -163,11 +174,19 @@ fn model_turns_mirror_the_upstream_message_shape() {
         arguments: r#"{"cmd": "ls"}"#.into(),
     }];
     let turn = model_turn(&outcome);
-    assert_eq!(turn["tool_calls"][0]["function"]["name"], "bash");
-    // Arguments stay the raw streamed string; the scorer parses them itself.
     assert_eq!(
-        turn["tool_calls"][0]["function"]["arguments"],
-        r#"{"cmd": "ls"}"#
+        turn,
+        json!({
+            "role": "assistant",
+            "content": "done",
+            "reasoning_content": "thinking",
+            "tool_calls": [{
+                "function": {
+                    "name": "bash",
+                    "arguments": r#"{"cmd": "ls"}"#,
+                },
+            }],
+        })
     );
     assert_eq!(scoring::bash_actions(&turn), vec!["ls".to_string()]);
 }
@@ -224,12 +243,54 @@ fn the_descriptor_says_it_cannot_run_and_defaults_validate() {
     values.validate_against(&b.parameters()).unwrap();
 }
 
+#[test]
+fn reconfiguring_clears_replay_state_and_applies_defaults() {
+    let mut b = MlperfAgentic::new();
+    b.phase = Phase::Done;
+    b.schedule.push((3, 4));
+    b.cursor = 1;
+    b.turns.push(TurnRecord {
+        conversation_id: "old".into(),
+        turn: 7,
+        domain: Domain::Coding,
+        score: Some(0.5),
+        missing: false,
+        completion_tokens: 12,
+        model: json!({"content": "old"}),
+    });
+    b.scores = report::aggregate(&b.turns);
+    b.fingerprint = Some("old-draw".into());
+    b.replay_started = Some(std::time::Instant::now());
+    b.replay_wall = Some(Duration::from_secs(9));
+
+    let values = ParamValues::defaults(&b.parameters());
+    b.configure(&values).unwrap();
+
+    assert!(matches!(b.phase, Phase::Provision));
+    assert_eq!(b.spec, dataset::DrawSpec::all());
+    assert_eq!(b.seed, 42);
+    assert!(
+        b.expected_sha256.is_empty(),
+        "unpinned is the empty runtime pin"
+    );
+    assert_eq!(b.request_timeout, Duration::from_secs(600));
+    assert_eq!(b.cursor, 0);
+    assert!(b.conversations.is_empty());
+    assert!(b.schedule.is_empty());
+    assert!(b.turns.is_empty());
+    assert!(b.scores.is_none());
+    assert!(b.fingerprint.is_none());
+    assert!(b.replay_started.is_none());
+    assert!(b.replay_wall.is_none());
+}
+
 /// The verdict can never be PASS: there is no baseline for it to have passed.
 #[test]
 fn the_verdict_is_info_and_names_the_unmeasured_state() {
     let mut b = MlperfAgentic::new();
     let v = b.verdict();
     assert_eq!(v.kind, crate::result::VerdictKind::Info);
+    assert_eq!(v.reason, "not scored");
 
     b.turns.push(TurnRecord {
         conversation_id: "sim_001".into(),
