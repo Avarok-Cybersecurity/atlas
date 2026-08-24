@@ -480,17 +480,35 @@ fn leaves_via_symlink(sandbox: &Path, out: &Path) -> bool {
     let Ok(root) = std::fs::canonicalize(sandbox) else {
         return false;
     };
-    let mut probe = out;
-    while probe != sandbox {
+    deepest_existing_real(out, 40).is_none_or(|real| !real.starts_with(&root))
+}
+
+/// Canonicalise `path`, or the deepest ancestor that can be resolved.
+///
+/// `canonicalize` follows a symlink only when its target already exists. A
+/// dangling link to an outside file would therefore disappear from an ordinary
+/// ancestor walk, even though `write` would create that target. Follow the link
+/// itself and continue the same search at its destination. The hop bound also
+/// makes a symlink cycle fail closed.
+fn deepest_existing_real(path: &Path, hops: usize) -> Option<PathBuf> {
+    let mut probe = path;
+    loop {
         if let Ok(real) = std::fs::canonicalize(probe) {
-            return !real.starts_with(&root);
+            return Some(real);
         }
-        match probe.parent() {
-            Some(parent) => probe = parent,
-            None => return false,
+        if std::fs::symlink_metadata(probe).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            if hops == 0 {
+                return None;
+            }
+            let target = std::fs::read_link(probe).ok()?;
+            let target = match target.is_absolute() {
+                true => target,
+                false => probe.parent()?.join(target),
+            };
+            return deepest_existing_real(&target, hops - 1);
         }
+        probe = probe.parent()?;
     }
-    false
 }
 
 #[cfg(test)]

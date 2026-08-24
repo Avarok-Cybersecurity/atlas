@@ -11,6 +11,39 @@ async fn tool(cfg: &AgentConfig, name: &str, args: Value) -> Result<String> {
     execute(cfg, &call, &mut Vec::new()).await
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn write_distinguishes_dangling_symlinks_by_destination() {
+    let c = cfg(sandbox("dangling-write"));
+    let outside = sandbox("dangling-write-outside");
+    let target = outside.join("created.rs");
+    let relative_target = Path::new("..")
+        .join(outside.file_name().unwrap())
+        .join("created.rs");
+    std::os::unix::fs::symlink(relative_target, c.sandbox.join("escape")).unwrap();
+
+    let result = tool(
+        &c,
+        "write",
+        json!({"filePath": "escape", "content": "outside"}),
+    )
+    .await;
+
+    assert!(result.is_err(), "outside write was accepted: {result:?}");
+    assert!(!target.exists(), "write created {}", target.display());
+
+    let inside_target = c.sandbox.join("created-inside.rs");
+    std::os::unix::fs::symlink(&inside_target, c.sandbox.join("inside")).unwrap();
+    tool(
+        &c,
+        "write",
+        json!({"filePath": "inside", "content": "inside"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(inside_target).unwrap(), "inside");
+}
+
 #[test]
 fn the_tool_surface_is_the_six_the_harness_agent_enables() {
     // `~/.config/opencode/agents/atlas.md` frontmatter: read, glob, grep, bash,
