@@ -417,6 +417,15 @@ pub(crate) fn load_model(
     config.fp8_kv_calibration_tokens = args
         .fp8_kv_calibration_tokens
         .unwrap_or(ptx_set.behavior.fp8_kv_calibration_tokens);
+    // Family-level decode-graph kill switch. Nemotron-H crashes under graph
+    // replay (CUDA 700/716 at specific prompt lengths) and graphs measured as
+    // a no-op on GB10, so the family serves eager. Logged because a silent
+    // capability change is the kind of thing that gets rediscovered the hard
+    // way when a later graph regression "does not reproduce" on this family.
+    config.no_decode_graphs = ptx_set.behavior.no_decode_graphs;
+    if config.no_decode_graphs {
+        tracing::info!("Decode graphs disabled by MODEL.toml [behavior].no_decode_graphs");
+    }
     // Unconditional: the serde(skip) default is 0.0, and the CLI default (2.0)
     // is the real one. Validated ≥ 1.0 in `validate_serve_args`.
     config.fp8_kv_headroom = args.fp8_kv_headroom;

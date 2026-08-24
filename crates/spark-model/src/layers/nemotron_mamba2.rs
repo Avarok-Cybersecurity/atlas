@@ -20,7 +20,38 @@ use crate::weight_map::{DenseWeight, Fp8Weight, NemotronSsmWeights, QuantizedWei
 
 mod prefill;
 mod prefill_proj;
+mod trait_decode_multi_seq;
 mod trait_impl;
+
+#[cfg(test)]
+mod tests_multi_seq;
+
+/// Minimum `num_seqs` (the PADDED batch rung, `traits::padded_batch_n`) at
+/// which `decode_multi_seq` takes the batched body instead of the canonical
+/// per-seq default loop.
+///
+/// Why 8 and not 2 (measured on GB10, Lightning-30B-A3B NVFP4, 2026-08-11,
+/// 400-token story sweeps, batched-Mamba2 arm isolated — MoE batched off):
+///
+///   C=4 aggregate 92.3 tok/s batched vs 72.9 parent per-seq loop (+27%)
+///   C=8 aggregate 80-88 tok/s batched vs ~75 parent          (+9-17%)
+///
+/// so the batched body is profitable from n=4 up. It is nevertheless gated
+/// at 8 because it is NOT bit-identical to the per-seq loop: the
+/// `w4a16_gemv_batchm` tiers map K-chunks to lanes differently from
+/// `w4a16_gemv` (k16 = lane, stride 64, scale pre-multiplied into the
+/// weights vs k16 = lane*2 paired chunks, two accumulators, scale factored
+/// out per 16-FMA block — the "per-row accumulation order is IDENTICAL"
+/// comment in w4a16_gemv.cu is wrong), an inherent FP-reordering that moved
+/// the temp-0 concurrent divergence onset from the family's pre-existing
+/// C>=5 down to C>=2. Rung 8 is the first rung reached only at
+/// n_decode >= 5 — where the parent build already diverges — so batching
+/// there wins throughput without costing any determinism the family had.
+/// Batching rung 4 (the +27%) is available the day a bit-exact batched
+/// GEMV twin exists — rung-4 batching was probed and REJECTED: 2 of 6
+/// C=3/C=4 temp-0 fact probes flipped the P&P answer 1813→1995 (the exact
+/// defect symptom this gate exists to prevent).
+pub(crate) const MAMBA2_BATCH_DECODE_MIN_SEQS: usize = 8;
 
 #[allow(dead_code)]
 pub struct NemotronMamba2Layer {
@@ -60,6 +91,14 @@ pub struct NemotronMamba2Layer {
     mamba2_ssm_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     residual_add_k: KernelHandle,
+    // Kernel handles — multi-sequence batched decode (one weight-DRAM pass
+    // serves all N rows; see trait_decode_multi_seq.rs). All optional
+    // (`try_kernel`): the ladder falls back to tile GEMM / per-row GEMV.
+    w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
+    w8a16_gemv_batch4_k: KernelHandle,
+    w8a16_gemv_batch16_k: KernelHandle,
     // Kernel handles — prefill (GEMM + batched kernels)
     w4a16_gemm_k: KernelHandle,
     // Native FP8 block-scaled prefill GEMM (paired with in_proj_fp8/out_proj_fp8).
@@ -134,6 +173,13 @@ impl NemotronMamba2Layer {
             mamba2_ssm_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_decode")?,
             gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
+            // NVFP4 batched decode GEMV (all three live in the w4a16_gemv
+            // module); FP8 siblings both live in w8a16_gemv_batch4.cu.
+            w4a16_gemv_batch4_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_gemv_batch16_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
+            w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
+            w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::try_kernel(

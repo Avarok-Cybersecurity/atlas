@@ -167,6 +167,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20               default_kv_dtype: \"{}\",\n\
              \x20               default_num_drafts: {},\n\
              \x20               disable_tool_steering: {},\n\
+             \x20               no_tool_system_prompt: {},\n\
              \x20               disable_cwd_hint_injection: {},\n\
              \x20               use_sampling_presets_for_core: {},\n\
              \x20               tool_call_parser: \"{}\",\n\
@@ -188,6 +189,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20               rollback_resteer: {},\n\
              \x20               rom_head: \"{}\",\n\
              \x20               tool_retry: {},\n\
+             \x20               no_decode_graphs: {},\n\
              \x20               preserve_thinking: {:?},\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
@@ -209,6 +211,7 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_default_kv_dtype,
             target.behavior_default_num_drafts,
             target.behavior_disable_tool_steering,
+            target.behavior_no_tool_system_prompt,
             target.behavior_disable_cwd_hint_injection,
             target.behavior_use_sampling_presets_for_core,
             target.behavior_tool_call_parser,
@@ -230,6 +233,7 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_rollback_resteer,
             target.behavior_rom_head,
             target.behavior_tool_retry,
+            target.behavior_no_decode_graphs,
             target.behavior_preserve_thinking,
             target.model_type_matches.iter().map(|m| {
                 let hs = match m.hidden_size {

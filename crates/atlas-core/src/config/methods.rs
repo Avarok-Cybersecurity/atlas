@@ -351,6 +351,18 @@ impl ModelConfig {
             .unwrap_or(self.num_experts_per_tok)
     }
 
+    /// Max top-K across all layers (buffer / scratch sizing). Per-block
+    /// schedules (Puzzle) can exceed the scalar `num_experts_per_tok`, so
+    /// any layout that must clear EVERY layer's routing writes sizes by this.
+    pub fn max_num_experts_per_tok(&self) -> usize {
+        self.num_experts_per_toks
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(self.num_experts_per_tok)
+    }
+
     /// Max routed intermediate across all layers (buffer / scratch sizing).
     pub fn max_moe_intermediate_size(&self) -> usize {
         self.moe_intermediate_sizes

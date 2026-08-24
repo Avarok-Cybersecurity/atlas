@@ -11,18 +11,35 @@ use atlas_core::config::ModelConfig;
 use crate::cli;
 
 pub(crate) fn merge_sidecar_quant_config(model_dir: &Path, config: &mut ModelConfig) {
-    if config.quantization_config.is_some() {
-        return;
-    }
     let hf_quant_path = model_dir.join("hf_quant_config.json");
     if !hf_quant_path.exists() {
         return;
     }
+    // The ModelOpt sidecar is the authoritative dump for its checkpoints:
+    // transformers 5.x ADDITIONALLY embeds a compressed-tensors mirror in
+    // config.json whose `config_groups.group_0` describes only ONE of a
+    // mixed-precision checkpoint's groups (Nemotron-3.5 Lightning: group_0
+    // is the FP8 mamba-projection group), so an embedded-block-wins rule
+    // mislabels the whole model FP8 and NVFP4 detection breaks. When the
+    // sidecar exists and parses, it wins; the embedded block only serves
+    // checkpoints that ship no sidecar.
     match std::fs::read_to_string(&hf_quant_path) {
         Ok(raw_hq) => {
             let wrapped = format!(r#"{{"quantization_config":{raw_hq}}}"#);
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&wrapped) {
-                config.quantization_config = atlas_core::config::parse_quantization_config(&v);
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&wrapped)
+                && let Some(sidecar) = atlas_core::config::parse_quantization_config(&v)
+            {
+                if let Some(ref embedded) = config.quantization_config
+                    && embedded.quant_algo != sidecar.quant_algo
+                {
+                    tracing::info!(
+                        "hf_quant_config.json overrides embedded quantization_config \
+                         ({} -> {})",
+                        embedded.quant_algo,
+                        sidecar.quant_algo
+                    );
+                }
+                config.quantization_config = Some(sidecar);
             }
         }
         Err(e) => tracing::warn!("Failed to read sibling hf_quant_config.json: {e}"),
@@ -198,5 +215,56 @@ mod tests {
                 NumDraftsSource::EngineDefault
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod sidecar_tests {
+    use super::merge_sidecar_quant_config;
+    use atlas_core::config::ModelConfig;
+
+    /// Nemotron-3.5 Lightning class: transformers 5.x embeds a
+    /// compressed-tensors `quantization_config` whose group_0 is the FP8
+    /// (mamba-projection) group, while the ModelOpt sidecar carries the
+    /// authoritative MIXED_PRECISION layout. Fails without the
+    /// sidecar-wins rule: the early return keeps the embedded FP8 label.
+    #[test]
+    fn modelopt_sidecar_overrides_embedded_group0_label() {
+        let dir = std::env::temp_dir().join(format!("sidecar-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("hf_quant_config.json"),
+            r#"{"producer":{"name":"modelopt","version":"0.44.0"},
+                "quantization":{"quant_algo":"MIXED_PRECISION",
+                                "kv_cache_quant_algo":"FP8",
+                                "quantized_layers":{
+                                  "backbone.layers.0.mixer.in_proj":{"quant_algo":"FP8"}}}}"#,
+        )
+        .unwrap();
+
+        // Embedded compressed-tensors block as parse_config would have left
+        // it: group_0 (8, "float") mined into a model-wide "FP8" label.
+        let embedded = serde_json::json!({
+            "quantization_config": {
+                "config_groups": {
+                    "group_0": { "weights": { "num_bits": 8, "type": "float" } }
+                }
+            }
+        });
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.quantization_config = None;
+        config.quantization_config = atlas_core::config::parse_quantization_config(&embedded);
+        assert_eq!(
+            config.quantization_config.as_ref().unwrap().quant_algo,
+            "FP8",
+            "precondition: embedded group_0 mining labels the model FP8"
+        );
+
+        merge_sidecar_quant_config(&dir, &mut config);
+        let qc = config.quantization_config.expect("sidecar must parse");
+        assert_eq!(qc.quant_algo, "MIXED_PRECISION");
+        assert_eq!(qc.quant_method, "modelopt");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

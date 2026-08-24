@@ -24,6 +24,11 @@ pub(crate) struct ParsedBehavior {
     pub default_kv_dtype: String,
     pub default_num_drafts: u32,
     pub disable_tool_steering: bool,
+    /// Suppress Atlas's parser-specific tool system prompt for this model,
+    /// leaving the checkpoint's own chat template as the only description of
+    /// the tools. Per-model because the injection helps one family and hurts
+    /// another (see `api/chat/prepare.rs`).
+    pub no_tool_system_prompt: bool,
     pub disable_cwd_hint_injection: bool,
     pub use_sampling_presets_for_core: bool,
     pub tool_call_parser: String,
@@ -71,6 +76,10 @@ pub(crate) struct ParsedBehavior {
     pub rollback_resteer: bool,
     pub rom_head: String,
     pub tool_retry: bool,
+    /// Suppress CUDA decode-graph capture for this model family.
+    /// Nemotron-H models crash under graph replay (CUDA 700/716 at
+    /// specific prompt lengths) and graphs are a measured no-op on GB10.
+    pub no_decode_graphs: bool,
     /// Tri-state `preserve_thinking` chat-template flag. `None` (key absent)
     /// = do not inject the Jinja variable; the model template's own default
     /// applies. See `ModelBehavior::preserve_thinking`.
@@ -88,6 +97,7 @@ impl Default for ParsedBehavior {
             default_kv_dtype: String::new(),
             default_num_drafts: 0,
             disable_tool_steering: false,
+            no_tool_system_prompt: false,
             disable_cwd_hint_injection: false,
             use_sampling_presets_for_core: false,
             tool_call_parser: String::new(),
@@ -109,6 +119,7 @@ impl Default for ParsedBehavior {
             rollback_resteer: true,
             rom_head: String::new(),
             tool_retry: true,
+            no_decode_graphs: false,
             preserve_thinking: None,
         }
     }
@@ -161,6 +172,10 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .unwrap_or(0);
     let disable_tool_steering = b
         .and_then(|v| v.get("disable_tool_steering"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let no_tool_system_prompt = b
+        .and_then(|v| v.get("no_tool_system_prompt"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let disable_cwd_hint_injection = b
@@ -261,6 +276,10 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let no_decode_graphs = b
+        .and_then(|v| v.get("no_decode_graphs"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Tri-state: absent key stays `None` (template default), no unwrap_or.
     let preserve_thinking = b
         .and_then(|v| v.get("preserve_thinking"))
@@ -274,9 +293,11 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         default_kv_dtype,
         default_num_drafts,
         disable_tool_steering,
+        no_tool_system_prompt,
         disable_cwd_hint_injection,
         use_sampling_presets_for_core,
         tool_call_parser,
+        no_decode_graphs,
         enable_loop_watchdog,
         enable_think_loop_watchdog,
         honor_eos_inside_thinking,

@@ -212,6 +212,11 @@ pub struct ModelBehavior {
     /// when the prefix forces them into that structure. Default: false
     /// (keep the existing Nemotron-Nano-correct behavior).
     pub disable_tool_steering: bool,
+    /// Suppress Atlas's parser-specific tool system prompt, leaving the
+    /// checkpoint's own chat template as the only place the tools are
+    /// described. Per-model because the second description helps one family
+    /// and hurts another. Default: false (inject, as before).
+    pub no_tool_system_prompt: bool,
     /// Do not append Atlas's derived `<environment>working_directory` block to
     /// a client system prompt. Native agent clients may already provide the
     /// cwd; duplicating it can become a tool-selection attractor.
@@ -333,6 +338,12 @@ pub struct ModelBehavior {
     /// keep historical `<think>` blocks in re-rendered assistant turns
     /// instead of stripping them before the last user query.
     ///
+    /// Suppress CUDA decode-graph capture for this model family
+    /// (MODEL.toml `[behavior].no_decode_graphs`). Nemotron-H models crash
+    /// under graph replay — CUDA 700/716 at specific prompt lengths — and
+    /// decode graphs measured as a no-op on GB10, so the family serves
+    /// eager and loses nothing.
+    pub no_decode_graphs: bool,
     /// Tri-state on purpose (SSOT): `None` = do NOT inject the variable —
     /// the model's own template default applies (Qwen3.6 strips unless
     /// `preserve_thinking` is true; Qwen3.8 KEEPS unless it is explicitly
@@ -376,6 +387,7 @@ impl Default for ModelBehavior {
             default_kv_dtype: "",
             default_num_drafts: 0,
             disable_tool_steering: false,
+            no_tool_system_prompt: false,
             disable_cwd_hint_injection: false,
             use_sampling_presets_for_core: false,
             tool_call_parser: "",
@@ -397,6 +409,7 @@ impl Default for ModelBehavior {
             rollback_resteer: true,
             rom_head: "",
             tool_retry: true,
+            no_decode_graphs: false,
             preserve_thinking: None,
         }
     }

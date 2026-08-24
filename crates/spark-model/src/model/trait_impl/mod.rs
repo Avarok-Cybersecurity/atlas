@@ -31,6 +31,7 @@ mod ep_misc;
 mod graph_borrow;
 mod lm_head_batched;
 mod meta;
+mod mixed_layout;
 mod prefill_a;
 mod prefill_b;
 mod prefill_c;
