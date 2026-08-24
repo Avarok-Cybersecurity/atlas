@@ -154,22 +154,26 @@ mod tests {
     }
 
     #[test]
-    fn packed_gemv_math_matches_dense_g128() {
-        let group = 128usize;
-        let k = 256usize; // 2 groups
-        // Deterministic pseudo-random codes {0,1,2,3} and activations.
-        let codes: Vec<u8> = (0..k).map(|i| ((i * 7 + 3) % 4) as u8).collect();
-        let a: Vec<f32> = (0..k).map(|i| ((i % 11) as f32 - 5.0) * 0.25).collect();
-        let d = [0.0123f32, -0.0456f32];
+    fn q2_block_layout_reference_matches_dense_for_supported_groups() {
+        for group in [64usize, 128] {
+            let k = group * 2;
+            // Deterministic pseudo-random codes {0,1,2,3} and activations.
+            let codes: Vec<u8> = (0..k).map(|i| ((i * 7 + 3) % 4) as u8).collect();
+            let a: Vec<f32> = (0..k).map(|i| ((i % 11) as f32 - 5.0) * 0.25).collect();
+            let d = [0.0123f32, -0.0456f32];
 
-        let mut row = Vec::new();
-        row.extend(pack_block(d[0], &codes[0..group]));
-        row.extend(pack_block(d[1], &codes[group..2 * group]));
-        assert_eq!(row.len(), 2 * (2 + group / 4));
+            let mut row = Vec::new();
+            row.extend(pack_block(d[0], &codes[0..group]));
+            row.extend(pack_block(d[1], &codes[group..]));
+            assert_eq!(row.len(), 2 * (2 + group / 4), "group {group}");
 
-        let got = packed_dot(&row, &a, group);
-        let want = dense_dot(&codes, &d, &a, group);
-        assert!((got - want).abs() < 1e-3, "packed {got} vs dense {want}");
+            let got = packed_dot(&row, &a, group);
+            let want = dense_dot(&codes, &d, &a, group);
+            assert!(
+                (got - want).abs() < 1e-3,
+                "group {group}: packed {got} vs dense {want}"
+            );
+        }
     }
 
     #[test]
@@ -187,20 +191,52 @@ mod tests {
     }
 
     #[test]
-    fn packed_gemv_math_matches_dense_g64() {
-        let group = 64usize;
-        let k = 128usize;
-        let codes: Vec<u8> = (0..k).map(|i| ((i * 3 + 1) % 4) as u8).collect();
-        let a: Vec<f32> = (0..k).map(|i| ((i % 7) as f32 - 3.0) * 0.5).collect();
-        let d = [0.01f32, 0.02f32];
-        let mut row = Vec::new();
-        row.extend(pack_block(d[0], &codes[0..group]));
-        row.extend(pack_block(d[1], &codes[group..]));
-        let got = packed_dot(&row, &a, group);
-        let want = dense_dot(&codes, &d, &a, group);
-        assert!(
-            (got - want).abs() < 1e-3,
-            "g64 packed {got} vs dense {want}"
+    fn shipped_kernels_use_the_q2_layout_and_symbol_mapping() {
+        let baseline = include_str!("../../../../../kernels/gb10/common/q2_0_gemv.cu");
+        let vector = include_str!("../../../../../kernels/gb10/common/q2_0_gemv_vec.cu");
+        let strip_comments = |source: &str| {
+            source
+                .lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let baseline = strip_comments(baseline);
+        let vector = strip_comments(vector);
+
+        assert_eq!(
+            baseline
+                .matches("const unsigned int block_bytes = 2u + group / 4u;")
+                .count(),
+            2,
+            "baseline single-row and batch kernels must use the inline-scale layout"
         );
+        assert_eq!(
+            baseline.matches("const float d = q2_rd_f16(blk);").count(),
+            2
+        );
+        assert_eq!(
+            baseline
+                .matches("const unsigned char* qs = blk + 2;")
+                .count(),
+            2
+        );
+        assert!(baseline.contains("acc += a * (float)(code - 1) * d;"));
+        assert!(baseline.contains("const float wv = (float)(code - 1) * d;"));
+
+        assert_eq!(
+            vector
+                .matches("const unsigned int block_bytes = 2u + group / 4u;")
+                .count(),
+            2,
+            "vector single-row and batch kernels must use the inline-scale layout"
+        );
+        assert_eq!(
+            vector.matches("const float d = q2v_rd_f16(blk);").count(),
+            2
+        );
+        assert_eq!(vector.matches("q2v_rd_u32(blk + 2 + jg * 4u)").count(), 2);
+        assert!(vector.contains("acc += a[j] * (float)(code - 1) * d;"));
+        assert!(vector.contains("wv[j] = (float)((int)((codes >> (2 * j)) & 3u) - 1) * d;"));
     }
 }
