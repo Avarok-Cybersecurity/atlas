@@ -162,6 +162,18 @@ pub fn invalidating_paths(
     record_sha: &str,
     gate: &super::coverage::GateCoverage,
 ) -> Option<Vec<String>> {
+    invalidating_paths_with(root, head, record_sha, gate, |path| {
+        super::amnesty::excused(root, head, path)
+    })
+}
+
+fn invalidating_paths_with(
+    root: &Path,
+    head: &str,
+    record_sha: &str,
+    gate: &super::coverage::GateCoverage,
+    mut is_excused: impl FnMut(&str) -> bool,
+) -> Option<Vec<String>> {
     if head == record_sha {
         return Some(Vec::new());
     }
@@ -187,7 +199,7 @@ pub fn invalidating_paths(
             // the OID and invalidates as before. See `amnesty.rs` for the
             // grant, the fail-closed rule, and the removal condition.
             .filter(|p| {
-                if super::amnesty::excused(root, head, p) {
+                if is_excused(p) {
                     tracing::warn!(
                         "amnesty: {p} would re-open {} but its content at {head} is the \
                          pinned one-time grant; excused (see gate/amnesty.rs)",
@@ -200,6 +212,19 @@ pub fn invalidating_paths(
             .map(str::to_string)
             .collect(),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn invalidating_paths_with_amnesty(
+    root: &Path,
+    head: &str,
+    record_sha: &str,
+    gate: &super::coverage::GateCoverage,
+    table: &[super::amnesty::AmnestyEntry],
+) -> Option<Vec<String>> {
+    invalidating_paths_with(root, head, record_sha, gate, |path| {
+        super::amnesty::excused_by(root, head, path, table)
+    })
 }
 
 /// The full gate verdict for `sha`: every required bench, in order.
