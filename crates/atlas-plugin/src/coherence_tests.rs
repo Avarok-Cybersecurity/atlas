@@ -295,11 +295,7 @@ fn the_wrong_family_note_outranks_an_odd_answer() {
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
         .expect("a concern");
-    assert!(concern.contains("35B MoE"), "{concern}");
-    assert!(
-        !concern.contains("answered nothing"),
-        "the cause leads: {concern}"
-    );
+    assert_eq!(concern, "Gate A is defined on the 35B MoE flagship");
     assert!(!report.is_clean());
 }
 
@@ -312,18 +308,18 @@ fn a_transport_error_carrying_a_hint_is_not_cut_off_mid_clause() {
              open the Library (press 4 in the dashboard), choose a model and a recipe, \
              and start it; then retry this request";
     let out = super::one_line(e);
-    assert!(
-        !out.ends_with('…'),
-        "the actionable half must survive the bound: {out}"
+    assert_eq!(
+        out,
+        "endpoint returned \"HTTP/1.1 503 Service Unavailable\": no model is loaded — \
+         open the Library (press 4 in the dashboard), choose a model and a recipe, \
+         and start it; then retry this request"
     );
-    assert!(out.contains("retry this request"), "{out}");
 }
 
 #[test]
 fn a_runaway_error_chain_is_still_bounded() {
     let out = super::one_line(&"boom ".repeat(500));
-    assert!(out.chars().count() <= 281, "still bounded: {}", out.len());
-    assert!(out.ends_with('…'));
+    assert_eq!(out, format!("{}…", "boom ".repeat(56)));
 }
 
 #[test]
@@ -342,12 +338,12 @@ fn serving_nothing_does_not_promise_numbers() {
     let c = report
         .concern(&target)
         .expect("serving nothing is a concern");
-    assert!(
-        !c.contains("WILL produce"),
-        "must not promise numbers it cannot produce: {c}"
+    assert_eq!(
+        c,
+        "http://127.0.0.1:8123 has no model loaded, so this run will produce no numbers — \
+         every request will be refused. Load a model first: in the dashboard open the Library \
+         (press 4), choose a model and a recipe, and start it."
     );
-    assert!(c.contains("no model loaded"), "{c}");
-    assert!(c.contains("Library"), "and says how to fix it: {c}");
 }
 
 #[test]
@@ -359,10 +355,7 @@ fn a_thinking_model_that_reasons_to_the_answer_passes() {
     // brain damage.
     let (passed, answer) = super::judge("", "2 + 2 = 4, so the answer is 4", &["4", "four"]);
     assert!(passed, "the fact is present, in the reasoning");
-    assert!(
-        answer.contains("4"),
-        "a failure must still quote something legible, not an empty string: {answer:?}"
-    );
+    assert_eq!(answer, "2 + 2 = 4, so the answer is 4");
 }
 
 #[test]
