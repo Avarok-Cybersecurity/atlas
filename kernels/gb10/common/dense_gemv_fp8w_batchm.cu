@@ -41,7 +41,8 @@ __device__ __forceinline__ float bm_fp8_to_f32(unsigned char b) {
     return (float)v;
 }
 
-extern "C" __global__ void dense_gemv_fp8w_batchm(
+template <int MAXM>
+__device__ __forceinline__ void dense_gemv_fp8w_batchm_impl(
     const __nv_bfloat16* __restrict__ A,   // [M, K] bf16, row-major
     const unsigned char* __restrict__ B,   // [N, K] fp8 e4m3
     const float* __restrict__ row_scale,   // [N] f32
@@ -61,9 +62,9 @@ extern "C" __global__ void dense_gemv_fp8w_batchm(
     const bool active = n < N;
     const float scale = active ? row_scale[n] : 0.0f;
 
-    float acc[BM_MAX_M];
+    float acc[MAXM];
     #pragma unroll
-    for (int t = 0; t < BM_MAX_M; t++) acc[t] = 0.0f;
+    for (int t = 0; t < MAXM; t++) acc[t] = 0.0f;
 
     const unsigned int K_VEC = K / BM_VEC;
     for (unsigned int kv = lane; active && kv < K_VEC; kv += threads_per_out) {
@@ -74,7 +75,7 @@ extern "C" __global__ void dense_gemv_fp8w_batchm(
         const unsigned int w_raw[4] = {wb.x, wb.y, wb.z, wb.w};
 
         #pragma unroll
-        for (int t = 0; t < BM_MAX_M; t++) {
+        for (int t = 0; t < MAXM; t++) {
             if ((unsigned int)t >= M) continue;
             const __nv_bfloat16* At = A + (unsigned long long)t * K;
             const uint4 a_d0 = ((const uint4*)At)[kv * 2];
@@ -105,16 +106,16 @@ extern "C" __global__ void dense_gemv_fp8w_batchm(
     // instead would be `(a+b)*s` against its `a*s + b*s` — a different
     // rounding, and on a 248K-vocab argmax a different token.
     #pragma unroll
-    for (int t = 0; t < BM_MAX_M; t++) {
+    for (int t = 0; t < MAXM; t++) {
         if ((unsigned int)t >= M) continue;
         acc[t] *= scale;
     }
 
     // 64-lane reduction: shuffle within each warp, cross-warp through smem.
-    __shared__ float s_red[BM_MAX_M][BM_N_PER_BLOCK * 2];
+    __shared__ float s_red[MAXM][BM_N_PER_BLOCK * 2];
     const unsigned int warp_in_out = lane / 32u;
     #pragma unroll
-    for (int t = 0; t < BM_MAX_M; t++) {
+    for (int t = 0; t < MAXM; t++) {
         if ((unsigned int)t >= M) continue;
         float a = acc[t];
         #pragma unroll
@@ -129,7 +130,7 @@ extern "C" __global__ void dense_gemv_fp8w_batchm(
 
     if (lane == 0 && active) {
         #pragma unroll
-        for (int t = 0; t < BM_MAX_M; t++) {
+        for (int t = 0; t < MAXM; t++) {
             if ((unsigned int)t >= M) continue;
             // Same combine order as the M=1 kernel: smem[0] + smem[1],
             // scale already applied per-thread above.
@@ -137,4 +138,35 @@ extern "C" __global__ void dense_gemv_fp8w_batchm(
             C[(unsigned long long)t * N + n] = __float2bfloat16(r);
         }
     }
+}
+
+extern "C" __global__ void dense_gemv_fp8w_batchm(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    dense_gemv_fp8w_batchm_impl<BM_MAX_M>(A, B, row_scale, C, M, N, K);
+}
+
+// M<=16 instantiation for the DFlash drafter propose path (block-16
+// drafters, γ=16). Same per-row chain, so the bit-parity property of the
+// template is preserved per instantiation; the drafter consumer does not
+// rely on it (strict-argmax accept), the verify family may. The nsys
+// node-trace measured this kernel family at 217 GB/s on the 248K-vocab
+// shape at M=8 — the best fp8-GEMV number on GB10 — which is why the
+// drafter wants a 16-row instantiation rather than another tile variant.
+extern "C" __global__ void dense_gemv_fp8w_batch16m(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    dense_gemv_fp8w_batchm_impl<16>(A, B, row_scale, C, M, N, K);
 }

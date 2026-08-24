@@ -251,3 +251,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "w4a16_qg_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8_propose_bench"
+required-features = ["cuda", "gpu-examples"]
