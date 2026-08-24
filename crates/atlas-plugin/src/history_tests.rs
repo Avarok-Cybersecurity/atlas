@@ -105,8 +105,9 @@ fn two_runs_in_the_same_instant_do_not_overwrite_each_other() {
     let (store, _d) = store();
     let mut a = record(frame("first"));
     let mut b = record(frame("second"));
-    let pa = save(&store, &mut a).expect("saves");
-    let pb = save(&store, &mut b).expect("saves");
+    let instant = 1_777_777_777_777_777_777;
+    let pa = save_at(&store, &mut a, instant, |_| {}).expect("saves");
+    let pb = save_at(&store, &mut b, instant, |_| {}).expect("saves");
 
     assert_ne!(pa, pb, "distinct paths");
     assert_ne!(a.run_id, b.run_id, "distinct ids");
@@ -191,7 +192,9 @@ fn baseline_json_is_not_mistaken_for_a_run() {
     // ttft writes baseline.json into the same directory.
     let (store, _d) = store();
     let dir = store.runs_dir("concurrency-sweep").expect("dir");
-    std::fs::write(dir.join("baseline.json"), "{}").expect("writes");
+    let baseline_shaped_like_a_run = serde_json::to_string(&record(frame("not a run")))
+        .expect("serializes a valid record shape");
+    std::fs::write(dir.join("baseline.json"), baseline_shaped_like_a_run).expect("writes");
     assert!(load(&store, "concurrency-sweep").is_empty());
 }
 
@@ -201,6 +204,17 @@ fn find_addresses_a_run_by_its_id() {
     let mut r = record(frame("done"));
     save(&store, &mut r).expect("saves");
     assert_eq!(find(&store, &r.run_id).expect("found").frame.phase, "done");
+    let mut other = record(frame("other benchmark"));
+    other.benchmark_id = "quick-speed-bench".into();
+    other.benchmark_name = "Quick Speed".into();
+    save(&store, &mut other).expect("saves another benchmark");
+    assert_eq!(
+        find(&store, &other.run_id)
+            .expect("found across registry")
+            .frame
+            .phase,
+        "other benchmark"
+    );
     assert!(find(&store, "run-0000000000000000000").is_none());
 }
 
@@ -245,7 +259,18 @@ fn a_published_record_is_never_half_written() {
     // appear complete or not at all.
     let (store, _d) = store();
     let mut r = record(frame("done"));
-    let path = save(&store, &mut r).expect("saves");
+    let mut claimed = None;
+    let path = save_at(&store, &mut r, 1_777_777_777_777_777_777, |path| {
+        claimed = Some(std::fs::File::open(path).expect("claimed placeholder"));
+    })
+    .expect("saves");
+    let mut placeholder = String::new();
+    std::io::Read::read_to_string(&mut claimed.expect("captured claim"), &mut placeholder)
+        .expect("reads original inode");
+    assert!(
+        placeholder.is_empty(),
+        "publication replaces the claim instead of filling the visible inode"
+    );
     let text = std::fs::read_to_string(&path).expect("readable");
     serde_json::from_str::<serde_json::Value>(&text).expect("complete JSON");
     assert!(
