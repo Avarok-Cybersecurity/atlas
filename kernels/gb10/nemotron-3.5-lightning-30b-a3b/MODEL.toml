@@ -224,6 +224,25 @@ M128-mfast FP8 GEMM; nemotron_mamba2/prefill gates the probe
 (handle != 0 && n >= 512) and falls back to the bf16-A FP8 path that
 resolves from common w4a16."""
 fp8_fp8_gemm_t_m128_mfast = "Same family — the pre-cast-A fp8 path falls back to the bf16-A arm that resolves."
+# DFlash drafter PROPOSE acceleration (harvested 2026-08-24, first
+# Lightning + NVFP4-DFlash drafter boot on wip/nemo-integration): this
+# target's w4a16_gemm.cu symlinks the deepseek copy, which predates the
+# Phase-G FP8 twins. The ATLAS_DFLASH_DRAFTER_FP8 gate warns and keeps
+# the drafter on the BF16 dense-GEMM propose path — CORRECT but
+# unaccelerated. To accelerate: retarget w4a16_gemm.cu ->
+# ../../qwen3.6-27b/nvfp4/ and symlink nvfp4_mmq.cu, then delete these.
+fp8_gemm_t_row_scaled = "Phase-G FP8 drafter GEMM; the DRAFTER_FP8 gate warns and stays BF16 when absent."
+fp8_gemm_t_row_scaled_m16 = "Phase-G small-M twin; same BF16 fallback."
+fp8_gemm_t_row_scaled_m16_splitk = "Split-K propose variant; dispatch gates on handle != 0."
+
+[expected_absent.nvfp4_mmq]
+# Drafter NVFP4 propose lane (ATLAS_DFLASH_DRAFTER_NVFP4);
+# nvfp4_propose_armed() gates the whole lane on these handles.
+atlas_nvfp4_mmq16_nc = "Drafter NVFP4 propose; lane disarms without it."
+atlas_nvfp4_mmq16_wc = "Same lane."
+atlas_nvfp4_quantize_bf16 = "Same lane (activation quantize)."
+atlas_nvfp4_repack = "Same lane (load-time repack)."
+atlas_nvfp4_scale_bf16 = "Same lane (scale2 fold)."
 
 [expected_absent.w4a4]
 w4a4_gemm_mfast = """
