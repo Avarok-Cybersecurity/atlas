@@ -18,6 +18,7 @@ pub struct MockGpuBackend {
     allocs: Mutex<HashMap<u64, MockAlloc>>,
     next_ptr: Mutex<u64>,
     launches: Mutex<Vec<MockLaunch>>,
+    kernel_lookups: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
     /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
@@ -67,6 +68,7 @@ impl MockGpuBackend {
             allocs: Mutex::new(HashMap::new()),
             next_ptr: Mutex::new(0x1000_0000),
             launches: Mutex::new(Vec::new()),
+            kernel_lookups: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
@@ -159,6 +161,11 @@ impl MockGpuBackend {
     /// the only per-launch identity available.
     pub fn launches_snapshot(&self) -> Vec<MockLaunch> {
         self.launches.lock().clone()
+    }
+
+    /// Module/function pairs requested through `kernel`, in lookup order.
+    pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
+        self.kernel_lookups.lock().clone()
     }
 }
 
@@ -353,7 +360,10 @@ impl GpuBackend for MockGpuBackend {
     }
 
     #[track_caller]
-    fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
+    fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        self.kernel_lookups
+            .lock()
+            .push((module.to_owned(), func_name.to_owned()));
         Ok(KernelHandle(0xDEAD))
     }
 
