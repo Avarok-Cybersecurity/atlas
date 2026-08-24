@@ -158,10 +158,16 @@ pub(super) fn verdict(s: &Score, rounds: usize) -> Verdict {
         ));
     }
     if s.unmeasured > 0 {
+        let detail = s
+            .unmeasured_rounds
+            .iter()
+            .map(|(round, reason)| format!("round {round}: {reason}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
         return Verdict::fail(format!(
-            "{} of {} replays were unmeasurable (transport errors) — the replay invariant is \
-             unproven for those rounds",
-            s.unmeasured, rounds
+            "{} of {} replays were unmeasurable (transport errors): {detail} — the replay \
+             invariant is unproven for those rounds",
+            s.unmeasured, rounds,
         ));
     }
     if !s.vacuous_rounds.is_empty() {
