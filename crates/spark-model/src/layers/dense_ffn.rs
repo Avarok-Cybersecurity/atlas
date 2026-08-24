@@ -2507,7 +2507,7 @@ mod tests {
     use super::native_small_batch_uses_prefill;
 
     #[test]
-    fn native_small_batches_never_dispatch_null_nvfp4_placeholders() {
+    fn native_weight_presence_requires_prefill_dispatch() {
         assert!(native_small_batch_uses_prefill(true, false));
         assert!(native_small_batch_uses_prefill(false, true));
         assert!(native_small_batch_uses_prefill(true, true));
