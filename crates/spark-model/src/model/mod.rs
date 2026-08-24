@@ -54,5 +54,8 @@ pub(crate) mod types;
 // Served NLLB-200 / M2M-100 encoder-decoder model (CUDA/GB10 serving path).
 #[cfg(feature = "cuda")]
 pub mod nllb;
+#[cfg(all(test, not(feature = "cuda")))]
+#[path = "nllb/host_tests.rs"]
+mod nllb_host_tests;
 
 pub use types::TransformerModel;
