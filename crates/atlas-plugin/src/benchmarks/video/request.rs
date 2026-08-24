@@ -90,10 +90,12 @@ pub fn text_only_body(model: &str, prompt: &str, max_tokens: usize) -> Value {
 /// test rather than silently turning skips into failures.
 pub fn is_decoder_unavailable(err: &str) -> bool {
     let e = err.to_lowercase();
-    e.contains("--video-allow-ffmpeg")
-        || e.contains("subprocess decoding is disabled")
-        || e.contains("is ffmpeg installed")
-        || e.contains("could not be run")
+    let quoted_binary_unavailable = e
+        .split_once(" could not be run:")
+        .is_some_and(|(binary, _)| binary.starts_with('"') && binary.ends_with('"'));
+    e.contains("subprocess decoding is disabled")
+        || (e.contains("could not run ") && e.contains("is ffmpeg installed"))
+        || quoted_binary_unavailable
 }
 
 #[cfg(test)]
