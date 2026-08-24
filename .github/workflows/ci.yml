@@ -838,3 +838,15 @@ jobs:
           # this gate through the flag within the PR's own run.
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: cargo run --locked -p spark-server --bin spark -- benchmark --pull-request-gate-check ${PR_NUMBER:+--pr "$PR_NUMBER"}
+      # ── Queue-composition diagnosis ──────────────────────────────────────
+      # A record-bearing perf PR can be GREEN at its head and still bounce
+      # here: the queue tests the MERGE tree, and records cannot compose
+      # across PRs — a campaign that covered this PR's tree does not cover a
+      # tree with another perf PR's kernels placed under it (observed
+      # 2026-08-23: #732 bounced behind #731, then behind post-#733 main; then
+      # #731 bounced behind post-#733 main — every head was green).
+      # When that is what happened, say so instead of ten bare NONEs.
+      - name: Name the failure if it is queue composition
+        if: failure() && github.event_name == 'merge_group'
+        run: |
+          echo "::error title=Queue-composition failure::This PR's benchmark records were valid at its head; the MERGE GROUP composed other performance changes underneath them, which invalidates records by design (unmeasured interaction). Retrying will not help. Apply the serialized-landing protocol (scripts/queue-perf-pr.sh): update the branch to current main, FREEZE that sha, run the ten gates against exactly that tree, commit the records, and queue with no other performance PR ahead. See docs/gate-queue-protocol.md."
