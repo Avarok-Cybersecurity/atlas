@@ -299,22 +299,28 @@ pub fn load_dflash_weights(
 mod tests {
     use super::*;
 
-    /// Smoke-test the DFlash drafter `config.json` parser against the live
-    /// `z-lab/Qwen3.6-35B-A3B-DFlash` checkpoint downloaded into the user's
-    /// HF cache. Skipped when the cache directory isn't populated — keeps
-    /// CI hermetic. Asserts the locked drafter dimensions: 8 layers,
-    /// hidden=2048, vocab=248320, γ=16, mask=248070, layer_ids=[1,10,19,28,37].
+    const SHIPPED_CONFIG: &str = r#"{
+        "hidden_size": 2048,
+        "num_hidden_layers": 8,
+        "intermediate_size": 6144,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 4,
+        "head_dim": 128,
+        "vocab_size": 248320,
+        "draft_vocab_size": 248320,
+        "tie_word_embeddings": false,
+        "block_size": 16,
+        "rope_theta": 10000000.0,
+        "rope_scaling": null,
+        "dflash_config": {
+            "mask_token_id": 248070,
+            "target_layer_ids": [1, 10, 19, 28, 37]
+        }
+    }"#;
+
     #[test]
-    fn parse_qwen3_6_35b_dflash_config() {
-        const SNAP: &str = "/workspace/.cache/huggingface/hub/models--z-lab--Qwen3.6-35B-A3B-DFlash/snapshots/42d3b34d588423cdae7ba8f53a8cf7789346a719/config.json";
-        let json = match std::fs::read_to_string(SNAP) {
-            Ok(s) => s,
-            Err(_) => {
-                tracing::warn!("Skipping: drafter snapshot not in cache");
-                return;
-            }
-        };
-        let config = parse_dflash_config(&json).expect("parse drafter config");
+    fn shipped_qwen3_6_fields_reach_the_runtime_config() {
+        let config = parse_dflash_config(SHIPPED_CONFIG).expect("parse drafter config");
         assert_eq!(config.num_hidden_layers, 8);
         assert_eq!(config.hidden_size, 2048);
         assert_eq!(config.intermediate_size, 6144);
@@ -322,10 +328,45 @@ mod tests {
         assert_eq!(config.num_key_value_heads, 4);
         assert_eq!(config.head_dim, 128);
         assert_eq!(config.vocab_size, 248320);
+        assert_eq!(config.draft_vocab_size, Some(248320));
         assert!(!config.tie_word_embeddings);
         assert_eq!(config.block_size, 16);
+        assert_eq!(config.rope_theta, 10_000_000.0);
+        assert!(config.rope_scaling.is_none());
         let sub = config.dflash_config.expect("dflash_config present");
         assert_eq!(sub.mask_token_id, 248070);
         assert_eq!(sub.target_layer_ids, vec![1, 10, 19, 28, 37]);
+    }
+
+    #[test]
+    fn omitted_optional_fields_use_runtime_defaults() {
+        let config = parse_dflash_config(
+            r#"{
+                "hidden_size": 64,
+                "num_hidden_layers": 1,
+                "intermediate_size": 128,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "vocab_size": 256
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.block_size, 16);
+        assert_eq!(config.rope_theta, 10_000_000.0);
+        assert!(!config.tie_word_embeddings);
+        assert!(config.draft_vocab_size.is_none());
+        assert!(config.dflash_config.is_none());
+        assert!(config.rope_scaling.is_none());
+    }
+
+    #[test]
+    fn malformed_runtime_field_is_rejected_with_parser_context() {
+        let malformed =
+            SHIPPED_CONFIG.replace("\"mask_token_id\": 248070", "\"mask_token_id\": \"bad\"");
+        let error = parse_dflash_config(&malformed).unwrap_err();
+        assert_eq!(error.to_string(), "Parsing DFlash drafter config.json");
+        assert!(format!("{error:#}").contains("invalid type: string \"bad\""));
     }
 }
