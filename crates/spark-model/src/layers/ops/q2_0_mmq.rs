@@ -227,10 +227,26 @@ mod tests {
             let got = (packed[2 + j / 4] >> (2 * (j % 4))) & 0x3;
             assert_eq!(got, (j % 3) as u8, "code {j} mispacked");
         }
+
+        let launcher = include_str!("../../../../../kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu");
+        let vendor =
+            include_str!("../../../../../kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh");
+        assert!(launcher.contains("constexpr ggml_type type = GGML_TYPE_Q2_0;"));
+        assert!(launcher.contains("atlas_q2_0_tile<128, false>"));
+        assert!(launcher.contains("atlas_q2_0_tile<128, true>"));
+        assert!(vendor.contains("load_tiles   = load_tiles_q2_0<mmq_y, need_check>;"));
+        assert!(vendor.contains(
+            "vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;"
+        ));
+        assert_eq!(
+            vendor.matches("& 0x3) - 1;").count(),
+            4,
+            "the Q2 unpack must subtract one from all four packed codes"
+        );
     }
 
     #[test]
-    fn q2_0_mmq_math_matches_oracle() {
+    fn q2_0_mmq_reference_arithmetic_matches_fp_oracle() {
         // Small [M,N,K], K multiple of 128 (two groups per block boundary check).
         let (m, n, k) = (3usize, 5usize, 256usize);
         let bpr = k / 128;
@@ -259,6 +275,12 @@ mod tests {
         let mut num = 0f32;
         for i in 0..m * n {
             let e = (mmq[i] - orc[i]).abs();
+            assert!(
+                e <= 0.02 * orc[i].abs().max(0.5),
+                "idx {i}: mmq {} vs oracle {}",
+                mmq[i],
+                orc[i]
+            );
             num += e * e;
             denom += orc[i] * orc[i];
             let r = e / orc[i].abs().max(1e-3);
@@ -269,25 +291,5 @@ mod tests {
             l2_rel < 1e-2,
             "Q2_0 MMQ L2 rel_err {l2_rel:.4e} exceeds 1e-2 (max pointwise {max_rel:.4e})"
         );
-    }
-
-    #[test]
-    fn q2_0_mmq_ternary_only_codes() {
-        // True ternary {-1,0,1}: code alphabet {0,1,2}; code=3 (value +2) never
-        // emitted. Confirm the math is exact-to-oracle-within-quant for that set.
-        let (m, n, k) = (2usize, 4usize, 128usize);
-        let codes: Vec<u8> = (0..n * k).map(|i| (i % 3) as u8).collect();
-        let scales = vec![0.02f32; n * (k / 128)];
-        let act: Vec<f32> = (0..m * k).map(|i| ((i % 11) as f32 - 5.0) * 0.3).collect();
-        let mmq = mmq_cpu(&act, &codes, &scales, m, n, k);
-        let orc = oracle(&act, &codes, &scales, m, n, k);
-        for i in 0..m * n {
-            assert!(
-                (mmq[i] - orc[i]).abs() <= 0.02 * orc[i].abs().max(0.5),
-                "idx {i}: mmq {} vs oracle {}",
-                mmq[i],
-                orc[i]
-            );
-        }
     }
 }
