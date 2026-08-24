@@ -377,6 +377,38 @@ impl BlockDiffusionDraftHead {
                 eff_ctx * self.hidden_size * bf16,
             )?;
         }
+        // INPUT-time noise-embed dump (same ATLAS_DFLASH_BLOCK_DUMP gate as
+        // the tail dumps). The tail's atlas_block_noise_embed.bin reads
+        // stream_buf AFTER the layer loop — the in-place residual stream —
+        // so it holds the FINAL hidden, not the embeddings (2026-08-24: that
+        // ambiguity cost a false "garbage embeddings" diagnosis on the
+        // Lightning port). This one is copied straight after batched_embed,
+        // before any layer touches stream_buf.
+        {
+            let block_dump_min_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
+                && position >= block_dump_min_pos
+                && ctx.stats.dumped.keyed("dflash_block_noise_input")
+            {
+                gpu.synchronize(stream)?;
+                let noise_off = eff_ctx * self.hidden_size * bf16;
+                let n_noise_bytes = self.gamma * self.hidden_size * bf16;
+                let mut nbuf = vec![0u8; n_noise_bytes];
+                if let Err(e) = gpu.copy_d2h(self.scratch.stream_buf.offset(noise_off), &mut nbuf) {
+                    tracing::warn!("DFLASH BLOCK_INPUT: noise embed input copy failed: {e}");
+                } else {
+                    let _ = std::fs::write("/tmp/atlas_block_noise_embed_input.bin", &nbuf);
+                    tracing::info!(
+                        "DFLASH BLOCK_INPUT: wrote noise_embed INPUT ({}×{} BF16, post-batched_embed)",
+                        self.gamma,
+                        self.hidden_size,
+                    );
+                }
+            }
+        }
         // ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
         // [eff_ctx..n_attn) with a deterministic pattern matching the
         // PyTorch reference. Lets us compare layer-0 q/k/v post-projection

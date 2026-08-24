@@ -88,15 +88,39 @@ impl BlockDiffusionDraftHead {
         // Stride (bytes) between adjacent rows in the fused KV GEMM output.
         let row_stride = l_total * 2 * kv_slab_bytes;
 
-        // One-shot diagnostic dump (ATLAS_DFLASH_PRECOMPUTE_DUMP=1).
+        // One-shot diagnostic dump (ATLAS_DFLASH_PRECOMPUTE_DUMP=N: dump on
+        // the N-th precompute call; =1 keeps the original first-call shot).
         // Per-model latch (see `ModelStats::dumped`) rather than a static: an
         // operator who sets the flag and then swaps models must still get the
         // dump, instead of it being swallowed by the previous model's shot.
-        let dump = std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP")
+        // The call counter IS process-global (AtomicUsize) — good enough for
+        // a single-sequence diagnostic run, which is the only sane way to use
+        // this flag anyway.
+        static PRECOMPUTE_CALLS: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let call_no = PRECOMPUTE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let dump_at: usize = std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP")
             .ok()
-            .as_deref()
-            == Some("1")
-            && ctx.stats.dumped.keyed("dflash_precompute");
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        // ATLAS_DFLASH_PRECOMPUTE_DUMP_AT_POS=N: instead of a call number,
+        // fire on the first call whose newest slot position reaches N — this
+        // keys the shot to the SAME propose as ATLAS_DFLASH_BLOCK_DUMP_AT_POS,
+        // so the ctx dump and the γ-block dumps describe one forward.
+        let dump_at_pos: Option<i32> = std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP_AT_POS")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let fires = match dump_at_pos {
+            Some(p) => slot_positions.last().is_some_and(|&lp| lp >= p),
+            None => dump_at != 0 && call_no == dump_at,
+        };
+        let dump = fires && ctx.stats.dumped.keyed("dflash_precompute");
+        if dump {
+            tracing::info!(
+                "precompute dump @call {call_no}: start_slot={start_slot} \
+                 new_ctx_count={new_ctx_count} slot_positions={slot_positions:?}"
+            );
+        }
         let dump_buf = |label: &str, ptr: DevicePtr, bytes: usize| -> Result<()> {
             if !dump {
                 return Ok(());
@@ -117,6 +141,15 @@ impl BlockDiffusionDraftHead {
         // py:175  `target_hidden = self.hidden_norm(self.fc(target_hidden))`
         //   first half: fc maps [n, L_t*h_t] → [n, h].
         let src = ctx_base_ptr.offset(start_slot * ctx_slot_bytes);
+        dump_buf("ctx_hidden_in", src, new_ctx_count * ctx_slot_bytes)?;
+        // Full accumulator (slots 0..start_slot+new_ctx_count): lets an
+        // offline reference recompute the WHOLE drafter ctx K/V — required
+        // to verify the γ-block attention numerically, not just the delta.
+        dump_buf(
+            "ctx_hidden_full",
+            ctx_base_ptr,
+            (start_slot + new_ctx_count) * ctx_slot_bytes,
+        )?;
         ops::dense_gemm_bf16_pipelined(
             gpu,
             self.kernels.dense_gemm_pipelined,

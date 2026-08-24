@@ -426,6 +426,15 @@ impl BlockDiffusionDraftHead {
                     // computing. ctx_positions is parallel to ctx slots.
                     let slot_positions =
                         &dstate.ctx_positions[chunk_start..chunk_start + chunk_count];
+                    // Companion to the precompute dump: the FULL position
+                    // stamp vector, so an offline attention reference knows
+                    // every ctx slot's RoPE position (not just the delta's).
+                    if std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP").is_ok() {
+                        let _ = std::fs::write(
+                            "/tmp/atlas_ctx_positions.json",
+                            format!("{:?}", dstate.ctx_positions),
+                        );
+                    }
                     self.precompute_ctx_kv(
                         dstate.ctx_hidden_acc,
                         chunk_start,

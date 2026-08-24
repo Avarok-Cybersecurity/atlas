@@ -135,6 +135,34 @@ pub fn build_model(
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
         config.dflash_capture_layers = sub.target_layer_ids.clone();
+        // Cross-checked 2026-08-24 against the vLLM reference: eagle3_utils
+        // maps target_layer_ids i → aux index i+1, and the model appends the
+        // embedding at aux index 0 and layer idx's output at idx+1 — the
+        // chain nets out to "id i = stream after layer i", i.e. EXACTLY this
+        // direct mapping. The measurement above and the reference agree.
+        //
+        // ATLAS_DFLASH_CAPTURE_SHIFT=<int>: A/B override re-mapping each id
+        // j to j+shift (clamped at 0). A drafter TRAINED on HF
+        // output_hidden_states[j] semantics (= stream after layer j-1) needs
+        // shift -1 even though vLLM-serving semantics are direct — the two
+        // agree only if the training harness applied vLLM's +1. Diagnostic
+        // for checkpoints whose acceptance is inexplicably near-zero while
+        // every compute stage verifies bit-exact (Nemotron Lightning DFlash
+        // hunt, 2026-08-24).
+        if let Ok(s) = std::env::var("ATLAS_DFLASH_CAPTURE_SHIFT")
+            && let Ok(shift) = s.parse::<i64>()
+            && shift != 0
+        {
+            config.dflash_capture_layers = config
+                .dflash_capture_layers
+                .iter()
+                .map(|&l| ((l as i64 + shift).max(0)) as usize)
+                .collect();
+            tracing::info!(
+                "DFlash: capture indices shifted by {shift} → {:?}",
+                config.dflash_capture_layers
+            );
+        }
         // gamma for the pool sizing below, resolved from the drafter itself:
         // a DFlash2 checkpoint states its trained block size inside
         // `dflash_config`, and the top-level field's default of 16 must not
