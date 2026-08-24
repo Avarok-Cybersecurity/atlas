@@ -60,11 +60,22 @@ fn land_targets_map_to_slot_subregions() {
     let (a_off, b_off) = module_slot_offsets(&cfg, max_rank, layer, LoraModule::KProj).unwrap();
     let a = targets.iter().find(|t| t.kind == LoraAbKind::A).unwrap();
     let b = targets.iter().find(|t| t.kind == LoraAbKind::B).unwrap();
+    assert_eq!(
+        a.tensor_name,
+        format!("base_model.model.model.layers.{layer}.self_attn.k_proj.lora_A.weight")
+    );
+    assert_eq!(
+        b.tensor_name,
+        format!("base_model.model.model.layers.{layer}.self_attn.k_proj.lora_B.weight")
+    );
     assert_eq!(a.dst, base + a_off as u64);
     assert_eq!(b.dst, base + b_off as u64);
-    assert_eq!(a.rank, r as usize);
-    assert_eq!(b.rank, r as usize);
-    assert_eq!(a.max_rank, max_rank);
+    for target in [a, b] {
+        assert_eq!(target.out_dim, out_dim);
+        assert_eq!(target.in_dim, in_dim);
+        assert_eq!(target.rank, r as usize);
+        assert_eq!(target.max_rank, max_rank);
+    }
 }
 
 #[test]
@@ -107,9 +118,25 @@ fn rebuild_slot_layers_sets_rank_and_pointers() {
         lora_embedding: false,
     };
     let layers = rebuild_slot_layers(&targets, &cfg, &peft, pool, 2, max_rank).unwrap();
+    assert_eq!(layers.len(), cfg.num_hidden_layers);
+    assert_eq!(
+        layers.iter().filter(|layer| layer.is_some()).count(),
+        1,
+        "only the target's layer should be rebuilt"
+    );
     let lw = layers[layer].as_ref().expect("layer 3 rebuilt");
+    assert_eq!(lw.layer_idx, layer);
+    assert!(lw.q_proj.is_none());
+    assert!(lw.v_proj.is_none());
+    assert!(lw.o_proj.is_none());
+    assert!(lw.gate_proj.is_none());
+    assert!(lw.up_proj.is_none());
+    assert!(lw.down_proj.is_none());
     let pair = lw.k_proj.expect("k_proj pair");
     assert_eq!(pair.rank, 4);
+    assert_eq!(pair.k_in, in_dim as u32);
+    assert_eq!(pair.n_out, out_dim as u32);
+    assert_eq!(pair.scale, peft.scaling());
     assert_eq!(pair.max_rank, max_rank as u32);
     assert_eq!(pair.a.weight.0, base + a_off as u64);
     assert_eq!(pair.b.weight.0, base + b_off as u64);

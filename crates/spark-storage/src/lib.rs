@@ -121,7 +121,6 @@ pub mod tiled_attention;
 // RDMA-stage a PEFT adapter's A/B tensors straight into a resident LoRA pool
 // slot (reuses the weight_peer manifest + wire; landing byte-identical to the
 // disk pack).
-#[cfg(feature = "cuda")]
 pub mod weight_lora_rdma;
 #[cfg(feature = "cuda")]
 pub mod weight_tier_rdma;
@@ -188,7 +187,8 @@ pub use projection::{PredictorShape, build_projection};
 #[cfg(feature = "cuda")]
 pub use tiled_attention::{TiledAttention, TiledAttentionDims};
 #[cfg(feature = "cuda")]
-pub use weight_lora_rdma::{LoraAbKind, LoraLandTarget, RdmaLoraLoader};
+pub use weight_lora_rdma::RdmaLoraLoader;
+pub use weight_lora_rdma::{LoraAbKind, LoraLandTarget};
 pub use weight_peer::{WeightManifest, WeightTensorRecord};
 #[cfg(feature = "cuda")]
 pub use weight_tier_rdma::RdmaWeightLoader;

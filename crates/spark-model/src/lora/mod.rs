@@ -46,11 +46,10 @@ pub use slot_math::*;
 pub use target::*;
 pub use types::*;
 
-// RDMA LoRA staging pulls `spark_storage::{LoraAbKind, LoraLandTarget}`, which
-// spark-storage only exports under `cuda`; its sole caller
-// (`swap_lora_slot_from_peer`) is already `cfg(feature = "cuda")`. Gate the
-// module so the non-cuda (metal) build doesn't try to resolve those imports.
-#[cfg(feature = "cuda")]
+// The RDMA network entry point is CUDA-only, but its landing-plan and pair-
+// rebuild logic is pure host code. Compile that logic in tests as well so its
+// contracts remain testable on non-CUDA hosts.
+#[cfg(any(feature = "cuda", test))]
 // RDMA LoRA staging lands adapter tensors via spark-storage's RDMA weight
 // loader; RDMA needs rdma-core, so this stays unix-only even though the NVMe
 // tier itself is now portable.
