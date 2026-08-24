@@ -59,6 +59,9 @@ struct Target {
     model: String,
     quant: String,
     arch: String,
+    /// This target's own model directory. It can differ from the owner of the
+    /// kernel sources when MODEL.toml declares `kernel_source`.
+    model_config_dir: PathBuf,
     /// Per-model quant dir (for KERNEL.toml and optional override .cu files).
     model_kernel_dir: PathBuf,
     /// Common quant dir (hw_dir/quant/) with shared .cu files.
@@ -586,13 +589,17 @@ fn closure_attestation(
         if sources.is_empty() {
             continue;
         }
-        let model_dir = target.model_kernel_dir.parent();
         let configs = [
             workspace_root
                 .join("kernels")
                 .join(&target.hw)
                 .join("HARDWARE.toml"),
-            model_dir.map(|d| d.join("MODEL.toml")).unwrap_or_default(),
+            target
+                .common_kernel_dir
+                .as_ref()
+                .map(|d| d.join("KERNEL.toml"))
+                .unwrap_or_default(),
+            target.model_config_dir.join("MODEL.toml"),
             target.model_kernel_dir.join("KERNEL.toml"),
         ]
         .into_iter()
@@ -1149,6 +1156,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 model: model.clone(),
                 quant: quant.clone(),
                 arch: arch.clone(),
+                model_config_dir: model_dir.clone(),
                 model_kernel_dir,
                 common_kernel_dir: if has_common_dir {
                     Some(common_kernel_dir)

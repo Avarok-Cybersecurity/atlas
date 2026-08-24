@@ -80,6 +80,7 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "gb10/qwen3.5-397b-a17b/nvfp4",
             "gb10/qwen3.6-27b/nvfp4",
             "gb10/qwen3.6-35b-a3b/nvfp4",
+            "gb10/qwen3.8-27b/nvfp4",
             "gb10/step3p7-flash/nvfp4",
             "metal/nllb-200-3.3b/bf16",
             "metal/qwen3-5-4b-vlm-mlx-int8/mlx_int8",
@@ -153,6 +154,73 @@ fn headers_are_not_in_the_source_set() {
             root.join("kernels/gb10/common/other.cu"),
             root.join("kernels/gb10/common/shared.cu"),
         ]
+    );
+}
+
+#[test]
+fn a_redirect_uses_the_source_owners_kernels_but_the_targets_model_config() {
+    let root = fixture("redirect");
+    let hw = root.join("kernels/gb10");
+    std::fs::create_dir_all(hw.join("modelC")).unwrap();
+    std::fs::write(
+        hw.join("modelC/MODEL.toml"),
+        "[model]\nkernel_source = \"modelA\"\n",
+    )
+    .unwrap();
+    std::fs::write(hw.join("common/KERNEL.toml"), "[build]\n").unwrap();
+    std::fs::write(hw.join("modelA/nvfp4/KERNEL.toml"), "[build]\n").unwrap();
+
+    let redirected = Target {
+        hardware: "gb10".into(),
+        model: "modelC".into(),
+        quant: "nvfp4".into(),
+    };
+    assert!(walk(&root).contains(&redirected));
+    assert_eq!(
+        sources(&root, &redirected).unwrap(),
+        [
+            hw.join("common/other.cu"),
+            hw.join("modelA/nvfp4/shared.cu"),
+        ]
+    );
+    assert_eq!(
+        configs(&root, &redirected),
+        [
+            hw.join("HARDWARE.toml"),
+            hw.join("common/KERNEL.toml"),
+            hw.join("modelC/MODEL.toml"),
+            hw.join("modelA/nvfp4/KERNEL.toml"),
+        ]
+    );
+}
+
+#[test]
+fn a_source_owner_change_affects_its_redirected_consumers() {
+    let root = fixture("redirect-affected");
+    let hw = root.join("kernels/gb10");
+    std::fs::create_dir_all(hw.join("modelC")).unwrap();
+    std::fs::write(
+        hw.join("modelC/MODEL.toml"),
+        "[model]\nkernel_source = \"modelA\"\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        affected(&root, &["kernels/gb10/modelA/nvfp4/shared.cu".to_string()]),
+        [
+            Target {
+                hardware: "gb10".into(),
+                model: "modelA".into(),
+                quant: "nvfp4".into(),
+            },
+            Target {
+                hardware: "gb10".into(),
+                model: "modelC".into(),
+                quant: "nvfp4".into(),
+            },
+        ]
+        .into_iter()
+        .collect()
     );
 }
 
