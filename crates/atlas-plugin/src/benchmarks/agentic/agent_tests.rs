@@ -223,16 +223,40 @@ fn compaction_elides_the_oldest_tool_results_and_keeps_the_pairing() {
     // The most recent results are what the model is working from.
     let last = msgs.last().unwrap()["content"].as_str().unwrap();
     assert_eq!(last.len(), big.len(), "the live window must survive intact");
+
+    // Force more elision than the live-window rule permits. The budget remains
+    // exceeded on purpose; preserving the four results the model is actively
+    // using takes precedence over shrinking farther.
+    let live = "y".repeat(HISTORY_BUDGET);
+    let mut pressured = vec![json!({"role": "system", "content": "s"})];
+    for i in 0..5 {
+        pressured.push(json!({"role": "assistant", "content": Value::Null,
+            "tool_calls": [{"id": format!("p{i}")}]}));
+        pressured.push(json!({"role": "tool", "tool_call_id": format!("p{i}"), "content": live}));
+    }
+    compact(&mut pressured);
+    assert!(pressured[2]["content"].as_str().unwrap().contains("elided"));
+    for i in 1..5 {
+        assert_eq!(
+            pressured[2 + 2 * i]["content"].as_str().unwrap().len(),
+            live.len(),
+            "live tool result {i} was compacted"
+        );
+    }
 }
 
 #[test]
-fn a_short_session_is_left_alone() {
-    let mut msgs = vec![
-        json!({"role": "system", "content": "s"}),
-        json!({"role": "tool", "tool_call_id": "c0", "content": "small"}),
-    ];
+fn a_session_below_the_history_budget_is_left_alone() {
+    let mut msgs = vec![json!({"role": "system", "content": "s"})];
+    for i in 0..5 {
+        msgs.push(json!({"role": "assistant", "content": Value::Null,
+            "tool_calls": [{"id": format!("c{i}")}]}));
+        msgs.push(json!({"role": "tool", "tool_call_id": format!("c{i}"),
+            "content": format!("small-{i}")}));
+    }
+    let before = msgs.clone();
     compact(&mut msgs);
-    assert_eq!(msgs[1]["content"], "small");
+    assert_eq!(msgs, before);
 }
 
 // ── shell ──────────────────────────────────────────────────────────
