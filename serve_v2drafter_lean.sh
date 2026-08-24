@@ -18,7 +18,8 @@ export ATLAS_DFLASH_RESUME_GUARD=8
 export RUST_LOG="${RUST_LOG:-info}"
 
 TARGET=$(ls -d /mnt/gx10-hf-hub/models--unsloth--Qwen3.8-27B-NVFP4/snapshots/*/ | head -1)
-DRAFT=/mnt/gx10-hf-hub/models--onewhosighs--Apathy-Qwen3.8-27B-DFlash-drafter-v2/snapshots/64f3e67ce7531279636964a253763482765789fa/
+# DRAFT_DIR overrides the drafter (e.g. incoai, for a same-profile control A/B).
+DRAFT="${DRAFT_DIR:-/mnt/gx10-hf-hub/models--onewhosighs--Apathy-Qwen3.8-27B-DFlash-drafter-v2/snapshots/64f3e67ce7531279636964a253763482765789fa/}"
 
 LAZY_ARGS=()
 [ -n "${WY17_LAZY:-}" ] && LAZY_ARGS=(--gdn-wy17-lazy "$WY17_LAZY")
