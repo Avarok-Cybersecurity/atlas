@@ -309,6 +309,10 @@ mod tests {
 
     use super::Fp8KvCalibration;
 
+    fn compact_source(src: &str) -> String {
+        src.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
     /// The write/read-scale invariant, as a fails-without-the-fix test: the
     /// scale a batch is WRITTEN with must be the scale every later read
     /// dequantizes with, so after the first observe the scale may never move.
@@ -320,7 +324,7 @@ mod tests {
     /// boundary is then dequantized ~6× off in production, and here the
     /// snapshot comparison trips.
     #[test]
-    fn scale_frozen_on_first_observe_never_moves() {
+    fn scale_freezes_on_first_observe_and_stays_fixed_by_default() {
         let gpu = MockGpuBackend::new();
         let cal = Fp8KvCalibration::new(256, 2.0, &gpu).expect("mock construct");
         let k = gpu.alloc(4096).expect("k buf");
@@ -383,59 +387,49 @@ mod tests {
         ]));
     }
 
-    /// Qwen3.6 `--kv-high-precision-layers auto`: first/last 2 attention
-    /// layers are BF16 (report `None` after we stop attaching a tracker)
-    /// and the FP8 middles freeze on first observe (`Some(true)`).
-    /// `find_map` on a leftover BF16 `Some(false)` would keep graphs off.
     #[test]
-    fn graphs_ready_ignores_bf16_boundary_layers() {
-        assert!(super::graphs_ready_after_fp8_kv_cal([
+    fn graphs_stay_blocked_when_a_warm_layer_follows_a_frozen_layer() {
+        assert!(!super::graphs_ready_after_fp8_kv_cal([
             None,
             Some(true),
-            Some(true),
+            Some(false),
             None
         ]));
     }
 
     #[test]
-    fn attention_init_attaches_calibrator_only_via_dtype_predicate() {
-        let src = include_str!("qwen3_attention/init.rs");
+    fn attention_init_gates_calibrator_on_tokens_and_plain_fp8() {
+        let src = compact_source(include_str!("qwen3_attention/init.rs"));
         assert!(
-            src.contains("dtype_runs_online_fp8_kv_calibration(kv_dtype)"),
-            "init.rs must attach Fp8KvCalibration only when the KV dtype observes"
+            src.contains(
+                "fp8_calibration:iffp8_calibration_tokens>0&&crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype){Some(Fp8KvCalibration::new("
+            ),
+            "the attention initializer must require enabled tokens and an observing KV dtype"
         );
     }
 
     #[test]
-    fn decode_unsuppress_aggregates_all_layers_not_find_map() {
-        let src = include_str!("../model/trait_impl/decode_a.rs");
+    fn decode_uses_shared_calibration_readiness() {
+        let src = compact_source(include_str!("../model/trait_impl/decode_a.rs"));
         assert!(
-            src.contains("graphs_ready_after_fp8_kv_cal"),
-            "decode_a must lift graph suppression from every layer's frozen flag"
-        );
-        let frozen_fn = src
-            .split("fn fp8_calibration_frozen")
-            .nth(1)
-            .expect("fp8_calibration_frozen");
-        let body = frozen_fn
-            .split("pub(super) fn decode_dispatch")
-            .next()
-            .unwrap();
-        assert!(
-            !body.contains("find_map"),
-            "find_map lets a BF16 boundary layer's Some(false) shadow frozen FP8 layers"
+            src.contains(
+                "fnfp8_calibration_frozen(&self)->bool{crate::layers::fp8_calibration::graphs_ready_after_fp8_kv_cal(self.layers.iter().map(|l|l.fp8_calibration_frozen()),)}"
+            ),
+            "decode readiness must aggregate every layer through the shared policy"
         );
     }
 
     #[test]
     fn fused_verify_unsuppress_matches_decode_frozen_flag() {
-        let src = include_str!("../model/trait_impl/verify_fused.rs");
+        let src = compact_source(include_str!("../model/trait_impl/verify_fused.rs"));
         assert!(
-            src.contains("fp8_calibration_frozen()"),
-            "fused verify must not wait seq_len > calibration_tokens+10"
+            src.contains(
+                "&&self.fp8_calibration_frozen(){self.suppress_graphs.store(false,std::sync::atomic::Ordering::Relaxed);"
+            ),
+            "fused verify must unsuppress graphs from the frozen-state predicate"
         );
         assert!(
-            !src.contains("calibration_tokens + 10"),
+            !src.contains("calibration_tokens+10"),
             "old token-count gate kept fused verify eager for ~266 tokens"
         );
     }
