@@ -86,17 +86,25 @@ pub fn mtp_ladder_disabled() -> bool {
 /// Parsed ladder steps `(n_max, drafts)`, ascending by `n_max`. Falls back
 /// to the default ladder when `ATLAS_MTP_K_LADDER` is unset or unparseable
 /// (a malformed value must not silently disable speculation).
+fn parse_ladder(value: &str) -> Option<Vec<(usize, usize)>> {
+    let mut steps = Vec::new();
+    for part in value.split(',') {
+        let (n, k) = part.trim().split_once(':')?;
+        steps.push((n.trim().parse().ok()?, k.trim().parse().ok()?));
+    }
+    if steps.is_empty() {
+        return None;
+    }
+    steps.sort_by_key(|&(n, _)| n);
+    Some(steps)
+}
+
 fn mtp_ladder_steps() -> &'static [(usize, usize)] {
     static STEPS: std::sync::OnceLock<Vec<(usize, usize)>> = std::sync::OnceLock::new();
     STEPS.get_or_init(|| {
-        let parsed = std::env::var("ATLAS_MTP_K_LADDER").ok().and_then(|v| {
-            let mut steps: Vec<(usize, usize)> = Vec::new();
-            for part in v.split(',') {
-                let (n, k) = part.trim().split_once(':')?;
-                steps.push((n.trim().parse().ok()?, k.trim().parse().ok()?));
-            }
-            (!steps.is_empty()).then_some(steps)
-        });
+        let parsed = std::env::var("ATLAS_MTP_K_LADDER")
+            .ok()
+            .and_then(|value| parse_ladder(&value));
         // Default ladder: 3 drafts up to the n=8 rung, then TWO drafts at
         // n<=16 (the 16:2 rung), then one at n<=32.
         //
@@ -197,10 +205,20 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
         // the measured fixed cost is 65.8 ms, only 33% of the 16:2 step.
         // Cutting c is the standing lever, and it is what would let a deeper
         // rung pay again.
-        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 3), (16, 1), (32, 1)]);
-        steps.sort_by_key(|&(n, _)| n);
-        steps
+        parsed.unwrap_or_else(|| vec![(4, 3), (8, 3), (16, 1), (32, 1)])
     })
+}
+
+fn ladder_drafts_from_steps(steps: &[(usize, usize)], n_active: usize, num_drafts: usize) -> usize {
+    if num_drafts == 0 {
+        return 0;
+    }
+    steps
+        .iter()
+        .find(|&&(n_max, _)| n_active <= n_max)
+        .or(steps.last())
+        .map(|&(_, k)| k.clamp(1, num_drafts))
+        .unwrap_or(num_drafts)
 }
 
 /// The per-step draft count for `n_active` concurrent sequences.
@@ -217,13 +235,7 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
     if mtp_ladder_disabled() {
         return num_drafts;
     }
-    let steps = mtp_ladder_steps();
-    steps
-        .iter()
-        .find(|&&(n_max, _)| n_active <= n_max)
-        .or(steps.last())
-        .map(|&(_, k)| k.clamp(1, num_drafts))
-        .unwrap_or(num_drafts)
+    ladder_drafts_from_steps(mtp_ladder_steps(), n_active, num_drafts)
 }
 
 /// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`; default 32
@@ -306,43 +318,34 @@ mod tests {
         assert_eq!(mtp_ladder_drafts(16, 1), 1);
     }
 
-    // The 24:2 / 32:2 rungs the 96-row envelope permits stay reachable via
-    // ATLAS_MTP_K_LADDER (pure step arithmetic — same shape the env parse
-    // produces for "4:3,8:3,16:2,24:2,32:2").
     #[test]
     fn depth_at_width_env_rungs_parse_shape() {
-        let steps = [(4usize, 3usize), (8, 3), (16, 2), (24, 2), (32, 2)];
-        let drafts = |n: usize| {
-            steps
-                .iter()
-                .find(|&&(n_max, _)| n <= n_max)
-                .or(steps.last())
-                .map(|&(_, k)| k.clamp(1, 3))
-                .unwrap()
-        };
+        let steps = parse_ladder("32:2, 4:3,8:3, 16:2,24:2").unwrap();
+        assert_eq!(steps, [(4, 3), (8, 3), (16, 2), (24, 2), (32, 2)]);
         // 24:2 = 24 x 3 = 72 rows; 32:2 = 32 x 3 = 96 rows — both a single
         // chunk under VERIFY_ROW_BUDGET = 96 (mtp_dcut::chunk_ranges).
-        assert_eq!(drafts(17), 2);
-        assert_eq!(drafts(24), 2);
-        assert_eq!(drafts(25), 2);
-        assert_eq!(drafts(32), 2);
+        assert_eq!(ladder_drafts_from_steps(&steps, 17, 3), 2);
+        assert_eq!(ladder_drafts_from_steps(&steps, 24, 3), 2);
+        assert_eq!(ladder_drafts_from_steps(&steps, 25, 3), 2);
+        assert_eq!(ladder_drafts_from_steps(&steps, 32, 3), 2);
     }
 
     // A step-down ladder must still be honored when asked for explicitly
     // (the 8:2 shape stays reachable via ATLAS_MTP_K_LADDER).
     #[test]
     fn explicit_steps_are_honored() {
-        let steps = [(4usize, 3usize), (8, 2)];
-        let drafts = |n: usize| {
-            steps
-                .iter()
-                .find(|&&(n_max, _)| n <= n_max)
-                .or(steps.last())
-                .map(|&(_, k)| k.clamp(1, 3))
-                .unwrap()
-        };
-        assert_eq!(drafts(4), 3);
-        assert_eq!(drafts(8), 2);
+        let steps = parse_ladder("4:3,8:2").unwrap();
+        assert_eq!(ladder_drafts_from_steps(&steps, 4, 3), 3);
+        assert_eq!(ladder_drafts_from_steps(&steps, 5, 3), 2);
+        assert_eq!(ladder_drafts_from_steps(&steps, 8, 3), 2);
+        assert_eq!(ladder_drafts_from_steps(&steps, 9, 3), 2);
+    }
+
+    #[test]
+    fn malformed_ladder_is_rejected_as_a_unit() {
+        assert_eq!(parse_ladder(""), None);
+        assert_eq!(parse_ladder("4:3,broken,8:2"), None);
+        assert_eq!(parse_ladder("4:three"), None);
     }
 
     #[test]
