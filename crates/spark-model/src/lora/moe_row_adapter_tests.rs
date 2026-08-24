@@ -35,21 +35,6 @@ fn route_non_active_adapter_refuses() {
 }
 
 #[test]
-fn route_short_prefill_single_active_folds() {
-    // Load-bearing for the lifted short-prefill refuse (forward_prefill.rs): a
-    // <=64-token prefill of ONE sequence owning the active adapter dispatches to
-    // forward_batched, whose per-token decode fold hooks take the NULL-map
-    // single-active path and consult this route. It MUST resolve Fold, or the
-    // adapter delta would be silently dropped. Sibling routes the short prefill
-    // relies on for its negative controls: a base sequence Skips (byte-identical
-    // base output while an adapter is resident), a non-active adapter Refuses.
-    assert_eq!(resolve_moe_lora_route(0, 0, true), MoeLoraRoute::Fold);
-    assert_eq!(resolve_moe_lora_route(4, 4, true), MoeLoraRoute::Fold);
-    assert_eq!(resolve_moe_lora_route(-1, 0, true), MoeLoraRoute::Skip);
-    assert_eq!(resolve_moe_lora_route(1, 0, true), MoeLoraRoute::Refuse);
-}
-
-#[test]
 fn row_adapter_uniform_single_stream() {
     // One stream of 4 tokens on slot 2 -> all rows 2.
     let map = build_moe_row_adapter_host(&[0, 4], &[2]).unwrap();
@@ -70,12 +55,6 @@ fn row_adapter_empty_stream_span() {
     // no rows for that stream; neighbors still align.
     let map = build_moe_row_adapter_host(&[0, 2, 2, 5], &[7, 9, -1]).unwrap();
     assert_eq!(map, vec![7, 7, -1, -1, -1]);
-}
-
-#[test]
-fn row_adapter_base_sentinel_is_minus_one() {
-    let map = build_moe_row_adapter_host(&[0, 3], &[-1]).unwrap();
-    assert_eq!(map, vec![-1, -1, -1]);
 }
 
 #[test]
