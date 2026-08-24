@@ -16,6 +16,21 @@ use std::time::Duration;
 use atlas_plugin::coherence::{self, CoherencePolicy};
 use atlas_plugin::plugin::TargetEndpoint;
 
+#[derive(Default)]
+struct WarningReporter {
+    warnings: Vec<String>,
+}
+
+impl atlas_plugin::headless::RunReporter for WarningReporter {
+    fn event(&mut self, event: &atlas_plugin::PluginEvent) {
+        if let atlas_plugin::PluginEvent::Log(line) = event
+            && line.level == atlas_plugin::LogLevel::Warn
+        {
+            self.warnings.push(line.text.clone());
+        }
+    }
+}
+
 fn target(port: u16) -> TargetEndpoint {
     TargetEndpoint::local(port, "mock")
 }
@@ -70,7 +85,7 @@ async fn an_unreachable_endpoint_is_a_transport_error_not_a_wrong_answer() {
 
 #[tokio::test]
 async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
-    use atlas_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
+    use atlas_plugin::headless::{HeadlessOptions, RunRequest, run_blocking};
     use atlas_plugin::{ArtifactStore, BenchmarkExecutor, ParamValues, registry};
 
     let mock = mock_endpoint::start_saying(
@@ -104,12 +119,14 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
         },
     };
 
-    let outcome = tokio::task::spawn_blocking(move || {
-        run_blocking(&executor, request, &mut SilentReporter, &|| false)
+    let (outcome, warnings) = tokio::task::spawn_blocking(move || {
+        let mut reporter = WarningReporter::default();
+        let outcome = run_blocking(&executor, request, &mut reporter, &|| false);
+        (outcome, reporter.warnings)
     })
     .await
-    .expect("join")
-    .expect("drives");
+    .expect("join");
+    let outcome = outcome.expect("drives");
 
     // The whole point of the change: an endpoint that answers oddly is a
     // WARNING, so the sweep still runs. Two probe questions plus the sweep's
@@ -119,6 +136,12 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
         "the benchmark must not have been blocked by the probe"
     );
     assert_eq!(outcome.exit_code(), 0, "a warning is not a failure");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("teapot") && warning.contains("still valid")),
+        "the advisory reaches the caller: {warnings:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
