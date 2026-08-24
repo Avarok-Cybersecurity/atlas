@@ -611,7 +611,27 @@ impl BlockDiffusionDraftHead {
             // kernel (fixed: 2-round A-load covers all 32 K-cols).
             // BF16 path (default, or Fp8 mirror missing) unchanged.
             let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
-            if lm_head_fp8 {
+            // Drafter NVFP4 head (ATLAS_DFLASH_DRAFTER_NVFP4): W4A4 MMQ over
+            // the vocab — TC compute on 0.56 B/weight vs the rt16 GEMV's
+            // ALU-bound ~140 GB/s. Takes precedence over the FP8/BF16 chains
+            // below; same drafter-side contract (temp-0 commits invariant,
+            // acceptance is the A/B metric).
+            if let Some(nv) = self.lm_head_shared_nv.as_ref()
+                && g <= 16
+                && h_local.is_multiple_of(64)
+                && self.nvfp4_propose_armed()
+            {
+                self.draft_nvfp4_gemm(
+                    gpu,
+                    nv,
+                    norm_noise_local,
+                    self.scratch.logits,
+                    g,
+                    self.vocab_size as u32,
+                    h_local,
+                    stream,
+                )?;
+            } else if lm_head_fp8 {
                 if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
                     // Register-tiled M<=8 FP8 GEMV (rt2 twin) over the
                     // vocab: the m16 tile pads 50% of its rows at γ=8 and

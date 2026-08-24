@@ -122,6 +122,16 @@ pub struct DflashKernels {
     /// the rt K-major stream is what escapes it. Same gate and
     /// kill-switch as `fp8_gemv_rt2`.
     pub fp8_gemv_rt16: KernelHandle,
+    /// Drafter NVFP4 propose (ATLAS_DFLASH_DRAFTER_NVFP4): the target's
+    /// W4A4 MMQ family at mmq_x=16 — TC compute on 0.56 B/weight, vs the
+    /// scalar GEMVs' ALU-bound ~135 GB/s at M=16. `.0 == 0` on targets
+    /// without the nvfp4_mmq module → the gate stays dark.
+    pub nvfp4_mmq16_nc: KernelHandle,
+    pub nvfp4_mmq16_wc: KernelHandle,
+    /// bf16 → block_fp4_mmq activation quantize (per propose GEMM).
+    pub nvfp4_act_quant: KernelHandle,
+    /// In-place ×scale2 on the MMQ's bf16 output.
+    pub nvfp4_scale_bf16: KernelHandle,
     /// DFlash2 two-tap grouped dynamic conv (`kernels/gb10/common/dflash2.cu`).
     /// `.0 == 0` on targets without the module (DFlash2 then refuses to arm).
     pub dflash2_conv2: KernelHandle,
@@ -257,6 +267,17 @@ pub enum DflashQuantization {
 /// when `ATLAS_DFLASH_DRAFTER_FP8=1`. The BF16 fields are always present
 /// (Fp8 path falls back to them for any GEMM whose Fp8 weight is None).
 #[allow(dead_code)]
+/// A drafter weight in llama block_nvfp4 MMQ form: the repacked blocks plus
+/// the per-tensor FP32 scale the MMQ output is missing (folded by
+/// `nvfp4_scale_bf16` after the GEMM). Built once at load from the BF16
+/// weight (quantize_to_nvfp4 → nvfp4_mmq_repack; the checkpoint-layout
+/// intermediates are freed). Ledger-tagged "dflash/drafter_nvfp4".
+#[derive(Debug, Clone, Copy)]
+pub struct DrafterNvfp4Weight {
+    pub mmq: spark_runtime::gpu::DevicePtr,
+    pub scale2: f32,
+}
+
 pub struct DflashLayer {
     // Norms
     pub input_layernorm: DenseWeight,
@@ -284,6 +305,19 @@ pub struct DflashLayer {
     pub gate_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
     pub up_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
     pub down_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+
+    // Drafter NVFP4 (ATLAS_DFLASH_DRAFTER_NVFP4=1): block_nvfp4-repacked
+    // MMQ mirrors of the same seven weights — TC compute on half FP8's
+    // bytes, the escape from the M=16 scalar-GEMV ALU wall (the fork
+    // ships the same idea as --dflash-quantization nvfp4). None unless
+    // the gate armed at load.
+    pub q_proj_nv: Option<DrafterNvfp4Weight>,
+    pub k_proj_nv: Option<DrafterNvfp4Weight>,
+    pub v_proj_nv: Option<DrafterNvfp4Weight>,
+    pub o_proj_nv: Option<DrafterNvfp4Weight>,
+    pub gate_proj_nv: Option<DrafterNvfp4Weight>,
+    pub up_proj_nv: Option<DrafterNvfp4Weight>,
+    pub down_proj_nv: Option<DrafterNvfp4Weight>,
 
     // DFlash2 grouped dynamic causal convs (None on DFlash1/DSpark).
     /// `attention_conv.base_kernel` `[2 applications, kernel_size, hidden]`.
@@ -444,6 +478,16 @@ pub struct BlockDiffusionDraftHead {
     /// it must not mutate the target model's lm_head. `None` on the
     /// BF16 path.
     pub lm_head_shared_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    /// Drafter NVFP4 mirror of the shared lm_head (block_nvfp4 MMQ form),
+    /// built at load when `ATLAS_DFLASH_DRAFTER_NVFP4=1`. Owned by the
+    /// drafter, same non-mutation contract as the FP8 mirror.
+    pub lm_head_shared_nv: Option<DrafterNvfp4Weight>,
+    /// block_fp4_mmq activation scratch for the NVFP4 propose GEMMs, sized
+    /// for the widest K (down: 17408) at m=16 and allocated AT LOAD when
+    /// the gate arms — never lazily, so no allocation can land inside a
+    /// CUDA-graph capture. NULL when the gate is off. Propose GEMMs run
+    /// serially on one stream, so one scratch serves every projection.
+    pub nvfp4_act_y: DevicePtr,
 
     // === Weights from the drafter checkpoint ===
     /// Hidden-norm applied to the projected target context before mixing
@@ -875,6 +919,28 @@ pub(crate) fn fp8_rt_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_NO_DFLASH_FP8_RT").as_deref() != Ok("1"))
 }
 
+/// `ATLAS_DFLASH_DRAFTER_NVFP4=1` — quantize the drafter's propose weights
+/// (7/layer + lm_head) to block_nvfp4 at load and run the propose GEMMs
+/// through the target's W4A4 MMQ family (mmq_x=16). DEFAULT OFF pending the
+/// acceptance A/B: e2m1 is a real precision step down from the FP8 twin, and
+/// while temp-0 commits cannot change (strict-argmax accept — the same
+/// contract every drafter-numerics lever ships under), the accept RATE can.
+/// The fork ships the same lever as `--dflash-quantization nvfp4`.
+pub(crate) fn drafter_nvfp4_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var("ATLAS_DFLASH_DRAFTER_NVFP4").as_deref() == Ok("1");
+        if on {
+            tracing::info!(
+                "DFlash drafter NVFP4 ENABLED (ATLAS_DFLASH_DRAFTER_NVFP4=1): propose \
+                 GEMMs run W4A4 MMQ on block_nvfp4 weights. Temp-0 commits are \
+                 invariant; watch mean_na/tok_step for the acceptance cost."
+            );
+        }
+        on
+    })
+}
+
 /// Split-K workspace bytes: covers the widest drafter band actually
 /// produced. The layer projections all need ≤ 2.3 MB (`slices × 16 × N ×
 /// 4` peaks at o/down: 7 × 16 × 5120 × 4); the lm_head at vocab 248320
@@ -955,6 +1021,64 @@ pub fn dflash_ctx_cap() -> usize {
 }
 
 impl BlockDiffusionDraftHead {
+    /// One NVFP4 propose GEMM: quantize the bf16 activations `[m, k]` into
+    /// the shared block_fp4_mmq scratch, run the mmq_x=16 W4A4 GEMM, fold
+    /// the weight's per-tensor scale2 into the bf16 output in place.
+    /// Caller guarantees `m <= 16`, `k % 64 == 0`, and `nvfp4_act_y` armed.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draft_nvfp4_gemm(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        w: &DrafterNvfp4Weight,
+        src: DevicePtr,
+        dst: DevicePtr,
+        m: u32,
+        n: u32,
+        k: u32,
+        stream: u64,
+    ) -> Result<()> {
+        crate::layers::ops::nvfp4_mmq_quantize_act(
+            gpu,
+            self.kernels.nvfp4_act_quant,
+            src,
+            self.nvfp4_act_y,
+            m,
+            k,
+            stream,
+        )?;
+        crate::layers::ops::nvfp4_mmq_gemm_tiled(
+            gpu,
+            self.kernels.nvfp4_mmq16_nc,
+            self.kernels.nvfp4_mmq16_wc,
+            16,
+            self.nvfp4_act_y,
+            w.mmq,
+            dst,
+            m,
+            n,
+            k,
+            stream,
+        )?;
+        crate::layers::ops::nvfp4_scale_bf16(
+            gpu,
+            self.kernels.nvfp4_scale_bf16,
+            dst,
+            w.scale2,
+            m * n,
+            stream,
+        )
+    }
+
+    /// Whether the NVFP4 propose lane is armed for this head: gate on, all
+    /// four kernels present, and the activation scratch allocated at load.
+    pub(super) fn nvfp4_propose_armed(&self) -> bool {
+        self.nvfp4_act_y != DevicePtr::NULL
+            && self.kernels.nvfp4_mmq16_nc.0 != 0
+            && self.kernels.nvfp4_mmq16_wc.0 != 0
+            && self.kernels.nvfp4_act_quant.0 != 0
+            && self.kernels.nvfp4_scale_bf16.0 != 0
+    }
+
     /// Get-or-allocate the split-K FP32 workspace (`DRAFT_SPLITK_WS_BYTES`,
     /// ledger-tagged). `None` on allocation failure — the caller then keeps
     /// the single-slice kernel, so a full pool degrades speed, never

@@ -248,6 +248,18 @@ impl BlockDiffusionDraftHead {
                 "fp8_gemv_rt",
                 "fp8_gemv_rowscale_batch16_rt2",
             ),
+            // Drafter NVFP4 propose (ATLAS_DFLASH_DRAFTER_NVFP4): the
+            // target's W4A4 MMQ family at mmq_x=16 + its activation quant
+            // and scale2 fold. try_kernel: absent on targets without the
+            // nvfp4_mmq module → the gate stays dark.
+            nvfp4_mmq16_nc: crate::layers::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_nc"),
+            nvfp4_mmq16_wc: crate::layers::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_wc"),
+            nvfp4_act_quant: crate::layers::try_kernel(
+                gpu,
+                "nvfp4_mmq",
+                "atlas_nvfp4_quantize_bf16",
+            ),
+            nvfp4_scale_bf16: crate::layers::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_scale_bf16"),
             // DFlash2 kernels (kernels/gb10/common/dflash2.cu). try_kernel:
             // absent on stale kernel builds — DFlash2 then refuses to arm
             // rather than failing DFlash1/DSpark drafters at load.
@@ -557,6 +569,8 @@ impl BlockDiffusionDraftHead {
             lm_head_shared,
             lm_head_nvfp4,
             lm_head_shared_fp8: None,
+            lm_head_shared_nv: None,
+            nvfp4_act_y: DevicePtr::NULL,
             hidden_norm: weights.hidden_norm,
             norm: weights.norm,
             fc: weights.fc,
@@ -584,6 +598,14 @@ impl BlockDiffusionDraftHead {
                     gate_proj_fp8: None,
                     up_proj_fp8: None,
                     down_proj_fp8: None,
+                    // NVFP4 — populated below if ATLAS_DFLASH_DRAFTER_NVFP4=1.
+                    q_proj_nv: None,
+                    k_proj_nv: None,
+                    v_proj_nv: None,
+                    o_proj_nv: None,
+                    gate_proj_nv: None,
+                    up_proj_nv: None,
+                    down_proj_nv: None,
                     attention_conv_base: l.attention_conv_base,
                     attention_conv_proj: l.attention_conv_proj,
                     mlp_conv_base: l.mlp_conv_base,
@@ -823,6 +845,107 @@ impl BlockDiffusionDraftHead {
                 "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \
                  Set ATLAS_DFLASH_DRAFTER_FP8=0 to revert to BF16."
             );
+        }
+
+        // Drafter NVFP4 propose (ATLAS_DFLASH_DRAFTER_NVFP4=1, default off):
+        // quantize the seven per-layer GEMM weights + the shared lm_head
+        // BF16 → checkpoint NVFP4 (quantize_to_nvfp4), repack each into the
+        // llama block_nvfp4 MMQ form the W4A4 kernels consume, and free the
+        // checkpoint-layout intermediates. TC compute on 0.56 B/weight — the
+        // escape from the M=16 scalar-GEMV ALU wall (fp8_propose_bench). The
+        // FP8 mirrors above stay resident as the dispatch fallback.
+        let nvfp4_repack_k = crate::layers::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_repack");
+        let nvfp4_absmax_k = crate::layers::try_kernel(gpu, "quantize_nvfp4", "nvfp4_global_absmax");
+        let nvfp4_quant_k =
+            crate::layers::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4");
+        if super::drafter_nvfp4_enabled() {
+            let kernels_ok = nvfp4_repack_k.0 != 0
+                && nvfp4_absmax_k.0 != 0
+                && nvfp4_quant_k.0 != 0
+                && head.kernels.nvfp4_mmq16_nc.0 != 0
+                && head.kernels.nvfp4_mmq16_wc.0 != 0
+                && head.kernels.nvfp4_act_quant.0 != 0
+                && head.kernels.nvfp4_scale_bf16.0 != 0;
+            if !kernels_ok {
+                tracing::warn!(
+                    "ATLAS_DFLASH_DRAFTER_NVFP4=1 but the nvfp4_mmq/quantize_nvfp4 \
+                     kernels are not in this target's PTX set — staying on the \
+                     FP8/BF16 drafter path."
+                );
+            } else {
+                let stream = 0u64; // default stream — load-time, no concurrency
+                let h = head.hidden_size;
+                let inter = head.intermediate_size;
+                tracing::info!(
+                    "DFlash drafter NVFP4: quantize+repack {} layers × 7 GEMMs + lm_head",
+                    head.num_layers
+                );
+                let build_nv = |bf16: &crate::weight_map::DenseWeight, n: usize, k: usize| -> Result<super::DrafterNvfp4Weight> {
+                    anyhow::ensure!(
+                        k.is_multiple_of(64),
+                        "drafter NVFP4: K={k} not a multiple of 64 (block_nvfp4 blocks)"
+                    );
+                    let q = crate::weight_map::quantize_to_nvfp4(
+                        bf16,
+                        n,
+                        k,
+                        gpu,
+                        nvfp4_absmax_k,
+                        nvfp4_quant_k,
+                        stream,
+                    )?;
+                    let mmq = gpu.alloc(crate::layers::ops::nvfp4_mmq_weight_bytes(
+                        n as u32, k as u32,
+                    ))?;
+                    gpu.tag_alloc_owner(mmq, "dflash/drafter_nvfp4");
+                    crate::layers::ops::nvfp4_mmq_repack(
+                        gpu,
+                        nvfp4_repack_k,
+                        q.weight,
+                        q.weight_scale,
+                        mmq,
+                        n as u32,
+                        k as u32,
+                        stream,
+                    )?;
+                    gpu.synchronize(stream)?;
+                    // The checkpoint-layout intermediates are consumed by the
+                    // repack; only the block_nvfp4 form + scale2 survive.
+                    let _ = gpu.free(q.weight);
+                    let _ = gpu.free(q.weight_scale);
+                    Ok(super::DrafterNvfp4Weight {
+                        mmq,
+                        scale2: q.weight_scale_2,
+                    })
+                };
+                for layer in head.layers.iter_mut() {
+                    layer.q_proj_nv = Some(build_nv(&layer.q_proj, q_dim, h)?);
+                    layer.k_proj_nv = Some(build_nv(&layer.k_proj, kv_dim, h)?);
+                    layer.v_proj_nv = Some(build_nv(&layer.v_proj, kv_dim, h)?);
+                    layer.o_proj_nv = Some(build_nv(&layer.o_proj, h, q_dim)?);
+                    layer.gate_proj_nv = Some(build_nv(&layer.gate_proj, inter, h)?);
+                    layer.up_proj_nv = Some(build_nv(&layer.up_proj, inter, h)?);
+                    layer.down_proj_nv = Some(build_nv(&layer.down_proj, h, inter)?);
+                }
+                let lm_head_bf16 = crate::weight_map::DenseWeight {
+                    weight: head.lm_head_shared,
+                };
+                head.lm_head_shared_nv =
+                    Some(build_nv(&lm_head_bf16, head.vocab_size, h)?);
+                // Activation scratch for the widest dispatched K (down:
+                // inter), allocated HERE so no allocation can land inside a
+                // later CUDA-graph capture.
+                let act_bytes =
+                    crate::layers::ops::fp4_act_scratch_bytes(16, inter.max(h) as u32);
+                head.nvfp4_act_y = gpu.alloc(act_bytes)?;
+                gpu.tag_alloc_owner(head.nvfp4_act_y, "dflash/nvfp4_act_y");
+                tracing::info!(
+                    "DFlash drafter NVFP4 armed: {} layers + lm_head repacked, \
+                     act scratch {:.1} MB",
+                    head.num_layers,
+                    act_bytes as f64 / 1e6
+                );
+            }
         }
 
         Ok(head)

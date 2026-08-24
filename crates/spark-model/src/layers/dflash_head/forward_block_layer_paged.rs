@@ -247,11 +247,24 @@ impl BlockDiffusionDraftHead {
         let use_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
         let gemm_swap = |w_bf16: &crate::weight_map::DenseWeight,
                          w_fp8: &Option<crate::weight_map::Fp8DenseWeight>,
+                         w_nv: &Option<super::DrafterNvfp4Weight>,
                          src: spark_runtime::gpu::DevicePtr,
                          dst: spark_runtime::gpu::DevicePtr,
                          n_out: u32,
                          k_in: u32|
          -> Result<()> {
+            // Drafter NVFP4 first (ATLAS_DFLASH_DRAFTER_NVFP4): W4A4 MMQ on
+            // block_nvfp4 — TC compute, 0.56 B/weight. Single-sequence only
+            // (g <= 16); K must be whole 64-value blocks. Same drafter-side
+            // contract as every propose lever: temp-0 commits invariant,
+            // acceptance is the A/B metric.
+            if let Some(nv) = w_nv
+                && g <= 16
+                && k_in.is_multiple_of(64)
+                && self.nvfp4_propose_armed()
+            {
+                return self.draft_nvfp4_gemm(gpu, nv, src, dst, g, n_out, k_in, stream);
+            }
             if use_fp8 && let Some(fp8) = w_fp8 {
                 // Register-tiled M<=8 FP8 GEMV (rt2 twin): the M64-tile GEMM
                 // below pads 87% of its tile at M=γ=8 (~100 GB/s measured);
@@ -401,6 +414,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.q_proj,
             &layer.q_proj_fp8,
+            &layer.q_proj_nv,
             qkv_src,
             self.scratch.q_buf,
             q_dim,
@@ -450,6 +464,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.k_proj,
             &layer.k_proj_fp8,
+            &layer.k_proj_nv,
             qkv_src,
             self.scratch.k_buf,
             kv_dim,
@@ -495,6 +510,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.v_proj,
             &layer.v_proj_fp8,
+            &layer.v_proj_nv,
             qkv_src,
             self.scratch.v_buf,
             kv_dim,
@@ -1026,11 +1042,24 @@ impl BlockDiffusionDraftHead {
         let use_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
         let gemm_swap = |w_bf16: &crate::weight_map::DenseWeight,
                          w_fp8: &Option<crate::weight_map::Fp8DenseWeight>,
+                         w_nv: &Option<super::DrafterNvfp4Weight>,
                          src: spark_runtime::gpu::DevicePtr,
                          dst: spark_runtime::gpu::DevicePtr,
                          n_out: u32,
                          k_in: u32|
          -> Result<()> {
+            // Drafter NVFP4 first (ATLAS_DFLASH_DRAFTER_NVFP4): W4A4 MMQ on
+            // block_nvfp4 — TC compute, 0.56 B/weight. Single-sequence only
+            // (g <= 16); K must be whole 64-value blocks. Same drafter-side
+            // contract as every propose lever: temp-0 commits invariant,
+            // acceptance is the A/B metric.
+            if let Some(nv) = w_nv
+                && g <= 16
+                && k_in.is_multiple_of(64)
+                && self.nvfp4_propose_armed()
+            {
+                return self.draft_nvfp4_gemm(gpu, nv, src, dst, g, n_out, k_in, stream);
+            }
             if use_fp8 && let Some(fp8) = w_fp8 {
                 // Register-tiled M<=8 FP8 GEMV (rt2 twin): the M64-tile GEMM
                 // below pads 87% of its tile at M=γ=8 (~100 GB/s measured);
@@ -1177,6 +1206,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.o_proj,
             &layer.o_proj_fp8,
+            &layer.o_proj_nv,
             self.scratch.attn_out,
             self.scratch.stream_acc,
             h,
@@ -1247,6 +1277,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.gate_proj,
             &layer.gate_proj_fp8,
+            &layer.gate_proj_nv,
             mlp_src,
             self.scratch.mlp_intermediate,
             inter,
@@ -1255,6 +1286,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.up_proj,
             &layer.up_proj_fp8,
+            &layer.up_proj_nv,
             mlp_src,
             self.scratch.mlp_up,
             inter,
@@ -1272,6 +1304,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.down_proj,
             &layer.down_proj_fp8,
+            &layer.down_proj_nv,
             self.scratch.mlp_intermediate,
             self.scratch.stream_acc,
             h,
