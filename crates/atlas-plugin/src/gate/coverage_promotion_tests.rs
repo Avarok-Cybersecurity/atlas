@@ -18,6 +18,14 @@ use super::coverage;
 fn every_promotion_candidate_is_a_registered_benchmark() {
     let known: std::collections::BTreeSet<&str> =
         crate::registry::all().iter().map(|d| d.id).collect();
+    assert_eq!(
+        coverage::PROMOTION_CANDIDATES
+            .iter()
+            .map(|gate| gate.id)
+            .collect::<Vec<_>>(),
+        ["cross-contamination"],
+        "promotion tracking must not pass vacuously or gain an unreviewed candidate"
+    );
     for gate in coverage::PROMOTION_CANDIDATES {
         assert!(
             known.contains(gate.id),
@@ -75,8 +83,9 @@ fn the_contamination_candidate_accrues_debt_for_engine_changes() {
         "the cross-contamination candidate must be registered"
     );
     let owed = coverage::promotion_debt(["crates/spark-server/src/scheduler/mod.rs"]);
-    assert!(
-        owed.contains(&"cross-contamination"),
+    assert_eq!(
+        owed,
+        ["cross-contamination"],
         "a scheduler change is exactly the kind of edit that can cross-wire \
          concurrent requests; it must accrue debt, got {owed:?}"
     );
@@ -93,7 +102,7 @@ fn the_contamination_candidate_accrues_debt_for_engine_changes() {
 fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
     let owed =
         coverage::promotion_debt(["crates/atlas-plugin/src/benchmarks/contamination/driver.rs"]);
-    assert!(owed.contains(&"cross-contamination"), "{owed:?}");
+    assert_eq!(owed, ["cross-contamination"]);
     assert!(
         coverage::promotion_debt(["crates/atlas-plugin/src/benchmarks/ttft/descriptors.rs"])
             .is_empty(),
@@ -156,10 +165,11 @@ fn candidate_exclusions_meet_the_required_gate_bar() {
         .and_then(|p| p.parent())
         .expect("repo root is two levels above the crate")
         .to_path_buf();
+    assert!(!coverage::PROMOTION_CANDIDATES.is_empty());
     for gate in coverage::PROMOTION_CANDIDATES {
         for ex in gate.excludes {
             assert!(
-                ex.rationale.len() > 20,
+                ex.rationale.trim().len() > 20,
                 "{} excludes {} with no real rationale",
                 gate.id,
                 ex.prefix
@@ -197,8 +207,8 @@ fn the_taxonomy_and_the_union_are_on_the_boundary() {
         "crates/atlas-plugin/src/gate/required.rs",
     ] {
         assert_eq!(
-            coverage::invalidated_by([path]).len(),
-            coverage::REQUIRED.len(),
+            coverage::invalidated_by([path]),
+            super::REQUIRED_GATES,
             "{path} decides what the gate requires; it must re-open EVERY gate"
         );
     }
