@@ -468,6 +468,15 @@ pub(crate) fn load_model(
     // when it is provably net-negative (verify multiplier ≥ 1 + num_drafts).
     // See `scheduler::mtp_gate`.
 
+    // 3b. Pre-warm cuBLASLt so request 1 does not pay its lazy init.
+    // Measured (2026-08-22, 35B flagship, dgx1): once QKVZ prefill routes
+    // through cuBLASLt, the FIRST request read ~0.9 s slower than warm ones —
+    // handle create + 64 MB workspace + the library's kernel-image load, all
+    // deferred to first use. Cold TTFT is a headline metric; load time is not.
+    // Failure is logged inside and never fails the serve.
+    #[cfg(feature = "cuda")]
+    spark_runtime::cublaslt::prewarm(0);
+
     // 4. Post-load OOM check + audit log.
     serve_phases::post_load_memory_audit(
         &args,

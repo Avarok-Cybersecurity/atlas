@@ -617,6 +617,62 @@ pub fn moe_w8a8_grouped_gemm(
         .launch(stream)
 }
 
+/// W8A8 + FP32 epilogue grouped MoE GEMM — PM4 geometry over the COMPACTED
+/// work-list built by `moe_build_tile_worklist` (kernel
+/// `moe_w8a8_grouped_gemm_pm4`, same module/numerics as
+/// `moe_w8a8_grouped_gemm`: bit-identical output, measured).
+///
+/// Same grid-compaction contract as `moe_fp8_grouped_gemm`: the kernel
+/// grid-strides by `gridDim.x` over the work-list, so the launch is sized to
+/// `max_tiles` (`wl_cap_items`), clamped to `MAX_GRID_CTAS`. Oversubscription
+/// is safe; undersizing is merely slower, never wrong.
+///
+/// SAME-STREAM INVARIANT: MUST be launched on the SAME `stream` as the
+/// preceding `moe_build_tile_worklist` (read-after-write of `total_tiles`).
+///
+/// Grid: (max_tiles.clamp(1, MAX_GRID_CTAS), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w8a8_grouped_gemm_pm4(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a_fp8: DevicePtr,            // [total_tokens, K] FP8 E4M3
+    a_scale: DevicePtr,          // [total_tokens, K/128] FP32
+    weight_ptrs: DevicePtr,      // [num_experts] → [N, K] FP8
+    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] FP32
+    output: DevicePtr,           // [total_expanded, N] BF16
+    expert_offsets: DevicePtr,   // [num_experts + 1]
+    sorted_token_ids: DevicePtr, // [total_expanded] or NULL
+    num_experts: u32,
+    n: u32,
+    k: u32,
+    worklist: DevicePtr,    // [*total_tiles * 2] u32 (built on the same stream)
+    total_tiles: DevicePtr, // [1] i32 (built on the same stream)
+    max_tiles: u32,         // caller's upper bound on tile count (wl_cap_items)
+    stream: u64,
+) -> Result<()> {
+    const MAX_GRID_CTAS: u32 = 16384;
+    let grid_ctas = max_tiles.clamp(1, MAX_GRID_CTAS);
+    // gb10-only kernel (256 threads, __launch_bounds__(256,2)); other targets
+    // fall back to the dense-grid `moe_w8a8_grouped_gemm` (handle gating at
+    // the dispatch site).
+    KernelLaunch::new(gpu, kernel)
+        .grid([grid_ctas, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a_fp8)
+        .arg_ptr(a_scale)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(scale_ptrs)
+        .arg_ptr(output)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .launch(stream)
+}
+
 /// BF16 grouped GEMM for sorted MoE prefill (FP8-dequant-on-load path).
 ///
 /// BF16 activations × BF16 expert weights via pointer table. No scale.

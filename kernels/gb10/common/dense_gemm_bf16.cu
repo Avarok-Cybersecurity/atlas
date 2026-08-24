@@ -168,6 +168,121 @@ extern "C" __global__ void dense_gemm_f32in_f32out(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Order-preserving register-blocked router GEMM (dense_gemm_bf16_router).
+//
+// Same math, same I/O contract and same PER-OUTPUT FP32 ACCUMULATION ORDER
+// as the scalar dense_gemm_bf16 above — each C[m,n] is one FP32 accumulator
+// updated in strict k = 0..K-1 order. bf16→f32 conversion is exact, so
+// converting at smem-store time (instead of at use) changes no bit. Built
+// with the kernel dir's `--fmad=false`, the PTX mul+add chain is therefore
+// BIT-IDENTICAL to the scalar kernel's (verified: 0/1,154,560 differing
+// outputs at M=4510 and 0/577,280 at M=2255 on [M,2048]x[2048,256]).
+//
+// This is what makes it legal for the MoE ROUTER gate GEMM, which is pinned
+// to scalar-order numerics (2026-08-12: rerouting the router to the
+// mma.sync pipelined kernel moved BFCL 86.55 → 84.76 — top-k flips on
+// 1-ulp-apart logits; tensor cores remain forbidden here). The win is pure
+// blocking/vectorization, not reassociation:
+//   - BM=16 x BN=64 output tile per 256-thread block, NCOL=4 cols/thread
+//     → each A smem element feeds 4 outputs, K-loop trip overhead /4
+//   - BK=64: 4x fewer __syncthreads barriers per K than TILE_K=16
+//   - ushort4/uint4 global loads (8/16 B) instead of scalar 2 B loads
+//   - smem staged as f32 (padded +1 to break bank conflicts), so the inner
+//     loop is pure FMUL/FADD on smem operands.
+// Measured 2.04x at M=4510 / 2.08x at M=2255 vs dense_gemm_bf16 (GB10,
+// --fmad=false). NCOL=8 / BN=128 was tested and is WORSE (1.79x) — do not
+// re-tune upward.
+//
+// Grid: (ceil(N/64), ceil(M/16), 1)   Block: (16, 16, 1) — blockDim.x MUST
+// be 16 (thread ids and NCOL column mapping assume it).
+
+#define RG_BM 16
+#define RG_BN 64
+#define RG_BK 64
+#define RG_NCOL 4
+
+extern "C" __global__ void dense_gemm_bf16_router(
+    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major (read transposed)
+    __nv_bfloat16* __restrict__ C,         // [M, N] row-major
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    __shared__ float sA[RG_BM][RG_BK + 1];
+    __shared__ float sB[RG_BN][RG_BK + 1];
+
+    const unsigned int tid  = threadIdx.y * 16u + threadIdx.x;   // 0..255
+    const unsigned int row0 = blockIdx.y * RG_BM;
+    const unsigned int col0 = blockIdx.x * RG_BN;
+    const unsigned int row  = row0 + threadIdx.y;
+    const unsigned int col  = col0 + threadIdx.x * RG_NCOL;
+
+    float acc[RG_NCOL] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    for (unsigned int kb = 0; kb < K; kb += RG_BK) {
+        {   // A tile: 16x64 = 1024 elems, 256 threads → 4 each (one ushort4)
+            unsigned int e = tid * 4u;
+            unsigned int r = e / RG_BK, c = e % RG_BK;
+            unsigned int gr = row0 + r, gc = kb + c;
+            if (gr < M && gc + 3u < K) {
+                ushort4 v = *(const ushort4*)(const unsigned short*)(A + (size_t)gr * K + gc);
+                sA[r][c + 0] = __bfloat162float(__ushort_as_bfloat16(v.x));
+                sA[r][c + 1] = __bfloat162float(__ushort_as_bfloat16(v.y));
+                sA[r][c + 2] = __bfloat162float(__ushort_as_bfloat16(v.z));
+                sA[r][c + 3] = __bfloat162float(__ushort_as_bfloat16(v.w));
+            } else {
+                for (int j = 0; j < 4; j++) {
+                    unsigned int cc = c + j;
+                    sA[r][cc] = (gr < M && kb + cc < K)
+                        ? __bfloat162float(A[(size_t)gr * K + kb + cc]) : 0.0f;
+                }
+            }
+        }
+        {   // B tile: 64x64 = 4096 elems, 256 threads → 16 each (2x uint4 = 2x 8 bf16)
+            for (int it = 0; it < 2; it++) {
+                unsigned int e = (tid + it * 256u) * 8u;
+                unsigned int r = e / RG_BK, c = e % RG_BK;
+                unsigned int gn = col0 + r, gc = kb + c;
+                if (gn < N && gc + 7u < K) {
+                    uint4 v = *(const uint4*)(B + (size_t)gn * K + gc);
+                    const unsigned short* u = (const unsigned short*)&v;
+                    #pragma unroll
+                    for (int j = 0; j < 8; j++)
+                        sB[r][c + j] = __bfloat162float(__ushort_as_bfloat16(u[j]));
+                } else {
+                    for (int j = 0; j < 8; j++) {
+                        unsigned int cc = c + j;
+                        sB[r][cc] = (gn < N && kb + cc < K)
+                            ? __bfloat162float(B[(size_t)gn * K + kb + cc]) : 0.0f;
+                    }
+                }
+            }
+        }
+        __syncthreads();
+
+        // Strict k-order per output: acc[j] += a*b for kk = 0..RG_BK-1 within
+        // the block, blocks visited in ascending kb — the exact chain the
+        // scalar kernel runs (out-of-range tiles contribute exact 0.0f adds
+        // there too, matching its zero-padding).
+        #pragma unroll 8
+        for (unsigned int kk = 0; kk < RG_BK; kk++) {
+            float a = sA[threadIdx.y][kk];
+            #pragma unroll
+            for (int j = 0; j < RG_NCOL; j++)
+                acc[j] += a * sB[threadIdx.x * RG_NCOL + j][kk];
+        }
+        __syncthreads();
+    }
+
+    if (row < M) {
+        #pragma unroll
+        for (int j = 0; j < RG_NCOL; j++)
+            if (col + j < N) C[(size_t)row * N + col + j] = __float2bfloat16(acc[j]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Fix-E: tensor-core pipelined BF16 dense GEMM (dense_gemm_bf16_pipelined).
 //
 // C[M,N] = A[M,K] (BF16, row-major) · B[N,K]^T (BF16, row-major)

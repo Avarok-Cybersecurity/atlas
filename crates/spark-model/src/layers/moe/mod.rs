@@ -122,6 +122,11 @@ pub struct MoeLayer {
     w4a16_gemv_sw: KernelHandle,
     w4a16_gemm: KernelHandle,
     dense_gemm: KernelHandle,
+    /// Order-preserving register-blocked router GEMM (`dense_gemm_bf16_router`):
+    /// bit-identical to the scalar `dense_gemm` (same per-output FP32 k-order,
+    /// `--fmad=false` build) at ~2x speed. `KernelHandle(0)` on miss → the
+    /// pinned scalar kernel. Used ONLY by `router_gate_gemm_dense`.
+    dense_gemm_router: KernelHandle,
     dense_gemm_pipelined: KernelHandle,
     /// FP32-output router GEMM + FP32-input top-K for the ATLAS_FP32_GATE path.
     /// Zero (unresolved) when the kernels are absent; dispatch falls back to BF16.
@@ -341,7 +346,18 @@ pub struct MoeLayer {
     // W8A8 + FP32 epilogue MoE GEMM (vLLM-equivalent). Opt-in via
     // ATLAS_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
     moe_w8a8_grouped_gemm_k: KernelHandle,
+    // PM4-geometry W8A8 grouped GEMM over the compacted work-list (kernel
+    // `moe_w8a8_grouped_gemm_pm4`, same module). Bit-identical numerics to
+    // the dense kernel; preferred when present (gb10). Handle may be 0 on
+    // targets/images that don't ship it — dispatch falls back to the dense
+    // 3D-grid `moe_w8a8_grouped_gemm_k`.
+    moe_w8a8_grouped_gemm_pm4_k: KernelHandle,
     per_token_group_quant_fp8_k: KernelHandle,
+    /// Fused SiLU·mul + per-token-group FP8 quant (bit-identical replacement
+    /// for the `silu_mul` → `per_token_group_quant_fp8` pair on the W8A8
+    /// prefill down-path). Optional: handle 0 (e.g. a model shadowing
+    /// moe_silu_mul.cu without this entry point) falls back to the pair.
+    silu_mul_quant_fp8_k: KernelHandle,
     // Dense W8A8 (same kernel used by attention QKV/O proj) for shared-expert path.
     fp8_gemm_t_blockscaled_k: KernelHandle,
     // BF16 grouped GEMM — for FP8-source models dequanted to BF16 at load.

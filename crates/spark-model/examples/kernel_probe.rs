@@ -39,8 +39,9 @@ fn main() -> anyhow::Result<()> {
         ("w8a16_gemm_pipelined", "w8a16_gemm_pipelined"),
         ("gemm", "dense_gemm_bf16_pipelined"),
         ("w8a16_gemm_t", "w8a16_gemm_t_pipelined"),
-        ("gemm", "dense_gemm_bf16"),      // known-good control
-        ("w8a16_gemm_t", "w8a16_gemm_t"), // known-good control (non-pipelined)
+        ("gemm", "dense_gemm_bf16_router"), // order-preserving router GEMM
+        ("gemm", "dense_gemm_bf16"),        // known-good control
+        ("w8a16_gemm_t", "w8a16_gemm_t"),   // known-good control (non-pipelined)
     ];
     for (m, f) in probes {
         match gpu.kernel(m, f) {

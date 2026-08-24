@@ -110,6 +110,41 @@ pub fn dense_gemm(
         .launch(stream)
 }
 
+/// Order-preserving register-blocked BF16 GEMM (kernel `dense_gemm_bf16_router`).
+///
+/// Same math AND the same per-output FP32 accumulation order (strict
+/// k = 0..K-1) as the scalar `dense_gemm` — bit-identical output under the
+/// kernel dir's `--fmad=false` build (verified 0 differing elements at the
+/// router shapes M=4510/M=2255, `[M,2048]x[2048,256]`) — at ~2x the speed via
+/// register blocking + vectorized smem staging. This is the ONLY fast GEMM
+/// that satisfies the 2026-08-12 router-numerics pin (see
+/// `router_gate_gemm_dense`); tensor-core kernels reassociate and stay
+/// forbidden there.
+///
+/// Grid: (ceil(N/64), ceil(M/16), 1)  Block: (16, 16, 1)
+pub fn dense_gemm_router(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 64), div_ceil(m, 16), 1])
+        .block([16, 16, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Pipelined tensor-core BF16 GEMM — drop-in faster `dense_gemm` (kernel
 /// `dense_gemm_bf16_pipelined`): mma.sync.m16n8k16 + cp.async 2-stage, 128x128
 /// tile. ~40x the scalar `dense_gemm` on large-M shapes (cosine=1.0, same math).

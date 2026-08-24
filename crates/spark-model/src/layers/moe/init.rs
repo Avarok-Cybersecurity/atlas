@@ -80,6 +80,7 @@ impl MoeLayer {
             w4a16_gemv_sw: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            dense_gemm_router: super::super::try_kernel(gpu, "gemm", "dense_gemm_bf16_router"),
             dense_gemm_pipelined: super::super::try_kernel(
                 gpu,
                 "gemm",
@@ -201,10 +202,25 @@ impl MoeLayer {
                 "moe_w8a8_grouped_gemm",
                 "moe_w8a8_grouped_gemm",
             ),
+            // PM4-geometry W8A8 grouped GEMM (same module). Handle may be 0 on
+            // targets/images without it; dispatch falls back to the dense grid.
+            moe_w8a8_grouped_gemm_pm4_k: super::super::try_kernel(
+                gpu,
+                "moe_w8a8_grouped_gemm",
+                "moe_w8a8_grouped_gemm_pm4",
+            ),
             per_token_group_quant_fp8_k: super::super::try_kernel(
                 gpu,
                 "per_token_group_quant_fp8",
                 "per_token_group_quant_fp8",
+            ),
+            // Fused silu_mul + per-token-group quant. Same module as
+            // moe_silu_mul, so a model that shadows moe_silu_mul.cu without
+            // this entry point gets handle 0 → unfused fallback.
+            silu_mul_quant_fp8_k: super::super::try_kernel(
+                gpu,
+                "moe_silu_mul",
+                "silu_mul_quant_fp8",
             ),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
