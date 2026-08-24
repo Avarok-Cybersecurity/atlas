@@ -55,7 +55,10 @@ impl Trace {
         section(&mut s, "reasoning", &outcome.reasoning);
         section(&mut s, "text", &outcome.text);
         for call in &outcome.tool_calls {
-            s.push_str(&format!("[call] {} {}\n", call.name, call.arguments));
+            s.push_str(&format!(
+                "[call {}] {} {}\n",
+                call.id, call.name, call.arguments
+            ));
         }
         if let Some(reason) = &outcome.finish_reason {
             s.push_str(&format!("[finish] {reason}\n"));
