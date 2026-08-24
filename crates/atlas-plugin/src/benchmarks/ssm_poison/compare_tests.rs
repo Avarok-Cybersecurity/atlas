@@ -2,10 +2,7 @@
 
 //! Per-round comparison, tested without a server.
 
-use super::{
-    COLLAPSE_RATIO_CEIL, COLLAPSE_RATIO_FLOOR, RoundVerdict, TurnDelta, compare_round,
-    first_divergence,
-};
+use super::{COLLAPSE_RATIO_CEIL, COLLAPSE_RATIO_FLOOR, RoundVerdict, TurnDelta, compare_round};
 use crate::benchmarks::transcript::Transcript;
 
 fn t(text: &str, tokens: usize) -> Transcript {
@@ -20,8 +17,41 @@ fn t(text: &str, tokens: usize) -> Transcript {
 #[test]
 fn identical_rounds_are_invariant() {
     let reference = vec![t("one", 10), t("two", 20)];
-    let replay = vec![t("one", 10), t("two", 20)];
+    let mut replay = vec![t("one", 10), t("two", 20)];
+    replay[1].cached_prompt_tokens = 99;
     assert_eq!(compare_round(&reference, &replay), RoundVerdict::Invariant);
+}
+
+#[test]
+fn equal_text_still_compares_token_count_shape() {
+    let reference = vec![t("same emitted text", 100)];
+    let collapsed = vec![t("same emitted text", 10)];
+    assert_eq!(
+        compare_round(&reference, &collapsed),
+        RoundVerdict::Collapsed {
+            turns: vec![TurnDelta {
+                turn: 1,
+                ref_tokens: 100,
+                replay_tokens: 10,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("stop".into()),
+            }],
+        }
+    );
+
+    let jittered = vec![t("same emitted text", 101)];
+    assert_eq!(
+        compare_round(&reference, &jittered),
+        RoundVerdict::Jittered {
+            turns: vec![TurnDelta {
+                turn: 1,
+                ref_tokens: 100,
+                replay_tokens: 101,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("stop".into()),
+            }],
+        }
+    );
 }
 
 #[test]
@@ -30,14 +60,27 @@ fn a_healthy_length_jitter_is_jittered_not_collapsed() {
     // change. This must be Jittered (recorded, passed), not a failure.
     let reference = vec![t("one", 100), t("two", 200)];
     let replay = vec![t("one-a", 98), t("two-b", 206)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Jittered { turns } => {
-            assert_eq!(turns.len(), 2);
-            assert_eq!(turns[0].turn, 1);
-            assert_eq!(turns[1].turn, 2);
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Jittered {
+            turns: vec![
+                TurnDelta {
+                    turn: 1,
+                    ref_tokens: 100,
+                    replay_tokens: 98,
+                    ref_finish: Some("stop".into()),
+                    replay_finish: Some("stop".into()),
+                },
+                TurnDelta {
+                    turn: 2,
+                    ref_tokens: 200,
+                    replay_tokens: 206,
+                    ref_finish: Some("stop".into()),
+                    replay_finish: Some("stop".into()),
+                },
+            ],
         }
-        other => panic!("expected Jittered, got {other:?}"),
-    }
+    );
 }
 
 #[test]
@@ -46,13 +89,18 @@ fn an_early_eos_collapse_is_collapsed() {
     // EOS immediately — drastically shorter.
     let reference = vec![t("one", 100), t("two", 200)];
     let replay = vec![t("one", 98), t("", 3)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Collapsed { turns } => {
-            assert_eq!(turns.len(), 1);
-            assert_eq!(turns[0].turn, 2);
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Collapsed {
+            turns: vec![TurnDelta {
+                turn: 2,
+                ref_tokens: 200,
+                replay_tokens: 3,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("stop".into()),
+            }],
         }
-        other => panic!("expected Collapsed, got {other:?}"),
-    }
+    );
 }
 
 #[test]
@@ -60,10 +108,18 @@ fn a_runaway_generation_is_collapsed() {
     // Poisoning can also manifest as runaway output that hits the budget.
     let reference = vec![t("one", 100)];
     let replay = vec![t(&format!("one{}", "x".repeat(400)), 260)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Collapsed { turns } => assert_eq!(turns[0].turn, 1),
-        other => panic!("expected Collapsed, got {other:?}"),
-    }
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Collapsed {
+            turns: vec![TurnDelta {
+                turn: 1,
+                ref_tokens: 100,
+                replay_tokens: 260,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("stop".into()),
+            }],
+        }
+    );
 }
 
 #[test]
@@ -74,10 +130,18 @@ fn a_different_finish_reason_is_collapsed() {
     reference[0].finish_reason = Some("stop".into());
     let mut replay = vec![t("abd", 100)];
     replay[0].finish_reason = Some("length".into());
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Collapsed { turns } => assert_eq!(turns[0].turn, 1),
-        other => panic!("expected Collapsed, got {other:?}"),
-    }
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Collapsed {
+            turns: vec![TurnDelta {
+                turn: 1,
+                ref_tokens: 100,
+                replay_tokens: 100,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("length".into()),
+            }],
+        }
+    );
 }
 
 #[test]
@@ -86,59 +150,75 @@ fn reasoning_difference_is_jitter_when_shape_is_healthy() {
     reference[0].reasoning = "thought A".into();
     let mut replay = vec![t("same", 101)];
     replay[0].reasoning = "thought B".into();
-    assert!(matches!(
+    assert_eq!(
         compare_round(&reference, &replay),
-        RoundVerdict::Jittered { .. }
-    ));
+        RoundVerdict::Jittered {
+            turns: vec![TurnDelta {
+                turn: 1,
+                ref_tokens: 100,
+                replay_tokens: 101,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("stop".into()),
+            }],
+        }
+    );
 }
 
 #[test]
 fn two_empty_replies_are_unmeasured_not_invariant() {
     let reference = vec![t("", 0)];
     let replay = vec![t("", 0)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Unmeasured { reason } => assert!(reason.contains("no tokens")),
-        other => panic!("expected Unmeasured, got {other:?}"),
-    }
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Unmeasured {
+            reason: "turn 1 returned no tokens".into(),
+        }
+    );
 }
 
 #[test]
-fn a_short_replay_is_unmeasured() {
+fn different_turn_counts_are_unmeasured() {
     let reference = vec![t("one", 10), t("two", 20)];
-    let replay = vec![t("one", 10)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Unmeasured { reason } => assert!(reason.contains("turn(s)")),
-        other => panic!("expected Unmeasured, got {other:?}"),
-    }
+    assert_eq!(
+        compare_round(&reference, &[t("one", 10)]),
+        RoundVerdict::Unmeasured {
+            reason: "replay produced 1 turn(s), reference has 2".into(),
+        }
+    );
+    assert_eq!(
+        compare_round(&reference, &[t("one", 10), t("two", 20), t("three", 30)]),
+        RoundVerdict::Unmeasured {
+            reason: "replay produced 3 turn(s), reference has 2".into(),
+        }
+    );
+}
+
+#[test]
+fn an_empty_reference_round_is_unmeasured() {
+    assert_eq!(
+        compare_round(&[], &[]),
+        RoundVerdict::Unmeasured {
+            reason: "reference round has no turns".into(),
+        }
+    );
 }
 
 #[test]
 fn collapse_bounds_are_the_documented_window() {
-    let floor = TurnDelta {
+    let delta = |replay_tokens| TurnDelta {
         turn: 1,
         ref_tokens: 100,
-        replay_tokens: 49,
+        replay_tokens,
         ref_finish: Some("stop".into()),
         replay_finish: Some("stop".into()),
     };
-    let healthy = TurnDelta {
-        replay_tokens: 51,
-        ..floor.clone()
-    };
-    assert!(floor.is_collapse());
-    assert!(!healthy.is_collapse());
-    assert!((COLLAPSE_RATIO_FLOOR - 0.5).abs() < 1e-9);
-    assert!((COLLAPSE_RATIO_CEIL - 2.0).abs() < 1e-9);
-}
-
-#[test]
-fn first_divergence_reports_char_offset_and_excerpts() {
-    let reference = t("the quick brown fox", 10);
-    let replay = t("the quick green fox", 10);
-    let (offset, ref_ex, rep_ex) = first_divergence(&reference, &replay);
-    assert_eq!(offset, 11); // '\u{1}' + "the quick "
-    assert!(ref_ex.starts_with("brown"), "{ref_ex}");
-    assert!(rep_ex.starts_with("green"), "{rep_ex}");
+    assert!(delta(49).is_collapse());
+    assert!(!delta(50).is_collapse());
+    assert!(!delta(51).is_collapse());
+    assert!(!delta(200).is_collapse());
+    assert!(delta(201).is_collapse());
+    assert_eq!(COLLAPSE_RATIO_FLOOR, 0.5);
+    assert_eq!(COLLAPSE_RATIO_CEIL, 2.0);
 }
 
 #[test]
@@ -157,10 +237,10 @@ fn a_zero_token_reference_with_a_nonzero_replay_is_collapsed() {
 
     let reference = vec![t("", 0)];
     let replay = vec![t("suddenly a full reply", 80)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Collapsed { turns } => assert_eq!(turns[0].turn, 1),
-        other => panic!("expected Collapsed, got {other:?}"),
-    }
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Collapsed { turns: vec![delta] }
+    );
 }
 
 #[test]
@@ -184,10 +264,10 @@ fn an_unmeasured_turn_is_not_masked_by_a_jittered_turn() {
     // (a pass), letting the unmeasured turn hide behind tolerated jitter.
     let reference = vec![t("", 0), t("two", 200)];
     let replay = vec![t("", 0), t("two-b", 206)];
-    match compare_round(&reference, &replay) {
-        RoundVerdict::Unmeasured { reason } => {
-            assert!(reason.contains("turn 1"), "{reason}");
+    assert_eq!(
+        compare_round(&reference, &replay),
+        RoundVerdict::Unmeasured {
+            reason: "turn 1 returned no tokens".into(),
         }
-        other => panic!("expected Unmeasured, got {other:?}"),
-    }
+    );
 }
