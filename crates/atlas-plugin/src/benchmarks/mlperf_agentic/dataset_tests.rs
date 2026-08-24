@@ -51,40 +51,53 @@ fn prebuilt_messages_are_teacher_forced_snapshots() {
     assert_eq!(c.domain, Domain::Coding);
     assert_eq!(c.client_turns.len(), 2, "turns 1 (user) and 3 (tool)");
 
-    // Turn 1: system + the user row.
+    // Turn 1: system + the user row, with dataset-only fields removed.
     let t1 = &c.client_turns[0];
     assert_eq!(t1.turn, 1);
-    assert_eq!(t1.messages.len(), 2);
-    assert_eq!(t1.messages[0]["role"], "system");
-    assert_eq!(t1.messages[0]["content"], "be an agent");
-    assert_eq!(t1.messages[1]["role"], "user");
-    // The dataset-level fields do not leak into the prompt.
-    assert!(t1.messages[1].get("system").is_none());
-    assert!(t1.messages[1].get("tools").is_none());
+    assert_eq!(
+        t1.messages,
+        vec![
+            json!({"role": "system", "content": "be an agent"}),
+            json!({"role": "user", "content": "fix the bug"}),
+        ]
+    );
 
     // Turn 3: system + user + RECORDED assistant (content: null filled in) +
     // the tool_results expanded to a tool message.
     let t3 = &c.client_turns[1];
     assert_eq!(t3.turn, 3);
-    assert_eq!(t3.messages.len(), 4);
-    let assistant = &t3.messages[2];
-    assert_eq!(assistant["role"], "assistant");
-    assert!(
-        assistant["content"].is_null(),
-        "tool-calling assistant gets content: null"
+    assert_eq!(
+        t3.messages,
+        vec![
+            json!({"role": "system", "content": "be an agent"}),
+            json!({"role": "user", "content": "fix the bug"}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "look first",
+                "tool_calls": [{
+                    "id": "c1",
+                    "function": {
+                        "name": "bash",
+                        "arguments": {"cmd": "grep -r bug src"},
+                    },
+                }],
+            }),
+            json!({
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "src/x.py: bug",
+            }),
+        ]
     );
-    assert_eq!(assistant["reasoning_content"], "look first");
-    let tool = &t3.messages[3];
-    assert_eq!(tool["role"], "tool");
-    assert_eq!(tool["tool_call_id"], "c1");
-    assert_eq!(tool["content"], "src/x.py: bug");
 
     // Ground truth: the immediately-following assistant row, raw.
-    assert_eq!(t1.ground_truth.as_ref().unwrap()["turn"], 2);
-    assert_eq!(t3.ground_truth.as_ref().unwrap()["turn"], 4);
+    let source = coding_rows("proj-1");
+    assert_eq!(t1.ground_truth.as_ref(), Some(&source[1]));
+    assert_eq!(t3.ground_truth.as_ref(), Some(&source[3]));
 
     // Tools come from the first user row.
-    assert!(c.tools.is_some());
+    assert_eq!(c.tools, Some(json!([{"type": "function"}])));
 }
 
 #[test]
@@ -105,12 +118,11 @@ fn a_trailing_client_turn_has_no_ground_truth() {
 #[test]
 fn the_draw_takes_the_first_k_per_domain_in_file_order() {
     let mut rows = Vec::new();
-    for id in ["proj-a", "proj-b", "proj-c"] {
-        rows.extend(coding_rows(id));
-    }
-    for id in ["sim_001", "sim_002"] {
-        rows.extend(workflow_rows(id));
-    }
+    rows.extend(coding_rows("proj-a"));
+    rows.extend(workflow_rows("sim_001"));
+    rows.extend(coding_rows("proj-b"));
+    rows.extend(coding_rows("proj-c"));
+    rows.extend(workflow_rows("sim_002"));
     let p = write("draw", &rows);
     let convs = load(
         &p,
@@ -123,7 +135,7 @@ fn the_draw_takes_the_first_k_per_domain_in_file_order() {
     let ids: Vec<&str> = convs.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(
         ids,
-        vec!["proj-a", "proj-b", "sim_001"],
+        vec!["proj-a", "sim_001", "proj-b"],
         "head(K), not a sample"
     );
 
@@ -165,6 +177,45 @@ fn the_fingerprint_tracks_draw_content_and_order() {
         draw_fingerprint(&smaller),
         "a different draw must never fingerprint the same"
     );
+
+    let mut changed_rows = rows.clone();
+    changed_rows[0]["content"] = json!("fix a different bug");
+    let changed_path = write("fp-content", &changed_rows);
+    let changed = load(&changed_path, &DrawSpec::all()).unwrap();
+    assert_ne!(
+        draw_fingerprint(&both),
+        draw_fingerprint(&changed),
+        "prompt content is part of the draw identity"
+    );
+
+    let mut changed_tools_rows = rows.clone();
+    changed_tools_rows[0]["tools"] = json!([{"type": "different-function-schema"}]);
+    let changed_tools_path = write("fp-tools", &changed_tools_rows);
+    let changed_tools = load(&changed_tools_path, &DrawSpec::all()).unwrap();
+    assert_ne!(
+        draw_fingerprint(&both),
+        draw_fingerprint(&changed_tools),
+        "tool schemas are part of the draw identity"
+    );
+
+    let mut changed_truth_rows = rows.clone();
+    changed_truth_rows[3]["tool_calls"][0]["function"]["arguments"]["cmd"] =
+        json!("python different.py");
+    let changed_truth_path = write("fp-ground-truth", &changed_truth_rows);
+    let changed_truth = load(&changed_truth_path, &DrawSpec::all()).unwrap();
+    assert_ne!(
+        draw_fingerprint(&both),
+        draw_fingerprint(&changed_truth),
+        "terminal ground truth is part of the draw identity"
+    );
+
+    let mut reversed = both.clone();
+    reversed.reverse();
+    assert_ne!(
+        draw_fingerprint(&both),
+        draw_fingerprint(&reversed),
+        "conversation order is part of the draw identity"
+    );
     assert_eq!(draw_fingerprint(&both).len(), 64, "full sha256 hex");
 }
 
@@ -185,6 +236,12 @@ fn turn_numbers_must_be_exactly_one_to_n() {
     let p = write("turns", &rows);
     let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
     assert!(err.contains("turn numbers must be exactly"), "{err}");
+
+    let mut reversed = workflow_rows("sim_002");
+    reversed.reverse();
+    let p = write("turn-order", &reversed);
+    let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
+    assert!(err.contains("file order"), "{err}");
 }
 
 #[test]
@@ -216,6 +273,28 @@ fn the_role_grammar_is_enforced() {
     let p = write("grammar3", &rows);
     let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
     assert!(err.contains("non-empty tool_results"), "{err}");
+
+    // A client turn must be answered before another client turn begins.
+    let p = write(
+        "grammar4",
+        &[
+            json!({"conversation_id": "c", "turn": 1, "role": "user", "content": "one"}),
+            json!({"conversation_id": "c", "turn": 2, "role": "user", "content": "two"}),
+        ],
+    );
+    let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
+    assert!(err.contains("after \"user\""), "{err}");
+
+    // Undocumented roles cannot silently disappear from formatted history.
+    let p = write(
+        "grammar5",
+        &[
+            json!({"conversation_id": "c", "turn": 1, "role": "user", "content": "one"}),
+            json!({"conversation_id": "c", "turn": 2, "role": "developer", "content": "two"}),
+        ],
+    );
+    let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
+    assert!(err.contains("role \"developer\""), "{err}");
 }
 
 #[test]
@@ -233,14 +312,26 @@ fn conversation_ids_must_be_printable_ascii_strings() {
     );
     let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
     assert!(err.contains("non-empty string"), "{err}");
+
+    for (name, id) in [("empty", json!("")), ("control", json!("sim\n001"))] {
+        let p = write(
+            name,
+            &[json!({"conversation_id": id, "turn": 1, "role": "user", "content": "x"})],
+        );
+        let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
+        assert!(
+            err.contains("non-empty string") || err.contains("non-printable or non-ASCII"),
+            "{err}"
+        );
+    }
 }
 
 #[test]
 fn a_malformed_line_names_its_line_number() {
     let p = write("bad", &coding_rows("proj-a"));
     let mut text = std::fs::read_to_string(&p).unwrap();
-    text.push_str("{not json}\n");
+    text.push_str("\n{not json}\n");
     std::fs::write(&p, text).unwrap();
     let err = load(&p, &DrawSpec::all()).unwrap_err().to_string();
-    assert!(err.contains("line 5"), "{err}");
+    assert!(err.contains("line 6"), "{err}");
 }
