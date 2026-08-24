@@ -126,7 +126,7 @@ fn slot_generation_bump_freshens_adapter_id() {
 }
 
 #[test]
-fn ref_count_acquire_release_balance_and_busy_gate() {
+fn ref_count_and_lru_bookkeeping_follow_resolved_slots() {
     // Task #25 ref_count invariants on a hand-built (no-GPU) LoraWeights.
     let peft = PeftAdapterConfig {
         r: 4,
@@ -167,6 +167,7 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     // acquire(0) returns the resolved index 0 and increments its counter.
     assert_eq!(lw.acquire_slot(0), 0);
     assert_eq!(lw.slot_ref_count(0), 1);
+    assert_eq!(lw.slot_last_used(0), 1);
     // The busy gate (exact read the swap bail uses) now fires for slot 0.
     assert!(lw.slot_ref_count(0) > 0);
     assert_eq!(lw.slot_ref_count(1), 0, "other slots untouched");
@@ -174,10 +175,12 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     // -1 resolves to active (=1) and increments slot 1.
     assert_eq!(lw.acquire_slot(-1), 1);
     assert_eq!(lw.slot_ref_count(1), 1);
+    assert_eq!(lw.slot_last_used(1), 2);
 
     // Two seqs on slot 0.
     assert_eq!(lw.acquire_slot(0), 0);
     assert_eq!(lw.slot_ref_count(0), 2);
+    assert_eq!(lw.slot_last_used(0), 3);
 
     // Release by the RESOLVED index; balance returns each to 0.
     lw.release_slot(0);
@@ -187,6 +190,11 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     assert!(lw.slot_ref_count(0) == 0, "gate clears after full release");
     lw.release_slot(1);
     assert_eq!(lw.slot_ref_count(1), 0);
+    assert_eq!(lw.slot_last_used(0), 3, "release does not change recency");
+    assert_eq!(lw.slot_last_used(1), 2, "release does not change recency");
+
+    lw.touch_slot(1);
+    assert_eq!(lw.slot_last_used(1), 4, "promotion touch advances recency");
 
     // Saturating: a stray double-release cannot wrap below 0.
     lw.release_slot(0);
