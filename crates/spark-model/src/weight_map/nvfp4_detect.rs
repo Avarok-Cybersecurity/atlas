@@ -409,9 +409,8 @@ mod ep_detection_tests {
     fn alternate_layer0_fp8_dtype_is_detected_on_every_ep_rank() {
         let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
         cfg.quantization_config = None;
-        let store = store_with(&[format!(
-            "model.language_model.layers.0.self_attn.q_proj.weight"
-        )]);
+        let store =
+            store_with(&["model.language_model.layers.0.self_attn.q_proj.weight".to_string()]);
 
         cfg.ep_world_size = 2;
         for ep_rank in 0..2 {
