@@ -145,20 +145,43 @@ mod tests {
 
     #[test]
     fn every_absence_reads_differently_because_each_needs_a_different_fix() {
-        let reasons: std::collections::BTreeSet<&str> =
-            [Absence::NoWeights, Absence::NoConfig, Absence::NoKernels]
-                .iter()
-                .map(|a| a.reason())
-                .collect();
-        assert_eq!(reasons.len(), 3);
+        assert_eq!(
+            [
+                (Absence::NoWeights, Absence::NoWeights.reason()),
+                (Absence::NoConfig, Absence::NoConfig.reason()),
+                (Absence::NoKernels, Absence::NoKernels.reason()),
+            ],
+            [
+                (Absence::NoWeights, "weights not fully downloaded"),
+                (
+                    Absence::NoConfig,
+                    "config.json unreadable — architecture unknown",
+                ),
+                (
+                    Absence::NoKernels,
+                    "no compiled kernels for this architecture",
+                ),
+            ]
+        );
     }
 
     #[test]
     fn a_ready_candidate_is_distinguishable_from_an_absent_one() {
-        assert!(ServeCandidate::ready("org/m", "nvfp4").absent.is_none());
         assert_eq!(
-            ServeCandidate::absent("org/m", "nvfp4", Absence::NoWeights).absent,
-            Some(Absence::NoWeights)
+            ServeCandidate::ready("org/ready", "nvfp4"),
+            ServeCandidate {
+                model: "org/ready".into(),
+                quant: "nvfp4".into(),
+                absent: None,
+            }
+        );
+        assert_eq!(
+            ServeCandidate::absent("org/absent", "fp8", Absence::NoWeights),
+            ServeCandidate {
+                model: "org/absent".into(),
+                quant: "fp8".into(),
+                absent: Some(Absence::NoWeights),
+            }
         );
     }
 }
