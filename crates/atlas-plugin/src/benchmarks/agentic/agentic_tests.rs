@@ -104,6 +104,29 @@ fn row(ok: bool, steps_ok: bool, wall: f64) -> IterationRow {
     }
 }
 
+fn committed_agentic_max(model: &str, checkpoint: &str, metric: &str) -> f64 {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace layout")
+        .to_path_buf();
+    let (_, committed) = crate::gate::bench::load_all(&root)
+        .expect("committed BENCH.toml files must load")
+        .into_iter()
+        .find(|(target, entry)| {
+            target.hardware == "gb10"
+                && target.model == model
+                && entry.gate == "agentic-webserver"
+                && entry.checkpoint == checkpoint
+        })
+        .unwrap_or_else(|| panic!("the {model}/{checkpoint} agentic gate must be committed"));
+    committed
+        .metrics
+        .expect("a measured agentic gate must declare bounds")[metric]
+        .max
+        .unwrap_or_else(|| panic!("{metric} must have a maximum"))
+}
+
 #[test]
 fn all_three_conditions_must_hold_to_pass() {
     let pass = with_rows(vec![row(true, true, 100.0), row(true, true, 100.0)], 1300.0);
@@ -156,7 +179,13 @@ fn the_measured_dense_tier_passes_its_own_budget_and_fails_the_35bs() {
         v.reason
     );
 
-    let under_own_budget = with_rows(rows(), 5000.0);
+    let dense_wall_budget =
+        committed_agentic_max("qwen3.8-27b", "unsloth/Qwen3.8-27B-NVFP4", "sum_wall_s");
+    assert_eq!(
+        dense_wall_budget, 5000.0,
+        "the documented dense wall bound drifted"
+    );
+    let under_own_budget = with_rows(rows(), dense_wall_budget);
     assert_eq!(
         under_own_budget.verdict().kind,
         crate::result::VerdictKind::Pass
@@ -225,6 +254,13 @@ fn a_failed_iteration_names_the_directives_it_missed() {
 /// of this test asserted 1300, a value the gate cannot produce.
 #[test]
 fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
+    let wall_budget =
+        committed_agentic_max("qwen3.6-35b-a3b", "Qwen/Qwen3.6-35B-A3B-FP8", "sum_wall_s");
+    let speed_budget =
+        committed_agentic_max("qwen3.6-35b-a3b", "Qwen/Qwen3.6-35B-A3B-FP8", "s_per_turn");
+    assert_eq!(wall_budget, 1800.0, "the documented blowup bound drifted");
+    assert_eq!(speed_budget, 8.5, "the documented speed bound drifted");
+
     const MEASURED: [(f64, usize); 5] = [
         (774.0, 113),
         (813.0, 115),
@@ -233,7 +269,7 @@ fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
         (1019.0, 166),
     ];
     for (wall, turns) in MEASURED {
-        let v = with_budgets(vec![tier(wall, turns)], 1800.0, 8.5).verdict();
+        let v = with_budgets(vec![tier(wall, turns)], wall_budget, speed_budget).verdict();
         assert_eq!(
             v.kind,
             crate::result::VerdictKind::Pass,
@@ -244,7 +280,7 @@ fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
     // ...and the two that the OLD 1000 s bound rejected really were rejected,
     // so this proves a behaviour change rather than restating the status quo.
     for (wall, turns) in [(1039.0, 144), (1019.0, 166)] {
-        let v = with_budgets(vec![tier(wall, turns)], 1000.0, 8.5).verdict();
+        let v = with_budgets(vec![tier(wall, turns)], 1000.0, speed_budget).verdict();
         assert_eq!(v.kind, crate::result::VerdictKind::Fail);
         assert!(v.reason.contains("Σwall"), "{}", v.reason);
     }
@@ -364,7 +400,8 @@ fn a_zero_turn_tier_reports_no_speed_at_all() {
     let empty = with_budgets(vec![tier(120.0, 0)], 1300.0, 8.5);
     assert!(!empty.metrics().contains_key("s_per_turn"));
     assert_eq!(empty.metrics()["sum_turns"], 0.0);
-    // The speed bound stays silent; webserver_ok/followed_directions do the failing.
+    // This fixture keeps correctness true to isolate speed omission: those
+    // independent failure partitions are owned by `all_three_conditions`.
     assert!(!empty.verdict().reason.contains("s/turn >"));
 }
 
