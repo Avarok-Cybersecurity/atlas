@@ -25,6 +25,14 @@
 #   base   54.6 / 65.5 / 105.3 / 130.5  accept 84/83/79/73%   (fp8 head)
 # Drop --lm-head-dtype fp8 for the nvfp4 head: 54.6 / 84.2 / 114.4 / 149.9,
 # faster but it does not reproduce the BF16 answer (see the flag note below).
+# AGENTIC GATE 2026-08-24 (LM_HEAD=nvfp4, greedy N=10, NVFP4-drafter build):
+# 10/10+10/10, s/turn 6.16 vs fp8's 6.58 (−6.4%), Σ656 vs 799 — the old
+# "C=1 wash" predates batched verify (the head is read per STEP at M=17
+# now, so halving its bytes pays). nvfp4 head is gated-VALID on this model
+# per the flag's own long-generation standard; fp8 stays the default for
+# its byte-parity-to-BF16 anchor (every drafter A/B leans on sha
+# invariance) and because the committed gate records baseline on it.
+# Opt in with LM_HEAD=nvfp4.
 #
 # Cross-sequence batched verify IS engaging here (it was not until the
 # eligibility contradiction in can_batch_verify was removed — before that the
@@ -400,5 +408,5 @@ exec ./target/release/spark serve \
   --video-allow-ffmpeg \
   --video-ffmpeg-path /usr/bin/ffmpeg \
   --vision-max-pixels 262144 \
-  --lm-head-dtype fp8 "${THINK_ARGS[@]}" "${LAZY_ARGS[@]}" --default-top-n-sigma 0 \
+  --lm-head-dtype "${LM_HEAD:-fp8}" "${THINK_ARGS[@]}" "${LAZY_ARGS[@]}" --default-top-n-sigma 0 \
   "${TUI_ARGS[@]}"
