@@ -107,9 +107,21 @@ mod tests {
     #[test]
     fn first_party_metadata_tracks_the_crate_version() {
         let m = PluginMetadata::atlas("a benchmark");
-        assert!(m.official);
-        assert_eq!(m.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(m.description, "a benchmark");
+        assert_eq!(
+            m,
+            PluginMetadata {
+                description: "a benchmark",
+                version: env!("CARGO_PKG_VERSION"),
+                author: "Avarok Cybersecurity",
+                author_url: "https://atlasinference.io",
+                email: "support@avarok.net",
+                repository: "https://github.com/Avarok-Cybersecurity/atlas",
+                help_url: "https://docs.atlasinference.io/benchmarks",
+                bug_report_url: "https://github.com/Avarok-Cybersecurity/atlas/issues/new",
+                license: "AGPL-3.0-only",
+                official: true,
+            }
+        );
     }
 
     #[test]
@@ -131,7 +143,9 @@ mod tests {
     #[test]
     fn empty_fields_are_not_rendered_as_blank_rows() {
         let m = PluginMetadata::third_party("d", "1", "A", "", "", "r", "", "", "MIT");
-        let labels: Vec<&str> = m.rows().iter().map(|(l, _)| *l).collect();
-        assert_eq!(labels, vec!["Author", "Repository", "License"]);
+        assert_eq!(
+            m.rows(),
+            [("Author", "A"), ("Repository", "r"), ("License", "MIT")]
+        );
     }
 }
