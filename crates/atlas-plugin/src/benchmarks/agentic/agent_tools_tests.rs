@@ -283,6 +283,25 @@ async fn edit_refuses_an_ambiguous_match_unless_replace_all_is_set() {
 }
 
 #[tokio::test]
+async fn edit_rejects_an_empty_match_without_touching_the_file() {
+    let c = cfg(sandbox("edit-empty"));
+    tool(&c, "write", json!({"filePath": "a.rs", "content": "abc\n"}))
+        .await
+        .unwrap();
+    let result = tool(
+        &c,
+        "edit",
+        json!({"filePath": "a.rs", "oldString": "", "newString": "x", "replaceAll": true}),
+    )
+    .await;
+    assert!(result.is_err(), "empty oldString was accepted: {result:?}");
+    assert_eq!(
+        std::fs::read_to_string(c.sandbox.join("a.rs")).unwrap(),
+        "abc\n"
+    );
+}
+
+#[tokio::test]
 async fn glob_and_grep_see_the_project_but_not_the_build_tree() {
     let c = cfg(sandbox("search"));
     tool(

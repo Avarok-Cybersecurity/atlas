@@ -171,6 +171,9 @@ fn read_tool(args: &Value, path: PathBuf) -> Result<String> {
 /// opencode's word for word: it tells the model *how* to retry, which a bare
 /// "no match" does not.
 fn edit_tool(args: &Value, path: &Path, old: &str, new: &str) -> Result<usize> {
+    if old.is_empty() {
+        bail!("oldString must not be empty");
+    }
     let all = args.get("replaceAll").and_then(Value::as_bool) == Some(true);
     // Not capped like [`read_capped`]: this text is written back, so reading a
     // prefix of the file would truncate it on disk.
