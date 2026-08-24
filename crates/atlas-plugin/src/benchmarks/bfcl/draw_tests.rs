@@ -80,20 +80,28 @@ fn the_golden_per_subset_counts_match_the_reference_rule() {
     let p: BTreeMap<String, usize> = plan(&DrawSpec::golden(), &real_totals())
         .into_iter()
         .collect();
-    // hallucination @10%: int(240*.10)=24, int(884*.10)=88
-    assert_eq!(p["irrelevance"], 24);
-    assert_eq!(p["live_irrelevance"], 88);
-    // live @10%: int(1053*.10)=105, int(258*.10)=25
-    assert_eq!(p["live_multiple"], 105);
-    assert_eq!(p["live_simple"], 25);
-    // floor 25 takes these whole rather than collapsing them to 1 and 2
-    assert_eq!(p["live_parallel"], 16);
-    assert_eq!(p["live_parallel_multiple"], 24);
-    // non_live @62%: int(400*.62)=248, int(200*.62)=124, int(100*.62)=62, int(50*.62)=31
-    assert_eq!(p["simple_python"], 248);
-    assert_eq!(p["multiple"], 124);
-    assert_eq!(p["simple_java"], 62);
-    assert_eq!(p["simple_javascript"], 31);
+    let expected: BTreeMap<String, usize> = [
+        // hallucination @10%: int(240*.10)=24, int(884*.10)=88
+        ("irrelevance", 24),
+        ("live_irrelevance", 88),
+        // live @10%: int(1053*.10)=105, int(258*.10)=25
+        ("live_multiple", 105),
+        // floor 25 takes these whole rather than collapsing them to 1 and 2
+        ("live_parallel", 16),
+        ("live_parallel_multiple", 24),
+        ("live_simple", 25),
+        // non_live @62%
+        ("multiple", 124),
+        ("parallel", 124),
+        ("parallel_multiple", 124),
+        ("simple_java", 62),
+        ("simple_javascript", 31),
+        ("simple_python", 248),
+    ]
+    .into_iter()
+    .map(|(subset, count)| (subset.to_string(), count))
+    .collect();
+    assert_eq!(p, expected);
 }
 
 #[test]
