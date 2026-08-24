@@ -312,6 +312,9 @@ pub struct Qwen3SsmLayer {
     /// NULL handles on targets lacking the module → sequential fallback.
     /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
     gdn_wyn_k: [KernelHandle; 4],
+    /// LAZY wyn variants (task #33 extension), index = K-5; NULL on targets
+    /// whose wyn module predates the lazy entries.
+    gdn_wyn_lazy_k: [KernelHandle; 4],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,

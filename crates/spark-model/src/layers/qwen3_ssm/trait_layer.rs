@@ -315,14 +315,20 @@ impl TransformerLayer for Qwen3SsmLayer {
         self.alloc_state_inner(gpu)
     }
 
-    /// wy17 LAZY verify (task #33). MUST agree with the dispatch decision
-    /// in `decode_batched_conv_gdn_wyn` — same flags read, same handle
-    /// checks, K=17 only (the wyn K∈{5..8} widths always write all slots).
+    /// WY LAZY verify (task #33 + wyn extension). MUST agree with the
+    /// dispatch decision in `decode_batched_conv_gdn_wyn` — same flags
+    /// read, same handle checks. Covers K=17 (the fork's γ=16 width) and
+    /// the chain-verify K∈{5..8} widths our 8-block drafter actually runs.
+    /// The replay kernel is shared: K-generic at batch 1.
     fn wy17_lazy_engaged(&self, num_tokens: usize) -> bool {
-        num_tokens == 17
-            && super::gdn_flags::flags().wy17_lazy_j > 1
-            && self.gdn_wy17_lazy_k.0 != 0
-            && self.gdn_wy17_replay_k.0 != 0
+        if super::gdn_flags::flags().wy17_lazy_j <= 1 || self.gdn_wy17_replay_k.0 == 0 {
+            return false;
+        }
+        match num_tokens {
+            17 => self.gdn_wy17_lazy_k.0 != 0,
+            5..=8 => self.gdn_wyn_lazy_k[num_tokens - 5].0 != 0,
+            _ => false,
+        }
     }
 
     fn wy17_replay_kernel(&self) -> spark_runtime::gpu::KernelHandle {

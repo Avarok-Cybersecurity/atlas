@@ -405,6 +405,15 @@ impl Qwen3SsmLayer {
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
             ],
+            // LAZY wyn variants (task #33 extension): same template, runtime
+            // lazy_j. Replay reuses `gated_delta_rule_wy17_replay` — K-generic
+            // at batch 1 (row index collapses at b=0; SMEM covers K<=17).
+            gdn_wyn_lazy_k: [
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5_lazy"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6_lazy"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7_lazy"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8_lazy"),
+            ],
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,

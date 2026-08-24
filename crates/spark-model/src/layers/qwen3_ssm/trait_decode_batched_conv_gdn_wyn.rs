@@ -172,9 +172,17 @@ impl Qwen3SsmLayer {
         }
         if lazy {
             let lazy_j = super::gdn_flags::flags().wy17_lazy_j;
+            // Width-aware lazy kernel: K=17 (fork-width drafters) or the
+            // wyn K∈{5..8} instantiations (our 8-block drafter's widths).
+            // `wy17_lazy_engaged` already guaranteed the handle is non-NULL.
+            let lazy_kernel = if num_tokens == 17 {
+                self.gdn_wy17_lazy_k
+            } else {
+                self.gdn_wyn_lazy_k[num_tokens - 5]
+            };
             ops::gdn_decode_wy17_lazy(
                 ctx.gpu,
-                self.gdn_wy17_lazy_k,
+                lazy_kernel,
                 ssm_state.h_state,
                 q_ptr,
                 k_ptr,
