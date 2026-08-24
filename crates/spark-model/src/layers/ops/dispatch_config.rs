@@ -57,37 +57,37 @@ pub struct GemmDispatch {
     pub w4a16_variant: u8,
 }
 
-fn on(var: &str) -> bool {
-    std::env::var(var).ok().as_deref() == Some("1")
+fn from_values(mut value: impl FnMut(&str) -> Option<String>) -> GemmDispatch {
+    fn on(value: &mut impl FnMut(&str) -> Option<String>, var: &str) -> bool {
+        value(var).as_deref() == Some("1")
+    }
+
+    let all_nvfp4 = on(&mut value, "ATLAS_CUTLASS_NVFP4_GEMM");
+    GemmDispatch {
+        w4a16_variant: match value("ATLAS_W4A16_VARIANT").as_deref() {
+            Some("v1") => 1,
+            Some("v2") => 2,
+            Some("v3") => 3,
+            _ => 0,
+        },
+        fp8_blockscaled_prefill: !on(&mut value, "ATLAS_FP8_SINGLE_SCALE"),
+        cublas_gemm: on(&mut value, "ATLAS_CUBLAS_GEMM"),
+        cublas_fp8: on(&mut value, "ATLAS_CUBLAS_FP8"),
+        cutlass_gemm: on(&mut value, "ATLAS_CUTLASS_GEMM"),
+        cutlass_nvfp4_gemm: all_nvfp4,
+        cutlass_nvfp4_qkvz: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_QKVZ"),
+        cutlass_nvfp4_attn_q: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_ATTN_Q"),
+        cutlass_nvfp4_attn_kv: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_ATTN_KV"),
+        cutlass_nvfp4_attn_o: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_ATTN_O"),
+        // Deliberately NOT implied by the umbrella flag.
+        cutlass_nvfp4_ssm_out: on(&mut value, "ATLAS_CUTLASS_NVFP4_SSM_OUT"),
+    }
 }
 
 impl GemmDispatch {
     /// Resolve from the environment. Called once, when the model is built.
     pub fn from_env() -> Self {
-        // The umbrella flag implies each per-projection one, exactly as the
-        // `cutlass_nvfp4_gemm_enabled() || …` chains did.
-        let all_nvfp4 = on("ATLAS_CUTLASS_NVFP4_GEMM");
-        Self {
-            w4a16_variant: match std::env::var("ATLAS_W4A16_VARIANT").ok().as_deref() {
-                Some("v1") => 1,
-                Some("v2") => 2,
-                Some("v3") => 3,
-                _ => 0,
-            },
-            // Note the inverted sense: this one is on unless opted out.
-            fp8_blockscaled_prefill: !on("ATLAS_FP8_SINGLE_SCALE"),
-            cublas_gemm: on("ATLAS_CUBLAS_GEMM"),
-            cublas_fp8: on("ATLAS_CUBLAS_FP8"),
-            cutlass_gemm: on("ATLAS_CUTLASS_GEMM"),
-            cutlass_nvfp4_gemm: all_nvfp4,
-            cutlass_nvfp4_qkvz: all_nvfp4 || on("ATLAS_CUTLASS_NVFP4_QKVZ"),
-            cutlass_nvfp4_attn_q: all_nvfp4 || on("ATLAS_CUTLASS_NVFP4_ATTN_Q"),
-            cutlass_nvfp4_attn_kv: all_nvfp4 || on("ATLAS_CUTLASS_NVFP4_ATTN_KV"),
-            cutlass_nvfp4_attn_o: all_nvfp4 || on("ATLAS_CUTLASS_NVFP4_ATTN_O"),
-            // Deliberately NOT implied by the umbrella flag — it was the one
-            // path the old `cutlass_nvfp4_ssm_out_enabled()` did not include.
-            cutlass_nvfp4_ssm_out: on("ATLAS_CUTLASS_NVFP4_SSM_OUT"),
-        }
+        from_values(|var| std::env::var(var).ok())
     }
 
     /// Everything off, block-scaled FP8 prefill on — the shape a build with no
@@ -128,41 +128,131 @@ impl Default for GemmDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn resolve(values: &[(&str, &str)]) -> GemmDispatch {
+        let values: HashMap<_, _> = values.iter().copied().collect();
+        from_values(|name| values.get(name).map(|value| (*value).to_owned()))
+    }
 
     #[test]
     fn defaults_have_only_blockscaled_prefill_on() {
         let d = GemmDispatch::defaults();
-        assert!(d.fp8_blockscaled_prefill, "on unless opted out");
-        assert!(!d.cublas_gemm && !d.cutlass_gemm && !d.cutlass_nvfp4_gemm);
+        assert_eq!(
+            resolve(&[]),
+            d,
+            "absent environment uses the public default"
+        );
+        assert_eq!(
+            d,
+            GemmDispatch {
+                fp8_blockscaled_prefill: true,
+                cublas_gemm: false,
+                cublas_fp8: false,
+                cutlass_gemm: false,
+                cutlass_nvfp4_gemm: false,
+                cutlass_nvfp4_qkvz: false,
+                cutlass_nvfp4_attn_q: false,
+                cutlass_nvfp4_attn_kv: false,
+                cutlass_nvfp4_attn_o: false,
+                cutlass_nvfp4_ssm_out: false,
+                w4a16_variant: 0,
+            }
+        );
     }
 
     #[test]
     fn the_umbrella_flag_implies_the_per_projection_ones() {
-        // Reproduces the old `cutlass_nvfp4_gemm_enabled() || flag(..)` chains.
-        let d = GemmDispatch {
-            cutlass_nvfp4_gemm: true,
-            cutlass_nvfp4_qkvz: true,
-            cutlass_nvfp4_attn_q: true,
-            cutlass_nvfp4_attn_kv: true,
-            cutlass_nvfp4_attn_o: true,
-            ..GemmDispatch::defaults()
-        };
+        let d = resolve(&[("ATLAS_CUTLASS_NVFP4_GEMM", "1")]);
+        assert!(d.cutlass_nvfp4_gemm);
+        assert!(d.cutlass_nvfp4_qkvz);
         assert!(d.cutlass_nvfp4_attn_qkv("q_proj"));
         assert!(d.cutlass_nvfp4_attn_qkv("k_proj"));
         assert!(d.cutlass_nvfp4_attn_qkv("v_proj"));
+        assert!(d.cutlass_nvfp4_attn_o);
         // SSM-out was never implied by the umbrella flag.
         assert!(!d.cutlass_nvfp4_ssm_out);
     }
 
     #[test]
     fn per_projection_flags_are_independent() {
-        let d = GemmDispatch {
-            cutlass_nvfp4_attn_q: true,
-            ..GemmDispatch::defaults()
-        };
-        assert!(d.cutlass_nvfp4_attn_qkv("q_proj"));
-        assert!(!d.cutlass_nvfp4_attn_qkv("k_proj"));
-        assert!(!d.cutlass_nvfp4_attn_qkv("v_proj"));
+        let cases = [
+            (
+                "ATLAS_CUTLASS_NVFP4_QKVZ",
+                [true, false, false, false, false],
+            ),
+            (
+                "ATLAS_CUTLASS_NVFP4_ATTN_Q",
+                [false, true, false, false, false],
+            ),
+            (
+                "ATLAS_CUTLASS_NVFP4_ATTN_KV",
+                [false, false, true, false, false],
+            ),
+            (
+                "ATLAS_CUTLASS_NVFP4_ATTN_O",
+                [false, false, false, true, false],
+            ),
+            (
+                "ATLAS_CUTLASS_NVFP4_SSM_OUT",
+                [false, false, false, false, true],
+            ),
+        ];
+        for (name, expected) in cases {
+            let d = resolve(&[(name, "1")]);
+            assert_eq!(
+                [
+                    d.cutlass_nvfp4_qkvz,
+                    d.cutlass_nvfp4_attn_q,
+                    d.cutlass_nvfp4_attn_kv,
+                    d.cutlass_nvfp4_attn_o,
+                    d.cutlass_nvfp4_ssm_out,
+                ],
+                expected,
+                "{name} must not enable a neighboring projection"
+            );
+        }
+    }
+
+    #[test]
+    fn non_nvfp4_flags_map_independently_and_single_scale_is_inverted() {
+        let cases = [
+            ("ATLAS_CUBLAS_GEMM", [true, false, false]),
+            ("ATLAS_CUBLAS_FP8", [false, true, false]),
+            ("ATLAS_CUTLASS_GEMM", [false, false, true]),
+        ];
+        for (name, expected) in cases {
+            let d = resolve(&[(name, "1")]);
+            assert_eq!(
+                [d.cublas_gemm, d.cublas_fp8, d.cutlass_gemm],
+                expected,
+                "{name} must not enable a neighboring GEMM path"
+            );
+            assert!(d.fp8_blockscaled_prefill);
+        }
+        assert!(!resolve(&[("ATLAS_FP8_SINGLE_SCALE", "1")]).fp8_blockscaled_prefill);
+        assert!(
+            !resolve(&[("ATLAS_CUBLAS_GEMM", "true")]).cublas_gemm,
+            "dispatch booleans accept only the documented literal 1"
+        );
+    }
+
+    #[test]
+    fn w4a16_variants_accept_only_documented_spellings() {
+        for (value, expected) in [
+            ("v1", 1),
+            ("v2", 2),
+            ("v3", 3),
+            ("1", 0),
+            ("V1", 0),
+            ("unknown", 0),
+        ] {
+            assert_eq!(
+                resolve(&[("ATLAS_W4A16_VARIANT", value)]).w4a16_variant,
+                expected,
+                "value {value}"
+            );
+        }
     }
 
     #[test]
@@ -173,17 +263,5 @@ mod tests {
             ..GemmDispatch::defaults()
         };
         assert!(d.cutlass_nvfp4_attn_qkv("mystery"));
-    }
-
-    #[test]
-    fn a_config_is_plain_data_two_models_can_hold_different_ones() {
-        // The property a static could not have: two configurations coexisting.
-        let a = GemmDispatch::defaults();
-        let b = GemmDispatch {
-            cublas_gemm: true,
-            ..GemmDispatch::defaults()
-        };
-        assert_ne!(a, b);
-        assert!(!a.cublas_gemm && b.cublas_gemm);
     }
 }
