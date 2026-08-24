@@ -262,25 +262,16 @@ fn a_session_below_the_history_budget_is_left_alone() {
 // ── shell ──────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn a_hanging_command_is_killed_at_the_timeout() {
-    let mut c = cfg(std::env::temp_dir());
-    c.command_timeout = Duration::from_millis(300);
-    // `exec` so the kill lands on the sleep itself and this test leaks nothing.
-    let out = run_shell(&c, "exec sleep 30", c.command_timeout)
-        .await
-        .unwrap();
-    assert!(out.contains("timed out"), "{out}");
-}
-
-#[tokio::test]
 async fn stderr_and_a_non_zero_exit_are_both_reported() {
     let c = cfg(std::env::temp_dir());
     let out = run_shell(&c, "echo hi; echo bad >&2; exit 7", Duration::from_secs(5))
         .await
         .unwrap();
+    assert!(out.contains("hi"), "stdout is missing: {out}");
+    assert!(out.contains("bad"), "stderr is missing: {out}");
     assert!(
-        out.contains("hi") && out.contains("bad") && out.contains("exit"),
-        "{out}"
+        out.contains("exit status: 7"),
+        "the exact exit status is missing: {out}"
     );
 }
 
@@ -323,7 +314,7 @@ async fn a_timed_out_command_still_returns_what_it_printed() {
 }
 
 #[tokio::test]
-async fn shell_output_reaches_the_model_normalised() {
+async fn shell_output_is_normalised_before_it_is_truncated() {
     // The wiring, not the rules (those are `norm_tests`): every byte the bash
     // tool returns has been through the normaliser, because that is the only
     // path by which run-to-run noise enters the conversation.
@@ -340,6 +331,20 @@ async fn shell_output_reaches_the_model_normalised() {
     assert!(!out.contains("Compiling"), "{out}");
     assert!(out.contains("target(s) in <elapsed>"), "{out}");
     assert!(out.contains("kill: (<pid>)"), "{out}");
+
+    // The payload fits under the model-output cap only after the progress line
+    // is removed. Truncating first would leave a permanent elision marker and
+    // different retained bytes for equivalent cold and warm builds.
+    let out = run_shell(
+        &c,
+        "printf '%08000d\\n' 0; printf '   Compiling %0300d\\n' 0",
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!out.contains("Compiling"), "{out}");
+    assert!(!out.contains("elided from the middle"), "{out}");
+    assert_eq!(out.len(), 8001);
 }
 
 #[tokio::test]

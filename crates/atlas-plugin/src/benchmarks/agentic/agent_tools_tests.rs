@@ -60,7 +60,19 @@ fn the_tool_surface_is_the_six_the_harness_agent_enables() {
 #[tokio::test]
 async fn a_model_supplied_timeout_can_shorten_but_never_raise_the_ceiling() {
     let mut c = cfg(std::env::temp_dir());
-    c.command_timeout = Duration::from_millis(500);
+    c.command_timeout = Duration::from_secs(1);
+
+    let started = std::time::Instant::now();
+    let out = tool(&c, "bash", json!({"command": "sleep 30", "timeout": 50}))
+        .await
+        .unwrap();
+    assert!(out.contains("timed out"), "{out}");
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the model's shorter timeout was ignored: {:?}",
+        started.elapsed()
+    );
+
     let started = std::time::Instant::now();
     let out = tool(
         &c,
@@ -70,7 +82,11 @@ async fn a_model_supplied_timeout_can_shorten_but_never_raise_the_ceiling() {
     .await
     .unwrap();
     assert!(out.contains("timed out"), "{out}");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the model raised the harness ceiling: {:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
