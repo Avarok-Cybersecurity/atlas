@@ -161,8 +161,13 @@ if [ "${GUARDS_DEFAULT:-0}" != "1" ]; then
   export ATLAS_CONTENT_LOOP_MIN_REPEATS=12
 fi
 
-# Serve at INFO so the log is useful if something misbehaves.
-export RUST_LOG="${RUST_LOG:-info}"
+# Serve at INFO so the log is useful if something misbehaves. The
+# tool_parser debug filter arms the burn-forensics capture (42f0b85b):
+# when an 8192-token in-parameter runaway is salvaged as an empty tool
+# call, the dropped text's head/tail samples land in the log — the class
+# is bursty (0-4 per 10-run arm, thinking+guard serves only) and this is
+# the only way to see WHAT was generated.
+export RUST_LOG="${RUST_LOG:-info,spark::tool_parser=debug}"
 
 # Everything else that matters is DEFAULT-ON as of this branch and needs no
 # env var: Option B paged drafter KV, unified ctx commit, GPU candidate
