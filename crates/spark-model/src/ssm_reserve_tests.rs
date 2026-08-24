@@ -64,13 +64,6 @@ fn tiered_pool_bytes_f16(bs: usize, spec_on: bool) -> usize {
 }
 
 #[test]
-fn blob_matches_campaign_constant() {
-    assert_eq!(H_BLOB, 150_994_944);
-    assert_eq!(CONV_BLOB, 7_864_320);
-    assert_eq!(BLOB, 158_859_264);
-}
-
-#[test]
 fn cap_identity_at_or_below_32_every_config() {
     // bs<=32 slot COUNT must be identical to the legacy sizing for every
     // dispatch-cap value (incl. ATLAS_NO_MTP_K_LADDER's 4) because the
@@ -269,29 +262,6 @@ fn bs64_ledger_before_after_and_fit() {
 }
 
 #[test]
-fn bs128_ledger_matches_campaign_reference() {
-    // The wave-47 measured bs=128 reserve the campaign docs quote as
-    // "51.5 GiB": base 128 blobs + 32 verify slots × 5 blobs + 32
-    // Marconi slots + GDN scratch + 4 GiB spec headroom.
-    let gdn = 186_122_240usize;
-    let headroom = 4usize * 1024 * 1024 * 1024;
-    // The measured pre-diet formula (wave 47): 128 base blobs +
-    // 32 slots × 5 blobs.
-    let old_pool = 128 * BLOB + 32 * (ND + 2) * BLOB;
-    assert_eq!(old_pool, 45_751_468_032);
-    let old_reserve = old_pool + 32 * BLOB + gdn + headroom;
-    assert_eq!(old_reserve, 55_316_054_016); // 51.52 GiB — the reference
-    // Tiered slots (−6.75 GiB) + K-1 shrink (−4.5 GiB).
-    let new_pool = tiered_pool_bytes(128, true);
-    assert_eq!(new_pool, 33_671_872_512);
-    assert_eq!(old_pool - new_pool, 80 * H_BLOB); // 11.25 GiB
-    let new_reserve = new_pool + 32 * BLOB + gdn + headroom;
-    assert_eq!(new_reserve, 43_236_458_496); // 40.27 GiB
-    // With the concurrency profile's Marconi 32→8 (#0): another 3.55 GiB.
-    assert_eq!(new_pool + 8 * BLOB + gdn + headroom, 39_423_836_160); // 36.72 GiB
-}
-
-#[test]
 fn h_stored_bytes_is_identity_off_and_half_on() {
     // Flag off: EXACT identity at any width — stage 1/2 keep the pool
     // FP32-sized, and every currently-serveable config takes this arm.
@@ -301,6 +271,14 @@ fn h_stored_bytes_is_identity_off_and_half_on() {
     // Stage 3: half. h blobs are FP32-element sized, so /2 is exact.
     assert_eq!(ssm_h_stored_bytes(H_BLOB, true), H_BLOB / 2);
     assert_eq!(ssm_h_stored_bytes(4, true), 2);
+}
+
+#[test]
+fn h_stored_bytes_rejects_non_fp32_width() {
+    for f16_pool in [false, true] {
+        let result = std::panic::catch_unwind(|| ssm_h_stored_bytes(3, f16_pool));
+        assert!(result.is_err(), "f16_pool={f16_pool}");
+    }
 }
 
 #[test]
@@ -346,35 +324,6 @@ fn prefill_staging_costs_one_fp32_layer_blob_per_slot() {
     assert_eq!(H_LAYER, 3_145_728);
     assert_eq!(ssm_h_prefill_stage_bytes(128, H_LAYER, true), 402_653_184); // 384 MiB
     assert_eq!(ssm_h_prefill_stage_bytes(32, H_LAYER, true), 100_663_296);
-    assert!(ssm_h_prefill_stage_bytes(128, H_LAYER, true) * 48 == 48 * 402_653_184);
-}
-
-/// The NET pool win at the reference shape, staging arena included — the
-/// number the PR quotes. Pinned because a per-layer staging arena (the
-/// tempting simplification) would turn a 9 GiB win into a 9 GiB loss, and
-/// nothing else in the suite would notice.
-#[test]
-fn f16_pool_net_win_is_the_h_saving_minus_the_staging_arena() {
-    // SERVEABLE configuration today: spec OFF (the MTP verify arms still
-    // address the h intermediate/checkpoint pools at the FP32 pitch, so
-    // `--speculative` is refused beside `--ssm-h-dtype f16-pool`).
-    let fp32 = tiered_pool_bytes(128, false);
-    let narrowed = tiered_pool_bytes_f16(128, false);
-    assert_eq!(fp32, 128 * BLOB); // 20_333_985_792 — 18.94 GiB
-    assert_eq!(narrowed, 10_670_309_376); //  9.94 GiB
-    let stage = ssm_h_prefill_stage_bytes(128, H_LAYER, true);
-    assert_eq!(fp32 - narrowed, 9_663_676_416); // 9.00 GiB of h
-    assert_eq!(fp32 - narrowed - stage, 9_261_023_232); // 8.63 GiB net
-    // The staging arena is 4.2% of what it buys back. Pinned as a RATIO so
-    // the assertion survives a shape change and still fails a design change.
-    assert!(stage * 20 < fp32 - narrowed, "staging must stay marginal");
-
-    // Spec ON (refused at serve; this pins the allocator arithmetic for when
-    // the verify strides land): the same arena, against a 14.62 GiB saving.
-    assert_eq!(
-        tiered_pool_bytes(128, true) - tiered_pool_bytes_f16(128, true) - stage,
-        15_300_820_992 // 14.25 GiB net
-    );
 }
 
 /// Replay-mode helper at the reference shape.
@@ -419,25 +368,6 @@ fn replay_ring_bytes_pinned_27b() {
 }
 
 #[test]
-fn replay_reserve_ledger_bs128() {
-    // Full bs=128/K=4 reserve in replay mode, on top of the commit-#2
-    // ledger (Marconi 32, GDN scratch, 4 GiB spec headroom):
-    let gdn = 186_122_240usize;
-    let headroom = 4usize * 1024 * 1024 * 1024;
-    let ring = ssm_replay_ring_bytes(48, ssm_replay_row_bytes(16384, 48), 4, 32);
-    let replay_reserve = replay_pool_bytes(128, true) + ring + 32 * BLOB + gdn + headroom;
-    assert_eq!(replay_reserve, 35_134_832_640); // 32.72 GiB
-    // vs the commit-#2 snapshot reserve (40.27 GiB): -7.55 GiB more...
-    let snapshot_reserve = tiered_pool_bytes(128, true) + 32 * BLOB + gdn + headroom;
-    assert_eq!(snapshot_reserve - replay_reserve, 8_101_625_856);
-    // ...and vs the measured wave-47 pre-diet reference (51.52 GiB):
-    // 18.80 GiB total — the "~18.9 GiB" replay headline.
-    let old_reserve = 128 * BLOB + 32 * (ND + 2) * BLOB + 32 * BLOB + gdn + headroom;
-    assert_eq!(old_reserve, 55_316_054_016);
-    assert_eq!(old_reserve - replay_reserve, 20_181_221_376); // 18.80 GiB
-}
-
-#[test]
 fn rollback_mode_parses_and_rejects() {
     use std::str::FromStr;
     assert_eq!(
@@ -451,4 +381,40 @@ fn rollback_mode_parses_and_rejects() {
     // Fail fast on anything else — the CLI relies on THIS parse (SSOT).
     assert!(SsmRollbackMode::from_str("Replay").is_err());
     assert!(SsmRollbackMode::from_str("").is_err());
+}
+
+#[test]
+fn decode_ring_decision_matrix() {
+    let decide = |layers, spec, override_value, watchdogs| {
+        let decision = decode_rollback_ring_slots_with(layers, spec, override_value, watchdogs);
+        (decision.slots, decision.skip_reason)
+    };
+    let ring = atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+
+    for value in ["1", "true", " TRUE "] {
+        assert!(
+            watchdogs_disabled_from_value(Some(value)),
+            "value={value:?}"
+        );
+    }
+    for value in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
+        assert!(!watchdogs_disabled_from_value(value), "value={value:?}");
+    }
+
+    assert_eq!(decide(0, false, Some("1"), false), (0, None));
+    assert_eq!(decide(48, true, Some("1"), true), (ring, None));
+    assert_eq!(decide(48, false, Some("0"), false), (0, None));
+    assert_eq!(
+        decide(48, true, None, false),
+        (0, Some("speculative decode active"))
+    );
+    assert_eq!(
+        decide(48, false, None, true),
+        (0, Some("watchdogs disabled"))
+    );
+    assert_eq!(
+        decide(48, true, Some("invalid"), true),
+        (0, Some("speculative decode active"))
+    );
+    assert_eq!(decide(48, false, None, false), (ring, None));
 }

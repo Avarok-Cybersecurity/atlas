@@ -241,7 +241,7 @@ pub fn verify_slot_h_intermediates(
 /// FP32-SIZED (`f16_pool = false`): the state bits are FP16 during decode
 /// but prefill still writes FP32 in place, so the slot must stay wide.
 pub fn ssm_h_stored_bytes(h_f32_bytes: usize, f16_pool: bool) -> usize {
-    debug_assert!(
+    assert!(
         h_f32_bytes.is_multiple_of(4),
         "h-state blobs are FP32-element sized"
     );
@@ -436,19 +436,39 @@ pub fn decode_rollback_ring_slots(
     num_ssm_layers: usize,
     use_speculative: bool,
 ) -> DecodeRingDecision {
+    let watchdogs_value = std::env::var("ATLAS_DISABLE_WATCHDOGS").ok();
+    let watchdogs_disabled = watchdogs_disabled_from_value(watchdogs_value.as_deref());
+    let ring_override = std::env::var("ATLAS_SSM_DECODE_RING").ok();
+    decode_rollback_ring_slots_with(
+        num_ssm_layers,
+        use_speculative,
+        ring_override.as_deref(),
+        watchdogs_disabled,
+    )
+}
+
+fn watchdogs_disabled_from_value(value: Option<&str>) -> bool {
+    value
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true"
+        })
+        .unwrap_or(false)
+}
+
+fn decode_rollback_ring_slots_with(
+    num_ssm_layers: usize,
+    use_speculative: bool,
+    ring_override: Option<&str>,
+    watchdogs_disabled: bool,
+) -> DecodeRingDecision {
     if num_ssm_layers == 0 {
         return DecodeRingDecision {
             slots: 0,
             skip_reason: None,
         };
     }
-    let watchdogs_disabled = std::env::var("ATLAS_DISABLE_WATCHDOGS")
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true"
-        })
-        .unwrap_or(false);
-    match std::env::var("ATLAS_SSM_DECODE_RING").ok().as_deref() {
+    match ring_override {
         Some("1") => DecodeRingDecision {
             slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
             skip_reason: None,
