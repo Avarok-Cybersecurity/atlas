@@ -39,17 +39,6 @@
 // `h_state` itself becomes the final (post token K-1) state — same
 // pool-layout contract as gated_delta_rule_wy17.
 
-// LAZY Hi-writes (task #33, `--gdn-wy17-lazy J`, wyn extension): a slot s
-// is a checkpoint iff s == 0 || s == K-2 || ((s+1) % J == 0). lazy_j <= 1
-// writes every slot — bit-identical to the historical kernels. Skipped
-// slots are reconstructed bit-exactly by `gated_delta_rule_wy17_replay`
-// (K-generic at batch 1: its row index (b*17 + t) collapses to t at b=0,
-// and its SMEM bounds cover any K <= 17).
-__device__ __forceinline__ bool wyn_is_checkpoint(int s, int k_tokens, unsigned int lazy_j) {
-    if (lazy_j <= 1u) return true;
-    return (s == 0) || (s == k_tokens - 2) || (((unsigned)(s + 1) % lazy_j) == 0u);
-}
-
 template <int K_TOKENS>
 __device__ __forceinline__ void gated_delta_rule_wyn_impl(
     float* __restrict__ h_state,
@@ -68,8 +57,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
     unsigned int v_dim,
     unsigned int qk_stride,
     unsigned int v_stride,
-    unsigned int gb_stride,
-    unsigned int lazy_j
+    unsigned int gb_stride
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -193,17 +181,11 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
                 h2 = sg[t] * h2 + sk[t][j + 2] * vn[t];
                 h3 = sg[t] * h3 + sk[t][j + 3] * vn[t];
                 if (t < K_TOKENS - 1) {
-                    // LAZY: only persist checkpoint slots (see
-                    // wyn_is_checkpoint); the register recurrence and qd[t]
-                    // are unaffected, so outputs + final H are bit-identical
-                    // for any lazy_j.
-                    if (wyn_is_checkpoint(t, K_TOKENS, lazy_j)) {
-                        float* Hi_t = Hi_base + t * inter_stride_floats;
-                        Hi_t[(j + 0) * v_dim + tid] = h0;
-                        Hi_t[(j + 1) * v_dim + tid] = h1;
-                        Hi_t[(j + 2) * v_dim + tid] = h2;
-                        Hi_t[(j + 3) * v_dim + tid] = h3;
-                    }
+                    float* Hi_t = Hi_base + t * inter_stride_floats;
+                    Hi_t[(j + 0) * v_dim + tid] = h0;
+                    Hi_t[(j + 1) * v_dim + tid] = h1;
+                    Hi_t[(j + 2) * v_dim + tid] = h2;
+                    Hi_t[(j + 3) * v_dim + tid] = h3;
                 } else {
                     H[(j + 0) * v_dim + tid] = h0;
                     H[(j + 1) * v_dim + tid] = h1;
@@ -251,33 +233,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
             h_state, query, key, value, gate, beta, output,                   \
             h_state_inter_base, inter_stride_floats, batch_size,              \
             num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
-            gb_stride, /*lazy_j=*/1u);                                        \
-    }                                                                         \
-    extern "C" __global__ void gated_delta_rule_wy##K##_lazy(                 \
-        float* __restrict__ h_state,                                          \
-        const __nv_bfloat16* __restrict__ query,                              \
-        const __nv_bfloat16* __restrict__ key,                                \
-        const __nv_bfloat16* __restrict__ value,                              \
-        const float* __restrict__ gate,                                       \
-        const float* __restrict__ beta,                                       \
-        __nv_bfloat16* __restrict__ output,                                   \
-        float* __restrict__ h_state_inter_base,                               \
-        unsigned int inter_stride_floats,                                     \
-        unsigned int batch_size,                                              \
-        unsigned int num_k_heads,                                             \
-        unsigned int num_v_heads,                                             \
-        unsigned int k_dim,                                                   \
-        unsigned int v_dim,                                                   \
-        unsigned int qk_stride,                                               \
-        unsigned int v_stride,                                                \
-        unsigned int gb_stride,                                               \
-        unsigned int lazy_j                                                   \
-    ) {                                                                       \
-        gated_delta_rule_wyn_impl<K>(                                         \
-            h_state, query, key, value, gate, beta, output,                   \
-            h_state_inter_base, inter_stride_floats, batch_size,              \
-            num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
-            gb_stride, lazy_j);                                               \
+            gb_stride);                                                       \
     }
 
 ATLAS_WYN_INSTANTIATE(5)
