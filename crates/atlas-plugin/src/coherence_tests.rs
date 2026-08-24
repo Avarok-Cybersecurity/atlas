@@ -93,8 +93,12 @@ fn an_empty_answer_reads_as_answered_nothing() {
     };
     let target = TargetEndpoint::local(8888, "m");
     let concern = report.concern(&target).expect("a concern");
-    assert!(concern.contains("answered nothing"), "{concern}");
-    assert!(!concern.contains("\"\""), "no empty quotes: {concern}");
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 is serving \"m\", which did not answer as expected (recall answered nothing). \
+         This benchmark may be aimed at a different model, or the checkpoint may be a base (non-instruct) one — \
+         the run is still valid, but read the numbers with that in mind."
+    );
     assert!(!report.is_clean());
 }
 
@@ -113,13 +117,12 @@ fn the_concern_describes_rather_than_forbids() {
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
         .expect("a concern");
-    // The old wording called it a failure and told the user to pass a flag.
-    assert!(!concern.contains("failed"), "not a verdict: {concern}");
-    assert!(
-        concern.contains("still valid"),
-        "says the run may proceed: {concern}"
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 is serving \"m\", which did not answer as expected (recall answered \"London\"). \
+         This benchmark may be aimed at a different model, or the checkpoint may be a base (non-instruct) one — \
+         the run is still valid, but read the numbers with that in mind."
     );
-    assert!(concern.contains("different model"), "{concern}");
 }
 
 #[test]
@@ -133,10 +136,9 @@ fn a_transport_error_is_worded_as_one() {
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
         .expect("a concern");
-    assert!(concern.contains("did not answer"), "{concern}");
-    assert!(
-        !concern.contains("different model"),
-        "a closed port is not a model problem: {concern}"
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 did not answer a test request: connection refused"
     );
 }
 
@@ -158,11 +160,9 @@ fn a_clean_report_has_nothing_to_say() {
 
 #[test]
 fn a_long_answer_is_truncated_for_the_error_message() {
-    let long = "x".repeat(500);
+    let long = format!("{}{}", "a".repeat(80), "z".repeat(420));
     let out = truncate(&long, 80);
-    assert_eq!(out.chars().count(), 81, "80 chars plus the ellipsis");
-    assert!(out.ends_with('…'));
-    // Short answers survive intact, trimmed.
+    assert_eq!(out, format!("{}…", "a".repeat(80)));
     assert_eq!(truncate("  Paris\n", 80), "Paris");
 }
 
@@ -171,7 +171,7 @@ fn truncate_counts_characters_not_bytes() {
     // A byte-slicing implementation panics on a multi-byte boundary.
     let s = "é".repeat(200);
     let out = truncate(&s, 10);
-    assert_eq!(out.chars().count(), 11);
+    assert_eq!(out, format!("{}…", "é".repeat(10)));
 }
 
 #[test]
