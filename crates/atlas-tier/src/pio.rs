@@ -88,28 +88,35 @@ mod tests {
     // leaving the cursor untouched.
     #[test]
     fn round_trip_at_offset() {
+        use std::io::{Seek, SeekFrom};
+
         let dir = std::env::temp_dir().join(format!("atlas_pio_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("pio.bin");
-        let f = std::fs::OpenOptions::new()
+        let mut f = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
             .open(&path)
             .unwrap();
+        f.seek(SeekFrom::Start(137)).unwrap();
 
         write_all_at(&f, &[0u8; 4096], 0).unwrap();
+        assert_eq!(f.stream_position().unwrap(), 137);
         let payload: Vec<u8> = (0..1024u32).map(|i| (i % 251) as u8).collect();
         write_all_at(&f, &payload, 2048).unwrap();
+        assert_eq!(f.stream_position().unwrap(), 137);
 
         let mut out = vec![0u8; payload.len()];
         read_exact_at(&f, &mut out, 2048).unwrap();
         assert_eq!(out, payload);
+        assert_eq!(f.stream_position().unwrap(), 137);
 
         // Reading past the end must fail, not silently return short.
         let mut past = vec![0u8; 8192];
         assert!(read_exact_at(&f, &mut past, 4096).is_err());
+        assert_eq!(f.stream_position().unwrap(), 137);
 
         drop(f);
         let _ = std::fs::remove_dir_all(&dir);
