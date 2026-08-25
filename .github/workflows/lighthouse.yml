@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Lighthouse
+
+# Scores the built site the way a visitor experiences it. The budgets in
+# lighthouserc.json are the contract; this job just runs them.
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/lighthouse.yml'
+  merge_group:
+
+concurrency:
+  group: lighthouse-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Lighthouse audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Checkout atlas-recipes (model SSOT)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Avarok-Cybersecurity/atlas-recipes
+          path: atlas-recipes-src
+
+      - name: Install dependencies
+        working-directory: site
+        run: bun install --frozen-lockfile
+
+      # Mirrors the deploy build, including the installer the front page's
+      # headline command is served from — auditing a page that differs from
+      # what ships would measure the wrong thing.
+      - name: Copy the installer from atlas-recipes
+        working-directory: site
+        run: |
+          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
+          if [ -f "$src" ]; then cp "$src" static/install.sh; chmod 0755 static/install.sh; fi
+
+      - name: Build
+        working-directory: site
+        run: bun x --bun vite build
+        env:
+          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+          ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
+
+      - name: Audit
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
+        with:
+          configPath: ./site/lighthouse/lighthouserc.json
+          uploadArtifacts: true
+          temporaryPublicStorage: true

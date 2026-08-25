@@ -47,19 +47,20 @@ export const nvidiaInceptionUrl = 'https://www.nvidia.com/en-us/startups/';
 // --- brand -------------------------------------------------------------------
 export const tagline = 'Pure Rust inference, tuned for the machine on your desk.';
 
-// --- commands (one flagship recipe, kept in lockstep with static/quickstart.sh)
+// --- commands (one flagship recipe, kept in lockstep with static/install.sh)
 export const flagshipRecipe = 'qwen3.6-35b-a3b-fp8-mtp';
-export const quickInstall = 'uvx sparkrun setup install';
-export const runCommand = 'curl -fsSL https://atlasinference.io/quickstart.sh | sh';
+export const quickInstall = 'cargo install atlasctl';
+export const runCommand = 'curl -fsSL https://atlasinference.io/install.sh | sh';
 export const runCommandRaw =
-  'uvx sparkrun setup install && sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp --hosts localhost';
+  'atlasctl run qwen3.6-35b-a3b-fp8-mtp';
 
 // --- hardware acknowledgment (modest banner) ---------------------------------
-export const gifts = {
-  line: 'Thank you NVIDIA and AMD.',
-  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD, and now a Strix Halo desktop from AMD too. That desktop is the box we ran our MLPerf submission on.',
-  ctaText: 'See the post',
-  ctaUrl: xUrl
+// --- announcement band (the strip above the hero) ----------------------------
+export const announcement = {
+  line: 'Atlas is partnering with Avarok Cybersecurity.',
+  sub: 'Bringing post-quantum security to safe, local inference — the model and your data stay on hardware you own.',
+  ctaText: 'avarok.net',
+  ctaUrl: 'https://avarok.net'
 };
 
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
@@ -271,10 +272,11 @@ export const getRunning = {
   title: 'Up and running in one command.',
   sub:
     'This is the first 60 seconds. Everything after, per model recipes, EP=2, tuning, lives in the docs.',
-  inspectNote: 'Rather not pipe curl to a shell. Install sparkrun, then run the flagship recipe direct.',
+  inspectNote:
+    'Rather not pipe curl to a shell. Install atlasctl from crates.io, then run the flagship recipe direct.',
   docsCta: 'Read the deployment guide',
   quickstartHint:
-    'The script checks for sparkrun, installs it with uvx if missing, then runs the flagship Qwen3.6 recipe.'
+    'The script downloads a prebuilt atlasctl, verifies its checksum, and installs it to ~/.local/bin. No Python, no Rust toolchain. Run it with --uninstall to reverse it.'
 };
 
 // --- mission -----------------------------------------------------------------

@@ -4,6 +4,7 @@
   // 3-level tree: vendor (brand) -> subfamily (recipe dir) -> recipes.
   import vendorsRaw from '$lib/models.generated.json';
   import { models as mcopy, recipesUrl } from '$lib/data.js';
+  import RunButton from './RunButton.svelte';
 
   // Flagship first: Qwen3.6 leads its vendor, then Qwen3.5, then the rest as-is.
   const rankSub = (n) => (n === 'Qwen3.6' ? 0 : n === 'Qwen3.5' ? 1 : 2);
@@ -131,6 +132,7 @@
                 >
                   {copied === r.command ? 'Copied' : 'Copy'}
                 </button>
+                <RunButton recipeId={r.recipeId ?? r.recipeStem} runnable={r.runnable ?? true} />
               </div>
             </div>
           {/each}

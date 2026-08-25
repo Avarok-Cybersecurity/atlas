@@ -21,6 +21,11 @@ img, svg, video { max-width: 100%; }
 .ms-grid > *, .community-band > *, .footer-inner > *, .mnav-vendors > *,
 .proof-strip > * { min-width: 0; }
 .repro, .hero-cmd, .cmd-pill, .term, .method-card, .receipt, .run-side { min-width: 0; }
+/* The card's command pill now carries two buttons (Copy and Run). On a narrow
+   screen they would squeeze the command to nothing, so let the pill wrap and
+   give the command its own full-width row. */
+.cmd-pill { flex-wrap: wrap; }
+.cmd-pill .cmd-text { flex-basis: 100%; }
 /* auto-fit tracks must never demand more than the viewport can give */
 .tstrip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
 .contrib-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
@@ -51,7 +56,7 @@ img, svg, video { max-width: 100%; }
   display: none; flex-direction: column;
   padding: 0.35rem 1.15rem 1.15rem;
   border-top: 1px solid var(--border);
-  background: rgba(244, 240, 232, 0.98);
+  background: rgba(20, 17, 31, 0.98);
   max-height: calc(100dvh - 56px); overflow-y: auto;
   animation: drawerin 0.18s ease-out both;
 }
@@ -66,7 +71,7 @@ img, svg, video { max-width: 100%; }
 .nav-drawer-foot .nav-star-btn { padding: 0.65rem 1.1rem; font-size: 0.9rem; }
 .nav-scrim {
   display: none; position: fixed; inset: 0; z-index: 80;
-  border: 0; padding: 0; background: rgba(26, 24, 21, 0.4); cursor: default;
+  border: 0; padding: 0; background: rgba(0, 0, 0, 0.4); cursor: default;
   touch-action: none; /* dragging the dimmed area must not scroll the page behind */
 }
 

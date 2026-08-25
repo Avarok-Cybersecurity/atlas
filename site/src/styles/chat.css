@@ -9,7 +9,7 @@
 
 /* ---- shell ---------------------------------------------------------------- */
 .cc-backdrop {
-  position: fixed; inset: 0; z-index: 110; background: rgba(38, 30, 18, 0.45);
+  position: fixed; inset: 0; z-index: 110; background: rgba(0, 0, 0, 0.45);
   display: flex; align-items: flex-start; justify-content: center;
   padding: 3.5rem 1.25rem 2rem;
 }
@@ -57,10 +57,10 @@
 .cc-status[data-tone='working'] .cc-status-dot { background: var(--accent); animation: cc-pulse 1.2s ease-in-out infinite; }
 .cc-status[data-tone='ready'] .cc-status-dot { background: var(--green); }
 .cc-status[data-tone='error'] .cc-status-dot { background: var(--amber); }
-.cc-status[data-tone='error'] { color: var(--amber); border-color: rgba(154, 106, 26, 0.4); }
+.cc-status[data-tone='error'] { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); }
 @keyframes cc-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(181, 98, 47, 0.35); }
-  50% { box-shadow: 0 0 0 5px rgba(181, 98, 47, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 92, 255, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(124, 92, 255, 0); }
 }
 .cc-close { flex-shrink: 0; }
 
@@ -99,7 +99,7 @@
   flex: 1; min-height: 16rem; overflow-y: auto; overscroll-behavior: contain;
   padding: 1.4rem 1.5rem 1.5rem; position: relative; z-index: 1;
   display: flex; flex-direction: column; align-items: stretch; gap: 1rem;
-  background-image: repeating-linear-gradient(transparent, transparent 27px, rgba(90, 74, 44, 0.05) 27px, rgba(90, 74, 44, 0.05) 28px);
+  background-image: repeating-linear-gradient(transparent, transparent 27px, rgba(0, 0, 0, 0.05) 27px, rgba(0, 0, 0, 0.05) 28px);
 }
 .cc-sub { font-family: var(--font-sans); font-size: 0.88rem; color: var(--t2); line-height: 1.6; max-width: 56ch; }
 .cc-boot { display: grid; gap: 0.3rem; }
@@ -109,13 +109,13 @@
 .cc-offline {
   align-self: flex-start; padding: 0.2rem 0.6rem; border-radius: 999px;
   font-size: 0.66rem; font-weight: 700; color: var(--amber);
-  background: rgba(154, 106, 26, 0.12); border: 1px solid rgba(154, 106, 26, 0.3);
+  background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.3);
 }
 .cc-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .cc-chip {
   font-family: inherit; font-size: 0.76rem; font-weight: 600; text-align: left;
   color: var(--accent-deep); background: var(--accent-soft);
-  border: 1px solid rgba(181, 98, 47, 0.3); border-radius: 999px;
+  border: 1px solid rgba(124, 92, 255, 0.3); border-radius: 999px;
   padding: 0.45rem 0.9rem; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
@@ -156,7 +156,7 @@
 }
 /* code fences are screens embedded in the instrument (the .term treatment) */
 .cm-body pre {
-  background: #201d18; color: #e6dfce; border-radius: 8px;
+  background: #0d0a16; color: #ddd8f0; border-radius: 8px;
   padding: 0.8rem 0.95rem; margin: 0 0 0.7rem; overflow-x: auto; scrollbar-width: thin;
 }
 .cm-body pre:last-child { margin-bottom: 0; }
@@ -174,7 +174,7 @@
 .cm-think[data-open='false'] .cm-think-clip { max-height: 0; }
 .cm-think-text {
   margin: 0.35rem 0 0; padding-left: 0.7rem;
-  border-left: 2px solid rgba(181, 98, 47, 0.4);
+  border-left: 2px solid rgba(124, 92, 255, 0.4);
   max-height: 11.5rem; overflow-y: auto; scrollbar-width: thin;
   font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.6;
   color: var(--t3); white-space: pre-wrap; overflow-wrap: anywhere;
@@ -232,16 +232,16 @@
 
 /* ---- error cards ----------------------------------------------------------- */
 .cc-error {
-  border: 1.5px dashed rgba(154, 106, 26, 0.5); border-radius: 4px;
-  background: rgba(154, 106, 26, 0.06); padding: 0.85rem 1rem;
+  border: 1.5px dashed rgba(251, 191, 36, 0.5); border-radius: 4px;
+  background: rgba(251, 191, 36, 0.06); padding: 0.85rem 1rem;
 }
 .cc-error-tag { font-size: 0.66rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--amber); }
 .cc-error-body { font-family: var(--font-sans); font-size: 0.84rem; color: var(--t2); line-height: 1.55; margin-top: 0.35rem; }
 .cc-error-retry {
   margin-top: 0.6rem; padding: 0.4rem 0.85rem; cursor: pointer;
   font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
-  color: var(--accent); background: var(--accent-soft);
-  border: 1px solid rgba(181, 98, 47, 0.3); border-radius: 6px;
+  color: var(--accent-deep); background: var(--accent-soft);
+  border: 1px solid rgba(124, 92, 255, 0.3); border-radius: 6px;
   transition: background 0.15s, color 0.15s;
 }
 .cc-error-retry:hover { background: var(--accent); color: #fff; }
@@ -305,7 +305,7 @@
 .cc-connected {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.65rem;
   font-size: 0.68rem; font-weight: 700; color: var(--green);
-  background: var(--green-soft); border: 1px solid rgba(59, 122, 80, 0.3); border-radius: 999px;
+  background: var(--green-soft); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 999px;
 }
 .cc-connected .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .cc-keyrow-note { font-size: 0.68rem; color: var(--t3); }
