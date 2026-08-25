@@ -1,16 +1,17 @@
 {
+  "id": "/",
   "name": "Atlas Inference Engine",
   "short_name": "Atlas",
-  "icons": [
-    {
-      "src": "/favicon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
-    }
-  ],
-  "theme_color": "#0a0c10",
-  "background_color": "#0a0c10",
+  "description": "Pure Rust inference, tuned for the machine on your desk.",
+  "scope": "/",
+  "start_url": "/",
   "display": "standalone",
-  "start_url": "/"
+  "theme_color": "#f4f0e8",
+  "background_color": "#f4f0e8",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
 }

@@ -53,6 +53,19 @@ jobs:
           repository: Avarok-Cybersecurity/atlas-recipes
           path: atlas-recipes-src
 
+      # install.sh is versioned alongside the binaries it installs, in
+      # atlas-recipes, and copied in here rather than duplicated. It embeds no
+      # version — it always resolves releases/latest — so a cached copy stays
+      # correct even when it predates the release it installs. Failing the build
+      # is right: serving a 404 for the headline command on the front page would
+      # be worse than a red pipeline.
+      - name: Copy the installer from atlas-recipes
+        run: |
+          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
+          test -f "$src" || { echo "install.sh missing from atlas-recipes"; exit 1; }
+          cp "$src" static/install.sh
+          chmod 0755 static/install.sh
+
       - name: Build
         run: bun x --bun vite build
         env:

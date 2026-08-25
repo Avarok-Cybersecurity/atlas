@@ -15,10 +15,17 @@ const CACHE = `atlas-site-${version}`;
 // visitors' disk/bandwidth pre-caching it. /lattice/ (the 763 KB LatticeDB
 // wasm + loader for the chat modal) is excluded too: it must load only when
 // the feature is used, not at SW install for every visitor.
+//
+// The install scripts are excluded and stay excluded: someone piping
+// install.sh into a shell must get exactly what the server has at that moment,
+// never a copy this worker happened to keep.
+const INSTALL_SCRIPTS = ['/install.sh', '/quickstart.sh'];
 const PRECACHE = [
   '/',
   ...build,
-  ...files.filter((f) => !f.includes('og-image') && !f.startsWith('/lattice/'))
+  ...files.filter(
+    (f) => !f.includes('og-image') && !f.startsWith('/lattice/') && !INSTALL_SCRIPTS.includes(f)
+  )
 ];
 
 self.addEventListener('install', (event) => {
@@ -44,6 +51,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== location.origin) return;
+  // Never serve or store an install script: it must come from the network.
+  if (INSTALL_SCRIPTS.includes(url.pathname)) return;
 
   // Content-hashed build assets are immutable: cache-first is always correct.
   if (url.pathname.includes('/_app/immutable/')) {
