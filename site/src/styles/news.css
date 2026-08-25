@@ -23,7 +23,7 @@
   transition: transform 0.2s, border-color 0.2s;
 }
 .news-card:hover { transform: translateY(-3px); border-color: var(--accent); }
-.news-accent { position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--bar); }
+.news-accent { position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--sx); }
 .news-card.is-featured { padding-top: 1.8rem; }
 
 .news-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }

@@ -14,22 +14,16 @@
 /* The button must track the receipt's own width (app.css `.receipt`, and the
    per-breakpoint overrides in mobile.css) — otherwise the corner chip anchors
    to empty grid track beside the receipt instead of to its corner. */
-.receipt-hit {
-  display: block; width: 100%; max-width: 460px;
-  background: none; border: 0; padding: 0;
-  cursor: pointer; text-align: inherit; font: inherit; color: inherit;
-  position: relative;
-}
+.receipt-hit { display: block; width: 100%; max-width: 460px; position: relative; }
 /* Ring is present at REST (1px), not only on hover. */
 .receipt-hit .receipt {
   box-shadow: var(--shadow-lg), 0 0 0 1.5px rgba(124, 92, 255, 0.38);
   transition: box-shadow 0.16s ease, transform 0.16s ease;
 }
 .receipt-hit:hover .receipt,
-.receipt-hit:focus-visible .receipt {
+.receipt-hit:has(.receipt-open-hint:focus-visible) .receipt {
   box-shadow: var(--shadow-lg), 0 0 0 2.5px var(--accent); transform: translateY(-2px);
 }
-.receipt-hit:focus-visible { outline: none; }
 
 /* Corner chip — sits on the receipt's top-right corner, outside its clip. */
 .receipt-chip {
@@ -42,20 +36,26 @@
   box-shadow: var(--shadow-sm); transition: background 0.16s ease;
 }
 .receipt-hit:hover .receipt-chip,
-.receipt-hit:focus-visible .receipt-chip { background: var(--accent-fill-hover); }
+.receipt-hit:has(.receipt-open-hint:focus-visible) .receipt-chip { background: var(--accent-fill-hover); }
 
 /* Hint reads as a button, not a caption. */
+/* The control, not the receipt. Its ::before stretches over the whole card so
+   the receipt is still one big click target, while the accessible name stays
+   equal to the visible text (WCAG 2.5.3) and the eight proof rows stay
+   readable content rather than part of a button label. */
 .receipt-open-hint {
   display: inline-flex; align-items: center; gap: 0.4rem; margin-top: 0.85rem;
+  cursor: pointer; font: inherit;
   padding: 0.42rem 0.85rem; border: 1.5px solid var(--accent);
   border-radius: 8px; background: var(--accent-soft);
   font-family: var(--font-mono); font-size: 0.74rem; font-weight: 700;
   letter-spacing: 0.06em; color: var(--accent-deep);
   transition: background 0.16s ease, color 0.16s ease;
 }
+.receipt-open-hint::before { content: ''; position: absolute; inset: 0; }
 .receipt-open-hint .rh-glyph { font-size: 0.85rem; line-height: 1; }
 .receipt-hit:hover .receipt-open-hint,
-.receipt-hit:focus-visible .receipt-open-hint { background: var(--accent); color: #fff; }
+.receipt-open-hint:focus-visible { background: var(--accent); color: #fff; }
 
 /* One-shot attention cue after the receipt finishes "printing". Motion only —
    every cue above is legible with animation disabled. */

@@ -10,15 +10,14 @@
       setTimeout(() => { if (copied === addr) copied = ''; }, 1600);
     } catch {}
   }
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="reach" class="section-alt">
+<section id="reach" class="section-alt sx-gold">
   <div class="container">
     <div class="reach-head">
       <div>
-        <div class="slabel">{reachout.label}</div>
-        <h2 class="stitle">{reachout.title}</h2>
-        <p class="ssub">{reachout.sub}</p>
+        <SectionHead label={reachout.label} title={reachout.title} sub={reachout.sub} />
       </div>
       <div class="reach-cta">
         {#each reachout.emails as e}

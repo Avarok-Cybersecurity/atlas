@@ -37,6 +37,18 @@
   --grad: linear-gradient(135deg, #9d85ff 0%, #6842f5 100%);
   --bar: linear-gradient(90deg, #9d85ff, #7c5cff);
   --vllm: #3a3054;
+  /* ---- the mark, as the page's grammar --------------------------------
+     The logo is three chevrons in four colours. Each colour is given one
+     fixed meaning and nothing else may use it: violet = engine, cyan =
+     silicon, green = verified, gold = community. Sections set --sx to their
+     colour; the ledger rail, chips and chart series read --sx and follow.
+     As TEXT all four clear 4.5:1 on --bg and on --card. As a FILL they carry
+     --bg ink, never white — white on gold is 1.88:1. */
+  --ch-violet: #BE9DF8;
+  --ch-cyan:   #49C3DB;
+  --ch-green:  #12B981;
+  --ch-gold:   #EFB338;
+  --sx: var(--ch-violet);
   /* type */
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
@@ -127,7 +139,6 @@ nav {
 .gift {
   margin-top: 62px; background: linear-gradient(180deg, #1a1628, #14111f);
   border-bottom: 1px solid var(--border);
-  position: sticky; top: 62px; z-index: 90;
 }
 .gift-inner {
   max-width: 1080px; margin: 0 auto; padding: 0.7rem 2rem;
@@ -204,6 +215,14 @@ nav {
 .receipt-pending .tag { font-size: 0.68rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--amber); }
 .receipt-pending p { font-size: 0.8rem; color: var(--t2); line-height: 1.55; margin-top: 0.4rem; font-family: var(--font-sans); }
 .receipt-foot { margin-top: 1rem; padding-top: 0.7rem; border-top: 1.5px dashed var(--border-strong); font-size: 0.7rem; color: var(--t3); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.3rem; }
+.receipt-sub { font-size: 0.7rem; color: var(--t3); margin: -0.3rem 0 0.6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The ruled paper draws a line every 28px; the total row sits on a heavier one
+   so it reads as a subtotal rather than one more entry. */
+.receipt-total { display: flex; align-items: center; gap: 0.6rem; font-size: 0.82rem; line-height: 1.9; margin-top: 0.35rem; padding-top: 0.35rem; border-top: 1.5px dashed var(--border-strong); font-weight: 700; }
+.receipt-total .ok { color: var(--green); }
+.receipt-total .name { flex: 1; color: var(--t1); }
+.receipt-total .val { color: var(--green); }
+.receipt-row .ok.pending { color: var(--amber); }
 .receipt-print { animation: printin 0.6s ease-out both; }
 @keyframes printin { from { clip-path: inset(0 0 100% 0); opacity: 0.4; } to { clip-path: inset(0 0 0 0); opacity: 1; } }
 
@@ -226,6 +245,10 @@ nav {
 
 /* ---- verified section ----------------------------------------------------- */
 .verified-grid { display: grid; grid-template-columns: 1fr 460px; gap: 3rem; align-items: start; margin-top: 2.5rem; }
+/* The methodology column runs much longer than the receipt, which left a
+   screen of dead track beside it. The receipt tracks the scroll instead;
+   mobile.css collapses the grid to one column, where sticky is inert. */
+.verified-grid > :last-child { position: sticky; top: 90px; }
 .method-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem 1.6rem; box-shadow: var(--shadow-sm); }
 .method-card h3 { font-size: 0.95rem; font-weight: 750; margin-bottom: 0.5rem; }
 .method-card p { font-size: 0.9rem; color: var(--t2); line-height: 1.6; }
@@ -273,7 +296,7 @@ nav {
 .ms-count { font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
 .ms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 1rem; padding: 0 1.6rem 1.6rem; }
 .subcard { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 1.05rem 1.1rem; display: flex; flex-direction: column; gap: 0.6rem; transition: border-color 0.2s, transform 0.2s; }
-.subcard:hover { border-color: var(--accent); transform: translateY(-2px); }
+.subcard:hover { border-color: var(--sx); }
 .subcard-label { font-size: 0.9rem; font-weight: 700; color: var(--t1); }
 .subcard-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .chip { display: inline-block; font-size: 0.6rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 4px; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid transparent; }
@@ -309,7 +332,40 @@ nav {
 /* ---- launch settings modal -----------------------------------------------
    Rendered entirely from the schema the agent sends, so an agent newer than
    this page still presents its settings. */
-.lm-backdrop { position: fixed; inset: 0; background: rgba(20,17,13,0.45); z-index: 60; }
+/* Backdrop and dialog are rendered at the page root, and must stay there. A
+   transformed ancestor becomes the containing block for `position: fixed`, so
+   a dialog nested in a recipe card resolved against the card and jumped the
+   moment a hover transform came or went. Rendering at the root makes that
+   whole class of bug unreachable rather than merely absent today. */
+.ld-backdrop, .lm-backdrop { position: fixed; inset: 0; background: rgba(8,6,14,0.62); backdrop-filter: blur(2px); z-index: 60; }
+.ld { position: fixed; z-index: 61; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(520px, calc(100vw - 2rem)); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-lg); }
+.ld:focus { outline: none; }
+.ld-head { position: relative; padding: 1.05rem 1.2rem 0.7rem; border-bottom: 1px solid var(--border); }
+.ld-title { margin: 0; font-size: 1rem; color: var(--t1); letter-spacing: -0.01em; }
+.ld-sub { margin: 0.2rem 0 0; font-size: 0.72rem; color: var(--t3); }
+.ld-close { position: absolute; top: 0.8rem; right: 0.9rem; background: none; border: none; font-size: 1.35rem; line-height: 1; color: var(--t2); cursor: pointer; padding: 0 0.25rem; }
+.ld-close:hover { color: var(--t1); }
+.ld-body { padding: 1rem 1.2rem 1.2rem; font-size: 0.85rem; color: var(--t2); line-height: 1.6; }
+.ld-body p { margin: 0 0 0.75rem; }
+.ld-probe { display: flex; align-items: center; gap: 0.6rem; color: var(--t2); }
+.ld-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: ld-spin 0.8s linear infinite; flex-shrink: 0; }
+@keyframes ld-spin { to { transform: rotate(360deg); } }
+.ld-steps { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-direction: column; gap: 0.85rem; }
+.ld-steps li { display: flex; gap: 0.7rem; align-items: flex-start; }
+.ld-step-n { flex-shrink: 0; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent-deep); font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.ld-step-t { margin: 0 0 0.3rem; color: var(--t1); font-weight: 600; font-size: 0.8rem; }
+.ld-cmd { display: flex; align-items: center; gap: 0.5rem; background: #0d0a16; border: 1px solid var(--border); border-radius: 7px; padding: 0.45rem 0.5rem 0.45rem 0.7rem; }
+.ld-cmd code { flex: 1; min-width: 0; font-size: 0.7rem; color: #ddd8f0; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
+.ld-watching { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--t3); }
+.ld-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; animation: ld-pulse 1.6s ease-in-out infinite; }
+@keyframes ld-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.ld-caution { font-size: 0.75rem; color: var(--t3); border-left: 2px solid var(--border-strong); padding-left: 0.65rem; margin-top: 0.9rem; }
+.ld-token { width: 100%; box-sizing: border-box; margin-bottom: 0.5rem; padding: 0.4rem 0.55rem; font-size: 0.72rem; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg2); color: var(--t1); }
+.ld-error { color: #f87171; }
+/* Respect a reduced-motion preference: the spinner and pulse are decoration. */
+@media (prefers-reduced-motion: reduce) {
+  .ld-spinner, .ld-pulse { animation: none; }
+}
 .lm { position: fixed; z-index: 61; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(720px, calc(100vw - 2rem)); max-height: min(84vh, 780px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow); }
 .lm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.15rem 0.75rem; border-bottom: 1px solid var(--border); }
 .lm-title { margin: 0; font-size: 0.95rem; color: var(--t1); }
@@ -492,3 +548,128 @@ section { padding: 7rem 2rem; }
 .reach-card h3 { font-size: 1.05rem; font-weight: 780; margin-bottom: 0.4rem; }
 .reach-card p { font-size: 0.9rem; color: var(--t2); line-height: 1.6; }
 
+
+/* =============================================================================
+   The ledger.
+
+   Atlas generates its numbers from gate output, so the page is a chain of
+   custody rather than a landing page. Every section is an entry: an index, a
+   chevron in that section's colour, the entry name, then the provenance stamp
+   that says where the numbers under it came from. The three-chevron mark stops
+   being a logo in the corner and becomes the structure of the page.
+   ========================================================================== */
+.sx-violet { --sx: var(--ch-violet); }
+.sx-cyan   { --sx: var(--ch-cyan); }
+.sx-green  { --sx: var(--ch-green); }
+.sx-gold   { --sx: var(--ch-gold); }
+
+.ledger-rail {
+  display: flex; align-items: center; gap: 0.6rem;
+  margin-bottom: 1rem; min-width: 0;
+}
+.ledger-no {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+  color: var(--t3); flex-shrink: 0;
+}
+.ledger-chev { color: var(--sx); flex-shrink: 0; display: block; }
+.ledger-name {
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 650;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--sx);
+  white-space: nowrap; flex-shrink: 0;
+}
+/* The rule fades out rather than stopping, so the rail reads as continuing
+   past the stamp instead of boxing the header in. */
+.ledger-line {
+  flex: 1 1 auto; min-width: 1rem; height: 1px;
+  background: linear-gradient(90deg, var(--border-strong), transparent);
+}
+
+/* The provenance stamp. One class, used anywhere a number appears, because the
+   page-wide claim is that nothing here is typed by hand. Kept at 0.72rem: --t3
+   is only cleared for AA at small-text contrast, so it must not shrink. */
+.prov {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 0.72rem; font-weight: 600; color: var(--t3);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.1rem 0.5rem; white-space: nowrap; flex-shrink: 0;
+  text-decoration: none;
+}
+a.prov:hover { color: var(--t2); border-color: var(--border-strong); }
+
+/* Section accent, applied through --sx so a section changes colour in one
+   place. These four selectors are why the chevron system is not just paint. */
+.ms-accent, .news-accent { background: var(--sx); }
+.mech-line { border-left-color: var(--sx); }
+.road-status { background: color-mix(in srgb, var(--sx) 16%, transparent); color: var(--sx); }
+
+/* Informational cards stop levitating. A card that lifts is telling the reader
+   it is clickable; news, hardware and roadmap cards are not. */
+.news-card:hover, .hw-card:hover, .road-card:hover { transform: none; }
+
+/* ---- mission quote band ---------------------------------------------------
+   Deliberately unlike every other band: no ledger rail, no cards, no index.
+   The page numbers what it can prove; this is the one unnumbered statement,
+   and looking different is how a reader knows the difference. */
+.quote-band {
+  position: relative; overflow: clip; text-align: center;
+  padding: 5rem 2rem; border-block: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg2), var(--bg));
+}
+.quote-mark {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(620px, 78vw); height: auto; color: var(--sx);
+  opacity: 0.05; pointer-events: none;
+}
+.quote-band .container { position: relative; }
+.quote-title {
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 650;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--sx);
+}
+.quote-statement {
+  margin: 1.1rem auto 0; max-width: 26ch;
+  font-size: clamp(1.5rem, 3.4vw, 2.3rem); font-weight: 780;
+  letter-spacing: -0.03em; line-height: 1.25; color: var(--t1);
+  text-wrap: balance;
+}
+.quote-foot {
+  margin: 1.4rem auto 0; max-width: 62ch;
+  font-size: 0.92rem; color: var(--t2); line-height: 1.65;
+}
+
+/* ---- a second card row inside one ledger entry ---------------------------- */
+.entry-row { margin-top: 3.5rem; padding-top: 2.25rem; border-top: 1px solid var(--border); }
+.entry-row-title { font-size: 1.35rem; font-weight: 780; letter-spacing: -0.025em; }
+.entry-row-sub { font-size: 0.95rem; color: var(--t2); max-width: 62ch; margin-top: 0.5rem; line-height: 1.6; }
+
+/* ---- the promoted concurrency ladder --------------------------------------
+   Same content as the standalone section, minus its own heading and container:
+   the Verified entry supplies both. */
+.cl-embed { display: block; margin-top: 2.5rem; }
+.cl-embed-inner { display: block; }
+.cl-h { font-size: 1.35rem; font-weight: 780; letter-spacing: -0.025em; line-height: 1.25; }
+
+/* ---- FAQ ------------------------------------------------------------------
+   Native <details>, so the answers are in the prerendered HTML and the
+   keyboard behaviour is the browser's rather than ours. */
+.faq-list { margin-top: 2.5rem; border-top: 1px solid var(--border); }
+.faq-item { border-bottom: 1px solid var(--border); }
+.faq-item summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;
+  padding: 1.15rem 0.25rem; cursor: pointer; list-style: none;
+}
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-q { font-size: 1.02rem; font-weight: 700; color: var(--t1); letter-spacing: -0.01em; }
+.faq-item summary:hover .faq-q { color: var(--sx); }
+/* A chevron built from the mark's geometry: same round caps, same 41° arm,
+   rotated down when open. */
+.faq-mark {
+  flex-shrink: 0; width: 11px; height: 11px; border-right: 2.5px solid var(--sx);
+  border-bottom: 2.5px solid var(--sx); border-radius: 0 0 3px 0;
+  transform: rotate(-45deg); transition: transform 0.2s;
+}
+.faq-item[open] .faq-mark { transform: rotate(45deg); }
+.faq-a {
+  padding: 0 0.25rem 1.3rem; margin-top: -0.2rem;
+  font-size: 0.95rem; color: var(--t2); line-height: 1.68; max-width: 78ch;
+}
