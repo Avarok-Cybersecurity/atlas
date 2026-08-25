@@ -32,6 +32,39 @@ use spark_runtime::weights::WeightStore;
 
 use crate::weight_map::{DenseWeight, dense};
 
+/// Load a drafter GEMM weight that may be NVFP4-packed.
+///
+/// ModelOpt NVFP4 drafter exports (NVIDIA-Nemotron-3.5-Lightning DFlash:
+/// `fc` + every attention/MLP projection) ship U8 `[n, k/2]` packed nibbles
+/// with F8_E4M3 `[n, k/16]` per-block scales and an F32 `weight_scale_2` —
+/// under the SAME tensor names a BF16 checkpoint uses. Loading them as BF16
+/// made every GEMM read 4x past the allocation (the Lightning bring-up's
+/// CUDA 700, fault grid [21,12,1] = the fc [2688, 16128] GEMM). Detect the
+/// packed form by dtype and GPU-dequantize to BF16; BF16 tensors pass
+/// through untouched, so existing drafters are byte-identical.
+fn dense_bf16_or_nvfp4(
+    store: &WeightStore,
+    name: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    let t = store.get(name)?;
+    if t.dtype == spark_runtime::weights::WeightDtype::UInt8 {
+        let prefix = name.strip_suffix(".weight").unwrap_or(name);
+        anyhow::ensure!(
+            t.shape.len() == 2,
+            "NVFP4-packed drafter tensor {name} has shape {:?} (want 2-D)",
+            t.shape
+        );
+        let (n, half_k) = (t.shape[0], t.shape[1]);
+        tracing::info!(
+            "DFlash drafter: dequantizing NVFP4 {name} [{n}, {}] -> BF16",
+            half_k * 2
+        );
+        return crate::weight_map::dequant_nvfp4_to_bf16(store, prefix, n, half_k * 2, gpu);
+    }
+    Ok(DenseWeight { weight: t.ptr })
+}
+
 /// Drafter HF `config.json` (subset Atlas consumes). Mirrors
 /// `z-lab/Qwen3.6-35B-A3B-DFlash/config.json` field names verbatim so
 /// `serde_json::from_str` works directly on the raw file.
@@ -224,7 +257,7 @@ pub fn load_dflash_weights(
         ""
     };
 
-    let fc = dense(drafter_store, &format!("{prefix}fc.weight"))
+    let fc = dense_bf16_or_nvfp4(drafter_store, &format!("{prefix}fc.weight"), _gpu)
         .context("DFlash drafter: load fc.weight")?;
     let hidden_norm = dense(drafter_store, &format!("{prefix}hidden_norm.weight"))
         .context("DFlash drafter: load hidden_norm.weight")?;
@@ -241,15 +274,15 @@ pub fn load_dflash_weights(
                 drafter_store,
                 &format!("{lp}.post_attention_layernorm.weight"),
             )?,
-            q_proj: dense(drafter_store, &format!("{lp}.self_attn.q_proj.weight"))?,
-            k_proj: dense(drafter_store, &format!("{lp}.self_attn.k_proj.weight"))?,
-            v_proj: dense(drafter_store, &format!("{lp}.self_attn.v_proj.weight"))?,
-            o_proj: dense(drafter_store, &format!("{lp}.self_attn.o_proj.weight"))?,
+            q_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.self_attn.q_proj.weight"), _gpu)?,
+            k_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.self_attn.k_proj.weight"), _gpu)?,
+            v_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.self_attn.v_proj.weight"), _gpu)?,
+            o_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.self_attn.o_proj.weight"), _gpu)?,
             q_norm: dense(drafter_store, &format!("{lp}.self_attn.q_norm.weight"))?,
             k_norm: dense(drafter_store, &format!("{lp}.self_attn.k_norm.weight"))?,
-            gate_proj: dense(drafter_store, &format!("{lp}.mlp.gate_proj.weight"))?,
-            up_proj: dense(drafter_store, &format!("{lp}.mlp.up_proj.weight"))?,
-            down_proj: dense(drafter_store, &format!("{lp}.mlp.down_proj.weight"))?,
+            gate_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.mlp.gate_proj.weight"), _gpu)?,
+            up_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.mlp.up_proj.weight"), _gpu)?,
+            down_proj: dense_bf16_or_nvfp4(drafter_store, &format!("{lp}.mlp.down_proj.weight"), _gpu)?,
         };
         layers.push(layer);
     }
