@@ -295,6 +295,38 @@ nav {
 .run-panel-note { font-size: 0.72rem; color: var(--t3, var(--t2)); }
 .run-panel-error { color: #b4341f; }
 .run-token { width: 100%; box-sizing: border-box; margin-bottom: 0.5rem; padding: 0.35rem 0.5rem; font-size: 0.7rem; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg); color: var(--t1); }
+
+/* ---- launch settings modal -----------------------------------------------
+   Rendered entirely from the schema the agent sends, so an agent newer than
+   this page still presents its settings. */
+.lm-backdrop { position: fixed; inset: 0; background: rgba(20,17,13,0.45); z-index: 60; }
+.lm { position: fixed; z-index: 61; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(720px, calc(100vw - 2rem)); max-height: min(84vh, 780px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow); }
+.lm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.15rem 0.75rem; border-bottom: 1px solid var(--border); }
+.lm-title { margin: 0; font-size: 0.95rem; color: var(--t1); }
+.lm-sub { margin: 0.2rem 0 0; font-size: 0.72rem; color: var(--t2); }
+.lm-close { background: none; border: none; font-size: 1.4rem; line-height: 1; color: var(--t2); cursor: pointer; padding: 0 0.25rem; }
+.lm-tabs { display: flex; gap: 0.25rem; padding: 0.6rem 1.15rem 0; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: thin; }
+.lm-tab { flex-shrink: 0; background: none; border: none; border-bottom: 2px solid transparent; padding: 0.4rem 0.6rem; font-size: 0.76rem; font-weight: 600; color: var(--t2); cursor: pointer; }
+.lm-tab-on { color: var(--accent); border-bottom-color: var(--accent); }
+.lm-body { flex: 1; overflow-y: auto; padding: 0.9rem 1.15rem; }
+.lm-foot { display: flex; align-items: center; gap: 0.6rem; padding: 0.75rem 1.15rem; border-top: 1px solid var(--border); }
+.lm-adv { font-size: 0.74rem; color: var(--t2); display: flex; align-items: center; gap: 0.35rem; }
+.lm-count { font-size: 0.74rem; color: var(--t2); margin-left: auto; }
+.lm-cmd { background: #201d18; color: #e8e2d6; border-radius: 8px; padding: 0.7rem 0.85rem; font-size: 0.68rem; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+.lm-h4 { margin: 1rem 0 0.4rem; font-size: 0.78rem; color: var(--t1); }
+.lm-diff { margin: 0; padding-left: 1.1rem; font-size: 0.72rem; color: var(--t2); }
+.lm-warn { margin-top: 0.9rem; background: var(--bg2); border-left: 3px solid #c98a2e; border-radius: 6px; padding: 0.6rem 0.75rem; font-size: 0.74rem; color: var(--t2); line-height: 1.55; }
+.set-row { padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+.set-row:last-child { border-bottom: none; }
+.set-label { display: block; font-size: 0.78rem; font-weight: 600; color: var(--t1); margin-bottom: 0.3rem; }
+.set-dot { color: var(--accent); font-size: 0.6rem; vertical-align: middle; margin-left: 0.3rem; }
+.set-control { display: flex; align-items: center; gap: 0.5rem; }
+.set-control input[type="number"], .set-control input:not([type]), .set-control select { padding: 0.28rem 0.45rem; font-size: 0.74rem; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg); color: var(--t1); min-width: 8rem; }
+.set-unit { font-size: 0.7rem; color: var(--t2); }
+.set-reset { background: none; border: none; font-size: 0.68rem; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.set-help { margin: 0.3rem 0 0; font-size: 0.72rem; color: var(--t2); line-height: 1.5; }
+.set-note { font-size: 0.7rem; color: var(--t2); font-style: italic; }
+.set-error { margin: 0.25rem 0 0; font-size: 0.72rem; color: #b4341f; }
 .ms-foot { font-size: 0.78rem; color: var(--t2); margin-top: 1.5rem; line-height: 1.7; }
 .ms-foot .link { font-weight: 600; }
 .qwen-block { margin-top: 1.5rem; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 1rem 1.25rem; font-size: 0.86rem; color: var(--t2); line-height: 1.6; }

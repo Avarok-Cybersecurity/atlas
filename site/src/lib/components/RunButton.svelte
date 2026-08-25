@@ -8,12 +8,13 @@
 
   import { AgentClient } from '$lib/agent/client.svelte.js';
   import { looksLikeToken, storeToken } from '$lib/agent/protocol.js';
+  import LaunchModal from './LaunchModal.svelte';
 
   let { recipeId, runnable = true } = $props();
 
   const agent = new AgentClient();
 
-  // 'idle' | 'probing' | 'guide' | 'pairing' | 'ready' | 'launching' | 'running' | 'failed'
+  // 'idle' | 'probing' | 'guide' | 'pairing' | 'settings' | 'launching' | 'running' | 'failed'
   let phase = $state('idle');
   let detail = $state('');
   let endpoint = $state('');
@@ -68,14 +69,12 @@
         : (agent.canLaunchReason ?? 'That machine cannot launch recipes.');
       return;
     }
-    phase = 'launching';
-    const result = await agent.launch(recipeId);
-    if (!result.ok) {
-      phase = 'failed';
-      detail = result.message;
-      return;
-    }
-    endpoint = result.reply.endpoint ?? '';
+    // Settings first, and a chance to read the command before it runs.
+    phase = 'settings';
+  }
+
+  function onStarted(reply) {
+    endpoint = reply.endpoint ?? '';
     phase = 'running';
   }
 
@@ -106,7 +105,16 @@
   {:else}Run{/if}
 </button>
 
-{#if phase !== 'idle' && phase !== 'probing'}
+{#if phase === 'settings'}
+  <LaunchModal
+    {agent}
+    {recipeId}
+    onclose={() => (phase = 'idle')}
+    onstarted={onStarted}
+  />
+{/if}
+
+{#if phase !== 'idle' && phase !== 'probing' && phase !== 'settings'}
   <div class="run-panel" role="status">
     {#if phase === 'guide'}
       <p class="run-panel-title">No local agent found</p>
