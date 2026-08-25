@@ -312,7 +312,23 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                         state.reasoning_xml_opener_hits =
                             state.reasoning_xml_opener_hits.saturating_add(1);
                         let threshold = ctx.state.chat.in_think_leak_openers;
-                        if threshold != 0 && state.reasoning_xml_opener_hits >= threshold {
+                        // A model that DECLARES tool calls inside thinking
+                        // (`[behavior].thinking_in_tools` — Nemotron-3.5
+                        // Lightning) emits its `<function=...>` opener while
+                        // the stream is still inside <think> as its NATIVE
+                        // format: cancelling on it kills every tool turn (the
+                        // Lightning agentic bring-up died 0/6 in one turn per
+                        // run until this was found — the non-streaming path
+                        // was never affected because it parses the full text).
+                        // For such models the opener is never a leak, so the
+                        // cancel is skipped regardless of the env threshold;
+                        // the downstream detector parses the call and emits
+                        // proper tool_calls deltas (verified end to end).
+                        let native_in_think_tools = ctx.state.behavior.thinking_in_tools;
+                        if threshold != 0
+                            && !native_in_think_tools
+                            && state.reasoning_xml_opener_hits >= threshold
+                        {
                             state.reasoning_xml_leak_detected = true;
                             // Name the cut for the --dump body / Done event;
                             // `tool_loop_capped` wires finish_reason
