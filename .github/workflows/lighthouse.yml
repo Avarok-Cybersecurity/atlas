@@ -25,15 +25,15 @@ jobs:
     name: Lighthouse audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
 
       - name: Checkout atlas-recipes (model SSOT)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Avarok-Cybersecurity/atlas-recipes
           path: atlas-recipes-src
@@ -59,7 +59,7 @@ jobs:
           ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
 
       - name: Audit
-        uses: treosh/lighthouse-ci-action@v12
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:
           configPath: ./site/lighthouse/lighthouserc.json
           uploadArtifacts: true
