@@ -614,7 +614,21 @@ pub(crate) fn load_model(
         } else {
             lora_states
                 .iter()
-                .map(|l| l.peft_config.r)
+                .map(|l| {
+                    // GDN in_proj deltas are packed as block-diagonal FUSED
+                    // pairs at rank 2r (in_proj_qkv+z / in_proj_a+b mirror the
+                    // loader's own weight fusions), so an adapter that targets
+                    // them needs the pool padded to 2r.
+                    let has_gdn_in = l
+                        .store
+                        .names()
+                        .any(|n| n.contains(".linear_attn.in_proj_"));
+                    if has_gdn_in {
+                        2 * l.peft_config.r
+                    } else {
+                        l.peft_config.r
+                    }
+                })
                 .max()
                 .unwrap_or(DEFAULT_MAX_LORA_RANK)
                 .max(1)

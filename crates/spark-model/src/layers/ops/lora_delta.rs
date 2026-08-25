@@ -368,6 +368,98 @@ pub fn apply_lora_delta(
     )
 }
 
+/// Compute the RAW (unscaled) delta `(x @ A^T) @ B^T` into `delta_out`
+/// (WRITTEN, not accumulated) — for consumers that must fold the delta
+/// INSIDE a fused kernel (e.g. the GDN BA-gates kernels, whose raw
+/// projection never materializes and whose nonlinearities do not commute
+/// with a post-hoc add). `pair.scale` is NOT applied here; the consumer
+/// receives it as a kernel argument.
+///
+/// Same contiguity + GRAPH-SAFE contract as [`apply_lora_delta`]: pure
+/// launches into fixed-address scratch, both stages write (never
+/// accumulate), so no memset of `delta_out` is needed — capture-safe.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_lora_delta_raw(
+    gpu: &dyn GpuBackend,
+    kernels: &LoraKernels,
+    pair: &LoraPair,
+    x: DevicePtr,         // [m, pair.k_in] BF16
+    delta_out: DevicePtr, // [m, pair.n_out] BF16, written
+    m: u32,
+    lora_xa: DevicePtr, // arena scratch >= m * max_rank BF16
+    stream: u64,
+) -> Result<()> {
+    if m == 1 {
+        ops::dense_gemv(
+            gpu,
+            kernels.gemv_k,
+            x,
+            &pair.a,
+            lora_xa,
+            pair.max_rank,
+            pair.k_in,
+            stream,
+        )?;
+        return ops::dense_gemv(
+            gpu,
+            kernels.gemv_k,
+            lora_xa,
+            &pair.b,
+            delta_out,
+            pair.n_out,
+            pair.max_rank,
+            stream,
+        );
+    }
+    if kernels.gemm_tc_k.0 != 0 {
+        ops::dense_gemm_tc(
+            gpu,
+            kernels.gemm_tc_k,
+            x,
+            &pair.a,
+            lora_xa,
+            m,
+            pair.max_rank,
+            pair.k_in,
+            stream,
+        )?;
+        ops::dense_gemm_tc(
+            gpu,
+            kernels.gemm_tc_k,
+            lora_xa,
+            &pair.b,
+            delta_out,
+            m,
+            pair.n_out,
+            pair.max_rank,
+            stream,
+        )
+    } else {
+        ops::dense_gemm(
+            gpu,
+            kernels.gemm_k,
+            x,
+            &pair.a,
+            lora_xa,
+            m,
+            pair.max_rank,
+            pair.k_in,
+            stream,
+        )?;
+        ops::dense_gemm(
+            gpu,
+            kernels.gemm_k,
+            lora_xa,
+            &pair.b,
+            delta_out,
+            m,
+            pair.n_out,
+            pair.max_rank,
+            stream,
+        )
+    }
+}
+
 /// M2 per-request routed LoRA delta over a batch of `n` decode rows, each
 /// naming its own adapter slot via `seq_slot[n]` (i32, `<0` = base/no delta).
 /// Two launches — shrink then expand+fold — reading the module's frozen

@@ -108,10 +108,13 @@ impl Qwen3SsmLayer {
             ctx,
             stream,
         )?;
+        // LoRA GDN in-proj: fused qkv+z delta before conv1d / gated norm.
+        self.apply_lora_gdn_qkvz(ctx, normed, deinterleaved, k, stream)?;
         // ── 4+5. Fused BA GEMM + GDN gates (token-parallel) ──
         let ba_size = ctx.config.ssm_ba_size();
         let gates_buf = ctx.buffers.ssm_gates();
         let gate_stride = nv * 2;
+        let (ba_delta, ba_scale) = self.compute_lora_gdn_ba(ctx, normed, k, stream)?;
         ops::dense_gemm_ba_gates_prefill(
             ctx.gpu,
             self.ba_gates_prefill_k,
@@ -127,6 +130,9 @@ impl Qwen3SsmLayer {
             gate_stride as u32,
             nv as u32,
             vpg as u32,
+            ba_delta,
+            ba_size as u32,
+            ba_scale,
             stream,
         )?;
 
@@ -276,12 +282,15 @@ impl Qwen3SsmLayer {
             ctx,
             stream,
         )?;
+        // LoRA GDN in-proj: fused qkv+z delta before conv1d / gated norm.
+        self.apply_lora_gdn_qkvz(ctx, normed, deinterleaved, k, stream)?;
 
         // 4+5. BA GEMM + GDN gates over ALL tokens → ssm_gates, then copy to
         // gdn_bufs.gate_beta in one contiguous D2D ([total, 2*nv] FP32 both).
         let ba_size = ctx.config.ssm_ba_size();
         let gates_buf = ctx.buffers.ssm_gates();
         let gate_stride = nv * 2;
+        let (ba_delta, ba_scale) = self.compute_lora_gdn_ba(ctx, normed, k, stream)?;
         ops::dense_gemm_ba_gates_prefill(
             ctx.gpu,
             self.ba_gates_prefill_k,
@@ -297,6 +306,9 @@ impl Qwen3SsmLayer {
             gate_stride as u32,
             nv as u32,
             vpg as u32,
+            ba_delta,
+            ba_size as u32,
+            ba_scale,
             stream,
         )?;
         ctx.gpu.copy_d2d_async(

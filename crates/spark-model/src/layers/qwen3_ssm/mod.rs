@@ -41,6 +41,22 @@ pub struct Qwen3SsmLayer {
         crate::layers::ops::lora_delta::LoraPair,
         crate::layers::ops::lora_delta::LoraKernels,
     )>,
+    /// FUSED GDN qkv+z input-projection LoRA delta (block-diagonal rank-2r
+    /// pair over the sequential [Q|K|V|Z] output). Applied into the
+    /// deinterleaved buffer right after every arm's qkvz projection, BEFORE
+    /// conv1d / gated norm consume it. `None` on base serves.
+    lora_gdn_qkvz: Option<(
+        crate::layers::ops::lora_delta::LoraPair,
+        crate::layers::ops::lora_delta::LoraKernels,
+    )>,
+    /// FUSED GDN b+a (interleaved BA) projection LoRA delta. Its RAW delta is
+    /// computed into the `ssm_ba` scratch and consumed pre-transform by the
+    /// fused BA-gates kernels (the raw projection never materializes, and the
+    /// sigmoid/softplus transforms do not commute with a post-hoc add).
+    lora_gdn_ba: Option<(
+        crate::layers::ops::lora_delta::LoraPair,
+        crate::layers::ops::lora_delta::LoraKernels,
+    )>,
     // NVFP4-quantized QKVZ weight (quarters bandwidth vs BF16)
     qkvz_nvfp4: Option<QuantizedWeight>,
     // Transposed [K/2, N] copy for coalesced w4a16_gemm reads (prefill)

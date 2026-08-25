@@ -23,6 +23,7 @@ mod audit;
 mod env;
 mod expert_apply;
 mod expert_pack;
+mod gdn_fuse;
 mod key;
 mod loading;
 mod moe_row_adapter;

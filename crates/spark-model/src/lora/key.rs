@@ -65,10 +65,19 @@ pub fn is_gdn_key(key: &str) -> bool {
     let Some((_idx, tail)) = rest.split_once('.') else {
         return false;
     };
-    // `linear_attn.out_proj` is SUPPORTED, so it is not skippable — skipping
-    // it would silently drop a delta Atlas can actually apply. Only the
-    // input-side projections, which still have no delta path, are skippable.
-    tail.starts_with("linear_attn.") && tail != "linear_attn.out_proj"
+    // Supported linear_attn modules are NOT skippable — skipping one would
+    // silently drop a delta Atlas can actually apply. NOTE the tail still
+    // carries the `.lora_A/.lora_B.weight` suffix here, so the match must be
+    // prefix-based (an exact `tail != "linear_attn.out_proj"` compare never
+    // matched anything and silently skipped every supported out_proj delta).
+    const SUPPORTED: [&str; 5] = [
+        "linear_attn.out_proj.",
+        "linear_attn.in_proj_qkv.",
+        "linear_attn.in_proj_z.",
+        "linear_attn.in_proj_a.",
+        "linear_attn.in_proj_b.",
+    ];
+    tail.starts_with("linear_attn.") && !SUPPORTED.iter().any(|p| tail.starts_with(p))
 }
 
 /// PEFT key → (layer, module, A|B). Every unsupported shape is a NAMED
@@ -135,11 +144,20 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
         // on — `in_proj_*` and `conv1d` DO feed the recurrence, so an error in
         // them compounds across timesteps, and they stay rejected.
         "linear_attn.out_proj" => LoraTarget::Attn(LoraModule::OutProj),
+        // GDN input-side projections: classified at RAW granularity, fused at
+        // pack time into GdnQkvz / GdnBa (block-diagonal rank-2r pairs that
+        // mirror the loader's own qkv||z concat and b/a interleave). Deltas
+        // are applied pre-recurrence on EVERY serving arm through the shared
+        // projection chokepoints, so decode/verify/prefill state stays
+        // consistent. `conv1d` (a depthwise conv, not a linear) stays out.
+        "linear_attn.in_proj_qkv" => LoraTarget::Gdn(GdnProj::Qkv),
+        "linear_attn.in_proj_z" => LoraTarget::Gdn(GdnProj::Z),
+        "linear_attn.in_proj_a" => LoraTarget::Gdn(GdnProj::A),
+        "linear_attn.in_proj_b" => LoraTarget::Gdn(GdnProj::B),
         t if t.starts_with("linear_attn.") => bail!(
-            "REJECT[gdn-target]: '{key}' — GDN/linear-attention INPUT-side \
-             projections (in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / \
-             conv1d) feed the recurrence and stay rejected until an \
-             exact-replay parity harness exists. `out_proj` IS supported."
+            "REJECT[gdn-target]: '{key}' — unsupported GDN/linear-attention \
+             module (conv1d and norms have no delta path; out_proj and the \
+             four in_proj_* projections ARE supported)."
         ),
         other => bail!("REJECT[unsupported-module]: '{key}' targets '{other}'"),
     };
@@ -179,6 +197,12 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, 
             )
         }
         LoraTarget::Attn(m) if m.is_gdn_out() => {}
+        // GDN input-side projections: linear-attention layers only.
+        LoraTarget::Gdn(_) if cfg.layer_type(layer_idx) == LayerType::FullAttention => bail!(
+            "REJECT[gdn-in-on-attention-layer]: '{key}' targets layer \
+             {layer_idx}, which is a full-attention layer with no GDN block"
+        ),
+        LoraTarget::Gdn(_) => {}
         LoraTarget::Attn(_) => match cfg.layer_type(layer_idx) {
             LayerType::FullAttention => {}
             lt => bail!(

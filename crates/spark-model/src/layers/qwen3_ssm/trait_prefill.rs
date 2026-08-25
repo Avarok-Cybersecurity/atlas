@@ -148,6 +148,9 @@ impl Qwen3SsmLayer {
             ctx,
             stream,
         )?;
+        // LoRA GDN in-proj: fused qkv+z delta before conv1d / gated norm
+        // (no-op base; placement mirrors the decode arms).
+        self.apply_lora_gdn_qkvz(ctx, normed, deinterleaved, k, stream)?;
         // ATLAS_GDN_DUMP hook #0c: post-qkvz GEMM (deinterleaved input
         // to conv1d). qkvz_size = key_dim*2 + value_dim*2 = 12288 for A3B
         // (Q+K+V+Z, head-major within each segment). Compare against HF's
@@ -178,6 +181,7 @@ impl Qwen3SsmLayer {
         let ba_size = ctx.config.ssm_ba_size(); // 64
         let gates_buf = ctx.buffers.ssm_gates();
         let gate_stride = nv * 2; // FP32 elements per token
+        let (ba_delta, ba_scale) = self.compute_lora_gdn_ba(ctx, normed, k, stream)?;
         ops::dense_gemm_ba_gates_prefill(
             ctx.gpu,
             self.ba_gates_prefill_k,
@@ -193,6 +197,9 @@ impl Qwen3SsmLayer {
             gate_stride as u32,
             nv as u32,
             vpg as u32,
+            ba_delta,
+            ba_size as u32,
+            ba_scale,
             stream,
         )?;
         prof!("ba+gates", t0);

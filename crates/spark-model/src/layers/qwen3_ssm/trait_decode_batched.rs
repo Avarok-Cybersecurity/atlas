@@ -555,6 +555,11 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "2+3:qkvz_proj+deinterleave", stream)?;
 
+        // LoRA GDN in-proj: fold the fused qkv+z delta into the deinterleaved
+        // rows BEFORE conv1d / gated norm — identical placement to the decode
+        // arm it verifies, or the recurrent state desyncs (no-op base).
+        self.apply_lora_gdn_qkvz(ctx, normed, deinterleaved, num_tokens as u32, stream)?;
+
         // ── 4. BA projection + GDN gates per token ──
         // BA output: ssm_ba buffer; gates: ssm_gates buffer [K, nv*2] FP32
         // Layout per token: [gate(nv), beta(nv)] → stride = 2*nv FP32 elements.
@@ -582,6 +587,8 @@ impl Qwen3SsmLayer {
             // BF16 round-trip through the `ssm_ba` staging buffer, so the gate
             // and beta transforms see the FP32 projection result directly.
             // Kill switch below restores the split form.
+            let (ba_delta, ba_scale) =
+                self.compute_lora_gdn_ba(ctx, normed, num_tokens as u32, stream)?;
             ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
                 self.ba_gates_prefill_k,
@@ -597,6 +604,9 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32,
                 nv as u32,
                 vpg as u32,
+                ba_delta,
+                ba_size as u32,
+                ba_scale,
                 stream,
             )?;
         } else {
@@ -614,6 +624,22 @@ impl Qwen3SsmLayer {
                     h as u32,
                     stream,
                 )?;
+                // LoRA GDN in-proj: this unfused arm MATERIALIZES the raw BA
+                // row, so the delta is an ordinary in-place fold on it
+                // (scale*B(A(x)) added pre-transform; no-op without adapter).
+                if let Some((ref pair, ref kernels)) = self.lora_gdn_ba {
+                    crate::layers::ops::lora_delta::apply_lora_delta(
+                        ctx.gpu,
+                        kernels,
+                        pair,
+                        normed_t,
+                        ba_out,
+                        1,
+                        ctx.buffers.lora_xa(),
+                        ctx.buffers.lora_delta(),
+                        stream,
+                    )?;
+                }
                 // Apply gate transforms
                 let gate_t = gates_buf.offset(t as usize * gate_beta_stride);
                 let beta_t = gates_buf.offset(t as usize * gate_beta_stride + nv * fp32);

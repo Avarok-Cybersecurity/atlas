@@ -270,6 +270,11 @@ pub fn dense_gemv_ba_gates(
     n: u32,
     k: u32,
     vheads_per_group: u32,
+    // LoRA in-proj: raw (unscaled) BA delta [n] BF16 in B's interleaved row
+    // order, added to the accumulator BEFORE the gate transforms.
+    // DevicePtr(0) = no delta (base path, byte-identical).
+    ba_delta: DevicePtr,
+    ba_delta_scale: f32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -284,6 +289,8 @@ pub fn dense_gemv_ba_gates(
         .arg_u32(n)
         .arg_u32(k)
         .arg_u32(vheads_per_group)
+        .arg_ptr(ba_delta)
+        .arg_f32(ba_delta_scale)
         .launch(stream)
 }
 
@@ -316,6 +323,11 @@ pub fn dense_gemm_ba_gates_prefill(
     gate_stride: u32,    // FP32 elements between tokens in gate_out (= 2*nv)
     nv: u32,             // num_v_heads (32)
     vheads_per_group: u32,
+    // LoRA in-proj: raw (unscaled) BA delta [m, ba_delta_stride] BF16 in B's
+    // interleaved row order, added pre-transform. DevicePtr(0) = no delta.
+    ba_delta: DevicePtr,
+    ba_delta_stride: u32,
+    ba_delta_scale: f32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -333,6 +345,9 @@ pub fn dense_gemm_ba_gates_prefill(
         .arg_u32(gate_stride)
         .arg_u32(nv)
         .arg_u32(vheads_per_group)
+        .arg_ptr(ba_delta)
+        .arg_u32(ba_delta_stride)
+        .arg_f32(ba_delta_scale)
         .launch(stream)
 }
 

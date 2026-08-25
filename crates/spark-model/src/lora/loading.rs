@@ -73,6 +73,7 @@ fn pack_slot(
     adapter_store: &WeightStore,
     peft: &PeftAdapterConfig,
     found: &BTreeMap<(usize, LoraModule), [Option<String>; 2]>,
+    gdn_fused: &super::gdn_fuse::FusedGdnMap,
     cfg: &ModelConfig,
     gpu: &dyn GpuBackend,
     pool: DevicePtr,
@@ -155,6 +156,53 @@ fn pack_slot(
                     LoraModule::UpProj => lw.up_proj = Some(pair),
                     LoraModule::DownProj => lw.down_proj = Some(pair),
                     LoraModule::OutProj => lw.out_proj = Some(pair),
+                    LoraModule::GdnQkvz | LoraModule::GdnBa => unreachable!(
+                        "fused GDN modules are packed from gdn_fused, never from found"
+                    ),
+                }
+                this = (a_ptr.0, b_ptr.0);
+                any = true;
+            } else if let Some((a_host, b_host, fused_r)) = gdn_fused.get(&(layer_idx, module)) {
+                // FUSED GDN pair, pre-built host-side by `gdn_fuse` at rank
+                // 2r (block-diagonal). Same pool region + padding contract as
+                // a native tensor of that rank: A contiguous at the head of
+                // the [max_rank, in] region, B row-stride padded to max_rank.
+                let fr = *fused_r;
+                debug_assert!(fr <= max_lora_rank, "audited: 2r <= max_rank");
+                debug_assert_eq!(a_host.len(), fr * in_dim * BF16_BYTES);
+                debug_assert_eq!(b_host.len(), out_dim * fr * BF16_BYTES);
+                gpu.copy_h2d(a_host, a_ptr)?;
+                let mut b_padded = vec![0u8; out_dim * max_lora_rank * BF16_BYTES];
+                for row in 0..out_dim {
+                    let d = row * max_lora_rank * BF16_BYTES;
+                    let src = row * fr * BF16_BYTES;
+                    b_padded[d..d + fr * BF16_BYTES]
+                        .copy_from_slice(&b_host[src..src + fr * BF16_BYTES]);
+                }
+                gpu.copy_h2d(&b_padded, b_ptr)?;
+                let pair = LoraPair {
+                    a: DenseWeight { weight: a_ptr },
+                    b: DenseWeight { weight: b_ptr },
+                    rank: fr as u32,
+                    k_in: in_dim as u32,
+                    n_out: out_dim as u32,
+                    scale,
+                    max_rank: max_lora_rank as u32,
+                };
+                tracing::info!(
+                    "LoRA: slot {slot} '{name}' layer {layer_idx} {module:?} FUSED \
+                     rank={fr} (2x r={}) scale={:.6} A=[{fr},{}] B=[{},{fr}] \
+                     (padded to max_rank={})",
+                    peft.r,
+                    scale,
+                    in_dim,
+                    out_dim,
+                    max_lora_rank
+                );
+                match module {
+                    LoraModule::GdnQkvz => lw.gdn_qkvz = Some(pair),
+                    LoraModule::GdnBa => lw.gdn_ba = Some(pair),
+                    _ => unreachable!("gdn_fused only holds fused GDN modules"),
                 }
                 this = (a_ptr.0, b_ptr.0);
                 any = true;
@@ -265,12 +313,15 @@ pub fn load_lora_adapters_multi(
             cfg.hidden_size,
             gpu,
         )?);
+        let gdn_fused =
+            super::gdn_fuse::fuse_gdn_pairs(a.store, &audited[k].gdn, &a.peft, cfg, gpu)?;
         let (mut layers, slot_ptrs) = pack_slot(
             k,
             &a.name,
             a.store,
             &a.peft,
             &audited[k].attn,
+            &gdn_fused,
             cfg,
             gpu,
             pool,
@@ -445,6 +496,7 @@ pub fn pack_store_into_slot(
         );
     }
     let found = audited.attn;
+    let gdn_fused = super::gdn_fuse::fuse_gdn_pairs(store, &audited.gdn, peft, cfg, gpu)?;
     let slot_bytes = pool_slot_bytes(cfg, lw.max_rank);
     gpu.memset(
         DevicePtr(lw.pool.0 + (slot * slot_bytes) as u64),
@@ -457,6 +509,7 @@ pub fn pack_store_into_slot(
         store,
         peft,
         &found,
+        &gdn_fused,
         cfg,
         gpu,
         lw.pool,

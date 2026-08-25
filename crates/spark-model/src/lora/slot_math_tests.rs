@@ -40,8 +40,13 @@ fn pool_slot_bytes_absolute_golden() {
     // gate/up/down + out_proj but the full-attention layers no longer reserve
     // out_proj space they cannot use, and the old shape was reserving all
     // seven modules on all twelve attention layers.
+    // CHANGED from 15_335_424 when the FUSED GDN input-projection modules
+    // (GdnQkvz / GdnBa) were added: every linear-attention layer now reserves
+    // a (max_rank·hidden + qkvz_size·max_rank) + (max_rank·hidden +
+    // ba_size·max_rank) region for the in_proj deltas, mirroring the loader's
+    // qkv||z concat and b/a interleave fusions.
     let cfg = cfg();
-    assert_eq!(pool_slot_bytes(&cfg, 16), 15_335_424);
+    assert_eq!(pool_slot_bytes(&cfg, 16), 34_283_520);
 }
 
 #[test]

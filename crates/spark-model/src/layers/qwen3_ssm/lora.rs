@@ -83,6 +83,81 @@ impl Qwen3SsmLayer {
         self.lora_out_proj = Some((pair, kernels));
     }
 
+    /// Install this layer's FUSED GDN input-projection deltas (either may be
+    /// absent — an adapter can target qkv/z without a/b and vice versa).
+    pub fn set_gdn_in_lora(
+        &mut self,
+        qkvz: Option<(LoraPair, LoraKernels)>,
+        ba: Option<(LoraPair, LoraKernels)>,
+    ) {
+        self.lora_gdn_qkvz = qkvz;
+        self.lora_gdn_ba = ba;
+    }
+
+    /// Fold the fused qkv+z delta into the deinterleaved `[m, qkvz]` buffer:
+    /// `deinterleaved += scale * (normed @ A^T) @ B^T`.
+    ///
+    /// MUST run immediately after the qkvz projection on EVERY arm — before
+    /// conv1d consumes rows 0..conv_dim and before the gated norm consumes the
+    /// Z slice — or the recurrent state desyncs between arms. No-op without an
+    /// adapter (base path byte-identical). GRAPH-SAFE (pure launches into
+    /// fixed arena scratch).
+    pub(super) fn apply_lora_gdn_qkvz(
+        &self,
+        ctx: &crate::layers::ForwardContext,
+        normed: spark_runtime::gpu::DevicePtr,
+        deinterleaved: spark_runtime::gpu::DevicePtr,
+        m: u32,
+        stream: u64,
+    ) -> Result<()> {
+        let Some((ref pair, ref kernels)) = self.lora_gdn_qkvz else {
+            return Ok(());
+        };
+        crate::layers::ops::lora_delta::apply_lora_delta(
+            ctx.gpu,
+            kernels,
+            pair,
+            normed,
+            deinterleaved,
+            m,
+            ctx.buffers.lora_xa(),
+            ctx.buffers.lora_delta(),
+            stream,
+        )
+    }
+
+    /// Compute the RAW (unscaled) fused b+a delta `[m, ssm_ba_size]` into the
+    /// `ssm_ba` arena scratch (unused by the fused BA-gates path) and return
+    /// `(delta_ptr, scale)` for the gates kernel to fold pre-transform.
+    /// `(DevicePtr(0), 0.0)` without an adapter — the kernels treat a null
+    /// pointer as "no delta" and stay byte-identical.
+    pub(super) fn compute_lora_gdn_ba(
+        &self,
+        ctx: &crate::layers::ForwardContext,
+        normed: spark_runtime::gpu::DevicePtr,
+        m: u32,
+        stream: u64,
+    ) -> Result<(spark_runtime::gpu::DevicePtr, f32)> {
+        if crate::layers::ops::lora_delta::lora_no_apply() {
+            return Ok((spark_runtime::gpu::DevicePtr(0), 0.0));
+        }
+        let Some((ref pair, ref kernels)) = self.lora_gdn_ba else {
+            return Ok((spark_runtime::gpu::DevicePtr(0), 0.0));
+        };
+        let delta = ctx.buffers.ssm_ba();
+        crate::layers::ops::lora_delta::compute_lora_delta_raw(
+            ctx.gpu,
+            kernels,
+            pair,
+            normed,
+            delta,
+            m,
+            ctx.buffers.lora_xa(),
+            stream,
+        )?;
+        Ok((delta, pair.scale))
+    }
+
     /// `out += scale * (normed_out @ A^T) @ B^T`.
     ///
     /// No-op without an adapter, so the base path stays byte-identical.

@@ -18,6 +18,8 @@ use super::*;
 /// pool). Attention lands byte-identically to the pre-Feature-1 path.
 pub(crate) struct AuditedAdapter {
     pub attn: BTreeMap<(usize, LoraModule), [Option<String>; 2]>,
+    /// RAW GDN input-projection coverage (fused into GdnQkvz/GdnBa at pack).
+    pub gdn: super::gdn_fuse::GdnMap,
     pub router: expert_pack::RouterMap,
     pub experts: expert_pack::ExpertMap,
     /// Feature-2: classified token-overlay tensor coverage (embed/lm_head
@@ -51,6 +53,7 @@ pub(crate) fn audit_adapter(
     //    is a hard error, which IS the "unconsumed adapter tensors fatal"
     //    audit direction.
     let mut found: BTreeMap<(usize, LoraModule), [Option<String>; 2]> = BTreeMap::new();
+    let mut gdn: super::gdn_fuse::GdnMap = BTreeMap::new();
     let mut router: expert_pack::RouterMap = BTreeMap::new();
     let mut experts: expert_pack::ExpertMap = BTreeMap::new();
     let mut overlay = OverlayTensors::default();
@@ -83,6 +86,14 @@ pub(crate) fn audit_adapter(
                     &format!("layer {layer} {module:?}"),
                 )?;
             }
+            LoraTarget::Gdn(proj) => {
+                let entry = gdn.entry((layer, proj)).or_default();
+                set_ab(
+                    &mut entry[ab as usize],
+                    name,
+                    &format!("layer {layer} gdn {proj:?}"),
+                )?;
+            }
             LoraTarget::Router => {
                 let entry = router.entry(layer).or_default();
                 set_ab(
@@ -105,8 +116,52 @@ pub(crate) fn audit_adapter(
     // Stage-2 build), not blanket-rejected. Only the classic low-rank embedding
     // LoRA (`lora_embedding_A/B`) remains a Tier-2 NAMED reject.
     reject_pending_overlay(&overlay)?;
-    if found.is_empty() && !expert_pack::present(&router, &experts) && overlay.is_empty() {
+    if found.is_empty()
+        && gdn.is_empty()
+        && !expert_pack::present(&router, &experts)
+        && overlay.is_empty()
+    {
         bail!("REJECT[empty-adapter]: no lora_A/lora_B or overlay tensors in adapter");
+    }
+
+    // GDN raw pair completeness + shape audit (A=[r, hidden], B=[out, r] per
+    // raw projection) + the FUSED-rank pool requirement: the pack fuses two
+    // raws into one block-diagonal rank-2r pair, so the pool must pad to 2r.
+    if !gdn.is_empty() && 2 * peft.r > max_lora_rank {
+        bail!(
+            "REJECT[gdn-fused-rank-exceeds-pool]: adapter targets GDN in_proj_* \
+             (fused pack rank = 2*r = {}), but the pool rank is {} — raise \
+             --max-lora-rank to at least {}",
+            2 * peft.r,
+            max_lora_rank,
+            2 * peft.r
+        );
+    }
+    for ((layer, proj), pair) in &gdn {
+        let [Some(a_key), Some(b_key)] = pair else {
+            bail!(
+                "REJECT[unpaired-tensor]: layer {layer} gdn {proj:?} has only one of lora_A/lora_B"
+            );
+        };
+        let out_dim = proj.out_dim(cfg);
+        let a = adapter_store.get(a_key)?;
+        let b = adapter_store.get(b_key)?;
+        if a.shape != vec![peft.r, cfg.hidden_size] {
+            bail!(
+                "REJECT[shape-mismatch]: '{a_key}' is {:?}, expected [{}, {}] (r, hidden)",
+                a.shape,
+                peft.r,
+                cfg.hidden_size
+            );
+        }
+        if b.shape != vec![out_dim, peft.r] {
+            bail!(
+                "REJECT[shape-mismatch]: '{b_key}' is {:?}, expected [{}, {}] (out_dim, r)",
+                b.shape,
+                out_dim,
+                peft.r
+            );
+        }
     }
 
     // 2) attention pair completeness + shape audit. PEFT: A=[r, in], B=[out, r].
@@ -147,8 +202,8 @@ pub(crate) fn audit_adapter(
     if gdn_skipped > 0 {
         tracing::warn!(
             "LoRA PARTIAL LOAD: skipped {gdn_skipped} GDN/linear-attention tensor(s) \
-             (out_proj / in_proj_*) — these layers have no v0 delta path, so that \
-             part of the adapter is NOT applied."
+             (conv1d / norms — out_proj and in_proj_* ARE applied) — that part of \
+             the adapter is NOT applied."
         );
     }
 
@@ -157,6 +212,7 @@ pub(crate) fn audit_adapter(
         let last = t.rsplit('.').next().unwrap_or(t);
         let matched = found.keys().any(|(_, m)| m.peft_name() == last)
             || (last == "gate" && !router.is_empty())
+            || (super::gdn_fuse::RAW_PEFT_NAMES.contains(&last) && !gdn.is_empty())
             || experts.keys().any(|(_, _, p)| p.peft_name() == last);
         if !matched {
             // Under ATLAS_LORA_ALLOW_PARTIAL the user has already been warned,
@@ -179,6 +235,7 @@ pub(crate) fn audit_adapter(
     }
     Ok(AuditedAdapter {
         attn: found,
+        gdn,
         router,
         experts,
         overlay,

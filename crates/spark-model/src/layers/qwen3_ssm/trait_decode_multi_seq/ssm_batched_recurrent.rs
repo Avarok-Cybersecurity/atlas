@@ -148,6 +148,8 @@ impl Qwen3SsmLayer {
             let gates = ctx.buffers.ssm_gates();
             let beta_fp32 = gates.offset(nv * 4);
             let gate_stride = (nv * 2) as u32;
+            let (ba_delta, ba_scale) =
+                self.compute_lora_gdn_ba(ctx, normed_base, n as u32, stream)?;
             ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
                 self.ba_gates_prefill_k,
@@ -163,6 +165,9 @@ impl Qwen3SsmLayer {
                 gate_stride,
                 nv as u32,
                 vpg as u32,
+                ba_delta,
+                ba_size,
+                ba_scale,
                 stream,
             )?;
             detail_step!("recurrent_batched_ba");
@@ -405,6 +410,8 @@ impl Qwen3SsmLayer {
                 } else {
                     None
                 };
+                let (ba_delta, ba_scale) =
+                    self.compute_lora_gdn_ba(ctx, normed_i, 1, stream)?;
                 ops::dense_gemv_ba_gates(
                     ctx.gpu,
                     self.ba_gates_k,
@@ -417,6 +424,8 @@ impl Qwen3SsmLayer {
                     ba_size,
                     h as u32,
                     vpg as u32,
+                    ba_delta,
+                    ba_scale,
                     stream,
                 )?;
                 if let Some(t0) = sub_t0 {

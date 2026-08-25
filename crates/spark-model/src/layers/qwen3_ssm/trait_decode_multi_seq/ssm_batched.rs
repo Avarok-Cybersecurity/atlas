@@ -334,6 +334,10 @@ impl Qwen3SsmLayer {
         }
         detail_step!("qkvz");
 
+        // LoRA GDN in-proj: fused qkv+z delta into the deinterleaved rows
+        // before conv1d / gated norm (no-op base; placement mirrors ssm_forward).
+        self.apply_lora_gdn_qkvz(ctx, normed_base, deinterleaved, n as u32, stream)?;
+
         // ── 3. Recurrent inner ──
         // Default: per-seq, byte-identical to ssm_forward. Experimental path:
         // use existing batch dimensions for BA/gates, conv, GDN, and gated norm

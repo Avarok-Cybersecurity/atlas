@@ -350,6 +350,14 @@ impl TransformerModel {
                 if let Some(pair) = layer_weights.out_proj {
                     ssm.set_out_proj_lora(pair, kernels);
                 }
+                // GDN input-side fused deltas (qkv+z / b+a) — linear-attention
+                // layers only; applied pre-recurrence on every serving arm.
+                if layer_weights.gdn_qkvz.is_some() || layer_weights.gdn_ba.is_some() {
+                    ssm.set_gdn_in_lora(
+                        layer_weights.gdn_qkvz.map(|p| (p, kernels)),
+                        layer_weights.gdn_ba.map(|p| (p, kernels)),
+                    );
+                }
                 if has_moe {
                     ssm.set_moe_lora_weights(
                         layer_weights.router,

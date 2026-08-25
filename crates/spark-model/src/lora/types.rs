@@ -28,10 +28,20 @@ pub enum LoraModule {
     /// GDN block OUTPUT projection (`linear_attn.out_proj`), value_dim ->
     /// hidden. Not `OProj`: different contract dim, disjoint layer set.
     OutProj,
+    /// FUSED GDN input projection delta: `in_proj_qkv` + `in_proj_z` packed as
+    /// one block-diagonal rank-2r pair over the loader's row-concatenated
+    /// sequential `[Q|K|V|Z]` output (hidden -> qkvz_size). Applied to the
+    /// deinterleaved buffer BEFORE conv1d / gated norm.
+    GdnQkvz,
+    /// FUSED GDN BA projection delta: `in_proj_b` + `in_proj_a` packed as one
+    /// block-diagonal rank-2r pair with B rows PERMUTED into the loader's
+    /// interleaved beta/alpha layout (hidden -> 2*num_v_heads). Consumed as a
+    /// pre-transform additive input by the fused BA-gates kernels.
+    GdnBa,
 }
 
 impl LoraModule {
-    pub const ALL: [LoraModule; 8] = [
+    pub const ALL: [LoraModule; 10] = [
         Self::QProj,
         Self::KProj,
         Self::VProj,
@@ -40,6 +50,8 @@ impl LoraModule {
         Self::UpProj,
         Self::DownProj,
         Self::OutProj,
+        Self::GdnQkvz,
+        Self::GdnBa,
     ];
 
     /// Dense SwiGLU FFN module — see [`Self::applies_to_layer`].
@@ -50,6 +62,13 @@ impl LoraModule {
     /// Whether this module is the GDN block's output projection.
     pub fn is_gdn_out(&self) -> bool {
         matches!(self, Self::OutProj)
+    }
+
+    /// Whether this module is one of the FUSED GDN input-side deltas. These
+    /// pairs are packed at 2x the adapter rank (block-diagonal fusion of two
+    /// PEFT tensors), which the pool's `max_rank` derivation must cover.
+    pub fn is_gdn_in(&self) -> bool {
+        matches!(self, Self::GdnQkvz | Self::GdnBa)
     }
 
     /// Which layers may carry this module: attention q/k/v/o on full-attention
@@ -63,7 +82,7 @@ impl LoraModule {
         if self.is_dense_ffn() {
             // MoE `mlp.*` is the routed-expert path, packed separately.
             cfg.num_experts == 0
-        } else if self.is_gdn_out() {
+        } else if self.is_gdn_out() || self.is_gdn_in() {
             !full_attn
         } else {
             full_attn
@@ -81,6 +100,12 @@ impl LoraModule {
             Self::UpProj => "up_proj",
             Self::DownProj => "down_proj",
             Self::OutProj => "out_proj",
+            // Synthetic names for the FUSED pack-time modules; the PEFT
+            // vocabulary names their four RAW halves (in_proj_qkv / in_proj_z
+            // / in_proj_a / in_proj_b), matched in `validate_peft_config` /
+            // audit reverse-check via `gdn_fuse::RAW_PEFT_NAMES`.
+            Self::GdnQkvz => "in_proj_qkvz",
+            Self::GdnBa => "in_proj_ba",
         }
     }
 
@@ -106,6 +131,9 @@ impl LoraModule {
             // GDN out_proj contracts over the SSM value width, NOT over
             // hidden or over the attention head width.
             Self::OutProj => (h, cfg.linear_num_value_heads * cfg.linear_value_head_dim),
+            // Fused input-side deltas: hidden in, fused projection width out.
+            Self::GdnQkvz => (cfg.ssm_qkvz_size(), h),
+            Self::GdnBa => (cfg.ssm_ba_size(), h),
         }
     }
 }
@@ -134,6 +162,11 @@ pub struct LoraLayerWeights {
     pub down_proj: Option<LoraPair>,
     /// GDN out_proj delta (linear-attention layers only).
     pub out_proj: Option<LoraPair>,
+    /// FUSED GDN qkv+z input-projection delta (linear-attention layers only).
+    pub gdn_qkvz: Option<LoraPair>,
+    /// FUSED GDN b+a (interleaved BA) projection delta (linear-attention
+    /// layers only).
+    pub gdn_ba: Option<LoraPair>,
     /// Feature-1: MoE router (`mlp.gate`) delta on the routing logits. `None`
     /// unless the adapter targets the router AND `ATLAS_LORA_EXPERTS=1`.
     pub router: Option<LoraPair>,
@@ -160,6 +193,8 @@ impl LoraLayerWeights {
             up_proj: None,
             down_proj: None,
             out_proj: None,
+            gdn_qkvz: None,
+            gdn_ba: None,
             router: None,
             experts: None,
         }
@@ -307,6 +342,8 @@ impl LoraLayerWeights {
             LoraModule::UpProj => self.up_proj.as_ref(),
             LoraModule::DownProj => self.down_proj.as_ref(),
             LoraModule::OutProj => self.out_proj.as_ref(),
+            LoraModule::GdnQkvz => self.gdn_qkvz.as_ref(),
+            LoraModule::GdnBa => self.gdn_ba.as_ref(),
         }
     }
 }
@@ -437,6 +474,8 @@ impl LoraWeights {
                     LoraModule::UpProj => lw.up_proj.as_ref(),
                     LoraModule::DownProj => lw.down_proj.as_ref(),
                     LoraModule::OutProj => lw.out_proj.as_ref(),
+                    LoraModule::GdnQkvz => lw.gdn_qkvz.as_ref(),
+                    LoraModule::GdnBa => lw.gdn_ba.as_ref(),
                 });
             let (a_ptr, b_ptr) = pair.map(|p| (p.a.weight.0, p.b.weight.0)).unwrap_or((0, 0));
             gpu.copy_h2d(&a_ptr.to_le_bytes(), DevicePtr(a_dev.0 + (slot * 8) as u64))?;

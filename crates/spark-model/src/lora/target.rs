@@ -78,6 +78,46 @@ pub enum LoraTarget {
     Router,
     /// One routed expert's projection (`mlp.experts.{n}.{proj}`).
     Expert { n: u16, proj: ExpertProj },
+    /// A GDN / linear-attention INPUT-side projection. Classified at RAW
+    /// granularity (the four separate PEFT tensors), then FUSED at pack time
+    /// into the two runtime modules ([`LoraModule::GdnQkvz`] /
+    /// [`LoraModule::GdnBa`]) that match the loader's row-concatenated /
+    /// interleaved base weights.
+    Gdn(GdnProj),
+}
+
+/// One raw GDN input-side projection as it appears in a PEFT checkpoint.
+/// The runtime never sees these individually — the loader fuses `in_proj_qkv`
+/// + `in_proj_z` into one sequential `[Q|K|V|Z]` weight and `in_proj_a` +
+/// `in_proj_b` into the interleaved BA weight, and the LoRA pack mirrors both
+/// fusions (block-diagonal rank-2r pairs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GdnProj {
+    Qkv,
+    Z,
+    A,
+    B,
+}
+
+impl GdnProj {
+    /// Output dim of the RAW on-disk projection (rows of its lora_B).
+    pub fn out_dim(&self, cfg: &ModelConfig) -> usize {
+        let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
+        let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
+        match self {
+            Self::Qkv => 2 * key_dim + value_dim,
+            Self::Z => value_dim,
+            Self::A | Self::B => cfg.linear_num_value_heads,
+        }
+    }
+
+    /// The fused runtime module this raw projection lands in.
+    pub fn fused_module(&self) -> LoraModule {
+        match self {
+            Self::Qkv | Self::Z => LoraModule::GdnQkvz,
+            Self::A | Self::B => LoraModule::GdnBa,
+        }
+    }
 }
 
 /// One MoE layer's routed-expert LoRA coverage: a SPARSE map keyed by

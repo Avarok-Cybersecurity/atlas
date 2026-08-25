@@ -29,6 +29,8 @@ impl Qwen3SsmLayer {
             post_attn_norm,
             ffn,
             lora_out_proj: None,
+            lora_gdn_qkvz: None,
+            lora_gdn_ba: None,
             qkvz_nvfp4,
             qkvz_nvfp4_t: None,
             out_proj_nvfp4_t: None,

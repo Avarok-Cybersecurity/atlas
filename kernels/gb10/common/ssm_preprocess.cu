@@ -392,7 +392,13 @@ extern "C" __global__ void dense_gemv_ba_gates(
     float* __restrict__ beta_out,                // [num_v_heads] FP32 sigmoid
     unsigned int N,                              // 64
     unsigned int K,                              // 2048
-    unsigned int vheads_per_group                // 2
+    unsigned int vheads_per_group,               // 2
+    // LoRA: optional RAW (unscaled) BA-projection delta in the SAME
+    // interleaved row order as B, added to the accumulator BEFORE the
+    // gate/beta transforms (a post-transform add would be wrong — the
+    // nonlinearities do not commute). NULL = no delta (base path).
+    const __nv_bfloat16* __restrict__ ba_delta,  // [N] or NULL
+    float ba_delta_scale                         // adapter alpha/r
 ) {
     const unsigned int threads_per_out = 256 / 4;  // 64
     const unsigned int local_out = threadIdx.x / threads_per_out;
@@ -441,6 +447,9 @@ extern "C" __global__ void dense_gemv_ba_gates(
     // Apply gate/beta transforms and write directly to output
     if (lane == 0) {
         float result = smem[local_out * 2] + smem[local_out * 2 + 1];
+        if (ba_delta != nullptr) {
+            result += ba_delta_scale * __bfloat162float(ba_delta[n]);
+        }
         unsigned int group_dim_ba = 2 * vheads_per_group;
         unsigned int within_group = n % group_dim_ba;
         unsigned int group = n / group_dim_ba;
@@ -491,7 +500,12 @@ extern "C" __global__ void dense_gemm_ba_gates_prefill(
     unsigned int K_stride,        // BF16 elements per token in A (= K for dense)
     unsigned int gate_stride,     // FP32 elements per token in gate_out (= 2*nv)
     unsigned int nv,              // num_v_heads (32)
-    unsigned int vheads_per_group // 2
+    unsigned int vheads_per_group,// 2
+    // LoRA: optional RAW (unscaled) BA-projection delta, [M, delta_stride]
+    // BF16 in B's interleaved row order, added pre-transform. NULL = none.
+    const __nv_bfloat16* __restrict__ ba_delta,
+    unsigned int ba_delta_stride, // BF16 elements between tokens (= N)
+    float ba_delta_scale          // adapter alpha/r
 ) {
     const unsigned int threads_per_out = 256 / 4;  // 64 (2 warps per output)
     const unsigned int local_out = threadIdx.x / threads_per_out;  // 0..3
@@ -541,6 +555,11 @@ extern "C" __global__ void dense_gemm_ba_gates_prefill(
     // Apply gate/beta transforms and write to interleaved output
     if (lane == 0) {
         float result = smem[local_out * 2] + smem[local_out * 2 + 1];
+        if (ba_delta != nullptr) {
+            result += ba_delta_scale
+                * __bfloat162float(
+                      ba_delta[(unsigned long long)token * ba_delta_stride + n]);
+        }
         unsigned int group_dim_ba = 2 * vheads_per_group;
         unsigned int within_group = n % group_dim_ba;
         unsigned int group = n / group_dim_ba;

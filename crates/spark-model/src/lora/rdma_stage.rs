@@ -50,6 +50,15 @@ pub fn build_land_targets(
                  slot-swap stages the attention pool only",
                 rec.name
             ),
+            // GDN in_proj deltas are FUSED at pack time (two raw tensors →
+            // one block-diagonal rank-2r pair); the raw on-wire tensor has no
+            // 1:1 pool landing region, so RDMA staging cannot place it.
+            LoraTarget::Gdn(_) => bail!(
+                "lora rdma: '{}' is a GDN in_proj delta (pack-time fused); RDMA \
+                 slot-swap cannot stage fused pairs — load it as a resident \
+                 --lora-adapter or via the disk-stageable path instead",
+                rec.name
+            ),
         };
         let (a_off, b_off) = module_slot_offsets(cfg, max_rank, layer, module)
             .ok_or_else(|| anyhow!("lora rdma: layer {layer} not a full-attention slot layer"))?;
@@ -160,6 +169,11 @@ pub fn rebuild_slot_layers(
                     LoraModule::UpProj => lw.up_proj = Some(pair),
                     LoraModule::DownProj => lw.down_proj = Some(pair),
                     LoraModule::OutProj => lw.out_proj = Some(pair),
+                    // Unreachable: classify never emits the fused modules and
+                    // the Gdn(_) target is rejected above.
+                    LoraModule::GdnQkvz | LoraModule::GdnBa => bail!(
+                        "lora rdma: fused GDN module cannot be RDMA-staged"
+                    ),
                 }
                 any = true;
             }

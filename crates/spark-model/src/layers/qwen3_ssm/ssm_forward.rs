@@ -175,6 +175,10 @@ impl Qwen3SsmLayer {
             Self::debug_bf16(ctx.gpu, "deinterleaved-Q", deinterleaved, 4);
         }
 
+        // LoRA GDN in-proj: fold the fused qkv+z delta into the deinterleaved
+        // buffer BEFORE conv1d / gated norm consume it (no-op without adapter).
+        self.apply_lora_gdn_qkvz(ctx, normed, deinterleaved, 1, stream)?;
+
         // Sequential offsets into deinterleaved buffer: [Q_2048 | K_2048 | V_4096 | Z_4096]
         let key_dim = nk * kd; // 2048
         let value_dim = nv * vd; // 4096
@@ -187,6 +191,9 @@ impl Qwen3SsmLayer {
         let ba_size = ctx.config.ssm_ba_size() as u32;
         let gates = ctx.buffers.ssm_gates();
         let beta_fp32 = gates.offset(nv * 4); // FP32, after gate[nv]
+        // LoRA GDN in-proj: raw fused b+a delta, folded pre-transform inside
+        // the gates kernel ((null, 0.0) without an adapter).
+        let (ba_delta, ba_scale) = self.compute_lora_gdn_ba(ctx, normed, 1, stream)?;
         prof!("ba_gates", {
             ops::dense_gemv_ba_gates(
                 ctx.gpu,
@@ -200,6 +207,8 @@ impl Qwen3SsmLayer {
                 ba_size,
                 h,
                 vpg as u32,
+                ba_delta,
+                ba_scale,
                 stream,
             )
         })?;
