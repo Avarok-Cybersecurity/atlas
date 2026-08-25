@@ -28,6 +28,7 @@
      on paper, so this is a small accessibility gain rather than a trade. */
   --accent: #9271f4;      /* violet — links, labels, anything read as text */
   --accent-fill: #662af4; /* solid backgrounds that carry white text */
+  --accent-fill-hover: #560dd3; /* deepens on hover, so white gains contrast rather than losing it */
   --accent-deep: #b39bf7; /* brighter still: emphasis on a dark canvas */
   --accent-soft: rgba(146,113,244,0.16);
   --green: #4ade80;       /* verify */
@@ -157,7 +158,7 @@ nav {
 .hero-cmd .prompt { color: var(--accent); font-weight: 700; font-family: var(--font-mono); }
 .hero-cmd code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 0.82rem; color: var(--t1); overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
 .copy-btn {
-  flex-shrink: 0; background: var(--accent-soft); color: var(--accent);
+  flex-shrink: 0; background: var(--accent-soft); color: var(--accent-deep);
   border: 1px solid rgba(124, 92, 255,0.3); border-radius: 6px; padding: 0.35rem 0.7rem;
   font-size: 0.7rem; font-weight: 700; cursor: pointer; font-family: var(--font-mono);
   letter-spacing: 0.03em; transition: background 0.15s, color 0.15s;
@@ -262,9 +263,9 @@ nav {
 .mnav-subs { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.1rem; }
 .mnav-sub { display: inline-flex; align-items: center; gap: 0.4rem; background: var(--bg2); border: 1px solid var(--border); color: var(--t2); border-radius: 7px; padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
 .mnav-sub:hover { border-color: var(--accent); color: var(--t1); }
-.mnav-sub.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.mnav-sub.is-active { color: var(--accent-deep); border-color: var(--accent); background: var(--accent-soft); }
 .mnav-sub-count { font-size: 0.62rem; font-weight: 700; background: rgba(0, 0, 0,0.1); color: var(--t3); border-radius: 999px; padding: 0.05rem 0.4rem; }
-.mnav-sub.is-active .mnav-sub-count { background: rgba(124, 92, 255,0.18); color: var(--accent); }
+.mnav-sub.is-active .mnav-sub-count { background: rgba(124, 92, 255,0.18); color: var(--accent-deep); }
 .ms-famcard { position: relative; overflow: hidden; padding: 0; }
 .ms-accent { height: 4px; width: 100%; background: var(--bar); }
 .ms-famhead { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: 1.4rem 1.6rem 0.9rem; flex-wrap: wrap; }
@@ -286,7 +287,7 @@ nav {
 .subcard-hf { font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmd-pill { display: flex; align-items: center; gap: 0.5rem; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 7px; padding: 0.4rem 0.4rem 0.4rem 0.65rem; margin-top: auto; }
 .cmd-text { flex: 1; min-width: 0; font-family: var(--font-mono); color: var(--accent-deep); font-size: 0.7rem; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
-.cmd-copy { flex-shrink: 0; background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(124, 92, 255,0.3); border-radius: 5px; padding: 0.28rem 0.55rem; font-size: 0.66rem; font-weight: 700; cursor: pointer; font-family: var(--font-mono); transition: background 0.15s, color 0.15s; }
+.cmd-copy { flex-shrink: 0; background: var(--accent-soft); color: var(--accent-deep); border: 1px solid rgba(124, 92, 255,0.3); border-radius: 5px; padding: 0.28rem 0.55rem; font-size: 0.66rem; font-weight: 700; cursor: pointer; font-family: var(--font-mono); transition: background 0.15s, color 0.15s; }
 .cmd-copy:hover { background: var(--accent-fill); color: #fff; }
 
 /* ---- run button + agent panel --------------------------------------------
@@ -295,7 +296,7 @@ nav {
    worked", because for most visitors there is no agent yet and that is not an
    error. */
 .cmd-run { flex-shrink: 0; background: var(--accent-fill); color: #fff; border: 1px solid var(--accent-fill); border-radius: 5px; padding: 0.28rem 0.6rem; font-size: 0.66rem; font-weight: 700; cursor: pointer; font-family: var(--font-mono); transition: background 0.15s, opacity 0.15s; }
-.cmd-run:hover:not(:disabled) { background: var(--accent); }
+.cmd-run:hover:not(:disabled) { background: var(--accent-fill-hover); }
 .cmd-run:disabled { opacity: 0.45; cursor: not-allowed; }
 .run-panel { margin-top: 0.6rem; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 0.8rem 0.95rem; font-size: 0.76rem; color: var(--t2); line-height: 1.6; }
 .run-panel p { margin: 0 0 0.5rem; }
@@ -435,7 +436,7 @@ section { padding: 7rem 2rem; }
 }
 .method-card, .hw-card, .contrib-card, .road-card, .tcard { background: var(--card); }
 .hw-card { padding: 2rem; }
-.subcard { background: #fff; border-color: rgba(58, 48, 84, 0.5); border-radius: 12px; }
+.subcard { background: var(--card); border-color: rgba(58, 48, 84, 0.5); border-radius: 12px; }
 .chip { text-transform: none; letter-spacing: 0; }
 
 /* hero air */
@@ -477,7 +478,7 @@ section { padding: 7rem 2rem; }
 .email-btn-addr { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.7rem 0.9rem; font-family: var(--font-mono); font-size: 0.86rem; font-weight: 600; color: var(--t1); text-decoration: none; }
 .email-btn-addr:hover { color: var(--accent); }
 .email-ico { color: var(--accent); }
-.email-btn-copy { border: 0; border-left: 1px solid var(--border-strong); background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; padding: 0 0.85rem; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.email-btn-copy { border: 0; border-left: 1px solid var(--border-strong); background: var(--accent-soft); color: var(--accent-deep); font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; padding: 0 0.85rem; cursor: pointer; transition: background 0.15s, color 0.15s; }
 .email-btn-copy:hover { background: var(--accent); color: #fff; }
 
 /* reach out — inviting */

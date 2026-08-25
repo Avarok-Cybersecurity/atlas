@@ -36,13 +36,13 @@
   position: absolute; top: -0.55rem; right: -0.4rem; z-index: 2;
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.24rem 0.55rem; border-radius: 999px;
-  background: var(--accent); color: #fff;
+  background: var(--accent-fill); color: #fff;
   font-family: var(--font-mono); font-size: 0.62rem; font-weight: 800;
   letter-spacing: 0.1em; text-transform: uppercase;
   box-shadow: var(--shadow-sm); transition: background 0.16s ease;
 }
 .receipt-hit:hover .receipt-chip,
-.receipt-hit:focus-visible .receipt-chip { background: var(--accent-deep); }
+.receipt-hit:focus-visible .receipt-chip { background: var(--accent-fill-hover); }
 
 /* Hint reads as a button, not a caption. */
 .receipt-open-hint {

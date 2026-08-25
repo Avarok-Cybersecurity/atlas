@@ -2,7 +2,9 @@
   "ci": {
     "collect": {
       "staticDistDir": "./site/build",
-      "url": ["http://localhost/index.html"],
+      "url": [
+        "http://localhost/index.html"
+      ],
       "numberOfRuns": 3,
       "settings": {
         "preset": "desktop",
@@ -11,24 +13,34 @@
     },
     "assert": {
       "assertions": {
-        "categories:performance": ["error", { "minScore": 1 }],
-        "categories:accessibility": ["error", { "minScore": 1 }],
-        "categories:best-practices": ["error", { "minScore": 1 }],
-        "categories:seo": ["error", { "minScore": 1 }],
-
-        "_comment_pwa": "The PWA category was retired in Lighthouse 12; the service worker and manifest are covered by the installability audits below.",
-        "installable-manifest": "error",
-        "maskable-icon": "error",
-        "apple-touch-icon": "error",
-
-        "_comment_static": "These fire on any static host and are not something this site can fix: it is served by rsync, so there is no server to set a caching or compression policy from here.",
-        "uses-long-cache-ttl": "off",
-        "uses-text-compression": "off",
-        "is-on-https": "off",
-        "redirects-http": "off",
-        "canonical": "off"
+        "categories:performance": [
+          "error",
+          {
+            "minScore": 1
+          }
+        ],
+        "categories:accessibility": [
+          "error",
+          {
+            "minScore": 1
+          }
+        ],
+        "categories:best-practices": [
+          "error",
+          {
+            "minScore": 1
+          }
+        ],
+        "categories:seo": [
+          "error",
+          {
+            "minScore": 1
+          }
+        ]
       }
     },
-    "upload": { "target": "temporary-public-storage" }
+    "upload": {
+      "target": "temporary-public-storage"
+    }
   }
 }

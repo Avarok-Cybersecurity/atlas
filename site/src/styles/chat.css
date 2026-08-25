@@ -240,7 +240,7 @@
 .cc-error-retry {
   margin-top: 0.6rem; padding: 0.4rem 0.85rem; cursor: pointer;
   font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
-  color: var(--accent); background: var(--accent-soft);
+  color: var(--accent-deep); background: var(--accent-soft);
   border: 1px solid rgba(124, 92, 255, 0.3); border-radius: 6px;
   transition: background 0.15s, color 0.15s;
 }

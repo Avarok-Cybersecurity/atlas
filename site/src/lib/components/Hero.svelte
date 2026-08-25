@@ -78,7 +78,7 @@
         onpointerenter={preloadDashboard}
         onfocus={preloadDashboard}
         aria-haspopup="dialog"
-        aria-label="Open the benchmark dashboard"
+        aria-label="View the benchmark dashboard"
       >
         <span class="receipt-chip" aria-hidden="true">⤢ expand</span>
         <Receipt compact={true} />
