@@ -26,21 +26,38 @@ use crate::weight_map::DenseWeight;
 /// rejected (no validated mapping). NOTE: `qwen3_5_moe` on disk is rewritten to
 /// `qwen3_6_moe` at parse time (dispatch.rs, MRoPE MoE), so we gate the
 /// post-dispatch name — the on-disk `qwen3_5_moe` never reaches here.
+///
+/// `laguna` (Laguna-S-2.1, MoE) is admitted too: its dedicated
+/// `LagunaWeightLoader` builds every layer as the SAME `Qwen3AttentionLayer`
+/// (via `load_attention`, `new_ungated`) wrapping a standard `MoeLayer`
+/// (`load_moe_ffn`) — structurally identical to the qwen3_6_moe trunk the
+/// install walk targets, so the attention q/k/v/o + MoE expert-down/router
+/// install downcasts land exactly as on qwen3_6_moe. The lone dense layer
+/// (`mlp_only_layers=[0]`) has no experts; `classify_key` naturally skips its
+/// MoE keys. (This is the fragile-string-gate pattern flagged for a later
+/// capability-predicate refactor — laguna == qwen3_6_moe trunk + a different
+/// model_type label.)
 fn check_family(cfg: &ModelConfig) -> Result<()> {
     if !(cfg.is_qwen35_dense()
         || cfg.model_type == "holo3_1_moe"
-        || cfg.model_type == "qwen3_6_moe")
+        || cfg.model_type == "qwen3_6_moe"
+        || cfg.model_type == "laguna")
     {
         bail!(
             "REJECT[unvalidated-family]: LoRA v0 is validated on qwen3_5 dense \
-             (holo-3.1-0.8b), holo3_1_moe (holo-3.1-35b-a3b), and qwen3_6_moe \
-             (Qwen3.6-35B-A3B) only; model_type='{}', num_experts={}",
+             (holo-3.1-0.8b), holo3_1_moe (holo-3.1-35b-a3b), qwen3_6_moe \
+             (Qwen3.6-35B-A3B), and laguna (Laguna-S-2.1) only; model_type='{}', \
+             num_experts={}",
             cfg.model_type,
             cfg.num_experts
         );
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "loading_tests.rs"]
+mod tests;
 
 /// Pack one already-audited adapter into pool `slot` (byte sub-region at base
 /// `slot * pool_slot_bytes`). The intra-slot walk (layer asc ×

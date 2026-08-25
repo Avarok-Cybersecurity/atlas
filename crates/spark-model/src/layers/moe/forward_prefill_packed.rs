@@ -102,7 +102,22 @@ impl MoeLayer {
         // kill-switch = `ctx.dispatch.packed_decode_fused` (resolved once at
         // model build — no env read here, so the captured branch is stable).
         const DECODE_FUSED_MAX_SLOTS: u32 = 32; // ~n<=2 at top_k=10
+        // A resident gate/up expert LoRA cannot be folded on the fused arm: the
+        // decode kernel fuses gate+up+silu and writes ONLY the post-silu product
+        // (moe_q4k_decode_fused.cu) — there is no pre-silu gate/up buffer to fold
+        // onto. Force the grouped arm (which materializes separate
+        // expert_gate_out/expert_up_out) whenever a gate/up delta is INSTALLED.
+        // Gate on RESIDENCY (self.lora routes), NOT the per-request Fold/Skip
+        // route, so a resident adapter set keeps the captured decode graph on ONE
+        // arm (matches the fused kernel's single-arm capture contract). Down-only
+        // and router-only adapters keep the fast fused path (their folds run in
+        // the caller — forward_prefill.rs router/down — unaffected).
+        let gateup_adapter = self
+            .lora
+            .as_ref()
+            .is_some_and(|l| l.gate_route.is_some() || l.up_route.is_some());
         if total_expanded <= DECODE_FUSED_MAX_SLOTS
+            && !gateup_adapter
             && self.q4k_decode_gate_up_k.0 != 0
             && self.q4k_decode_down_k.0 != 0
             && ctx.dispatch.packed_decode_fused
@@ -191,6 +206,24 @@ impl MoeLayer {
             h,
             num_experts,
             total_expanded,
+            stream,
+        )?;
+        // GGUF LoRA parity: fold the routed-expert gate/up_proj LoRA deltas onto
+        // the sorted expert_gate_out/expert_up_out BEFORE silu_mul consumes them
+        // in place — exact mirror of the NVFP4 arm (forward_prefill_routed.rs).
+        // x = token-major expert_input, gathered per sorted row. No-op unless a
+        // gate/up delta is installed AND the request routes Fold. The delta is an
+        // output-space fold, so it is BF16-ULP identical to the validated NVFP4
+        // fold regardless of the Q4_K/Q6_K base quant. Router + expert-down folds
+        // already fire in the caller, outside this packed early-return.
+        self.apply_expert_lora_prefill_gateup(
+            expert_gate_out,
+            expert_up_out,
+            expert_input,
+            expert_offsets,
+            sorted_token_ids,
+            total_expanded,
+            ctx,
             stream,
         )?;
         // SiLU(gate) * up over the whole sorted buffer (one launch).
