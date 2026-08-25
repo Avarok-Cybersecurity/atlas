@@ -49,6 +49,17 @@ pub enum WeightDtype {
     PackedQ2_0 {
         group: u16,
     },
+    /// Keep-packed GGUF K-quant Q4_K (ggml id 12): raw 144-byte super-blocks of
+    /// 256 elements (fp16 d + fp16 dmin + 12B of 6-bit scales/mins + 128B of
+    /// 4-bit codes) stay packed in VRAM, dequantized in-kernel by the Q4_K MMQ
+    /// GEMM. Produced by the GGUF loader's keep-packed path for the routed MoE
+    /// experts (Laguna-S-2.1 Q4_K_M). Block-based footprint → `byte_size`
+    /// returns 0 here and [`WeightTensor::byte_size`] computes the real size.
+    PackedQ4K,
+    /// Keep-packed GGUF K-quant Q6_K (ggml id 14): raw 210-byte super-blocks of
+    /// 256 elements. Same keep-packed contract as [`WeightDtype::PackedQ4K`];
+    /// used for the Q4_K_M `ffn_down_exps` (the dominant Q6_K mass).
+    PackedQ6K,
 }
 
 impl WeightDtype {
@@ -64,6 +75,8 @@ impl WeightDtype {
             Self::UInt8 => 1,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
+            // Block-based (256-elem super-blocks); real size via WeightTensor.
+            Self::PackedQ4K | Self::PackedQ6K => 0,
         }
     }
 
@@ -144,6 +157,9 @@ impl WeightTensor {
                 let n_blocks = self.num_elements() / g.max(1);
                 n_blocks * (2 + g / 4)
             }
+            // GGUF K-quants: 256 elems/super-block, 144B (Q4_K) / 210B (Q6_K).
+            WeightDtype::PackedQ4K => (self.num_elements() / 256) * 144,
+            WeightDtype::PackedQ6K => (self.num_elements() / 256) * 210,
             d => self.num_elements() * d.byte_size(),
         }
     }
@@ -159,6 +175,16 @@ impl WeightTensor {
     /// True if this tensor holds keep-packed ternary Q2_0 blocks (id 42).
     pub fn is_packed_q2(&self) -> bool {
         matches!(self.dtype, WeightDtype::PackedQ2_0 { .. })
+    }
+
+    /// True if this tensor holds keep-packed GGUF Q4_K super-blocks (id 12).
+    pub fn is_packed_q4k(&self) -> bool {
+        matches!(self.dtype, WeightDtype::PackedQ4K)
+    }
+
+    /// True if this tensor holds keep-packed GGUF Q6_K super-blocks (id 14).
+    pub fn is_packed_q6k(&self) -> bool {
+        matches!(self.dtype, WeightDtype::PackedQ6K)
     }
 }
 

@@ -70,6 +70,11 @@ pub struct BufferSizes {
     pub ffn_act_q8: usize,
     pub ffn_act_a: usize,
     pub ffn_act_scale: usize,
+    /// q8_1_mmq activation scratch for the keep-packed GGUF grouped MoE
+    /// (Laguna Q4_K_M). Sized for the whole sorted buffer [k_max*top_k rows
+    /// padded to 128, K=hidden] so gate/up/down quantize once per layer without
+    /// a per-call alloc (CUDA-graph-safe). 0 for non-MoE models.
+    pub moe_grouped_q8: usize,
     /// FP8 block-scaled activation scratch for prefill projections (qkv / o /
     /// ssm-qkvz). Persistent so the W8A8+FP32-epilogue path stops doing a
     /// per-projection cuMemAlloc + cuStreamSynchronize + cuMemFree. 1 byte/elem.
@@ -233,6 +238,17 @@ impl BufferSizes {
         };
         let expert_gate_out = expert_inter * bf16;
         let expert_up_out = expert_inter * bf16;
+        // Grouped keep-packed MoE q8_1 activation scratch: [padded(k_max*top_k), h]
+        // q8_1_mmq = rows*kpad*4 + 1MB (matches ops::q8_1_scratch_bytes). Only the
+        // keep-packed GGUF path uses it; harmless (small) for other MoE models.
+        let moe_grouped_q8 = if config.num_experts > 0 {
+            let te = k_max * config.num_experts_per_tok;
+            let te_pad = te.next_multiple_of(128);
+            let kpad = h.div_ceil(256) * 256;
+            te_pad * kpad * 4 + (1 << 20)
+        } else {
+            0
+        };
         // Routed expert down output: [k_max * top_k, moe_input_size].
         // For LatentMoE (Super 120B), routed experts output in latent space.
         let moe_out_dim = config.moe_input_size();
@@ -443,6 +459,7 @@ impl BufferSizes {
             expert_gate_out,
             expert_up_out,
             expert_down_out,
+            moe_grouped_q8,
             splitk_workspace,
             gdn_fla_scratch,
             ssd_scratch,

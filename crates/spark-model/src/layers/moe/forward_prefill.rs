@@ -203,6 +203,27 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+        } else if n == 1 && self.weights.packed_experts.is_some() {
+            // Keep-packed DECODE router: at M=1 dense_gemm_prefill is a poorly
+            // shaped GEMM (~135us); the warp-per-output BF16 GEMV is the same
+            // plain BF16 dot, just fast.
+            //
+            // MERGE NOTE (laguna-integration): the keep-packed branch also
+            // carried a `cublas_gemm && n > 1` arm here — DROPPED, because
+            // this branch's 2026-08-12 fix pins the n>1 router GEMM to the
+            // scalar kernel (see the comment on the fallthrough below: a
+            // rerouted router GEMM flips top-k on borderline tokens). The
+            // n==1 GEMV stays: same plain BF16 dot as the scalar kernel.
+            ops::dense_gemv(
+                ctx.gpu,
+                self.dense_gemv,
+                router_in,
+                &self.weights.gate,
+                gate_logits,
+                num_experts,
+                h,
+                stream,
+            )?;
         } else {
             // Selection numerics — see router_gate_gemm_dense for why this
             // must stay on the scalar kernel and why ATLAS_CUBLAS_GEMM must
@@ -225,78 +246,18 @@ impl MoeLayer {
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
-        if let Some(tid2eid) = self.tid2eid_dev {
-            // DeepSeek-V4 hash routing (hash_moe layer): static
-            // `tid2eid[token_id]` selection, sqrtsoftplus-weighted.
-            let token_ids = ctx.token_ids.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (prefill grouped)"
-                )
-            })?;
-            ops::moe_hash_route_batched(
-                ctx.gpu,
-                self.moe_hash_route_batched_k,
-                gate_logits,
-                tid2eid,
-                token_ids,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                n,
-                stream,
-            )?;
-        } else if let Some(bias) = self.correction_bias_dev {
-            // DeepSeek-V4 scores experts with sqrtsoftplus (NOT sigmoid); the
-            // bias selects experts, weights gather pre-bias scores. Other
-            // sigmoid+bias models (DeepSeek-V3 / MiniMax-M2) keep sigmoid.
-            if ctx.config.scoring_func == "sqrtsoftplus" {
-                ops::moe_topk_sqrtsoftplus_batched(
-                    ctx.gpu,
-                    self.moe_topk_sqrtsoftplus_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    n,
-                    stream,
-                )?;
-            } else {
-                ops::moe_topk_sigmoid_batched(
-                    ctx.gpu,
-                    self.moe_topk_sigmoid_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    n,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::moe_topk_softmax_batched(
-                ctx.gpu,
-                self.moe_topk_batched,
-                gate_logits,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                n,
-                stream,
-            )?;
-        }
+        // Routing dispatch (hash / sigmoid+bias / sqrtsoftplus / softmax) —
+        // hoisted to forward_prefill_phase.rs (500-LoC cap); behavior identical.
+        self.run_topk_dispatch(
+            gate_logits,
+            indices_dev,
+            weights_dev,
+            num_experts,
+            top_k,
+            n,
+            ctx,
+            stream,
+        )?;
         super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
         prof_step!("topk");
 
@@ -348,12 +309,14 @@ impl MoeLayer {
         prof_step!("pre_expert_norm");
 
         // 4-6. Routed grouped-GEMM phase (grid sizing → grouped gate+up
-        // GEMM → SiLU → grouped down GEMM). Hoisted to forward_prefill_routed.rs
-        // to keep this file under the 500 LoC cap; behavior identical.
-        self.run_routed_grouped_gemm(
+        // GEMM → SiLU → grouped down GEMM). Arm selection (keep-packed q4k_mmq
+        // vs NVFP4 grouped) lives in forward_prefill_packed.rs; the NVFP4 body
+        // stays in forward_prefill_routed.rs (500-LoC cap). Behavior identical.
+        self.run_routed_compute(
             expert_input,
             expert_offsets,
             sorted_token_ids,
+            sorted_expert_ids,
             n,
             h,
             inter,
@@ -365,6 +328,7 @@ impl MoeLayer {
             ctx,
             stream,
         )?;
+        prof_step!("routed_compute");
         let expert_down_out = ctx.buffers.expert_down_out();
 
         // Feature-1: fold the routed-expert down_proj LoRA deltas onto the sorted

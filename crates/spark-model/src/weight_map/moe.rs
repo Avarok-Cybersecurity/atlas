@@ -20,6 +20,12 @@ pub struct MoeWeights {
     pub shared_expert_gate: DenseWeight,
     /// Per-expert weights: 512 experts.
     pub experts: Vec<ExpertWeight>,
+    /// Keep-packed routed experts (Laguna GGUF Q4_K_M): when `Some`, the layer
+    /// serves from raw GGUF K-quant blocks via the MoE keep-packed prefill arm
+    /// (per-expert dequant-scratch → dense GEMM), and `experts` above is left as
+    /// null placeholders. `None` = the standard NVFP4/FP8 grouped path. Length
+    /// matches `experts` (local experts under EP; null entries for remote).
+    pub packed_experts: Option<Vec<PackedExpertWeights>>,
     /// Optional router pre-normalization weight.
     /// Set for Gemma-4 MoE where the HF reference applies a pure RMSNorm to
     /// the router input followed by a per-dim scale multiplication:
@@ -68,6 +74,7 @@ impl MoeWeights {
             shared_expert: null_expert,
             shared_expert_gate: null_dense,
             experts: vec![null_expert; num_experts],
+            packed_experts: None,
             router_pre_norm: None,
             correction_bias: None,
         }

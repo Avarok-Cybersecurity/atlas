@@ -15,6 +15,8 @@ use crate::weight_map::{
     quantize_to_nvfp4, quantized_v2,
 };
 
+use super::packed;
+
 pub(super) fn load_layers(
     store: &WeightStore,
     config: &ModelConfig,
@@ -118,21 +120,67 @@ fn load_moe_ffn(
     unified_moe_layout: bool,
 ) -> Result<FfnComponent> {
     let mlp = format!("{lp}.mlp");
+    let mi = config.moe_intermediate_size;
+    let h0 = config.hidden_size;
+
+    // Keep-packed GGUF experts (Laguna Q4_K_M): the loader stored the routed
+    // experts as raw Q4_K (gate/up) / Q6_K (down) blocks — detect via the store
+    // dtype tag and build PackedExpertWeights so the MoE keep-packed prefill arm
+    // computes NATIVELY on the packed blocks (q4k_mmq W4A8; weights never
+    // dequant to a BF16 buffer, mirroring how the NVFP4 path computes on packed
+    // weights). `experts` is left null and packed_experts carries the layer.
+    let experts_keep_packed = packed::experts_keep_packed(store, &mlp);
+
     let gate = dense(store, &format!("{mlp}.gate.weight"))?;
-    let correction_bias = dense(store, &format!("{mlp}.experts.e_score_correction_bias"))?;
-    let experts = (0..config.num_experts)
-        .map(|e| {
-            if !config.is_local_expert(e) {
-                return Ok(ExpertWeight::null());
+    // e_score_correction_bias: the GGUF loader dequants this originally-F32 tensor
+    // to a BF16 device buffer, but `moe_topk_sigmoid_batched` reads `bias` as
+    // `const float*` — handing it the BF16 buffer over-reads one buffer-length
+    // past the end (CUDA_ERROR_ILLEGAL_ADDRESS, surfacing at whichever layer's
+    // trailing bytes hit an unmapped page). Widen BF16→F32 into a correctly-sized
+    // device buffer. Safetensors already delivers F32 on-device, so keep `dense`.
+    let correction_bias = if experts_keep_packed {
+        packed::dense_bias_to_device(
+            store,
+            &format!("{mlp}.experts.e_score_correction_bias"),
+            gpu,
+        )?
+    } else {
+        dense(store, &format!("{mlp}.experts.e_score_correction_bias"))?
+    };
+
+    let (experts, packed_experts) = if experts_keep_packed {
+        let packed = packed::load_packed_experts(store, config, &mlp)?;
+        let null_experts = (0..config.num_experts)
+            .map(|_| ExpertWeight::null())
+            .collect();
+        (null_experts, Some(packed))
+    } else {
+        // Existing NVFP4/safetensors path: pre-packed NVFP4 (`.weight_packed`)
+        // or a BF16 GGUF (`.weight`) requantized to NVFP4 at load. Computed
+        // natively by the grouped NVFP4 GEMM — no dequant-to-BF16 buffer.
+        let expert_proj = |proj: &str, n: usize, k: usize| -> Result<QuantizedWeight> {
+            if store.contains(&format!("{proj}.weight_packed")) {
+                quantized_v2(store, proj, gpu)
+            } else {
+                let bf16 = dense_auto(store, &format!("{proj}.weight"), gpu)?;
+                quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)
             }
-            let ep = format!("{mlp}.experts.{e}");
-            Ok(ExpertWeight {
-                gate_proj: quantized_v2(store, &format!("{ep}.gate_proj"), gpu)?,
-                up_proj: quantized_v2(store, &format!("{ep}.up_proj"), gpu)?,
-                down_proj: quantized_v2(store, &format!("{ep}.down_proj"), gpu)?,
+        };
+        let experts = (0..config.num_experts)
+            .map(|e| {
+                if !config.is_local_expert(e) {
+                    return Ok(ExpertWeight::null());
+                }
+                let ep = format!("{mlp}.experts.{e}");
+                Ok(ExpertWeight {
+                    gate_proj: expert_proj(&format!("{ep}.gate_proj"), mi, h0)?,
+                    up_proj: expert_proj(&format!("{ep}.up_proj"), mi, h0)?,
+                    down_proj: expert_proj(&format!("{ep}.down_proj"), h0, mi)?,
+                })
             })
-        })
-        .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?;
+        (experts, None)
+    };
 
     let shared = format!("{mlp}.shared_expert");
     let shared_gate = dense_auto(store, &format!("{shared}.gate_proj.weight"), gpu)?;
@@ -152,6 +200,7 @@ fn load_moe_ffn(
             weight: DevicePtr::NULL,
         },
         experts,
+        packed_experts,
         router_pre_norm: None,
         correction_bias: Some(correction_bias),
     };
@@ -161,7 +210,13 @@ fn load_moe_ffn(
     // decode; the quantized copies above are placeholders for fused routed
     // kernels and their shared contribution is overwritten before blending.
     layer.set_bf16_shared_expert(shared_gate, shared_up, shared_down)?;
-    if unified_moe_layout {
+    // Keep-packed GGUF experts: the routed experts are raw Q4_K/Q6_K blocks and
+    // carry NO NVFP4 scale tables, so the NVFP4-specific transpose and CUTLASS
+    // SFB swizzle below (which read the null NVFP4 expert scales) must be
+    // skipped — the keep-packed MoE prefill arm consumes the packed blocks via
+    // q4k_mmq instead.
+    let experts_keep_packed = layer.weights.packed_experts.is_some();
+    if unified_moe_layout && !experts_keep_packed {
         layer.transpose_for_prefill_unified(gpu, config)?;
     }
     // Native NVFP4 CUTLASS grouped MoE (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1).
@@ -170,7 +225,9 @@ fn load_moe_ffn(
     // tile. The SFB swizzle is built from whichever scale tables exist —
     // transposed [K/16,N] under the unified layout, else the checkpoint's own
     // [N,K/16] via the src_n_major packer path.
-    if cutlass_grouped_moe_enabled() {
+    // Keep-packed Q4_K experts are 4-bit blocks with no NVFP4 scale tables to
+    // swizzle, so the grouped-CUTLASS path does not apply to them.
+    if cutlass_grouped_moe_enabled() && !experts_keep_packed {
         // ★ These two levers are mutually exclusive, and combining them was
         // silent memory corruption. `transpose_for_prefill_unified` FREES the
         // original [N,K/2] expert weights, but the grouped-CUTLASS prefill
@@ -296,9 +353,20 @@ fn validate_matrix(store: &WeightStore, key: &str, rows: usize, cols: usize) -> 
 }
 
 fn load_kv_scales(store: &WeightStore, gpu: &dyn GpuBackend, prefix: &str) -> Result<(f32, f32)> {
+    // GGUF checkpoints carry no calibrated FP8 KV scales; default to 1.0 (no
+    // scaling) when absent so they load. The NVFP4 safetensors checkpoint ships
+    // real k_scale/v_scale and is unchanged. (FP8 KV without calibration clips —
+    // serve GGUF with --kv-cache-dtype bf16; the scales are then inert anyway.)
+    let load_opt = |name: String| -> Result<f32> {
+        if store.contains(&name) {
+            load_scalar(store, gpu, &name)
+        } else {
+            Ok(1.0)
+        }
+    };
     Ok((
-        load_scalar(store, gpu, &format!("{prefix}.k_scale"))?,
-        load_scalar(store, gpu, &format!("{prefix}.v_scale"))?,
+        load_opt(format!("{prefix}.k_scale"))?,
+        load_opt(format!("{prefix}.v_scale"))?,
     ))
 }
 
