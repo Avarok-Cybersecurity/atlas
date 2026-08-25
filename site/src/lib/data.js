@@ -55,11 +55,12 @@ export const runCommandRaw =
   'atlasctl run qwen3.6-35b-a3b-fp8-mtp';
 
 // --- hardware acknowledgment (modest banner) ---------------------------------
-export const gifts = {
-  line: 'Thank you NVIDIA and AMD.',
-  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD, and now a Strix Halo desktop from AMD too. That desktop is the box we ran our MLPerf submission on.',
-  ctaText: 'See the post',
-  ctaUrl: xUrl
+// --- announcement band (the strip above the hero) ----------------------------
+export const announcement = {
+  line: 'Atlas is partnering with Avarok Cybersecurity.',
+  sub: 'Bringing post-quantum security to safe, local inference — the model and your data stay on hardware you own.',
+  ctaText: 'avarok.net',
+  ctaUrl: 'https://avarok.net'
 };
 
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
