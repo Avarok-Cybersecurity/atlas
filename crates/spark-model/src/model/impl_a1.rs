@@ -842,6 +842,7 @@ impl TransformerModel {
             dflash_carry: parking_lot::Mutex::new(None),
             mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
+            verify_ptok_meta: std::sync::OnceLock::new(),
             dflash_hidden_save_rows,
             dflash_kgamma,
             dflash_capture_layers,

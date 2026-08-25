@@ -191,7 +191,14 @@ impl TransformerModel {
             // correct). #544 gated the decode graphs and #475 the multiseq
             // graphs on this flag; the K=γ verify capture was the last
             // ungated graph path.
-            && !self.config.no_decode_graphs;
+            && !self.config.no_decode_graphs
+            // Sliding-window attention layers verify via the eager per-token
+            // metadata loop (verify_attention_per_token) — per-token H2D
+            // uploads are illegal under capture, and a captured verify body
+            // would bake row-0's position for every token anyway (the exact
+            // 'ToToTo…' Laguna failure the loop exists to fix).
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -299,6 +306,23 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: the decode_batched default
+                    // loop reuses this call's single metadata upload, so
+                    // every token attends/writes at the same position —
+                    // route through the eager per-token-metadata loop
+                    // instead (use_graphs is already off for models with
+                    // sliding layers). See verify_attention_per_token.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        k,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     layer.decode_batched(
                         hidden,
