@@ -157,7 +157,34 @@ pub fn ngram_ids(dims: &NgramDims, ctx: &[u32]) -> Vec<Vec<u64>> {
 use anyhow::{Context, Result};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
-use crate::weight_map::DenseWeight;
+use crate::weight_map::{DenseWeight, Fp8DenseWeight};
+
+/// One n-gram lookup table on device: BF16 as shipped, or FP8-quantized at
+/// load (per-row E4M3 + f32 scale — halves the ~63 GB table footprint;
+/// embeddings tolerate this well and the gather dequantizes on read).
+pub enum NgramTable {
+    Bf16(DenseWeight),
+    Fp8(Fp8DenseWeight),
+}
+
+impl NgramTable {
+    /// Quantize a BF16 table to FP8 on the GPU (per-row E4M3 absmax +
+    /// f32 scale via `quantize_bf16_to_fp8`) — the quantize-on-load
+    /// lever. The caller frees the BF16 source afterwards; tables are
+    /// loaded one at a time so peak overhead is a single table.
+    pub fn quantize_bf16(
+        w: &DenseWeight,
+        rows: usize,
+        dim: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Self> {
+        let k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
+        Ok(Self::Fp8(crate::weight_map::quantize_to_fp8(
+            w, rows, dim, gpu, k, stream,
+        )?))
+    }
+}
 
 /// GPU n-gram embedding: base word embedding fused with the K*(N-1)
 /// hashed-table lookups, composed entirely from existing kernels
@@ -171,12 +198,13 @@ pub struct NgramEmbedding {
     /// Base word embedding `[vocab, hidden]` BF16.
     pub word: DenseWeight,
     /// The K*(N-1) lookup tables, index order `(ngram-2)*K + split`,
-    /// each `[table_rows(i), table_dim]` BF16.
-    pub tables: Vec<DenseWeight>,
+    /// each `[table_rows(i), table_dim]` — BF16 or FP8-quantized.
+    pub tables: Vec<NgramTable>,
     /// Per-table projections `[hidden, table_dim]` BF16 (nn.Linear layout).
     pub projs: Vec<DenseWeight>,
 
     batched_embed_k: KernelHandle,
+    batched_embed_fp8_k: KernelHandle,
     gemm_k: KernelHandle,
     scaled_add_k: KernelHandle,
 
@@ -193,7 +221,7 @@ impl NgramEmbedding {
     pub fn new(
         dims: NgramDims,
         word: DenseWeight,
-        tables: Vec<DenseWeight>,
+        tables: Vec<NgramTable>,
         projs: Vec<DenseWeight>,
         max_tokens: usize,
         gpu: &dyn GpuBackend,
@@ -207,6 +235,7 @@ impl NgramEmbedding {
             tables,
             projs,
             batched_embed_k: gpu.kernel("embed_from_argmax", "batched_embed")?,
+            batched_embed_fp8_k: gpu.kernel("embed_from_argmax", "batched_embed_fp8")?,
             gemm_k: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
             scaled_add_k: gpu.kernel("residual_add", "bf16_scaled_add")?,
             ids_dev: gpu.alloc(max_tokens * 4)?,
@@ -275,16 +304,29 @@ impl NgramEmbedding {
                 .flat_map(|v| v.to_le_bytes())
                 .collect();
             gpu.copy_h2d_async(&id_bytes, self.ids_dev, stream)?;
-            ops::batched_embed(
-                gpu,
-                self.batched_embed_k,
-                self.ids_dev,
-                self.tables[index].weight,
-                self.gather_buf,
-                seq_len as u32,
-                td as u32,
-                stream,
-            )?;
+            match &self.tables[index] {
+                NgramTable::Bf16(w) => ops::batched_embed(
+                    gpu,
+                    self.batched_embed_k,
+                    self.ids_dev,
+                    w.weight,
+                    self.gather_buf,
+                    seq_len as u32,
+                    td as u32,
+                    stream,
+                )?,
+                NgramTable::Fp8(w) => ops::batched_embed_fp8(
+                    gpu,
+                    self.batched_embed_fp8_k,
+                    self.ids_dev,
+                    w.weight,
+                    w.row_scale,
+                    self.gather_buf,
+                    seq_len as u32,
+                    td as u32,
+                    stream,
+                )?,
+            }
             ops::dense_gemm_bf16_pipelined(
                 gpu,
                 self.gemm_k,
@@ -429,6 +471,7 @@ mod tests {
         let mut tables = Vec::new();
         let mut projs = Vec::new();
         let mut compact_ids = Vec::new();
+        let mut table_rows_n = Vec::new();
         for t in meta["tables"].as_array().unwrap() {
             let index = t["index"].as_u64().unwrap() as usize;
             assert_eq!(index, tables.len());
@@ -438,9 +481,10 @@ mod tests {
                 .iter()
                 .map(|v| v.as_u64().unwrap())
                 .collect();
-            tables.push(DenseWeight {
+            tables.push(NgramTable::Bf16(DenseWeight {
                 weight: upload(&load(format!("{dir}/table{index}_rows.bin"))),
-            });
+            }));
+            table_rows_n.push(ids.len());
             projs.push(DenseWeight {
                 weight: upload(&load(format!("{dir}/proj{index}.bin"))),
             });
@@ -456,34 +500,18 @@ mod tests {
         let stream = g.default_stream();
         let m = toks.len();
         let out = g.alloc(m * hidden * 2).unwrap();
-        g.memset(out, 0, m * hidden * 2).unwrap();
         let inv = 1.0f32 / (1 + ng.dims.num_tables()) as f32;
+        let td = ng.dims.table_dim();
         let put_ids = |ids: &[u32]| {
             let b: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
             g.copy_h2d_async(&b, ng.ids_dev, stream).unwrap();
         };
-        put_ids(&compact_toks);
-        crate::layers::ops::batched_embed(
-            g, ng.batched_embed_k, ng.ids_dev, ng.word.weight, ng.proj_buf,
-            m as u32, hidden as u32, stream,
-        )
-        .unwrap();
-        crate::layers::ops::scaled_add(
-            g, ng.scaled_add_k, out, ng.proj_buf, inv, (m * hidden) as u32,
-            stream,
-        )
-        .unwrap();
-        let td = ng.dims.table_dim();
-        for index in 0..ng.dims.num_tables() {
-            put_ids(&compact_ids[index]);
+        let run = |tables: &[NgramTable]| -> Vec<u8> {
+            g.memset(out, 0, m * hidden * 2).unwrap();
+            put_ids(&compact_toks);
             crate::layers::ops::batched_embed(
-                g, ng.batched_embed_k, ng.ids_dev, ng.tables[index].weight,
-                ng.gather_buf, m as u32, td as u32, stream,
-            )
-            .unwrap();
-            crate::layers::ops::dense_gemm_bf16_pipelined(
-                g, ng.gemm_k, ng.gather_buf, &ng.projs[index], ng.proj_buf,
-                m as u32, hidden as u32, td as u32, stream,
+                g, ng.batched_embed_k, ng.ids_dev, ng.word.weight,
+                ng.proj_buf, m as u32, hidden as u32, stream,
             )
             .unwrap();
             crate::layers::ops::scaled_add(
@@ -491,8 +519,39 @@ mod tests {
                 (m * hidden) as u32, stream,
             )
             .unwrap();
-        }
-        g.synchronize(stream).unwrap();
+            for index in 0..ng.dims.num_tables() {
+                put_ids(&compact_ids[index]);
+                match &tables[index] {
+                    NgramTable::Bf16(w) => crate::layers::ops::batched_embed(
+                        g, ng.batched_embed_k, ng.ids_dev, w.weight,
+                        ng.gather_buf, m as u32, td as u32, stream,
+                    )
+                    .unwrap(),
+                    NgramTable::Fp8(w) => {
+                        crate::layers::ops::batched_embed_fp8(
+                            g, ng.batched_embed_fp8_k, ng.ids_dev, w.weight,
+                            w.row_scale, ng.gather_buf, m as u32, td as u32,
+                            stream,
+                        )
+                        .unwrap()
+                    }
+                }
+                crate::layers::ops::dense_gemm_bf16_pipelined(
+                    g, ng.gemm_k, ng.gather_buf, &ng.projs[index],
+                    ng.proj_buf, m as u32, hidden as u32, td as u32, stream,
+                )
+                .unwrap();
+                crate::layers::ops::scaled_add(
+                    g, ng.scaled_add_k, out, ng.proj_buf, inv,
+                    (m * hidden) as u32, stream,
+                )
+                .unwrap();
+            }
+            g.synchronize(stream).unwrap();
+            let mut got = vec![0u8; m * hidden * 2];
+            g.copy_d2h(out, &mut got).unwrap();
+            got
+        };
 
         // Compare vs golden f32. Criterion: per-row relative Frobenius
         // error — elementwise max-rel is the wrong instrument here: the
@@ -503,35 +562,69 @@ mod tests {
         // The 2% gate keeps ~3x headroom over measured rounding noise
         // while a single mis-mapped table would register ~27% (1/13 of
         // the row's energy replaced).
-        let mut got_bf16 = vec![0u8; m * hidden * 2];
-        g.copy_d2h(out, &mut got_bf16).unwrap();
         let golden = load(format!("{dir}/golden_f32.bin"));
-        let mut worst_row = 0f32;
-        for r in 0..m {
-            let mut err2 = 0f64;
-            let mut ref2 = 0f64;
-            for c in 0..hidden {
-                let i = r * hidden + c;
-                let bits =
-                    u16::from_le_bytes([got_bf16[i * 2], got_bf16[i * 2 + 1]]);
-                let got = f32::from_bits((bits as u32) << 16) as f64;
-                let want = f32::from_le_bytes([
-                    golden[i * 4],
-                    golden[i * 4 + 1],
-                    golden[i * 4 + 2],
-                    golden[i * 4 + 3],
-                ]) as f64;
-                err2 += (got - want) * (got - want);
-                ref2 += want * want;
+        let worst_row = |got_bf16: &[u8]| -> f32 {
+            let mut worst = 0f32;
+            for r in 0..m {
+                let mut err2 = 0f64;
+                let mut ref2 = 0f64;
+                for c in 0..hidden {
+                    let i = r * hidden + c;
+                    let bits = u16::from_le_bytes([
+                        got_bf16[i * 2],
+                        got_bf16[i * 2 + 1],
+                    ]);
+                    let got = f32::from_bits((bits as u32) << 16) as f64;
+                    let want = f32::from_le_bytes([
+                        golden[i * 4],
+                        golden[i * 4 + 1],
+                        golden[i * 4 + 2],
+                        golden[i * 4 + 3],
+                    ]) as f64;
+                    err2 += (got - want) * (got - want);
+                    ref2 += want * want;
+                }
+                worst = worst.max((err2 / ref2).sqrt() as f32);
             }
-            worst_row = worst_row.max((err2 / ref2).sqrt() as f32);
-        }
+            worst
+        };
+
+        let bf16_worst = worst_row(&run(&ng.tables));
         assert!(
-            worst_row < 0.02,
-            "GPU fused embedding diverges from golden: worst row Frobenius \
-             rel = {worst_row}"
+            bf16_worst < 0.02,
+            "BF16 fused embedding diverges from golden: worst row Frobenius \
+             rel = {bf16_worst}"
         );
-        println!("ngram GPU parity vs golden: worst row Frobenius rel = {worst_row:.4}");
+        println!(
+            "ngram GPU parity (BF16 tables): worst row Frobenius rel = {bf16_worst:.4}"
+        );
+
+        // FP8 leg: quantize the compacted tables on the GPU (the
+        // quantize-on-load path) and rerun. E4M3 per-row-scaled rounding
+        // adds a few percent per table contribution; a mis-mapped table
+        // or a broken decode would still register ~27%, so 5% keeps the
+        // gate discriminating while tolerating quantization noise.
+        let fp8_tables: Vec<NgramTable> = ng
+            .tables
+            .iter()
+            .enumerate()
+            .map(|(index, t)| {
+                let NgramTable::Bf16(w) = t else {
+                    panic!("test built BF16 tables")
+                };
+                NgramTable::quantize_bf16(w, table_rows_n[index], td, g, stream)
+                    .unwrap()
+            })
+            .collect();
+        let fp8_worst = worst_row(&run(&fp8_tables));
+        assert!(
+            fp8_worst < 0.05,
+            "FP8-quantized fused embedding diverges from golden: worst row \
+             Frobenius rel = {fp8_worst}"
+        );
+        println!(
+            "ngram GPU parity (FP8 tables): worst row Frobenius rel = {fp8_worst:.4}"
+        );
     }
 
     #[test]

@@ -147,4 +147,32 @@ pub fn batched_embed(
         .launch(stream)
 }
 
+/// FP8-table variant of [`batched_embed`]: rows are FP8 E4M3 bytes with a
+/// per-row f32 dequant scale (the `quantize_bf16_to_fp8` layout); the
+/// kernel dequantizes on read and writes BF16 rows.
+///
+/// Kernel: `batched_embed_fp8(token_ids, table, row_scale, output, hidden)`
+/// Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
+pub fn batched_embed_fp8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    token_ids_dev: DevicePtr,
+    embed_table: DevicePtr,
+    row_scale: DevicePtr,
+    output: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(token_ids_dev)
+        .arg_ptr(embed_table)
+        .arg_ptr(row_scale)
+        .arg_ptr(output)
+        .arg_u32(hidden_size)
+        .launch(stream)
+}
+
 // ── MoE routing ──────────────────────────────────────────────────
