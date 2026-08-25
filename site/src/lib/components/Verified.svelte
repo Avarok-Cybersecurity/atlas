@@ -59,7 +59,7 @@
         <p class="mlperf-note" style="font-size:0.84rem">Every model card comes from a recipe in <a class="link" href={recipesUrl} target="_blank" rel="noopener">atlas-recipes</a>.</p>
       </div>
 
-      <Receipt />
+      <Receipt source="gate" />
     </div>
   </div>
 </section>

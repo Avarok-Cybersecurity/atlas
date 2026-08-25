@@ -12,13 +12,16 @@
   import ladder from '$lib/ladder.generated.json';
   import { verified } from '$lib/data.js';
 
-  let { compact = false } = $props();
+  // `source`: 'auto' prefers whichever data exists (serve matrix, then ladder).
+  // 'gate' pins the receipt to the release-gate state — used where the ladder
+  // is already rendered in full on the page and reprinting it would duplicate.
+  let { compact = false, source = 'auto' } = $props();
 
   const rows = bench.entries ?? [];
   const isVerified = bench.status === 'verified' && rows.length > 0;
 
   const rungs = ladder.rows ?? [];
-  const isLadder = !isVerified && rungs.length > 0;
+  const isLadder = source === 'auto' && !isVerified && rungs.length > 0;
   // Compact (hero) prints the four rungs that bracket the range — single
   // stream, small batch, mid, and the widest published rung — because eight
   // rows would push the receipt past the fold on a laptop.

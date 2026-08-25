@@ -245,6 +245,10 @@ nav {
 
 /* ---- verified section ----------------------------------------------------- */
 .verified-grid { display: grid; grid-template-columns: 1fr 460px; gap: 3rem; align-items: start; margin-top: 2.5rem; }
+/* The methodology column runs much longer than the receipt, which left a
+   screen of dead track beside it. The receipt tracks the scroll instead;
+   mobile.css collapses the grid to one column, where sticky is inert. */
+.verified-grid > :last-child { position: sticky; top: 90px; }
 .method-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem 1.6rem; box-shadow: var(--shadow-sm); }
 .method-card h3 { font-size: 0.95rem; font-weight: 750; margin-bottom: 0.5rem; }
 .method-card p { font-size: 0.9rem; color: var(--t2); line-height: 1.6; }
