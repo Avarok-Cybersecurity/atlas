@@ -122,6 +122,22 @@ impl BlockDiffusionDraftHead {
             residual_rms_norm: gpu
                 .kernel("norm", "rms_norm_residual")
                 .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?,
+            // Laguna-DFlash per-head attention gate. Same module/symbol the
+            // main model resolves at qwen3_attention/init.rs:124. try_kernel:
+            // absent for targets that predate the gate — the gate path is then
+            // gated off by `self.gated` (Qwen-format drafters set gated=false).
+            softplus_gate_head_broadcast: super::super::try_kernel(
+                gpu,
+                "residual_add",
+                "softplus_gate_mul_head_broadcast",
+            ),
+            // Laguna-DFlash per-captured-state aux RMSNorm. Module = file stem
+            // `rms_norm_aux_stack` (kernels/gb10/common/rms_norm_aux_stack.cu).
+            rms_norm_aux_stack: super::super::try_kernel(
+                gpu,
+                "rms_norm_aux_stack",
+                "rms_norm_aux_stack",
+            ),
             dense_gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
             w4a16_gemm: super::super::try_kernel(gpu, "w4a16", "w4a16_gemm"),
@@ -548,6 +564,33 @@ impl BlockDiffusionDraftHead {
             num_layers,
         );
 
+        // ── Laguna-DFlash aux RMSNorm concat build ────────────────
+        //
+        // Concatenate the `aux_hidden_norms.{i}` weight vectors (one
+        // `[target_hidden]` BF16 vector per captured target layer) into a
+        // single `[n_states * target_hidden]` BF16 buffer, state i at byte
+        // offset `i * target_hidden * bf16`. `rms_norm_aux_stack` reads this
+        // to normalize each captured hidden-state slice before `fc`. Empty
+        // (`DevicePtr::NULL`) for Qwen-format drafters — no aux norms.
+        let aux_hidden_norms_concat = if weights.aux_hidden_norms.is_empty() {
+            DevicePtr::NULL
+        } else {
+            let state_bytes = target_hidden_size * bf16;
+            let total = weights.aux_hidden_norms.len() * state_bytes;
+            let concat = gpu.alloc(total)?;
+            for (i, w) in weights.aux_hidden_norms.iter().enumerate() {
+                gpu.copy_d2d(w.weight, concat.offset(i * state_bytes), state_bytes)?;
+            }
+            tracing::info!(
+                "DFlash aux_hidden_norms_concat: {} states × {} × bf16 = {} bytes",
+                weights.aux_hidden_norms.len(),
+                target_hidden_size,
+                total,
+            );
+            concat
+        };
+        let gated = weights.gated;
+
         let mut head = Self {
             draft_splitk_ws: std::sync::OnceLock::new(),
             num_layers,
@@ -587,6 +630,7 @@ impl BlockDiffusionDraftHead {
                     o_proj: l.o_proj,
                     q_norm: l.q_norm,
                     k_norm: l.k_norm,
+                    g_proj: l.g_proj,
                     gate_proj: l.gate_proj,
                     up_proj: l.up_proj,
                     down_proj: l.down_proj,
@@ -612,6 +656,8 @@ impl BlockDiffusionDraftHead {
                     mlp_conv_proj: l.mlp_conv_proj,
                 })
                 .collect(),
+            aux_hidden_norms_concat,
+            gated,
             // Phase 2 stage 2: fused KV weight built above by copy_d2d
             // from each layer's k_proj/v_proj. precompute_ctx_kv will
             // GEMM against it in stage 3 once we wire the call site.

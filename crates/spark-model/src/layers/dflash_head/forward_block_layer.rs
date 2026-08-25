@@ -296,6 +296,39 @@ impl BlockDiffusionDraftHead {
             }
         }
 
+        // 3e'. Laguna per-head attention gate (Step 3.7 g_proj), BEFORE o_proj.
+        //   gate = g_proj(input_layernorm output) → [n_attn, nq]; then
+        //   attn_out[t,h,d] *= softplus(gate[t,h]) broadcast over head_dim.
+        //   norm_buf still holds the input_layernorm output here (the post-attn
+        //   layernorm at 3i has not run yet). q_buf is free after attention,
+        //   reused as the [n_attn, nq] gate scratch. Qwen drafters skip.
+        if self.gated && layer.g_proj.weight != spark_runtime::gpu::DevicePtr::NULL {
+            let nq = self.num_q_heads as u32;
+            let head_dim = self.head_dim as u32;
+            ops::dense_gemm_bf16_pipelined(
+                gpu,
+                self.kernels.dense_gemm_pipelined,
+                self.scratch.norm_buf,
+                &layer.g_proj,
+                self.scratch.q_buf,
+                n_attn,
+                nq,
+                h,
+                stream,
+            )?;
+            ops::softplus_gate_mul_head_broadcast(
+                gpu,
+                self.kernels.softplus_gate_head_broadcast,
+                self.scratch.attn_out,
+                self.scratch.q_buf,
+                self.scratch.attn_out,
+                nq,
+                head_dim,
+                n_attn,
+                stream,
+            )?;
+        }
+
         // 3f. o_proj.
         ops::dense_gemm_bf16_pipelined(
             gpu,

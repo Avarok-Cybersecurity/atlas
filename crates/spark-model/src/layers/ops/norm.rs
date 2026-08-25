@@ -75,6 +75,39 @@ pub fn rms_norm(
         .launch(stream)
 }
 
+/// Laguna-DFlash per-captured-state aux RMSNorm over a row-contiguous stack.
+///
+/// The captured-hidden accumulator packs each row as
+/// `[s0(state_dim) | s1 | … | s_{n_states-1}]`. This normalizes every
+/// `(row, state)` slice in place with its own `aux_hidden_norms.{state}`
+/// weight (HF-vanilla `out = x * w / RMS(x)`, eps=1e-6), BEFORE the `fc`
+/// concat+projection. `weight_concat` holds the `n_states` weight vectors
+/// concatenated (`[n_states * state_dim]` BF16).
+///
+/// Kernel: `rms_norm_aux_stack(io, w, state_dim, n_states)`
+/// Grid: (n_rows * n_states, 1, 1)  Block: (256, 1, 1) — block b handles
+/// slice base `b * state_dim`; its weight is `w + (b % n_states) * state_dim`.
+#[allow(clippy::too_many_arguments)]
+pub fn rms_norm_aux_stack(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    io_ptr: DevicePtr,
+    weight_concat: DevicePtr,
+    n_rows: u32,
+    n_states: u32,
+    state_dim: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n_rows * n_states, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(io_ptr)
+        .arg_ptr(weight_concat)
+        .arg_u32(state_dim)
+        .arg_u32(n_states)
+        .launch(stream)
+}
+
 /// Warp-per-row RMS norm for SHORT rows — one warp per row instead of one
 /// block, so the grid shrinks 8x and the reduction needs no shared memory or
 /// barrier. Profitable exactly for the Qwen3 per-head `q_norm`/`k_norm` during

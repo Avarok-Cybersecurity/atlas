@@ -33,6 +33,16 @@ use crate::weight_map::{DenseWeight, QuantizedWeight};
 pub struct DflashKernels {
     pub rms_norm: KernelHandle,
     pub residual_rms_norm: KernelHandle,
+    /// Laguna-DFlash per-head attention gate (Step 3.7 `g_proj`): applies
+    /// `attn_out[t,h,d] *= softplus(gate[t,h])` broadcast over head_dim.
+    /// Same module/symbol the main model uses at qwen3_attention/init.rs:124.
+    /// `.0 == 0` for Qwen-format drafters (no gate; never launched).
+    pub softplus_gate_head_broadcast: KernelHandle,
+    /// Laguna-DFlash per-captured-state aux RMSNorm. Normalizes each of the
+    /// 6 captured 3072-wide hidden-state slices in a row-contiguous
+    /// accumulator with its own `aux_hidden_norms.{i}` weight, HF-vanilla,
+    /// BEFORE the `fc` concat+projection. `.0 == 0` for Qwen drafters.
+    pub rms_norm_aux_stack: KernelHandle,
     pub dense_gemv: KernelHandle,
     pub dense_gemm: KernelHandle,
     /// NVFP4 GEMM for the final logits when the shared lm_head is NVFP4
@@ -289,6 +299,11 @@ pub struct DflashLayer {
     pub o_proj: DenseWeight,
     pub q_norm: DenseWeight,
     pub k_norm: DenseWeight,
+    /// Laguna-DFlash per-head attention gate (`g_proj`, `[num_q_heads, H]`).
+    /// `weight == DevicePtr::NULL` for Qwen-format drafters (no gate).
+    /// Applied as `attn_out *= softplus(g_proj · normed).broadcast_over(head_dim)`
+    /// immediately before `o_proj`. Only consumed when `self.gated`.
+    pub g_proj: DenseWeight,
     // MLP
     pub gate_proj: DenseWeight,
     pub up_proj: DenseWeight,
@@ -507,6 +522,17 @@ pub struct BlockDiffusionDraftHead {
     pub draft_id_to_target_id: Option<DevicePtr>,
     /// Drafter transformer layers (8 for Qwen3.6-35B-A3B-DFlash).
     pub layers: Vec<DflashLayer>,
+
+    /// Laguna-DFlash per-captured-state aux RMSNorm weights, the 6
+    /// `aux_hidden_norms.{i}` `[target_hidden]` vectors concatenated into a
+    /// single `[n_states * target_hidden]` BF16 buffer (state i at byte offset
+    /// `i * target_hidden * 2`). Applied to each captured hidden-state slice
+    /// BEFORE the `fc` concat+projection. `DevicePtr::NULL` for Qwen-format
+    /// drafters (single `hidden_norm` only, no aux norms).
+    pub aux_hidden_norms_concat: DevicePtr,
+    /// True when the drafter ships the Laguna gated attention (`g_proj`) and
+    /// per-captured-state aux RMSNorms. Gates the forward-path insertions.
+    pub gated: bool,
 
     /// Phase 2 (Option B) fused K/V projection across all L drafter layers.
     /// Shape: `[L × 2 × kv_dim, h]` BF16 — concatenated `[K0; V0; K1; V1; …]`

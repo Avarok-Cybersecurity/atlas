@@ -259,6 +259,32 @@ impl BlockDiffusionDraftHead {
                     );
                 }
             }
+            // Laguna aux RMSNorm: normalize each captured hidden-state slice
+            // (n_states × target_hidden per row) in place with its own
+            // `aux_hidden_norms.{i}` weight BEFORE the fc projection. Qwen
+            // drafters skip (gated=false / NULL concat).
+            //
+            // NOTE: this normalizes `base` (the captured-hidden accumulator) in
+            // place. A code-read flagged that as a potential progressive-poison
+            // of the drafter ctx across propose() calls; an attempted staging
+            // fix (norm a copy, leave `base` raw) REGRESSED output coherence at
+            // temp 0.7, so the in-place form is kept as the empirically-correct
+            // path. Revisit as a follow-up (see laguna-dflash-state memory).
+            if eff_ctx > 0
+                && self.gated
+                && self.aux_hidden_norms_concat != spark_runtime::gpu::DevicePtr::NULL
+            {
+                ops::rms_norm_aux_stack(
+                    gpu,
+                    self.kernels.rms_norm_aux_stack,
+                    base.offset(start_slot * ctx_slot_bytes),
+                    self.aux_hidden_norms_concat,
+                    eff_ctx as u32,
+                    self.target_layer_ids.len() as u32,
+                    self.target_hidden_size as u32,
+                    stream,
+                )?;
+            }
             for i in 0..eff_ctx {
                 let src_slot = base.offset((start_slot + i) * ctx_slot_bytes);
                 let dst_slot = self.scratch.fc_proj.offset(i * self.hidden_size * bf16);

@@ -141,6 +141,8 @@ impl BlockDiffusionDraftHead {
         // py:175  `target_hidden = self.hidden_norm(self.fc(target_hidden))`
         //   first half: fc maps [n, L_t*h_t] → [n, h].
         let src = ctx_base_ptr.offset(start_slot * ctx_slot_bytes);
+        // Dumps read the RAW accumulator (pre-aux-norm) so offline
+        // references see what the target actually captured.
         dump_buf("ctx_hidden_in", src, new_ctx_count * ctx_slot_bytes)?;
         // Full accumulator (slots 0..start_slot+new_ctx_count): lets an
         // offline reference recompute the WHOLE drafter ctx K/V — required
@@ -150,6 +152,25 @@ impl BlockDiffusionDraftHead {
             ctx_base_ptr,
             (start_slot + new_ctx_count) * ctx_slot_bytes,
         )?;
+        // ── Step 0 (Laguna): per-captured-state aux RMSNorm ──────────
+        // py: each captured hidden state is RMS-normed with its own
+        // `aux_hidden_norms.{i}` weight BEFORE the fc concat+projection.
+        // In-place over the captured-context region: n rows × n_states
+        // slices × target_hidden — each delta slot is processed exactly
+        // once, so the in-place norm never double-applies. Qwen-format
+        // drafters skip this (no aux norms; gated=false / NULL concat).
+        if self.gated && self.aux_hidden_norms_concat != DevicePtr::NULL {
+            ops::rms_norm_aux_stack(
+                gpu,
+                self.kernels.rms_norm_aux_stack,
+                src,
+                self.aux_hidden_norms_concat,
+                n,
+                self.target_layer_ids.len() as u32,
+                self.target_hidden_size as u32,
+                stream,
+            )?;
+        }
         ops::dense_gemm_bf16_pipelined(
             gpu,
             self.kernels.dense_gemm_pipelined,
