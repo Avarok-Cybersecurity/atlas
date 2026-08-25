@@ -51,7 +51,16 @@ impl Qwen3AttentionLayer {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *ON.get_or_init(|| std::env::var("ATLAS_NO_ROPE_STRIDED").ok().as_deref() != Some("1"))
         }
-        if n > 1 && self.rope_strided_k.0 != 0 && rope_strided_enabled() {
+        // YARN-scaled layers (yarn_inv_freq set -- Laguna full-attention) must
+        // take the per-seq loop below: rope_strided computes plain-theta rope
+        // and has no yarn table argument, so a K-row verify through it rotates
+        // Q/K differently than the serial decode path. Bit-parity for
+        // non-yarn layers is unchanged.
+        if n > 1
+            && self.rope_strided_k.0 != 0
+            && rope_strided_enabled()
+            && self.yarn_inv_freq.is_null()
+        {
             let stride_e = (per_seq_qkv / bf16) as u32;
             return ops::rope_strided(
                 fwd.gpu,
