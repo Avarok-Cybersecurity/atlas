@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_laguna,
+    parse_longcat_ngram,
     parse_minimax_m2, parse_mistral_params, parse_quantization_config, parse_step3p7,
     parse_vision_config, validate_config,
 };
@@ -254,6 +255,7 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         }
         "gemma4" => parse_gemma4_params(&raw),
         "laguna" => parse_laguna(&raw),
+        "longcat_flash_ngram" | "longcat_flash" => parse_longcat_ngram(&raw),
         "m2m_100" | "nllb" => {
             let mut config = ModelConfig::qwen3_next_80b_nvfp4();
             config.model_type = "m2m_100".to_string();
