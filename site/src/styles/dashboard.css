@@ -147,7 +147,7 @@
 .gbs-tile-val { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 750; color: var(--t1); }
 .gbs-tile-label { font-size: 0.7rem; color: var(--t3); font-family: var(--font-mono); }
 .gbs-verdict[data-verdict='PASS'] { color: var(--green); }
-.gbs-verdict:not([data-verdict='PASS']) { color: #ef4444; }
+.gbs-verdict:not([data-verdict='PASS']) { color: #f87171; }
 
 /* ---- chart panel ---------------------------------------------------------- */
 .gate-panel {
@@ -183,7 +183,7 @@
 .gpc { max-height: min(85vh, 46rem); overflow-y: auto; width: min(430px, 100%); }
 .gpc-verdict { font-size: 0.78rem; font-weight: 800; font-family: var(--font-mono); }
 .gpc-verdict[data-verdict='PASS'] { color: var(--green); }
-.gpc-verdict:not([data-verdict='PASS']) { color: #ef4444; }
+.gpc-verdict:not([data-verdict='PASS']) { color: #f87171; }
 .gpc-model-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .gpc-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 .gpc-model { font-size: 0.8rem; font-weight: 700; color: var(--t1); overflow-wrap: anywhere; }

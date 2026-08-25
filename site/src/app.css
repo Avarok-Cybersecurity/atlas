@@ -16,7 +16,10 @@
   /* ink */
   --t1: #f2f0fa;          /* primary */
   --t2: #a9a2c9;          /* secondary */
-  --t3: #6f6a8d;          /* faint */
+  /* --t3 is used at 0.7rem, which is small text: it needs 4.5:1, not the 3:1
+     that would do for large. #6f6a8d managed only 3.27:1 on the card. This
+     still sits clearly below --t2 (6.90:1) so it reads as faint. */
+  --t3: #8a83af;          /* faint — 4.72:1 worst case */
   /* accent + signals */
   /* One accent hue, two tokens, because a single violet cannot be optimal both
      as text on a dark canvas and as a fill under white. --accent is the text
@@ -350,7 +353,7 @@ nav {
 .term-dots span:nth-child(3) { background: #28c840; }
 .term-title { font-family: var(--font-mono); font-size: 0.74rem; color: var(--t2); margin-left: 0.3rem; }
 .term-body { padding: 1.1rem 1.25rem; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.8; color: #ddd8f0; overflow-x: auto; }
-.term-body .c { color: var(--green); } .term-body .p { color: #d98b6a; } .term-body .d { color: var(--t3); }
+.term-body .c { color: var(--green); } .term-body .p { color: var(--accent-deep); } .term-body .d { color: var(--t3); }
 .run-copy { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.9rem; }
 .run-note { font-size: 0.82rem; color: var(--t2); margin-top: 0.9rem; line-height: 1.6; }
 .run-side h3 { font-size: 0.95rem; font-weight: 750; margin-bottom: 0.6rem; }
