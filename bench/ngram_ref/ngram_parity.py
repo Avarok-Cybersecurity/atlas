@@ -285,10 +285,18 @@ def dump_golden(snapshot_dir):
         return ((a.astype(np.uint32) << 16).view(np.float32)
                 .reshape(info['shape']))
 
-    # Discover tensor names (dump what the index actually calls them)
+    # Discover tensor names (dump what the index actually calls them).
+    # NUMERIC sort — lexicographic puts "embedders.10" before "embedders.2"
+    # and silently mismaps tables 2..9.
+    import re
+
+    def table_index(name):
+        return int(re.search(r'\.(\d+)\.weight$', name).group(1))
+
     names = list(idx['weight_map'])
-    emb_names = sorted(n for n in names if 'embedders' in n)
-    proj_names = sorted(n for n in names if 'post_projs' in n)
+    emb_names = sorted((n for n in names if 'embedders' in n), key=table_index)
+    proj_names = sorted((n for n in names if 'post_projs' in n),
+                        key=table_index)
     word_name = next(n for n in names if 'embed_tokens' in n)
     print('embedders:', emb_names[:2], '... projs:', proj_names[:2],
           'word:', word_name)
