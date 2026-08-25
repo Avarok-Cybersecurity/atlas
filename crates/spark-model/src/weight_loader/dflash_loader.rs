@@ -173,7 +173,82 @@ pub fn store_has_dflash_weights(store: &WeightStore) -> bool {
 /// `BlockDiffusionDraftHead` (layer count, head_dim, vocab_size, the
 /// `target_layer_ids` capture indices).
 pub fn parse_dflash_config(json: &str) -> Result<DflashConfig> {
-    serde_json::from_str(json).context("Parsing DFlash drafter config.json")
+    let mut raw: serde_json::Value =
+        serde_json::from_str(json).context("Reading DFlash drafter config.json")?;
+    // speculators-format DSpark exports (orestis-z/Laguna-S-2.1-DSpark,
+    // `DSparkSpeculatorConfig`) nest the drafter transformer shape under
+    // `transformer_layer_config` — the root has none of hidden_size /
+    // num_attention_heads / …. Flatten the nested block into the root
+    // (root keys win) so the strict parse below sees one flat config.
+    if let Some(nested) = raw
+        .get("transformer_layer_config")
+        .and_then(|v| v.as_object())
+        .cloned()
+        && let Some(root) = raw.as_object_mut()
+    {
+        for (k, v) in nested {
+            root.entry(k).or_insert(v);
+        }
+        tracing::info!(
+            "DFlash drafter config: flattened speculators `transformer_layer_config` \
+             into the root (DSpark speculator format)"
+        );
+    }
+    let mut cfg: DflashConfig = serde_json::from_value(raw)
+        .context("Parsing DFlash drafter config.json")?;
+    // SpecForge DSpark exports (RespectMathias/Laguna-XS-2.1-DSpark
+    // `LagunaDSparkModel`, orestis-z/Laguna-S-2.1-DSpark `DSparkDraftModel`)
+    // declare the sub-config fields TOP-LEVEL — `mask_token_id` and
+    // `target_layer_ids` (or `aux_hidden_state_layer_ids`) sit beside
+    // hidden_size, and there is no `dflash_config` object at all. Synthesize
+    // one so the rest of the pipeline (capture indices, mask id, the
+    // dspark shifted-row convention) needs no second code path. Checkpoints
+    // that DO ship `dflash_config` are untouched.
+    if cfg.dflash_config.is_none() {
+        let raw: serde_json::Value =
+            serde_json::from_str(json).context("Re-reading drafter config for DSpark keys")?;
+        let mask = raw.get("mask_token_id").and_then(|v| v.as_u64());
+        let targets: Option<Vec<usize>> = raw
+            .get("target_layer_ids")
+            .or_else(|| raw.get("aux_hidden_state_layer_ids"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64().map(|u| u as usize))
+                    .collect()
+            });
+        if let (Some(mask), Some(target_layer_ids)) = (mask, targets) {
+            let arch_says_dspark = raw
+                .get("architectures")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| {
+                    a.iter().any(|x| {
+                        x.as_str()
+                            .is_some_and(|s| s.to_ascii_lowercase().contains("dspark"))
+                    })
+                })
+                || raw
+                    .get("model_type")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("dspark"));
+            tracing::info!(
+                "DFlash drafter config: synthesized dflash_config from top-level \
+                 SpecForge keys (mask_token_id={mask}, target_layer_ids={target_layer_ids:?}, \
+                 dspark={arch_says_dspark})"
+            );
+            cfg.dflash_config = Some(DflashSubConfig {
+                block_size: None,
+                mask_token_id: mask as u32,
+                target_layer_ids,
+                projector_type: arch_says_dspark.then(|| "dspark".to_string()),
+                conv_kernel_size: 0,
+                conv_group_size: 0,
+                selector_rank: 0,
+                selector_top_k: 0,
+            });
+        }
+    }
+    Ok(cfg)
 }
 
 /// Load DFlash drafter weights from a separate [`WeightStore`] pointing at
