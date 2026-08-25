@@ -152,6 +152,164 @@ pub fn ngram_ids(dims: &NgramDims, ctx: &[u32]) -> Vec<Vec<u64>> {
     out
 }
 
+// ── GPU module ───────────────────────────────────────────────────────────
+
+use anyhow::{Context, Result};
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+
+use crate::weight_map::DenseWeight;
+
+/// GPU n-gram embedding: base word embedding fused with the K*(N-1)
+/// hashed-table lookups, composed entirely from existing kernels
+/// (`batched_embed` gathers + `dense_gemm_bf16_pipelined` projections +
+/// `bf16_scaled_add` accumulation). A fused single-kernel version is a
+/// later optimization; per-token cost here is 1+T gathers, T tiny GEMMs
+/// and T+1 scaled adds (T = 12 for LongCat-Lite) — negligible next to a
+/// transformer layer.
+pub struct NgramEmbedding {
+    pub dims: NgramDims,
+    /// Base word embedding `[vocab, hidden]` BF16.
+    pub word: DenseWeight,
+    /// The K*(N-1) lookup tables, index order `(ngram-2)*K + split`,
+    /// each `[table_rows(i), table_dim]` BF16.
+    pub tables: Vec<DenseWeight>,
+    /// Per-table projections `[hidden, table_dim]` BF16 (nn.Linear layout).
+    pub projs: Vec<DenseWeight>,
+
+    batched_embed_k: KernelHandle,
+    gemm_k: KernelHandle,
+    scaled_add_k: KernelHandle,
+
+    /// Device staging: ids `[max_tokens]` u32 (reused per table),
+    /// gathered rows `[max_tokens, table_dim]` BF16, projected rows
+    /// `[max_tokens, hidden]` BF16.
+    ids_dev: DevicePtr,
+    gather_buf: DevicePtr,
+    proj_buf: DevicePtr,
+    max_tokens: usize,
+}
+
+impl NgramEmbedding {
+    pub fn new(
+        dims: NgramDims,
+        word: DenseWeight,
+        tables: Vec<DenseWeight>,
+        projs: Vec<DenseWeight>,
+        max_tokens: usize,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Self> {
+        anyhow::ensure!(tables.len() == dims.num_tables(), "table count");
+        anyhow::ensure!(projs.len() == dims.num_tables(), "proj count");
+        let td = dims.table_dim();
+        Ok(Self {
+            dims,
+            word,
+            tables,
+            projs,
+            batched_embed_k: gpu.kernel("embed_from_argmax", "batched_embed")?,
+            gemm_k: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
+            scaled_add_k: gpu.kernel("residual_add", "bf16_scaled_add")?,
+            ids_dev: gpu.alloc(max_tokens * 4)?,
+            gather_buf: gpu.alloc(max_tokens * td * 2)?,
+            proj_buf: gpu.alloc(max_tokens * dims.hidden_size * 2)?,
+            max_tokens,
+        })
+    }
+
+    /// Fused embedding for the LAST `seq_len` tokens of `ctx` (`ctx` =
+    /// up to n-1 cached context tokens followed by the new tokens —
+    /// exactly the reference NgramCache contract). Writes
+    /// `[seq_len, hidden]` BF16 to `out`.
+    pub fn embed(
+        &self,
+        ctx_tokens: &[u32],
+        seq_len: usize,
+        out: DevicePtr,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        use crate::layers::ops;
+        anyhow::ensure!(seq_len <= self.max_tokens, "ngram embed: seq_len over staging");
+        anyhow::ensure!(seq_len <= ctx_tokens.len(), "ngram embed: seq_len over ctx");
+        let h = self.dims.hidden_size;
+        let td = self.dims.table_dim();
+        let inv_scale = 1.0f32 / (1 + self.dims.num_tables()) as f32;
+
+        // out = 0; each contribution lands via scaled_add(out += src/13),
+        // matching the reference's final 1/(1+T) over base + all tables.
+        gpu.memset(out, 0, seq_len * h * 2)?;
+
+        // Base word rows for the NEW tokens only.
+        let new_tokens = &ctx_tokens[ctx_tokens.len() - seq_len..];
+        let ids_bytes: Vec<u8> = new_tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        gpu.copy_h2d_async(&ids_bytes, self.ids_dev, stream)?;
+        ops::batched_embed(
+            gpu,
+            self.batched_embed_k,
+            self.ids_dev,
+            self.word.weight,
+            self.proj_buf,
+            seq_len as u32,
+            h as u32,
+            stream,
+        )?;
+        ops::scaled_add(
+            gpu,
+            self.scaled_add_k,
+            out,
+            self.proj_buf,
+            inv_scale,
+            (seq_len * h) as u32,
+            stream,
+        )?;
+
+        // Host-side hash ids over the full ctx, one table at a time.
+        let all_ids = ngram_ids(&self.dims, ctx_tokens);
+        for (index, ids) in all_ids.iter().enumerate() {
+            let tail = &ids[ids.len() - seq_len..];
+            let id_bytes: Vec<u8> = tail
+                .iter()
+                .map(|&v| u32::try_from(v).context("ngram id exceeds u32"))
+                .collect::<Result<Vec<u32>>>()?
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            gpu.copy_h2d_async(&id_bytes, self.ids_dev, stream)?;
+            ops::batched_embed(
+                gpu,
+                self.batched_embed_k,
+                self.ids_dev,
+                self.tables[index].weight,
+                self.gather_buf,
+                seq_len as u32,
+                td as u32,
+                stream,
+            )?;
+            ops::dense_gemm_bf16_pipelined(
+                gpu,
+                self.gemm_k,
+                self.gather_buf,
+                &self.projs[index],
+                self.proj_buf,
+                seq_len as u32,
+                h as u32,
+                td as u32,
+                stream,
+            )?;
+            ops::scaled_add(
+                gpu,
+                self.scaled_add_k,
+                out,
+                self.proj_buf,
+                inv_scale,
+                (seq_len * h) as u32,
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +355,183 @@ mod tests {
                 assert_eq!(ids, want, "{} table {index}", f.name);
             }
         }
+    }
+
+    /// GPU parity vs the real-checkpoint golden vectors, on COMPACTED
+    /// tables (only the rows the fixture touches — ~20 MB instead of
+    /// 63 GB). Data dir comes from `ATLAS_NGRAM_TEST_DATA`, generated by
+    /// `bench/ngram_ref/make_gpu_testdata.py`. GPU test: `#[ignore]` per
+    /// repo convention (CI is CPU-only); run with
+    ///   ATLAS_NGRAM_TEST_DATA=/tank/atlas-testdata/ngram_longcat_lite \
+    ///   cargo test -p spark-model --release ngram_gpu -- --ignored
+    #[test]
+    #[ignore]
+    fn ngram_gpu_matches_golden() {
+        let dir = std::env::var("ATLAS_NGRAM_TEST_DATA")
+            .expect("set ATLAS_NGRAM_TEST_DATA (see make_gpu_testdata.py)");
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{dir}/meta.json")).unwrap(),
+        )
+        .unwrap();
+        let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(
+            0,
+            &atlas_kernels::ptx_modules(),
+        )
+        .expect("CUDA backend");
+        let g: &dyn GpuBackend = &gpu;
+
+        let toks: Vec<u32> = meta["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect();
+        let hidden = meta["hidden_size"].as_u64().unwrap() as usize;
+        let dims = NgramDims {
+            vocab_size: meta["vocab_size"].as_u64().unwrap(),
+            ratio: meta["ngram_vocab_size_ratio"].as_u64().unwrap(),
+            neighbor_num: meta["emb_neighbor_num"].as_u64().unwrap() as usize,
+            split_num: meta["emb_split_num"].as_u64().unwrap() as usize,
+            eos_token_id: meta["eos_token_id"].as_u64().unwrap() as u32,
+            hidden_size: hidden,
+        };
+
+        let upload = |bytes: &[u8]| -> DevicePtr {
+            let p = g.alloc(bytes.len()).unwrap();
+            g.copy_h2d_async(bytes, p, g.default_stream()).unwrap();
+            p
+        };
+        let load = |path: String| std::fs::read(path).unwrap();
+
+        // Compacted word table + remapped base token ids.
+        let word_ids: Vec<u64> = meta["word_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        let word = DenseWeight {
+            weight: upload(&load(format!("{dir}/word_rows.bin"))),
+        };
+        let remap =
+            |ids: &[u64], all: &[u64]| -> Vec<u32> {
+                ids.iter()
+                    .map(|id| all.binary_search(id).unwrap() as u32)
+                    .collect()
+            };
+        let compact_toks =
+            remap(&toks.iter().map(|&t| t as u64).collect::<Vec<_>>(), &word_ids);
+
+        // Compacted per-table rows + full projections; the test computes
+        // the SAME hash ids the module will and remaps them to the compact
+        // row order — so the id math is exercised end to end.
+        let host_ids = ngram_ids(&dims, &toks);
+        let mut tables = Vec::new();
+        let mut projs = Vec::new();
+        let mut compact_ids = Vec::new();
+        for t in meta["tables"].as_array().unwrap() {
+            let index = t["index"].as_u64().unwrap() as usize;
+            assert_eq!(index, tables.len());
+            let ids: Vec<u64> = t["ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .collect();
+            tables.push(DenseWeight {
+                weight: upload(&load(format!("{dir}/table{index}_rows.bin"))),
+            });
+            projs.push(DenseWeight {
+                weight: upload(&load(format!("{dir}/proj{index}.bin"))),
+            });
+            compact_ids.push(remap(&host_ids[index], &ids));
+        }
+
+        // Build the module on the compacted tables, then OVERRIDE the id
+        // path by embedding through a shim: we can't inject compact ids
+        // into embed() (it recomputes real ids), so drive the same op
+        // sequence manually here — this validates the GPU op composition
+        // and the id math jointly (ids were remapped from OUR ngram_ids).
+        let ng = NgramEmbedding::new(dims, word, tables, projs, 32, g).unwrap();
+        let stream = g.default_stream();
+        let m = toks.len();
+        let out = g.alloc(m * hidden * 2).unwrap();
+        g.memset(out, 0, m * hidden * 2).unwrap();
+        let inv = 1.0f32 / (1 + ng.dims.num_tables()) as f32;
+        let put_ids = |ids: &[u32]| {
+            let b: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
+            g.copy_h2d_async(&b, ng.ids_dev, stream).unwrap();
+        };
+        put_ids(&compact_toks);
+        crate::layers::ops::batched_embed(
+            g, ng.batched_embed_k, ng.ids_dev, ng.word.weight, ng.proj_buf,
+            m as u32, hidden as u32, stream,
+        )
+        .unwrap();
+        crate::layers::ops::scaled_add(
+            g, ng.scaled_add_k, out, ng.proj_buf, inv, (m * hidden) as u32,
+            stream,
+        )
+        .unwrap();
+        let td = ng.dims.table_dim();
+        for index in 0..ng.dims.num_tables() {
+            put_ids(&compact_ids[index]);
+            crate::layers::ops::batched_embed(
+                g, ng.batched_embed_k, ng.ids_dev, ng.tables[index].weight,
+                ng.gather_buf, m as u32, td as u32, stream,
+            )
+            .unwrap();
+            crate::layers::ops::dense_gemm_bf16_pipelined(
+                g, ng.gemm_k, ng.gather_buf, &ng.projs[index], ng.proj_buf,
+                m as u32, hidden as u32, td as u32, stream,
+            )
+            .unwrap();
+            crate::layers::ops::scaled_add(
+                g, ng.scaled_add_k, out, ng.proj_buf, inv,
+                (m * hidden) as u32, stream,
+            )
+            .unwrap();
+        }
+        g.synchronize(stream).unwrap();
+
+        // Compare vs golden f32. Criterion: per-row relative Frobenius
+        // error — elementwise max-rel is the wrong instrument here: the
+        // GPU path accumulates 13 BF16-rounded adds while the golden
+        // accumulates in f32, and simulating that exact chain over the
+        // reference itself (bench/ngram_ref/sim_bf16_chain.py) gives
+        // elementwise max_rel 0.17 with per-row Frobenius only 0.0067.
+        // The 2% gate keeps ~3x headroom over measured rounding noise
+        // while a single mis-mapped table would register ~27% (1/13 of
+        // the row's energy replaced).
+        let mut got_bf16 = vec![0u8; m * hidden * 2];
+        g.copy_d2h(out, &mut got_bf16).unwrap();
+        let golden = load(format!("{dir}/golden_f32.bin"));
+        let mut worst_row = 0f32;
+        for r in 0..m {
+            let mut err2 = 0f64;
+            let mut ref2 = 0f64;
+            for c in 0..hidden {
+                let i = r * hidden + c;
+                let bits =
+                    u16::from_le_bytes([got_bf16[i * 2], got_bf16[i * 2 + 1]]);
+                let got = f32::from_bits((bits as u32) << 16) as f64;
+                let want = f32::from_le_bytes([
+                    golden[i * 4],
+                    golden[i * 4 + 1],
+                    golden[i * 4 + 2],
+                    golden[i * 4 + 3],
+                ]) as f64;
+                err2 += (got - want) * (got - want);
+                ref2 += want * want;
+            }
+            worst_row = worst_row.max((err2 / ref2).sqrt() as f32);
+        }
+        assert!(
+            worst_row < 0.02,
+            "GPU fused embedding diverges from golden: worst row Frobenius \
+             rel = {worst_row}"
+        );
+        println!("ngram GPU parity vs golden: worst row Frobenius rel = {worst_row:.4}");
     }
 
     #[test]
