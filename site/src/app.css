@@ -279,6 +279,22 @@ nav {
 .cmd-text { flex: 1; min-width: 0; font-family: var(--font-mono); color: var(--accent-deep); font-size: 0.7rem; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
 .cmd-copy { flex-shrink: 0; background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(181,98,47,0.3); border-radius: 5px; padding: 0.28rem 0.55rem; font-size: 0.66rem; font-weight: 700; cursor: pointer; font-family: var(--font-mono); transition: background 0.15s, color 0.15s; }
 .cmd-copy:hover { background: var(--accent); color: #fff; }
+
+/* ---- run button + agent panel --------------------------------------------
+   The Run button sits beside Copy on a recipe card. It drives the local agent
+   on 127.0.0.1; the panel below it explains every state that is not "it
+   worked", because for most visitors there is no agent yet and that is not an
+   error. */
+.cmd-run { flex-shrink: 0; background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 5px; padding: 0.28rem 0.6rem; font-size: 0.66rem; font-weight: 700; cursor: pointer; font-family: var(--font-mono); transition: background 0.15s, opacity 0.15s; }
+.cmd-run:hover:not(:disabled) { background: var(--accent-deep); }
+.cmd-run:disabled { opacity: 0.45; cursor: not-allowed; }
+.run-panel { margin-top: 0.6rem; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 0.8rem 0.95rem; font-size: 0.76rem; color: var(--t2); line-height: 1.6; }
+.run-panel p { margin: 0 0 0.5rem; }
+.run-panel-title { font-weight: 700; color: var(--t1); }
+.run-panel pre { background: #201d18; color: #e8e2d6; border-radius: 6px; padding: 0.55rem 0.7rem; font-size: 0.7rem; overflow-x: auto; margin: 0 0 0.55rem; }
+.run-panel-note { font-size: 0.72rem; color: var(--t3, var(--t2)); }
+.run-panel-error { color: #b4341f; }
+.run-token { width: 100%; box-sizing: border-box; margin-bottom: 0.5rem; padding: 0.35rem 0.5rem; font-size: 0.7rem; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg); color: var(--t1); }
 .ms-foot { font-size: 0.78rem; color: var(--t2); margin-top: 1.5rem; line-height: 1.7; }
 .ms-foot .link { font-weight: 600; }
 .qwen-block { margin-top: 1.5rem; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 1rem 1.25rem; font-size: 0.86rem; color: var(--t2); line-height: 1.6; }

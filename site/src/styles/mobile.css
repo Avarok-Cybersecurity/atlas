@@ -21,6 +21,11 @@ img, svg, video { max-width: 100%; }
 .ms-grid > *, .community-band > *, .footer-inner > *, .mnav-vendors > *,
 .proof-strip > * { min-width: 0; }
 .repro, .hero-cmd, .cmd-pill, .term, .method-card, .receipt, .run-side { min-width: 0; }
+/* The card's command pill now carries two buttons (Copy and Run). On a narrow
+   screen they would squeeze the command to nothing, so let the pill wrap and
+   give the command its own full-width row. */
+.cmd-pill { flex-wrap: wrap; }
+.cmd-pill .cmd-text { flex-basis: 100%; }
 /* auto-fit tracks must never demand more than the viewport can give */
 .tstrip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
 .contrib-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
