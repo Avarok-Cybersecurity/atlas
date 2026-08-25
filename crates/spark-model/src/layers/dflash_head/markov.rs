@@ -54,9 +54,7 @@ impl BlockDiffusionDraftHead {
     /// configured via `ATLAS_DSPARK_CONF_TAU` (0/unset = off, matching the
     /// reference's `threshold <= 0.0 → full block`).
     pub(super) fn confidence_active(&self) -> bool {
-        self.confidence_proj.is_some()
-            && self.scratch.conf_out.0 != 0
-            && Self::conf_tau() > 0.0
+        self.confidence_proj.is_some() && self.scratch.conf_out.0 != 0 && Self::conf_tau() > 0.0
     }
 
     /// `ATLAS_DSPARK_CONF_TAU` parsed once per call site. Sigmoid-space
@@ -99,8 +97,7 @@ impl BlockDiffusionDraftHead {
             .markov_w2
             .as_ref()
             .expect("markov_active() checked markov_w2");
-        let anchor_bias =
-            std::env::var("ATLAS_DSPARK_ANCHOR_BIAS").ok().as_deref() != Some("0");
+        let anchor_bias = std::env::var("ATLAS_DSPARK_ANCHOR_BIAS").ok().as_deref() != Some("0");
         let conf_on = self.confidence_active();
         let bf16u = 2usize;
 
@@ -193,14 +190,7 @@ impl BlockDiffusionDraftHead {
                             stream,
                         )?;
                     }
-                    ops::residual_add(
-                        gpu,
-                        self.kernels.residual_add,
-                        conf_i,
-                        b.weight,
-                        1,
-                        stream,
-                    )?;
+                    ops::residual_add(gpu, self.kernels.residual_add, conf_i, b.weight, 1, stream)?;
                 }
             }
             ops::argmax_bf16(

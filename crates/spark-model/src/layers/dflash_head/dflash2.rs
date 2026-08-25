@@ -57,11 +57,7 @@ impl BlockDiffusionDraftHead {
             && std::env::var("ATLAS_DFLASH2").ok().as_deref() != Some("0")
     }
 
-    fn conv_weights(
-        &self,
-        layer: &DflashLayer,
-        site: ConvSite,
-    ) -> Option<(DevicePtr, DevicePtr)> {
+    fn conv_weights(&self, layer: &DflashLayer, site: ConvSite) -> Option<(DevicePtr, DevicePtr)> {
         match site {
             ConvSite::Attention => Some((
                 layer.attention_conv_base.as_ref()?.weight,
@@ -92,7 +88,8 @@ impl BlockDiffusionDraftHead {
         let dyn_stride = 2 * k * groups;
         let app_off = application * k * groups;
         // base_kernel is [2, k, h]; each application's slice is [k, h].
-        let base_slice = base.offset((application as usize) * self.conv_kernel_size * self.hidden_size * 2);
+        let base_slice =
+            base.offset((application as usize) * self.conv_kernel_size * self.hidden_size * 2);
         KernelLaunch::new(ctx.gpu, self.kernels.dflash2_conv2)
             .grid([g, 1, 1])
             .block([256, 1, 1])

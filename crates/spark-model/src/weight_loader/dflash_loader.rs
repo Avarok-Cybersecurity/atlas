@@ -26,135 +26,13 @@
 //! (`MTP loads ALL experts on every rank — no EP all_reduce needed`).
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
 use crate::weight_map::{DenseWeight, dense};
 
-/// Drafter HF `config.json` (subset Atlas consumes). Mirrors
-/// `z-lab/Qwen3.6-35B-A3B-DFlash/config.json` field names verbatim so
-/// `serde_json::from_str` works directly on the raw file.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DflashConfig {
-    pub hidden_size: usize,
-    pub num_hidden_layers: usize,
-    pub intermediate_size: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub head_dim: usize,
-    pub vocab_size: usize,
-    #[serde(default)]
-    pub draft_vocab_size: Option<usize>,
-    #[serde(default)]
-    pub tie_word_embeddings: bool,
-    /// Block size γ. Qwen3.6-DFlash ships `block_size: 16`.
-    #[serde(default = "default_block_size")]
-    pub block_size: usize,
-    /// DFlash-specific nested config object.
-    #[serde(default)]
-    pub dflash_config: Option<DflashSubConfig>,
-    /// Drafter base RoPE θ. Defaults to 10M (matches Qwen3.6-DFlash).
-    #[serde(default = "default_rope_theta")]
-    pub rope_theta: f32,
-    /// HF-style `rope_scaling` block. `None` ⇒ plain RoPE (the v2 2026-04-27
-    /// Qwen3.6-DFlash drafter ships `rope_scaling: null`). When present and
-    /// `rope_type == "yarn"`, the drafter's YaRN parameters are used to
-    /// build the inv_freq table at construction time.
-    /// `alias = "rope_parameters"`: newer transformers releases (RadixArk
-    /// DSpark, incoai DFlash2) ship the block under that key — without the
-    /// alias Atlas silently drops the scaling (the RadixArk config.json had
-    /// to be hand-patched before this).
-    #[serde(default, alias = "rope_parameters")]
-    pub rope_scaling: Option<DflashRopeScaling>,
-    /// DSpark Markov head rank. `0` (default) ⇒ plain DFlash drafter with no
-    /// Markov head. RadixArk `Qwen3.8-27B-DSpark` ships `markov_rank: 256`
-    /// top-level (SpecForge `DSparkConfig` convention — see the checkpoint's
-    /// `dspark.py`: DSpark fields are declared as top-level config attrs).
-    #[serde(default)]
-    pub markov_rank: usize,
-    /// DSpark Markov head flavor. Only `"vanilla"` (low-rank learned bigram
-    /// bias) is defined by the reference; anything else is rejected at load.
-    #[serde(default)]
-    pub markov_head_type: Option<String>,
-    /// DSpark confidence head (`AcceptRatePredictor`): a `Linear(input, 1)`
-    /// predicting per-draft-position acceptance probability, used for
-    /// adaptive block length. Loaded when present; consumed by the dynamic-K
-    /// scheduling phase (the Markov fixup works without it).
-    #[serde(default)]
-    pub enable_confidence_head: bool,
-    /// When true the confidence head's input is `[hidden ‖ markov_embed]`
-    /// (input_dim = hidden_size + markov_rank); when false, hidden only.
-    #[serde(default = "default_true")]
-    pub confidence_head_with_markov: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_rope_theta() -> f32 {
-    10_000_000.0
-}
-
-/// Subset of HF `rope_scaling` block consumed by Atlas. Mirrors the field
-/// names in `transformers`' Qwen3 config so `serde_json::from_str` works
-/// directly on the drafter's `config.json`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DflashRopeScaling {
-    /// Currently only `"yarn"` is recognised; anything else falls back to
-    /// plain RoPE with a warning logged at construction time.
-    #[serde(default)]
-    pub rope_type: Option<String>,
-    #[serde(default)]
-    pub factor: Option<f32>,
-    #[serde(default)]
-    pub beta_fast: Option<f32>,
-    #[serde(default)]
-    pub beta_slow: Option<f32>,
-    #[serde(default)]
-    pub original_max_position_embeddings: Option<f32>,
-}
-
-fn default_block_size() -> usize {
-    16
-}
-
-/// Nested `dflash_config` block in the drafter's `config.json`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DflashSubConfig {
-    /// Token id used to fill the γ "to-be-predicted" positions during draft
-    /// inference. `248070` for Qwen3.6-DFlash.
-    pub mask_token_id: u32,
-    /// Target-model layer indices to capture intermediate hidden states from.
-    /// `[1, 10, 19, 28, 37]` for Qwen3.6-35B-A3B-DFlash. Order matters:
-    /// shallow-to-deep concatenation is what `fc` expects.
-    pub target_layer_ids: Vec<usize>,
-    /// Draft flavor tag. `"dspark"` marks a SpecForge-lineage drafter, whose
-    /// row convention is SHIFTED (row j's output = token at position j+1; the
-    /// anchor row's output is draft #1) versus the z-lab convention Atlas's
-    /// forward was built for (row j predicts at j, row 0 = echo). The runtime
-    /// keys the draft-vector rotation off this tag. DFlash2 checkpoints have
-    /// no tag and keep the z-lab convention (verified against z-lab
-    /// `dflash/model.py::dflash_generate` — anchor-row output discarded,
-    /// mask rows fill in place).
-    #[serde(default)]
-    pub projector_type: Option<String>,
-
-    // ── DFlash2 fields (incoai/z-lab `DFlash2DraftModel`); absent = DFlash1 ──
-    /// Two-tap dynamic conv kernel size (2 for DFlash2).
-    #[serde(default)]
-    pub conv_kernel_size: usize,
-    /// Channels per conv group (16 for DFlash2 → hidden/16 groups).
-    #[serde(default)]
-    pub conv_group_size: usize,
-    /// Selector codebook rank (256 for DFlash2).
-    #[serde(default)]
-    pub selector_rank: usize,
-    /// Candidates kept per position for the selector walk (16 for DFlash2).
-    #[serde(default)]
-    pub selector_top_k: usize,
-}
+mod config;
+pub use config::*;
 
 /// Raw weight bundle for the DFlash drafter, post-load.
 ///
@@ -385,18 +263,24 @@ pub fn load_dflash_weights(
         && drafter_store.contains(&selector_key)
     {
         (
-            Some(dense(drafter_store, &selector_key)
-                .context("DFlash2: load candidate_selector.predecessor_codebook")?),
-            Some(dense(
-                drafter_store,
-                &format!("{prefix}candidate_selector.successor_codebook"),
-            )
-            .context("DFlash2: load candidate_selector.successor_codebook")?),
-            Some(dense(
-                drafter_store,
-                &format!("{prefix}candidate_selector.hidden_projection.weight"),
-            )
-            .context("DFlash2: load candidate_selector.hidden_projection.weight")?),
+            Some(
+                dense(drafter_store, &selector_key)
+                    .context("DFlash2: load candidate_selector.predecessor_codebook")?,
+            ),
+            Some(
+                dense(
+                    drafter_store,
+                    &format!("{prefix}candidate_selector.successor_codebook"),
+                )
+                .context("DFlash2: load candidate_selector.successor_codebook")?,
+            ),
+            Some(
+                dense(
+                    drafter_store,
+                    &format!("{prefix}candidate_selector.hidden_projection.weight"),
+                )
+                .context("DFlash2: load candidate_selector.hidden_projection.weight")?,
+            ),
         )
     } else {
         (None, None, None)
@@ -405,11 +289,27 @@ pub fn load_dflash_weights(
         tracing::info!(
             "DFlash2 heads loaded: convs={} (k={}, group={}), selector={} (rank={}, top_k={})",
             dflash2_conv,
-            drafter_config.dflash_config.as_ref().map(|c| c.conv_kernel_size).unwrap_or(0),
-            drafter_config.dflash_config.as_ref().map(|c| c.conv_group_size).unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.conv_kernel_size)
+                .unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.conv_group_size)
+                .unwrap_or(0),
             selector_pred.is_some(),
-            drafter_config.dflash_config.as_ref().map(|c| c.selector_rank).unwrap_or(0),
-            drafter_config.dflash_config.as_ref().map(|c| c.selector_top_k).unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.selector_rank)
+                .unwrap_or(0),
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.selector_top_k)
+                .unwrap_or(0),
         );
     }
 
@@ -438,50 +338,45 @@ pub fn load_dflash_weights(
     // `confidence_head.proj.weight` [1, 5376], `confidence_head.proj.bias`
     // [1] — all BF16, bare layout (same prefix convention as fc.weight).
     let markov_key = format!("{prefix}markov_head.markov_w1.weight");
-    let (markov_w1, markov_w2) = if drafter_config.markov_rank > 0
-        && drafter_store.contains(&markov_key)
-    {
-        if let Some(kind) = drafter_config.markov_head_type.as_deref()
-            && kind != "vanilla"
-        {
-            anyhow::bail!(
-                "DSpark drafter declares markov_head_type={kind:?}; only \"vanilla\" \
+    let (markov_w1, markov_w2) =
+        if drafter_config.markov_rank > 0 && drafter_store.contains(&markov_key) {
+            if let Some(kind) = drafter_config.markov_head_type.as_deref()
+                && kind != "vanilla"
+            {
+                anyhow::bail!(
+                    "DSpark drafter declares markov_head_type={kind:?}; only \"vanilla\" \
                  (low-rank bigram bias) is defined by the reference implementation"
-            );
-        }
-        let w1 = dense(drafter_store, &markov_key)
-            .context("DSpark drafter: load markov_head.markov_w1.weight")?;
-        let w2 = dense(
-            drafter_store,
-            &format!("{prefix}markov_head.markov_w2.weight"),
-        )
-        .context("DSpark drafter: load markov_head.markov_w2.weight")?;
-        (Some(w1), Some(w2))
-    } else {
-        if drafter_config.markov_rank > 0 {
-            tracing::warn!(
-                "DSpark drafter config declares markov_rank={} but the checkpoint has \
+                );
+            }
+            let w1 = dense(drafter_store, &markov_key)
+                .context("DSpark drafter: load markov_head.markov_w1.weight")?;
+            let w2 = dense(
+                drafter_store,
+                &format!("{prefix}markov_head.markov_w2.weight"),
+            )
+            .context("DSpark drafter: load markov_head.markov_w2.weight")?;
+            (Some(w1), Some(w2))
+        } else {
+            if drafter_config.markov_rank > 0 {
+                tracing::warn!(
+                    "DSpark drafter config declares markov_rank={} but the checkpoint has \
                  no {markov_key} — running as plain DFlash (Markov bias disabled)",
-                drafter_config.markov_rank,
-            );
-        }
-        (None, None)
-    };
+                    drafter_config.markov_rank,
+                );
+            }
+            (None, None)
+        };
     let conf_key = format!("{prefix}confidence_head.proj.weight");
-    let (confidence_proj, confidence_bias) = if drafter_config.enable_confidence_head
-        && drafter_store.contains(&conf_key)
-    {
-        let w = dense(drafter_store, &conf_key)
-            .context("DSpark drafter: load confidence_head.proj.weight")?;
-        let b = dense(
-            drafter_store,
-            &format!("{prefix}confidence_head.proj.bias"),
-        )
-        .context("DSpark drafter: load confidence_head.proj.bias")?;
-        (Some(w), Some(b))
-    } else {
-        (None, None)
-    };
+    let (confidence_proj, confidence_bias) =
+        if drafter_config.enable_confidence_head && drafter_store.contains(&conf_key) {
+            let w = dense(drafter_store, &conf_key)
+                .context("DSpark drafter: load confidence_head.proj.weight")?;
+            let b = dense(drafter_store, &format!("{prefix}confidence_head.proj.bias"))
+                .context("DSpark drafter: load confidence_head.proj.bias")?;
+            (Some(w), Some(b))
+        } else {
+            (None, None)
+        };
     if markov_w1.is_some() || confidence_proj.is_some() {
         tracing::info!(
             "DSpark heads loaded: markov={} (rank={}), confidence={} (with_markov={})",
