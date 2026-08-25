@@ -62,13 +62,16 @@
   };
   const quantLabel = (q) => (q && q !== 'none' ? q.toUpperCase() : 'BF16');
   const topoClass = (t) => (t === 'EP=2' ? 'chip chip-ep2' : t === 'TP=2' ? 'chip chip-tp2' : 'chip chip-single');
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="models">
+<section id="models" class="sx-violet">
   <div class="container">
-    <div class="slabel">{mcopy.label}</div>
-    <h2 class="stitle">{mcopy.title}</h2>
-    <p class="ssub">{mcopy.sub}</p>
+    <SectionHead
+      label={mcopy.label}
+      title={mcopy.title}
+      sub={mcopy.sub}
+    />
 
     <div class="mnav">
       <!-- Level 1: vendor brand tabs -->

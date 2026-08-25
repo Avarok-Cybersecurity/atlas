@@ -12,6 +12,11 @@
   // which is where single-stream latency lives.
   import ladder from '$lib/ladder.generated.json';
 
+  // `embedded`: render as a block inside a section that already has a heading
+  // and a container (the Verified entry). Default is the standalone section the
+  // benchmark dashboard mounts.
+  let { embedded = false } = $props();
+
   const W = 760, H = 300, PL = 62, PR = 20, PT = 18, PB = 34;
 
   const subject = ladder.series.find((s) => s.role === 'subject');
@@ -43,16 +48,19 @@
   const ratio = (r) => `${r.toFixed(3)}×`;
 </script>
 
-<section id="concurrency" class="section-alt">
-  <div class="container">
-    <div class="slabel">Concurrency</div>
-    <h2 class="stitle">
+<svelte:element this={embedded ? 'div' : 'section'} id="concurrency"
+  class={embedded ? 'cl-embed' : 'section-alt'}>
+  <div class={embedded ? 'cl-embed-inner' : 'container'}>
+    {#if !embedded}
+      <div class="slabel">Concurrency</div>
+    {/if}
+    <svelte:element this={embedded ? 'h3' : 'h2'} class={embedded ? 'cl-h' : 'stitle'}>
       {#if ladder.summary.all_won}
         Faster than vLLM at every concurrency, C=1 to 128
       {:else}
         Atlas vs vLLM, C=1 to 128 — {ladder.summary.won} of {ladder.summary.rungs} rungs
       {/if}
-    </h2>
+    </svelte:element>
     <p class="cl-sub">
       {ladder.workload.checkpoint} on one GB10. {ladder.aggregate}. The matched baseline
       runs vLLM's own MTP speculative decoding at K=4, same as Atlas, on the same box,
@@ -81,7 +89,8 @@
           <line class="gc-grid" x1={PL} y1={y(t)} x2={W - PR} y2={y(t)} />
           <text class="gc-axis" x={PL - 8} y={y(t) + 3.5} text-anchor="end">{Math.round(t)}</text>
         {/each}
-        <text class="gc-axis cl-ylab" x={14} y={PT + 6} text-anchor="start">tok/s</text>
+        <text class="gc-axis cl-ylab" text-anchor="middle" x={13} y={(PT + H - PB) / 2 + 4}
+          transform="rotate(-90 13 {(PT + H - PB) / 2 + 4})">tok/s</text>
         {#each cs as c}
           <text class="gc-axis" x={x(c)} y={H - 9} text-anchor="middle">{c}</text>
         {/each}
@@ -213,4 +222,4 @@
       </div>
     </details>
   </div>
-</section>
+</svelte:element>

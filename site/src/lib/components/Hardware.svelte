@@ -1,11 +1,14 @@
 <script>
   import { hardware } from '$lib/data.js';
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="hardware" class="section-alt">
+<section id="hardware" class="section-alt sx-cyan">
   <div class="container">
-    <div class="slabel">{hardware.label}</div>
-    <h2 class="stitle">{hardware.title}</h2>
+    <SectionHead
+      label={hardware.label}
+      title={hardware.title}
+    />
 
     <div class="hw-grid">
       {#each hardware.cards as c}

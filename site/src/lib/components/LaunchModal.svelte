@@ -86,7 +86,6 @@
   }
 </script>
 
-<div class="lm-backdrop" role="presentation" onclick={onclose}></div>
 <div class="lm" role="dialog" aria-modal="true" aria-label={`Launch settings for ${recipeId}`}>
   <header class="lm-head">
     <div>

@@ -9,13 +9,16 @@
       setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
     } catch {}
   }
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="run" class="section-alt">
+<section id="run" class="section-alt sx-cyan">
   <div class="container">
-    <div class="slabel">{getRunning.label}</div>
-    <h2 class="stitle">{getRunning.title}</h2>
-    <p class="ssub">{getRunning.sub}</p>
+    <SectionHead
+      label={getRunning.label}
+      title={getRunning.title}
+      sub={getRunning.sub}
+    />
 
     <div class="run-grid">
       <div>
