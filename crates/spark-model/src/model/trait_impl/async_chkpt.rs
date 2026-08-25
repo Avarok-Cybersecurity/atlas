@@ -39,14 +39,12 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4;
-                let conv_dim = nk * kd * 2 + nv * vd;
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4;
+                // Sizes from the SSM pool SSOT (covers GDN AND Mamba-2 — the
+                // old inline math read GDN `linear_*` config fields that are
+                // 0 on Nemotron-H, making every checkpoint/rollback copy a
+                // silent 0-byte no-op; found porting DFlash to Lightning).
+                let h_bytes = self.ssm_pool.h_bytes;
+                let conv_bytes = self.ssm_pool.conv_bytes;
 
                 if ssm.h_state_checkpoint.is_none() {
                     ssm.h_state_checkpoint = Some(self.gpu.alloc(h_bytes)?);
@@ -91,14 +89,12 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4;
-                let conv_dim = nk * kd * 2 + nv * vd;
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4;
+                // Sizes from the SSM pool SSOT (covers GDN AND Mamba-2 — the
+                // old inline math read GDN `linear_*` config fields that are
+                // 0 on Nemotron-H, making every checkpoint/rollback copy a
+                // silent 0-byte no-op; found porting DFlash to Lightning).
+                let h_bytes = self.ssm_pool.h_bytes;
+                let conv_bytes = self.ssm_pool.conv_bytes;
 
                 // Rollback: restore h_state and conv_state from the appropriate source.
                 if num_accepted == 0 {
@@ -259,12 +255,10 @@ impl TransformerModel {
                 .downcast_mut::<SsmLayerState>()
                 .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-            let nv = self.config.linear_num_value_heads;
-            let vd = self.config.linear_value_head_dim;
-            let nk = self.config.linear_num_key_heads;
-            let kd = self.config.linear_key_head_dim;
-            let h_bytes = nv * vd * kd * 4;
-            let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
+            // Pool SSOT sizes (GDN AND Mamba-2) — the GDN `linear_*` math
+            // is 0 on Nemotron-H (0-byte no-op commit copies).
+            let h_bytes = self.ssm_pool.h_bytes;
+            let conv_bytes = self.ssm_pool.conv_bytes;
 
             // Partial accept: rewind live state to the last accepted token's
             // intermediate (state after token `num_accepted-1`).
