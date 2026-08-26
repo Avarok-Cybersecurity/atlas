@@ -124,8 +124,15 @@ class FleetSession {
   /** Detail for the current mode. */
   detail = $state('');
 
-  /** Nodes by fingerprint. */
-  nodes = $state.raw([]);
+  /**
+   * The fleet, local node first.
+   *
+   * Plain `$state`, not `$state.raw`: the list is reassigned wholesale on every
+   * update, and a raw field did not re-render when it was filled in after the
+   * mode had already flipped to 'live' — the page connected and then showed an
+   * empty fleet.
+   */
+  nodes = $state([]);
 
   /** Whether a watch is open and vitals are flowing. */
   watching = $state(false);
@@ -134,6 +141,13 @@ class FleetSession {
   #probeTimer = null;
   #probeDelay = PROBE_START_MS;
   #started = false;
+  /**
+   * The in-flight start, so concurrent callers await one connect rather than
+   * racing two. The nav indicator and the control page share this session, and
+   * an effect that re-runs would otherwise tear down a connection that another
+   * caller is still opening.
+   */
+  #starting = null;
 
   /** This machine, when the agent has told us about it. */
   get local() {
@@ -177,10 +191,18 @@ class FleetSession {
    * retry loop — a marketing page must not poll loopback forever.
    */
   async start({ watch = true } = {}) {
-    if (this.#started) return;
+    if (this.#started) return this.#starting ?? Promise.resolve();
     this.#started = true;
-    await this.#connect();
-    if (watch && this.mode === 'no_agent') this.#scheduleProbe();
+    this.#starting = (async () => {
+      await this.#connect();
+      if (watch && this.mode === 'no_agent') this.#scheduleProbe();
+    })();
+    try {
+      await this.#starting;
+    } finally {
+      this.#starting = null;
+    }
+    return undefined;
   }
 
   /** Stop everything. Used when the control page unmounts. */
@@ -228,6 +250,11 @@ class FleetSession {
       this.detail = this.agent.message ?? '';
       return;
     }
+    // 'live' is announced as soon as the agent answers, not after the first
+    // fleet load: leaving it until later showed the "no agent here yet" panel
+    // to someone whose agent had just answered. The list filling in a moment
+    // later is fine because `nodes` is reactive — which it was not, and that
+    // was the actual bug behind an empty fleet on a working connection.
     this.mode = 'live';
     this.detail = '';
     this.#probeDelay = PROBE_START_MS;

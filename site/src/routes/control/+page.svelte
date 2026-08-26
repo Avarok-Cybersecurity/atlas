@@ -43,9 +43,12 @@
     }
   }
 
+  // Start only. The session is an app-wide singleton the nav indicator shares,
+  // so tearing it down when this effect re-runs would kill a connection some
+  // other caller is still using — and did: the page connected, then lost its
+  // event listener mid-open and rendered an empty fleet.
   $effect(() => {
     fleet.start({ watch: true });
-    return () => fleet.stop();
   });
 
   // Default the head to this machine once the fleet is known.
