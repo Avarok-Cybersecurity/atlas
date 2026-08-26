@@ -18,9 +18,13 @@
 //      selection, pairing, launching — uses the fingerprint, because Sparks
 //      ship with colliding names like spark-256a.
 //
-// PRIVACY. Fleet data lives in memory for the life of the tab. Nothing is
-// written to storage except the existing browser-pairing token, no fleet value
+// PRIVACY. Fleet data lives in memory for the life of the tab, no fleet value
 // ever reaches a URL, and the prerendered page contains no fleet data at all.
+// Two things are written to storage, both by other modules and neither by this
+// one: the browser-pairing token (`protocol.js`) and the operator's own
+// preferences (`profile.js`). The latter includes the fingerprints of machines
+// the operator selected themselves — see that file for why that is the one
+// fleet value worth persisting. Names, addresses, vitals and alerts are not.
 
 import { AgentClient } from './client.svelte.js';
 
@@ -185,6 +189,42 @@ class FleetSession {
   /** Nodes that could take a rank in a cluster launch. */
   get launchable() {
     return this.nodes.filter((n) => n.canLaunch && (n.isLocal || n.pairing === 'paired'));
+  }
+
+  /**
+   * Whether the machine running this browser can host a rank itself.
+   *
+   * Null until the agent has said, which is not the same as false: a page that
+   * assumed false while connecting would flash a control-only banner at every
+   * operator on a Spark. Callers must treat null as "not yet known".
+   */
+  get localCanLaunch() {
+    return this.local ? this.local.canLaunch : null;
+  }
+
+  /**
+   * True only once the agent has confirmed this machine cannot run a model.
+   *
+   * This is an ordinary, supported way to run — a laptop driving headless
+   * boxes — so it drives explanation, never an error.
+   */
+  get controlOnly() {
+    return this.localCanLaunch === false;
+  }
+
+  /** Why this machine cannot run a model, as the agent explained it. */
+  get controlOnlyReason() {
+    return this.local?.cannotLaunchReason ?? '';
+  }
+
+  /**
+   * Machines other than this one that could hold a rank.
+   *
+   * What a control-only browser is actually offering to drive, and the number
+   * that decides whether its empty state should teach pairing or launching.
+   */
+  get remoteLaunchable() {
+    return this.launchable.filter((n) => !n.isLocal);
   }
 
   /**

@@ -177,6 +177,27 @@
 .fl-unpair:hover { color: var(--red); }
 .fl-solo-note { margin-top: 1.5rem; font-size: 0.9rem; color: var(--t2); line-height: 1.65; max-width: 62ch; }
 
+/* Control-only mode: a laptop driving headless machines. This is a supported
+   way to work, not a fault, so it reads as an explanation — amber for "know
+   this", never the red used for something that went wrong. */
+.fl-control-only {
+  margin-top: 1.5rem; padding: 1rem 1.15rem; max-width: 68ch;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber); border-radius: 12px;
+}
+.fl-co-head { font-size: 0.92rem; font-weight: 650; color: var(--t1); line-height: 1.6; }
+.fl-co-chip {
+  display: inline-block; margin-right: 0.5rem; padding: 0.16rem 0.5rem;
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 999px; color: var(--amber);
+  font-family: var(--font-mono); font-size: 0.66rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase; vertical-align: 1px;
+}
+.fl-co-why { margin-top: 0.55rem; font-size: 0.87rem; color: var(--t2); line-height: 1.65; }
+.fl-co-next { margin-top: 0.6rem; font-size: 0.87rem; color: var(--t2); line-height: 1.65; }
+.fl-co-next strong { color: var(--t1); }
+
 /* ---- topology -------------------------------------------------------------- */
 .topo-wrap { display: grid; grid-template-columns: 1fr 300px; gap: 2rem; margin-top: 2.5rem; align-items: start; }
 .topo-fig {
@@ -214,6 +235,9 @@
 .topo-act-btn:disabled { opacity: 0.55; cursor: default; }
 .topo-act-danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
 .topo-act-empty { font-size: 0.82rem; color: var(--t3); }
+/* Shown where "Make head" would be on a machine that cannot hold a rank. A
+   disabled button reads as broken; a sentence reads as an answer. */
+.topo-act-note { display: inline-block; margin: 0.15rem 0; font-size: 0.75rem; color: var(--amber); }
 
 .topo-table { margin-top: 1rem; font-size: 0.8rem; }
 .topo-table summary { cursor: pointer; color: var(--t3); font-size: 0.76rem; }

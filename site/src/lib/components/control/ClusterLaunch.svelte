@@ -12,6 +12,7 @@
   // preview it invented would be a guess presented as the thing that executes.
   import * as L from '$lib/agent/launch.js';
   import * as O from '$lib/agent/overrides.js';
+  import * as Prof from '$lib/agent/profile.js';
   import SettingsEditor from './SettingsEditor.svelte';
   import LaunchStats from './LaunchStats.svelte';
   import LaunchLogs from './LaunchLogs.svelte';
@@ -22,6 +23,12 @@
   let overrides = $state({});
   let showSettings = $state(false);
   let copied = $state('');
+
+  // The operator's remembered preferences. Read once, on the client only —
+  // this component is prerendered, and there is no storage during prerender.
+  const store = typeof localStorage === 'undefined' ? null : localStorage;
+  let profile = $state(Prof.empty());
+  let restored = $state(false);
 
   const recipes = $derived(
     (fleet.agent?.recipes ?? []).filter((r) => r.runnable).slice().sort((a, b) => a.id.localeCompare(b.id)),
@@ -41,11 +48,47 @@
   const changed = $derived(O.changedCount(overrides, defaults));
   const wire = $derived(O.toWire(overrides, defaults));
 
+  // Pick up where the operator left off, once — and only once there is enough
+  // to check a remembered choice against. Restoring blind would put a recipe
+  // this agent does not carry, or a machine that is switched off, into a plan
+  // and then fail at preview with something the operator did not choose.
+  $effect(() => {
+    if (restored || recipes.length === 0) return;
+    restored = true;
+    const p = Prof.load(store);
+    profile = p;
+    if (p.recipe == null) return;
+
+    const target = recipes.find((r) => r.id === p.recipe);
+    if (!target) return;
+    let next = L.setRecipe(L.initial(), target.id);
+
+    // Only machines that can hold a rank *right now*. A remembered selection
+    // is a preference, never an assertion about what is on the network.
+    const live = new Set(candidates.map((n) => n.id));
+    for (const id of p.selected) {
+      if (live.has(id)) next = L.toggleNode(next, id, target);
+    }
+    if (p.head != null && next.selected.includes(p.head)) next = L.setHead(next, p.head);
+
+    flow = next;
+    overrides = Prof.overridesFor(p, target.id);
+  });
+
+  /** Persist the current plan. Failure is silent by design — see profile.js. */
+  function remember(patch) {
+    profile = Prof.merge(profile, patch);
+    Prof.save(store, profile);
+  }
+
   function chooseRecipe(id) {
     flow = L.setRecipe(flow, id);
     // Bounds and defaults belong to a recipe; carrying one recipe's overrides
     // onto another would apply values the operator chose for something else.
-    overrides = {};
+    // A recipe's *own* remembered overrides are a different matter: those are
+    // what this operator last chose for this recipe, so they come back.
+    overrides = Prof.overridesFor(profile, id);
+    remember({ recipe: id });
   }
 
   function nameOf(id) {
@@ -101,6 +144,20 @@
   // also depends on is a loop waiting to be introduced.
   function settingsChanged() {
     flow = L.settingsChanged(flow);
+    if (flow.recipe != null) {
+      profile = Prof.rememberOverrides(profile, flow.recipe, overrides);
+      Prof.save(store, profile);
+    }
+  }
+
+  function pickNode(id) {
+    flow = L.toggleNode(flow, id, recipe);
+    remember({ selected: flow.selected, head: flow.head });
+  }
+
+  function pickHead(id) {
+    flow = L.setHead(flow, id);
+    remember({ selected: flow.selected, head: flow.head });
   }
 
   async function copy(text, key) {
@@ -149,13 +206,20 @@
     <fieldset class="lc-nodes" disabled={busy || held}>
       <legend>Machines · pick {L.required(recipe)}</legend>
       {#if candidates.length === 0}
-        <p class="lc-empty">No machine here can hold a rank yet. Pair one first.</p>
+        {#if fleet.controlOnly}
+          <p class="lc-empty">
+            This machine is control only, so it cannot hold a rank itself. Pair a
+            machine that can run models and it will appear here.
+          </p>
+        {:else}
+          <p class="lc-empty">No machine here can hold a rank yet. Pair one first.</p>
+        {/if}
       {/if}
       {#each candidates as n (n.id)}
         {@const on = flow.selected.includes(n.id)}
         <div class="lc-node" class:lc-node-on={on}>
           <label class="lc-node-pick">
-            <input type="checkbox" checked={on} onchange={() => (flow = L.toggleNode(flow, n.id, recipe))} />
+            <input type="checkbox" checked={on} onchange={() => pickNode(n.id)} />
             <span class="lc-node-name">{n.name}</span>
             <span class="lc-node-sub">{n.isLocal ? 'this machine' : (n.addresses[0]?.addr ?? '')}</span>
           </label>
@@ -165,7 +229,7 @@
               name="cluster-head"
               checked={flow.head === n.id}
               disabled={!on}
-              onchange={() => (flow = L.setHead(flow, n.id))}
+              onchange={() => pickHead(n.id)}
             />
             <span>serves the API</span>
           </label>
