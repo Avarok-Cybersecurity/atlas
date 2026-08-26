@@ -53,9 +53,25 @@ class LaunchSession {
     this.detail = '';
   }
 
-  /** Retry after the user has started the agent. */
+  /**
+   * Retry because the user asked. User-initiated, so it shows progress.
+   */
   async retry() {
-    await this.#connect();
+    await this.#connect(undefined, { silent: false });
+  }
+
+  /**
+   * Background poll while the "no agent yet" guide is on screen.
+   *
+   * Silent on purpose. This used to call retry(), which set phase back to
+   * 'connecting' on every tick — so the dialog flipped between "Looking for
+   * your agent" and "Run this on your own machine" once a second, swapping its
+   * whole body each time. A poll the user did not ask for must not change what
+   * they are reading; it may only move the dialog FORWARD, when an agent
+   * actually answers.
+   */
+  async probe() {
+    await this.#connect(undefined, { silent: true });
   }
 
   /** Submit a pairing token the user pasted. */
@@ -76,11 +92,21 @@ class LaunchSession {
     this.phase = 'running';
   }
 
-  async #connect(token) {
-    this.busy = true;
-    this.phase = 'connecting';
+  /**
+   * @param {string} [token]
+   * @param {{ silent?: boolean }} [opts] `silent` suppresses every visible
+   *   effect of a FAILED attempt: no spinner, no phase change, no message.
+   *   Success and "an agent answered but wants pairing" still advance, because
+   *   those are the events the poll exists to catch.
+   */
+  async #connect(token, opts) {
+    const silent = opts?.silent === true;
+    if (!silent) {
+      this.busy = true;
+      this.phase = 'connecting';
+    }
     const ok = await (token === undefined ? this.agent.connect() : this.agent.connect(token));
-    this.busy = false;
+    if (!silent) this.busy = false;
 
     if (ok) {
       this.phase = 'settings';
@@ -89,7 +115,14 @@ class LaunchSession {
     if (this.agent.phase === 'unpaired') {
       this.phase = 'pairing';
       this.detail = this.agent.message;
-    } else if (this.agent.phase === 'error') {
+      return;
+    }
+    // Still nothing there. A silent probe leaves the guide exactly as it is;
+    // a transient error mid-poll is not worth tearing the dialog down over,
+    // and the user can still press Try again to see it.
+    if (silent) return;
+
+    if (this.agent.phase === 'error') {
       this.phase = 'failed';
       this.detail = this.agent.message;
     } else {

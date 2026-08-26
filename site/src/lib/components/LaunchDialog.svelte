@@ -32,6 +32,23 @@
     }
   }
 
+  // A loopback connection either answers or is refused within a few
+  // milliseconds, so rendering the "looking for your agent" panel the instant
+  // the dialog opens puts it on screen and tears it down inside one frame —
+  // a flash, not information. Show it only once the attempt has lasted long
+  // enough to be worth reporting; below that threshold the dialog simply opens
+  // on its real answer.
+  const PROBE_VISIBLE_AFTER_MS = 350;
+  let showProbe = $state(false);
+  $effect(() => {
+    if (launch.phase !== 'connecting') {
+      showProbe = false;
+      return;
+    }
+    const timer = setTimeout(() => { showProbe = true; }, PROBE_VISIBLE_AFTER_MS);
+    return () => clearTimeout(timer);
+  });
+
   // Keep probing while we are waiting for the user to start an agent, so the
   // dialog advances by itself the moment one appears.
   $effect(() => {
@@ -40,7 +57,7 @@
     let delay = 1200;
     const tick = async () => {
       if (cancelled) return;
-      await launch.retry();
+      await launch.probe();
       if (cancelled || launch.phase !== 'guide') return;
       // Back off so a dialog left open does not poll forever at full rate.
       delay = Math.min(delay * 1.4, 8000);
@@ -87,7 +104,8 @@
     >
       <header class="ld-head">
         <h3 class="ld-title" id="ld-title">
-          {#if launch.phase === 'connecting'}Looking for your agent
+          {#if launch.phase === 'connecting' && showProbe}Looking for your agent
+          {:else if launch.phase === 'connecting'}Run this on your own machine
           {:else if launch.phase === 'guide'}Run this on your own machine
           {:else if launch.phase === 'pairing'}Pair this browser
           {:else if launch.phase === 'running'}Running
@@ -98,11 +116,17 @@
       </header>
 
       <div class="ld-body">
-        {#if launch.phase === 'connecting'}
+        {#if launch.phase === 'connecting' && showProbe}
           <div class="ld-probe" aria-live="polite">
             <span class="ld-spinner" aria-hidden="true"></span>
             <span>Checking <code class="mono">127.0.0.1:34333</code> …</span>
           </div>
+
+        {:else if launch.phase === 'connecting'}
+          <!-- Sub-threshold: hold the frame rather than paint something that is
+               about to be replaced. Same height as the guide, so nothing jumps
+               when the real answer lands a few milliseconds from now. -->
+          <div class="ld-settle" aria-hidden="true"></div>
 
         {:else if launch.phase === 'guide'}
           <p>
