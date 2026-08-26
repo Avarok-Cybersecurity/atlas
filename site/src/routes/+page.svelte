@@ -3,7 +3,7 @@
   // a visitor reaches is the concurrency ladder against a named competitor —
   // not a Reddit chart. Everything below it is context for that claim.
   import Nav from '$lib/components/Nav.svelte';
-  import GiftBanner from '$lib/components/GiftBanner.svelte';
+  import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
   import Hero from '$lib/components/Hero.svelte';
   import Proof from '$lib/components/Proof.svelte';
   import Verified from '$lib/components/Verified.svelte';
@@ -21,7 +21,7 @@
 </script>
 
 <Nav />
-<GiftBanner />
+<AnnouncementBanner />
 <Hero />
 <Proof />
 <Verified />

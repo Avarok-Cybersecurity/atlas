@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Atlas Inference Engine",
   "short_name": "Atlas",
-  "description": "Pure Rust inference, tuned for the machine on your desk.",
+  "description": "Pure Rust inference, from the device in your hand to the datacenter rack.",
   "lang": "en",
   "dir": "ltr",
   "scope": "/",

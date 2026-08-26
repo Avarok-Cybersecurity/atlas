@@ -30,7 +30,7 @@
       {#each roadmap.items as item}
         <div class="road-card">
           <div class="road-top">
-            <h3>{#if item.gift}<span class="gift-emoji" title="Gifted hardware">🎁</span> {/if}{item.title}</h3>
+            <h3>{item.title}</h3>
             <span class="road-status">{item.status}</span>
           </div>
           <p>{item.body}</p>

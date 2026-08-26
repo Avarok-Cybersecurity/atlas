@@ -1,16 +1,17 @@
 # Atlas Inference Engine
 
-> Pure Rust inference, tuned for the machine on your desk.
+> Pure Rust inference, from the device in your hand to the datacenter rack.
 
-Atlas is an open source LLM engine we hand tuned for NVIDIA DGX Spark. One ~75 MB binary, no Python, no PyTorch. What ships is what we verify, and we bench it every single release.
+Atlas is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.
 
-Written in pure Rust and CUDA and licensed AGPL-3.0-only, Atlas is tuned for
-prosumer AI workstations rather than datacenter racks.
+Written in pure Rust and CUDA and licensed AGPL-3.0-only. One codebase covers
+the range, from edge-class accelerators through workstations to expert-parallel
+deployments across nodes.
 
 ## What it runs on
 
 - NVIDIA DGX Spark (GB10 · SM121) — Verified today. One multi model binary serves a full matrix of hand tuned targets on a single GB10. NVFP4 and FP8, MTP speculative decoding, EP=2 across two Sparks. Every target passes the serve matrix before we cut an image.
-- AMD Strix Halo (gfx1151 · RDNA 3.5) — MLPerf submitted. One codebase, both camps. Our CUDA kernels compile straight for AMD gfx1151 with SCALE by Spectral Compute. No HIP port, no second kernel tree. AMD sent us a Strix Halo desktop and that is the box we ran and submitted our MLPerf Inference v6.1 numbers on.
+- AMD Strix Halo (gfx1151 · RDNA 3.5) — MLPerf submitted. One codebase, both vendors. Our CUDA kernels compile straight for AMD gfx1151 with SCALE by Spectral Compute. No HIP port, no second kernel tree. AMD provided the Strix Halo desktop we ran and submitted our MLPerf Inference v6.1 numbers on.
 
 ## Measured performance
 

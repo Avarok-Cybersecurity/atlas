@@ -58,8 +58,9 @@ push(
   '',
   `${hero.sub}`,
   '',
-  'Written in pure Rust and CUDA and licensed AGPL-3.0-only, Atlas is tuned for',
-  'prosumer AI workstations rather than datacenter racks.',
+  'Written in pure Rust and CUDA and licensed AGPL-3.0-only. One codebase covers',
+  'the range, from edge-class accelerators through workstations to expert-parallel',
+  'deployments across nodes.',
   '',
   '## What it runs on',
   ''

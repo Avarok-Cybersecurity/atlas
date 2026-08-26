@@ -12,6 +12,11 @@
   import Receipt from './Receipt.svelte';
   import SectionHead from './SectionHead.svelte';
   import ConcurrencyLadder from './ConcurrencyLadder.svelte';
+  import { headroom, signed } from '$lib/ladder.js';
+
+  // Derived from the committed ladder, so regenerating it rewrites this
+  // sentence rather than leaving prose asserting a gap that closed.
+  const top = headroom(ladder.rows);
 
   const mlperfLine = mlperfCopy[mlperf.status] ?? mlperfCopy.preparing;
   const stamp = `atlas ${bench.generated_sha} · ${bench.generated_date}`;
@@ -37,6 +42,19 @@
     />
 
     <ConcurrencyLadder embedded />
+
+    {#if top}
+      <div class="scale-note">
+        <h3>{verified.scale.title}</h3>
+        <p>{verified.scale.lead}</p>
+        <p class="scale-figure">
+          From C={top.from} to C={top.to}, Atlas adds
+          <strong class="scale-up">{signed(top.atlas)}</strong> throughput while
+          {top.label} adds <strong class="scale-flat">{signed(top.baseline)}</strong>.
+        </p>
+        <p>{verified.scale.tail}</p>
+      </div>
+    {/if}
 
     <div class="verified-grid">
       <div>
