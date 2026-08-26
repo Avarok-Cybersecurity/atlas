@@ -44,8 +44,60 @@ export const claim = {
   reps: ladder.workload.reps,
   warmup: ladder.workload.warmup,
   harnessFile: ladder.workload.harness,
+  // The --concs argument, from the same rung list the chart is drawn from, so a
+  // lost rung shortens the command as well as the ladder.
+  concsArg: ladder.concurrencies.join(','),
+  // The driver hash the published Atlas legs carry, beside the one a reader will
+  // actually get from the tree. Both derived: the first is the manifest key whose
+  // note names the Atlas legs, the second is hashed from the file at build time.
+  harnessShaAtlas: Object.keys(ladder.harness_shas).find((k) =>
+    /Atlas legs/i.test(ladder.harness_shas[k])
+  ),
+  harnessShaRepo: ladder.harness_repo_sha256.slice(0, 10),
   resultsUrl: ladder.results_doc_url,
   resultsDoc: ladder.results_doc
+};
+
+// Step 4's serve command, rendered FROM THE RECORD rather than hand-abridged.
+//
+// It used to be a shortened list with a note pointing at series[atlas].cli for
+// "the full flag list, including the SSM cache and scheduling knobs". That
+// pointer was not enough: the abridged command omits thirteen flags, six of
+// which are kernel and scheduling knobs whose defaults are the OPPOSITE of the
+// certified values (ssm_h_dtype f32 not f16-pool, gdn_fused_norm off,
+// ssm_batched_recurrent off, ssm_tail_midchunk on, mtp_gate auto not force,
+// prefill_varlen_batch off). Serving that way and then running the ladder in
+// Step 5b measures a differently-configured engine and lands well under the
+// chart — the walkthrough manufacturing evidence against its own claim, which
+// is the worst failure available to a page like this. Measured on 2026-08-26:
+// the abridged config ran 4.7% under at C=1 and 14% under at C=4, the gap
+// widening with concurrency exactly as those knobs predict.
+//
+// Wrapped here rather than in the component so the command cannot drift from
+// the record: change the serve config and this moves with it.
+const argvLines = (argv, { width = 66, indent = '  ', breakAnywhere = false } = {}) => {
+  const out = [];
+  let line = '';
+  for (const tok of argv) {
+    // In a CLI a value belongs to the flag before it, so only a `--` token may
+    // start a new line. An env prefix is all standalone assignments, so any
+    // token may.
+    const canBreak = breakAnywhere || tok.startsWith('--');
+    const joined = line ? `${line} ${tok}` : tok;
+    if (line && joined.length > width && canBreak) {
+      out.push(line);
+      line = indent + tok;
+    } else {
+      line = joined;
+    }
+  }
+  if (line) out.push(line);
+  return out;
+};
+
+export const serve = {
+  env: argvLines(subject.env.split(/\s+/), { breakAnywhere: true, indent: '' }),
+  cli: argvLines(subject.cli.split(/\s+/))
 };
 
 // The rungs won by a margin small enough that ordinary run-to-run drift could
@@ -125,7 +177,13 @@ export const audit = [
   {
     state: 'clear',
     risk: 'Best-of instead of representative',
-    answer: 'Where a rung was re-measured higher, the older, lower number is published. C=2 is the documented case.'
+    // C=8 is the case that actually answers this, and C=2 is not: C=2's
+    // published pair IS the better Atlas number (41.02, over round 11's 40.42)
+    // — defensible because both legs were re-measured back to back that day and
+    // the pair replaced the pair, but it is not an example of declining a
+    // better number. C=8 is: re-measured at a HIGHER ratio and the lower one
+    // still stands.
+    answer: `Re-measuring C=8 on a later build gave 1.013×; the certified 1.012× is what is published. Both engines came out ~2.2% below their certified absolutes in that run while the ratio held, which is why every rung is quoted as a same-day A/B rather than against a stored number.`
   },
   {
     state: 'open',
