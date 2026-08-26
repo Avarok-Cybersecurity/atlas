@@ -196,6 +196,11 @@ export class AgentClient {
   }
 
   /** Abandon a prepare, releasing every reservation. */
+  /** How a running launch is doing. */
+  launchStats(recipe) {
+    return this.#request({ type: 'launch_stats', recipe });
+  }
+
   /** Stop every rank of the cluster this agent started. */
   stopCluster() {
     return this.#request({ type: 'stop_cluster' });

@@ -471,3 +471,32 @@
   border: 1px solid var(--amber); border-left-width: 3px; border-radius: 8px;
   padding: 0.5rem 0.7rem;
 }
+
+/* Live stats. Tiles rather than a table: an operator reads these by glancing at
+   one number, not by comparing rows. */
+.ls { border: 1px solid var(--border); border-radius: 16px; background: var(--card); padding: 1.1rem 1.2rem; }
+.ls-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.ls-head h3 { font-size: 0.95rem; font-weight: 750; color: var(--t1); }
+.ls-window { font-size: 0.74rem; color: var(--t3); font-family: var(--font-mono); }
+.ls-waiting { margin-top: 0.6rem; font-size: 0.84rem; color: var(--t3); line-height: 1.6; }
+.ls-grid {
+  margin-top: 0.9rem; display: grid; gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+}
+.ls-tile {
+  border: 1px solid var(--border); border-radius: 11px; background: var(--bg2);
+  padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0;
+}
+.ls-tile-wide { grid-column: span 2; color: var(--accent); }
+@media (max-width: 560px) { .ls-tile-wide { grid-column: span 1; } }
+.ls-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--t3); }
+.ls-value {
+  font-family: var(--font-mono); font-size: 1.15rem; font-weight: 650; color: var(--t1);
+  display: flex; align-items: baseline; gap: 0.3rem;
+}
+.ls-value em { font-style: normal; font-size: 0.7rem; font-weight: 500; color: var(--t3); }
+.ls-note { font-size: 0.7rem; color: var(--t3); }
+.ls-spark { margin-top: 0.3rem; width: 100%; height: 34px; opacity: 0.75; }
+.lc-here { display: flex; flex-direction: column; gap: 0.8rem; }
+.lc-here-head { font-size: 0.9rem; color: var(--t2); }
+.lc-here-head strong { color: var(--t1); font-family: var(--font-mono); font-size: 0.85rem; }

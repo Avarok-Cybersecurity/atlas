@@ -13,6 +13,7 @@
   import * as L from '$lib/agent/launch.js';
   import * as O from '$lib/agent/overrides.js';
   import SettingsEditor from './SettingsEditor.svelte';
+  import LaunchStats from './LaunchStats.svelte';
 
   let { fleet } = $props();
 
@@ -29,6 +30,11 @@
   const blocker = $derived(L.blocker(flow, recipe, candidates.length));
   const busy = $derived(L.BUSY.includes(flow.phase));
   const held = $derived(flow.epoch != null && flow.phase === 'prepared');
+
+  // Whatever this machine is serving, however it was launched — including a
+  // launch from a previous run of the agent, which it re-adopts rather than
+  // forgetting.
+  const runningHere = $derived(fleet.local?.running ?? null);
 
   const defaults = $derived(recipe?.defaults ?? {});
   const changed = $derived(O.changedCount(overrides, defaults));
@@ -108,6 +114,15 @@
 </script>
 
 <div class="lc">
+  {#if runningHere && flow.started.length === 0}
+    <div class="lc-here">
+      <p class="lc-here-head">
+        <strong>{runningHere}</strong> is running on {fleet.local?.name ?? 'this machine'}.
+      </p>
+      <LaunchStats {fleet} recipe={runningHere} />
+    </div>
+  {/if}
+
   <div class="lc-pick">
     <label class="lc-field">
       <span>Recipe</span>
@@ -280,6 +295,8 @@
           </li>
         {/each}
       </ul>
+      <LaunchStats {fleet} recipe={flow.recipe} />
+
       <div class="lc-commit">
         <button class="btn btn-primary" onclick={doStop} disabled={busy}>Stop the cluster</button>
         <button class="btn" onclick={() => (flow = L.initial())} disabled={busy}>Plan another launch</button>
