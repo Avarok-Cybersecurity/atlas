@@ -18,7 +18,13 @@
 
   const addr = $derived(preferredAddress(node));
   const stale = $derived(isStale(node));
-  const trusted = $derived(node.isLocal || node.pairing === 'paired');
+  // 'unreachable' is a PAIRED node that is not answering, so it keeps its
+  // identity, its address and its unpair action. Only a genuinely unpaired
+  // node gets the "pair me" treatment.
+  const trusted = $derived(
+    node.isLocal || node.pairing === 'paired' || node.pairing === 'unreachable'
+  );
+  const offline = $derived(node.pairing === 'unreachable');
   const v = $derived(node.vitals);
 
   const short = $derived(
@@ -104,14 +110,23 @@
     <div class="fl-ident">
       {#if addr}
         <span class="mono fl-addr">{addr.addr}</span>
-        <span class="chip chip-link" class:chip-link-warn={linkWarns(addr.class)}>
+        <span
+          class="chip chip-link"
+          class:chip-link-warn={linkWarns(addr.class)}
+          class:chip-link-unknown={addr.class === 'unverified'}
+          title={addr.class === 'unverified'
+            ? 'This machine told us where it is, but that message is not authenticated — so its link is not taken on trust until we reach it over the paired channel.'
+            : undefined}
+        >
           {addr.class === 'roce'
             ? 'RoCE'
             : addr.class === 'infini_band'
               ? 'InfiniBand'
               : addr.class === 'wireless'
                 ? 'Wi-Fi'
-                : 'Ethernet'}
+                : addr.class === 'unverified'
+                  ? 'link unverified'
+                  : 'Ethernet'}
           {#if addr.speedMbps}· {Math.round(addr.speedMbps / 1000)}G{/if}
         </span>
       {:else}
@@ -119,7 +134,17 @@
       {/if}
     </div>
 
-    {#if !node.canLaunch}
+    {#if trusted && !node.isLocal && !v}
+      <p class="fl-pendingvitals">
+        Vitals arrive over the paired channel. Nothing is shown here rather than
+        a placeholder that would never fill.
+      </p>
+    {:else if offline}
+      <p class="fl-offline">
+        Paired, but not answering right now. It stays in your fleet — switch it
+        on and it comes back on its own.
+      </p>
+    {:else if !node.canLaunch}
       <p class="fl-untrusted">{node.cannotLaunchReason || 'This node cannot run models.'}</p>
     {:else}
       <div class="vt-row">

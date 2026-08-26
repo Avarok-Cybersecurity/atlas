@@ -99,7 +99,8 @@ function ingestNode(raw) {
 export function preferredAddress(node) {
   const usable = node.addresses.filter((a) => a.class !== 'virtual' && a.class !== 'loopback');
   if (usable.length === 0) return null;
-  const rank = { infini_band: 5, roce: 4, ethernet: 3, wireless: 2 };
+  // Unverified ranks below everything known: a candidate, never a preference.
+  const rank = { infini_band: 5, roce: 4, ethernet: 3, wireless: 2, unverified: 1 };
   return usable.slice().sort((a, b) => {
     const r = (rank[b.class] ?? 0) - (rank[a.class] ?? 0);
     return r !== 0 ? r : (b.speedMbps ?? 0) - (a.speedMbps ?? 0);
@@ -108,7 +109,9 @@ export function preferredAddress(node) {
 
 /** Whether a link class should carry a visible warning. */
 export function linkWarns(cls) {
-  return cls !== 'roce' && cls !== 'infini_band';
+  // Unverified is missing information, not a slow link. Warning about it would
+  // be inventing a problem.
+  return cls !== 'roce' && cls !== 'infini_band' && cls !== 'unverified';
 }
 
 class FleetSession {

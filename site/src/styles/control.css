@@ -92,6 +92,12 @@
 .trust-pairing, .trust-unreachable { color: var(--amber); background: rgba(251,191,36,0.12); }
 
 .fl-untrusted { font-size: 0.85rem; color: var(--t2); line-height: 1.6; }
+.fl-offline { font-size: 0.85rem; color: var(--amber); line-height: 1.6; }
+.fl-pendingvitals { font-size: 0.82rem; color: var(--t3); line-height: 1.6; }
+/* Unverified is an absence of information, not a warning — neutral, not amber. */
+.chip-link-unknown {
+  color: var(--t3); background: rgba(0,0,0,0.16); border-color: var(--border);
+}
 .fl-actions { display: flex; gap: 0.6rem; }
 .fl-btn-sm { padding: 0.5rem 0.9rem; font-size: 0.82rem; }
 
