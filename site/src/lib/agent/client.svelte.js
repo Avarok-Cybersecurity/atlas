@@ -175,6 +175,21 @@ export class AgentClient {
     return this.#request({ type: 'pair_peer', node, code });
   }
 
+  /**
+   * Open a window in which one new machine may join this fleet.
+   *
+   * Answers with the digits and this node's dialable addresses, which is
+   * everything needed to build the command the operator pastes elsewhere.
+   */
+  mintJoinCode() {
+    return this.#request({ type: 'mint_join_code' });
+  }
+
+  /** Close an outstanding join window. */
+  revokeJoinCode() {
+    return this.#request({ type: 'revoke_join_code' });
+  }
+
   /** Drop trust in a peer. */
   unpairPeer(node) {
     return this.#request({ type: 'unpair_peer', node });

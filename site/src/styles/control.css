@@ -577,3 +577,31 @@
 .lm-co-lead { font-size: 0.95rem; font-weight: 650; color: var(--t1); line-height: 1.6; }
 .lm-co-why { margin-top: 0.7rem; font-size: 0.88rem; color: var(--t2); line-height: 1.65; }
 .lm-co-go { display: inline-flex; align-items: center; text-decoration: none; }
+
+/* Placement chooser, in the model-card launch dialog. A list of buttons rather
+   than a select: the machines differ in ways worth showing on two lines, and a
+   collapsed control hides exactly the detail the choice turns on. */
+.ld-place-lead { font-size: 0.92rem; color: var(--t2); line-height: 1.6; }
+.ld-place { list-style: none; margin: 0.9rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+.ld-place-btn {
+  width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  padding: 0.7rem 0.9rem; display: grid; gap: 0.15rem;
+}
+.ld-place-btn:hover { border-color: var(--sx); }
+.ld-place-btn:focus-visible { outline: 2px solid var(--sx); outline-offset: 2px; }
+.ld-place-name { font-size: 0.92rem; font-weight: 650; color: var(--t1); }
+.ld-place-sub { font-family: var(--font-mono); font-size: 0.74rem; color: var(--t3); }
+.ld-place-busy { font-size: 0.74rem; color: var(--amber); }
+
+/* The join one-liner is long and carries a credential: it must be readable in
+   full, not silently clipped to something that looks copyable and is not. The
+   copy button stays put while the command wraps. */
+.ld-place-cmd { align-items: start; }
+.ld-place-cmd code {
+  /* `anywhere` rather than `break-all`: it prefers a space and only splits a
+     token when one will not fit, so `--join` does not end up straddling two
+     lines in a command someone may read before they trust it. */
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+  line-height: 1.5; min-width: 0;
+}

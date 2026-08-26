@@ -15,6 +15,8 @@
 // tidy-up that belongs with it.
 
 import { AgentClient } from './client.svelte.js';
+import { fleet } from './fleet.svelte.js';
+import * as Placement from './placement.js';
 import { looksLikeToken, storeToken } from './protocol.js';
 
 class LaunchSession {
@@ -26,9 +28,30 @@ class LaunchSession {
 
   /**
    * What the dialog is doing.
-   * 'connecting' | 'guide' | 'pairing' | 'settings' | 'running' | 'failed'
+   * 'connecting' | 'guide' | 'pairing' | 'placement' | 'settings' | 'running'
+   * | 'failed'
    */
   phase = $state('connecting');
+
+  /**
+   * Where the launch is headed, once chosen.
+   *
+   * Null means this machine, which is both the default and the only answer a
+   * single-candidate fleet has. Set only by an explicit choice, so nothing
+   * silently retargets a launch the operator already reviewed.
+   */
+  target = $state(null);
+
+  /** The placement decision, recomputed as the fleet fills in. */
+  placement = $state(null);
+
+  /**
+   * An outstanding invitation for another machine, when one has been minted.
+   *
+   * `{ code, addresses, expiresInS }`, or null when this agent cannot take
+   * members — which is a normal thing to be, not an error.
+   */
+  join = $state(null);
 
   /** Detail for the current phase — an error message, usually. */
   detail = $state('');
@@ -42,6 +65,9 @@ class LaunchSession {
   /** Open the dialog for a recipe and try to reach the agent. */
   async open(recipeId) {
     this.openRecipe = recipeId;
+    this.target = null;
+    this.placement = null;
+    this.join = null;
     this.detail = '';
     this.endpoint = '';
     await this.#connect();
@@ -109,7 +135,7 @@ class LaunchSession {
     if (!silent) this.busy = false;
 
     if (ok) {
-      this.phase = 'settings';
+      this.#choosePlacement();
       return;
     }
     if (this.agent.phase === 'unpaired') {
@@ -129,6 +155,58 @@ class LaunchSession {
       this.phase = 'guide';
       this.detail = '';
     }
+  }
+
+  /**
+   * Decide whether to ask where this should run.
+   *
+   * Skipped whenever there is nothing to ask — one candidate, or a multi-node
+   * recipe, which is a cluster plan rather than a placement question. A
+   * chooser with a single option is a nag, and the fleet being unknown (this
+   * agent may not carry the fleet verbs at all) is exactly that case.
+   */
+  #choosePlacement() {
+    const recipe = this.agent.recipes.find((r) => r.id === this.openRecipe) ?? null;
+    const d = Placement.decide(fleet.nodes, recipe, fleet.localCanLaunch);
+    this.placement = d;
+
+    if (d.kind === 'ask' || d.kind === 'none') {
+      // 'none' is not a dead end: it is the moment to offer the machine that
+      // would fix it. Sending the operator to a settings form for a machine
+      // that cannot run the recipe would be the older, worse answer.
+      this.phase = 'placement';
+      if (d.kind === 'none') this.mintJoin();
+      return;
+    }
+    // 'only' still records the target, so the settings step and the review
+    // that follows name the machine rather than assuming this one.
+    this.target = d.kind === 'only' && !d.target.isLocal ? d.target : null;
+    this.phase = 'settings';
+  }
+
+  /**
+   * Ask this agent to open a join window, for the onboarding panel.
+   *
+   * Failure is quiet and leaves `join` null: an agent that cannot take members
+   * is a normal thing to be, and the panel falls back to telling the operator
+   * how to do it by hand.
+   */
+  async mintJoin() {
+    this.join = null;
+    const res = await this.agent.mintJoinCode();
+    if (res?.ok && res.reply?.code) {
+      this.join = {
+        code: res.reply.code,
+        addresses: res.reply.addresses ?? [],
+        expiresInS: res.reply.expires_in_s ?? 0
+      };
+    }
+  }
+
+  /** Send this launch to a specific machine. */
+  chooseTarget(node) {
+    this.target = node?.isLocal ? null : node;
+    this.phase = 'settings';
   }
 }
 
