@@ -39,6 +39,8 @@
       "role": "subject",
       "engine": "Atlas 1.0.0-beta-preview",
       "build": "bce152b18",
+      "build_public": "4012c9b7e1",
+      "build_public_note": "The sha to check out. bce152b18 was a local merge on test/ladder-stack and was never pushed, so `git checkout bce152b18` fails on a fresh public clone (verified 2026-08-26). 4012c9b7e1 is the certified sha, is reachable from origin/test/ladder-stack, and differs from the measured tree only in doc comments and gate machinery. 60370b9532 is the same work as merged to main.",
       "build_note": "Certified at 4012c9b7e1, which differs only in doc comments and gate machinery -- no executable change. Merged to main as 60370b9532.",
       "env": "ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1 ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1",
       "cli": "spark serve unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8888 --model-name unsloth/Qwen3.8-27B-NVFP4 --max-seq-len 2048 --max-batch-size 128 --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 --enable-prefix-caching true --ssm-cache-slots 8 --ssm-checkpoint-interval 32 --speculative --num-drafts 3 --mtp-quantization bf16 --scheduling-policy fifo --tool-call-parser qwen3_coder --disable-tool-grammar true --disable-thinking --request-timeout 0 --ssm-h-dtype f16-pool --gdn-fused-norm --ssm-batched-recurrent --ssm-tail-midchunk false --mtp-gate force --prefill-varlen-batch --no-tui",

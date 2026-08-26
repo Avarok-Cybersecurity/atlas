@@ -23,6 +23,7 @@ export const stamp = `atlas ${bench.generated_sha} · ${ladder.generated_utc.sli
 export const claim = {
   engine: subject.engine,
   build: subject.build,
+  buildPublic: subject.build_public,
   baseline: matched.engine ?? 'vLLM 0.27.1 + MTP',
   checkpoint: ladder.workload.checkpoint,
   box: ladder.box.gpu,
@@ -45,6 +46,21 @@ export const claim = {
   harnessFile: ladder.workload.harness,
   resultsUrl: ladder.results_doc_url,
   resultsDoc: ladder.results_doc
+};
+
+// The rungs won by a margin small enough that ordinary run-to-run drift could
+// swallow them. Derived, not typed: the earlier hand-written sentence said
+// "1.007x to 1.03x" while the record said 1.012x to 1.032x -- the exact staleness
+// the generated-copy rule exists to prevent. 1.05 is the cutoff because the
+// campaign's own re-measurements moved rungs by ~2-4%.
+const FRAGILE_MAX_RATIO = 1.05;
+const fragileRows = ladder.rows.filter((r) => r.ratio_vs_best < FRAGILE_MAX_RATIO);
+
+export const fragile = {
+  count: fragileRows.length,
+  rungs: fragileRows.map((r) => `C=${r.c}`).join(', '),
+  min: x(Math.min(...fragileRows.map((r) => r.ratio_vs_best))),
+  max: x(Math.max(...fragileRows.map((r) => r.ratio_vs_best)))
 };
 
 // The fingerprint an analyst needs before they can start. Third element is the

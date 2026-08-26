@@ -114,7 +114,7 @@
         label="clone, image, binary"
         lines={[
           `git clone https://github.com/Avarok-Cybersecurity/atlas.git`,
-          `cd atlas && git checkout ${claim.build}`,
+          `cd atlas && git checkout ${claim.buildPublic}`,
           ``,
           `docker build -f docker/gb10/Dockerfile -t atlas-gb10 .`,
           ``,
@@ -122,7 +122,7 @@
           `  cmake clang libclang-dev`,
           `cargo build --release -p spark-server --bin spark`
         ]}
-        note="Both builds run from the repository root. The multi-target image compiles PTX for every supported model; the first cargo build takes 15–30 minutes for the same reason and leaves 3–5 GB under target/."
+        note={`Both builds run from the repository root, with CUDA still on PATH from Step 1. The multi-target image compiles PTX for every supported model; the first cargo build takes 15–30 minutes for the same reason and leaves 3–5 GB under target/. ${claim.buildPublic} is the certified sha rather than ${claim.build}, the tree the numbers were measured on: that one was a local merge and was never pushed, so it does not exist in your clone. The two differ only in doc comments and gate machinery — no executable change.`}
       />
     </div>
     <div class="at" style="--n: 2">
@@ -206,13 +206,14 @@
       <p class="side-h mono">Two instruments, not interchangeable</p>
       <p>
         The published C=1…128 ladder came from <code class="mono">{claim.harnessFile}</code>, a
-        campaign driver with <code class="mono">--reps</code> and a per-rep series. The gate's sweep
-        runs one measured batch per cell at pinned parameters.
+        campaign driver with <code class="mono">--reps</code>; the gate's sweep runs one measured
+        batch per cell at pinned parameters.
       </p>
       <p>
-        They share a byte-identical prompt corpus and a bit-compatible percentile function on
-        purpose, so the numbers are comparable — but only the gate's instrument produces a record
-        CI will accept.
+        Their prompt corpus is byte-identical, which makes a cell's throughput comparable across
+        the two. Their percentile rules are <em>not</em> — the driver interpolates, the gate takes a
+        nearest rank — so compare the aggregate tok/s the ladder publishes, never one instrument's
+        p50 TTFT against the other's. Only the gate's produces a record CI accepts.
       </p>
     </aside>
   </div>
@@ -403,7 +404,6 @@
     font-size: 0.75em;
     color: var(--t3);
   }
-
   .after {
     margin-top: 1em;
     color: var(--t3);
