@@ -577,3 +577,52 @@
 .lm-co-lead { font-size: 0.95rem; font-weight: 650; color: var(--t1); line-height: 1.6; }
 .lm-co-why { margin-top: 0.7rem; font-size: 0.88rem; color: var(--t2); line-height: 1.65; }
 .lm-co-go { display: inline-flex; align-items: center; text-decoration: none; }
+
+/* Placement chooser, in the model-card launch dialog. A list of buttons rather
+   than a select: the machines differ in ways worth showing on two lines, and a
+   collapsed control hides exactly the detail the choice turns on. */
+.ld-place-lead { font-size: 0.92rem; color: var(--t2); line-height: 1.6; }
+.ld-place { list-style: none; margin: 0.9rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+.ld-place-btn {
+  width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  padding: 0.7rem 0.9rem; display: grid; gap: 0.15rem;
+}
+.ld-place-btn:hover { border-color: var(--sx); }
+.ld-place-btn:focus-visible { outline: 2px solid var(--sx); outline-offset: 2px; }
+.ld-place-name { font-size: 0.92rem; font-weight: 650; color: var(--t1); }
+.ld-place-sub { font-family: var(--font-mono); font-size: 0.74rem; color: var(--t3); }
+.ld-place-busy { font-size: 0.74rem; color: var(--amber); }
+
+/* The join one-liner is long and carries a credential: it must be readable in
+   full, not silently clipped to something that looks copyable and is not. The
+   copy button stays put while the command wraps. */
+.ld-place-cmd { align-items: start; }
+.ld-place-cmd code {
+  /* `anywhere` rather than `break-all`: it prefers a space and only splits a
+     token when one will not fit, so `--join` does not end up straddling two
+     lines in a command someone may read before they trust it. */
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+  line-height: 1.5; min-width: 0;
+}
+
+/* Node details. The card is for scanning, this is for checking — hence the
+   full fingerprint and every interface rather than the preferred one. */
+.nd { width: min(560px, calc(100vw - 2rem)); }
+.nd-facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 0; }
+.nd-facts dt { font-size: 0.78rem; color: var(--t3); }
+.nd-facts dd { margin: 0; font-size: 0.86rem; color: var(--t1); }
+.nd-fp { font-size: 0.74rem; word-break: break-all; color: var(--t2); }
+.nd-h4 {
+  margin-top: 1.2rem; font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3);
+}
+.nd-links { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem; }
+.nd-links th {
+  text-align: left; font-weight: 650; color: var(--t3); font-size: 0.72rem;
+  padding-bottom: 0.3rem; border-bottom: 1px solid var(--border);
+}
+.nd-links td { padding: 0.34rem 0.5rem 0.34rem 0; color: var(--t2); border-bottom: 1px solid var(--border); }
+.nd-warn { color: var(--amber); }
+.nd-none { font-size: 0.85rem; color: var(--t2); margin-top: 0.5rem; }
+.nd-note { margin-top: 0.7rem; font-size: 0.8rem; color: var(--t3); line-height: 1.6; }

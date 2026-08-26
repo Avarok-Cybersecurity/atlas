@@ -13,6 +13,8 @@
   // to come back and click retry.
 
   import { launch } from '$lib/agent/session.svelte.js';
+  import { describe } from '$lib/agent/placement.js';
+  import { joinCommand } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
 
   let tokenInput = $state('');
@@ -108,6 +110,8 @@
           {#if launch.phase === 'connecting' && showProbe}Looking for your agent
           {:else if launch.phase === 'connecting'}Run this on your own machine
           {:else if launch.phase === 'guide'}Run this on your own machine
+          {:else if launch.phase === 'placement' && launch.placement?.kind === 'none'}Add a machine
+          {:else if launch.phase === 'placement'}Where should this run?
           {:else if launch.phase === 'pairing'}Pair this browser
           {:else if launch.phase === 'running'}Running
           {:else}That didn’t work{/if}
@@ -128,6 +132,52 @@
                about to be replaced. Same height as the guide, so nothing jumps
                when the real answer lands a few milliseconds from now. -->
           <div class="ld-settle" aria-hidden="true"></div>
+
+          {:else if launch.phase === 'placement' && launch.placement?.kind === 'none'}
+          <p class="ld-place-lead">{launch.placement.reason}</p>
+          <p class="ld-place-lead">
+            Add a machine that can. Run this on it — the code is good for one
+            machine, once, for {Math.round((launch.join?.expiresInS ?? 600) / 60)} minutes.
+          </p>
+          {#if launch.join}
+            <div class="ld-cmd ld-place-cmd">
+              <code class="mono">{joinCommand(launch.join)}</code>
+              <button type="button" class="cmd-copy" onclick={() => copy(joinCommand(launch.join))}>
+                {copied === joinCommand(launch.join) ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <p class="ld-watching">
+              <span class="ld-dot" aria-hidden="true"></span>
+              Watching for it — this dialog will continue on its own.
+            </p>
+          {:else}
+            <p class="ld-place-sub">
+              This agent cannot invite machines. Install the agent on the other
+              machine and pair it from the control plane.
+            </p>
+          {/if}
+          <p class="ld-caution">
+            Anyone who runs that command joins your fleet and can use its
+            hardware. Send it to a machine you own, not a chat.
+          </p>
+
+        {:else if launch.phase === 'placement'}
+          <p class="ld-place-lead">
+            More than one of your machines can run this. Pick one.
+          </p>
+          <ul class="ld-place">
+            {#each launch.placement?.options ?? [] as n (n.id)}
+              <li>
+                <button type="button" class="ld-place-btn" onclick={() => launch.chooseTarget(n)}>
+                  <span class="ld-place-name">{n.name}</span>
+                  <span class="ld-place-sub">{describe(n)}</span>
+                  {#if n.running}
+                    <span class="ld-place-busy">running {n.running}</span>
+                  {/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
 
         {:else if launch.phase === 'guide'}
           <p>

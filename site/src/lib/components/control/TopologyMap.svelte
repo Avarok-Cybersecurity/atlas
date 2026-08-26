@@ -2,11 +2,10 @@
 <script>
   // The fleet as a picture.
   //
-  // Layout is COMPUTED, never dragged: node positions are a pure function of
-  // the sorted node list, so the same fleet draws the same pixels every time
-  // and nothing shifts. Fleets here are 1-8 machines and multi-node recipes are
-  // exactly two, so a force simulation would be a dependency and a source of
-  // jitter in exchange for nothing.
+  // The rules live in `$lib/agent/topology.js`, which is pure and tested; this
+  // file is the surface. Layout is COMPUTED, never dragged — the same fleet
+  // draws the same pixels every time, so nothing shifts under a cursor and
+  // nothing depends on the order machines happened to be discovered in.
   //
   // Nothing inside this SVG is focusable or clickable. It carries role="img"
   // and a generated sentence as its label; every action lives in the button
@@ -14,52 +13,24 @@
   // focus semantics for SVG, and it means a screen reader gets a description
   // rather than a maze of unlabelled shapes.
 
-  import { preferredAddress, linkWarns } from '$lib/agent/fleet.svelte.js';
+  import { flip } from 'svelte/animate';
+  import { scale } from 'svelte/transition';
+  import { preferredAddress } from '$lib/agent/fleet.svelte.js';
+  import * as Topo from '$lib/agent/topology.js';
 
   let { nodes = [], head = null, selected = new Set() } = $props();
 
-  const W = 760;
-  const H = 300;
-  const R = 34;
+  const W = Topo.W;
+  const H = Topo.H;
+  const R = Topo.R;
 
-  // Local node first, then paired, then discovered — and by fingerprint within
-  // each group, so the order cannot depend on arrival timing.
-  const ordered = $derived(
-    nodes.slice().sort((a, b) => {
-      const rank = (n) => (n.isLocal ? 0 : n.pairing === 'paired' ? 1 : 2);
-      const r = rank(a) - rank(b);
-      return r !== 0 ? r : a.id.localeCompare(b.id);
-    })
-  );
+  // A pattern id must be unique per instance: two graphs on one page sharing a
+  // hardcoded id makes the second one reference the first one's fill.
+  const hatchId = `topoHatch-${Math.random().toString(36).slice(2, 9)}`;
 
-  const points = $derived(
-    ordered.map((n, i) => {
-      const count = ordered.length;
-      if (count === 1) return { node: n, x: W / 2, y: H / 2 - 10 };
-      // A single row, equally spaced, with a gentle arc so edges have room.
-      const span = Math.min(W - 160, count * 190);
-      const x = W / 2 - span / 2 + (span / Math.max(1, count - 1)) * i;
-      const lift = count > 2 ? Math.sin((i / (count - 1)) * Math.PI) * 26 : 0;
-      return { node: n, x, y: H / 2 - 10 - lift };
-    })
-  );
-
-  // Edges only between trusted, launch-capable nodes: an unpaired node has no
-  // link to draw because there is no relationship yet.
-  const edges = $derived(
-    points
-      .filter((p) => p.node.isLocal || p.node.pairing === 'paired')
-      .flatMap((a, i, arr) =>
-        arr.slice(i + 1).map((b) => {
-          const aa = preferredAddress(a.node);
-          const bb = preferredAddress(b.node);
-          const cls =
-            !aa || !bb ? 'none' : (aa.class ?? 'ethernet') === (bb.class ?? 'ethernet') ? aa.class : 'ethernet';
-          const speed = Math.min(aa?.speedMbps ?? 0, bb?.speedMbps ?? 0);
-          return { a, b, cls, speed, warn: cls === 'none' || linkWarns(cls) };
-        })
-      )
-  );
+  const ordered = $derived(Topo.ordered(nodes));
+  const points = $derived(Topo.points(nodes));
+  const edges = $derived(Topo.edges(points));
 
   const label = $derived(
     (() => {
@@ -78,6 +49,16 @@
       return `Fleet of ${ordered.length} node${ordered.length === 1 ? '' : 's'}. ${parts.join('. ')}.${tail}`;
     })()
   );
+
+  /** How a link class is written on an edge. */
+  function linkText(cls) {
+    if (cls === 'none') return 'no link';
+    if (cls === 'roce') return 'RoCE';
+    if (cls === 'infini_band') return 'IB';
+    if (cls === 'wireless') return 'Wi-Fi';
+    if (cls === 'unverified') return 'unverified';
+    return 'eth';
+  }
 </script>
 
 <figure class="topo-fig">
@@ -99,13 +80,14 @@
   {:else}
   <svg class="topo-svg" viewBox="0 0 {W} {H}" role="img" aria-label={label}>
     <defs>
-      <pattern id="topoHatch" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <pattern id={hatchId} width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
         <line x1="0" y1="0" x2="0" y2="8" stroke="var(--border-strong)" stroke-width="3" />
       </pattern>
     </defs>
 
     {#each edges as e (e.a.node.id + e.b.node.id)}
       <line
+        in:scale={{ duration: 260 }}
         class="topo-edge"
         class:topo-edge-warn={e.warn}
         x1={e.a.x}
@@ -114,30 +96,41 @@
         y2={e.b.y}
       />
       <text class="topo-edge-label" x={(e.a.x + e.b.x) / 2} y={(e.a.y + e.b.y) / 2 - 10} text-anchor="middle">
-        {#if e.cls === 'none'}no link{:else}{e.cls === 'roce'
-            ? 'RoCE'
-            : e.cls === 'infini_band'
-              ? 'IB'
-              : e.cls === 'wireless'
-                ? 'Wi-Fi'
-                : 'eth'}{#if e.speed}
-            {Math.round(e.speed / 1000)}G{/if}{/if}
+        {linkText(e.cls)}{#if e.speed} {Math.round(e.speed / 1000)}G{/if}
       </text>
     {/each}
 
     {#each points as p (p.node.id)}
       {@const trusted = p.node.isLocal || p.node.pairing === 'paired'}
-      <g class="topo-node" class:topo-node-sel={selected.has(p.node.id)}>
+      <!-- A discovered machine used to pop in and shove every other node
+           sideways, because positions are index-derived. Keyed + flipped, they
+           slide to their new places instead.
+
+           Both are CSS-driven, so the global `prefers-reduced-motion` rule in
+           app.css — `animation-duration: 0.001ms !important` on `*` — zeroes
+           them. `!important` in a stylesheet outranks the inline shorthand
+           Svelte writes, which is what makes one killswitch enough rather than
+           each animation needing its own guard. -->
+      <g
+        class="topo-node"
+        class:topo-node-sel={selected.has(p.node.id)}
+        animate:flip={{ duration: 420 }}
+        in:scale={{ duration: 260, start: 0.6 }}
+      >
         <circle
           cx={p.x}
           cy={p.y}
           r={R}
-          fill={trusted ? 'var(--card)' : 'url(#topoHatch)'}
+          fill={trusted ? 'var(--card)' : `url(#${hatchId})`}
           stroke={selected.has(p.node.id) ? 'var(--sx)' : 'var(--border-strong)'}
           stroke-width={selected.has(p.node.id) ? 2.5 : 1.5}
         />
+        <!-- The fingerprint, not the hostname: this file's own header warns
+             that Sparks ship with colliding names, and the last four characters
+             of a hostname collide for exactly the machines an operator most
+             needs to tell apart. -->
         <text class="topo-node-name" x={p.x} y={p.y + 4} text-anchor="middle">
-          {p.node.name.slice(-4)}
+          {Topo.label(p.node)}
         </text>
         {#if head === p.node.id}
           <g transform="translate({p.x - 10}, {p.y + R + 6})">
@@ -145,10 +138,14 @@
             <text class="topo-head-tag" x="10" y="10.5" text-anchor="middle">H</text>
           </g>
         {/if}
+        <!-- Inside the animated group, not beside it: `animate:` requires the
+             element to be the only child of its keyed block, and a hostname
+             that stayed put while its circle slid would be worse than no
+             animation at all. -->
+        <text class="topo-node-label" x={p.x} y={p.y - R - 10} text-anchor="middle">
+          {p.node.name}
+        </text>
       </g>
-      <text class="topo-node-label" x={p.x} y={p.y - R - 10} text-anchor="middle">
-        {p.node.name}
-      </text>
     {/each}
   </svg>
 
