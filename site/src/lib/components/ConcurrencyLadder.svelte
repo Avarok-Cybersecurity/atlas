@@ -15,7 +15,12 @@
   // `embedded`: render as a block inside a section that already has a heading
   // and a container (the Verified entry). Default is the standalone section the
   // benchmark dashboard mounts.
-  let { embedded = false } = $props();
+  //
+  // `compact`: chart and table only. The slide deck at /due-diligence gives the
+  // claim its own headline and spends the rest of the slide on the evidence, so
+  // it needs the instrument without the surrounding prose or the provenance
+  // disclosure — which it reaches on its own slides instead.
+  let { embedded = false, compact = false } = $props();
 
   const W = 760, H = 300, PL = 62, PR = 20, PT = 18, PB = 34;
 
@@ -54,6 +59,7 @@
     {#if !embedded}
       <div class="slabel">Concurrency</div>
     {/if}
+    {#if !compact}
     <svelte:element this={embedded ? 'h3' : 'h2'} class={embedded ? 'cl-h' : 'stitle'}>
       {#if ladder.summary.all_won}
         Faster than vLLM at every concurrency, C=1 to 128
@@ -68,6 +74,7 @@
       {ratio(ladder.summary.min_ratio)}–{ratio(ladder.summary.max_ratio)} against whichever
       vLLM configuration is faster at that rung.
     </p>
+    {/if}
 
     <figure class="cl-panel">
       <figcaption class="cl-legend">
@@ -142,6 +149,7 @@
       </table>
     </div>
 
+    {#if !compact}
     <details class="cl-details">
       <summary class="cl-toggle">Exact configuration and provenance</summary>
       <div class="cl-meta">
@@ -221,5 +229,6 @@
         </article>
       </div>
     </details>
+    {/if}
   </div>
 </svelte:element>
