@@ -6,7 +6,10 @@
   // The index and the name are parsed out of the single `label` string that
   // already lives in data.js ("// 03 · verified"), so the numbering keeps one
   // source. A label with no number still renders — it just has no index.
-  let { label, title, sub = '', prov = '', provUrl = '' } = $props();
+  // `level` lets a page make its first entry the document's h1. Sections on
+  // the home page stay h2 under the hero's h1; a standalone page has no hero,
+  // and a document whose headings start at h2 fails heading-order.
+  let { label, title, sub = '', prov = '', provUrl = '', level = 2 } = $props();
 
   const parsed = /^\s*\/\/\s*(?:(\d+)\s*·\s*)?(.+?)\s*$/.exec(label);
   const index = parsed?.[1] ?? '';
@@ -36,5 +39,5 @@
   {/if}
 </div>
 
-<h2 class="stitle">{title}</h2>
+<svelte:element this={level === 1 ? 'h1' : 'h2'} class="stitle">{title}</svelte:element>
 {#if sub}<p class="ssub">{sub}</p>{/if}

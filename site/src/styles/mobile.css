@@ -291,3 +291,34 @@ img, svg, video { max-width: 100%; }
   .cc-keyrow-swap, .cm-sources summary { padding-block: 0.55rem; }
   .cm-src { min-height: 42px; align-items: center; }
 }
+
+/* ---- control plane --------------------------------------------------------
+   Every viewport rule for /control lives here, like everything else. */
+.fl-grid > *, .topo-wrap > *, .vt-row > *, .al-row > *, .topo-actions > * { min-width: 0; }
+
+@media (max-width: 860px) {
+  /* The nav shrinks to 56px below this width. */
+  .control > section:first-of-type { padding-top: calc(56px + 2rem); }
+}
+
+@media (max-width: 1000px) {
+  /* The action list moves under the picture rather than beside it. */
+  .topo-wrap { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  /* Two across keeps the labels readable; three does not at this width. */
+  .vt-row { grid-template-columns: repeat(2, 1fr); }
+  /* The alert table becomes stacked rows. */
+  .al-row { grid-template-columns: 1fr; gap: 0.3rem; }
+  .al-sev { justify-self: start; }
+  /* Reserving 420px for a mode swap is wrong once cards stack: the live
+     content is far taller, and an over-large reservation is itself a hole in
+     the page. */
+  .ctl-modes { min-height: 0; }
+}
+
+@media (pointer: coarse) {
+  /* Touch targets. */
+  .topo-act-btn, .fp-chip, .fl-unpair { min-height: 34px; }
+}

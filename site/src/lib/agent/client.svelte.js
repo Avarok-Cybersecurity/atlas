@@ -36,6 +36,25 @@ export class AgentClient {
   #socket = null;
   #nextId = 1;
   #pending = new Map();
+  /**
+   * Listeners for frames nobody asked for.
+   *
+   * The agent pushes `fleet_event` continuously once a watch is open, and
+   * those frames match no pending request — `#onMessage` used to drop anything
+   * uncorrelated on the floor, so a stream would have silently gone nowhere.
+   */
+  #listeners = new Set();
+
+  /**
+   * Listen for unsolicited frames. Returns a function that stops listening.
+   *
+   * @param {(msg: object) => void} fn
+   * @returns {() => void}
+   */
+  onEvent(fn) {
+    this.#listeners.add(fn);
+    return () => this.#listeners.delete(fn);
+  }
 
   /** Whether a recipe id is one this agent can actually run. */
   runnable(recipeId) {
@@ -135,6 +154,67 @@ export class AgentClient {
     return this.#request({ type: 'stop', recipe });
   }
 
+  /** The fleet as the agent currently sees it. */
+  listNodes() {
+    return this.#request({ type: 'list_nodes' });
+  }
+
+  /**
+   * Subscribe to fleet changes.
+   *
+   * `vitals` is dropped for a background tab: losing 1 Hz telemetry costs
+   * nothing, while structural changes and alerts must keep arriving so the nav
+   * indicator stays truthful.
+   */
+  watchFleet(vitals = true) {
+    return this.#request({ type: 'watch_fleet', vitals });
+  }
+
+  /** Pair a discovered peer with a code read off that machine. */
+  pairPeer(node, code) {
+    return this.#request({ type: 'pair_peer', node, code });
+  }
+
+  /** Drop trust in a peer. */
+  unpairPeer(node) {
+    return this.#request({ type: 'unpair_peer', node });
+  }
+
+  /** Render each rank's command without running anything. */
+  previewCluster(recipe, nodes, head, settings) {
+    return this.#request({ type: 'preview_cluster', recipe, nodes, head, settings });
+  }
+
+  /** Ask every selected node to validate and reserve. Nothing starts. */
+  prepareCluster(recipe, nodes, head, settings) {
+    return this.#request({ type: 'prepare_cluster', recipe, nodes, head, settings });
+  }
+
+  /** Start every rank of a prepared cluster. */
+  commitCluster(epoch) {
+    return this.#request({ type: 'commit_cluster', epoch });
+  }
+
+  /** Abandon a prepare, releasing every reservation. */
+  /** How a running launch is doing. */
+  launchStats(recipe) {
+    return this.#request({ type: 'launch_stats', recipe });
+  }
+
+  /** The tail of a launch's log. */
+  launchLogs(recipe, lines = 200) {
+    return this.#request({ type: 'launch_logs', recipe, lines });
+  }
+
+  /** Stop every rank of the cluster this agent started. */
+  stopCluster() {
+    return this.#request({ type: 'stop_cluster' });
+  }
+
+  abortCluster(epoch) {
+    return this.#request({ type: 'abort_cluster', epoch });
+  }
+
   /** Close the connection. */
   dispose() {
     try {
@@ -174,6 +254,15 @@ export class AgentClient {
         this.#pending.delete(key);
         resolve(msg);
         return;
+      }
+    }
+    // Nothing was waiting for it, so it is a pushed frame. A listener that
+    // throws must not take down the socket handler with it.
+    for (const fn of this.#listeners) {
+      try {
+        fn(msg);
+      } catch {
+        /* a broken listener is not the socket's problem */
       }
     }
   }

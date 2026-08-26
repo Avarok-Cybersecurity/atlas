@@ -10,7 +10,7 @@
   // renderer — the same function the launch will use. Preview and execution
   // cannot drift, because they are one code path.
 
-  import { groupsPresent, settingsIn, checkValue, unknownDefaults } from '$lib/agent/schema.js';
+  import { groupsPresent, settingsIn, checkValue, notEditableHere } from '$lib/agent/schema.js';
   import SettingField from './SettingField.svelte';
 
   let { agent, recipeId, onclose, onstarted } = $props();
@@ -28,7 +28,12 @@
 
   const tabs = $derived([...groupsPresent(agent.schema, showAdvanced), { key: 'review', label: 'Review' }]);
   const changedCount = $derived(Object.keys(overrides).length);
-  const orphaned = $derived(unknownDefaults(agent.schema, defaults));
+  // Not editable from a page is not the same as not applied: the schema
+  // bounds what a web page may override, and the agent applies the recipe's own
+  // defaults through its flag table regardless. `host` is the clear case — it is
+  // deliberately absent from the schema, and `host: 0.0.0.0` still reaches the
+  // command line.
+  const fixedByRecipe = $derived(notEditableHere(agent.schema, defaults));
 
   // Every invalid field at once, so a form can be fixed in one pass.
   const invalid = $derived(
@@ -145,11 +150,11 @@
           onchange={(v) => setValue(spec.key, v)}
         />
       {/each}
-      {#if orphaned.length > 0 && tab === 'server'}
+      {#if fixedByRecipe.length > 0 && tab === 'server'}
         <p class="lm-warn">
-          This recipe sets {orphaned.length} value(s) your agent does not
-          recognise: <code class="mono">{orphaned.join(', ')}</code>. They will not
-          be applied.
+          The recipe also sets <code class="mono">{fixedByRecipe.join(', ')}</code>.
+          {fixedByRecipe.length === 1 ? 'It is' : 'They are'} applied as written and cannot be changed from a
+          web page.
         </p>
       {/if}
     {/if}
