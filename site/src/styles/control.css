@@ -571,3 +571,9 @@
   .fp-serving .fp-dot { animation: fp-pulse 2.4s ease-in-out infinite; }
 }
 @keyframes fp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Control-only, shown in the model-card launch modal. Reuses .fl-co-chip so
+   the mode looks the same wherever it is reported. */
+.lm-co-lead { font-size: 0.95rem; font-weight: 650; color: var(--t1); line-height: 1.6; }
+.lm-co-why { margin-top: 0.7rem; font-size: 0.88rem; color: var(--t2); line-height: 1.65; }
+.lm-co-go { display: inline-flex; align-items: center; text-decoration: none; }

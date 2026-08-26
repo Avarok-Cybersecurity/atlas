@@ -18,6 +18,17 @@
   const info = $derived(agent.recipes.find((r) => r.id === recipeId));
   const defaults = $derived(info?.defaults ?? {});
 
+  // This agent may be a control node — installed on a laptop to drive headless
+  // machines, and structurally unable to run a model itself. Without this the
+  // modal offered the whole settings form and a Start button, and the refusal
+  // only arrived after the form was filled in. Say it before the work, not
+  // after.
+  const controlOnly = $derived(agent.canLaunch === false);
+
+  // `.html`, not `/control`: adapter-static writes this route to control.html
+  // and the deploy target serves files literally. Same reasoning as FleetPill.
+  const CONTROL = '/control.html';
+
   let overrides = $state({});
   let showAdvanced = $state(false);
   let tab = $state('server');
@@ -100,6 +111,25 @@
     <button type="button" class="lm-close" onclick={onclose} aria-label="Close">×</button>
   </header>
 
+  {#if controlOnly}
+    <div class="lm-body">
+      <p class="lm-co-lead">
+        <span class="fl-co-chip">Control only</span>
+        This machine cannot run models, so there is nothing to configure here.
+      </p>
+      <p class="lm-co-why">
+        {agent.canLaunchReason || 'The agent on this machine reports it cannot run models.'}
+      </p>
+      <p class="lm-co-why">
+        It can still drive machines that do. Pair one from the control plane and
+        launch <code class="mono">{recipeId}</code> onto it from there.
+      </p>
+    </div>
+    <footer class="lm-foot">
+      <button type="button" class="cmd-copy" onclick={onclose}>Close</button>
+      <a class="cmd-run lm-co-go" href={CONTROL}>Open the control plane</a>
+    </footer>
+  {:else}
   <div class="lm-tabs" role="tablist">
     {#each tabs as t (t.key)}
       <button
@@ -176,4 +206,5 @@
       disabled={starting || invalid.length > 0}
     >{starting ? 'Starting…' : 'Start'}</button>
   </footer>
+  {/if}
 </div>
