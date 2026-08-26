@@ -201,6 +201,11 @@ export class AgentClient {
     return this.#request({ type: 'launch_stats', recipe });
   }
 
+  /** The tail of a launch's log. */
+  launchLogs(recipe, lines = 200) {
+    return this.#request({ type: 'launch_logs', recipe, lines });
+  }
+
   /** Stop every rank of the cluster this agent started. */
   stopCluster() {
     return this.#request({ type: 'stop_cluster' });

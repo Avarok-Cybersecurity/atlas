@@ -500,3 +500,27 @@
 .lc-here { display: flex; flex-direction: column; gap: 0.8rem; }
 .lc-here-head { font-size: 0.9rem; color: var(--t2); }
 .lc-here-head strong { color: var(--t1); font-family: var(--font-mono); font-size: 0.85rem; }
+
+/* Log tail. Monospace, fixed height, its own scroll — a log that grows the page
+   moves every control below it while an operator is trying to click one. */
+.lg { border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+.lg-disclose {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: none; border: 0; padding: 0.75rem 1rem; cursor: pointer;
+  font: inherit; font-size: 0.86rem; font-weight: 650; color: var(--t1);
+}
+.lg-name { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500; color: var(--t3); }
+.lg-problem, .lg-exited, .lg-empty { padding: 0 1rem 0.6rem; font-size: 0.8rem; color: var(--t3); }
+.lg-exited { color: var(--amber); }
+.lg-pane {
+  max-height: 320px; overflow: auto; padding: 0.2rem 1rem 0.8rem;
+  border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 0.73rem;
+  line-height: 1.65; color: var(--t2);
+}
+/* Never wrap: a wrapped log line is a different line, and column alignment is
+   half of what makes a stack trace readable. */
+.lg-line { white-space: pre; }
+.lg-follow {
+  margin: 0 1rem 0.8rem; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 7px; padding: 0.25rem 0.6rem; font-size: 0.74rem; color: var(--t2); cursor: pointer;
+}

@@ -14,6 +14,7 @@
   import * as O from '$lib/agent/overrides.js';
   import SettingsEditor from './SettingsEditor.svelte';
   import LaunchStats from './LaunchStats.svelte';
+  import LaunchLogs from './LaunchLogs.svelte';
 
   let { fleet } = $props();
 
@@ -120,6 +121,7 @@
         <strong>{runningHere}</strong> is running on {fleet.local?.name ?? 'this machine'}.
       </p>
       <LaunchStats {fleet} recipe={runningHere} />
+      <LaunchLogs {fleet} recipe={runningHere} />
     </div>
   {/if}
 
@@ -296,6 +298,7 @@
         {/each}
       </ul>
       <LaunchStats {fleet} recipe={flow.recipe} />
+      <LaunchLogs {fleet} recipe={flow.recipe} />
 
       <div class="lc-commit">
         <button class="btn btn-primary" onclick={doStop} disabled={busy}>Stop the cluster</button>
