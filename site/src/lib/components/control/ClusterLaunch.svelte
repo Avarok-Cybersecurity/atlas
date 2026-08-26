@@ -24,11 +24,19 @@
   let showSettings = $state(false);
   let copied = $state('');
 
-  // The operator's remembered preferences. Read once, on the client only —
-  // this component is prerendered, and there is no storage during prerender.
+  // The operator's remembered preferences. Loaded at init rather than in an
+  // effect: there is no storage during prerender, so this is `empty()` on the
+  // server and the real profile on the client — and this component only
+  // renders once an agent has answered, which never happens while
+  // prerendering, so the two cannot disagree on screen.
   const store = typeof localStorage === 'undefined' ? null : localStorage;
-  let profile = $state(Prof.empty());
-  let restored = $state(false);
+  let profile = $state(Prof.load(store));
+
+  // Deliberately NOT `$state`. An effect that reads a flag it also assigns
+  // depends on itself, which is the loop this file's own comments warn about;
+  // a plain variable is a latch the effect can check without subscribing to.
+  let recipeRestored = false;
+  let selectionRestored = false;
 
   const recipes = $derived(
     (fleet.agent?.recipes ?? []).filter((r) => r.runnable).slice().sort((a, b) => a.id.localeCompare(b.id)),
@@ -48,31 +56,47 @@
   const changed = $derived(O.changedCount(overrides, defaults));
   const wire = $derived(O.toWire(overrides, defaults));
 
-  // Pick up where the operator left off, once — and only once there is enough
-  // to check a remembered choice against. Restoring blind would put a recipe
-  // this agent does not carry, or a machine that is switched off, into a plan
-  // and then fail at preview with something the operator did not choose.
+  // Pick up where the operator left off. Two steps, because the two halves
+  // become checkable at different moments: the recipe list arrives with the
+  // agent's handshake, while the machines that can hold a rank arrive as
+  // discovery and pairing resolve. Restoring both on the first signal meant a
+  // fleet that had not finished loading discarded the remembered machines
+  // silently and for good.
+  //
+  // Neither restores blind. A remembered choice is a preference, never an
+  // assertion about what is on the network, so a recipe this agent does not
+  // carry and a machine that is not currently able to hold a rank are both
+  // simply not applied.
   $effect(() => {
-    if (restored || recipes.length === 0) return;
-    restored = true;
-    const p = Prof.load(store);
-    profile = p;
-    if (p.recipe == null) return;
+    if (recipeRestored || recipes.length === 0) return;
+    recipeRestored = true;
+    const id = profile.recipe;
+    if (id == null || !recipes.some((r) => r.id === id)) return;
+    flow = L.setRecipe(L.initial(), id);
+    overrides = Prof.overridesFor(profile, id);
+  });
 
-    const target = recipes.find((r) => r.id === p.recipe);
-    if (!target) return;
-    let next = L.setRecipe(L.initial(), target.id);
+  $effect(() => {
+    // `recipe` gates this as well as `candidates`: selecting machines needs
+    // the recipe's own node count to know how many the operator may pick.
+    if (selectionRestored || candidates.length === 0 || recipe == null) return;
+    // Only latch once something was actually offered to restore against; an
+    // operator who never selected anything has nothing to restore, and
+    // latching on their behalf costs nothing either way.
+    selectionRestored = true;
+    if (profile.selected.length === 0) return;
 
-    // Only machines that can hold a rank *right now*. A remembered selection
-    // is a preference, never an assertion about what is on the network.
     const live = new Set(candidates.map((n) => n.id));
-    for (const id of p.selected) {
-      if (live.has(id)) next = L.toggleNode(next, id, target);
+    let next = flow;
+    for (const id of profile.selected) {
+      if (live.has(id) && !next.selected.includes(id)) {
+        next = L.toggleNode(next, id, recipe);
+      }
     }
-    if (p.head != null && next.selected.includes(p.head)) next = L.setHead(next, p.head);
-
+    if (profile.head != null && next.selected.includes(profile.head)) {
+      next = L.setHead(next, profile.head);
+    }
     flow = next;
-    overrides = Prof.overridesFor(p, target.id);
   });
 
   /** Persist the current plan. Failure is silent by design — see profile.js. */
