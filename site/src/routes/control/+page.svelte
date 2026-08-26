@@ -21,7 +21,10 @@
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { runCommand } from '$lib/data.js';
 
-  const START_AGENT = 'atlasctl agent run';
+  // `install`, not `run`. `run` holds the terminal and the agent dies with it,
+  // which turns a fleet into a demo: close the window and the page this
+  // command was meant to light up goes dark again.
+  const START_AGENT = 'atlasctl agent install';
 
   let pairing = $state(null);
   let unpairing = $state(null);
@@ -198,7 +201,7 @@
             <li>
               <span class="ld-step-n">2</span>
               <div>
-                <p class="ld-step-t">Start the agent</p>
+                <p class="ld-step-t">Start the agent in the background</p>
                 <div class="ld-cmd">
                   <code class="mono">{START_AGENT}</code>
                   <button type="button" class="cmd-copy" onclick={() => copy(START_AGENT)}>

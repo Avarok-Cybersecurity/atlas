@@ -20,7 +20,8 @@
   let dialogEl = $state(null);
 
   const INSTALL = 'curl -fsSL https://atlasinference.io/install.sh | sh';
-  const START = 'atlasctl agent run';
+  // `install`, not `run`: `run` holds the terminal and the agent dies with it.
+  const START = 'atlasctl agent install';
 
   async function copy(text) {
     try {
@@ -149,7 +150,7 @@
             <li>
               <span class="ld-step-n">2</span>
               <div>
-                <p class="ld-step-t">Start the agent</p>
+                <p class="ld-step-t">Start the agent in the background</p>
                 <div class="ld-cmd">
                   <code class="mono">{START}</code>
                   <button type="button" class="cmd-copy" onclick={() => copy(START)}>
