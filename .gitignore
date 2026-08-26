@@ -141,3 +141,9 @@ adapters35/
 # #531 (since excised from history). Never track them.
 .buncache/
 .buntmp/
+
+# Lighthouse CI writes a full report per run into .lighthouseci/. They are
+# build artifacts of a check, not source: each local run rewrites all of them,
+# which buried a three-file fix under 110k lines of diff. The scores that matter
+# are asserted by lighthouserc.json and reported in the job log.
+.lighthouseci/

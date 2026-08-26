@@ -8,6 +8,7 @@
   import DiscordIcon from './DiscordIcon.svelte';
   import XIcon from './XIcon.svelte';
   import ChatLatticeIcon from './ChatLatticeIcon.svelte';
+  import FleetPill from './FleetPill.svelte';
   import { preloadChat, prefetchWasmOnIdle } from '../chat/warmup.js';
 
   let open = $state(false);
@@ -63,6 +64,7 @@
       {#each nav.links as l}
         <a href={l.href}>{l.text}</a>
       {/each}
+      <FleetPill />
       <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener"><DiscordIcon size={18} /></a>
       <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener"><XIcon size={16} /></a>
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener">

@@ -1,0 +1,628 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+   =============================================================================
+   Control plane.
+
+   Same design system as the rest of the site — ledger rails, --sx section
+   accent, the card and chip grammar — because this is the same product, not a
+   dashboard bolted onto it. The page-level accent is cyan: the chevron colours
+   carry fixed meanings and this page is about silicon.
+
+   Contrast rule, restated because it is easy to break here: the brand colours
+   clear 4.5:1 as TEXT on --bg and --card, but as FILLS they must carry --bg
+   ink, never white. White on gold is 1.88:1.
+
+   Every viewport rule lives in mobile.css, which loads after this file.
+   ========================================================================== */
+
+/* Loaded before mobile.css, so nothing here may be width-conditional. */
+
+/* The nav is fixed, and /control has no hero to absorb it — its first section
+   starts immediately under the bar. Clear it explicitly rather than relying on
+   section padding, which mobile.css reduces. */
+.control > section:first-of-type { padding-top: calc(62px + 3rem); }
+
+/* ---- shared ---------------------------------------------------------------- */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* The page swaps this whole container when an agent appears. Reserving its
+   height means the sections below do not jump — measured at CLS 0.322 before
+   this, which is a real shift for anyone who actually has an agent running. */
+.ctl-modes { min-height: 420px; }
+
+/* ---- setup / empty state --------------------------------------------------- */
+.ctl-setup {
+  margin-top: 2.5rem; background: var(--card);
+  border: 1px solid var(--border-strong); border-radius: 18px;
+  padding: 2rem 2.25rem; max-width: 720px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
+}
+.ctl-setup h2 { font-size: 1.15rem; font-weight: 780; letter-spacing: -0.02em; }
+.ctl-setup > p { font-size: 0.95rem; color: var(--t2); line-height: 1.65; margin-top: 0.6rem; }
+.ctl-safety {
+  margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);
+  font-size: 0.82rem; color: var(--t3); line-height: 1.6;
+}
+.ctl-safety strong { color: var(--t2); }
+
+/* ---- node grid ------------------------------------------------------------- */
+.fl-grid {
+  display: grid; gap: 1.25rem; margin-top: 2.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+}
+.fl-card {
+  background: var(--card); border: 1px solid rgba(58,48,84,0.45); border-radius: 18px;
+  padding: 1.35rem 1.45rem; display: flex; flex-direction: column; gap: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
+}
+/* Informational, so it does not levitate on hover — the actions are buttons. */
+.fl-card-discovered { border-style: dashed; border-color: var(--border-strong); }
+.fl-card-discovered .fl-head h2 { color: var(--t2); }
+.fl-card-stale { opacity: 0.72; }
+
+.fl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.fl-head-name { min-width: 0; }
+.fl-head h2 {
+  font-size: 1.02rem; font-weight: 750; letter-spacing: -0.01em; color: var(--t1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fl-sub { font-size: 0.78rem; color: var(--t3); margin-top: -0.4rem; }
+.fl-controlonly { color: var(--amber); }
+
+/* Fingerprint chip — the trustworthy half of a node's identity. */
+.fp-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem; margin-top: 0.3rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 5px;
+  padding: 0.15rem 0.45rem; font-size: 0.7rem; font-weight: 600; color: var(--t3);
+  cursor: pointer; font-family: var(--font-mono);
+}
+.fp-chip:hover { color: var(--t2); border-color: var(--border-strong); }
+
+/* Trust state. Green appears here and nowhere else on the page. */
+.trust-chip {
+  display: inline-flex; align-items: center; gap: 0.4rem; flex-shrink: 0;
+  font-size: 0.7rem; font-weight: 750; padding: 0.25rem 0.6rem; border-radius: 100px;
+  background: rgba(0,0,0,0.12); color: var(--t3); white-space: nowrap;
+}
+.trust-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.trust-paired { color: var(--ch-green); background: color-mix(in srgb, var(--ch-green) 14%, transparent); }
+.trust-this { color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); }
+.trust-pairing, .trust-unreachable { color: var(--amber); background: rgba(251,191,36,0.12); }
+
+.fl-untrusted { font-size: 0.85rem; color: var(--t2); line-height: 1.6; }
+.fl-offline { font-size: 0.85rem; color: var(--amber); line-height: 1.6; }
+.fl-pendingvitals { font-size: 0.82rem; color: var(--t3); line-height: 1.6; }
+/* Unverified is an absence of information, not a warning — neutral, not amber. */
+.chip-link-unknown {
+  color: var(--t3); background: rgba(0,0,0,0.16); border-color: var(--border);
+}
+.fl-actions { display: flex; gap: 0.6rem; }
+.fl-btn-sm { padding: 0.5rem 0.9rem; font-size: 0.82rem; }
+
+.fl-ident { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.fl-addr { font-size: 0.8rem; color: var(--t2); }
+.fl-addr-none { color: var(--amber); font-size: 0.8rem; }
+.chip-link {
+  font-size: 0.62rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 4px;
+  color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ch-cyan) 30%, transparent);
+}
+.chip-link-warn {
+  color: var(--amber); background: rgba(251,191,36,0.12);
+  border-color: rgba(251,191,36,0.3);
+}
+
+/* ---- vitals ---------------------------------------------------------------- */
+/* Six tiles, fixed height in every state, so a card never resizes as telemetry
+   arrives. Zero layout shift is a requirement here, not a nicety. */
+/* Three across, two rows. Six columns in a 340px card truncated the labels
+   ("SM CLOC"), and a measurement whose name you cannot read is not a
+   measurement. */
+.vt-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+.vt-tile {
+  display: flex; flex-direction: column; gap: 0.15rem; min-height: 3.7rem;
+  padding: 0.45rem 0.5rem; border-radius: 8px; background: var(--bg2);
+  border-left: 3px solid transparent; min-width: 0;
+}
+.vt-label {
+  font-family: var(--font-mono); font-size: 0.58rem; font-weight: 700;
+  letter-spacing: 0.06em; color: var(--t3); white-space: nowrap;
+}
+.vt-val {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 0.94rem; font-weight: 700; color: var(--t1); white-space: nowrap;
+}
+.vt-unit { font-size: 0.68rem; font-weight: 600; color: var(--t3); }
+.vt-tilde { color: var(--t3); }
+.vt-sub { font-size: 0.58rem; color: var(--t3); min-height: 0.8rem; }
+/* "not on this hardware" is a permanent answer and must not look pending. */
+.vt-na .vt-val, .vt-dash { color: var(--t3); }
+.vt-skeleton {
+  height: 0.94rem; width: 60%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--border), var(--border-strong), var(--border));
+}
+.vt-stale .vt-val { color: var(--t3); }
+.vt-meter { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 0.2rem; }
+.vt-meter-fill { display: block; height: 100%; background: var(--sx); }
+.vt-alert { border-left-color: var(--amber); background: rgba(251,191,36,0.08); }
+/* --t3 measures 3.95:1 against the tinted grounds below, which is under AA for
+   text this small. Alerting tiles step their small text up to --t2. */
+.vt-alert .vt-label, .vt-alert .vt-unit, .vt-alert .vt-sub,
+.vt-alert-crit .vt-label, .vt-alert-crit .vt-unit, .vt-alert-crit .vt-sub { color: var(--t2); }
+.vt-alert .vt-val { color: var(--amber); }
+.vt-alert-crit { border-left-color: var(--red); background: var(--red-soft); }
+.vt-alert-crit .vt-val { color: var(--red); }
+
+/* ---- badges + activity ----------------------------------------------------- */
+.fl-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; list-style: none; }
+.al-badge {
+  font-size: 0.62rem; font-weight: 700; padding: 0.18rem 0.45rem; border-radius: 4px;
+  background: rgba(251,191,36,0.12); color: var(--amber);
+}
+.al-badge.al-critical { background: var(--red-soft); color: var(--red); }
+.fl-activity {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  margin-top: auto; padding-top: 0.7rem; border-top: 1px solid var(--border);
+  font-size: 0.76rem; color: var(--t3);
+}
+.fl-running { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--ch-green); font-weight: 650; }
+.fl-running .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.fl-stale-note { color: var(--amber); }
+.fl-unpair {
+  margin-left: auto; background: none; border: 0; color: var(--t3);
+  font-size: 0.74rem; cursor: pointer; font-family: inherit; padding: 0.2rem;
+}
+.fl-unpair:hover { color: var(--red); }
+.fl-solo-note { margin-top: 1.5rem; font-size: 0.9rem; color: var(--t2); line-height: 1.65; max-width: 62ch; }
+
+/* Control-only mode: a laptop driving headless machines. This is a supported
+   way to work, not a fault, so it reads as an explanation — amber for "know
+   this", never the red used for something that went wrong. */
+.fl-control-only {
+  margin-top: 1.5rem; padding: 1rem 1.15rem; max-width: 68ch;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber); border-radius: 12px;
+}
+.fl-co-head { font-size: 0.92rem; font-weight: 650; color: var(--t1); line-height: 1.6; }
+.fl-co-chip {
+  display: inline-block; margin-right: 0.5rem; padding: 0.16rem 0.5rem;
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 999px; color: var(--amber);
+  font-family: var(--font-mono); font-size: 0.66rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase; vertical-align: 1px;
+}
+.fl-co-why { margin-top: 0.55rem; font-size: 0.87rem; color: var(--t2); line-height: 1.65; }
+.fl-co-next { margin-top: 0.6rem; font-size: 0.87rem; color: var(--t2); line-height: 1.65; }
+.fl-co-next strong { color: var(--t1); }
+
+/* ---- topology -------------------------------------------------------------- */
+.topo-wrap { display: grid; grid-template-columns: 1fr 300px; gap: 2rem; margin-top: 2.5rem; align-items: start; }
+.topo-fig {
+  background: var(--card); border: 1px solid rgba(58,48,84,0.45); border-radius: 18px;
+  padding: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
+}
+/* Fixed viewBox: node count changes redraw inside it, never resize it. */
+.topo-svg { width: 100%; height: auto; display: block; }
+.topo-edge { stroke: var(--ch-cyan); stroke-width: 2.5; }
+.topo-edge-warn { stroke: var(--amber); stroke-dasharray: 6 5; }
+.topo-edge-label { fill: var(--t2); font-family: var(--font-mono); font-size: 10px; }
+.topo-node-name { fill: var(--t1); font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+.topo-node-label { fill: var(--t2); font-size: 11px; }
+/* The head badge is a fill, so it carries --bg ink rather than white. */
+.topo-head-tag { fill: var(--bg); font-family: var(--font-mono); font-size: 9px; font-weight: 800; }
+
+.topo-actions {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem;
+}
+.topo-actions-title {
+  font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3); margin-bottom: 0.8rem;
+}
+.topo-act-group { padding: 0.6rem 0; border-top: 1px solid var(--border); }
+.topo-act-group:first-of-type { border-top: 0; }
+.topo-act-name { font-size: 0.85rem; font-weight: 650; color: var(--t1); margin-bottom: 0.4rem; }
+.topo-act-fp { font-size: 0.66rem; color: var(--t3); margin-left: 0.35rem; }
+.topo-act-btn {
+  display: inline-block; margin: 0.15rem 0.3rem 0.15rem 0;
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 7px;
+  color: var(--t2); font-size: 0.75rem; font-weight: 650; padding: 0.32rem 0.6rem;
+  cursor: pointer; font-family: inherit;
+}
+.topo-act-btn:hover:not(:disabled) { border-color: var(--sx); color: var(--t1); }
+.topo-act-btn:disabled { opacity: 0.55; cursor: default; }
+.topo-act-danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.topo-act-empty { font-size: 0.82rem; color: var(--t3); }
+/* Shown where "Make head" would be on a machine that cannot hold a rank. A
+   disabled button reads as broken; a sentence reads as an answer. */
+.topo-act-note { display: inline-block; margin: 0.15rem 0; font-size: 0.75rem; color: var(--amber); }
+
+.topo-table { margin-top: 1rem; font-size: 0.8rem; }
+.topo-table summary { cursor: pointer; color: var(--t3); font-size: 0.76rem; }
+.topo-table table { width: 100%; border-collapse: collapse; margin-top: 0.6rem; }
+.topo-table th, .topo-table td {
+  text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); color: var(--t2);
+}
+.topo-table thead th { color: var(--t3); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ---- alerts ---------------------------------------------------------------- */
+.al-strip {
+  margin-top: 1.75rem; padding: 0.8rem 1rem; border-radius: 10px;
+  font-size: 0.88rem; color: var(--t1); line-height: 1.55;
+  background: rgba(251,191,36,0.10); border: 1px solid rgba(251,191,36,0.28);
+}
+.al-strip.al-critical { background: var(--red-soft); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+.al-strip a { color: var(--accent-deep); }
+.al-empty-title { font-size: 1rem; font-weight: 750; color: var(--t1); margin-top: 2rem; }
+.al-empty { margin-top: 0.5rem; font-size: 0.92rem; color: var(--t2); line-height: 1.65; max-width: 62ch; }
+.al-list { list-style: none; margin-top: 2rem; border-top: 1px solid var(--border); }
+.al-row {
+  display: grid; grid-template-columns: 88px 150px 160px 1fr; gap: 0.8rem; align-items: baseline;
+  padding: 0.85rem 0.25rem; border-bottom: 1px solid var(--border); font-size: 0.86rem;
+}
+.al-sev {
+  font-family: var(--font-mono); font-size: 0.64rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.06em; padding: 0.18rem 0.45rem;
+  border-radius: 4px; background: rgba(251,191,36,0.12); color: var(--amber); text-align: center;
+}
+.al-sev.al-critical { background: var(--red-soft); color: var(--red); }
+.al-node { color: var(--t1); font-weight: 650; }
+.al-kind { color: var(--t2); font-family: var(--font-mono); font-size: 0.78rem; }
+.al-detail { color: var(--t2); line-height: 1.55; }
+
+/* ---- pairing --------------------------------------------------------------- */
+.ld-wide { width: min(600px, calc(100vw - 2rem)); }
+.pair-code {
+  font-size: 1.15rem; letter-spacing: 0.18em; padding: 0.55rem 0.75rem;
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px;
+  color: var(--t1); width: 100%; max-width: 220px; margin-right: 0.6rem;
+}
+.pair-fps {
+  margin: 1rem 0; padding: 1.1rem 1.25rem; border-radius: 12px;
+  background: var(--bg2); border: 1px solid var(--border-strong);
+}
+.pair-words {
+  font-size: 1.5rem; font-weight: 800; letter-spacing: 0.06em;
+  color: var(--ch-cyan); text-align: center;
+}
+.pair-fp-note { margin-top: 0.8rem; font-size: 0.82rem; color: var(--t2); line-height: 1.6; }
+.pair-consequence { font-size: 0.86rem; color: var(--t2); line-height: 1.6; }
+.unpair-confirm-note { font-size: 0.85rem; color: var(--t2); margin: 0.9rem 0 0.5rem; }
+.ld-actions { display: flex; gap: 0.7rem; justify-content: flex-end; margin-top: 1.2rem; }
+
+/* Destructive. Fills carry --bg ink, per the contrast rule. */
+.btn-danger {
+  background: transparent; color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+}
+.btn-danger:hover:not(:disabled) { background: var(--red); color: var(--bg); }
+.btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* An empty topology is a placeholder, not a blank box: a blank box reads as
+   broken. It holds the figure's height so nothing resizes when the first node
+   arrives. */
+.topo-empty {
+  min-height: 258px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0.5rem; text-align: center;
+  padding: 2rem 1.5rem;
+}
+.topo-empty-mark { color: var(--border-strong); }
+.topo-empty p { font-size: 0.9rem; color: var(--t2); max-width: 42ch; }
+.topo-empty-sub { font-size: 0.82rem; color: var(--t3); }
+
+/* ---------------------------------------------------------------- launch --
+   The cluster-launch flow. Laid out as one column of steps rather than a
+   wizard with hidden panes: every step's outcome stays on screen, because the
+   operator's decision to start a cluster is made from the preview and the
+   reservations together, not from whichever one is currently visible. */
+
+.lc { margin-top: 2.5rem; display: flex; flex-direction: column; gap: 1.5rem; }
+.lc-offline { margin-top: 2rem; color: var(--t3); font-size: 0.92rem; }
+
+.lc-pick { display: flex; flex-direction: column; gap: 0.5rem; }
+.lc-field { display: flex; flex-direction: column; gap: 0.45rem; max-width: 640px; }
+.lc-field > span {
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--t3);
+}
+.lc-field select {
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 0.7rem 0.85rem; font: inherit; font-size: 0.92rem; color: var(--t1);
+}
+.lc-field select:disabled { opacity: 0.55; }
+.lc-model { font-size: 0.86rem; color: var(--t3); }
+.lc-model strong { color: var(--t2); font-family: var(--font-mono); font-weight: 600; }
+
+.lc-nodes {
+  border: 1px solid var(--border); border-radius: 16px; padding: 1.1rem 1.25rem 1.25rem;
+  display: grid; gap: 0.6rem; background: var(--card);
+}
+.lc-nodes:disabled { opacity: 0.6; }
+.lc-nodes legend {
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--t3); padding: 0 0.4rem;
+}
+.lc-empty { font-size: 0.88rem; color: var(--t3); }
+
+.lc-node {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 0.9rem;
+  background: var(--bg2);
+}
+.lc-node-on { border-color: var(--accent); }
+.lc-node-pick { display: flex; align-items: baseline; gap: 0.6rem; cursor: pointer; min-width: 0; }
+.lc-node-name { font-weight: 650; color: var(--t1); font-size: 0.94rem; }
+.lc-node-sub { font-size: 0.76rem; color: var(--t3); font-family: var(--font-mono); }
+.lc-head { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--t2); cursor: pointer; }
+/* Dimmed rather than hidden: a control that appears when a box is ticked makes
+   the row jump, and the operator loses the line they were reading. */
+.lc-head-off { opacity: 0.35; cursor: default; }
+
+.lc-actions { display: flex; flex-direction: column; gap: 0.6rem; }
+.lc-blocker, .lc-wait, .lc-note { font-size: 0.87rem; color: var(--t3); line-height: 1.6; }
+.lc-note { max-width: 68ch; }
+.lc-error {
+  font-size: 0.9rem; line-height: 1.6; color: var(--t1);
+  border: 1px solid var(--red); border-left-width: 3px; border-radius: 10px;
+  padding: 0.8rem 1rem; background: var(--card);
+}
+.lc-warn {
+  font-size: 0.88rem; line-height: 1.6; color: var(--t1);
+  border: 1px solid var(--amber); border-left-width: 3px; border-radius: 10px;
+  padding: 0.8rem 1rem; background: var(--card);
+}
+
+.lc-preview, .lc-prepared, .lc-running { display: flex; flex-direction: column; gap: 0.9rem; }
+.lc-preview h3, .lc-prepared h3, .lc-running h3 {
+  font-size: 0.95rem; font-weight: 750; letter-spacing: -0.01em; color: var(--t1);
+}
+
+.lc-rank {
+  border: 1px solid var(--border); border-radius: 14px; background: var(--card);
+  padding: 0.9rem 1rem; position: relative;
+}
+.lc-rank header { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.lc-rank-no {
+  font-family: var(--font-mono); font-size: 0.72rem; color: var(--t3);
+  border: 1px solid var(--border); border-radius: 5px; padding: 0.1rem 0.4rem;
+}
+.lc-tag { font-size: 0.74rem; color: var(--accent); }
+/* The command is the one thing here that must never be reflowed or truncated:
+   an operator copies it, and a wrapped shell line is a broken shell line. */
+.lc-rank pre {
+  margin-top: 0.7rem; overflow-x: auto; font-family: var(--font-mono);
+  font-size: 0.76rem; line-height: 1.7; color: var(--t2);
+  background: var(--bg2); border-radius: 9px; padding: 0.7rem 0.85rem;
+}
+.lc-copy {
+  position: absolute; top: 0.8rem; right: 0.85rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.2rem 0.55rem; font-size: 0.72rem; font-weight: 600; color: var(--t3); cursor: pointer;
+}
+.lc-copy:hover { color: var(--t1); border-color: var(--border-strong); }
+
+.lc-prepared ul, .lc-running ul { display: flex; flex-direction: column; gap: 0.5rem; }
+.lc-prepared li, .lc-running li {
+  display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 11px; padding: 0.6rem 0.85rem;
+  background: var(--card); font-size: 0.87rem;
+}
+.lc-prepared li span, .lc-running li span { color: var(--t3); font-size: 0.8rem; }
+.lc-refused { border-color: var(--red); }
+.lc-ok { color: var(--green) !important; font-weight: 650; }
+.lc-no { color: var(--red) !important; }
+.lc-running code { font-family: var(--font-mono); font-size: 0.76rem; color: var(--t3); }
+.lc-running a { font-family: var(--font-mono); font-size: 0.78rem; color: var(--accent); }
+
+.lc-commit { display: flex; gap: 0.7rem; flex-wrap: wrap; }
+
+@media (max-width: 560px) {
+  .lc-node { align-items: flex-start; flex-direction: column; gap: 0.5rem; }
+}
+
+/* Settings editor. Tabs rather than one long list, because the settings that
+   matter for a launch are grouped by what they affect, and an operator looking
+   for KV dtype should not scroll past twenty server flags to find it. */
+
+.lc-settings { border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
+.lc-disclose {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: none; border: 0; padding: 0.9rem 1.1rem; cursor: pointer;
+  font: inherit; font-size: 0.9rem; font-weight: 650; color: var(--t1);
+}
+.lc-changed { font-size: 0.78rem; font-weight: 500; color: var(--t3); }
+
+.se { padding: 0 1.1rem 1.2rem; border-top: 1px solid var(--border); }
+.se-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap; padding: 0.9rem 0 0.6rem;
+}
+.se-tabs { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.se-tab {
+  background: none; border: 1px solid transparent; border-radius: 7px;
+  padding: 0.3rem 0.6rem; font: inherit; font-size: 0.8rem; color: var(--t3); cursor: pointer;
+}
+.se-tab-on { color: var(--t1); border-color: var(--border-strong); background: var(--bg2); }
+.se-adv { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--t3); cursor: pointer; }
+.se-count { font-size: 0.8rem; color: var(--t3); padding-bottom: 0.6rem; }
+.se-empty { font-size: 0.85rem; color: var(--t3); padding: 0.6rem 0; }
+
+.se-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 0.5rem 1.25rem; align-items: start;
+  padding: 0.7rem 0; border-top: 1px solid var(--border);
+}
+/* A changed setting is marked on the row, not only in the count: an operator
+   scanning for what they altered should not have to remember. */
+.se-row-changed { border-left: 2px solid var(--accent); padding-left: 0.7rem; margin-left: -0.7rem; }
+.se-label label { font-size: 0.87rem; font-weight: 600; color: var(--t1); display: block; }
+.se-label code { font-family: var(--font-mono); font-size: 0.72rem; color: var(--t3); }
+.se-help { font-size: 0.78rem; color: var(--t3); line-height: 1.55; margin-top: 0.25rem; max-width: 60ch; }
+.se-input { display: inline-flex; align-items: center; gap: 0.5rem; }
+.se-input input[type='text'], .se-input select {
+  background: var(--bg2); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 0.35rem 0.55rem; font: inherit; font-size: 0.84rem; color: var(--t1);
+  font-family: var(--font-mono); max-width: 11rem;
+}
+.se-bounds, .se-note { font-size: 0.72rem; color: var(--t3); font-family: var(--font-mono); }
+.se-ro { font-family: var(--font-mono); font-size: 0.82rem; color: var(--t2); }
+.se-reset {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.15rem 0.45rem; font-size: 0.72rem; color: var(--t3); cursor: pointer;
+}
+.se-reset:hover { color: var(--t1); border-color: var(--border-strong); }
+.se-err { grid-column: 1 / -1; font-size: 0.78rem; color: var(--red); }
+.se-unknown {
+  margin-top: 0.9rem; font-size: 0.8rem; line-height: 1.6; color: var(--t2);
+  border: 1px solid var(--amber); border-left-width: 3px; border-radius: 9px; padding: 0.7rem 0.9rem;
+}
+.se-unknown code { font-family: var(--font-mono); font-size: 0.76rem; color: var(--t1); }
+
+@media (max-width: 560px) {
+  .se-row { grid-template-columns: 1fr; }
+}
+.se-fixed {
+  margin-top: 0.9rem; font-size: 0.8rem; line-height: 1.6; color: var(--t3);
+  border-top: 1px solid var(--border); padding-top: 0.8rem;
+}
+.se-fixed code { font-family: var(--font-mono); font-size: 0.76rem; color: var(--t2); }
+/* Amber, not grey: a value that reaches nothing is a real problem with the
+   launch, unlike a value that is merely not editable from here. */
+.lc-unmapped {
+  margin-top: 0.6rem; font-size: 0.78rem; line-height: 1.6; color: var(--t1);
+  border: 1px solid var(--amber); border-left-width: 3px; border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+}
+
+/* Live stats. Tiles rather than a table: an operator reads these by glancing at
+   one number, not by comparing rows. */
+.ls { border: 1px solid var(--border); border-radius: 16px; background: var(--card); padding: 1.1rem 1.2rem; }
+.ls-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.ls-head h3 { font-size: 0.95rem; font-weight: 750; color: var(--t1); }
+.ls-window { font-size: 0.74rem; color: var(--t3); font-family: var(--font-mono); }
+.ls-waiting { margin-top: 0.6rem; font-size: 0.84rem; color: var(--t3); line-height: 1.6; }
+.ls-grid {
+  margin-top: 0.9rem; display: grid; gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+}
+.ls-tile {
+  border: 1px solid var(--border); border-radius: 11px; background: var(--bg2);
+  padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0;
+}
+.ls-tile-wide { grid-column: span 2; color: var(--accent); }
+@media (max-width: 560px) { .ls-tile-wide { grid-column: span 1; } }
+.ls-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--t3); }
+.ls-value {
+  font-family: var(--font-mono); font-size: 1.15rem; font-weight: 650; color: var(--t1);
+  display: flex; align-items: baseline; gap: 0.3rem;
+}
+.ls-value em { font-style: normal; font-size: 0.7rem; font-weight: 500; color: var(--t3); }
+.ls-note { font-size: 0.7rem; color: var(--t3); }
+.ls-spark { margin-top: 0.3rem; width: 100%; height: 34px; opacity: 0.75; }
+.lc-here { display: flex; flex-direction: column; gap: 0.8rem; }
+.lc-here-head { font-size: 0.9rem; color: var(--t2); }
+.lc-here-head strong { color: var(--t1); font-family: var(--font-mono); font-size: 0.85rem; }
+
+/* Log tail. Monospace, fixed height, its own scroll — a log that grows the page
+   moves every control below it while an operator is trying to click one. */
+.lg { border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+.lg-disclose {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: none; border: 0; padding: 0.75rem 1rem; cursor: pointer;
+  font: inherit; font-size: 0.86rem; font-weight: 650; color: var(--t1);
+}
+.lg-name { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500; color: var(--t3); }
+.lg-problem, .lg-exited, .lg-empty { padding: 0 1rem 0.6rem; font-size: 0.8rem; color: var(--t3); }
+.lg-exited { color: var(--amber); }
+.lg-pane {
+  max-height: 320px; overflow: auto; padding: 0.2rem 1rem 0.8rem;
+  border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 0.73rem;
+  line-height: 1.65; color: var(--t2);
+}
+/* Never wrap: a wrapped log line is a different line, and column alignment is
+   half of what makes a stack trace readable. */
+.lg-line { white-space: pre; }
+.lg-follow {
+  margin: 0 1rem 0.8rem; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 7px; padding: 0.25rem 0.6rem; font-size: 0.74rem; color: var(--t2); cursor: pointer;
+}
+
+/* Topbar fleet pill. Present only when a local agent answered, so a visitor who
+   has never installed one sees an unchanged bar. */
+.fp {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 0.22rem 0.6rem; font-size: 0.75rem; font-weight: 600;
+  color: var(--t2); text-decoration: none; white-space: nowrap;
+}
+.fp:hover { color: var(--t1); border-color: var(--accent); }
+.fp-detail { color: var(--t3); font-weight: 500; }
+.fp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
+.fp-ok .fp-dot { background: var(--t3); }
+.fp-serving .fp-dot { background: var(--green); }
+.fp-warning .fp-dot { background: var(--amber); }
+.fp-critical .fp-dot { background: var(--red); }
+/* The dot pulses only while something is actually serving. A permanently
+   animating element in a topbar is noise the eye learns to filter out, and then
+   it cannot carry meaning when it matters. */
+@media (prefers-reduced-motion: no-preference) {
+  .fp-serving .fp-dot { animation: fp-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes fp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Control-only, shown in the model-card launch modal. Reuses .fl-co-chip so
+   the mode looks the same wherever it is reported. */
+.lm-co-lead { font-size: 0.95rem; font-weight: 650; color: var(--t1); line-height: 1.6; }
+.lm-co-why { margin-top: 0.7rem; font-size: 0.88rem; color: var(--t2); line-height: 1.65; }
+.lm-co-go { display: inline-flex; align-items: center; text-decoration: none; }
+
+/* Placement chooser, in the model-card launch dialog. A list of buttons rather
+   than a select: the machines differ in ways worth showing on two lines, and a
+   collapsed control hides exactly the detail the choice turns on. */
+.ld-place-lead { font-size: 0.92rem; color: var(--t2); line-height: 1.6; }
+.ld-place { list-style: none; margin: 0.9rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+.ld-place-btn {
+  width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  padding: 0.7rem 0.9rem; display: grid; gap: 0.15rem;
+}
+.ld-place-btn:hover { border-color: var(--sx); }
+.ld-place-btn:focus-visible { outline: 2px solid var(--sx); outline-offset: 2px; }
+.ld-place-name { font-size: 0.92rem; font-weight: 650; color: var(--t1); }
+.ld-place-sub { font-family: var(--font-mono); font-size: 0.74rem; color: var(--t3); }
+.ld-place-busy { font-size: 0.74rem; color: var(--amber); }
+
+/* The join one-liner is long and carries a credential: it must be readable in
+   full, not silently clipped to something that looks copyable and is not. The
+   copy button stays put while the command wraps. */
+.ld-place-cmd { align-items: start; }
+.ld-place-cmd code {
+  /* `anywhere` rather than `break-all`: it prefers a space and only splits a
+     token when one will not fit, so `--join` does not end up straddling two
+     lines in a command someone may read before they trust it. */
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+  line-height: 1.5; min-width: 0;
+}
+
+/* Node details. The card is for scanning, this is for checking — hence the
+   full fingerprint and every interface rather than the preferred one. */
+.nd { width: min(560px, calc(100vw - 2rem)); }
+.nd-facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 0; }
+.nd-facts dt { font-size: 0.78rem; color: var(--t3); }
+.nd-facts dd { margin: 0; font-size: 0.86rem; color: var(--t1); }
+.nd-fp { font-size: 0.74rem; word-break: break-all; color: var(--t2); }
+.nd-h4 {
+  margin-top: 1.2rem; font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3);
+}
+.nd-links { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem; }
+.nd-links th {
+  text-align: left; font-weight: 650; color: var(--t3); font-size: 0.72rem;
+  padding-bottom: 0.3rem; border-bottom: 1px solid var(--border);
+}
+.nd-links td { padding: 0.34rem 0.5rem 0.34rem 0; color: var(--t2); border-bottom: 1px solid var(--border); }
+.nd-warn { color: var(--amber); }
+.nd-none { font-size: 0.85rem; color: var(--t2); margin-top: 0.5rem; }
+.nd-note { margin-top: 0.7rem; font-size: 0.8rem; color: var(--t3); line-height: 1.6; }

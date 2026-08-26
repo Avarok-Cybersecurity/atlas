@@ -1,14 +1,14 @@
 <script>
-  import { gifts } from '$lib/data.js';
+  import { announcement } from '$lib/data.js';
 </script>
 
 <div class="gift">
   <div class="gift-inner">
     <svg class="gift-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M20 7h-2.18A3 3 0 0 0 12 4.35 3 3 0 0 0 6.18 7H4a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1v6a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-6a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1zm-5-1a1 1 0 1 1-1 1 1 1 0 0 1 1-1zM9 6a1 1 0 1 1-1 1 1 1 0 0 1 1-1zm2 12H6v-5h5zm0-7H5V9h6zm7 7h-5v-5h5zm1-7h-6V9h6z"/>
+      <path d="M12 2 4 5v6.1c0 4.6 3.1 8.9 8 10.9 4.9-2 8-6.3 8-10.9V5l-8-3Zm0 2.2 6 2.2v5.7c0 3.6-2.4 7-6 8.7-3.6-1.7-6-5.1-6-8.7V6.4l6-2.2Zm-1 4.3v3h-3v2h3v3h2v-3h3v-2h-3v-3h-2Z"/>
     </svg>
-    <span class="gift-line">{gifts.line}</span>
-    <span class="gift-sub">{gifts.sub}</span>
-    <a class="gift-cta" href={gifts.ctaUrl} target="_blank" rel="noopener">{gifts.ctaText} ↗</a>
+    <span class="gift-line">{announcement.line}</span>
+    <span class="gift-sub">{announcement.sub}</span>
+    <a class="gift-cta" href={announcement.ctaUrl} target="_blank" rel="noopener">{announcement.ctaText} ↗</a>
   </div>
 </div>

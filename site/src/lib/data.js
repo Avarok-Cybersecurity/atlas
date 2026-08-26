@@ -47,30 +47,36 @@ export const nvidiaInceptionUrl = 'https://www.nvidia.com/en-us/startups/';
 // --- brand -------------------------------------------------------------------
 export const tagline = 'Pure Rust inference, tuned for the machine on your desk.';
 
-// --- commands (one flagship recipe, kept in lockstep with static/quickstart.sh)
+// --- commands (one flagship recipe, kept in lockstep with static/install.sh)
 export const flagshipRecipe = 'qwen3.6-35b-a3b-fp8-mtp';
-export const quickInstall = 'uvx sparkrun setup install';
-export const runCommand = 'curl -fsSL https://atlasinference.io/quickstart.sh | sh';
+export const quickInstall = 'cargo install atlasctl';
+export const runCommand = 'curl -fsSL https://atlasinference.io/install.sh | sh';
 export const runCommandRaw =
-  'uvx sparkrun setup install && sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp --hosts localhost';
+  'atlasctl run qwen3.6-35b-a3b-fp8-mtp';
 
 // --- hardware acknowledgment (modest banner) ---------------------------------
-export const gifts = {
-  line: 'Thank you NVIDIA and AMD.',
-  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD, and now a Strix Halo desktop from AMD too. That desktop is the box we ran our MLPerf submission on.',
-  ctaText: 'See the post',
-  ctaUrl: xUrl
+// --- announcement band (the strip above the hero) ----------------------------
+export const announcement = {
+  line: 'Atlas is partnering with Avarok Cybersecurity.',
+  sub: 'Bringing SOTA post-quantum security and lightning fast inference for local, SMB, and data center inference. The model and your data securely stay on hardware you own.',
+  ctaText: 'avarok.net',
+  ctaUrl: 'https://avarok.net'
 };
 
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
 export const nav = {
   links: [
-    { text: 'News', href: '#news' },
-    { text: 'Verified', href: '#verified' },
-    { text: 'Hardware', href: '#hardware' },
-    { text: 'Models', href: '#models' },
-    { text: 'Get running', href: '#run' },
-    { text: 'Contribute', href: '#contribute' }
+    { text: 'Verified', href: '/#verified' },
+    { text: 'News', href: '/#news' },
+    { text: 'Hardware', href: '/#hardware' },
+    { text: 'Models', href: '/#models' },
+    { text: 'Get running', href: '/#run' },
+    // `.html`, not `/control`. adapter-static writes this route to
+    // control.html, and the deploy target serves files literally: no extension
+    // guessing, and no directory index outside the document root. /control is
+    // the SPA fallback at best and a 500 at worst. If the server ever gains
+    // `try_files $uri $uri.html`, this becomes '/control'.
+    { text: 'Control', href: '/control.html' }
   ],
   menuLabel: 'Menu',
   closeLabel: 'Close menu'
@@ -108,7 +114,7 @@ export const proof = {
 // Newest first. Every card points at a primary source, no numbers before
 // MLCommons publishes. See CLAIM POLICY at the top of this file.
 export const news = {
-  label: '// 01 · news',
+  label: '// 03 · news',
   title: 'What just happened.',
   sub:
     'Three things landed this month and every card links straight to the primary source.',
@@ -146,7 +152,7 @@ export const news = {
 
 // --- star / social proof -----------------------------------------------------
 export const stars = {
-  label: '// 02 · momentum',
+  label: '// 07 · community',
   title: 'Built in the open, starred in the open.',
   sub:
     'Atlas went from one Reddit post to a whole crew of builders running it on their own Sparks. The curve below is live, regenerated from the GitHub API on every deploy.',
@@ -189,7 +195,7 @@ export const community = {
 
 // --- verified performance (the gate receipt) ---------------------------------
 export const verified = {
-  label: '// 03 · verified',
+  label: '// 02 · verified',
   title: 'Every number is a receipt.',
   sub:
     'The website is a build artifact of the repo. Models come from recipes, performance comes from committed gate enforced baselines, stamped with commit and date. If a number is not in the repo, it is not on this page.',
@@ -271,26 +277,27 @@ export const getRunning = {
   title: 'Up and running in one command.',
   sub:
     'This is the first 60 seconds. Everything after, per model recipes, EP=2, tuning, lives in the docs.',
-  inspectNote: 'Rather not pipe curl to a shell. Install sparkrun, then run the flagship recipe direct.',
+  inspectNote:
+    'Rather not pipe curl to a shell. Install atlasctl from crates.io, then run the flagship recipe direct.',
   docsCta: 'Read the deployment guide',
   quickstartHint:
-    'The script checks for sparkrun, installs it with uvx if missing, then runs the flagship Qwen3.6 recipe.'
+    'The script downloads a prebuilt atlasctl, verifies its checksum, and installs it to ~/.local/bin. No Python, no Rust toolchain. Run it with --uninstall to reverse it.'
 };
 
 // --- mission -----------------------------------------------------------------
 export const mission = {
-  label: '// 07 · mission',
   title: 'Local AI worth having, open to all.',
-  body: [
+  statement:
     'AI worth having should run on hardware you own. Prosumer machines like DGX Spark and Strix Halo are the first generation that makes that real, and we build for them first.',
-    'Pure Rust because the whole stack should be inspectable by one person, HTTP to kernel dispatch, no interpreter in the hot path. We develop on machines granted by NVIDIA and AMD. Both camps handed us silicon and we intend to continue proving to the world the raw power of these machines.',
-    'Open to all. The test fleet is the community desks. If a model matters to you, it matters to us.'
-  ]
+  // Shown small, under the statement — the reasoning behind it rather than a
+  // second full-size claim.
+  footnote:
+    'Pure Rust because the whole stack should be inspectable by one person, HTTP to kernel dispatch, no interpreter in the hot path. We develop on machines granted by NVIDIA and AMD, and the test fleet is community desks. If a model matters to you, it matters to us.'
 };
 
 // --- contribute --------------------------------------------------------------
 export const contribute = {
-  label: '// 08 · contribute',
+  label: '// 08 · build with us',
   title: 'Your machine is the test fleet.',
   sub:
     'Atlas grows from the desks it runs on. Every path below is real and linked. Contributions ship in the Community Edition under AGPLv3, and the CLA lets us re license for the Enterprise Edition.',
@@ -325,9 +332,8 @@ export const contribute = {
 
 // --- roadmap (next up + artifact-linked) -------------------------------------
 export const roadmap = {
-  label: '// 09 · next up',
-  title: 'What we are building next.',
-  sub: 'Everything real links to an issue, a PR, or the Discord where the work happens. The teasers are teasers, and we say so.',
+  rowTitle: 'What we are building next.',
+  rowSub: 'Everything real links to an issue, a PR, or the Discord where the work happens. The teasers are teasers, and we say so.',
   items: [
     {
       title: 'Trifecta, three Sparks',
@@ -372,6 +378,54 @@ export const roadmap = {
       body: 'Large MoE NVFP4 ports across EP topologies, DeepSeek and Kimi class, tracked in the open.',
       cta: 'Open issues',
       url: 'https://github.com/Avarok-Cybersecurity/atlas/issues'
+    }
+  ]
+};
+
+// --- FAQ ---------------------------------------------------------------------
+// Rendered on the page AND emitted as FAQPage structured data. Both come from
+// here, which is what keeps the markup answering the same questions the page
+// answers — marking up an answer a visitor cannot see is a search-policy
+// violation, not a shortcut.
+//
+// CLAIM POLICY applies: every answer below restates something already shown
+// elsewhere on this page or in a linked artifact. No new numbers.
+export const faq = {
+  label: '// 09 · questions',
+  title: 'The questions we actually get asked.',
+  sub: 'Short answers, each one backed by something on this page or in the repo.',
+  items: [
+    {
+      q: 'What is Atlas?',
+      a: 'An open source LLM inference engine written in pure Rust and CUDA, tuned for prosumer AI workstations rather than datacenter racks. It serves an OpenAI-compatible API from a single binary, with no Python and no PyTorch in the serving path.'
+    },
+    {
+      q: 'What hardware does Atlas run on?',
+      a: 'NVIDIA DGX Spark (GB10) is verified today, and AMD Strix Halo (gfx1151) runs the same CUDA source compiled through SCALE by Spectral Compute — one codebase, no HIP port. Both were submitted to MLPerf Inference v6.1 in the closed edge division.'
+    },
+    {
+      q: 'Is Atlas faster than vLLM on a DGX Spark?',
+      a: 'On the published concurrency ladder, yes at every rung from C=1 to C=128, by 1.012x to 1.225x against whichever vLLM configuration is faster at that concurrency. Same box, same checkpoint, same client, same prompts, greedy sampling with matched penalties. The full campaign log, including the rungs we lost on the way, is in the repo.'
+    },
+    {
+      q: 'How do I install it?',
+      a: 'One command: curl -fsSL https://atlasinference.io/install.sh | sh. It downloads a prebuilt atlasctl, verifies its checksum, and installs to ~/.local/bin. If you would rather not pipe curl to a shell, cargo install atlasctl does the same thing from source.'
+    },
+    {
+      q: 'Which models can I run?',
+      a: 'Every model on this page maps to a recipe in the atlas-recipes repository, which is the single source of truth — the site cannot list a model that has no recipe. Qwen3.6 is the flagship family, alongside Gemma, Nemotron, Mistral, MiniMax and DeepSeek.'
+    },
+    {
+      q: 'What does “verified” mean here?',
+      a: 'An image ships only after the serve matrix passes: every model boots, stays coherent under greedy determinism with no token leakage and reliable tool calls, and holds throughput within 10% of its committed baseline. A release that ships slower than its baseline fails the gate.'
+    },
+    {
+      q: 'What license is Atlas under, and can I use it commercially?',
+      a: 'The Community Edition is AGPL-3.0-only. Contributions are covered by a CLA that permits re-licensing for the Enterprise Edition. If you are running Atlas in production or need different terms, email us.'
+    },
+    {
+      q: 'Does Atlas run multi-node?',
+      a: 'Yes. EP=2 expert parallelism across two DGX Sparks is supported and shipped as recipes; those cards are marked EP=2 in the model list.'
     }
   ]
 };

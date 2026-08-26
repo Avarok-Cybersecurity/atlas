@@ -13,7 +13,9 @@
             "quant": "fp8",
             "topology": "single",
             "recipeStem": "qwen3-coder-next-fp8",
-            "command": "sparkrun run @atlas/qwen3-coder-next-fp8 --hosts localhost"
+            "recipeId": "qwen3-coder-next-fp8",
+            "runnable": true,
+            "command": "atlasctl run qwen3-coder-next-fp8"
           }
         ]
       },
@@ -27,7 +29,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3-next-80b-a3b-nvfp4",
-            "command": "sparkrun run @atlas/qwen3-next-80b-a3b-nvfp4 --hosts localhost"
+            "recipeId": "qwen3-next-80b-a3b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3-next-80b-a3b-nvfp4"
           }
         ]
       },
@@ -41,7 +45,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3-vl-30b-a3b-nvfp4",
-            "command": "sparkrun run @atlas/qwen3-vl-30b-a3b-nvfp4 --hosts localhost"
+            "recipeId": "qwen3-vl-30b-a3b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3-vl-30b-a3b-nvfp4"
           }
         ]
       },
@@ -55,7 +61,9 @@
             "quant": "none",
             "topology": "single",
             "recipeStem": "qwen3.5-0.8b-bf16-atlas",
-            "command": "sparkrun run @atlas/qwen3.5-0.8b-bf16-atlas --hosts localhost"
+            "recipeId": "qwen3.5-0.8b-bf16-atlas",
+            "runnable": true,
+            "command": "atlasctl run qwen3.5-0.8b-bf16-atlas"
           },
           {
             "displayName": "Qwen3.5 122B A10B NVFP4 EP=2",
@@ -64,7 +72,9 @@
             "quant": "nvfp4",
             "topology": "EP=2",
             "recipeStem": "qwen3.5-122b-a10b-nvfp4-ep2",
-            "command": "sparkrun run @atlas/qwen3.5-122b-a10b-nvfp4-ep2 --hosts <spark-1>,<spark-2>"
+            "recipeId": "qwen3.5-122b-a10b-nvfp4-ep2",
+            "runnable": false,
+            "command": "atlasctl run qwen3.5-122b-a10b-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
           },
           {
             "displayName": "Qwen3.5 122B A10B NVFP4 Single",
@@ -73,7 +83,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3.5-122b-a10b-nvfp4-single",
-            "command": "sparkrun run @atlas/qwen3.5-122b-a10b-nvfp4-single --hosts localhost"
+            "recipeId": "qwen3.5-122b-a10b-nvfp4-single",
+            "runnable": true,
+            "command": "atlasctl run qwen3.5-122b-a10b-nvfp4-single"
           },
           {
             "displayName": "Qwen3.5 27B Dense NVFP4",
@@ -82,7 +94,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3.5-27b-dense-nvfp4",
-            "command": "sparkrun run @atlas/qwen3.5-27b-dense-nvfp4 --hosts localhost"
+            "recipeId": "qwen3.5-27b-dense-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3.5-27b-dense-nvfp4"
           },
           {
             "displayName": "Qwen3.5 35B A3B NVFP4",
@@ -91,7 +105,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3.5-35b-a3b-nvfp4",
-            "command": "sparkrun run @atlas/qwen3.5-35b-a3b-nvfp4 --hosts localhost"
+            "recipeId": "qwen3.5-35b-a3b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3.5-35b-a3b-nvfp4"
           }
         ]
       },
@@ -105,7 +121,9 @@
             "quant": "fp8",
             "topology": "single",
             "recipeStem": "qwen3.6-27b-fp8",
-            "command": "sparkrun run @atlas/qwen3.6-27b-fp8 --hosts localhost"
+            "recipeId": "qwen3.6-27b-fp8",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-27b-fp8"
           },
           {
             "displayName": "Qwen3.6 27B FP8 MTP",
@@ -114,7 +132,9 @@
             "quant": "fp8",
             "topology": "single",
             "recipeStem": "qwen3.6-27b-fp8-mtp",
-            "command": "sparkrun run @atlas/qwen3.6-27b-fp8-mtp --hosts localhost"
+            "recipeId": "qwen3.6-27b-fp8-mtp",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-27b-fp8-mtp"
           },
           {
             "displayName": "Qwen3.6 27B NVFP4",
@@ -123,7 +143,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3.6-27b-nvfp4",
-            "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4 --hosts localhost"
+            "recipeId": "qwen3.6-27b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-27b-nvfp4"
           },
           {
             "displayName": "Qwen3.6 27B NVFP4 Prefill Record",
@@ -132,7 +154,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3.6-27b-nvfp4-prefill-record",
-            "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4-prefill-record --hosts localhost"
+            "recipeId": "qwen3.6-27b-nvfp4-prefill-record",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-27b-nvfp4-prefill-record"
           },
           {
             "displayName": "Qwen3.6 27B NVFP4 Unsloth",
@@ -141,16 +165,9 @@
             "quant": "NVFP4 (mixed precision above layer 55)",
             "topology": "single",
             "recipeStem": "qwen3.6-27b-nvfp4-unsloth",
-            "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4-unsloth --hosts localhost"
-          },
-          {
-            "displayName": "Qwen3.6 27B W55 Sweep Dev",
-            "hfId": "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf",
-            "params": "27B",
-            "quant": "w4a4",
-            "topology": "single",
-            "recipeStem": "qwen3.6-27b-w55-sweep-dev",
-            "command": "sparkrun run @atlas/qwen3.6-27b-w55-sweep-dev --hosts localhost"
+            "recipeId": "qwen3.6-27b-nvfp4-unsloth",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-27b-nvfp4-unsloth"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 Bf16head",
@@ -159,7 +176,9 @@
             "quant": "fp8",
             "topology": "single",
             "recipeStem": "qwen3.6-35b-a3b-fp8-bf16head",
-            "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-bf16head --hosts localhost"
+            "recipeId": "qwen3.6-35b-a3b-fp8-bf16head",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-35b-a3b-fp8-bf16head"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 MTP",
@@ -168,7 +187,9 @@
             "quant": "fp8",
             "topology": "single",
             "recipeStem": "qwen3.6-35b-a3b-fp8-mtp",
-            "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp --hosts localhost"
+            "recipeId": "qwen3.6-35b-a3b-fp8-mtp",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-35b-a3b-fp8-mtp"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 Nvfp4head",
@@ -177,7 +198,9 @@
             "quant": "fp8",
             "topology": "single",
             "recipeStem": "qwen3.6-35b-a3b-fp8-nvfp4head",
-            "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-nvfp4head --hosts localhost"
+            "recipeId": "qwen3.6-35b-a3b-fp8-nvfp4head",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-35b-a3b-fp8-nvfp4head"
           },
           {
             "displayName": "Qwen3.6 35B A3B NVFP4",
@@ -186,7 +209,58 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "qwen3.6-35b-a3b-nvfp4",
-            "command": "sparkrun run @atlas/qwen3.6-35b-a3b-nvfp4 --hosts localhost"
+            "recipeId": "qwen3.6-35b-a3b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3.6-35b-a3b-nvfp4"
+          }
+        ]
+      },
+      {
+        "name": "Qwen3.8",
+        "recipes": [
+          {
+            "displayName": "Qwen3.8 27B NVFP4 Latency",
+            "hfId": "unsloth/Qwen3.8-27B-NVFP4",
+            "params": "",
+            "quant": "NVFP4 (compressed-tensors, mixed precision)",
+            "topology": "single",
+            "recipeStem": "qwen3.8-27b-nvfp4-latency",
+            "recipeId": "qwen3.8-27b-nvfp4-latency",
+            "runnable": true,
+            "command": "atlasctl run qwen3.8-27b-nvfp4-latency"
+          },
+          {
+            "displayName": "Qwen3.8 27B NVFP4 Throughput",
+            "hfId": "unsloth/Qwen3.8-27B-NVFP4",
+            "params": "",
+            "quant": "NVFP4 (compressed-tensors, mixed precision)",
+            "topology": "single",
+            "recipeStem": "qwen3.8-27b-nvfp4-throughput",
+            "recipeId": "qwen3.8-27b-nvfp4-throughput",
+            "runnable": true,
+            "command": "atlasctl run qwen3.8-27b-nvfp4-throughput"
+          },
+          {
+            "displayName": "Qwen3.8 27B NVFP4 Unsloth",
+            "hfId": "unsloth/Qwen3.8-27B-NVFP4",
+            "params": "27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers)",
+            "quant": "NVFP4 (mixed precision above layer 55, FP8 linear_attn projections)",
+            "topology": "single",
+            "recipeStem": "qwen3.8-27b-nvfp4-unsloth",
+            "recipeId": "qwen3.8-27b-nvfp4-unsloth",
+            "runnable": true,
+            "command": "atlasctl run qwen3.8-27b-nvfp4-unsloth"
+          },
+          {
+            "displayName": "Qwen3.8 27B NVFP4 Unsloth Bfcl",
+            "hfId": "unsloth/Qwen3.8-27B-NVFP4",
+            "params": "27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers)",
+            "quant": "NVFP4 (mixed precision above layer 55)",
+            "topology": "single",
+            "recipeStem": "qwen3.8-27b-nvfp4-unsloth-bfcl",
+            "recipeId": "qwen3.8-27b-nvfp4-unsloth-bfcl",
+            "runnable": true,
+            "command": "atlasctl run qwen3.8-27b-nvfp4-unsloth-bfcl"
           }
         ]
       }
@@ -206,7 +280,9 @@
             "quant": "",
             "topology": "single",
             "recipeStem": "diffusion-gemma-bf16",
-            "command": "sparkrun run @atlas/diffusion-gemma-bf16 --hosts localhost"
+            "recipeId": "diffusion-gemma-bf16",
+            "runnable": true,
+            "command": "atlasctl run diffusion-gemma-bf16"
           },
           {
             "displayName": "Diffusion Gemma FP8 Dynamic",
@@ -215,7 +291,9 @@
             "quant": "",
             "topology": "single",
             "recipeStem": "diffusion-gemma-fp8-dynamic",
-            "command": "sparkrun run @atlas/diffusion-gemma-fp8-dynamic --hosts localhost"
+            "recipeId": "diffusion-gemma-fp8-dynamic",
+            "runnable": true,
+            "command": "atlasctl run diffusion-gemma-fp8-dynamic"
           }
         ]
       },
@@ -229,7 +307,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "gemma-4-26b-a4b-nvfp4",
-            "command": "sparkrun run @atlas/gemma-4-26b-a4b-nvfp4 --hosts localhost"
+            "recipeId": "gemma-4-26b-a4b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run gemma-4-26b-a4b-nvfp4"
           },
           {
             "displayName": "Gemma 4 31B NVFP4",
@@ -238,7 +318,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "gemma-4-31b-nvfp4",
-            "command": "sparkrun run @atlas/gemma-4-31b-nvfp4 --hosts localhost"
+            "recipeId": "gemma-4-31b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run gemma-4-31b-nvfp4"
           }
         ]
       }
@@ -258,7 +340,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "nemotron-3-nano-30b-a3b-nvfp4",
-            "command": "sparkrun run @atlas/nemotron-3-nano-30b-a3b-nvfp4 --hosts localhost"
+            "recipeId": "nemotron-3-nano-30b-a3b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run nemotron-3-nano-30b-a3b-nvfp4"
           }
         ]
       },
@@ -272,7 +356,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "nemotron-3-super-120b-a12b-nvfp4",
-            "command": "sparkrun run @atlas/nemotron-3-super-120b-a12b-nvfp4 --hosts localhost"
+            "recipeId": "nemotron-3-super-120b-a12b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run nemotron-3-super-120b-a12b-nvfp4"
           }
         ]
       }
@@ -292,7 +378,9 @@
             "quant": "nvfp4",
             "topology": "single",
             "recipeStem": "mistral-small-4-119b-nvfp4",
-            "command": "sparkrun run @atlas/mistral-small-4-119b-nvfp4 --hosts localhost"
+            "recipeId": "mistral-small-4-119b-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run mistral-small-4-119b-nvfp4"
           }
         ]
       }
@@ -312,7 +400,9 @@
             "quant": "nvfp4",
             "topology": "EP=2",
             "recipeStem": "minimax-m2.7-nvfp4-ep2",
-            "command": "sparkrun run @atlas/minimax-m2.7-nvfp4-ep2 --hosts <spark-1>,<spark-2>"
+            "recipeId": "minimax-m2.7-nvfp4-ep2",
+            "runnable": false,
+            "command": "atlasctl run minimax-m2.7-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
           }
         ]
       }
@@ -332,7 +422,9 @@
             "quant": "nvfp4",
             "topology": "EP=2",
             "recipeStem": "deepseek-v4-flash-nvfp4-ep2",
-            "command": "sparkrun run @atlas/deepseek-v4-flash-nvfp4-ep2 --hosts <spark-1>,<spark-2>"
+            "recipeId": "deepseek-v4-flash-nvfp4-ep2",
+            "runnable": false,
+            "command": "atlasctl run deepseek-v4-flash-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
           }
         ]
       }
