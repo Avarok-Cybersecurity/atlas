@@ -59,7 +59,7 @@ jobs:
           # `recipe list` exercises the vendored corpus, so an installer that
           # shipped a binary without its recipes fails here rather than in a
           # user's terminal.
-          count=$(atlasctl recipe list | tail -n +2 | grep -c . || true)
+          count=$(atlasctl recipe list | tail -n +2 | grep -c . || echo 0)
           echo "recipes: $count"
           [ "$count" -ge 10 ] || {
             echo "::error::atlasctl shipped only $count recipes; the vendored corpus is missing or truncated"
@@ -99,6 +99,9 @@ jobs:
           }
 
           check /         'Atlas, pure Rust inference'
+          # Both spellings: the route is emitted as control/index.html, and a
+          # server that does not redirect /control to /control/ would quietly
+          # serve the SPA fallback again.
           check /control  'Control plane'
           check /control/ 'Control plane'
 
