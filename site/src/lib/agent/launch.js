@@ -21,6 +21,9 @@
 /** Phases in which the selection may still be edited. */
 const EDITABLE = new Set(['choosing', 'previewed', 'failed']);
 
+/** Phases in which the fleet is being asked something and must not be disturbed. */
+export const BUSY = ['previewing', 'preparing', 'committing', 'stopping'];
+
 /**
  * A fresh flow.
  *
@@ -304,6 +307,25 @@ export function failed(state, reason) {
     answers: [],
     reason: describe(reason),
   };
+}
+
+/** Enter the stop wait. */
+export function beginStop(state) {
+  return { ...state, phase: 'stopping', reason: null };
+}
+
+/**
+ * Record that every rank stopped.
+ *
+ * Back to 'previewed' rather than 'choosing': the operator most often stops a
+ * cluster to change one setting and start it again, and throwing the plan away
+ * would make them rebuild it from nothing.
+ *
+ * @param {object} state
+ * @returns {object}
+ */
+export function stopped(state) {
+  return { ...state, phase: 'previewed', started: [], epoch: null, answers: [] };
 }
 
 /** Release a prepare without starting anything. */

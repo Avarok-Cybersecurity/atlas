@@ -23,7 +23,7 @@
   const recipe = $derived(recipes.find((r) => r.id === flow.recipe) ?? null);
   const candidates = $derived(fleet.launchable);
   const blocker = $derived(L.blocker(flow, recipe, candidates.length));
-  const busy = $derived(['previewing', 'preparing', 'committing'].includes(flow.phase));
+  const busy = $derived(L.BUSY.includes(flow.phase));
   const held = $derived(flow.epoch != null && flow.phase === 'prepared');
 
   function nameOf(id) {
@@ -55,6 +55,8 @@
     run(L.beginPrepare, () => fleet.agent.prepareCluster(flow.recipe, flow.selected, flow.head, {}), L.prepared);
 
   const doCommit = () => run(L.beginCommit, () => fleet.agent.commitCluster(flow.epoch), L.started);
+
+  const doStop = () => run(L.beginStop, () => fleet.agent.stopCluster(), L.stopped);
 
   async function doAbandon() {
     const epoch = flow.epoch;
@@ -141,6 +143,7 @@
     {#if flow.phase === 'previewing'}<p class="lc-wait">Asking each machine what it would run…</p>{/if}
     {#if flow.phase === 'preparing'}<p class="lc-wait">Asking each machine to reserve…</p>{/if}
     {#if flow.phase === 'committing'}<p class="lc-wait">Starting every rank…</p>{/if}
+    {#if flow.phase === 'stopping'}<p class="lc-wait">Stopping every rank…</p>{/if}
   </div>
 
   {#if flow.reason}
@@ -226,7 +229,14 @@
           </li>
         {/each}
       </ul>
-      <button class="btn" onclick={() => (flow = L.initial())}>Plan another launch</button>
+      <div class="lc-commit">
+        <button class="btn btn-primary" onclick={doStop} disabled={busy}>Stop the cluster</button>
+        <button class="btn" onclick={() => (flow = L.initial())} disabled={busy}>Plan another launch</button>
+      </div>
+      <p class="lc-note">
+        Stopping reaches every machine, not just this one. Leaving a worker running would hold its GPU with
+        nothing to serve.
+      </p>
     </div>
   {/if}
 </div>

@@ -196,6 +196,11 @@ export class AgentClient {
   }
 
   /** Abandon a prepare, releasing every reservation. */
+  /** Stop every rank of the cluster this agent started. */
+  stopCluster() {
+    return this.#request({ type: 'stop_cluster' });
+  }
+
   abortCluster(epoch) {
     return this.#request({ type: 'abort_cluster', epoch });
   }

@@ -251,3 +251,58 @@ describe('phases in flight are not editable', () => {
     }
   });
 });
+
+describe('stopping a running cluster', () => {
+  function running() {
+    let s = L.previewed(chosen(TWO, ['a', 'b']), {
+      ranks: [
+        { node: 'a', rank: 0, command: 'x' },
+        { node: 'b', rank: 1, command: 'y' },
+      ],
+    });
+    s = L.prepared(s, {
+      epoch: 'e1',
+      ranks: [
+        { node: 'a', rank: 0, prepared: true },
+        { node: 'b', rank: 1, prepared: true },
+      ],
+      may_commit: true,
+    });
+    return L.started(s, {
+      ranks: [
+        { node: 'a', rank: 0, container: 'c0', endpoint: 'http://10.0.0.1:8888' },
+        { node: 'b', rank: 1, container: 'c1', endpoint: null },
+      ],
+    });
+  }
+
+  test('a running cluster is not editable', () => {
+    const s = running();
+    expect(s.phase).toBe('running');
+    expect(L.toggleNode(s, 'c', TWO)).toBe(s);
+  });
+
+  // Most often an operator stops a cluster to change one setting and start it
+  // again; throwing the plan away would make them rebuild it from nothing.
+  test('stopping keeps the plan and drops the containers', () => {
+    const s = L.stopped(running());
+    expect(s.phase).toBe('previewed');
+    expect(s.started).toEqual([]);
+    expect(s.epoch).toBeNull();
+    expect(s.ranks).toHaveLength(2);
+    expect(L.setHead(s, 'b').head).toBe('b');
+  });
+
+  test('a failed stop leaves the containers on screen to try again', () => {
+    const s = L.failed(running(), 'the container runtime is not answering');
+    expect(s.started).toHaveLength(2);
+    expect(s.reason).toContain('not answering');
+  });
+
+  test('BUSY names every phase in which the fleet is mid-question', () => {
+    expect(L.BUSY).toContain('stopping');
+    for (const phase of L.BUSY) {
+      expect(L.toggleNode({ ...running(), phase }, 'c', TWO).phase).toBe(phase);
+    }
+  });
+});
