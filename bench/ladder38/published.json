@@ -55,7 +55,7 @@
         "64": "l38_r11_c64.json",
         "128": "l38_r11_c128.json"
       },
-      "source_note": "Round 11 throughout. C=2 is round 8 on the identical configuration -- round 11 re-measured that rung at 40.42, and we publish the lower, older number rather than the better one."
+      "source_note": "Round 11 throughout, except C=2. C=2 is the 2026-08-18 hardening run (c2_atlas_dgx2_20260818.json), not round 8: the certified table originally carried round 8's 38.95 there, which won by 1.004x -- a margin inside either engine's run-to-run spread. Both legs were re-measured back to back on dgx2 on 2026-08-18 (Atlas 15:05, vLLM+MTP 15:20) and that PAIR replaced the earlier pair, which is why the Atlas number rose to 41.02 while the paired vLLM number fell to 37.11 and the margin moved to 1.105x with non-overlapping distributions. A round-11 C=2 exists at 40.42 (l38_r11_c2.json) but has no same-day vLLM leg, so it is not publishable as a pair. See RESULTS.md, C=2 HARDENED."
     },
     {
       "id": "vllm-mtp",

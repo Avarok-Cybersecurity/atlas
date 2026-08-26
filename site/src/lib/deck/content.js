@@ -135,7 +135,13 @@ export const audit = [
   {
     state: 'clear',
     risk: 'Best-of instead of representative',
-    answer: 'Where a rung was re-measured higher, the older, lower number is published. C=2 is the documented case.'
+    // C=8 is the case that actually answers this, and C=2 is not: C=2's
+    // published pair IS the better Atlas number (41.02, over round 11's 40.42)
+    // — defensible because both legs were re-measured back to back that day and
+    // the pair replaced the pair, but it is not an example of declining a
+    // better number. C=8 is: re-measured at a HIGHER ratio and the lower one
+    // still stands.
+    answer: `Re-measuring C=8 on a later build gave 1.013×; the certified 1.012× is what is published. Both engines came out ~2.2% below their certified absolutes in that run while the ratio held, which is why every rung is quoted as a same-day A/B rather than against a stored number.`
   },
   {
     state: 'open',
