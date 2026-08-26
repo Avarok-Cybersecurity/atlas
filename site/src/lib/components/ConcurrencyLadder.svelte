@@ -16,7 +16,7 @@
   // and a container (the Verified entry). Default is the standalone section the
   // benchmark dashboard mounts.
   //
-  // `compact`: chart and table only. The slide deck at /due-diligence gives the
+  // `compact`: chart and table only. The slide deck at /diligence gives the
   // claim its own headline and spends the rest of the slide on the evidence, so
   // it needs the instrument without the surrounding prose or the provenance
   // disclosure — which it reaches on its own slides instead.
