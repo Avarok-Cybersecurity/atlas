@@ -1,0 +1,117 @@
+name: Install canary
+
+# What CI cannot see.
+#
+# Everything else here tests the artifact. This tests the *deployment*: the URL
+# a user is told to curl, the release the installer resolves, and the pages the
+# site links to. Those live on a web server and in GitHub Releases, and both can
+# break while every check in this repository stays green.
+#
+# That is not hypothetical. `https://atlasinference.io/control` served the
+# homepage — same 200, wrong page — because the web server does not try the
+# `.html` extension. Nothing in the build could tell, and nothing did, until
+# somebody opened the link.
+#
+# It runs on aarch64 because that is what a DGX Spark is; an installer that
+# resolves the wrong asset for the only architecture customers run is the
+# failure worth catching.
+
+# Deliberately **not** run on pull_request. This checks what is deployed, and a
+# pull request's changes are by definition not deployed yet — so gating a PR on
+# it would fail every PR that fixes production, which is precisely backwards. It
+# is a smoke alarm, not a spell-checker.
+on:
+  schedule:
+    # 06:20 UTC daily, offset off the hour so it does not queue behind the
+    # crowd of midnight crons.
+    - cron: '20 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: production one-liner (aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - name: Install atlasctl the way the website tells people to
+        run: |
+          set -euo pipefail
+          # A private prefix: the canary must prove the installer works, not
+          # inherit whatever a runner image happens to have on PATH.
+          prefix="$RUNNER_TEMP/atlasctl-bin"
+          mkdir -p "$prefix"
+          ATLASCTL_INSTALL_DIR="$prefix" \
+            curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
+              https://atlasinference.io/install.sh | sh
+          echo "$prefix" >> "$GITHUB_PATH"
+
+      - name: It runs, and it knows its recipes
+        run: |
+          set -euo pipefail
+          atlasctl --version
+          # `recipe list` exercises the vendored corpus, so an installer that
+          # shipped a binary without its recipes fails here rather than in a
+          # user's terminal.
+          count=$(atlasctl recipe list | tail -n +2 | grep -c . || true)
+          echo "recipes: $count"
+          [ "$count" -ge 10 ] || {
+            echo "::error::atlasctl shipped only $count recipes; the vendored corpus is missing or truncated"
+            exit 1
+          }
+
+  pages:
+    name: the pages the site links to
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every advertised URL serves the page it claims
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # A URL is only correct if it serves the *right* page. Status alone
+          # cannot tell: the SPA fallback answers 200 with the homepage, which
+          # is exactly how /control broke.
+          check() {
+            url="https://atlasinference.io$1"
+            want="$2"
+            body=$(curl --fail --silent --show-error --location \
+                     --retry 3 --retry-delay 5 "$url") || {
+              echo "::error::$url did not respond"
+              fail=1
+              return
+            }
+            title=$(printf '%s' "$body" | grep -o '<title>[^<]*</title>' | head -1)
+            case "$title" in
+              *"$want"*) echo "ok   $1 -> $title" ;;
+              *)
+                echo "::error::$url served \"$title\", expected a page titled like \"$want\""
+                fail=1
+                ;;
+            esac
+          }
+
+          check /         'Atlas, pure Rust inference'
+          check /control  'Control plane'
+          check /control/ 'Control plane'
+
+          # The one-liner the launch dialog prints. If this is not a shell
+          # script, every install instruction on the site is wrong.
+          head=$(curl --fail --silent --show-error --location \
+                   --retry 3 --retry-delay 5 https://atlasinference.io/install.sh | head -1)
+          case "$head" in
+            '#!'*) echo "ok   /install.sh -> $head" ;;
+            *)
+              echo "::error::/install.sh does not start with a shebang; it served: $head"
+              fail=1
+              ;;
+          esac
+
+          exit "$fail"
