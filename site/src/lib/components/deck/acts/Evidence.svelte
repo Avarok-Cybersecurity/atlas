@@ -102,11 +102,14 @@
         than that is a threshold change wearing a measurement-noise costume.
       </p>
       <p class="lead">
-        A record is voided by <em>content</em>, not ancestry: any diff touching
+        A record is voided by <em>content</em>, not ancestry. Eight paths invalidate one:
         <code class="mono">crates/</code>, <code class="mono">kernels/</code>,
-        <code class="mono">Cargo.*</code>, <code class="mono">vendor/</code> or the toolchain pin
-        invalidates it. A dirty tree fails, and an entry declaring no thresholds fails rather than
-        passes.
+        <code class="mono">Cargo.toml</code>, <code class="mono">Cargo.lock</code>,
+        <code class="mono">vendor/</code>, <code class="mono">3rdparty_patches/</code>,
+        <code class="mono">rust-toolchain.toml</code> — and <code class="mono">jinja-templates/</code>,
+        which is runtime input rather than build input: the server loads one over the checkpoint's own
+        chat template, so editing it changes the bytes every prompt renders to. A dirty tree fails, and
+        an entry declaring no thresholds fails rather than passes.
       </p>
     </div>
     <div class="at" style="--n: 2">
@@ -177,7 +180,7 @@
     <article class="at" style="--n: 1">
       <h3>Structure</h3>
       <ul>
-        <li>500-LoC cap per source file, enforced by <code class="mono">file-size-cap.yml</code></li>
+        <li>500-LoC cap per Rust source file, enforced by <code class="mono">file-size-cap.yml</code></li>
         <li>SSOT — every datum has one authoritative source and the rest derive</li>
         <li>No implicit defaults in production paths; fail fast instead</li>
       </ul>

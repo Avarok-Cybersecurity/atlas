@@ -5,7 +5,7 @@
   import Slide from '../Slide.svelte';
   import Chevrons from '../Chevrons.svelte';
   import Kv from '../Kv.svelte';
-  import { claim, stamp } from '$lib/deck/content.js';
+  import { claim, fragile, stamp } from '$lib/deck/content.js';
 </script>
 
 <Slide act="violet" wide>
@@ -93,9 +93,9 @@
     <aside class="warn at" style="--n: 4">
       <p class="warn-h mono">Fragile rungs, named</p>
       <p>
-        Three rungs are won by margins inside plausible run-to-run drift — C=8, C=16 and C=32 sit
-        between 1.007× and 1.03×. We flag them rather than rounding them into the headline, and
-        they are the rungs we re-measure first when anything changes.
+        {fragile.count} rungs are won by margins inside plausible run-to-run drift — {fragile.rungs}
+        sit between {fragile.min} and {fragile.max}. We flag them rather than rounding them into the
+        headline, and they are the rungs we re-measure first when anything changes.
       </p>
     </aside>
   </div>
