@@ -135,12 +135,17 @@
               <span class="fl-co-chip">Control only</span>
               This machine drives the fleet; it does not run models itself.
             </p>
+            <!-- The agent's own reason is on the card above; repeating it
+                 here verbatim read as a stutter. This says what it means. -->
             <p class="fl-co-why">
-              {fleet.controlOnlyReason ||
-                'The agent here reports it cannot run models.'}
-              That is a supported way to work — a laptop driving headless
-              machines — and everything on this page still applies to
-              {remoteCount === 0 ? 'the machines you pair' : 'the machines below'}.
+              {#if remoteCount === 0}
+                Pair a machine that can run models and everything on this page —
+                topology, launching, alerts — applies to it.
+              {:else}
+                Everything on this page — topology, launching, alerts — applies
+                to the {remoteCount === 1 ? 'machine' : `${remoteCount} machines`}
+                you have paired.
+              {/if}
             </p>
             {#if remoteCount === 0}
               <p class="fl-co-next">
