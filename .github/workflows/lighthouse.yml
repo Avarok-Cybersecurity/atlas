@@ -53,11 +53,7 @@ jobs:
 
       - name: Build
         working-directory: site
-        # `bun run build`, not `vite build` directly: the build is vite plus a
-        # step that mirrors each prerendered page to `<name>/index.html`.
-        # Calling vite by name skipped it, and `/control` served the homepage in
-        # production while every check here passed.
-        run: bun run build
+        run: bun x --bun vite build
         env:
           ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
           ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines

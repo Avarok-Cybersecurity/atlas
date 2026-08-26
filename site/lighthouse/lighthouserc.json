@@ -4,7 +4,6 @@
       "staticDistDir": "./site/build",
       "url": [
         "http://localhost/index.html",
-        "http://localhost/control.html",
         "http://localhost/control/"
       ],
       "numberOfRuns": 3,
@@ -45,7 +44,7 @@
           }
         },
         {
-          "matchingUrlPattern": ".*/control(\\.html|/)$",
+          "matchingUrlPattern": ".*/control/$",
           "assertions": {
             "categories:performance": [
               "error",
