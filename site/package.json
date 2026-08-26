@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "generate": "node scripts/gen-models.mjs && node scripts/gen-benchmarks.mjs && node scripts/gen-gates.mjs && node scripts/gen-ladder.mjs && node scripts/gen-stars.mjs",
     "test:e2e": "bun x --bun playwright test",
-    "test:e2e:live": "LIVE=1 bun x --bun playwright test --grep @live"
+    "test:e2e:live": "LIVE=1 bun x --bun playwright test --grep @live",
+    "test:unit": "bun test src/lib"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

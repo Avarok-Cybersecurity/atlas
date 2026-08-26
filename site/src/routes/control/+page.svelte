@@ -15,6 +15,7 @@
   import Footer from '$lib/components/Footer.svelte';
   import SectionHead from '$lib/components/SectionHead.svelte';
   import NodeCard from '$lib/components/control/NodeCard.svelte';
+  import ClusterLaunch from '$lib/components/control/ClusterLaunch.svelte';
   import TopologyMap from '$lib/components/control/TopologyMap.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
@@ -232,10 +233,26 @@
     </div>
   </section>
 
-  <section id="alerts" class="sx-cyan">
+  <section id="launch" class="sx-cyan">
     <div class="container">
       <SectionHead
-        label="// 03 · alerts"
+        label="// 03 · launch"
+        title="Run one model across them."
+        sub="Two phases, because one cannot fail cleanly. Every machine checks it can run this and holds its place; nothing starts until all of them have agreed. If one refuses, the reservations the others took are released — so a cluster is either whole or absent, never a half that hangs waiting on a rendezvous."
+      />
+
+      {#if fleet.mode === 'live'}
+        <ClusterLaunch {fleet} />
+      {:else}
+        <p class="lc-offline">Connect an agent to launch anything.</p>
+      {/if}
+    </div>
+  </section>
+
+  <section id="alerts" class="section-alt sx-cyan">
+    <div class="container">
+      <SectionHead
+        label="// 04 · alerts"
         title="What needs looking at."
         sub="Idle machines matter as much as busy ones. A clamped clock, a failing fan or a full cache filesystem is something to know before a launch, not after a benchmark comes back wrong."
       />

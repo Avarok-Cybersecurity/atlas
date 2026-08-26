@@ -287,3 +287,114 @@
 .topo-empty-mark { color: var(--border-strong); }
 .topo-empty p { font-size: 0.9rem; color: var(--t2); max-width: 42ch; }
 .topo-empty-sub { font-size: 0.82rem; color: var(--t3); }
+
+/* ---------------------------------------------------------------- launch --
+   The cluster-launch flow. Laid out as one column of steps rather than a
+   wizard with hidden panes: every step's outcome stays on screen, because the
+   operator's decision to start a cluster is made from the preview and the
+   reservations together, not from whichever one is currently visible. */
+
+.lc { margin-top: 2.5rem; display: flex; flex-direction: column; gap: 1.5rem; }
+.lc-offline { margin-top: 2rem; color: var(--t3); font-size: 0.92rem; }
+
+.lc-pick { display: flex; flex-direction: column; gap: 0.5rem; }
+.lc-field { display: flex; flex-direction: column; gap: 0.45rem; max-width: 640px; }
+.lc-field > span {
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--t3);
+}
+.lc-field select {
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 0.7rem 0.85rem; font: inherit; font-size: 0.92rem; color: var(--t1);
+}
+.lc-field select:disabled { opacity: 0.55; }
+.lc-model { font-size: 0.86rem; color: var(--t3); }
+.lc-model strong { color: var(--t2); font-family: var(--font-mono); font-weight: 600; }
+
+.lc-nodes {
+  border: 1px solid var(--border); border-radius: 16px; padding: 1.1rem 1.25rem 1.25rem;
+  display: grid; gap: 0.6rem; background: var(--card);
+}
+.lc-nodes:disabled { opacity: 0.6; }
+.lc-nodes legend {
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--t3); padding: 0 0.4rem;
+}
+.lc-empty { font-size: 0.88rem; color: var(--t3); }
+
+.lc-node {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 0.9rem;
+  background: var(--bg2);
+}
+.lc-node-on { border-color: var(--accent); }
+.lc-node-pick { display: flex; align-items: baseline; gap: 0.6rem; cursor: pointer; min-width: 0; }
+.lc-node-name { font-weight: 650; color: var(--t1); font-size: 0.94rem; }
+.lc-node-sub { font-size: 0.76rem; color: var(--t3); font-family: var(--font-mono); }
+.lc-head { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--t2); cursor: pointer; }
+/* Dimmed rather than hidden: a control that appears when a box is ticked makes
+   the row jump, and the operator loses the line they were reading. */
+.lc-head-off { opacity: 0.35; cursor: default; }
+
+.lc-actions { display: flex; flex-direction: column; gap: 0.6rem; }
+.lc-blocker, .lc-wait, .lc-note { font-size: 0.87rem; color: var(--t3); line-height: 1.6; }
+.lc-note { max-width: 68ch; }
+.lc-error {
+  font-size: 0.9rem; line-height: 1.6; color: var(--t1);
+  border: 1px solid var(--red); border-left-width: 3px; border-radius: 10px;
+  padding: 0.8rem 1rem; background: var(--card);
+}
+.lc-warn {
+  font-size: 0.88rem; line-height: 1.6; color: var(--t1);
+  border: 1px solid var(--amber); border-left-width: 3px; border-radius: 10px;
+  padding: 0.8rem 1rem; background: var(--card);
+}
+
+.lc-preview, .lc-prepared, .lc-running { display: flex; flex-direction: column; gap: 0.9rem; }
+.lc-preview h3, .lc-prepared h3, .lc-running h3 {
+  font-size: 0.95rem; font-weight: 750; letter-spacing: -0.01em; color: var(--t1);
+}
+
+.lc-rank {
+  border: 1px solid var(--border); border-radius: 14px; background: var(--card);
+  padding: 0.9rem 1rem; position: relative;
+}
+.lc-rank header { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.lc-rank-no {
+  font-family: var(--font-mono); font-size: 0.72rem; color: var(--t3);
+  border: 1px solid var(--border); border-radius: 5px; padding: 0.1rem 0.4rem;
+}
+.lc-tag { font-size: 0.74rem; color: var(--accent); }
+/* The command is the one thing here that must never be reflowed or truncated:
+   an operator copies it, and a wrapped shell line is a broken shell line. */
+.lc-rank pre {
+  margin-top: 0.7rem; overflow-x: auto; font-family: var(--font-mono);
+  font-size: 0.76rem; line-height: 1.7; color: var(--t2);
+  background: var(--bg2); border-radius: 9px; padding: 0.7rem 0.85rem;
+}
+.lc-copy {
+  position: absolute; top: 0.8rem; right: 0.85rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.2rem 0.55rem; font-size: 0.72rem; font-weight: 600; color: var(--t3); cursor: pointer;
+}
+.lc-copy:hover { color: var(--t1); border-color: var(--border-strong); }
+
+.lc-prepared ul, .lc-running ul { display: flex; flex-direction: column; gap: 0.5rem; }
+.lc-prepared li, .lc-running li {
+  display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 11px; padding: 0.6rem 0.85rem;
+  background: var(--card); font-size: 0.87rem;
+}
+.lc-prepared li span, .lc-running li span { color: var(--t3); font-size: 0.8rem; }
+.lc-refused { border-color: var(--red); }
+.lc-ok { color: var(--green) !important; font-weight: 650; }
+.lc-no { color: var(--red) !important; }
+.lc-running code { font-family: var(--font-mono); font-size: 0.76rem; color: var(--t3); }
+.lc-running a { font-family: var(--font-mono); font-size: 0.78rem; color: var(--accent); }
+
+.lc-commit { display: flex; gap: 0.7rem; flex-wrap: wrap; }
+
+@media (max-width: 560px) {
+  .lc-node { align-items: flex-start; flex-direction: column; gap: 0.5rem; }
+}
