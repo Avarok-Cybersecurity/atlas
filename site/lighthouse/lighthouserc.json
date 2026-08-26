@@ -2,7 +2,11 @@
   "ci": {
     "collect": {
       "staticDistDir": "./site/build",
-      "url": ["http://localhost/index.html", "http://localhost/control.html"],
+      "url": [
+        "http://localhost/index.html",
+        "http://localhost/control.html",
+        "http://localhost/control/"
+      ],
       "numberOfRuns": 3,
       "settings": {
         "preset": "desktop",
@@ -14,24 +18,66 @@
         {
           "matchingUrlPattern": ".*/index\\.html$",
           "assertions": {
-            "categories:performance": ["error", { "minScore": 1 }],
-            "categories:accessibility": ["error", { "minScore": 1 }],
-            "categories:best-practices": ["error", { "minScore": 1 }],
-            "categories:seo": ["error", { "minScore": 1 }]
+            "categories:performance": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ],
+            "categories:accessibility": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ],
+            "categories:best-practices": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ],
+            "categories:seo": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ]
           }
         },
         {
-          "matchingUrlPattern": ".*/control\\.html$",
+          "matchingUrlPattern": ".*/control(\\.html|/)$",
           "assertions": {
-            "categories:performance": ["error", { "minScore": 1 }],
-            "categories:accessibility": ["error", { "minScore": 1 }],
-            "categories:seo": ["error", { "minScore": 1 }],
-            "categories:best-practices": ["error", { "minScore": 0.9 }],
+            "categories:performance": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ],
+            "categories:accessibility": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ],
+            "categories:seo": [
+              "error",
+              {
+                "minScore": 1
+              }
+            ],
+            "categories:best-practices": [
+              "error",
+              {
+                "minScore": 0.9
+              }
+            ],
             "errors-in-console": "off"
           }
         }
       ]
     },
-    "upload": { "target": "temporary-public-storage" }
+    "upload": {
+      "target": "temporary-public-storage"
+    }
   }
 }

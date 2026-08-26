@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "vite build && node scripts/emit-directory-routes.mjs",
     "preview": "vite preview",
     "generate": "node scripts/gen-models.mjs && node scripts/gen-benchmarks.mjs && node scripts/gen-gates.mjs && node scripts/gen-ladder.mjs && node scripts/gen-stars.mjs",
     "test:e2e": "bun x --bun playwright test",
