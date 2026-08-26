@@ -63,6 +63,14 @@ pub struct Flag {
     pub default: Option<String>,
     /// First line of help, for a label.
     pub help: Option<String>,
+    /// Other long names clap accepts for this same flag.
+    ///
+    /// `--bind` carries `alias = "host"`, and `get_long()` returns only the
+    /// primary name — so a snapshot built from it alone says `--host` does not
+    /// exist, when shipping recipes set `host:` and the engine accepts it. A
+    /// consumer that rewrote or rejected it would be breaking a working recipe
+    /// on the strength of an incomplete document.
+    pub cli_aliases: Vec<String>,
     /// Recipe spellings that mean this flag but do not match its name.
     ///
     /// A consumer cannot derive these: `max_model_len` is vLLM's spelling kept
@@ -114,6 +122,10 @@ pub fn build() -> Manifest {
                 help: arg
                     .get_help()
                     .map(|h| h.to_string().lines().next().unwrap_or_default().to_owned()),
+                cli_aliases: arg
+                    .get_all_aliases()
+                    .map(|a| a.iter().map(|s| (*s).to_owned()).collect())
+                    .unwrap_or_default(),
                 recipe_aliases: crate::recipe::schema::RENAMES
                     .iter()
                     .filter(|(_, flag)| *flag == long)

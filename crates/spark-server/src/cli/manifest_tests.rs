@@ -82,6 +82,22 @@ fn recipe_aliases_travel_with_the_flag_that_owns_them() {
     assert!(flag(&m, "port").recipe_aliases.is_empty());
 }
 
+/// clap accepts more names than `get_long()` reports. `--bind` carries
+/// `alias = "host"`, and shipping recipes set `host:` — a document that omits
+/// it says a working recipe uses a flag that does not exist.
+#[test]
+fn clap_aliases_are_captured_not_just_the_primary_name() {
+    let m = build();
+    let bind = flag(&m, "bind");
+    assert!(
+        bind.cli_aliases.contains(&"host".to_owned()),
+        "--bind accepts --host; the manifest reported {:?}",
+        bind.cli_aliases
+    );
+    // And a flag without aliases reports none rather than a guess.
+    assert!(flag(&m, "port").cli_aliases.is_empty());
+}
+
 #[test]
 fn flags_are_the_cli_spelling_and_keys_the_underscored_one() {
     let m = build();
