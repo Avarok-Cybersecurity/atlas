@@ -1,0 +1,283 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+   =============================================================================
+   Control plane.
+
+   Same design system as the rest of the site — ledger rails, --sx section
+   accent, the card and chip grammar — because this is the same product, not a
+   dashboard bolted onto it. The page-level accent is cyan: the chevron colours
+   carry fixed meanings and this page is about silicon.
+
+   Contrast rule, restated because it is easy to break here: the brand colours
+   clear 4.5:1 as TEXT on --bg and --card, but as FILLS they must carry --bg
+   ink, never white. White on gold is 1.88:1.
+
+   Every viewport rule lives in mobile.css, which loads after this file.
+   ========================================================================== */
+
+/* Loaded before mobile.css, so nothing here may be width-conditional. */
+
+/* The nav is fixed, and /control has no hero to absorb it — its first section
+   starts immediately under the bar. Clear it explicitly rather than relying on
+   section padding, which mobile.css reduces. */
+.control > section:first-of-type { padding-top: calc(62px + 3rem); }
+
+/* ---- shared ---------------------------------------------------------------- */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* The page swaps this whole container when an agent appears. Reserving its
+   height means the sections below do not jump — measured at CLS 0.322 before
+   this, which is a real shift for anyone who actually has an agent running. */
+.ctl-modes { min-height: 420px; }
+
+/* ---- setup / empty state --------------------------------------------------- */
+.ctl-setup {
+  margin-top: 2.5rem; background: var(--card);
+  border: 1px solid var(--border-strong); border-radius: 18px;
+  padding: 2rem 2.25rem; max-width: 720px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
+}
+.ctl-setup h2 { font-size: 1.15rem; font-weight: 780; letter-spacing: -0.02em; }
+.ctl-setup > p { font-size: 0.95rem; color: var(--t2); line-height: 1.65; margin-top: 0.6rem; }
+.ctl-safety {
+  margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);
+  font-size: 0.82rem; color: var(--t3); line-height: 1.6;
+}
+.ctl-safety strong { color: var(--t2); }
+
+/* ---- node grid ------------------------------------------------------------- */
+.fl-grid {
+  display: grid; gap: 1.25rem; margin-top: 2.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+}
+.fl-card {
+  background: var(--card); border: 1px solid rgba(58,48,84,0.45); border-radius: 18px;
+  padding: 1.35rem 1.45rem; display: flex; flex-direction: column; gap: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
+}
+/* Informational, so it does not levitate on hover — the actions are buttons. */
+.fl-card-discovered { border-style: dashed; border-color: var(--border-strong); }
+.fl-card-discovered .fl-head h2 { color: var(--t2); }
+.fl-card-stale { opacity: 0.72; }
+
+.fl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.fl-head-name { min-width: 0; }
+.fl-head h2 {
+  font-size: 1.02rem; font-weight: 750; letter-spacing: -0.01em; color: var(--t1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fl-sub { font-size: 0.78rem; color: var(--t3); margin-top: -0.4rem; }
+.fl-controlonly { color: var(--amber); }
+
+/* Fingerprint chip — the trustworthy half of a node's identity. */
+.fp-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem; margin-top: 0.3rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 5px;
+  padding: 0.15rem 0.45rem; font-size: 0.7rem; font-weight: 600; color: var(--t3);
+  cursor: pointer; font-family: var(--font-mono);
+}
+.fp-chip:hover { color: var(--t2); border-color: var(--border-strong); }
+
+/* Trust state. Green appears here and nowhere else on the page. */
+.trust-chip {
+  display: inline-flex; align-items: center; gap: 0.4rem; flex-shrink: 0;
+  font-size: 0.7rem; font-weight: 750; padding: 0.25rem 0.6rem; border-radius: 100px;
+  background: rgba(0,0,0,0.12); color: var(--t3); white-space: nowrap;
+}
+.trust-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.trust-paired { color: var(--ch-green); background: color-mix(in srgb, var(--ch-green) 14%, transparent); }
+.trust-this { color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); }
+.trust-pairing, .trust-unreachable { color: var(--amber); background: rgba(251,191,36,0.12); }
+
+.fl-untrusted { font-size: 0.85rem; color: var(--t2); line-height: 1.6; }
+.fl-actions { display: flex; gap: 0.6rem; }
+.fl-btn-sm { padding: 0.5rem 0.9rem; font-size: 0.82rem; }
+
+.fl-ident { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.fl-addr { font-size: 0.8rem; color: var(--t2); }
+.fl-addr-none { color: var(--amber); font-size: 0.8rem; }
+.chip-link {
+  font-size: 0.62rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 4px;
+  color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ch-cyan) 30%, transparent);
+}
+.chip-link-warn {
+  color: var(--amber); background: rgba(251,191,36,0.12);
+  border-color: rgba(251,191,36,0.3);
+}
+
+/* ---- vitals ---------------------------------------------------------------- */
+/* Six tiles, fixed height in every state, so a card never resizes as telemetry
+   arrives. Zero layout shift is a requirement here, not a nicety. */
+/* Three across, two rows. Six columns in a 340px card truncated the labels
+   ("SM CLOC"), and a measurement whose name you cannot read is not a
+   measurement. */
+.vt-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+.vt-tile {
+  display: flex; flex-direction: column; gap: 0.15rem; min-height: 3.7rem;
+  padding: 0.45rem 0.5rem; border-radius: 8px; background: var(--bg2);
+  border-left: 3px solid transparent; min-width: 0;
+}
+.vt-label {
+  font-family: var(--font-mono); font-size: 0.58rem; font-weight: 700;
+  letter-spacing: 0.06em; color: var(--t3); white-space: nowrap;
+}
+.vt-val {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 0.94rem; font-weight: 700; color: var(--t1); white-space: nowrap;
+}
+.vt-unit { font-size: 0.68rem; font-weight: 600; color: var(--t3); }
+.vt-tilde { color: var(--t3); }
+.vt-sub { font-size: 0.58rem; color: var(--t3); min-height: 0.8rem; }
+/* "not on this hardware" is a permanent answer and must not look pending. */
+.vt-na .vt-val, .vt-dash { color: var(--t3); }
+.vt-skeleton {
+  height: 0.94rem; width: 60%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--border), var(--border-strong), var(--border));
+}
+.vt-stale .vt-val { color: var(--t3); }
+.vt-meter { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 0.2rem; }
+.vt-meter-fill { display: block; height: 100%; background: var(--sx); }
+.vt-alert { border-left-color: var(--amber); background: rgba(251,191,36,0.08); }
+/* --t3 measures 3.95:1 against the tinted grounds below, which is under AA for
+   text this small. Alerting tiles step their small text up to --t2. */
+.vt-alert .vt-label, .vt-alert .vt-unit, .vt-alert .vt-sub,
+.vt-alert-crit .vt-label, .vt-alert-crit .vt-unit, .vt-alert-crit .vt-sub { color: var(--t2); }
+.vt-alert .vt-val { color: var(--amber); }
+.vt-alert-crit { border-left-color: var(--red); background: var(--red-soft); }
+.vt-alert-crit .vt-val { color: var(--red); }
+
+/* ---- badges + activity ----------------------------------------------------- */
+.fl-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; list-style: none; }
+.al-badge {
+  font-size: 0.62rem; font-weight: 700; padding: 0.18rem 0.45rem; border-radius: 4px;
+  background: rgba(251,191,36,0.12); color: var(--amber);
+}
+.al-badge.al-critical { background: var(--red-soft); color: var(--red); }
+.fl-activity {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  margin-top: auto; padding-top: 0.7rem; border-top: 1px solid var(--border);
+  font-size: 0.76rem; color: var(--t3);
+}
+.fl-running { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--ch-green); font-weight: 650; }
+.fl-running .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.fl-stale-note { color: var(--amber); }
+.fl-unpair {
+  margin-left: auto; background: none; border: 0; color: var(--t3);
+  font-size: 0.74rem; cursor: pointer; font-family: inherit; padding: 0.2rem;
+}
+.fl-unpair:hover { color: var(--red); }
+.fl-solo-note { margin-top: 1.5rem; font-size: 0.9rem; color: var(--t2); line-height: 1.65; max-width: 62ch; }
+
+/* ---- topology -------------------------------------------------------------- */
+.topo-wrap { display: grid; grid-template-columns: 1fr 300px; gap: 2rem; margin-top: 2.5rem; align-items: start; }
+.topo-fig {
+  background: var(--card); border: 1px solid rgba(58,48,84,0.45); border-radius: 18px;
+  padding: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
+}
+/* Fixed viewBox: node count changes redraw inside it, never resize it. */
+.topo-svg { width: 100%; height: auto; display: block; }
+.topo-edge { stroke: var(--ch-cyan); stroke-width: 2.5; }
+.topo-edge-warn { stroke: var(--amber); stroke-dasharray: 6 5; }
+.topo-edge-label { fill: var(--t2); font-family: var(--font-mono); font-size: 10px; }
+.topo-node-name { fill: var(--t1); font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+.topo-node-label { fill: var(--t2); font-size: 11px; }
+/* The head badge is a fill, so it carries --bg ink rather than white. */
+.topo-head-tag { fill: var(--bg); font-family: var(--font-mono); font-size: 9px; font-weight: 800; }
+
+.topo-actions {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem;
+}
+.topo-actions-title {
+  font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3); margin-bottom: 0.8rem;
+}
+.topo-act-group { padding: 0.6rem 0; border-top: 1px solid var(--border); }
+.topo-act-group:first-of-type { border-top: 0; }
+.topo-act-name { font-size: 0.85rem; font-weight: 650; color: var(--t1); margin-bottom: 0.4rem; }
+.topo-act-fp { font-size: 0.66rem; color: var(--t3); margin-left: 0.35rem; }
+.topo-act-btn {
+  display: inline-block; margin: 0.15rem 0.3rem 0.15rem 0;
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 7px;
+  color: var(--t2); font-size: 0.75rem; font-weight: 650; padding: 0.32rem 0.6rem;
+  cursor: pointer; font-family: inherit;
+}
+.topo-act-btn:hover:not(:disabled) { border-color: var(--sx); color: var(--t1); }
+.topo-act-btn:disabled { opacity: 0.55; cursor: default; }
+.topo-act-danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.topo-act-empty { font-size: 0.82rem; color: var(--t3); }
+
+.topo-table { margin-top: 1rem; font-size: 0.8rem; }
+.topo-table summary { cursor: pointer; color: var(--t3); font-size: 0.76rem; }
+.topo-table table { width: 100%; border-collapse: collapse; margin-top: 0.6rem; }
+.topo-table th, .topo-table td {
+  text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); color: var(--t2);
+}
+.topo-table thead th { color: var(--t3); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ---- alerts ---------------------------------------------------------------- */
+.al-strip {
+  margin-top: 1.75rem; padding: 0.8rem 1rem; border-radius: 10px;
+  font-size: 0.88rem; color: var(--t1); line-height: 1.55;
+  background: rgba(251,191,36,0.10); border: 1px solid rgba(251,191,36,0.28);
+}
+.al-strip.al-critical { background: var(--red-soft); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+.al-strip a { color: var(--accent-deep); }
+.al-empty-title { font-size: 1rem; font-weight: 750; color: var(--t1); margin-top: 2rem; }
+.al-empty { margin-top: 0.5rem; font-size: 0.92rem; color: var(--t2); line-height: 1.65; max-width: 62ch; }
+.al-list { list-style: none; margin-top: 2rem; border-top: 1px solid var(--border); }
+.al-row {
+  display: grid; grid-template-columns: 88px 150px 160px 1fr; gap: 0.8rem; align-items: baseline;
+  padding: 0.85rem 0.25rem; border-bottom: 1px solid var(--border); font-size: 0.86rem;
+}
+.al-sev {
+  font-family: var(--font-mono); font-size: 0.64rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.06em; padding: 0.18rem 0.45rem;
+  border-radius: 4px; background: rgba(251,191,36,0.12); color: var(--amber); text-align: center;
+}
+.al-sev.al-critical { background: var(--red-soft); color: var(--red); }
+.al-node { color: var(--t1); font-weight: 650; }
+.al-kind { color: var(--t2); font-family: var(--font-mono); font-size: 0.78rem; }
+.al-detail { color: var(--t2); line-height: 1.55; }
+
+/* ---- pairing --------------------------------------------------------------- */
+.ld-wide { width: min(600px, calc(100vw - 2rem)); }
+.pair-code {
+  font-size: 1.15rem; letter-spacing: 0.18em; padding: 0.55rem 0.75rem;
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px;
+  color: var(--t1); width: 100%; max-width: 220px; margin-right: 0.6rem;
+}
+.pair-fps {
+  margin: 1rem 0; padding: 1.1rem 1.25rem; border-radius: 12px;
+  background: var(--bg2); border: 1px solid var(--border-strong);
+}
+.pair-words {
+  font-size: 1.5rem; font-weight: 800; letter-spacing: 0.06em;
+  color: var(--ch-cyan); text-align: center;
+}
+.pair-fp-note { margin-top: 0.8rem; font-size: 0.82rem; color: var(--t2); line-height: 1.6; }
+.pair-consequence { font-size: 0.86rem; color: var(--t2); line-height: 1.6; }
+.unpair-confirm-note { font-size: 0.85rem; color: var(--t2); margin: 0.9rem 0 0.5rem; }
+.ld-actions { display: flex; gap: 0.7rem; justify-content: flex-end; margin-top: 1.2rem; }
+
+/* Destructive. Fills carry --bg ink, per the contrast rule. */
+.btn-danger {
+  background: transparent; color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+}
+.btn-danger:hover:not(:disabled) { background: var(--red); color: var(--bg); }
+.btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* An empty topology is a placeholder, not a blank box: a blank box reads as
+   broken. It holds the figure's height so nothing resizes when the first node
+   arrives. */
+.topo-empty {
+  min-height: 258px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0.5rem; text-align: center;
+  padding: 2rem 1.5rem;
+}
+.topo-empty-mark { color: var(--border-strong); }
+.topo-empty p { font-size: 0.9rem; color: var(--t2); max-width: 42ch; }
+.topo-empty-sub { font-size: 0.82rem; color: var(--t3); }

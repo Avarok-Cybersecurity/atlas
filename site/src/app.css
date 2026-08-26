@@ -34,6 +34,10 @@
   --green: #4ade80;       /* verify */
   --green-soft: rgba(74,222,128,0.14);
   --amber: #fbbf24;
+  /* Promoted from literals: #f87171 already appeared in .ld-error and friends.
+     Used as TEXT on dark surfaces, and as a fill only with --bg ink. */
+  --red: #f87171;
+  --red-soft: rgba(248,113,113,0.12);
   --grad: linear-gradient(135deg, #9d85ff 0%, #6842f5 100%);
   --bar: linear-gradient(90deg, #9d85ff, #7c5cff);
   --vllm: #3a3054;

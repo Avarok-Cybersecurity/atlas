@@ -9,9 +9,17 @@
   import '../styles/dashboard.css';
   import '../styles/chat.css';
   import '../styles/ladder.css';
+  import '../styles/control.css';
   import '../styles/mobile.css';
+  import { page } from '$app/state';
   import { tagline, hero, faq, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
   let { children } = $props();
+
+  // Route-aware: a hardcoded canonical meant /control emitted two of them,
+  // which is the same as emitting none.
+  const canonical = $derived(
+    page.url.pathname === '/' ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname}`
+  );
 
   const SITE = 'https://atlasinference.io/';
 
@@ -81,7 +89,7 @@
 
 <svelte:head>
   <title>Atlas, pure Rust inference for DGX Spark</title>
-  <link rel="canonical" href={SITE} />
+  <link rel="canonical" href={canonical} />
   {@html `<script type="application/ld+json">${JSON.stringify(graph)}<\/script>`}
 </svelte:head>
 

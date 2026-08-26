@@ -66,12 +66,12 @@ export const announcement = {
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
 export const nav = {
   links: [
-    { text: 'Verified', href: '#verified' },
-    { text: 'News', href: '#news' },
-    { text: 'Hardware', href: '#hardware' },
-    { text: 'Models', href: '#models' },
-    { text: 'Get running', href: '#run' },
-    { text: 'Community', href: '#community' }
+    { text: 'Verified', href: '/#verified' },
+    { text: 'News', href: '/#news' },
+    { text: 'Hardware', href: '/#hardware' },
+    { text: 'Models', href: '/#models' },
+    { text: 'Get running', href: '/#run' },
+    { text: 'Control', href: '/control' }
   ],
   menuLabel: 'Menu',
   closeLabel: 'Close menu'
