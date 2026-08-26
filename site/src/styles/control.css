@@ -524,3 +524,26 @@
   margin: 0 1rem 0.8rem; background: var(--bg2); border: 1px solid var(--border);
   border-radius: 7px; padding: 0.25rem 0.6rem; font-size: 0.74rem; color: var(--t2); cursor: pointer;
 }
+
+/* Topbar fleet pill. Present only when a local agent answered, so a visitor who
+   has never installed one sees an unchanged bar. */
+.fp {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 0.22rem 0.6rem; font-size: 0.75rem; font-weight: 600;
+  color: var(--t2); text-decoration: none; white-space: nowrap;
+}
+.fp:hover { color: var(--t1); border-color: var(--accent); }
+.fp-detail { color: var(--t3); font-weight: 500; }
+.fp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
+.fp-ok .fp-dot { background: var(--t3); }
+.fp-serving .fp-dot { background: var(--green); }
+.fp-warning .fp-dot { background: var(--amber); }
+.fp-critical .fp-dot { background: var(--red); }
+/* The dot pulses only while something is actually serving. A permanently
+   animating element in a topbar is noise the eye learns to filter out, and then
+   it cannot carry meaning when it matters. */
+@media (prefers-reduced-motion: no-preference) {
+  .fp-serving .fp-dot { animation: fp-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes fp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
