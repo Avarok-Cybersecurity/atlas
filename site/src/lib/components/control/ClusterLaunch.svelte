@@ -12,6 +12,7 @@
   // preview it invented would be a guess presented as the thing that executes.
   import * as L from '$lib/agent/launch.js';
   import * as O from '$lib/agent/overrides.js';
+  import * as Prof from '$lib/agent/profile.js';
   import SettingsEditor from './SettingsEditor.svelte';
   import LaunchStats from './LaunchStats.svelte';
   import LaunchLogs from './LaunchLogs.svelte';
@@ -22,6 +23,20 @@
   let overrides = $state({});
   let showSettings = $state(false);
   let copied = $state('');
+
+  // The operator's remembered preferences. Loaded at init rather than in an
+  // effect: there is no storage during prerender, so this is `empty()` on the
+  // server and the real profile on the client — and this component only
+  // renders once an agent has answered, which never happens while
+  // prerendering, so the two cannot disagree on screen.
+  const store = typeof localStorage === 'undefined' ? null : localStorage;
+  let profile = $state(Prof.load(store));
+
+  // Deliberately NOT `$state`. An effect that reads a flag it also assigns
+  // depends on itself, which is the loop this file's own comments warn about;
+  // a plain variable is a latch the effect can check without subscribing to.
+  let recipeRestored = false;
+  let selectionRestored = false;
 
   const recipes = $derived(
     (fleet.agent?.recipes ?? []).filter((r) => r.runnable).slice().sort((a, b) => a.id.localeCompare(b.id)),
@@ -41,11 +56,63 @@
   const changed = $derived(O.changedCount(overrides, defaults));
   const wire = $derived(O.toWire(overrides, defaults));
 
+  // Pick up where the operator left off. Two steps, because the two halves
+  // become checkable at different moments: the recipe list arrives with the
+  // agent's handshake, while the machines that can hold a rank arrive as
+  // discovery and pairing resolve. Restoring both on the first signal meant a
+  // fleet that had not finished loading discarded the remembered machines
+  // silently and for good.
+  //
+  // Neither restores blind. A remembered choice is a preference, never an
+  // assertion about what is on the network, so a recipe this agent does not
+  // carry and a machine that is not currently able to hold a rank are both
+  // simply not applied.
+  $effect(() => {
+    if (recipeRestored || recipes.length === 0) return;
+    recipeRestored = true;
+    const id = profile.recipe;
+    if (id == null || !recipes.some((r) => r.id === id)) return;
+    flow = L.setRecipe(L.initial(), id);
+    overrides = Prof.overridesFor(profile, id);
+  });
+
+  $effect(() => {
+    // `recipe` gates this as well as `candidates`: selecting machines needs
+    // the recipe's own node count to know how many the operator may pick.
+    if (selectionRestored || candidates.length === 0 || recipe == null) return;
+    // Only latch once something was actually offered to restore against; an
+    // operator who never selected anything has nothing to restore, and
+    // latching on their behalf costs nothing either way.
+    selectionRestored = true;
+    if (profile.selected.length === 0) return;
+
+    const live = new Set(candidates.map((n) => n.id));
+    let next = flow;
+    for (const id of profile.selected) {
+      if (live.has(id) && !next.selected.includes(id)) {
+        next = L.toggleNode(next, id, recipe);
+      }
+    }
+    if (profile.head != null && next.selected.includes(profile.head)) {
+      next = L.setHead(next, profile.head);
+    }
+    flow = next;
+  });
+
+  /** Persist the current plan. Failure is silent by design — see profile.js. */
+  function remember(patch) {
+    profile = Prof.merge(profile, patch);
+    Prof.save(store, profile);
+  }
+
   function chooseRecipe(id) {
     flow = L.setRecipe(flow, id);
     // Bounds and defaults belong to a recipe; carrying one recipe's overrides
     // onto another would apply values the operator chose for something else.
-    overrides = {};
+    // A recipe's *own* remembered overrides are a different matter: those are
+    // what this operator last chose for this recipe, so they come back.
+    overrides = Prof.overridesFor(profile, id);
+    remember({ recipe: id });
   }
 
   function nameOf(id) {
@@ -101,6 +168,20 @@
   // also depends on is a loop waiting to be introduced.
   function settingsChanged() {
     flow = L.settingsChanged(flow);
+    if (flow.recipe != null) {
+      profile = Prof.rememberOverrides(profile, flow.recipe, overrides);
+      Prof.save(store, profile);
+    }
+  }
+
+  function pickNode(id) {
+    flow = L.toggleNode(flow, id, recipe);
+    remember({ selected: flow.selected, head: flow.head });
+  }
+
+  function pickHead(id) {
+    flow = L.setHead(flow, id);
+    remember({ selected: flow.selected, head: flow.head });
   }
 
   async function copy(text, key) {
@@ -149,13 +230,20 @@
     <fieldset class="lc-nodes" disabled={busy || held}>
       <legend>Machines · pick {L.required(recipe)}</legend>
       {#if candidates.length === 0}
-        <p class="lc-empty">No machine here can hold a rank yet. Pair one first.</p>
+        {#if fleet.controlOnly}
+          <p class="lc-empty">
+            This machine is control only, so it cannot hold a rank itself. Pair a
+            machine that can run models and it will appear here.
+          </p>
+        {:else}
+          <p class="lc-empty">No machine here can hold a rank yet. Pair one first.</p>
+        {/if}
       {/if}
       {#each candidates as n (n.id)}
         {@const on = flow.selected.includes(n.id)}
         <div class="lc-node" class:lc-node-on={on}>
           <label class="lc-node-pick">
-            <input type="checkbox" checked={on} onchange={() => (flow = L.toggleNode(flow, n.id, recipe))} />
+            <input type="checkbox" checked={on} onchange={() => pickNode(n.id)} />
             <span class="lc-node-name">{n.name}</span>
             <span class="lc-node-sub">{n.isLocal ? 'this machine' : (n.addresses[0]?.addr ?? '')}</span>
           </label>
@@ -165,7 +253,7 @@
               name="cluster-head"
               checked={flow.head === n.id}
               disabled={!on}
-              onchange={() => (flow = L.setHead(flow, n.id))}
+              onchange={() => pickHead(n.id)}
             />
             <span>serves the API</span>
           </label>

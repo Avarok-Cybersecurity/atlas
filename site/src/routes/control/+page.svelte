@@ -21,7 +21,10 @@
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { runCommand } from '$lib/data.js';
 
-  const START_AGENT = 'atlasctl agent run';
+  // `install`, not `run`. `run` holds the terminal and the agent dies with it,
+  // which turns a fleet into a demo: close the window and the page this
+  // command was meant to light up goes dark again.
+  const START_AGENT = 'atlasctl agent install';
 
   let pairing = $state(null);
   let unpairing = $state(null);
@@ -31,6 +34,7 @@
 
   const nodes = $derived(fleet.nodes);
   const solo = $derived(fleet.mode === 'live' && fleet.peers.length === 0);
+  const remoteCount = $derived(fleet.remoteLaunchable.length);
 
   async function copy(text) {
     try {
@@ -52,9 +56,22 @@
     fleet.start({ watch: true });
   });
 
-  // Default the head to this machine once the fleet is known.
+  // Default the head to this machine — but only if this machine can actually
+  // hold rank 0. On a control-only node it cannot, and defaulting to it drew
+  // the laptop as rank 0 in the topology while its own "Make head" button sat
+  // disabled, which is a picture of a cluster that could never start.
   $effect(() => {
-    if (head === null && fleet.local) head = fleet.local.id;
+    if (head !== null) return;
+    const first = fleet.launchable;
+    if (first.length === 0) return;
+    head = (fleet.local?.canLaunch ? fleet.local : first[0]).id;
+  });
+
+  // If the machine acting as head stops being able to hold a rank — it was
+  // unpaired, or it went away — the selection is stale and must not linger.
+  $effect(() => {
+    if (head === null) return;
+    if (!fleet.launchable.some((n) => n.id === head)) head = null;
   });
 
   const unpairReady = $derived(
@@ -115,7 +132,34 @@
           {/each}
         </div>
 
-        {#if solo}
+        {#if fleet.controlOnly}
+          <div class="fl-control-only" role="status">
+            <p class="fl-co-head">
+              <span class="fl-co-chip">Control only</span>
+              This machine drives the fleet; it does not run models itself.
+            </p>
+            <!-- The agent's own reason is on the card above; repeating it
+                 here verbatim read as a stutter. This says what it means. -->
+            <p class="fl-co-why">
+              {#if remoteCount === 0}
+                Pair a machine that can run models and everything on this page —
+                topology, launching, alerts — applies to it.
+              {:else}
+                Everything on this page — topology, launching, alerts — applies
+                to the {remoteCount === 1 ? 'machine' : `${remoteCount} machines`}
+                you have paired.
+              {/if}
+            </p>
+            {#if remoteCount === 0}
+              <p class="fl-co-next">
+                <strong>Next:</strong> install the agent on a machine with a GPU and
+                pair it. It will appear here on its own once it is running.
+              </p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if solo && !fleet.controlOnly}
           <p class="fl-solo-note">
             No peers yet. Start an agent on another machine on this network and it
             will appear here on its own — then pair it to unlock the EP=2 recipes,
@@ -157,7 +201,7 @@
             <li>
               <span class="ld-step-n">2</span>
               <div>
-                <p class="ld-step-t">Start the agent</p>
+                <p class="ld-step-t">Start the agent in the background</p>
                 <div class="ld-cmd">
                   <code class="mono">{START_AGENT}</code>
                   <button type="button" class="cmd-copy" onclick={() => copy(START_AGENT)}>
@@ -201,14 +245,21 @@
                 <span class="mono topo-act-fp">{node.id.slice(0, 8)}</span>
               </p>
               {#if node.isLocal || node.pairing === 'paired'}
-                <button
-                  type="button"
-                  class="topo-act-btn"
-                  disabled={head === node.id || !node.canLaunch}
-                  onclick={() => (head = node.id)}
-                >
-                  {head === node.id ? 'Head (rank 0)' : 'Make head'}
-                </button>
+                {#if node.canLaunch}
+                  <button
+                    type="button"
+                    class="topo-act-btn"
+                    disabled={head === node.id}
+                    onclick={() => (head = node.id)}
+                  >
+                    {head === node.id ? 'Head (rank 0)' : 'Make head'}
+                  </button>
+                {:else}
+                  <!-- A disabled "Make head" reads as something broken. Say
+                       what this machine is instead: rank 0 serves the API, so
+                       a machine that cannot run models can never hold it. -->
+                  <span class="topo-act-note">Control only — cannot hold a rank</span>
+                {/if}
                 {#if !node.isLocal}
                   <button
                     type="button"

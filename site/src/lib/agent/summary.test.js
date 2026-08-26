@@ -120,3 +120,53 @@ describe('a flapping peer does not flicker the count', () => {
     expect(r.nodes[0].running).toBe('new');
   });
 });
+
+describe('a control-only machine says what it is', () => {
+  // "idle" invites an operator to expect a model to start here. A laptop
+  // running --client structurally cannot run one, and no amount of waiting
+  // changes that, so the pill must not imply otherwise.
+  test('a lone control-only machine reads as control only, not idle', () => {
+    const s = U.summarize({
+      mode: 'live',
+      nodes: [node('a', { isLocal: true, canLaunch: false })],
+    });
+    expect(s.label).toBe('1 node');
+    expect(s.detail).toBe('control only');
+  });
+
+  test('once something launchable is paired it is idle again — there is a wait that ends', () => {
+    const s = U.summarize({
+      mode: 'live',
+      nodes: [node('a', { isLocal: true, canLaunch: false }), node('b', { canLaunch: true })],
+    });
+    expect(s.detail).toBe('idle');
+  });
+
+  test('a paired peer that also cannot launch does not make the fleet launchable', () => {
+    const s = U.summarize({
+      mode: 'live',
+      nodes: [node('a', { isLocal: true, canLaunch: false }), node('b', { canLaunch: false })],
+    });
+    expect(s.detail).toBe('control only');
+  });
+
+  test('serving always wins over the control-only note', () => {
+    // A control-only head can drive a peer that is serving; that is the whole
+    // point of the mode, and it is the more useful thing to report.
+    const s = U.summarize({
+      mode: 'live',
+      nodes: [
+        node('a', { isLocal: true, canLaunch: false }),
+        node('b', { canLaunch: true, running: 'qwen3.6-35b' }),
+      ],
+    });
+    expect(s.detail).toBe('1 serving');
+  });
+
+  test('a machine whose agent has not answered yet is idle, not control only', () => {
+    // canLaunch absent means "not yet known"; assuming false would flash the
+    // wrong word at every operator on a Spark while the agent connects.
+    const s = U.summarize({ mode: 'live', nodes: [node('a', { isLocal: true })] });
+    expect(s.detail).toBe('idle');
+  });
+});
