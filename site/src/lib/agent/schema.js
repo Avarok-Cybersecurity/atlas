@@ -72,12 +72,20 @@ export function isEditable(spec) {
 }
 
 /**
- * Recipe defaults that this agent's schema does not cover.
+ * Recipe values this page cannot offer an editor for.
  *
- * The tool this replaces discarded these in silence, which is how a stated
- * correctness pin went unapplied for months. They are surfaced instead.
+ * **Not the same as "will not be applied", and the distinction matters.** The
+ * schema bounds what a *web page* may override; the agent applies a recipe's
+ * own defaults through its flag table regardless. `host` is the clear case: it
+ * is deliberately absent from the schema, because a page must not choose what
+ * address a server binds to — and the recipe's `host: 0.0.0.0` still lands on
+ * the command line. Telling an operator it "will not be applied" would be
+ * false, and would send them looking for a version mismatch that is not there.
+ *
+ * The thing that genuinely reaches nothing is reported per rank by the agent
+ * as `unmapped`, because only the machine that owns the flag table can know it.
  */
-export function unknownDefaults(schema, defaults) {
+export function notEditableHere(schema, defaults) {
   const known = new Set(schema.map((s) => s.key));
   return Object.keys(defaults ?? {}).filter((k) => !known.has(k));
 }

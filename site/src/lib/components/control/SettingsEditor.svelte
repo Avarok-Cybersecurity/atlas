@@ -28,10 +28,10 @@
   const groups = $derived(S.groupsPresent(schema, advanced));
   const shown = $derived(S.settingsIn(schema, group, advanced));
   const changed = $derived(O.changedCount(overrides, defaults));
-  // Recipe values this agent's flag table does not claim. The tool this
-  // replaces dropped these in silence, which is how a stated correctness pin
-  // went unapplied for months.
-  const unknown = $derived(S.unknownDefaults(schema, defaults));
+  // Recipe values with no editor here. They are still applied by the agent —
+  // the schema bounds what a *page* may override, not what a recipe may set —
+  // so this says "not editable", never "not applied".
+  const fixed = $derived(S.notEditableHere(schema, defaults));
 
   $effect(() => {
     if (groups.length > 0 && !groups.some((g) => g.key === group)) group = groups[0].key;
@@ -138,10 +138,10 @@
     </div>
   {/each}
 
-  {#if unknown.length > 0}
-    <p class="se-unknown" role="status">
-      This recipe sets {unknown.length} value{unknown.length === 1 ? '' : 's'} this agent does not recognise, so
-      {unknown.length === 1 ? 'it' : 'they'} will not be applied: <code>{unknown.join(', ')}</code>
+  {#if fixed.length > 0}
+    <p class="se-fixed" role="status">
+      The recipe also sets <code>{fixed.join(', ')}</code>. {fixed.length === 1 ? 'It is' : 'They are'} applied as
+      written and cannot be changed from a web page.
     </p>
   {/if}
 </div>

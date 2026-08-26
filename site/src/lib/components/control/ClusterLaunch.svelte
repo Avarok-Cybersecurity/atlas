@@ -211,6 +211,15 @@
             {#if r.rank === 0}<span class="lc-tag">serves the API</span>{/if}
           </header>
           <pre>{r.command}</pre>
+          {#if r.unmapped?.length}
+            <!-- Per rank, because the machines can be running different
+                 revisions: a value that lands on rank 0 can be dropped on
+                 rank 1, and that asymmetry is what needs seeing. -->
+            <p class="lc-unmapped" role="status">
+              {r.name} does not understand {r.unmapped.join(', ')}, so {r.unmapped.length === 1 ? 'it reaches' : 'they reach'}
+              nothing on that machine.
+            </p>
+          {/if}
           <button class="lc-copy" onclick={() => copy(r.command, r.node)}>
             {copied === r.node ? 'Copied' : 'Copy'}
           </button>

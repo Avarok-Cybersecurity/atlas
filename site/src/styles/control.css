@@ -459,3 +459,15 @@
 @media (max-width: 560px) {
   .se-row { grid-template-columns: 1fr; }
 }
+.se-fixed {
+  margin-top: 0.9rem; font-size: 0.8rem; line-height: 1.6; color: var(--t3);
+  border-top: 1px solid var(--border); padding-top: 0.8rem;
+}
+.se-fixed code { font-family: var(--font-mono); font-size: 0.76rem; color: var(--t2); }
+/* Amber, not grey: a value that reaches nothing is a real problem with the
+   launch, unlike a value that is merely not editable from here. */
+.lc-unmapped {
+  margin-top: 0.6rem; font-size: 0.78rem; line-height: 1.6; color: var(--t1);
+  border: 1px solid var(--amber); border-left-width: 3px; border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+}
