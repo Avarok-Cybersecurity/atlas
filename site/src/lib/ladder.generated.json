@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-08-26T21:28:56Z",
+  "generated_utc": "2026-08-26T23:01:23Z",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
@@ -29,6 +29,7 @@
     "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
     "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
   },
+  "harness_repo_sha256": "1f10d4887b39a86ee946bc2aa0395e31c43ce1b3dfac778f51abbad11832d880",
   "concurrencies": [
     1,
     2,

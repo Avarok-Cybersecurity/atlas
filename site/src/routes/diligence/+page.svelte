@@ -5,6 +5,7 @@
   import Deck from '$lib/components/deck/Deck.svelte';
   import Frame from '$lib/components/deck/acts/Frame.svelte';
   import Reproduce from '$lib/components/deck/acts/Reproduce.svelte';
+  import Ladder from '$lib/components/deck/acts/Ladder.svelte';
   import Evidence from '$lib/components/deck/acts/Evidence.svelte';
   import { stamp } from '$lib/deck/content.js';
 </script>
@@ -20,5 +21,6 @@
 <Deck title="Verification steps" {stamp}>
   <Frame />
   <Reproduce />
+  <Ladder />
   <Evidence />
 </Deck>

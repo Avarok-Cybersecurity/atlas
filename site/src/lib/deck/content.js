@@ -44,6 +44,16 @@ export const claim = {
   reps: ladder.workload.reps,
   warmup: ladder.workload.warmup,
   harnessFile: ladder.workload.harness,
+  // The --concs argument, from the same rung list the chart is drawn from, so a
+  // lost rung shortens the command as well as the ladder.
+  concsArg: ladder.concurrencies.join(','),
+  // The driver hash the published Atlas legs carry, beside the one a reader will
+  // actually get from the tree. Both derived: the first is the manifest key whose
+  // note names the Atlas legs, the second is hashed from the file at build time.
+  harnessShaAtlas: Object.keys(ladder.harness_shas).find((k) =>
+    /Atlas legs/i.test(ladder.harness_shas[k])
+  ),
+  harnessShaRepo: ladder.harness_repo_sha256.slice(0, 10),
   resultsUrl: ladder.results_doc_url,
   resultsDoc: ladder.results_doc
 };

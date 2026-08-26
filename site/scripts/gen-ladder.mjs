@@ -25,6 +25,7 @@
 // No third-party deps: Node builtins only.
 // =============================================================================
 
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,6 +132,17 @@ const rows = subject.rungs.map((row) => {
   };
 });
 
+// The campaign driver stamps a sha256 of its own source into every record it
+// writes, and the published rungs carry the hash of the copy that produced
+// them. Hash the copy that ships in the tree so the deck can put the two side
+// by side: a reader who runs the repo's driver gets THIS hash in their output,
+// and a page that quoted only the recorded one would be inviting them to
+// compare against bytes they do not have. Computed, never typed — if the file
+// is ever edited this moves with it.
+const harnessRepoSha256 = createHash('sha256')
+  .update(readFileSync(resolve(REPO, manifest.workload.harness)))
+  .digest('hex');
+
 const out = {
   generated_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
   title: manifest.title,
@@ -141,6 +153,7 @@ const out = {
   workload: manifest.workload,
   box: manifest.box,
   harness_shas: manifest.harness_shas,
+  harness_repo_sha256: harnessRepoSha256,
   concurrencies: subject.rungs.map((r) => r.c),
   series,
   rows,
