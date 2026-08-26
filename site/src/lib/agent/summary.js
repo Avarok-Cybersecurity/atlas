@@ -42,8 +42,28 @@ export function summarize(fleet) {
     show: true,
     tone: worst ?? (serving > 0 ? 'serving' : 'ok'),
     label: `${reachable.length} ${reachable.length === 1 ? 'node' : 'nodes'}`,
-    detail: serving === 0 ? 'idle' : `${serving} serving`,
+    detail: serving === 0 ? quiet(reachable) : `${serving} serving`,
   };
+}
+
+/**
+ * What to say about a fleet that is running nothing.
+ *
+ * Usually "idle" — but a control-only machine with nothing paired is not idle,
+ * it is unable, and there is no wait that changes that. Saying "idle" invites
+ * an operator to expect a model to start on a laptop that structurally cannot
+ * run one.
+ *
+ * `canLaunch === false` rather than a falsy check on purpose: the field is
+ * absent until the agent has answered, and absent means "not yet known".
+ *
+ * @param {object[]} reachable
+ * @returns {string}
+ */
+function quiet(reachable) {
+  const local = reachable.find((n) => n.isLocal);
+  if (local?.canLaunch !== false) return 'idle';
+  return reachable.some((n) => !n.isLocal && n.canLaunch) ? 'idle' : 'control only';
 }
 
 /**
