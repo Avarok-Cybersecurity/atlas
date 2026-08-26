@@ -88,6 +88,10 @@ function ingestNode(raw) {
     cannotLaunchReason: sanitize(raw?.launchability?.reason, DETAIL_MAX),
     agentVersion: sanitize(raw?.agent_version, 32),
     accelerator: sanitize(raw?.accelerator, 32),
+    // Reported only over the authenticated channel — a beacon carries none —
+    // so a machine we have merely seen shows a blank rather than a guess.
+    // Sanitised regardless, because everything on this path is untrusted input.
+    os: sanitize(raw?.os, 32),
     vitals: raw?.vitals ?? null,
     alerts: (Array.isArray(raw?.alerts) ? raw.alerts : []).slice(0, 8).map((a) => ({
       kind: a?.kind ?? 'unknown',

@@ -18,6 +18,7 @@
   import ClusterLaunch from '$lib/components/control/ClusterLaunch.svelte';
   import TopologyMap from '$lib/components/control/TopologyMap.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
+  import NodeDetails from '$lib/components/control/NodeDetails.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { runCommand } from '$lib/data.js';
 
@@ -27,6 +28,7 @@
   const START_AGENT = 'atlasctl agent install';
 
   let pairing = $state(null);
+  let details = $state(null);
   let unpairing = $state(null);
   let unpairConfirm = $state('');
   let head = $state(null);
@@ -123,6 +125,7 @@
           {#each nodes as node (node.id)}
             <NodeCard
               {node}
+              ondetails={(n) => (details = n)}
               onpair={(n) => (pairing = n)}
               onunpair={(n) => {
                 unpairing = n;
@@ -332,6 +335,10 @@
 </main>
 
 <Footer />
+
+{#if details}
+  <NodeDetails node={details} onclose={() => (details = null)} />
+{/if}
 
 {#if pairing}
   <PairDialog node={pairing} onclose={() => (pairing = null)} />

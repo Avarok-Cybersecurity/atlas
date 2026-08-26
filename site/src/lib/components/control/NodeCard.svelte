@@ -92,6 +92,8 @@
 
   <p class="fl-sub">
     {#if node.isLocal}this machine{:else}peer{/if}
+    {#if node.os}· {node.os}{/if}
+    {#if node.accelerator}· {node.accelerator}{/if}
     {#if node.agentVersion}· agent {node.agentVersion}{/if}
     {#if !node.canLaunch}· <span class="fl-controlonly">control only</span>{/if}
   </p>

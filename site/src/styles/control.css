@@ -605,3 +605,24 @@
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
   line-height: 1.5; min-width: 0;
 }
+
+/* Node details. The card is for scanning, this is for checking — hence the
+   full fingerprint and every interface rather than the preferred one. */
+.nd { width: min(560px, calc(100vw - 2rem)); }
+.nd-facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 0; }
+.nd-facts dt { font-size: 0.78rem; color: var(--t3); }
+.nd-facts dd { margin: 0; font-size: 0.86rem; color: var(--t1); }
+.nd-fp { font-size: 0.74rem; word-break: break-all; color: var(--t2); }
+.nd-h4 {
+  margin-top: 1.2rem; font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3);
+}
+.nd-links { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem; }
+.nd-links th {
+  text-align: left; font-weight: 650; color: var(--t3); font-size: 0.72rem;
+  padding-bottom: 0.3rem; border-bottom: 1px solid var(--border);
+}
+.nd-links td { padding: 0.34rem 0.5rem 0.34rem 0; color: var(--t2); border-bottom: 1px solid var(--border); }
+.nd-warn { color: var(--amber); }
+.nd-none { font-size: 0.85rem; color: var(--t2); margin-top: 0.5rem; }
+.nd-note { margin-top: 0.7rem; font-size: 0.8rem; color: var(--t3); line-height: 1.6; }
