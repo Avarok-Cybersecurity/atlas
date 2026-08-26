@@ -71,7 +71,12 @@ export const nav = {
     { text: 'Hardware', href: '/#hardware' },
     { text: 'Models', href: '/#models' },
     { text: 'Get running', href: '/#run' },
-    { text: 'Control', href: '/control' }
+    // `.html`, not `/control`. adapter-static writes this route to
+    // control.html, and the deploy target serves files literally: no extension
+    // guessing, and no directory index outside the document root. /control is
+    // the SPA fallback at best and a 500 at worst. If the server ever gains
+    // `try_files $uri $uri.html`, this becomes '/control'.
+    { text: 'Control', href: '/control.html' }
   ],
   menuLabel: 'Menu',
   closeLabel: 'Close menu'

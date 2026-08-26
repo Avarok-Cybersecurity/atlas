@@ -29,6 +29,14 @@
   import { storedToken } from '$lib/agent/protocol.js';
   import { summarize } from '$lib/agent/summary.js';
 
+  // `.html`, not `/control`. adapter-static writes this route to control.html,
+  // and the deploy target serves files literally: it does not try the
+  // extension, and it has no directory index outside the document root. So
+  // /control is the SPA fallback and /control/ is a 500. This is the URL that
+  // resolves. If the server ever gains `try_files $uri $uri.html`, this becomes
+  // '/control'.
+  const CONTROL = '/control.html';
+
   let asked = $state(false);
 
   $effect(() => {
@@ -44,7 +52,7 @@
 </script>
 
 {#if view.show}
-  <a class="fp fp-{view.tone}" href="/control" title="Open the control plane">
+  <a class="fp fp-{view.tone}" href={CONTROL} title="Open the control plane">
     <span class="fp-dot" aria-hidden="true"></span>
     <span class="fp-text">{view.label}</span>
     <span class="fp-detail">{view.detail}</span>

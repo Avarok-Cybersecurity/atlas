@@ -17,8 +17,15 @@
 
   // Route-aware: a hardcoded canonical meant /control emitted two of them,
   // which is the same as emitting none.
+  //
+  // The `.html` matters. adapter-static writes a sub-page to `<name>.html`, and
+  // the deploy target serves files literally — no extension guessing, no
+  // directory index outside the document root. A canonical of `/control` named
+  // a URL that answers 500, which is worse than naming none.
   const canonical = $derived(
-    page.url.pathname === '/' ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname}`
+    page.url.pathname === '/'
+      ? SITE
+      : `${SITE.replace(/\/$/, '')}${page.url.pathname}.html`
   );
 
   const SITE = 'https://atlasinference.io/';

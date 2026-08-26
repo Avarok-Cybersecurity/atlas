@@ -59,7 +59,7 @@ jobs:
           # `recipe list` exercises the vendored corpus, so an installer that
           # shipped a binary without its recipes fails here rather than in a
           # user's terminal.
-          count=$(atlasctl recipe list | tail -n +2 | grep -c . || true)
+          count=$(atlasctl recipe list | tail -n +2 | grep -c . || echo 0)
           echo "recipes: $count"
           [ "$count" -ge 10 ] || {
             echo "::error::atlasctl shipped only $count recipes; the vendored corpus is missing or truncated"
@@ -99,8 +99,23 @@ jobs:
           }
 
           check /         'Atlas, pure Rust inference'
-          check /control  'Control plane'
-          check /control/ 'Control plane'
+          # The URL the site actually links to. adapter-static writes this
+          # route to control.html, and the deploy target serves files
+          # literally, so this is the spelling that resolves.
+          check /control.html 'Control plane'
+
+          # /control must not be an error. It is the SPA fallback here -- the
+          # wrong page, but harmless. A 5xx means something shipped a directory
+          # where the server expects a file, which is exactly how this broke.
+          code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                   --location --max-time 20 https://atlasinference.io/control || echo 000)
+          case "$code" in
+            5*|000)
+              echo "::error::/control returned $code -- a directory is shadowing the page again"
+              fail=1
+              ;;
+            *) echo "ok   /control -> $code (fallback, not an error)" ;;
+          esac
 
           # The one-liner the launch dialog prints. If this is not a shell
           # script, every install instruction on the site is wrong.
