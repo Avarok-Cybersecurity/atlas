@@ -190,6 +190,21 @@ function clearResults(state) {
   };
 }
 
+/**
+ * A setting changed, so anything computed from the old one is stale.
+ *
+ * Refused while a prepare is held or a cluster is running, for the same reason
+ * the selection is: real machines are holding reservations or containers, and
+ * the flow has to be abandoned or stopped explicitly first.
+ *
+ * @param {object} state
+ * @returns {object}
+ */
+export function settingsChanged(state) {
+  if (!EDITABLE.has(state.phase)) return state;
+  return clearResults(state);
+}
+
 /** Enter a waiting phase. */
 export function beginPreview(state) {
   return { ...state, phase: 'previewing', reason: null };

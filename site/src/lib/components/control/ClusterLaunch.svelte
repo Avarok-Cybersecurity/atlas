@@ -11,10 +11,14 @@
   // The head does not know another machine's recipe revision or hardware, so a
   // preview it invented would be a guess presented as the thing that executes.
   import * as L from '$lib/agent/launch.js';
+  import * as O from '$lib/agent/overrides.js';
+  import SettingsEditor from './SettingsEditor.svelte';
 
   let { fleet } = $props();
 
   let flow = $state(L.initial());
+  let overrides = $state({});
+  let showSettings = $state(false);
   let copied = $state('');
 
   const recipes = $derived(
@@ -25,6 +29,17 @@
   const blocker = $derived(L.blocker(flow, recipe, candidates.length));
   const busy = $derived(L.BUSY.includes(flow.phase));
   const held = $derived(flow.epoch != null && flow.phase === 'prepared');
+
+  const defaults = $derived(recipe?.defaults ?? {});
+  const changed = $derived(O.changedCount(overrides, defaults));
+  const wire = $derived(O.toWire(overrides, defaults));
+
+  function chooseRecipe(id) {
+    flow = L.setRecipe(flow, id);
+    // Bounds and defaults belong to a recipe; carrying one recipe's overrides
+    // onto another would apply values the operator chose for something else.
+    overrides = {};
+  }
 
   function nameOf(id) {
     return fleet.nodes.find((n) => n.id === id)?.name ?? id.slice(0, 12);
@@ -49,10 +64,10 @@
   }
 
   const doPreview = () =>
-    run(L.beginPreview, () => fleet.agent.previewCluster(flow.recipe, flow.selected, flow.head, {}), L.previewed);
+    run(L.beginPreview, () => fleet.agent.previewCluster(flow.recipe, flow.selected, flow.head, wire), L.previewed);
 
   const doPrepare = () =>
-    run(L.beginPrepare, () => fleet.agent.prepareCluster(flow.recipe, flow.selected, flow.head, {}), L.prepared);
+    run(L.beginPrepare, () => fleet.agent.prepareCluster(flow.recipe, flow.selected, flow.head, wire), L.prepared);
 
   const doCommit = () => run(L.beginCommit, () => fleet.agent.commitCluster(flow.epoch), L.started);
 
@@ -70,6 +85,15 @@
       // The agent releases on its next prepare regardless, and a failure here
       // must not replace whatever the operator was actually doing.
     }
+  }
+
+  // A preview describes one exact plan. Changing a setting after it was
+  // rendered would leave commands on screen that no longer match what would
+  // run, so the plan drops back to unpreviewed. Driven by an explicit callback
+  // rather than an effect watching the map: an effect that assigns state it
+  // also depends on is a loop waiting to be introduced.
+  function settingsChanged() {
+    flow = L.settingsChanged(flow);
   }
 
   async function copy(text, key) {
@@ -90,7 +114,7 @@
       <select
         value={flow.recipe ?? ''}
         disabled={busy || held}
-        onchange={(e) => (flow = L.setRecipe(flow, e.currentTarget.value || null))}
+        onchange={(e) => chooseRecipe(e.currentTarget.value || null)}
       >
         <option value="">Choose a recipe…</option>
         {#each recipes as r (r.id)}
@@ -131,6 +155,24 @@
         </div>
       {/each}
     </fieldset>
+  {/if}
+
+  {#if recipe}
+    <div class="lc-settings">
+      <button class="lc-disclose" onclick={() => (showSettings = !showSettings)} aria-expanded={showSettings}>
+        {showSettings ? 'Hide settings' : 'Settings'}
+        <span class="lc-changed">{changed === 0 ? 'recipe defaults' : `${changed} changed`}</span>
+      </button>
+      {#if showSettings}
+        <SettingsEditor
+          schema={fleet.agent.schema}
+          {defaults}
+          bind:overrides
+          onchange={settingsChanged}
+          disabled={busy || held || flow.phase === 'running'}
+        />
+      {/if}
+    </div>
   {/if}
 
   <div class="lc-actions">

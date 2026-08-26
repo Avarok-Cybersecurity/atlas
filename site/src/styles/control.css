@@ -398,3 +398,64 @@
 @media (max-width: 560px) {
   .lc-node { align-items: flex-start; flex-direction: column; gap: 0.5rem; }
 }
+
+/* Settings editor. Tabs rather than one long list, because the settings that
+   matter for a launch are grouped by what they affect, and an operator looking
+   for KV dtype should not scroll past twenty server flags to find it. */
+
+.lc-settings { border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
+.lc-disclose {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: none; border: 0; padding: 0.9rem 1.1rem; cursor: pointer;
+  font: inherit; font-size: 0.9rem; font-weight: 650; color: var(--t1);
+}
+.lc-changed { font-size: 0.78rem; font-weight: 500; color: var(--t3); }
+
+.se { padding: 0 1.1rem 1.2rem; border-top: 1px solid var(--border); }
+.se-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap; padding: 0.9rem 0 0.6rem;
+}
+.se-tabs { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.se-tab {
+  background: none; border: 1px solid transparent; border-radius: 7px;
+  padding: 0.3rem 0.6rem; font: inherit; font-size: 0.8rem; color: var(--t3); cursor: pointer;
+}
+.se-tab-on { color: var(--t1); border-color: var(--border-strong); background: var(--bg2); }
+.se-adv { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--t3); cursor: pointer; }
+.se-count { font-size: 0.8rem; color: var(--t3); padding-bottom: 0.6rem; }
+.se-empty { font-size: 0.85rem; color: var(--t3); padding: 0.6rem 0; }
+
+.se-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 0.5rem 1.25rem; align-items: start;
+  padding: 0.7rem 0; border-top: 1px solid var(--border);
+}
+/* A changed setting is marked on the row, not only in the count: an operator
+   scanning for what they altered should not have to remember. */
+.se-row-changed { border-left: 2px solid var(--accent); padding-left: 0.7rem; margin-left: -0.7rem; }
+.se-label label { font-size: 0.87rem; font-weight: 600; color: var(--t1); display: block; }
+.se-label code { font-family: var(--font-mono); font-size: 0.72rem; color: var(--t3); }
+.se-help { font-size: 0.78rem; color: var(--t3); line-height: 1.55; margin-top: 0.25rem; max-width: 60ch; }
+.se-input { display: inline-flex; align-items: center; gap: 0.5rem; }
+.se-input input[type='text'], .se-input select {
+  background: var(--bg2); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 0.35rem 0.55rem; font: inherit; font-size: 0.84rem; color: var(--t1);
+  font-family: var(--font-mono); max-width: 11rem;
+}
+.se-bounds, .se-note { font-size: 0.72rem; color: var(--t3); font-family: var(--font-mono); }
+.se-ro { font-family: var(--font-mono); font-size: 0.82rem; color: var(--t2); }
+.se-reset {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.15rem 0.45rem; font-size: 0.72rem; color: var(--t3); cursor: pointer;
+}
+.se-reset:hover { color: var(--t1); border-color: var(--border-strong); }
+.se-err { grid-column: 1 / -1; font-size: 0.78rem; color: var(--red); }
+.se-unknown {
+  margin-top: 0.9rem; font-size: 0.8rem; line-height: 1.6; color: var(--t2);
+  border: 1px solid var(--amber); border-left-width: 3px; border-radius: 9px; padding: 0.7rem 0.9rem;
+}
+.se-unknown code { font-family: var(--font-mono); font-size: 0.76rem; color: var(--t1); }
+
+@media (max-width: 560px) {
+  .se-row { grid-template-columns: 1fr; }
+}
