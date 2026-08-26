@@ -67,7 +67,7 @@
   act="cyan"
   eyebrow="Step 1"
   title="Prove the box before you trust a number"
-  lede="Four checks, in this order. Every one of them has been the reason a run was thrown away in
+  lede="Five checks, in this order. Every one of them has been the reason a run was thrown away in
         this campaign, so none of them is ceremony."
   steps={2}
 >
@@ -76,13 +76,17 @@
       <Cmd
         label="preflight"
         lines={[
-          `nvidia-smi                       # GB10, driver 580+, 119.7 GB free`,
+          `nvidia-smi                       # GB10, driver 580+`,
+          `free -g                          # ~121 GB unified, not nvidia-smi`,
+          ``,
+          `export PATH=/usr/local/cuda/bin:$PATH`,
           `nvcc --version                   # must report CUDA 13.0`,
+          ``,
           `docker run --rm --gpus all \\`,
           `  nvidia/cuda:13.0.0-base-ubuntu24.04 nvidia-smi`,
           `df -h ~/.cache/huggingface       # weights land here, tens of GB`
         ]}
-        note="The third line is the one people skip: it proves the NVIDIA Container Toolkit is wired up, not just installed. Without it the image builds and then serves nothing."
+        note="Two GB10 particulars, both of which have cost this campaign time. nvidia-smi reports memory as `Not Supported` — the 121 GB is a unified LPDDR5X pool, so `free` is the instrument. And CUDA ships outside PATH: without that export, `nvcc --version` says command-not-found and the cargo build in Step 2 dies in cudarc's build script rather than anywhere informative. The docker line is the one people skip: it proves the NVIDIA Container Toolkit is wired up, not just installed."
       />
     </div>
     <aside class="side at" style="--n: 2">
