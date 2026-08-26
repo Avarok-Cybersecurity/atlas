@@ -58,6 +58,48 @@ export const claim = {
   resultsDoc: ladder.results_doc
 };
 
+// Step 4's serve command, rendered FROM THE RECORD rather than hand-abridged.
+//
+// It used to be a shortened list with a note pointing at series[atlas].cli for
+// "the full flag list, including the SSM cache and scheduling knobs". That
+// pointer was not enough: the abridged command omits thirteen flags, six of
+// which are kernel and scheduling knobs whose defaults are the OPPOSITE of the
+// certified values (ssm_h_dtype f32 not f16-pool, gdn_fused_norm off,
+// ssm_batched_recurrent off, ssm_tail_midchunk on, mtp_gate auto not force,
+// prefill_varlen_batch off). Serving that way and then running the ladder in
+// Step 5b measures a differently-configured engine and lands well under the
+// chart — the walkthrough manufacturing evidence against its own claim, which
+// is the worst failure available to a page like this. Measured on 2026-08-26:
+// the abridged config ran 4.7% under at C=1 and 14% under at C=4, the gap
+// widening with concurrency exactly as those knobs predict.
+//
+// Wrapped here rather than in the component so the command cannot drift from
+// the record: change the serve config and this moves with it.
+const argvLines = (argv, { width = 66, indent = '  ', breakAnywhere = false } = {}) => {
+  const out = [];
+  let line = '';
+  for (const tok of argv) {
+    // In a CLI a value belongs to the flag before it, so only a `--` token may
+    // start a new line. An env prefix is all standalone assignments, so any
+    // token may.
+    const canBreak = breakAnywhere || tok.startsWith('--');
+    const joined = line ? `${line} ${tok}` : tok;
+    if (line && joined.length > width && canBreak) {
+      out.push(line);
+      line = indent + tok;
+    } else {
+      line = joined;
+    }
+  }
+  if (line) out.push(line);
+  return out;
+};
+
+export const serve = {
+  env: argvLines(subject.env.split(/\s+/), { breakAnywhere: true, indent: '' }),
+  cli: argvLines(subject.cli.split(/\s+/))
+};
+
 // The rungs won by a margin small enough that ordinary run-to-run drift could
 // swallow them. Derived, not typed: the earlier hand-written sentence said
 // "1.007x to 1.03x" while the record said 1.012x to 1.032x -- the exact staleness

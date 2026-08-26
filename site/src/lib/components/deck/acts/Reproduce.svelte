@@ -7,7 +7,7 @@
   import Slide from '../Slide.svelte';
   import Cmd from '../Cmd.svelte';
   import Kv from '../Kv.svelte';
-  import { claim, fingerprint, parity } from '$lib/deck/content.js';
+  import { claim, fingerprint, parity, serve } from '$lib/deck/content.js';
 
   const VLLM_DIGEST = 'sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967';
 </script>
@@ -161,19 +161,17 @@
   />
 </Slide>
 
-<Slide act="cyan" eyebrow="Step 4" title="Bring up the subject leg" lede="Same box, same checkpoint, same client. Back to back, not from memory.">
+<Slide
+  act="cyan"
+  eyebrow="Step 4"
+  title="Bring up the subject leg"
+  lede="Same box, same checkpoint, same client. Every flag, not the interesting ones — this is the
+        whole certified configuration, rendered from the record the harness wrote."
+>
   <Cmd
-    label="Atlas — round-11 flags"
-    lines={[
-      `ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1 \\`,
-      `ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1 \\`,
-      `spark serve ${claim.checkpoint} \\`,
-      `  --host 0.0.0.0 --port 8888 --max-seq-len 2048 --max-batch-size 128 \\`,
-      `  --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 \\`,
-      `  --enable-prefix-caching true --speculative --num-drafts 3 \\`,
-      `  --mtp-quantization bf16 --disable-thinking --no-tui`
-    ]}
-    note="The full flag list, including the SSM cache and scheduling knobs, is in ladder.generated.json under series[atlas].cli — the site renders it from the same record the harness wrote."
+    label="Atlas — round-11 flags, complete"
+    lines={[...serve.env.map((l) => `${l} \\`), ...serve.cli.map((l, i, a) => (i < a.length - 1 ? `${l} \\` : l))]}
+    note="Do not trim this. Six of these are kernel and scheduling knobs whose defaults are the OPPOSITE of the certified values — ssm-h-dtype, gdn-fused-norm, ssm-batched-recurrent, ssm-tail-midchunk, mtp-gate and prefill-varlen-batch — and serving without them measures a different engine. An abridged version of this command, run on 2026-08-26, landed 4.7% under the published ladder at C=1 and 14% under at C=4, the gap widening with concurrency exactly as those knobs predict. With the full command the same box reproduced every rung to within 2.2%."
   />
 </Slide>
 
