@@ -6,7 +6,13 @@
 // the whole surface a page can reach is a handful of message types, and that is
 // the point — the agent has no relay or raw-command verb to reach for.
 
-export const PROTOCOL_VERSION = 1;
+// 2: pairing became two-phase. `pair_peer` runs the exchange and writes no
+// pin; `confirm_pairing` establishes trust and `reject_pairing` discards it.
+// `pair_result.paired` became `.exchanged` because it no longer means trusted.
+// The agent enforces an exact match, so a page still on 1 is refused at the
+// handshake rather than reading `exchanged` as "trusted" and showing a machine
+// as paired that the agent has not accepted.
+export const PROTOCOL_VERSION = 2;
 
 // The agent binds loopback only. Connecting to anything else would defeat the
 // entire security model, so the address is a literal here too.

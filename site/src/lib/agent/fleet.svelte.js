@@ -223,21 +223,52 @@ class FleetSession {
   }
 
   /** Pair a discovered peer with a code read off that machine. */
+  /**
+   * Run the pairing exchange. This establishes NO trust.
+   *
+   * `ok` means the two machines derived the same key and there are words to
+   * compare — not that anything is pinned. `confirm` is what trusts.
+   */
   async pair(nodeId, code) {
     const res = await this.agent.pairPeer(nodeId, code);
     if (!res.ok) return { ok: false, detail: res.message };
     const reply = res.reply;
     return {
-      ok: reply.paired === true,
+      ok: reply.exchanged === true,
       verification: reply.verification ?? null,
       detail: sanitize(reply.detail, DETAIL_MAX)
     };
   }
 
   /** Drop trust in a peer. */
+  /** Trust a peer after a human compared the words. */
+  async confirm(nodeId) {
+    const res = await this.agent.confirmPairing(nodeId);
+    if (!res.ok) return { ok: false, detail: res.message };
+    return {
+      ok: res.reply.trusted === true,
+      detail: sanitize(res.reply.detail, DETAIL_MAX)
+    };
+  }
+
+  /**
+   * Refuse a completed exchange.
+   *
+   * Distinct from `unpair`: nothing was written, so this discards rather than
+   * removes. The difference matters when it fails — a failed reject leaves no
+   * trust behind, whereas a failed unpair leaves a machine trusted.
+   */
+  async reject(nodeId) {
+    const res = await this.agent.rejectPairing(nodeId);
+    if (!res.ok) return { ok: false, detail: res.message };
+    return { ok: true, detail: sanitize(res.reply.detail, DETAIL_MAX) };
+  }
+
   async unpair(nodeId) {
     const res = await this.agent.unpairPeer(nodeId);
-    return { ok: res.ok, detail: res.ok ? '' : res.message };
+    if (!res.ok) return { ok: false, detail: res.message };
+    // `unpair_peer` answers a decision now, not a pairing result.
+    return { ok: res.reply.trusted === false, detail: sanitize(res.reply.detail, DETAIL_MAX) };
   }
 
   // ---- internals ---------------------------------------------------------

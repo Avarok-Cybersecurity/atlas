@@ -221,6 +221,16 @@ export class AgentClient {
     return this.#request({ type: 'pair_peer', node, code });
   }
 
+  /** Trust a peer whose exchange completed and whose words the operator accepted. */
+  confirmPairing(node) {
+    return this.#request({ type: 'confirm_pairing', node });
+  }
+
+  /** Discard a completed exchange. Nothing was written, so nothing is undone. */
+  rejectPairing(node) {
+    return this.#request({ type: 'reject_pairing', node });
+  }
+
   /**
    * Open a window in which one new machine may join this fleet.
    *
