@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
-use spark_model::layers::ops::{hc_post, hc_pre};
+use spark_model::layers::ops::{Glm5NextMhcKernels, hc_head_mean, hc_post, hc_pre};
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
@@ -262,9 +262,21 @@ fn main() -> Result<()> {
     //   `glm5next_mhc::glm5next_hc_pre` — GLM's, same signature, that block removed.
     // `hc_post` is deviation-free and is shared verbatim.
     let k_pre_v4: KernelHandle = gpu.kernel("hyper_connection", "hc_pre")?;
-    let k_pre_glm: KernelHandle = gpu.kernel("glm5next_mhc", "glm5next_hc_pre")?;
-    let k_post: KernelHandle = gpu.kernel("hyper_connection", "hc_post")?;
-    let arms: [(&str, KernelHandle); 2] = [("glm", k_pre_glm), ("v4", k_pre_v4)];
+    let k_post_v4: KernelHandle = gpu.kernel("hyper_connection", "hc_post")?;
+    // GATE 0 — TARGET INDEPENDENCE. Every kernel GLM's mHC needs must resolve from the single
+    // module `glm5next_mhc`. If this succeeds, a GLM kernel target never has to carry the
+    // DeepSeek-V4 `hyper_connection` module to complete its own hyper-connection.
+    let glm = Glm5NextMhcKernels::resolve(&gpu)?;
+    println!(
+        "gate 0: GLM mHC resolves hc_pre + hc_post + hc_head from module '{}' alone",
+        spark_model::layers::ops::GLM5NEXT_MHC_MODULE
+    );
+    // (arm, hc_pre, hc_post). The GLM arm uses GLM's hc_post; the V4 arm keeps V4's. Both must
+    // hit the same golden — hc_post is deviation-free, and that is asserted, not assumed.
+    let arms: [(&str, KernelHandle, KernelHandle); 2] = [
+        ("glm", glm.hc_pre, glm.hc_post),
+        ("v4", k_pre_v4, k_post_v4),
+    ];
     // Max |column sum - 1| of the produced `comb`, per arm. The V4 arm pins columns to exactly
     // 1; GLM's eps-ending Sinkhorn must NOT. If these two ever agree, the entry points have
     // collapsed into one and the whole separation is fiction.
@@ -296,7 +308,7 @@ fn main() -> Result<()> {
         }
 
         for &(regime, t) in REGIMES.iter() {
-            for &(arm, k_pre) in arms.iter() {
+            for &(arm, k_pre, k_post) in arms.iter() {
                 // The f32 arm isolates ARITHMETIC: Atlas's highway is f32, so feeding the raw f32
                 // stream and comparing against the f32 golden asks only "is the math the same".
                 let mut rng = Lcg::new(0x0E1C_0DE5);
@@ -440,6 +452,37 @@ fn main() -> Result<()> {
                     let bytes: Vec<u8> = got_out.iter().flat_map(|x| x.to_le_bytes()).collect();
                     gpu.copy_h2d(&bytes, cur)?;
                 }
+                // ── hc_head: the FINAL collapse, after both sites ──
+                // 🔴 GLM's is a parameterless MEAN. The V4 arm has nothing comparable — its
+                // kernel needs `hc_head.{fn,base,scale}` and this checkpoint has none — so only
+                // the GLM path can be gated here, and that asymmetry IS the finding.
+                if arm == "glm" {
+                    hc_head_mean(
+                        &gpu,
+                        glm.hc_head,
+                        cur,
+                        d_y,
+                        t as u32,
+                        hid as u32,
+                        hc as u32,
+                        0,
+                    )?;
+                    gpu.synchronize(0)?;
+                    let got_head = down_bf16(&gpu, d_y, t * hid)?;
+                    let want = g.get(layer, "f32", regime, "hc_head_out")?;
+                    let e = residual("hc_head_out", &got_head, &want)?;
+                    let (b, mag) = floor_b(&g, layer, regime, "hc_head_out")?;
+                    rows.push(Row {
+                        arm,
+                        layer,
+                        regime,
+                        site: "final",
+                        stage: "hc_head",
+                        e,
+                        b,
+                        mag,
+                    });
+                }
                 if cur != d_streams {
                     gpu.free(cur)?;
                 }
@@ -500,7 +543,7 @@ fn main() -> Result<()> {
         if !ok {
             fails += 1;
         }
-        if !ok || r.stage == "comb" || r.stage == "comb@colproj" {
+        if !ok || r.stage == "comb" || r.stage == "comb@colproj" || r.stage == "hc_head" {
             println!(
                 "{:4} {:>3} {:9} {:5} {:12} {:>11.4e} {:>11.4e} {:>11.4e} {:>7.3}  {}",
                 r.arm, r.layer, r.regime, r.site, r.stage, r.e, r.b, r.mag, ratio, label
@@ -583,6 +626,10 @@ fn main() -> Result<()> {
                still doing the DeepSeek-V4 projection"
         );
     }
+    let head_rows = rows.iter().filter(|r| r.stage == "hc_head").count();
+    if head_rows != LAYERS.len() * REGIMES.len() {
+        bail!("expected one hc_head row per layer x regime, got {head_rows}");
+    }
     if v4_known == 0 {
         bail!("the V4 arm showed no colproj deviation — the two arms are not distinguishable");
     }
@@ -595,7 +642,12 @@ fn main() -> Result<()> {
          this change."
     );
     println!(
-        "⛔ NOT covered here: hc_head. Atlas's is DeepSeek-V4's LEARNED sigmoid-weighted sum; \
+        "  HEAD glm5next_mhc::glm5next_hc_head — parameterless MEAN, {head_rows} rows at the \
+         bf16 floor. DeepSeek-V4's learned sigmoid-weighted hc_head is NOT used and could not \
+         be: this checkpoint carries zero hc_head tensors."
+    );
+    println!(
+        "⛔ historical note: hc_head. Atlas's is DeepSeek-V4's LEARNED sigmoid-weighted sum; \
          GLM's Glm5NextTextHyperHead is a parameterless MEAN and the checkpoint carries ZERO \
          hc_head tensors. That one is ADAPT, not REUSE."
     );

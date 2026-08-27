@@ -178,3 +178,85 @@ extern "C" __global__ void glm5next_hc_pre(
         y_out[(size_t)t * H + d] = __float2bfloat16(acc);
     }
 }
+
+// ── glm5next_hc_post ──
+// out[t,j,d] = post[t,j]*block_out[t,d] + sum_i comb[t,i,j]*residual[t,i,d].
+// `out` may alias `residual` (all hc residual values are read before write).
+// Grid: (T,1,1)  Block: (256,1,1).
+//
+// Mirrors the decoder layer's own residual write:
+//   post.unsqueeze(-1) * block_out.unsqueeze(-2) + matmul(comb.transpose(-1,-2), residual)
+//
+// ⚠️ This is byte-for-byte the same arithmetic as `hyper_connection::hc_post` — Slice 9 measured
+// that half of mHC as deviation-free, so there is NO semantic duplication here, only a second
+// entry point. It exists solely for TARGET INDEPENDENCE: `hyper_connection` lives in the
+// deepseek-v4-flash target, and a GLM kernel target must not have to carry a DeepSeek module to
+// resolve half of its own hyper-connection. `hc_pre` is where the two models genuinely differ
+// (GLM omits the final exact column projection); this one differs in name only, and that is
+// stated rather than hidden.
+extern "C" __global__ void glm5next_hc_post(
+    const __nv_bfloat16* __restrict__ block_out, // [T, H]
+    const float* __restrict__ residual,          // [T, hc, H] FP32 highway (mHC)
+    const float* __restrict__ post,              // [T, hc]
+    const float* __restrict__ comb,              // [T, hc, hc]
+    float* __restrict__ out,                     // [T, hc, H] FP32 highway (mHC)
+    const unsigned int hidden_size,
+    const unsigned int hc_mult
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    const unsigned int hc = hc_mult;
+
+    const __nv_bfloat16* x = block_out + (size_t)t * H;
+    const float* res = residual + (size_t)t * hc * H;
+    const float* p = post + (size_t)t * hc;
+    const float* c = comb + (size_t)t * hc * hc;
+    float* o = out + (size_t)t * hc * H;
+
+    for (unsigned int d = tid; d < H; d += GLM_HC_BLOCK) {
+        float xd = (float)x[d];
+        float rv[GLM_HC_MAX_MULT];
+        for (unsigned int i = 0; i < hc; ++i) rv[i] = res[i * H + d];
+        for (unsigned int j = 0; j < hc; ++j) {
+            float acc = p[j] * xd;
+            for (unsigned int i = 0; i < hc; ++i) acc += c[i * hc + j] * rv[i];
+            o[j * H + d] = acc;
+        }
+    }
+}
+
+// ── glm5next_hc_head ──
+// Final collapse before the LM head: streams [T, hc, H] -> y_out [T, H].
+// Grid: (T,1,1)  Block: (256,1,1).
+//
+// 🔴 GLM's `Glm5NextTextHyperHead` is an UNWEIGHTED MEAN and has NO PARAMETERS:
+//     return hidden_streams.mean(dim=2)
+// HF's own comment: "Unlike DeepSeek-V4, this is an unweighted mean."
+//
+// `hyper_connection::hc_head` is DeepSeek-V4's LEARNED sigmoid-weighted sum and reads
+// `hc_head.{fn,base,scale}`. This checkpoint contains **ZERO** `hc_head` tensors — reusing that
+// kernel would read weights that do not exist. Hence a separate kernel with NO weight arguments
+// at all: the absence of the pointers is the guard.
+//
+// Divides ONCE by hc after accumulating, matching `mean`, rather than pre-scaling each stream.
+extern "C" __global__ void glm5next_hc_head(
+    const float* __restrict__ streams, // [T, hc, H] FP32 highway (mHC)
+    __nv_bfloat16* __restrict__ y_out, // [T, H]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    const unsigned int hc = hc_mult;
+
+    const float* x = streams + (size_t)t * hc * H;
+    const float inv = 1.0f / (float)hc;
+
+    for (unsigned int d = tid; d < H; d += GLM_HC_BLOCK) {
+        float acc = 0.f;
+        for (unsigned int i = 0; i < hc; ++i) acc += x[i * H + d];
+        y_out[(size_t)t * H + d] = __float2bfloat16(acc * inv);
+    }
+}
