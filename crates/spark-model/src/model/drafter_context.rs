@@ -162,17 +162,30 @@ pub fn resolve_from_env() -> DrafterContext {
                 );
             }
         }
-        tracing::info!(
-            "MTP drafter context: prefill={} carry={} ({}). Disable both with {}=1.",
-            on_off(cfg.prefill),
-            on_off(cfg.carry),
-            if cfg == DrafterContext::BOTH {
-                "default"
-            } else {
-                "overridden by environment"
-            },
-            DISABLE_ENV,
-        );
+        // Log on CHANGE, not on call: a second model resolving to a
+        // different policy still logs (the discrepancy this fn exists to
+        // surface — see the doc above on why the config itself is not
+        // OnceLock'd), but a hot caller re-resolving the same policy no
+        // longer spams (measured 193 identical lines on one warm prefill
+        // when a per-layer lever read went through `from_env()`).
+        static LAST_LOGGED: std::sync::Mutex<Option<DrafterContext>> = std::sync::Mutex::new(None);
+        if LAST_LOGGED.lock().map_or(true, |mut last| {
+            let changed = *last != Some(cfg);
+            *last = Some(cfg);
+            changed
+        }) {
+            tracing::info!(
+                "MTP drafter context: prefill={} carry={} ({}). Disable both with {}=1.",
+                on_off(cfg.prefill),
+                on_off(cfg.carry),
+                if cfg == DrafterContext::BOTH {
+                    "default"
+                } else {
+                    "overridden by environment"
+                },
+                DISABLE_ENV,
+            );
+        }
         if cfg.prefill && !cfg.carry {
             tracing::warn!(
                 "{PREFILL_ONLY_ENV}=1: drafter prefill is ON with cross-turn carry \

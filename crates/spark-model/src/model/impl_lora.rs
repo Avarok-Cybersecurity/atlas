@@ -407,12 +407,16 @@ impl TransformerModel {
             self.verify_kgamma_graph
                 .lock()
                 .drain()
-                .map(|(_, g)| g)
+                .map(|(_, (g, _))| g)
                 .collect(),
         );
         drain(
             "fused_graph",
-            self.fused_graph.lock().drain().map(|(_, g)| g).collect(),
+            self.fused_graph
+                .lock()
+                .drain()
+                .map(|(_, (g, _))| g)
+                .collect(),
         );
     }
 

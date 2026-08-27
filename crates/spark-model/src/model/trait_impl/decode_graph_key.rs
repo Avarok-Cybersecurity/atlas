@@ -87,8 +87,15 @@ pub(super) fn verify_k_graph_on_free() -> FreeSlotGraphPolicy {
     FreeSlotGraphPolicy::Retain
 }
 
+/// `verify_kgamma` / `fused` graphs bake the LoRA bgmv-vs-installed-pair
+/// branch of the capturing sequence, which used to force `DropThisSlot` — a
+/// ~0.3 s recapture on every request's first decode step, the largest fixed
+/// cost on a warm-turn TTFT. Retained since the replay-time occupant check:
+/// each cache entry carries the `adapter_slot` it baked, verify_d /
+/// verify_fused destroy + recapture on mismatch, and adapter (un)load still
+/// drains both maps wholesale (`impl_lora`).
 pub(super) fn lora_baked_graph_on_free() -> FreeSlotGraphPolicy {
-    FreeSlotGraphPolicy::DropThisSlot
+    FreeSlotGraphPolicy::Retain
 }
 
 /// Insert `graph` at `key`, evicting the LRU entry when at `cap` and the key
@@ -219,10 +226,11 @@ mod tests {
         assert_eq!(decode_graph_on_free(), FreeSlotGraphPolicy::Retain);
         assert_eq!(batch_decode_graphs_on_free(), FreeSlotGraphPolicy::Retain);
         assert_eq!(verify_k_graph_on_free(), FreeSlotGraphPolicy::Retain);
-        assert_eq!(
-            lora_baked_graph_on_free(),
-            FreeSlotGraphPolicy::DropThisSlot
-        );
+        // Retain since the replay-time adapter occupant check landed — the
+        // free-time drop was a ~0.3 s recapture tax on every request. The
+        // companion assertions in `free_sequence_does_not_destroy_slot_
+        // keyed_decode_graphs` pin the check that makes this sound.
+        assert_eq!(lora_baked_graph_on_free(), FreeSlotGraphPolicy::Retain);
     }
 
     #[test]
@@ -263,13 +271,18 @@ mod tests {
         assert_eq!(batch_decode_graph_cap(64), 80);
     }
 
-    /// NEGATIVE: `free_sequence_dispatch` must not drain slot-keyed decode
-    /// graphs. Recapturing on every completion was the cost this PR removes.
-    /// LoRA-baked `verify_kgamma` / `fused` still drop (adapter index baked).
+    /// NEGATIVE: `free_sequence_dispatch` must not drain ANY slot-keyed
+    /// graph cache. Recapturing on every completion was a ~0.3 s tax on
+    /// every request's first decode step (the largest fixed cost on a
+    /// warm-turn TTFT). The LoRA-branch correctness that used to justify
+    /// dropping `verify_kgamma` / `fused` lives at the replay site now: the
+    /// cached entry carries the `adapter_slot` it baked and the replay
+    /// destroys + recaptures on occupant mismatch.
     ///
-    /// PROVEN BY: restoring `self.decode_graph.lock()` or
-    /// `self.batch_decode_graphs.lock()` inside `free_sequence_dispatch`
-    /// turns this red.
+    /// PROVEN BY: restoring any `.lock()` of a graph map inside
+    /// `free_sequence_dispatch` turns this red; deleting the
+    /// adapter-mismatch check in verify_d/verify_fused turns the companion
+    /// assertion red.
     #[test]
     fn free_sequence_does_not_destroy_slot_keyed_decode_graphs() {
         let src = std::fs::read_to_string(
@@ -292,8 +305,24 @@ mod tests {
             "free_sequence must retain batch_decode_graphs"
         );
         assert!(
-            body.contains("verify_kgamma_graph") && body.contains("fused_graph"),
-            "LoRA-baked graphs still drop"
+            !body.contains("self.verify_kgamma_graph.lock()")
+                && !body.contains("self.fused_graph.lock()"),
+            "free_sequence must retain the DFlash verify graphs too — the \
+             adapter check moved to replay time"
         );
+        // Companion: the replay-time occupant check must exist in BOTH
+        // consumers, or a reused slot could replay a stale LoRA branch.
+        for f in ["verify_d.rs", "verify_fused.rs"] {
+            let consumer = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("src/model/trait_impl")
+                    .join(f),
+            )
+            .unwrap();
+            assert!(
+                consumer.contains("baked_adapter != seq.adapter_slot"),
+                "{f} lost the replay-time adapter occupant check"
+            );
+        }
     }
 }

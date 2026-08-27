@@ -40,8 +40,16 @@ impl Qwen3AttentionLayer {
         // FP8 prefill perturbation on the attention projections.
         // Load-time weight prep runs before any `TransformerModel` exists to
         // carry the levers, so this resolves at the point of use. The
-        // interpretation stays SSOT in `ModelLevers`.
-        let bf16_proj = crate::layers::ops::ModelLevers::from_env().bf16_tc_proj;
+        // interpretation stays SSOT in `ModelLevers`. Resolved ONCE: this is
+        // called per attention layer per prefill chunk, and a full
+        // `from_env()` here re-read a dozen env vars (a process-global lock)
+        // and re-ran the drafter-context resolution — whose info line then
+        // spammed ~4 lines per prefill chunk × layer (193 on one warm turn).
+        // The env cannot change under a running process, so a OnceLock is
+        // exact, not a staleness risk.
+        static BF16_PROJ: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let bf16_proj =
+            *BF16_PROJ.get_or_init(|| crate::layers::ops::ModelLevers::from_env().bf16_tc_proj);
         if bf16_proj && self.w4a16_gemm_t_m128_bf16_k.0 != 0 {
             return crate::layers::ops::w4a16_gemm_n128_m128_bf16(
                 gpu,

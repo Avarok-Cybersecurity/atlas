@@ -322,12 +322,20 @@ pub struct TransformerModel {
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
-    pub(super) verify_kgamma_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
+    /// Value carries the `adapter_slot` the capture baked (the LoRA
+    /// bgmv-vs-installed-pair branch is a capture-time decision): replay
+    /// checks it against the current occupant and recaptures on mismatch,
+    /// which is what lets `free_sequence` RETAIN these across occupants
+    /// instead of paying a ~0.3 s recapture on every request's first step.
+    pub(super) verify_kgamma_graph:
+        Mutex<std::collections::HashMap<(usize, usize), (GraphHandle, i32)>>,
     /// Cached CUDA graphs for the DFlash decode+verify fused pass, keyed by
     /// `(seq.slot_idx, M)` where M = tokens.len() = 1 + num_drafts.
     /// Replaces the separate `decode_graph` (M=1) + `verify{k}_graph` (M=k)
-    /// on the DFlash path with a single M-row weight sweep.
-    pub(super) fused_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
+    /// on the DFlash path with a single M-row weight sweep. Value carries
+    /// the baked `adapter_slot` — same replay-time occupant check as
+    /// `verify_kgamma_graph`.
+    pub(super) fused_graph: Mutex<std::collections::HashMap<(usize, usize), (GraphHandle, i32)>>,
     /// Prefix cache for KV block reuse across requests.
     pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     /// Secondary CUDA stream for pipelining checkpoint D2D with MTP propose.

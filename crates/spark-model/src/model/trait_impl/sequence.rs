@@ -221,32 +221,18 @@ impl TransformerModel {
         // on every completion was an extra eager step per request. Policy is
         // pinned by `decode_graph_key` tests (`*_graph_on_free` → Retain).
         //
-        // verify_kgamma / fused still drop below: they bake a per-occupant
-        // LoRA adapter index (`lora_baked_graph_on_free` → DropThisSlot).
-        // verify_kgamma_graph + fused_graph are keyed by (slot, K). They now
-        // capture the LoRA bgmv-vs-installed-pair branch and read the per-seq
-        // seq_slot buffer, so a freed slot's entries MUST be destroyed — else a
-        // reused slot replays a stale adapter index (multi-adapter + DFlash
-        // spec-decode output corruption). Drop every K for this slot.
-        for graph_map in [&self.verify_kgamma_graph, &self.fused_graph] {
-            let mut cache = graph_map.lock();
-            let keys: Vec<(usize, usize)> = cache
-                .keys()
-                .filter(|k| k.0 == seq.slot_idx)
-                .copied()
-                .collect();
-            for k in keys {
-                if let Some(graph) = cache.remove(&k)
-                    && let Err(e) = self.gpu.destroy_graph(graph)
-                {
-                    tracing::error!(
-                        "free_sequence: destroy_graph(kgamma/fused[{},{}]): {e:#}",
-                        k.0,
-                        k.1
-                    );
-                }
-            }
-        }
+        // verify_kgamma / fused graphs are RETAINED here too
+        // (`lora_baked_graph_on_free` → Retain since the replay-time occupant
+        // check landed). They bake the LoRA bgmv-vs-installed-pair branch of
+        // the sequence that captured them, which is why this loop used to
+        // destroy every (slot, K) entry on free — costing a ~0.3 s recapture
+        // on EVERY request's first decode step, the single largest fixed
+        // cost on a warm-turn TTFT. The correctness the destroy provided now
+        // lives at the replay site: each cached entry carries the
+        // `adapter_slot` it baked, and verify_d / verify_fused destroy +
+        // recapture on occupant mismatch (adapter (un)load still drains both
+        // maps wholesale in `impl_lora`). On a non-LoRA serve every occupant
+        // bakes -1, so retained graphs replay across sequences unconditionally.
 
         // ATLAS_MTP_CARRY_DRAFTER: hand this turn's drafter KV to the model's
         // single carry slot BEFORE `free_state`, so the next turn of the same
