@@ -5,15 +5,36 @@
   // Rendered entirely from the agent's schema — there is no per-key code here,
   // which is what lets an agent newer than this page still present its settings.
   import { checkValue, isEditable } from '$lib/agent/schema.js';
+  import * as O from '$lib/agent/overrides.js';
 
   let { spec, value, isDefault, onchange } = $props();
 
-  const error = $derived(value === undefined ? null : checkValue(spec, value));
+  /** Set when the text in the box is not a value, cleared when it is. */
+  let typed = $state(null);
+
+  const error = $derived(typed ?? (value === undefined ? null : checkValue(spec, value)));
   const editable = $derived(isEditable(spec));
 
-  function num(raw) {
-    const n = Number(raw);
-    return Number.isNaN(n) ? raw : n;
+  /**
+   * Interpret typed text through the same parser the control page uses.
+   *
+   * This file used to carry its own: `Number(raw)`, keeping the raw string when
+   * the result was NaN. `Number('')` is 0 and `isNaN(0)` is false, so CLEARING
+   * a numeric field silently committed 0 — a real value, within bounds for
+   * anything whose minimum is 0, and nothing on screen said it had happened.
+   * `overrides.parse` already answers this correctly ("enter a value, or reset
+   * it to the recipe default"); the control page called it and this one did
+   * not, so the same empty box meant two different things depending on which
+   * screen you were looking at.
+   */
+  function commit(raw) {
+    const r = O.parse(spec, raw);
+    if (r.error) {
+      typed = r.error;
+      return;
+    }
+    typed = null;
+    onchange(r.value);
   }
 </script>
 
@@ -47,10 +68,7 @@
         id={`set-${spec.key}`}
         class="mono"
         value={String(value)}
-        onchange={(e) => {
-          const raw = e.currentTarget.value.trim();
-          onchange(raw === 'auto' ? 'auto' : num(raw));
-        }}
+        onchange={(e) => commit(e.currentTarget.value)}
       />
     {:else}
       <input
@@ -61,12 +79,19 @@
         min={spec.bound.min}
         max={spec.bound.max}
         step={spec.bound.kind === 'float' ? 0.01 : 1}
-        onchange={(e) => onchange(num(e.currentTarget.value))}
+        onchange={(e) => commit(e.currentTarget.value)}
       />
     {/if}
     {#if spec.unit}<span class="set-unit">{spec.unit}</span>{/if}
     {#if !isDefault}
-      <button type="button" class="set-reset" onclick={() => onchange(undefined)}>reset</button>
+      <button
+        type="button"
+        class="set-reset"
+        onclick={() => {
+          typed = null;
+          onchange(undefined);
+        }}>reset</button
+      >
     {/if}
   </div>
 
