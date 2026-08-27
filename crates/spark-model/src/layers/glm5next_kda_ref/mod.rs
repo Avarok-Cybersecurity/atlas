@@ -152,10 +152,32 @@ pub fn kda_recurrent(
     dims: KdaDims,
     state: &mut [f32],
 ) -> Vec<f32> {
-    let (h_n, d, t_n) = (dims.heads, dims.head_dim, dims.tokens);
-    let scale = 1.0 / (d as f32).sqrt();
+    let d = dims.head_dim;
     let qn = l2norm_rows(q, d, 1e-6);
     let kn = l2norm_rows(k, d, 1e-6);
+    kda_recurrent_prenorm(&qn, &kn, v, gate, beta, dims, state)
+}
+
+/// Same recurrence, but `q`/`k` are **already L2-normalised**.
+///
+/// This is Atlas's contract, where `causal_conv1d_update_l2norm` fuses conv + SiLU + L2
+/// upstream, and it is what the `kda_recurrent` GPU kernel consumes. Keep it separate
+/// rather than passing pre-normalised vectors into [`kda_recurrent`]: re-normalising an
+/// already-unit vector is nearly a no-op in fp32 (it scales by `1/sqrt(1+1e-6)`), but on a
+/// bf16-rounded vector — whose norm is off by ~0.4% — it silently RESTORES the norm the
+/// rounding destroyed, which makes the reference disagree with the kernel by ~1e-5 and
+/// looks exactly like a kernel bug.
+pub fn kda_recurrent_prenorm(
+    qn: &[f32],
+    kn: &[f32],
+    v: &[f32],
+    gate: &[f32],
+    beta: &[f32],
+    dims: KdaDims,
+    state: &mut [f32],
+) -> Vec<f32> {
+    let (h_n, d, t_n) = (dims.heads, dims.head_dim, dims.tokens);
+    let scale = 1.0 / (d as f32).sqrt();
 
     let mut out = vec![0.0f32; t_n * h_n * d];
     let mut delta = vec![0.0f32; d];

@@ -213,6 +213,10 @@ golden["outputs"] = {
     "core_chunked_c4_padded": _entry(core_chunk_c4),
     "state_chunked_c4_padded": _entry(state_chunk_c4),
     "core_split_prefill_then_decode": _entry(core_split),
+    # HF-produced carried state after the 4-token prefill. Lets a decode-only kernel be
+    # driven from HF's own state rather than from a reproduction of it.
+    "state_after_prefill4": _entry(state_pre),
+    "core_prefill4": _entry(core_pre),
     "out_gate": _entry(out_gate),
     "o_norm_out": _entry(normed),
     "layer_out": _entry(layer_out),

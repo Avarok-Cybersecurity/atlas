@@ -520,3 +520,63 @@ fn hf_self_checks_were_clean() {
         assert!(d < 1e-6, "HF self-check {k} = {d:e} is not clean");
     }
 }
+
+// ─────────────────────────── prenorm contract (Slice 4 trap)
+
+/// `kda_recurrent` normalises q/k internally (HF's contract); `kda_recurrent_prenorm`
+/// does not (Atlas's contract, where the conv fuses the L2). Passing already-normalised
+/// vectors to the former is *nearly* a no-op in fp32, which is exactly what makes it
+/// dangerous: on bf16-rounded inputs the second normalisation RESTORES the norm the
+/// rounding destroyed, so the reference silently disagrees with a kernel that consumes
+/// pre-normalised q/k — and it looks like a kernel bug.
+#[test]
+fn prenorm_and_internal_norm_agree_only_on_unit_input() {
+    let g = Golden::load();
+    let d = g.dims();
+    let (q, k, v) = (
+        g.get("inputs", "q_in"),
+        g.get("inputs", "k_in"),
+        g.get("inputs", "v_in"),
+    );
+    let (gate, beta) = (g.get("outputs", "gate"), g.get("outputs", "beta"));
+    let n = d.heads * d.head_dim * d.head_dim;
+
+    // Routed through the internal-norm entry point == prenorm on the normalised vectors.
+    let mut s1 = vec![0.0f32; n];
+    let a = kda_recurrent(&q, &k, &v, &gate, &beta, d, &mut s1);
+    let mut s2 = vec![0.0f32; n];
+    let b = kda_recurrent_prenorm(
+        &g.get("outputs", "q_l2"),
+        &g.get("outputs", "k_l2"),
+        &v,
+        &gate,
+        &beta,
+        d,
+        &mut s2,
+    );
+    assert_close("prenorm == internal-norm on unit input", &b, &a, 2e-6);
+
+    // Double-normalising a bf16-rounded unit vector is NOT a no-op: it measurably moves.
+    let round = |x: &[f32]| -> Vec<f32> {
+        x.iter()
+            .map(|v| f32::from_bits((v.to_bits() + 0x8000) & 0xFFFF_0000))
+            .collect()
+    };
+    let (qr, kr) = (
+        round(&g.get("outputs", "q_l2")),
+        round(&g.get("outputs", "k_l2")),
+    );
+    let mut s3 = vec![0.0f32; n];
+    let pre = kda_recurrent_prenorm(&qr, &kr, &v, &gate, &beta, d, &mut s3);
+    let mut s4 = vec![0.0f32; n];
+    let dbl = kda_recurrent(&qr, &kr, &v, &gate, &beta, d, &mut s4);
+    let spread = pre
+        .iter()
+        .zip(&dbl)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        spread > 1e-6,
+        "double-normalisation must be detectable on bf16-rounded input, saw {spread:e}"
+    );
+}
