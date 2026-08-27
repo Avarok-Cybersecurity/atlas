@@ -18,7 +18,19 @@
  * @param {{setInterval: Function, clearInterval: Function}} [timers] injected
  *   for tests, which must not wait a real second to observe a tick
  */
-export function makeTicker(onTick, ms, timers = { setInterval, clearInterval }) {
+export function makeTicker(
+  onTick,
+  ms,
+  // Wrapped, not referenced: `{ setInterval }` calls the global as a method
+  // of this object, and a browser's setInterval is this-sensitive — Chromium
+  // throws "Illegal invocation" mid effect-flush, which took the reactive
+  // clock (and every stale badge behind it) down on the live page while every
+  // bun test kept passing, because bun's globals do not care who `this` is.
+  timers = {
+    setInterval: (fn, t) => setInterval(fn, t),
+    clearInterval: (h) => clearInterval(h)
+  }
+) {
   let handle = null;
   let users = 0;
 
