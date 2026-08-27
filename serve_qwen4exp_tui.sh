@@ -45,7 +45,7 @@ echo "  checkpoint: $SNAP"
 # Inline ${REASONING_KWARGS:-{json}} appended a stray '}' whenever the var was
 # SET (bash pairs the expansion's closing brace with the JSON's braces), which
 # the server rejects as invalid JSON. Plain assignment sidesteps the parsing.
-if [ -z "$REASONING_KWARGS" ]; then
+if [ -z "${REASONING_KWARGS:-}" ]; then
   REASONING_KWARGS='{"reasoning_effort":"low"}'
 fi
 
