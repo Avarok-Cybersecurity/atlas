@@ -41,10 +41,17 @@ export function subnetOf(addr, prefixLen) {
   if (octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return null;
   if (parts.some((p) => p === '' || !/^\d+$/.test(p))) return null;
 
-  // `>>>` and a 0 shift: a 32-bit mask built with `<<` is signed, so a /1
-  // yields a negative number and every octet after it is wrong.
+  // `>>> 0` on both: a 32-bit mask built with `<<` is SIGNED in JS, so a /1
+  // yields a negative number and every octet derived from it is wrong.
+  //
+  // No `prefixLen === 0` branch. It cannot reach here — the guard above returns
+  // null below /1 — and writing one implied a case that does not exist. It was
+  // there to dodge `0xffffffff << 32`, which JS evaluates as a shift by 32 % 32
+  // = 0 and so leaves the mask all-ones rather than all-zeros. That trap is
+  // real; it is simply not reachable, and a guard against an impossible input
+  // reads as if the input were possible.
   const value = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
-  const mask = prefixLen === 0 ? 0 : (0xffffffff << (32 - prefixLen)) >>> 0;
+  const mask = (0xffffffff << (32 - prefixLen)) >>> 0;
   const net = (value & mask) >>> 0;
   return `${(net >>> 24) & 255}.${(net >>> 16) & 255}.${(net >>> 8) & 255}.${net & 255}/${prefixLen}`;
 }

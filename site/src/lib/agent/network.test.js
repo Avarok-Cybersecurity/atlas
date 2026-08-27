@@ -123,3 +123,15 @@ test('a bare IPv6 literal is not mistaken for a host and port', () => {
   expect(checkTarget('2001:db8::1').ok).toBe(true);
   expect(checkTarget('[2001:db8::1]:34334').ok).toBe(true);
 });
+
+test('a /0 is refused rather than masked, so the mask never shifts by 32', () => {
+  // `0xffffffff << 32` is a shift by 32 % 32 = 0 in JS, which leaves the mask
+  // all-ones — a /0 would come back as the address unchanged, claiming the
+  // whole internet is one subnet. The guard makes that unreachable; this pins
+  // it, because the mask arithmetic below now assumes prefixLen >= 1.
+  expect(subnetOf('192.168.68.67', 0)).toBeNull();
+  expect(subnetOf('0.0.0.0', 0)).toBeNull();
+  // And the narrowest real prefix still works, which is what the guard protects.
+  expect(subnetOf('192.168.68.67', 1)).toBe('128.0.0.0/1');
+  expect(subnetOf('0.0.0.0', 32)).toBe('0.0.0.0/32');
+});
