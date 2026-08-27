@@ -746,3 +746,41 @@
   margin: 0.35rem 0 0.5rem; max-width: 52ch;
 }
 .fs-good { font-size: 0.78rem; color: var(--green); line-height: 1.6; margin: 0.6rem 0 0; }
+
+/* The join guide. A card rather than loose paragraphs because the operator
+   leaves the room mid-flow and has to find it again — it needs an edge. */
+.jg-toggle { margin-left: 0.6rem; vertical-align: baseline; }
+.jg {
+  margin-top: 1rem;
+  padding: 1.1rem 1.2rem;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  max-width: 66ch;
+}
+.jg-h { font-size: 1rem; font-weight: 700; color: var(--t1); margin: 0 0 0.5rem; }
+.jg-h:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 3px; }
+.jg-lead { font-size: 0.86rem; color: var(--t2); line-height: 1.6; margin: 0 0 0.9rem; }
+.jg-body { font-size: 0.78rem; color: var(--t3); line-height: 1.6; margin: 0.4rem 0 0; }
+.jg-facts {
+  font-size: 0.76rem; color: var(--t3); line-height: 1.6; margin: 0.5rem 0 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem;
+}
+.jg-facts .mono { color: var(--t1); }
+.jg-link {
+  background: none; border: 0; padding: 0; color: var(--t3);
+  font-size: 0.74rem; text-decoration: underline; cursor: pointer;
+}
+.jg-link:hover { color: var(--t1); }
+.jg-link:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 2px; }
+/* Amber, not red: the code is about to lapse, which costs one click to redo. */
+.jg-warn { font-size: 0.78rem; color: var(--amber); line-height: 1.6; margin: 0.5rem 0 0; }
+.jg-expired {
+  font-size: 0.82rem; color: var(--t2); line-height: 1.6;
+  margin: 0 0 0.8rem; padding: 0.6rem 0.8rem;
+  background: var(--bg2); border-radius: 8px;
+}
+.jg-tshoot { margin-top: 0.9rem; font-size: 0.78rem; color: var(--t3); }
+.jg-tshoot summary { cursor: pointer; color: var(--t2); }
+.jg-tshoot summary:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 2px; }
+.jg-tshoot ul { margin: 0.5rem 0 0 1.1rem; display: grid; gap: 0.45rem; line-height: 1.6; }

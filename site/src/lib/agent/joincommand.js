@@ -8,8 +8,7 @@
 // is subtly wrong is worse than no command, because it fails on the far
 // machine where the operator has the least context.
 
-/** Where install.sh is served from. Kept in step with `data.js:runCommand`. */
-const INSTALLER = 'https://atlasinference.io/install.sh';
+import { installerUrl } from '../data.js';
 
 /**
  * Build the install-and-join one-liner.
@@ -26,7 +25,7 @@ export function joinCommand(join) {
   if (!code) return '';
   const host = bestAddress(join?.addresses);
   if (!host) return '';
-  return `curl -fsSL ${INSTALLER} | sh -s -- --join ${code}@${host}`;
+  return `curl -fsSL ${installerUrl} | sh -s -- --join ${code}@${host}`;
 }
 
 /**

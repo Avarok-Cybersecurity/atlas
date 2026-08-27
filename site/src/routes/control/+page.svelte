@@ -20,38 +20,26 @@
   import ReachMap from '$lib/components/control/ReachMap.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
   import FleetScan from '$lib/components/control/FleetScan.svelte';
+  import JoinGuide from '$lib/components/control/JoinGuide.svelte';
+  import InstallSteps from '$lib/components/InstallSteps.svelte';
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { storedToken } from '$lib/agent/protocol.js';
-  import { runCommand } from '$lib/data.js';
+  import { startAgentCommand } from '$lib/data.js';
 
   // `install`, not `run`. `run` holds the terminal and the agent dies with it,
   // which turns a fleet into a demo: close the window and the page this
   // command was meant to light up goes dark again.
-  const START_AGENT = 'atlasctl agent install';
 
   let pairing = $state(null);
   let details = $state(null);
   let unpairing = $state(null);
   let unpairConfirm = $state('');
   let head = $state(null);
-  let copied = $state('');
 
   const nodes = $derived(fleet.nodes);
   const solo = $derived(fleet.mode === 'live' && fleet.peers.length === 0);
   const remoteCount = $derived(fleet.remoteLaunchable.length);
-
-  async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = text;
-      setTimeout(() => {
-        if (copied === text) copied = '';
-      }, 1600);
-    } catch {
-      /* clipboard blocked; the command is on screen */
-    }
-  }
 
   /** Whether a connection to the local agent has been attempted yet. */
   let attempted = $state(false);
@@ -213,10 +201,7 @@
               {/if}
             </p>
             {#if remoteCount === 0}
-              <p class="fl-co-next">
-                <strong>Next:</strong> install the agent on a machine with a GPU and
-                pair it. It will appear here on its own once it is running.
-              </p>
+              <JoinGuide {fleet} />
             {/if}
           </div>
         {/if}
@@ -249,7 +234,7 @@
           <p>
             If it does not come back, the agent may have stopped. Check it with
             <code class="mono">atlasctl agent status</code>, or start it again with
-            <code class="mono">{START_AGENT}</code>.
+            <code class="mono">{startAgentCommand}</code>.
           </p>
         </div>
       {:else if fleet.mode === 'browser_unpaired'}
@@ -271,32 +256,7 @@
             Atlas runs on your hardware, not ours. Install the agent on a machine
             and this page becomes its control panel.
           </p>
-          <ol class="ld-steps">
-            <li>
-              <span class="ld-step-n">1</span>
-              <div>
-                <p class="ld-step-t">Install the launcher</p>
-                <div class="ld-cmd">
-                  <code class="mono">{runCommand}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(runCommand)}>
-                    {copied === runCommand ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-            <li>
-              <span class="ld-step-n">2</span>
-              <div>
-                <p class="ld-step-t">Start the agent in the background</p>
-                <div class="ld-cmd">
-                  <code class="mono">{START_AGENT}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(START_AGENT)}>
-                    {copied === START_AGENT ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ol>
+          <InstallSteps />
           {#if attempted}
             <p class="ld-watching">
               <span class="ld-pulse" aria-hidden="true"></span>

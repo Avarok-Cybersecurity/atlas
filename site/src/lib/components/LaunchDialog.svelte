@@ -13,6 +13,7 @@
   // to come back and click retry.
 
   import { launch } from '$lib/agent/session.svelte.js';
+  import InstallSteps from './InstallSteps.svelte';
   import { describe } from '$lib/agent/placement.js';
   import { joinCommand } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
@@ -27,9 +28,7 @@
   const joinCmd = $derived(joinCommand(launch.join));
   let dialogEl = $state(null);
 
-  const INSTALL = 'curl -fsSL https://atlasinference.io/install.sh | sh';
   // `install`, not `run`: `run` holds the terminal and the agent dies with it.
-  const START = 'atlasctl agent install';
 
   async function copy(text) {
     try {
@@ -201,32 +200,7 @@
             Atlas runs on your hardware, not ours. This page can start a model for
             you once a small local agent is listening.
           </p>
-          <ol class="ld-steps">
-            <li>
-              <span class="ld-step-n">1</span>
-              <div>
-                <p class="ld-step-t">Install the launcher</p>
-                <div class="ld-cmd">
-                  <code class="mono">{INSTALL}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(INSTALL)}>
-                    {copied === INSTALL ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-            <li>
-              <span class="ld-step-n">2</span>
-              <div>
-                <p class="ld-step-t">Start the agent in the background</p>
-                <div class="ld-cmd">
-                  <code class="mono">{START}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(START)}>
-                    {copied === START ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ol>
+          <InstallSteps />
           <p class="ld-watching" aria-live="polite">
             <span class="ld-pulse" aria-hidden="true"></span>
             Watching for it — this will continue on its own.
