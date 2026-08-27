@@ -101,3 +101,50 @@ export function describeError(error) {
       return error.code ?? 'The agent reported an unknown problem.';
   }
 }
+
+/**
+ * What to tell an operator whose agent and page disagree about the protocol.
+ *
+ * "Update whichever is older" was true and unhelpful: it named no command, and
+ * it made the operator work out which side was behind from two version numbers
+ * they have no reason to care about. Protocol 4 shipped to a fleet of agents
+ * that all speak something older, so this is now the first thing many people
+ * will see — it has to end with something they can run.
+ *
+ * The two directions have genuinely different remedies, which is why this does
+ * not just print both:
+ *
+ * - the AGENT is behind — reinstall it, which is one line;
+ * - the PAGE is behind — the browser is holding a cached bundle, and no amount
+ *   of updating the agent will fix it. That one is a hard reload.
+ *
+ * @param {number} page this bundle's `PROTOCOL_VERSION`
+ * @param {number} min the agent's lowest supported version
+ * @param {number} max the agent's highest
+ * @returns {{ok: true} | {ok: false, side: 'agent'|'page', message: string}}
+ */
+export function versionAdvice(page, min, max) {
+  if (!Number.isInteger(page) || !Number.isInteger(min) || !Number.isInteger(max)) {
+    // A malformed welcome is not a version mismatch, and guessing which side is
+    // behind from a non-number would name a remedy at random.
+    return {
+      ok: false,
+      side: 'agent',
+      message: 'The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: curl -fsSL https://atlasinference.io/install.sh | sh'
+    };
+  }
+  if (page >= min && page <= max) return { ok: true };
+
+  if (page > max) {
+    return {
+      ok: false,
+      side: 'agent',
+      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: curl -fsSL https://atlasinference.io/install.sh | sh`
+    };
+  }
+  return {
+    ok: false,
+    side: 'page',
+    message: `This page is out of date — it speaks protocol ${page}, your agent speaks ${min === max ? min : `${min}–${max}`}. Your browser is holding an old copy: reload with Ctrl-Shift-R (⌘-Shift-R on a Mac).`
+  };
+}
