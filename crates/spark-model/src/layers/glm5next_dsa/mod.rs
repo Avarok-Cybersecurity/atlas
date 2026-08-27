@@ -53,6 +53,12 @@ pub mod tp;
 /// stem as the module name, so `kernels/gb10/common/dsa_indexer.cu` is `dsa_indexer`.
 pub const DSA_MODULE: &str = "dsa_indexer";
 
+/// `#define KV_LORA_DIM` in `kernels/gb10/common/mla_paged_decode{,_fp8}.cu`.
+///
+/// Mirrored here so the config can refuse a checkpoint the kernel cannot read.
+/// Changing the kernel without changing this constant is the bug this guards.
+pub const KERNEL_KV_LORA_DIM: usize = 512;
+
 /// Every kernel the DSA path launches.
 ///
 /// Resolved with `kernel()` (not `try_kernel`): a missing DSA entry point is a hard
@@ -180,6 +186,27 @@ impl Glm5NextDsaConfig {
         }
         if self.kv_lora_rank == 0 {
             bail!("DSA is MLA: kv_lora_rank must be > 0");
+        }
+        // 🔴 HARD ASSERTION, tied to a kernel constant.
+        //
+        // `mla_paged_decode{,_fp8}.cu` hardcode `#define KV_LORA_DIM 512` for the
+        // latent width, while taking the cache stride (`kv_cache_dim`) as a runtime
+        // argument. GLM-5.3 is correct on that path only because its
+        // `kv_lora_rank` is ALSO 512 — a coincidence, not a design.
+        //
+        // A GLM revision with a different latent would read the cache at the wrong
+        // width and produce plausible garbage with no crash, which is the exact
+        // failure class this campaign has already paid for twice (#341, #347). Fail
+        // at config time instead. If this ever fires, the fix is to parameterise
+        // `KV_LORA_DIM` in the `common/` copies of those kernels — NOT to relax
+        // this check.
+        if self.kv_lora_rank != KERNEL_KV_LORA_DIM {
+            bail!(
+                "GLM-5.3 DSA: kv_lora_rank is {}, but mla_paged_decode hardcodes                  KV_LORA_DIM={}. The MLA decode kernels would read the latent at the                  wrong width. Parameterise KV_LORA_DIM in kernels/gb10/common/\
+                 mla_paged_decode{{,_fp8}}.cu before serving this checkpoint.",
+                self.kv_lora_rank,
+                KERNEL_KV_LORA_DIM,
+            );
         }
         if self.local_heads == 0 {
             bail!("DSA: this rank owns zero attention heads");

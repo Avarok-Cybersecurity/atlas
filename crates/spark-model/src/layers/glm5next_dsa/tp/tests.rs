@@ -217,3 +217,16 @@ fn config_rejects_a_kpool_beyond_the_kernel_bound() {
 fn tp_rank_must_be_in_range() {
     assert!(DsaTpPlan::new(2, 2, &cfg(32)).is_err());
 }
+
+/// 🔴 The latent width is tied to `KV_LORA_DIM` in the MLA decode kernels. A
+/// checkpoint whose latent differs must be refused at config time, not read at
+/// the wrong width.
+#[test]
+fn a_latent_the_kernel_cannot_read_is_refused() {
+    let mut c = cfg(64);
+    assert_eq!(c.kv_lora_rank, super::super::KERNEL_KV_LORA_DIM);
+    c.kv_lora_rank = 576; // DeepSeek-V4-Flash's latent+rope width
+    let e = c.validate().unwrap_err();
+    assert!(e.to_string().contains("KV_LORA_DIM"), "unexpected: {e}");
+    assert!(e.to_string().contains("wrong width"), "unexpected: {e}");
+}

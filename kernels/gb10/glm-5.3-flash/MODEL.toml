@@ -1,0 +1,58 @@
+[model]
+name = "glm-5.3-flash"
+hf_id = "LibertAIDAI/GLM-5.3-Flash-NVFP4"
+revision = "9e0d74e3cef17f634e84fb8e2223707e02616290"
+model_type = "glm5_next"
+architecture = "Hybrid KDA linear-attention + NoPE sparse MLA (DSA) + mHC + NVFP4 MoE"
+parameters = "320B-A18B"
+
+layers_total = 45
+layers_kda = 34
+layers_dsa = 11
+layer_pattern = "3 KDA then 1 DSA, repeating; layer 45 is the MTP head (out of scope)"
+first_k_dense_replace = 3
+
+hidden_dim = 4096
+vocab_size = 154624
+max_position_embeddings = 262144
+
+# ── NoPE sparse MLA ──
+q_heads = 64
+kv_heads = 64
+q_lora_rank = 1536
+kv_lora_rank = 512
+qk_nope_head_dim = 256
+qk_rope_head_dim = 0
+v_head_dim = 256
+
+# 🔴 NoPE. There is no rope section: the MLA latent cache is kv_lora_rank wide
+# (512), NOT DeepSeek-V4-Flash's 512+64=576. `rope_theta` is absent from the
+# checkpoint config entirely.
+rotary_dim = 0
+partial_rotary_factor = 0.0
+
+# ── DSA indexer ──
+index_n_heads = 32
+index_head_dim = 128
+index_kpool = 4
+index_topk = 2048
+index_kpool_always_select_tail = true
+
+# ── KDA linear attention ──
+linear_num_heads = 64
+linear_head_dim = 128
+linear_conv_kernel = 4
+
+# ── MoE ──
+moe_experts = 288
+moe_topk = 8
+moe_intermediate = 2048
+shared_expert_intermediate = 2048
+moe_scoring_func = "sigmoid"
+moe_routing_bias = true
+n_group = 1
+routed_scaling_factor = 2.5
+
+# ── mHC ──
+hc_mult = 4
+hc_sinkhorn_iters = 20
