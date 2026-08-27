@@ -265,6 +265,19 @@ class FleetSession {
   }
 
   #onEvent(msg) {
+    // The socket died. Until this existed nothing observed it, so a page that
+    // had reached 'live' stayed 'live' through an agent restart — showing a
+    // fleet that could no longer change, with no probe scheduled, because
+    // probes only ever started from 'no_agent'.
+    if (msg?.type === 'agent_closed') {
+      if (this.mode === 'live') {
+        this.mode = 'reconnecting';
+        this.watching = false;
+        this.#probeDelay = PROBE_START_MS;
+        this.#scheduleProbe();
+      }
+      return;
+    }
     if (msg?.type !== 'fleet_event') return;
     const ev = msg.event;
     const next = this.nodes.slice();
@@ -327,6 +340,9 @@ class FleetSession {
     clearTimeout(this.#probeTimer);
     this.#probeTimer = setTimeout(async () => {
       if (!this.#started) return;
+      // Reached from 'no_agent' and from 'reconnecting' alike: both mean "no
+      // usable socket", and the only difference is whether the page ever had
+      // one.
       // Silent: a poll the user did not ask for must not repaint what they are
       // reading. It may only move the page forward, when an agent answers.
       const ok = await this.agent.connect();

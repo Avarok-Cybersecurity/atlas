@@ -169,6 +169,24 @@
             which need exactly two nodes.
           </p>
         {/if}
+      {:else if fleet.mode === 'reconnecting'}
+        <!-- The agent was here a moment ago and went away — a restart, a
+             reboot, an ssh session closing. Falling through to the "install the
+             agent" invitation below would tell someone who plainly HAS one to
+             go and get one. -->
+        <div class="ctl-setup">
+          <h2>Lost the agent</h2>
+          <p>
+            The connection to the local agent dropped. This page is trying again on
+            its own, and will pick up where it left off as soon as the agent answers.
+          </p>
+          <p class="ld-watching">Reconnecting…</p>
+          <p>
+            If it does not come back, the agent may have stopped. Check it with
+            <code class="mono">atlasctl agent status</code>, or start it again with
+            <code class="mono">{START_AGENT}</code>.
+          </p>
+        </div>
       {:else if fleet.mode === 'browser_unpaired'}
         <div class="ctl-setup">
           <h2>Pair this browser with your agent</h2>

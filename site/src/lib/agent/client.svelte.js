@@ -108,7 +108,30 @@ export class AgentClient {
     socket.addEventListener('message', (ev) => this.#onMessage(ev));
     socket.addEventListener('close', () => {
       this.#socket = null;
-      if (this.phase === 'ready') this.phase = 'unavailable';
+      const wasReady = this.phase === 'ready';
+      if (wasReady) this.phase = 'unavailable';
+
+      // Fail everything in flight NOW rather than letting each request sit out
+      // its full REPLY_TIMEOUT_MS. The socket is gone; no reply is coming, and
+      // twenty seconds of a spinner is twenty seconds the operator spends
+      // wondering whether the agent is slow or dead.
+      const waiting = [...this.#pending.values()];
+      this.#pending.clear();
+      for (const resolve of waiting) resolve(null);
+
+      // And say so. Nothing observed this before, so a page that had reached
+      // 'live' stayed 'live' after the agent restarted — watching a fleet that
+      // could no longer change, with no probe scheduled because probes only
+      // start from 'no_agent'.
+      if (wasReady) {
+        for (const fn of this.#listeners) {
+          try {
+            fn({ type: 'agent_closed' });
+          } catch {
+            /* a listener that throws must not stop the others hearing it */
+          }
+        }
+      }
     });
 
     // The agent speaks first, so wait for its welcome before greeting back.
