@@ -167,9 +167,23 @@ class LaunchSession {
    */
   #choosePlacement() {
     const recipe = this.agent.recipes.find((r) => r.id === this.openRecipe) ?? null;
-    const d = Placement.decide(fleet.nodes, recipe, fleet.localCanLaunch);
+    // The fleet list is a second source for a fact this dialog's own agent has
+    // already stated. Prefer the fleet when it has reported; fall back to the
+    // agent's own answer rather than treating an unstarted fleet session as
+    // evidence that nothing can launch.
+    // `agent.canLaunch` is set from the `ready` frame during connect, and this
+    // runs after connect, so it is the agent's answer rather than a default.
+    const canLaunchHere = fleet.localCanLaunch ?? this.agent.canLaunch;
+    const d = Placement.decide(fleet.nodes, recipe, canLaunchHere);
     this.placement = d;
 
+    if (d.kind === 'here') {
+      // Nothing to ask and nothing to name: run on the machine we are talking
+      // to, which is what `target: null` means downstream.
+      this.target = null;
+      this.phase = 'settings';
+      return;
+    }
     if (d.kind === 'ask' || d.kind === 'none') {
       // 'none' is not a dead end: it is the moment to offer the machine that
       // would fix it. Sending the operator to a settings form for a machine

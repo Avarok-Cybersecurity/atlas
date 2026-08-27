@@ -9,21 +9,68 @@
   //
   // The fingerprint comparison is the part people skip, so it is the part with
   // the most room on screen and the plainest consequence attached to it.
+  //
+  // IMPORTANT about when trust actually happens. `pair_peer` completes the
+  // SPAKE2 ceremony and writes the pin BEFORE these words can be shown — the
+  // words are derived from the exchange, so there is no earlier moment to show
+  // them. The dialog therefore cannot ask "may I pair?"; it can only ask "was
+  // that the right machine?" and undo it if the answer is no. Every path out of
+  // the confirm step that is not the confirm button unpairs, because a screen
+  // that says "if they differ, cancel" while cancel does nothing is worse than
+  // no ceremony at all.
 
   import { fleet } from '$lib/agent/fleet.svelte.js';
 
   let { node, onclose } = $props();
 
-  /** 'code' | 'verifying' | 'confirm' | 'paired' | 'failed' */
+  /** 'code' | 'verifying' | 'confirm' | 'rejecting' | 'paired' | 'failed' */
   let phase = $state('code');
   let code = $state('');
   let detail = $state('');
   let verification = $state('');
   let dialogEl = $state(null);
+  /** Set when the operator dismissed while the exchange was still in flight. */
+  let dismissed = $state(false);
 
   const START = 'atlasctl agent pair';
   const digitsOnly = $derived(code.replaceAll(/\D/g, '').slice(0, 8));
   const ready = $derived(digitsOnly.length === 8);
+
+  /**
+   * Leave the confirm step without trusting the node.
+   *
+   * Removes the pin the ceremony already wrote. If that fails the dialog stays
+   * open and says so rather than closing on a promise it did not keep.
+   */
+  async function reject() {
+    // Dismissing while the exchange is still running is NOT a refusal of
+    // something that has not happened yet — `pair_peer` is in flight, and it
+    // will complete and write the pin whether this dialog is on screen or not.
+    // Closing here left a peer paired that nobody ever saw words for. So the
+    // dismissal is remembered and acted on when the reply lands.
+    if (phase === 'verifying') {
+      dismissed = true;
+      return;
+    }
+    // Already undoing. Re-entering would fire a second unpair, and closing
+    // would drop the "still trusted" warning on an unmounted component if that
+    // unpair then failed.
+    if (phase === 'rejecting') return;
+    if (phase !== 'confirm') {
+      onclose?.();
+      return;
+    }
+    phase = 'rejecting';
+    const res = await fleet.unpair(node.id);
+    if (res.ok) {
+      onclose?.();
+      return;
+    }
+    detail =
+      `${node.name} could not be un-paired: ${res.detail || 'the agent refused'}. ` +
+      'It is still trusted — remove it with Unpair before using this fleet.';
+    phase = 'confirm';
+  }
 
   const short = (id, n = 4) =>
     id ? `${id.slice(0, n)} ${id.slice(n, 8)} ${id.slice(8, 12)} ${id.slice(12, 16)}` : '';
@@ -37,6 +84,12 @@
     if (res.ok) {
       verification = res.verification ?? '';
       phase = 'confirm';
+      // They walked away mid-ceremony. The pin exists now, and they never saw
+      // the words, so the only honest reading is that they did not approve it.
+      if (dismissed) {
+        dismissed = false;
+        void reject();
+      }
     } else {
       detail = res.detail || 'The code was not accepted.';
       phase = 'failed';
@@ -46,14 +99,14 @@
   $effect(() => {
     dialogEl?.focus();
     const onKey = (ev) => {
-      if (ev.key === 'Escape') onclose?.();
+      if (ev.key === 'Escape') void reject();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
 </script>
 
-<div class="ld-backdrop" role="presentation" onclick={() => onclose?.()}></div>
+<div class="ld-backdrop" role="presentation" onclick={() => void reject()}></div>
 <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 <div
   class="ld ld-wide"
@@ -65,12 +118,12 @@
 >
   <header class="ld-head">
     <h3 class="ld-title" id="pair-title">
-      {#if phase === 'confirm'}Confirm you are joining the right machines
+      {#if phase === 'confirm' || phase === 'rejecting'}Confirm you are joining the right machines
       {:else if phase === 'paired'}Paired
       {:else}Pair {node.name}{/if}
     </h3>
     <p class="ld-sub mono">{node.id.slice(0, 16)}</p>
-    <button type="button" class="ld-close" onclick={() => onclose?.()} aria-label="Close">×</button>
+    <button type="button" class="ld-close" onclick={() => void reject()} aria-label="Close">×</button>
   </header>
 
   <div class="ld-body">
@@ -114,17 +167,18 @@
       {#if phase === 'failed'}
         <p class="ld-error" role="alert">{detail}</p>
       {/if}
-    {:else if phase === 'confirm'}
+    {:else if phase === 'confirm' || phase === 'rejecting'}
       <p>
-        The code was accepted. Check that <strong>{node.name}</strong> is showing the
-        same words, then confirm.
+        The code was accepted and <strong>{node.name}</strong> is paired. Check that it
+        is showing the same words. If it is not, cancel and the pairing is removed.
       </p>
 
       <div class="pair-fps">
         <div class="pair-words mono">{verification || '—'}</div>
         <p class="pair-fp-note">
           <code class="mono">{START}</code> on {node.name} is printing these same words.
-          If they differ, something is sitting between your machines — cancel.
+          If they differ, something is sitting between your machines — cancel, and
+          this node is un-paired again.
         </p>
       </div>
 
@@ -133,11 +187,23 @@
         models on it. You can undo it at any time with Unpair.
       </p>
 
+      {#if detail}
+        <p class="ld-error" role="alert">{detail}</p>
+      {/if}
+
       <div class="ld-actions">
-        <button type="button" class="btn btn-ghost" onclick={() => onclose?.()}>Cancel</button>
+        <button
+          type="button"
+          class="btn btn-ghost"
+          disabled={phase === 'rejecting'}
+          onclick={() => void reject()}
+        >
+          {phase === 'rejecting' ? 'Removing…' : "They differ — cancel"}
+        </button>
         <button
           type="button"
           class="btn btn-primary"
+          disabled={phase === 'rejecting'}
           onclick={() => {
             phase = 'paired';
             onclose?.(true);

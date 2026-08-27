@@ -71,6 +71,17 @@ export function decide(nodes, recipe, localCanLaunch = null) {
   const options = candidates(nodes);
 
   if (options.length === 0) {
+    // `localCanLaunch === true` with no nodes means the fleet has not reported
+    // yet, not that nothing can run. The agent this dialog is talking to has
+    // already said it can launch; the fleet list is a second, slower source for
+    // the same fact. Telling a brand-new Spark owner "No machine here can run
+    // this yet" on their first launch — because a list had not arrived — sent
+    // them to onboard a second machine to fix a machine that was fine.
+    //
+    // `null` still falls through to 'none'. Null means the agent has not said,
+    // and guessing "it can" would flash a launchable UI at a control-only
+    // laptop, which is the mistake in the other direction.
+    if (localCanLaunch === true) return { kind: 'here' };
     return {
       kind: 'none',
       reason:

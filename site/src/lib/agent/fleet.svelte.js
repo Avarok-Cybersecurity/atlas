@@ -29,9 +29,7 @@
 import { AgentClient } from './client.svelte.js';
 
 /** Longest display string we will render. */
-const NAME_MAX = 63;
-/** Longest free-text detail we will render. */
-const DETAIL_MAX = 500;
+import { DETAIL_MAX, MAX_NODES, alert, ingestNode, sanitize, vitals } from './ingest.js';
 
 /** Poll cadence while waiting for an agent to appear, and its ceiling. */
 const PROBE_START_MS = 1200;
@@ -41,69 +39,8 @@ const PROBE_FACTOR = 1.4;
 /** A node unheard from for this long is shown as stale rather than removed. */
 const STALE_AFTER_MS = 15_000;
 
-/**
- * Strip anything that could rewrite the interface, then cap the length.
- *
- * @param {unknown} raw
- * @param {number} max
- * @returns {string}
- */
-export function sanitize(raw, max = NAME_MAX) {
-  if (typeof raw !== 'string') return '';
-  let out = '';
-  for (const ch of raw) {
-    const c = ch.codePointAt(0) ?? 0;
-    // C0, DEL and C1 controls.
-    if (c < 0x20 || (c >= 0x7f && c <= 0x9f)) continue;
-    // Bidi overrides and isolates: a name must not be able to reorder the
-    // fingerprint rendered beside it.
-    if ((c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue;
-    out += ch;
-    if (out.length >= max) break;
-  }
-  return out.trim();
-}
+export { sanitize } from './ingest.js';
 
-/**
- * Normalise a node descriptor from the wire into something safe to render.
- *
- * @param {object} raw
- * @returns {object}
- */
-function ingestNode(raw) {
-  const addresses = Array.isArray(raw?.addresses) ? raw.addresses : [];
-  return {
-    id: typeof raw?.id === 'string' ? raw.id : '',
-    name: sanitize(raw?.name) || 'unnamed',
-    isLocal: raw?.is_local === true,
-    pairing: raw?.pairing ?? 'discovered',
-    addresses: addresses.slice(0, 8).map((a) => ({
-      iface: sanitize(a?.iface, 32),
-      addr: sanitize(a?.addr, 64),
-      class: a?.class ?? 'ethernet',
-      speedMbps: Number.isFinite(a?.speed_mbps) ? a.speed_mbps : null,
-      rdma: a?.rdma === true
-    })),
-    canLaunch: raw?.launchability?.can_launch === true,
-    cannotLaunchReason: sanitize(raw?.launchability?.reason, DETAIL_MAX),
-    agentVersion: sanitize(raw?.agent_version, 32),
-    accelerator: sanitize(raw?.accelerator, 32),
-    // Reported only over the authenticated channel — a beacon carries none —
-    // so a machine we have merely seen shows a blank rather than a guess.
-    // Sanitised regardless, because everything on this path is untrusted input.
-    os: sanitize(raw?.os, 32),
-    vitals: raw?.vitals ?? null,
-    alerts: (Array.isArray(raw?.alerts) ? raw.alerts : []).slice(0, 8).map((a) => ({
-      kind: a?.kind ?? 'unknown',
-      severity: a?.severity ?? 'warning',
-      detail: sanitize(a?.detail, DETAIL_MAX)
-    })),
-    running: raw?.running ? sanitize(raw.running, 64) : null,
-    lastSeen: Date.now()
-  };
-}
-
-/** The node's best address, which is what a collective would use. */
 export function preferredAddress(node) {
   const usable = node.addresses.filter((a) => a.class !== 'virtual' && a.class !== 'loopback');
   if (usable.length === 0) return null;
@@ -238,7 +175,22 @@ class FleetSession {
    * retry loop — a marketing page must not poll loopback forever.
    */
   async start({ watch = true } = {}) {
-    if (this.#started) return this.#starting ?? Promise.resolve();
+    if (this.#started) {
+      // A later caller asking to WATCH must get watching, even though the
+      // session is already up. FleetPill is mounted by <Nav/> INSIDE the
+      // control page, and child effects run first, so on a machine with a
+      // stored token the pill's `start({watch: false})` always won the race.
+      // The page's own `start({watch: true})` then short-circuited here, and a
+      // paired operator whose agent was down read "Watching for it — this page
+      // will continue on its own" while nothing was watching at all.
+      if (watch) {
+        await (this.#starting ?? Promise.resolve());
+        // Idempotent: #scheduleProbe clears any existing timer first, so the
+        // second caller cannot stack a second backoff loop on the first.
+        if (this.mode === 'no_agent') this.#scheduleProbe();
+      }
+      return this.#starting ?? Promise.resolve();
+    }
     this.#started = true;
     this.#starting = (async () => {
       await this.#connect();
@@ -314,18 +266,37 @@ class FleetSession {
 
     const res = await this.agent.watchFleet(true);
     if (res.ok && Array.isArray(res.reply?.nodes)) {
-      this.nodes = res.reply.nodes.map(ingestNode);
+      // Same filter and cap as the fallback path below. This is the branch a
+      // modern agent actually takes, so it was the one that mattered: an
+      // invalid id put a null in `nodes`, and the `local` getter reads
+      // `n.isLocal` on every entry.
+      this.nodes = res.reply.nodes.map(ingestNode).filter(Boolean).slice(0, MAX_NODES);
       this.watching = true;
       return;
     }
     // An agent too old to know the fleet verbs is not an error: it is a
     // single-node agent, and the page should show this machine and say so.
     const list = await this.agent.listNodes();
-    this.nodes = Array.isArray(list.reply?.nodes) ? list.reply.nodes.map(ingestNode) : [];
+    this.nodes = Array.isArray(list.reply?.nodes)
+      ? list.reply.nodes.map(ingestNode).filter(Boolean).slice(0, MAX_NODES)
+      : [];
     this.watching = false;
   }
 
   #onEvent(msg) {
+    // The socket died. Until this existed nothing observed it, so a page that
+    // had reached 'live' stayed 'live' through an agent restart — showing a
+    // fleet that could no longer change, with no probe scheduled, because
+    // probes only ever started from 'no_agent'.
+    if (msg?.type === 'agent_closed') {
+      if (this.mode === 'live') {
+        this.mode = 'reconnecting';
+        this.watching = false;
+        this.#probeDelay = PROBE_START_MS;
+        this.#scheduleProbe();
+      }
+      return;
+    }
     if (msg?.type !== 'fleet_event') return;
     const ev = msg.event;
     const next = this.nodes.slice();
@@ -334,9 +305,16 @@ class FleetSession {
     switch (ev?.change) {
       case 'node_changed': {
         const node = ingestNode(ev.node);
+        // A descriptor this page cannot make sense of is dropped rather than
+        // rendered as a blank card.
+        if (!node) break;
         const i = at(node.id);
         if (i >= 0) next[i] = node;
-        else next.push(node);
+        // This is the flood path: an update for a node already known is
+        // always accepted, but a NEW id past the cap is refused. Beacons are
+        // unauthenticated, so without this a stream of fresh ids grows the
+        // list until the page stops responding.
+        else if (next.length < MAX_NODES) next.push(node);
         break;
       }
       case 'node_gone': {
@@ -346,19 +324,24 @@ class FleetSession {
       }
       case 'vitals': {
         const i = at(ev.node);
-        if (i >= 0) next[i] = { ...next[i], vitals: ev.vitals, lastSeen: Date.now() };
+        // Through the same validator as the snapshot. This path assigned the
+        // wire value raw, so a hostile `{state:'reading',value:'x'}` reached
+        // `format(value)` in VitalTile and threw — the exact crash class the
+        // ingestion whitelist exists to prevent, on the one path that fires
+        // while somebody is watching.
+        if (i >= 0) next[i] = { ...next[i], vitals: vitals(ev.vitals), lastSeen: Date.now() };
         break;
       }
       case 'alert_raised': {
         const i = at(ev.node);
         if (i >= 0) {
-          const alert = {
-            kind: ev.alert?.kind ?? 'unknown',
-            severity: ev.alert?.severity ?? 'warning',
-            detail: sanitize(ev.alert?.detail, DETAIL_MAX)
-          };
-          const kept = next[i].alerts.filter((a) => a.kind !== alert.kind);
-          next[i] = { ...next[i], alerts: [...kept, alert] };
+          // Was built inline with `?? 'unknown'` / `?? 'warning'`, so neither
+          // field went through the whitelist the snapshot path uses: a
+          // non-string `kind` reached `.replaceAll` and a chosen `severity`
+          // reached `class="al-{...}"`.
+          const raised = alert(ev.alert);
+          const kept = next[i].alerts.filter((a) => a.kind !== raised.kind);
+          next[i] = { ...next[i], alerts: [...kept, raised].slice(-8) };
         }
         break;
       }
@@ -381,6 +364,9 @@ class FleetSession {
     clearTimeout(this.#probeTimer);
     this.#probeTimer = setTimeout(async () => {
       if (!this.#started) return;
+      // Reached from 'no_agent' and from 'reconnecting' alike: both mean "no
+      // usable socket", and the only difference is whether the page ever had
+      // one.
       // Silent: a poll the user did not ask for must not repaint what they are
       // reading. It may only move the page forward, when an agent answers.
       const ok = await this.agent.connect();

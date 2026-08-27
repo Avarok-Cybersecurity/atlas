@@ -80,9 +80,44 @@
     unpairing ? unpairConfirm.trim().toLowerCase() === unpairing.id.slice(0, 8) : false
   );
 
+  /** Set when an unpair was refused, so the dialog can say so. */
+  let unpairError = $state('');
+
+  let unpairEl = $state(null);
+
+  /** Dismiss the unpair dialog, clearing what it was showing. */
+  function closeUnpair() {
+    unpairing = null;
+    unpairConfirm = '';
+    unpairError = '';
+  }
+
+  // Declaring `aria-modal="true"` and then leaving the dialog unfocused with no
+  // Escape handler tells an assistive-technology user they are in a modal and
+  // gives them no way out. PairDialog and LaunchDialog both do this properly;
+  // this one and NodeDetails did not.
+  $effect(() => {
+    if (!unpairing) return;
+    unpairEl?.focus();
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') closeUnpair();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   async function doUnpair() {
     if (!unpairReady) return;
-    await fleet.unpair(unpairing.id);
+    unpairError = '';
+    const res = await fleet.unpair(unpairing.id);
+    if (!res.ok) {
+      // The dialog used to close here regardless. The node stayed trusted and
+      // the interface implied it had been removed, which is the worst of the
+      // three possible outcomes: the operator believes a machine is out of
+      // their fleet when it is still in it.
+      unpairError = res.detail || 'The agent refused to remove this pairing.';
+      return;
+    }
     unpairing = null;
     unpairConfirm = '';
   }
@@ -169,6 +204,24 @@
             which need exactly two nodes.
           </p>
         {/if}
+      {:else if fleet.mode === 'reconnecting'}
+        <!-- The agent was here a moment ago and went away — a restart, a
+             reboot, an ssh session closing. Falling through to the "install the
+             agent" invitation below would tell someone who plainly HAS one to
+             go and get one. -->
+        <div class="ctl-setup">
+          <h2>Lost the agent</h2>
+          <p>
+            The connection to the local agent dropped. This page is trying again on
+            its own, and will pick up where it left off as soon as the agent answers.
+          </p>
+          <p class="ld-watching">Reconnecting…</p>
+          <p>
+            If it does not come back, the agent may have stopped. Check it with
+            <code class="mono">atlasctl agent status</code>, or start it again with
+            <code class="mono">{START_AGENT}</code>.
+          </p>
+        </div>
       {:else if fleet.mode === 'browser_unpaired'}
         <div class="ctl-setup">
           <h2>Pair this browser with your agent</h2>
@@ -345,12 +398,19 @@
 {/if}
 
 {#if unpairing}
-  <div class="ld-backdrop" role="presentation" onclick={() => (unpairing = null)}></div>
+  <div class="ld-backdrop" role="presentation" onclick={closeUnpair}></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-  <div class="ld" role="dialog" aria-modal="true" aria-labelledby="unpair-title" tabindex="-1">
+  <div
+    class="ld"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="unpair-title"
+    tabindex="-1"
+    bind:this={unpairEl}
+  >
     <header class="ld-head">
       <h3 class="ld-title" id="unpair-title">Unpair {unpairing.name}?</h3>
-      <button type="button" class="ld-close" onclick={() => (unpairing = null)} aria-label="Close"
+      <button type="button" class="ld-close" onclick={closeUnpair} aria-label="Close"
         >×</button
       >
     </header>
@@ -369,8 +429,11 @@
         aria-label="Type the fingerprint prefix to confirm"
         placeholder={unpairing.id.slice(0, 8)}
       />
+      {#if unpairError}
+        <p class="ld-error" role="alert">{unpairError}</p>
+      {/if}
       <div class="ld-actions">
-        <button type="button" class="btn btn-ghost" onclick={() => (unpairing = null)}>Cancel</button>
+        <button type="button" class="btn btn-ghost" onclick={closeUnpair}>Cancel</button>
         <button type="button" class="btn btn-danger" disabled={!unpairReady} onclick={doUnpair}>
           Unpair
         </button>

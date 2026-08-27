@@ -16,6 +16,21 @@
 
   let { node, onclose } = $props();
 
+  let dialogEl = $state(null);
+
+  // The same two lines PairDialog and LaunchDialog carry. Without them this
+  // markup claims `role="dialog" aria-modal="true"` while Tab walks straight
+  // into the page behind it and Escape does nothing — an assistive-technology
+  // user is told they are in a modal and then handed no way out of it.
+  $effect(() => {
+    dialogEl?.focus();
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') onclose?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   const linkName = {
     roce: 'RoCE',
     infini_band: 'InfiniBand',
@@ -33,7 +48,14 @@
 
 <div class="ld-backdrop" role="presentation" onclick={onclose}></div>
 <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-<div class="ld nd" role="dialog" aria-modal="true" aria-labelledby="nd-title" tabindex="-1">
+<div
+  class="ld nd"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="nd-title"
+  tabindex="-1"
+  bind:this={dialogEl}
+>
   <header class="ld-head">
     <h3 class="ld-title" id="nd-title">{node.name}</h3>
     <button type="button" class="ld-close" onclick={onclose} aria-label="Close">×</button>

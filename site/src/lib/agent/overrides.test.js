@@ -87,3 +87,26 @@ describe('parsing what an input produced', () => {
     expect(O.parse(AUTO, '8')).toEqual({ value: 8 });
   });
 });
+
+// SettingField carried its own `Number(raw)` parser until 2026-08-27. These pin
+// the behaviour it now shares, because the divergence was invisible: the same
+// empty box meant "reset to 0" on the homepage and "that is not a value" on the
+// control page, and only one of those is right.
+test('an emptied numeric field is an error, not zero', () => {
+  const spec = { key: 'gpu', bound: { kind: 'float', min: 0, max: 1 } };
+  const r = O.parse(spec, '');
+  expect(r.value).toBeUndefined();
+  expect(r.error).toMatch(/enter a value/);
+});
+
+test('whitespace is not a value either', () => {
+  const spec = { key: 'n', bound: { kind: 'int', min: 0, max: 8 } };
+  expect(O.parse(spec, '   ').error).toMatch(/enter a value/);
+});
+
+test('a real zero still parses, so the guard is about emptiness not falsiness', () => {
+  const spec = { key: 'n', bound: { kind: 'int', min: 0, max: 8 } };
+  const r = O.parse(spec, '0');
+  expect(r.value).toBe(0);
+  expect(r.error).toBeUndefined();
+});

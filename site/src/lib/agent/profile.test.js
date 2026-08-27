@@ -224,3 +224,38 @@ test('overridesFor answers an empty map for an unknown or absent recipe', () => 
 test('merge cannot be used to write a foreign version', () => {
   expect(P.merge(P.empty(), { v: 99, recipe: 'r' }).v).toBe(P.VERSION);
 });
+
+test('a stored __proto__ key cannot set the prototype of what load returns', () => {
+  // JSON.parse makes __proto__ an ordinary own property and Object.entries
+  // hands it over, but writing it back with obj[key] = value goes through the
+  // inherited setter and swaps the prototype instead of adding a key. The
+  // object then reads as empty while `overrides.anything` resolves through the
+  // attacker's value — load() is documented as total, and a return value whose
+  // prototype came from localStorage is not that.
+  const raw = '{"v":1,"overrides":{"__proto__":{"gpu":0.9},"real":{"gpu":0.8}}}';
+  const p = P.load({ getItem: () => raw });
+  expect(Object.getPrototypeOf(p.overrides)).toBe(Object.prototype);
+  expect(p.overrides.gpu).toBeUndefined();
+  expect(Object.keys(p.overrides)).toEqual(['real']);
+  // And nothing leaked onto every other object in the page.
+  expect(/** @type {any} */ ({}).gpu).toBeUndefined();
+});
+
+test('constructor and prototype are refused as recipe ids too', () => {
+  const raw = '{"v":1,"overrides":{"constructor":{"a":1},"prototype":{"b":2},"ok":{"c":3}}}';
+  const p = P.load({ getItem: () => raw });
+  expect(Object.keys(p.overrides)).toEqual(['ok']);
+});
+
+// This one passes with or without the key guard, and that is the point of
+// writing it down: the inner map is safe for a DIFFERENT reason — `scalar()`
+// refuses objects, and assigning a non-object to `__proto__` is a no-op per
+// spec. So the safety here rests on a coupling nobody states out loud. Widen
+// `scalar()` to accept objects and this map becomes pollutable; this test is
+// what fails when someone does.
+test('the inner map stays clean because scalar() refuses objects', () => {
+  const raw = '{"v":1,"overrides":{"r":{"__proto__":{"x":1},"real":5}}}';
+  const p = P.load({ getItem: () => raw });
+  expect(Object.getPrototypeOf(p.overrides.r)).toBe(Object.prototype);
+  expect(Object.keys(p.overrides.r)).toEqual(['real']);
+});

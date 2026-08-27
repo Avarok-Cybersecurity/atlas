@@ -306,3 +306,28 @@ describe('stopping a running cluster', () => {
     }
   });
 });
+
+test('a commit reply naming no machine is a failure, not a running launch', () => {
+  // previewed() and prepared() both guard this and say why; started() did not.
+  // phase 'running' with an empty started list renders neither panel, so the
+  // operator sees an empty screen with no error immediately after the step
+  // that actually spends machines.
+  const held = L.prepared(
+    L.previewed(chosen(TWO, ['a', 'b']), { ranks: [{ node: 'a', rank: 0, command: 'x' }] }),
+    { epoch: 'e1', ranks: [{ node: 'a', prepared: true }], may_commit: true }
+  );
+  const out = L.started(L.beginCommit(held), { ranks: [] });
+  expect(out.phase).toBe('failed');
+  expect(out.reason).toMatch(/named no machine/);
+  expect(out.epoch).toBeNull();
+});
+
+test('a commit reply with ranks still starts', () => {
+  const held = L.prepared(
+    L.previewed(chosen(TWO, ['a', 'b']), { ranks: [{ node: 'a', rank: 0, command: 'x' }] }),
+    { epoch: 'e1', ranks: [{ node: 'a', prepared: true }], may_commit: true }
+  );
+  const out = L.started(L.beginCommit(held), { ranks: [{ node: 'a' }] });
+  expect(out.phase).toBe('running');
+  expect(out.started.length).toBe(1);
+});

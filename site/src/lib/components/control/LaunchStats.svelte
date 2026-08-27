@@ -16,12 +16,17 @@
   let stats = $state(null);
   let decodeHistory = $state([]);
   let problem = $state(null);
-  let stopped = false;
 
   const live = $derived(S.hasAnything(stats));
 
   $effect(() => {
-    stopped = false;
+    // Effect-LOCAL, as in LaunchLogs. This was an instance field, so a re-run
+    // — a recipe change, or a new `every` — did the wrong thing in a specific
+    // order: cleanup set it true, the new body set it false, and the OLD
+    // chain's in-flight continuation then read false and rescheduled itself.
+    // Two poll loops for two different recipes, interleaving their stats into
+    // one panel and pushing twice into one history.
+    let stopped = false;
     let timer = null;
 
     async function tick() {
