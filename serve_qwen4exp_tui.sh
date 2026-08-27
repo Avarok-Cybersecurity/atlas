@@ -42,6 +42,13 @@ echo "  checkpoint: $SNAP"
 # in process RSS -- which spirals the box into reclaim (load 20-37, earlyoom).
 # Fit floor by context: 16K ctx needs >= 0.84 (pre-KV ~100.4 GB); 4K ctx fits
 # at 0.82 (~12 GB headroom -- both C=4 passes measured flat; prefer it there).
+# Inline ${REASONING_KWARGS:-{json}} appended a stray '}' whenever the var was
+# SET (bash pairs the expansion's closing brace with the JSON's braces), which
+# the server rejects as invalid JSON. Plain assignment sidesteps the parsing.
+if [ -z "$REASONING_KWARGS" ]; then
+  REASONING_KWARGS='{"reasoning_effort":"low"}'
+fi
+
 exec target/release/spark serve \
   --model-from-path "$SNAP" \
   --model-name "${MODEL_NAME:-qwen4exp}" \
@@ -54,5 +61,5 @@ exec target/release/spark serve \
   --gpu-memory-utilization "${GPU_UTIL:-0.84}" \
   --fast-load-prefetch-shards \
   --enable-prefix-caching \
-  --default-chat-template-kwargs "${REASONING_KWARGS:-{\"reasoning_effort\":\"low\"}}" \
+  --default-chat-template-kwargs "$REASONING_KWARGS" \
   "$@"
