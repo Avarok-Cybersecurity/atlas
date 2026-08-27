@@ -10,6 +10,27 @@
 // is all expressible without a single rune.
 
 /**
+ * The real timers, wrapped so they are called on the global object.
+ *
+ * NOT `{ setInterval, clearInterval }`. That object's properties hold the
+ * global functions, but calling `timers.setInterval(...)` invokes them with
+ * `this === timers` — and a browser's `setInterval` is a method of `Window`
+ * that WebIDL requires to be called on one. Chromium throws
+ * `TypeError: Illegal invocation` on the first acquire, which took out every
+ * clock-driven badge on the control page.
+ *
+ * Node and Bun's timers are plain functions and are not `this`-sensitive, so
+ * the unit tests passed against a default that could never work in the browser
+ * the code exists to run in. The arrow wrappers below call them on the global.
+ */
+function browserTimers() {
+  return {
+    setInterval: (fn, ms) => setInterval(fn, ms),
+    clearInterval: (h) => clearInterval(h)
+  };
+}
+
+/**
  * Make a ticker that runs `onTick` every `ms` while at least one consumer holds
  * it.
  *
@@ -18,7 +39,7 @@
  * @param {{setInterval: Function, clearInterval: Function}} [timers] injected
  *   for tests, which must not wait a real second to observe a tick
  */
-export function makeTicker(onTick, ms, timers = { setInterval, clearInterval }) {
+export function makeTicker(onTick, ms, timers = browserTimers()) {
   let handle = null;
   let users = 0;
 

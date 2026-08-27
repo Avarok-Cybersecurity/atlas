@@ -86,3 +86,45 @@ test('it actually ticks while held', () => {
   f.fire();
   expect(n).toBe(2);
 });
+
+test('the default timers survive a this-sensitive global, as in every browser', () => {
+  // The bug this pins: `timers = { setInterval, clearInterval }` puts the
+  // globals on an object and then calls them as ITS methods. A browser's
+  // setInterval is a Window method that WebIDL requires to be called on a
+  // Window, so Chromium throws "Illegal invocation" on the first acquire and
+  // every clock-driven badge on the page stops.
+  //
+  // Node and Bun's timers are plain functions, so the default was untestable
+  // by accident — the runner could not see the failure the browser has. This
+  // replaces the globals with this-sensitive stand-ins, which is the contract
+  // the browser actually implements.
+  const realSet = globalThis.setInterval;
+  const realClear = globalThis.clearInterval;
+  let started = 0;
+  try {
+    // The real contract: WebIDL rejects a call whose `this` is some OTHER
+    // object. A bare call from an ES module passes `this === undefined`, which
+    // browsers accept — so modelling it as "must be globalThis" would fail a
+    // correct implementation.
+    const illegal = (t) => t !== undefined && t !== globalThis;
+    globalThis.setInterval = function (fn, ms) {
+      if (illegal(this)) throw new TypeError('Illegal invocation');
+      started += 1;
+      return 42;
+    };
+    globalThis.clearInterval = function (h) {
+      if (illegal(this)) throw new TypeError('Illegal invocation');
+    };
+
+    // No `timers` argument: the default is what is under test.
+    const t = makeTicker(() => {}, 1000);
+    const release = t.acquire();
+    expect(started).toBe(1);
+    expect(t.running()).toBe(true);
+    release();
+    expect(t.running()).toBe(false);
+  } finally {
+    globalThis.setInterval = realSet;
+    globalThis.clearInterval = realClear;
+  }
+});
