@@ -158,6 +158,17 @@ fn tol_for(ref_vals: &[f32]) -> f32 {
     (rms * 0.05).max(1e-3)
 }
 
+/// The small-T cuBLASLt arm shares the prefill GEMM formulation (BF16-staged
+/// `normed`, tensor-core dots) but cuBLASLt's reduction order differs from
+/// `dense_gemm_bf16_pipelined`'s, so its worst element sits at ~9% of the
+/// reference RMS where the split/tile arms sit under 5% — same cos grade
+/// (>=0.999996) the prefill GEMM shipped with. Held to 12% + the cosine gate.
+fn tol_gemm(ref_vals: &[f32]) -> f32 {
+    let rms = (ref_vals.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / ref_vals.len() as f64)
+        .sqrt() as f32;
+    (rms * 0.12).max(1e-3)
+}
+
 #[test]
 #[ignore]
 fn hc_lowrank_matches_reference() {
@@ -195,25 +206,47 @@ fn hc_lowrank_matches_reference() {
     let streams = upload(g, &f.bytes("streams"));
     let y_out = g.alloc(t * h * 2).unwrap();
     let inj_out = g.alloc(t * hc * 4).unwrap();
-    // Sized as the BufferArena sizes it (64-token ceiling). With the T=8
-    // fixture this routes hc_pre/hc_head through the SPLIT collapse — the
-    // three-launch decode path — so the parity gate covers the fast path,
-    // not just the fused prefill kernel.
+    // Sized as the BufferArena sizes it (64-token ceiling): big enough for
+    // BOTH small-T layouts (split f32 [64, hc*h + rank]; the cuBLASLt GEMM
+    // layout is smaller at lay = 8).
     let scratch = g.alloc(64 * (hc * h + f.rank) * 4).unwrap();
 
-    // ── hc_pre: the per-layer collapse, both sites ──
+    // ── hc_pre: the per-layer collapse, both sites, BOTH small-T arms ──
+    // The public entry routes small T through the cuBLASLt GEMM arm
+    // (`tol_gemm` — see its docs); the split arm is called directly and
+    // held to the original tight bound.
     for site in ["attn", "mlp"] {
         let w = site_weights(g, &f, site, true);
+        let want_mixed = f.f32s(&format!("{site}_mixed"));
+        let want_inj = f.f32s(&format!("{site}_inj"));
+
         ops::hc_pre_lowrank(
             g, k_pre, streams, &w, y_out, inj_out, scratch, t as u32, h as u32, hc as u32, f.eps,
             stream,
         )
         .unwrap();
         g.synchronize(stream).unwrap();
+        println!("{site}_hyper_connection (cublas arm):");
+        compare(
+            "mixed_input",
+            &download_bf16(g, y_out, t * h),
+            &want_mixed,
+            tol_gemm(&want_mixed),
+        );
+        compare(
+            "injection_weights",
+            &download_f32(g, inj_out, t * hc),
+            &want_inj,
+            tol_gemm(&want_inj),
+        );
 
-        let want_mixed = f.f32s(&format!("{site}_mixed"));
-        let want_inj = f.f32s(&format!("{site}_inj"));
-        println!("{site}_hyper_connection:");
+        super::hyper_connection_lowrank::hc_pre_split(
+            g, streams, &w, y_out, inj_out, scratch, t as u32, h as u32, hc as u32, f.eps, true,
+            stream,
+        )
+        .unwrap();
+        g.synchronize(stream).unwrap();
+        println!("{site}_hyper_connection (split arm):");
         compare(
             "mixed_input",
             &download_bf16(g, y_out, t * h),
@@ -237,7 +270,32 @@ fn hc_lowrank_matches_reference() {
     .unwrap();
     g.synchronize(stream).unwrap();
     let want_head = f.f32s("head_mixed");
-    println!("hyper_connection_mixer:");
+    println!("hyper_connection_mixer (cublas arm):");
+    compare(
+        "mixed_input",
+        &download_bf16(g, y_out, t * h),
+        &want_head,
+        tol_gemm(&want_head),
+    );
+
+    // Split arm of the head, tight bound.
+    super::hyper_connection_lowrank::hc_pre_split(
+        g,
+        streams,
+        &w_head,
+        y_out,
+        DevicePtr::NULL,
+        scratch,
+        t as u32,
+        h as u32,
+        hc as u32,
+        f.eps,
+        false,
+        stream,
+    )
+    .unwrap();
+    g.synchronize(stream).unwrap();
+    println!("hyper_connection_mixer (split arm):");
     compare(
         "mixed_input",
         &download_bf16(g, y_out, t * h),
