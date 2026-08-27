@@ -197,8 +197,10 @@ pub(super) fn select(
 /// which depth was the half that multiplied the batched-verify CUDA-graph key
 /// space (266 arrangements at n=8 against a 32-entry cache → 89% of steps
 /// re-capturing, 23.2 ms/step). It also RECONCILES the batch's two ordering
-/// demands — contiguous equal-depth runs and ascending consecutive ssm slots
-/// — which the confidence-ordered arrangement put in direct conflict.
+/// demands — contiguous equal-depth runs and ascending ssm slots — which the
+/// confidence-ordered arrangement put in direct conflict. Runs are physically
+/// consecutive only when the selected pool slots have no gaps; the model
+/// checks their pointers and declines the batched fast path otherwise.
 ///
 /// Below that width the key space is 2 (n=2) or 10 (n=4) keys against a
 /// 32-entry cache — nothing to collapse — and the forced assignment measured

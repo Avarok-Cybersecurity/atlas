@@ -1,6 +1,6 @@
 /* =============================================================================
    Benchmark dashboard modal — same warm-workshop dialect as app.css.
-   Copper stays the 35B flagship's series color; steel #1f6a9e is the dense
+   Copper stays the 35B flagship's series color; steel #7ba7d4 is the dense
    27B's (pair validated for CVD + contrast on the paper surfaces). Verdict
    colors are STATUS colors (green/red) and never used for a series.
    Viewport rules for these components live in mobile.css (its stated SSOT).
@@ -14,48 +14,48 @@
 /* The button must track the receipt's own width (app.css `.receipt`, and the
    per-breakpoint overrides in mobile.css) — otherwise the corner chip anchors
    to empty grid track beside the receipt instead of to its corner. */
-.receipt-hit {
-  display: block; width: 100%; max-width: 460px;
-  background: none; border: 0; padding: 0;
-  cursor: pointer; text-align: inherit; font: inherit; color: inherit;
-  position: relative;
-}
+.receipt-hit { display: block; width: 100%; max-width: 460px; position: relative; }
 /* Ring is present at REST (1px), not only on hover. */
 .receipt-hit .receipt {
-  box-shadow: var(--shadow-lg), 0 0 0 1.5px rgba(181, 98, 47, 0.38);
+  box-shadow: var(--shadow-lg), 0 0 0 1.5px rgba(124, 92, 255, 0.38);
   transition: box-shadow 0.16s ease, transform 0.16s ease;
 }
 .receipt-hit:hover .receipt,
-.receipt-hit:focus-visible .receipt {
+.receipt-hit:has(.receipt-open-hint:focus-visible) .receipt {
   box-shadow: var(--shadow-lg), 0 0 0 2.5px var(--accent); transform: translateY(-2px);
 }
-.receipt-hit:focus-visible { outline: none; }
 
 /* Corner chip — sits on the receipt's top-right corner, outside its clip. */
 .receipt-chip {
   position: absolute; top: -0.55rem; right: -0.4rem; z-index: 2;
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.24rem 0.55rem; border-radius: 999px;
-  background: var(--accent); color: #fff;
+  background: var(--accent-fill); color: #fff;
   font-family: var(--font-mono); font-size: 0.62rem; font-weight: 800;
   letter-spacing: 0.1em; text-transform: uppercase;
   box-shadow: var(--shadow-sm); transition: background 0.16s ease;
 }
 .receipt-hit:hover .receipt-chip,
-.receipt-hit:focus-visible .receipt-chip { background: var(--accent-deep); }
+.receipt-hit:has(.receipt-open-hint:focus-visible) .receipt-chip { background: var(--accent-fill-hover); }
 
 /* Hint reads as a button, not a caption. */
+/* The control, not the receipt. Its ::before stretches over the whole card so
+   the receipt is still one big click target, while the accessible name stays
+   equal to the visible text (WCAG 2.5.3) and the eight proof rows stay
+   readable content rather than part of a button label. */
 .receipt-open-hint {
   display: inline-flex; align-items: center; gap: 0.4rem; margin-top: 0.85rem;
+  cursor: pointer; font: inherit;
   padding: 0.42rem 0.85rem; border: 1.5px solid var(--accent);
   border-radius: 8px; background: var(--accent-soft);
   font-family: var(--font-mono); font-size: 0.74rem; font-weight: 700;
   letter-spacing: 0.06em; color: var(--accent-deep);
   transition: background 0.16s ease, color 0.16s ease;
 }
+.receipt-open-hint::before { content: ''; position: absolute; inset: 0; }
 .receipt-open-hint .rh-glyph { font-size: 0.85rem; line-height: 1; }
 .receipt-hit:hover .receipt-open-hint,
-.receipt-hit:focus-visible .receipt-open-hint { background: var(--accent); color: #fff; }
+.receipt-open-hint:focus-visible { background: var(--accent); color: #fff; }
 
 /* One-shot attention cue after the receipt finishes "printing". Motion only —
    every cue above is legible with animation disabled. */
@@ -69,7 +69,7 @@
 
 /* ---- modal shell ---------------------------------------------------------- */
 .bd-backdrop {
-  position: fixed; inset: 0; z-index: 110; background: rgba(38, 30, 18, 0.45);
+  position: fixed; inset: 0; z-index: 110; background: rgba(0, 0, 0, 0.45);
   display: flex; align-items: flex-start; justify-content: center;
   padding: 3.5rem 1.25rem 2rem; overflow-y: auto;
 }
@@ -147,7 +147,7 @@
 .gbs-tile-val { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 750; color: var(--t1); }
 .gbs-tile-label { font-size: 0.7rem; color: var(--t3); font-family: var(--font-mono); }
 .gbs-verdict[data-verdict='PASS'] { color: var(--green); }
-.gbs-verdict:not([data-verdict='PASS']) { color: #a03123; }
+.gbs-verdict:not([data-verdict='PASS']) { color: #f87171; }
 
 /* ---- chart panel ---------------------------------------------------------- */
 .gate-panel {
@@ -177,13 +177,13 @@
 
 /* ---- point metadata card (a receipt) -------------------------------------- */
 .gpc-backdrop {
-  position: fixed; inset: 0; z-index: 115; background: rgba(38, 30, 18, 0.35);
+  position: fixed; inset: 0; z-index: 115; background: rgba(0, 0, 0, 0.35);
   display: flex; align-items: center; justify-content: center; padding: 1.25rem;
 }
 .gpc { max-height: min(85vh, 46rem); overflow-y: auto; width: min(430px, 100%); }
 .gpc-verdict { font-size: 0.78rem; font-weight: 800; font-family: var(--font-mono); }
 .gpc-verdict[data-verdict='PASS'] { color: var(--green); }
-.gpc-verdict:not([data-verdict='PASS']) { color: #a03123; }
+.gpc-verdict:not([data-verdict='PASS']) { color: #f87171; }
 .gpc-model-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .gpc-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 .gpc-model { font-size: 0.8rem; font-weight: 700; color: var(--t1); overflow-wrap: anywhere; }

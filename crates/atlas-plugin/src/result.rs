@@ -344,18 +344,62 @@ mod tests {
     fn failed_carries_the_reason_into_both_verdict_and_log() {
         let r = BenchmarkResult::failed("scoring", "endpoint refused", Duration::from_secs(1));
         assert_eq!(r.status, RunStatus::Failed);
-        assert_eq!(r.verdict.as_ref().unwrap().kind, VerdictKind::Fail);
-        assert!(r.log.iter().any(|l| l.text.contains("refused")));
+        assert_eq!(r.phase, "scoring");
+        assert_eq!(r.elapsed, Duration::from_secs(1));
+        let verdict = r.verdict.as_ref().expect("failure verdict");
+        assert_eq!(verdict.kind, VerdictKind::Fail);
+        assert_eq!(verdict.reason, "endpoint refused");
+        assert_eq!(r.log.len(), 1);
+        assert_eq!(r.log[0].level, LogLevel::Error);
+        assert_eq!(r.log[0].text, "endpoint refused");
     }
 
     #[test]
     fn frames_round_trip_through_json_for_the_history_pane() {
-        let r = BenchmarkResult::completed("done", Duration::from_millis(1500))
-            .with_summary(vec![Stat::new("Throughput", "119.3", "tok/s")])
-            .with_verdict(Verdict::pass("median +0.4% (limit 3%)"));
+        let mut table = ResultTable::new("Samples", vec![Column::right("Rate", 8)]);
+        table.push(vec![Cell::styled("119.3", CellStyle::Good)]);
+        let mut r = BenchmarkResult::completed("done", Duration::from_millis(1500))
+            .with_progress(2, 3)
+            .with_summary(vec![
+                Stat::new("Throughput", "119.3", "tok/s").with_style(CellStyle::Accent),
+            ])
+            .with_table(table)
+            .with_metrics(BTreeMap::from([("median_tps".into(), 119.3)]))
+            .with_verdict(Verdict::pass("median +0.4% (limit 3%)"))
+            .with_log(vec![LogLine::warn("clock dipped")])
+            .with_hardware_state(crate::hardware::HardwareStateReport::opened(
+                crate::hardware::Sensitivity::Correctness,
+                crate::hardware::HardwareState::default(),
+            ));
+        r.dataset_fingerprint = Some("file-sha256:abc".into());
         let json = serde_json::to_string(&r).unwrap();
         let back: BenchmarkResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, RunStatus::Completed);
+        assert_eq!(back.phase, "done");
+        assert_eq!(back.progress, Some((2, 3)));
         assert_eq!(back.elapsed, Duration::from_millis(1500));
+        assert_eq!(back.summary.len(), 1);
+        assert_eq!(back.summary[0].label, "Throughput");
         assert_eq!(back.summary[0].value, "119.3");
+        assert_eq!(back.summary[0].unit, "tok/s");
+        assert_eq!(back.summary[0].style, CellStyle::Accent);
+        let table = back.table.as_ref().expect("table");
+        assert_eq!(table.title, "Samples");
+        assert_eq!(table.columns.len(), 1);
+        assert_eq!(table.columns[0].title, "Rate");
+        assert_eq!(table.columns[0].align, Align::Right);
+        assert_eq!(table.columns[0].width, 8);
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0][0].text, "119.3");
+        assert_eq!(table.rows[0][0].style, CellStyle::Good);
+        let verdict = back.verdict.as_ref().expect("verdict");
+        assert_eq!(verdict.kind, VerdictKind::Pass);
+        assert_eq!(verdict.reason, "median +0.4% (limit 3%)");
+        assert_eq!(back.metrics, BTreeMap::from([("median_tps".into(), 119.3)]));
+        assert_eq!(back.log.len(), 1);
+        assert_eq!(back.log[0].level, LogLevel::Warn);
+        assert_eq!(back.log[0].text, "clock dipped");
+        assert!(back.hardware_state.is_some());
+        assert_eq!(back.dataset_fingerprint.as_deref(), Some("file-sha256:abc"));
     }
 }

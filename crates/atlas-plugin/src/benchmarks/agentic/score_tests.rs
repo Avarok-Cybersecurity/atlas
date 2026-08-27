@@ -73,6 +73,10 @@ fn tests_count_from_either_a_tests_dir_or_an_attribute() {
     assert!(!step(&d, "wrote_tests"), "an empty tests/ is not evidence");
     std::fs::write(d.join("tests/it.rs"), "#[test] fn t() {}").unwrap();
     assert!(step(&d, "wrote_tests"));
+    std::fs::remove_dir_all(d.join("tests")).unwrap();
+    assert!(!step(&d, "wrote_tests"));
+    std::fs::write(d.join("src/main.rs"), "fn main() {}\n#[test] fn t() {}").unwrap();
+    assert!(step(&d, "wrote_tests"));
 }
 
 #[test]
@@ -118,14 +122,12 @@ fn the_evidence_walk_neither_follows_a_symlink_nor_counts_one() {
     std::os::unix::fs::symlink(elsewhere.join("main.rs"), d.join("src/main.rs")).unwrap();
     std::fs::create_dir_all(d.join("tests")).unwrap();
     std::os::unix::fs::symlink(elsewhere.join("it.rs"), d.join("tests/it.rs")).unwrap();
-    for name in ["a", "b", "c"] {
-        std::os::unix::fs::symlink(".", d.join(name)).unwrap();
-    }
-    // Returning at all is half the assertion; the harness has no timeout to
-    // rescue it if this walk does not terminate.
+    std::os::unix::fs::symlink(&elsewhere, d.join("borrowed")).unwrap();
+    // A finite borrowed directory makes a follow-links mutant fail promptly;
+    // the old three-link self-cycle could consume the whole CI job first.
     assert!(!step(&d, "wrote_project"), "a symlinked main.rs is not one");
     assert!(!step(&d, "wrote_tests"), "a symlinked test file is not one");
-    std::fs::write(d.join("src/real.rs"), "#[test] fn t() {}").unwrap();
+    std::fs::write(d.join("tests/real.rs"), "fn helper() {}").unwrap();
     assert!(step(&d, "wrote_tests"), "a real test file still counts");
 }
 
@@ -173,17 +175,37 @@ fn the_walk_skips_target_so_build_output_is_not_evidence() {
     assert!(!has_tests(&d), "a #[test] under target/ must not count");
 }
 
-#[test]
-fn free_port_returns_a_usable_ephemeral_port() {
-    // What `free_port` actually promises: a port the OS handed out as free at
-    // the moment of the call. It does NOT promise the port is still free
-    // afterwards — nothing can, since any process may take it — so this asserts
-    // the range and does not re-bind. An earlier version of this test did
-    // re-bind and flaked under a parallel `cargo test`.
-    for _ in 0..4 {
-        let p = free_port().unwrap();
-        assert!(p > 1024, "expected an ephemeral port, got {p}");
-    }
+#[tokio::test]
+async fn the_ephemeral_port_stays_reserved_while_the_project_builds() {
+    let d = sandbox("port-reservation");
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"port-reservation\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(
+        d.join("build.rs"),
+        r#"fn main() {
+    let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap().parse().unwrap();
+    assert!(
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_err(),
+        "the scorer released its selected port before the build"
+    );
+}
+"#,
+    )
+    .unwrap();
+
+    let result = webserver_test(
+        &d,
+        None,
+        Duration::from_secs(30),
+        Duration::from_millis(100),
+    )
+    .await;
+    assert!(result.build_ok, "{}", result.error);
+    let _ = std::fs::remove_dir_all(d);
 }
 
 #[tokio::test]

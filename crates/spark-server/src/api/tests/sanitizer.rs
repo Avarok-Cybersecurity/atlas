@@ -52,9 +52,11 @@ fn a_tag_split_across_chunks_still_matches() {
     let markers = qwen();
     let mut s = Stream::new(&markers);
     let first = s.feed("abc<param");
+    // Marker-prefix holdback (first-delta latency fix): the prose emits
+    // immediately; only the `<param` suffix is withheld for fusion.
     assert_eq!(
-        first, "",
-        "a chunk that could still be a tag prefix must not be emitted yet"
+        first, "abc",
+        "prose before a possible tag prefix emits immediately"
     );
     assert!(!s.suppressing(), "a partial tag is not yet a leak");
     s.feed("eter=x>body</parameter>tail");

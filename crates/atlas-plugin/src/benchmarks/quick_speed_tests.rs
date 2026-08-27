@@ -21,8 +21,45 @@ fn defaults_match_the_python_probe() {
 }
 
 #[test]
+fn reconfiguring_clears_run_and_probe_state() {
+    let mut b = configured();
+    b.warmups_done = 1;
+    b.samples.push(sample(7, 80.0, Some(5.0), Some(2.0)));
+    b.probed = true;
+
+    let values = ParamValues::defaults(&b.parameters());
+    b.configure(&values).unwrap();
+
+    assert_eq!((b.isl, b.osl, b.runs, b.warmup), (60, 128, 5, 1));
+    assert_eq!(b.timeout, Duration::from_secs(300));
+    assert_eq!(b.warmups_done, 0);
+    assert!(b.samples.is_empty());
+    assert!(!b.probed);
+}
+
+#[test]
 fn a_fixture_isl_loads_the_committed_text_and_any_other_synthesizes() {
-    for isl in [128usize, 512, 1024, 4096] {
+    use sha2::{Digest, Sha256};
+
+    let expected = [
+        (
+            128usize,
+            "f9d03ba9af6778941b923cb5b6871c0e9633aef25cebfb6a63b3082f30b21244",
+        ),
+        (
+            512,
+            "7d8a5fc10b77a710ea5957a1933f77f34bc21a85a7ce96d1959e6391d7a4af37",
+        ),
+        (
+            1024,
+            "3191c4db03b3a0b33a75e309e93846239c474298006ad9ae5afbaf9740daf6df",
+        ),
+        (
+            4096,
+            "60c5743a46ea72f5962f39a5aa1d73bbe54fac9bdf797d10bdb0bce1b058673f",
+        ),
+    ];
+    for (isl, digest) in expected {
         let p = prompt_for(isl);
         assert!(
             p.ends_with(COUNT_SUFFIX),
@@ -33,6 +70,7 @@ fn a_fixture_isl_loads_the_committed_text_and_any_other_synthesizes() {
             !p.starts_with("The quick brown fox"),
             "{isl}: expected fixture text, got synthesized filler"
         );
+        assert_eq!(format!("{:x}", Sha256::digest(p.as_bytes())), digest);
     }
     // Any non-fixture size is exactly the shared synthesizer's output — one
     // corpus, one rule, no drift from the concurrency sweep's prompts.
@@ -48,6 +86,24 @@ fn a_fixture_isl_loads_the_committed_text_and_any_other_synthesizes() {
     assert_eq!(prompt_for(128), prompt_for(128));
 }
 
+#[test]
+fn request_body_pins_the_measurement_instrument() {
+    let b = configured();
+    assert_eq!(
+        b.request_body("fixture-model"),
+        serde_json::json!({
+            "model": "fixture-model",
+            "stream": true,
+            "max_tokens": 128,
+            "temperature": 0.0,
+            "messages": [{
+                "role": "user",
+                "content": prompt_for(60),
+            }],
+        })
+    );
+}
+
 fn sample(tokens: usize, e2e_ms: f64, ttft: Option<f64>, tps: Option<f64>) -> RunSample {
     RunSample {
         prompt_tokens: 70,
@@ -59,12 +115,35 @@ fn sample(tokens: usize, e2e_ms: f64, ttft: Option<f64>, tps: Option<f64>) -> Ru
 }
 
 #[test]
+fn run_sample_preserves_live_timing_evidence() {
+    let outcome = http::ChatOutcome {
+        prompt_tokens: 61,
+        completion_tokens: 127,
+        e2e_ms: 4_321.5,
+        server_ttft_ms: Some(87.25),
+        server_tps: Some(59.75),
+        ..Default::default()
+    };
+    assert_eq!(
+        RunSample::from_outcome(&outcome),
+        RunSample {
+            prompt_tokens: 61,
+            completion_tokens: 127,
+            e2e_ms: 4_321.5,
+            server_ttft_ms: Some(87.25),
+            server_tps: Some(59.75),
+        }
+    );
+}
+
+#[test]
 fn averages_are_computed_from_the_server_timings() {
     let runs = [
         sample(128, 4000.0, Some(100.0), Some(50.0)),
         sample(128, 4000.0, Some(200.0), Some(70.0)),
     ];
     let avg = Averages::of(&runs);
+    assert_eq!(avg.prompt_tokens, Some(70.0));
     assert_eq!(avg.server_decode_tok_s, Some(60.0));
     assert_eq!(avg.server_ttft_ms, Some(150.0));
     // TPOT is derived from the server decode rate, per run then averaged:
@@ -75,6 +154,7 @@ fn averages_are_computed_from_the_server_timings() {
     // lower than the 60 tok/s decode rate, which is the point of the label.
     assert_eq!(avg.client_e2e_tok_s, Some(32.0));
     assert_eq!(avg.output_tokens, Some(128.0));
+    assert_eq!(avg.e2e_ms, Some(4000.0));
 }
 
 /// ★ The defect the port exists to fix: no server timing ⇒ no TPOT, never a
@@ -103,6 +183,21 @@ fn without_server_timings_no_decode_rate_or_tpot_is_fabricated() {
         sample(100, 2000.0, None, None),
     ];
     assert_eq!(Averages::of(&mixed).server_decode_tok_s, Some(40.0));
+}
+
+#[test]
+fn invalid_timings_are_omitted_instead_of_averaged() {
+    let runs = [
+        sample(100, f64::INFINITY, Some(-1.0), Some(0.0)),
+        sample(100, -1.0, Some(f64::NAN), Some(-20.0)),
+        sample(100, f64::NAN, Some(f64::INFINITY), Some(f64::INFINITY)),
+    ];
+    let avg = Averages::of(&runs);
+    assert_eq!(avg.server_decode_tok_s, None);
+    assert_eq!(avg.server_tpot_ms, None);
+    assert_eq!(avg.server_ttft_ms, None);
+    assert_eq!(avg.client_e2e_tok_s, None);
+    assert_eq!(avg.e2e_ms, None);
 }
 
 /// EOS before the OSL cap is a data point, not an error: the arithmetic uses

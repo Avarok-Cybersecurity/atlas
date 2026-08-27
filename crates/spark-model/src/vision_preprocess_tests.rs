@@ -9,48 +9,54 @@
 use super::*;
 
 #[test]
-fn test_target_size_no_upscale() {
-    // Small image: grid_unit=32, no upscale needed.
+fn a_small_unbounded_image_only_moves_to_the_nearest_grid() {
     let (h, w) = target_size_with_max_pixels(100, 150, 32, None);
-    assert!(h <= 1280 && w <= 1280);
-    assert_eq!(h % 32, 0);
-    assert_eq!(w % 32, 0);
+    assert_eq!((h, w), (96, 160));
 }
 
 #[test]
-fn test_target_size_downscale() {
-    // Large image: should be downscaled.
+fn an_unbounded_large_image_uses_the_fallback_long_side() {
     let (h, w) = target_size_with_max_pixels(2000, 3000, 32, None);
-    assert!(h.max(w) <= 1280);
-    assert_eq!(h % 32, 0);
-    assert_eq!(w % 32, 0);
+    assert_eq!((h, w), (864, 1280));
 }
 
 #[test]
-fn test_target_size_max_pixels() {
+fn a_square_area_bound_snaps_to_its_exact_grid() {
     let (h, w) = target_size_with_max_pixels(1254, 1254, 32, Some(512 * 512));
     assert_eq!((h, w), (512, 512));
 }
 
 #[test]
-fn test_image_pad_count_2x2_merge() {
+fn still_image_pad_count_uses_the_spatially_merged_grid() {
     // Standard Qwen3-VL: 2×2 spatial merger folds a patch block
     // into one embedding token.
-    assert_eq!(image_pad_count(64, 64, 2), 32 * 32);
-    assert_eq!(image_pad_count(40, 80, 2), 20 * 40);
+    assert_eq!(
+        crate::VisionItem::image(vec![], 64, 64).pad_count(2),
+        32 * 32
+    );
+    assert_eq!(
+        crate::VisionItem::image(vec![], 40, 80).pad_count(2),
+        20 * 40
+    );
 }
 
 #[test]
-fn test_image_pad_count_no_merge() {
+fn still_image_pad_count_is_identity_without_merging() {
     // spatial_merge_size=1 → identity (each patch → one token).
-    assert_eq!(image_pad_count(64, 64, 1), 64 * 64);
-    assert_eq!(image_pad_count(8, 12, 1), 96);
+    assert_eq!(
+        crate::VisionItem::image(vec![], 64, 64).pad_count(1),
+        64 * 64
+    );
+    assert_eq!(crate::VisionItem::image(vec![], 8, 12).pad_count(1), 96);
 }
 
 #[test]
-fn test_image_pad_count_zero_sms_clamps_to_one() {
+fn still_image_pad_count_treats_zero_merge_as_one() {
     // sms=0 is invalid; clamps to 1 so we never divide by zero.
-    assert_eq!(image_pad_count(64, 64, 0), 64 * 64);
+    assert_eq!(
+        crate::VisionItem::image(vec![], 64, 64).pad_count(0),
+        64 * 64
+    );
 }
 
 /// A `vision_config` for the shipped Qwen3-VL geometry.
@@ -118,19 +124,33 @@ fn zero_temporal_patch_size_is_an_error() {
 /// The geometry check must not have broken the working path: a valid
 /// config still decodes and produces `num_patches × patch_dim` floats.
 #[test]
-fn valid_config_still_preprocesses() {
+fn a_red_pixel_produces_the_exact_grid_and_normalized_channel_layout() {
     let vcfg = ok_cfg();
     let (pixels, gh, gw) = preprocess_image(TINY_PNG_B64, &vcfg).unwrap();
     let patch_dim = 3 * vcfg.temporal_patch_size * vcfg.patch_size * vcfg.patch_size;
+    assert_eq!((gh, gw), (2, 2));
     assert_eq!(pixels.len(), gh * gw * patch_dim);
-    assert!(gh > 0 && gw > 0);
+    let channel_span = vcfg.temporal_patch_size * vcfg.patch_size * vcfg.patch_size;
+    for patch in pixels.chunks_exact(patch_dim) {
+        assert!(patch[..channel_span].iter().all(|&v| v == 1.0));
+        assert!(patch[channel_span..].iter().all(|&v| v == -1.0));
+    }
 }
 
-/// Garbage that is not an image must be a clean error, not a panic.
+/// Invalid transport and invalid image bytes must report their own boundary.
 #[test]
-fn undecodable_input_is_an_error() {
-    assert!(preprocess_image("bm90LWFuLWltYWdl", &ok_cfg()).is_err());
-    assert!(preprocess_image("!!! not base64 !!!", &ok_cfg()).is_err());
+fn malformed_base64_and_undecodable_bytes_fail_for_distinct_reasons() {
+    let image_err = format!(
+        "{:#}",
+        preprocess_image("bm90LWFuLWltYWdl", &ok_cfg()).unwrap_err()
+    );
+    assert!(image_err.contains("image decode failed"), "{image_err}");
+
+    let base64_err = format!(
+        "{:#}",
+        preprocess_image("!!! not base64 !!!", &ok_cfg()).unwrap_err()
+    );
+    assert!(base64_err.contains("base64 decode failed"), "{base64_err}");
 }
 
 /// A PNG whose IHDR declares 65535×65535 (~12.9 GB of RGB) but whose file
@@ -174,9 +194,12 @@ fn decode_bomb_dimensions_are_rejected_before_allocation() {
 }
 
 #[test]
-fn test_image_pad_count_non_divisible_floors() {
+fn still_image_pad_count_floors_partial_merge_blocks() {
     // Integer division truncates: 65/2 = 32 (not 33).
-    assert_eq!(image_pad_count(65, 64, 2), 32 * 32);
+    assert_eq!(
+        crate::VisionItem::image(vec![], 65, 64).pad_count(2),
+        32 * 32
+    );
 }
 
 // ── area-bound sizing (Gap 1, 2026-08-14) ────────────────────────────
@@ -224,6 +247,21 @@ fn declared_area_bound_still_downscales_when_exceeded() {
 }
 
 #[test]
+fn declared_area_bound_survives_grid_rounding() {
+    // The continuous scale lands just below a grid boundary on both axes.
+    // Rounding both sides to nearest used to return 96x2752 = 264,192 pixels,
+    // exceeding the operator's 262,144-pixel cap.
+    let max_pixels = 512 * 512;
+    let (h, w) = target_size_with_max_pixels(85, 2740, GU, Some(max_pixels));
+    assert_eq!((h, w), (96, 2720));
+    assert!(
+        (h as usize) * (w as usize) <= max_pixels,
+        "grid-rounded area {} exceeds the declared bound {max_pixels}",
+        (h as usize) * (w as usize)
+    );
+}
+
+#[test]
 fn operator_override_can_lower_below_the_fallback() {
     let (h, w) = target_size_with_max_pixels(1344, 1344, GU, Some(256 * 256));
     assert!((h as u64) * (w as u64) <= 256 * 256);
@@ -242,7 +280,7 @@ fn absolute_ceiling_bounds_a_pathological_aspect_ratio() {
 }
 
 #[test]
-fn never_upscales() {
+fn an_aligned_small_image_is_not_scaled_up_to_a_large_declared_bound() {
     // A tiny image under a huge bound stays tiny. Atlas diverges from HF
     // here (HF honours shortest_edge/min_pixels by scaling UP); that is
     // deliberate and out of scope, but it must not drift silently.
@@ -345,13 +383,32 @@ fn an_exif_tagged_image_is_rotated_upright() {
     );
 }
 
-/// Rotation happens BEFORE the grid snap, so a portrait photo tagged as
-/// landscape is measured at its displayed shape rather than its stored one.
-/// A 90° turn swaps the axes; on a square fixture the token count is
-/// unchanged, which is what makes this safe to apply universally.
+/// Rotation happens BEFORE the grid snap, so a landscape-shaped stored image
+/// tagged as portrait is measured at its displayed shape. The asymmetric
+/// fixture makes an ignored or late-applied orientation swap `(4, 2)` back to
+/// `(2, 4)` instead of hiding behind equal square axes.
 #[test]
-fn rotation_does_not_change_the_token_count_of_a_square() {
-    let (_, gh_a, gw_a) = preprocess_image(&as_data_uri(EXIF_ROT90), &ok_cfg()).expect("tagged");
-    let (_, gh_b, gw_b) = preprocess_image(&as_data_uri(EXIF_NONE), &ok_cfg()).expect("untagged");
-    assert_eq!((gh_a, gw_a), (gh_b, gw_b));
+fn exif_rotation_precedes_grid_sizing() {
+    let image = image::RgbImage::from_pixel(64, 32, image::Rgb([255, 0, 0]));
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&image)
+        .expect("encode fixture");
+
+    // Insert a minimal big-endian EXIF APP1 segment carrying Orientation=6
+    // immediately after the JPEG SOI marker.
+    const ORIENTATION_6: &[u8] = &[
+        0xff, 0xe1, 0x00, 0x22, b'E', b'x', b'i', b'f', 0x00, 0x00, b'M', b'M', 0x00, 0x2a, 0x00,
+        0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let mut tagged = jpeg[..2].to_vec();
+    tagged.extend_from_slice(ORIENTATION_6);
+    tagged.extend_from_slice(&jpeg[2..]);
+
+    let decoded = decode_image(&as_data_uri(&tagged)).expect("decode tagged fixture");
+    assert_eq!((decoded.width(), decoded.height()), (32, 64));
+
+    let (_, grid_h, grid_w) = preprocess_image(&as_data_uri(&tagged), &ok_cfg()).expect("tagged");
+    assert_eq!((grid_h, grid_w), (4, 2));
 }

@@ -88,16 +88,18 @@ pub(crate) fn repo_root() -> Result<std::path::PathBuf> {
 /// because that is the only moment the warning can still save anything: a
 /// `bfcl-subset` gate takes ~3.5 hours, and an operator told at the end that
 /// the binary never matched the commit has already spent the afternoon. A
-/// failure to read the dirt is itself reported and does not abort — the run is
-/// the expensive thing, and `git_sha` above has already proven this is a
-/// checkout.
+/// A failure to read the dirt aborts before the model is loaded. A record with
+/// an empty dirty list asserts that the tree was clean; it must not also mean
+/// that git could not answer the question.
 fn capture_provenance() -> Result<(String, Vec<String>)> {
     let root = repo_root()?;
-    let sha = gate::git_sha(&root)?;
-    let dirty = gate::dirty_perf_paths(&root).unwrap_or_else(|e| {
-        eprintln!("gate: could not read the working tree's state ({e:#})");
-        Vec::new()
-    });
+    capture_provenance_at(&root)
+}
+
+fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)> {
+    let sha = gate::git_sha(root)?;
+    let dirty = gate::dirty_perf_paths(root)
+        .context("reading the working tree state before the gate run")?;
     if !dirty.is_empty() {
         eprintln!(
             "gate: WARNING — {} uncommitted file(s) that change what a gate \
@@ -115,6 +117,10 @@ fn capture_provenance() -> Result<(String, Vec<String>)> {
     }
     Ok((sha, dirty))
 }
+
+#[cfg(test)]
+#[path = "bench_provenance_tests.rs"]
+mod provenance_tests;
 
 /// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
 ///

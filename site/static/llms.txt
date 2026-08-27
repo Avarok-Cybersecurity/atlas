@@ -1,12 +1,121 @@
-# Atlas Inference
+# Atlas Inference Engine
 
-Pure Rust + CUDA LLM inference engine, hand-tuned for prosumer AI machines (NVIDIA DGX Spark / GB10 and AMD Strix Halo / gfx1151). Submitted to MLPerf Inference v6.1, closed edge division, on both.
+> Pure Rust inference, from the device in your hand to the datacenter rack.
+
+Atlas is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.
+
+Written in pure Rust and CUDA and licensed AGPL-3.0-only. One codebase covers
+the range, from edge-class accelerators through workstations to expert-parallel
+deployments across nodes.
+
+## What it runs on
+
+- NVIDIA DGX Spark (GB10 · SM121) — Verified today. One multi model binary serves a full matrix of hand tuned targets on a single GB10. NVFP4 and FP8, MTP speculative decoding, EP=2 across two Sparks. Every target passes the serve matrix before we cut an image.
+- AMD Strix Halo (gfx1151 · RDNA 3.5) — MLPerf submitted. One codebase, both vendors. Our CUDA kernels compile straight for AMD gfx1151 with SCALE by Spectral Compute. No HIP port, no second kernel tree. AMD provided the Strix Halo desktop we ran and submitted our MLPerf Inference v6.1 numbers on.
+
+## Measured performance
+
+Qwen3.8-27B NVFP4 concurrency ladder. Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched.
+Aggregate: mean tok/s over 3 timed reps (1 warmup discarded). Box: dgx2 (spark-43fa), NVIDIA GB10 Grace Blackwell, 121.7 GB unified.
+Workload: ISL 128 / OSL 1024 tokens, temperature 0,
+seed 42, 3 timed reps after 1 warmup. presence_penalty and frequency_penalty pinned to 0.0 on both engines.
+
+Result: Atlas wins 8 of 8 rungs, margin 1.012x to 1.225x
+against whichever vLLM configuration is faster at that concurrency.
+
+| concurrency | Atlas tok/s | best vLLM tok/s | ratio |
+| --- | --- | --- | --- |
+| 1 | 23.59 | 19.72 (vLLM + MTP) | 1.196x |
+| 2 | 41.02 | 37.11 (vLLM + MTP) | 1.105x |
+| 4 | 74.21 | 71.61 (vLLM + MTP) | 1.036x |
+| 8 | 125.95 | 124.48 (vLLM + MTP) | 1.012x |
+| 16 | 203.36 | 197.03 (vLLM + MTP) | 1.032x |
+| 32 | 291.01 | 283.48 (vLLM + MTP) | 1.027x |
+| 64 | 386.63 | 361.39 (vLLM + MTP) | 1.070x |
+| 128 | 478.11 | 390.42 (vLLM, no speculation) | 1.225x |
+
+Full campaign log including every rung lost on the way: https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md
+MLPerf Inference v6.1: submitted, closed edge division, on both GB10 and gfx1151.
+Release gate: An Atlas image ships only after the serve matrix passes: every model boots, stays coherent (greedy determinism, no token leakage, tool reliability), and holds throughput within 10% of its committed baseline.
+Reproduce: python3 tests/run_all_models.py && python3 tests/gate_results.py --update-baselines
+
+## Install
+
+```sh
+curl -fsSL https://atlasinference.io/install.sh | sh
+```
+
+Or without piping to a shell:
+
+```sh
+cargo install atlasctl
+atlasctl run qwen3.6-35b-a3b-fp8-mtp
+```
+
+## Models (30 recipes)
+
+Every model below maps to one recipe in atlas-recipes; the site cannot list a
+model that has no recipe. Run any of them with `atlasctl run <id>`.
+
+### Qwen
+
+- `qwen3-coder-next-fp8` — Qwen3 Coder Next FP8, 80B fp8, single, `Qwen/Qwen3-Coder-Next-FP8`
+- `qwen3-next-80b-a3b-nvfp4` — Qwen3 Next 80B A3B NVFP4, 80B nvfp4, single, `nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4`
+- `qwen3-vl-30b-a3b-nvfp4` — Qwen3 VL 30B A3B NVFP4, 30B nvfp4, single, `ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4`
+- `qwen3.5-0.8b-bf16-atlas` — Qwen3.5 0.8B BF16, 0.8B none, single, `Qwen/Qwen3.5-0.8B`
+- `qwen3.5-122b-a10b-nvfp4-ep2` — Qwen3.5 122B A10B NVFP4 EP=2, 122B nvfp4, EP=2, `Sehyo/Qwen3.5-122B-A10B-NVFP4`
+- `qwen3.5-122b-a10b-nvfp4-single` — Qwen3.5 122B A10B NVFP4 Single, 122B nvfp4, single, `Sehyo/Qwen3.5-122B-A10B-NVFP4`
+- `qwen3.5-27b-dense-nvfp4` — Qwen3.5 27B Dense NVFP4, 27B nvfp4, single, `Kbenkhaled/Qwen3.5-27B-NVFP4`
+- `qwen3.5-35b-a3b-nvfp4` — Qwen3.5 35B A3B NVFP4, 35B nvfp4, single, `Sehyo/Qwen3.5-35B-A3B-NVFP4`
+- `qwen3.6-27b-fp8` — Qwen3.6 27B FP8, 27B fp8, single, `Qwen/Qwen3.6-27B-FP8`
+- `qwen3.6-27b-fp8-mtp` — Qwen3.6 27B FP8 MTP, 27B fp8, single, `Qwen/Qwen3.6-27B-FP8`
+- `qwen3.6-27b-nvfp4` — Qwen3.6 27B NVFP4, 27B nvfp4, single, `nvidia/Qwen3.6-27B-NVFP4`
+- `qwen3.6-27b-nvfp4-prefill-record` — Qwen3.6 27B NVFP4 Prefill Record, 27B nvfp4, single, `nvidia/Qwen3.6-27B-NVFP4`
+- `qwen3.6-27b-nvfp4-unsloth` — Qwen3.6 27B NVFP4 Unsloth, 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers) NVFP4 (mixed precision above layer 55), single, `unsloth/Qwen3.6-27B-NVFP4`
+- `qwen3.6-35b-a3b-fp8-bf16head` — Qwen3.6 35B A3B FP8 Bf16head, 35B fp8, single, `Qwen/Qwen3.6-35B-A3B-FP8`
+- `qwen3.6-35b-a3b-fp8-mtp` — Qwen3.6 35B A3B FP8 MTP, 35B fp8, single, `Qwen/Qwen3.6-35B-A3B-FP8`
+- `qwen3.6-35b-a3b-fp8-nvfp4head` — Qwen3.6 35B A3B FP8 Nvfp4head, 35B fp8, single, `Qwen/Qwen3.6-35B-A3B-FP8`
+- `qwen3.6-35b-a3b-nvfp4` — Qwen3.6 35B A3B NVFP4, 35B nvfp4, single, `nvidia/Qwen3.6-35B-A3B-NVFP4`
+- `qwen3.8-27b-nvfp4-latency` — Qwen3.8 27B NVFP4 Latency,  NVFP4 (compressed-tensors, mixed precision), single, `unsloth/Qwen3.8-27B-NVFP4`
+- `qwen3.8-27b-nvfp4-throughput` — Qwen3.8 27B NVFP4 Throughput,  NVFP4 (compressed-tensors, mixed precision), single, `unsloth/Qwen3.8-27B-NVFP4`
+- `qwen3.8-27b-nvfp4-unsloth` — Qwen3.8 27B NVFP4 Unsloth, 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers) NVFP4 (mixed precision above layer 55, FP8 linear_attn projections), single, `unsloth/Qwen3.8-27B-NVFP4`
+- `qwen3.8-27b-nvfp4-unsloth-bfcl` — Qwen3.8 27B NVFP4 Unsloth Bfcl, 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers) NVFP4 (mixed precision above layer 55), single, `unsloth/Qwen3.8-27B-NVFP4`
+
+### Gemma
+
+- `diffusion-gemma-bf16` — Diffusion Gemma BF16,  , single, `google/diffusiongemma-26B-A4B-it`
+- `diffusion-gemma-fp8-dynamic` — Diffusion Gemma FP8 Dynamic,  , single, `RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic`
+- `gemma-4-26b-a4b-nvfp4` — Gemma 4 26B A4B NVFP4, 26B nvfp4, single, `bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16`
+- `gemma-4-31b-nvfp4` — Gemma 4 31B NVFP4, 31B nvfp4, single, `nvidia/Gemma-4-31B-IT-NVFP4`
+
+### Nemotron
+
+- `nemotron-3-nano-30b-a3b-nvfp4` — Nemotron 3 Nano 30B A3B NVFP4, 30B nvfp4, single, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4`
+- `nemotron-3-super-120b-a12b-nvfp4` — Nemotron 3 Super 120B A12B NVFP4, 120B nvfp4, single, `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4`
+
+### Mistral
+
+- `mistral-small-4-119b-nvfp4` — Mistral Small 4 119B NVFP4, 119B nvfp4, single, `mistralai/Mistral-Small-4-119B-2603-NVFP4`
+
+### MiniMax
+
+- `minimax-m2.7-nvfp4-ep2` — Minimax M2.7 NVFP4 EP=2, 230B nvfp4, EP=2, `lukealonso/MiniMax-M2.7-NVFP4`
+
+### DeepSeek
+
+- `deepseek-v4-flash-nvfp4-ep2` — Deepseek V4 Flash NVFP4 EP=2, 280B nvfp4, EP=2, `nvidia/DeepSeek-V4-Flash-NVFP4`
 
 ## Links
 
-- Repo: https://github.com/Avarok-Cybersecurity/atlas
-- MLPerf Edge Agentic benchmark (Atlas Inference named as a contributor): https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/
-- Deployment guide: https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md
+- Engine repo: https://github.com/Avarok-Cybersecurity/atlas
 - Recipes (model SSOT): https://github.com/Avarok-Cybersecurity/atlas-recipes
+- Deployment guide: https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md
+- Benchmark results: https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md
 - Discord: https://discord.gg/RQcGakU2jW
+- X: https://x.com/AtlasInferenceX
 - Site: https://atlasinference.io
+
+## License
+
+AGPL-3.0-only for the Community Edition. Contributions are covered by a CLA
+that permits Enterprise re-licensing.

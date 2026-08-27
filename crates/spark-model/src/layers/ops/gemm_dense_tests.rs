@@ -121,9 +121,10 @@ fn ldb_kernels_actually_use_the_parameter() {
                 continue; // reported by the drift test; do not double-fail
             }
             let where_ = format!("{}::{name}", util::rel(p));
+            let code = util::strip_line_comments(&body);
             assert!(
-                body.contains("LDB"),
-                "{where_} DECLARES `ldb` but never uses it — B is still strided by N"
+                code.contains("const unsigned int LDB = ldb;"),
+                "{where_} must derive the body stride LDB from the launcher-supplied ldb"
             );
             for arr in ["B_packed", "B_scale"] {
                 let idx = indexed_exprs(&body, arr);

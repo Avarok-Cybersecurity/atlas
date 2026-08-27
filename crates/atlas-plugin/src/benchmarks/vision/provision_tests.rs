@@ -50,11 +50,18 @@ fn provision_writes_every_fixture_then_stamps() {
     let root = tmp("provision");
     let store = ArtifactStore::with_root(&root);
     let dir = provision(&store).expect("provision");
-    for (name, bytes, _, _) in FIXTURES {
+    for (name, bytes) in FIXTURES
+        .iter()
+        .map(|(name, bytes, _, _)| (*name, *bytes))
+        .chain(EXIF_PAIR.iter().copied())
+    {
         let got = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(&got, bytes, "{name} was written with different bytes");
     }
-    assert!(dir.join(".provisioned").exists(), "stamp not committed");
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".provisioned")).expect("read vision stamp"),
+        stamp_value()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -65,19 +72,13 @@ fn a_second_provision_is_a_no_op() {
     let root = tmp("idempotent");
     let store = ArtifactStore::with_root(&root);
     let dir = provision(&store).expect("first");
-    let before = std::fs::metadata(dir.join(FIXTURES[0].0))
-        .unwrap()
-        .modified()
-        .unwrap();
-    provision(&store).expect("second");
-    let after = std::fs::metadata(dir.join(FIXTURES[0].0))
-        .unwrap()
-        .modified()
-        .unwrap();
-    assert_eq!(
-        before, after,
-        "second provision rewrote an unchanged fixture"
-    );
+    let victim = dir.join(EXIF_PAIR[0].0);
+    let original_permissions = std::fs::metadata(&victim).unwrap().permissions();
+    let mut readonly_permissions = original_permissions.clone();
+    readonly_permissions.set_readonly(true);
+    std::fs::set_permissions(&victim, readonly_permissions).unwrap();
+    provision(&store).expect("current stamp must return before EXIF writes");
+    std::fs::set_permissions(&victim, original_permissions).unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -88,14 +89,14 @@ fn a_stale_stamp_forces_reprovision() {
     let root = tmp("stale");
     let store = ArtifactStore::with_root(&root);
     let dir = provision(&store).expect("first");
-    let victim = dir.join(FIXTURES[0].0);
+    let victim = dir.join(EXIF_PAIR[1].0);
     std::fs::write(&victim, b"corrupted").unwrap();
     std::fs::write(dir.join(".provisioned"), "not-the-current-stamp").unwrap();
     provision(&store).expect("reprovision");
     assert_eq!(
         std::fs::read(&victim).unwrap(),
-        FIXTURES[0].1,
-        "a stale stamp did not force the fixture to be rewritten"
+        EXIF_PAIR[1].1,
+        "a stale stamp did not force the EXIF fixture to be rewritten"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -105,11 +106,11 @@ fn the_stamp_tracks_fixture_content() {
     // Content-derived, so a regenerated PNG re-provisions without anyone
     // remembering to bump a version literal.
     let v = stamp_value();
-    assert!(v.starts_with("vision-fixtures-v1-"), "unexpected stamp {v}");
+    assert_eq!(v, "vision-fixtures-v1-67ae2560abe3e0cc");
     assert_eq!(v, stamp_value(), "stamp is not deterministic");
-    assert!(
-        v.len() > "vision-fixtures-v1-".len(),
-        "stamp carries no digest"
+    assert_ne!(
+        crate::benchmarks::content_stamp("vision-fixtures-v1", [("image", b"one".as_slice())]),
+        crate::benchmarks::content_stamp("vision-fixtures-v1", [("image", b"two".as_slice())])
     );
 }
 
@@ -123,7 +124,11 @@ fn assets_match_the_repo_fixtures() {
     if !repo.is_dir() {
         return;
     }
-    for (name, bytes, _, _) in FIXTURES {
+    for (name, bytes) in FIXTURES
+        .iter()
+        .map(|(name, bytes, _, _)| (*name, *bytes))
+        .chain(EXIF_PAIR.iter().copied())
+    {
         let path = repo.join(name);
         let Ok(on_disk) = std::fs::read(&path) else {
             panic!("{name} is baked in but missing from {}", repo.display());
@@ -137,21 +142,20 @@ fn assets_match_the_repo_fixtures() {
 }
 
 #[test]
-fn the_ladder_covers_both_sides_of_the_grid_snap() {
-    // patch 16 x spatial merge 2 = 32. The ladder DELIBERATELY mixes exact
-    // multiples (224, 512x384, 768, 1024x576) with non-multiples (336, 360,
-    // 720, 854) so the preprocessor's snap-to-grid is exercised rather than
-    // bypassed. The geometry leg must therefore model the rounding, not
-    // assume the raw dimensions survive — a benchmark that only used exact
-    // multiples would pass while snapping was broken.
-    let exact = FIXTURES
-        .iter()
-        .filter(|(_, _, w, h)| w % 32 == 0 && h % 32 == 0)
-        .count();
-    let snapped = FIXTURES.len() - exact;
-    assert!(exact >= 3, "ladder lost its grid-exact cases ({exact})");
+fn a_failed_exif_write_does_not_commit_the_stamp() {
+    let root = tmp("partial-exif");
+    let store = ArtifactStore::with_root(&root);
+    let dir = store
+        .plugin_dir(PLUGIN_ID)
+        .expect("vision artifact directory");
+    std::fs::create_dir(dir.join(EXIF_PAIR[0].0)).expect("block the first EXIF path");
     assert!(
-        snapped >= 3,
-        "ladder lost its snap-exercising cases ({snapped})"
+        provision(&store).is_err(),
+        "the obstructed EXIF write must fail"
     );
+    assert!(
+        !dir.join(".provisioned").exists(),
+        "the complete main ladder with a missing EXIF fixture is still partial"
+    );
+    std::fs::remove_dir_all(root).expect("remove temporary vision root");
 }

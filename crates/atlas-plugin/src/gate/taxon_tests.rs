@@ -55,11 +55,40 @@ fn fixture(name: &str) -> PathBuf {
 fn every_real_target_resolves_a_nonempty_source_set() {
     let root = repo_root();
     let targets = walk(&root);
-    assert!(
-        targets.len() >= 4,
-        "the walk found {} targets — the kernel tree has many more, so the \
-         walk is broken rather than the tree being small",
-        targets.len()
+    assert_eq!(
+        targets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [
+            "gb10/deepseek-v4-flash/nvfp4",
+            "gb10/gemma-4-26b-a4b/nvfp4",
+            "gb10/gemma-4-31b/nvfp4",
+            "gb10/holo-3.1-0.8b/nvfp4",
+            "gb10/holo-3.1-35b-a3b/nvfp4",
+            "gb10/holo-3.1-4b/nvfp4",
+            "gb10/laguna-s-2.1/nvfp4",
+            "gb10/minimax-m2-229b/nvfp4",
+            "gb10/mistral-small-4/nvfp4",
+            "gb10/nemotron-3-nano-30b-a3b/nvfp4",
+            "gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4",
+            "gb10/nemotron-super-120b-a12b/nvfp4",
+            "gb10/nllb-200-3.3b/bf16",
+            "gb10/ornith-1.0-9b/nvfp4",
+            "gb10/qwen3-next-80b-a3b/nvfp4",
+            "gb10/qwen3-vl-30b-a3b/nvfp4",
+            "gb10/qwen3.5-122b-a10b/nvfp4",
+            "gb10/qwen3.5-27b/nvfp4",
+            "gb10/qwen3.5-35b-a3b/nvfp4",
+            "gb10/qwen3.5-397b-a17b/nvfp4",
+            "gb10/qwen3.6-27b/nvfp4",
+            "gb10/qwen3.6-35b-a3b/nvfp4",
+            "gb10/qwen3.8-27b/nvfp4",
+            "gb10/step3p7-flash/nvfp4",
+            "metal/nllb-200-3.3b/bf16",
+            "metal/qwen3-5-4b-vlm-mlx-int8/mlx_int8",
+            "strix/qwen3.6-27b/nvfp4",
+            "strix/qwen3.6-35b-a3b/nvfp4",
+            "strix-hip/qwen3.6-27b/nvfp4",
+            "strix-hip/qwen3.6-35b-a3b/nvfp4",
+        ]
     );
     for t in &targets {
         let srcs = sources(&root, t)
@@ -86,15 +115,6 @@ fn every_hardware_vendor_is_known_to_the_source_extension_table() {
     }
 }
 
-/// `common/` holds no `MODEL.toml`, so it must never appear as a model. If it
-/// did, a shared-kernel edit would be scoped to a model that does not exist.
-#[test]
-fn common_is_never_a_model() {
-    for t in walk(&repo_root()) {
-        assert_ne!(t.model, "common", "common/ resolved as a model");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Shadowing
 // ---------------------------------------------------------------------------
@@ -108,19 +128,12 @@ fn a_model_file_shadows_the_common_file_with_the_same_stem() {
         quant: "nvfp4".into(),
     };
     let srcs = sources(&root, &t).unwrap();
-    let shared: Vec<_> = srcs
-        .iter()
-        .filter(|p| p.file_stem().unwrap() == "shared")
-        .collect();
-    assert_eq!(shared.len(), 1, "one file per stem after shadowing");
-    assert!(
-        shared[0].to_string_lossy().contains("modelA/nvfp4"),
-        "the model copy must win: {shared:?}"
-    );
-    assert!(
-        srcs.iter()
-            .any(|p| p.to_string_lossy().contains("common/other.cu")),
-        "unshadowed common files stay in the set"
+    assert_eq!(
+        srcs,
+        [
+            root.join("kernels/gb10/common/other.cu"),
+            root.join("kernels/gb10/modelA/nvfp4/shared.cu"),
+        ]
     );
 }
 
@@ -135,12 +148,79 @@ fn headers_are_not_in_the_source_set() {
         model: "modelB".into(),
         quant: "nvfp4".into(),
     };
-    assert!(
-        !sources(&root, &t)
-            .unwrap()
-            .iter()
-            .any(|p| p.extension().unwrap() == "cuh"),
-        ".cuh must not be a source"
+    assert_eq!(
+        sources(&root, &t).unwrap(),
+        [
+            root.join("kernels/gb10/common/other.cu"),
+            root.join("kernels/gb10/common/shared.cu"),
+        ]
+    );
+}
+
+#[test]
+fn a_redirect_uses_the_source_owners_kernels_but_the_targets_model_config() {
+    let root = fixture("redirect");
+    let hw = root.join("kernels/gb10");
+    std::fs::create_dir_all(hw.join("modelC")).unwrap();
+    std::fs::write(
+        hw.join("modelC/MODEL.toml"),
+        "[model]\nkernel_source = \"modelA\"\n",
+    )
+    .unwrap();
+    std::fs::write(hw.join("common/KERNEL.toml"), "[build]\n").unwrap();
+    std::fs::write(hw.join("modelA/nvfp4/KERNEL.toml"), "[build]\n").unwrap();
+
+    let redirected = Target {
+        hardware: "gb10".into(),
+        model: "modelC".into(),
+        quant: "nvfp4".into(),
+    };
+    assert!(walk(&root).contains(&redirected));
+    assert_eq!(
+        sources(&root, &redirected).unwrap(),
+        [
+            hw.join("common/other.cu"),
+            hw.join("modelA/nvfp4/shared.cu"),
+        ]
+    );
+    assert_eq!(
+        configs(&root, &redirected),
+        [
+            hw.join("HARDWARE.toml"),
+            hw.join("common/KERNEL.toml"),
+            hw.join("modelC/MODEL.toml"),
+            hw.join("modelA/nvfp4/KERNEL.toml"),
+        ]
+    );
+}
+
+#[test]
+fn a_source_owner_change_affects_its_redirected_consumers() {
+    let root = fixture("redirect-affected");
+    let hw = root.join("kernels/gb10");
+    std::fs::create_dir_all(hw.join("modelC")).unwrap();
+    std::fs::write(
+        hw.join("modelC/MODEL.toml"),
+        "[model]\nkernel_source = \"modelA\"\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        affected(&root, &["kernels/gb10/modelA/nvfp4/shared.cu".to_string()]),
+        [
+            Target {
+                hardware: "gb10".into(),
+                model: "modelA".into(),
+                quant: "nvfp4".into(),
+            },
+            Target {
+                hardware: "gb10".into(),
+                model: "modelC".into(),
+                quant: "nvfp4".into(),
+            },
+        ]
+        .into_iter()
+        .collect()
     );
 }
 
@@ -221,15 +301,39 @@ fn lookalike_paths_are_not_kernel_paths() {
 fn a_common_change_affects_every_target_on_that_hardware() {
     let root = fixture("affected-common");
     let hit = affected(&root, &["kernels/gb10/common/shared.cu".to_string()]);
-    assert_eq!(hit.len(), 2, "both models inherit common: {hit:?}");
+    assert_eq!(
+        hit,
+        [
+            Target {
+                hardware: "gb10".into(),
+                model: "modelA".into(),
+                quant: "nvfp4".into(),
+            },
+            Target {
+                hardware: "gb10".into(),
+                model: "modelB".into(),
+                quant: "nvfp4".into(),
+            },
+        ]
+        .into_iter()
+        .collect()
+    );
 }
 
 #[test]
 fn a_model_change_affects_only_that_model() {
     let root = fixture("affected-model");
     let hit = affected(&root, &["kernels/gb10/modelA/nvfp4/shared.cu".to_string()]);
-    assert_eq!(hit.len(), 1);
-    assert_eq!(hit.iter().next().unwrap().model, "modelA");
+    assert_eq!(
+        hit,
+        [Target {
+            hardware: "gb10".into(),
+            model: "modelA".into(),
+            quant: "nvfp4".into(),
+        }]
+        .into_iter()
+        .collect()
+    );
 }
 
 #[test]
@@ -256,24 +360,29 @@ fn spans_are_reported_per_node_level() {
         "kernels/strix/qwen3.6-27b/nvfp4/a.cu".to_string(),
     ];
     assert_eq!(
-        hardware_span(&changed).len(),
-        2,
-        "the AMD-port exemption case"
+        hardware_span(&changed),
+        ["gb10", "strix"].map(str::to_string).into()
     );
     assert_eq!(
-        model_span(&changed).len(),
-        2,
-        "same model name under two hardwares is two nodes"
+        model_span(&changed),
+        [
+            ("gb10".to_string(), "qwen3.6-27b".to_string()),
+            ("strix".to_string(), "qwen3.6-27b".to_string()),
+        ]
+        .into()
     );
 
     let one_hw = vec![
         "kernels/gb10/modelA/nvfp4/a.cu".to_string(),
         "kernels/gb10/modelB/nvfp4/a.cu".to_string(),
     ];
-    assert_eq!(hardware_span(&one_hw).len(), 1);
+    assert_eq!(hardware_span(&one_hw), ["gb10".to_string()].into());
     assert_eq!(
-        model_span(&one_hw).len(),
-        2,
-        "two models under one hardware — the case a split check can honestly fail"
+        model_span(&one_hw),
+        [
+            ("gb10".to_string(), "modelA".to_string()),
+            ("gb10".to_string(), "modelB".to_string()),
+        ]
+        .into()
     );
 }

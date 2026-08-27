@@ -211,10 +211,7 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     assert!(record_covers(root, &head, earlier_pass, &any_gate()));
     assert!(record_covers(root, &head, later_fail, &any_gate()));
     match &check_gates(root, &head)["bfcl-subset"] {
-        GateStatus::Fail(reasons) => assert!(
-            reasons.iter().any(|r| r.contains("not PASS")),
-            "{reasons:?}"
-        ),
+        GateStatus::Fail(reasons) => assert_eq!(reasons, &["run verdict is not PASS: ok"]),
         other => panic!("a superseded PASS must not speak for the branch, got {other:?}"),
     }
 }
@@ -287,10 +284,12 @@ fn a_baseline_entry_with_no_thresholds_is_not_a_pass() {
     )
     .unwrap();
     let problems = check_record(&gate, &baseline_for(MODEL, BTreeMap::new())).expect("refused");
-    assert!(
-        problems[0].contains("no thresholds"),
-        "{}",
-        problems[0].clone()
+    assert_eq!(
+        problems,
+        [format!(
+            "the baseline entry for {MODEL} on {TEST_HW} declares no thresholds — \
+             there is nothing here for this run to have passed"
+        )]
     );
 }
 
@@ -318,7 +317,9 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
 
     let gates = check_gates(root, SHA);
     match &gates["bfcl-subset"] {
-        GateStatus::Fail(reasons) => assert!(reasons.iter().any(|r| r.contains("failed"))),
+        GateStatus::Fail(reasons) => {
+            assert_eq!(reasons, &["the run itself failed: scoring crashed"])
+        }
         other => panic!("wanted Fail, got {other:?}"),
     }
 }
@@ -336,13 +337,10 @@ fn the_summary_names_the_model_the_numbers_and_the_verdict() {
         Default::default(),
     )
     .unwrap();
-    assert!(gate.summary.contains(MODEL), "{}", gate.summary);
-    assert!(
-        gate.summary.contains("overall_accuracy=87.74"),
-        "{}",
-        gate.summary
+    assert_eq!(
+        gate.summary,
+        format!("{MODEL} · overall_accuracy=87.74 · Pass: ok")
     );
-    assert!(gate.summary.contains("Pass"), "{}", gate.summary);
 }
 
 #[test]
@@ -378,10 +376,10 @@ fn an_exact_pin_passes_only_on_the_pinned_value() {
     let Comparison::Fail(msg) = compare("samples", 972.0, &pin) else {
         panic!("a draw of 972 against a pin of 1004 must FAIL, not pass or skip");
     };
-    assert!(msg.contains("972") && msg.contains("1004"), "{msg}");
-    assert!(
-        !msg.contains("malformed"),
-        "must blame the measurement, not the baseline's syntax: {msg}"
+    assert_eq!(
+        msg,
+        "samples is 972, but this gate is pinned to exactly 1004 — \
+         the run measured something other than what the baseline describes"
     );
 }
 
@@ -417,7 +415,10 @@ fn a_bound_with_no_side_at_all_is_still_reported() {
         max: None,
         noise: None,
     };
-    assert!(matches!(compare("m", 1.0, &empty), Comparison::Skip(_)));
+    let Comparison::Skip(reason) = compare("m", 1.0, &empty) else {
+        panic!("a bound with neither side must be reported as uncheckable");
+    };
+    assert_eq!(reason, "m has no bound");
 }
 
 /// The baselines COMMITTED IN THIS REPO must be loadable and checkable.

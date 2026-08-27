@@ -38,7 +38,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "video-fidelity",
     name: "Video Fidelity",
     summary: SUMMARY,
-    detail: "Four legs over clips of solid colors, one per second. ORDER sends the same \
+    detail: "Seven check groups over clips of solid colors, one per second. ORDER sends the same \
              sequence forwards and REVERSED and requires the answer to reverse with it — the \
              only assertion that separates 'the frames arrived in order' from 'something \
              arrived', and the one that caught the splice defect where video pad tokens \
@@ -48,12 +48,15 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              --video-fps the server was started with. PARITY requires an MP4 and an identical \
              GIF to produce the same geometry, one through ffmpeg and one through the \
              in-process decoder. MIXED sends an image and a video together, exercising the \
-             ordering contract between collection, template markers and pad expansion. A \
+             ordering contract between collection, template markers and pad expansion. \
+             INTEGRITY varies media order, request history, and opposite clips in flight. \
+             CONCURRENCY requires correct replies and the same prompt-token geometry at \
+             C=1, C=2, and C=4. A \
              no-video CONTROL runs last: if it describes a clip it never received, the run is \
              VACUOUS rather than PASS. Legs needing a decoder the server lacks are SKIPPED, \
              never failed — that is a deployment choice.",
     duration_hint: "~1-2 min",
-    updated: "2026-08-14",
+    updated: "2026-08-24",
     needs_confirmation: false,
     intended_for: None,
     threshold_params: &[],
@@ -797,19 +800,25 @@ impl Benchmark for VideoFidelity {
                 let is_correct = |reply: &str| order_matches(reply, &want, PALETTE);
                 let r = run_level(self.handle()?, &body, level, self.timeout(), &is_correct).await;
 
-                let line = if r.ok() {
+                let baseline_prompt_tokens = self
+                    .conc_results
+                    .first()
+                    .and_then(|baseline| baseline.prompt_tokens);
+                let clean = baseline_prompt_tokens
+                    .map_or_else(|| r.ok(), |baseline| r.ok_against(baseline));
+                let geometry = r.geometry_detail(baseline_prompt_tokens);
+                let line = if clean {
                     LogLine::info(format!(
-                        "C={level}: {}/{} correct, one geometry, {} ms",
-                        r.correct, r.conc, r.wall_ms
+                        "C={level}: {}/{} correct, {geometry}, {} ms",
+                        r.correct, r.conc, r.wall_ms,
                     ))
                 } else {
                     LogLine::warn(format!(
-                        "C={level}: {}/{} returned, {}/{} CORRECT, {} distinct token counts, {} ms{}",
+                        "C={level}: {}/{} returned, {}/{} CORRECT, {geometry}, {} ms{}",
                         r.returned,
                         r.conc,
                         r.correct,
                         r.conc,
-                        r.distinct_token_counts,
                         r.wall_ms,
                         if r.errors.is_empty() {
                             String::new()
@@ -823,7 +832,7 @@ impl Benchmark for VideoFidelity {
                         id: "concurrency",
                         why: format!("C={level}: no video decoder"),
                     }
-                } else if r.ok() {
+                } else if clean {
                     CountCell::Match {
                         id: "concurrency",
                         detail: format!("C={level} clean in {} ms", r.wall_ms),
@@ -831,10 +840,7 @@ impl Benchmark for VideoFidelity {
                 } else {
                     CountCell::Mismatch {
                         id: "concurrency",
-                        detail: format!(
-                            "C={level}: {}/{} correct, {} distinct token counts",
-                            r.correct, r.conc, r.distinct_token_counts
-                        ),
+                        detail: format!("C={level}: {}/{} correct, {geometry}", r.correct, r.conc),
                     }
                 };
                 self.counts.push(cell);

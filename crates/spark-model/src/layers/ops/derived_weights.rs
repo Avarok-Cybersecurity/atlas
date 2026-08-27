@@ -204,6 +204,9 @@ impl atlas_core::scope::ModelResource<dyn spark_runtime::gpu::GpuBackend> for De
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atlas_core::scope::ModelResource;
+    use spark_runtime::gpu::GpuBackend;
+    use spark_runtime::gpu::mock::MockGpuBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -284,17 +287,50 @@ mod tests {
     }
 
     #[test]
-    fn a_pair_derivation_round_trips() {
+    fn pair_derivations_round_trip_without_sharing_a_keyspace() {
         let d = DerivedWeights::new();
         let got = d
             .get_or_build_pair(Derivation::RowwiseFp8, 5, || Ok((11, 22)))
             .unwrap();
         assert_eq!(got, (11, 22));
         assert_eq!(
+            d.get_or_build_pair(Derivation::CutlassNvfp4FromFp8, 5, || Ok((33, 44)))
+                .unwrap(),
+            (33, 44)
+        );
+        assert_eq!(
             d.get_or_build_pair(Derivation::RowwiseFp8, 5, || Ok((99, 99)))
                 .unwrap(),
             (11, 22),
             "cached, not rebuilt"
         );
+        assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    fn release_frees_only_derived_values_and_drains_every_map() {
+        let gpu = MockGpuBackend::new();
+        let mut d = DerivedWeights::new();
+        let keys: Vec<u64> = (0..4).map(|_| gpu.alloc(1).unwrap().0).collect();
+        let values: Vec<u64> = (0..6).map(|_| gpu.alloc(1).unwrap().0).collect();
+
+        d.insert_pair(Derivation::RowwiseFp8, keys[0], (values[0], values[1]));
+        d.insert_ptr(Derivation::Bf16, keys[1], values[2]);
+        d.insert_ptr(Derivation::CutlassNvfp4Transposed, keys[2], values[3]);
+        d.insert_pair(
+            Derivation::CutlassNvfp4FromFp8,
+            keys[3],
+            (values[4], values[5]),
+        );
+        assert_eq!(gpu.alloc_count(), 10);
+        assert_eq!(d.len(), 4);
+
+        d.release(&gpu).unwrap();
+
+        assert!(d.is_empty(), "freed pointers must not remain memoized");
+        assert_eq!(gpu.alloc_count(), 4, "source-weight keys remain GPU-owned");
+        for key in keys {
+            gpu.free(spark_runtime::gpu::DevicePtr(key)).unwrap();
+        }
     }
 }

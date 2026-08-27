@@ -5,31 +5,45 @@
 use super::*;
 
 #[test]
-fn no_probe_ever_sends_a_repetition_penalty() {
+fn the_base_probe_body_is_deterministic_and_penalty_free() {
     // `tests/single_gpu_suite.py` sends repetition_penalty=1.05 on the codegen
     // probe. It penalises `\n` — the most repeated token in source — and the
     // generated function arrives with 3 newlines instead of 8, i.e. as a
     // syntax error, while the control image is byte-identical in both
     // conditions. Carrying it across would grade the harness, not the model.
     let body = with_user(base_body("m", 512), "write fib".into());
-    let text = serde_json::to_string(&body).expect("serializable");
-    for banned in [
-        "repetition_penalty",
-        "presence_penalty",
-        "frequency_penalty",
-        "dry_multiplier",
-    ] {
-        assert!(!text.contains(banned), "{banned} leaked into a probe body");
-    }
-    assert_eq!(body["temperature"], 0.0);
-    assert_eq!(body["max_tokens"], 512);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "model": "m",
+            "stream": true,
+            "temperature": 0.0,
+            "max_tokens": 512,
+            "messages": [{"role": "user", "content": "write fib"}],
+        })
+    );
 }
 
 #[test]
 fn the_tool_probe_declares_the_tool_it_grades() {
     let tools = weather_tool();
-    assert_eq!(tools[0]["function"]["name"], "get_weather");
-    assert!(tools[0]["function"]["parameters"]["properties"]["location"].is_object());
+    assert_eq!(
+        tools,
+        serde_json::json!([{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City name"},
+                    },
+                    "required": ["location"],
+                },
+            },
+        }])
+    );
 }
 
 #[test]
@@ -51,6 +65,17 @@ fn prose_with_no_function_is_caught_separately_from_a_broken_one() {
     let prose = "Sure! Fibonacci is a sequence where each number is the sum of the previous two.";
     let err = code_shape(prose).expect_err("no function");
     assert!(err.contains("`def fib`"), "{err}");
+}
+
+#[test]
+fn a_similar_name_or_prose_fragment_is_not_a_fib_function() {
+    for text in [
+        "def fibonacci(n):\n    return n",
+        "I would write def fib(n): in Python.\n    This is still prose.",
+    ] {
+        let err = code_shape(text).expect_err("not an actual fib definition");
+        assert!(err.contains("`def fib`"), "{err}");
+    }
 }
 
 #[test]
@@ -85,6 +110,32 @@ fn only_a_real_4xx_from_the_server_excuses_the_tool_probe() {
             is_client_rejection(rejection),
             "not recognised: {rejection}"
         );
+    }
+}
+
+#[test]
+fn the_tool_probe_requires_a_weather_call_for_paris() {
+    let outcome = |name: &str, arguments: &str| http::ChatOutcome {
+        tool_calls: vec![http::ToolCall {
+            id: "call-1".into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        score_tool_call(&outcome("get_weather", r#"{"location":"Paris"}"#)),
+        Signal::Pass
+    );
+    for bad in [
+        outcome("get_weather", r#"{"location":"London"}"#),
+        outcome("get_weather", r#"{"location":""}"#),
+        outcome("other_tool", r#"{"location":"Paris"}"#),
+        outcome("get_weather", "not-json"),
+        http::ChatOutcome::default(),
+    ] {
+        assert!(matches!(score_tool_call(&bad), Signal::Fail(_)));
     }
 }
 

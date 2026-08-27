@@ -1,4 +1,53 @@
+# Atlas Inference — https://atlasinference.io
+#
+# Everything here is public documentation of an open source project, and being
+# found is the point. Answer engines are named explicitly rather than left to
+# the wildcard, because several of them treat an absent named rule as a reason
+# to be conservative.
+
 User-agent: *
+Allow: /
+
+# Search
+User-agent: Googlebot
+Allow: /
+User-agent: Bingbot
+Allow: /
+User-agent: DuckDuckBot
+Allow: /
+
+# Answer engines and AI crawlers
+User-agent: GPTBot
+Allow: /
+User-agent: OAI-SearchBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: Claude-User
+Allow: /
+User-agent: Claude-SearchBot
+Allow: /
+User-agent: anthropic-ai
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Perplexity-User
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: Applebot
+Allow: /
+User-agent: Applebot-Extended
+Allow: /
+User-agent: Amazonbot
+Allow: /
+User-agent: meta-externalagent
+Allow: /
+User-agent: cohere-ai
+Allow: /
+User-agent: YouBot
 Allow: /
 
 Sitemap: https://atlasinference.io/sitemap.xml

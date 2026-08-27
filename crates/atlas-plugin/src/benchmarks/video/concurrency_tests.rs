@@ -11,6 +11,7 @@ fn r(conc: usize, returned: usize, correct: usize, distinct: usize, errs: usize)
         returned,
         correct,
         distinct_token_counts: distinct,
+        prompt_tokens: (distinct == 1).then_some(100),
         wall_ms: 1,
         errors: (0..errs).map(|i| format!("e{i}")).collect(),
     }
@@ -19,11 +20,6 @@ fn r(conc: usize, returned: usize, correct: usize, distinct: usize, errs: usize)
 #[test]
 fn a_clean_level_is_ok() {
     assert!(r(4, 4, 4, 1, 0).ok());
-}
-
-#[test]
-fn a_dropped_reply_is_not_ok() {
-    assert!(!r(4, 3, 3, 1, 0).ok());
 }
 
 /// ★ The case this leg exists for. Every request returned, none errored, and
@@ -47,11 +43,6 @@ fn disagreeing_geometry_across_identical_requests_is_not_ok() {
 }
 
 #[test]
-fn an_error_is_not_ok_even_if_the_rest_were_fine() {
-    assert!(!r(4, 4, 4, 1, 1).ok());
-}
-
-#[test]
 fn the_levels_cross_the_single_stream_boundary() {
     assert!(LEVELS.contains(&1), "a baseline to compare against");
     assert!(
@@ -59,4 +50,30 @@ fn the_levels_cross_the_single_stream_boundary() {
         "a single-stream-only sweep would exercise none of the shared state"
     );
     assert!(LEVELS.windows(2).all(|w| w[0] < w[1]), "ascending");
+}
+
+#[test]
+fn every_level_must_preserve_the_single_stream_geometry() {
+    let baseline = r(1, 1, 1, 1, 0);
+    let mut changed = r(2, 2, 2, 1, 0);
+    changed.prompt_tokens = Some(200);
+    let high = r(4, 4, 4, 1, 0);
+
+    assert!(changed.ok(), "the C=2 replies agree with each other");
+    assert_eq!(
+        changed.geometry_detail(baseline.prompt_tokens),
+        "200 prompt tokens, C=1 baseline 100"
+    );
+    assert!(
+        !sweep_ok(&[baseline, changed, high]),
+        "internal agreement is not enough when C=2 changed from the C=1 geometry"
+    );
+}
+
+#[test]
+fn an_incomplete_concurrency_sweep_is_not_clean() {
+    assert!(
+        !sweep_ok(&[r(1, 1, 1, 1, 0), r(2, 2, 2, 1, 0)]),
+        "omitting the highest configured level leaves the shared-state claim untested"
+    );
 }

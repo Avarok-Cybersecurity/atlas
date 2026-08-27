@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-08-18T23:03:02Z",
+  "generated_utc": "2026-08-27T09:41:42Z",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
@@ -29,6 +29,7 @@
     "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
     "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
   },
+  "harness_repo_sha256": "1f10d4887b39a86ee946bc2aa0395e31c43ce1b3dfac778f51abbad11832d880",
   "concurrencies": [
     1,
     2,
@@ -46,11 +47,13 @@
       "role": "subject",
       "engine": "Atlas 1.0.0-beta-preview",
       "build": "bce152b18",
+      "build_public": "4012c9b7e1",
+      "build_public_note": "The sha to check out. bce152b18 was a local merge on test/ladder-stack and was never pushed, so `git checkout bce152b18` fails on a fresh public clone (verified 2026-08-26). 4012c9b7e1 is the certified sha, is reachable from origin/test/ladder-stack, and differs from the measured tree only in doc comments and gate machinery. 60370b9532 is the same work as merged to main.",
       "build_note": "Certified at 4012c9b7e1, which differs only in doc comments and gate machinery -- no executable change. Merged to main as 60370b9532.",
       "env": "ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1 ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1",
       "cli": "spark serve unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8888 --model-name unsloth/Qwen3.8-27B-NVFP4 --max-seq-len 2048 --max-batch-size 128 --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 --enable-prefix-caching true --ssm-cache-slots 8 --ssm-checkpoint-interval 32 --speculative --num-drafts 3 --mtp-quantization bf16 --scheduling-policy fifo --tool-call-parser qwen3_coder --disable-tool-grammar true --disable-thinking --request-timeout 0 --ssm-h-dtype f16-pool --gdn-fused-norm --ssm-batched-recurrent --ssm-tail-midchunk false --mtp-gate force --prefill-varlen-batch --no-tui",
       "speculation": "MTP, K=4 (--num-drafts 3); self-disables above 32 concurrent sequences",
-      "source_note": "Round 11 throughout. C=2 is round 8 on the identical configuration -- round 11 re-measured that rung at 40.42, and we publish the lower, older number rather than the better one.",
+      "source_note": "Round 11 throughout, except C=2. C=2 is the 2026-08-18 hardening run (c2_atlas_dgx2_20260818.json), not round 8: the certified table originally carried round 8's 38.95 there, which won by 1.004x -- a margin inside either engine's run-to-run spread. Both legs were re-measured back to back on dgx2 on 2026-08-18 (Atlas 15:05, vLLM+MTP 15:20) and that PAIR replaced the earlier pair, which is why the Atlas number rose to 41.02 while the paired vLLM number fell to 37.11 and the margin moved to 1.105x with non-overlapping distributions. A round-11 C=2 exists at 40.42 (l38_r11_c2.json) but has no same-day vLLM leg, so it is not publishable as a pair. See RESULTS.md, C=2 HARDENED.",
       "rungs": [
         {
           "c": 1,

@@ -221,11 +221,8 @@ fn failed_reput_of_spilled_key_must_not_alias_its_disk_record() {
     let mut out = vec![0u8; B];
     let hit = r.get_blob(1, &mut out).unwrap();
     assert!(
-        !hit || out == blob(1) || out == blob(99),
-        "GET(key 1) returned Ok(true) with {out:?} — key 2's blob. The failed \
-         re-PUT left record 0 on the free list while key 1's map entry still \
-         pointed at it, so two keys now alias one record. A clean miss or key \
-         1's own bytes are the only correct answers."
+        hit && out == blob(1),
+        "the failed re-PUT must preserve key 1's old record, got hit={hit} {out:?}"
     );
 }
 
@@ -251,8 +248,7 @@ fn retried_reput_must_not_double_free_the_same_disk_record() {
     let mut out = vec![0u8; B];
     let hit = r.get_blob(2, &mut out).unwrap();
     assert!(
-        !hit || out == blob(2),
-        "GET(key 2) returned Ok(true) with {out:?} — key 1's blob. Record 0 was \
-         freed twice and handed to both keys."
+        hit && out == blob(2),
+        "key 2 must remain present with its own bytes after retry, got hit={hit} {out:?}"
     );
 }

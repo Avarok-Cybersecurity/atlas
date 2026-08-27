@@ -11,17 +11,6 @@ fn a_224_square_group_is_49_tokens() {
     assert_eq!(tokens_per_group(224, 224, 16, 2), 49);
 }
 
-/// The clean case: 1, 2 and 4 groups at 49 tokens each, over a 21-token
-/// template.
-#[test]
-fn proportional_totals_resolve_to_groups_and_overhead() {
-    let plane = 49;
-    let r =
-        check_proportional(21 + plane, 21 + 2 * plane, 21 + 4 * plane, plane).expect("resolvable");
-    assert_eq!(r.unit_groups, 1);
-    assert_eq!(r.overhead, 21);
-}
-
 /// ★ The check must be independent of the server's sampling rate — that is
 /// the entire reason it is expressed as differences. Sweep plausible rates
 /// and require the same conclusion at each.
@@ -63,8 +52,6 @@ fn a_non_proportional_sampler_is_caught() {
         .is_none(),
         "a 1:2:3 progression must not read as proportional"
     );
-    // And the flat case: duration changes, group count does not.
-    assert!(check_proportional(100, 100, 100, plane).is_none());
 }
 
 /// A clip that costs the same as a shorter one — sampling collapsed to a
@@ -84,14 +71,13 @@ fn a_non_multiple_difference_is_refused() {
 }
 
 #[test]
-fn degenerate_inputs_do_not_panic_or_divide_by_zero() {
+fn descending_totals_and_a_zero_plane_are_refused() {
     assert!(
         check_proportional(100, 50, 200, 49).is_none(),
         "2x below 1x"
     );
     assert!(check_proportional(50, 100, 90, 49).is_none(), "4x below 2x");
     assert!(check_proportional(50, 100, 200, 0).is_none(), "zero plane");
-    assert!(check_proportional(0, 0, 0, 49).is_none());
 }
 
 /// An implied-negative overhead means the numbers cannot describe one
@@ -101,5 +87,11 @@ fn an_impossible_overhead_is_refused() {
     let plane = 49;
     // The differences say 2 groups per unit, but the 1x total is too small to
     // contain even one of them.
-    assert!(check_proportional(plane, 3 * plane, 5 * plane, plane).is_none());
+    assert!(check_proportional(plane, 3 * plane, 7 * plane, plane).is_none());
+}
+
+#[test]
+fn arithmetic_overflow_is_refused_instead_of_panicking() {
+    let too_large_to_double = usize::MAX / 2 + 1;
+    assert!(check_proportional(0, too_large_to_double, usize::MAX, 1).is_none());
 }

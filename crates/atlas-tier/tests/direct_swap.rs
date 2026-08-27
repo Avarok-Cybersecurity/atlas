@@ -17,10 +17,18 @@ fn o_direct_file(record_bytes: usize, tag: &str) -> Option<(DirectSwapFile, std:
     match DirectSwapFile::create(&path, record_bytes) {
         Ok(f) => Some((f, path)),
         Err(e) => {
+            let unsupported = e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::raw_os_error)
+                    .is_some_and(|code| code == libc::EINVAL || code == libc::EOPNOTSUPP)
+            });
             // Opt-in enforcement: CI on a real disk sets this so a silent skip
             // can't green-light a run that never touched the O_DIRECT path.
-            if std::env::var_os("ATLAS_TIER_REQUIRE_O_DIRECT").is_some() {
-                panic!("ATLAS_TIER_REQUIRE_O_DIRECT set but O_DIRECT unavailable: {e:#}");
+            if std::env::var_os("ATLAS_TIER_REQUIRE_O_DIRECT").is_some() || !unsupported {
+                panic!(
+                    "DirectSwapFile setup failed instead of reporting unsupported O_DIRECT: {e:#}"
+                );
             }
             eprintln!("skipping O_DIRECT test (filesystem refused O_DIRECT): {e:#}");
             None
@@ -34,6 +42,12 @@ fn o_direct_file(record_bytes: usize, tag: &str) -> Option<(DirectSwapFile, std:
 fn page_aligned(storage: &mut [u8], len: usize) -> &mut [u8] {
     let pad = (4096 - (storage.as_ptr() as usize & 0xfff)) & 0xfff;
     &mut storage[pad..pad + len]
+}
+
+/// A deterministically non-page-aligned sub-slice of an over-allocated buffer.
+fn page_unaligned(storage: &mut [u8], len: usize) -> &mut [u8] {
+    let offset = usize::from(storage.as_ptr() as usize & 0xfff == 0);
+    &mut storage[offset..offset + len]
 }
 
 #[test]
@@ -51,25 +65,29 @@ fn direct_swap_file_rejects_bad_record_bytes() {
     );
 }
 
-/// O_DIRECT write/read round-trips through the page-aligned bounce (a plain
-/// `Vec` caller buffer is usually unaligned, exercising both bounce paths).
+/// O_DIRECT write/read round-trips through the page-aligned bounce with caller
+/// buffers that are deterministically unaligned.
 #[test]
-fn direct_swap_file_roundtrips_records() {
+fn direct_swap_file_roundtrips_unaligned_records() {
     let rb = 4096usize;
     let Some((mut f, path)) = o_direct_file(rb, "rt") else {
         return;
     };
     assert_eq!(f.record_bytes(), rb);
-    let mut pat = vec![0u8; rb];
+    let mut pat_storage = vec![0u8; rb + 1];
+    let pat = page_unaligned(&mut pat_storage, rb);
+    assert_ne!(pat.as_ptr() as usize & 0xfff, 0, "write uses bounce");
     for (i, b) in pat.iter_mut().enumerate() {
         *b = (i % 251) as u8;
     }
-    f.write_record(3, &pat).unwrap(); // sparse: slot 3 before slot 0
+    f.write_record(3, pat).unwrap(); // sparse: slot 3 before slot 0
     f.write_record(0, &vec![0xEE; rb]).unwrap();
-    let mut out = vec![0u8; rb];
-    f.read_record(3, &mut out).unwrap();
+    let mut out_storage = vec![0u8; rb + 1];
+    let out = page_unaligned(&mut out_storage, rb);
+    assert_ne!(out.as_ptr() as usize & 0xfff, 0, "read uses bounce");
+    f.read_record(3, out).unwrap();
     assert_eq!(out, pat, "record 3 byte-identical");
-    f.read_record(0, &mut out).unwrap();
+    f.read_record(0, out).unwrap();
     assert_eq!(out, vec![0xEE; rb], "record 0 byte-identical");
     // Size validation is a hard error, not a short IO.
     assert!(f.write_record(1, &pat[..100]).is_err());
@@ -107,13 +125,10 @@ fn residency_over_o_direct_swap_byte_identical() {
     let _ = std::fs::remove_file(path);
 }
 
-/// Deterministically exercise the O_DIRECT *aligned fast-path* (the direct
-/// pwrite/pread, not the bounce staging): pass page-aligned buffers so
-/// `write_record`/`read_record` take the `is_aligned()` branch. The existing
-/// `Vec`-based tests almost always hit the bounce instead, so this is the only
-/// coverage of the zero-copy path the peer's mmap'd arena actually uses.
+/// Page-aligned caller buffers round-trip without alignment errors. This proves
+/// the input partition, not which internal branch handled it.
 #[test]
-fn direct_swap_aligned_fast_path_roundtrips() {
+fn direct_swap_aligned_buffers_roundtrip() {
     let rb = 4096usize;
     let Some((mut f, path)) = o_direct_file(rb, "aligned") else {
         return;

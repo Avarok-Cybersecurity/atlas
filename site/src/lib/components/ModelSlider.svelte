@@ -4,6 +4,7 @@
   // 3-level tree: vendor (brand) -> subfamily (recipe dir) -> recipes.
   import vendorsRaw from '$lib/models.generated.json';
   import { models as mcopy, recipesUrl } from '$lib/data.js';
+  import RunButton from './RunButton.svelte';
 
   // Flagship first: Qwen3.6 leads its vendor, then Qwen3.5, then the rest as-is.
   const rankSub = (n) => (n === 'Qwen3.6' ? 0 : n === 'Qwen3.5' ? 1 : 2);
@@ -61,13 +62,16 @@
   };
   const quantLabel = (q) => (q && q !== 'none' ? q.toUpperCase() : 'BF16');
   const topoClass = (t) => (t === 'EP=2' ? 'chip chip-ep2' : t === 'TP=2' ? 'chip chip-tp2' : 'chip chip-single');
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="models">
+<section id="models" class="sx-violet">
   <div class="container">
-    <div class="slabel">{mcopy.label}</div>
-    <h2 class="stitle">{mcopy.title}</h2>
-    <p class="ssub">{mcopy.sub}</p>
+    <SectionHead
+      label={mcopy.label}
+      title={mcopy.title}
+      sub={mcopy.sub}
+    />
 
     <div class="mnav">
       <!-- Level 1: vendor brand tabs -->
@@ -131,6 +135,7 @@
                 >
                   {copied === r.command ? 'Copied' : 'Copy'}
                 </button>
+                <RunButton recipeId={r.recipeId ?? r.recipeStem} runnable={r.runnable ?? true} />
               </div>
             </div>
           {/each}

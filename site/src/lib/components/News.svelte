@@ -2,13 +2,17 @@
   // News band. Presentation only, every card comes from `news` in data.js so the
   // page can never carry an announcement that is not in the SSOT.
   import { news } from '$lib/data.js';
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="news">
+<section id="news" class="sx-gold">
   <div class="container">
-    <div class="slabel">{news.label}</div>
-    <h2 class="stitle">{news.title}</h2>
-    <p class="ssub">{news.sub}</p>
+    <SectionHead
+      label={news.label}
+      title={news.title}
+      sub={news.sub}
+      prov="every card links its primary source"
+    />
 
     <div class="news-grid">
       {#each news.items as item}

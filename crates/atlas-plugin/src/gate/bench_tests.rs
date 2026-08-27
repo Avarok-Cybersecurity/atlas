@@ -109,24 +109,42 @@ min = 85.0
 "#,
     );
     let err = load_all(&root).unwrap_err().to_string();
-    assert!(err.contains("unmeasured but carries thresholds"), "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "{}: bfcl-subset / org/M is unmeasured but carries thresholds. A guessed number a run can clear is worse than no number — it reports PASS for something nobody measured.",
+            root.join("kernels/gb10/modelA/BENCH.toml").display()
+        )
+    );
 }
 
 /// The mirror: claiming `measured` without numbers is equally a lie.
 #[test]
 fn a_measured_entry_without_thresholds_is_rejected() {
-    let root = fixture(
-        "empty-measured",
-        r#"
+    for (name, metrics) in [("absent", ""), ("empty", "[benchmarks.metrics]")] {
+        let root = fixture(
+            name,
+            &format!(
+                r#"
 [[benchmarks]]
 quant = "nvfp4"
 checkpoint = "org/M"
 gate = "bfcl-subset"
 status = "measured"
-"#,
-    );
-    let err = load_all(&root).unwrap_err().to_string();
-    assert!(err.contains("declares no metrics"), "{err}");
+{metrics}
+"#
+            ),
+        );
+        let err = load_all(&root).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "{}: bfcl-subset / org/M claims to be measured but declares no metrics",
+                root.join("kernels/gb10/modelA/BENCH.toml").display()
+            ),
+            "partition {name}"
+        );
+    }
 }
 
 #[test]
@@ -141,11 +159,12 @@ gate = "bfcl-subset"
 status = "probably-fine"
 "#,
     );
-    assert!(
-        load_all(&root)
-            .unwrap_err()
-            .to_string()
-            .contains("status must be")
+    assert_eq!(
+        load_all(&root).unwrap_err().to_string(),
+        format!(
+            "{}: status must be \"measured\" or \"unmeasured\", got \"probably-fine\"",
+            root.join("kernels/gb10/modelA/BENCH.toml").display()
+        )
     );
 }
 
@@ -167,11 +186,12 @@ status = "unmeasured"
     // to check a default on. What matters is the next step: resolving against
     // it must fail loudly, never read as "nothing to check".
     let baseline = baseline_for(&root, "bfcl-subset").unwrap();
+    assert_eq!(baseline.schema, 2);
     assert!(baseline.hardware.is_empty(), "{baseline:?}");
     let err = baseline.resolve("gb10", None).unwrap_err().to_string();
-    assert!(
-        err.contains("no baseline for hardware"),
-        "an unmeasured entry must produce a loud miss, not a silent pass: {err}"
+    assert_eq!(
+        err,
+        "no baseline for hardware \"gb10\"; this benchmark has entries for []"
     );
 }
 
@@ -202,7 +222,10 @@ min = 86.0
 "#,
     );
     let err = baseline_for(&root, "bfcl-subset").unwrap_err().to_string();
-    assert!(err.contains("claim to be the default"), "{err}");
+    assert_eq!(
+        err,
+        "bfcl-subset: both org/A (in modelA) and org/B (in modelA) claim to be the default on gb10"
+    );
 }
 
 /// No implicit "the only entry wins": a second checkpoint added later would
@@ -221,11 +244,9 @@ status = "measured"
 min = 85.0
 "#,
     );
-    assert!(
-        baseline_for(&root, "bfcl-subset")
-            .unwrap_err()
-            .to_string()
-            .contains("`default = true`")
+    assert_eq!(
+        baseline_for(&root, "bfcl-subset").unwrap_err().to_string(),
+        "bfcl-subset: no checkpoint on gb10 sets `default = true`; one must, or the gate has no defined subject"
     );
 }
 
@@ -252,11 +273,9 @@ status = "measured"
 min = 90.0
 "#,
     );
-    assert!(
-        baseline_for(&root, "bfcl-subset")
-            .unwrap_err()
-            .to_string()
-            .contains("declared twice")
+    assert_eq!(
+        baseline_for(&root, "bfcl-subset").unwrap_err().to_string(),
+        "bfcl-subset: org/A is declared twice on gb10"
     );
 }
 
@@ -305,13 +324,11 @@ min = 85.0
 "#,
     );
     let baseline = baseline_for(&root, "bfcl-subset").unwrap();
-    let (_, entry) = baseline.resolve("gb10", None).unwrap();
+    let (checkpoint, entry) = baseline.resolve("gb10", None).unwrap();
+    assert_eq!(checkpoint, "org/A");
     assert_eq!(
-        entry
-            .serve_overrides
-            .get("ssm_cache_slots")
-            .map(String::as_str),
-        Some("256")
+        entry.serve_overrides,
+        std::collections::BTreeMap::from([("ssm_cache_slots".to_string(), "256".to_string())])
     );
 }
 
@@ -335,7 +352,13 @@ min = 85.0
 "#,
     );
     let err = load_all(&root).unwrap_err().to_string();
-    assert!(err.contains("cannot set `port`"), "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "{}: bfcl-subset / org/A serve_overrides cannot set `port`: self-start binds a free port itself, so a pin here would name a listener that is not there",
+            root.join("kernels/gb10/modelA/BENCH.toml").display()
+        )
+    );
 }
 
 /// The committed tree's pins, exactly where the gates need them — and nowhere
@@ -435,49 +458,5 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     }
 }
 
-/// ★ Every committed `[benchmarks.param_overrides]` pin in the REAL tree must
-/// hold against its gate's actual schema: name a registered benchmark, name a
-/// parameter that exists, parse through that parameter's own kind, and never
-/// name a `threshold_params`-coupled key (whose value comes from the paired
-/// metric's bound). A pin that fails any of these is discovered here in
-/// milliseconds instead of at serve time on a gate run.
-#[test]
-fn every_committed_param_override_parses_against_its_gates_schema() {
-    let root = repo_root();
-    for (target, entry) in load_all(&root).expect("tree loads") {
-        if entry.param_overrides.is_empty() {
-            continue;
-        }
-        let descriptor = crate::registry::find(&entry.gate).unwrap_or_else(|| {
-            panic!(
-                "{}/{}: param_overrides on unregistered benchmark {:?}",
-                target.hardware, target.model, entry.gate
-            )
-        });
-        let specs = descriptor.build().parameters();
-        for (key, raw) in &entry.param_overrides {
-            assert!(
-                !descriptor.threshold_params.iter().any(|(p, _)| p == key),
-                "{}/{}/{}: pin {key:?} names a threshold-coupled param",
-                target.hardware,
-                target.model,
-                entry.gate
-            );
-            let spec = specs
-                .iter()
-                .find(|s| s.key == key.as_str())
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}/{}/{}: pin {key:?} names no schema parameter",
-                        target.hardware, target.model, entry.gate
-                    )
-                });
-            spec.kind.parse(raw).unwrap_or_else(|e| {
-                panic!(
-                    "{}/{}/{}: pin {key}={raw} does not parse: {e:#}",
-                    target.hardware, target.model, entry.gate
-                )
-            });
-        }
-    }
-}
+#[path = "bench_override_tree_tests.rs"]
+mod bench_override_tree_tests;

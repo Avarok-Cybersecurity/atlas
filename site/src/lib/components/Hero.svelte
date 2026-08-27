@@ -44,6 +44,7 @@
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape' && dashboardOpen && !Dashboard) closeDashboard(); }} />
 
 <section class="hero">
+
   <div class="hero-inner">
     <div class="hero-copy">
       <span class="hero-badge"><span class="dot"></span> {hero.badge}</span>
@@ -71,22 +72,21 @@
     </div>
 
     <div class="hero-receipt">
-      <button
-        type="button"
-        class="receipt-hit"
-        onclick={openDashboard}
-        onpointerenter={preloadDashboard}
-        onfocus={preloadDashboard}
-        aria-haspopup="dialog"
-        aria-label="Open the benchmark dashboard"
-      >
+      <div class="receipt-hit">
         <span class="receipt-chip" aria-hidden="true">⤢ expand</span>
         <Receipt compact={true} />
-        <span class="receipt-open-hint">
+        <button
+          type="button"
+          class="receipt-open-hint"
+          onclick={openDashboard}
+          onpointerenter={preloadDashboard}
+          onfocus={preloadDashboard}
+          aria-haspopup="dialog"
+        >
           <span class="rh-glyph" aria-hidden="true">⤢</span>
           view the benchmark dashboard
-        </span>
-      </button>
+        </button>
+      </div>
     </div>
   </div>
 </section>

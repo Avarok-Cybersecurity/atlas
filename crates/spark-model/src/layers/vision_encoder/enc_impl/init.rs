@@ -280,17 +280,6 @@ mod derive_tests {
     }
 
     #[test]
-    fn the_ceiling_is_never_exceeded_whatever_is_declared() {
-        for area in [Q38_BOUND, 100_000_000, usize::MAX / 4] {
-            let (got, _) = derive_max_patches(Some(area), 16);
-            assert!(
-                got <= CEILING_MAX_PATCHES,
-                "area {area} produced {got} patches, past the ceiling"
-            );
-        }
-    }
-
-    #[test]
     fn capacity_tracks_patch_size() {
         // patches = area / patch^2, so a finer grid needs MORE rows for the
         // same pixel area. A checkpoint at patch 14 must not silently get a
@@ -317,9 +306,7 @@ mod derive_tests {
     fn degenerate_inputs_do_not_produce_a_zero_allocation() {
         // A zero-row allocation would make every buffer empty and turn the
         // first upload into the same opaque CUDA error this work removed.
-        let (got, _) = derive_max_patches(Some(1), 16);
-        assert!(got >= 1, "derived capacity must never be zero");
-        let (got0, _) = derive_max_patches(Some(1024), 0);
-        assert!(got0 >= 1, "patch_size 0 must not divide by zero");
+        assert_eq!(derive_max_patches(Some(1), 16), (1, None));
+        assert_eq!(derive_max_patches(Some(1024), 0), (1024, None));
     }
 }

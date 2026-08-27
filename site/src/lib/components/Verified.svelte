@@ -1,12 +1,25 @@
 <script>
+  // Ledger entry 02. This is the second screen on purpose: the concurrency
+  // ladder is the strongest verified artifact the project owns, and it used to
+  // be hidden behind a click on the hero receipt. The methodology that makes
+  // the chart credible sits directly under it rather than in a modal.
   import {
     verified, mlperfCopy, mlperfTrademark, mlcommons, verifiedAnchor, gateSrcUrl, recipesUrl
   } from '$lib/data.js';
   import bench from '$lib/benchmarks.generated.json';
+  import ladder from '$lib/ladder.generated.json';
   import mlperf from '$lib/mlperf.json';
   import Receipt from './Receipt.svelte';
+  import SectionHead from './SectionHead.svelte';
+  import ConcurrencyLadder from './ConcurrencyLadder.svelte';
+  import { headroom, signed } from '$lib/ladder.js';
+
+  // Derived from the committed ladder, so regenerating it rewrites this
+  // sentence rather than leaving prose asserting a gap that closed.
+  const top = headroom(ladder.rows);
 
   const mlperfLine = mlperfCopy[mlperf.status] ?? mlperfCopy.preparing;
+  const stamp = `atlas ${bench.generated_sha} · ${bench.generated_date}`;
 
   let copied = $state(false);
   async function copyRepro() {
@@ -18,11 +31,30 @@
   }
 </script>
 
-<section id="verified">
+<section id="verified" class="sx-green">
   <div class="container">
-    <div class="slabel">{verified.label}</div>
-    <h2 class="stitle">{verified.title}</h2>
-    <p class="ssub">{verified.sub}</p>
+    <SectionHead
+      label={verified.label}
+      title={verified.title}
+      sub={verified.sub}
+      prov={stamp}
+      provUrl={ladder.results_doc_url}
+    />
+
+    <ConcurrencyLadder embedded />
+
+    {#if top}
+      <div class="scale-note">
+        <h3>{verified.scale.title}</h3>
+        <p>{verified.scale.lead}</p>
+        <p class="scale-figure">
+          From C={top.from} to C={top.to}, Atlas adds
+          <strong class="scale-up">{signed(top.atlas)}</strong> throughput while
+          {top.label} adds <strong class="scale-flat">{signed(top.baseline)}</strong>.
+        </p>
+        <p>{verified.scale.tail}</p>
+      </div>
+    {/if}
 
     <div class="verified-grid">
       <div>
@@ -45,7 +77,7 @@
         <p class="mlperf-note" style="font-size:0.84rem">Every model card comes from a recipe in <a class="link" href={recipesUrl} target="_blank" rel="noopener">atlas-recipes</a>.</p>
       </div>
 
-      <Receipt />
+      <Receipt source="gate" />
     </div>
   </div>
 </section>

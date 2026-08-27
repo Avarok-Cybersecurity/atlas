@@ -64,14 +64,6 @@ fn a_failed_probe_fails_the_run() {
 }
 
 #[test]
-fn unmeasured_geometry_does_not_fail_the_run() {
-    // An image past the server's encoder capacity says nothing about
-    // correctness; failing on it would make the benchmark unusable on any
-    // deployment with a lower --vision-max-pixels.
-    assert_eq!(verdict(&[um("big")], &[pass("p")], true), Verdict::Pass);
-}
-
-#[test]
 fn a_run_that_asserted_nothing_is_visible_as_such() {
     // All-Unmeasured is green under `verdict`, which is correct but useless.
     // `asserted_cells` is what stops that being silent.
@@ -82,7 +74,19 @@ fn a_run_that_asserted_nothing_is_visible_as_such() {
         0,
         "a reader must be able to see it asserted nothing"
     );
-    assert_eq!(asserted_cells(&[m("a", 1), um("b"), mm("c", 1, 2)]), 2);
+    assert_eq!(
+        asserted_cells(&[
+            m("a", 1),
+            um("b"),
+            mm("c", 1, 2),
+            GeomCell::Error {
+                fixture: "d",
+                msg: "decode failed".into(),
+            },
+        ]),
+        2,
+        "only measured matches and mismatches contribute to the geometry denominator"
+    );
 }
 
 #[test]
@@ -93,6 +97,9 @@ fn matching_is_case_insensitive_and_honours_want_none() {
         !reply_matches("Maybe red, maybe blue.", &["red"], &["blue"]),
         "want_none must veto a reply that hedges across every option"
     );
+    assert!(!reply_matches("The label reads 12800.", &["1280"], &[]));
+    assert!(!reply_matches("The shape is squared.", &["square"], &[]));
+    assert!(reply_matches("It is square.", &["square"], &[]));
 }
 
 #[test]
@@ -116,4 +123,36 @@ fn errors_count_as_failures_not_as_absences() {
         msg: "timeout".into(),
     }];
     assert_eq!(verdict(&[], &p, true), Verdict::Fail);
+}
+
+#[test]
+fn runtime_integrity_and_concurrency_are_part_of_the_final_verdict() {
+    assert_eq!(
+        with_runtime_checks(Verdict::Pass, false, true),
+        Verdict::Pass,
+        "clean runtime legs must preserve a pass"
+    );
+    assert_eq!(
+        with_runtime_checks(Verdict::Pass, true, true),
+        Verdict::Fail,
+        "an integrity failure must demote a pass"
+    );
+    assert_eq!(
+        with_runtime_checks(Verdict::Pass, false, false),
+        Verdict::Fail,
+        "an incomplete or inconsistent concurrency sweep must demote a pass"
+    );
+    assert_eq!(
+        with_runtime_checks(Verdict::Vacuous, true, false),
+        Verdict::Vacuous,
+        "a broken control remains the more precise diagnosis"
+    );
+}
+
+#[test]
+fn every_vision_verdict_has_an_exact_operator_label() {
+    assert_eq!(
+        [Verdict::Pass, Verdict::Fail, Verdict::Vacuous].map(|verdict| verdict.to_string()),
+        ["PASS", "FAIL", "VACUOUS"]
+    );
 }

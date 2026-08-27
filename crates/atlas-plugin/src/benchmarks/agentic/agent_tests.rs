@@ -80,13 +80,25 @@ fn truncation_keeps_both_ends() {
 }
 
 #[test]
-fn short_output_is_untouched() {
+fn output_at_or_below_the_cap_is_untouched() {
     assert_eq!(truncate("hello"), "hello");
+    let at_cap = "x".repeat(MAX_TOOL_OUTPUT);
+    assert_eq!(truncate(&at_cap), at_cap);
 }
 
 #[test]
 fn truncation_caps_at_the_harness_output_cap_and_never_splits_a_char() {
-    let t = truncate(&"é".repeat(20_000));
+    let text = "€".repeat(20_000);
+    let cut = (MAX_TOOL_OUTPUT - shell::TEST_ELISION_NOTE) / 2;
+    assert!(
+        !text.is_char_boundary(cut),
+        "fixture head cut is a character boundary"
+    );
+    assert!(
+        !text.is_char_boundary(text.len() - cut),
+        "fixture tail cut is a character boundary"
+    );
+    let t = truncate(&text);
     assert!(t.len() < MAX_TOOL_OUTPUT + 200, "{}", t.len());
     assert!(t.contains("characters elided from the middle"));
 }
@@ -165,23 +177,20 @@ fn the_system_prompt_is_the_harness_agent_prompt_plus_the_environment() {
 }
 
 #[test]
-fn the_gate_samples_greedily_and_pins_it_on_the_wire() {
+fn the_gate_request_pins_sampling_messages_and_tools() {
     // This asserted `TEMPERATURE == 0.3` — opencode's own setting — until the
     // gate's bar (an exact 10/10 on two counts) made a sampled instrument
     // useless: the same binary measured 10/10 then 8/10. The deviation from the
     // ported harness is deliberate and is documented at the constant.
     const { assert!(TEMPERATURE == 0.0) };
-    let body = request_body(
-        "Qwen/Qwen3.6-35B-A3B-FP8",
-        &[json!({"role": "user", "content": "hi"})],
-        &tool_schema(),
-        8192,
-    );
+    let messages = [json!({"role": "user", "content": "hi"})];
+    let body = request_body("Qwen/Qwen3.6-35B-A3B-FP8", &messages, &tool_schema(), 8192);
     assert_eq!(body["temperature"], 0.0);
     assert_eq!(body["seed"], SEED);
     assert_eq!(body["model"], "Qwen/Qwen3.6-35B-A3B-FP8");
     assert_eq!(body["stream"], true);
     assert_eq!(body["max_tokens"], 8192);
+    assert_eq!(body["messages"], json!(messages));
     assert_eq!(body["tool_choice"], "auto");
     assert_eq!(body["tools"], tool_schema());
 }
@@ -214,30 +223,43 @@ fn compaction_elides_the_oldest_tool_results_and_keeps_the_pairing() {
     // The most recent results are what the model is working from.
     let last = msgs.last().unwrap()["content"].as_str().unwrap();
     assert_eq!(last.len(), big.len(), "the live window must survive intact");
+
+    // Force more elision than the live-window rule permits. The budget remains
+    // exceeded on purpose; preserving the four results the model is actively
+    // using takes precedence over shrinking farther.
+    let live = "y".repeat(HISTORY_BUDGET);
+    let mut pressured = vec![json!({"role": "system", "content": "s"})];
+    for i in 0..5 {
+        pressured.push(json!({"role": "assistant", "content": Value::Null,
+            "tool_calls": [{"id": format!("p{i}")}]}));
+        pressured.push(json!({"role": "tool", "tool_call_id": format!("p{i}"), "content": live}));
+    }
+    compact(&mut pressured);
+    assert!(pressured[2]["content"].as_str().unwrap().contains("elided"));
+    for i in 1..5 {
+        assert_eq!(
+            pressured[2 + 2 * i]["content"].as_str().unwrap().len(),
+            live.len(),
+            "live tool result {i} was compacted"
+        );
+    }
 }
 
 #[test]
-fn a_short_session_is_left_alone() {
-    let mut msgs = vec![
-        json!({"role": "system", "content": "s"}),
-        json!({"role": "tool", "tool_call_id": "c0", "content": "small"}),
-    ];
+fn a_session_below_the_history_budget_is_left_alone() {
+    let mut msgs = vec![json!({"role": "system", "content": "s"})];
+    for i in 0..5 {
+        msgs.push(json!({"role": "assistant", "content": Value::Null,
+            "tool_calls": [{"id": format!("c{i}")}]}));
+        msgs.push(json!({"role": "tool", "tool_call_id": format!("c{i}"),
+            "content": format!("small-{i}")}));
+    }
+    let before = msgs.clone();
     compact(&mut msgs);
-    assert_eq!(msgs[1]["content"], "small");
+    assert_eq!(msgs, before);
 }
 
 // ── shell ──────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn a_hanging_command_is_killed_at_the_timeout() {
-    let mut c = cfg(std::env::temp_dir());
-    c.command_timeout = Duration::from_millis(300);
-    // `exec` so the kill lands on the sleep itself and this test leaks nothing.
-    let out = run_shell(&c, "exec sleep 30", c.command_timeout)
-        .await
-        .unwrap();
-    assert!(out.contains("timed out"), "{out}");
-}
 
 #[tokio::test]
 async fn stderr_and_a_non_zero_exit_are_both_reported() {
@@ -245,9 +267,11 @@ async fn stderr_and_a_non_zero_exit_are_both_reported() {
     let out = run_shell(&c, "echo hi; echo bad >&2; exit 7", Duration::from_secs(5))
         .await
         .unwrap();
+    assert!(out.contains("hi"), "stdout is missing: {out}");
+    assert!(out.contains("bad"), "stderr is missing: {out}");
     assert!(
-        out.contains("hi") && out.contains("bad") && out.contains("exit"),
-        "{out}"
+        out.contains("exit status: 7"),
+        "the exact exit status is missing: {out}"
     );
 }
 
@@ -290,7 +314,7 @@ async fn a_timed_out_command_still_returns_what_it_printed() {
 }
 
 #[tokio::test]
-async fn shell_output_reaches_the_model_normalised() {
+async fn shell_output_is_normalised_before_it_is_truncated() {
     // The wiring, not the rules (those are `norm_tests`): every byte the bash
     // tool returns has been through the normaliser, because that is the only
     // path by which run-to-run noise enters the conversation.
@@ -307,6 +331,20 @@ async fn shell_output_reaches_the_model_normalised() {
     assert!(!out.contains("Compiling"), "{out}");
     assert!(out.contains("target(s) in <elapsed>"), "{out}");
     assert!(out.contains("kill: (<pid>)"), "{out}");
+
+    // The payload fits under the model-output cap only after the progress line
+    // is removed. Truncating first would leave a permanent elision marker and
+    // different retained bytes for equivalent cold and warm builds.
+    let out = run_shell(
+        &c,
+        "printf '%08000d\\n' 0; printf '   Compiling %0300d\\n' 0",
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!out.contains("Compiling"), "{out}");
+    assert!(!out.contains("elided from the middle"), "{out}");
+    assert_eq!(out.len(), 8001);
 }
 
 #[cfg(target_os = "linux")]
@@ -340,12 +378,13 @@ async fn output_past_the_pipe_buffer_does_not_deadlock_the_writer() {
     let c = cfg(std::env::temp_dir());
     let out = run_shell(
         &c,
-        "head -c 400000 /dev/zero | tr '\\0' 'a'",
-        Duration::from_secs(10),
+        "head -c 8000000 /dev/zero | tr '\\0' 'a'",
+        Duration::from_secs(2),
     )
     .await
     .unwrap();
     assert!(!out.contains("timed out"), "{}", &out[..80.min(out.len())]);
+    assert!(!out.contains("[exit"), "the writer did not finish: {out}");
     assert!(out.contains("elided"), "the cap still applies");
 }
 

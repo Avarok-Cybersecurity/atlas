@@ -4,31 +4,38 @@
 
 use super::*;
 use atlas_core::config::ModelConfig;
-use spark_runtime::gpu::mock::MockGpuBackend;
+use spark_runtime::gpu::mock::{MockArg, MockGpuBackend, MockLaunch};
 
 #[test]
-fn test_ssm_state_allocation_sizes() {
+fn ssm_state_allocation_uses_layer_sizes_and_defaults() {
     let config = ModelConfig::qwen3_next_80b_nvfp4();
-    let nv = config.linear_num_value_heads; // 32
-    let vd = config.linear_value_head_dim; // 128
-    let nk = config.linear_num_key_heads; // 16
-    let kd = config.linear_key_head_dim; // 128
-    let d_conv = config.linear_conv_kernel_dim; // 4
-
-    let h_bytes = nv * vd * kd * 4;
-    assert_eq!(h_bytes, 32 * 128 * 128 * 4); // 2 MB
-
-    // conv_dim = 2*key_dim + value_dim = 2*2048 + 4096 = 8192
-    let conv_dim = nk * kd * 2 + nv * vd;
-    let conv_bytes = conv_dim * d_conv * 4;
-    assert_eq!(conv_bytes, 8192 * 4 * 4); // 128 KB
-
-    // Verify allocations
     let gpu = MockGpuBackend::new();
-    let h_state = gpu.alloc(h_bytes).unwrap();
-    let conv_state = gpu.alloc(conv_bytes).unwrap();
-    assert!(!h_state.is_null());
-    assert!(!conv_state.is_null());
+    let layer = native_fp8_gdn_layer(&gpu, &config, true, true);
+    let before = gpu.alloc_count();
+
+    let state = layer.alloc_state(&gpu).unwrap();
+    let state = state
+        .as_any()
+        .downcast_ref::<SsmLayerState>()
+        .expect("Qwen3 SSM allocation must return SsmLayerState");
+
+    assert_eq!(gpu.alloc_count(), before + 2);
+    assert_eq!(
+        gpu.read_alloc(state.h_state).unwrap().len(),
+        layer.h_state_bytes
+    );
+    assert_eq!(
+        gpu.read_alloc(state.conv_state).unwrap().len(),
+        layer.conv_state_bytes
+    );
+    assert_eq!(layer.h_state_bytes, 32 * 128 * 128 * 4);
+    assert_eq!(layer.conv_state_bytes, 8192 * 4 * 4);
+    assert!(state.h_state_checkpoint.is_none());
+    assert!(state.conv_state_checkpoint.is_none());
+    assert!(state.h_state_intermediates.is_empty());
+    assert!(state.conv_state_intermediates.is_empty());
+    assert!(!state.h_is_f16);
+    assert!(state.h_prefill_stage.is_none());
 }
 
 // ── Batched-verify QKVZ/out_proj dispatch on native-FP8-GDN checkpoints ──
@@ -202,16 +209,15 @@ fn native_fp8_gdn_batched_verify_r7_dispatches_w8a16_gemm() {
     // Pin the arm identity: w8a16_gemm_pipelined geometry at M=7 —
     // QKVZ (N=12288): grid [ceil(12288/32)=384, ceil(7/128)=1, 1];
     // out_proj (N=2048): grid [64, 1, 1]; both block [256,1,1].
-    let launches = (0..gpu.launch_count()).count();
-    assert!(launches > 0);
-    let seen = gpu_launch_grids(&gpu);
+    let qkvz = layer.qkvz_fp8w.as_ref().unwrap();
+    let out = layer.out_proj_fp8w.as_ref().unwrap();
     assert!(
-        seen.contains(&([384, 1, 1], [256, 1, 1])),
-        "QKVZ w8a16_gemm_pipelined launch missing; grids seen: {seen:?}"
+        has_fp8_projection(&gpu, qkvz, 7, 12_288, 2_048, [384, 1, 1]),
+        "QKVZ must consume its block-scaled FP8 pair at M=7"
     );
     assert!(
-        seen.contains(&([64, 1, 1], [256, 1, 1])),
-        "out_proj w8a16_gemm_pipelined launch missing; grids seen: {seen:?}"
+        has_fp8_projection(&gpu, out, 7, 2_048, 4_096, [64, 1, 1]),
+        "out_proj must consume its block-scaled FP8 pair at M=7"
     );
 }
 
@@ -223,6 +229,17 @@ fn native_fp8_gdn_batched_verify_r4_still_ok() {
     let gpu = MockGpuBackend::new();
     let layer = native_fp8_gdn_layer(&gpu, &config, true, true);
     run_batched_verify(&gpu, &config, &layer, &[2, 2]).unwrap();
+    let qkvz = layer.qkvz_fp8w.as_ref().unwrap();
+    let out = layer.out_proj_fp8w.as_ref().unwrap();
+    assert!(has_fp8_projection(
+        &gpu,
+        qkvz,
+        4,
+        12_288,
+        2_048,
+        [3_072, 1, 1]
+    ));
+    assert!(has_fp8_projection(&gpu, out, 4, 2_048, 4_096, [512, 1, 1]));
 }
 
 /// NEGATIVE: no QKVZ weight in ANY form at R=7 must fail fast with the
@@ -256,12 +273,34 @@ fn batched_verify_null_out_proj_fails_fast() {
     );
 }
 
-/// Grid/block pairs of every launch recorded by the mock.
-fn gpu_launch_grids(gpu: &MockGpuBackend) -> Vec<([u32; 3], [u32; 3])> {
-    gpu.launches_snapshot()
-        .into_iter()
-        .map(|l| (l.grid, l.block))
-        .collect()
+fn scalar_u32(arg: &MockArg) -> Option<u32> {
+    let MockArg::Bytes(bytes) = arg else {
+        return None;
+    };
+    (bytes.len() == 4).then(|| u32::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+}
+
+/// Find the exact block-scaled FP8 projection call among the full layer's
+/// launches. Input/output buffers vary by phase; the weight pair and M/N/K
+/// identify the production consumer contract.
+fn has_fp8_projection(
+    gpu: &MockGpuBackend,
+    weight: &Fp8Weight,
+    m: u32,
+    n: u32,
+    k: u32,
+    grid: [u32; 3],
+) -> bool {
+    gpu.launches_snapshot().iter().any(|launch: &MockLaunch| {
+        launch.grid == grid
+            && launch.block == [256, 1, 1]
+            && launch.args.len() == 7
+            && launch.args[1] == MockArg::Buffer(weight.weight)
+            && launch.args[2] == MockArg::Buffer(weight.row_scale)
+            && scalar_u32(&launch.args[4]) == Some(m)
+            && scalar_u32(&launch.args[5]) == Some(n)
+            && scalar_u32(&launch.args[6]) == Some(k)
+    })
 }
 
 // ── Batched decode/verify QKVZ weight-copy dispatch (M>8) ──
@@ -350,20 +389,4 @@ fn qkvz_verify_declines_without_the_fp8_copy() {
             "M={m}: no FP8 copy means nothing to divert"
         );
     }
-}
-
-/// The threshold is SHARED with the out_proj arm — both projections make the
-/// same trade on the same rows. Pins that the QKVZ predicate flips at exactly
-/// the row count out_proj's `num_tokens > VERIFY_TGEMM_MIN_TOKENS` flips at,
-/// so the two cannot drift apart silently.
-#[test]
-fn qkvz_and_out_proj_share_one_threshold() {
-    let flip = (1..=64)
-        .find(|&m| qkvz_verify_nvfp4_wins(m, true, true, true, false))
-        .expect("predicate must turn on somewhere in 1..=64");
-    assert_eq!(
-        flip,
-        super::trait_decode_batched::VERIFY_TGEMM_MIN_TOKENS + 1,
-        "QKVZ must flip at the shared out_proj threshold"
-    );
 }

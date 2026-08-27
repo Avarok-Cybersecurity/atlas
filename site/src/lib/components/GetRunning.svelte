@@ -9,13 +9,16 @@
       setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
     } catch {}
   }
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="run" class="section-alt">
+<section id="run" class="section-alt sx-cyan">
   <div class="container">
-    <div class="slabel">{getRunning.label}</div>
-    <h2 class="stitle">{getRunning.title}</h2>
-    <p class="ssub">{getRunning.sub}</p>
+    <SectionHead
+      label={getRunning.label}
+      title={getRunning.title}
+      sub={getRunning.sub}
+    />
 
     <div class="run-grid">
       <div>
@@ -25,7 +28,7 @@
             <span class="term-title">bash</span>
           </div>
           <pre class="term-body"><span class="p">$</span> <span class="c">{runCommand}</span>
-<span class="d"># checks for sparkrun, installs via uvx if missing, runs the flagship recipe</span></pre>
+<span class="d"># downloads atlasctl, verifies its checksum, installs to ~/.local/bin</span></pre>
         </div>
         <div class="run-copy">
           <button type="button" class="btn btn-secondary" onclick={() => copy(runCommand)}>
@@ -45,7 +48,7 @@
         </div>
         <div class="hero-cmd" style="margin-top:0.5rem">
           <span class="prompt">$</span>
-          <code>{runCommandRaw.split('&& ')[1]}</code>
+          <code>{runCommandRaw}</code>
           <button type="button" class="copy-btn" onclick={() => copy(runCommandRaw)}>{copied === runCommandRaw ? 'Copied' : 'Copy'}</button>
         </div>
         <p class="run-note">

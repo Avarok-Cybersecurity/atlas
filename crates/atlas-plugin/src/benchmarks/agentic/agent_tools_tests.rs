@@ -11,6 +11,39 @@ async fn tool(cfg: &AgentConfig, name: &str, args: Value) -> Result<String> {
     execute(cfg, &call, &mut Vec::new()).await
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn write_distinguishes_dangling_symlinks_by_destination() {
+    let c = cfg(sandbox("dangling-write"));
+    let outside = sandbox("dangling-write-outside");
+    let target = outside.join("created.rs");
+    let relative_target = Path::new("..")
+        .join(outside.file_name().unwrap())
+        .join("created.rs");
+    std::os::unix::fs::symlink(relative_target, c.sandbox.join("escape")).unwrap();
+
+    let result = tool(
+        &c,
+        "write",
+        json!({"filePath": "escape", "content": "outside"}),
+    )
+    .await;
+
+    assert!(result.is_err(), "outside write was accepted: {result:?}");
+    assert!(!target.exists(), "write created {}", target.display());
+
+    let inside_target = c.sandbox.join("created-inside.rs");
+    std::os::unix::fs::symlink(&inside_target, c.sandbox.join("inside")).unwrap();
+    tool(
+        &c,
+        "write",
+        json!({"filePath": "inside", "content": "inside"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(inside_target).unwrap(), "inside");
+}
+
 #[test]
 fn the_tool_surface_is_the_six_the_harness_agent_enables() {
     // `~/.config/opencode/agents/atlas.md` frontmatter: read, glob, grep, bash,
@@ -27,7 +60,19 @@ fn the_tool_surface_is_the_six_the_harness_agent_enables() {
 #[tokio::test]
 async fn a_model_supplied_timeout_can_shorten_but_never_raise_the_ceiling() {
     let mut c = cfg(std::env::temp_dir());
-    c.command_timeout = Duration::from_millis(500);
+    c.command_timeout = Duration::from_secs(1);
+
+    let started = std::time::Instant::now();
+    let out = tool(&c, "bash", json!({"command": "sleep 30", "timeout": 50}))
+        .await
+        .unwrap();
+    assert!(out.contains("timed out"), "{out}");
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the model's shorter timeout was ignored: {:?}",
+        started.elapsed()
+    );
+
     let started = std::time::Instant::now();
     let out = tool(
         &c,
@@ -37,7 +82,11 @@ async fn a_model_supplied_timeout_can_shorten_but_never_raise_the_ceiling() {
     .await
     .unwrap();
     assert!(out.contains("timed out"), "{out}");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the model raised the harness ceiling: {:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
@@ -73,12 +122,19 @@ async fn read_lists_a_directory_so_a_missing_src_is_visible() {
     tool(
         &c,
         "write",
+        json!({"filePath": "z.txt", "content": "created first\n"}),
+    )
+    .await
+    .unwrap();
+    tool(
+        &c,
+        "write",
         json!({"filePath": "src/main.rs", "content": "fn main() {}\n"}),
     )
     .await
     .unwrap();
     let listing = tool(&c, "read", json!({"filePath": "."})).await.unwrap();
-    assert_eq!(listing, "Cargo.toml\nsrc/");
+    assert_eq!(listing, "Cargo.toml\nsrc/\nz.txt");
 }
 
 #[tokio::test]
@@ -227,6 +283,25 @@ async fn edit_refuses_an_ambiguous_match_unless_replace_all_is_set() {
 }
 
 #[tokio::test]
+async fn edit_rejects_an_empty_match_without_touching_the_file() {
+    let c = cfg(sandbox("edit-empty"));
+    tool(&c, "write", json!({"filePath": "a.rs", "content": "abc\n"}))
+        .await
+        .unwrap();
+    let result = tool(
+        &c,
+        "edit",
+        json!({"filePath": "a.rs", "oldString": "", "newString": "x", "replaceAll": true}),
+    )
+    .await;
+    assert!(result.is_err(), "empty oldString was accepted: {result:?}");
+    assert_eq!(
+        std::fs::read_to_string(c.sandbox.join("a.rs")).unwrap(),
+        "abc\n"
+    );
+}
+
+#[tokio::test]
 async fn glob_and_grep_see_the_project_but_not_the_build_tree() {
     let c = cfg(sandbox("search"));
     tool(
@@ -270,7 +345,7 @@ async fn glob_and_grep_see_the_project_but_not_the_build_tree() {
 }
 
 #[tokio::test]
-async fn a_file_bigger_than_read_can_return_is_not_loaded_whole() {
+async fn read_and_grep_do_not_return_content_past_the_file_cap() {
     // Nothing bounds what ends up in the sandbox — a server redirected to
     // `./server.log` instead of `/tmp/server.log`, a `dd`, a looping
     // `println!`. `read` and `grep` used to load whatever they found in one
@@ -315,13 +390,46 @@ async fn a_file_bigger_than_read_can_return_is_not_loaded_whole() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_symlink_cycle_does_not_wedge_the_search_tools() {
-    // One bash call: `ln -s . a; ln -s . b; ln -s . c`. `is_dir()` resolves the
-    // link, so the walk explored 3^40 paths — bounded in depth by the kernel's
-    // ELOOP limit and not at all in breadth — and nothing times out a tool
-    // call, so `glob` never returned and the iteration was lost. The link to
-    // /etc is the other half: `grep` reads what the walk hands it without
-    // consulting `resolve`, so a followed link is an exfiltration path too.
+async fn the_file_reader_returns_at_the_cap_without_waiting_for_eof() {
+    use std::io::Write;
+
+    let fifo = sandbox("read-fifo").join("stream");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (release, held) = std::sync::mpsc::channel();
+    let writer_path = fifo.clone();
+    let writer = std::thread::spawn(move || {
+        let mut stream = std::fs::OpenOptions::new()
+            .write(true)
+            .open(writer_path)
+            .unwrap();
+        stream
+            .write_all(&vec![b'x'; READ_LINES * READ_LINE_CHARS])
+            .unwrap();
+        let _ = held.recv_timeout(Duration::from_secs(8));
+    });
+    let read = tokio::task::spawn_blocking(move || read_capped(&fifo));
+    let result = tokio::time::timeout(Duration::from_secs(4), read).await;
+    let _ = release.send(());
+    writer.join().unwrap();
+    let text = result
+        .expect("reader waited for EOF after reaching its cap")
+        .unwrap()
+        .unwrap();
+    assert!(text.contains("(file truncated at this point)"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn search_tools_neither_follow_symlink_directories_nor_read_symlink_files() {
+    // A finite directory alias makes a follow-symlinks mutant fail promptly
+    // instead of expanding a cycle until the CI job times out. Skipping this
+    // link is the same policy that makes `ln -s . loop` harmless.
     let c = cfg(sandbox("cycle"));
     tool(
         &c,
@@ -330,9 +438,7 @@ async fn a_symlink_cycle_does_not_wedge_the_search_tools() {
     )
     .await
     .unwrap();
-    for name in ["a", "b", "c"] {
-        std::os::unix::fs::symlink(".", c.sandbox.join(name)).unwrap();
-    }
+    std::os::unix::fs::symlink("src", c.sandbox.join("alias")).unwrap();
     std::os::unix::fs::symlink("/etc/hostname", c.sandbox.join("host.rs")).unwrap();
     assert_eq!(
         tool(&c, "glob", json!({"pattern": "**/*.rs"}))
@@ -354,7 +460,7 @@ async fn an_unknown_tool_tells_the_model_what_it_may_call() {
 }
 
 #[test]
-fn glob_patterns_behave_like_the_shell() {
+fn glob_patterns_cover_basenames_segments_and_recursive_paths() {
     let m = |p: &str, t: &str| glob_match(p.as_bytes(), t.as_bytes());
     assert!(m("**/*.rs", "src/main.rs"));
     assert!(m("**/*.rs", "main.rs"));

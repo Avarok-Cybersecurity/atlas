@@ -174,19 +174,39 @@ mod tests {
     }
 
     #[test]
-    fn test_loader_selection() {
+    fn all_declared_model_type_spellings_are_accepted() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        config.model_type = "qwen3_next".to_string();
-        assert!(loader_for_config(&config).is_ok());
-
-        config.model_type = "nemotron_h".to_string();
-        assert!(loader_for_config(&config).is_ok());
-
-        config.model_type = "holo3_1_moe".to_string();
-        assert!(loader_for_config(&config).is_ok());
-
-        config.model_type = "m2m_100".to_string();
-        assert!(loader_for_config(&config).is_ok());
+        for model_type in [
+            "qwen3_next",
+            "qwen3_vl_moe",
+            "qwen3_5_moe",
+            "qwen3_5",
+            "qwen35_moe",
+            "qwen35",
+            "qwen3_6_moe",
+            "holo3_1_moe",
+            "nemotron_h",
+            "nemotron_h_puzzle",
+            "m2m_100",
+            "nllb",
+            "gemma4",
+            "gemma_4",
+            "mistral",
+            "minimax_m2",
+            "step3p7",
+            "laguna",
+            "deepseek_v4",
+            // Normalization accepts case, hyphens, and dots before dispatch.
+            "QWEN3-NEXT",
+            "nemotron.h.puzzle",
+            "M2M-100",
+        ] {
+            config.model_type = model_type.to_string();
+            assert!(
+                loader_for_config(&config).is_ok(),
+                "declared model type {model_type:?} was rejected"
+            );
+        }
 
         config.model_type = "unsupported_model".to_string();
         assert!(loader_for_config(&config).is_err());
@@ -195,20 +215,37 @@ mod tests {
     // The generic `ModelWeightLoader` for NLLB must fail fast: real NLLB serving
     // goes through the dedicated `NllbGpuModel` encoder-decoder runtime, which
     // `build_model` selects before this loader is ever consulted. Reaching this
-    // loader is a routing bug, so every generic entry point bails.
+    // loader is a routing bug, so every mandatory generic tensor-loading
+    // entry point bails. Optional hooks still report their normal absence.
     #[test]
-    fn test_nllb_generic_loader_fails_fast_dedicated_runtime_serves() {
+    fn nllb_mandatory_generic_loads_fail_fast() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
         config.model_type = "nllb".to_string();
         let loader = loader_for_config(&config).unwrap();
         let store = WeightStore::empty();
         let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
 
-        let err = loader.load_embedding(&store, &config, &gpu).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("dedicated GPU encoder-decoder runtime"),
-            "{err}"
-        );
+        let errors = [
+            loader
+                .load_layers(&store, &config, &gpu, &[])
+                .err()
+                .expect("generic layer load unexpectedly succeeded"),
+            loader
+                .load_embedding(&store, &config, &gpu)
+                .expect_err("generic embedding load unexpectedly succeeded"),
+            loader
+                .load_final_norm(&store, &config, &gpu)
+                .expect_err("generic final-norm load unexpectedly succeeded"),
+            loader
+                .load_lm_head(&store, &config, &gpu)
+                .expect_err("generic LM-head load unexpectedly succeeded"),
+        ];
+        for err in errors {
+            assert!(
+                err.to_string()
+                    .contains("dedicated GPU encoder-decoder runtime"),
+                "unexpected fail-fast diagnostic: {err}"
+            );
+        }
     }
 }

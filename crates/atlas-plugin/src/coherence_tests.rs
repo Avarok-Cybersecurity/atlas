@@ -5,11 +5,9 @@
 
 use super::*;
 
-/// Does the answer text satisfy the check? Mirrors `ask`'s decision so the
-/// matching rule can be tested without a server.
+/// Exercise the same decision seam as `ask`, without a server.
 fn accepts(check: &Check, answer: &str) -> bool {
-    let lowered = answer.to_lowercase();
-    check.accept.iter().any(|a| lowered.contains(a))
+    super::judge(answer, "", check.accept).0
 }
 
 fn check(label: &str) -> &'static Check {
@@ -34,37 +32,42 @@ fn a_model_answering_correctly_passes_however_it_phrases_it() {
 #[test]
 fn a_wrong_or_empty_answer_fails() {
     let arith = check("arithmetic");
-    for answer in ["5", "", "I cannot help with that", "twenty-two"] {
+    for answer in [
+        "5",
+        "",
+        "I cannot help with that",
+        "twenty-two",
+        "14",
+        "404",
+        "fourteen",
+    ] {
         assert!(!accepts(arith, answer), "should reject {answer:?}");
     }
-    // "22" contains no "4" — a garbled quantization producing digits is not a pass.
     assert!(!accepts(arith, "22"));
     assert!(!accepts(check("recall"), "London"));
 }
 
 #[test]
 fn the_checks_cover_two_different_faculties() {
-    // Arithmetic and recall fail independently; a probe made of two arithmetic
-    // questions would be one signal counted twice.
-    assert_eq!(CHECKS.len(), 2);
-    assert!(CHECKS.iter().any(|c| c.label == "arithmetic"));
-    assert!(CHECKS.iter().any(|c| c.label == "recall"));
-}
-
-#[test]
-fn every_accept_pattern_is_lower_case() {
-    // `accepts` lower-cases the answer, so an upper-case pattern could never
-    // match and the check would silently always fail.
-    for c in CHECKS {
-        for pattern in c.accept {
-            assert_eq!(
-                *pattern,
-                pattern.to_lowercase(),
-                "{}: {pattern:?} must be lower-case",
-                c.label
-            );
-        }
-    }
+    assert_eq!(
+        CHECKS
+            .iter()
+            .map(|check| (check.label, check.prompt, check.accept))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "arithmetic",
+                "What is 2+2? Reply with only the number.",
+                &["4", "four"][..],
+            ),
+            (
+                "recall",
+                "What is the capital of France? Reply with only the city name.",
+                &["paris"][..],
+            ),
+        ],
+        "the two probes must retain distinct faculties and their measured prompts"
+    );
 }
 
 #[test]
@@ -90,8 +93,12 @@ fn an_empty_answer_reads_as_answered_nothing() {
     };
     let target = TargetEndpoint::local(8888, "m");
     let concern = report.concern(&target).expect("a concern");
-    assert!(concern.contains("answered nothing"), "{concern}");
-    assert!(!concern.contains("\"\""), "no empty quotes: {concern}");
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 is serving \"m\", which did not answer as expected (recall answered nothing). \
+         This benchmark may be aimed at a different model, or the checkpoint may be a base (non-instruct) one — \
+         the run is still valid, but read the numbers with that in mind."
+    );
     assert!(!report.is_clean());
 }
 
@@ -110,13 +117,12 @@ fn the_concern_describes_rather_than_forbids() {
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
         .expect("a concern");
-    // The old wording called it a failure and told the user to pass a flag.
-    assert!(!concern.contains("failed"), "not a verdict: {concern}");
-    assert!(
-        concern.contains("still valid"),
-        "says the run may proceed: {concern}"
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 is serving \"m\", which did not answer as expected (recall answered \"London\"). \
+         This benchmark may be aimed at a different model, or the checkpoint may be a base (non-instruct) one — \
+         the run is still valid, but read the numbers with that in mind."
     );
-    assert!(concern.contains("different model"), "{concern}");
 }
 
 #[test]
@@ -130,10 +136,9 @@ fn a_transport_error_is_worded_as_one() {
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
         .expect("a concern");
-    assert!(concern.contains("did not answer"), "{concern}");
-    assert!(
-        !concern.contains("different model"),
-        "a closed port is not a model problem: {concern}"
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 did not answer a test request: connection refused"
     );
 }
 
@@ -155,11 +160,9 @@ fn a_clean_report_has_nothing_to_say() {
 
 #[test]
 fn a_long_answer_is_truncated_for_the_error_message() {
-    let long = "x".repeat(500);
+    let long = format!("{}{}", "a".repeat(80), "z".repeat(420));
     let out = truncate(&long, 80);
-    assert_eq!(out.chars().count(), 81, "80 chars plus the ellipsis");
-    assert!(out.ends_with('…'));
-    // Short answers survive intact, trimmed.
+    assert_eq!(out, format!("{}…", "a".repeat(80)));
     assert_eq!(truncate("  Paris\n", 80), "Paris");
 }
 
@@ -168,7 +171,7 @@ fn truncate_counts_characters_not_bytes() {
     // A byte-slicing implementation panics on a multi-byte boundary.
     let s = "é".repeat(200);
     let out = truncate(&s, 10);
-    assert_eq!(out.chars().count(), 11);
+    assert_eq!(out, format!("{}…", "é".repeat(10)));
 }
 
 #[test]
@@ -189,34 +192,13 @@ fn a_wrong_model_name_is_reported_ahead_of_the_answers() {
     };
     let target = TargetEndpoint::local(8888, "does/not-exist");
     let concern = report.concern(&target).expect("a concern");
-    assert!(
-        concern.contains("nvidia/Qwen3.6-27B-NVFP4"),
-        "names what IS served: {concern}"
-    );
-    assert!(
-        concern.contains("does/not-exist"),
-        "and what was asked for: {concern}"
-    );
-    assert!(
-        !concern.contains("answered nothing"),
-        "the cause leads, not the symptom: {concern}"
+    assert_eq!(
+        concern,
+        "http://127.0.0.1:8888 is serving nvidia/Qwen3.6-27B-NVFP4 — not \"does/not-exist\", \
+         which this benchmark is set to request. Atlas answers whatever model name it is sent, \
+         so the run WILL produce numbers; they will just be for a different model than the one named."
     );
     assert!(!report.is_clean());
-}
-
-#[test]
-fn a_server_serving_the_requested_model_is_clean() {
-    let report = Report {
-        answers: vec![Answer {
-            label: "recall",
-            answer: "Paris".into(),
-            passed: true,
-        }],
-        transport_error: None,
-        served_instead: None,
-        wrong_family: None,
-    };
-    assert!(report.is_clean());
 }
 
 /// Gate A's thresholds were measured on the 35B MoE, which stays the DEFAULT
@@ -229,11 +211,15 @@ fn a_server_serving_the_requested_model_is_clean() {
 /// numbers. A model outside every declared family must still be reported,
 /// because its numbers would compare to nothing.
 #[test]
-fn a_gate_run_against_the_wrong_model_family_is_reported() {
+fn the_agentic_gate_accepts_only_its_declared_model_families() {
     use crate::registry;
     let agentic = registry::find("agentic-webserver").expect("registered");
     let expect = agentic.intended_for.expect("gate A names its models");
 
+    assert_eq!(
+        expect.families,
+        &["qwen3.6-35b-a3b", "qwen3.6-27b", "qwen3.8-27b"]
+    );
     assert!(
         expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"),
         "the FP8 flagship"
@@ -254,19 +240,26 @@ fn a_gate_run_against_the_wrong_model_family_is_reported() {
         !expect.accepts("meta-llama/Llama-3.1-8B"),
         "an unrelated model still compares to nothing"
     );
+    assert!(!expect.accepts("Qwen/Qwen3.5-27B"));
+    assert!(!expect.accepts("Qwen/Qwen3.6-270B"));
 }
 
 #[test]
-fn the_bfcl_gates_accept_both_of_their_models() {
+fn the_bfcl_gate_accepts_all_and_only_its_declared_model_families() {
     use crate::registry;
     let expect = registry::find("bfcl-subset")
         .expect("registered")
         .intended_for
         .expect("names its models");
-    // Gate D is the dense 27B, gate B the 35B MoE — both are legitimate.
+    assert_eq!(
+        expect.families,
+        &["qwen3.6-27b", "qwen3.6-35b-a3b", "qwen3.8-27b"]
+    );
     assert!(expect.accepts("unsloth/Qwen3.6-27B-NVFP4"));
     assert!(expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"));
+    assert!(expect.accepts("unsloth/Qwen3.8-27B-NVFP4"));
     assert!(!expect.accepts("meta-llama/Llama-3.1-8B"));
+    assert!(!expect.accepts("Qwen/Qwen3.5-27B"));
 }
 
 #[test]
@@ -302,11 +295,7 @@ fn the_wrong_family_note_outranks_an_odd_answer() {
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
         .expect("a concern");
-    assert!(concern.contains("35B MoE"), "{concern}");
-    assert!(
-        !concern.contains("answered nothing"),
-        "the cause leads: {concern}"
-    );
+    assert_eq!(concern, "Gate A is defined on the 35B MoE flagship");
     assert!(!report.is_clean());
 }
 
@@ -319,18 +308,18 @@ fn a_transport_error_carrying_a_hint_is_not_cut_off_mid_clause() {
              open the Library (press 4 in the dashboard), choose a model and a recipe, \
              and start it; then retry this request";
     let out = super::one_line(e);
-    assert!(
-        !out.ends_with('…'),
-        "the actionable half must survive the bound: {out}"
+    assert_eq!(
+        out,
+        "endpoint returned \"HTTP/1.1 503 Service Unavailable\": no model is loaded — \
+         open the Library (press 4 in the dashboard), choose a model and a recipe, \
+         and start it; then retry this request"
     );
-    assert!(out.contains("retry this request"), "{out}");
 }
 
 #[test]
 fn a_runaway_error_chain_is_still_bounded() {
     let out = super::one_line(&"boom ".repeat(500));
-    assert!(out.chars().count() <= 281, "still bounded: {}", out.len());
-    assert!(out.ends_with('…'));
+    assert_eq!(out, format!("{}…", "boom ".repeat(56)));
 }
 
 #[test]
@@ -349,12 +338,12 @@ fn serving_nothing_does_not_promise_numbers() {
     let c = report
         .concern(&target)
         .expect("serving nothing is a concern");
-    assert!(
-        !c.contains("WILL produce"),
-        "must not promise numbers it cannot produce: {c}"
+    assert_eq!(
+        c,
+        "http://127.0.0.1:8123 has no model loaded, so this run will produce no numbers — \
+         every request will be refused. Load a model first: in the dashboard open the Library \
+         (press 4), choose a model and a recipe, and start it."
     );
-    assert!(c.contains("no model loaded"), "{c}");
-    assert!(c.contains("Library"), "and says how to fix it: {c}");
 }
 
 #[test]
@@ -366,10 +355,7 @@ fn a_thinking_model_that_reasons_to_the_answer_passes() {
     // brain damage.
     let (passed, answer) = super::judge("", "2 + 2 = 4, so the answer is 4", &["4", "four"]);
     assert!(passed, "the fact is present, in the reasoning");
-    assert!(
-        answer.contains("4"),
-        "a failure must still quote something legible, not an empty string: {answer:?}"
-    );
+    assert_eq!(answer, "2 + 2 = 4, so the answer is 4");
 }
 
 #[test]

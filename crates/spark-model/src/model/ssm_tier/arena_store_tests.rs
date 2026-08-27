@@ -29,8 +29,9 @@ fn rdma_put_get_round_trip_bit_identical() {
 #[test]
 fn rdma_get_absent_is_miss_not_error() {
     let s = rdma_store(4);
-    let mut out = [0u8; BLOB];
+    let mut out = [0xA5u8; BLOB];
     assert!(!s.get(7, &mut out).unwrap());
+    assert_eq!(out, [0xA5; BLOB], "a miss must not alter caller memory");
     assert_eq!(s.stats.get_misses.load(Ordering::Relaxed), 1);
 }
 
@@ -38,22 +39,21 @@ fn rdma_get_absent_is_miss_not_error() {
 fn rdma_wrong_size_get_refused_out_untouched() {
     let s = rdma_store(4);
     s.put(1, &[9; BLOB]).unwrap();
-    let mut out = [0u8; BLOB + 4]; // mismatched
-    assert!(
-        !s.get(1, &mut out).unwrap(),
-        "never scatter a wrong-sized blob"
-    );
-    assert_eq!(out, [0u8; BLOB + 4], "out left untouched on refusal");
+    let mut short = [0xA5u8; BLOB - 1];
+    let mut long = [0x5Au8; BLOB + 1];
+    assert!(!s.get(1, &mut short).unwrap(), "short output refused");
+    assert!(!s.get(1, &mut long).unwrap(), "long output refused");
+    assert_eq!(short, [0xA5; BLOB - 1], "short output untouched");
+    assert_eq!(long, [0x5A; BLOB + 1], "long output untouched");
 }
 
 #[test]
 fn rdma_wrong_size_put_refused() {
     let s = rdma_store(4);
-    assert!(
-        !s.put(1, &[0; BLOB + 1]).unwrap(),
-        "off-size blob refused, not corrupt"
-    );
+    assert!(!s.put(1, &[0; BLOB - 1]).unwrap(), "short blob refused");
+    assert!(!s.put(1, &[0; BLOB + 1]).unwrap(), "long blob refused");
     assert_eq!(s.len(), 0);
+    assert_eq!(s.stats.put_rejects.load(Ordering::Relaxed), 2);
 }
 
 #[test]
@@ -135,5 +135,8 @@ fn file_arena_write_past_capacity_errs_not_corrupts() {
         arena.write_blob(1, &[1; BLOB]).is_err(),
         "over-capacity write refused"
     );
+    let mut original = [0u8; BLOB];
+    arena.read_blob(0, &mut original).unwrap();
+    assert_eq!(original, [1; BLOB], "failed write must preserve slot zero");
     let _ = std::fs::remove_dir_all(dir);
 }

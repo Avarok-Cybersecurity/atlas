@@ -336,11 +336,16 @@ async fn post_json(target: &TargetEndpoint, path: &str, body: &Value) -> Result<
         .unwrap_or("?")
         .to_string();
     if status != "200" {
-        let detail = error_message_from_response(body_bytes).unwrap_or_else(|| {
-            String::from_utf8_lossy(body_bytes)
-                .chars()
-                .take(200)
-                .collect()
+        let detail = error_message_from_response(&raw).unwrap_or_else(|| {
+            let text = if head
+                .to_ascii_lowercase()
+                .contains("transfer-encoding: chunked")
+            {
+                dechunk(body_bytes)
+            } else {
+                String::from_utf8_lossy(body_bytes).to_string()
+            };
+            text.chars().take(200).collect()
         });
         bail!("endpoint returned HTTP {status}: {detail}");
     }
@@ -488,7 +493,7 @@ pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Result<()> {
         .map_err(|_| anyhow!("{} did not answer within {:?}", target.base_url, timeout))?
         .with_context(|| format!("probing {}", target.base_url))?;
     let status = head.lines().next().unwrap_or_default();
-    if !status.contains(" 200") {
+    if !status_is_success(status) {
         bail!("{} /v1/models returned {status:?}", target.base_url);
     }
     Ok(())
@@ -621,8 +626,14 @@ pub fn error_message_from_response(raw: &[u8]) -> Option<String> {
 pub(super) const MAX_ERROR_BODY: usize = 64 * 1024;
 
 pub(super) fn is_chunked(head: &str) -> bool {
-    head.lines()
-        .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:") && l.contains("chunked"))
+    head.lines().any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.starts_with("transfer-encoding:") && line.contains("chunked")
+    })
+}
+
+pub(super) fn status_is_success(status_line: &str) -> bool {
+    status_line.split_whitespace().nth(1) == Some("200")
 }
 
 /// `Content-Length` from a header block, if declared and parseable.

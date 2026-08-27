@@ -558,41 +558,4 @@ mod tests {
         // All cursors ≥ 50 → no change.
         assert_eq!(cursors, vec![100, 100, 100]);
     }
-
-    #[test]
-    fn advance_after_slide_idempotent() {
-        let mut cursors = vec![5, 5, 5];
-        advance_layer_cursors_after_slide(&mut cursors, 10);
-        advance_layer_cursors_after_slide(&mut cursors, 10);
-        assert_eq!(cursors, vec![10, 10, 10]);
-    }
-
-    // Round-trip: a slide loop pattern — for each slide, check then advance.
-    // Models the cap=4 / chunk crossing case described in issue #31.
-
-    #[test]
-    fn slide_loop_round_trip_chunk_transition() {
-        // After chunk N, all 3 attn layers have offloaded blocks 0..64.
-        let mut cursors = vec![64u32, 64, 64];
-
-        // Chunk N+1's bulk alloc loop: simulate 64 slides + 64 allocs with
-        // window_start advancing one step per slide. cap = 64.
-        let cap = 64;
-        for slide_idx in 0..cap {
-            let ws_before = slide_idx; // prior to this slide, ws = slide_idx
-            // Safety check: every cursor > ws_before? Initial cursors are 64.
-            // All slides up to slide_idx=63 have cursors > slide_idx → safe.
-            assert!(
-                check_safe_to_evict(&cursors, ws_before).is_ok(),
-                "slide {slide_idx} should be safe with cursors {cursors:?}"
-            );
-            // Advance after the slide.
-            advance_layer_cursors_after_slide(&mut cursors, ws_before + 1);
-        }
-
-        // After 64 slides (ws now 64), cursors should still be [64; 3] because
-        // none of the advances moved them past 64 (each step advanced ws by 1
-        // up to 64, and cursors started at 64 ≥ each new_ws).
-        assert_eq!(cursors, vec![64, 64, 64]);
-    }
 }

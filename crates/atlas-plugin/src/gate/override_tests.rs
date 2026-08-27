@@ -38,14 +38,21 @@ fn a_run_with_serve_overrides_records_them_and_stays_replayable() {
     )
     .unwrap();
     assert_eq!(gate.serve_overrides, overrides);
-    let joined = gate.command.join(" ");
-    assert!(
-        joined.contains("--serve-override kv_cache_dtype=fp8"),
-        "the command must replay the override, not just the recipe: {joined}"
-    );
-    assert!(
-        joined.contains("--serve-override fp8_kv_calibration_tokens=512"),
-        "{joined}"
+    assert_eq!(
+        gate.command,
+        [
+            "spark",
+            "benchmark",
+            "run",
+            "bfcl-subset",
+            "--param",
+            "repeats=12",
+            "--serve-override",
+            "fp8_kv_calibration_tokens=512",
+            "--serve-override",
+            "kv_cache_dtype=fp8",
+            "--pull-request-gate",
+        ]
     );
 }
 
@@ -99,11 +106,11 @@ fn a_record_missing_a_baseline_serve_pin_fails() {
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
-    assert!(
-        problems
-            .iter()
-            .any(|p| p.contains("ssm_cache_slots=256") && p.contains("missing")),
-        "{problems:?}"
+    assert_eq!(
+        problems,
+        [
+            "serve override ssm_cache_slots=256 is pinned on the baseline but missing from the record"
+        ]
     );
 }
 
@@ -138,6 +145,28 @@ fn a_record_with_the_baseline_serve_pin_still_scores_metrics() {
     assert!(check_record(&gate, &baseline).is_none());
 }
 
+#[test]
+fn a_record_with_an_unpinned_serve_override_fails() {
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]),
+    )
+    .unwrap();
+    let problems = check_record(&gate, &bfcl_baseline()).expect("must fail");
+    assert_eq!(
+        problems,
+        [
+            "serve override kv_cache_dtype=fp8 is present on the record but not pinned by the baseline"
+        ]
+    );
+}
+
 /// A record served at some OTHER value fails naming both numbers — the run
 /// measured a config the baseline does not describe.
 #[test]
@@ -167,11 +196,9 @@ fn a_record_with_a_different_pin_value_fails() {
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
-    assert!(
-        problems
-            .iter()
-            .any(|p| p.contains("ssm_cache_slots=16") && p.contains("256")),
-        "{problems:?}"
+    assert_eq!(
+        problems,
+        ["serve override ssm_cache_slots=16 does not match the baseline pin ssm_cache_slots=256"]
     );
 }
 
@@ -210,11 +237,9 @@ fn a_record_missing_a_baseline_param_pin_fails() {
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
-    assert!(
-        problems
-            .iter()
-            .any(|p| p.contains("osl=320") && p.contains("missing")),
-        "{problems:?}"
+    assert_eq!(
+        problems,
+        ["param osl=320 is pinned on the baseline but missing from the record"]
     );
 }
 
@@ -250,7 +275,7 @@ fn a_record_with_a_different_param_pin_value_fails() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".into(), 90.0);
     let mut record = run_record(metrics, Verdict::pass("ok"));
-    record.params.insert("osl".into(), "128".into());
+    record.params.insert("osl".into(), "3 20".into());
     let gate = GateRecord::from_run(
         &record,
         hw(),
@@ -261,10 +286,11 @@ fn a_record_with_a_different_param_pin_value_fails() {
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
-    assert!(
-        problems
-            .iter()
-            .any(|p| p.contains("osl=128") && p.contains("320")),
-        "{problems:?}"
+    assert_eq!(
+        problems,
+        [
+            "param osl=3 20 does not match the baseline pin osl=320 — the run measured a \
+             different instrument than the one these thresholds describe"
+        ]
     );
 }

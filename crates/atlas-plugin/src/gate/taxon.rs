@@ -76,11 +76,46 @@ fn vendor(root: &Path, hardware: &str) -> Option<String> {
         .map(|v| v.trim().trim_matches('"').to_string())
 }
 
+/// Directory that owns a model's per-quant kernel sources.
+///
+/// Most models own their sources. A `[model] kernel_source` entry redirects
+/// only the quant directory; the target's own MODEL.toml remains a build
+/// input. Malformed TOML, an invalid referent, and redirect chains all fail
+/// closed as an unresolved target.
+fn kernel_source_dir(root: &Path, hardware: &str, model: &str) -> Option<PathBuf> {
+    let hw_dir = root.join("kernels").join(hardware);
+    let model_dir = hw_dir.join(model);
+    let text = std::fs::read_to_string(model_dir.join("MODEL.toml")).ok()?;
+    let parsed: toml::Value = toml::from_str(&text).ok()?;
+    let Some(source) = parsed
+        .get("model")
+        .and_then(|table| table.get("kernel_source"))
+    else {
+        return Some(model_dir);
+    };
+    let source = source.as_str()?.trim();
+    if source.is_empty() {
+        return None;
+    }
+    let source_dir = hw_dir.join(source);
+    let source_text = std::fs::read_to_string(source_dir.join("MODEL.toml")).ok()?;
+    let source_toml: toml::Value = toml::from_str(&source_text).ok()?;
+    if source_toml
+        .get("model")
+        .and_then(|table| table.get("kernel_source"))
+        .is_some()
+    {
+        return None;
+    }
+    Some(source_dir)
+}
+
 /// Every target in the tree.
 ///
 /// Mirrors `resolve_targets()` with both wildcards expanded: a hardware dir is
 /// one holding `HARDWARE.toml`, a model dir one holding `MODEL.toml` (which is
-/// what excludes `common/`), and every subdir of a model is a quant.
+/// what excludes `common/`), and every subdir of the model's resolved kernel
+/// source directory is a quant.
 pub fn walk(root: &Path) -> Vec<Target> {
     let kernels = root.join("kernels");
     let mut targets = Vec::new();
@@ -94,7 +129,10 @@ pub fn walk(root: &Path) -> Vec<Target> {
             if !model_dir.join("MODEL.toml").exists() {
                 continue;
             }
-            for quant in subdirs(&model_dir) {
+            let Some(source_dir) = kernel_source_dir(root, &hardware, &model) else {
+                continue;
+            };
+            for quant in subdirs(&source_dir) {
                 targets.push(Target {
                     hardware: hardware.clone(),
                     model: model.clone(),
@@ -117,12 +155,10 @@ pub fn walk(root: &Path) -> Vec<Target> {
 pub fn sources(root: &Path, target: &Target) -> Option<Vec<PathBuf>> {
     let hw_dir = root.join("kernels").join(&target.hardware);
     let ext = source_ext(&vendor(root, &target.hardware)?)?;
+    let source_dir = kernel_source_dir(root, &target.hardware, &target.model)?;
 
     let mut by_stem: BTreeMap<String, PathBuf> = BTreeMap::new();
-    for dir in [
-        hw_dir.join("common"),
-        hw_dir.join(&target.model).join(&target.quant),
-    ] {
+    for dir in [hw_dir.join("common"), source_dir.join(&target.quant)] {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -151,13 +187,13 @@ pub fn sources(root: &Path, target: &Target) -> Option<Vec<PathBuf>> {
 /// `MODEL.toml` invalidates the target that reads it — and only that target.
 pub fn configs(root: &Path, target: &Target) -> Vec<PathBuf> {
     let hw_dir = root.join("kernels").join(&target.hardware);
+    let source_dir = kernel_source_dir(root, &target.hardware, &target.model)
+        .unwrap_or_else(|| hw_dir.join(&target.model));
     [
         hw_dir.join("HARDWARE.toml"),
+        hw_dir.join("common").join("KERNEL.toml"),
         hw_dir.join(&target.model).join("MODEL.toml"),
-        hw_dir
-            .join(&target.model)
-            .join(&target.quant)
-            .join("KERNEL.toml"),
+        source_dir.join(&target.quant).join("KERNEL.toml"),
     ]
     .into_iter()
     .filter(|p| p.exists())
@@ -206,7 +242,14 @@ pub fn affected(root: &Path, changed: &[String]) -> BTreeSet<Target> {
         match model_of(path) {
             Some((_, model)) => out.extend(
                 all.iter()
-                    .filter(|t| t.hardware == hw && t.model == model)
+                    .filter(|t| {
+                        t.hardware == hw
+                            && (t.model == model
+                                || kernel_source_dir(root, &t.hardware, &t.model)
+                                    .and_then(|p| p.file_name()?.to_str().map(str::to_string))
+                                    .as_deref()
+                                    == Some(model))
+                    })
                     .cloned(),
             ),
             None => out.extend(all.iter().filter(|t| t.hardware == hw).cloned()),

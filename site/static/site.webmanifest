@@ -1,16 +1,42 @@
 {
+  "id": "/",
   "name": "Atlas Inference Engine",
   "short_name": "Atlas",
+  "description": "Pure Rust inference, from the device in your hand to the datacenter rack.",
+  "lang": "en",
+  "dir": "ltr",
+  "scope": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "categories": ["developer", "productivity", "utilities"],
+  "theme_color": "#14111f",
+  "background_color": "#14111f",
   "icons": [
     {
-      "src": "/favicon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
-  ],
-  "theme_color": "#0a0c10",
-  "background_color": "#0a0c10",
-  "display": "standalone",
-  "start_url": "/"
+  ]
 }

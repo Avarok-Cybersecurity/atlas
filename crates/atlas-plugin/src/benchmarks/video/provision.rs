@@ -95,14 +95,7 @@ pub fn clip(name: &str) -> Option<&'static Clip> {
 /// Content-derived, so a regenerated clip re-provisions without anyone
 /// remembering to bump a version.
 fn stamp_value() -> String {
-    let mut acc: u64 = 1469598103934665603; // FNV-1a offset basis
-    for c in CLIPS {
-        for b in c.name.as_bytes().iter().chain(c.bytes.iter()) {
-            acc ^= *b as u64;
-            acc = acc.wrapping_mul(1099511628211);
-        }
-    }
-    format!("video-fixtures-v1-{acc:016x}")
+    crate::benchmarks::content_stamp("video-fixtures-v1", CLIPS.iter().map(|c| (c.name, c.bytes)))
 }
 
 pub const PLUGIN_ID: &str = "video";

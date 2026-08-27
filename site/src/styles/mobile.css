@@ -21,6 +21,11 @@ img, svg, video { max-width: 100%; }
 .ms-grid > *, .community-band > *, .footer-inner > *, .mnav-vendors > *,
 .proof-strip > * { min-width: 0; }
 .repro, .hero-cmd, .cmd-pill, .term, .method-card, .receipt, .run-side { min-width: 0; }
+/* The card's command pill now carries two buttons (Copy and Run). On a narrow
+   screen they would squeeze the command to nothing, so let the pill wrap and
+   give the command its own full-width row. */
+.cmd-pill { flex-wrap: wrap; }
+.cmd-pill .cmd-text { flex-basis: 100%; }
 /* auto-fit tracks must never demand more than the viewport can give */
 .tstrip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
 .contrib-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
@@ -51,7 +56,7 @@ img, svg, video { max-width: 100%; }
   display: none; flex-direction: column;
   padding: 0.35rem 1.15rem 1.15rem;
   border-top: 1px solid var(--border);
-  background: rgba(244, 240, 232, 0.98);
+  background: rgba(20, 17, 31, 0.98);
   max-height: calc(100dvh - 56px); overflow-y: auto;
   animation: drawerin 0.18s ease-out both;
 }
@@ -66,7 +71,7 @@ img, svg, video { max-width: 100%; }
 .nav-drawer-foot .nav-star-btn { padding: 0.65rem 1.1rem; font-size: 0.9rem; }
 .nav-scrim {
   display: none; position: fixed; inset: 0; z-index: 80;
-  border: 0; padding: 0; background: rgba(26, 24, 21, 0.4); cursor: default;
+  border: 0; padding: 0; background: rgba(0, 0, 0, 0.4); cursor: default;
   touch-action: none; /* dragging the dimmed area must not scroll the page behind */
 }
 
@@ -74,7 +79,7 @@ img, svg, video { max-width: 100%; }
 @media (max-width: 1040px) {
   section { padding: 5.5rem 1.75rem; }
   .hero { padding: 4.5rem 1.75rem 4rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 1.75rem; padding-right: 1.75rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 1.75rem; padding-right: 1.75rem; }
   footer { padding-left: 1.75rem; padding-right: 1.75rem; }
 }
 
@@ -96,21 +101,21 @@ img, svg, video { max-width: 100%; }
   .nav-toggle { display: inline-flex; }
   .nav-drawer.is-open { display: flex; }
   .nav-scrim.is-on { display: block; }
-  .gift { margin-top: 56px; top: 56px; }
+  .ann { margin-top: 56px; top: 56px; }
 }
 
 /* ---- 680, phone ----------------------------------------------------------- */
 @media (max-width: 680px) {
   section { padding: 3.5rem 1.15rem; }
   .hero { padding: 2.5rem 1.15rem 3rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 1.15rem; padding-right: 1.15rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 1.15rem; padding-right: 1.15rem; }
   footer { padding: 2.5rem 1.15rem 2rem; }
 
   /* the banner scrolls away on a phone instead of eating the viewport */
-  .gift { position: static; }
-  .gift-inner { flex-direction: column; gap: 0.3rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
-  .gift-line { font-size: 0.85rem; }
-  .gift-sub { font-size: 0.78rem; line-height: 1.5; }
+  .ann { position: static; }
+  .ann-inner { flex-direction: column; gap: 0.3rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  .ann-line { font-size: 0.85rem; }
+  .ann-sub { font-size: 0.78rem; line-height: 1.5; }
 
   /* type scale */
   .hero h1 { font-size: clamp(1.95rem, 7.4vw, 2.7rem); }
@@ -179,7 +184,7 @@ img, svg, video { max-width: 100%; }
 @media (max-width: 480px) {
   section { padding: 3rem 1rem; }
   .hero { padding: 2.25rem 1rem 2.5rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 1rem; padding-right: 1rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 1rem; padding-right: 1rem; }
   footer { padding: 2.25rem 1rem 1.75rem; }
   .nav-wordmark { font-size: 1.2rem; }
   .nav-mark { height: 30px; width: 30px; }
@@ -203,7 +208,7 @@ img, svg, video { max-width: 100%; }
 @media (max-width: 380px) {
   section { padding: 2.75rem 0.9rem; }
   .hero { padding: 2rem 0.9rem 2.25rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 0.9rem; padding-right: 0.9rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 0.9rem; padding-right: 0.9rem; }
   .hero h1 { font-size: 1.85rem; }
   .stitle { font-size: 1.5rem; }
   .email-btn-addr { font-size: 0.7rem; }
@@ -285,4 +290,35 @@ img, svg, video { max-width: 100%; }
   .cc-ask, .cc-chip, .cc-key-toggle, .cc-key-save, .cc-error-retry, .cc-close { min-height: 42px; }
   .cc-keyrow-swap, .cm-sources summary { padding-block: 0.55rem; }
   .cm-src { min-height: 42px; align-items: center; }
+}
+
+/* ---- control plane --------------------------------------------------------
+   Every viewport rule for /control lives here, like everything else. */
+.fl-grid > *, .topo-wrap > *, .vt-row > *, .al-row > *, .topo-actions > * { min-width: 0; }
+
+@media (max-width: 860px) {
+  /* The nav shrinks to 56px below this width. */
+  .control > section:first-of-type { padding-top: calc(56px + 2rem); }
+}
+
+@media (max-width: 1000px) {
+  /* The action list moves under the picture rather than beside it. */
+  .topo-wrap { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  /* Two across keeps the labels readable; three does not at this width. */
+  .vt-row { grid-template-columns: repeat(2, 1fr); }
+  /* The alert table becomes stacked rows. */
+  .al-row { grid-template-columns: 1fr; gap: 0.3rem; }
+  .al-sev { justify-self: start; }
+  /* Reserving 420px for a mode swap is wrong once cards stack: the live
+     content is far taller, and an over-large reservation is itself a hole in
+     the page. */
+  .ctl-modes { min-height: 0; }
+}
+
+@media (pointer: coarse) {
+  /* Touch targets. */
+  .topo-act-btn, .fp-chip, .fl-unpair { min-height: 34px; }
 }
