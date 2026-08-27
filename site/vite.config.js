@@ -30,6 +30,7 @@ function atlasGenerators() {
       // Depends on the four above: llms.txt restates their numbers for answer
       // engines, so it must be written after they are.
       run('gen-llms.mjs');
+      run('gen-sitemap.mjs');
       // Vendors the sha256-pinned LatticeDB wasm into static/lattice/; a pin
       // mismatch or no-cache-and-offline is a hard failure by design.
       run('gen-lattice.mjs');

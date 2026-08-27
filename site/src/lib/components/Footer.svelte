@@ -14,7 +14,11 @@
       <div class="fcol">
         <h4>{col.heading}</h4>
         {#each col.links as l}
-          <a href={l.url} target="_blank" rel="noopener">{l.text}</a>
+          {#if l.url.startsWith('http')}
+            <a href={l.url} target="_blank" rel="noopener">{l.text}</a>
+          {:else}
+            <a href={l.url}>{l.text}</a>
+          {/if}
         {/each}
       </div>
     {/each}

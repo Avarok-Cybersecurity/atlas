@@ -22,7 +22,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const site = resolve(here, '..');
@@ -35,7 +35,7 @@ const bench = read('src/lib/benchmarks.generated.json');
 
 // data.js is an ES module of plain exports; importing it keeps the copy in one
 // place instead of restating it here.
-const data = await import(resolve(site, 'src/lib/data.js'));
+const data = await import(pathToFileURL(resolve(site, 'src/lib/data.js')).href);
 const { tagline, hero, githubUrl, recipesUrl, discordUrl, xUrl, guideUrl, hardware } = data;
 
 const recipes = models.flatMap((v) =>
@@ -114,6 +114,27 @@ for (const vendor of [...new Set(recipes.map((r) => r.vendor))]) {
   push('');
 }
 
+const blog = await import(pathToFileURL(resolve(site, 'src/lib/blog.js')).href);
+const { posts, writing, postUrl, indexUrl } = blog;
+if (!posts?.length) throw new Error('gen-llms: blog.js exported no posts');
+
+push(
+  '## Writing',
+  '',
+  writing.sub,
+  '',
+  `- Writing index: ${indexUrl}`
+);
+for (const post of posts) {
+  push(`- [${post.title}](${postUrl(post.slug)})`);
+  push(`  ${post.description}`);
+}
+
+push('', '## Questions', '');
+for (const item of data.faq.items) {
+  push(`### ${item.q}`, '', item.a, '');
+}
+
 push(
   '## Links',
   '',
@@ -124,6 +145,7 @@ push(
   `- Discord: ${discordUrl}`,
   `- X: ${xUrl}`,
   '- Site: https://atlasinference.io',
+  `- Writing: ${indexUrl}`,
   '',
   '## License',
   '',

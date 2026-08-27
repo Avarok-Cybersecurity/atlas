@@ -1,0 +1,106 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+   =============================================================================
+   Writing pages.
+
+   Same design system as the rest of the site. Ledger rails, --sx, card and
+   figure grammar. The page-level accent is violet because these pages are
+   engine copy, not silicon or verify.
+
+   Contrast rule, restated: brand colours clear 4.5:1 as TEXT on --bg and
+   --card. As FILLS they carry --bg ink, never white.
+
+   Every viewport rule lives in mobile.css, which loads after this file.
+   ========================================================================== */
+
+.blog > section:first-of-type,
+.blog > article:first-of-type {
+  padding-top: calc(62px + 3rem);
+}
+
+.blog-crumb {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 1.4rem;
+}
+.blog-crumb a { color: var(--sx); text-decoration: none; }
+.blog-crumb a:hover { text-decoration: underline; }
+
+.blog-index {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 2.5rem;
+}
+.blog-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: var(--card);
+  border: 1px solid rgba(58, 48, 84, 0.45);
+  border-radius: 18px;
+  padding: 1.6rem 1.7rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 16px 44px -20px rgba(0, 0, 0, 0.24);
+  transition: transform 0.2s, border-color 0.2s;
+}
+.blog-card:hover { transform: translateY(-3px); border-color: var(--accent); }
+.blog-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.blog-card h2 {
+  font-size: 1.15rem;
+  font-weight: 780;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+.blog-card h2 a { color: var(--t1); text-decoration: none; }
+.blog-card h2 a:hover { color: var(--accent); }
+.blog-card p { font-size: 0.9rem; color: var(--t2); line-height: 1.62; }
+.blog-more {
+  margin-top: auto;
+  padding-top: 0.35rem;
+  font-size: 0.84rem;
+  font-weight: 650;
+  color: var(--accent);
+  text-decoration: none;
+}
+.blog-more:hover { text-decoration: underline; }
+
+.blog-p {
+  font-size: 1.02rem;
+  color: var(--t2);
+  line-height: 1.7;
+  margin-top: 1.1rem;
+  max-width: 72ch;
+}
+.blog-h2 {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  margin-top: 2.4rem;
+  color: var(--t1);
+  max-width: 72ch;
+}
+.blog-fig { margin: 2rem 0 0; }
+.blog-fig img {
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.blog-fig figcaption {
+  font-size: 0.82rem;
+  color: var(--t3);
+  margin-top: 0.7rem;
+  line-height: 1.5;
+  max-width: 72ch;
+}
+.blog .scale-note { margin-top: 1.4rem; }
+.blog-end { margin-top: 2.8rem; }

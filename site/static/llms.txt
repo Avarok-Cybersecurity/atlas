@@ -105,6 +105,68 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 
 - `deepseek-v4-flash-nvfp4-ep2` — Deepseek V4 Flash NVFP4 EP=2, 280B nvfp4, EP=2, `nvidia/DeepSeek-V4-Flash-NVFP4`
 
+## Writing
+
+Longer pages that stay on the ledger. Numbers still come from the repo.
+
+- Writing index: https://atlasinference.io/blog.html
+- [C=1 is a conversation. C=128 is the work.](https://atlasinference.io/blog/fleets.html)
+  The concurrency thesis at a length an answer engine can cite. A swarm is a fleet. A context bus keeps the story on hardware you own. The motherboard is vision.
+
+## Questions
+
+### What is Atlas?
+
+An open source LLM inference engine written in pure Rust and CUDA. It serves an OpenAI-compatible API from a single binary, with no Python and no PyTorch in the serving path. One codebase covers the range, from edge-class accelerators through workstations to expert-parallel deployments across nodes.
+
+### What hardware does Atlas run on?
+
+NVIDIA DGX Spark (GB10) is verified today, and AMD Strix Halo (gfx1151) runs the same CUDA source compiled through SCALE by Spectral Compute — one codebase, no HIP port. Both were submitted to MLPerf Inference v6.1 in the closed edge division.
+
+### Is Atlas faster than vLLM on a DGX Spark?
+
+On the published concurrency ladder, yes at every rung from C=1 to C=128, by 1.012x to 1.225x against whichever vLLM configuration is faster at that concurrency. The margin is widest at the top, because between C=64 and C=128 Atlas keeps scaling and the vLLM configuration that leads the mid-ladder stops. Same box, same checkpoint, same client, same prompts, greedy sampling with matched penalties. The full campaign log, including the rungs we lost on the way, is in the repo.
+
+### How do I install it?
+
+One command: curl -fsSL https://atlasinference.io/install.sh | sh. It downloads a prebuilt atlasctl, verifies its checksum, and installs to ~/.local/bin. If you would rather not pipe curl to a shell, cargo install atlasctl does the same thing from source.
+
+### Which models can I run?
+
+Every model on this page maps to a recipe in the atlas-recipes repository, which is the single source of truth — the site cannot list a model that has no recipe. Qwen3.6 is the flagship family, alongside Gemma, Nemotron, Mistral, MiniMax and DeepSeek.
+
+### What does “verified” mean here?
+
+An image ships only after the serve matrix passes: every model boots, stays coherent under greedy determinism with no token leakage and reliable tool calls, and holds throughput within 10% of its committed baseline. A release that ships slower than its baseline fails the gate.
+
+### Why does concurrency matter more than single-stream speed?
+
+Because agentic systems do not send one request at a time. A fleet of tool-calling agents sharing a context bus arrives as many concurrent streams, so the engine is judged where the requests pile up. On the published ladder Atlas keeps gaining throughput from C=64 to C=128 while the leading vLLM configuration does not, and an engine that flattens under load caps how many agents a given box can actually run.
+
+### What does Atlas mean by an AI swarm?
+
+A swarm is a fleet of concurrent tool calling agents sharing work on hardware you own. It is not a product name. The published concurrency ladder is the receipt for that claim. C=1 is a conversation. C=128 is the work. An engine that flattens under load caps how many agents a given box can actually run.
+
+### What is a context bus?
+
+Shared context that stays on the machines running the swarm, without a hop through someone else's cloud. Agent threads fan out and rejoin on the same box or the same rack. The homepage already uses the phrase. This names it so it can be cited.
+
+### What is an AI motherboard?
+
+A vision, not a product you can order. The next abstraction Atlas is pointing at is connectors, volatile memory, a context bus, a swarm, and duty, sitting together the way a motherboard sits under a CPU. Verified silicon and the concurrency ladder are what ships today. The motherboard is the direction those pieces travel, with its status attached.
+
+### What is Atlas Enterprise?
+
+The commercial license path for teams that need different terms than AGPL-3.0-only. The Community Edition stays AGPL. Contributions are covered by a CLA that permits re-licensing. Enterprise is on-prem inference as a B2B API on hardware you own, not a hosted cloud hop. Email us if that is the conversation you need.
+
+### What license is Atlas under, and can I use it commercially?
+
+The Community Edition is AGPL-3.0-only. Contributions are covered by a CLA that permits re-licensing for the Enterprise Edition. If you are running Atlas in production or need different terms, email us.
+
+### Does Atlas run multi-node?
+
+Yes. EP=2 expert parallelism across two DGX Sparks is supported and shipped as recipes; those cards are marked EP=2 in the model list. A three-node GB10 topology is being wired up now.
+
 ## Links
 
 - Engine repo: https://github.com/Avarok-Cybersecurity/atlas
@@ -114,6 +176,7 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - Discord: https://discord.gg/RQcGakU2jW
 - X: https://x.com/AtlasInferenceX
 - Site: https://atlasinference.io
+- Writing: https://atlasinference.io/blog.html
 
 ## License
 

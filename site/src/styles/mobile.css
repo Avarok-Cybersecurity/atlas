@@ -19,7 +19,7 @@ img, svg, video { max-width: 100%; }
 .hero-inner > *, .verified-grid > *, .star-wrap > *, .run-grid > *, .hw-grid > *,
 .news-grid > *, .road-grid > *, .contrib-grid > *, .reach-grid > *, .tstrip > *,
 .ms-grid > *, .community-band > *, .footer-inner > *, .mnav-vendors > *,
-.proof-strip > * { min-width: 0; }
+.proof-strip > *, .blog-index > *, .blog-fig > * { min-width: 0; }
 .repro, .hero-cmd, .cmd-pill, .term, .method-card, .receipt, .run-side { min-width: 0; }
 /* The card's command pill now carries two buttons (Copy and Run). On a narrow
    screen they would squeeze the command to nothing, so let the pill wrap and
@@ -298,7 +298,9 @@ img, svg, video { max-width: 100%; }
 
 @media (max-width: 860px) {
   /* The nav shrinks to 56px below this width. */
-  .control > section:first-of-type { padding-top: calc(56px + 2rem); }
+  .control > section:first-of-type,
+  .blog > section:first-of-type,
+  .blog > article:first-of-type { padding-top: calc(56px + 2rem); }
 }
 
 @media (max-width: 1000px) {

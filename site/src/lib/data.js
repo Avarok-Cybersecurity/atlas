@@ -77,6 +77,8 @@ export const nav = {
   links: [
     { text: 'Verified', href: '/#verified' },
     { text: 'News', href: '/#news' },
+    // `.html`, not `/blog`. Same static-host constraint as Control below.
+    { text: 'Blog', href: '/blog.html' },
     { text: 'Hardware', href: '/#hardware' },
     { text: 'Models', href: '/#models' },
     { text: 'Get running', href: '/#run' },
@@ -440,6 +442,22 @@ export const faq = {
       a: 'Because agentic systems do not send one request at a time. A fleet of tool-calling agents sharing a context bus arrives as many concurrent streams, so the engine is judged where the requests pile up. On the published ladder Atlas keeps gaining throughput from C=64 to C=128 while the leading vLLM configuration does not, and an engine that flattens under load caps how many agents a given box can actually run.'
     },
     {
+      q: 'What does Atlas mean by an AI swarm?',
+      a: 'A swarm is a fleet of concurrent tool calling agents sharing work on hardware you own. It is not a product name. The published concurrency ladder is the receipt for that claim. C=1 is a conversation. C=128 is the work. An engine that flattens under load caps how many agents a given box can actually run.'
+    },
+    {
+      q: 'What is a context bus?',
+      a: "Shared context that stays on the machines running the swarm, without a hop through someone else's cloud. Agent threads fan out and rejoin on the same box or the same rack. The homepage already uses the phrase. This names it so it can be cited."
+    },
+    {
+      q: 'What is an AI motherboard?',
+      a: 'A vision, not a product you can order. The next abstraction Atlas is pointing at is connectors, volatile memory, a context bus, a swarm, and duty, sitting together the way a motherboard sits under a CPU. Verified silicon and the concurrency ladder are what ships today. The motherboard is the direction those pieces travel, with its status attached.'
+    },
+    {
+      q: 'What is Atlas Enterprise?',
+      a: 'The commercial license path for teams that need different terms than AGPL-3.0-only. The Community Edition stays AGPL. Contributions are covered by a CLA that permits re-licensing. Enterprise is on-prem inference as a B2B API on hardware you own, not a hosted cloud hop. Email us if that is the conversation you need.'
+    },
+    {
       q: 'What license is Atlas under, and can I use it commercially?',
       a: 'The Community Edition is AGPL-3.0-only. Contributions are covered by a CLA that permits re-licensing for the Enterprise Edition. If you are running Atlas in production or need different terms, email us.'
     },
@@ -622,6 +640,7 @@ export const footer = {
       heading: 'Project',
       links: [
         { text: 'GitHub', url: githubUrl },
+        { text: 'Blog', url: '/blog.html' },
         { text: 'Deployment guide', url: guideUrl },
         { text: 'Recipes (SSOT)', url: recipesUrl },
         { text: 'License AGPLv3', url: githubUrl + '/blob/main/LICENSE' }
