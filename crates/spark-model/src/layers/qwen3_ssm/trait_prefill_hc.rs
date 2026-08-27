@@ -114,7 +114,12 @@ impl Qwen3SsmLayer {
              moe_router_in_f32. Unset it."
         );
 
-        let streams = ctx.buffers.hc_streams();
+        // Mixed steps park the prefill chunk's highway rows above the
+        // decode rows (ctx.hc_row_offset = padded decode count; 0 elsewhere).
+        let streams = ctx
+            .buffers
+            .hc_streams()
+            .offset(ctx.hc_row_offset * hc.hc_mult * h * 4);
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
 

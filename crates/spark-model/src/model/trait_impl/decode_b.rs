@@ -67,8 +67,16 @@ impl TransformerModel {
         // validated for the absorbed-MLA path — so MLA stays on the
         // dedicated `decode_batch` route.
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
+        // hc + QSA-active decode rows must not fuse: the batched ms decode
+        // inlined below has no per-seq QSA selection arm (decode_a2 routes
+        // those per-seq). Same inert-bound formula as decode_a2's gate.
+        let hc_qsa_perseq = self.config.hc_mult > 0 && self.config.index_topk > 0 && {
+            let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
+            decode_seqs.iter().any(|s| s.seq_len >= bound)
+        };
         if self.comm.is_some()
             || self.is_mla_dispatch()
+            || hc_qsa_perseq
             || (padded_n_guard + n_prefill) > self.buffers.max_batch_tokens()
             || n_decode == 0
         {
@@ -403,6 +411,7 @@ impl TransformerModel {
         // the sequential decode_batch + prefill_chunk approach.
         let decode_ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -415,7 +424,9 @@ impl TransformerModel {
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: None,
-            host_token_ids: None,
+            // PLE (qwen4_exp n-gram) computes its hash rows from HOST ids;
+            // without this the hc multi-seq decode refuses the whole step.
+            host_token_ids: Some(decode_tokens),
             // #30: decode never routes prefill — installed-pair/bgmv path only.
             routed_lora_layers: None,
             midchunk_capture: None,
@@ -424,6 +435,9 @@ impl TransformerModel {
 
         let prefill_ctx = ForwardContext {
             buffers: &self.buffers,
+            // The prefill chunk's highway rows live above the (padded)
+            // decode rows — same disjoint layout hidden/residual use.
+            hc_row_offset: padded_n,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -436,7 +450,10 @@ impl TransformerModel {
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: None,
-            host_token_ids: None,
+            // The chunk's ids, for the PLE prefill hash on the fused path.
+            host_token_ids: Some(
+                &prefill_tokens[prefill_chunk_start..prefill_chunk_start + prefill_chunk_len],
+            ),
             // #30: the fused (SLAI) prefill portion routes by the prefilling
             // seq's slot (None unless it routes to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(prefill_seq.adapter_slot),
@@ -451,77 +468,87 @@ impl TransformerModel {
             "mixed_forward decode",
         )?;
 
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            // 6a. Decode: N sequences × 1 token each on hidden[0..padded_n*H)
-            let mut layer_state_refs = extract_layer_refs(&mut all_layer_states, layer_idx);
-            layer.decode_multi_seq(
-                hidden,
-                residual,
-                padded_n,
-                &mut layer_state_refs,
-                &mut kv_cache,
-                &seq_lens,
-                &block_tables,
-                &decode_ctx,
-                stream,
-            )?;
+        // The fallible span below runs with the decode seqs' layer_states
+        // TAKEN (moved into `all_layer_states`). Any `?` that escaped before
+        // the restore left every decode sequence stateless — the next
+        // single-seq decode then indexed an empty `layer_states` and
+        // panicked. Run the span as a closure so the restore ALWAYS happens.
+        let fused_body = (|| -> Result<()> {
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                // 6a. Decode: N sequences × 1 token each on hidden[0..padded_n*H)
+                let mut layer_state_refs = extract_layer_refs(&mut all_layer_states, layer_idx);
+                layer.decode_multi_seq(
+                    hidden,
+                    residual,
+                    padded_n,
+                    &mut layer_state_refs,
+                    &mut kv_cache,
+                    &seq_lens,
+                    &block_tables,
+                    &decode_ctx,
+                    stream,
+                )?;
 
-            // 6b. Prefill: 1 sequence × M tokens on hidden[padded_n*H..]
-            layer.prefill(
-                prefill_hidden,
-                prefill_residual,
-                proc_count,
-                prefill_seq.layer_states[layer_idx].as_mut(),
-                &mut kv_cache,
+                // 6b. Prefill: 1 sequence × M tokens on hidden[padded_n*H..]
+                layer.prefill(
+                    prefill_hidden,
+                    prefill_residual,
+                    proc_count,
+                    prefill_seq.layer_states[layer_idx].as_mut(),
+                    &mut kv_cache,
+                    effective_seq_len_start,
+                    &mut prefill_seq.block_table,
+                    &mut prefill_seq.disk_block_ids,
+                    &mut prefill_seq.disk_last_offloaded_per_layer,
+                    0, // kv_write_start: no prefix cache skip in fused path
+                    &prefill_ctx,
+                    stream,
+                )?;
+            }
+
+            // ── Step 0 (spec blocker B1): per-chunk SSM state normalize ──
+            //
+            // Normalize the prefill seq's h_state on the SAME `stream`
+            // (= default_stream, reassigned near the top of this fn) that the
+            // GDN recurrence just wrote it on — in-order, no event, no race.
+            // This MUST cover EVERY mixed chunk INCLUDING the last: mixed_forward
+            // runs the GDN write on default_stream, so the terminal normalize
+            // also belongs here. Leaving the is_last normalize in run_standard.rs
+            // on prefill_stream (as the original Step 0 did) does NOT order these
+            // default_stream writes → the final chunk reads a stale state →
+            // nondeterministic corruption (the residual B1 race that failed
+            // token-for-token validation, 0/12). The standard prefill_chunk path
+            // keeps its own same-stream (prefill_stream) every-chunk normalize.
+            self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
+
+            // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+            // rows for the whole-prompt drafter prefill — the standard prefill
+            // paths have always done this, the mixed path never did, so requests
+            // 3..n of a concurrent group (which take this path, since
+            // `spec_step_this_tick` only holds at `active.len() == 1`) drafted
+            // blind. ★ The SOURCE is `prefill_hidden`, not the buffer head: the
+            // mixed layout is [decode rows | prefill rows] and capturing from the
+            // head would store DECODE hiddens as this sequence's prompt hiddens
+            // (poison, not blindness).
+            self.try_mtp_prefill_capture_from(
+                prefill_seq,
                 effective_seq_len_start,
-                &mut prefill_seq.block_table,
-                &mut prefill_seq.disk_block_ids,
-                &mut prefill_seq.disk_last_offloaded_per_layer,
-                0, // kv_write_start: no prefix cache skip in fused path
-                &prefill_ctx,
+                proc_count,
+                prefill_hidden,
                 stream,
             )?;
-        }
+            Ok(())
+        })();
 
-        // ── Step 0 (spec blocker B1): per-chunk SSM state normalize ──
-        //
-        // Normalize the prefill seq's h_state on the SAME `stream`
-        // (= default_stream, reassigned near the top of this fn) that the
-        // GDN recurrence just wrote it on — in-order, no event, no race.
-        // This MUST cover EVERY mixed chunk INCLUDING the last: mixed_forward
-        // runs the GDN write on default_stream, so the terminal normalize
-        // also belongs here. Leaving the is_last normalize in run_standard.rs
-        // on prefill_stream (as the original Step 0 did) does NOT order these
-        // default_stream writes → the final chunk reads a stale state →
-        // nondeterministic corruption (the residual B1 race that failed
-        // token-for-token validation, 0/12). The standard prefill_chunk path
-        // keeps its own same-stream (prefill_stream) every-chunk normalize.
-        self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
-
-        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
-        // rows for the whole-prompt drafter prefill — the standard prefill
-        // paths have always done this, the mixed path never did, so requests
-        // 3..n of a concurrent group (which take this path, since
-        // `spec_step_this_tick` only holds at `active.len() == 1`) drafted
-        // blind. ★ The SOURCE is `prefill_hidden`, not the buffer head: the
-        // mixed layout is [decode rows | prefill rows] and capturing from the
-        // head would store DECODE hiddens as this sequence's prompt hiddens
-        // (poison, not blindness).
-        self.try_mtp_prefill_capture_from(
-            prefill_seq,
-            effective_seq_len_start,
-            proc_count,
-            prefill_hidden,
-            stream,
-        )?;
-
-        // Restore decode layer_states to sequences
+        // Restore decode layer_states to sequences — UNCONDITIONALLY, before
+        // the fused-body result is inspected.
         for (seq, ls) in decode_seqs
             .iter_mut()
             .zip(all_layer_states.drain(..n_decode))
         {
             seq.layer_states = ls;
         }
+        fused_body?;
 
         // ── 7. Final norm + LM head ──
         let head_out = self.mixed_final_norm_lm_head(

@@ -144,6 +144,7 @@ impl TransformerModel {
 
                     let ctx = ForwardContext {
                         buffers: &self.buffers,
+                        hc_row_offset: 0,
                         gpu: self.gpu.as_ref(),
                         config: &self.config,
                         dispatch: &self.dispatch,
@@ -181,6 +182,7 @@ impl TransformerModel {
                 // SSM layers: GEMM-batched via decode_batched override
                 let ctx = ForwardContext {
                     buffers: &self.buffers,
+                    hc_row_offset: 0,
                     gpu: self.gpu.as_ref(),
                     config: &self.config,
                     dispatch: &self.dispatch,
@@ -218,17 +220,7 @@ impl TransformerModel {
         // ── Final norm for K tokens ──
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            k as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, k as u32, h as u32, eps, stream)?;
 
         // ── LM head for K tokens → logits[K, vocab] ──
         self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;

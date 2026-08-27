@@ -99,17 +99,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
 
         // LM head reads from normed directly (no D2D copy needed)
         self.lm_head(normed, stream)?;

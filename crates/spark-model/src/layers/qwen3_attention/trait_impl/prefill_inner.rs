@@ -558,7 +558,11 @@ impl Qwen3AttentionLayer {
         // Qwen the mixer IS the final norm).
         let is_first_layer = hc.is_first_model_layer;
         let is_last_layer = hc.is_last_model_layer;
-        let hc_streams = ctx.buffers.hc_streams();
+        // Mixed steps: prefill highway rows sit above the decode rows.
+        let hc_streams = ctx
+            .buffers
+            .hc_streams()
+            .offset(ctx.hc_row_offset * hc.hc_mult * h * 4);
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
         // Opt-in ONLY: each diag is a full-stream synchronize + D2H, and the

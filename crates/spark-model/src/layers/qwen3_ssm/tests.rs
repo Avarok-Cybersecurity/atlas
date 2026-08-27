@@ -144,6 +144,7 @@ fn run_batched_verify(
         levers: &levers,
         stats: &stats,
         buffers: &buffers,
+        hc_row_offset: 0,
         gpu,
         config,
         attn_metadata: None,

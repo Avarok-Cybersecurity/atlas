@@ -42,6 +42,7 @@ impl Qwen3SsmLayer {
         hidden: DevicePtr,
         num_seqs: usize,
         states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        seq_lens: &[usize],
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -82,12 +83,19 @@ impl Qwen3SsmLayer {
             let host = ctx.host_token_ids.ok_or_else(|| {
                 anyhow::anyhow!("hc multi-seq decode: PLE needs host_token_ids threaded")
             })?;
-            anyhow::ensure!(
-                host.len() >= n,
-                "hc multi-seq decode: {} host ids for {n} seqs",
-                host.len()
-            );
             for (i, state) in states.iter_mut().enumerate().take(n) {
+                // Padding rows (seq_len 0 — the mixed step pads n_decode up
+                // to the batch-kernel width) carry a dummy state with no PLE
+                // carry and no host id; their highway rows are discarded, so
+                // the injection is skipped, NOT zero-filled.
+                if seq_lens.get(i).copied() == Some(0) {
+                    continue;
+                }
+                anyhow::ensure!(
+                    host.len() > i,
+                    "hc multi-seq decode: {} host ids for real seq row {i}",
+                    host.len()
+                );
                 let ssm = state
                     .as_any_mut()
                     .downcast_mut::<SsmLayerState>()

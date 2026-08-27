@@ -115,7 +115,11 @@ pub(super) fn continue_in_progress_prefills(
         // Can this iteration fuse a prefill chunk into active decode? The
         // single-stream mixed path (run_standard) requires: active decode,
         // not EP, not a single-active speculative path.
-        let fusable_mixed = !active.is_empty() && !model.is_ep() && !single_active_with_spec;
+        let active_lens: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
+        let fusable_mixed = !active.is_empty()
+            && !model.is_ep()
+            && !single_active_with_spec
+            && !model.hc_mixed_decode_veto(&active_lens);
         let slas_ok = active.is_empty() || policy.should_prefill(&timings);
         // Genuine suppress: nothing to fuse and policy says wait.
         if !slas_ok && !fusable_mixed {

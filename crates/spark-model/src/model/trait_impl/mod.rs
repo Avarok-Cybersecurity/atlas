@@ -824,6 +824,14 @@ impl Model for TransformerModel {
     fn is_ep(&self) -> bool {
         self.is_ep_dispatch()
     }
+    fn hc_mixed_decode_veto(&self, decode_seq_lens: &[usize]) -> bool {
+        // Mirrors decode_a2's per-seq routing gate (QsaIndexer::inert_bound).
+        self.config.hc_mult > 0 && self.config.index_topk > 0 && {
+            let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
+            decode_seq_lens.iter().any(|&l| l >= bound)
+        }
+    }
+
     fn hc_mult(&self) -> usize {
         self.config.hc_mult
     }

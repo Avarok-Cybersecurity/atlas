@@ -105,6 +105,7 @@ impl ModelConfig {
             hc_mult: 0,
             hc_sinkhorn_iters: 0,
             hc_lowrank: 0,
+            final_norm_identity: false,
             hc_eps: 1e-6,
             compress_ratios: Vec::new(),
             index_compress_ratio: 0,

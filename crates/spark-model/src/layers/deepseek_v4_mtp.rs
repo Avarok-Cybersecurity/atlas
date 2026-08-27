@@ -320,6 +320,7 @@ impl DeepseekV4MtpHead {
         // capture).
         let mtp_ctx = ForwardContext {
             buffers: ctx.buffers,
+            hc_row_offset: ctx.hc_row_offset,
             gpu: ctx.gpu,
             config: ctx.config,
             dispatch: ctx.dispatch,

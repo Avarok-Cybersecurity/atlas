@@ -447,6 +447,7 @@ impl TransformerModel {
             // Suppress per-op profiling by creating a non-profile context
             &ForwardContext {
                 buffers: ctx.buffers,
+                hc_row_offset: ctx.hc_row_offset,
                 gpu: ctx.gpu,
                 config: ctx.config,
                 dispatch: ctx.dispatch,
@@ -523,17 +524,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
         self.gpu.synchronize(stream)?;
         let head_us = t0.elapsed().as_micros() as u64;
@@ -658,6 +649,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -699,17 +691,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
 
         seq.tokens.push(token);

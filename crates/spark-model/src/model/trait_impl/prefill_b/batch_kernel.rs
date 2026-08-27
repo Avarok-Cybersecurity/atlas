@@ -529,6 +529,7 @@ impl TransformerModel {
         // through the model-level dispatcher arguments.
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,

@@ -198,6 +198,7 @@ impl TransformerModel {
             let position = seq.seq_len;
             let ctx = ForwardContext {
                 buffers: &self.buffers,
+                hc_row_offset: 0,
                 gpu: self.gpu.as_ref(),
                 config: &self.config,
                 dispatch: &self.dispatch,

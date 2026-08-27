@@ -975,6 +975,21 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// Scheduler-side veto for the fused mixed (decode+prefill) step.
+    ///
+    /// mHC models whose decode rows are QSA-ACTIVE (visible tokens past the
+    /// indexer's inert bound) must not take ANY mixed route — not even the
+    /// sequential fallback inside `mixed_forward`, which pushes the decode
+    /// rows through the multi-seq path for one tick. Alternating a sequence
+    /// between the single-seq decode path (PLE prestage + graph carry) and
+    /// the multi-seq path tick-to-tick desyncs the PLE/QSA per-seq carries
+    /// and was observed to corrupt ONE decoded token per mixed tick
+    /// (long-ctx retrieval A/B, 2026-08-27). Below the bound the fused step
+    /// is validated end-to-end.
+    fn hc_mixed_decode_veto(&self, _decode_seq_lens: &[usize]) -> bool {
+        false
+    }
+
     /// Tokens per paged-KV block, or `None` when the model has no paged KV.
     /// The scheduler uses this to land a prefill chunk boundary exactly on the
     /// block boundary a warm turn will match at (see

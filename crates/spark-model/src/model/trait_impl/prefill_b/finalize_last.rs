@@ -130,17 +130,7 @@ impl TransformerModel {
         let last_hidden = hidden.offset(last_token_offset * h * fp32);
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            last_hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // Diagnostic: post-norm hidden state
         if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {

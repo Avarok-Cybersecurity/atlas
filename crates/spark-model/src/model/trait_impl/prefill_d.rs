@@ -67,17 +67,7 @@ impl TransformerModel {
         // Run final norm + LM head on the single re-embedded token.
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
         // Prefix cache insert (no new snapshot needed — SSM state unchanged).
         if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {

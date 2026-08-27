@@ -65,6 +65,7 @@ fn test_forward_context_lifetime() {
         levers: &levers,
         stats: &stats,
         buffers: &buffers,
+        hc_row_offset: 0,
         gpu: &gpu,
         config: &config,
         attn_metadata: None,

@@ -199,7 +199,7 @@ impl TransformerLayer for Qwen3SsmLayer {
             // #753 item B milestone 2: the highway replaces the residual the
             // non-hc path folds into its fused norm kernels; run the
             // hc-bracketed variant instead of refusing.
-            return self.decode_multi_seq_inner_hc(hidden, num_seqs, states, ctx, stream);
+            return self.decode_multi_seq_inner_hc(hidden, num_seqs, states, seq_lens, ctx, stream);
         }
         self.decode_multi_seq_inner(
             hidden,

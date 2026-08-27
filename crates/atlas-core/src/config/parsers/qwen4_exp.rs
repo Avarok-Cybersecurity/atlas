@@ -58,6 +58,9 @@ pub(crate) fn parse_qwen4_exp(raw: &Value) -> Result<ModelConfig> {
     // bench/qwen4_exp/{forward_ref,slice_ref}.py: GDN sublayer cos 0.99999,
     // MoE-delta cos 0.93 ratio 0.84.
     config.norm_topk_prob = true;
+    // No `model.norm.weight` in the checkpoint; the reference forward feeds
+    // the collapsed highway straight into lm_head. See ModelConfig docs.
+    config.final_norm_identity = true;
     // Multimodal wrapper: every decoder tensor is under
     // `model.language_model.`, and the ViT under `model.visual.`. Setting the
     // prefix here means `config.layer_prefix(i)` yields the real key, so the

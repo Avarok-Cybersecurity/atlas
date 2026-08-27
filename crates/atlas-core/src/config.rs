@@ -330,6 +330,16 @@ pub struct ModelConfig {
     /// selects the low-rank variant. 0 = DeepSeek-V4's Sinkhorn form.
     #[serde(default)]
     pub hc_lowrank: usize,
+    /// The checkpoint carries NO final normalization before `lm_head`: the
+    /// real one is applied inside the hyper-connection mixer while the
+    /// residual streams collapse. Applying the engine's ones-placeholder RMS
+    /// anyway still DIVIDES the hidden by its per-token RMS, which flattens
+    /// the logits by a per-token factor (measured 1.16-1.63x vs the reference
+    /// forward on qwen4_exp) -- an uninvited temperature multiplier that
+    /// argmax survives but sampling does not. When set, the final-norm step
+    /// becomes an identity copy.
+    #[serde(default)]
+    pub final_norm_identity: bool,
     /// Per-layer compression ratios for hybrid attention (CSA/HCA).
     /// 0 = full attention, >0 = compressed attention with that ratio.
     /// Length equals num_hidden_layers. Empty = all layers full attention.

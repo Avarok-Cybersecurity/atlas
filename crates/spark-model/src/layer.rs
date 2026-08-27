@@ -287,6 +287,11 @@ pub struct GdnPrefillBuffers {
 pub struct ForwardContext<'a> {
     /// Pre-allocated scratch buffers.
     pub buffers: &'a BufferArena,
+    /// mHC highway ROW offset for this pass (#753 item B, mixed steps):
+    /// the fused decode+prefill step gives the prefill chunk highway rows
+    /// at `padded_n` so they live disjoint from the decode rows, mirroring
+    /// the hidden/residual layout. 0 everywhere else.
+    pub hc_row_offset: usize,
     /// GPU backend for kernel launches and memory ops.
     pub gpu: &'a dyn GpuBackend,
     /// Model configuration (dimensions, hyperparameters).
