@@ -18,6 +18,7 @@
   import { onTarget, route, travelWarning } from '$lib/agent/verbs.js';
   import { nameOf, refusal } from '$lib/agent/refusal.js';
   import { copyText } from '$lib/clipboard.js';
+  import ComingSoon from './ComingSoon.svelte';
 
   let { fleet, node, nodes = [], onlog } = $props();
 
@@ -230,6 +231,13 @@
             <button type="button" class="dt-cancel" onclick={() => (confirming = false)}>Cancel</button>
           {/if}
         </div>
+
+        <!-- The slim dashed phase strip (§2 row 19): LaunchPhase is shared
+             vocabulary with no wire message yet, so this is a registered
+             placeholder in the launch region — its own cap of one. -->
+        <p class="dt-phase">
+          <ComingSoon id="launch-phase" kind="strip" />
+        </p>
 
         {#if preview}
           <p class="dt-cap">This is the command that will run. Nothing else is sent.</p>

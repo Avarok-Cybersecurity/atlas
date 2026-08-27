@@ -29,6 +29,9 @@ export const CAPS = {
   dock: 1,
   command: 2,
   alerts: 3,
+  // The Launch tab's slim phase strip: LaunchPhase is vocabulary the page
+  // shares with the agent, but no wire message carries a phase yet.
+  launch: 1,
   // The Status tab's footer: the one admission that the action log is
   // session-memory, not an audit trail.
   status: 1
@@ -70,6 +73,12 @@ const REGISTRY = [
     region: 'command',
     label: '24h',
     soon: 'Coming soon — the agent keeps no history ring buffer and has no query verb for one; this page can only show what it saw this session.'
+  },
+  {
+    id: 'launch-phase',
+    region: 'launch',
+    label: 'Launch phase',
+    soon: 'Coming soon — LaunchPhase is shared vocabulary, but no wire message carries a phase yet; this strip lights up rank by rank when one does.'
   },
   {
     id: 'durable-audit',

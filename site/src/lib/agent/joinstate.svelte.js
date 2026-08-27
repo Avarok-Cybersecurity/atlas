@@ -26,9 +26,13 @@ class JoinState {
    * Quiet on failure, leaving `current` null: an agent that cannot take on new
    * machines is a normal thing to be, and the surfaces have a designed state
    * for it. Returns whether an offer is now live so a caller can branch.
+   *
+   * `allowControl` — whether the machine that joins with this code may drive
+   * this one — is bound to the code at mint time, so changing the answer
+   * means minting again; there is no way to edit a live offer.
    */
-  async mint(client) {
-    const res = await client?.mintJoinCode?.();
+  async mint(client, allowControl = false) {
+    const res = await client?.mintJoinCode?.(allowControl);
     const offer = res?.ok ? normalizeJoinReply(res.reply) : null;
     // `mintedAtMs` is stamped HERE, not taken from the agent: the countdown is
     // rendered against this browser's clock, so it must be measured on it too.

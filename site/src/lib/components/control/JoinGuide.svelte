@@ -36,6 +36,12 @@
   // It is still an explicit, visible flag on the pasted line, and unticking it
   // changes the command in front of the operator before they carry it away.
   let grantControl = $state(true);
+  // The opposite direction, and OFF by default: whether the machine that
+  // joins with this code may drive THIS one. Granting remote control of the
+  // machine you are sitting at is the decision that must be said, not
+  // implied — and it is bound to the code at mint time, so flipping it
+  // mints a fresh code.
+  let allowControl = $state(false);
 
   const join = $derived(joinState.current);
   const command = $derived(join ? joinCommand(join, grantControl) : '');
@@ -76,7 +82,7 @@
     if (!open) return;
     // Reuse a live offer: re-minting on every open would invalidate the command
     // the operator may already be carrying to the other machine.
-    if (!join || left?.expired) await joinState.mint(fleet.agent);
+    if (!join || left?.expired) await joinState.mint(fleet.agent, allowControl);
     // The card is rendered by this state change, so the heading does not exist
     // until Svelte has flushed. Focusing before that silently does nothing —
     // and a keyboard operator is then left where they were, with a card that
@@ -88,7 +94,13 @@
   async function remint() {
     shownAt = 0;
     arrived = null;
-    await joinState.mint(fleet.agent);
+    await joinState.mint(fleet.agent, allowControl);
+  }
+
+  /** Flip the mint-time grant — which can only take effect on a fresh code. */
+  async function setAllowControl(v) {
+    allowControl = v;
+    if (join && !left?.expired) await remint();
   }
 
   async function cancel() {
@@ -151,6 +163,21 @@
                     permission is granted on that machine, by whoever runs the command
                     there — untick it and you can still see the machine, but not launch
                     on it from here.
+                  </span>
+                </span>
+              </label>
+              <label class="jg-grant">
+                <input
+                  type="checkbox"
+                  checked={allowControl}
+                  onchange={(e) => setAllowControl(e.currentTarget.checked)}
+                />
+                <span>
+                  Let that machine control this one.
+                  <span class="jg-grant-why">
+                    Ticking it means whoever drives the new machine can launch and stop
+                    models here. The permission is baked into the code, so changing this
+                    mints a fresh one — carry the new line, not the old.
                   </span>
                 </span>
               </label>

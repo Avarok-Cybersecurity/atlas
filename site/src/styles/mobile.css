@@ -321,6 +321,9 @@ img, svg, video { max-width: 100%; }
 @media (pointer: coarse) {
   /* Touch targets. */
   .topo-act-btn, .fp-chip, .fl-unpair { min-height: 34px; }
+  .ab-btn, .cmd-seg-btn, .dock-tab, .cs-btn, .cmd-help, .rail-cl-btn, .ov-abort,
+  .ov-close { min-height: 34px; }
+  .cmd-help { min-width: 34px; }
 }
 
 /* ---- the /control bridge ---------------------------------------------------

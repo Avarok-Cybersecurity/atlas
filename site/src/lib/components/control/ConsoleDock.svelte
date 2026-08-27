@@ -13,7 +13,7 @@
   import StatusTab from './StatusTab.svelte';
   import { placeholder, placeholdersFor } from '$lib/agent/placeholders.js';
 
-  let { fleet, node, nodes = [], tab = 'launch', ontab, log = [], onlog, extra } = $props();
+  let { fleet, node, nodes = [], tab = 'launch', ontab, log = [], onlog } = $props();
 
   // The registry enforces the dock's cap of one placeholder tab; reading it
   // here (rather than hardcoding a fourth tab) means adding a fifth fails a
@@ -75,16 +75,6 @@
           with KV-cache occupancy and queue depth — in this footprint, with
           nothing else moving.
         </p>
-      </div>
-    {/if}
-
-    {#if extra}
-      <!-- Interim hosting: panels whose final home is a step-7 overlay
-           (cluster launch, fleet scan) live at the bottom of the dock's
-           scroll until those overlays land, so every flow stays reachable
-           while the fixed rows above stay fixed. -->
-      <div class="dock-extra">
-        {@render extra()}
       </div>
     {/if}
   </div>

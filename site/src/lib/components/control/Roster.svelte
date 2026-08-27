@@ -88,6 +88,12 @@
     {:else}
       <li class="roster-empty">No machines yet.</li>
     {/each}
+    {#if fleet.peers.length === 0 && rows.length > 0}
+      <li class="roster-solo">
+        Solo fleet. A second machine gives this column something to compare —
+        and unlocks the EP=2 recipes, which need exactly two nodes.
+      </li>
+    {/if}
   </ul>
 
   <div class="roster-foot">

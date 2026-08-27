@@ -21,6 +21,7 @@
   // that the operator had explicitly rejected.
 
   import { fleet } from '$lib/agent/fleet.svelte.js';
+  import { modal } from './modal.js';
 
   let { node, onclose } = $props();
 
@@ -29,6 +30,8 @@
   let code = $state('');
   let detail = $state('');
   let verification = $state('');
+  /** Whether the trusted peer may drive this machine. Off until said. */
+  let allowControl = $state(false);
   let dialogEl = $state(null);
   /** Set when the operator dismissed while the exchange was still in flight. */
   let dismissed = $state(false);
@@ -43,7 +46,7 @@
   async function accept() {
     if (phase !== 'confirm') return;
     phase = 'accepting';
-    const res = await fleet.confirm(node.id);
+    const res = await fleet.confirm(node.id, allowControl);
     if (res.ok) {
       phase = 'paired';
       onclose?.(true);
@@ -123,8 +126,9 @@
     }
   }
 
+  // Focus in, Tab trap and focus-return live in modal.js (use:modal below);
+  // Esc stays here because in this dialog it is a rejection, not a dismissal.
   $effect(() => {
-    dialogEl?.focus();
     const onKey = (ev) => {
       if (ev.key === 'Escape') void reject();
     };
@@ -142,6 +146,7 @@
   aria-labelledby="pair-title"
   tabindex="-1"
   bind:this={dialogEl}
+  use:modal
 >
   <header class="ld-head">
     <h3 class="ld-title" id="pair-title">
@@ -218,9 +223,24 @@
       </div>
 
       <p class="pair-consequence">
-        If you confirm, {node.name} can run models on this fleet and this machine can
-        run models on it. You can undo it later with Unpair.
+        If you confirm, this machine will trust {node.name} and can launch on it
+        wherever it has granted control. You can undo it later with Unpair.
       </p>
+
+      <label class="jg-grant">
+        <input
+          type="checkbox"
+          bind:checked={allowControl}
+          disabled={phase === 'rejecting' || phase === 'accepting'}
+        />
+        <span>
+          Let {node.name} control this machine.
+          <span class="jg-grant-why">
+            Ticked, it can launch and stop models here. Unticked, control runs one
+            way — from here toward it.
+          </span>
+        </span>
+      </label>
 
       {#if detail}
         <p class="ld-error" role="alert">{detail}</p>

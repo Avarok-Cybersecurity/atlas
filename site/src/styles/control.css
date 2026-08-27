@@ -178,7 +178,6 @@
   font-size: 0.74rem; cursor: pointer; font-family: inherit; padding: 0.2rem;
 }
 .fl-unpair:hover { color: var(--red); }
-.fl-solo-note { margin-top: 1.5rem; font-size: 0.9rem; color: var(--t2); line-height: 1.65; max-width: 62ch; }
 
 /* Control-only mode: a laptop driving headless machines. This is a supported
    way to work, not a fault, so it reads as an explanation — amber for "know
@@ -524,9 +523,6 @@
 .ls-value em { font-style: normal; font-size: 0.7rem; font-weight: 500; color: var(--t3); }
 .ls-note { font-size: 0.7rem; color: var(--t3); }
 .ls-spark { margin-top: 0.3rem; width: 100%; height: 34px; opacity: 0.75; }
-.lc-here { display: flex; flex-direction: column; gap: 0.8rem; }
-.lc-here-head { font-size: 0.9rem; color: var(--t2); }
-.lc-here-head strong { color: var(--t1); font-family: var(--font-mono); font-size: 0.85rem; }
 
 /* Log tail. Monospace, fixed height, its own scroll — a log that grows the page
    moves every control below it while an operator is trying to click one. */

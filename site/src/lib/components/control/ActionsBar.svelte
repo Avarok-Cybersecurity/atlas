@@ -44,6 +44,20 @@
     onlog?.({ verb, target: node?.isLocal ? 'this machine' : (node?.name ?? ''), route: routeText, outcome, ok });
   }
 
+  /**
+   * The 's' hotkey's door: identical to pressing the Stop button, two steps
+   * included — first press arms (with the travel warning when routed), the
+   * second confirms. A disabled Stop stays disabled from the keyboard too.
+   */
+  export function armStop() {
+    if (!avail.stop?.enabled) return;
+    if (!confirmingStop) {
+      confirmingStop = true;
+      return;
+    }
+    doStop();
+  }
+
   async function doStop() {
     if (!node?.running) return;
     stopping = true;

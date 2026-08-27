@@ -39,6 +39,15 @@ describe('the registry itself', () => {
   });
 });
 
+describe('the launch phase strip', () => {
+  test('the Launch tab carries exactly its one phase strip', () => {
+    // §2 row 19: the slim dashed strip is the Launch tab's only placeholder.
+    const entries = placeholdersFor('launch', FLEET);
+    expect(entries.map((e) => e.id)).toEqual(['launch-phase']);
+    expect(CAPS.launch).toBe(1);
+  });
+});
+
 describe('cap enforcement fails at the source of the creep', () => {
   test('registering one placeholder past a cap throws', () => {
     const bloated = [

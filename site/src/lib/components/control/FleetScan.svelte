@@ -28,6 +28,9 @@
   let phase = $state('idle'); // idle | dialling | confirm | done
   let detail = $state('');
   let answered = $state(null); // {node, name, address, verification}
+  // Whether the confirmed machine may drive THIS one. Off by default: the
+  // grant is a decision, and the protocol requires it said out loud.
+  let allowControl = $state(false);
 
   const targetProblem = $derived(target.trim() ? (checkTarget(target).why ?? '') : '');
   const ready = $derived(checkTarget(target).ok && code.trim().length > 0);
@@ -48,11 +51,12 @@
 
   async function accept() {
     if (phase !== 'confirm' || !answered?.node) return;
-    const res = await fleet.confirm(answered.node);
+    const res = await fleet.confirm(answered.node, allowControl);
     if (res.ok) {
       phase = 'done';
       target = '';
       code = '';
+      allowControl = false;
       return;
     }
     detail = res.detail || 'The agent did not accept the pairing.';
@@ -131,6 +135,16 @@
         Check those words match what that machine is showing. Nothing is trusted
         yet — no pairing has been written.
       </p>
+      <label class="jg-grant">
+        <input type="checkbox" bind:checked={allowControl} />
+        <span>
+          Let {answered.name || 'that machine'} control this one.
+          <span class="jg-grant-why">
+            Ticked, it can launch and stop models here. Unticked, control runs one
+            way — from here toward it, wherever it has granted control.
+          </span>
+        </span>
+      </label>
       <div class="fs-actions">
         <button type="button" class="btn btn-primary" onclick={accept}>
           They match — trust this node

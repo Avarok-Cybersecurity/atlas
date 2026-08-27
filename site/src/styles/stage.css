@@ -149,7 +149,6 @@
 }
 .dock-soon-head { font-weight: 700; color: var(--t2); margin-bottom: 0.4rem; }
 .dock-soon-text { font-size: 0.82rem; color: var(--t2); line-height: 1.55; margin-top: 0.3rem; }
-.dock-extra { margin-top: 1.6rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
 
 /* ---- dock tabs: shared bits ------------------------------------------------- */
 .dt-quiet { font-size: 0.82rem; color: var(--t3); line-height: 1.55; max-width: 62ch; }

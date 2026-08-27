@@ -31,13 +31,18 @@
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
   import UnpairDialog from '$lib/components/control/UnpairDialog.svelte';
+  import PairingOverlay from '$lib/components/control/PairingOverlay.svelte';
+  import ClusterOverlay from '$lib/components/control/ClusterOverlay.svelte';
+  import ShortcutSheet from '$lib/components/control/ShortcutSheet.svelte';
   import TopologyMap from '$lib/components/control/TopologyMap.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
-  import { fromHash, reselect, toHash } from '$lib/agent/selection.js';
+  import { fromHash, reselect, selectByKey, toHash } from '$lib/agent/selection.js';
+  import { shortcut } from '$lib/agent/shortcuts.js';
   import { storedToken } from '$lib/agent/protocol.js';
   import { CADENCES, isPaused } from '$lib/agent/cadence.js';
   import { StatsPoller } from '$lib/agent/statspoll.svelte.js';
   import * as A from '$lib/agent/actionlog.js';
+  import * as L from '$lib/agent/launch.js';
   import { startAgentCommand } from '$lib/data.js';
 
   // `install`, not `run`. `run` holds the terminal and the agent dies with it,
@@ -48,7 +53,18 @@
   let details = $state(null);
   let unpairing = $state(null);
   let head = $state(null);
-  let addOpen = $state(false);
+  let pairingOpen = $state(false);
+  let clusterOpen = $state(false);
+  let sheetOpen = $state(false);
+
+  // The cluster flow lives HERE, not in the overlay: closing the overlay is
+  // not abandoning a prepare, so the reservations survive it, the rail's D3
+  // summary reads the same state, and reopening lands mid-ceremony.
+  let clusterFlow = $state(L.initial());
+
+  // The dock tab is page state so the keyboard map can reach it.
+  let tab = $state('launch');
+  let stageEl = $state(null);
 
   // ---- telemetry ---------------------------------------------------------
 
@@ -119,6 +135,14 @@
   /** A #node= hash captured at arrival, honoured once its machine appears. */
   let wantedHash = browser ? location.hash : '';
 
+  // The pre-bridge #launch anchor: deep links and the @live e2e spec target
+  // it, and the panel it named now lives in the cluster overlay — so the
+  // anchor opens the overlay instead of scrolling to a section.
+  if (wantedHash === '#launch') {
+    clusterOpen = true;
+    wantedHash = '';
+  }
+
   $effect(() => {
     const nodes = fleet.nodes;
     if (wantedHash) {
@@ -143,6 +167,56 @@
 
   const selectedNode = $derived(fleet.nodes.find((n) => n.id === selectedId) ?? null);
   const select = (id) => (selectedId = id);
+
+  // ---- keyboard map -------------------------------------------------------
+
+  // Which key does what — and when a key must do nothing — is shortcuts.js's
+  // tested rule; this handler only carries out the verdict. Arrows are
+  // deliberately not here: they rove only while the roster has focus
+  // (Roster.svelte), so they never steal scrolling from the dock or rail.
+  let lastCadence = '2s';
+
+  function onKeydown(e) {
+    if (fleet.mode !== 'live') return;
+    // The roster's own handler (arrows, 1–8 while focused) runs first and
+    // prevents default; dispatching again would double-move the selection.
+    if (e.defaultPrevented) return;
+    const t = e.target;
+    const typing = Boolean(
+      t instanceof Element && t.closest('input, textarea, select, [contenteditable="true"]')
+    );
+    const overlayOpen = Boolean(
+      pairingOpen || clusterOpen || sheetOpen || pairing || unpairing || details
+    );
+    const act = shortcut(e.key, {
+      typing,
+      overlayOpen,
+      modified: e.ctrlKey || e.metaKey || e.altKey
+    });
+    if (!act) return;
+    e.preventDefault();
+    if (act.kind === 'select') {
+      const id = selectByKey(fleet.nodes, act.key);
+      if (id) selectedId = id;
+    } else if (act.kind === 'tab') {
+      tab = act.tab;
+    } else if (act.kind === 'stop') {
+      stageEl?.armStop();
+    } else if (act.kind === 'alerts') {
+      document.getElementById('alert-lane')?.focus();
+    } else if (act.kind === 'cluster') {
+      clusterOpen = true;
+    } else if (act.kind === 'pause') {
+      if (cadenceId === 'pause') {
+        cadenceId = lastCadence;
+      } else {
+        lastCadence = cadenceId;
+        cadenceId = 'pause';
+      }
+    } else if (act.kind === 'sheet') {
+      sheetOpen = !sheetOpen;
+    }
+  }
 
   // ---- cluster head -------------------------------------------------------
 
@@ -173,6 +247,8 @@
   />
 </svelte:head>
 
+<svelte:window onkeydown={onKeydown} />
+
 {#if fleet.mode === 'live'}
   <div class="bridge">
     <CommandStrip
@@ -182,6 +258,7 @@
       oncadence={(id) => (cadenceId = id)}
       vitals={vitalsOn}
       onvitals={(v) => (vitalsOn = v)}
+      onhelp={() => (sheetOpen = true)}
     />
     <Roster
       {fleet}
@@ -189,16 +266,18 @@
       {poller}
       {paused}
       onselect={select}
-      onadd={() => (addOpen = true)}
+      onadd={() => (pairingOpen = true)}
       onpair={(n) => (pairing = n)}
     />
     <NodeStage
+      bind:this={stageEl}
       {fleet}
       node={selectedNode}
       {poller}
       {paused}
       {vitalsOn}
-      {addOpen}
+      {tab}
+      ontab={(t) => (tab = t)}
       {log}
       onlog={record}
       onpair={(n) => (pairing = n)}
@@ -208,6 +287,8 @@
     <FleetRail
       {fleet}
       {head}
+      {clusterFlow}
+      oncluster={() => (clusterOpen = true)}
       onmakehead={(id) => (head = id)}
       onselect={select}
       onpair={(n) => (pairing = n)}
@@ -339,6 +420,18 @@
   </main>
 
   <Footer />
+{/if}
+
+{#if fleet.mode === 'live' && pairingOpen}
+  <PairingOverlay {fleet} onclose={() => (pairingOpen = false)} />
+{/if}
+
+{#if fleet.mode === 'live' && clusterOpen}
+  <ClusterOverlay {fleet} bind:flow={clusterFlow} onclose={() => (clusterOpen = false)} />
+{/if}
+
+{#if sheetOpen}
+  <ShortcutSheet onclose={() => (sheetOpen = false)} />
 {/if}
 
 {#if details}

@@ -13,17 +13,10 @@
   // desktop widths. All tiles are fixed geometry — telemetry arriving never
   // reflows the stage.
   //
-  // Panels whose final home is a step-7 overlay (cluster launch, fleet scan,
-  // the solo join guide) are hosted at the bottom of the dock's scroll for
-  // now, so every flow stays reachable while the rows above stay fixed.
-
   import ActionsBar from './ActionsBar.svelte';
-  import ClusterLaunch from './ClusterLaunch.svelte';
   import ConsoleDock from './ConsoleDock.svelte';
-  import FleetScan from './FleetScan.svelte';
   import IdentityHeader from './IdentityHeader.svelte';
   import IoStrip from './IoStrip.svelte';
-  import JoinGuide from './JoinGuide.svelte';
   import VitalsGrid from './VitalsGrid.svelte';
 
   let {
@@ -32,7 +25,10 @@
     poller,
     paused = false,
     vitalsOn = true,
-    addOpen = false,
+    // The dock tab is the PAGE's state, not this component's: the keyboard
+    // map ('l' Logs, 'n' Launch) has to reach it from outside the stage.
+    tab = 'launch',
+    ontab,
     log = [],
     onlog,
     onpair,
@@ -42,17 +38,21 @@
 
   const nodes = $derived(fleet.nodes);
   const solo = $derived(fleet.peers.length === 0);
-  const remoteCount = $derived(fleet.remoteLaunchable.length);
   const entry = $derived(node ? (poller?.byNode[node.id] ?? null) : null);
 
-  let tab = $state('launch');
+  let bar = $state(null);
+
+  /** The 's' hotkey: same two-step arm/confirm as pressing Stop in the bar. */
+  export function armStop() {
+    bar?.armStop();
+  }
 
   function onverb(verb) {
     // The bar's verbs land in the dock: the tab does the work and shows the
     // reply where there is room to read it.
-    if (verb === 'logs') tab = 'logs';
-    else if (verb === 'status') tab = 'status';
-    else tab = 'launch';
+    if (verb === 'logs') ontab?.('logs');
+    else if (verb === 'status') ontab?.('status');
+    else ontab?.('launch');
   }
 </script>
 
@@ -62,6 +62,7 @@
     <VitalsGrid {node} paused={!vitalsOn} />
     <IoStrip {node} {entry} {paused} {nodes} />
     <ActionsBar
+      bind:this={bar}
       {fleet}
       {node}
       {nodes}
@@ -70,44 +71,7 @@
       {onlog}
       onstats={() => poller?.pollNow(node.id)}
     />
-    <ConsoleDock {fleet} {node} {nodes} {tab} ontab={(t) => (tab = t)} {log} {onlog}>
-      {#snippet extra()}
-        {#if fleet.controlOnly && remoteCount === 0}
-          <p class="fl-co-why">
-            This machine drives the fleet; it does not run models itself. Pair a
-            machine that can and everything on this page applies to it.
-          </p>
-          <JoinGuide {fleet} />
-        {/if}
-
-        {#if solo}
-          {#if !fleet.controlOnly}
-            <p class="fl-solo-note">
-              No peers yet. Pairing a second machine also unlocks the EP=2
-              recipes, which need exactly two nodes.
-            </p>
-            <JoinGuide {fleet} />
-          {/if}
-          <FleetScan {fleet} />
-        {:else if addOpen}
-          <div class="stage-add">
-            <h3 class="stage-h">Add a machine</h3>
-            <FleetScan {fleet} />
-          </div>
-        {/if}
-
-        <!-- Keeps the pre-bridge anchor: deep links and the @live e2e spec
-             target #launch, and moving the panel must not break either. -->
-        <div class="stage-launch" id="launch">
-          <h3 class="stage-h">Cluster launch</h3>
-          <p class="stage-sub">
-            Two phases, because one cannot fail cleanly: every machine validates
-            and reserves, and nothing starts until all of them have agreed.
-          </p>
-          <ClusterLaunch {fleet} />
-        </div>
-      {/snippet}
-    </ConsoleDock>
+    <ConsoleDock {fleet} {node} {nodes} {tab} {ontab} {log} {onlog} />
   {:else}
     <p class="stage-none">No machine selected. Pick one from the roster.</p>
   {/if}

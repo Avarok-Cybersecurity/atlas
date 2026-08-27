@@ -249,9 +249,16 @@ class FleetSession {
     return readExchangeAt(res.reply);
   }
 
-  /** Trust a peer after a human compared the words. */
-  async confirm(nodeId) {
-    const res = await this.agent.confirmPairing(nodeId);
+  /**
+   * Trust a peer after a human compared the words.
+   *
+   * `allowControl` is the second, separate decision the ceremony asks:
+   * whether the newly trusted machine may drive THIS one (launch and stop
+   * models here). Trust without it is one-way — this machine can still see
+   * and drive the peer wherever the peer has granted control.
+   */
+  async confirm(nodeId, allowControl = false) {
+    const res = await this.agent.confirmPairing(nodeId, allowControl);
     if (!res.ok) return { ok: false, detail: res.message };
     return readDecision(res.reply, true);
   }

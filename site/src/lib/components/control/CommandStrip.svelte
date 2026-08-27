@@ -24,7 +24,7 @@
   import { placeholdersFor } from '$lib/agent/placeholders.js';
   import ComingSoon from './ComingSoon.svelte';
 
-  let { fleet, onselect, cadence, oncadence, vitals = true, onvitals } = $props();
+  let { fleet, onselect, cadence, oncadence, vitals = true, onvitals, onhelp } = $props();
 
   const cadenceLabel = (c) => (c.ms === null ? 'Pause' : c.id);
 
@@ -137,5 +137,16 @@
         <ComingSoon id={seg.id} kind="chip" />
       {/each}
     </span>
+
+    <!-- The keyboard map's click-and-touch door: keys are a faster way in,
+         never the only one. -->
+    <button
+      type="button"
+      class="cmd-help mono"
+      aria-label="Keyboard shortcuts"
+      onclick={() => onhelp?.()}
+    >
+      ?
+    </button>
   </div>
 </header>

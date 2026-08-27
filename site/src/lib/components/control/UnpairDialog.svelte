@@ -6,6 +6,8 @@
   // regardless used to leave a machine trusted while the interface implied it
   // had been removed, the worst of the three possible outcomes.
 
+  import { modal } from './modal.js';
+
   let { fleet, node, onclose } = $props();
 
   let confirm = $state('');
@@ -17,8 +19,8 @@
   // Declaring aria-modal="true" and then leaving the dialog unfocused with no
   // Escape handler tells an assistive-technology user they are in a modal and
   // gives them no way out.
+  // Focus in, Tab trap and focus-return live in modal.js (use:modal below).
   $effect(() => {
-    el?.focus();
     const onKey = (ev) => {
       if (ev.key === 'Escape') onclose?.();
     };
@@ -47,6 +49,7 @@
   aria-labelledby="unpair-title"
   tabindex="-1"
   bind:this={el}
+  use:modal
 >
   <header class="ld-head">
     <h3 class="ld-title" id="unpair-title">Unpair {node.name}?</h3>

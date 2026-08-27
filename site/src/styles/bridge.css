@@ -209,7 +209,6 @@
 .stage-none { color: var(--t3); font-size: 0.9rem; padding: 1rem 1.2rem; }
 .stage-h { font-size: 1rem; font-weight: 700; color: var(--t1); margin-bottom: 0.3rem; }
 .stage-sub { font-size: 0.82rem; color: var(--t2); line-height: 1.55; max-width: 62ch; }
-.stage-add, .stage-launch { margin-top: 1.6rem; padding-top: 1.2rem; border-top: 1px solid var(--border); }
 
 /* ---- D: rail --------------------------------------------------------------- */
 .rail { background: var(--card); overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }

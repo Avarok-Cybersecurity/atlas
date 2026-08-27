@@ -15,10 +15,42 @@
   // that lived beside them.
 
   import { linkWarns, preferredAddress } from '$lib/agent/fleet.svelte.js';
+  import ComingSoon from './ComingSoon.svelte';
   import ReachMap from './ReachMap.svelte';
   import TopologyMap from './TopologyMap.svelte';
 
-  let { fleet, head, onmakehead, onselect, onpair, onunpair } = $props();
+  let {
+    fleet,
+    head,
+    /** The page's cluster flow — this rail only ever summarizes it. */
+    clusterFlow = null,
+    oncluster,
+    onmakehead,
+    onselect,
+    onpair,
+    onunpair
+  } = $props();
+
+  // D3 is a summary, never the ceremony: the epoch-pinned Prepare→Commit
+  // flow with its always-visible Abort lives in the overlay, because it must
+  // never scroll inside a 180px sub-panel.
+  const clusterState = $derived.by(() => {
+    const f = clusterFlow;
+    if (!f) return { line: 'No cluster.', members: [] };
+    if (f.started?.length > 0) {
+      return {
+        line: `running · ${f.recipe}`,
+        members: f.started.map((r) => ({ name: r.name, rank: r.rank, ok: true }))
+      };
+    }
+    if (f.epoch != null && f.phase === 'prepared') {
+      return {
+        line: `prepared · epoch ${f.epoch}`,
+        members: f.answers.map((r) => ({ name: r.name, rank: r.rank, ok: r.prepared === true }))
+      };
+    }
+    return { line: 'No cluster.', members: [] };
+  });
 
   const nodes = $derived(fleet.nodes);
   // The amber the placement machinery raises when a cluster would fall back
@@ -43,9 +75,11 @@
         alerts would appear.
       </p>
     {:else}
-      <ul class="rail-al-list">
+      <!-- An internal scroll region, so keyboard-reachable like every other. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <ul class="rail-al-list" id="alert-lane" tabindex="0" aria-label="Alert feed">
         {#each fleet.alerts as a (a.node + a.kind)}
-          <li>
+          <li class="rail-al-item">
             <button
               type="button"
               class="rail-al-row"
@@ -61,10 +95,17 @@
                 {#if a.detail}<span class="rail-al-detail">{a.detail}</span>{/if}
               </span>
             </button>
+            <span class="rail-al-acts">
+              <ComingSoon id="alert-ack" kind="chip" />
+              <ComingSoon id="alert-silence" kind="chip" />
+            </span>
           </li>
         {/each}
       </ul>
     {/if}
+    <p class="rail-al-foot">
+      <ComingSoon id="alert-routing" kind="chip" />
+    </p>
   </section>
 
   <section class="rail-sec" id="topology" aria-label="Fabric">
@@ -114,5 +155,31 @@
         <p class="topo-act-empty">No machines yet.</p>
       {/each}
     </div>
+  </section>
+
+  <section class="rail-sec rail-cluster" aria-label="Cluster">
+    <h3 class="rail-h">Cluster</h3>
+    <p class="rail-cl-state">{clusterState.line}</p>
+    {#if clusterState.members.length > 0}
+      <ul class="rail-cl-members">
+        {#each clusterState.members as m (m.name + m.rank)}
+          <li class="rail-cl-member" class:rail-cl-refused={!m.ok}>
+            <span class="mono rail-cl-rank">r{m.rank}</span>
+            {m.name}{#if !m.ok}<span class="rail-cl-no">refused</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="rail-quiet">
+        Recipes that span two machines launch from the overlay — every rank
+        previews its own exact command before anything reserves.
+      </p>
+    {/if}
+    {#if clusterFlow?.linkWarning}
+      <p class="rail-cl-warn">{clusterFlow.linkWarning}</p>
+    {/if}
+    <button type="button" class="btn btn-primary rail-cl-btn" onclick={() => oncluster?.()}>
+      Cluster launch…
+    </button>
   </section>
 </aside>

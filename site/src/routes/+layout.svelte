@@ -12,6 +12,7 @@
   import '../styles/control.css';
   import '../styles/bridge.css';
   import '../styles/stage.css';
+  import '../styles/overlays.css';
   import '../styles/mobile.css';
   import { page } from '$app/state';
   import { tagline, hero, faq, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
