@@ -35,7 +35,13 @@ export function settingsIn(schema, group, showAdvanced) {
  * re-checks everything, and its answer is the one that counts.
  */
 export function checkValue(spec, value) {
-  const b = spec.bound;
+  // `?? {}` rather than `spec.bound`: this schema arrives from the agent at
+  // handshake, and a spec without a bound — an older agent, a newer one, a
+  // field renamed — threw here and took the whole settings panel with it. The
+  // default arm below already treats an unrecognised KIND as read-only; a
+  // missing bound is the same situation and deserves the same answer, not a
+  // TypeError.
+  const b = spec?.bound ?? {};
   switch (b.kind) {
     case 'int': {
       if (!Number.isInteger(value)) return 'must be a whole number';
@@ -47,8 +53,12 @@ export function checkValue(spec, value) {
       if (value < b.min || value > b.max) return `must be between ${b.min} and ${b.max}`;
       return null;
     }
-    case 'enum':
+    case 'enum': {
+      // A variant list is what makes an enum checkable. Without one there is
+      // nothing to check against, so say nothing rather than throw.
+      if (!Array.isArray(b.variants)) return null;
       return b.variants.includes(value) ? null : `must be one of: ${b.variants.join(', ')}`;
+    }
     case 'toggle':
     case 'bool_value':
       return typeof value === 'boolean' ? null : 'must be true or false';
@@ -68,7 +78,9 @@ export function checkValue(spec, value) {
 
 /** Whether this page can render an editor for a bound kind. */
 export function isEditable(spec) {
-  return ['int', 'float', 'enum', 'toggle', 'bool_value', 'int_or_auto'].includes(spec.bound.kind);
+  return ['int', 'float', 'enum', 'toggle', 'bool_value', 'int_or_auto'].includes(
+    spec?.bound?.kind
+  );
 }
 
 /**
