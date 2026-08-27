@@ -29,9 +29,7 @@
 import { AgentClient } from './client.svelte.js';
 
 /** Longest display string we will render. */
-const NAME_MAX = 63;
-/** Longest free-text detail we will render. */
-const DETAIL_MAX = 500;
+import { DETAIL_MAX, MAX_NODES, ingestNode, sanitize } from './ingest.js';
 
 /** Poll cadence while waiting for an agent to appear, and its ceiling. */
 const PROBE_START_MS = 1200;
@@ -41,69 +39,8 @@ const PROBE_FACTOR = 1.4;
 /** A node unheard from for this long is shown as stale rather than removed. */
 const STALE_AFTER_MS = 15_000;
 
-/**
- * Strip anything that could rewrite the interface, then cap the length.
- *
- * @param {unknown} raw
- * @param {number} max
- * @returns {string}
- */
-export function sanitize(raw, max = NAME_MAX) {
-  if (typeof raw !== 'string') return '';
-  let out = '';
-  for (const ch of raw) {
-    const c = ch.codePointAt(0) ?? 0;
-    // C0, DEL and C1 controls.
-    if (c < 0x20 || (c >= 0x7f && c <= 0x9f)) continue;
-    // Bidi overrides and isolates: a name must not be able to reorder the
-    // fingerprint rendered beside it.
-    if ((c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue;
-    out += ch;
-    if (out.length >= max) break;
-  }
-  return out.trim();
-}
+export { sanitize } from './ingest.js';
 
-/**
- * Normalise a node descriptor from the wire into something safe to render.
- *
- * @param {object} raw
- * @returns {object}
- */
-function ingestNode(raw) {
-  const addresses = Array.isArray(raw?.addresses) ? raw.addresses : [];
-  return {
-    id: typeof raw?.id === 'string' ? raw.id : '',
-    name: sanitize(raw?.name) || 'unnamed',
-    isLocal: raw?.is_local === true,
-    pairing: raw?.pairing ?? 'discovered',
-    addresses: addresses.slice(0, 8).map((a) => ({
-      iface: sanitize(a?.iface, 32),
-      addr: sanitize(a?.addr, 64),
-      class: a?.class ?? 'ethernet',
-      speedMbps: Number.isFinite(a?.speed_mbps) ? a.speed_mbps : null,
-      rdma: a?.rdma === true
-    })),
-    canLaunch: raw?.launchability?.can_launch === true,
-    cannotLaunchReason: sanitize(raw?.launchability?.reason, DETAIL_MAX),
-    agentVersion: sanitize(raw?.agent_version, 32),
-    accelerator: sanitize(raw?.accelerator, 32),
-    // Reported only over the authenticated channel — a beacon carries none —
-    // so a machine we have merely seen shows a blank rather than a guess.
-    // Sanitised regardless, because everything on this path is untrusted input.
-    os: sanitize(raw?.os, 32),
-    vitals: raw?.vitals ?? null,
-    alerts: (Array.isArray(raw?.alerts) ? raw.alerts : []).slice(0, 8).map((a) => ({
-      kind: a?.kind ?? 'unknown',
-      severity: a?.severity ?? 'warning',
-      detail: sanitize(a?.detail, DETAIL_MAX)
-    })),
-    running: raw?.running ? sanitize(raw.running, 64) : null,
-    lastSeen: Date.now()
-  };
-}
-
-/** The node's best address, which is what a collective would use. */
 export function preferredAddress(node) {
   const usable = node.addresses.filter((a) => a.class !== 'virtual' && a.class !== 'loopback');
   if (usable.length === 0) return null;
@@ -321,7 +258,9 @@ class FleetSession {
     // An agent too old to know the fleet verbs is not an error: it is a
     // single-node agent, and the page should show this machine and say so.
     const list = await this.agent.listNodes();
-    this.nodes = Array.isArray(list.reply?.nodes) ? list.reply.nodes.map(ingestNode) : [];
+    this.nodes = Array.isArray(list.reply?.nodes)
+      ? list.reply.nodes.map(ingestNode).filter(Boolean).slice(0, MAX_NODES)
+      : [];
     this.watching = false;
   }
 
@@ -334,9 +273,16 @@ class FleetSession {
     switch (ev?.change) {
       case 'node_changed': {
         const node = ingestNode(ev.node);
+        // A descriptor this page cannot make sense of is dropped rather than
+        // rendered as a blank card.
+        if (!node) break;
         const i = at(node.id);
         if (i >= 0) next[i] = node;
-        else next.push(node);
+        // This is the flood path: an update for a node already known is
+        // always accepted, but a NEW id past the cap is refused. Beacons are
+        // unauthenticated, so without this a stream of fresh ids grows the
+        // list until the page stops responding.
+        else if (next.length < MAX_NODES) next.push(node);
         break;
       }
       case 'node_gone': {
