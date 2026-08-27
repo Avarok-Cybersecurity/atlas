@@ -48,6 +48,7 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod attend;
 pub mod binding;
+pub mod layer;
 pub mod select;
 pub mod state;
 pub mod tp;
