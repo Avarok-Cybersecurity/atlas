@@ -81,17 +81,54 @@ impl TransformerModel {
             || n_decode == 0
         {
             let decode_logits = if !decode_tokens.is_empty() {
-                self.decode_batch(decode_tokens, decode_seqs, stream)?
+                let live = self.decode_batch(decode_tokens, decode_seqs, stream)?;
+                // The prefill below writes the SAME shared logits buffer
+                // (its lm_head row at the base, and every MoE call scribbles
+                // logits[0..64K] as shared-gate scratch), and the scheduler
+                // only reads the decode rows AFTER mixed_forward returns —
+                // so without this copy the co-tenant's decode logits are the
+                // PREFILL's numbers by then. Observed as the decode stream
+                // deterministically emitting the prefilling request's first
+                // token mid-answer (the '6287' retrieval corruption).
+                // Stage the rows at the TOP of the logits arena, out of
+                // reach of both the base rows and the 64K scratch band.
+                // Order the D2D on the BACKEND DEFAULT stream: `decode()`
+                // writes its logits there, and in THIS early block `stream`
+                // is still the caller's prefill stream (the default-stream
+                // reassignment sits below the guard) — copying on it read
+                // half-baked rows.
+                let v = self.config.vocab_size;
+                let elem: usize = if self.decode_logits_fp32() { 4 } else { 2 };
+                let bytes = n_decode * v * elem;
+                let arena = self.buffers.sizes().logits;
+                let staged_off = arena
+                    .checked_sub(bytes)
+                    .filter(|&off| off >= 65536 + v * elem)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "mixed fallback: {bytes} B of decode logits do not                              fit above the prefill row + scratch band in the                              {arena} B logits arena"
+                        )
+                    })?;
+                let staged = self.buffers.logits().offset(staged_off);
+                self.gpu
+                    .copy_d2d_async(live, staged, bytes, self.gpu.default_stream())?;
+                staged
             } else {
                 DevicePtr::NULL
             };
+            // The prefill must run ORDERED AFTER the staging copy above —
+            // it scribbles the same logits arena (gate scratch + its lm_head
+            // row). One stream orders all three: decode -> copy -> prefill.
+            // (`stream` here is still the caller's prefill stream; using it
+            // left the prefill racing the copy — seen as an occasional
+            // corrupted token on the mixed tick even after the staging fix.)
             let prefill_logits = self.prefill_chunk(
                 prefill_tokens,
                 prefill_seq,
                 prefill_chunk_start,
                 prefill_chunk_len,
                 prefill_is_last,
-                stream,
+                self.gpu.default_stream(),
             )?;
             return Ok(crate::traits::MixedForwardResult {
                 decode_logits,

@@ -67,12 +67,7 @@ pub(super) fn start_new_requests(
     // first chunk (the residual ~3.6s burst stall). Mutually exclusive with
     // want_codispatch (which requires active.is_empty()). EP/vision excluded (per
     // request, below) — same constraints as the fused mixed path.
-    let active_lens: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
-    let mixed_defer = always_mixed
-        && chunked
-        && !active.is_empty()
-        && !model.is_ep()
-        && !model.hc_mixed_decode_veto(&active_lens);
+    let mixed_defer = always_mixed && chunked && !active.is_empty() && !model.is_ep();
 
     // ── Vision co-dispatch pre-pass (ATLAS_VISION_CODISPATCH, default on) ──
     // Batch every single-chunk-fit image request's ViT encode into ONE

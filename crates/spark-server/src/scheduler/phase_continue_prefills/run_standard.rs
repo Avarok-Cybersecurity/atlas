@@ -116,14 +116,7 @@ pub(super) fn run_standard_chunk_loop(
     // the 2026-07-25 architecture map.
     let any_spec = use_mtp || use_self_speculative || use_ngram_speculative;
     let spec_step_this_tick = active.len() == 1 && any_spec;
-    // QSA-active hc decode rows: no mixed route at all (not even the
-    // sequential fallback inside mixed_forward) — see hc_mixed_decode_veto.
-    let active_lens: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
-    let can_mix = !no_mix_bisect
-        && !active.is_empty()
-        && !model.is_ep()
-        && !spec_step_this_tick
-        && !model.hc_mixed_decode_veto(&active_lens);
+    let can_mix = !no_mix_bisect && !active.is_empty() && !model.is_ep() && !spec_step_this_tick;
 
     if can_mix {
         // Entering the mixed step under a speculative serve at C>=2: mirror the

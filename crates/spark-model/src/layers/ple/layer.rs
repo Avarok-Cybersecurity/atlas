@@ -249,8 +249,18 @@ impl PleLayer {
         // graph, not by this forward (which never runs on replay) — so a
         // `Some` here on a prefill call is ordinary leftover from the
         // previous request's last replayed step, not an error. Only a
-        // single-token, non-fresh decode may consume it.
-        let prestaged = st.prestaged_va.take().filter(|_| num_tokens == 1 && !fresh);
+        // single-token, non-fresh decode WITHOUT an ids override may
+        // consume it: the multi-seq path (`forward_row`) never prestages,
+        // so a `Some` there is always the single-seq path's leftover for
+        // the PREVIOUS token — consuming it injected the prior token's
+        // n-gram rows AND skipped the history advance, shifting every
+        // later hash window by one. That was the mixed-tick corruption
+        // (one wrong token, then a permanently degraded tail) that forced
+        // the hc_mixed_decode_veto; `.take()` still clears the leftover.
+        let prestaged = st
+            .prestaged_va
+            .take()
+            .filter(|_| num_tokens == 1 && !fresh && ids_override.is_none());
         if fresh || st.history.len() != self.dims.context_len() {
             self.reset(st, gpu, stream)?;
         }
