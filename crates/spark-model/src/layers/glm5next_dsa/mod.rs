@@ -46,6 +46,7 @@ use anyhow::{Result, bail};
 use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
+pub mod binding;
 pub mod tp;
 
 /// Module name the DSA kernels resolve from. Unlisted `.cu` files take their file
