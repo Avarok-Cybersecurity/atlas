@@ -13,11 +13,19 @@
 
   import VitalTile from './VitalTile.svelte';
   import { preferredAddress, linkWarns, isStale } from '$lib/agent/fleet.svelte.js';
+  import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
 
   let { node, onpair, onunpair, ondetails } = $props();
 
+  // Staleness is the passage of time, not an event. Without a reactive clock
+  // the derived below only re-ran when `node` changed — and a node that has
+  // stopped reporting never changes, so the badge never appeared and the
+  // counter froze at whatever it read when the last update arrived.
+  $effect(() => useClock());
+
   const addr = $derived(preferredAddress(node));
-  const stale = $derived(isStale(node));
+  const stale = $derived(isStale(node, nowMs()));
+  const staleFor = $derived(Math.max(0, Math.round((nowMs() - node.lastSeen) / 1000)));
   // 'unreachable' is a PAIRED node that is not answering, so it keeps its
   // identity, its address and its unpair action. Only a genuinely unpaired
   // node gets the "pair me" treatment.
@@ -203,7 +211,7 @@
       {:else}
         <span class="fl-idle">idle</span>
       {/if}
-      {#if stale}<span class="fl-stale-note">last seen {Math.round((Date.now() - node.lastSeen) / 1000)}s ago</span>{/if}
+      {#if stale}<span class="fl-stale-note">last seen {staleFor}s ago</span>{/if}
       {#if !node.isLocal}
         <button type="button" class="fl-unpair" onclick={() => onunpair?.(node)}>Unpair…</button>
       {/if}
