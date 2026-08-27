@@ -80,9 +80,21 @@
     unpairing ? unpairConfirm.trim().toLowerCase() === unpairing.id.slice(0, 8) : false
   );
 
+  /** Set when an unpair was refused, so the dialog can say so. */
+  let unpairError = $state('');
+
   async function doUnpair() {
     if (!unpairReady) return;
-    await fleet.unpair(unpairing.id);
+    unpairError = '';
+    const res = await fleet.unpair(unpairing.id);
+    if (!res.ok) {
+      // The dialog used to close here regardless. The node stayed trusted and
+      // the interface implied it had been removed, which is the worst of the
+      // three possible outcomes: the operator believes a machine is out of
+      // their fleet when it is still in it.
+      unpairError = res.detail || 'The agent refused to remove this pairing.';
+      return;
+    }
     unpairing = null;
     unpairConfirm = '';
   }
@@ -363,12 +375,12 @@
 {/if}
 
 {#if unpairing}
-  <div class="ld-backdrop" role="presentation" onclick={() => (unpairing = null)}></div>
+  <div class="ld-backdrop" role="presentation" onclick={() => { unpairing = null; unpairError = ''; }}></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
   <div class="ld" role="dialog" aria-modal="true" aria-labelledby="unpair-title" tabindex="-1">
     <header class="ld-head">
       <h3 class="ld-title" id="unpair-title">Unpair {unpairing.name}?</h3>
-      <button type="button" class="ld-close" onclick={() => (unpairing = null)} aria-label="Close"
+      <button type="button" class="ld-close" onclick={() => { unpairing = null; unpairError = ''; }} aria-label="Close"
         >×</button
       >
     </header>
@@ -387,8 +399,11 @@
         aria-label="Type the fingerprint prefix to confirm"
         placeholder={unpairing.id.slice(0, 8)}
       />
+      {#if unpairError}
+        <p class="ld-error" role="alert">{unpairError}</p>
+      {/if}
       <div class="ld-actions">
-        <button type="button" class="btn btn-ghost" onclick={() => (unpairing = null)}>Cancel</button>
+        <button type="button" class="btn btn-ghost" onclick={() => { unpairing = null; unpairError = ''; }}>Cancel</button>
         <button type="button" class="btn btn-danger" disabled={!unpairReady} onclick={doUnpair}>
           Unpair
         </button>

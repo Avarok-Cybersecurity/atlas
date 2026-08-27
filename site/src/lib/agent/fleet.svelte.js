@@ -175,7 +175,22 @@ class FleetSession {
    * retry loop — a marketing page must not poll loopback forever.
    */
   async start({ watch = true } = {}) {
-    if (this.#started) return this.#starting ?? Promise.resolve();
+    if (this.#started) {
+      // A later caller asking to WATCH must get watching, even though the
+      // session is already up. FleetPill is mounted by <Nav/> INSIDE the
+      // control page, and child effects run first, so on a machine with a
+      // stored token the pill's `start({watch: false})` always won the race.
+      // The page's own `start({watch: true})` then short-circuited here, and a
+      // paired operator whose agent was down read "Watching for it — this page
+      // will continue on its own" while nothing was watching at all.
+      if (watch) {
+        await (this.#starting ?? Promise.resolve());
+        // Idempotent: #scheduleProbe clears any existing timer first, so the
+        // second caller cannot stack a second backoff loop on the first.
+        if (this.mode === 'no_agent') this.#scheduleProbe();
+      }
+      return this.#starting ?? Promise.resolve();
+    }
     this.#started = true;
     this.#starting = (async () => {
       await this.#connect();
