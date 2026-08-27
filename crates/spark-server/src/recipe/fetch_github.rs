@@ -59,6 +59,17 @@ pub(super) fn try_refresh(root: &Path, cancel: &AtomicBool) -> Result<Index> {
         bail!("refresh cancelled");
     }
 
+    if out.lock().is_empty() {
+        // Every file failed. Bailing (rather than returning an empty index)
+        // sends this down the offline path, which serves the existing cache
+        // untouched. Returning `Ok` with no recipes would have replaced a good
+        // cache with an empty one BEFORE the caller could refuse it.
+        bail!(
+            "{REPO}@{tree_sha} listed {} recipe file(s) but none could be fetched",
+            paths.len()
+        );
+    }
+
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     let mut recipes = Vec::new();
     for (id, body) in out.into_inner() {
@@ -74,13 +85,40 @@ pub(super) fn try_refresh(root: &Path, cancel: &AtomicBool) -> Result<Index> {
     recipes.sort_by(|a, b| a.id.cmp(&b.id));
 
     let fetched_at = unix_now();
-    write_cache(root, &tree_sha, fetched_at, &files)
-        .unwrap_or_else(|e| tracing::warn!("could not cache recipes: {e:#}"));
+
+    // The cache is replaced only by a COMPLETE fetch.
+    //
+    // Skipping an unreachable file is right for the index we return — one bad
+    // file must not cost the other 24 this session. It is wrong for the cache:
+    // writing the survivors DELETES the ones that did not come back, so a
+    // transient failure of `raw.githubusercontent.com` (a proxy that resolves
+    // the API host but not the raw host is a real topology) turns a complete
+    // 30-recipe cache into a 3-recipe one, permanently, while reporting
+    // success. Keeping the old cache is strictly better: it is complete, and it
+    // is what the caller already had.
+    let missing = paths.len().saturating_sub(files.len());
+    let incomplete = if missing > 0 {
+        Some(format!(
+            "{missing} of {} recipe file(s) could not be fetched, so the cache was left alone",
+            paths.len()
+        ))
+    } else {
+        // A write failure is NOT a warning here. `sync-recipes` dispatches
+        // before the tracing subscriber exists, so a `warn!` on this path goes
+        // nowhere at all and the command prints "recipe index written to …"
+        // over a file it never wrote — the exact success-with-stale-data this
+        // command exists to prevent.
+        write_cache(root, &tree_sha, fetched_at, &files)
+            .err()
+            .map(|e| format!("the index could not be cached: {e:#}"))
+    };
+
     Ok(Index {
         recipes,
         tree_sha,
         fetched_at,
         offline: None,
+        incomplete,
     })
 }
 
