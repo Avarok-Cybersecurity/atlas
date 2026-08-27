@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-08-27T06:34:32Z",
+  "generated_utc": "2026-08-27T07:03:51Z",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
