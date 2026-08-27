@@ -248,6 +248,19 @@ fn main() -> Result<()> {
         .context("indexer k_norm LayerNorm(bias) kernel missing from the GLM target")?;
     println!("  indexer k_norm LayerNorm(weight, bias) resolves in the GLM target");
 
+    // Every module name the DSA layer resolves, checked against real hardware. Module names
+    // follow TWO conventions -- `common/KERNEL.toml` [modules] overrides, else the .cu file
+    // stem -- so a wrong one is invisible until construction. This caught
+    // `dense_gemm_bf16` (stem) where the map says `gemm`.
+    spark_model::layers::glm5next_dsa::Glm5NextDsaKernels::resolve(&gpu)
+        .context("Glm5NextDsaKernels")?;
+    spark_model::layers::glm5next_dsa::layer::Glm5NextDsaLayerKernels::resolve(&gpu)
+        .context("Glm5NextDsaLayerKernels")?;
+    spark_model::layers::glm5next_dsa::attend::Glm5NextDsaDecodeKernel::resolve(&gpu)
+        .context("Glm5NextDsaDecodeKernel")?;
+    spark_model::layers::ops::Glm5NextMhcKernels::resolve(&gpu).context("Glm5NextMhcKernels")?;
+    println!("  every DSA-layer + mHC kernel module resolves");
+
     // ── real weights ────────────────────────────────────────────────────────────────
     let w_qa = round_bf16(&pkt.f32s("self_attn.q_a_proj.weight")?);
     let n_qa = pkt.f32s("self_attn.q_a_layernorm.weight")?;

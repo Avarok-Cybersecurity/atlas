@@ -88,8 +88,12 @@ pub struct Glm5NextDsaLayerKernels {
 impl Glm5NextDsaLayerKernels {
     pub fn resolve(gpu: &dyn GpuBackend) -> Result<Self> {
         Ok(Self {
-            gemm: gpu.kernel("dense_gemm_bf16", "dense_gemm_bf16")?,
-            gemm_f32: gpu.kernel("dense_gemm_bf16", "dense_gemm_bf16_f32out")?,
+            // 🪤 Module is "gemm", NOT the file stem. `common/KERNEL.toml` [modules] maps
+            // `dense_gemm_bf16 = "gemm"`, and an unlisted .cu takes its stem — so the two
+            // conventions coexist and only the TOML says which applies. Guessing the stem
+            // here resolved to nothing and would have failed at first construction.
+            gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            gemm_f32: gpu.kernel("gemm", "dense_gemm_bf16_f32out")?,
             rms_norm: gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?,
             latent_write: gpu
                 .kernel("glm5next_mla_latent_write", "glm5next_mla_latent_write_fp8")?,
