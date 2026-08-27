@@ -43,6 +43,7 @@
 //!   `.to(torch.float32)` and vLLM's `kda_state_dtype` hardcodes fp32.
 
 pub mod binding;
+pub mod tp;
 
 use anyhow::{Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
