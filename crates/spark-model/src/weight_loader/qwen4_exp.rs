@@ -52,6 +52,10 @@ use crate::layer::TransformerLayer;
 use crate::weight_loader::ModelWeightLoader;
 use crate::weight_map::{DenseWeight, MtpWeights, dense};
 
+// `aux_sites`, NOT `aux`: bare `aux` is a RESERVED filename on Windows
+// (CON/PRN/AUX/NUL...) — git checkout of `aux.rs` fails with "invalid
+// path" on every Windows runner, which killed the release-matrix builds.
+#[path = "qwen4_exp/aux_sites.rs"]
 mod aux;
 mod ffn;
 mod hc;
