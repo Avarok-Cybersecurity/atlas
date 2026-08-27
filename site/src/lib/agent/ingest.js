@@ -99,8 +99,12 @@ function oneOfOrNull(raw, allowed) {
  * It matters more than the other fields: it is the fingerprint the pairing
  * ceremony asks a human to compare, so an id carrying bidi marks could reorder
  * the very string being checked. Anything else is not a node.
+ *
+ * Exported because `control-msgs.js` and `selection.js` put ids ON the wire
+ * and into `location.hash`; a second spelling of this rule is how one of them
+ * would drift.
  */
-function nodeId(raw) {
+export function nodeId(raw) {
   return typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : null;
 }
 
