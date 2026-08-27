@@ -745,3 +745,4 @@
   font-size: 0.72rem; color: var(--t3); line-height: 1.55;
   margin: 0.35rem 0 0.5rem; max-width: 52ch;
 }
+.fs-good { font-size: 0.78rem; color: var(--green); line-height: 1.6; margin: 0.6rem 0 0; }

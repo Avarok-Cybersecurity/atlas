@@ -180,5 +180,14 @@
     </form>
   {/if}
 
+  {#if phase === 'done'}
+    <!-- The node also appears in the list above on the next fleet update, but
+         that can be a second away and the operator is looking HERE. Silence
+         after a successful action reads as a failure. -->
+    <p class="fs-good">
+      Paired. It will appear in the fleet above; you can add another machine
+      with the form.
+    </p>
+  {/if}
   {#if detail}<p class="fs-bad">{detail}</p>{/if}
 </div>
