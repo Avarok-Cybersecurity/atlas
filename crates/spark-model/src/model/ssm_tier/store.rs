@@ -98,14 +98,17 @@ impl SnapshotBlobStore for MemBlobStore {
         // Evict oldest until the new blob fits under the cap.
         if self.cap_bytes != 0 {
             while self.bytes.load(Ordering::Relaxed) + bytes.len() > self.cap_bytes {
-                let Some(victim) = g.order.pop_front() else {
+                // An overwrite keeps its FIFO position, but the value being
+                // replaced is no longer part of the resident-byte count. Skip
+                // that key and evict the oldest *other* blob when it grows.
+                let Some(victim_pos) = g.order.iter().position(|&candidate| candidate != key)
+                else {
                     break;
                 };
-                if victim == key {
-                    // Don't evict the key we're inserting; requeue and stop.
-                    g.order.push_front(victim);
-                    break;
-                }
+                let victim = g
+                    .order
+                    .remove(victim_pos)
+                    .expect("position came from the same queue");
                 if let Some(v) = g.map.remove(&victim) {
                     self.bytes.fetch_sub(v.len(), Ordering::Relaxed);
                     self.stats.evictions.fetch_add(1, Ordering::Relaxed);

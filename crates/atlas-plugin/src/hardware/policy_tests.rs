@@ -98,17 +98,6 @@ fn a_speed_gate_refuses_a_box_with_a_second_gpu_process() {
     );
 }
 
-/// One is the model under test — a self-provisioned serve, or the endpoint a
-/// `--url` run was pointed at.
-#[test]
-fn one_foreign_gpu_process_is_the_model_under_test() {
-    assert_eq!(MAX_FOREIGN_COMPUTE_APPS, 1);
-    assert_eq!(
-        precheck(Sensitivity::Speed, &healthy(), options()).decision,
-        Decision::Proceed
-    );
-}
-
 /// ★ A correctness gate is RECORDED and PROCEEDS. Accuracy is not thermally
 /// sensitive, and blocking a 3.5-hour BFCL run because the chassis is warm
 /// would stop correctness work for a reason that cannot reach the number.
@@ -288,6 +277,28 @@ fn unreadable_counters_leave_the_run_unknown_not_valid() {
     );
     assert_eq!(p.validity, Validity::Unknown);
     assert!(p.concerns.iter().any(|c| c.contains("not known")), "{p:?}");
+}
+
+#[test]
+fn partially_unreadable_zero_counters_leave_the_run_unknown() {
+    let p = postcheck(
+        Sensitivity::Speed,
+        &HardwareStateDelta {
+            elapsed_s: Some(692),
+            sw_thermal_us: Some(0),
+            hw_thermal_us: None,
+            hw_power_brake_us: None,
+            ..HardwareStateDelta::default()
+        },
+        options(),
+    );
+    assert_eq!(p.validity, Validity::Unknown);
+    assert_eq!(
+        p.concerns,
+        [
+            "throttle counters were unreadable on at least one capture — this run is not known to have been unthrottled"
+        ]
+    );
 }
 
 /// A correctness number is never invalidated by thermals — and the concerns

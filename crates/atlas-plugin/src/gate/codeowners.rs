@@ -81,13 +81,17 @@ pub fn owners_for_paths(rules: &[Rule], paths: &[String]) -> Vec<String> {
 
 /// Whether this module understands `pattern` well enough to answer for it.
 ///
-/// `**` is the one gitignore construct left out: no rule in `.github/CODEOWNERS`
-/// uses it, and implementing a separator-spanning glob correctly is more
-/// subtlety than an advisory mention list is worth.
-/// `every_pattern_in_the_real_file_is_supported` fails if one appears, which is
-/// the signal to implement it rather than to let an owner go unmentioned.
+/// Separator-spanning `**`, `?`, character classes and escapes are left out:
+/// no rule in `.github/CODEOWNERS` uses them, and partially implementing those
+/// constructs would be worse than reporting them unsupported.
+/// `every_pattern_in_the_real_file_is_supported` fails if one appears, which
+/// is the signal to implement it rather than to let an owner go unmentioned.
 pub fn is_supported(pattern: &str) -> bool {
     !pattern.contains("**")
+        && !pattern.contains('?')
+        && !pattern.contains('[')
+        && !pattern.contains(']')
+        && !pattern.contains('\\')
 }
 
 /// Whether a CODEOWNERS pattern matches a repo-relative path.
@@ -143,12 +147,24 @@ fn glob_segment(pattern: &str, path: &str) -> bool {
 
 /// `*` within a single segment.
 fn star(pattern: &str, s: &str) -> bool {
-    match pattern.split_once('*') {
-        None => pattern == s,
-        Some((head, tail)) => {
-            s.len() >= head.len() + tail.len() && s.starts_with(head) && s.ends_with(tail)
+    let text: Vec<char> = s.chars().collect();
+    let mut matched = vec![false; text.len() + 1];
+    matched[0] = true;
+    for token in pattern.chars() {
+        let mut next = vec![false; text.len() + 1];
+        if token == '*' {
+            next[0] = matched[0];
+            for index in 1..=text.len() {
+                next[index] = matched[index] || next[index - 1];
+            }
+        } else {
+            for index in 1..=text.len() {
+                next[index] = matched[index - 1] && token == text[index - 1];
+            }
         }
+        matched = next;
     }
+    matched[text.len()]
 }
 
 #[cfg(test)]

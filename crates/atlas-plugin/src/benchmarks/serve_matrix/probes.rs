@@ -117,19 +117,23 @@ pub async fn codegen_probe(target: &TargetEndpoint, timeout: Duration, budget: u
 
 /// The structural test, split out so it can be tested without an endpoint.
 pub fn code_shape(text: &str) -> Result<(), String> {
-    let Some(start) = text.find("def fib") else {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some((start, header)) = lines.iter().enumerate().find(|(_, line)| {
+        line.trim_start()
+            .strip_prefix("def fib")
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
+    }) else {
         return Err("no `def fib` in the reply".into());
     };
-    let rest = &text[start..];
-    if !rest.contains('(') || !rest.contains(':') {
+    if !header.contains(':') {
         return Err("`def fib` has no parameter list or colon".into());
     }
     // The body has to be on its own indented line. This single assertion is
     // what `repetition_penalty` was breaking: penalise `\n` and the function
     // arrives as `def fib(n): return ...` fragments with no structure left.
-    let indented = rest
-        .lines()
-        .skip(1)
+    let indented = lines
+        .iter()
+        .skip(start + 1)
         .any(|l| !l.trim().is_empty() && (l.starts_with(' ') || l.starts_with('\t')));
     if !indented {
         return Err("the function has no indented body — the reply collapsed onto one line".into());
@@ -179,6 +183,10 @@ pub async fn tool_call_probe(target: &TargetEndpoint, timeout: Duration, budget:
             };
         }
     };
+    score_tool_call(&outcome)
+}
+
+fn score_tool_call(outcome: &http::ChatOutcome) -> Signal {
     let Some(call) = outcome.tool_calls.iter().find(|c| !c.name.is_empty()) else {
         return Signal::Fail("no tool call in the reply".into());
     };
@@ -186,8 +194,11 @@ pub async fn tool_call_probe(target: &TargetEndpoint, timeout: Duration, budget:
         return Signal::Fail(format!("called {:?}, not get_weather", call.name));
     }
     match serde_json::from_str::<Value>(&call.arguments) {
-        Ok(args) if args.get("location").and_then(Value::as_str).is_some() => Signal::Pass,
-        Ok(_) => Signal::Fail(format!("arguments carry no location: {}", call.arguments)),
+        Ok(args) => match args.get("location").and_then(Value::as_str) {
+            Some(location) if location.trim().eq_ignore_ascii_case("Paris") => Signal::Pass,
+            Some(location) => Signal::Fail(format!("called for {location:?}, not Paris")),
+            None => Signal::Fail(format!("arguments carry no location: {}", call.arguments)),
+        },
         Err(e) => Signal::Fail(format!("arguments are not JSON ({e}): {}", call.arguments)),
     }
 }

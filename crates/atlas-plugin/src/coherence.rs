@@ -45,7 +45,7 @@ pub enum CoherencePolicy {
 pub struct Check {
     pub label: &'static str,
     pub prompt: &'static str,
-    /// Lower-cased substrings; the answer must contain **one** of them. More
+    /// Lower-cased standalone terms; the answer must contain **one** of them. More
     /// than one entry means the same fact has several acceptable spellings, not
     /// that the check is lenient.
     pub accept: &'static [&'static str],
@@ -290,7 +290,14 @@ async fn ask(target: &TargetEndpoint, check: &Check, timeout: Duration) -> Resul
 fn judge(text: &str, reasoning: &str, accept: &[&str]) -> (bool, String) {
     let matched = |s: &str| {
         let lowered = s.to_lowercase();
-        accept.iter().any(|a| lowered.contains(a))
+        accept.iter().any(|term| {
+            lowered.match_indices(term).any(|(at, _)| {
+                let before = lowered[..at].chars().next_back();
+                let after = lowered[at + term.len()..].chars().next();
+                let continues_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+                !before.is_some_and(continues_word) && !after.is_some_and(continues_word)
+            })
+        })
     };
     let passed = matched(text) || matched(reasoning);
     let answer = if text.trim().is_empty() {

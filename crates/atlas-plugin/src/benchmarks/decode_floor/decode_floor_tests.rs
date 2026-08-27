@@ -18,6 +18,27 @@ fn healthy(tps: f64) -> RunObs {
     }
 }
 
+#[test]
+fn run_observation_preserves_wire_evidence() {
+    let outcome = crate::http::ChatOutcome {
+        completion_tokens: 941,
+        server_tps: Some(28.125),
+        accepted_prediction_tokens: Some(417),
+        e2e_ms: 33_456.75,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        RunObs::from_outcome(&outcome),
+        RunObs {
+            completion_tokens: 941,
+            server_tps: Some(28.125),
+            accepted_prediction_tokens: Some(417),
+            e2e_ms: 33_456.75,
+        }
+    );
+}
+
 // ── Path A: the success path ────────────────────────────────────────────────
 
 #[test]
@@ -56,9 +77,9 @@ fn min_output_tokens_is_the_worst_run_not_the_mean() {
 // ── Path B: the boundaries where the bugs live ──────────────────────────────
 
 #[test]
-fn output_floor_is_inclusive_and_one_below_is_inconclusive() {
+fn one_below_the_output_floor_is_inconclusive() {
     let mut samples = [healthy(30.0), healthy(30.0), healthy(30.0)];
-    samples[2].completion_tokens = MIN_OUTPUT_TOKENS - 1; // 799
+    samples[2].completion_tokens = MIN_OUTPUT_TOKENS - 1; // 749
     match evaluate(&samples) {
         Evaluation::Inconclusive(why) => {
             assert!(why.contains("run 3"), "{why}");
@@ -114,7 +135,7 @@ fn accept_len_floor_is_inclusive() {
 }
 
 #[test]
-fn a_disengaged_speculation_run_is_inconclusive_not_a_floor() {
+fn a_disengaged_speculation_mean_is_inconclusive_not_a_floor() {
     // accepted 100 of 1400 → 1400/1300 ≈ 1.077: speculation nominally on but
     // not at gate depth. This is the serial-floor trap (thinking-on, prompt
     // regression) and must never be recorded as the decode floor.
@@ -189,6 +210,21 @@ fn a_missing_server_rate_is_inconclusive() {
             assert!(why.contains("response_token/s"), "{why}");
         }
         other => panic!("expected Inconclusive, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_nonpositive_or_nonfinite_server_rate_is_inconclusive() {
+    for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mut samples = [healthy(30.0), healthy(30.0), healthy(30.0)];
+        samples[2].server_tps = Some(invalid);
+        match evaluate(&samples) {
+            Evaluation::Inconclusive(why) => {
+                assert!(why.contains("run 3"), "{why}");
+                assert!(why.contains("positive"), "{why}");
+            }
+            other => panic!("server rate {invalid} must be inconclusive, got {other:?}"),
+        }
     }
 }
 
@@ -277,7 +313,21 @@ fn the_pins_are_the_documented_fingerprint() {
     // deterministic natural stop is 915, and the pin must sit under it.
     assert_eq!(MIN_OUTPUT_TOKENS, 750);
     assert_eq!(MIN_ACCEPT_LEN, 1.5);
-    assert!(MINHEAP_PROMPT.contains("MinHeap"));
+    assert_eq!(
+        DecodeFloor::request_body("fixture-model"),
+        serde_json::json!({
+            "model": "fixture-model",
+            "stream": true,
+            "temperature": 0.0,
+            "seed": 0,
+            "max_tokens": 1500,
+            "reasoning_effort": "none",
+            "messages": [{
+                "role": "user",
+                "content": "Implement a complete, production-quality MinHeap class in Python. Include the methods insert, extract_min, peek, heapify (bottom-up from an arbitrary list), decrease_key, delete_at_index, merge (with another MinHeap), __len__ and __iter__. Every method needs a full docstring with time-complexity analysis. Then write a comprehensive pytest test suite covering the empty heap, a single element, duplicate keys, and long interleaved insert/extract sequences. Finish with a line-by-line explanation of the sift_up and sift_down invariants. Be exhaustive and do not stop early."
+            }],
+        })
+    );
 }
 
 #[test]

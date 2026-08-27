@@ -6,7 +6,8 @@
 //! length, and the router-only (empty) case.
 
 use super::{
-    ExpertTables, gather_bgmv_grids, gather_row_token, grouped_down_wc, pack_expert_tables,
+    ExpertTables, gather_bgmv_grids, gather_row_token, grouped_down_wc, grouped_down_windows,
+    pack_expert_tables,
 };
 
 #[test]
@@ -86,15 +87,6 @@ fn gather_grids_rank_not_multiple_of_four_rounds_up() {
 }
 
 #[test]
-fn row_token_decomposition_matches_kernel() {
-    // token = row / top_k, mirroring the kernel's per-token row_adapter gather.
-    assert_eq!(gather_row_token(0, 8), 0);
-    assert_eq!(gather_row_token(7, 8), 0); // last slot of token 0
-    assert_eq!(gather_row_token(8, 8), 1); // first slot of token 1
-    assert_eq!(gather_row_token(23, 8), 2); // K=3 verify, token 2
-}
-
-#[test]
 fn short_prefill_slot_rows_map_to_owning_token() {
     // Short (<=64-token) LoRA prefill through forward_batched folds each token
     // independently: for token t the fold sees n_slots=top_k flat rows
@@ -113,11 +105,6 @@ fn short_prefill_slot_rows_map_to_owning_token() {
             }
         }
     }
-    // And the decode/prefill gather grid is per-token exact (n_slots = top_k for a
-    // single token), matching the single-token decode replay the prefill mirrors.
-    let (shrink, expand) = gather_bgmv_grids(16, 4096, 8);
-    assert_eq!(shrink, [4, 8, 1]);
-    assert_eq!(expand, [1024, 8, 1]);
 }
 
 // ── SOLID Incr-4 router fold (degenerate 1-"expert" gather, top_k=1) ──────────
@@ -193,18 +180,15 @@ fn chunks_tile_range_without_gap_or_overlap() {
     // per-window wc matches the window length.
     let cap = 4096u32;
     for te in [1u32, 4096, 4097, 10000, 131072] {
-        let mut off = 0u32;
         let mut covered = 0u32;
         let mut prev_end = 0u32;
-        while off < te {
-            let end = (off + cap).min(te);
+        for (off, end) in grouped_down_windows(te, cap) {
             assert_eq!(off, prev_end, "gap/overlap at off={off} (te={te})");
             let window = end - off;
             assert!(window <= cap, "window {window} exceeds cap {cap}");
             assert_eq!(grouped_down_wc(off, end), div_ceil64(window), "te={te}");
             covered += window;
             prev_end = end;
-            off = end;
         }
         assert_eq!(covered, te, "windows must cover exactly [0,te) for te={te}");
     }

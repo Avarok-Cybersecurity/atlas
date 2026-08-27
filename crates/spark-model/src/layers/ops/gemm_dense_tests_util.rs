@@ -50,7 +50,7 @@ pub fn rel(p: &Path) -> String {
 /// Drop `//` line comments. CUDA signatures carry commas INSIDE comments
 /// (`// [K/2, N] transposed`), which is exactly how a naive parameter count
 /// reads 11 where the compiler sees 9.
-fn strip_line_comments(s: &str) -> String {
+pub fn strip_line_comments(s: &str) -> String {
     s.lines()
         .map(|l| l.split_once("//").map_or(l, |(head, _)| head))
         .collect::<Vec<_>>()

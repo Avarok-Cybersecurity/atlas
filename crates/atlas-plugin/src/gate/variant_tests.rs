@@ -85,20 +85,41 @@ fn both_variants_records_coexist_for_one_commit_and_day() {
     let default_path = plant_variant(root, MODEL, 1_785_891_382);
     let dense_path = plant_variant(root, DENSE, 1_785_891_382 + 60);
 
-    assert!(
-        default_path.ends_with(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json"),
-        "the default variant's name is byte-identical to the pre-variant era: {default_path:?}"
+    assert_eq!(
+        default_path,
+        root.join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json")
     );
-    assert!(
-        dense_path.ends_with(
-            ".benchmarks/bfcl-subset/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json"
-        ),
-        "{dense_path:?}"
+    assert_eq!(
+        dense_path,
+        root.join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json")
     );
     assert!(default_path.exists() && dense_path.exists());
     // Each file still says which variant produced it, independent of its name.
     assert_eq!(read_record(&default_path).unwrap().target_model, MODEL);
     assert_eq!(read_record(&dense_path).unwrap().target_model, DENSE);
+}
+
+#[test]
+fn lossy_variant_slugs_cannot_overwrite_each_other() {
+    const ALIAS: &str = "unsloth/Qwen3.8/27B/NVFP4";
+    assert_eq!(variant_slug(DENSE), variant_slug(ALIAS));
+    let dir = tempdir::Dir::new();
+    let root = dir.path();
+    let mut baseline = two_variant_baseline();
+    let dense = baseline.hardware[TEST_HW].models[DENSE].clone();
+    baseline
+        .hardware
+        .get_mut(TEST_HW)
+        .unwrap()
+        .models
+        .insert(ALIAS.into(), dense);
+    write_baseline(root, "bfcl-subset", &baseline);
+
+    let first = plant_variant(root, DENSE, 1_785_891_382);
+    let second = plant_variant(root, ALIAS, 1_785_891_382 + 60);
+    assert_ne!(first, second);
+    assert_eq!(read_record(&first).unwrap().target_model, DENSE);
+    assert_eq!(read_record(&second).unwrap().target_model, ALIAS);
 }
 
 /// A same-day re-run of the SAME non-default variant still replaces its own
@@ -111,6 +132,7 @@ fn a_variant_rerun_replaces_only_its_own_record() {
     let first = plant_variant(root, DENSE, 1_785_891_382);
     let second = plant_variant(root, DENSE, 1_785_891_382 + 3_600);
     assert_eq!(first, second, "same variant + sha + UTC day = same file");
+    assert_eq!(read_record(&second).unwrap().recorded_at, 1_785_894_982);
 }
 
 /// A benchmark with no baseline at all keeps the legacy name: there is no
@@ -119,9 +141,10 @@ fn a_variant_rerun_replaces_only_its_own_record() {
 fn no_baseline_means_the_legacy_filename() {
     let dir = tempdir::Dir::new();
     let path = plant_variant(dir.path(), DENSE, 1_785_891_382);
-    assert!(
-        path.ends_with(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json"),
-        "{path:?}"
+    assert_eq!(
+        path,
+        dir.path()
+            .join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json")
     );
 }
 
@@ -156,16 +179,9 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
     .unwrap();
     let dense_path = write_record(root, &gate).unwrap();
 
-    assert_ne!(
-        dense_path, default_path,
-        "a non-default variant with a degraded fingerprint must never take \
-         the default's filename"
-    );
-    assert!(
-        dense_path
-            .to_string_lossy()
-            .ends_with("-unsloth-qwen3.8-27b-nvfp4.json"),
-        "{dense_path:?}"
+    assert_eq!(
+        dense_path,
+        root.join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json")
     );
     // The default's committed record survives untouched.
     assert_eq!(read_record(&default_path).unwrap().target_model, MODEL);
@@ -217,11 +233,11 @@ fn a_non_default_variant_record_cannot_discharge_the_required_gate() {
     // never as a pass for the 35B subject.
     std::fs::remove_file(record_path(root, "bfcl-subset", 1_785_891_382, SHA)).unwrap();
     let gates = check_gates(root, SHA);
-    assert!(
-        matches!(gates["bfcl-subset"], GateStatus::Missing(_)),
-        "a dense record must not stand in for the default subject: {:?}",
-        gates["bfcl-subset"]
-    );
+    assert!(matches!(
+        &gates["bfcl-subset"],
+        GateStatus::Missing(reason)
+            if reason == "latest record measured the unsloth/Qwen3.8-27B-NVFP4 variant; the required subject on gb10 is Qwen/Qwen3.6-35B-A3B-FP8, which has no covering record"
+    ));
 }
 
 /// The variant record is still SCORED against its own thresholds when asked
@@ -245,9 +261,10 @@ fn a_variant_record_is_scored_against_its_own_entry() {
     .unwrap();
     // 86.0 clears the MoE floor (84.0) but not the dense one (87.0): only a
     // dense-floor failure proves the dense entry is what it was scored on.
-    let problems = check_record(&gate, &baseline).expect("fails the dense floor");
-    assert!(
-        problems.iter().any(|p| p.contains("87.00")),
-        "scored against its own variant's floor: {problems:?}"
+    assert_eq!(
+        check_record(&gate, &baseline),
+        Some(vec![
+            "overall_accuracy 86.00 is below the floor 87.00 (noise 0.00)".into()
+        ])
     );
 }

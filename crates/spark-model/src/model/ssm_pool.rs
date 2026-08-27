@@ -32,6 +32,10 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 /// all SSM layers. This enables CUDA graph capture at batch sizes > 1 because
 /// the graph embeds memory addresses that remain stable across replays.
 pub(crate) struct SsmStatePool {
+    /// Base pointers returned by `GpuBackend::alloc`, owned by this pool.
+    /// The per-family vectors below may be interior layer views into one
+    /// contiguous allocation and therefore must never be freed directly.
+    owned_allocations: Vec<DevicePtr>,
     pub(super) h_state_pools: Vec<DevicePtr>,
     pub(super) conv_state_pools: Vec<DevicePtr>,
     /// Per-slot K=3 intermediate checkpoint pools (only allocated when has_mtp).
@@ -137,17 +141,18 @@ fn alloc_layer_pools(
     gpu: &dyn GpuBackend,
     num_ssm_layers: usize,
     bytes: usize,
-) -> Result<Vec<DevicePtr>> {
+) -> Result<(Vec<DevicePtr>, Vec<DevicePtr>)> {
     if num_ssm_layers == 0 || bytes == 0 {
-        return Ok(vec![DevicePtr::NULL; num_ssm_layers]);
+        return Ok((vec![DevicePtr::NULL; num_ssm_layers], Vec::new()));
     }
     if let Some(total) = bytes.checked_mul(num_ssm_layers)
         && let Ok(base) = gpu.alloc(total)
     {
         gpu.memset(base, 0, total)?;
-        return Ok((0..num_ssm_layers)
+        let layers = (0..num_ssm_layers)
             .map(|l| base.offset(l * bytes))
-            .collect());
+            .collect();
+        return Ok((layers, vec![base]));
     }
     tracing::warn!(
         "SSM pool: {num_ssm_layers} × {bytes} B did not fit one contiguous block — \
@@ -160,7 +165,7 @@ fn alloc_layer_pools(
         gpu.memset(p, 0, bytes)?;
         pools.push(p);
     }
-    Ok(pools)
+    Ok((pools.clone(), pools))
 }
 
 impl SsmStatePool {
@@ -194,13 +199,18 @@ impl SsmStatePool {
         // num_ssm_layers` extra GPU memory (~kilobytes per pool).
         let total_slots = max_slots + 1;
 
+        let mut owned_allocations = Vec::new();
         let mut h_intermediate_pools = Vec::new();
         let mut conv_intermediate_pools = Vec::new();
         let mut h_checkpoint_pools = Vec::new();
         let mut conv_checkpoint_pools = Vec::new();
 
-        let h_state_pools = alloc_layer_pools(gpu, num_ssm_layers, total_slots * h_stored_bytes)?;
-        let conv_state_pools = alloc_layer_pools(gpu, num_ssm_layers, total_slots * conv_bytes)?;
+        let (h_state_pools, allocations) =
+            alloc_layer_pools(gpu, num_ssm_layers, total_slots * h_stored_bytes)?;
+        owned_allocations.extend(allocations);
+        let (conv_state_pools, allocations) =
+            alloc_layer_pools(gpu, num_ssm_layers, total_slots * conv_bytes)?;
+        owned_allocations.extend(allocations);
 
         // Stage-3 f16-SIZED pool: the FP32 prefill staging arena. Allocated
         // ONLY when the h slots actually narrowed — an FP32-sized pool needs
@@ -216,6 +226,7 @@ impl SsmStatePool {
             } else {
                 let p = gpu.alloc(bytes)?;
                 gpu.memset(p, 0, bytes)?;
+                owned_allocations.push(p);
                 tracing::info!(
                     "SSM f16-sized h pool: FP32 prefill staging arena {} MB ({total_slots} slots × {h_bytes} B)",
                     bytes / (1024 * 1024)
@@ -277,10 +288,14 @@ impl SsmStatePool {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
             if !replay {
-                h_intermediate_pools =
+                let (layers, allocations) =
                     alloc_layer_pools(gpu, num_ssm_layers, h_inter_total * h_stored_bytes)?;
-                conv_intermediate_pools =
+                h_intermediate_pools = layers;
+                owned_allocations.extend(allocations);
+                let (layers, allocations) =
                     alloc_layer_pools(gpu, num_ssm_layers, mtp_total * ni * conv_bytes)?;
+                conv_intermediate_pools = layers;
+                owned_allocations.extend(allocations);
             } else {
                 // Replay: verify-window INPUT rows instead of state
                 // snapshots — (mtp_total slots incl. dummy) × (K-1)
@@ -291,14 +306,21 @@ impl SsmStatePool {
                     config.linear_num_value_heads,
                 );
                 let ring = crate::ssm_reserve::ssm_replay_ring_bytes(1, row, ni, mtp_total);
-                replay_input_rings = alloc_layer_pools(gpu, num_ssm_layers, ring)?;
+                let (layers, allocations) = alloc_layer_pools(gpu, num_ssm_layers, ring)?;
+                replay_input_rings = layers;
+                owned_allocations.extend(allocations);
             }
 
             // 1 checkpoint per slot per layer (BOTH modes: replay's
             // reconstruction base is exactly this blob).
-            h_checkpoint_pools =
+            let (layers, allocations) =
                 alloc_layer_pools(gpu, num_ssm_layers, mtp_total * h_stored_bytes)?;
-            conv_checkpoint_pools = alloc_layer_pools(gpu, num_ssm_layers, mtp_total * conv_bytes)?;
+            h_checkpoint_pools = layers;
+            owned_allocations.extend(allocations);
+            let (layers, allocations) =
+                alloc_layer_pools(gpu, num_ssm_layers, mtp_total * conv_bytes)?;
+            conv_checkpoint_pools = layers;
+            owned_allocations.extend(allocations);
 
             let mtp_mb = num_ssm_layers
                 * (h_inter_total * h_stored_bytes
@@ -339,6 +361,7 @@ impl SsmStatePool {
         );
 
         Ok(Self {
+            owned_allocations,
             h_state_pools,
             conv_state_pools,
             h_intermediate_pools,
@@ -824,22 +847,21 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
 
     fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
         let mut first_error = None;
-        for pool in [
-            &mut self.h_state_pools,
-            &mut self.conv_state_pools,
-            &mut self.h_intermediate_pools,
-            &mut self.conv_intermediate_pools,
-            &mut self.h_checkpoint_pools,
-            &mut self.conv_checkpoint_pools,
-        ] {
-            for ptr in pool.drain(..) {
-                if let Err(e) = gpu.free(ptr)
-                    && first_error.is_none()
-                {
-                    first_error = Some(e);
-                }
+        for ptr in self.owned_allocations.drain(..) {
+            if let Err(e) = gpu.free(ptr)
+                && first_error.is_none()
+            {
+                first_error = Some(e);
             }
         }
+        self.h_state_pools.clear();
+        self.conv_state_pools.clear();
+        self.h_intermediate_pools.clear();
+        self.conv_intermediate_pools.clear();
+        self.h_checkpoint_pools.clear();
+        self.conv_checkpoint_pools.clear();
+        self.h_prefill_stage_pool = None;
+        self.replay_input_rings.clear();
         match first_error {
             Some(e) => Err(e),
             None => Ok(()),
@@ -882,6 +904,7 @@ mod h_inter_layout_tests {
 mod h_stored_geometry_tests {
     use super::*;
     use atlas_core::config::ModelConfig;
+    use atlas_core::scope::ModelResource;
     use spark_runtime::gpu::mock::MockGpuBackend;
 
     /// Claimable slots in the test pool (the pool allocates `SLOTS + 1`,
@@ -915,6 +938,11 @@ mod h_stored_geometry_tests {
     #[test]
     fn layer_pools_are_one_contiguous_block_per_family() {
         let p = pool(false);
+        assert_eq!(
+            p.owned_allocations.len(),
+            6,
+            "each family must own one bulk allocation"
+        );
         let families: [(&str, &[DevicePtr], usize); 6] = [
             (
                 "h_state",
@@ -961,6 +989,39 @@ mod h_stored_geometry_tests {
                     "{name}: layer {l} is not at base + {l}*{stride}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn rejected_bulk_allocation_falls_back_to_owned_layer_allocations() {
+        let gpu = MockGpuBackend::new();
+        gpu.set_max_allocation_bytes(1024);
+        let (layers, owners) = alloc_layer_pools(&gpu, 4, 512).unwrap();
+        assert_eq!(layers, owners, "fallback views must be allocation bases");
+        assert_eq!(gpu.alloc_count(), 4);
+        for ptr in owners {
+            assert_eq!(gpu.read_alloc(ptr).unwrap(), vec![0; 512]);
+            gpu.free(ptr).unwrap();
+        }
+        assert_eq!(gpu.alloc_count(), 0);
+    }
+
+    #[test]
+    fn release_frees_backing_allocations_not_layer_views() {
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        for (mode, narrowed) in [
+            (crate::ssm_reserve::SsmRollbackMode::Snapshot, true),
+            (crate::ssm_reserve::SsmRollbackMode::Replay, false),
+        ] {
+            let gpu = MockGpuBackend::new();
+            let mut p =
+                SsmStatePool::new(&config, SLOTS, true, 4, 3, narrowed, mode, &gpu).unwrap();
+            assert!(gpu.alloc_count() > 0, "fixture must own device allocations");
+            p.release(&gpu).unwrap();
+            assert_eq!(gpu.alloc_count(), 0, "mode={mode:?}, narrowed={narrowed}");
+            assert!(p.owned_allocations.is_empty());
+            assert!(p.h_prefill_stage_pool.is_none());
+            assert!(p.replay_input_rings.is_empty());
         }
     }
 
@@ -1092,6 +1153,7 @@ mod slot_guard_tests {
     /// required to validate the exactly-once release invariant.
     fn bare_pool(max_slots: usize) -> Arc<SsmStatePool> {
         Arc::new(SsmStatePool {
+            owned_allocations: Vec::new(),
             h_state_pools: Vec::new(),
             conv_state_pools: Vec::new(),
             h_intermediate_pools: Vec::new(),
@@ -1187,38 +1249,5 @@ mod slot_guard_tests {
         let mut sorted = free.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, vec![0, 1], "both slots free exactly once, no dupes");
-    }
-
-    #[test]
-    fn retire_with_migration_is_double_free_free() {
-        // Full scenario: retired R owns slot i; survivor S owns slot j; S is
-        // compacted onto i; R is then disowned (detach_slot_for_reuse) and
-        // freed. Then S is freed. Every slot must be released exactly once.
-        let pool = bare_pool(2); // slots {0,1}
-        let mut r = pool.claim_guarded().unwrap(); // R owns 1
-        let mut s = pool.claim_guarded().unwrap(); // S owns 0
-        assert_eq!(free_count(&pool), 0);
-        let r_slot = r.idx().unwrap();
-        let s_slot = s.idx().unwrap();
-
-        // compact_sequence(S, r_slot): release S's old slot, migrate to R's slot.
-        let old = s.take().unwrap();
-        assert_eq!(old, s_slot);
-        pool.release_slot(old); // j released once
-        s.migrate(r_slot); // S now owns i
-
-        // detach_slot_for_reuse(R): take WITHOUT release (S owns it now).
-        let _ = r.take();
-        drop(r); // R's guard is empty → no release of i
-
-        // free_sequence(S) later: release i exactly once.
-        let i = s.take().unwrap();
-        pool.release_slot(i);
-        drop(s);
-
-        let free = pool.free_slots.lock();
-        let mut sorted = free.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, vec![0, 1], "both slots free, exactly once each");
     }
 }

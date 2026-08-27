@@ -279,14 +279,26 @@ mod tests {
 
     #[test]
     fn accept_hedge_rescue_is_terminal() {
-        // spine [10, 20], hedge at depth1 = 11. Target wants 11 then 77.
+        // spine [10, 20], hedge at depth1 = 11. Its bonus deliberately
+        // equals spine2, proving the accepted hedge remains a leaf.
         let t = draft("2,1", &[10, 20], &[(1, 2, 11)]);
         let rows = t.rows(5);
         // v[root]=11 → spine1(10) misses, hedge(11) rescues (row 3).
-        // Hedge is a leaf: path ends there; bonus = v[hedge row]=77.
-        let (path, bonus) = t.accept_path(&rows, &[11, 55, 66, 77]);
+        // Hedge is a leaf: path ends there; bonus = v[hedge row]=20.
+        let (path, bonus) = t.accept_path(&rows, &[11, 55, 66, 20]);
         assert_eq!(path, vec![3]);
-        assert_eq!(bonus, 77);
+        assert_eq!(bonus, 20);
+    }
+
+    #[test]
+    fn accept_hedge_after_spine_prefix_is_terminal() {
+        // The first spine token is accepted before a depth-2 hedge rescues
+        // the path. This reaches hedge lookup after `cur` has advanced.
+        let t = draft("1,2,1", &[10, 20, 30], &[(2, 2, 21)]);
+        let rows = t.rows(5);
+        let (path, bonus) = t.accept_path(&rows, &[10, 21, 66, 77, 88]);
+        assert_eq!(path, vec![1, 4]);
+        assert_eq!(bonus, 88);
     }
 
     #[test]

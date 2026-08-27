@@ -28,6 +28,10 @@ fn cat(s: &str) -> Vec<String> {
     parse_category(s)
 }
 
+fn set(ids: &[&str]) -> BTreeSet<String> {
+    ids.iter().map(|id| (*id).to_string()).collect()
+}
+
 // ── The live case ──────────────────────────────────────────────────────────
 
 /// ★ **The live cases, and they must be paths this repo can actually produce.**
@@ -86,11 +90,9 @@ fn intent_adds_where_the_paths_are_silent() {
         "a docs diff must stay off the floor, got {:?}",
         promoted.by_path
     );
-    assert!(
-        promoted.intent_only().contains("concurrency-sweep"),
-        "performance/scheduling must add the promoted concurrency-sweep gate; \
-         intent supplied {:?}",
-        promoted.intent_only()
+    assert_eq!(
+        promoted.intent_only(),
+        set(&["agentic-webserver", "concurrency-sweep", "ttft-warm-gate"])
     );
 }
 
@@ -111,19 +113,17 @@ fn union_actually_includes_the_intent_half() {
         &[cat("performance/decode")],
         &roots,
     );
-    assert!(
-        got.union().len() > got.by_path.len(),
-        "union() must be STRICTLY larger than by_path when intent adds; \
-         got union={:?} by_path={:?}",
-        got.union(),
-        got.by_path
+    assert!(got.by_path.is_empty());
+    assert_eq!(
+        got.by_intent,
+        set(&[
+            "agentic-webserver",
+            "bfcl-subset",
+            "decode-floor",
+            "ttft-warm-gate",
+        ])
     );
-    for bench in &got.by_intent {
-        assert!(
-            got.union().contains(bench),
-            "union() dropped the intent-derived {bench:?}"
-        );
-    }
+    assert_eq!(got.union(), got.by_intent);
 }
 
 /// The same change with no classification owes nothing — and that is correct,
@@ -131,9 +131,8 @@ fn union_actually_includes_the_intent_half() {
 #[test]
 fn an_unclassified_change_gets_no_invented_intent() {
     let roots = real_taxonomy();
-    let got = required_for(&["recipes/gb10/x.yaml".to_string()], &[], &roots);
-    assert!(got.by_intent.is_empty());
-    assert!(got.union().is_empty());
+    let got = required_for(&["docker/gb10/Dockerfile".to_string()], &[], &roots);
+    assert_eq!(got, RequiredSet::default());
 }
 
 // ── The vacuity tripwires ──────────────────────────────────────────────────
@@ -162,11 +161,11 @@ fn crates_paths_split_into_fully_covered_and_not_covered_at_all() {
         &[cat("performance/scheduling")],
         &roots,
     );
-    assert_eq!(
-        engine.by_path.len(),
-        super::super::coverage::REQUIRED.len(),
-        "an ordinary crates/ path should owe every gate"
-    );
+    let all = super::super::coverage::REQUIRED
+        .iter()
+        .map(|gate| gate.id.to_string())
+        .collect();
+    assert_eq!(engine.by_path, all, "ordinary engine code owes every gate");
     assert!(
         engine.intent_only().is_empty(),
         "intent should be redundant here; it added {:?}",
@@ -180,15 +179,10 @@ fn crates_paths_split_into_fully_covered_and_not_covered_at_all() {
         &[cat("performance/scheduling")],
         &roots,
     );
-    assert!(
-        machinery.by_path.is_empty(),
-        "GATE_MACHINERY excludes crates/atlas-plugin/src/gate from every gate; \
-         got {:?}",
-        machinery.by_path
-    );
-    assert!(
-        !machinery.intent_only().is_empty(),
-        "with no path-derived coverage, intent must be the thing that supplies it"
+    assert!(machinery.by_path.is_empty());
+    assert_eq!(
+        machinery.intent_only(),
+        set(&["agentic-webserver", "concurrency-sweep", "ttft-warm-gate"])
     );
 }
 
@@ -249,7 +243,7 @@ fn intent_can_never_remove_a_path_derived_gate() {
 #[test]
 fn disagreeing_classifications_union_rather_than_last_wins() {
     let roots = real_taxonomy();
-    let changed = vec!["recipes/x.yaml".to_string()];
+    let changed = vec!["docker/gb10/Dockerfile".to_string()];
 
     let a = required_for(&changed, &[cat("correctness/kv-cache")], &roots);
     let b = required_for(&changed, &[cat("performance/decode")], &roots);
@@ -259,11 +253,27 @@ fn disagreeing_classifications_union_rather_than_last_wins() {
         &roots,
     );
 
-    assert!(a.by_intent.is_subset(&both.by_intent));
-    assert!(b.by_intent.is_subset(&both.by_intent));
-    assert!(
-        both.by_intent.len() > a.by_intent.len(),
-        "two disagreeing classifications must ask for MORE than either alone"
+    assert_eq!(
+        a.by_intent,
+        set(&[
+            "bfcl-subset",
+            "ssm-state-poisoning-gate",
+            "ttft-cold-gate",
+            "ttft-warm-gate",
+        ])
+    );
+    assert_eq!(
+        b.by_intent,
+        set(&[
+            "agentic-webserver",
+            "bfcl-subset",
+            "decode-floor",
+            "ttft-warm-gate",
+        ])
+    );
+    assert_eq!(
+        both.by_intent,
+        a.by_intent.union(&b.by_intent).cloned().collect()
     );
     // Order must not matter, or a re-run could read differently.
     let reversed = required_for(
@@ -303,10 +313,16 @@ fn a_truncated_path_would_lose_benches() {
     let full = super::super::pr_taxonomy::benches_for(&roots, &cat("performance/decode"));
     let truncated =
         super::super::pr_taxonomy::benches_for(&roots, &["performance".to_string(), String::new()]);
-    assert!(
-        truncated.len() < full.len(),
-        "an empty segment must actually cost benches, or this guard is theatre"
+    assert_eq!(
+        full,
+        set(&[
+            "agentic-webserver",
+            "bfcl-subset",
+            "decode-floor",
+            "ttft-warm-gate",
+        ])
     );
+    assert_eq!(truncated, set(&["agentic-webserver"]));
 }
 
 // ── IntentSource: an abstention is not an empty answer ──────────────────────
@@ -315,13 +331,13 @@ fn ledger_dir() -> super::super::tests::tempdir::Dir {
     super::super::tests::tempdir::Dir::new()
 }
 
-fn write_events(root: &std::path::Path, pr: u64, rows: &[(&str, &str, &str)]) {
+fn write_events(root: &std::path::Path, pr: u64, rows: &[(&str, &str, &str, &str)]) {
     let path = atlas_governance::ledger::path_for(root, pr);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    for (i, (run, value, status)) in rows.iter().enumerate() {
+    for (i, (run, head, value, status)) in rows.iter().enumerate() {
         let e = atlas_governance::event::Event {
             pr,
-            head_sha: "deadbeef".into(),
+            head_sha: (*head).into(),
             run_id: (*run).into(),
             attempt: 1,
             at: 1_786_280_000 + i as u64,
@@ -338,10 +354,12 @@ fn write_events(root: &std::path::Path, pr: u64, rows: &[(&str, &str, &str)]) {
 fn no_pr_is_not_requested_and_no_pr_is_not_a_missing_ledger() {
     let d = ledger_dir();
     assert_eq!(intent_source(d.path(), None), IntentSource::NotRequested);
-    assert!(matches!(
+    assert_eq!(
         intent_source(d.path(), Some(7)),
-        IntentSource::NotRecorded { .. }
-    ));
+        IntentSource::NotRecorded {
+            ledger: d.path().join("governance/pr-7.jsonl")
+        }
+    );
 }
 
 /// ★ The one that would silently kill the feature. The ledger line for head X
@@ -355,14 +373,17 @@ fn every_recorded_category_counts_regardless_of_head_sha() {
         d.path(),
         7,
         &[
-            ("100", "performance/decode", "ok"),
-            ("101", "correctness/kv-cache", "ok"),
+            ("100", "old-head", "performance/decode", "ok"),
+            ("101", "new-head", "correctness/kv-cache", "ok"),
         ],
     );
     let IntentSource::Recorded { categories, .. } = intent_source(d.path(), Some(7)) else {
         panic!("expected Recorded");
     };
-    assert_eq!(categories.len(), 2, "both rows must count: {categories:?}");
+    assert_eq!(
+        categories,
+        [cat("performance/decode"), cat("correctness/kv-cache")]
+    );
 }
 
 /// An outage is not a classification. The day the fallback root gains
@@ -375,10 +396,10 @@ fn error_and_abstain_rows_are_counted_but_never_treated_as_intent() {
         d.path(),
         7,
         &[
-            ("100", "performance/decode", "ok"),
-            ("101", "unknown", "abstain"),
-            ("102", "unknown", "error"),
-            ("103", "performance", "partial"),
+            ("100", "head", "performance/decode", "ok"),
+            ("101", "head", "unknown", "abstain"),
+            ("102", "head", "unknown", "error"),
+            ("103", "head", "performance", "partial"),
         ],
     );
     let IntentSource::Recorded {
@@ -389,11 +410,7 @@ fn error_and_abstain_rows_are_counted_but_never_treated_as_intent() {
         panic!("expected Recorded");
     };
     assert_eq!(skipped, 2, "abstain + error");
-    assert!(
-        categories.contains(&vec!["performance".to_string()]),
-        "a `partial` row is real intent — its matched prefix carries ancestor \
-         _benches by the union rule: {categories:?}"
-    );
+    assert_eq!(categories, [cat("performance/decode"), cat("performance")]);
 }
 
 /// A ledger holding only abstentions is NOT recorded — it must not read as a
@@ -401,11 +418,13 @@ fn error_and_abstain_rows_are_counted_but_never_treated_as_intent() {
 #[test]
 fn a_ledger_of_only_abstentions_reads_as_not_recorded() {
     let d = ledger_dir();
-    write_events(d.path(), 7, &[("100", "unknown", "error")]);
-    assert!(matches!(
+    write_events(d.path(), 7, &[("100", "head", "unknown", "error")]);
+    assert_eq!(
         intent_source(d.path(), Some(7)),
-        IntentSource::NotRecorded { .. }
-    ));
+        IntentSource::NotRecorded {
+            ledger: d.path().join("governance/pr-7.jsonl")
+        }
+    );
 }
 
 /// One corrupt byte must not fail an advisory consumer — and must not read as
@@ -448,5 +467,21 @@ fn only_a_recorded_source_contributes_intent() {
         },
         &roots,
     );
-    assert!(!r.set.by_intent.is_empty());
+    assert!(r.set.by_path.is_empty());
+    assert_eq!(
+        r.set.by_intent,
+        set(&[
+            "agentic-webserver",
+            "bfcl-subset",
+            "decode-floor",
+            "ttft-warm-gate",
+        ])
+    );
+    assert_eq!(
+        r.source,
+        IntentSource::Recorded {
+            categories: vec![cat("performance/decode")],
+            skipped: 0,
+        }
+    );
 }

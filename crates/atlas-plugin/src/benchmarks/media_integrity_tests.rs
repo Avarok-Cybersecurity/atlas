@@ -13,7 +13,6 @@ fn a_pass_is_measured_and_passed() {
         detail: "d".into(),
     };
     assert!(c.passed() && c.measured());
-    assert_eq!(c.id(), "x");
 }
 
 #[test]
@@ -48,32 +47,67 @@ fn an_error_is_neither_passed_nor_measured() {
 }
 
 #[test]
-fn a_failure_line_says_so_loudly() {
-    let line = Cell::Fail {
-        id: "prefix-cache-isolation",
-        detail: "served the first image".into(),
+fn cell_lines_preserve_variant_evidence() {
+    let cases = [
+        (
+            Cell::Pass {
+                id: "concurrency",
+                detail: "four distinct replies".into(),
+            },
+            "concurrency",
+            "concurrency: four distinct replies",
+        ),
+        (
+            Cell::Fail {
+                id: "prefix-cache-isolation",
+                detail: "served the first image".into(),
+            },
+            "prefix-cache-isolation",
+            "prefix-cache-isolation: FAILED — served the first image",
+        ),
+        (
+            Cell::Skipped {
+                id: "history",
+                why: "no decoder".into(),
+            },
+            "history",
+            "history: skipped — no decoder",
+        ),
+        (
+            Cell::Error {
+                id: "long-prompt",
+                msg: "connection reset".into(),
+            },
+            "long-prompt",
+            "long-prompt: connection reset",
+        ),
+    ];
+
+    for (cell, expected_id, expected_line) in cases {
+        assert_eq!(cell.id(), expected_id);
+        assert_eq!(cell.line(), expected_line);
     }
-    .line();
-    assert!(line.contains("FAILED"), "{line}");
-    assert!(line.contains("prefix-cache-isolation"), "{line}");
 }
 
 #[test]
 fn an_image_request_carries_the_image_then_the_prompt() {
     let b = image_request("m", "image/png", b"bytes", "what colour", 32);
-    let content = b["messages"][0]["content"].as_array().expect("array");
-    assert_eq!(content[0]["type"], "image_url");
-    assert!(
-        content[0]["image_url"]["url"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/png;base64,")
+    assert_eq!(
+        b,
+        serde_json::json!({
+            "model": "m",
+            "stream": true,
+            "temperature": 0.0,
+            "max_tokens": 32,
+            "chat_template_kwargs": {"enable_thinking": false},
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64,Ynl0ZXM="
+                }},
+                {"type": "text", "text": "what colour"},
+            ]}],
+        })
     );
-    assert_eq!(content[1]["type"], "text");
-    // Deterministic: every assertion is about what the model saw, so sampling
-    // variance is pure noise.
-    assert_eq!(b["temperature"], 0.0);
-    assert_eq!(b["chat_template_kwargs"]["enable_thinking"], false);
 }
 
 /// The mime is carried through rather than assumed to be PNG — the decode

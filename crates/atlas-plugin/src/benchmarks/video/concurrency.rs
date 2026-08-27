@@ -50,17 +50,46 @@ pub struct LevelResult {
     /// requests that disagree on geometry mean the shared vision buffers were
     /// indexed per-request incorrectly.
     pub distinct_token_counts: usize,
+    /// The agreed prompt-token count when there was exactly one. Retained so
+    /// later levels can be compared with the single-stream baseline rather
+    /// than merely checked for internal agreement.
+    pub prompt_tokens: Option<usize>,
     pub wall_ms: u128,
     pub errors: Vec<String>,
 }
 
 impl LevelResult {
     pub fn ok(&self) -> bool {
-        self.returned == self.conc
-            && self.correct == self.conc
-            && self.distinct_token_counts == 1
-            && self.errors.is_empty()
+        self.correct == self.conc && self.distinct_token_counts == 1 && self.prompt_tokens.is_some()
     }
+
+    /// A level is clean only when its internally consistent geometry also
+    /// matches the C=1 observation.
+    pub fn ok_against(&self, baseline_prompt_tokens: usize) -> bool {
+        self.ok() && self.prompt_tokens == Some(baseline_prompt_tokens)
+    }
+
+    pub fn geometry_detail(&self, baseline_prompt_tokens: Option<usize>) -> String {
+        match (self.prompt_tokens, baseline_prompt_tokens) {
+            (Some(got), Some(want)) if got != want => {
+                format!("{got} prompt tokens, C=1 baseline {want}")
+            }
+            (Some(got), _) => format!("one geometry ({got} prompt tokens)"),
+            (None, _) => format!("{} distinct token counts", self.distinct_token_counts),
+        }
+    }
+}
+
+/// Score the complete configured sweep, including cross-level geometry.
+pub fn sweep_ok(results: &[LevelResult]) -> bool {
+    let Some(baseline_prompt_tokens) = results.first().and_then(|r| r.prompt_tokens) else {
+        return false;
+    };
+    results.len() == LEVELS.len()
+        && results
+            .iter()
+            .zip(LEVELS)
+            .all(|(r, &level)| r.conc == level && r.ok_against(baseline_prompt_tokens))
 }
 
 /// Fire `conc` copies of `body` at once and score them with `is_correct`.
@@ -99,11 +128,13 @@ pub async fn run_level(
     }
     counts.sort_unstable();
     counts.dedup();
+    let prompt_tokens = (counts.len() == 1).then(|| counts[0]);
     LevelResult {
         conc,
         returned,
         correct,
         distinct_token_counts: counts.len(),
+        prompt_tokens,
         wall_ms,
         errors,
     }

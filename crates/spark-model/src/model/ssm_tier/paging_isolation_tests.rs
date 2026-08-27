@@ -21,7 +21,7 @@ use anyhow::Result;
 use atlas_core::config::{LayerType, ModelConfig};
 use parking_lot::Mutex;
 
-use super::super::fingerprint::{ModelFingerprint, mix64};
+use super::super::fingerprint::{ModelFingerprint, derive_decode_ns_salted, mix64};
 use super::super::{MockSnapshotTransport, PagingTransport, SnapshotBlobStore, SnapshotTransport};
 use super::PagingSnapshotStore;
 
@@ -134,12 +134,12 @@ fn distinct_fingerprints_do_not_cross_serve() {
     let a = store(&peer, ns_of(&hybrid()));
     let b = store(&peer, ns_of(&dense()));
     a.put(K, &[0xAA; BLOB]).unwrap();
-    let mut out = [0u8; BLOB];
+    let mut out = [0x5Au8; BLOB];
     assert!(
         !b.get(K, &mut out).unwrap(),
         "model B must MISS model A's state for the same logical key"
     );
-    assert_eq!(out, [0u8; BLOB], "a miss must leave `out` untouched");
+    assert_eq!(out, [0x5A; BLOB], "a miss must leave `out` untouched");
     // …while model A still hits its own entry (isolation, not amnesia).
     assert!(a.get(K, &mut out).unwrap());
     assert_eq!(out, [0xAA; BLOB]);
@@ -208,15 +208,12 @@ fn remove_is_namespace_scoped() {
 #[test]
 fn decode_and_marconi_tiers_do_not_cross_serve_on_one_peer() {
     // Decode + Marconi share ONE peer residency whenever blob_bytes match;
-    // the decode namespace mix64(fp, DECODE_DOMAIN) must keep one model's
+    // the production fingerprint/domain/client fold must keep one model's
     // decode spills off its own Marconi keys.
     let peer = Arc::new(MockPagingPeer::new(BLOB, 8));
     let fp = ModelFingerprint::derive_with_id(&hybrid(), BLOB, "").unwrap();
     let marconi = store(&peer, fp.nonzero());
-    let decode = store(
-        &peer,
-        NonZeroU64::new(mix64(fp.get(), atlas_kernels::DECODE_DOMAIN)).unwrap(),
-    );
+    let decode = store(&peer, derive_decode_ns_salted(fp.get(), 0x00C1_1E17));
     marconi.put(K, &[0xAA; BLOB]).unwrap();
     let mut out = [0u8; BLOB];
     assert!(

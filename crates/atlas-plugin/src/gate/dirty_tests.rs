@@ -110,11 +110,13 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
     assert!(check_record(&gate, &bfcl_baseline()).is_none());
 
     match &check_gates(root, SHA)["bfcl-subset"] {
-        GateStatus::Fail(reasons) => assert!(
-            reasons
-                .iter()
-                .any(|r| r.contains("dirty tree") && r.contains("gdn.rs")),
-            "{reasons:?}"
+        GateStatus::Fail(reasons) => assert_eq!(
+            reasons,
+            &[format!(
+                "measured from a dirty tree — 1 uncommitted invalidation-set file(s) \
+                 when the run started (crates/spark-model/src/layers/gdn.rs), so the binary \
+                 was not {SHA}"
+            )]
         ),
         other => panic!("a record that names no commit is not a pass: {other:?}"),
     }

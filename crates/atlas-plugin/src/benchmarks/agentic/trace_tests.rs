@@ -52,17 +52,16 @@ fn a_turn_records_everything_that_could_diverge() {
     trace.result("bash", "test result: ok. 1 passed");
     let text = std::fs::read_to_string(sb.with_file_name("run-07.trajectory.txt")).expect("trace");
 
-    for expected in [
-        "[prompt]\ndo the thing",
-        "── turn 2 ",
-        "[reasoning]\ncheck the port",
-        "[text]\nrunning the tests",
-        "[call] bash {\"command\":\"cargo test\"}",
-        "[finish] tool_calls",
-        "[result bash]\ntest result: ok. 1 passed",
-    ] {
-        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
-    }
+    assert_eq!(
+        text,
+        "[prompt]\ndo the thing\n\
+         \n── turn 2 ───────────────────────────────\n\
+         [reasoning]\ncheck the port\n\
+         [text]\nrunning the tests\n\
+         [call call_0] bash {\"command\":\"cargo test\"}\n\
+         [finish] tool_calls\n\
+         [result bash]\ntest result: ok. 1 passed\n"
+    );
 }
 
 #[test]
@@ -79,7 +78,7 @@ fn a_new_run_replaces_the_previous_trace() {
 }
 
 #[test]
-fn an_unwritable_location_disables_the_trace_instead_of_failing_the_run() {
+fn an_unwritable_trace_location_does_not_fail_the_run() {
     let missing = Path::new("/proc/atlas-does-not-exist/run-00");
     let trace = Trace::start(missing, "prompt");
     trace.turn(0, &outcome());

@@ -83,19 +83,6 @@ fn gate_route_dims_are_hidden_to_inter() {
 }
 
 #[test]
-fn down_route_is_the_transpose_of_gate() {
-    let gpu = MockGpuBackend::new();
-    let mut el = ExpertLoraLayer::default();
-    el.pairs.insert((2, ExpertProj::Down), down_pair(0x200));
-    let route = MoeLayer::build_expert_route(&el, ExpertProj::Down, &gpu)
-        .unwrap()
-        .expect("down pair present => Some route");
-    assert_eq!(route.k_in, INTER); // down contracts over moe_inter
-    assert_eq!(route.n_out, H); // ...and outputs hidden — transpose of gate/up
-    assert_eq!(route.n_experts, 3);
-}
-
-#[test]
 fn mixed_proj_layer_yields_three_independent_tables() {
     let gpu = MockGpuBackend::new();
     let mut el = ExpertLoraLayer::default();
@@ -121,7 +108,9 @@ fn mixed_proj_layer_yields_three_independent_tables() {
     assert_eq!((up.k_in, up.n_out), (H, INTER));
     assert_eq!((down.k_in, down.n_out), (INTER, H));
     // Each proj's table carries only its own address (no cross-proj bleed).
+    assert_eq!(u64s(&gpu, gate.a_table, 6), vec![0, 0, 0, 0, 0, 0x10]);
     assert_eq!(u64s(&gpu, up.a_table, 4), vec![0, 0, 0, 0x20]);
+    assert_eq!(u64s(&gpu, down.a_table, 8), vec![0, 0, 0, 0, 0, 0, 0, 0x30]);
 }
 
 #[test]

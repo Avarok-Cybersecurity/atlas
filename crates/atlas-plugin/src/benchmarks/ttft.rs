@@ -67,6 +67,24 @@ struct LengthRow {
     cached_tokens: usize,
 }
 
+fn ttft_stats(samples: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
+    let percentiles = stats::Percentiles::of(samples);
+    (stats::median(samples), percentiles.p90, percentiles.p99)
+}
+
+fn sample_prefix_tag(mode: Mode, tokens: usize, sample: usize, run_id: u64) -> String {
+    match mode {
+        Mode::Warm => format!("warm-{tokens}"),
+        Mode::Cold => {
+            crate::benchmarks::unique_prefix_tag(&format!("cold-{tokens}-{sample}"), run_id)
+        }
+    }
+}
+
+fn valid_ttft_ms(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
 pub struct TtftGate {
     mode: Mode,
     handle: Option<PluginHandle>,
@@ -152,17 +170,7 @@ impl TtftGate {
                 i + 1,
                 self.repeats
             ));
-            let prefix_tag = match self.mode {
-                // Constant per length: identical prompt every time, so the
-                // prefix cache can hit.
-                Mode::Warm => format!("warm-{tokens}"),
-                // Unique per sample: no prefix is ever shared, so every
-                // request pays a full prefill.
-                Mode::Cold => crate::benchmarks::unique_prefix_tag(
-                    &format!("cold-{tokens}-{i}"),
-                    handle.run_id(),
-                ),
-            };
+            let prefix_tag = sample_prefix_tag(self.mode, tokens, i, handle.run_id());
             if self.mode == Mode::Warm {
                 // Prime, then measure. The first request populates the cache;
                 // only the second is a warm-path measurement.
@@ -172,7 +180,10 @@ impl TtftGate {
             let outcome = self.measure(tokens, &prefix_tag).await?;
             cached_tokens = cached_tokens.max(outcome.cached_prompt_tokens);
             match outcome.ttft_ms {
-                Some(ms) => samples.push(ms),
+                Some(ms) if valid_ttft_ms(ms) => samples.push(ms),
+                Some(ms) => handle.warn(format!(
+                    "{tokens} tok sample {i}: invalid TTFT measurement {ms:?}"
+                )),
                 None => handle.warn(format!("{tokens} tok sample {i}: no token was emitted")),
             }
         }
@@ -196,13 +207,13 @@ impl TtftGate {
             ],
         );
         for r in &self.rows {
-            let p = stats::Percentiles::of(&r.samples);
+            let (median, p90, p99) = ttft_stats(&r.samples);
             t.push(vec![
                 Cell::new(r.prompt_tokens.to_string()),
                 Cell::new(r.samples.len().to_string()),
-                Cell::styled(stats::fmt_ms(p.p50), CellStyle::Accent),
-                Cell::new(stats::fmt_ms(p.p90)),
-                Cell::new(stats::fmt_ms(p.p99)),
+                Cell::styled(stats::fmt_ms(median), CellStyle::Accent),
+                Cell::new(stats::fmt_ms(p90)),
+                Cell::new(stats::fmt_ms(p99)),
                 // The cache-hit evidence: a warm gate reporting 0 cached tokens
                 // measured a cold path and its verdict means nothing.
                 Cell::styled(
@@ -306,6 +317,7 @@ impl Benchmark for TtftGate {
         self.p90_limit_pct = values.float("p90_limit_pct")?;
         self.update_baseline = values.bool("update_baseline")?;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.probed = false;
         self.cursor = 0;
         self.rows.clear();
         Ok(())
@@ -340,8 +352,8 @@ impl Benchmark for TtftGate {
             if samples.is_empty() {
                 bail!("no TTFT samples were collected — the endpoint emitted no tokens");
             }
-            let p = stats::Percentiles::of(&samples);
-            let (verdict, summary) = self.verdict(p.p50, p.p90);
+            let (median, p90, _) = ttft_stats(&samples);
+            let (verdict, summary) = self.verdict(median, p90);
             let mut metrics = BTreeMap::new();
             // ★ How many measurements are behind that median — else a record
             // cannot be told from one drawn at a third of the lengths or
@@ -349,10 +361,10 @@ impl Benchmark for TtftGate {
             // Recorded, not yet pinned: the committed records predate it. Pin
             // `{"min": n, "max": n}` when these gates are next re-recorded.
             metrics.insert("samples".to_string(), samples.len() as f64);
-            if let Some(v) = p.p50 {
+            if let Some(v) = median {
                 metrics.insert("median_ms".to_string(), v);
             }
-            if let Some(v) = p.p90 {
+            if let Some(v) = p90 {
                 metrics.insert("p90_ms".to_string(), v);
             }
             if self.should_store(&verdict) {
@@ -379,12 +391,12 @@ impl Benchmark for TtftGate {
 
         let tokens = self.lengths[self.cursor];
         let row = self.run_length(tokens).await?;
-        let p = stats::Percentiles::of(&row.samples);
+        let (median, p90, _) = ttft_stats(&row.samples);
         let line = LogLine::info(one_line(format!(
             "{} {tokens} tok: median {} ms · p90 {} ms · cached {} tok",
             self.mode.label(),
-            stats::fmt_ms(p.p50),
-            stats::fmt_ms(p.p90),
+            stats::fmt_ms(median),
+            stats::fmt_ms(p90),
             row.cached_tokens
         )));
         self.rows.push(row);

@@ -41,13 +41,17 @@ impl<'a> Cursor<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .context("gguf: byte range overflows address space")?;
         ensure!(
-            self.pos + n <= self.buf.len(),
+            end <= self.buf.len(),
             "gguf: unexpected EOF (need {n} bytes at {})",
             self.pos
         );
-        let s = &self.buf[self.pos..self.pos + n];
-        self.pos += n;
+        let s = &self.buf[self.pos..end];
+        self.pos = end;
         Ok(s)
     }
 
@@ -105,8 +109,10 @@ fn skip_value(c: &mut Cursor, vtype: u32) -> Result<Option<u64>> {
     }
 }
 
-fn align_up(pos: usize, align: usize) -> usize {
-    pos.div_ceil(align) * align
+fn align_up(pos: usize, align: usize) -> Result<usize> {
+    pos.checked_add(align - 1)
+        .map(|end| end / align * align)
+        .context("gguf: aligned data offset overflows address space")
 }
 
 /// A tensor directory entry (name, ggml dims, type id, data offset).
@@ -133,8 +139,10 @@ pub fn read_gguf_f32(path: &Path) -> Result<Vec<GgufTensor>> {
         version == 2 || version == 3,
         "unsupported GGUF version {version} (only 2/3 supported)"
     );
-    let tensor_count = c.u64().context("tensor_count")? as usize;
-    let kv_count = c.u64().context("kv_count")? as usize;
+    let tensor_count = usize::try_from(c.u64().context("tensor_count")?)
+        .context("tensor_count does not fit address space")?;
+    let kv_count = usize::try_from(c.u64().context("kv_count")?)
+        .context("kv_count does not fit address space")?;
 
     // Metadata KV block: skip everything except `general.alignment`.
     let mut alignment = DEFAULT_ALIGNMENT;
@@ -147,23 +155,29 @@ pub fn read_gguf_f32(path: &Path) -> Result<Vec<GgufTensor>> {
         if key == "general.alignment" {
             if let Some(a) = val {
                 ensure!(a > 0, "general.alignment must be > 0");
-                alignment = a as usize;
+                alignment = usize::try_from(a).context("general.alignment does not fit usize")?;
             }
         }
     }
 
     // Tensor directory.
-    let mut entries = Vec::with_capacity(tensor_count);
+    // Do not preallocate from a file-controlled count. A truncated or hostile
+    // header must return a parse error rather than panic on capacity overflow.
+    let mut entries = Vec::new();
     for i in 0..tensor_count {
         let name = c.string().with_context(|| format!("tensor name #{i}"))?;
         let ndim = c.u32().with_context(|| format!("ndim for {name:?}"))? as usize;
         ensure!(ndim <= 8, "tensor {name:?} has implausible ndim {ndim}");
         let mut dims = Vec::with_capacity(ndim);
         for _ in 0..ndim {
-            dims.push(c.u64()? as usize);
+            dims.push(
+                usize::try_from(c.u64()?)
+                    .with_context(|| format!("dimension for tensor {name:?} does not fit usize"))?,
+            );
         }
         let type_id = c.u32().with_context(|| format!("ggml_type for {name:?}"))?;
-        let offset = c.u64().with_context(|| format!("offset for {name:?}"))? as usize;
+        let offset = usize::try_from(c.u64().with_context(|| format!("offset for {name:?}"))?)
+            .with_context(|| format!("offset for tensor {name:?} does not fit usize"))?;
         entries.push(Entry {
             name,
             dims,
@@ -172,7 +186,7 @@ pub fn read_gguf_f32(path: &Path) -> Result<Vec<GgufTensor>> {
         });
     }
 
-    let data_offset = align_up(c.pos, alignment);
+    let data_offset = align_up(c.pos, alignment)?;
     ensure!(
         data_offset <= bytes.len(),
         "tensor-data section starts past EOF ({data_offset} > {})",
@@ -181,17 +195,29 @@ pub fn read_gguf_f32(path: &Path) -> Result<Vec<GgufTensor>> {
 
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
-        let n: usize = e.dims.iter().product();
-        let start = data_offset + e.offset;
-        let nbytes = n * type_bytes(e.type_id)?;
+        let n = e.dims.iter().try_fold(1usize, |count, dim| {
+            count.checked_mul(*dim).with_context(|| {
+                format!("tensor {:?} element count overflows address space", e.name)
+            })
+        })?;
+        let start = data_offset
+            .checked_add(e.offset)
+            .with_context(|| format!("tensor {:?} data offset overflows address space", e.name))?;
+        let width = type_bytes(e.type_id)?;
+        let nbytes = n
+            .checked_mul(width)
+            .with_context(|| format!("tensor {:?} byte size overflows address space", e.name))?;
+        let end = start
+            .checked_add(nbytes)
+            .with_context(|| format!("tensor {:?} data range overflows address space", e.name))?;
         ensure!(
-            start + nbytes <= bytes.len(),
+            end <= bytes.len(),
             "tensor {:?} data runs past EOF ({} > {})",
             e.name,
-            start + nbytes,
+            end,
             bytes.len()
         );
-        let raw = &bytes[start..start + nbytes];
+        let raw = &bytes[start..end];
         let data = match e.type_id {
             0 => raw
                 .chunks_exact(4)

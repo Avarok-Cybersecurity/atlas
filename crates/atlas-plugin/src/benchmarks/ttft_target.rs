@@ -18,14 +18,23 @@
 /// name this machine.
 pub(super) fn same_box(a: &str, b: &str) -> bool {
     fn host(url: &str) -> String {
-        let rest = url.split("://").nth(1).unwrap_or(url);
-        let hostport = rest.split('/').next().unwrap_or(rest);
-        // Strip the port, taking care not to cut an unbracketed IPv6 literal.
-        let h = match hostport.rfind(':') {
-            Some(i) if !hostport[i + 1..].contains(':') => &hostport[..i],
-            _ => hostport,
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        let hostport = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, hostport)| hostport);
+        let h = if let Some(bracketed) = hostport.strip_prefix('[') {
+            bracketed
+                .split_once(']')
+                .map_or(hostport, |(address, _)| address)
+        } else if hostport.matches(':').count() == 1 {
+            hostport.split_once(':').map_or(hostport, |(host, _)| host)
+        } else {
+            // An unbracketed IPv6 literal has no unambiguous port delimiter.
+            // Preserve the whole address rather than collapsing its last
+            // segment and making adjacent machines compare equal.
+            hostport
         };
-        let h = h.trim_start_matches('[').trim_end_matches(']');
         match h {
             "localhost" | "127.0.0.1" | "::1" => "localhost".to_string(),
             other => other.to_ascii_lowercase(),
@@ -44,6 +53,10 @@ mod tests {
         // full-URL comparison never matched and the guard abstained forever.
         assert!(same_box("http://127.0.0.1:8888", "http://127.0.0.1:33033"));
         assert!(same_box("http://localhost:8888", "http://127.0.0.1:41999"));
+        assert!(same_box(
+            "https://Example.COM:8888/a",
+            "http://example.com:41999/b"
+        ));
     }
 
     #[test]
@@ -59,6 +72,9 @@ mod tests {
     #[test]
     fn an_ipv6_literal_keeps_its_address() {
         assert!(same_box("http://[::1]:8888", "http://localhost:9"));
+        assert!(same_box("http://[::1]", "http://127.0.0.1:9"));
         assert!(!same_box("http://[fe80::1]:8888", "http://[fe80::2]:8888"));
+        assert!(!same_box("http://fe80::1", "http://fe80::2"));
+        assert!(!same_box("http://[fe80::1]", "http://[fe80::2]"));
     }
 }

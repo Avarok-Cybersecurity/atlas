@@ -243,12 +243,12 @@ mod tests {
     #[test]
     fn missing_fields_default_to_unknown() {
         let hw: Hardware = serde_json::from_str("{}").unwrap();
-        assert!(hw.is_unknown());
+        assert_eq!(hw, Hardware::unknown());
         assert_eq!(hw.one_line(), "unknown hardware");
     }
 
     #[test]
-    fn one_line_lists_every_known_field() {
+    fn one_line_lists_each_reported_measurement() {
         let hw = Hardware {
             gpu: "NVIDIA GB10".into(),
             driver: "580.126.09".into(),
@@ -258,6 +258,30 @@ mod tests {
         assert_eq!(
             hw.one_line(),
             "NVIDIA GB10 · driver 580.126.09 · sm 208 MHz"
+        );
+        assert_eq!(
+            Hardware {
+                gpu: hw.gpu.clone(),
+                ..Hardware::default()
+            }
+            .one_line(),
+            "NVIDIA GB10"
+        );
+        assert_eq!(
+            Hardware {
+                driver: hw.driver.clone(),
+                ..Hardware::default()
+            }
+            .one_line(),
+            "driver 580.126.09"
+        );
+        assert_eq!(
+            Hardware {
+                sm_clock_mhz: hw.sm_clock_mhz,
+                ..Hardware::default()
+            }
+            .one_line(),
+            "sm 208 MHz"
         );
     }
 }

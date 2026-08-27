@@ -114,6 +114,15 @@ mod tests {
                     a.canary,
                     b.canary
                 );
+                let a_parts: std::collections::BTreeSet<_> = a.canary.split('-').collect();
+                let b_parts: std::collections::BTreeSet<_> = b.canary.split('-').collect();
+                assert!(
+                    a_parts.is_disjoint(&b_parts),
+                    "canaries {} / {} share lexical components: {:?}",
+                    a.canary,
+                    b.canary,
+                    a_parts.intersection(&b_parts).collect::<Vec<_>>()
+                );
             }
         }
     }
@@ -122,6 +131,19 @@ mod tests {
     /// the preamble boundary and each canary sits in the probe-specific tail.
     #[test]
     fn prompts_share_the_preamble_and_diverge_at_the_canary() {
+        let full: Vec<String> = PROBES.iter().map(Probe::prompt).collect();
+        let canary_offsets: Vec<usize> = PROBES
+            .iter()
+            .zip(&full)
+            .map(|(probe, prompt)| prompt.find(probe.canary).expect("canary in own prompt"))
+            .collect();
+        assert_eq!(canary_offsets[0], canary_offsets[1]);
+        let boundary = canary_offsets[0];
+        assert_eq!(&full[0][..boundary], &full[1][..boundary]);
+        assert_eq!(
+            &full[0][..boundary],
+            format!("{PREAMBLE}Your reference code is ")
+        );
         for p in &PROBES {
             assert!(
                 p.prompt().starts_with(PREAMBLE),

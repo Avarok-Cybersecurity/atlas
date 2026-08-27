@@ -31,27 +31,13 @@
 //   into_verbs: decompose — clients re-own each `Verbs` in their own rail
 //     structs, so drop order (MR dereg before buffer free) is unchanged.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::io::{Read, Write};
 
 use crate::handshake;
+use crate::rail_count::check_rail_count;
 use crate::verbs::Verbs;
 use crate::wire::{CacheServerParams, RemoteQp, VerbsServerParams, read_server_rails};
-
-/// Guard for `complete`'s rail/param pairing. A bare `zip` would SILENTLY
-/// truncate: a server slice shorter than the rail count leaves the trailing
-/// rails stuck in INIT (never RTS) while `complete` still returns `Ok`, so the
-/// caller believes it is connected and fails later, obscurely, on its first
-/// RDMA op. Pure so it is unit-testable without a NIC.
-pub(crate) fn check_rail_count(server_len: usize, rails_len: usize, peer: &str) -> Result<()> {
-    if server_len != rails_len {
-        bail!(
-            "{peer}: server returned {server_len} rail params for {rails_len} client rails — \
-             refusing to leave rails unconnected (a zip would silently truncate)"
-        );
-    }
-    Ok(())
-}
 
 /// One rail's bring-up parameters: device name, RoCEv2 GID index, and the
 /// caller-chosen 24-bit send PSN.
@@ -158,7 +144,3 @@ impl RailSet {
         self.rails.into_iter().map(|r| r.verbs).collect()
     }
 }
-
-#[cfg(test)]
-#[path = "railset_tests.rs"]
-mod tests;

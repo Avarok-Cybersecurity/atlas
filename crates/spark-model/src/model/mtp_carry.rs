@@ -356,6 +356,8 @@ mod tests {
     fn append_plan_declines_when_the_store_stops_short_of_the_last_key() {
         // Needs hidden row 198; store ends at 190 (exclusive).
         assert_eq!(plan_append(97, 200, 97, 190), None);
+        // Exclusive end 198 still omits row 198; this is the adjacent boundary.
+        assert_eq!(plan_append(97, 200, 97, 198), None);
     }
 
     #[test]
@@ -382,6 +384,7 @@ mod tests {
         // A disjoint write must NOT claim the gap: rows in it were never
         // written for this sequence.
         assert_eq!(merge_interval((10, 20), 30, 5), (30, 35));
+        assert_eq!(merge_interval((10, 20), 0, 5), (0, 5));
         assert_eq!(merge_interval((0, 0), 30, 5), (30, 35));
     }
 

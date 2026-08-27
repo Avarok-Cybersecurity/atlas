@@ -123,28 +123,38 @@ impl RoundResult {
         // default that scored clean would mean any future conditional probe —
         // or any early return between booting and probing — silently produced
         // a verified round.
-        for (name, signal) in [
-            ("wrong-model", &signals.identity),
-            ("codegen", &signals.codegen),
-            ("tool_call", &signals.tool_call),
+        for (name, signal, allows_not_applicable) in [
+            ("wrong-model", &signals.identity, false),
+            ("codegen", &signals.codegen, false),
+            ("tool_call", &signals.tool_call, true),
         ] {
             match signal {
-                Signal::Pass | Signal::NotApplicable(_) => {}
+                Signal::Pass => {}
+                Signal::NotApplicable(_) if allows_not_applicable => {}
+                Signal::NotApplicable(_) => fails.push(format!("{name}(not-applicable)")),
                 Signal::Fail(_) => fails.push(name.to_string()),
                 Signal::NotRun => fails.push(format!("{name}(not-probed)")),
             }
         }
         let coherence_bar = COHERENCE_MIN_PASS.min(signals.coherence_total);
-        if signals.coherence_total == 0 || signals.coherence_pass < coherence_bar {
+        if signals.coherence_total == 0
+            || signals.coherence_pass < coherence_bar
+            || signals.coherence_pass > signals.coherence_total
+        {
             fails.push(format!(
                 "coherence({}/{})",
                 signals.coherence_pass, signals.coherence_total
             ));
         }
         if let Some(tps) = signals.tps {
-            if tps <= 0.0 {
+            if !tps.is_finite() {
+                fails.push("tps(non-finite)".into());
+            } else if tps <= 0.0 {
                 fails.push("tps(0)".into());
-            } else if let Some(base) = self.baseline_tps.filter(|b| *b > 0.0) {
+            } else if let Some(base) = self
+                .baseline_tps
+                .filter(|baseline| baseline.is_finite() && *baseline > 0.0)
+            {
                 let floor = base * (1.0 - TPS_TOLERANCE);
                 if tps < floor {
                     fails.push(format!("tps({tps:.1}<{floor:.1})"));
@@ -162,7 +172,13 @@ impl RoundResult {
     /// that and implying a check passed.
     pub fn tps_note(&self) -> Option<&'static str> {
         let tps = self.signals()?.tps?;
-        if tps > 0.0 && self.baseline_tps.filter(|b| *b > 0.0).is_none() {
+        if tps.is_finite()
+            && tps > 0.0
+            && self
+                .baseline_tps
+                .filter(|baseline| baseline.is_finite() && *baseline > 0.0)
+                .is_none()
+        {
             return Some("no baseline — liveness only");
         }
         None

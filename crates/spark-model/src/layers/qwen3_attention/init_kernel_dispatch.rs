@@ -298,31 +298,26 @@ mod tests {
     /// variants must NOT end in `_128`.
     #[test]
     fn hd_gate_picks_128_or_full_kernel() {
-        // Turbo3 has both _128 and full variants.
-        let (_, _, dm_128, _) = kernel_modules_for_dtype(KvCacheDtype::Turbo3, 128);
-        let (_, _, dm_256, _) = kernel_modules_for_dtype(KvCacheDtype::Turbo3, 256);
-        assert!(
-            dm_128.ends_with("_128"),
-            "hd=128 turbo3: {dm_128} should end _128"
-        );
-        assert!(
-            !dm_256.ends_with("_128"),
-            "hd=256 turbo3: {dm_256} should not end _128"
-        );
-
-        // Same shape gate for the asym families that support hd>128
-        // (Bf16K/Fp8K — Turbo*KTurbo*V are 128-only today and the test
-        // accepts that).
-        for asym in &[KvCacheDtype::Bf16KTurbo3V, KvCacheDtype::Fp8KTurbo3V] {
-            let (_, _, dm_128, _) = kernel_modules_for_dtype(*asym, 128);
-            let (_, _, dm_256, _) = kernel_modules_for_dtype(*asym, 256);
+        for dtype in [
+            KvCacheDtype::Turbo3,
+            KvCacheDtype::Turbo4,
+            KvCacheDtype::Turbo8,
+            KvCacheDtype::Bf16KTurbo3V,
+            KvCacheDtype::Bf16KTurbo4V,
+            KvCacheDtype::Bf16KTurbo2V,
+            KvCacheDtype::Fp8KTurbo3V,
+            KvCacheDtype::Fp8KTurbo4V,
+            KvCacheDtype::Fp8KTurbo2V,
+        ] {
+            let (_, _, dm_128, _) = kernel_modules_for_dtype(dtype, 128);
+            let (_, _, dm_256, _) = kernel_modules_for_dtype(dtype, 256);
             assert!(
                 dm_128.ends_with("_128"),
-                "{asym:?} hd=128: {dm_128} should end _128"
+                "{dtype:?} hd=128: {dm_128} should end _128"
             );
             assert!(
                 !dm_256.ends_with("_128"),
-                "{asym:?} hd=256: {dm_256} should not end _128"
+                "{dtype:?} hd=256: {dm_256} should not end _128"
             );
         }
     }

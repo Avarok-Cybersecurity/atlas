@@ -116,7 +116,14 @@ mod tests {
 
     #[test]
     fn the_draw_takes_the_first_n_of_each_subset() {
-        let p = write("head", &[("simple_python", 10), ("irrelevance", 10)]);
+        let p = write(
+            "head",
+            &[
+                ("simple_python", 10),
+                ("simple_java", 10),
+                ("irrelevance", 10),
+            ],
+        );
         let spec = DrawSpec {
             categories: vec!["non_live".into()],
             category_pct: [("non_live".to_string(), 50.0)].into_iter().collect(),
@@ -125,13 +132,18 @@ mod tests {
         let s = load(&p, &spec).unwrap();
         assert_eq!(
             s.len(),
-            5,
-            "50% of 10, and irrelevance is out of the selection"
+            10,
+            "50% of both selected subsets, and irrelevance is excluded"
         );
         let ids: Vec<&str> = s.iter().map(|x| x.sample_id.as_str()).collect();
         assert_eq!(
             ids,
             vec![
+                "simple_java_0",
+                "simple_java_1",
+                "simple_java_2",
+                "simple_java_3",
+                "simple_java_4",
                 "simple_python_0",
                 "simple_python_1",
                 "simple_python_2",
@@ -144,8 +156,20 @@ mod tests {
 
     #[test]
     fn totals_are_counted_without_parsing_whole_samples() {
-        let p = write("totals", &[("multiple", 3), ("live_simple", 2)]);
+        let p = write("totals", &[]);
+        std::fs::write(
+            &p,
+            concat!(
+                "{\"subset\":\"multiple\"}\n",
+                "{\"subset\":\"multiple\"}\n",
+                "{\"subset\":\"multiple\"}\n",
+                "{\"subset\":\"live_simple\"}\n",
+                "{\"subset\":\"live_simple\"}\n",
+            ),
+        )
+        .unwrap();
         let t = totals(&p).unwrap();
+        assert_eq!(t.len(), 2);
         assert_eq!(t["multiple"], 3);
         assert_eq!(t["live_simple"], 2);
     }
@@ -164,9 +188,6 @@ mod tests {
         text.push_str("{not json}\n");
         std::fs::write(&p, text).unwrap();
         let err = load(&p, &DrawSpec::full()).unwrap_err().to_string();
-        assert!(
-            err.contains("malformed sample") || err.contains("expected"),
-            "{err}"
-        );
+        assert!(err.contains("line 2: malformed sample"), "{err}");
     }
 }

@@ -14,6 +14,8 @@ use crate::hardware::Hardware;
 use crate::history::RunRecord;
 use crate::result::{RunStatus, VerdictKind};
 
+pub use super::record_path::{date_of, record_path, record_path_for, variant_slug};
+
 /// One run record, as committed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateRecord {
@@ -233,113 +235,6 @@ impl GateBaseline {
     }
 }
 
-/// `YYYY-MM-DD` (UTC) from unix seconds, hand-rolled to keep the crate
-/// dependency-free. The epoch day is shifted to the March-based civil
-/// calendar, where the leap day is last, before the division.
-pub fn date_of(unix_secs: u64) -> String {
-    let days = (unix_secs / 86_400) as i64 + 719_468;
-    let era = days.div_euclid(146_097);
-    let doe = days.rem_euclid(146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// The filename for a run: `YYYY-MM-DD-<sha>.json`. A second run of the same
-/// commit on the same UTC day replaces the first — the record is the branch's
-/// current word on that bench, not an accumulating log of attempts.
-///
-/// This is the DEFAULT-variant name. A benchmark with model variants names its
-/// non-default records through [`record_path_for`], or a 35B run and a dense
-/// run cut from one commit on one day would silently overwrite each other.
-pub fn record_path(root: &Path, benchmark_id: &str, unix_secs: u64, sha: &str) -> PathBuf {
-    gate_dir(root, benchmark_id).join(format!("{}-{sha}.json", date_of(unix_secs)))
-}
-
-/// Filename-safe slug of a checkpoint id: `unsloth/Qwen3.8-27B-NVFP4` →
-/// `unsloth-qwen3.8-27b-nvfp4`. Lossy on purpose — the record's own
-/// `target_model` field is the provenance; the slug only keeps two variants'
-/// files from colliding.
-pub fn variant_slug(model: &str) -> String {
-    let mut out = String::with_capacity(model.len());
-    for c in model.chars() {
-        let mapped = if c.is_ascii_alphanumeric() || c == '.' {
-            c.to_ascii_lowercase()
-        } else {
-            '-'
-        };
-        if mapped == '-' && out.ends_with('-') {
-            continue;
-        }
-        out.push(mapped);
-    }
-    out.trim_matches('-').to_string()
-}
-
-/// The path for one record, keyed by (benchmark, VARIANT, day, sha).
-///
-/// The default variant keeps the historical `YYYY-MM-DD-<sha>.json` name, so
-/// every committed record and every consumer of the required-gate flow is
-/// untouched. A NON-default variant gets `YYYY-MM-DD-<sha>-<slug>.json` —
-/// without the suffix, one variant's run would silently REPLACE the other's
-/// record for the same commit and day, which is exactly the cross-variant
-/// provenance failure the whole (hardware, model) keying exists to prevent.
-///
-/// "Default" is read from the committed baseline for the record's own hardware
-/// class. A benchmark with no baseline at all falls back to the legacy name:
-/// there is no declared variant axis to key by, and such records already fail
-/// `check_record` loudly rather than comparing against anything.
-///
-/// ★ A record whose hardware key the baseline does NOT know (the fingerprint
-/// probe degrades to `Hardware::unknown()` without surfacing an error) is
-/// still slugged unless its `target_model` is a declared default on SOME
-/// hardware class — otherwise a degraded-probe run of a non-default variant
-/// silently OVERWRITES the committed default record for the same commit and
-/// day. Such a record still fails `check_record` by hardware name; failing
-/// red is fine, destroying the default's green is not.
-pub fn record_path_for(root: &Path, record: &GateRecord) -> PathBuf {
-    let legacy = record_path(
-        root,
-        &record.benchmark_id,
-        record.recorded_at,
-        &record.git_sha,
-    );
-    let Ok(baseline) = super::bench::baseline_for(root, &record.benchmark_id) else {
-        return legacy;
-    };
-    if baseline.hardware.is_empty() {
-        // No hardware entry declared anywhere: no variant axis exists, so
-        // there is no default record a stray name could shadow.
-        return legacy;
-    }
-    let hardware = record.hardware.gate_key();
-    let is_default = match baseline.hardware.get(&hardware) {
-        Some(hw) => hw.default == record.target_model,
-        // Unknown box class: no entry can say what the default is, so keep
-        // the legacy name only for a model that IS some declared default —
-        // anything else is a variant record and must not shadow one.
-        None => baseline
-            .hardware
-            .values()
-            .any(|hw| hw.default == record.target_model),
-    };
-    if is_default {
-        legacy
-    } else {
-        gate_dir(root, &record.benchmark_id).join(format!(
-            "{}-{}-{}.json",
-            date_of(record.recorded_at),
-            record.git_sha,
-            variant_slug(&record.target_model)
-        ))
-    }
-}
-
 /// Write one gate record. Returns the path; the parent directory is created,
 /// but never committed on the writer's behalf — that stays the caller's
 /// explicit act.
@@ -396,7 +291,7 @@ impl GateRecord {
         served_by: Option<String>,
         serve_overrides: BTreeMap<String, String>,
     ) -> Result<Self> {
-        if git_sha.is_empty() {
+        if git_sha.trim().is_empty() {
             bail!("a gate record needs the commit sha it was measured from");
         }
         let frame = &record.frame;

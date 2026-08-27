@@ -116,7 +116,7 @@ pub fn compare_round(reference: &[Transcript], replay: &[Transcript]) -> RoundVe
             unmeasured = Some(format!("turn {} returned no tokens", i + 1));
             continue;
         }
-        if r.canonical() == p.canonical() {
+        if r.canonical() == p.canonical() && r.completion_tokens == p.completion_tokens {
             continue;
         }
         let delta = TurnDelta {
@@ -147,24 +147,6 @@ pub fn compare_round(reference: &[Transcript], replay: &[Transcript]) -> RoundVe
         return RoundVerdict::Jittered { turns: jittered };
     }
     RoundVerdict::Invariant
-}
-
-/// Where the two transcripts first differ, for the report. Returns a
-/// (common prefix length in chars, ref excerpt, replay excerpt) triple.
-pub fn first_divergence(reference: &Transcript, replay: &Transcript) -> (usize, String, String) {
-    let a = reference.canonical();
-    let b = replay.canonical();
-    let common_chars = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
-    // The char count is NOT a byte offset — walk the indices to convert.
-    let excerpt = |s: &str| {
-        let byte_start = s
-            .char_indices()
-            .nth(common_chars)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        s[byte_start..].chars().take(60).collect()
-    };
-    (common_chars, excerpt(&a), excerpt(&b))
 }
 
 #[cfg(test)]

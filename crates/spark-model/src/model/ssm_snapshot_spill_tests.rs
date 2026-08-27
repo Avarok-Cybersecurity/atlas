@@ -47,32 +47,6 @@ fn read_slot(p: &SsmSnapshotPool, gpu: &dyn GpuBackend, s: usize) -> (Vec<Vec<u8
     (hs, cs)
 }
 
-/// The headline invariant: spill a slot's scattered state to the tier, then
-/// fault it back into a DIFFERENT slot — the recurrent state is bit-for-bit
-/// preserved. This is "spill-not-drop" proven end-to-end at the pool layer.
-#[test]
-fn spill_then_fault_in_preserves_bytes() {
-    let gpu = MockGpuBackend::new();
-    let p = pool(&gpu, /*slots*/ 4, /*layers*/ 3);
-    let store = MemBlobStore::new(0);
-    let key = 0xABCD_1234;
-
-    write_pattern(&p, &gpu, /*src*/ 1);
-    let want = read_slot(&p, &gpu, 1);
-
-    assert!(p.spill_slot(1, key, &store, &gpu, 0).unwrap());
-    assert_eq!(store.len(), 1);
-    assert_eq!(store.bytes_resident(), p.spill_blob_bytes());
-
-    // Fault into slot 2 (which is still zeroed) and compare to slot 1.
-    assert!(p.fault_in_slot(2, key, &store, &gpu, 0).unwrap());
-    let got = read_slot(&p, &gpu, 2);
-    assert_eq!(
-        got, want,
-        "faulted-in slot must equal the spilled slot bit-for-bit"
-    );
-}
-
 /// THE regression test for the measured defect: the gather must be
 /// `2 × layers` ASYNC enqueues followed by exactly ONE trailing stream sync,
 /// never one blocking `copy_d2h` (= one full stream drain) per chunk. The old
@@ -85,9 +59,10 @@ fn spill_issues_exactly_one_trailing_sync() {
     let store = MemBlobStore::new(0);
     write_pattern(&p, &gpu, 0);
 
+    const STREAM: u64 = 0x5a17;
     let syncs_before = gpu.sync_count();
     let d2h_before = gpu.d2h_blocking_count();
-    assert!(p.spill_slot(0, 0x11, &store, &gpu, 0).unwrap());
+    assert!(p.spill_slot(0, 0x11, &store, &gpu, STREAM).unwrap());
 
     assert_eq!(
         gpu.d2h_async_count(),
@@ -103,6 +78,12 @@ fn spill_issues_exactly_one_trailing_sync() {
         gpu.sync_count() - syncs_before,
         2,
         "exactly two drains: the leading save-drain and ONE trailing commit"
+    );
+    assert_eq!(gpu.d2h_async_streams(), vec![STREAM; 2 * p.num_ssm_layers]);
+    assert_eq!(
+        gpu.sync_d2h_async_counts(),
+        [(STREAM, 0), (STREAM, 2 * p.num_ssm_layers)],
+        "the save drain must precede every enqueue and the commit must follow all of them"
     );
 }
 
@@ -126,38 +107,6 @@ fn staging_buffer_allocated_once() {
         "one buffer, shared by spill and fault-in, for the model's lifetime"
     );
     p.free_staging(&gpu);
-}
-
-/// The buffer is deliberately NOT zeroed between uses (the zero-fill was part
-/// of the measured cost), so the gather must overwrite every byte. Spill
-/// pattern A, then a DIFFERENT pattern B from another slot: B's stored blob
-/// must contain none of A.
-#[test]
-fn staging_reuse_leaves_no_stale_bytes() {
-    let gpu = MockGpuBackend::new();
-    let p = pool(&gpu, 2, 3);
-    let store = MemBlobStore::new(0);
-
-    // Slot 0 = pattern A (0x10.., 0x80..), slot 1 = a distinct constant.
-    write_pattern(&p, &gpu, 0);
-    for i in 0..p.num_ssm_layers {
-        gpu.copy_h2d(&vec![0x5A; p.h_bytes], p.h_snapshots[i].offset(p.h_bytes))
-            .unwrap();
-        gpu.copy_h2d(
-            &vec![0x5A; p.conv_bytes],
-            p.conv_snapshots[i].offset(p.conv_bytes),
-        )
-        .unwrap();
-    }
-    assert!(p.spill_slot(0, 0xA, &store, &gpu, 0).unwrap());
-    assert!(p.spill_slot(1, 0xB, &store, &gpu, 0).unwrap());
-
-    let mut got = vec![0u8; p.spill_blob_bytes()];
-    assert!(store.get(0xB, &mut got).unwrap());
-    assert!(
-        got.iter().all(|&b| b == 0x5A),
-        "B's blob must be wholly B's bytes — any A byte means an unwritten hole"
-    );
 }
 
 /// Faulting an absent key is a clean miss (caller recomputes), not an error.

@@ -9,7 +9,8 @@
 //! logic never calls NCCL or MPI directly.
 //!
 //! - [`SingleGpuBackend`] — all ops are no-ops (single GPU).
-//! - [`NcclBackend`] — real multi-GPU via NCCL (expert parallelism).
+//! - `NcclBackend` — real multi-GPU via NCCL (expert parallelism; available
+//!   with the `nccl` feature).
 
 use anyhow::Result;
 
@@ -205,6 +206,7 @@ mod tests {
         assert_eq!(comm.rank(), 0);
         assert_eq!(comm.world_size(), 1);
         comm.all_reduce(0x1000, 1024).unwrap();
+        comm.all_reduce_async(0x1000, 1024, 0x3000).unwrap();
         comm.all_gather(0x1000, 0x2000, 512).unwrap();
         comm.reduce_scatter(0x1000, 0x2000, 512).unwrap();
         comm.broadcast(0x1000, 256, 0).unwrap();
@@ -213,6 +215,10 @@ mod tests {
         comm.recv_from(0x2000, 256, 0, 0).unwrap();
         comm.group_start().unwrap();
         comm.group_end().unwrap();
+        let registration = comm.register_buffer(0x1000, 1024).unwrap();
+        assert_eq!(registration, 0, "single-GPU registration is a no-op handle");
+        comm.deregister_buffer(registration).unwrap();
+        comm.set_add_kernel(0x4000);
         assert!(comm.is_healthy());
         comm.attempt_reconnect().unwrap();
     }

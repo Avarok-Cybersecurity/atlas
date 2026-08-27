@@ -11,13 +11,11 @@ use spark_runtime::metal_backend::MetalGpuBackend;
 #[test]
 fn nllb_metal_kernels_smoke() -> Result<()> {
     let modules = atlas_kernels::metallib_modules();
-    if modules.is_empty() {
-        eprintln!(
-            "metal kernel registry empty; run with ATLAS_TARGET_HW=metal \
-             ATLAS_TARGET_MODEL=nllb-200-3.3b ATLAS_TARGET_QUANT=bf16"
-        );
-        return Ok(());
-    }
+    anyhow::ensure!(
+        !modules.is_empty(),
+        "metal kernel registry empty; run with ATLAS_TARGET_HW=metal \
+         ATLAS_TARGET_MODEL=nllb-200-3.3b ATLAS_TARGET_QUANT=bf16"
+    );
 
     let backend = MetalGpuBackend::new(0, &modules)?;
     let gpu: &dyn GpuBackend = &backend;
@@ -154,7 +152,7 @@ fn run_bf16_batch_smoke(gpu: &dyn GpuBackend, stream: u64) -> Result<()> {
 
     let src = upload_bf16(gpu, &[1.0, 2.0, 3.0, 4.0])?;
     let cache = gpu.alloc(2 * 2 * 2 * 2)?;
-    gpu.copy_h2d(bf16_bytes(&vec![bf16::from_f32(0.0); 8]), cache)?;
+    gpu.copy_h2d(bf16_bytes(&[bf16::from_f32(0.0); 8]), cache)?;
     KernelLaunch::new(gpu, scatter)
         .grid([1, 1, 1])
         .block([256, 1, 1])

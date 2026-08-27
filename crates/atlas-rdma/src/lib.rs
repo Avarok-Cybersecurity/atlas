@@ -29,6 +29,11 @@ pub mod handshake;
 /// framing, mode/status bytes) — un-gated, a frozen external wire contract.
 pub mod wire;
 
+// Pure cardinality policy used by the verbs-gated RailSet. Kept un-gated so
+// its no-NIC regression checks execute on every development platform.
+#[cfg(any(atlas_rdma_verbs, test))]
+mod rail_count;
+
 /// Safe-ish wrapper over the C shim: one [`verbs::Verbs`] == one RC QP.
 /// Compiled only where the shim is (`cfg(atlas_rdma_verbs)`).
 #[cfg(atlas_rdma_verbs)]

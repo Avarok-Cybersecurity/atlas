@@ -212,9 +212,17 @@ mod tests {
             assert_eq!(p.high_water(), 32);
             let packed = p.packed();
             assert_eq!(packed.len(), 32);
-            assert_eq!(u32::from_le_bytes(packed[0..4].try_into().unwrap()), 1);
+            let positions: Vec<u32> = packed[0..12]
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            assert_eq!(positions, [1, 2, 3]);
             assert_eq!(&packed[12..16], &[0, 0, 0, 0], "gap stays zeroed");
-            assert_eq!(i64::from_le_bytes(packed[16..24].try_into().unwrap()), 7);
+            let slots: Vec<i64> = packed[16..32]
+                .chunks_exact(8)
+                .map(|bytes| i64::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            assert_eq!(slots, [7, 8]);
         });
     }
 
@@ -237,6 +245,14 @@ mod tests {
             assert_eq!(p.high_water(), 8);
             let e = p.put_prefix_at("positions", 0, &src, 5).unwrap_err();
             assert!(e.to_string().contains("needed 5"), "{e}");
+            let packed = p.packed();
+            assert_eq!(
+                packed,
+                [1u32, 2]
+                    .into_iter()
+                    .flat_map(u32::to_ne_bytes)
+                    .collect::<Vec<_>>()
+            );
         });
     }
 

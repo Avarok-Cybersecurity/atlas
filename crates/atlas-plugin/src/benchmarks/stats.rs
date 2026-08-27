@@ -105,7 +105,7 @@ pub fn median(values: &[f64]) -> Option<f64> {
     Some(if n % 2 == 1 {
         sorted[n / 2]
     } else {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        sorted[n / 2 - 1].midpoint(sorted[n / 2])
     })
 }
 
@@ -130,6 +130,7 @@ impl Percentiles {
 /// Format an optional millisecond value for a table cell.
 pub fn fmt_ms(v: Option<f64>) -> String {
     match v {
+        Some(ms) if !ms.is_finite() || ms < 0.0 => "—".into(),
         Some(ms) if ms >= 10_000.0 => format!("{:.1}s", ms / 1000.0),
         Some(ms) => format!("{ms:.1}"),
         None => "—".into(),
@@ -139,7 +140,10 @@ pub fn fmt_ms(v: Option<f64>) -> String {
 /// Relative change `new` vs `base`, in percent. `None` when `base` is unusable.
 pub fn pct_delta(new: Option<f64>, base: Option<f64>) -> Option<f64> {
     match (new, base) {
-        (Some(n), Some(b)) if b.abs() > f64::EPSILON => Some((n - b) / b * 100.0),
+        (Some(n), Some(b)) if n.is_finite() && b.is_finite() && b > f64::EPSILON => {
+            let delta = (n - b) / b * 100.0;
+            delta.is_finite().then_some(delta)
+        }
         _ => None,
     }
 }
@@ -147,6 +151,11 @@ pub fn pct_delta(new: Option<f64>, base: Option<f64>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn sha256(text: &str) -> String {
+        format!("{:x}", Sha256::digest(text.as_bytes()))
+    }
 
     #[test]
     fn percentile_matches_the_python_nearest_rank_rule() {
@@ -163,8 +172,24 @@ mod tests {
     #[test]
     fn percentiles_ignore_non_finite_samples() {
         let v = vec![1.0, f64::NAN, 3.0, f64::INFINITY];
-        assert_eq!(Percentiles::of(&v).p50, Some(3.0));
+        assert_eq!(
+            Percentiles::of(&v),
+            Percentiles {
+                p50: Some(3.0),
+                p90: Some(3.0),
+                p99: Some(3.0),
+            }
+        );
         assert_eq!(percentile(&[f64::NAN], 50), None);
+    }
+
+    #[test]
+    fn median_handles_empty_odd_even_and_large_finite_samples() {
+        assert_eq!(median(&[]), None);
+        assert_eq!(median(&[f64::NAN, f64::INFINITY]), None);
+        assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), Some(2.5));
+        assert_eq!(median(&[f64::MAX, f64::MAX]), Some(f64::MAX));
     }
 
     #[test]
@@ -173,6 +198,9 @@ mod tests {
         let b = make_prompt(1024, PromptMode::Natural, "");
         assert!(b.len() > a.len());
         assert_eq!(a.split_whitespace().count(), 256 - 12);
+        assert!(
+            make_prompt(256, PromptMode::Natural, "s1").starts_with("[s1] The quick brown fox")
+        );
         // Same prefix_tag -> identical prompt (warm/prefix-cache hit).
         assert_eq!(
             make_prompt(256, PromptMode::Natural, "s1"),
@@ -186,9 +214,25 @@ mod tests {
     }
 
     #[test]
-    fn count_mode_appends_the_forcing_instruction() {
-        assert!(make_prompt(64, PromptMode::Count, "").ends_with("until told to stop."));
-        assert!(!make_prompt(64, PromptMode::Natural, "").ends_with("stop."));
+    fn prompt_modes_pin_the_complete_natural_and_forced_bytes() {
+        assert_eq!(
+            sha256(&make_prompt(64, PromptMode::Natural, "fixture")),
+            "1d34b0e6f6c8b13f614be586f7f29ab9fcf918ed11416a3c62702d4a05bf7a54"
+        );
+        assert_eq!(
+            sha256(&make_prompt(64, PromptMode::Count, "fixture")),
+            "619330d2a0c46380c7c3e815226610d5cdea78b760736f496f64a6ec8a6efe96"
+        );
+    }
+
+    #[test]
+    fn millisecond_formatting_rejects_invalid_durations() {
+        assert_eq!(fmt_ms(None), "—");
+        assert_eq!(fmt_ms(Some(12.25)), "12.2");
+        assert_eq!(fmt_ms(Some(10_000.0)), "10.0s");
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(fmt_ms(Some(invalid)), "—", "value={invalid:?}");
+        }
     }
 
     #[test]
@@ -196,5 +240,10 @@ mod tests {
         assert_eq!(pct_delta(Some(110.0), Some(100.0)), Some(10.0));
         assert_eq!(pct_delta(Some(110.0), None), None);
         assert_eq!(pct_delta(Some(110.0), Some(0.0)), None);
+        assert_eq!(pct_delta(Some(110.0), Some(-100.0)), None);
+        assert_eq!(pct_delta(Some(110.0), Some(f64::INFINITY)), None);
+        assert_eq!(pct_delta(Some(f64::INFINITY), Some(100.0)), None);
+        assert_eq!(pct_delta(Some(f64::NAN), Some(100.0)), None);
+        assert_eq!(pct_delta(Some(f64::MAX), Some(1.0)), None);
     }
 }

@@ -28,6 +28,7 @@ pub mod closure;
 pub mod codeowners;
 pub mod coverage;
 pub mod record;
+mod record_path;
 pub mod scoring;
 pub mod taxon;
 
@@ -209,6 +210,11 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+/// Construction and replay contracts split from `tests.rs` for its LoC cap.
+#[cfg(test)]
+#[path = "record_contract_tests.rs"]
+mod record_contract_tests;
 
 #[cfg(test)]
 #[path = "variant_tests.rs"]

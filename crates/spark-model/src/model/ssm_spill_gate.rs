@@ -112,7 +112,7 @@ mod tests {
     /// fault-in default — a tripwire if either constant moves.
     #[test]
     fn shipped_defaults_satisfy_the_invariant() {
-        let fault = super::super::trait_impl::ssm_fault_in::fault_in_min_tokens();
+        let fault = super::super::trait_impl::ssm_fault_in::DEFAULT_FAULT_MIN_TOKENS;
         assert_eq!(
             clamp_spill_to_fault(DEFAULT_SPILL_MIN_TOKENS, fault),
             DEFAULT_SPILL_MIN_TOKENS,

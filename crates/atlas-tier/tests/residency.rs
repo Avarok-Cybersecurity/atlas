@@ -45,14 +45,10 @@ fn disk_cap_bounds_swap_and_drops_coldest() {
     for k in 0..10u64 {
         put(&mut r, k, k as u8);
     }
-    assert!(
-        r.stats().disk_evictions >= 5,
-        "coldest disk snaps must be dropped at cap"
-    );
-    assert!(
-        r.total_keys() <= 2 + 3,
-        "total tracked keys bounded by RAM + disk cap"
-    );
+    assert_eq!(r.stats().spills_to_disk, 8);
+    assert_eq!(r.stats().disk_evictions, 5, "only overflow is dropped");
+    assert_eq!(r.disk_count(), 3, "the configured disk capacity is usable");
+    assert_eq!(r.total_keys(), 2 + 3, "RAM and disk capacities are full");
     // Coldest keys were dropped → clean miss (checked first: a miss doesn't
     // perturb residency).
     assert_eq!(
@@ -289,9 +285,22 @@ fn overwrite_spilled_key_reclaims_disk() {
     let mut r = residency(1); // force spilling
     put(&mut r, 1, 1);
     put(&mut r, 2, 2); // spills key 1 to disk
+    assert_eq!(r.disk_high_water(), 1);
     put(&mut r, 1, 99); // rewrite the SPILLED key 1
+    assert_eq!(
+        r.disk_high_water(),
+        2,
+        "rewriting secures a slot before reclaiming the old record"
+    );
+    put(&mut r, 3, 3); // must reuse the reclaimed record, not grow another
+    assert_eq!(
+        r.disk_high_water(),
+        2,
+        "the overwritten key's old disk record is reusable"
+    );
     assert_eq!(get(&mut r, 1), Some(blob(99)));
     assert_eq!(get(&mut r, 2), Some(blob(2)));
+    assert_eq!(get(&mut r, 3), Some(blob(3)));
 }
 
 #[test]
@@ -306,6 +315,23 @@ fn remove_frees_resources() {
     assert_eq!(get(&mut r, 2), None);
     assert_eq!(get(&mut r, 3), Some(blob(3)));
     assert_eq!(r.total_keys(), 1);
+
+    let spills = r.stats().spills_to_disk;
+    let high_water = r.disk_high_water();
+    put(&mut r, 4, 4);
+    assert_eq!(
+        r.stats().spills_to_disk,
+        spills,
+        "the removed resident key releases its arena slot"
+    );
+    put(&mut r, 5, 5);
+    assert_eq!(
+        r.disk_high_water(),
+        high_water,
+        "the removed spilled key releases its disk record for reuse"
+    );
+    assert_eq!(get(&mut r, 4), Some(blob(4)));
+    assert_eq!(get(&mut r, 5), Some(blob(5)));
 }
 
 #[test]

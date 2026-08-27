@@ -28,10 +28,16 @@ use spark_runtime::gpu::GpuBackend;
 /// `ATLAS_PREFILL_CODISPATCH` is the end-to-end request-admission flag;
 /// keep the older Q12 spelling as a compatibility alias for existing recipes.
 pub fn prefill_batched_first_chunk_enabled() -> bool {
-    ["ATLAS_Q12_BATCHED_FIRST_CHUNK", "ATLAS_PREFILL_CODISPATCH"]
-        .iter()
-        .map(|name| std::env::var(name).ok())
-        .any(|value| bool_value_enabled(value.as_deref()))
+    prefill_batched_first_chunk_from_values([
+        std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
+            .ok()
+            .as_deref(),
+        std::env::var("ATLAS_PREFILL_CODISPATCH").ok().as_deref(),
+    ])
+}
+
+fn prefill_batched_first_chunk_from_values(values: [Option<&str>; 2]) -> bool {
+    values.into_iter().any(bool_value_enabled)
 }
 
 /// The resolved VARLEN batched-prefill decision. One cell, three readers
@@ -100,7 +106,7 @@ pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) 
 
 #[cfg(test)]
 mod tests {
-    use super::bool_value_enabled;
+    use super::{bool_value_enabled, prefill_batched_first_chunk_from_values};
 
     #[test]
     fn accepts_boolean_environment_spellings() {
@@ -113,8 +119,16 @@ mod tests {
     }
 
     #[test]
-    fn accepts_the_codispatch_alias_for_chunk_zero() {
-        let enabled = [None, Some("1")].into_iter().any(bool_value_enabled);
-        assert!(enabled);
+    fn either_chunk_zero_spelling_enables_admission() {
+        assert!(prefill_batched_first_chunk_from_values([Some("1"), None]));
+        assert!(prefill_batched_first_chunk_from_values([
+            None,
+            Some("true")
+        ]));
+        assert!(!prefill_batched_first_chunk_from_values([None, None]));
+        assert!(!prefill_batched_first_chunk_from_values([
+            Some("0"),
+            Some("false")
+        ]));
     }
 }

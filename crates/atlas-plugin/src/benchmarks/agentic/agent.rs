@@ -19,21 +19,24 @@
 //! capped so a runaway `yes` cannot exhaust memory; turns are capped so a loop
 //! cannot run forever.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::{Value, json};
 
 #[path = "norm.rs"]
 pub mod norm;
+#[path = "agent_path.rs"]
+mod path_guard;
 #[path = "agent_shell.rs"]
 pub mod shell;
 #[path = "agent_tools.rs"]
 pub mod tools;
 #[path = "trace.rs"]
 pub mod trace;
+pub use path_guard::resolve;
 pub(crate) use shell::run_shell;
 pub use shell::truncate;
 pub use tools::{glob_match, tool_schema};
@@ -427,72 +430,9 @@ fn assistant_message(outcome: &crate::http::ChatOutcome, turn: usize) -> Value {
 
 /// Resolve `path` inside `sandbox`, rejecting anything that escapes it.
 ///
-/// Lexical, not `canonicalize`: the target usually does not exist yet, and a
-/// canonicalize-then-compare check silently passes on a missing path.
-///
-/// An absolute path is accepted **only** when it is already inside the sandbox.
-/// opencode's file tools ask for absolute paths and its environment block hands
-/// the model the working directory to build them from, so rejecting every
-/// absolute path — as this did — failed the prompt-compliant call.
-///
-/// Lexical containment is necessary and not sufficient: `ln -s / esc` inside the
-/// sandbox makes `esc/etc/passwd` a lexically-clean path that `read` and `write`
-/// would follow straight out, so the resolved path is checked against the
-/// sandbox's real location as well. That check is defence in depth, not a
-/// privilege boundary — `bash` runs unconfined by construction, which is the
-/// measurement — and it is a check, so a symlink swapped between here and the
-/// open would still win. What it does buy is that the rule this function
-/// documents is the rule it enforces.
-pub fn resolve(sandbox: &Path, path: &str) -> Result<PathBuf> {
-    let path = Path::new(path);
-    let path = match path.strip_prefix(sandbox) {
-        Ok(inside) => inside,
-        Err(_) if path.is_absolute() => bail!(
-            "path must be inside the project directory {}: {}",
-            sandbox.display(),
-            path.display()
-        ),
-        Err(_) => path,
-    };
-    let mut out = sandbox.to_path_buf();
-    for component in path.components() {
-        match component {
-            Component::Normal(c) => out.push(c),
-            Component::CurDir => {}
-            Component::ParentDir => bail!("path must not leave the project directory"),
-            Component::RootDir | Component::Prefix(_) => bail!("absolute paths are not allowed"),
-        }
-    }
-    if leaves_via_symlink(sandbox, &out) {
-        bail!("path must not leave the project directory through a symlink");
-    }
-    Ok(out)
-}
-
-/// Does `out` — already lexically inside `sandbox` — resolve to somewhere else?
-///
-/// The target itself usually does not exist yet (`write` creates it), so the
-/// deepest ancestor that DOES exist is what gets canonicalised. Walking stops at
-/// the sandbox: with nothing on disk below it there is no symlink to follow, and
-/// a sandbox that does not exist at all (the path-rule unit tests) resolves
-/// nothing and denies nothing.
-fn leaves_via_symlink(sandbox: &Path, out: &Path) -> bool {
-    let Ok(root) = std::fs::canonicalize(sandbox) else {
-        return false;
-    };
-    let mut probe = out;
-    while probe != sandbox {
-        if let Ok(real) = std::fs::canonicalize(probe) {
-            return !real.starts_with(&root);
-        }
-        match probe.parent() {
-            Some(parent) => probe = parent,
-            None => return false,
-        }
-    }
-    false
-}
-
+#[cfg(test)]
+#[path = "agent_loop_tests.rs"]
+mod loop_tests;
 #[cfg(test)]
 #[path = "agent_tests.rs"]
 mod tests;

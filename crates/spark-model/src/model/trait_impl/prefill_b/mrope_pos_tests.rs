@@ -46,8 +46,10 @@ fn text_only_is_the_identity_ramp_on_all_three_streams() {
 
 #[test]
 fn the_streams_start_where_the_caller_says() {
-    let (t, _, _) = run(&[TXT; 3], &[], 100);
+    let (t, h, w) = run(&[TXT; 3], &[], 100);
     assert_eq!(t, vec![100, 101, 102]);
+    assert_eq!(h, t);
+    assert_eq!(w, t);
 }
 
 // ── images: must be byte-identical to the pre-video rule ─────────────────
@@ -114,10 +116,12 @@ fn the_image_rule_is_unchanged_by_the_temporal_axis() {
 
 #[test]
 fn two_images_each_advance_the_running_position() {
-    let tokens = [IMG, IMG, IMG, IMG, IMG, IMG, IMG, IMG, TXT];
-    // 2x2 at base 0 (advances 2), then 2x2 at base 2 (advances 2) -> text at 4
-    let (t, _, _) = run(&tokens, &[(1, 2, 2), (1, 2, 2)], 0);
-    assert_eq!(t, vec![0, 0, 0, 0, 2, 2, 2, 2, 4]);
+    let tokens = [IMG, IMG, IMG, IMG, IMG, TXT];
+    // 1x2 at base 0 (advances 2), then 1x3 at base 2 (advances 3) -> text at 5.
+    let (t, h, w) = run(&tokens, &[(1, 1, 2), (1, 1, 3)], 0);
+    assert_eq!(t, vec![0, 0, 2, 2, 2, 5]);
+    assert_eq!(h, vec![0, 0, 2, 2, 2, 5]);
+    assert_eq!(w, vec![0, 1, 2, 3, 4, 5]);
 }
 
 // ── video ────────────────────────────────────────────────────────────────
@@ -202,11 +206,13 @@ fn a_one_group_video_matches_the_equivalent_image() {
 #[test]
 fn the_grid_window_bounds_which_items_are_consumed() {
     let tokens = [IMG, IMG, IMG, IMG];
-    let grids = [(1, 2, 2), (1, 2, 2), (1, 2, 2)];
+    let grids = [(1, 1, 4), (1, 2, 2), (1, 4, 1)];
     let (mut t, mut h, mut w) = (Vec::new(), Vec::new(), Vec::new());
     // Own only grids[1..2] — the second 2x2.
     build(&tokens, &grids, 1, 2, 0, IMG, VID, &mut t, &mut h, &mut w);
     assert_eq!(t, vec![0, 0, 0, 0], "consumed its one owned item");
+    assert_eq!(h, vec![0, 0, 1, 1]);
+    assert_eq!(w, vec![0, 1, 0, 1]);
 }
 
 /// Pad tokens with no grid left to describe them fall through to the text
@@ -244,6 +250,8 @@ fn the_three_streams_always_match_the_token_count() {
 /// A zero in a grid must not divide by zero or loop forever.
 #[test]
 fn a_degenerate_grid_is_survivable() {
-    let (t, _, _) = run(&[IMG, TXT], &[(0, 0, 0)], 0);
-    assert_eq!(t.len(), 2);
+    let (t, h, w) = run(&[IMG, TXT], &[(0, 0, 0)], 7);
+    assert_eq!(t, vec![7, 8]);
+    assert_eq!(h, t);
+    assert_eq!(w, t);
 }

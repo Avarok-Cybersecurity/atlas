@@ -15,6 +15,7 @@ fn mixed_dense_moe_sizes_for_widest_ffn() {
     assert_eq!(sizes.expert_up_out, 4 * 12_288 * 2);
 }
 use crate::gpu::mock::MockGpuBackend;
+use std::collections::HashSet;
 
 #[test]
 fn test_buffer_sizes_qwen3() {
@@ -53,27 +54,106 @@ fn test_buffer_arena_alloc() {
     // max_batch_size=32: the decode-meta rows floor — legacy byte-identical sizing.
     let arena = BufferArena::new(&cfg, 128, 4096, 16, 32, &gpu).unwrap();
 
-    assert!(!arena.hidden_states().is_null());
-    assert!(!arena.logits().is_null());
     assert_eq!(arena.max_batch_tokens(), 128);
-    // 27 allocations: main's 18 (12 data + 1 scratch + 3 expert + 2 splitk)
-    // plus 9 added by the V4 foundation atop main:
-    //   - 2 FP32-routing buffers (gate_logits_f32 + moe_router_in_f32),
-    //   - 1 gdn_fla_scratch (allocated here: qwen3_next_80b has 128-dim linear
-    //     heads, so sizes.gdn_fla_scratch > 0),
-    //   - 2 V4-MLA buffers (o_latent + norm_unit_w, present non-zero for all
-    //     configs via the .max(256) floor),
-    //   - 3 HC buffers (hc_streams/hc_post/hc_comb, placeholder-sized 256 when
-    //     hc_mult == 0 but still allocated unconditionally),
-    //   - 1 token_ids buffer (hash-routing scratch, .max(256) floor so it is
-    //     allocated unconditionally even for models without hash routing).
-    // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
-    //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
-    //     allocated unconditionally). 27 + 2 = 29.
-    // (wip-laguna-lora counts 30 here: its keep-packed GGUF grouped MoE adds
-    // a moe_grouped_q8 arena buffer (06c89a33) that this branch does not
-    // carry. Re-sync this count if that work is ever picked.)
-    assert_eq!(gpu.alloc_count(), 29);
+    let sizes = arena.sizes();
+    let buffers = [
+        ("hidden_states", arena.hidden_states(), sizes.hidden_states),
+        ("residual", arena.residual(), sizes.residual),
+        ("norm_output", arena.norm_output(), sizes.norm_output),
+        ("qkv_output", arena.qkv_output(), sizes.qkv_output),
+        ("attn_output", arena.attn_output(), sizes.attn_output),
+        ("gate_logits", arena.gate_logits(), sizes.gate_logits),
+        (
+            "gate_logits_f32",
+            arena.gate_logits_f32(),
+            sizes.gate_logits_f32,
+        ),
+        (
+            "moe_router_in_f32",
+            arena.moe_router_in_f32(),
+            sizes.moe_router_in_f32,
+        ),
+        ("moe_output", arena.moe_output(), sizes.moe_output),
+        ("logits", arena.logits(), sizes.logits),
+        ("ssm_qkvz", arena.ssm_qkvz(), sizes.ssm_qkvz),
+        ("ssm_ba", arena.ssm_ba(), sizes.ssm_ba),
+        (
+            "ssm_deinterleaved",
+            arena.ssm_deinterleaved(),
+            sizes.ssm_deinterleaved,
+        ),
+        ("ssm_gates", arena.ssm_gates(), sizes.ssm_gates),
+        (
+            "ssm_conv_out_f32",
+            arena.ssm_conv_out_f32(),
+            sizes.ssm_conv_out_f32,
+        ),
+        ("scratch", arena.scratch(), sizes.scratch),
+        (
+            "expert_gate_out",
+            arena.expert_gate_out(),
+            sizes.expert_gate_out,
+        ),
+        ("expert_up_out", arena.expert_up_out(), sizes.expert_up_out),
+        (
+            "expert_down_out",
+            arena.expert_down_out(),
+            sizes.expert_down_out,
+        ),
+        (
+            "splitk_workspace",
+            arena.splitk_workspace(),
+            sizes.splitk_workspace,
+        ),
+        ("o_latent", arena.o_latent(), sizes.o_latent),
+        ("norm_unit_w", arena.norm_unit_w(), sizes.norm_unit_w),
+        ("hc_streams", arena.hc_streams(), sizes.hc_streams),
+        ("hc_post", arena.hc_post(), sizes.hc_post),
+        ("hc_comb", arena.hc_comb(), sizes.hc_comb),
+        ("ssd_scratch", arena.ssd_scratch(), sizes.ssd_scratch),
+        (
+            "gdn_fla_scratch",
+            arena.gdn_fla_scratch(),
+            sizes.gdn_fla_scratch,
+        ),
+        ("token_ids", arena.token_ids(), sizes.token_ids),
+        ("ffn_act_q8", arena.ffn_act_q8(), sizes.ffn_act_q8),
+        ("ffn_act_a", arena.ffn_act_a(), sizes.ffn_act_a),
+        ("ffn_act_scale", arena.ffn_act_scale(), sizes.ffn_act_scale),
+        ("fp8_act", arena.fp8_act(), sizes.fp8_act),
+        ("fp8_act_scale", arena.fp8_act_scale(), sizes.fp8_act_scale),
+        (
+            "q2_dequant_scratch",
+            arena.q2_dequant_scratch(),
+            sizes.q2_dequant_scratch,
+        ),
+        ("q2_act_q8", arena.q2_act_q8(), sizes.q2_act_q8),
+        ("lora_xa", arena.lora_xa(), sizes.lora_xa),
+        ("lora_delta", arena.lora_delta(), sizes.lora_delta),
+        ("lora_hact", arena.lora_hact(), sizes.lora_hact),
+        ("lora_seq_slot", arena.lora_seq_slot(), sizes.lora_seq_slot),
+    ];
+    let mut allocated = HashSet::new();
+    for (name, ptr, bytes) in buffers {
+        if bytes == 0 {
+            assert!(ptr.is_null(), "{name} must be null when disabled");
+        } else {
+            assert!(!ptr.is_null(), "{name} must be allocated");
+            assert!(
+                allocated.insert(ptr.0),
+                "{name} aliases another arena buffer"
+            );
+            assert_eq!(gpu.read_alloc(ptr).unwrap().len(), bytes, "{name} size");
+        }
+    }
+    assert_eq!(gpu.alloc_count(), allocated.len());
+    assert!(
+        gpu.read_alloc(arena.norm_unit_w())
+            .unwrap()
+            .iter()
+            .all(|byte| *byte == 0),
+        "unit RMSNorm weight must be zero-initialized"
+    );
 }
 
 #[test]
@@ -98,15 +178,29 @@ fn q2_dequant_scratch_covers_largest_projection() {
 }
 
 #[test]
-fn q2_dequant_scratch_zero_without_flag() {
-    // Flag off (default): from_config must NOT size the buffer, so non-Q2
-    // models allocate nothing extra (BufferArena skips the alloc on 0 → NULL).
-    if std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1") {
-        return; // flag on in this environment — the sized path is covered above
-    }
+fn q2_scratch_flags_are_explicit_partitions() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
-    let sizes = BufferSizes::from_config(&cfg, 1, 4096, 16, 32);
-    assert_eq!(sizes.q2_dequant_scratch, 0);
+    let m = 3;
+    let h = cfg.hidden_size;
+    let hd = cfg.head_dim;
+    let dequant_bytes = q2_dequant_scratch_bytes(&cfg);
+    let kmax = h
+        .max(cfg.intermediate_size)
+        .max(cfg.num_attention_heads * hd);
+    let mmq_bytes = m * kmax.div_ceil(256) * 256 * 4 + (1 << 20);
+
+    assert_eq!(
+        sizes_q2::q2_scratch_sizes_for(&cfg, m, h, hd, false, false),
+        (0, 0)
+    );
+    assert_eq!(
+        sizes_q2::q2_scratch_sizes_for(&cfg, m, h, hd, true, false),
+        (dequant_bytes, 0)
+    );
+    assert_eq!(
+        sizes_q2::q2_scratch_sizes_for(&cfg, m, h, hd, false, true),
+        (0, mmq_bytes)
+    );
 }
 
 #[test]

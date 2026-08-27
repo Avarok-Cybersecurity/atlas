@@ -104,19 +104,27 @@ fn the_max_frames_ceiling_is_honoured() {
     assert_eq!(got.len(), 768);
 }
 
+#[test]
+fn an_inverted_frame_band_uses_the_ceiling() {
+    let got = sample_indices(100, 30.0, 30.0, 16, 4, 2);
+    assert_eq!(got.len(), 4);
+    assert_eq!(got[0], 0);
+    assert_eq!(*got.last().unwrap(), 99);
+}
+
 /// A degenerate rate must not divide by zero or return nothing; it falls back
 /// to the checkpoint default rather than failing the request.
 #[test]
 fn zero_and_nonfinite_rates_fall_back_rather_than_exploding() {
-    for (native, target) in [
-        (0.0f32, 2.0f32),
-        (30.0, 0.0),
-        (f32::NAN, 2.0),
-        (30.0, f32::INFINITY),
+    for (native, target, valid_native, valid_target) in [
+        (0.0f32, 1.0f32, DEFAULT_FPS, 1.0),
+        (30.0, 0.0, 30.0, DEFAULT_FPS),
+        (f32::NAN, 1.0, DEFAULT_FPS, 1.0),
+        (30.0, f32::INFINITY, 30.0, DEFAULT_FPS),
     ] {
-        let got = sample_indices(20, native, target, 4, 768, 2);
-        assert!(!got.is_empty(), "native={native} target={target} gave none");
-        assert_eq!(got.len() % 2, 0);
+        let got = sample_indices(100, native, target, 4, 768, 2);
+        let expected = sample_indices(100, valid_native, valid_target, 4, 768, 2);
+        assert_eq!(got, expected, "native={native} target={target}");
     }
 }
 
@@ -173,6 +181,14 @@ fn an_animated_gif_decodes_to_its_frames() {
     let (frames, fps) = decode_frames(&uri, 10.0, &no_ffmpeg()).expect("decode");
     assert_eq!(frames.len(), 6);
     // 100 ms per frame → 10 fps.
+    assert!((fps - 10.0).abs() < 0.5, "fps was {fps}");
+}
+
+#[test]
+fn gif_magic_wins_over_a_mislabelled_mime() {
+    let uri = make_gif(4, 64).replacen("data:image/gif", "data:video/mp4", 1);
+    let (frames, fps) = decode_frames(&uri, 10.0, &no_ffmpeg()).expect("decode by magic");
+    assert_eq!(frames.len(), 4);
     assert!((fps - 10.0).abs() < 0.5, "fps was {fps}");
 }
 

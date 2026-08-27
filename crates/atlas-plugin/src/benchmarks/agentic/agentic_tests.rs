@@ -3,12 +3,19 @@ use super::*;
 
 #[test]
 fn the_prompt_is_the_harness_prompt() {
-    // Guards against a well-meaning reword: a different prompt is a
-    // different benchmark and its numbers are not comparable.
-    assert!(PROMPT.starts_with("Please create a pure rust Axum project"));
-    assert!(PROMPT.contains("ATLAS_HARNESS_PORT"));
-    assert!(PROMPT.contains("Add tests, run them and prove all tests pass"));
-    assert!(PROMPT.contains("fuser -k"));
+    // A different prompt is a different benchmark and its numbers are not
+    // comparable. Compare the whole authoritative shell assignment, not a few
+    // fragments that allow an unobserved rewording to survive.
+    let harness = include_str!("../../../../../bench/fp8_dgx2_drift/harness/run_tier.sh");
+    let assignment = harness
+        .lines()
+        .find(|line| line.starts_with("PROMPT='"))
+        .expect("run_tier.sh must define PROMPT");
+    let expected = assignment
+        .strip_prefix("PROMPT='")
+        .and_then(|prompt| prompt.strip_suffix('\''))
+        .expect("PROMPT must remain a single-quoted shell assignment");
+    assert_eq!(PROMPT, expected);
 }
 
 #[test]
@@ -21,6 +28,12 @@ fn defaults_are_the_gate_a_tier() {
     let b = AgenticWebserver::default();
     let v = ParamValues::defaults(&b.parameters());
     assert_eq!(v.usize("iterations").unwrap(), 10);
+    assert_eq!(v.usize("max_turns").unwrap(), 40);
+    assert_eq!(v.usize("command_timeout_s").unwrap(), 180);
+    assert_eq!(v.usize("build_timeout_s").unwrap(), 600);
+    assert_eq!(v.usize("serve_timeout_s").unwrap(), 30);
+    assert_eq!(v.usize("max_tokens").unwrap(), 8192);
+    assert_eq!(v.usize("request_timeout_s").unwrap(), 900);
     assert_eq!(v.float("wall_budget_s").unwrap(), 1000.0);
     // 0.0 = NON-GATING. A schema speed default cannot be right for both the
     // 35B MoE (6.8 s/turn) and the dense 27B (18-40), so variants opt IN by
@@ -91,18 +104,44 @@ fn row(ok: bool, steps_ok: bool, wall: f64) -> IterationRow {
     }
 }
 
+fn committed_agentic_max(model: &str, checkpoint: &str, metric: &str) -> f64 {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace layout")
+        .to_path_buf();
+    let (_, committed) = crate::gate::bench::load_all(&root)
+        .expect("committed BENCH.toml files must load")
+        .into_iter()
+        .find(|(target, entry)| {
+            target.hardware == "gb10"
+                && target.model == model
+                && entry.gate == "agentic-webserver"
+                && entry.checkpoint == checkpoint
+        })
+        .unwrap_or_else(|| panic!("the {model}/{checkpoint} agentic gate must be committed"));
+    committed
+        .metrics
+        .expect("a measured agentic gate must declare bounds")[metric]
+        .max
+        .unwrap_or_else(|| panic!("{metric} must have a maximum"))
+}
+
 #[test]
 fn all_three_conditions_must_hold_to_pass() {
     let pass = with_rows(vec![row(true, true, 100.0), row(true, true, 100.0)], 1300.0);
     assert_eq!(pass.verdict().kind, crate::result::VerdictKind::Pass);
 
     let ws = with_rows(vec![row(false, true, 100.0)], 1300.0);
+    assert_eq!(ws.verdict().kind, crate::result::VerdictKind::Fail);
     assert!(ws.verdict().reason.contains("webserver_ok 0/1"));
 
     let fd = with_rows(vec![row(true, false, 100.0)], 1300.0);
+    assert_eq!(fd.verdict().kind, crate::result::VerdictKind::Fail);
     assert!(fd.verdict().reason.contains("followed_directions 0/1"));
 
     let slow = with_rows(vec![row(true, true, 2000.0)], 1300.0);
+    assert_eq!(slow.verdict().kind, crate::result::VerdictKind::Fail);
     assert!(slow.verdict().reason.contains("Σwall"));
 }
 
@@ -140,7 +179,13 @@ fn the_measured_dense_tier_passes_its_own_budget_and_fails_the_35bs() {
         v.reason
     );
 
-    let under_own_budget = with_rows(rows(), 5000.0);
+    let dense_wall_budget =
+        committed_agentic_max("qwen3.8-27b", "unsloth/Qwen3.8-27B-NVFP4", "sum_wall_s");
+    assert_eq!(
+        dense_wall_budget, 5000.0,
+        "the documented dense wall bound drifted"
+    );
+    let under_own_budget = with_rows(rows(), dense_wall_budget);
     assert_eq!(
         under_own_budget.verdict().kind,
         crate::result::VerdictKind::Pass
@@ -209,6 +254,13 @@ fn a_failed_iteration_names_the_directives_it_missed() {
 /// of this test asserted 1300, a value the gate cannot produce.
 #[test]
 fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
+    let wall_budget =
+        committed_agentic_max("qwen3.6-35b-a3b", "Qwen/Qwen3.6-35B-A3B-FP8", "sum_wall_s");
+    let speed_budget =
+        committed_agentic_max("qwen3.6-35b-a3b", "Qwen/Qwen3.6-35B-A3B-FP8", "s_per_turn");
+    assert_eq!(wall_budget, 1800.0, "the documented blowup bound drifted");
+    assert_eq!(speed_budget, 8.5, "the documented speed bound drifted");
+
     const MEASURED: [(f64, usize); 5] = [
         (774.0, 113),
         (813.0, 115),
@@ -217,7 +269,7 @@ fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
         (1019.0, 166),
     ];
     for (wall, turns) in MEASURED {
-        let v = with_budgets(vec![tier(wall, turns)], 1800.0, 8.5).verdict();
+        let v = with_budgets(vec![tier(wall, turns)], wall_budget, speed_budget).verdict();
         assert_eq!(
             v.kind,
             crate::result::VerdictKind::Pass,
@@ -228,7 +280,7 @@ fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
     // ...and the two that the OLD 1000 s bound rejected really were rejected,
     // so this proves a behaviour change rather than restating the status quo.
     for (wall, turns) in [(1039.0, 144), (1019.0, 166)] {
-        let v = with_budgets(vec![tier(wall, turns)], 1000.0, 8.5).verdict();
+        let v = with_budgets(vec![tier(wall, turns)], 1000.0, speed_budget).verdict();
         assert_eq!(v.kind, crate::result::VerdictKind::Fail);
         assert!(v.reason.contains("Σwall"), "{}", v.reason);
     }
@@ -348,7 +400,8 @@ fn a_zero_turn_tier_reports_no_speed_at_all() {
     let empty = with_budgets(vec![tier(120.0, 0)], 1300.0, 8.5);
     assert!(!empty.metrics().contains_key("s_per_turn"));
     assert_eq!(empty.metrics()["sum_turns"], 0.0);
-    // The speed bound stays silent; webserver_ok/followed_directions do the failing.
+    // This fixture keeps correctness true to isolate speed omission: those
+    // independent failure partitions are owned by `all_three_conditions`.
     assert!(!empty.verdict().reason.contains("s/turn >"));
 }
 

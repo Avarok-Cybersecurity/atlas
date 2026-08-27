@@ -158,12 +158,14 @@ fn validate_geometry(vcfg: &VisionConfig) -> Result<()> {
 }
 
 /// Compute the target (H, W) so that:
-/// - The area bound is respected: `max_pixels` when the caller supplies one,
-///   otherwise the long side is clamped to [`FALLBACK_MAX_DIM`].
+/// - The area bound is respected after grid snapping: `max_pixels` when the
+///   caller supplies one, otherwise the long side is clamped to
+///   [`FALLBACK_MAX_DIM`]. A bound below one grid cell uses that minimum cell.
 /// - The long side never exceeds [`ABS_MAX_DIM`], bound or not.
 /// - Both sides are multiples of `grid_unit = patch_size × spatial_merge_size`.
 /// - Aspect ratio is preserved (rounded to nearest grid_unit).
-/// - The image is never upscaled.
+/// - The continuous scale never upscales. Grid snapping may round a side up by
+///   less than half a grid unit, and every target contains at least one cell.
 ///
 /// `max_pixels` is an area, matching the `size.longest_edge` /
 /// `shortest_edge` convention HF's Qwen2VL/Qwen3VL processors use (both are
@@ -202,8 +204,49 @@ fn target_size_with_max_pixels(
     // Safety net, always applied.
     let abs_scale = (ABS_MAX_DIM as f32) / long_side;
     let scale = bound_scale.min(abs_scale).min(1.0); // never upscale
-    let target_h = ((orig_h as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
-    let target_w = ((orig_w as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
+    let mut target_h =
+        ((orig_h as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
+    let mut target_w =
+        ((orig_w as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
+
+    // Nearest-grid rounding can raise BOTH axes past the continuous area
+    // scale. A declared hard cap must survive that quantisation step. Shrink
+    // one grid unit at a time, choosing the axis that leaves the closer source
+    // aspect ratio. One grid cell is the smallest representable target, so a
+    // smaller declared bound is normalized to that unavoidable minimum.
+    if let Some(max_pixels) = max_pixels.filter(|&p| p > 0) {
+        let grid_area = u64::from(grid_unit) * u64::from(grid_unit);
+        let max_area = (max_pixels as u64).max(grid_area);
+        let area = |h: u32, w: u32| u64::from(h) * u64::from(w);
+        let aspect_error = |h: u32, w: u32| {
+            if orig_h == 0 {
+                0.0
+            } else {
+                ((w as f64 / h as f64) - (orig_w as f64 / orig_h as f64)).abs()
+            }
+        };
+
+        while area(target_h, target_w) > max_area {
+            let shorter_h = target_h.checked_sub(grid_unit).filter(|&h| h >= grid_unit);
+            let shorter_w = target_w.checked_sub(grid_unit).filter(|&w| w >= grid_unit);
+            match (shorter_h, shorter_w) {
+                (Some(h), Some(w)) => {
+                    let h_error = aspect_error(h, target_w);
+                    let w_error = aspect_error(target_h, w);
+                    if h_error < w_error
+                        || (h_error == w_error && area(h, target_w) >= area(target_h, w))
+                    {
+                        target_h = h;
+                    } else {
+                        target_w = w;
+                    }
+                }
+                (Some(h), None) => target_h = h,
+                (None, Some(w)) => target_w = w,
+                (None, None) => break,
+            }
+        }
+    }
     (target_h, target_w)
 }
 
@@ -274,15 +317,6 @@ pub fn preprocess_image_with_max_pixels(
     }
 
     Ok((pixels, grid_h, grid_w))
-}
-
-/// Number of image pad tokens produced per image after the vision
-/// encoder's spatial merger. Qwen3-VL / Qwen3.6 fold a 2×2 patch block
-/// into a single token, so the embedding stream has
-/// `(grid_h / sms) * (grid_w / sms)` rows — not `grid_h * grid_w`.
-pub fn image_pad_count(grid_h: usize, grid_w: usize, spatial_merge_size: usize) -> usize {
-    let sms = spatial_merge_size.max(1);
-    (grid_h / sms) * (grid_w / sms)
 }
 
 #[cfg(test)]

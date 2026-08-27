@@ -21,11 +21,12 @@ use crate::plugin::{Plugin, PluginHandle};
 use crate::result::{BenchmarkResult, LogLine, RunStatus, Stat, Verdict as RunVerdict};
 
 use super::geometry::expected_vision_tokens;
-use super::probes::{CONTROL, PROBES, Probe};
+use super::probes::{CONTROL, PROBES, Probe, concurrency_probe};
 use super::provision::{FIXTURES, provision};
 use super::request;
 use super::score::{
     GeomCell, ProbeCell, Verdict as VisionVerdict, asserted_cells, reply_matches, verdict,
+    with_runtime_checks,
 };
 
 const SUMMARY: &str = "Vision fidelity: exact vision-token geometry across a resolution ladder, \
@@ -676,30 +677,29 @@ impl Benchmark for VisionFidelity {
             Phase::Concurrency => {
                 use crate::benchmarks::video::concurrency::{LEVELS, run_level};
                 let level = LEVELS[self.cursor];
-                let (_, png, _, _) = FIXTURES[0];
-                let body = request::body(
-                    &self.handle()?.target().model,
-                    &[png],
-                    "Reply with the single word OK.",
-                    16,
-                );
-                // The reply only has to be non-empty and consistent: the
-                // capability probes above already established the model reads
-                // the image, so this leg is about whether concurrency breaks
-                // that, not about re-proving it.
-                let is_correct = |reply: &str| !reply.trim().is_empty();
+                let probe = concurrency_probe();
+                let png = self.fixture(probe.images[0])?;
+                let body = request::body(&self.handle()?.target().model, &[png], probe.prompt, 16);
+                let is_correct =
+                    |reply: &str| reply_matches(reply, probe.want_all, probe.want_none);
                 let r = run_level(self.handle()?, &body, level, self.timeout(), &is_correct).await;
-                let line = if r.ok() {
+                let baseline_prompt_tokens = self
+                    .conc_results
+                    .first()
+                    .and_then(|baseline| baseline.prompt_tokens);
+                let clean = baseline_prompt_tokens
+                    .map_or_else(|| r.ok(), |baseline| r.ok_against(baseline));
+                let geometry = r.geometry_detail(baseline_prompt_tokens);
+                let line = if clean {
                     LogLine::info(format!(
-                        "C={level}: {}/{} returned, one geometry, {} ms",
-                        r.returned, r.conc, r.wall_ms
+                        "C={level}: {}/{} returned, {geometry}, {} ms",
+                        r.returned, r.conc, r.wall_ms,
                     ))
                 } else {
                     LogLine::warn(format!(
-                        "C={level}: {}/{} returned, {} distinct token counts, {} ms{}",
+                        "C={level}: {}/{} returned, {geometry}, {} ms{}",
                         r.returned,
                         r.conc,
-                        r.distinct_token_counts,
                         r.wall_ms,
                         if r.errors.is_empty() {
                             String::new()
@@ -741,10 +741,13 @@ impl Benchmark for VisionFidelity {
                 // mean the benchmark reports PASS while telling you, in its
                 // own log, that a request got another request's picture.
                 let integ_failed = self.integrity.iter().any(|c| c.measured() && !c.passed());
-                let v = match verdict(&self.geom, &self.probes, self.control_held) {
-                    VisionVerdict::Pass if integ_failed => VisionVerdict::Fail,
-                    other => other,
-                };
+                let concurrency_clean =
+                    crate::benchmarks::video::concurrency::sweep_ok(&self.conc_results);
+                let v = with_runtime_checks(
+                    verdict(&self.geom, &self.probes, self.control_held),
+                    integ_failed,
+                    concurrency_clean,
+                );
                 let asserted = asserted_cells(&self.geom);
                 let passed = self
                     .probes
@@ -796,7 +799,17 @@ impl Benchmark for VisionFidelity {
                     .insert("control_held".into(), self.control_held as u8 as f64);
                 // Recorded so a run shows how vision behaves under a little
                 // load; NOT thresholded — see the Concurrency phase.
-                let conc_clean = self.conc_results.iter().filter(|r| r.ok()).count();
+                let baseline_prompt_tokens = self
+                    .conc_results
+                    .first()
+                    .and_then(|baseline| baseline.prompt_tokens);
+                let conc_clean = self
+                    .conc_results
+                    .iter()
+                    .filter(|r| {
+                        baseline_prompt_tokens.is_some_and(|baseline| r.ok_against(baseline))
+                    })
+                    .count();
                 r.metrics
                     .insert("concurrency_levels_clean".into(), conc_clean as f64);
                 let integ_passed = self.integrity.iter().filter(|c| c.passed()).count();

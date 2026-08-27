@@ -173,7 +173,7 @@ warmup_endpoint() {
     echo "[warmup] raw body (first 400 chars): ${body:0:400}" >&2
     exit 4
   fi
-  if ! echo "${merged}" | grep -q '4'; then
+  if ! echo "${merged}" | grep -Eq '(^|[^[:alnum:]_])4([^[:alnum:]_]|$)'; then
     echo "[warmup] FATAL: ${label} did not emit '4' for '2+2' — catastrophic regression, halting" >&2
     echo "[warmup] response excerpt: ${merged:0:300}" >&2
     exit 4
