@@ -173,8 +173,10 @@
         </button>
       </div>
       <p class="fs-note">
-        The port is optional — 34334 is assumed. Run
-        <code class="mono">atlasctl agent pair</code> on that machine to get one.
+        The port is optional — 34334 is assumed. For the code, run
+        <code class="mono">atlasctl agent pair</code> on that machine. If its agent is
+        already running it holds that port, so use "Show me how" above instead — that
+        way round, the code comes from here and you carry one line to it.
       </p>
       {#if targetProblem}<p class="fs-bad">{targetProblem}</p>{/if}
     </form>

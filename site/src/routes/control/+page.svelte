@@ -216,6 +216,13 @@
               No peers yet. Pairing a second machine also unlocks the EP=2
               recipes, which need exactly two nodes.
             </p>
+            <!-- A machine that CAN launch and has no peers wants to add one
+                 just as much; it simply is not stuck without one. The guide is
+                 rendered here rather than in both places so it appears exactly
+                 once — the control-only panel above already carries it, and
+                 two "Show me how" buttons on one screen is two live join
+                 codes and a question about which is real. -->
+            <JoinGuide {fleet} />
           {/if}
           <FleetScan {fleet} />
         {/if}
