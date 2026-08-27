@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script>
-  // One measurement, in one of four states that must be distinguishable at a
+  // One measurement, in one of five states that must be distinguishable at a
   // glance because they mean different things:
   //
   //   value    a reading
@@ -10,6 +10,11 @@
   //            be reporting a measurement nobody took.
   //   pending  the capability exists, the first sample has not arrived
   //   alerting a reading that has tripped a threshold
+  //   paused   the OPERATOR stopped the updates — the last value stays, in
+  //            --t3 with a 'paused' sublabel, so an old number is never
+  //            dressed as a live one. Distinct from stale, whose tilde blames
+  //            the machine for going quiet; here the page went quiet on
+  //            purpose, so the tilde is suppressed.
   //
   // Fixed height in every state, so a card never resizes as telemetry arrives.
 
@@ -24,6 +29,8 @@
     alert = null,
     /** Renders the last known value greyed out. */
     stale = false,
+    /** The operator paused updates; the last value is shown as held, not live. */
+    paused = false,
     format = (v) => v.toFixed(0)
   } = $props();
 
@@ -35,7 +42,8 @@
 <div
   class="vt-tile"
   class:vt-na={unsupported}
-  class:vt-stale={stale}
+  class:vt-stale={stale && !paused}
+  class:vt-paused={paused}
   class:vt-alert={Boolean(alert)}
   class:vt-alert-crit={alert === 'critical'}
 >
@@ -50,11 +58,13 @@
     <span class="visually-hidden">{label}: waiting for the first sample</span>
   {:else}
     <span class="vt-val">
-      {#if stale}<span class="vt-tilde" aria-hidden="true">~</span>{/if}{format(value)}<span
-        class="vt-unit">{unit}</span
-      >
+      {#if stale && !paused}<span class="vt-tilde" aria-hidden="true">~</span>{/if}{format(
+        value
+      )}<span class="vt-unit">{unit}</span>
     </span>
-    {#if fraction !== null}
+    {#if paused}
+      <span class="vt-sub">paused</span>
+    {:else if fraction !== null}
       <span class="vt-meter" aria-hidden="true">
         <span class="vt-meter-fill" style="width: {Math.max(0, Math.min(1, fraction)) * 100}%"
         ></span>

@@ -144,6 +144,9 @@
   background: linear-gradient(90deg, var(--border), var(--border-strong), var(--border));
 }
 .vt-stale .vt-val { color: var(--t3); }
+/* Paused is the operator's doing, not the machine's: held value in --t3 with
+   the 'paused' sublabel, and no tilde — the tilde blames a quiet machine. */
+.vt-paused .vt-val { color: var(--t3); }
 .vt-meter { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 0.2rem; }
 .vt-meter-fill { display: block; height: 100%; background: var(--sx); }
 .vt-alert { border-left-color: var(--amber); background: rgba(251,191,36,0.08); }
