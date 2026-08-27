@@ -49,6 +49,7 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 pub mod attend;
 pub mod binding;
 pub mod select;
+pub mod state;
 pub mod tp;
 
 /// Module name the DSA kernels resolve from. Unlisted `.cu` files take their file
