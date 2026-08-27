@@ -56,6 +56,10 @@ pub mod tp;
 /// stem as the module name, so `kernels/gb10/common/dsa_indexer.cu` is `dsa_indexer`.
 pub const DSA_MODULE: &str = "dsa_indexer";
 
+/// Module carrying the bias-bearing BF16 LayerNorm the indexer's `k_norm` needs. Lives in
+/// `common/`, so every target merges it; the name is the `.cu` file stem.
+pub const LAYERNORM_MODULE: &str = "nllb_encoder";
+
 /// `#define KV_LORA_DIM` in `kernels/gb10/common/mla_paged_decode{,_fp8}.cu`.
 ///
 /// Mirrored here so the config can refuse a checkpoint the kernel cannot read.
@@ -80,6 +84,18 @@ pub struct Glm5NextDsaKernels {
     pub index_scores: KernelHandle,
     pub topk_pools: KernelHandle,
     pub expand_selection: KernelHandle,
+    /// `indexer.k_norm`, which is an **`nn.LayerNorm` with a bias** — not an RMSNorm.
+    ///
+    /// 🪤 Do NOT reach for an RMSNorm kernel here. A `.weight`-only norm silently drops
+    /// both the mean subtraction and the bias, and nothing about the shapes says so:
+    /// `k_norm.weight` and `k_norm.bias` are both `[index_head_dim]`. The binder already
+    /// lists the bias as REQUIRED for exactly this reason.
+    ///
+    /// ✅ No new kernel needed — `common/nllb_encoder.cu` already carries an in-place
+    /// BF16 LayerNorm taking `(x, weight, bias, rows, dim, eps)`, and `common/` is merged
+    /// into every target. Found by grepping `kernels/` before scoping a build, per the
+    /// campaign's standing rule; this is the fifth thing that turned out to already exist.
+    pub k_norm: KernelHandle,
     /// 🔬 ORACLE ONLY — see [`MASKED_ATTN_MAX_KEYS`].
     pub topk_to_mask: KernelHandle,
     /// 🔬 ORACLE ONLY — see [`MASKED_ATTN_MAX_KEYS`].
@@ -119,6 +135,7 @@ impl Glm5NextDsaKernels {
             index_scores: gpu.kernel(DSA_MODULE, "dsa_index_scores")?,
             topk_pools: gpu.kernel(DSA_MODULE, "dsa_topk_pools")?,
             expand_selection: gpu.kernel(DSA_MODULE, "dsa_expand_selection")?,
+            k_norm: gpu.kernel(LAYERNORM_MODULE, "nllb_layernorm_bf16")?,
             topk_to_mask: gpu.kernel(DSA_MODULE, "dsa_topk_to_mask")?,
             mla_masked_attn: gpu.kernel(DSA_MODULE, "dsa_mla_masked_attn")?,
         })

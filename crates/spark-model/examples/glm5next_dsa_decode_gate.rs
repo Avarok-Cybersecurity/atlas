@@ -241,6 +241,12 @@ fn main() -> Result<()> {
     let gpu = AtlasCudaBackend::new(0, &glm.modules)?;
     let k_sub = gpu.kernel("glm5next_dsa_mla_decode", "glm5next_dsa_mla_decode_fp8")?;
     let k_orc = gpu.kernel("dsa_indexer", "dsa_mla_masked_attn")?;
+    // The indexer's k_norm is an nn.LayerNorm WITH A BIAS. Prove the bias-bearing kernel
+    // actually resolves in the GLM target rather than assuming common/ reached it.
+    let _ = gpu
+        .kernel("nllb_encoder", "nllb_layernorm_bf16")
+        .context("indexer k_norm LayerNorm(bias) kernel missing from the GLM target")?;
+    println!("  indexer k_norm LayerNorm(weight, bias) resolves in the GLM target");
 
     // ── real weights ────────────────────────────────────────────────────────────────
     let w_qa = round_bf16(&pkt.f32s("self_attn.q_a_proj.weight")?);
