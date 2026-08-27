@@ -48,6 +48,7 @@ impl ModelConfig {
             rope_theta: 10_000_000.0,
             rms_norm_eps: 1e-6,
             bos_token_id: 151643,
+            glm5next_router_mode: crate::config::Glm5NextRouterMode::HfFp32,
             eos_token_id: 151645,
             // Empty = not populated; read through `eos_ids()`, which falls back to the scalar.
             eos_token_ids: Vec::new(),

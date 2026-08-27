@@ -35,6 +35,60 @@ fn eos_token_id_field<'de, D: serde::Deserializer<'de>>(
     })
 }
 
+/// Which dtype ladder GLM-5.3's MoE router runs in.
+///
+/// 🔴 **This is a SEMANTIC switch, not a precision preference.** Slice 10 measured the two
+/// ladders selecting a different top-8 expert set on ~89–95 % of tokens (layers 3/23/44,
+/// T=2048), moving 20–26 % of routed weight mass onto experts the other ladder did not pick.
+/// Treating it as a harmless rounding choice is how a "faster router" silently becomes a
+/// different model.
+///
+/// Deliberately its OWN field, not derived from the quantization config or from
+/// `PrecisionSchedule::router_dtype` (which is a weight-STORAGE schedule with no compute
+/// meaning, and no consumers). Inferring a semantic from an unrelated knob is the defect this
+/// avoids.
+///
+/// GLM-scoped on purpose: no other Atlas model has a contested router ladder, and widening this
+/// into a cross-model routing refactor would be scope Atlas has not asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Glm5NextRouterMode {
+    /// **CANONICAL / REFERENCE.** HF `transformers` 5.16.1 semantics:
+    /// `F.linear(hidden.type(float32), weight.type(float32))`, and sigmoid / correction bias /
+    /// top-k / renormalisation all in fp32. This is the production default and must not change
+    /// without review.
+    #[default]
+    HfFp32,
+    /// **COMPATIBILITY / ORACLE REPRODUCTION.** Reproduces what vLLM currently does for
+    /// `glm5_next_text`: `GateLinear.out_dtype` resolves to `None` (the fp32 special case in
+    /// `_get_moe_router_dtype` fires only for `glm_moe_dsa` or an explicit `moe_router_dtype`),
+    /// so the gate GEMM runs in the model dtype and `grouped_topk` does no upcast.
+    ///
+    /// Exists so Atlas can reproduce the frozen vLLM oracle's routing for A/B work. **Never a
+    /// production default.**
+    VllmBf16,
+}
+
+impl Glm5NextRouterMode {
+    /// Parse the `moe_router_dtype` config field — the same name vLLM reads.
+    ///
+    /// Absent ⇒ [`Self::HfFp32`]. That is the opposite of vLLM's fallthrough, and deliberately
+    /// so: absent means "the checkpoint did not say", and the reference implementation's answer
+    /// for that case is fp32.
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "float32" | "fp32" => Some(Self::HfFp32),
+            "bfloat16" | "bf16" => Some(Self::VllmBf16),
+            _ => None,
+        }
+    }
+
+    /// True when router math must be carried in fp32.
+    pub fn is_fp32(self) -> bool {
+        matches!(self, Self::HfFp32)
+    }
+}
+
 /// Layer type in a hybrid transformer model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -198,6 +252,10 @@ pub struct ModelConfig {
     /// BOS token ID (null → 0 for models without explicit BOS).
     #[serde(default, deserialize_with = "nullable_u32")]
     pub bos_token_id: u32,
+    /// Which dtype ladder GLM-5.3's MoE router runs in. See [`Glm5NextRouterMode`] — this is a
+    /// semantic switch, and `HfFp32` is the production default.
+    #[serde(default)]
+    pub glm5next_router_mode: Glm5NextRouterMode,
     /// The PRIMARY stop token. See [`ModelConfig::eos_ids`] for the complete set — a config may
     /// declare several, and this holds only the first.
     #[serde(default, deserialize_with = "eos_token_id_field")]

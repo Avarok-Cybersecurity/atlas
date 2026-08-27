@@ -25,7 +25,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use super::super::{LayerType, ModelConfig, finalize_config};
+use super::super::{Glm5NextRouterMode, LayerType, ModelConfig, finalize_config};
 
 /// `num_hidden_layers` counts text layers only; the MTP layer sits at index
 /// `num_hidden_layers` (45) and is NOT included in that count.
@@ -202,6 +202,19 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     // `mlp_layer_types` array when the checkpoint carries one, the same way
     // `build_layer_types` cross-checks the mixer map.
     config.mlp_only_layers = build_mlp_only_layers(text, config.num_hidden_layers)?;
+
+    // ---- Router dtype ladder ---------------------------------------------
+    // 🔴 SEMANTIC, not precision. Default = HF 5.16.1's explicit fp32 router. The checkpoint may
+    // override with `moe_router_dtype` (the same field vLLM reads); an UNRECOGNISED value is a
+    // hard error, never a silent fallback onto the other semantics.
+    config.glm5next_router_mode = match text.get("moe_router_dtype").and_then(|v| v.as_str()) {
+        None => Glm5NextRouterMode::HfFp32,
+        Some(s) => Glm5NextRouterMode::from_config_str(s).ok_or_else(|| {
+            anyhow::anyhow!(
+                "glm5_next: unknown moe_router_dtype {s:?}; expected float32 or bfloat16"
+            )
+        })?,
+    };
 
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
     validate_glm5_next(&config)?;
@@ -595,5 +608,52 @@ mod tests {
             serde_json::Value::String("deepseek_sparse_attention".into());
         let err = parse_glm5_next(&v.to_string()).unwrap_err();
         assert!(err.to_string().contains("disagrees"), "unexpected: {err}");
+    }
+
+    // ───────────────────────────────────────────── GLM router dtype ladder (Slice 10)
+
+    /// 🔴 The production default is HF's fp32 router. An absent `moe_router_dtype` means "the
+    /// checkpoint did not say", and the reference implementation's answer for that is fp32 — the
+    /// OPPOSITE of vLLM's fallthrough to bf16.
+    #[test]
+    fn glm_router_defaults_to_hf_fp32_when_the_config_is_silent() {
+        let cfg = parse_glm5_next(&glm53_config_json()).unwrap();
+        assert_eq!(cfg.glm5next_router_mode, Glm5NextRouterMode::HfFp32);
+        assert!(cfg.glm5next_router_mode.is_fp32());
+    }
+
+    /// The compatibility mode must be reachable EXPLICITLY, from its own field — never inferred
+    /// from quantization settings or from the weight-storage precision schedule.
+    #[test]
+    fn glm_router_bf16_compat_mode_is_explicit_and_never_inferred() {
+        let base = glm53_config_json();
+        let with = base.replace(
+            r#""hc_mult": 4,"#,
+            r#""hc_mult": 4, "moe_router_dtype": "bfloat16","#,
+        );
+        assert_ne!(with, base, "fixture anchor moved");
+        let cfg = parse_glm5_next(&with).unwrap();
+        assert_eq!(cfg.glm5next_router_mode, Glm5NextRouterMode::VllmBf16);
+        assert!(!cfg.glm5next_router_mode.is_fp32());
+
+        let fp32 = base.replace(
+            r#""hc_mult": 4,"#,
+            r#""hc_mult": 4, "moe_router_dtype": "float32","#,
+        );
+        assert_eq!(
+            parse_glm5_next(&fp32).unwrap().glm5next_router_mode,
+            Glm5NextRouterMode::HfFp32
+        );
+    }
+
+    /// An unrecognised value must be a hard error. Silently falling back would pick one of two
+    /// semantics at random, which is the whole defect this switch exists to prevent.
+    #[test]
+    fn an_unknown_router_dtype_is_refused_not_defaulted() {
+        let bad = glm53_config_json().replace(
+            r#""hc_mult": 4,"#,
+            r#""hc_mult": 4, "moe_router_dtype": "fp8","#,
+        );
+        assert!(parse_glm5_next(&bad).is_err());
     }
 }
