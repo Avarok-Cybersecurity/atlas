@@ -83,6 +83,29 @@
   /** Set when an unpair was refused, so the dialog can say so. */
   let unpairError = $state('');
 
+  let unpairEl = $state(null);
+
+  /** Dismiss the unpair dialog, clearing what it was showing. */
+  function closeUnpair() {
+    unpairing = null;
+    unpairConfirm = '';
+    unpairError = '';
+  }
+
+  // Declaring `aria-modal="true"` and then leaving the dialog unfocused with no
+  // Escape handler tells an assistive-technology user they are in a modal and
+  // gives them no way out. PairDialog and LaunchDialog both do this properly;
+  // this one and NodeDetails did not.
+  $effect(() => {
+    if (!unpairing) return;
+    unpairEl?.focus();
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') closeUnpair();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   async function doUnpair() {
     if (!unpairReady) return;
     unpairError = '';
@@ -375,12 +398,19 @@
 {/if}
 
 {#if unpairing}
-  <div class="ld-backdrop" role="presentation" onclick={() => { unpairing = null; unpairError = ''; }}></div>
+  <div class="ld-backdrop" role="presentation" onclick={closeUnpair}></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-  <div class="ld" role="dialog" aria-modal="true" aria-labelledby="unpair-title" tabindex="-1">
+  <div
+    class="ld"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="unpair-title"
+    tabindex="-1"
+    bind:this={unpairEl}
+  >
     <header class="ld-head">
       <h3 class="ld-title" id="unpair-title">Unpair {unpairing.name}?</h3>
-      <button type="button" class="ld-close" onclick={() => { unpairing = null; unpairError = ''; }} aria-label="Close"
+      <button type="button" class="ld-close" onclick={closeUnpair} aria-label="Close"
         >×</button
       >
     </header>
@@ -403,7 +433,7 @@
         <p class="ld-error" role="alert">{unpairError}</p>
       {/if}
       <div class="ld-actions">
-        <button type="button" class="btn btn-ghost" onclick={() => { unpairing = null; unpairError = ''; }}>Cancel</button>
+        <button type="button" class="btn btn-ghost" onclick={closeUnpair}>Cancel</button>
         <button type="button" class="btn btn-danger" disabled={!unpairReady} onclick={doUnpair}>
           Unpair
         </button>
