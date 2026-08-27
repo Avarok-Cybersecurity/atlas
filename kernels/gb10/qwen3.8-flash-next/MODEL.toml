@@ -226,6 +226,11 @@ in qwen3.6-27b/nvfp4. Probed handle != 0; absent, the exact chain keeps
 its per-token conv launches (same bits, more launches)."""
 
 [behavior]
+# Native tool-call format is Qwen3-Coder XML:
+#   <tool_call><function=fn><parameter=key>value</parameter></function></tool_call>
+# (verified from live emissions, agentic-webserver run 2026-08-27). Without a
+# parser the calls land in content and finish_reason still says tool_calls.
+tool_call_parser = "qwen3_coder"
 # Qwen3.8-Flash-Next is a THINKING model whose chat template gates
 # EVERYTHING on `enable_thinking is undefined or true`: the default render
 # carries a reasoning-effort system preamble ("Reasoning effort is set to
