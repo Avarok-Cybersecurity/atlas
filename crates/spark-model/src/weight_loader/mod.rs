@@ -17,6 +17,8 @@
 pub(crate) mod deepseek_v4;
 pub mod dflash_loader;
 mod gemma4;
+/// GLM-5.3-Flash tensor accounting (Slice 1: classification only).
+pub mod glm5_next;
 mod laguna;
 mod longcat;
 mod minimax;
