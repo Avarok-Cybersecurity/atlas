@@ -47,7 +47,15 @@ class JoinState {
    */
   async revoke(client) {
     this.current = null;
-    await client?.revokeJoinCode?.().catch?.(() => {});
+    // try/catch rather than `.catch()` on the result: a client that is missing,
+    // or that throws synchronously before it ever returns a promise, would
+    // otherwise take down the caller — and the caller here is a click handler
+    // on a code the operator has already decided to abandon.
+    try {
+      await client?.revokeJoinCode?.();
+    } catch {
+      /* the offer is already cleared locally; it expires on its own regardless */
+    }
   }
 }
 

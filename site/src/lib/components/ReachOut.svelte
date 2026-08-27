@@ -1,14 +1,13 @@
 <script>
   import { reachout, discordUrl } from '$lib/data.js';
+  import { copyText } from '$lib/clipboard.js';
   import DiscordIcon from './DiscordIcon.svelte';
 
   let copied = $state('');
   async function copy(addr) {
-    try {
-      await navigator.clipboard.writeText(addr);
-      copied = addr;
-      setTimeout(() => { if (copied === addr) copied = ''; }, 1600);
-    } catch {}
+    if ((await copyText(addr)) !== 'copied') return;
+    copied = addr;
+    setTimeout(() => { if (copied === addr) copied = ''; }, 1600);
   }
   import SectionHead from './SectionHead.svelte';
 </script>

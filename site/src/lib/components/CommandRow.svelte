@@ -12,27 +12,26 @@
   // worked, a refusal selects the text so the operator can copy it with the
   // keyboard, and says so.
 
+  import { copyText, selectText } from '$lib/clipboard.js';
+
   let { command, label = 'Copy' } = $props();
 
-  let state = $state('idle'); // idle | copied | manual
+  let state = $state('idle'); // idle | copied | manual | blocked
   let codeEl = $state(null);
   let timer;
 
+  // A dialog can close while the "Copied" flash is still pending. Without this
+  // the timeout fires against a component that no longer exists.
+  $effect(() => () => clearTimeout(timer));
+
   async function copy() {
     clearTimeout(timer);
-    try {
-      await navigator.clipboard.writeText(command);
+    if ((await copyText(command)) === 'copied') {
       state = 'copied';
-    } catch {
-      // Select it instead, so the next keystroke can copy it.
-      if (codeEl) {
-        const range = document.createRange();
-        range.selectNodeContents(codeEl);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-      }
-      state = 'manual';
+    } else {
+      // Select it instead, so the next keystroke can copy it. Flashing nothing
+      // would leave the operator believing they had it.
+      state = selectText(codeEl) ? 'manual' : 'blocked';
     }
     timer = setTimeout(() => (state = 'idle'), 2400);
   }
@@ -41,6 +40,12 @@
 <div class="ld-cmd">
   <code class="mono" bind:this={codeEl}>{command}</code>
   <button type="button" class="cmd-copy" onclick={copy}>
-    {state === 'copied' ? 'Copied' : state === 'manual' ? 'Press ⌘/Ctrl+C' : label}
+    {state === 'copied'
+      ? 'Copied'
+      : state === 'manual'
+        ? 'Press ⌘/Ctrl+C'
+        : state === 'blocked'
+          ? 'Select it above'
+          : label}
   </button>
 </div>

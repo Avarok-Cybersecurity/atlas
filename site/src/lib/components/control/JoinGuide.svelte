@@ -15,6 +15,7 @@
   // Every rule is in `joinwindow.js` (plain `.js`, tested). This file renders
   // whichever state that module names.
 
+  import { tick } from 'svelte';
   import { joinState } from '$lib/agent/joinstate.svelte.js';
   import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
   import { joinCommand } from '$lib/agent/joincommand.js';
@@ -71,6 +72,11 @@
     // Reuse a live offer: re-minting on every open would invalidate the command
     // the operator may already be carrying to the other machine.
     if (!join || left?.expired) await joinState.mint(fleet.agent);
+    // The card is rendered by this state change, so the heading does not exist
+    // until Svelte has flushed. Focusing before that silently does nothing —
+    // and a keyboard operator is then left where they were, with a card that
+    // opened somewhere below them.
+    await tick();
     heading?.focus();
   }
 

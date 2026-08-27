@@ -13,6 +13,8 @@
   // to come back and click retry.
 
   import { launch } from '$lib/agent/session.svelte.js';
+
+  import { copyText } from '$lib/clipboard.js';
   import InstallSteps from './InstallSteps.svelte';
   import { describe } from '$lib/agent/placement.js';
   import { joinCommand } from '$lib/agent/joincommand.js';
@@ -31,13 +33,9 @@
   // `install`, not `run`: `run` holds the terminal and the agent dies with it.
 
   async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = text;
-      setTimeout(() => { if (copied === text) copied = ''; }, 1600);
-    } catch {
-      /* clipboard blocked; the command is on screen to select */
-    }
+    if ((await copyText(text)) !== 'copied') return;
+    copied = text;
+    setTimeout(() => { if (copied === text) copied = ''; }, 1600);
   }
 
   // A loopback connection either answers or is refused within a few
