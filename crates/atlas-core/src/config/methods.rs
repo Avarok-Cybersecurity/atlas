@@ -9,6 +9,27 @@
 use super::{LayerType, ModelConfig};
 
 impl ModelConfig {
+    /// Every configured stop-token id, primary first.
+    ///
+    /// Falls back to `vec![eos_token_id]` when `eos_token_ids` was never populated, so a
+    /// hand-built `ModelConfig` and a scalar-EOS checkpoint both behave exactly as before.
+    pub fn eos_ids(&self) -> Vec<u32> {
+        if self.eos_token_ids.is_empty() {
+            vec![self.eos_token_id]
+        } else {
+            self.eos_token_ids.clone()
+        }
+    }
+
+    /// Does this token id terminate generation?
+    pub fn is_eos(&self, id: u32) -> bool {
+        if self.eos_token_ids.is_empty() {
+            id == self.eos_token_id
+        } else {
+            self.eos_token_ids.contains(&id)
+        }
+    }
+
     /// GQA ratio: number of Q heads per KV head.
     pub fn gqa_ratio(&self) -> usize {
         self.num_attention_heads

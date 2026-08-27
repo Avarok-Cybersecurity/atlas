@@ -294,3 +294,22 @@ fn an_unexpected_layer_type_is_refused() {
     cfg.layer_types[5] = LayerType::SlidingAttention;
     assert!(Glm5NextTextSkeleton::from_config(&cfg).is_err());
 }
+
+// ───────────────────────────────────────────────────── multi-EOS
+
+/// Slice 9 decision 2, end to end on the REAL checkpoint config: all three stop tokens survive
+/// parsing, with `<|endoftext|>` as the primary.
+///
+/// `154827 <|user|>` and `154829 <|observation|>` are turn terminators. Before this fix the
+/// array made `config.json` fail to parse outright; the first repair collapsed it to one id,
+/// which would have let an agent model run straight past the end of its own turn.
+#[test]
+fn all_three_glm_stop_tokens_survive_parsing() {
+    let cfg = parse_config(CONFIG).expect("parses");
+    assert_eq!(cfg.eos_token_id, 154820, "<|endoftext|> is the primary");
+    assert_eq!(cfg.eos_ids(), vec![154820, 154827, 154829]);
+    for id in [154820u32, 154827, 154829] {
+        assert!(cfg.is_eos(id), "generation must stop on {id}");
+    }
+    assert!(!cfg.is_eos(154828));
+}

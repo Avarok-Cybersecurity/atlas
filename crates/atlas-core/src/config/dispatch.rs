@@ -38,7 +38,63 @@ fn required_u32(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<
         .with_context(|| format!("{model_type} config field `{key}` does not fit in u32"))
 }
 
+/// Parse a checkpoint `config.json` into a [`ModelConfig`].
+///
+/// Thin wrapper: the per-family dispatch is unchanged in `parse_config_dispatch`, and the only
+/// added step is populating the complete stop-token set. That step is ADDITIVE — it never
+/// changes `eos_token_id`, so every existing model behaves exactly as before.
 pub fn parse_config(json: &str) -> Result<ModelConfig> {
+    let mut config = parse_config_dispatch(json)?;
+    populate_eos_token_ids(&mut config, json);
+    Ok(config)
+}
+
+/// Collect every declared stop-token id, primary first.
+///
+/// HF allows `eos_token_id` to be a scalar OR an array, at the top level or inside
+/// `text_config`. Family parsers collapse the array to one id because `ModelConfig::eos_token_id`
+/// is a `u32` — this recovers the rest instead of losing them.
+///
+/// Ordering contract: `config.eos_token_id` is always element 0, whatever the family parser
+/// chose (laguna takes the first, step3p7 deliberately takes the LAST). The remaining declared
+/// ids follow in config order, de-duplicated. Nothing here overrides a parser's primary choice.
+#[cfg(test)]
+pub(super) fn populate_eos_token_ids_for_test(config: &mut ModelConfig, json: &str) {
+    populate_eos_token_ids(config, json);
+}
+
+fn populate_eos_token_ids(config: &mut ModelConfig, json: &str) {
+    let Ok(raw) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    let mut ids: Vec<u32> = vec![config.eos_token_id];
+    let mut push = |v: &serde_json::Value| match v {
+        serde_json::Value::Number(n) => {
+            if let Some(x) = n.as_u64() {
+                ids.push(x as u32);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for e in a {
+                if let Some(x) = e.as_u64() {
+                    ids.push(x as u32);
+                }
+            }
+        }
+        _ => {}
+    };
+    if let Some(v) = raw.get("eos_token_id") {
+        push(v);
+    }
+    if let Some(v) = raw.get("text_config").and_then(|t| t.get("eos_token_id")) {
+        push(v);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    ids.retain(|id| seen.insert(*id));
+    config.eos_token_ids = ids;
+}
+
+fn parse_config_dispatch(json: &str) -> Result<ModelConfig> {
     // First, probe the top-level model_type.
     let raw: serde_json::Value =
         serde_json::from_str(json).context("Invalid JSON in config.json")?;

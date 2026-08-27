@@ -49,6 +49,8 @@ impl ModelConfig {
             rms_norm_eps: 1e-6,
             bos_token_id: 151643,
             eos_token_id: 151645,
+            // Empty = not populated; read through `eos_ids()`, which falls back to the scalar.
+            eos_token_ids: Vec::new(),
             tie_word_embeddings: false,
             lm_head_bf16_override: None,
             lm_head_fp8: false,

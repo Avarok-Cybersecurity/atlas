@@ -26,7 +26,7 @@ pub(crate) fn load_eos_tokens(model_dir: &Path, config: &ModelConfig) -> Vec<u32
                         tracing::info!("EOS tokens (from generation_config.json): {:?}", ids);
                         ids
                     } else {
-                        vec![config.eos_token_id]
+                        config.eos_ids()
                     }
                 }
                 Some(serde_json::Value::Number(n)) => {
@@ -34,13 +34,13 @@ pub(crate) fn load_eos_tokens(model_dir: &Path, config: &ModelConfig) -> Vec<u32
                     tracing::info!("EOS token (from generation_config.json): {}", id);
                     vec![id]
                 }
-                _ => vec![config.eos_token_id],
+                _ => config.eos_ids(),
             };
         }
-        return vec![config.eos_token_id];
+        return config.eos_ids();
     }
-    tracing::info!("EOS token (from config.json): {}", config.eos_token_id);
-    vec![config.eos_token_id]
+    tracing::info!("EOS tokens (from config.json): {:?}", config.eos_ids());
+    config.eos_ids()
 }
 
 pub(crate) struct SamplingDefaults {
@@ -480,5 +480,62 @@ mod sampling_defaults_tests {
         p.min_p = Some(0.0);
         let d = resolve_sampling_defaults(Some(&cfg), &args(), &p);
         assert_eq!(d.min_p, 0.31);
+    }
+}
+
+#[cfg(test)]
+mod eos_tests {
+    use atlas_core::config::ModelConfig;
+
+    use super::load_eos_tokens;
+
+    /// GLM-5.3-Flash's three stop tokens: `<|endoftext|>`, `<|user|>`, `<|observation|>`.
+    const GLM_EOS: [u32; 3] = [154820, 154827, 154829];
+
+    fn cfg(primary: u32, all: &[u32]) -> ModelConfig {
+        let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+        c.eos_token_id = primary;
+        c.eos_token_ids = all.to_vec();
+        c
+    }
+
+    /// 🔴 The regression this closes: with no `generation_config.json`, the fallback used to be
+    /// `vec![config.eos_token_id]` — one id — so a multi-EOS checkpoint silently lost its turn
+    /// terminators at serve time.
+    #[test]
+    fn without_generation_config_the_full_config_set_is_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(GLM_EOS[0], &GLM_EOS));
+        assert_eq!(got, GLM_EOS.to_vec());
+    }
+
+    /// generation_config.json stays authoritative when present — precedence is unchanged.
+    #[test]
+    fn generation_config_array_still_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("generation_config.json"),
+            r#"{"eos_token_id": [154820, 154827, 154829]}"#,
+        )
+        .unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(GLM_EOS[0], &GLM_EOS));
+        assert_eq!(got, GLM_EOS.to_vec());
+    }
+
+    /// A scalar-EOS model with an unpopulated set must behave exactly as before: one id.
+    #[test]
+    fn scalar_eos_model_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(151645, &[]));
+        assert_eq!(got, vec![151645]);
+    }
+
+    /// A malformed generation_config must not swallow the config's set.
+    #[test]
+    fn unreadable_generation_config_falls_back_to_the_full_set() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("generation_config.json"), "not json").unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(GLM_EOS[0], &GLM_EOS));
+        assert_eq!(got, GLM_EOS.to_vec());
     }
 }

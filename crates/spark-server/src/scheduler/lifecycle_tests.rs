@@ -469,3 +469,36 @@ fn call_site_passes_the_real_guard() {
     let (a, rx) = test_seq(vec![5, 6, 42], 3, Some("fuzzy_repetition"), 10);
     assert_eq!(finish_and_recv(a, rx).finish_reason, "length");
 }
+
+/// Slice 9 decision 2 — a multi-EOS model must stop on EVERY configured stop token, each one
+/// independently, not only on the primary.
+///
+/// GLM-5.3-Flash declares three: `154820 <|endoftext|>`, `154827 <|user|>`,
+/// `154829 <|observation|>`. The last two are turn terminators; an agent model that cannot stop
+/// on them runs past its turn. `ModelConfig::eos_token_id` holds only 154820, which is why the
+/// complete set has to reach `eos_tokens` here.
+#[test]
+fn every_configured_eos_token_stops_generation_independently() {
+    const GLM_EOS: [u32; 3] = [154820, 154827, 154829];
+    for id in GLM_EOS {
+        assert_eq!(
+            derive_finish_reason(None, Some(id), &GLM_EOS, None, 10, 5, 100),
+            "stop",
+            "generation must stop on {id}"
+        );
+    }
+    // A non-EOS token must not stop — otherwise the assertion above is vacuous.
+    assert_ne!(
+        derive_finish_reason(None, Some(154821), &GLM_EOS, None, 10, 5, 100),
+        "stop"
+    );
+    // And the pre-fix behaviour is exactly what this guards against: with only the primary in
+    // the set, the two turn terminators sail straight through.
+    for id in [GLM_EOS[1], GLM_EOS[2]] {
+        assert_ne!(
+            derive_finish_reason(None, Some(id), &GLM_EOS[..1], None, 10, 5, 100),
+            "stop",
+            "collapsing to the primary would let {id} through"
+        );
+    }
+}

@@ -8,6 +8,33 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
     Option::<u32>::deserialize(d).map(|v| v.unwrap_or(0))
 }
 
+/// `eos_token_id`, which HF allows to be `null`, a scalar, **or an array**.
+///
+/// GLM-5.3-Flash declares three stop tokens as an array, and before Slice 9 that made its
+/// `config.json` fail to parse outright ("invalid type: sequence, expected u32") — every family
+/// arm deserializes `eos_token_id` as a bare `u32`. This yields **element 0** as the primary;
+/// the COMPLETE set is recovered separately into [`ModelConfig::eos_token_ids`] by
+/// `parse_config`, so nothing is discarded.
+///
+/// Backward compatible by construction: an array was previously a hard error, so no config that
+/// parses today can change meaning. A parser that wants a different primary (`step3p7` takes the
+/// LAST element) still rewrites the field before deserializing, and that choice is preserved.
+fn eos_token_id_field<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(u32),
+        Many(Vec<u32>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(d)? {
+        None => 0,
+        Some(OneOrMany::One(v)) => v,
+        Some(OneOrMany::Many(v)) => v.first().copied().unwrap_or(0),
+    })
+}
+
 /// Layer type in a hybrid transformer model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -171,8 +198,22 @@ pub struct ModelConfig {
     /// BOS token ID (null → 0 for models without explicit BOS).
     #[serde(default, deserialize_with = "nullable_u32")]
     pub bos_token_id: u32,
-    #[serde(default, deserialize_with = "nullable_u32")]
+    /// The PRIMARY stop token. See [`ModelConfig::eos_ids`] for the complete set — a config may
+    /// declare several, and this holds only the first.
+    #[serde(default, deserialize_with = "eos_token_id_field")]
     pub eos_token_id: u32,
+    /// The COMPLETE stop-token set. HF configs are allowed to declare `eos_token_id` as an
+    /// array, and several real checkpoints do — GLM-5.3-Flash declares three:
+    /// `154820 <|endoftext|>`, `154827 <|user|>`, `154829 <|observation|>`. `eos_token_id`
+    /// above holds only the PRIMARY one (element 0), which is what every scalar consumer and
+    /// every chat template wants; collapsing to it and discarding the rest is what made an
+    /// agent model unable to stop on its own turn terminators.
+    ///
+    /// Populated by `parse_config` for every model family from the raw JSON, scalar or array.
+    /// Empty means "not populated" (a hand-built `ModelConfig`), NOT "no stop tokens" — read it
+    /// through [`ModelConfig::eos_ids`], never directly.
+    #[serde(default)]
+    pub eos_token_ids: Vec<u32>,
     #[serde(default)]
     pub tie_word_embeddings: bool,
     /// CLI override (`--lm-head-dtype`) for LM-head quantization, set at serve time

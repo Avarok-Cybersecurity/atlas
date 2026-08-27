@@ -70,29 +70,13 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     if let Some(obj) = text_for_struct.as_object_mut() {
         obj.remove("layer_types");
         // 🔴 GLM-5.3-Flash declares THREE stop tokens — `eos_token_id` is an ARRAY:
-        // 154820 `<|endoftext|>`, 154827 `<|user|>`, 154829 `<|observation|>`. `ModelConfig`
-        // holds a single u32, so the array must be collapsed or the whole text_config fails to
-        // deserialize ("invalid type: sequence, expected u32"). Until this slice the parser had
-        // only ever seen a hand-written config with no `eos_token_id` at all, so the real
-        // checkpoint's config.json did not parse.
-        //
-        // 154820 is chosen because `tokenizer_config.json` names `<|endoftext|>` as THE
-        // `eos_token`. ⚠️ The other two are DROPPED, and a chat/agent model that cannot stop on
-        // `<|user|>` or `<|observation|>` will run past its turn. That is a serving defect, not a
-        // skeleton one — recorded here and in the anomaly ledger rather than papered over.
-        // Fixing it needs a multi-EOS field on `ModelConfig`, which is a cross-model change.
-        if let Some(arr) = obj.get("eos_token_id").and_then(|v| v.as_array()) {
-            let ids: Vec<u32> = arr
-                .iter()
-                .filter_map(|v| v.as_u64())
-                .map(|v| v as u32)
-                .collect();
-            let Some((&primary, rest)) = ids.split_first() else {
-                bail!("glm5_next: eos_token_id is an empty array");
-            };
-            let _dropped = rest; // see the note above: no logging facility here
-            obj.insert("eos_token_id".into(), serde_json::Value::from(primary));
-        }
+        // 154820 `<|endoftext|>`, 154827 `<|user|>`, 154829 `<|observation|>`. Before Slice 9
+        // that made this checkpoint's config.json fail to parse outright ("invalid type:
+        // sequence, expected u32"); the parser had only ever seen a hand-written fixture with
+        // no `eos_token_id` at all. Handled centrally now — `eos_token_id_field` takes element
+        // 0 as the primary (`tokenizer_config.json` names `<|endoftext|>` as THE `eos_token`)
+        // and `parse_config` fills `eos_token_ids` with the complete set.
+        // Read stop tokens through `ModelConfig::eos_ids()` / `is_eos()`, never off the scalar.
     }
     let text_json =
         serde_json::to_string(&text_for_struct).context("re-serialize glm5_next text_config")?;
