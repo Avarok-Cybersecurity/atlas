@@ -36,6 +36,8 @@ export class AgentClient {
   #socket = null;
   #nextId = 1;
   #pending = new Map();
+  /** The in-flight connect, so a second caller joins it rather than racing. */
+  #connecting = null;
   /**
    * Listeners for frames nobody asked for.
    *
@@ -70,6 +72,20 @@ export class AgentClient {
    */
   async connect(token = storedToken()) {
     if (this.phase === 'ready') return true;
+    // One connect at a time. Two are reachable in practice — the launch
+    // dialog's "Try again" while a silent fleet probe is mid-flight — and they
+    // do not merely race: both build a socket, the second overwrites `#socket`
+    // while the orphan's message listener keeps feeding `#onMessage`, and both
+    // wait on the string key 'welcome', so the second clobbers the first's
+    // entry in `#pending` and one of them hangs until its timeout.
+    if (this.#connecting) return this.#connecting;
+    this.#connecting = this.#connect(token).finally(() => {
+      this.#connecting = null;
+    });
+    return this.#connecting;
+  }
+
+  async #connect(token) {
     this.phase = 'connecting';
     this.message = '';
 
@@ -135,23 +151,24 @@ export class AgentClient {
     });
 
     // The agent speaks first, so wait for its welcome before greeting back.
+    // Every failure below closes the socket. They used to return with it
+    // open and its listeners attached, so a wedged agent — one that accepts a
+    // connection and then says nothing — collected a fresh socket from the
+    // probe loop every 1.2 to 8 seconds, none of which were ever released.
     const welcome = await this.#await('welcome');
     if (!welcome) {
-      this.phase = 'unavailable';
-      return false;
+      return this.#abandon(socket, 'unavailable');
     }
     if (PROTOCOL_VERSION < welcome.protocol_min || PROTOCOL_VERSION > welcome.protocol_max) {
-      this.phase = 'error';
       this.message = `This page speaks protocol ${PROTOCOL_VERSION}; your agent speaks ${welcome.protocol_min}–${welcome.protocol_max}. Update whichever is older.`;
-      return false;
+      return this.#abandon(socket, 'error');
     }
 
     this.#send({ type: 'hello', protocol_version: PROTOCOL_VERSION, token });
     const ready = await this.#await('ready', 'error');
     if (!ready || ready.type === 'error') {
-      this.phase = ready?.error?.code === 'not_paired' ? 'unpaired' : 'error';
       this.message = ready ? describeError(ready.error) : 'The agent closed the connection.';
-      return false;
+      return this.#abandon(socket, ready?.error?.code === 'not_paired' ? 'unpaired' : 'error');
     }
 
     this.recipes = ready.recipes ?? [];
@@ -307,6 +324,27 @@ export class AgentClient {
 
   #await(...types) {
     return this.#waitFor(types.join('|'));
+  }
+
+  /**
+   * Give up on a half-built connection, closing it.
+   *
+   * Always returns false, so a caller can `return this.#abandon(...)` and not
+   * be able to forget the close — which is how three of these paths leaked.
+   *
+   * @param {WebSocket} socket
+   * @param {string} phase
+   * @returns {false}
+   */
+  #abandon(socket, phase) {
+    this.phase = phase;
+    if (this.#socket === socket) this.#socket = null;
+    try {
+      socket.close();
+    } catch {
+      /* already gone */
+    }
+    return false;
   }
 
   #awaitId(id) {
