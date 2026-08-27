@@ -68,6 +68,17 @@ pub struct Index {
     pub fetched_at: u64,
     /// Set when the network failed and this came off disk instead.
     pub offline: Option<String>,
+    /// Set when the network was REACHED but the result was not good enough to
+    /// replace the cache with — some recipe files did not come back, or the
+    /// write itself failed.
+    ///
+    /// Distinct from [`Self::offline`], which means the repository was never
+    /// reached at all. Both mean "what is on disk is not what you just asked
+    /// for", but only this one can happen on a working network, and it used to
+    /// be reported as a clean success: the fetch loop logged unreachable files
+    /// at `warn!` and cached whatever did arrive, so a partial fetch silently
+    /// replaced a complete cache with a smaller one.
+    pub incomplete: Option<String>,
 }
 
 impl Index {
@@ -181,6 +192,7 @@ fn parse_cache(text: &str) -> Result<Index> {
             .to_string(),
         fetched_at: doc.get("fetched_at").and_then(|s| s.as_u64()).unwrap_or(0),
         offline: None,
+        incomplete: None,
     })
 }
 
