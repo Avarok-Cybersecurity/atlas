@@ -16,8 +16,14 @@ import { readDecision, readExchange, readExchangeAt } from './pairing.js';
 test('the page speaks the version the agent speaks', () => {
   // The agent enforces an exact match. If this drifts from the agent's version
   // the handshake is refused — which is the designed behaviour, but it must
-  // drift deliberately rather than by being forgotten. 3 adds `pair_peer_at`.
-  expect(PROTOCOL_VERSION).toBe(3);
+  // drift deliberately rather than by being forgotten.
+  //
+  // This test has already earned its keep: the agent moved to 4 and the page
+  // was left on 3, which the exact-match gate turns into "every control page is
+  // refused" the moment both halves ship. 4 adds the `on`/`via` control
+  // annotations; the page never sends `on`, and declaring the version it
+  // speaks is what lets it connect at all.
+  expect(PROTOCOL_VERSION).toBe(4);
 });
 
 /** The reply shape `pair_peer` returns under protocol 2. */

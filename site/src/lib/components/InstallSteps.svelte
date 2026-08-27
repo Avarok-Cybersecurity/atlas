@@ -4,8 +4,12 @@
   //
   // ONE copy of this guide. It previously existed three times — the launch
   // dialog's guide phase, the control page's no-agent branch, and the literals
-  // behind both — which is how the three drifted: two of them named
-  // `atlasctl agent run`, which dies with the terminal that started it.
+  // behind both. They happened to agree when they were merged; nothing kept
+  // them agreeing, and a fourth was about to be added by the join guide.
+  //
+  // `startAgentCommand` is `agent install`, not `agent run`, deliberately: a
+  // bare `run` dies with the terminal that started it, and the machine leaves
+  // the fleet the next time someone closes an ssh session.
   //
   // `after` continues the numbering, so a caller can add a third step without
   // restarting the list at 1 or hard-coding "3" here.

@@ -4,7 +4,19 @@
 //
 // Mirrors crates/atlasctl-protocol in atlas-recipes. Kept deliberately small:
 // the whole surface a page can reach is a handful of message types, and that is
-// the point — the agent has no relay or raw-command verb to reach for.
+// the point. There is no raw-command verb, no nested-message verb and no relay
+// of opaque bytes, and the enum is closed — an unknown `type` fails to
+// deserialize rather than reaching a handler.
+//
+// One scoped exception, stated here so this file cannot outgrow the doctrine it
+// mirrors: the seven single-node control verbs carry an optional `on` target,
+// which the agent honours by re-issuing the request AS ITSELF over its
+// authenticated peer channel — one hop, only toward a machine it has itself
+// pinned AND whose pin of the requester carries an explicit `controller` grant.
+// Forwarding is an ANNOTATION on closed verbs, never a wrapper around arbitrary
+// messages: the forwardable vocabulary cannot express pairing, joining, cluster
+// reservation, or a further hop. That is what still keeps the agent from being
+// an open proxy for whatever page is talking to it.
 
 // 2: pairing became two-phase. `pair_peer` runs the exchange and writes no
 // pin; `confirm_pairing` establishes trust and `reject_pairing` discards it.
@@ -13,11 +25,15 @@
 // handshake rather than reading `exchanged` as "trusted" and showing a machine
 // as paired that the agent has not accepted.
 //
+// 4: control verbs gained an optional `on` target and the replies gained
+// `on`/`via`, so a page can drive a machine reached through a peer. See the
+// doctrine note above for what that deliberately cannot do.
+//
 // 3: `pair_peer_at` added, so a machine can be added by typing its address.
 // mDNS is link-local — it does not cross a router and is off on plenty of
 // managed networks — so without it the page could only reach machines on one
 // broadcast domain. Additive, but the handshake is exact-match by design.
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 // The agent binds loopback only. Connecting to anything else would defeat the
 // entire security model, so the address is a literal here too.
