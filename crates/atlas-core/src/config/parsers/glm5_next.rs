@@ -69,6 +69,30 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     let mut text_for_struct = text.clone();
     if let Some(obj) = text_for_struct.as_object_mut() {
         obj.remove("layer_types");
+        // 🔴 GLM-5.3-Flash declares THREE stop tokens — `eos_token_id` is an ARRAY:
+        // 154820 `<|endoftext|>`, 154827 `<|user|>`, 154829 `<|observation|>`. `ModelConfig`
+        // holds a single u32, so the array must be collapsed or the whole text_config fails to
+        // deserialize ("invalid type: sequence, expected u32"). Until this slice the parser had
+        // only ever seen a hand-written config with no `eos_token_id` at all, so the real
+        // checkpoint's config.json did not parse.
+        //
+        // 154820 is chosen because `tokenizer_config.json` names `<|endoftext|>` as THE
+        // `eos_token`. ⚠️ The other two are DROPPED, and a chat/agent model that cannot stop on
+        // `<|user|>` or `<|observation|>` will run past its turn. That is a serving defect, not a
+        // skeleton one — recorded here and in the anomaly ledger rather than papered over.
+        // Fixing it needs a multi-EOS field on `ModelConfig`, which is a cross-model change.
+        if let Some(arr) = obj.get("eos_token_id").and_then(|v| v.as_array()) {
+            let ids: Vec<u32> = arr
+                .iter()
+                .filter_map(|v| v.as_u64())
+                .map(|v| v as u32)
+                .collect();
+            let Some((&primary, rest)) = ids.split_first() else {
+                bail!("glm5_next: eos_token_id is an empty array");
+            };
+            let _dropped = rest; // see the note above: no logging facility here
+            obj.insert("eos_token_id".into(), serde_json::Value::from(primary));
+        }
     }
     let text_json =
         serde_json::to_string(&text_for_struct).context("re-serialize glm5_next text_config")?;
@@ -186,9 +210,65 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
         config.mtp_layer_types = vec![kind; n_mtp];
     }
 
+    // ---- Dense-vs-routed MLP split ---------------------------------------
+    // `first_k_dense_replace = 3`: layers 0..=2 carry a dense MLP, every later text layer
+    // routes to experts. Nothing in Atlas read this before, so `mlp_only_layers` came out
+    // EMPTY and the whole stack looked routed — a dense layer bound as MoE looks for
+    // `mlp.experts.*` that do not exist. Cross-checked against the textual
+    // `mlp_layer_types` array when the checkpoint carries one, the same way
+    // `build_layer_types` cross-checks the mixer map.
+    config.mlp_only_layers = build_mlp_only_layers(text, config.num_hidden_layers)?;
+
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
     validate_glm5_next(&config)?;
     Ok(config)
+}
+
+/// Layers whose MLP is dense rather than routed.
+///
+/// `first_k_dense_replace` is the authoritative knob; the textual `mlp_layer_types` array is
+/// used to CROSS-CHECK it, never as a silent substitute. A disagreement is a hard error: the
+/// two answers differing means the checkpoint is not the one this parser was written for.
+fn build_mlp_only_layers(text: &serde_json::Value, n_layers: usize) -> Result<Vec<usize>> {
+    let first_k = text
+        .get("first_k_dense_replace")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    let textual: Option<Vec<usize>> =
+        text.get("mlp_layer_types")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.as_str() != Some("sparse"))
+                    .map(|(i, _)| i)
+                    .collect()
+            });
+
+    match (first_k, textual) {
+        (Some(k), t) => {
+            if k > n_layers {
+                bail!("glm5_next: first_k_dense_replace {k} exceeds num_hidden_layers {n_layers}");
+            }
+            let derived: Vec<usize> = (0..k).collect();
+            if let Some(t) = t
+                && t != derived
+            {
+                bail!(
+                    "glm5_next: first_k_dense_replace={k} implies dense layers \
+                     {derived:?}, but mlp_layer_types says {t:?}"
+                );
+            }
+            Ok(derived)
+        }
+        // No `first_k_dense_replace`: the textual array is then the only statement of the
+        // split, and it must be present and correctly sized.
+        (None, Some(t)) => Ok(t),
+        (None, None) => bail!(
+            "glm5_next: neither first_k_dense_replace nor mlp_layer_types present; \
+             refusing to guess which layers are dense"
+        ),
+    }
 }
 
 /// Build the per-layer mixer map.
