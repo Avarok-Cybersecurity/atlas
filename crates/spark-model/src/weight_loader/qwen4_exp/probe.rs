@@ -59,7 +59,16 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
         if store.contains(&format!("{lp}.mlp_hyper_connection.hc_norm.weight")) {
             r.hc_tensors += 1;
         }
-        if store.contains(&format!("{lp}.mlp.experts.0.gate_proj.weight")) {
+        // The FIRST LOCAL expert, not expert 0: under EP the store holds only
+        // `local_expert_range()`, so probing a hardcoded 0 finds nothing on
+        // every rank but 0 and the `expert_tensors == layers` check below
+        // then refuses a perfectly good rank-1 load ("0 of 48 layers have
+        // routed experts", measured on a 2-node EP=2 bring-up 2026-08-27).
+        // Same first-local idiom as `weight_map::nemotron`.
+        let first_local = (0..config.num_experts)
+            .find(|e| config.is_local_expert(*e))
+            .unwrap_or(0);
+        if store.contains(&format!("{lp}.mlp.experts.{first_local}.gate_proj.weight")) {
             r.expert_tensors += 1;
         }
         if store.contains(&format!("{lp}.input_layernorm.weight"))
