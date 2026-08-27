@@ -102,13 +102,31 @@ const TILES = [
     // Absence has a specific, known meaning for this field.
     absentNote: 'not speculating'
   },
-  { id: 'prefix', label: 'Prefix cache', field: 'prefix_hit_rate', fmt: S.percent, unit: '' }
-];
-
-/** ISL/OSL: same footprint as their live neighbours, no value slot at all. */
-const PLACEHOLDER_TILES = [
-  { id: 'isl', label: 'ISL' },
-  { id: 'osl', label: 'OSL' }
+  { id: 'prefix', label: 'Prefix cache', field: 'prefix_hit_rate', fmt: S.percent, unit: '' },
+  // Real as of the agent's `isl_mean`/`osl_mean`. They were placeholders while
+  // the protocol could not carry them; the design sized them so that lighting
+  // them up changes a border and a value and nothing reflows.
+  //
+  // Absent has a real meaning for both: no request COMPLETED in the window, so
+  // there is no mean. Tokens can be flowing the whole time — a long request
+  // accrues them without finishing — which is why the note says "no request
+  // finished" rather than "no traffic".
+  {
+    id: 'isl',
+    label: 'ISL',
+    field: 'isl_mean',
+    fmt: S.tokens,
+    unit: 'tok',
+    absentNote: 'no request finished'
+  },
+  {
+    id: 'osl',
+    label: 'OSL',
+    field: 'osl_mean',
+    fmt: S.tokens,
+    unit: 'tok',
+    absentNote: 'no request finished'
+  }
 ];
 
 /**
@@ -150,9 +168,6 @@ export function tiles(reading, opts) {
       paused: opts.paused
     };
   });
-  for (const p of PLACEHOLDER_TILES) {
-    out.push({ id: p.id, label: p.label, kind: 'placeholder' });
-  }
   return out;
 }
 

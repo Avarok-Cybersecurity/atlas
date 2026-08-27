@@ -36,18 +36,6 @@ export const CAPS = {
 
 const REGISTRY = [
   {
-    id: 'isl',
-    region: 'iostrip',
-    label: 'ISL',
-    soon: 'Coming soon — the agent does not yet report a mean input length per request, and deriving one in the browser from counters would be biased by in-flight requests.'
-  },
-  {
-    id: 'osl',
-    region: 'iostrip',
-    label: 'OSL',
-    soon: 'Coming soon — the agent does not yet report a mean output length per request, and deriving one in the browser from counters would be biased by in-flight requests.'
-  },
-  {
     id: 'test-prompt',
     region: 'actions',
     label: 'Test prompt',

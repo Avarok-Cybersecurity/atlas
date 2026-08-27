@@ -29,14 +29,34 @@ describe('absent is never zero, and the kinds of absence stay distinct', () => {
     }
   });
 
-  test('placeholders carry no value at all — not even the dash', () => {
+  test('the strip no longer carries a placeholder tile', () => {
+    // ISL and OSL were the only two, and the agent emits them now. If one comes
+    // back as a promise, it must come back deliberately — with a value slot
+    // that stays empty rather than an em-dash, which would be a claim.
     for (const reading of [null, { decode_tokens_per_s: 5, window_s: 2 }]) {
-      const ph = IO.tiles(reading, LIVE).filter((x) => x.kind === 'placeholder');
-      expect(ph.map((x) => x.id).sort()).toEqual(['isl', 'osl']);
-      for (const tile of ph) {
-        expect('text' in tile).toBe(false);
-      }
+      expect(IO.tiles(reading, LIVE).filter((x) => x.kind === 'placeholder')).toEqual([]);
     }
+  });
+
+  test('ISL and OSL read from the agent, and absence means no request finished', () => {
+    const live = IO.tiles(
+      { isl_mean: 512, osl_mean: 128, window_s: 4 },
+      LIVE
+    );
+    const isl = live.find((t) => t.id === 'isl');
+    const osl = live.find((t) => t.id === 'osl');
+    expect(isl.kind).toBe('reading');
+    expect(isl.text).toContain('512');
+    expect(osl.text).toContain('128');
+
+    // Tokens can be flowing the whole window while nothing FINISHES — a long
+    // request accrues them without completing — so the note must not say "no
+    // traffic", which would be a different and wrong claim.
+    const none = IO.tiles({ decode_tokens_per_s: 40, window_s: 4 }, LIVE);
+    const absent = none.find((t) => t.id === 'isl');
+    expect(absent.kind).toBe('absent');
+    expect(absent.text).toBe('—');
+    expect(absent.note).toBe('no request finished');
   });
 
   test('absence with a known meaning says it', () => {

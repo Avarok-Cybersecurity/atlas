@@ -4,9 +4,9 @@
   //
   // Row A: decode and prompt tok/s (numeral + gap-honest sparkline), requests
   // total, requests in flight. Row B: TTFT p50/p90, draft accept, prefix
-  // cache — and the ISL/OSL placeholders, same footprint as their live
-  // neighbours so lighting them up later changes a border and a value with
-  // no reflow.
+  // cache — and ISL/OSL, which were placeholders until the agent learned to
+  // emit `isl_mean`/`osl_mean`. They kept the same footprint throughout, so
+  // going live changed a border and a value and nothing reflowed.
   //
   // Every rule about what a tile shows lives in iostrip.js, tested: the four
   // kinds of absence (reading / pending / absent / placeholder) must never
@@ -16,7 +16,6 @@
   import * as IO from '$lib/agent/iostrip.js';
   import * as S from '$lib/agent/stats.js';
   import { nameOf } from '$lib/agent/refusal.js';
-  import ComingSoon from './ComingSoon.svelte';
 
   let {
     node,
@@ -128,8 +127,8 @@
       {@render tile(byId['ttft-p90'])}
       {@render tile(byId['accept'])}
       {@render tile(byId['prefix'])}
-      <ComingSoon id="isl" kind="tile" />
-      <ComingSoon id="osl" kind="tile" />
+      {@render tile(byId['isl'])}
+      {@render tile(byId['osl'])}
     </div>
   {/if}
 </div>

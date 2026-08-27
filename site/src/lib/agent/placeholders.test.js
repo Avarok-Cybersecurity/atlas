@@ -23,8 +23,12 @@ describe('the registry itself', () => {
     }
   });
 
-  test('the ISL and OSL tiles are placeholders, and the forbidden verbs are not', () => {
-    expect(placeholdersFor('iostrip', FLEET).map((e) => e.id).sort()).toEqual(['isl', 'osl']);
+  test('the I/O strip promises nothing, and the forbidden verbs never appear', () => {
+    // ISL and OSL were the strip's two placeholders until the agent learned to
+    // emit `isl_mean`/`osl_mean`. Nothing in the strip is a promise now, and a
+    // tile that went real must leave the registry — a "soon" chip on a field
+    // that already works is worse than no chip.
+    expect(placeholdersFor('iostrip', FLEET)).toEqual([]);
     // The closed-enum doctrine: no remote shell, exec, restart or reboot may
     // appear even as a promise.
     for (const region of Object.keys(CAPS)) {
@@ -71,7 +75,7 @@ describe('solo mode collapses the actions chips', () => {
 
 describe('popover lookup', () => {
   test('a registered id resolves to its sentence', () => {
-    expect(placeholder('isl').soon).toContain('in-flight requests');
+    expect(placeholder('update-agent').soon.length).toBeGreaterThan(0);
   });
 
   test('an unknown id throws instead of opening an empty popover', () => {
