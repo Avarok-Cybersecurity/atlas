@@ -351,4 +351,17 @@ img, svg, video { max-width: 100%; }
   .rr-cols { display: none; }
   .roster-foot { border-top: 1px solid var(--border); padding: 0.4rem 0.8rem; }
   .stage, .rail { overflow: visible; }
+
+  /* The stage's fixed rows are a desktop budget. Stacked, the page scrolls,
+     so every row sizes to its content and the dock stops being the one
+     scroller — its content joins the page flow. */
+  .stage { display: block; }
+  .ih { flex-wrap: wrap; overflow: visible; }
+  .vg-grid { grid-template-columns: repeat(2, 1fr); }
+  .io-rowa, .io-rowb { grid-template-columns: repeat(2, 1fr); height: auto; }
+  .io { padding: 8px 9px; }
+  .io-off { min-height: 4rem; }
+  .ab { flex-wrap: wrap; padding: 0.4rem 0.9rem; }
+  .dock-body { overflow-y: visible; padding-bottom: 2rem; }
+  .dt-log { max-height: 45vh; }
 }

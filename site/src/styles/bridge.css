@@ -194,10 +194,19 @@
 .roster-foot { display: flex; align-items: center; padding: 0 0.8rem; border-top: 1px solid var(--border); }
 .roster-add { width: 100%; padding: 0.35rem 0; font-size: 0.78rem; }
 
-/* ---- C: stage (shell: one scroll region until the dock is recomposed) ------ */
-.stage { background: var(--card); overflow-y: auto; min-height: 0; padding: 1rem 1.2rem 2rem; }
-.stage-none { color: var(--t3); font-size: 0.9rem; padding: 1rem 0; }
-.stage > .fl-card { margin-bottom: 1rem; }
+/* ---- C: stage — recomposed to the spec's fixed rows ------------------------
+   48 (identity, allowed one extra line) / 144 (vitals 2×4) / 120 (I/O strip,
+   two 56px rows + 8px gap) / 44 (actions) / remainder (console dock, the only
+   scroll region). 356px of fixed rows leaves the dock ≥363px at 1366×768.
+   The stage itself never scrolls; row internals live in stage.css. */
+.stage {
+  /* padding: 0 beats app.css's global `section` padding — the stage budgets
+     its own rows and a global 7rem would silently halve the dock. */
+  background: var(--card); min-height: 0; overflow: hidden; padding: 0;
+  display: grid;
+  grid-template-rows: minmax(48px, auto) 144px 120px 44px minmax(0, 1fr);
+}
+.stage-none { color: var(--t3); font-size: 0.9rem; padding: 1rem 1.2rem; }
 .stage-h { font-size: 1rem; font-weight: 700; color: var(--t1); margin-bottom: 0.3rem; }
 .stage-sub { font-size: 0.82rem; color: var(--t2); line-height: 1.55; max-width: 62ch; }
 .stage-add, .stage-launch { margin-top: 1.6rem; padding-top: 1.2rem; border-top: 1px solid var(--border); }

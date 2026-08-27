@@ -93,3 +93,52 @@ describe('telling loading from idle', () => {
     expect(S.hasAnything({ a: null, b: undefined })).toBe(false);
   });
 });
+
+describe('uptime reads at its order of magnitude', () => {
+  test('each band formats coarsely', () => {
+    expect(S.uptime(42)).toBe('42s');
+    expect(S.uptime(90)).toBe('1m');
+    expect(S.uptime(3660)).toBe('1h 1m');
+    expect(S.uptime(3 * 86400 + 2 * 3600)).toBe('3d 2h');
+  });
+
+  test('absent is the dash, never zero', () => {
+    expect(S.uptime(null)).toBe('—');
+    expect(S.uptime(undefined)).toBe('—');
+    expect(S.uptime(-5)).toBe('—');
+  });
+});
+
+describe('timeline pins the sparkline to a fixed time axis', () => {
+  test('always exactly HISTORY slots, samples at the left', () => {
+    const t = S.timeline([1, 2, 3], { held: false });
+    expect(t.length).toBe(S.HISTORY);
+    expect(t.slice(0, 3)).toEqual([1, 2, 3]);
+    expect(t[3]).toBeNull();
+  });
+
+  test('a full history is windowed to the newest HISTORY samples', () => {
+    const long = Array.from({ length: S.HISTORY + 10 }, (_, i) => i);
+    const t = S.timeline(long, { held: false });
+    expect(t.length).toBe(S.HISTORY);
+    expect(t[S.HISTORY - 1]).toBe(S.HISTORY + 9);
+  });
+
+  test('held leaves a visible gap at the right edge', () => {
+    const full = Array.from({ length: S.HISTORY }, () => 5);
+    const t = S.timeline(full, { held: true });
+    expect(t.slice(-S.HOLD_GAP).every((v) => v === null)).toBe(true);
+    // The samples slid left rather than being dropped from the count shown.
+    expect(t[S.HISTORY - S.HOLD_GAP - 1]).toBe(5);
+  });
+
+  test('held does not move a line that already ends short', () => {
+    const t = S.timeline([1, 2], { held: true });
+    expect(t.slice(0, 2)).toEqual([1, 2]);
+  });
+
+  test('held must be said, not assumed', () => {
+    expect(() => S.timeline([1])).toThrow(TypeError);
+    expect(() => S.timeline([1], {})).toThrow(TypeError);
+  });
+});

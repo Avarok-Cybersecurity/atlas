@@ -11,13 +11,36 @@
   // both move focus WITH selection so the keyboard never loses its place.
 
   import { move, rosterVm, selectByKey } from '$lib/agent/selection.js';
+  import * as S from '$lib/agent/stats.js';
   import FleetAggregate from './FleetAggregate.svelte';
   import RosterRow from './RosterRow.svelte';
 
-  let { fleet, selectedId, onselect, onadd, onpair } = $props();
+  let { fleet, selectedId, poller = null, paused = false, onselect, onadd, onpair } = $props();
 
   const nodes = $derived(fleet.nodes);
   const rows = $derived(rosterVm(nodes, selectedId));
+
+  // The micro-columns and the fleet Σ read the same poller entries; a dash
+  // means "unknown", which must never render as a number.
+  const readings = $derived(poller?.byNode ?? {});
+  const entries = $derived(
+    nodes
+      .filter((n) => n.running)
+      .map((n) => ({
+        id: n.id,
+        name: n.name,
+        at: readings[n.id]?.at ?? null,
+        reading: readings[n.id]?.reading ?? null
+      }))
+  );
+  const decodeOf = (id) => {
+    const v = readings[id]?.reading?.decode_tokens_per_s;
+    return Number.isFinite(v) ? S.tokens(v) : null;
+  };
+  const requestsOf = (id) => {
+    const v = readings[id]?.reading?.requests_active;
+    return Number.isFinite(v) ? S.count(v) : null;
+  };
 
   let listEl = $state(null);
 
@@ -42,7 +65,7 @@
      which would tear this column out of the grid. A labelled region is the
      honest role anyway — this is a selection surface, not site navigation. -->
 <div class="roster" id="fleet" role="region" aria-label="Fleet roster">
-  <FleetAggregate />
+  <FleetAggregate {entries} {paused} />
 
   <div class="roster-hdr" aria-hidden="true">
     <span class="roster-hdr-node">node</span>
@@ -53,7 +76,15 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <ul class="roster-rows" onkeydown={onKeys} bind:this={listEl}>
     {#each rows as vm (vm.id)}
-      <RosterRow node={nodes.find((n) => n.id === vm.id)} {vm} {nodes} {onselect} {onpair} />
+      <RosterRow
+        node={nodes.find((n) => n.id === vm.id)}
+        {vm}
+        {nodes}
+        {onselect}
+        {onpair}
+        decode={decodeOf(vm.id)}
+        requests={requestsOf(vm.id)}
+      />
     {:else}
       <li class="roster-empty">No machines yet.</li>
     {/each}

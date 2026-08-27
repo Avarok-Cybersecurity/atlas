@@ -28,7 +28,10 @@ export const CAPS = {
   actions: 3,
   dock: 1,
   command: 2,
-  alerts: 3
+  alerts: 3,
+  // The Status tab's footer: the one admission that the action log is
+  // session-memory, not an audit trail.
+  status: 1
 };
 
 const REGISTRY = [
@@ -79,6 +82,12 @@ const REGISTRY = [
     region: 'command',
     label: '24h',
     soon: 'Coming soon — the agent keeps no history ring buffer and has no query verb for one; this page can only show what it saw this session.'
+  },
+  {
+    id: 'durable-audit',
+    region: 'status',
+    label: 'Durable audit',
+    soon: 'Coming soon — the agent keeps no action history; this log is only what this page did this session, and it dies with the tab.'
   },
   {
     id: 'alert-ack',

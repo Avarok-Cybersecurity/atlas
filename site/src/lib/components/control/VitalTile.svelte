@@ -31,6 +31,9 @@
     stale = false,
     /** The operator paused updates; the last value is shown as held, not live. */
     paused = false,
+    /** A word the agent raised about this reading (e.g. 'clamped'). The page
+        invents no thresholds: a badge renders only when an alert names it. */
+    badge = null,
     format = (v) => v.toFixed(0)
   } = $props();
 
@@ -47,7 +50,9 @@
   class:vt-alert={Boolean(alert)}
   class:vt-alert-crit={alert === 'critical'}
 >
-  <span class="vt-label">{label}</span>
+  <span class="vt-label"
+    >{label}{#if badge}<span class="vt-badge">{badge}</span>{/if}</span
+  >
 
   {#if unsupported}
     <span class="vt-val vt-dash" aria-hidden="true">—</span>

@@ -1,0 +1,245 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The recomposed stage rows (bridge.css owns the grid; this file owns the
+   rows' internals) plus the command strip's live controls. Split from
+   bridge.css on the 500-line cap. Loaded after bridge.css, before mobile.css
+   — mobile.css stays the SSOT for every viewport rule. */
+
+/* ---- command strip: cadence + vitals toggle ------------------------------- */
+.cmd-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.cmd-seg-btn {
+  padding: 0.28rem 0.55rem; font-size: 0.72rem; font-family: inherit;
+  color: var(--t2); background: none; border: 0; cursor: pointer; white-space: nowrap;
+}
+.cmd-seg-btn + .cmd-seg-btn { border-left: 1px solid var(--border); }
+.cmd-seg-btn:hover { color: var(--t1); background: var(--bg2); }
+.cmd-seg-on, .cmd-seg-btn.cmd-seg-on { color: var(--t1); background: var(--bg2); font-weight: 650; }
+.cmd-vitals { display: inline-flex; align-items: center; gap: 0.3rem; }
+.cmd-vitals-btn {
+  padding: 0.28rem 0.55rem; font-size: 0.72rem; font-family: inherit;
+  color: var(--t3); background: none; border: 1px solid var(--border-strong);
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.cmd-vitals-on { color: var(--t1); background: var(--bg2); }
+.cmd-vitals-cap { font-size: 0.56rem; color: var(--t3); white-space: nowrap; }
+
+/* ---- C1: identity header --------------------------------------------------- */
+.ih {
+  display: flex; align-items: center; gap: 0.55rem; flex-wrap: nowrap;
+  padding: 0.35rem 0.9rem; border-bottom: 1px solid var(--border); min-width: 0;
+  overflow: hidden;
+}
+.ih-name {
+  font-size: 1rem; font-weight: 700; color: var(--t1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 18ch;
+}
+.ih-facts {
+  font-size: 0.72rem; color: var(--t2); min-width: 0; flex: 0 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ih-stale { color: var(--amber); }
+.ih-prov {
+  font-size: 0.68rem; color: var(--ch-cyan); white-space: nowrap;
+  min-width: 4ch; overflow: hidden; text-overflow: ellipsis; flex: 0 4 auto;
+}
+.ih-reason {
+  font-size: 0.68rem; color: var(--amber); min-width: 0; flex: 1 1 12ch;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.3;
+}
+.ih-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+.ih-details {
+  padding: 0.2rem 0.5rem; font-size: 0.68rem; font-family: inherit;
+  color: var(--t3); background: none; border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer;
+}
+.ih-details:hover { color: var(--t1); border-color: var(--border-strong); }
+
+/* ---- C2: vitals grid -------------------------------------------------------- */
+.vg { padding: 4px 9px; border-bottom: 1px solid var(--border); min-width: 0; overflow: hidden; }
+.vg-grid { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 64px; gap: 8px; }
+.vg .vt-tile { min-height: 64px; height: 64px; overflow: hidden; }
+.vg .vt-label, .vg .vt-sub { line-height: 1.2; }
+.vg .vt-val { line-height: 1.25; }
+.vg-note { font-size: 0.82rem; color: var(--t2); line-height: 1.55; padding: 0.8rem 0.4rem; max-width: 62ch; }
+.vt-badge {
+  margin-left: 0.4rem; padding: 0 0.35rem; border-radius: 999px;
+  font-size: 0.54rem; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+}
+
+/* ---- C3: serving I/O strip --------------------------------------------------
+   Two 56px rows + 8px gap = 120px. Fixed geometry: a tile is the same size in
+   every one of its states, so telemetry arriving never reflows the strip. */
+.io { padding: 0 9px; border-bottom: 1px solid var(--border); min-width: 0; overflow: hidden; }
+.io-rowa { display: grid; grid-template-columns: 2fr 2fr 1.2fr 1.2fr; gap: 8px; height: 56px; }
+.io-rowb { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; height: 56px; margin-top: 8px; }
+.io-tile {
+  display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; height: 56px;
+  padding: 0.4rem 0.5rem; border-radius: 8px; background: var(--bg2);
+  border: 1px solid transparent; overflow: hidden;
+}
+.io-label {
+  font-family: var(--font-mono); font-size: 0.56rem; font-weight: 700;
+  letter-spacing: 0.06em; color: var(--t3); text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2;
+}
+.io-caption { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--t3); }
+.io-val {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 0.94rem; font-weight: 700; color: var(--t1); white-space: nowrap;
+  line-height: 1.25;
+}
+.io-unit { font-size: 0.64rem; font-weight: 600; color: var(--t3); }
+.io-dash { color: var(--t3); }
+.io-note { font-size: 0.56rem; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
+.io-paused .io-val { color: var(--t3); }
+.io-wide-body { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex: 1; }
+.io-spark { flex: 1; min-width: 0; height: 30px; color: var(--ch-cyan); }
+.io-off {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 0.86rem; color: var(--t3);
+}
+/* The I/O placeholder tiles share the exact live-tile footprint, so lighting
+   one up later changes a border and a value with no reflow. */
+.io-rowb .cs-wrap { display: flex; min-width: 0; }
+.io-rowb .cs-btn.cs-tile { height: 56px; min-height: 56px; padding: 0.4rem 0.5rem; }
+
+/* ---- C4: actions bar -------------------------------------------------------- */
+.ab {
+  display: flex; align-items: center; gap: 0.35rem; padding: 0 0.9rem;
+  border-bottom: 1px solid var(--border); min-width: 0; overflow-x: auto; overflow-y: hidden;
+}
+.ab-route {
+  /* Never squeezed out: every action states where it will run BEFORE it runs,
+     so the route statement wins over the chips (the bar scrolls instead). */
+  font-size: 0.68rem; color: var(--t3); white-space: nowrap; flex: 0 0 auto;
+  max-width: 20rem; overflow: hidden; text-overflow: ellipsis; margin-right: 0.3rem;
+}
+.ab-warn { color: var(--amber); }
+.ab-btn {
+  padding: 0.3rem 0.55rem; font-size: 0.74rem; font-family: inherit;
+  color: var(--t1); background: none; border: 1px solid var(--border-strong);
+  border-radius: 6px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.ab-btn:hover { background: var(--bg2); }
+.ab-off, .ab-btn.ab-off { color: var(--t3); border-color: var(--border); cursor: not-allowed; }
+.ab-off:hover { background: none; }
+.ab-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.ab-hr { width: 1px; align-self: stretch; margin: 8px 0.3rem; background: var(--border); flex-shrink: 0; }
+.ab .cs-btn.cs-chip { padding: 0.24rem 0.5rem; flex-shrink: 0; }
+/* The bar sits above the dock, so its popovers open downward into it. */
+.ab .cs-pop { z-index: 70; }
+
+/* ---- C5: console dock ------------------------------------------------------- */
+.dock { display: flex; flex-direction: column; min-height: 0; }
+.dock-tabs { display: flex; gap: 0.2rem; padding: 0 0.9rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.dock-tab {
+  padding: 0.45rem 0.7rem; font-size: 0.78rem; font-family: inherit;
+  color: var(--t2); background: none; border: 0; border-bottom: 2px solid transparent;
+  cursor: pointer; white-space: nowrap;
+}
+.dock-tab:hover { color: var(--t1); }
+.dock-tab-on, .dock-tab.dock-tab-on { color: var(--t1); border-bottom-color: var(--ch-cyan); font-weight: 650; }
+.dock-tab-soon { border: 1px dashed var(--border); border-bottom: 1px dashed var(--border); border-radius: 6px 6px 0 0; margin: 0.2rem 0 0.2rem 0.4rem; color: var(--t3); }
+.dock-tab-soon.dock-tab-on { color: var(--t2); border-color: var(--border-strong); }
+.dock-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.8rem 0.9rem 1.4rem; }
+.dock-soon {
+  border: 1px dashed var(--border); border-radius: 8px; padding: 0.9rem 1rem; max-width: 62ch;
+}
+.dock-soon-head { font-weight: 700; color: var(--t2); margin-bottom: 0.4rem; }
+.dock-soon-text { font-size: 0.82rem; color: var(--t2); line-height: 1.55; margin-top: 0.3rem; }
+.dock-extra { margin-top: 1.6rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
+
+/* ---- dock tabs: shared bits ------------------------------------------------- */
+.dt-quiet { font-size: 0.82rem; color: var(--t3); line-height: 1.55; max-width: 62ch; }
+.dt-cap { font-size: 0.68rem; color: var(--t3); }
+.dt-note { font-size: 0.76rem; color: var(--amber); margin: 0.4rem 0; }
+.dt-problem { font-size: 0.78rem; color: var(--red); margin: 0.4rem 0; overflow-wrap: anywhere; }
+.dt-warn { font-size: 0.76rem; color: var(--amber); margin: 0.5rem 0; line-height: 1.5; }
+.dt-h { font-size: 0.8rem; font-weight: 700; color: var(--t1); display: flex; align-items: baseline; gap: 0.5rem; }
+.dt-route-badge { font-size: 0.66rem; font-weight: 400; color: var(--ch-cyan); }
+
+/* logs */
+.dt-log {
+  margin-top: 0.4rem; max-height: 100%; min-height: 8rem; overflow-y: auto;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.5rem 0.6rem; font-size: 0.7rem; line-height: 1.45;
+}
+.dt-line { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--t2); }
+.dt-follow {
+  margin-top: 0.4rem; padding: 0.25rem 0.6rem; font-size: 0.72rem; font-family: inherit;
+  color: var(--ch-cyan); background: none; border: 1px solid var(--border-strong);
+  border-radius: 6px; cursor: pointer;
+}
+
+/* launch */
+.dt-recipes { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.8rem; }
+.dt-recipe {
+  display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; text-align: left;
+  padding: 0.45rem 0.6rem; font-family: inherit; font-size: 0.8rem; color: var(--t1);
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+.dt-recipe:hover { border-color: var(--border-strong); }
+.dt-recipe-on, .dt-recipe.dt-recipe-on { border-color: var(--ch-cyan); }
+.dt-recipe-off { color: var(--t3); cursor: not-allowed; }
+.dt-recipe-model { font-size: 0.7rem; color: var(--t3); }
+.dt-recipe-why { font-size: 0.68rem; color: var(--amber); flex-basis: 100%; }
+.dt-launchrow { display: flex; align-items: center; gap: 0.6rem; margin: 0.8rem 0; flex-wrap: wrap; }
+.dt-act { padding: 0.4rem 0.9rem; font-size: 0.8rem; }
+.dt-cancel {
+  padding: 0.3rem 0.6rem; font-size: 0.74rem; font-family: inherit; color: var(--t2);
+  background: none; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.dt-cmd {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.6rem 0.7rem; font-size: 0.7rem; line-height: 1.5; overflow-x: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.3rem 0 0.6rem;
+}
+.dt-started { border: 1px solid var(--border-strong); border-radius: 8px; padding: 0.6rem 0.8rem; margin-top: 0.6rem; font-size: 0.8rem; color: var(--t2); }
+.dt-endpoint { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.4rem; overflow-wrap: anywhere; }
+.dt-copy {
+  padding: 0.2rem 0.5rem; font-size: 0.68rem; font-family: inherit; color: var(--ch-cyan);
+  background: none; border: 1px solid var(--border-strong); border-radius: 6px; cursor: pointer; flex-shrink: 0;
+}
+
+/* status + session action log */
+.dt-statushead { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.4rem; }
+.dt-refresh {
+  padding: 0.25rem 0.6rem; font-size: 0.72rem; font-family: inherit; color: var(--t2);
+  background: none; border: 1px solid var(--border-strong); border-radius: 6px; cursor: pointer;
+}
+.dt-refresh:hover { color: var(--t1); }
+.dt-table { width: 100%; border-collapse: collapse; font-size: 0.74rem; margin: 0.3rem 0 0.6rem; }
+.dt-table th {
+  text-align: left; font-family: var(--font-mono); font-size: 0.56rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3);
+  padding: 0.25rem 0.6rem 0.25rem 0; border-bottom: 1px solid var(--border);
+}
+.dt-table td { padding: 0.35rem 0.6rem 0.35rem 0; border-bottom: 1px solid var(--border); color: var(--t2); overflow-wrap: anywhere; }
+.dt-loghead { margin-top: 1.2rem; }
+.dt-loglist { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.dt-logrow {
+  display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap;
+  padding: 0.3rem 0; border-bottom: 1px solid var(--border); font-size: 0.74rem;
+}
+.dt-logwhen { font-size: 0.64rem; color: var(--t3); }
+.dt-logverb { font-weight: 700; color: var(--t1); }
+.dt-logtarget { color: var(--t2); }
+.dt-logroute { font-size: 0.66rem; color: var(--ch-cyan); }
+.dt-logoutcome { color: var(--t2); overflow-wrap: anywhere; }
+.dt-logbad .dt-logoutcome { color: var(--red); }
+.dt-audit { margin-top: 0.7rem; }
+
+/* ---- B1: aggregate sparkline ------------------------------------------------ */
+.fa-spark { flex: 1; min-width: 0; height: 22px; align-self: center; color: var(--ch-cyan); }
+
+/* Skeleton shimmer is meaning-carrying motion (a first sample in flight) and
+   is therefore the only animation here, guarded exactly as the spec asks. */
+@media (prefers-reduced-motion: no-preference) {
+  .vt-skeleton { background-size: 200% 100%; animation: stage-shimmer 1.6s linear infinite; }
+  @keyframes stage-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+}

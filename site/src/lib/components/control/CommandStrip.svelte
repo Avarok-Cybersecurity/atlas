@@ -20,10 +20,13 @@
   // The timer here only lets the fleet settle before the sentence is read.
 
   import { ANNOUNCE_DEBOUNCE_MS, announcement } from '$lib/agent/announce.js';
+  import { CADENCES } from '$lib/agent/cadence.js';
   import { placeholdersFor } from '$lib/agent/placeholders.js';
   import ComingSoon from './ComingSoon.svelte';
 
-  let { fleet, onselect } = $props();
+  let { fleet, onselect, cadence, oncadence, vitals = true, onvitals } = $props();
+
+  const cadenceLabel = (c) => (c.ms === null ? 'Pause' : c.id);
 
   const worst = $derived(fleet.alerts[0] ?? null);
   const more = $derived(Math.max(0, fleet.alerts.length - 1));
@@ -94,6 +97,40 @@
   </div>
 
   <div class="cmd-right">
+    <!-- The poll cadence: what the page asks LaunchStats for, and how often.
+         Pause means paused for everything — background 10s polls that kept
+         flowing would keep a relay busy on behalf of a page claiming quiet. -->
+    <span class="cmd-seg" role="group" aria-label="Poll cadence">
+      {#each CADENCES as c (c.id)}
+        <button
+          type="button"
+          class="cmd-seg-btn"
+          class:cmd-seg-on={cadence === c.id}
+          aria-pressed={cadence === c.id}
+          onclick={() => oncadence?.(c.id)}
+        >
+          {cadenceLabel(c)}
+        </button>
+      {/each}
+    </span>
+
+    <!-- Display only, and it says so: the agent discards WatchFleet{vitals}
+         (session.rs:219), so flipping this holds the tiles rather than
+         quieting the wire. The caption comes off when the agent honours it. -->
+    <span class="cmd-vitals">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={vitals}
+        class="cmd-vitals-btn"
+        class:cmd-vitals-on={vitals}
+        onclick={() => onvitals?.(!vitals)}
+      >
+        Vitals
+      </button>
+      <span class="cmd-vitals-cap">display only</span>
+    </span>
+
     <span class="cmd-range" aria-label="Telemetry range">
       <span class="cmd-range-live" aria-current="true">this session</span>
       {#each rangeSegments as seg (seg.id)}

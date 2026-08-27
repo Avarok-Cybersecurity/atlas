@@ -35,6 +35,9 @@
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { fromHash, reselect, toHash } from '$lib/agent/selection.js';
   import { storedToken } from '$lib/agent/protocol.js';
+  import { CADENCES, isPaused } from '$lib/agent/cadence.js';
+  import { StatsPoller } from '$lib/agent/statspoll.svelte.js';
+  import * as A from '$lib/agent/actionlog.js';
   import { startAgentCommand } from '$lib/data.js';
 
   // `install`, not `run`. `run` holds the terminal and the agent dies with it,
@@ -46,6 +49,44 @@
   let unpairing = $state(null);
   let head = $state(null);
   let addOpen = $state(false);
+
+  // ---- telemetry ---------------------------------------------------------
+
+  // 2s: fast enough to feel live, half the load of 1s on a relayed fleet.
+  // The operator owns it from the command strip; it is a starting position,
+  // not a policy.
+  let cadenceId = $state('2s');
+  let vitalsOn = $state(true);
+  const cadenceMs = $derived(CADENCES.find((c) => c.id === cadenceId).ms);
+  const paused = $derived(isPaused(cadenceMs));
+
+  // The one stats poller. Schedule rules live in cadence.js; this page only
+  // tells it what the fleet looks like and which node is selected.
+  const poller = new StatsPoller(fleet.agent);
+  $effect(() => {
+    if (fleet.mode !== 'live') return;
+    poller.start();
+    return () => poller.stop();
+  });
+  $effect(() => {
+    poller.configure(
+      fleet.nodes.map((n) => ({
+        id: n.id,
+        selected: n.id === selectedId,
+        running: n.running !== null,
+        recipe: n.running,
+        on: n.isLocal ? null : n.id
+      })),
+      cadenceMs
+    );
+  });
+
+  // The session action log: what this page asked the fleet to do. Page
+  // memory, dead with the tab — the Status tab says so.
+  let log = $state([]);
+  function record(fields) {
+    log = A.append(log, A.entry(fields, Date.now()));
+  }
 
   /** Whether a connection to the local agent has been attempted yet. */
   let attempted = $state(false);
@@ -134,10 +175,19 @@
 
 {#if fleet.mode === 'live'}
   <div class="bridge">
-    <CommandStrip {fleet} onselect={select} />
+    <CommandStrip
+      {fleet}
+      onselect={select}
+      cadence={cadenceId}
+      oncadence={(id) => (cadenceId = id)}
+      vitals={vitalsOn}
+      onvitals={(v) => (vitalsOn = v)}
+    />
     <Roster
       {fleet}
       {selectedId}
+      {poller}
+      {paused}
       onselect={select}
       onadd={() => (addOpen = true)}
       onpair={(n) => (pairing = n)}
@@ -145,7 +195,12 @@
     <NodeStage
       {fleet}
       node={selectedNode}
+      {poller}
+      {paused}
+      {vitalsOn}
       {addOpen}
+      {log}
+      onlog={record}
       onpair={(n) => (pairing = n)}
       onunpair={(n) => (unpairing = n)}
       ondetails={(n) => (details = n)}
