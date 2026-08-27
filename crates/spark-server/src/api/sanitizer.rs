@@ -33,6 +33,32 @@ use super::strip::strip_thinking_tags;
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::inference_types::*;
 
+/// Longest suffix of `buf` that is a byte-prefix of ANY leak marker —
+/// the only bytes that could still fuse with a future chunk into a marker
+/// match. Everything before that suffix is marker-incompatible and safe to
+/// emit immediately. Bounded by `tag_max - 1` (a full marker would have
+/// matched in the scan above). Markers are ASCII, so byte comparison is
+/// exact; a hold that lands mid-char is rounded UP by the caller's
+/// char-boundary cut, which only ever holds MORE, never less.
+fn marker_prefix_hold(buf: &str, markers: &tool_parser::LeakMarkers, tag_max: usize) -> usize {
+    let b = buf.as_bytes();
+    let max_k = b.len().min(tag_max.saturating_sub(1));
+    for k in (1..=max_k).rev() {
+        let suffix = &b[b.len() - k..];
+        let hit = markers
+            .orphan_open
+            .iter()
+            .chain(markers.close.iter())
+            .chain(markers.envelope_open.iter())
+            .chain(markers.envelope_close.iter())
+            .any(|m| m.as_bytes().starts_with(suffix));
+        if hit {
+            return k;
+        }
+    }
+    0
+}
+
 pub fn sanitize_content_chunk(
     text: &str,
     tag_scan_buf: &mut String,
@@ -187,18 +213,32 @@ pub fn sanitize_content_chunk(
                 continue;
             }
             None => {
+                // Hold back ONLY the longest suffix that is a byte-prefix of
+                // some marker — the only bytes that can still fuse with a
+                // future chunk into a match. The old rule held a flat
+                // `tag_max - 1` bytes regardless of content, which withheld
+                // the FIRST ~tag_max bytes of EVERY stream until enough
+                // later tokens arrived to push them past the window —
+                // measured 250-500 ms of first-delta latency on every
+                // response ("An" is not a prefix of "<tool_call>", yet it
+                // waited for 3-5 more decode steps). Marker-incompatible
+                // tails are safe to emit immediately; the straddle-fusion
+                // guarantee only ever needed the compatible suffix.
                 let buf_len = tag_scan_buf.len();
-                let hold = tag_max.saturating_sub(1);
+                let hold = marker_prefix_hold(tag_scan_buf, markers, tag_max);
                 if buf_len <= hold {
                     break;
                 }
                 let commit_to = buf_len - hold;
-                let cut = tag_scan_buf
-                    .char_indices()
-                    .map(|(i, _)| i)
-                    .take_while(|&i| i <= commit_to)
-                    .last()
-                    .unwrap_or(0);
+                // Floor to a char boundary. The previous `char_indices()`
+                // walk could never select `buf_len` itself (char_indices
+                // yields char STARTS only), so the final character of the
+                // buffer was unconditionally withheld — invisible under the
+                // old flat holdback, wrong the moment hold can be 0.
+                let mut cut = commit_to;
+                while cut > 0 && !tag_scan_buf.is_char_boundary(cut) {
+                    cut -= 1;
+                }
                 let emit: String = tag_scan_buf.drain(..cut).collect();
                 out.push_str(&emit);
                 break;

@@ -88,6 +88,9 @@ pub(super) struct StreamState {
     pub(super) loop_scan_buf: String,
     /// Set true when the watchdog or SimHash guard fires.
     pub(super) loop_watchdog_triggered: bool,
+    /// TTFT forensics: whether the first non-empty delta batch has been
+    /// logged leaving `handle_token` (one line per stream).
+    pub(super) first_result_logged: bool,
     /// Set true when the watchdog salvages a fenced/XML tool intent
     /// into a synthetic `tool_call` so the Done arm picks the right
     /// `finish_reason`.
@@ -218,6 +221,7 @@ impl StreamState {
             reasoning_tag_scan_buf: String::new(),
             loop_scan_buf: String::new(),
             loop_watchdog_triggered: false,
+            first_result_logged: false,
             salvaged_tool_call: false,
             simhash_guard: crate::loop_simhash::SimHashLoopGuard::new(),
             simhash_pending: String::new(),
