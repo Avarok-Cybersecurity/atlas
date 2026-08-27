@@ -493,6 +493,36 @@ mod tests {
         assert_eq!(c.partial_rotary_factor, 0.0);
     }
 
+    /// 🪤 GLM-5.3 is **MLA AND NoPE at the same time** — the exact combination
+    /// that broke Atlas's MLA decode dispatch.
+    ///
+    /// `qwen3_attention/decode/run_paged_decode.rs` used to select the MLA
+    /// compressed-cache decode with `mla.rope > 0`, treating "has a RoPE
+    /// section" as a proxy for "is MLA". That holds for DeepSeek-V4-Flash
+    /// (rope=64) and fails here: GLM has a 512-dim latent cache and rope=0, so
+    /// it satisfied "is MLA" while failing the proxy, and would have fallen
+    /// through to the generic *non-MLA* paged decode carrying an MLA-shaped
+    /// cache — a wrong answer with no crash.
+    ///
+    /// The predicate is now `mla.is_some()`, and only the genuine RoPE
+    /// operations are guarded on `rope > 0`. This test pins the config-level
+    /// fact that makes the distinction necessary; if it ever fails, re-read that
+    /// dispatch before touching anything else.
+    #[test]
+    fn is_mla_and_nope_simultaneously() {
+        let c = parse_glm5_next(&glm53_config_json()).expect("parse");
+        assert!(
+            c.kv_lora_rank > 0,
+            "GLM-5.3 is MLA: a latent KV cache of {} dims",
+            c.kv_lora_rank
+        );
+        assert_eq!(c.kv_lora_rank, 512);
+        assert_eq!(
+            c.qk_rope_head_dim, 0,
+            "...and simultaneously NoPE. `rope > 0` must never stand in for `is MLA`."
+        );
+    }
+
     /// head_dim=0 in-file must resolve to qk_head_dim (256), never to
     /// hidden_size / num_attention_heads (64).
     #[test]
