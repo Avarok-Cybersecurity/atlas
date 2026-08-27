@@ -17,6 +17,7 @@
   // House rule, as in ClusterLaunch: the rules live in tested modules
   // (`network.js`), and this file is only a surface.
   import { checkTarget, networksOf } from '$lib/agent/network.js';
+  import HelpDot from './HelpDot.svelte';
 
   let { fleet } = $props();
 
@@ -86,6 +87,28 @@
     <p class="fs-note">
       Machines on these networks appear here on their own. Discovery is
       link-local, so anything past a router has to be named below.
+      <HelpDot label="How to reach machines on another network">
+        <p>
+          Discovery uses mDNS, which does not cross a router. A machine on a
+          network this one cannot see will never appear on its own.
+        </p>
+        <p>
+          The way to reach it is to install the agent on a machine that sits on
+          <em>both</em> networks — one interface on your LAN, one on the far
+          subnet — and pair with that machine. It becomes the middle node: it
+          can see its own neighbours and reports them here, and control of them
+          is carried through it.
+        </p>
+        <p>
+          Two DGX Sparks joined by RoCE are the usual case. Pair with the one
+          your laptop can reach; the machines behind it on the fabric follow.
+        </p>
+        <p>
+          Pairing itself stays between neighbours — each hop trusts the machine
+          it can actually reach — so a middle node vouches for what is behind
+          it rather than handing over its keys.
+        </p>
+      </HelpDot>
     </p>
   {:else}
     <!-- Not "no networks found". The agent reports its own interfaces, so an

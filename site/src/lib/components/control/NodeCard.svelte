@@ -13,6 +13,7 @@
 
   import VitalTile from './VitalTile.svelte';
   import { preferredAddress, linkWarns, isStale } from '$lib/agent/fleet.svelte.js';
+  import { classLabel, subnetOf } from '$lib/agent/network.js';
   import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
 
   let { node, onpair, onunpair, ondetails } = $props();
@@ -24,6 +25,10 @@
   $effect(() => useClock());
 
   const addr = $derived(preferredAddress(node));
+  // Which network, not just which address. "10.10.10.2" does not tell an
+  // operator whether that is the fabric or the office LAN; "10.10.10.0/24"
+  // does, and it is the thing they compare against their own networks.
+  const subnet = $derived(addr ? subnetOf(addr.addr, addr.prefixLen) : null);
   const stale = $derived(isStale(node, nowMs()));
   const staleFor = $derived(Math.max(0, Math.round((nowMs() - node.lastSeen) / 1000)));
   // 'unreachable' is a PAIRED node that is not answering, so it keeps its
@@ -128,17 +133,18 @@
             ? 'This machine told us where it is, but that message is not authenticated — so its link is not taken on trust until we reach it over the paired channel.'
             : undefined}
         >
-          {addr.class === 'roce'
-            ? 'RoCE'
-            : addr.class === 'infini_band'
-              ? 'InfiniBand'
-              : addr.class === 'wireless'
-                ? 'Wi-Fi'
-                : addr.class === 'unverified'
-                  ? 'link unverified'
-                  : 'Ethernet'}
+          <!-- `classLabel` is the one place these names live. This card used
+               to carry its own ternary, so a class added to the protocol
+               rendered here as "Ethernet" — telling someone their fabric was
+               something it is not. -->
+          {addr.class === 'unverified' ? 'link unverified' : classLabel(addr.class)}
           {#if addr.speedMbps}· {Math.round(addr.speedMbps / 1000)}G{/if}
         </span>
+        {#if subnet}
+          <span class="chip fl-subnet mono" title="The network this machine was reached on">
+            {subnet}
+          </span>
+        {/if}
       {:else}
         <span class="fl-addr fl-addr-none">no usable network link</span>
       {/if}

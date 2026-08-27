@@ -681,3 +681,56 @@
   .fs-row { flex-direction: column; align-items: stretch; }
   .fs-field, .fs-field-code { flex: 1 1 auto; }
 }
+
+/* The network a node was reached on, beside its address. Quieter than the link
+   chip: the link class is what an operator acts on, the subnet is what they
+   check against their own. */
+.fl-subnet {
+  background: var(--bg2); color: var(--ch-cyan);
+  border: 1px solid var(--border); font-size: 0.68rem; letter-spacing: 0.01em;
+}
+
+/* Inline help. The dot is deliberately quiet — it must not compete with the
+   thing it explains — but it is a real button, so it has a focus ring. */
+.hd { position: relative; display: inline-flex; vertical-align: baseline; }
+.hd-btn {
+  width: 15px; height: 15px; padding: 0; margin-left: 0.35rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--border-strong);
+  background: var(--bg2); color: var(--t3);
+  font-size: 0.62rem; font-weight: 700; line-height: 1; cursor: help;
+}
+.hd-btn:hover, .hd-btn[aria-expanded='true'] { color: var(--t1); border-color: var(--ch-cyan); }
+.hd-btn:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 2px; }
+.hd-panel {
+  position: absolute; z-index: 30; top: calc(100% + 0.45rem); left: 0;
+  width: min(34ch, 78vw); padding: 0.7rem 0.8rem;
+  background: var(--card); border: 1px solid var(--border-strong);
+  border-radius: 8px; box-shadow: 0 8px 28px rgb(0 0 0 / 0.45);
+  font-size: 0.75rem; font-weight: 400; line-height: 1.6; color: var(--t2);
+  text-align: left; white-space: normal;
+}
+.hd-panel :global(code) { font-size: 0.72rem; color: var(--t1); }
+.hd-panel :global(p + p) { margin-top: 0.5rem; }
+/* Near the right edge the panel would overflow the viewport; flip it. */
+.hd-right .hd-panel { left: auto; right: 0; }
+
+/* Reachability map: the fleet from where the operator is sitting. Quieter than
+   the cluster mesh — it is orientation, not a control surface. */
+.rm { margin: 0 0 1.2rem; }
+.rm-cap {
+  display: flex; align-items: center;
+  font-size: 0.78rem; font-weight: 650; color: var(--t2); margin-bottom: 0.4rem;
+}
+.rm-svg { width: 100%; height: auto; display: block; }
+.rm-edge { stroke: var(--border-strong); stroke-width: 1.5; }
+.rm-edge-browser { stroke-dasharray: 3 3; }
+/* A vouched hop is drawn differently because it IS different: that machine is
+   reached through another one and goes away with it. */
+.rm-edge-vouched { stroke: var(--ch-cyan); stroke-opacity: 0.55; stroke-dasharray: 5 4; }
+.rm-edge-label { fill: var(--t3); font-size: 9px; letter-spacing: 0.04em; }
+.rm-you { fill: var(--bg2); stroke: var(--border-strong); stroke-width: 1.5; }
+.rm-dot { fill: var(--card); stroke: var(--border-strong); stroke-width: 1.5; }
+.rm-dot-local { stroke: var(--t2); }
+.rm-dot-vouched { stroke: var(--ch-cyan); stroke-opacity: 0.7; }
+.rm-label { fill: var(--t2); font-size: 10px; }

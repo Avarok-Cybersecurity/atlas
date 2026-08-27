@@ -17,6 +17,7 @@
   import NodeCard from '$lib/components/control/NodeCard.svelte';
   import ClusterLaunch from '$lib/components/control/ClusterLaunch.svelte';
   import TopologyMap from '$lib/components/control/TopologyMap.svelte';
+  import ReachMap from '$lib/components/control/ReachMap.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
   import FleetScan from '$lib/components/control/FleetScan.svelte';
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
@@ -329,10 +330,17 @@
       <SectionHead
         label="// 02 · topology"
         title="How they reach each other."
-        sub="Multi-node decode is all-reduce bound, so the link between two machines decides the throughput. A cluster that falls back to ethernet still runs — several times slower — while every correctness check keeps passing, so the fabric is called out here rather than left to be discovered in a benchmark."
+        sub="Two views: how you reach each machine, and how the machines reach each other. Multi-node decode is all-reduce bound, so the link between two machines decides the throughput. A cluster that falls back to ethernet still runs — several times slower — while every correctness check keeps passing, so the fabric is called out here rather than left to be discovered in a benchmark."
       />
 
       <div class="topo-wrap">
+        <!-- Two graphs, because there are two questions and one picture cannot
+             answer both. This one is reachability from where the operator is
+             sitting — how do I get to that machine. The mesh below is the
+             cluster question — can these machines talk to each other, and over
+             what. Drawing only the mesh left "why can I not see dgx3?"
+             unanswerable. -->
+        <ReachMap {nodes} />
         <TopologyMap {nodes} {head} />
 
         <div class="topo-actions">

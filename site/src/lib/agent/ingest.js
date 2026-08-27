@@ -209,6 +209,11 @@ export function ingestNode(raw) {
           ? a.prefix_len
           : 0
     })),
+    // Which peer told us about this machine. `null` means this agent reached it
+    // itself. A machine known only second-hand is controlled THROUGH its
+    // voucher and disappears with it, so the page must be able to say so rather
+    // than drawing it as though it were directly attached.
+    via: nodeId(raw?.via),
     canLaunch: raw?.launchability?.can_launch === true,
     cannotLaunchReason: sanitize(raw?.launchability?.reason, DETAIL_MAX),
     agentVersion: sanitize(raw?.agent_version, 32),
