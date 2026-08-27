@@ -19,6 +19,12 @@
 
   let tokenInput = $state('');
   let copied = $state('');
+
+  // Derived once. Built three times inline before — in the `{#if}`, the click
+  // handler and the label — so the guard and the thing being rendered could
+  // disagree, and did: the guard tested `launch.join` (an object) while the
+  // command it rendered could be the empty string.
+  const joinCmd = $derived(joinCommand(launch.join));
   let dialogEl = $state(null);
 
   const INSTALL = 'curl -fsSL https://atlasinference.io/install.sh | sh';
@@ -139,16 +145,27 @@
             Add a machine that can. Run this on it — the code is good for one
             machine, once, for {Math.round((launch.join?.expiresInS ?? 600) / 60)} minutes.
           </p>
-          {#if launch.join}
+          {#if joinCmd}
             <div class="ld-cmd ld-place-cmd">
-              <code class="mono">{joinCommand(launch.join)}</code>
-              <button type="button" class="cmd-copy" onclick={() => copy(joinCommand(launch.join))}>
-                {copied === joinCommand(launch.join) ? 'Copied' : 'Copy'}
+              <code class="mono">{joinCmd}</code>
+              <button type="button" class="cmd-copy" onclick={() => copy(joinCmd)}>
+                {copied === joinCmd ? 'Copied' : 'Copy'}
               </button>
             </div>
             <p class="ld-watching">
               <span class="ld-dot" aria-hidden="true"></span>
               Watching for it — this dialog will continue on its own.
+            </p>
+          {:else if launch.join}
+            <!-- A window opened, but this machine offered no address another
+                 machine could dial. Rendering the bar anyway drew an empty box
+                 with a Copy button next to it, which is how an operator found
+                 this: there was nothing to copy and nothing saying why. -->
+            <p class="ld-place-sub">
+              This machine has no network address another machine could dial —
+              only loopback or virtual interfaces are up. Connect it to the
+              network you want the fleet on, then reopen this dialog. The code
+              itself is fine; there is nowhere to point it.
             </p>
           {:else}
             <p class="ld-place-sub">

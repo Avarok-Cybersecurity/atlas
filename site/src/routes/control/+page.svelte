@@ -20,6 +20,7 @@
   import PairDialog from '$lib/components/control/PairDialog.svelte';
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
+  import { storedToken } from '$lib/agent/protocol.js';
   import { runCommand } from '$lib/data.js';
 
   // `install`, not `run`. `run` holds the terminal and the agent dies with it,
@@ -50,13 +51,33 @@
     }
   }
 
+  /** Whether a connection to the local agent has been attempted yet. */
+  let attempted = $state(false);
+
   // Start only. The session is an app-wide singleton the nav indicator shares,
   // so tearing it down when this effect re-runs would kill a connection some
   // other caller is still using — and did: the page connected, then lost its
   // event listener mid-open and rendered an empty fleet.
+  //
+  // **Only if this browser has paired before.** Opening a loopback socket makes
+  // the browser ask for "access other apps and services on this device", and
+  // asking that of someone who has just arrived — before they have said they
+  // want anything from a local machine — is asking for a permission that is not
+  // yet needed. A stored token is proof this browser has been paired, which
+  // means the permission was already granted and re-dialing prompts nobody.
+  // Without one, the page renders its install invitation and waits for the
+  // operator to press Connect below.
   $effect(() => {
+    if (attempted || !storedToken()) return;
+    attempted = true;
     fleet.start({ watch: true });
   });
+
+  /** Dial the local agent because the operator asked. */
+  function connectNow() {
+    attempted = true;
+    fleet.start({ watch: true });
+  }
 
   // Default the head to this machine — but only if this machine can actually
   // hold rank 0. On a control-only node it cannot, and defaulting to it drew
@@ -267,10 +288,25 @@
               </div>
             </li>
           </ol>
-          <p class="ld-watching">
-            <span class="ld-dot" aria-hidden="true"></span>
-            Watching for it — this page will continue on its own.
-          </p>
+          {#if attempted}
+            <p class="ld-watching">
+              <span class="ld-dot" aria-hidden="true"></span>
+              Watching for it — this page will continue on its own.
+            </p>
+          {:else}
+            <!-- Not "watching": nothing is being watched until the operator
+                 asks. Saying otherwise would be a claim about behaviour that is
+                 deliberately not happening yet. -->
+            <button type="button" class="btn btn-primary" onclick={connectNow}>
+              Connect to the agent on this machine
+            </button>
+            <p class="ctl-safety">
+              Your browser will ask permission to reach other apps on this
+              device. That is this page opening a connection to the agent on
+              127.0.0.1, and nothing else — it is asked now, rather than on
+              arrival, because until now there was nothing to connect to.
+            </p>
+          {/if}
           <p class="ctl-safety">
             Any web page can show you an install command. Check the address bar says
             <strong>atlasinference.io</strong> before running one.
