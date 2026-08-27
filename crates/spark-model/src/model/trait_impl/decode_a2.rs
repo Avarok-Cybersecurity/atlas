@@ -86,7 +86,27 @@ impl TransformerModel {
         // forward_batched.rs:269) remain at shape `h * elem` per call —
         // batching the comm shape would need new MoE kernel work and is
         // deliberately out of scope here.
-        if self.comm.is_some() {
+        let mla_perseq_fallback = self.is_mla_dispatch()
+            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
+        let qsa_active = self.config.index_topk > 0 && {
+            // Mirrors QsaIndexer::inert_bound: index_topk IS the selection
+            // budget in tokens (2048 on this card); at or below
+            // budget + ratio - 1 visible tokens every block is selected and
+            // selection is inert.
+            let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
+            seqs.iter().any(|s| s.seq_len >= bound)
+        };
+        let hc_perseq = self.config.hc_mult > 0
+            && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"));
+        // ★ The per-seq routing decision is resolved ABOVE the EP branch on
+        // purpose. It used to sit below, so under EP a QSA-active batch
+        // returned at `decode_batch_compute_main` before ever reaching the
+        // gate, landed on the batched multi-seq path, and died on its guard
+        // ("QSA selection active for seq 0 on the batched ms path" — measured
+        // on the 2-node EP=2 bring-up, 2026-08-27). EP does not change WHICH
+        // path is correct for a sequence; it only changes how the worker is
+        // told about it.
+        if self.comm.is_some() && !(mla_perseq_fallback || hc_perseq) {
             let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
             self.ep_broadcast_decode_batch_dispatch(&seq_ids, tokens)?;
             return self.decode_batch_compute_main(tokens, seqs, stream);
@@ -109,8 +129,6 @@ impl TransformerModel {
         // fully isolate concurrent sequences (each `decode()`'s
         // `Buffers::zero_all` wipes the shared `logits` buffer), so it is
         // not the default.
-        let mla_perseq_fallback = self.is_mla_dispatch()
-            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
         // mHC highway models (#753 item B): the batched GDN paths are UNWIRED
         // (they carry their own residual, which the highway replaces), so the
         // per-seq loop is the DEFAULT here, not a fallback — each sequence
@@ -124,16 +142,6 @@ impl TransformerModel {
         //   * QSA would be ACTIVE for any sequence (the ms attention path has
         //     no per-seq indexer hook yet — dense past the budget is NOT the
         //     reference model, so keep those batches on the proven loop).
-        let qsa_active = self.config.index_topk > 0 && {
-            // Mirrors QsaIndexer::inert_bound: index_topk IS the selection
-            // budget in tokens (2048 on this card); at or below
-            // budget + ratio - 1 visible tokens every block is selected and
-            // selection is inert.
-            let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
-            seqs.iter().any(|s| s.seq_len >= bound)
-        };
-        let hc_perseq = self.config.hc_mult > 0
-            && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"));
         if mla_perseq_fallback || hc_perseq {
             use std::sync::atomic::Ordering;
             let logits = self.decode_logits_ptr();
@@ -155,6 +163,11 @@ impl TransformerModel {
             let result = (|| -> Result<()> {
                 let mut staged = vec![0u8; n * row_bytes];
                 for i in 0..n {
+                    // Same announcement the `n == 1` path makes: under EP the
+                    // worker must run THIS sequence's single-seq forward, so
+                    // the comm-stream op order stays B(seq)B(cmd) per row on
+                    // both ranks. No-ops without a communicator.
+                    self.ep_broadcast_cmd_for_seq(seqs[i].slot_idx as u32, tokens[i])?;
                     self.decode(tokens[i], seqs[i], stream)?;
                     // `decode()` wrote this sequence's logits to row 0.
                     // Pull them to the host before the next `decode()`'s
