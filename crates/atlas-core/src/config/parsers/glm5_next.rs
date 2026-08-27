@@ -41,10 +41,14 @@ fn text_config(raw: &serde_json::Value) -> &serde_json::Value {
     raw.get("text_config").unwrap_or(raw)
 }
 
-/// GLM's own name for its sparse-MLA mixer. Atlas has no dedicated `LayerType`
-/// for it; it is a full-attention-class mixer with a top-k indexer in front, so
-/// it maps to [`LayerType::FullAttention`] for scheduling purposes. The
-/// distinction that matters (KDA vs not) is preserved exactly.
+/// GLM's own name for its sparse-MLA mixer.
+///
+/// Since Slice 8 this maps to [`LayerType::SparseAttention`], a real variant, and the
+/// array **round-trips**: `layer_types[i].hf_name()` reproduces the checkpoint string.
+/// It used to be flattened onto `FullAttention` "for scheduling purposes" — which was
+/// only true while nothing scheduled on it. A sparse layer needs indexer state, an
+/// indexer weight family and a per-query top-k step, so cache sizing and weight binding
+/// have to be able to tell the two apart.
 pub const GLM5NEXT_SPARSE_ATTN: &str = "deepseek_sparse_attention";
 
 pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
@@ -56,11 +60,12 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     // keep the outer one for quantization and for the architecture string.
     let text = text_config(&raw).clone();
 
-    // GLM names its sparse-MLA layers `deepseek_sparse_attention`, which is not
-    // in Atlas's `LayerType` vocabulary — serde rejects the whole struct on it.
-    // Strip `layer_types` before the struct parse and rebuild it ourselves
-    // below; `build_layer_types` still reads the ORIGINAL array for the
-    // cross-check, so the checkpoint's own vocabulary is never lost.
+    // `deepseek_sparse_attention` now deserializes onto `LayerType::SparseAttention` via a
+    // serde alias, so the strip below is no longer required for parsing to succeed. It stays
+    // because `build_layer_types` derives the array from `linear_attn_config`'s index lists
+    // (the authoritative source) and then CROSS-CHECKS it against the textual array; letting
+    // serde populate the field first would make that cross-check compare a value against
+    // itself.
     let mut text_for_struct = text.clone();
     if let Some(obj) = text_for_struct.as_object_mut() {
         obj.remove("layer_types");
@@ -158,6 +163,29 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     // ---- Layer types ------------------------------------------------------
     config.layer_types = build_layer_types(text, config.num_hidden_layers)?;
 
+    // MTP / NextN layers sit PAST the text stack. GLM-5.3-Flash declares
+    // `num_nextn_predict_layers = 1`, so layer 45 exists as a real decoder layer while
+    // `layer_types` legitimately covers only 0..=44. Give it its own slot rather than
+    // appending it, so every "iterate the text stack" loop keeps meaning what it says.
+    //
+    // The config does not state the MTP block's mixer kind. Derived here as "the same
+    // non-linear mixer this model uses", which the Slice-8 checkpoint audit confirms:
+    // layer 45's `self_attn` tensor set is name/dtype/shape IDENTICAL to the 11
+    // `deepseek_sparse_attention` text layers. Weight binding classifies from tensor
+    // names anyway and does not trust this field.
+    let n_mtp = text
+        .get("num_nextn_predict_layers")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    if n_mtp > 0 {
+        let kind = if config.layer_types.contains(&LayerType::SparseAttention) {
+            LayerType::SparseAttention
+        } else {
+            LayerType::FullAttention
+        };
+        config.mtp_layer_types = vec![kind; n_mtp];
+    }
+
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
     validate_glm5_next(&config)?;
     Ok(config)
@@ -202,6 +230,10 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
                 }
                 types[*i] = LayerType::LinearAttention;
             }
+            // `full_attn_layers` is GLM's name for "not KDA". On GLM-5.3-Flash those layers
+            // are `deepseek_sparse_attention`, so the textual array decides the variant —
+            // the index list alone cannot tell sparse from dense full attention.
+            let textual = text.get("layer_types").and_then(|v| v.as_array());
             for i in &full {
                 if *i >= n_layers {
                     bail!("glm5_next: full_attn_layers index {i} out of range");
@@ -209,6 +241,10 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
                 if types[*i] == LayerType::LinearAttention {
                     bail!("glm5_next: layer {i} listed as BOTH kda and full attention");
                 }
+                types[*i] = match textual.and_then(|a| a.get(*i)).and_then(|v| v.as_str()) {
+                    Some(GLM5NEXT_SPARSE_ATTN) => LayerType::SparseAttention,
+                    _ => LayerType::FullAttention,
+                };
             }
         }
         _ => {
@@ -226,7 +262,8 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
             for (i, v) in arr.iter().enumerate() {
                 types[i] = match v.as_str().unwrap_or("") {
                     "linear_attention" => LayerType::LinearAttention,
-                    GLM5NEXT_SPARSE_ATTN | "full_attention" => LayerType::FullAttention,
+                    GLM5NEXT_SPARSE_ATTN => LayerType::SparseAttention,
+                    "full_attention" => LayerType::FullAttention,
                     other => bail!("glm5_next: unknown layer_type {other:?} at layer {i}"),
                 };
             }
@@ -240,6 +277,7 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
         for (i, v) in arr.iter().enumerate() {
             let want = match v.as_str().unwrap_or("") {
                 "linear_attention" => LayerType::LinearAttention,
+                GLM5NEXT_SPARSE_ATTN => LayerType::SparseAttention,
                 _ => LayerType::FullAttention,
             };
             if types[i] != want {
@@ -398,7 +436,14 @@ mod tests {
             .iter()
             .filter(|t| **t == LayerType::LinearAttention)
             .count();
+        // Since Slice 8 the DSA layers are `SparseAttention`, not `FullAttention` — and
+        // there must be ZERO plain full-attention layers, or something was flattened.
         let dsa = c
+            .layer_types
+            .iter()
+            .filter(|t| **t == LayerType::SparseAttention)
+            .count();
+        let plain_full = c
             .layer_types
             .iter()
             .filter(|t| **t == LayerType::FullAttention)
@@ -406,11 +451,47 @@ mod tests {
         assert_eq!(c.layer_types.len(), 45);
         assert_eq!(kda, 34, "KDA layers over text layers 0..44");
         assert_eq!(dsa, 11, "DSA layers over text layers 0..44");
+        assert_eq!(plain_full, 0, "GLM-5.3 has no plain full-attention layer");
         // Spot-check the actual indices, not just the totals.
         assert_eq!(c.layer_types[0], LayerType::LinearAttention);
-        assert_eq!(c.layer_types[3], LayerType::FullAttention);
-        assert_eq!(c.layer_types[43], LayerType::FullAttention);
+        assert_eq!(c.layer_types[3], LayerType::SparseAttention);
+        assert_eq!(c.layer_types[43], LayerType::SparseAttention);
         assert_eq!(c.layer_types[44], LayerType::LinearAttention);
+    }
+
+    /// `layer_types` must round-trip back to the checkpoint's own vocabulary. This is what
+    /// "flattened onto FullAttention" used to break: the parse succeeded and the array
+    /// silently said `full_attention` where the checkpoint said `deepseek_sparse_attention`.
+    #[test]
+    fn layer_types_round_trip_to_the_checkpoint_strings() {
+        let c = parse_glm5_next(&glm53_config_json()).expect("parse");
+        let raw: serde_json::Value = serde_json::from_str(&glm53_config_json()).unwrap();
+        let want = raw["text_config"]["layer_types"]
+            .as_array()
+            .expect("layer_types");
+        assert_eq!(want.len(), c.layer_types.len());
+        for (i, w) in want.iter().enumerate() {
+            assert_eq!(
+                c.layer_types[i].hf_name(),
+                w.as_str().unwrap(),
+                "layer {i} does not round-trip"
+            );
+        }
+    }
+
+    /// Layer 45 (MTP) is a real decoder layer that is NOT part of the text stack.
+    /// It must be representable without being appended to `layer_types`.
+    #[test]
+    fn mtp_layer_is_represented_outside_the_text_stack() {
+        let c = parse_glm5_next(&glm53_config_json()).expect("parse");
+        assert_eq!(c.num_hidden_layers, 45);
+        assert_eq!(c.layer_types.len(), 45, "text stack stays 0..=44");
+        assert_eq!(c.mtp_layer_types, vec![LayerType::SparseAttention]);
+        // Index 45 resolves, and it resolves through the MTP list, not the text stack.
+        assert_eq!(c.layer_type_at(45), Some(LayerType::SparseAttention));
+        assert_eq!(c.layer_type_at(46), None);
+        assert!(c.has_sparse_attention());
+        assert_eq!(c.sparse_attention_layers().len(), 11, "text stack only");
     }
 
     #[test]

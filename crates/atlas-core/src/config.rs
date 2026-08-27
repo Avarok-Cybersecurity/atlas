@@ -17,6 +17,39 @@ pub enum LayerType {
     LinearAttention,
     /// Standalone MoE FFN layer (Nemotron-H: no mixer, just expert routing + FFN).
     Moe,
+    /// Sparse attention over a per-query selected subset of the KV cache
+    /// (`deepseek_sparse_attention`): a full-rank mixer whose visible key set is
+    /// chosen at runtime by an indexer, not fixed by a window.
+    ///
+    /// Distinct from [`Self::FullAttention`] on purpose. Both attend over the whole
+    /// cache in principle, but a sparse layer additionally needs indexer state, an
+    /// indexer weight family, and a per-query top-k selection step — so scheduling,
+    /// cache sizing and weight binding all have to be able to tell them apart. GLM-5.3
+    /// was previously flattened onto `FullAttention` at parse time, which round-tripped
+    /// `deepseek_sparse_attention` into a lie.
+    SparseAttention,
+}
+
+impl LayerType {
+    /// Does this layer attend over a KV cache (as opposed to carrying recurrent state
+    /// or being FFN-only)?
+    pub fn is_attention(self) -> bool {
+        matches!(
+            self,
+            Self::FullAttention | Self::SlidingAttention | Self::SparseAttention
+        )
+    }
+
+    /// The string this layer type round-trips to in a HuggingFace `layer_types` array.
+    pub fn hf_name(self) -> &'static str {
+        match self {
+            Self::FullAttention => "full_attention",
+            Self::SlidingAttention => "sliding_attention",
+            Self::LinearAttention => "linear_attention",
+            Self::Moe => "moe",
+            Self::SparseAttention => "deepseek_sparse_attention",
+        }
+    }
 }
 
 /// Model configuration parsed from HuggingFace config.json.
@@ -100,6 +133,17 @@ pub struct ModelConfig {
     /// HF config. When empty, falls back to `full_attention_interval`.
     #[serde(default)]
     pub layer_types: Vec<LayerType>,
+    /// Per-layer kind for the **extra** layers that sit past `num_hidden_layers`:
+    /// multi-token-prediction / NextN blocks. Empty for models that have none.
+    ///
+    /// Kept separate from `layer_types` on purpose. GLM-5.3-Flash's layer 45 is a real
+    /// decoder layer with its own attention block, but `num_hidden_layers` is 45 and
+    /// `config.layer_types` has 45 entries covering 0..=44 — so layer 45 has no honest
+    /// slot there. Appending it would make every length check and every "iterate the text
+    /// stack" loop silently include a speculative-decoding layer. Look it up through
+    /// [`ModelConfig::layer_type_at`], which routes indices past the text stack here.
+    #[serde(default)]
+    pub mtp_layer_types: Vec<LayerType>,
     /// Stride for full-attention layers in hybrid models when
     /// `layer_types` is empty: every Nth layer is FullAttention, the
     /// rest LinearAttention. 1 = every layer is full attention.

@@ -41,6 +41,7 @@ impl ModelConfig {
                 }
                 types
             },
+            mtp_layer_types: Vec::new(),
             full_attention_interval: 4,
             sliding_window: 0,
             max_position_embeddings: 262144,

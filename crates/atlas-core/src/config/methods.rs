@@ -18,6 +18,39 @@ impl ModelConfig {
 
     /// Layer type for a given layer index.
     /// Falls back to full_attention_interval if layer_types is empty.
+    /// Layer kind for ANY index in the checkpoint, including layers past the text stack.
+    ///
+    /// `layer_type` covers the text stack only. Indices `>= num_hidden_layers` are
+    /// MTP/NextN layers and resolve through `mtp_layer_types`; that is what lets GLM-5.3's
+    /// layer 45 be represented as the sparse-attention block it actually is, rather than
+    /// being appended to the text stack and silently swept into every text-layer loop.
+    pub fn layer_type_at(&self, layer_idx: usize) -> Option<LayerType> {
+        if layer_idx < self.num_hidden_layers {
+            return Some(self.layer_type(layer_idx));
+        }
+        self.mtp_layer_types
+            .get(layer_idx - self.num_hidden_layers)
+            .copied()
+    }
+
+    /// Layers (text stack only) whose mixer is `deepseek_sparse_attention`.
+    pub fn sparse_attention_layers(&self) -> Vec<usize> {
+        self.layer_types
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t == LayerType::SparseAttention)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// True when any layer — text stack **or** MTP — needs the sparse-attention
+    /// indexer. Scheduling and cache sizing both key off this, so it must not be
+    /// answered from `layer_types` alone.
+    pub fn has_sparse_attention(&self) -> bool {
+        self.layer_types.contains(&LayerType::SparseAttention)
+            || self.mtp_layer_types.contains(&LayerType::SparseAttention)
+    }
+
     pub fn layer_type(&self, layer_idx: usize) -> LayerType {
         if !self.layer_types.is_empty() {
             self.layer_types

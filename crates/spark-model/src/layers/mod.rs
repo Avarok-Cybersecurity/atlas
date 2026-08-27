@@ -6,6 +6,8 @@ pub mod dflash_head;
 pub mod ep_dispatch;
 pub mod fp8_calibration;
 mod gemv_tier;
+/// GLM-5.3-Flash DSA + kpool indexer CPU reference (Slice 8 design artifact).
+pub mod glm5next_dsa_ref;
 /// GLM-5.3-Flash KDA integrated layer (Slice 6 -- one layer, no scheduler/cache wiring).
 pub mod glm5next_kda;
 /// GLM-5.3-Flash KDA CPU reference (Slice 2 design artifact -- not a production forward path).
