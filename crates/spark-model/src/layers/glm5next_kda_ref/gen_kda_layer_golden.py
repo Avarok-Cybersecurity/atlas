@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slice 6 — REAL-CHECKPOINT full-KDA-layer golden, HF transformers 5.16.1.
+"""Slice 6/7 — REAL-CHECKPOINT full-KDA-layer golden, HF transformers 5.16.1.
 
 Drives the genuine `Glm5NextTextLinearAttention` module built from the real `config.json`
 (`gate_lower_bound`, `rms_norm_eps`, `hidden_act` all READ) and loaded with the real layer-0
@@ -45,7 +45,8 @@ from transformers.models.glm5_next.modeling_glm5_next import (  # noqa: E402
     recurrent_kimi_delta_attention,
 )
 
-PACKET = "/w/layer0.safetensors"
+LAYERS = [int(x) for x in (sys.argv[1].split(",") if len(sys.argv) > 1 else ["0"])]
+PACKET = "/w/layer%d.safetensors"
 CONFIG = "/w/config.json"
 OUT = "/w/kda_layer_golden.json"
 
@@ -102,10 +103,7 @@ KS = cfg.linear_conv_kernel_dim
 assert (H, D, HID, KS) == (64, 128, 4096, 4), (H, D, HID, KS)
 assert cfg.linear_lower_bound == -5.0 and cfg.rms_norm_eps == 1e-5 and cfg.hidden_act == "silu"
 
-W = load_packet(PACKET)
-
-
-def build(dtype):
+def build(dtype, W):
     m = Glm5NextTextLinearAttention(cfg, 0).to(dtype).eval()
     sd = {
         "q_proj.weight": W["self_attn.q_proj.weight"],
@@ -241,10 +239,13 @@ probe = Lcg(0x5EED_1A70)
 lcg_probe = [probe.u() for _ in range(8)]
 
 REGIMES = [("decode1", 1), ("prefill4", 4), ("prefill7", 7), ("prefill7_decode1", 7)]
-blocks = []
+per_layer = []
 diag = []
-for dt_name, dt in (("f32", torch.float32), ("bf16", torch.bfloat16)):
-    mod = build(dt)
+for LAYER in LAYERS:
+  W = load_packet(PACKET % LAYER)
+  blocks = []
+  for dt_name, dt in (("f32", torch.float32), ("bf16", torch.bfloat16)):
+    mod = build(dt, W)
     for rname, T in REGIMES:
         # Every regime draws from a freshly seeded LCG so each is independently reproducible.
         rng = Lcg(0x5EED_1A70)
@@ -262,8 +263,9 @@ for dt_name, dt in (("f32", torch.float32), ("bf16", torch.bfloat16)):
                 st = {**{"prefill_" + k: v for k, v in st_p.items()}, **st}
             else:
                 st, _, _ = run(mod, hidden, None, None, dt)
-        blocks.append(f'  "{dt_name}__{rname}":' + emit(st))
-        diag.append((dt_name, rname, float(st["final_out"].abs().max())))
+        blocks.append(f'   "{dt_name}__{rname}":' + emit(st))
+        diag.append((LAYER, dt_name, rname, float(st["final_out"].abs().max())))
+  per_layer.append(f'  "{LAYER}":{{\n' + ",\n".join(blocks) + "\n  }")
 
 body = (
     "{\n"
@@ -273,9 +275,10 @@ body = (
     f'"hf_chunk":64,"hf_state_width":{KS - 1},"l2_eps":1e-06,"seed":"0x5EED1A70",'
     f'"seed_decode2":"0xD3C0DE01","stride":{STRIDE},"stride_conv":{STRIDE_CONV},'
     f'"stride_state":{STRIDE_STATE},'
-    f'"checkpoint":"LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3","layer":0}},\n'
+    f'"checkpoint":"LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3",'
+    f'"layers":{LAYERS}}},\n'
     f' "lcg_probe":[{",".join(f"{x:.9g}" for x in lcg_probe)}],\n'
-    ' "regimes":{\n' + ",\n".join(blocks) + "\n }\n}\n"
+    ' "by_layer":{\n' + ",\n".join(per_layer) + "\n }\n}\n"
 )
 with open(OUT, "w") as fh:
     fh.write(body)
@@ -283,5 +286,5 @@ with open(OUT, "w") as fh:
 print("transformers", __import__("transformers").__version__, "torch", torch.__version__)
 print("bytes", len(body))
 print("sha256", hashlib.sha256(body.encode()).hexdigest())
-for d, r, mx in diag:
-    print(f"  {d:5s} {r:18s} |final_out|max {mx:.6g}")
+for L, d, r, mx in diag:
+    print(f"  L{L:<3d} {d:5s} {r:18s} |final_out|max {mx:.6g}")

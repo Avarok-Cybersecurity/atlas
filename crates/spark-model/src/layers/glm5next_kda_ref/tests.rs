@@ -613,7 +613,12 @@ fn chunked_prenorm_and_internal_norm_agree_only_on_unit_input() {
         chunk,
         &mut s2,
     );
-    assert_close("chunked prenorm == internal-norm on unit input", &b, &a, 2e-6);
+    assert_close(
+        "chunked prenorm == internal-norm on unit input",
+        &b,
+        &a,
+        2e-6,
+    );
 
     let round = |x: &[f32]| -> Vec<f32> {
         x.iter()
