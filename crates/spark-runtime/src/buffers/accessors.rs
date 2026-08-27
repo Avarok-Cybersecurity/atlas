@@ -85,6 +85,18 @@ impl BufferArena {
     pub fn expert_down_out(&self) -> DevicePtr {
         self.expert_down_out
     }
+    /// Persistent compact NVFP4 MoE work-list storage.
+    pub fn moe_worklist(&self) -> DevicePtr {
+        self.moe_worklist
+    }
+    /// Device counter for the compact NVFP4 MoE work-list.
+    pub fn moe_worklist_total(&self) -> DevicePtr {
+        self.moe_worklist_total
+    }
+    /// Persistent compact NVFP4 work-list overflow diagnostic flag.
+    pub fn moe_worklist_overflow(&self) -> DevicePtr {
+        self.moe_worklist_overflow
+    }
     /// Split-K decode attention workspace (F32 partials).
     /// GDN FLA chunked-prefill scratch base (W|U|S|uc sub-divided by the caller).
     /// `DevicePtr::NULL` unless this is a 128-dim-linear-head GDN model.
@@ -270,6 +282,17 @@ impl BufferArena {
             "expert_down_out",
             self.expert_down_out,
             self.sizes.expert_down_out,
+        );
+        probe("moe_worklist", self.moe_worklist, self.sizes.moe_worklist);
+        probe(
+            "moe_worklist_total",
+            self.moe_worklist_total,
+            self.sizes.moe_worklist_total,
+        );
+        probe(
+            "moe_worklist_overflow",
+            self.moe_worklist_overflow,
+            self.sizes.moe_worklist_overflow,
         );
         probe(
             "splitk_workspace",

@@ -69,11 +69,9 @@ fn test_buffer_arena_alloc() {
     //     allocated unconditionally even for models without hash routing).
     // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
     //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
-    //     allocated unconditionally). 27 + 2 = 29.
-    // (wip-laguna-lora counts 30 here: its keep-packed GGUF grouped MoE adds
-    // a moe_grouped_q8 arena buffer (06c89a33) that this branch does not
-    // carry. Re-sync this count if that work is ever picked.)
-    assert_eq!(gpu.alloc_count(), 29);
+    //     allocated unconditionally), plus the compact MoE work-list, counter,
+    //     and overflow flag. 27 + 2 + 3 = 32.
+    assert_eq!(gpu.alloc_count(), 32);
 }
 
 #[test]

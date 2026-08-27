@@ -10,6 +10,62 @@
 
 use super::*;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static MOE_DUMP_LAYER_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Debug-only raw BF16 snapshot used by the dense/compact numerical comparator.
+/// The environment gate keeps all synchronization and D2H traffic out of the
+/// normal prefill path.
+fn maybe_dump_moe_bf16(
+    gpu: &dyn GpuBackend,
+    ptr: DevicePtr,
+    elements: usize,
+    layer: usize,
+    stage: &str,
+    stream: u64,
+) -> Result<()> {
+    let dir = match std::env::var("ATLAS_MOE_PREFILL_DUMP") {
+        Ok(dir) if !dir.is_empty() => dir,
+        _ => return Ok(()),
+    };
+    gpu.synchronize(stream)?;
+    let mut bytes = vec![0u8; elements.saturating_mul(2)];
+    gpu.copy_d2h(ptr, &mut bytes)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("create dump directory {dir}: {e}"))?;
+    let path = std::path::Path::new(&dir).join(format!("moe_L{layer:03}_{stage}.bin"));
+    std::fs::write(&path, &bytes).map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+    tracing::info!(
+        "ATLAS_MOE_PREFILL_DUMP: wrote {} ({} BF16 elements)",
+        path.display(),
+        elements
+    );
+    Ok(())
+}
+
+fn maybe_dump_moe_i32(
+    gpu: &dyn GpuBackend,
+    ptr: DevicePtr,
+    elements: usize,
+    layer: usize,
+    stage: &str,
+    stream: u64,
+) -> Result<()> {
+    let dir = match std::env::var("ATLAS_MOE_PREFILL_DUMP") {
+        Ok(dir) if !dir.is_empty() => dir,
+        _ => return Ok(()),
+    };
+    gpu.synchronize(stream)?;
+    let mut bytes = vec![0u8; elements.saturating_mul(4)];
+    gpu.copy_d2h(ptr, &mut bytes)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("create dump directory {dir}: {e}"))?;
+    let path = std::path::Path::new(&dir).join(format!("moe_L{layer:03}_{stage}.bin"));
+    std::fs::write(&path, &bytes).map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
 /// Whether the single-launch CUTLASS grouped NVFP4 gate_up path is enabled
 /// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS=1`). Off by default; falls back to the
 /// hand-rolled fused FP4/FP8 grouped kernels when unset.
@@ -36,6 +92,7 @@ impl MoeLayer {
         expert_input: DevicePtr,
         expert_offsets: DevicePtr,
         sorted_token_ids: DevicePtr,
+        sorted_expert_ids: DevicePtr,
         n: u32,
         h: u32,
         inter: u32,
@@ -122,6 +179,35 @@ impl MoeLayer {
         prof_step!("grid_setup");
 
         let total_expanded = n * top_k;
+        // A validation run uses one prefill request per process, so this
+        // ordinal is deterministic across dense and compact processes.
+        let dump_layer = if std::env::var_os("ATLAS_MOE_PREFILL_DUMP").is_some() {
+            MOE_DUMP_LAYER_COUNTER.fetch_add(1, Ordering::Relaxed)
+        } else {
+            usize::MAX
+        };
+        let prefill_max_exact =
+            std::env::var("ATLAS_PREFILL_MAX_EXACT").ok().as_deref() == Some("1");
+        // Stage 3 forward-selection result: K32 down is enabled by the total
+        // exact switch or the diagnostic knob.
+        let stage3_k32 = prefill_max_exact
+            || std::env::var("ATLAS_MOE_PREFILL_COMPACT_K32")
+                .ok()
+                .as_deref()
+                == Some("1");
+        // The compact row work-list is sized for the worst valid expert skew
+        // and is reused by gate/up and down; no per-layer allocation or host
+        // synchronization is needed.
+        let compact_nvfp4 = (self.compact_nvfp4 || prefill_max_exact)
+            && n > 64
+            && ctx.comm.is_none()
+            && ctx.config.ep_world_size <= 1
+            && self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Nvfp4
+            && self.moe_fused_gate_up_t_k64.0 != 0
+            && self.moe_grouped_gemm_t_k64.0 != 0
+            && self.moe_build_row_worklist_k.0 != 0;
+        let compact_m_tiles = (total_expanded as usize).div_ceil(64) + ne.saturating_sub(1);
+        let compact_row_capacity = compact_m_tiles.max(1);
 
         // 5. Grouped gate+up GEMM — cp.async pipelined FP8-MMA K64 (transposed).
         let expert_gate_out = ctx.buffers.expert_gate_out();
@@ -235,6 +321,43 @@ impl MoeLayer {
                         max_m_tiles,
                         stream,
                     )?;
+                } else if compact_nvfp4 {
+                    ops::moe_build_row_worklist(
+                        ctx.gpu,
+                        self.moe_build_row_worklist_k,
+                        expert_offsets,
+                        gp.packed_ptrs,
+                        ctx.buffers.moe_worklist(),
+                        ctx.buffers.moe_worklist_total(),
+                        ctx.buffers.moe_worklist_overflow(),
+                        num_experts,
+                        64,
+                        compact_row_capacity as u32,
+                        stream,
+                    )?;
+                    prof_step!("worklist_build");
+                    ops::moe_w4a16_fused_gate_up_k64_n128_compact(
+                        ctx.gpu,
+                        self.moe_fused_gate_up_t_k64,
+                        expert_input,
+                        gp.packed_ptrs,
+                        gp.scale_ptrs,
+                        gp.scale2_vals,
+                        up.packed_ptrs,
+                        up.scale_ptrs,
+                        up.scale2_vals,
+                        expert_gate_out,
+                        expert_up_out,
+                        expert_offsets,
+                        sorted_token_ids,
+                        num_experts,
+                        inter,
+                        h,
+                        ctx.buffers.moe_worklist(),
+                        ctx.buffers.moe_worklist_total(),
+                        compact_row_capacity as u32,
+                        stream,
+                    )?;
                 } else {
                     // Block D #3 dispatch: M=128 path needs the env var on AND
                     // the kernel actually loaded (try_kernel returns 0 on
@@ -331,6 +454,40 @@ impl MoeLayer {
                 )?;
             }
         }
+        if dump_layer != usize::MAX {
+            maybe_dump_moe_i32(
+                ctx.gpu,
+                sorted_token_ids,
+                total_expanded as usize,
+                dump_layer,
+                "token_ids",
+                stream,
+            )?;
+            maybe_dump_moe_i32(
+                ctx.gpu,
+                sorted_expert_ids,
+                total_expanded as usize,
+                dump_layer,
+                "expert_ids",
+                stream,
+            )?;
+            maybe_dump_moe_bf16(
+                ctx.gpu,
+                expert_gate_out,
+                total_expanded as usize * inter as usize,
+                dump_layer,
+                "gate",
+                stream,
+            )?;
+            maybe_dump_moe_bf16(
+                ctx.gpu,
+                expert_up_out,
+                total_expanded as usize * inter as usize,
+                dump_layer,
+                "up",
+                stream,
+            )?;
+        }
         prof_step!("grouped_gate_up");
 
         // 6. Activation+mul for routed experts + grouped down GEMM (K64 pipelined).
@@ -360,6 +517,7 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
+            prof_step!("silu");
             // ── FP4 down (ATLAS_HOLO_MOE_DOWN_FP4) ── single block-scaled FP4
             // MMA per k64 tile (mxf4nvf4.scale_vec::4X.m16n8k64), reading the
             // post-SiLU intermediate (expert_gate_out) and the per-expert FP4
@@ -439,6 +597,45 @@ impl MoeLayer {
                         max_m_tiles,
                         stream,
                     )?;
+                } else if compact_nvfp4 {
+                    if stage3_k32 {
+                        ops::moe_w4a16_grouped_gemm_ptrtable_t_compact(
+                            ctx.gpu,
+                            self.moe_grouped_gemm_t,
+                            expert_gate_out,
+                            dp.packed_ptrs,
+                            dp.scale_ptrs,
+                            dp.scale2_vals,
+                            expert_down_out,
+                            expert_offsets,
+                            num_experts,
+                            h,
+                            inter,
+                            ctx.buffers.moe_worklist(),
+                            ctx.buffers.moe_worklist_total(),
+                            compact_row_capacity as u32,
+                            stream,
+                        )?;
+                    } else {
+                        ops::moe_w4a16_grouped_gemm_ptrtable_t_k64_compact(
+                            ctx.gpu,
+                            self.moe_grouped_gemm_t_k64,
+                            expert_gate_out,
+                            dp.packed_ptrs,
+                            dp.scale_ptrs,
+                            dp.scale2_vals,
+                            expert_down_out,
+                            expert_offsets,
+                            DevicePtr(0),
+                            num_experts,
+                            h,
+                            inter,
+                            ctx.buffers.moe_worklist(),
+                            ctx.buffers.moe_worklist_total(),
+                            compact_row_capacity as u32,
+                            stream,
+                        )?;
+                    }
                 } else {
                     let fp8_down = std::env::var("ATLAS_MOE_PREFILL_FP8_DOWN").ok().as_deref()
                         == Some("1")
@@ -470,7 +667,7 @@ impl MoeLayer {
                             stream,
                         )?;
                     } else {
-                        ops::moe_w4a16_grouped_gemm_ptrtable_n128(
+                        ops::moe_w4a16_grouped_gemm_ptrtable_k64_n128(
                             ctx.gpu,
                             self.moe_grouped_gemm_t_k64,
                             expert_gate_out,
@@ -512,7 +709,17 @@ impl MoeLayer {
                 )?;
             }
         }
-        prof_step!("grouped_silu_down");
+        if dump_layer != usize::MAX {
+            maybe_dump_moe_bf16(
+                ctx.gpu,
+                expert_down_out,
+                total_expanded as usize * h as usize,
+                dump_layer,
+                "down",
+                stream,
+            )?;
+        }
+        prof_step!("grouped_down");
 
         Ok(())
     }
