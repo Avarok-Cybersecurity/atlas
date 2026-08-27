@@ -65,8 +65,8 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     if let Some(obj) = text_for_struct.as_object_mut() {
         obj.remove("layer_types");
     }
-    let text_json = serde_json::to_string(&text_for_struct)
-        .context("re-serialize glm5_next text_config")?;
+    let text_json =
+        serde_json::to_string(&text_for_struct).context("re-serialize glm5_next text_config")?;
     let mut config: ModelConfig =
         serde_json::from_str(&text_json).context("Failed to parse glm5_next text_config")?;
     let text = &text;
@@ -149,10 +149,10 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     // ---- DSA indexer ------------------------------------------------------
     // Default only if truly absent. GLM's value is 2048 and it matters: it is
     // part of what a sparse-MLA backend gates on.
-    if config.index_topk == 0 {
-        if let Some(v) = text.get("index_topk").and_then(|v| v.as_u64()) {
-            config.index_topk = v as usize;
-        }
+    if config.index_topk == 0
+        && let Some(v) = text.get("index_topk").and_then(|v| v.as_u64())
+    {
+        config.index_topk = v as usize;
     }
 
     // ---- Layer types ------------------------------------------------------
@@ -174,7 +174,12 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
         text.get("linear_attn_config")?
             .get(key)?
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .collect()
+            })
     };
 
     let kda = idx_list("kda_layers");
@@ -229,19 +234,19 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
     }
 
     // Cross-check against layer_types when we used the index lists.
-    if let Some(arr) = text.get("layer_types").and_then(|v| v.as_array()) {
-        if arr.len() == n_layers {
-            for (i, v) in arr.iter().enumerate() {
-                let want = match v.as_str().unwrap_or("") {
-                    "linear_attention" => LayerType::LinearAttention,
-                    _ => LayerType::FullAttention,
-                };
-                if types[i] != want {
-                    bail!(
-                        "glm5_next: layer {i} disagrees — index lists say {:?}, layer_types says {want:?}",
-                        types[i]
-                    );
-                }
+    if let Some(arr) = text.get("layer_types").and_then(|v| v.as_array())
+        && arr.len() == n_layers
+    {
+        for (i, v) in arr.iter().enumerate() {
+            let want = match v.as_str().unwrap_or("") {
+                "linear_attention" => LayerType::LinearAttention,
+                _ => LayerType::FullAttention,
+            };
+            if types[i] != want {
+                bail!(
+                    "glm5_next: layer {i} disagrees — index lists say {:?}, layer_types says {want:?}",
+                    types[i]
+                );
             }
         }
     }

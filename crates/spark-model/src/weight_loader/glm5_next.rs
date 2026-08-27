@@ -246,10 +246,10 @@ where
             }
             None => acc.unknown.push(name.to_string()),
         }
-        if is_mtp_only_name(name) {
-            if let Some(i) = layer_index(name) {
-                mtp.insert(i);
-            }
+        if is_mtp_only_name(name)
+            && let Some(i) = layer_index(name)
+        {
+            mtp.insert(i);
         }
     }
     acc.mtp_layers = mtp.into_iter().collect();
