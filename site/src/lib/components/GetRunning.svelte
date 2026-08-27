@@ -1,13 +1,12 @@
 <script>
   import { getRunning, runCommand, quickInstall, runCommandRaw, guideUrl, githubUrl } from '$lib/data.js';
+  import { copyText } from '$lib/clipboard.js';
 
   let copied = $state('');
   async function copy(cmd) {
-    try {
-      await navigator.clipboard.writeText(cmd);
-      copied = cmd;
-      setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
-    } catch {}
+    if ((await copyText(cmd)) !== 'copied') return;
+    copied = cmd;
+    setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
   }
   import SectionHead from './SectionHead.svelte';
 </script>

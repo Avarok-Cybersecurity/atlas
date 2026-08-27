@@ -3,6 +3,7 @@
   // via site/scripts/gen-models.mjs -> models.generated.json.
   // 3-level tree: vendor (brand) -> subfamily (recipe dir) -> recipes.
   import vendorsRaw from '$lib/models.generated.json';
+  import { copyText } from '$lib/clipboard.js';
   import { models as mcopy, recipesUrl } from '$lib/data.js';
   import RunButton from './RunButton.svelte';
 
@@ -46,11 +47,9 @@
   }
 
   async function copyCmd(cmd) {
-    try {
-      await navigator.clipboard.writeText(cmd);
-      copied = cmd;
-      setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
-    } catch {}
+    if ((await copyText(cmd)) !== 'copied') return;
+    copied = cmd;
+    setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
   }
 
   const quantClass = (q) => {

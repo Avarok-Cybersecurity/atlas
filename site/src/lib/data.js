@@ -59,7 +59,14 @@ export const tagline =
 // --- commands (one flagship recipe, kept in lockstep with static/install.sh)
 export const flagshipRecipe = 'qwen3.6-35b-a3b-fp8-mtp';
 export const quickInstall = 'cargo install atlasctl';
-export const runCommand = 'curl -fsSL https://atlasinference.io/install.sh | sh';
+/// Where install.sh is served from. One authority: the join one-liner in
+/// `joincommand.js` builds on this too, and a second copy is how the two drift.
+export const installerUrl = 'https://atlasinference.io/install.sh';
+export const runCommand = `curl -fsSL ${installerUrl} | sh`;
+/// Install the agent as a service — deliberately `install`, not `run`: a bare
+/// `run` dies with the terminal that started it, and the machine silently
+/// leaves the fleet the next time someone closes an ssh session.
+export const startAgentCommand = 'atlasctl agent install';
 export const runCommandRaw =
   'atlasctl run qwen3.6-35b-a3b-fp8-mtp';
 

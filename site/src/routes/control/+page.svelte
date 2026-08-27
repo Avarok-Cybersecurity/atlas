@@ -17,46 +17,57 @@
   import NodeCard from '$lib/components/control/NodeCard.svelte';
   import ClusterLaunch from '$lib/components/control/ClusterLaunch.svelte';
   import TopologyMap from '$lib/components/control/TopologyMap.svelte';
+  import ReachMap from '$lib/components/control/ReachMap.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
+  import FleetScan from '$lib/components/control/FleetScan.svelte';
+  import JoinGuide from '$lib/components/control/JoinGuide.svelte';
+  import InstallSteps from '$lib/components/InstallSteps.svelte';
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
-  import { runCommand } from '$lib/data.js';
+  import { storedToken } from '$lib/agent/protocol.js';
+  import { startAgentCommand } from '$lib/data.js';
 
   // `install`, not `run`. `run` holds the terminal and the agent dies with it,
   // which turns a fleet into a demo: close the window and the page this
   // command was meant to light up goes dark again.
-  const START_AGENT = 'atlasctl agent install';
 
   let pairing = $state(null);
   let details = $state(null);
   let unpairing = $state(null);
   let unpairConfirm = $state('');
   let head = $state(null);
-  let copied = $state('');
 
   const nodes = $derived(fleet.nodes);
   const solo = $derived(fleet.mode === 'live' && fleet.peers.length === 0);
   const remoteCount = $derived(fleet.remoteLaunchable.length);
 
-  async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = text;
-      setTimeout(() => {
-        if (copied === text) copied = '';
-      }, 1600);
-    } catch {
-      /* clipboard blocked; the command is on screen */
-    }
-  }
+  /** Whether a connection to the local agent has been attempted yet. */
+  let attempted = $state(false);
 
   // Start only. The session is an app-wide singleton the nav indicator shares,
   // so tearing it down when this effect re-runs would kill a connection some
   // other caller is still using — and did: the page connected, then lost its
   // event listener mid-open and rendered an empty fleet.
+  //
+  // **Only if this browser has paired before.** Opening a loopback socket makes
+  // the browser ask for "access other apps and services on this device", and
+  // asking that of someone who has just arrived — before they have said they
+  // want anything from a local machine — is asking for a permission that is not
+  // yet needed. A stored token is proof this browser has been paired, which
+  // means the permission was already granted and re-dialing prompts nobody.
+  // Without one, the page renders its install invitation and waits for the
+  // operator to press Connect below.
   $effect(() => {
+    if (attempted || !storedToken()) return;
+    attempted = true;
     fleet.start({ watch: true });
   });
+
+  /** Dial the local agent because the operator asked. */
+  function connectNow() {
+    attempted = true;
+    fleet.start({ watch: true });
+  }
 
   // Default the head to this machine — but only if this machine can actually
   // hold rank 0. On a control-only node it cannot, and defaulting to it drew
@@ -159,6 +170,7 @@
         <div class="fl-grid">
           {#each nodes as node (node.id)}
             <NodeCard
+              {nodes}
               {node}
               ondetails={(n) => (details = n)}
               onpair={(n) => (pairing = n)}
@@ -189,20 +201,30 @@
               {/if}
             </p>
             {#if remoteCount === 0}
-              <p class="fl-co-next">
-                <strong>Next:</strong> install the agent on a machine with a GPU and
-                pair it. It will appear here on its own once it is running.
-              </p>
+              <JoinGuide {fleet} />
             {/if}
           </div>
         {/if}
 
-        {#if solo && !fleet.controlOnly}
-          <p class="fl-solo-note">
-            No peers yet. Start an agent on another machine on this network and it
-            will appear here on its own — then pair it to unlock the EP=2 recipes,
-            which need exactly two nodes.
-          </p>
+        {#if solo}
+          <!-- Shown whether or not this machine can launch. A control-only node
+               with no peers is the case that needs this MOST: it can do nothing
+               at all until a machine is added, and the old copy only appeared
+               on nodes that could already run models. -->
+          {#if !fleet.controlOnly}
+            <p class="fl-solo-note">
+              No peers yet. Pairing a second machine also unlocks the EP=2
+              recipes, which need exactly two nodes.
+            </p>
+            <!-- A machine that CAN launch and has no peers wants to add one
+                 just as much; it simply is not stuck without one. The guide is
+                 rendered here rather than in both places so it appears exactly
+                 once — the control-only panel above already carries it, and
+                 two "Show me how" buttons on one screen is two live join
+                 codes and a question about which is real. -->
+            <JoinGuide {fleet} />
+          {/if}
+          <FleetScan {fleet} />
         {/if}
       {:else if fleet.mode === 'reconnecting'}
         <!-- The agent was here a moment ago and went away — a restart, a
@@ -219,7 +241,7 @@
           <p>
             If it does not come back, the agent may have stopped. Check it with
             <code class="mono">atlasctl agent status</code>, or start it again with
-            <code class="mono">{START_AGENT}</code>.
+            <code class="mono">{startAgentCommand}</code>.
           </p>
         </div>
       {:else if fleet.mode === 'browser_unpaired'}
@@ -241,36 +263,26 @@
             Atlas runs on your hardware, not ours. Install the agent on a machine
             and this page becomes its control panel.
           </p>
-          <ol class="ld-steps">
-            <li>
-              <span class="ld-step-n">1</span>
-              <div>
-                <p class="ld-step-t">Install the launcher</p>
-                <div class="ld-cmd">
-                  <code class="mono">{runCommand}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(runCommand)}>
-                    {copied === runCommand ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-            <li>
-              <span class="ld-step-n">2</span>
-              <div>
-                <p class="ld-step-t">Start the agent in the background</p>
-                <div class="ld-cmd">
-                  <code class="mono">{START_AGENT}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(START_AGENT)}>
-                    {copied === START_AGENT ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ol>
-          <p class="ld-watching">
-            <span class="ld-dot" aria-hidden="true"></span>
-            Watching for it — this page will continue on its own.
-          </p>
+          <InstallSteps />
+          {#if attempted}
+            <p class="ld-watching">
+              <span class="ld-pulse" aria-hidden="true"></span>
+              Watching for it — this page will continue on its own.
+            </p>
+          {:else}
+            <!-- Not "watching": nothing is being watched until the operator
+                 asks. Saying otherwise would be a claim about behaviour that is
+                 deliberately not happening yet. -->
+            <button type="button" class="btn btn-primary" onclick={connectNow}>
+              Connect to the agent on this machine
+            </button>
+            <p class="ctl-safety">
+              Your browser will ask permission to reach other apps on this
+              device. That is this page opening a connection to the agent on
+              127.0.0.1, and nothing else — it is asked now, rather than on
+              arrival, because until now there was nothing to connect to.
+            </p>
+          {/if}
           <p class="ctl-safety">
             Any web page can show you an install command. Check the address bar says
             <strong>atlasinference.io</strong> before running one.
@@ -286,10 +298,22 @@
       <SectionHead
         label="// 02 · topology"
         title="How they reach each other."
-        sub="Multi-node decode is all-reduce bound, so the link between two machines decides the throughput. A cluster that falls back to ethernet still runs — several times slower — while every correctness check keeps passing, so the fabric is called out here rather than left to be discovered in a benchmark."
+        sub="Two views: how you reach each machine, and how the machines reach each other. Multi-node decode is all-reduce bound, so the link between two machines decides the throughput. A cluster that falls back to ethernet still runs — several times slower — while every correctness check keeps passing, so the fabric is called out here rather than left to be discovered in a benchmark."
       />
 
       <div class="topo-wrap">
+        <!-- Two graphs, because there are two questions and one picture cannot
+             answer both. This one is reachability from where the operator is
+             sitting — how do I get to that machine. The mesh below is the
+             cluster question — can these machines talk to each other, and over
+             what. Drawing only the mesh left "why can I not see dgx3?"
+             unanswerable. -->
+        {#if nodes.length > 0}
+          <!-- Only once there is something to be connected TO. This section is
+               not gated on a live agent, so without this a visitor with no
+               agent gets a lone box labelled "You" wired to nothing. -->
+          <ReachMap {nodes} />
+        {/if}
         <TopologyMap {nodes} {head} />
 
         <div class="topo-actions">

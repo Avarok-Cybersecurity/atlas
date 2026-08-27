@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '$lib/clipboard.js';
   // A command an analyst is expected to paste. Copy is the point of the
   // component: a step someone has to retype by eye is a step they will get
   // wrong and then report as a failure to reproduce.
@@ -8,13 +9,9 @@
   const text = $derived(lines.join('\n'));
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
-    } catch {
-      /* clipboard denied — the text is on screen either way */
-    }
+    if ((await copyText(text)) !== 'copied') return;
+    copied = true;
+    setTimeout(() => (copied = false), 1600);
   }
 </script>
 

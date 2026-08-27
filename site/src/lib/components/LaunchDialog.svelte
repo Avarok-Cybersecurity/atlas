@@ -13,26 +13,29 @@
   // to come back and click retry.
 
   import { launch } from '$lib/agent/session.svelte.js';
+
+  import { copyText } from '$lib/clipboard.js';
+  import InstallSteps from './InstallSteps.svelte';
   import { describe } from '$lib/agent/placement.js';
   import { joinCommand } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
 
   let tokenInput = $state('');
   let copied = $state('');
+
+  // Derived once. Built three times inline before — in the `{#if}`, the click
+  // handler and the label — so the guard and the thing being rendered could
+  // disagree, and did: the guard tested `launch.join` (an object) while the
+  // command it rendered could be the empty string.
+  const joinCmd = $derived(joinCommand(launch.join));
   let dialogEl = $state(null);
 
-  const INSTALL = 'curl -fsSL https://atlasinference.io/install.sh | sh';
   // `install`, not `run`: `run` holds the terminal and the agent dies with it.
-  const START = 'atlasctl agent install';
 
   async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = text;
-      setTimeout(() => { if (copied === text) copied = ''; }, 1600);
-    } catch {
-      /* clipboard blocked; the command is on screen to select */
-    }
+    if ((await copyText(text)) !== 'copied') return;
+    copied = text;
+    setTimeout(() => { if (copied === text) copied = ''; }, 1600);
   }
 
   // A loopback connection either answers or is refused within a few
@@ -139,16 +142,27 @@
             Add a machine that can. Run this on it — the code is good for one
             machine, once, for {Math.round((launch.join?.expiresInS ?? 600) / 60)} minutes.
           </p>
-          {#if launch.join}
+          {#if joinCmd}
             <div class="ld-cmd ld-place-cmd">
-              <code class="mono">{joinCommand(launch.join)}</code>
-              <button type="button" class="cmd-copy" onclick={() => copy(joinCommand(launch.join))}>
-                {copied === joinCommand(launch.join) ? 'Copied' : 'Copy'}
+              <code class="mono">{joinCmd}</code>
+              <button type="button" class="cmd-copy" onclick={() => copy(joinCmd)}>
+                {copied === joinCmd ? 'Copied' : 'Copy'}
               </button>
             </div>
             <p class="ld-watching">
-              <span class="ld-dot" aria-hidden="true"></span>
+              <span class="ld-pulse" aria-hidden="true"></span>
               Watching for it — this dialog will continue on its own.
+            </p>
+          {:else if launch.join}
+            <!-- A window opened, but this machine offered no address another
+                 machine could dial. Rendering the bar anyway drew an empty box
+                 with a Copy button next to it, which is how an operator found
+                 this: there was nothing to copy and nothing saying why. -->
+            <p class="ld-place-sub">
+              This machine has no network address another machine could dial —
+              only loopback or virtual interfaces are up. Connect it to the
+              network you want the fleet on, then reopen this dialog. The code
+              itself is fine; there is nowhere to point it.
             </p>
           {:else}
             <p class="ld-place-sub">
@@ -184,32 +198,7 @@
             Atlas runs on your hardware, not ours. This page can start a model for
             you once a small local agent is listening.
           </p>
-          <ol class="ld-steps">
-            <li>
-              <span class="ld-step-n">1</span>
-              <div>
-                <p class="ld-step-t">Install the launcher</p>
-                <div class="ld-cmd">
-                  <code class="mono">{INSTALL}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(INSTALL)}>
-                    {copied === INSTALL ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-            <li>
-              <span class="ld-step-n">2</span>
-              <div>
-                <p class="ld-step-t">Start the agent in the background</p>
-                <div class="ld-cmd">
-                  <code class="mono">{START}</code>
-                  <button type="button" class="cmd-copy" onclick={() => copy(START)}>
-                    {copied === START ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ol>
+          <InstallSteps />
           <p class="ld-watching" aria-live="polite">
             <span class="ld-pulse" aria-hidden="true"></span>
             Watching for it — this will continue on its own.
