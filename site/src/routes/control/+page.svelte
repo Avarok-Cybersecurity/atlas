@@ -341,7 +341,12 @@
              cluster question — can these machines talk to each other, and over
              what. Drawing only the mesh left "why can I not see dgx3?"
              unanswerable. -->
-        <ReachMap {nodes} />
+        {#if nodes.length > 0}
+          <!-- Only once there is something to be connected TO. This section is
+               not gated on a live agent, so without this a visitor with no
+               agent gets a lone box labelled "You" wired to nothing. -->
+          <ReachMap {nodes} />
+        {/if}
         <TopologyMap {nodes} {head} />
 
         <div class="topo-actions">
