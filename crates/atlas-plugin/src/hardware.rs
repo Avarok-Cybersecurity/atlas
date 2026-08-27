@@ -30,6 +30,7 @@ pub mod parse;
 pub mod policy;
 pub mod report;
 pub mod state;
+pub mod throttle_monitor;
 
 pub use policy::{Decision, Sensitivity, Validity};
 pub use report::HardwareStateReport;
