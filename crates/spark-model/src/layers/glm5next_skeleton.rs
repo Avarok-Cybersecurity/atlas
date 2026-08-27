@@ -369,6 +369,28 @@ impl Glm5NextTextSkeleton {
             .collect()
     }
 
+    /// The per-sequence state contract, from the config's real geometry.
+    ///
+    /// 🪤 `kda_recurrent` is **fp32 and not negotiable**: HF casts the recurrent state to
+    /// float32 and vLLM hardcodes `kda_state_dtype`, so `--ssm-h-dtype f16` is unavailable.
+    /// Sizing it as bf16 halves the number and is wrong.
+    pub fn state_budget(&self, cfg: &ModelConfig, num_spec: usize) -> StateBudget {
+        let kda_layers = self.kda_state_layers().len();
+        let kv_layers = self.layers.iter().filter(|l| l.mixer == Mixer::Dsa).count();
+        let heads = cfg.linear_num_value_heads.max(1);
+        let hd = cfg.linear_value_head_dim.max(1);
+        let conv_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim * 2
+            + cfg.linear_num_value_heads * cfg.linear_value_head_dim;
+        StateBudget {
+            kda_recurrent: kda_layers * heads * hd * hd * 4,
+            kda_conv: kda_layers * conv_dim * (cfg.linear_conv_kernel_dim - 1 + num_spec) * 2,
+            dsa_kv_per_token: kv_layers * cfg.kv_lora_rank * 2,
+            dsa_indexer_per_token: kv_layers * cfg.index_head_dim * 2,
+            mhc_highway_per_token: self.hc_mult * self.hidden_size * 4,
+            moe_routing_per_token: cfg.num_experts * 4 + cfg.num_experts_per_tok * 8,
+        }
+    }
+
     /// Account the skeleton's structural contract against a checkpoint's tensor names.
     ///
     /// `available` is the FULL name list; MLP/MoE and vision names are expected to be present
@@ -403,6 +425,56 @@ impl Glm5NextTextSkeleton {
             missing,
             unexpected,
             deferred,
+        }
+    }
+}
+
+/// Per-sequence state contract (Slice 11 gate 3).
+///
+/// Derived from the checkpoint config, not from a formula chosen to look tidy. Every field is
+/// bytes for ONE sequence at EP=1; `per_rank` halves only what EP actually shards.
+#[derive(Debug, Clone, Copy)]
+pub struct StateBudget {
+    /// KDA recurrent state — `[heads, head_dim, head_dim]` **fp32 mandatory** (HF casts to
+    /// float32 and vLLM hardcodes it), 34 layers. FIXED: does not grow with sequence length.
+    pub kda_recurrent: usize,
+    /// KDA causal-conv window, bf16, `conv_dim x (kernel - 1 + num_spec)`. FIXED.
+    pub kda_conv: usize,
+    /// DSA MLA KV per TOKEN across the 11 text layers — `kv_lora_rank` bf16, NoPE so there is
+    /// no rope section. GROWS with sequence length.
+    pub dsa_kv_per_token: usize,
+    /// Indexer key state per TOKEN across the 11 text layers. GROWS.
+    pub dsa_indexer_per_token: usize,
+    /// mHC highway per TOKEN — `hc_mult x hidden` fp32 in Atlas (bf16 in HF; see the OPEN
+    /// highway-dtype item). Activation-lifetime, not persistent across steps.
+    pub mhc_highway_per_token: usize,
+    /// MoE routing scratch per token: logits + top-k ids + weights.
+    pub moe_routing_per_token: usize,
+}
+
+impl StateBudget {
+    /// Fixed (sequence-length-independent) bytes per sequence.
+    pub fn fixed(&self) -> usize {
+        self.kda_recurrent + self.kda_conv
+    }
+    /// Bytes that grow with every token of context.
+    pub fn per_token(&self) -> usize {
+        self.dsa_kv_per_token + self.dsa_indexer_per_token
+    }
+    /// Total persistent state for a sequence of `tokens`.
+    pub fn for_sequence(&self, tokens: usize) -> usize {
+        self.fixed() + tokens * self.per_token()
+    }
+    /// EP shards the KDA head dimension and the KV heads; the mHC highway and routing scratch
+    /// are replicated. Conservative: only the two attention families are divided.
+    pub fn per_rank(&self, ep: usize) -> StateBudget {
+        StateBudget {
+            kda_recurrent: self.kda_recurrent / ep,
+            kda_conv: self.kda_conv / ep,
+            dsa_kv_per_token: self.dsa_kv_per_token / ep,
+            dsa_indexer_per_token: self.dsa_indexer_per_token / ep,
+            mhc_highway_per_token: self.mhc_highway_per_token,
+            moe_routing_per_token: self.moe_routing_per_token,
         }
     }
 }

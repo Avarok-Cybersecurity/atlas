@@ -313,3 +313,92 @@ fn all_three_glm_stop_tokens_survive_parsing() {
     }
     assert!(!cfg.is_eos(154828));
 }
+
+// ───────────────────────────────────── Slice 11 gates 1 + 3
+
+const FAMILIES: &str = include_str!("fixtures/glm53-nvfp4-9e0d74e3-families.tsv");
+
+fn families() -> Vec<(String, usize, usize)> {
+    FAMILIES
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| {
+            let mut p = l.split('\t');
+            (
+                p.next().unwrap().to_string(),
+                p.next().unwrap().parse().unwrap(),
+                p.next().unwrap().parse().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Gate 1: every one of the checkpoint's 113,074 tensors lands in exactly one family, and the
+/// families that are deliberately NOT loaded are named rather than merely absent.
+#[test]
+fn the_whole_checkpoint_is_accounted_for_and_the_excluded_set_is_explicit() {
+    let f = families();
+    let total: usize = f.iter().map(|(_, c, _)| c).sum();
+    assert_eq!(total, 113_074, "checkpoint tensor count drifted");
+    let excluded: Vec<&str> = f
+        .iter()
+        .filter(|(n, ..)| n.contains("NOT LOADED"))
+        .map(|(n, ..)| n.as_str())
+        .collect();
+    // The exclusions are the vision tower and EVERY layer-45 tensor — nothing else.
+    assert!(excluded.iter().any(|n| n.starts_with("vision")));
+    assert_eq!(excluded.len(), 7, "excluded families: {excluded:?}");
+    let excl_t: usize = f
+        .iter()
+        .filter(|(n, ..)| n.contains("NOT LOADED"))
+        .map(|(_, c, _)| c)
+        .sum();
+    assert_eq!(excl_t, 347 + 2592 + 14 + 4 + 3 + 2 + 2);
+}
+
+/// Gate 1: weight memory, from the MEASURED byte counts — never a formula.
+///
+/// 🔴 176.086 GiB of text weights against a 121 GB node is why Slice 11 cannot run EP=1.
+#[test]
+fn text_model_weight_memory_and_the_ep2_split() {
+    let f = families();
+    let text: usize = f
+        .iter()
+        .filter(|(n, ..)| !n.contains("NOT LOADED"))
+        .map(|(_, _, b)| b)
+        .sum();
+    let experts: usize = f
+        .iter()
+        .filter(|(n, ..)| n == "moe_experts_NVFP4")
+        .map(|(_, _, b)| b)
+        .sum();
+    let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
+    assert!((gib(text) - 176.086).abs() < 0.01, "{}", gib(text));
+    assert!((gib(experts) - 159.469).abs() < 0.01, "{}", gib(experts));
+    // EP=2: only the routed experts shard; everything else replicates.
+    let per_rank = experts / 2 + (text - experts);
+    assert!((gib(per_rank) - 96.352).abs() < 0.01, "{}", gib(per_rank));
+    // The node has 121 GB total / ~112 GB available. EP=1 does not fit; EP=2 does, barely.
+    assert!(gib(text) > 121.0, "EP=1 would fit and this test is stale");
+    assert!(gib(per_rank) < 112.0, "EP=2 no longer fits either");
+}
+
+/// Gate 3: the per-sequence state contract, split into what is fixed and what grows.
+#[test]
+fn per_sequence_state_budget_separates_fixed_from_growing() {
+    let cfg = parse_config(CONFIG).expect("parses");
+    let s = skeleton();
+    let b = s.state_budget(&cfg, 0);
+    // 🪤 fp32 recurrent state is mandatory; sizing it bf16 would halve this and be wrong.
+    assert_eq!(b.kda_recurrent % 4, 0);
+    assert!(b.fixed() > 0 && b.per_token() > 0);
+    // Growth is linear and dominated by the MLA KV of the 11 sparse text layers.
+    assert!(b.dsa_kv_per_token > b.dsa_indexer_per_token);
+    let short = b.for_sequence(1);
+    let long = b.for_sequence(4096);
+    assert_eq!(long - short, 4095 * b.per_token());
+    // EP=2 halves the attention state and leaves replicated scratch alone.
+    let r = b.per_rank(2);
+    assert_eq!(r.kda_recurrent, b.kda_recurrent / 2);
+    assert_eq!(r.mhc_highway_per_token, b.mhc_highway_per_token);
+}
