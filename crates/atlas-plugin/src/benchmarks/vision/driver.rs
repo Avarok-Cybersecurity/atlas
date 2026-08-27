@@ -679,7 +679,23 @@ impl Benchmark for VisionFidelity {
                 let level = LEVELS[self.cursor];
                 let probe = concurrency_probe();
                 let png = self.fixture(probe.images[0])?;
-                let body = request::body(&self.handle()?.target().model, &[png], probe.prompt, 16);
+                // `self.max_tokens`, not a literal. The 16 here was calibrated
+                // for the stimulus this leg used to send — a 224px square and
+                // "Reply with the single word OK", where any non-empty reply
+                // passed. This leg now sends the 1280x720 fixture and demands
+                // the label "1280" appear, and a model asked to read a label
+                // exactly spends its first tokens saying so. At temperature 0
+                // the reply is cut off by `finish_reason=length` before the
+                // number arrives, every time, on every box — which reads as a
+                // vision failure and is not one. The capability phase already
+                // uses `self.max_tokens` for the same probe and passes; this is
+                // now the same number in both places.
+                let body = request::body(
+                    &self.handle()?.target().model,
+                    &[png],
+                    probe.prompt,
+                    self.max_tokens,
+                );
                 let is_correct =
                     |reply: &str| reply_matches(reply, probe.want_all, probe.want_none);
                 let r = run_level(self.handle()?, &body, level, self.timeout(), &is_correct).await;
