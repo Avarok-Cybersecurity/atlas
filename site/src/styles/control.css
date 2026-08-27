@@ -785,3 +785,14 @@
 .jg-tshoot summary:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 2px; }
 .jg-tshoot ul { margin: 0.5rem 0 0 1.1rem; display: grid; gap: 0.45rem; line-height: 1.6; }
 .pair-hint { font-size: 0.78rem; color: var(--t3); line-height: 1.6; margin: 0.3rem 0 0; }
+
+/* The control grant, beside the command it modifies — so the operator sees the
+   flag appear in the line they are about to carry to another machine. */
+.jg-grant {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  margin: 0.6rem 0 0; font-size: 0.78rem; color: var(--t2); line-height: 1.55;
+  cursor: pointer;
+}
+.jg-grant input { margin-top: 0.2rem; flex-shrink: 0; accent-color: var(--ch-cyan); }
+.jg-grant input:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 2px; }
+.jg-grant-why { display: block; margin-top: 0.2rem; font-size: 0.74rem; color: var(--t3); }

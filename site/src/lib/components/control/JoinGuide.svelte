@@ -31,9 +31,14 @@
   let arrived = $state(null);
   let detailsOpen = $state(false);
   let touchedDetails = $state(false);
+  // Default ON: adding a GPU machine in order to run models on it is the
+  // ordinary reason to be here, and a fleet you cannot drive is not a fleet.
+  // It is still an explicit, visible flag on the pasted line, and unticking it
+  // changes the command in front of the operator before they carry it away.
+  let grantControl = $state(true);
 
   const join = $derived(joinState.current);
-  const command = $derived(join ? joinCommand(join) : '');
+  const command = $derived(join ? joinCommand(join, grantControl) : '');
   const kind = $derived(JW.offerKind(join));
   const left = $derived(
     join ? JW.remaining(JW.deadlineMs(join.mintedAtMs, join.expiresInS), nowMs()) : null
@@ -137,6 +142,18 @@
             <div>
               <p class="ld-step-t">Paste this line there</p>
               <CommandRow {command} />
+              <label class="jg-grant">
+                <input type="checkbox" bind:checked={grantControl} />
+                <span>
+                  Let this fleet run models on that machine.
+                  <span class="jg-grant-why">
+                    Adds <code class="mono">--grant-control</code> to the line above. The
+                    permission is granted on that machine, by whoever runs the command
+                    there — untick it and you can still see the machine, but not launch
+                    on it from here.
+                  </span>
+                </span>
+              </label>
               <p class="jg-body">
                 It installs the agent, starts it in the background, and pairs the
                 machine back to this fleet — all three. Watch that terminal until it
