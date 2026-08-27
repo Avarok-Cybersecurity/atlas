@@ -138,6 +138,7 @@ fn a_successful_fetch_is_not_marked_offline() {
         tree_sha: "abc".into(),
         fetched_at: unix_now(),
         offline: None,
+        incomplete: None,
     };
     let index = refresh_with(&dir.0, || Ok(fresh));
     assert!(index.offline.is_none());

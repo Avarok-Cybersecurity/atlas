@@ -104,7 +104,9 @@ mod policy {
         argv.extend_from_slice(extra);
         match cli::Cli::parse_from(argv).command {
             cli::Command::Serve(a) => a,
-            cli::Command::Benchmark(_) | cli::Command::DumpServeOptions => unreachable!(),
+            cli::Command::Benchmark(_)
+            | cli::Command::DumpServeOptions
+            | cli::Command::SyncRecipes => unreachable!(),
         }
     }
 
