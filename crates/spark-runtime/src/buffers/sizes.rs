@@ -34,6 +34,14 @@ pub struct BufferSizes {
     pub expert_gate_out: usize,
     pub expert_up_out: usize,
     pub expert_down_out: usize,
+    /// Persistent NVFP4 MoE prefill work-list: two u32 words per tile.
+    /// Sized for the worst valid expert skew and reused by gate/up and down.
+    pub moe_worklist: usize,
+    /// Device counter paired with `moe_worklist`.
+    pub moe_worklist_total: usize,
+    /// Device-side diagnostic flag reserved for work-list capacity overflow.
+    /// The proven capacity bound keeps this at zero on valid launches.
+    pub moe_worklist_overflow: usize,
     pub splitk_workspace: usize,
     /// GDN FLA chunked-prefill scratch (single buffer, sub-divided W|U|S|uc).
     /// 0 unless the model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
@@ -238,6 +246,16 @@ impl BufferSizes {
             k_max * h * bf16
         };
 
+        // Compact NVFP4 grouped GEMM row-list.  K64 kernels use M_TILE=64;
+        // the sum of ceil(M_e/64) over all experts is bounded by
+        // ceil(total_expanded/64) + num_experts - 1.  Each entry is only the
+        // expert id and local M tile; gate/up and down reuse the same list.
+        let total_expanded = m.saturating_mul(top_k);
+        let m_tiles_bound = total_expanded.div_ceil(64) + config.num_experts.saturating_sub(1);
+        let moe_worklist = (m_tiles_bound.max(1) * 2 * std::mem::size_of::<u32>()).max(256);
+        let moe_worklist_total = std::mem::size_of::<i32>();
+        let moe_worklist_overflow = std::mem::size_of::<i32>();
+
         // Logits: only last token used during prefill. Cap at 96 tokens —
         // the batched MTP verify's R = Σ ks row cap (n=32 × k=3 rows, the
         // wave-11 depth-at-width envelope; VERIFY_ROW_CAP in verify_e2.rs).
@@ -439,6 +457,9 @@ impl BufferSizes {
             expert_gate_out,
             expert_up_out,
             expert_down_out,
+            moe_worklist,
+            moe_worklist_total,
+            moe_worklist_overflow,
             splitk_workspace,
             gdn_fla_scratch,
             ssd_scratch,
@@ -503,6 +524,9 @@ impl BufferSizes {
             + self.expert_gate_out
             + self.expert_up_out
             + self.expert_down_out
+            + self.moe_worklist
+            + self.moe_worklist_total
+            + self.moe_worklist_overflow
             + self.splitk_workspace
             + self.gdn_fla_scratch
             + self.ssd_scratch

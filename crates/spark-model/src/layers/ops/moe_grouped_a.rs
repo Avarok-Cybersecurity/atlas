@@ -289,6 +289,98 @@ pub fn moe_w4a16_grouped_gemm_ptrtable_k64_n128(
         .arg_u32(num_experts)
         .arg_u32(n_out)
         .arg_u32(k)
+        .arg_ptr(DevicePtr::NULL)
+        .arg_ptr(DevicePtr::NULL)
+        .arg_u32(0)
+        .arg_u32(0)
+        .launch(stream)
+}
+
+/// Compact K64 down GEMM. `worklist` contains `(expert, m_tile)` row pairs;
+/// the kernel expands the N tiles from each row on its 1-D grid.
+/// to `moe_w4a16_grouped_gemm_ptrtable_t_k64`.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w4a16_grouped_gemm_ptrtable_t_k64_compact(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a: DevicePtr,
+    b_packed_ptrs: DevicePtr,
+    b_scale_ptrs: DevicePtr,
+    scale2_vals: DevicePtr,
+    c: DevicePtr,
+    expert_offsets: DevicePtr,
+    sorted_token_ids: DevicePtr,
+    num_experts: u32,
+    n_out: u32,
+    k: u32,
+    worklist: DevicePtr,
+    total_tiles: DevicePtr,
+    row_capacity: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([
+            row_capacity.saturating_mul(div_ceil(n_out, 128)).max(1),
+            1,
+            1,
+        ])
+        .block([128, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(b_packed_ptrs)
+        .arg_ptr(b_scale_ptrs)
+        .arg_ptr(scale2_vals)
+        .arg_ptr(c)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n_out)
+        .arg_u32(k)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .arg_u32(row_capacity)
+        .arg_u32(div_ceil(n_out, 128))
+        .launch(stream)
+}
+
+/// Diagnostic compact K32 down GEMM candidate.  It uses the legacy
+/// transposed K32 kernel with the same row-list ABI; disabled unless the
+/// stage-3 environment switch is set.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w4a16_grouped_gemm_ptrtable_t_compact(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a: DevicePtr,
+    b_packed_ptrs: DevicePtr,
+    b_scale_ptrs: DevicePtr,
+    scale2_vals: DevicePtr,
+    c: DevicePtr,
+    expert_offsets: DevicePtr,
+    num_experts: u32,
+    n_out: u32,
+    k: u32,
+    worklist: DevicePtr,
+    total_rows: DevicePtr,
+    row_capacity: u32,
+    stream: u64,
+) -> Result<()> {
+    let n_tiles = div_ceil(n_out, 128);
+    KernelLaunch::new(gpu, kernel)
+        .grid([row_capacity.saturating_mul(n_tiles).max(1), 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(b_packed_ptrs)
+        .arg_ptr(b_scale_ptrs)
+        .arg_ptr(scale2_vals)
+        .arg_ptr(c)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(DevicePtr::NULL)
+        .arg_u32(num_experts)
+        .arg_u32(n_out)
+        .arg_u32(k)
+        .arg_ptr(worklist)
+        .arg_ptr(total_rows)
+        .arg_u32(row_capacity)
+        .arg_u32(n_tiles)
         .launch(stream)
 }
 
@@ -333,6 +425,63 @@ pub fn moe_w4a16_fused_gate_up_k64_n128(
         .arg_u32(num_experts)
         .arg_u32(n_out)
         .arg_u32(k)
+        .arg_ptr(DevicePtr::NULL)
+        .arg_ptr(DevicePtr::NULL)
+        .arg_u32(0)
+        .arg_u32(0)
+        .launch(stream)
+}
+
+/// Compact K64 fused gate/up GEMM. The work-list N dimension spans the
+/// concatenated `[gate | up]` output, so `n_tiles = ceil(2*n_out/128)`.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w4a16_fused_gate_up_k64_n128_compact(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a: DevicePtr,
+    gate_packed_ptrs: DevicePtr,
+    gate_scale_ptrs: DevicePtr,
+    gate_scale2_vals: DevicePtr,
+    up_packed_ptrs: DevicePtr,
+    up_scale_ptrs: DevicePtr,
+    up_scale2_vals: DevicePtr,
+    c_gate: DevicePtr,
+    c_up: DevicePtr,
+    expert_offsets: DevicePtr,
+    sorted_token_ids: DevicePtr,
+    num_experts: u32,
+    n_out: u32,
+    k: u32,
+    worklist: DevicePtr,
+    total_tiles: DevicePtr,
+    row_capacity: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([
+            row_capacity.saturating_mul(div_ceil(2 * n_out, 128)).max(1),
+            1,
+            1,
+        ])
+        .block([128, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(gate_packed_ptrs)
+        .arg_ptr(gate_scale_ptrs)
+        .arg_ptr(gate_scale2_vals)
+        .arg_ptr(up_packed_ptrs)
+        .arg_ptr(up_scale_ptrs)
+        .arg_ptr(up_scale2_vals)
+        .arg_ptr(c_gate)
+        .arg_ptr(c_up)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n_out)
+        .arg_u32(k)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .arg_u32(row_capacity)
+        .arg_u32(div_ceil(2 * n_out, 128))
         .launch(stream)
 }
 

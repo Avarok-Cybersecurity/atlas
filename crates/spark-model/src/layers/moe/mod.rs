@@ -257,6 +257,10 @@ pub struct MoeLayer {
     /// `ATLAS_HOLO_MOE_DOWN_FP4=1` — same, for the prefill down projection over
     /// the shared `down_ptrs_t` table.
     down_fp4: bool,
+    /// `ATLAS_MOE_PREFILL_COMPACT_NVFP4=1` enables the exact GPU-built
+    /// work-list launch for the Standard-NVFP4 K64 routed prefill path.
+    /// Default off until the GB10 A/B gate is recorded.
+    compact_nvfp4: bool,
     /// `ATLAS_HYBRID_MOE_LAYOUT=1` opts in to the hybrid-layout path:
     /// keep BOTH original `[N, K/2]` weights (for decode + MTP verify) AND
     /// transposed `[K/2, N]` weights (for prefill). Doubles MoE-weight
@@ -343,6 +347,8 @@ pub struct MoeLayer {
     // Launched on the SAME stream as the grouped GEMM (read-after-write of
     // total_tiles). Handle may be 0 on older images.
     moe_build_tile_worklist_k: KernelHandle,
+    // NVFP4 row work-list builder (one (expert,m_tile) item; module "moe").
+    moe_build_row_worklist_k: KernelHandle,
     // W8A8 + FP32 epilogue MoE GEMM (vLLM-equivalent). Opt-in via
     // ATLAS_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
     moe_w8a8_grouped_gemm_k: KernelHandle,

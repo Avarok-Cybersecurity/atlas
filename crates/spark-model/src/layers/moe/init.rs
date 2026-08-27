@@ -197,6 +197,11 @@ impl MoeLayer {
                 "moe",
                 "moe_build_tile_worklist",
             ),
+            moe_build_row_worklist_k: super::super::try_kernel(
+                gpu,
+                "moe",
+                "moe_build_row_worklist",
+            ),
             moe_w8a8_grouped_gemm_k: super::super::try_kernel(
                 gpu,
                 "moe_w8a8_grouped_gemm",
@@ -378,6 +383,9 @@ impl MoeLayer {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             down_fp4: std::env::var("ATLAS_HOLO_MOE_DOWN_FP4")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+            compact_nvfp4: std::env::var("ATLAS_MOE_PREFILL_COMPACT_NVFP4")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             shared_gate_t: None,
