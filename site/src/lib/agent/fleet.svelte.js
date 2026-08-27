@@ -30,6 +30,7 @@ import { AgentClient } from './client.svelte.js';
 
 /** Longest display string we will render. */
 import { DETAIL_MAX, MAX_NODES, alert, ingestNode, sanitize, vitals } from './ingest.js';
+import { readDecision, readExchange } from './pairing.js';
 
 /** Poll cadence while waiting for an agent to appear, and its ceiling. */
 const PROBE_START_MS = 1200;
@@ -232,23 +233,14 @@ class FleetSession {
   async pair(nodeId, code) {
     const res = await this.agent.pairPeer(nodeId, code);
     if (!res.ok) return { ok: false, detail: res.message };
-    const reply = res.reply;
-    return {
-      ok: reply.exchanged === true,
-      verification: reply.verification ?? null,
-      detail: sanitize(reply.detail, DETAIL_MAX)
-    };
+    return readExchange(res.reply);
   }
 
-  /** Drop trust in a peer. */
   /** Trust a peer after a human compared the words. */
   async confirm(nodeId) {
     const res = await this.agent.confirmPairing(nodeId);
     if (!res.ok) return { ok: false, detail: res.message };
-    return {
-      ok: res.reply.trusted === true,
-      detail: sanitize(res.reply.detail, DETAIL_MAX)
-    };
+    return readDecision(res.reply, true);
   }
 
   /**
@@ -261,14 +253,18 @@ class FleetSession {
   async reject(nodeId) {
     const res = await this.agent.rejectPairing(nodeId);
     if (!res.ok) return { ok: false, detail: res.message };
-    return { ok: true, detail: sanitize(res.reply.detail, DETAIL_MAX) };
+    // Not an unconditional `ok: true`. This asked the agent to leave the peer
+    // untrusted, so the answer worth reporting is whether it IS untrusted — an
+    // affirmative here would tell the operator their refusal took effect
+    // without ever having read what the agent said about it.
+    return readDecision(res.reply, false);
   }
 
   async unpair(nodeId) {
     const res = await this.agent.unpairPeer(nodeId);
     if (!res.ok) return { ok: false, detail: res.message };
     // `unpair_peer` answers a decision now, not a pairing result.
-    return { ok: res.reply.trusted === false, detail: sanitize(res.reply.detail, DETAIL_MAX) };
+    return readDecision(res.reply, false);
   }
 
   // ---- internals ---------------------------------------------------------
