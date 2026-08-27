@@ -182,6 +182,7 @@
         <div class="fl-grid">
           {#each nodes as node (node.id)}
             <NodeCard
+              {nodes}
               {node}
               ondetails={(n) => (details = n)}
               onpair={(n) => (pairing = n)}

@@ -13,8 +13,8 @@
 //   you → the agent on this machine → machines it has paired → machines those
 //   vouch for
 //
-// A node's `via` names the peer that told us about it. `null` means this agent
-// reached it itself. That distinction is the whole point: a vouched machine is
+// A node's `reachedVia` names the peer control travels through. `null` means
+// this agent reaches it itself. That distinction is the whole point: a vouched machine is
 // known second-hand, it is controlled THROUGH its voucher, and if the voucher
 // goes away it goes with it. Drawing it as though it were directly attached
 // would promise the operator something the network does not do.
@@ -45,8 +45,8 @@ export function tiers(nodes) {
   const remote = list.filter((n) => !n.isLocal);
   const present = new Set(local.concat(remote).map((n) => n.id));
 
-  const direct = remote.filter((n) => !n.via || !present.has(n.via) || n.via === local[0]?.id);
-  const vouched = remote.filter((n) => n.via && present.has(n.via) && n.via !== local[0]?.id);
+  const direct = remote.filter((n) => !n.reachedVia || !present.has(n.reachedVia) || n.reachedVia === local[0]?.id);
+  const vouched = remote.filter((n) => n.reachedVia && present.has(n.reachedVia) && n.reachedVia !== local[0]?.id);
 
   const byId = (a, b) => a.id.localeCompare(b.id);
   const out = [{ tier: 0, nodes: [ROOT] }];
@@ -76,9 +76,9 @@ export function reach(nodes) {
   if (local) out.push({ from: ROOT.id, to: local.id, kind: 'browser' });
   for (const n of list) {
     if (n.isLocal) continue;
-    const viaPresent = n.via && present.has(n.via) && n.via !== local?.id;
+    const viaPresent = n.reachedVia && present.has(n.reachedVia) && n.reachedVia !== local?.id;
     if (viaPresent) {
-      out.push({ from: n.via, to: n.id, kind: 'vouched' });
+      out.push({ from: n.reachedVia, to: n.id, kind: 'vouched' });
     } else if (local) {
       out.push({ from: local.id, to: n.id, kind: 'direct' });
     }
@@ -89,15 +89,34 @@ export function reach(nodes) {
 /**
  * How this machine is known, in words the operator can act on.
  *
+ * Rule 5 of the provenance contract: when a voucher goes unreachable its
+ * vouched machines do not vanish — a fleet member that is off is still your
+ * fleet — but the page must stop implying they are reachable.
+ *
  * @param {object} node
  * @param {object[]} all
  * @returns {string}
  */
 export function provenance(node, all) {
   if (node?.isLocal) return 'This machine — the agent this page is connected to.';
-  const via = node?.via ? (all ?? []).find((n) => n.id === node.via) : null;
-  if (via) {
-    return `Reached through ${via.name || via.id.slice(0, 8)}. It is not directly reachable from here, so control of it is carried by that machine.`;
+  const list = all ?? [];
+  const carrier = node?.reachedVia ? list.find((n) => n.id === node.reachedVia) : null;
+  const claimer = node?.vouchedBy ? list.find((n) => n.id === node.vouchedBy) : null;
+
+  if (carrier) {
+    const who = carrier.name || carrier.id.slice(0, 8);
+    if (carrier.pairing === 'unreachable') {
+      return `Reached through ${who}, which is unreachable — so this machine cannot be reached either. It has not been removed from your fleet.`;
+    }
+    return `Reached through ${who}. It is not directly reachable from here, so control of it is carried by that machine.`;
+  }
+
+  // Vouched but not carried: somebody claimed it exists and we can reach it
+  // ourselves. Worth saying, because nothing about it has been verified
+  // first-hand until a ceremony runs.
+  if (node?.pairing === 'vouched' && claimer) {
+    const who = claimer.name || claimer.id.slice(0, 8);
+    return `Known only because ${who} vouched for it. Nothing here has been verified first-hand — pair with it to do that.`;
   }
   return 'Reached directly from this machine.';
 }

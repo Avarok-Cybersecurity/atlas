@@ -14,9 +14,10 @@
   import VitalTile from './VitalTile.svelte';
   import { preferredAddress, linkWarns, isStale } from '$lib/agent/fleet.svelte.js';
   import { classLabel, subnetOf } from '$lib/agent/network.js';
+  import { provenance } from '$lib/agent/hops.js';
   import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
 
-  let { node, onpair, onunpair, ondetails } = $props();
+  let { nodes = [], node, onpair, onunpair, ondetails } = $props();
 
   // Staleness is the passage of time, not an event. Without a reactive clock
   // the derived below only re-ran when `node` changed — and a node that has
@@ -53,8 +54,17 @@
           ? 'pairing…'
           : node.pairing === 'unreachable'
             ? 'unreachable'
-            : 'discovered'
+            : node.pairing === 'vouched'
+              ? 'vouched'
+              : 'discovered'
   );
+
+  // Second-hand knowledge must never wear the same clothes as a verified pin.
+  // A vouched machine has had no ceremony: everything shown about it is another
+  // machine's claim, and presenting it as paired would tell the operator they
+  // verified something they never saw.
+  const vouched = $derived(node.pairing === 'vouched');
+  const route = $derived(provenance(node, nodes));
 
   // A clamped SM clock has cost whole benchmark campaigns: every throughput
   // number reads 2.5-2.9x low while every correctness gate still passes. It is
@@ -73,7 +83,8 @@
 
 <article
   class="fl-card"
-  class:fl-card-discovered={!trusted}
+  class:fl-card-vouched={vouched}
+  class:fl-card-discovered={!trusted && !vouched}
   class:fl-card-stale={stale && trusted}
 >
   <header class="fl-head">
@@ -122,6 +133,9 @@
       </button>
     </div>
   {:else}
+    {#if node.reachedVia || vouched}
+      <p class="fl-prov">{route}</p>
+    {/if}
     <div class="fl-ident">
       {#if addr}
         <span class="mono fl-addr">{addr.addr}</span>
