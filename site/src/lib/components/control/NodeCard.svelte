@@ -13,9 +13,11 @@
 
   import VitalTile from './VitalTile.svelte';
   import { preferredAddress, linkWarns, isStale } from '$lib/agent/fleet.svelte.js';
+  import { classLabel, subnetOf } from '$lib/agent/network.js';
+  import { provenance } from '$lib/agent/hops.js';
   import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
 
-  let { node, onpair, onunpair, ondetails } = $props();
+  let { nodes = [], node, onpair, onunpair, ondetails } = $props();
 
   // Staleness is the passage of time, not an event. Without a reactive clock
   // the derived below only re-ran when `node` changed — and a node that has
@@ -24,6 +26,10 @@
   $effect(() => useClock());
 
   const addr = $derived(preferredAddress(node));
+  // Which network, not just which address. "10.10.10.2" does not tell an
+  // operator whether that is the fabric or the office LAN; "10.10.10.0/24"
+  // does, and it is the thing they compare against their own networks.
+  const subnet = $derived(addr ? subnetOf(addr.addr, addr.prefixLen) : null);
   const stale = $derived(isStale(node, nowMs()));
   const staleFor = $derived(Math.max(0, Math.round((nowMs() - node.lastSeen) / 1000)));
   // 'unreachable' is a PAIRED node that is not answering, so it keeps its
@@ -48,8 +54,17 @@
           ? 'pairing…'
           : node.pairing === 'unreachable'
             ? 'unreachable'
-            : 'discovered'
+            : node.pairing === 'vouched'
+              ? 'vouched'
+              : 'discovered'
   );
+
+  // Second-hand knowledge must never wear the same clothes as a verified pin.
+  // A vouched machine has had no ceremony: everything shown about it is another
+  // machine's claim, and presenting it as paired would tell the operator they
+  // verified something they never saw.
+  const vouched = $derived(node.pairing === 'vouched');
+  const route = $derived(provenance(node, nodes));
 
   // A clamped SM clock has cost whole benchmark campaigns: every throughput
   // number reads 2.5-2.9x low while every correctness gate still passes. It is
@@ -68,7 +83,8 @@
 
 <article
   class="fl-card"
-  class:fl-card-discovered={!trusted}
+  class:fl-card-vouched={vouched}
+  class:fl-card-discovered={!trusted && !vouched}
   class:fl-card-stale={stale && trusted}
 >
   <header class="fl-head">
@@ -117,6 +133,9 @@
       </button>
     </div>
   {:else}
+    {#if node.reachedVia || vouched}
+      <p class="fl-prov">{route}</p>
+    {/if}
     <div class="fl-ident">
       {#if addr}
         <span class="mono fl-addr">{addr.addr}</span>
@@ -128,17 +147,18 @@
             ? 'This machine told us where it is, but that message is not authenticated — so its link is not taken on trust until we reach it over the paired channel.'
             : undefined}
         >
-          {addr.class === 'roce'
-            ? 'RoCE'
-            : addr.class === 'infini_band'
-              ? 'InfiniBand'
-              : addr.class === 'wireless'
-                ? 'Wi-Fi'
-                : addr.class === 'unverified'
-                  ? 'link unverified'
-                  : 'Ethernet'}
+          <!-- `classLabel` is the one place these names live. This card used
+               to carry its own ternary, so a class added to the protocol
+               rendered here as "Ethernet" — telling someone their fabric was
+               something it is not. -->
+          {addr.class === 'unverified' ? 'link unverified' : classLabel(addr.class)}
           {#if addr.speedMbps}· {Math.round(addr.speedMbps / 1000)}G{/if}
         </span>
+        {#if subnet}
+          <span class="chip fl-subnet mono" title="The network this machine was reached on">
+            {subnet}
+          </span>
+        {/if}
       {:else}
         <span class="fl-addr fl-addr-none">no usable network link</span>
       {/if}

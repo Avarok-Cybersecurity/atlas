@@ -1,5 +1,6 @@
 <script>
   import { hero, runCommand, githubUrl, discordUrl } from '$lib/data.js';
+  import { copyText } from '$lib/clipboard.js';
   import Receipt from './Receipt.svelte';
   import DiscordIcon from './DiscordIcon.svelte';
 
@@ -32,11 +33,9 @@
   }
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(runCommand);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
-    } catch {}
+    if ((await copyText(runCommand)) !== 'copied') return;
+    copied = true;
+    setTimeout(() => (copied = false), 1600);
   }
 </script>
 

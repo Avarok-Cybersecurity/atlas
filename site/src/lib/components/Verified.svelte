@@ -3,6 +3,7 @@
   // ladder is the strongest verified artifact the project owns, and it used to
   // be hidden behind a click on the hero receipt. The methodology that makes
   // the chart credible sits directly under it rather than in a modal.
+  import { copyText } from '$lib/clipboard.js';
   import {
     verified, mlperfCopy, mlperfTrademark, mlcommons, verifiedAnchor, gateSrcUrl, recipesUrl
   } from '$lib/data.js';
@@ -23,11 +24,9 @@
 
   let copied = $state(false);
   async function copyRepro() {
-    try {
-      await navigator.clipboard.writeText(bench.repro_cmd);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
-    } catch {}
+    if ((await copyText(bench.repro_cmd)) !== 'copied') return;
+    copied = true;
+    setTimeout(() => (copied = false), 1600);
   }
 </script>
 

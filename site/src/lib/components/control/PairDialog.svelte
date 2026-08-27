@@ -10,20 +10,21 @@
   // The fingerprint comparison is the part people skip, so it is the part with
   // the most room on screen and the plainest consequence attached to it.
   //
-  // IMPORTANT about when trust actually happens. `pair_peer` completes the
-  // SPAKE2 ceremony and writes the pin BEFORE these words can be shown — the
-  // words are derived from the exchange, so there is no earlier moment to show
-  // them. The dialog therefore cannot ask "may I pair?"; it can only ask "was
-  // that the right machine?" and undo it if the answer is no. Every path out of
-  // the confirm step that is not the confirm button unpairs, because a screen
-  // that says "if they differ, cancel" while cancel does nothing is worse than
-  // no ceremony at all.
+  // When trust actually happens, as of protocol 2. `pair_peer` runs the SPAKE2
+  // exchange and writes NOTHING. The words are derived from that exchange, so
+  // this is the earliest they can exist — and now the pin does not exist yet
+  // either. Confirming writes it; every other way out of this step discards it.
+  //
+  // That is why the copy can finally say "not trusted yet" and mean it. Before
+  // this, the pin was written first and the dialog could only undo — so a
+  // refusal was a REMOVAL that could itself fail, leaving a machine trusted
+  // that the operator had explicitly rejected.
 
   import { fleet } from '$lib/agent/fleet.svelte.js';
 
   let { node, onclose } = $props();
 
-  /** 'code' | 'verifying' | 'confirm' | 'rejecting' | 'paired' | 'failed' */
+  /** 'code' | 'verifying' | 'confirm' | 'accepting' | 'rejecting' | 'paired' | 'failed' */
   let phase = $state('code');
   let code = $state('');
   let detail = $state('');
@@ -32,43 +33,65 @@
   /** Set when the operator dismissed while the exchange was still in flight. */
   let dismissed = $state(false);
 
-  const START = 'atlasctl agent pair';
+  /**
+   * Accept the words and trust the node.
+   *
+   * The pin is written HERE, by the agent, on this click — which is the whole
+   * point of the two-phase change. A failure leaves nothing trusted, and the
+   * dialog stays open to say so rather than closing on an unkept promise.
+   */
+  async function accept() {
+    if (phase !== 'confirm') return;
+    phase = 'accepting';
+    const res = await fleet.confirm(node.id);
+    if (res.ok) {
+      phase = 'paired';
+      onclose?.(true);
+      return;
+    }
+    detail = res.detail || 'The agent did not accept the pairing.';
+    phase = 'confirm';
+  }
+
   const digitsOnly = $derived(code.replaceAll(/\D/g, '').slice(0, 8));
   const ready = $derived(digitsOnly.length === 8);
 
   /**
    * Leave the confirm step without trusting the node.
    *
-   * Removes the pin the ceremony already wrote. If that fails the dialog stays
-   * open and says so rather than closing on a promise it did not keep.
+   * Discards the exchange. Nothing was written, so unlike the old unpair-based
+   * refusal there is nothing that can fail and leave the peer trusted.
    */
   async function reject() {
-    // Dismissing while the exchange is still running is NOT a refusal of
-    // something that has not happened yet — `pair_peer` is in flight, and it
-    // will complete and write the pin whether this dialog is on screen or not.
-    // Closing here left a peer paired that nobody ever saw words for. So the
-    // dismissal is remembered and acted on when the reply lands.
+    // Dismissing while the exchange is still running: `pair_peer` is in flight
+    // and will complete. Under protocol 2 it writes nothing, so the pending
+    // exchange would die with the socket anyway — but the dismissal is still
+    // remembered and turned into an explicit reject when the reply lands,
+    // because relying on a socket closing is relying on a side effect, and the
+    // operator said no.
     if (phase === 'verifying') {
       dismissed = true;
       return;
     }
-    // Already undoing. Re-entering would fire a second unpair, and closing
-    // would drop the "still trusted" warning on an unmounted component if that
-    // unpair then failed.
-    if (phase === 'rejecting') return;
+    // A decision is already in flight. Re-entering would send a second one for
+    // an exchange the agent has already taken, and the reply would say "no
+    // exchange waiting" — true, confusing, and entirely self-inflicted.
+    if (phase === 'rejecting' || phase === 'accepting') return;
     if (phase !== 'confirm') {
       onclose?.();
       return;
     }
     phase = 'rejecting';
-    const res = await fleet.unpair(node.id);
+    const res = await fleet.reject(node.id);
     if (res.ok) {
       onclose?.();
       return;
     }
+    // The agent could not even discard it. Nothing was trusted either way —
+    // say that plainly rather than implying the operator must go clean up.
     detail =
-      `${node.name} could not be un-paired: ${res.detail || 'the agent refused'}. ` +
-      'It is still trusted — remove it with Unpair before using this fleet.';
+      `The agent did not acknowledge the refusal: ${res.detail || 'no reason given'}. ` +
+      `${node.name} was not trusted.`;
     phase = 'confirm';
   }
 
@@ -84,8 +107,12 @@
     if (res.ok) {
       verification = res.verification ?? '';
       phase = 'confirm';
-      // They walked away mid-ceremony. The pin exists now, and they never saw
-      // the words, so the only honest reading is that they did not approve it.
+      // They walked away mid-ceremony. Nothing is written — under protocol 2 the
+      // exchange holds no pin — but the exchange IS live on the agent, and the
+      // operator never saw the words. The only honest reading of a dismissal is
+      // that they did not approve it, so the exchange is spent explicitly rather
+      // than left to lapse: relying on a socket closing is relying on a side
+      // effect, and they said no.
       if (dismissed) {
         dismissed = false;
         void reject();
@@ -118,7 +145,7 @@
 >
   <header class="ld-head">
     <h3 class="ld-title" id="pair-title">
-      {#if phase === 'confirm' || phase === 'rejecting'}Confirm you are joining the right machines
+      {#if phase === 'confirm' || phase === 'rejecting' || phase === 'accepting'}Confirm you are joining the right machines
       {:else if phase === 'paired'}Paired
       {:else}Pair {node.name}{/if}
     </h3>
@@ -138,14 +165,22 @@
         <li>
           <span class="ld-step-n">1</span>
           <div>
-            <p class="ld-step-t">On {node.name}, run</p>
-            <div class="ld-cmd"><code class="mono">{START}</code></div>
+            <p class="ld-step-t">On {node.name}, open its control page and mint a code</p>
+            <!-- NOT `atlasctl agent pair`. That command binds the peer port,
+                 and {node.name}'s agent is already holding it — which is the
+                 only reason this machine can see it at all. The code has to
+                 come from the running agent, and its control page is what asks
+                 for one. -->
+            <p class="pair-hint">
+              Use “Show me how” there, or the add-a-machine panel — either opens a
+              join window and shows the eight digits.
+            </p>
           </div>
         </li>
         <li>
           <span class="ld-step-n">2</span>
           <div>
-            <p class="ld-step-t">Type the eight digits it prints</p>
+            <p class="ld-step-t">Type those eight digits here</p>
             <form onsubmit={submit}>
               <input
                 class="pair-code mono"
@@ -167,24 +202,24 @@
       {#if phase === 'failed'}
         <p class="ld-error" role="alert">{detail}</p>
       {/if}
-    {:else if phase === 'confirm' || phase === 'rejecting'}
+    {:else if phase === 'confirm' || phase === 'rejecting' || phase === 'accepting'}
       <p>
-        The code was accepted and <strong>{node.name}</strong> is paired. Check that it
-        is showing the same words. If it is not, cancel and the pairing is removed.
+        The code was accepted. <strong>{node.name}</strong> is <strong>not trusted
+        yet</strong> — check that it is showing the same words first.
       </p>
 
       <div class="pair-fps">
         <div class="pair-words mono">{verification || '—'}</div>
         <p class="pair-fp-note">
-          <code class="mono">{START}</code> on {node.name} is printing these same words.
-          If they differ, something is sitting between your machines — cancel, and
-          this node is un-paired again.
+          {node.name} logs these same words when it accepts. If they differ, something
+          is sitting between your machines. Cancel and nothing is trusted; no pairing
+          was written.
         </p>
       </div>
 
       <p class="pair-consequence">
-        Once paired, {node.name} can run models on this fleet and this machine can run
-        models on it. You can undo it at any time with Unpair.
+        If you confirm, {node.name} can run models on this fleet and this machine can
+        run models on it. You can undo it later with Unpair.
       </p>
 
       {#if detail}
@@ -195,21 +230,21 @@
         <button
           type="button"
           class="btn btn-ghost"
-          disabled={phase === 'rejecting'}
+          disabled={phase === 'rejecting' || phase === 'accepting'}
           onclick={() => void reject()}
         >
-          {phase === 'rejecting' ? 'Removing…' : "They differ — cancel"}
+          <!-- Not "Removing…": nothing was written, so there is nothing to
+               remove. Saying otherwise implies a pin existed, which is exactly
+               the pre-protocol-2 behaviour this dialog stopped having. -->
+          {phase === 'rejecting' ? 'Discarding…' : "They differ — cancel"}
         </button>
         <button
           type="button"
           class="btn btn-primary"
-          disabled={phase === 'rejecting'}
-          onclick={() => {
-            phase = 'paired';
-            onclose?.(true);
-          }}
+          disabled={phase === 'rejecting' || phase === 'accepting'}
+          onclick={() => void accept()}
         >
-          They match — trust this node
+          {phase === 'accepting' ? 'Trusting…' : 'They match — trust this node'}
         </button>
       </div>
     {/if}

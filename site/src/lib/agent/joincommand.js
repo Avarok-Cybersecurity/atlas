@@ -8,8 +8,7 @@
 // is subtly wrong is worse than no command, because it fails on the far
 // machine where the operator has the least context.
 
-/** Where install.sh is served from. Kept in step with `data.js:runCommand`. */
-const INSTALLER = 'https://atlasinference.io/install.sh';
+import { installerUrl } from '../data.js';
 
 /**
  * Build the install-and-join one-liner.
@@ -21,12 +20,19 @@ const INSTALLER = 'https://atlasinference.io/install.sh';
  * @param {{code: string, addresses: string[]}|null} join
  * @returns {string}
  */
-export function joinCommand(join) {
+export function joinCommand(join, grantControl = false) {
   const code = typeof join?.code === 'string' ? join.code.trim() : '';
   if (!code) return '';
   const host = bestAddress(join?.addresses);
   if (!host) return '';
-  return `curl -fsSL ${INSTALLER} | sh -s -- --join ${code}@${host}`;
+  const base = `curl -fsSL ${installerUrl} | sh -s -- --join ${code}@${host}`;
+  // The grant is a VISIBLE flag on the line the operator pastes, never an
+  // implication of joining. It is also the only direction that does what
+  // someone adding a GPU box actually wants: it is written into THAT machine's
+  // pin of this fleet, by the person standing at that keyboard. The reverse —
+  // this machine granting the new one control of itself — is a different
+  // decision and is not what "add a machine I can run models on" means.
+  return grantControl ? `${base} --grant-control` : base;
 }
 
 /**

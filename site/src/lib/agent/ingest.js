@@ -59,7 +59,10 @@ export function sanitize(raw, max = NAME_MAX) {
  */
 export const MAX_NODES = 64;
 
-const PAIRING = ['discovered', 'pairing', 'paired', 'unreachable'];
+// 'vouched' is a machine we know about only because a peer told us. It is not
+// paired: no ceremony ran, no pin exists, and everything shown about it is that
+// peer's claim. It must never share a visual treatment with 'paired'.
+const PAIRING = ['discovered', 'pairing', 'paired', 'vouched', 'unreachable'];
 const SEVERITY = ['info', 'warning', 'critical'];
 const LINK_CLASS = [
   'roce',
@@ -199,8 +202,33 @@ export function ingestNode(raw) {
       addr: sanitize(a?.addr, 64),
       class: oneOf(a?.class, LINK_CLASS, 'unverified'),
       speedMbps: Number.isFinite(a?.speed_mbps) ? a.speed_mbps : null,
-      rdma: a?.rdma === true
+      rdma: a?.rdma === true,
+      // The subnet, so the page can say WHICH network a machine was reached
+      // on rather than only its address. Dropped until now, which is why the
+      // UI could show "10.10.10.2" but never "on the 10.10.10.0/24 fabric".
+      // 0 means the agent did not report one; it is not a /0.
+      prefixLen:
+        Number.isInteger(a?.prefix_len) && a.prefix_len >= 0 && a.prefix_len <= 128
+          ? a.prefix_len
+          : 0
     })),
+    // Two different questions, kept apart on purpose.
+    //
+    // `vouchedBy` is who CLAIMED this machine exists. On a vouched node it is
+    // the only reason we believe it at all; on a paired node it is mere
+    // corroboration, and every attribute still comes from the first-hand
+    // report — averaging a voucher's claims into a verified node is how a
+    // lying peer edits a machine it does not own.
+    //
+    // `reachedVia` is who control actually travels THROUGH. It decides what the
+    // page must warn before an action ("this will go through dgx1") and what
+    // happens when that machine goes away.
+    //
+    // They are usually the same peer and are still not the same fact: a node
+    // can be vouched for by one machine and reachable directly, at which point
+    // `reachedVia` is null and the vouch is only corroboration.
+    vouchedBy: nodeId(raw?.vouched_by),
+    reachedVia: nodeId(raw?.reached_via),
     canLaunch: raw?.launchability?.can_launch === true,
     cannotLaunchReason: sanitize(raw?.launchability?.reason, DETAIL_MAX),
     agentVersion: sanitize(raw?.agent_version, 32),

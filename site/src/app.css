@@ -153,6 +153,22 @@ nav {
 .ann-line { font-size: 0.88rem; font-weight: 600; color: var(--t1); }
 .ann-sub { font-size: 0.82rem; color: var(--t2); }
 
+/* The second band row. Deliberately quieter and tighter than the first: it is
+   news, not a headline, and the band as a whole must not push the hero down the
+   page. Its own top border reads as two notices rather than one run-on. */
+.ann-note {
+  padding-top: 0.45rem; padding-bottom: 0.6rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  gap: 0.6rem;
+}
+.ann-note .ann-sub { font-size: 0.78rem; }
+.ann-tag {
+  flex-shrink: 0; padding: 0.08rem 0.42rem; border-radius: 4px;
+  background: color-mix(in srgb, var(--ch-cyan) 16%, transparent);
+  color: var(--ch-cyan); border: 1px solid color-mix(in srgb, var(--ch-cyan) 35%, transparent);
+  font-size: 0.64rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+}
+
 /* ---- hero ----------------------------------------------------------------- */
 .hero { padding: 4.5rem 2rem 4rem; }
 .hero-inner { max-width: 1080px; margin: 0 auto; display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 3.5rem; align-items: center; }

@@ -41,3 +41,18 @@ test('junk in the address list is skipped rather than rendered', () => {
   expect(bestAddress([null, undefined, '  ', '10.0.0.9'])).toBe('10.0.0.9');
   expect(bestAddress(null)).toBeNull();
 });
+
+test('the control grant is a visible flag, not an implication of joining', () => {
+  const join = { code: '12345678', addresses: ['10.10.10.1'] };
+  expect(joinCommand(join)).not.toContain('--grant-control');
+  expect(joinCommand(join, true)).toContain('--grant-control');
+  // It must sit at the end of the same one-liner, so the operator reads it on
+  // the line they are pasting rather than discovering it afterwards.
+  expect(joinCommand(join, true).endsWith('--grant-control')).toBe(true);
+});
+
+test('no address still means no command, grant or not', () => {
+  // Half an invitation with a privilege flag on the end is worse than none.
+  expect(joinCommand({ code: '12345678', addresses: [] }, true)).toBe('');
+  expect(joinCommand({ code: '', addresses: ['10.0.0.1'] }, true)).toBe('');
+});

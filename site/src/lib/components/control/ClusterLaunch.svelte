@@ -11,6 +11,7 @@
   // The head does not know another machine's recipe revision or hardware, so a
   // preview it invented would be a guess presented as the thing that executes.
   import * as L from '$lib/agent/launch.js';
+  import { copyText } from '$lib/clipboard.js';
   import * as O from '$lib/agent/overrides.js';
   import * as Prof from '$lib/agent/profile.js';
   import SettingsEditor from './SettingsEditor.svelte';
@@ -186,7 +187,7 @@
 
   async function copy(text, key) {
     try {
-      await navigator.clipboard.writeText(text);
+      if ((await copyText(text)) !== 'copied') return;
       copied = key;
       setTimeout(() => (copied = copied === key ? '' : copied), 1600);
     } catch {
