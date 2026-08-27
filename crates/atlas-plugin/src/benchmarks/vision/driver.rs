@@ -20,7 +20,7 @@ use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
 use crate::result::{BenchmarkResult, LogLine, RunStatus, Stat, Verdict as RunVerdict};
 
-use super::geometry::expected_vision_tokens;
+use super::geometry::expected_vision_tokens_bounded;
 use super::probes::{CONTROL, PROBES, Probe};
 use super::provision::{FIXTURES, provision};
 use super::request;
@@ -44,8 +44,10 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              changes, and the one a capability check cannot see. CAPABILITY asks unambiguous \
              questions about those images. A no-image CONTROL runs last: if it answers as \
              though it saw a picture, the capability leg proved nothing and the run reports \
-             VACUOUS rather than PASS. Images above the server's encoder capacity report \
-             UNMEASURED, never FAIL — that is a deployment setting, not a defect.",
+             VACUOUS rather than PASS. Images the encoder REFUSES report UNMEASURED, never \
+             FAIL — that is a deployment setting, not a defect. A serve that caps vision \
+             area does not refuse, it downscales: declare its bound with vision_max_pixels \
+             and the ladder predicts the downscaled geometry and still asserts every rung.",
     duration_hint: "~1-2 min",
     updated: "2026-08-14",
     needs_confirmation: false,
@@ -92,6 +94,11 @@ pub struct VisionFidelity {
     integrity: Vec<crate::benchmarks::media_integrity::Cell>,
     max_tokens: usize,
     request_timeout_s: u64,
+    /// The area bound the TARGET serve was started with, as an area in pixels;
+    /// 0 means "not declared". Every geometry prediction is made under this
+    /// bound, because a serve that caps vision area answers normally with a
+    /// DOWNSCALED image rather than refusing it.
+    vision_max_pixels: u64,
 }
 
 impl VisionFidelity {
@@ -209,12 +216,38 @@ impl Benchmark for VisionFidelity {
                 ParamKind::Int { min: 30, max: 3600 },
                 ParamValue::Int(300),
             ),
+            ParamSpec::new(
+                "vision_max_pixels",
+                "Target serve's --vision-max-pixels (0 = not set)",
+                "Set this to the SAME area the target server was started with. It is an \
+                 area in pixels, not an edge length, exactly like the flag. Leave it 0 \
+                 when the serve does not pass the flag — the checkpoint's own bound is \
+                 far above every fixture, so nothing downscales and the ladder asserts \
+                 native geometry. \
+                 \n\nWhy this exists: a serve that caps vision area does NOT refuse an \
+                 oversized image, it silently downscales it and answers normally. The \
+                 reply then carries fewer vision tokens than a native-resolution \
+                 prediction expects, and the cell fails while the model is perfectly \
+                 healthy. A run against `--vision-max-pixels 262144` scored 9/14 for \
+                 exactly that reason (2026-08-21) — the five fixtures above the bound. \
+                 Declaring the bound here does not SKIP those rungs: the prediction is \
+                 recomputed for the downscaled geometry and the rung is still asserted, \
+                 so an engine that does not honour its own declared bound still fails.",
+                ParamKind::Int {
+                    min: 0,
+                    // 4096², the engine's own absolute long-side ceiling squared:
+                    // above this the area bound can never be the binding constraint.
+                    max: 16_777_216,
+                },
+                ParamValue::Int(0),
+            ),
         ]
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
         self.max_tokens = values.int("max_tokens")? as usize;
         self.request_timeout_s = values.int("request_timeout_s")? as u64;
+        self.vision_max_pixels = values.int("vision_max_pixels")? as u64;
         if self.max_tokens == 0 {
             bail!("max_tokens must be positive");
         }
@@ -240,7 +273,8 @@ impl Benchmark for VisionFidelity {
                 let out = http::chat_stream(handle.target(), &body, self.timeout())
                     .await
                     .context("calibration request failed — is this a vision-capable model?")?;
-                let want = expected_vision_tokens(w, h, 16, 2) as usize;
+                let want =
+                    expected_vision_tokens_bounded(w, h, 16, 2, self.vision_max_pixels) as usize;
                 let overhead = out.prompt_tokens.checked_sub(want).with_context(|| {
                     format!(
                         "calibration: {name} reported {} prompt tokens but its {want} vision \
@@ -264,7 +298,8 @@ impl Benchmark for VisionFidelity {
             Phase::Geometry => {
                 let (name, bytes, w, h) = FIXTURES[self.cursor];
                 let overhead = self.overhead.context("geometry ran before calibration")?;
-                let want = expected_vision_tokens(w, h, 16, 2) as usize;
+                let want =
+                    expected_vision_tokens_bounded(w, h, 16, 2, self.vision_max_pixels) as usize;
                 let body = request::body(&handle.target().model, &[bytes], "Colour?", 8);
                 let cell = match http::chat_stream(handle.target(), &body, self.timeout()).await {
                     Ok(o) => match request::vision_tokens(o.prompt_tokens, overhead) {
@@ -348,6 +383,12 @@ impl Benchmark for VisionFidelity {
                 let h = self.handle()?;
                 let model = h.target().model.clone();
                 let tmo = self.timeout();
+                // Same declared bound the geometry ladder predicts under. The two
+                // fixtures these probes diff are small enough that no realistic
+                // bound moves them, but the delta is an ASSERTED token count like
+                // any other and has no business being the one prediction in this
+                // file that ignores the serve's configuration.
+                let cap = self.vision_max_pixels;
                 // The flat red/blue split, used as the SECOND image of the cache
                 // probe: its dominant color cannot be confused with the gradient
                 // rungs. It lives in EXIF_PAIR, not the geometry ladder, so it is
@@ -560,8 +601,8 @@ impl Benchmark for VisionFidelity {
                     7 => {
                         let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
                         let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
-                        let delta = (expected_vision_tokens(lw, lh, 16, 2)
-                            - expected_vision_tokens(sw, sh, 16, 2))
+                        let delta = (expected_vision_tokens_bounded(lw, lh, 16, 2, cap)
+                            - expected_vision_tokens_bounded(sw, sh, 16, 2, cap))
                             as usize;
                         let q = "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.";
@@ -580,8 +621,8 @@ impl Benchmark for VisionFidelity {
                     8 => {
                         let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
                         let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
-                        let delta = (expected_vision_tokens(lw, lh, 16, 2)
-                            - expected_vision_tokens(sw, sh, 16, 2))
+                        let delta = (expected_vision_tokens_bounded(lw, lh, 16, 2, cap)
+                            - expected_vision_tokens_bounded(sw, sh, 16, 2, cap))
                             as usize;
                         let q = "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.";
@@ -814,12 +855,54 @@ impl Benchmark for VisionFidelity {
                         "{asserted} geometry cells matched, {passed}/{} probes, control held",
                         self.probes.len()
                     )),
-                    VisionVerdict::Fail => RunVerdict::fail(format!(
-                        "{}/{} geometry cells asserted, {passed}/{} probes passed",
-                        asserted,
-                        self.geom.len(),
-                        self.probes.len()
-                    )),
+                    VisionVerdict::Fail => {
+                        // Name WHAT failed. The old reason recited two
+                        // green-looking counts ("14/14 asserted, 3/3 probes
+                        // passed") on a FAIL, and twice in one day a reader
+                        // took it for a pass while the real story — 5
+                        // geometry mismatches — lived only in the scrollback.
+                        let mism: Vec<String> = self
+                            .geom
+                            .iter()
+                            .filter_map(|c| match c {
+                                GeomCell::Mismatch { fixture, want, got } => {
+                                    Some(format!("{fixture} want {want} got {got}"))
+                                }
+                                GeomCell::Error { fixture, msg } => {
+                                    Some(format!("{fixture} ERROR {msg}"))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        let mut reason = format!(
+                            "{matched}/{asserted} geometry matched, {passed}/{} probes",
+                            self.probes.len()
+                        );
+                        if !mism.is_empty() {
+                            reason.push_str(": ");
+                            reason.push_str(&mism[..mism.len().min(5)].join("; "));
+                            if mism.len() > 5 {
+                                reason.push_str(&format!(" (+{} more)", mism.len() - 5));
+                            }
+                        }
+                        // Every observed count LOWER than predicted with no
+                        // declared bound is the --vision-max-pixels shape:
+                        // the serve silently downscales, this benchmark
+                        // predicts native geometry, and the operator must
+                        // declare the bound (see the param's help).
+                        let all_low = self.geom.iter().all(|c| match c {
+                            GeomCell::Mismatch { want, got, .. } => got < want,
+                            _ => true,
+                        });
+                        if self.vision_max_pixels == 0 && !mism.is_empty() && all_low {
+                            reason.push_str(
+                                " — every mismatch reads LOW: if the target serve passes \
+                                 --vision-max-pixels, set the vision_max_pixels param to the \
+                                 same value",
+                            );
+                        }
+                        RunVerdict::fail(reason)
+                    }
                     VisionVerdict::Vacuous => RunVerdict::fail(
                         "VACUOUS: the no-image control answered as though it saw one, so the \
                          capability probes are not evidence"
