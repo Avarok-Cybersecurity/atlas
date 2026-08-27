@@ -229,6 +229,7 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     };
 
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
+    refuse_shared_indexer(text, &config).context("glm5_next: indexer_types")?;
     validate_glm5_next(&config)?;
     Ok(config)
 }
@@ -380,6 +381,110 @@ fn build_layer_types(text: &serde_json::Value, n_layers: usize) -> Result<Vec<La
     Ok(types)
 }
 
+/// Refuse a checkpoint whose DSA layers use **shared** indexing.
+///
+/// `indexer_types[i]` is `"full"` (this layer runs its own DSA indexer) or `"shared"`
+/// (it reuses the previous full layer's top-k selection, which HF propagates as
+/// `prev_topk_indices`). A shared layer must attend to the **upstream** layer's token
+/// set; running its own indexer instead yields a plausible wrong answer with no crash
+/// and no shape error, so this is refused at load rather than discovered in output.
+///
+/// `LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3` carries an explicit 45-entry array that is
+/// entirely `"full"` — its 11 DSA layers (3, 7, … 43) each run their own indexer — so
+/// propagation is deliberately NOT implemented. Verified against the checkpoint config
+/// 2026-08-27.
+///
+/// Nothing is stored: the value of this check is the refusal. Adding a config field no
+/// runtime path reads would be dead surface.
+///
+/// When the array is absent, HF derives it, and so must we — an absent array does not
+/// mean all-full. Source: `transformers` 5.16.1 `configuration_glm5_next.py`:
+/// `index_topk_pattern` (an `"FSSF…"` string) wins, else
+/// `"full" if (max(i - offset + 1, 0) % freq) == 0` with `freq = max(index_topk_freq, 1)`
+/// and `offset = index_skip_topk_offset` (default 2).
+fn refuse_shared_indexer(text: &serde_json::Value, config: &ModelConfig) -> Result<()> {
+    let n = config.num_hidden_layers;
+    let modes: Vec<String> = if let Some(arr) = text.get("indexer_types").and_then(|v| v.as_array())
+    {
+        if arr.len() != n {
+            bail!(
+                "indexer_types has {} entries for {n} layers; a length mismatch would \
+                 silently misalign every layer's indexer mode",
+                arr.len()
+            );
+        }
+        arr.iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .context("indexer_types entry is not a string")
+            })
+            .collect::<Result<_>>()?
+    } else if let Some(pat) = text.get("index_topk_pattern").and_then(|v| v.as_str()) {
+        if pat.chars().count() != n {
+            bail!(
+                "index_topk_pattern has {} chars for {n} layers",
+                pat.chars().count()
+            );
+        }
+        pat.chars()
+            .map(|c| match c {
+                'F' => Ok("full".to_string()),
+                'S' => Ok("shared".to_string()),
+                other => bail!("index_topk_pattern: unknown char {other:?}, expected F or S"),
+            })
+            .collect::<Result<_>>()?
+    } else {
+        let freq = text
+            .get("index_topk_freq")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            .max(1) as i64;
+        let offset = text
+            .get("index_skip_topk_offset")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(2);
+        (0..n)
+            .map(|i| {
+                let shifted = ((i as i64) - offset + 1).max(0);
+                if shifted % freq == 0 {
+                    "full"
+                } else {
+                    "shared"
+                }
+                .to_string()
+            })
+            .collect()
+    };
+
+    for (i, m) in modes.iter().enumerate() {
+        if m != "full" && m != "shared" {
+            bail!("layer {i}: unknown indexer mode {m:?}, expected \"full\" or \"shared\"");
+        }
+    }
+
+    // Only DSA layers have an indexer at all; a "shared" entry on a KDA layer is inert.
+    let shared: Vec<usize> = config
+        .layer_types
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| {
+            **t != LayerType::LinearAttention && modes.get(*i).is_some_and(|m| m == "shared")
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if !shared.is_empty() {
+        bail!(
+            "DSA layer(s) {shared:?} use SHARED indexing (reuse the previous full layer's \
+             top-k). Atlas runs a per-layer indexer and does not propagate selections, so \
+             these layers would attend to the wrong token set — a wrong answer, not a \
+             crash. GLM-5.3-Flash-NVFP4 is entirely \"full\"; implement prev_topk_indices \
+             propagation before serving a checkpoint that is not."
+        );
+    }
+    Ok(())
+}
+
 fn validate_glm5_next(config: &ModelConfig) -> Result<()> {
     if config.qk_rope_head_dim != 0 {
         bail!(
@@ -482,6 +587,85 @@ mod tests {
             full = full.join(","),
             lt = layer_types.join(",")
         )
+    }
+
+    /// Inject a key into `text_config` and re-serialise, so a test can vary one
+    /// checkpoint field without restating the whole fixture.
+    fn with_text_key(key: &str, value: serde_json::Value) -> String {
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&glm53_config_json()).expect("fixture json");
+        raw["text_config"][key] = value;
+        raw.to_string()
+    }
+
+    /// The real checkpoint's array: 45 entries, every one `"full"`.
+    #[test]
+    fn an_all_full_indexer_array_is_accepted() {
+        let all_full = serde_json::Value::from(vec!["full"; 45]);
+        let c = parse_glm5_next(&with_text_key("indexer_types", all_full)).expect("parse");
+        // The 11 DSA layers of GLM-5.3-Flash.
+        let dsa: Vec<usize> = c
+            .layer_types
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t != LayerType::LinearAttention)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(dsa, vec![3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43]);
+    }
+
+    /// 🔴 A shared DSA layer must attend to the UPSTREAM layer's token set. Atlas runs a
+    /// per-layer indexer and does not propagate, so this is a wrong answer with no crash
+    /// — refused at load.
+    #[test]
+    fn a_shared_dsa_layer_is_refused() {
+        let mut modes = vec!["full"; 45];
+        modes[7] = "shared"; // a real DSA layer
+        let e = parse_glm5_next(&with_text_key("indexer_types", modes.into()))
+            .expect_err("shared DSA indexing must be refused");
+        let msg = e.to_string() + &e.root_cause().to_string();
+        assert!(msg.contains('7'), "the error must name the layer: {msg}");
+    }
+
+    /// A `"shared"` entry on a KDA layer is inert — those layers have no indexer at all.
+    /// Refusing it would reject a legal checkpoint.
+    #[test]
+    fn a_shared_entry_on_a_linear_layer_is_inert() {
+        let mut modes = vec!["full"; 45];
+        modes[0] = "shared"; // layer 0 is KDA
+        assert!(parse_glm5_next(&with_text_key("indexer_types", modes.into())).is_ok());
+    }
+
+    /// A length mismatch would silently misalign every layer's mode.
+    #[test]
+    fn a_wrong_length_indexer_array_is_refused() {
+        let short = serde_json::Value::from(vec!["full"; 44]);
+        assert!(parse_glm5_next(&with_text_key("indexer_types", short)).is_err());
+    }
+
+    /// An ABSENT array does not mean all-full: HF derives it. With the default
+    /// `freq = 1` every layer is full, which is why the bare fixture parses — but a
+    /// `freq = 4` schedule genuinely produces shared DSA layers and must be refused.
+    #[test]
+    fn an_absent_array_is_derived_not_assumed_full() {
+        // freq=1 (the default) → all full → parses.
+        assert!(parse_glm5_next(&glm53_config_json()).is_ok());
+        // freq=4, offset=2 → full only where (max(i-1,0) % 4 == 0); DSA layer 7 is shared.
+        let e = parse_glm5_next(&with_text_key("index_topk_freq", 4.into()))
+            .expect_err("a freq schedule that shares DSA layers must be refused");
+        assert!(e.root_cause().to_string().contains("SHARED"), "{e}");
+    }
+
+    /// The `"FSSF…"` pattern string overrides the freq schedule, as in HF.
+    #[test]
+    fn an_index_topk_pattern_is_honoured() {
+        // All-F pattern parses; one S on a DSA layer does not.
+        let ok: String = "F".repeat(45);
+        assert!(parse_glm5_next(&with_text_key("index_topk_pattern", ok.into())).is_ok());
+        let mut bad: Vec<char> = "F".repeat(45).chars().collect();
+        bad[43] = 'S'; // the last DSA layer
+        let bad: String = bad.into_iter().collect();
+        assert!(parse_glm5_next(&with_text_key("index_topk_pattern", bad.into())).is_err());
     }
 
     #[test]

@@ -78,9 +78,36 @@ pub struct Glm5NextDsaKernels {
     pub index_scores: KernelHandle,
     pub topk_pools: KernelHandle,
     pub expand_selection: KernelHandle,
+    /// 🔬 ORACLE ONLY — see [`MASKED_ATTN_MAX_KEYS`].
     pub topk_to_mask: KernelHandle,
+    /// 🔬 ORACLE ONLY — see [`MASKED_ATTN_MAX_KEYS`].
     pub mla_masked_attn: KernelHandle,
 }
+
+/// 🔴 `dsa_mla_masked_attn` is an **oracle**, not a serve path. Resolved from source
+/// 2026-08-27; do not re-derive.
+///
+/// It stages the whole `[S]` score row in shared memory, so `4·S ≤ 49,152` caps it at
+/// **12,288 keys** — a limit that does not shrink with sparsity, because the dense mask
+/// and not the selected set sets the footprint. GLM-5.3 advertises 262,144.
+///
+/// The production path gathers the selected tokens through the page table instead:
+///
+/// * HF `transformers` 5.16.1 builds the dense `[B, Q, kv_len]` mask and sets
+///   `_supports_flash_attn = False`, saying so in its own docstring — *"cannot be mapped
+///   to FA without a custom kernel that can select on a per indices bases per row"*. The
+///   mask is pure set membership (`scatter_add(...).ne(0)`, duplicates collapse, no
+///   additive weighting), so a per-row gather is **exactly equivalent**, not an
+///   approximation.
+/// * vLLM ships that kernel (FlashMLA sparse / FlashInfer paged MLA), and the SM121
+///   backend serving our own frozen oracle is the SM90 NoPE sparse-MLA path over a plain
+///   bf16 paged cache.
+///
+/// ⇒ Atlas's serve path is `mla_paged_decode{,_fp8}` — block-table paged, online
+/// softmax, **no `S` term in shared memory** — taught to walk a selected-index row
+/// instead of `0..seq_len`. That kernel variant is NOT yet written; until it is, DSA
+/// decode has no production consumer and these two handles must stay test-only.
+pub const MASKED_ATTN_MAX_KEYS: usize = 12_288;
 
 impl Glm5NextDsaKernels {
     pub fn resolve(gpu: &dyn GpuBackend) -> Result<Self> {
