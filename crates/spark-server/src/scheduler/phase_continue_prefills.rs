@@ -202,12 +202,14 @@ pub(super) fn continue_in_progress_prefills(
     let any_collecting = prefilling
         .iter()
         .any(|p| p.seq.collect_prompt_logprobs.is_some());
-    // mHC highway models run every batched path per-stream against shared
-    // scratch the highway replaces — serialize instead (#753 item B v1).
-    let hc_serial = model.hc_mult() > 0;
+    // hc models ran these serialized (#753 item B v1) while per-stream aux
+    // state was still shared; per-seq PLE/QSA/SSM carries shipped with the
+    // concurrency milestones and the highway scratch is per-chunk transient
+    // (hc_expand re-derives it from hidden every forward), so the
+    // round-robin batched dispatch is safe for them now. The dispatch is
+    // per-stream underneath (Q12 phase 1) — no cross-stream kernel state.
     let can_batch_prefill_only = !q12_dispatch_disabled
         && !any_collecting
-        && !hc_serial
         && prefilling.len() >= 2
         && active.is_empty()
         && !model.is_ep();
@@ -221,7 +223,6 @@ pub(super) fn continue_in_progress_prefills(
     let can_batch_mixed = !always_mixed
         && !q12_dispatch_disabled
         && !any_collecting
-        && !hc_serial
         && prefilling.len() >= 2
         && !active.is_empty()
         && !single_active_with_spec
