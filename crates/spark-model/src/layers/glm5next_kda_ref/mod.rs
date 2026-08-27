@@ -234,11 +234,33 @@ pub fn kda_chunked(
     chunk: usize,
     state: &mut [f32],
 ) -> Vec<f32> {
-    let (h_n, d, t_n) = (dims.heads, dims.head_dim, dims.tokens);
-    let scale = 1.0 / (d as f32).sqrt();
+    let d = dims.head_dim;
     // l2norm runs on the REAL tokens, then the result is padded — HF pads after normalising.
     let qn = l2norm_rows(q, d, 1e-6);
     let kn = l2norm_rows(k, d, 1e-6);
+    kda_chunked_prenorm(&qn, &kn, v, gate, beta, dims, chunk, state)
+}
+
+/// Same chunked formulation, but `q`/`k` are **already L2-normalised** — Atlas's contract, where
+/// the conv path (fused on decode, `l2_norm_bf16` on prefill) has already normalised them.
+///
+/// Split out for the same reason as [`kda_recurrent_prenorm`]: re-normalising an already-unit
+/// vector is nearly a no-op in fp32 but on a bf16-rounded vector it RESTORES the norm the
+/// rounding destroyed, which makes the reference disagree with the kernel and looks exactly
+/// like a kernel bug. Atlas's prefill L2 writes **bf16**, so this path is always the bf16 case.
+#[allow(clippy::too_many_arguments)]
+pub fn kda_chunked_prenorm(
+    qn: &[f32],
+    kn: &[f32],
+    v: &[f32],
+    gate: &[f32],
+    beta: &[f32],
+    dims: KdaDims,
+    chunk: usize,
+    state: &mut [f32],
+) -> Vec<f32> {
+    let (h_n, d, t_n) = (dims.heads, dims.head_dim, dims.tokens);
+    let scale = 1.0 / (d as f32).sqrt();
     let pad = (chunk - t_n % chunk) % chunk;
     let tt = t_n + pad;
     let n_chunks = tt / chunk;

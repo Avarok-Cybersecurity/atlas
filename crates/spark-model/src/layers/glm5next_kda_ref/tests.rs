@@ -580,3 +580,61 @@ fn prenorm_and_internal_norm_agree_only_on_unit_input() {
         "double-normalisation must be detectable on bf16-rounded input, saw {spread:e}"
     );
 }
+
+/// Slice 6: the chunked path needs the same prenorm split the recurrent path got in Slice 4.
+///
+/// Atlas's prefill L2 (`l2_norm_bf16`) writes **bf16**, so the chunked kernel is always fed
+/// already-normalised bf16 vectors. Routing those through [`kda_chunked`] would re-normalise
+/// them and silently restore the rounding the bf16 write destroyed — the Slice-4 hazard, which
+/// looked exactly like a kernel bug when it appeared on the recurrent path.
+#[test]
+fn chunked_prenorm_and_internal_norm_agree_only_on_unit_input() {
+    let g = Golden::load();
+    let d = g.dims();
+    let (q, k, v) = (
+        g.get("inputs", "q_in"),
+        g.get("inputs", "k_in"),
+        g.get("inputs", "v_in"),
+    );
+    let (gate, beta) = (g.get("outputs", "gate"), g.get("outputs", "beta"));
+    let n = d.heads * d.head_dim * d.head_dim;
+    let chunk = 2;
+
+    let mut s1 = vec![0.0f32; n];
+    let a = kda_chunked(&q, &k, &v, &gate, &beta, d, chunk, &mut s1);
+    let mut s2 = vec![0.0f32; n];
+    let b = kda_chunked_prenorm(
+        &g.get("outputs", "q_l2"),
+        &g.get("outputs", "k_l2"),
+        &v,
+        &gate,
+        &beta,
+        d,
+        chunk,
+        &mut s2,
+    );
+    assert_close("chunked prenorm == internal-norm on unit input", &b, &a, 2e-6);
+
+    let round = |x: &[f32]| -> Vec<f32> {
+        x.iter()
+            .map(|v| f32::from_bits((v.to_bits() + 0x8000) & 0xFFFF_0000))
+            .collect()
+    };
+    let (qr, kr) = (
+        round(&g.get("outputs", "q_l2")),
+        round(&g.get("outputs", "k_l2")),
+    );
+    let mut s3 = vec![0.0f32; n];
+    let pre = kda_chunked_prenorm(&qr, &kr, &v, &gate, &beta, d, chunk, &mut s3);
+    let mut s4 = vec![0.0f32; n];
+    let dbl = kda_chunked(&qr, &kr, &v, &gate, &beta, d, chunk, &mut s4);
+    let spread = pre
+        .iter()
+        .zip(&dbl)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        spread > 1e-6,
+        "double-normalisation must be detectable on bf16-rounded input, saw {spread:e}"
+    );
+}
