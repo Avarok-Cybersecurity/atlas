@@ -11,13 +11,13 @@
 
 import { test, expect } from 'bun:test';
 import { PROTOCOL_VERSION } from './protocol.js';
-import { readDecision, readExchange } from './pairing.js';
+import { readDecision, readExchange, readExchangeAt } from './pairing.js';
 
-test('the page speaks the version that has the two-phase verbs', () => {
-  // The agent enforces an exact match. If this drifts below the agent's
-  // version the handshake is refused — which is the designed behaviour, but it
-  // must drift deliberately rather than by being forgotten.
-  expect(PROTOCOL_VERSION).toBe(2);
+test('the page speaks the version the agent speaks', () => {
+  // The agent enforces an exact match. If this drifts from the agent's version
+  // the handshake is refused — which is the designed behaviour, but it must
+  // drift deliberately rather than by being forgotten. 3 adds `pair_peer_at`.
+  expect(PROTOCOL_VERSION).toBe(3);
 });
 
 /** The reply shape `pair_peer` returns under protocol 2. */
@@ -101,4 +101,62 @@ test('detail text is sanitized, because it is rendered', () => {
   expect(d).toBe('ab');
   expect(readDecision({ trusted: false, detail: 'x'.repeat(9999) }, false).detail.length)
     .toBeLessThan(9999);
+});
+
+// ---- pairing with a typed address ----------------------------------------
+
+test('a successful address pairing names the machine that answered', () => {
+  const r = readExchangeAt({
+    type: 'pair_at_result',
+    node: 'c'.repeat(64),
+    name: 'spark-43fa',
+    address: '10.10.10.2',
+    exchanged: true,
+    verification: 'amber-koala-drift',
+    detail: ''
+  });
+  expect(r.ok).toBe(true);
+  expect(r.node).toBe('c'.repeat(64));
+  expect(r.name).toBe('spark-43fa');
+  expect(r.address).toBe('10.10.10.2');
+  expect(r.verification).toBe('amber-koala-drift');
+});
+
+test('nothing answering is not a machine with no name', () => {
+  // The operator typed an address. If nothing answered there is no identity at
+  // all, and the page must not present one — naming a machine it never reached
+  // is worse than saying the attempt failed.
+  const r = readExchangeAt({
+    type: 'pair_at_result',
+    node: null,
+    name: '',
+    address: '',
+    exchanged: false,
+    verification: null,
+    detail: 'nothing answered at that address'
+  });
+  expect(r.ok).toBe(false);
+  expect(r.node).toBeNull();
+  expect(r.detail).toContain('nothing answered');
+});
+
+test('an identity is never taken from a reply that did not exchange', () => {
+  // Defence in depth: even if a reply carried both a node and exchanged:false,
+  // the node must not be adopted. The exchange is what makes the identity mean
+  // anything.
+  const r = readExchangeAt({ node: 'd'.repeat(64), exchanged: false, verification: null });
+  expect(r.ok).toBe(false);
+  expect(r.node).toBeNull();
+});
+
+test('a name from the wire is sanitized before it is rendered', () => {
+  // It arrives from a machine that is not trusted yet — that is the whole point
+  // of the step the operator is about to take.
+  const r = readExchangeAt({
+    node: 'e'.repeat(64),
+    exchanged: true,
+    verification: 'w',
+    name: 'spark\u202e-evil'
+  });
+  expect(r.name).toBe('spark-evil');
 });

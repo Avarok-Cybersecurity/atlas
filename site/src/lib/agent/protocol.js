@@ -12,7 +12,12 @@
 // The agent enforces an exact match, so a page still on 1 is refused at the
 // handshake rather than reading `exchanged` as "trusted" and showing a machine
 // as paired that the agent has not accepted.
-export const PROTOCOL_VERSION = 2;
+//
+// 3: `pair_peer_at` added, so a machine can be added by typing its address.
+// mDNS is link-local — it does not cross a router and is off on plenty of
+// managed networks — so without it the page could only reach machines on one
+// broadcast domain. Additive, but the handshake is exact-match by design.
+export const PROTOCOL_VERSION = 3;
 
 // The agent binds loopback only. Connecting to anything else would defeat the
 // entire security model, so the address is a literal here too.

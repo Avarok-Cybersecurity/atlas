@@ -220,6 +220,16 @@ export class AgentClient {
   pairPeer(node, code) {
     return this.#request({ type: 'pair_peer', node, code });
   }
+  /**
+   * Pair with a machine at an address the operator typed.
+   *
+   * `target` is `host`, `host:port` or `[v6]:port`; the agent assumes the peer
+   * port when none is given. Discovery is mDNS and therefore link-local, so
+   * this is the only way to reach a machine across a router.
+   */
+  pairPeerAt(target, code) {
+    return this.#request({ type: 'pair_peer_at', target, code });
+  }
 
   /** Trust a peer whose exchange completed and whose words the operator accepted. */
   confirmPairing(node) {

@@ -18,6 +18,7 @@
   import ClusterLaunch from '$lib/components/control/ClusterLaunch.svelte';
   import TopologyMap from '$lib/components/control/TopologyMap.svelte';
   import PairDialog from '$lib/components/control/PairDialog.svelte';
+  import FleetScan from '$lib/components/control/FleetScan.svelte';
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { storedToken } from '$lib/agent/protocol.js';
@@ -218,12 +219,18 @@
           </div>
         {/if}
 
-        {#if solo && !fleet.controlOnly}
-          <p class="fl-solo-note">
-            No peers yet. Start an agent on another machine on this network and it
-            will appear here on its own — then pair it to unlock the EP=2 recipes,
-            which need exactly two nodes.
-          </p>
+        {#if solo}
+          <!-- Shown whether or not this machine can launch. A control-only node
+               with no peers is the case that needs this MOST: it can do nothing
+               at all until a machine is added, and the old copy only appeared
+               on nodes that could already run models. -->
+          {#if !fleet.controlOnly}
+            <p class="fl-solo-note">
+              No peers yet. Pairing a second machine also unlocks the EP=2
+              recipes, which need exactly two nodes.
+            </p>
+          {/if}
+          <FleetScan {fleet} />
         {/if}
       {:else if fleet.mode === 'reconnecting'}
         <!-- The agent was here a moment ago and went away — a restart, a
@@ -290,7 +297,7 @@
           </ol>
           {#if attempted}
             <p class="ld-watching">
-              <span class="ld-dot" aria-hidden="true"></span>
+              <span class="ld-pulse" aria-hidden="true"></span>
               Watching for it — this page will continue on its own.
             </p>
           {:else}

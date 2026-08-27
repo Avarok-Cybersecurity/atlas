@@ -30,7 +30,7 @@ import { AgentClient } from './client.svelte.js';
 
 /** Longest display string we will render. */
 import { DETAIL_MAX, MAX_NODES, alert, ingestNode, sanitize, vitals } from './ingest.js';
-import { readDecision, readExchange } from './pairing.js';
+import { readDecision, readExchange, readExchangeAt } from './pairing.js';
 
 /** Poll cadence while waiting for an agent to appear, and its ceiling. */
 const PROBE_START_MS = 1200;
@@ -234,6 +234,19 @@ class FleetSession {
     const res = await this.agent.pairPeer(nodeId, code);
     if (!res.ok) return { ok: false, detail: res.message };
     return readExchange(res.reply);
+  }
+
+  /**
+   * Run the ceremony against an address the operator typed.
+   *
+   * Returns the identity that answered as well as the words, because nothing
+   * was discovered: this reply is the first statement of who is at that
+   * address, and the operator needs it before they decide.
+   */
+  async pairAt(target, code) {
+    const res = await this.agent.pairPeerAt(target, code);
+    if (!res.ok) return { ok: false, node: null, name: '', address: '', detail: res.message };
+    return readExchangeAt(res.reply);
   }
 
   /** Trust a peer after a human compared the words. */

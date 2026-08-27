@@ -153,7 +153,7 @@
               </button>
             </div>
             <p class="ld-watching">
-              <span class="ld-dot" aria-hidden="true"></span>
+              <span class="ld-pulse" aria-hidden="true"></span>
               Watching for it — this dialog will continue on its own.
             </p>
           {:else if launch.join}

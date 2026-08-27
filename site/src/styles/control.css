@@ -626,3 +626,58 @@
 .nd-warn { color: var(--amber); }
 .nd-none { font-size: 0.85rem; color: var(--t2); margin-top: 0.5rem; }
 .nd-note { margin-top: 0.7rem; font-size: 0.8rem; color: var(--t3); line-height: 1.6; }
+
+/* Fleet scan: what the operator sees while the fleet is still being assembled.
+   Deliberately a panel rather than loose paragraphs — it is one question ("where
+   are my machines?") asked three ways, and three separated blocks read as three
+   unrelated notices. */
+.fs {
+  margin-top: 1.5rem;
+  padding: 1.1rem 1.2rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: 62ch;
+}
+.fs-scan { margin: 0 0 0.9rem; font-size: 0.85rem; color: var(--t2); }
+.fs-lead { font-size: 0.85rem; color: var(--t2); margin: 0 0 0.5rem; }
+.fs-nets { list-style: none; margin: 0 0 0.7rem; padding: 0; display: grid; gap: 0.35rem; }
+.fs-nets li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem;
+  font-size: 0.8rem; color: var(--t3);
+}
+.fs-addr { color: var(--t1); font-size: 0.82rem; }
+.fs-sub {
+  padding: 0.05rem 0.4rem; border-radius: 4px;
+  background: var(--bg2); color: var(--ch-cyan); font-size: 0.72rem;
+}
+.fs-meta { color: var(--t3); font-size: 0.74rem; }
+.fs-note { font-size: 0.76rem; color: var(--t3); line-height: 1.6; margin: 0.5rem 0 0; }
+.fs-bad { font-size: 0.78rem; color: var(--amber); line-height: 1.6; margin: 0.6rem 0 0; }
+
+.fs-form { margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+.fs-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
+.fs-field { display: flex; flex-direction: column; gap: 0.25rem; flex: 1 1 12rem; }
+.fs-field-code { flex: 0 1 9rem; }
+.fs-field span { font-size: 0.72rem; color: var(--t3); }
+.fs-field input {
+  padding: 0.45rem 0.6rem; font-size: 0.85rem;
+  background: var(--bg2); color: var(--t1);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+}
+.fs-field input:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 1px; }
+
+.fs-confirm { margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+/* The words are the whole point of the step: they must be the largest thing
+   here, and unambiguous to read aloud. */
+.fs-words {
+  margin: 0.6rem 0; padding: 0.6rem 0.8rem;
+  background: var(--bg2); border-radius: 8px;
+  font-size: 1.05rem; letter-spacing: 0.04em; color: var(--t1);
+}
+.fs-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
+
+@media (max-width: 560px) {
+  .fs-row { flex-direction: column; align-items: stretch; }
+  .fs-field, .fs-field-code { flex: 1 1 auto; }
+}

@@ -10,6 +10,7 @@
 //
 // Under protocol 2 the reply shapes are:
 //   pair_peer      -> { exchanged: bool, verification: string|null, detail }
+//   pair_peer_at   -> { node: id|null, name, address, exchanged, verification, detail }
 //   confirm/reject -> { trusted: bool, detail }
 //   unpair_peer    -> { trusted: bool, detail }
 //
@@ -52,6 +53,34 @@ export function readDecision(reply, expectTrusted) {
   }
   return {
     ok: reply?.trusted === expectTrusted,
+    detail: sanitize(reply?.detail, DETAIL_MAX)
+  };
+}
+
+/**
+ * Read a `pair_at_result`.
+ *
+ * Carries the identity that answered, because the operator typed an ADDRESS —
+ * nothing was discovered, so this reply is the first moment anyone can say
+ * which machine it was. They need that in front of them before they are asked
+ * to trust it, alongside the words.
+ *
+ * `node` is null when nothing answered. That is not the same as a failure with
+ * an identity, and collapsing the two would let the page name a machine it
+ * never reached.
+ *
+ * @param {any} reply
+ * @returns {{ok: boolean, node: string|null, name: string, address: string,
+ *   verification: string|null, detail: string}}
+ */
+export function readExchangeAt(reply) {
+  const ok = reply?.exchanged === true;
+  return {
+    ok,
+    node: ok && typeof reply?.node === 'string' ? reply.node : null,
+    name: sanitize(reply?.name, 63),
+    address: sanitize(reply?.address, 63),
+    verification: reply?.verification ?? null,
     detail: sanitize(reply?.detail, DETAIL_MAX)
   };
 }
