@@ -29,7 +29,7 @@
 import { AgentClient } from './client.svelte.js';
 
 /** Longest display string we will render. */
-import { DETAIL_MAX, MAX_NODES, ingestNode, sanitize } from './ingest.js';
+import { DETAIL_MAX, MAX_NODES, alert, ingestNode, sanitize, vitals } from './ingest.js';
 
 /** Poll cadence while waiting for an agent to appear, and its ceiling. */
 const PROBE_START_MS = 1200;
@@ -266,7 +266,11 @@ class FleetSession {
 
     const res = await this.agent.watchFleet(true);
     if (res.ok && Array.isArray(res.reply?.nodes)) {
-      this.nodes = res.reply.nodes.map(ingestNode);
+      // Same filter and cap as the fallback path below. This is the branch a
+      // modern agent actually takes, so it was the one that mattered: an
+      // invalid id put a null in `nodes`, and the `local` getter reads
+      // `n.isLocal` on every entry.
+      this.nodes = res.reply.nodes.map(ingestNode).filter(Boolean).slice(0, MAX_NODES);
       this.watching = true;
       return;
     }
@@ -320,19 +324,24 @@ class FleetSession {
       }
       case 'vitals': {
         const i = at(ev.node);
-        if (i >= 0) next[i] = { ...next[i], vitals: ev.vitals, lastSeen: Date.now() };
+        // Through the same validator as the snapshot. This path assigned the
+        // wire value raw, so a hostile `{state:'reading',value:'x'}` reached
+        // `format(value)` in VitalTile and threw — the exact crash class the
+        // ingestion whitelist exists to prevent, on the one path that fires
+        // while somebody is watching.
+        if (i >= 0) next[i] = { ...next[i], vitals: vitals(ev.vitals), lastSeen: Date.now() };
         break;
       }
       case 'alert_raised': {
         const i = at(ev.node);
         if (i >= 0) {
-          const alert = {
-            kind: ev.alert?.kind ?? 'unknown',
-            severity: ev.alert?.severity ?? 'warning',
-            detail: sanitize(ev.alert?.detail, DETAIL_MAX)
-          };
-          const kept = next[i].alerts.filter((a) => a.kind !== alert.kind);
-          next[i] = { ...next[i], alerts: [...kept, alert] };
+          // Was built inline with `?? 'unknown'` / `?? 'warning'`, so neither
+          // field went through the whitelist the snapshot path uses: a
+          // non-string `kind` reached `.replaceAll` and a chosen `severity`
+          // reached `class="al-{...}"`.
+          const raised = alert(ev.alert);
+          const kept = next[i].alerts.filter((a) => a.kind !== raised.kind);
+          next[i] = { ...next[i], alerts: [...kept, raised].slice(-8) };
         }
         break;
       }

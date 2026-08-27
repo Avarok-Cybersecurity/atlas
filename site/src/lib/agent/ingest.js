@@ -84,6 +84,11 @@ function oneOf(raw, allowed, fallback) {
   return typeof raw === 'string' && allowed.includes(raw) ? raw : fallback;
 }
 
+/** Like `oneOf`, but reports "not one of these" instead of substituting. */
+function oneOfOrNull(raw, allowed) {
+  return typeof raw === 'string' && allowed.includes(raw) ? raw : null;
+}
+
 /**
  * A node id is 64 lowercase hex characters — `NodeId`'s own contract, which
  * the Rust side enforces on parse and this side did not.
@@ -96,14 +101,78 @@ function nodeId(raw) {
   return typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : null;
 }
 
-/** A vital is a finite number or it is absent. Never a string to `.toFixed`. */
-function vitals(raw) {
+/**
+ * The metric states the protocol defines.
+ *
+ * `Metric` is a serde-tagged enum (`#[serde(tag = "state")]`), so a reading
+ * arrives as `{state: "reading", value: 53.0}` and unavailable hardware as
+ * `{state: "unsupported"}` — never a bare number. The distinction is the whole
+ * point of the type: "unsupported" lets a tile say "not on this hardware"
+ * instead of drawing a zero, and flattening it to null would erase that.
+ */
+const METRIC_STATES = ['reading', 'unsupported'];
+
+/** Fields of `NodeVitals` that are metrics rather than plain values. */
+const METRIC_FIELDS = [
+  'accelerator_util',
+  'sm_clock_mhz',
+  'temperature_c',
+  'power_w',
+  'memory_used_frac',
+  'memory_total_bytes',
+  'disk_free_bytes'
+];
+
+/** One `Metric`, or null if it is not one. */
+export function metric(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const state = oneOfOrNull(raw.state, METRIC_STATES);
+  if (state === null) return null;
+  if (state === 'unsupported') return { state };
+  // `VitalTile` calls `format(value)`, which is `v.toFixed(0)` by default. A
+  // string here throws during render and takes the card with it.
+  return Number.isFinite(raw.value) ? { state, value: raw.value } : null;
+}
+
+/**
+ * One alert, safe to render.
+ *
+ * Exported because the live `alert_raised` event builds one too, and building
+ * it separately is how the snapshot path ended up validated while the event
+ * path — the one that fires while an operator is watching — did not.
+ */
+export function alert(a) {
+  return {
+    // `kind` is rendered through .replaceAll('_', ' '); a non-string there
+    // throws and blanks the whole control page.
+    kind: sanitize(a?.kind, 64) || 'unknown',
+    // Interpolated into `class="al-{severity}"`, so a whitelist rather than a
+    // strip: sanitising would make it harmless to render and still let a peer
+    // choose the class name.
+    severity: oneOf(a?.severity, SEVERITY, 'warning'),
+    detail: sanitize(a?.detail, DETAIL_MAX)
+  };
+}
+
+/**
+ * Validate a `NodeVitals` payload without flattening it.
+ *
+ * Every field is checked against what the protocol actually sends. An earlier
+ * version treated each value as a bare number, which is false for all seven
+ * metrics — so every tile read null and showed the "waiting for first sample"
+ * skeleton forever. Its tests passed because they fed a shape the agent never
+ * emits.
+ */
+export function vitals(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const out = {};
-  for (const [k, v] of Object.entries(raw)) {
-    if (typeof k !== 'string' || k.length > 64) continue;
-    out[sanitize(k, 64)] = Number.isFinite(v) ? v : null;
-  }
+  for (const f of METRIC_FIELDS) out[f] = metric(raw[f]);
+  // Not metrics: a plain bound, a boolean and a counter.
+  out.sm_clock_healthy_mhz = Number.isFinite(raw.sm_clock_healthy_mhz)
+    ? raw.sm_clock_healthy_mhz
+    : null;
+  out.docker_ok = raw.docker_ok === true;
+  out.agent_uptime_s = Number.isFinite(raw.agent_uptime_s) ? raw.agent_uptime_s : null;
   return out;
 }
 
@@ -141,13 +210,7 @@ export function ingestNode(raw) {
     // Sanitised regardless, because everything on this path is untrusted input.
     os: sanitize(raw?.os, 32),
     vitals: vitals(raw?.vitals),
-    alerts: (Array.isArray(raw?.alerts) ? raw.alerts : []).slice(0, 8).map((a) => ({
-      // `kind` is rendered through .replaceAll('_', ' '); a non-string there
-      // throws and blanks the whole control page.
-      kind: sanitize(a?.kind, 64) || 'unknown',
-      severity: oneOf(a?.severity, SEVERITY, 'warning'),
-      detail: sanitize(a?.detail, DETAIL_MAX)
-    })),
+    alerts: (Array.isArray(raw?.alerts) ? raw.alerts : []).slice(0, 8).map(alert),
     running: raw?.running ? sanitize(raw.running, 64) : null,
     lastSeen: Date.now()
   };

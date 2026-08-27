@@ -29,6 +29,8 @@
   let detail = $state('');
   let verification = $state('');
   let dialogEl = $state(null);
+  /** Set when the operator dismissed while the exchange was still in flight. */
+  let dismissed = $state(false);
 
   const START = 'atlasctl agent pair';
   const digitsOnly = $derived(code.replaceAll(/\D/g, '').slice(0, 8));
@@ -41,6 +43,19 @@
    * open and says so rather than closing on a promise it did not keep.
    */
   async function reject() {
+    // Dismissing while the exchange is still running is NOT a refusal of
+    // something that has not happened yet — `pair_peer` is in flight, and it
+    // will complete and write the pin whether this dialog is on screen or not.
+    // Closing here left a peer paired that nobody ever saw words for. So the
+    // dismissal is remembered and acted on when the reply lands.
+    if (phase === 'verifying') {
+      dismissed = true;
+      return;
+    }
+    // Already undoing. Re-entering would fire a second unpair, and closing
+    // would drop the "still trusted" warning on an unmounted component if that
+    // unpair then failed.
+    if (phase === 'rejecting') return;
     if (phase !== 'confirm') {
       onclose?.();
       return;
@@ -69,6 +84,12 @@
     if (res.ok) {
       verification = res.verification ?? '';
       phase = 'confirm';
+      // They walked away mid-ceremony. The pin exists now, and they never saw
+      // the words, so the only honest reading is that they did not approve it.
+      if (dismissed) {
+        dismissed = false;
+        void reject();
+      }
     } else {
       detail = res.detail || 'The code was not accepted.';
       phase = 'failed';

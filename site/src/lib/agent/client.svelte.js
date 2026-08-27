@@ -123,6 +123,12 @@ export class AgentClient {
     this.#socket = socket;
     socket.addEventListener('message', (ev) => this.#onMessage(ev));
     socket.addEventListener('close', () => {
+      // Only if this is still the live socket. An abandoned one — a wedged
+      // agent that accepted a connection and said nothing — can fire `close`
+      // long after a later connect succeeded, and without this guard it would
+      // null the NEW socket, flip a ready phase to 'unavailable', fail that
+      // connection's pending waits and emit a spurious `agent_closed`.
+      if (this.#socket !== socket) return;
       this.#socket = null;
       const wasReady = this.phase === 'ready';
       if (wasReady) this.phase = 'unavailable';
