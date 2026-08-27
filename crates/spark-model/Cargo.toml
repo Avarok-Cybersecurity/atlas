@@ -97,6 +97,10 @@ name = "kda_recurrent_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "kda_chunk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 
