@@ -160,7 +160,15 @@ pub(crate) fn encode_sse_response(
     let done_event = futures::stream::once(async {
         Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"))
     });
+    // TTFT forensics twin of handle_token's first-delta line: the moment
+    // the first delta reaches the SSE encoder (i.e. hyper polled it off the
+    // channel). A gap between the two lines is channel/scheduling latency;
+    // a gap from here to the client is wire/client-side.
+    let first_event_logged = std::cell::Cell::new(false);
     let token_stream = deltas.flat_map(move |d| {
+        if !first_event_logged.replace(true) {
+            tracing::debug!("stream: first delta reaches the SSE encoder");
+        }
         let events: Vec<Result<Event, std::convert::Infallible>> =
             delta_to_chunk_events(&d, &model, &chunk_id, include_usage)
                 .into_iter()
