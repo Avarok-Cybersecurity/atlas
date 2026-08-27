@@ -79,7 +79,7 @@ img, svg, video { max-width: 100%; }
 @media (max-width: 1040px) {
   section { padding: 5.5rem 1.75rem; }
   .hero { padding: 4.5rem 1.75rem 4rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 1.75rem; padding-right: 1.75rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 1.75rem; padding-right: 1.75rem; }
   footer { padding-left: 1.75rem; padding-right: 1.75rem; }
 }
 
@@ -101,21 +101,21 @@ img, svg, video { max-width: 100%; }
   .nav-toggle { display: inline-flex; }
   .nav-drawer.is-open { display: flex; }
   .nav-scrim.is-on { display: block; }
-  .gift { margin-top: 56px; top: 56px; }
+  .ann { margin-top: 56px; top: 56px; }
 }
 
 /* ---- 680, phone ----------------------------------------------------------- */
 @media (max-width: 680px) {
   section { padding: 3.5rem 1.15rem; }
   .hero { padding: 2.5rem 1.15rem 3rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 1.15rem; padding-right: 1.15rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 1.15rem; padding-right: 1.15rem; }
   footer { padding: 2.5rem 1.15rem 2rem; }
 
   /* the banner scrolls away on a phone instead of eating the viewport */
-  .gift { position: static; }
-  .gift-inner { flex-direction: column; gap: 0.3rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
-  .gift-line { font-size: 0.85rem; }
-  .gift-sub { font-size: 0.78rem; line-height: 1.5; }
+  .ann { position: static; }
+  .ann-inner { flex-direction: column; gap: 0.3rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  .ann-line { font-size: 0.85rem; }
+  .ann-sub { font-size: 0.78rem; line-height: 1.5; }
 
   /* type scale */
   .hero h1 { font-size: clamp(1.95rem, 7.4vw, 2.7rem); }
@@ -184,7 +184,7 @@ img, svg, video { max-width: 100%; }
 @media (max-width: 480px) {
   section { padding: 3rem 1rem; }
   .hero { padding: 2.25rem 1rem 2.5rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 1rem; padding-right: 1rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 1rem; padding-right: 1rem; }
   footer { padding: 2.25rem 1rem 1.75rem; }
   .nav-wordmark { font-size: 1.2rem; }
   .nav-mark { height: 30px; width: 30px; }
@@ -208,7 +208,7 @@ img, svg, video { max-width: 100%; }
 @media (max-width: 380px) {
   section { padding: 2.75rem 0.9rem; }
   .hero { padding: 2rem 0.9rem 2.25rem; }
-  .nav-inner, .gift-inner, .footer-inner { padding-left: 0.9rem; padding-right: 0.9rem; }
+  .nav-inner, .ann-inner, .footer-inner { padding-left: 0.9rem; padding-right: 0.9rem; }
   .hero h1 { font-size: 1.85rem; }
   .stitle { font-size: 1.5rem; }
   .email-btn-addr { font-size: 0.7rem; }

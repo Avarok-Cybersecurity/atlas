@@ -23,8 +23,9 @@
   </g>
   <text x="452" y="258" fill="#f3f0fb" font-size="132" font-weight="800" letter-spacing="-5">Atlas</text>
 
-  <text x="96" y="392" fill="#f3f0fb" font-size="56" font-weight="700" letter-spacing="-1">Pure Rust inference, tuned for</text>
-  <text x="96" y="462" fill="#b39bf7" font-size="56" font-weight="800" letter-spacing="-1">the machine on your desk.</text>
+  <text x="96" y="370" fill="#f3f0fb" font-size="50" font-weight="700" letter-spacing="-1">One inference engine, from the</text>
+  <text x="96" y="426" fill="#b39bf7" font-size="50" font-weight="800" letter-spacing="-1">device in your hand</text>
+  <text x="96" y="482" fill="#b39bf7" font-size="50" font-weight="800" letter-spacing="-1">to the datacenter rack.</text>
 
   <rect x="96" y="516" width="1008" height="1" fill="#3a3252"/>
   <text x="96" y="574" fill="#8a83af" font-size="28" font-weight="600"

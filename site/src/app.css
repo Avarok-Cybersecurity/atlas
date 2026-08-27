@@ -139,19 +139,19 @@ nav {
   border-radius: 50%; background: var(--green); border: 2px solid var(--bg);
 }
 
-/* ---- gift banner ---------------------------------------------------------- */
-.gift {
+/* ---- announcement banner -------------------------------------------------- */
+.ann {
   margin-top: 62px; background: linear-gradient(180deg, #1a1628, #14111f);
   border-bottom: 1px solid var(--border);
 }
-.gift-inner {
+.ann-inner {
   max-width: 1080px; margin: 0 auto; padding: 0.7rem 2rem;
   display: flex; align-items: center; justify-content: center; gap: 0.9rem;
   flex-wrap: wrap; text-align: center;
 }
-.gift-mark { color: var(--accent); flex-shrink: 0; }
-.gift-line { font-size: 0.88rem; font-weight: 600; color: var(--t1); }
-.gift-sub { font-size: 0.82rem; color: var(--t2); }
+.ann-mark { color: var(--accent); flex-shrink: 0; }
+.ann-line { font-size: 0.88rem; font-weight: 600; color: var(--t1); }
+.ann-sub { font-size: 0.82rem; color: var(--t2); }
 
 /* ---- hero ----------------------------------------------------------------- */
 .hero { padding: 4.5rem 2rem 4rem; }
@@ -259,6 +259,21 @@ nav {
 .method-card + .method-card { margin-top: 1.1rem; }
 .mech-line { font-weight: 650; color: var(--t1); border-left: 3px solid var(--accent); padding-left: 0.9rem; margin: 1.5rem 0; font-size: 0.98rem; line-height: 1.55; }
 .mlperf-note { margin-top: 1.5rem; font-size: 0.9rem; color: var(--t2); line-height: 1.6; }
+
+/* ---- the scaling note under the ladder ------------------------------------
+   Sits between the chart and the methodology, because it is the reading of the
+   chart rather than a separate claim. The two figures are the only coloured
+   text in it: everything else is prose, so the contrast lands on the numbers. */
+.scale-note { margin: 2.2rem 0 0; padding: 1.6rem 1.8rem; background: var(--card); border: 1px solid var(--border); border-radius: 18px; max-width: 78ch; }
+.scale-note h3 { font-size: 1.05rem; font-weight: 750; margin-bottom: 0.7rem; color: var(--t1); }
+.scale-note p { font-size: 0.94rem; color: var(--t2); line-height: 1.65; }
+.scale-note p + p { margin-top: 0.9rem; }
+.scale-figure { font-size: 1rem !important; color: var(--t1) !important; border-left: 3px solid var(--sx); padding-left: 0.9rem; }
+.scale-up { color: var(--sx); font-weight: 750; font-variant-numeric: tabular-nums; }
+/* Deliberately not red. The baseline flattening is a measurement, not a
+   failure, and colouring it as an error reads as a taunt rather than a result. */
+.scale-flat { color: var(--t3); font-weight: 750; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .scale-note { padding: 1.2rem 1.1rem; } }
 .trademark { font-size: 0.68rem; color: var(--t3); line-height: 1.5; margin-top: 0.9rem; max-width: 62ch; }
 .repro { display: flex; align-items: center; gap: 0.6rem; margin-top: 1rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 0.55rem 0.55rem 0.55rem 0.85rem; }
 .repro code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 0.76rem; color: var(--t1); overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
@@ -532,10 +547,6 @@ section { padding: 7rem 2rem; }
 .star-chart .grid { stroke: var(--border); stroke-width: 1; }
 .star-chart .axis-y, .star-chart .axis-x { fill: var(--t3); font-family: var(--font-mono); font-size: 11px; }
 .star-chart .axis-val { fill: var(--accent-deep); font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
-
-/* gift emoji on gifted hardware */
-.gift-emoji { font-size: 0.95em; filter: saturate(1.05); }
-.hw-card h3 .gift-emoji { font-size: 1.35rem; margin-left: 0.15rem; vertical-align: -1px; }
 
 /* email buttons — address shown inside, one-tap copy */
 .email-btn { display: inline-flex; align-items: stretch; border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; background: var(--card); box-shadow: var(--shadow-sm); }

@@ -8,6 +8,7 @@
     <SectionHead
       label={hardware.label}
       title={hardware.title}
+      sub={hardware.sub}
     />
 
     <div class="hw-grid">
@@ -15,7 +16,7 @@
         <div class="hw-card">
           <div class="hw-top">
             <div>
-              <h3>{c.name}{#if c.gift} <span class="gift-emoji" title="Gifted hardware">🎁</span>{/if}</h3>
+              <h3>{c.name}</h3>
               <div class="hw-chip mono">{c.chip}</div>
             </div>
             <span class="hw-status {c.status}"><span class="dot"></span>{c.statusText}</span>

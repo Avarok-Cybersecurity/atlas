@@ -42,10 +42,10 @@
 }
 .news-link:hover { text-decoration: underline; }
 
-/* gift banner call to action, sits inline with the thank-you line */
-.gift-cta {
+/* announcement banner call to action, sits inline with the thank-you line */
+.ann-cta {
   font-size: 0.82rem; font-weight: 700; color: var(--accent);
   text-decoration: none; white-space: nowrap;
   border-bottom: 1px solid rgba(124, 92, 255, 0.35);
 }
-.gift-cta:hover { border-bottom-color: var(--accent); }
+.ann-cta:hover { border-bottom-color: var(--accent); }
