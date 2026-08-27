@@ -55,56 +55,16 @@ const SHAPES: &[(&str, u32, u32)] = &[
     ("qkv/o    N=5120   K=5120 ", 5120, 5120),
     ("ffn_up   N=17408  K=5120 ", 17408, 5120),
     ("ffn_down N=5120   K=17408", 5120, 17408),
+    // Qwen3.8-27B GDN in_proj qkvz — 48 launches/step in the DFlash2 M=8
+    // verify (nsys node-trace 2026-08-19; ran ~148 GB/s on shipping batch8).
+    ("gdn_qkvz N=16384  K=5120 ", 16384, 5120),
     ("lm_head  N=248320 K=5120 ", 248320, 5120),
 ];
 
-struct XorShift(u64);
-impl XorShift {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    fn byte(&mut self) -> u8 {
-        (self.next() >> 32) as u8
-    }
-    /// Uniform in [-1, 1).
-    fn unit_f32(&mut self) -> f32 {
-        ((self.next() >> 40) as f32) / ((1u64 << 23) as f32) * 2.0 - 1.0
-    }
-}
-
-fn f32_to_bf16_bits(v: f32) -> u16 {
-    // Round-to-nearest-even, matching __float2bfloat16.
-    let bits = v.to_bits();
-    let rounding = 0x7fff + ((bits >> 16) & 1);
-    ((bits + rounding) >> 16) as u16
-}
-
-fn bf16_bits_to_f32(b: u16) -> f32 {
-    f32::from_bits((b as u32) << 16)
-}
-
-const E2M1_LUT: [f32; 16] = [
-    0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
-];
-
-/// Standard E4M3 (1-4-3, bias 7) decode — matches (float)__nv_fp8_e4m3.
-fn e4m3_to_f32(b: u8) -> f32 {
-    let s = if b & 0x80 != 0 { -1.0f32 } else { 1.0 };
-    let e = (b >> 3) & 0xF;
-    let m = b & 0x7;
-    if e == 0 {
-        s * (m as f32) * 0.001953125 // subnormal: m * 2^-9
-    } else if e == 15 && m == 7 {
-        f32::NAN
-    } else {
-        s * (2.0f32).powi(e as i32 - 7) * (1.0 + m as f32 / 8.0)
-    }
-}
+// Scalar dtype helpers + deterministic RNG (see the module docs).
+#[path = "batchm_bench/dtype.rs"]
+mod dtype;
+use dtype::{E2M1_LUT, XorShift, bf16_bits_to_f32, e4m3_to_f32, f32_to_bf16_bits};
 
 /// Launch a batchm GEMV (batch4/8/16): grid ceil(N/4), block 256, args
 /// (A, B_packed, B_scale, scale2, C, M, N, K) — mirrors ops::w4a16_gemv_batchm.
@@ -149,8 +109,14 @@ fn launch_gemm(
     m: u32,
     n: u32,
     k: u32,
+    // `Some(ldb)` for `w4a16_gemm_t` — its compiled signature grew a 9th
+    // `ldb` param (lm_head-716 fix). Launching it with 8 args makes
+    // cuLaunchKernel read one-past-the-end of the param array: the
+    // documented host-SIGSEGV class (see gemm_dense.rs on the bf16 _v2
+    // sibling). This was THE bench segfault of 2026-08-19.
+    ldb: Option<u32>,
 ) -> Result<()> {
-    KernelLaunch::new(g, kh)
+    let mut l = KernelLaunch::new(g, kh)
         .grid([div_ceil(n, n_tile), div_ceil(m, 64), 1])
         .block([128, 1, 1])
         .arg_ptr(a)
@@ -160,8 +126,11 @@ fn launch_gemm(
         .arg_ptr(c)
         .arg_u32(m)
         .arg_u32(n)
-        .arg_u32(k)
-        .launch(0)
+        .arg_u32(k);
+    if let Some(ldb) = ldb {
+        l = l.arg_u32(ldb);
+    }
+    l.launch(0)
 }
 
 #[derive(Clone, Copy)]
@@ -270,6 +239,32 @@ fn correctness_gate(
         "  gate 3   PASS: batch8 @M=8 vs CPU f64 ref, {rows} rows (worst {:.2}x tol)",
         worst
     );
+
+    // Gate 4: pipelined batch8 variants must be BIT-EXACT vs shipping batch8
+    // at every M — same virtual-lane order by construction; this proves it.
+    for &(kn, kh, _) in kernels
+        .iter()
+        .filter(|(kn, _, _)| kn.starts_with("batch8_pf") || kn.starts_with("batch8_rt"))
+    {
+        for &m in M_SWEEP {
+            zero_c(g)?;
+            launch_batchm(g, b8, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let reference = read_c(g, c, m as usize * n_us)?;
+            zero_c(g)?;
+            launch_batchm(g, kh, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let got = read_c(g, c, m as usize * n_us)?;
+            if reference != got {
+                let bad = reference.iter().zip(&got).filter(|(x, y)| x != y).count();
+                bail!(
+                    "GATE FAIL: {kn} != batch8 at M={m} ({bad}/{} elems differ)",
+                    got.len()
+                );
+            }
+        }
+        eprintln!("  gate 4   PASS: {kn} BIT-EXACT vs batch8 at all M");
+    }
     Ok(())
 }
 
@@ -317,6 +312,50 @@ fn main() -> Result<()> {
             "w4a16_gemv",
             "w4a16_gemv_batch16",
             Kind::Batchm { max_m: 16 },
+        ),
+        // Lever-1 candidates (2026-08-19): software-pipelined batch8 —
+        // weight prefetch, bit-identical FMA order (gate 4 proves it).
+        // provenance-id: 526f6e616c6420522e205374657369616b
+        (
+            "batch8_pf",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_pf",
+            Kind::Batchm { max_m: 8 },
+        ),
+        (
+            "batch8_pfree",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_pf_free",
+            Kind::Batchm { max_m: 8 },
+        ),
+        // v2: activation row-ahead prefetch (the M-scaling fix; weight
+        // prefetch benched as a wash 2026-08-19). pf3 = both prefetches.
+        (
+            "batch8_pf2",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_pf2",
+            Kind::Batchm { max_m: 8 },
+        ),
+        (
+            "batch8_pf3",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_pf3",
+            Kind::Batchm { max_m: 8 },
+        ),
+        // v3: register-tiled, T outputs/thread (activation traffic, load
+        // instructions, and FMA-chain ILP all ÷T). Grid stays ceil(N/4):
+        // surplus blocks early-exit, coverage and outputs unchanged.
+        (
+            "batch8_rt2",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_rt2",
+            Kind::Batchm { max_m: 8 },
+        ),
+        (
+            "batch8_rt4",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_rt4",
+            Kind::Batchm { max_m: 8 },
         ),
         ("gemm_m64", "w4a16", "w4a16_gemm", Kind::Gemm),
         ("gemm_t", "w4a16", "w4a16_gemm_t", Kind::GemmT),
@@ -387,8 +426,8 @@ fn main() -> Result<()> {
                     let (b, bs) = b_copies[i % copies];
                     match kind {
                         Kind::Batchm { .. } => launch_batchm(g, kh, a, b, bs, c, m, n, k),
-                        Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k),
-                        Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k),
+                        Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k, None),
+                        Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k, Some(n)),
                     }
                 };
                 for i in 0..WARMUP {

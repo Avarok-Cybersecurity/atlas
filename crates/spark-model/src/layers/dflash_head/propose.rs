@@ -278,7 +278,9 @@ impl BlockDiffusionDraftHead {
         // allocated paged blocks, do it now. We allocate enough blocks
         // to cover the full ctx_hidden_acc plus a safety margin for γ.
         // Block_size matches from_weights.rs:68 (=16).
-        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (2026-08-19): the paged
+        // drafter cache is the proven path. `=0` is the kill switch.
+        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() != Some("0");
         let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
             // Lazy block table init. ctx slots come from precompute over the
             // accumulated target hiddens; γ slots come from the layer body.
