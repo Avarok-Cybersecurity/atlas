@@ -69,7 +69,13 @@ export const announcement = {
   line: 'Atlas is partnering with Avarok Cybersecurity.',
   sub: 'Post quantum security and high performance inference across edge, workstation, and datacenter deployments. The model and your data stay on hardware you own.',
   ctaText: 'avarok.net',
-  ctaUrl: 'https://avarok.net'
+  ctaUrl: 'https://avarok.net',
+  // A second line, kept to one sentence. The band sits above the hero on every
+  // page: it earns its height by saying what changed, not by explaining it.
+  // "In active development" is stated rather than implied — an operator who
+  // reads this and then finds an unfinished fleet manager was misled by us, not
+  // by their own optimism.
+  note: 'Sparkrun has been retired: Atlas now ships atlasctl, our own control plane for enterprise fleet management and telemetry. In active development.'
 };
 
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
