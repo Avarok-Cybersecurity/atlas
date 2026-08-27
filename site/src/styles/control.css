@@ -784,3 +784,4 @@
 .jg-tshoot summary { cursor: pointer; color: var(--t2); }
 .jg-tshoot summary:focus-visible { outline: 2px solid var(--ch-cyan); outline-offset: 2px; }
 .jg-tshoot ul { margin: 0.5rem 0 0 1.1rem; display: grid; gap: 0.45rem; line-height: 1.6; }
+.pair-hint { font-size: 0.78rem; color: var(--t3); line-height: 1.6; margin: 0.3rem 0 0; }

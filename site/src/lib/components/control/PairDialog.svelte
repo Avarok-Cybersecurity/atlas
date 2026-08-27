@@ -53,7 +53,6 @@
     phase = 'confirm';
   }
 
-  const START = 'atlasctl agent pair';
   const digitsOnly = $derived(code.replaceAll(/\D/g, '').slice(0, 8));
   const ready = $derived(digitsOnly.length === 8);
 
@@ -108,8 +107,12 @@
     if (res.ok) {
       verification = res.verification ?? '';
       phase = 'confirm';
-      // They walked away mid-ceremony. The pin exists now, and they never saw
-      // the words, so the only honest reading is that they did not approve it.
+      // They walked away mid-ceremony. Nothing is written — under protocol 2 the
+      // exchange holds no pin — but the exchange IS live on the agent, and the
+      // operator never saw the words. The only honest reading of a dismissal is
+      // that they did not approve it, so the exchange is spent explicitly rather
+      // than left to lapse: relying on a socket closing is relying on a side
+      // effect, and they said no.
       if (dismissed) {
         dismissed = false;
         void reject();
@@ -162,14 +165,22 @@
         <li>
           <span class="ld-step-n">1</span>
           <div>
-            <p class="ld-step-t">On {node.name}, run</p>
-            <div class="ld-cmd"><code class="mono">{START}</code></div>
+            <p class="ld-step-t">On {node.name}, open its control page and mint a code</p>
+            <!-- NOT `atlasctl agent pair`. That command binds the peer port,
+                 and {node.name}'s agent is already holding it — which is the
+                 only reason this machine can see it at all. The code has to
+                 come from the running agent, and its control page is what asks
+                 for one. -->
+            <p class="pair-hint">
+              Use “Show me how” there, or the add-a-machine panel — either opens a
+              join window and shows the eight digits.
+            </p>
           </div>
         </li>
         <li>
           <span class="ld-step-n">2</span>
           <div>
-            <p class="ld-step-t">Type the eight digits it prints</p>
+            <p class="ld-step-t">Type those eight digits here</p>
             <form onsubmit={submit}>
               <input
                 class="pair-code mono"
@@ -200,9 +211,9 @@
       <div class="pair-fps">
         <div class="pair-words mono">{verification || '—'}</div>
         <p class="pair-fp-note">
-          <code class="mono">{START}</code> on {node.name} is printing these same words.
-          If they differ, something is sitting between your machines. Cancel and
-          nothing is trusted; no pairing was written.
+          {node.name} logs these same words when it accepts. If they differ, something
+          is sitting between your machines. Cancel and nothing is trusted; no pairing
+          was written.
         </p>
       </div>
 
@@ -222,7 +233,10 @@
           disabled={phase === 'rejecting' || phase === 'accepting'}
           onclick={() => void reject()}
         >
-          {phase === 'rejecting' ? 'Removing…' : "They differ — cancel"}
+          <!-- Not "Removing…": nothing was written, so there is nothing to
+               remove. Saying otherwise implies a pin existed, which is exactly
+               the pre-protocol-2 behaviour this dialog stopped having. -->
+          {phase === 'rejecting' ? 'Discarding…' : "They differ — cancel"}
         </button>
         <button
           type="button"
