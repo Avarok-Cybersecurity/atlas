@@ -139,9 +139,9 @@ pub fn classify(name: &str) -> Option<TensorRole> {
         | "self_attn.f_b_proj.weight"
         | "self_attn.g_a_proj.weight"
         | "self_attn.g_b_proj.weight" => return Some(TensorRole::KdaProjection),
-        "self_attn.q_conv1d.weight"
-        | "self_attn.k_conv1d.weight"
-        | "self_attn.v_conv1d.weight" => return Some(TensorRole::KdaConv),
+        "self_attn.q_conv1d.weight" | "self_attn.k_conv1d.weight" | "self_attn.v_conv1d.weight" => {
+            return Some(TensorRole::KdaConv);
+        }
         "self_attn.A_log" | "self_attn.dt_bias" => return Some(TensorRole::KdaDecay),
         "self_attn.o_norm.weight" => return Some(TensorRole::KdaNorm),
         _ => {}
@@ -300,7 +300,10 @@ mod tests {
 
     #[test]
     fn unknown_tensor_is_refused_not_skipped() {
-        assert_eq!(classify("model.language_model.layers.4.self_attn.wat"), None);
+        assert_eq!(
+            classify("model.language_model.layers.4.self_attn.wat"),
+            None
+        );
         let acc = account([("model.language_model.layers.4.self_attn.wat", 1)]);
         assert_eq!(acc.unknown.len(), 1);
     }

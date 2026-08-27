@@ -146,7 +146,10 @@ fn norm_sanity_pass() {
             "text-model norm tensor {name} classified as non-norm {role:?}"
         );
     }
-    assert!(checked >= 8, "expected several norm patterns, saw {checked}");
+    assert!(
+        checked >= 8,
+        "expected several norm patterns, saw {checked}"
+    );
 }
 
 /// The vision tower is present and must be classified, not silently ignored —
@@ -155,7 +158,10 @@ fn norm_sanity_pass() {
 fn vision_tower_is_classified_and_separable() {
     let acc = account(rows());
     let vision = acc.by_role.get("Vision").copied().unwrap_or(0);
-    assert!(vision > 0, "vision tensors should be present and classified");
+    assert!(
+        vision > 0,
+        "vision tensors should be present and classified"
+    );
     let text: usize = acc
         .by_role
         .iter()
@@ -174,11 +180,17 @@ fn vision_tower_is_classified_and_separable() {
 fn print_accounting_table() {
     let acc = account(rows());
     println!("\nGLM-5.3-Flash-NVFP4 @ 9e0d74e3 — tensor accounting");
-    println!("  shards 120 · patterns {EXPECTED_PATTERNS} · tensors {}", acc.total);
+    println!(
+        "  shards 120 · patterns {EXPECTED_PATTERNS} · tensors {}",
+        acc.total
+    );
     for (role, n) in &acc.by_role {
         println!("  {role:>18} : {n:>7}");
     }
     println!("  {:>18} : {:>7}", "UNKNOWN", acc.unknown.len());
     println!("  MTP layer indices: {:?}", acc.mtp_layers);
-    assert!(matches!(classify("lm_head.weight"), Some(TensorRole::LmHead)));
+    assert!(matches!(
+        classify("lm_head.weight"),
+        Some(TensorRole::LmHead)
+    ));
 }
