@@ -30,6 +30,28 @@ permissions:
   contents: read
 
 jobs:
+  unit:
+    name: Site unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # `src/lib` only: the e2e specs under `e2e/` need a browser and a served
+      # build, and are a separate concern from these.
+      - name: Run unit tests
+        run: bun test src/lib
+
   build:
     name: Build SvelteKit site
     runs-on: ubuntu-latest
