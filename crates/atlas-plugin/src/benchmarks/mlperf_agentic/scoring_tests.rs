@@ -15,6 +15,7 @@ use serde_json::Value;
 use super::*;
 
 const FIXTURES: &str = include_str!("../../../assets/mlperf-agentic/parity_fixtures.json");
+const GENERATOR: &str = include_str!("../../../assets/mlperf-agentic/gen_parity_fixtures.py");
 
 fn fixtures() -> Value {
     serde_json::from_str(FIXTURES).expect("parity_fixtures.json parses")
@@ -31,9 +32,34 @@ fn cases<'a>(fixtures: &'a Value, key: &str) -> &'a Vec<Value> {
 /// file with a new commit id fails here until this pin is consciously moved.
 #[test]
 fn fixtures_are_pinned_to_the_recorded_upstream_commit() {
+    use sha2::{Digest, Sha256};
+
     let f = fixtures();
     assert_eq!(f["upstream_commit"], "7935df4");
+    assert_eq!(
+        f["upstream_file"],
+        "src/inference_endpoint/evaluation/scoring.py"
+    );
     assert_eq!(f["upstream_class"], "AgenticInferenceInlineScorer");
+    for (key, count) in [
+        ("intent_cases", 15),
+        ("gt_intent_cases", 5),
+        ("bash_cases", 18),
+        ("alias_cases", 58),
+        ("wrapper_cases", 6),
+        ("turn_cases", 8),
+        ("domain_cases", 8),
+    ] {
+        assert_eq!(cases(&f, key).len(), count, "{key} fixture count");
+    }
+    assert_eq!(
+        format!("{:x}", Sha256::digest(FIXTURES.as_bytes())),
+        "cb70bbda8d9da4883480f8d08c4fd12b826b6a0c83ed99b738bfde44916fbf9e"
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(GENERATOR.as_bytes())),
+        "d13c91fc257e1d198ce5a892827656e384dc79b4f01abb67dedeb7f0ce403dc5"
+    );
 }
 
 #[test]

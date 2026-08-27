@@ -343,16 +343,18 @@ impl HardwareStateDelta {
     /// [`ThrottleActive::thermal`]: on the healthy box it advances constantly
     /// and carries no fault information.
     pub fn thermal_throttle_advanced(&self) -> Option<bool> {
-        match (
+        let counters = [
             self.sw_thermal_us,
             self.hw_thermal_us,
             self.hw_power_brake_us,
-        ) {
-            (None, None, None) => None,
-            (sw, hw, brake) => {
-                Some(sw.unwrap_or(0) > 0 || hw.unwrap_or(0) > 0 || brake.unwrap_or(0) > 0)
-            }
+        ];
+        if counters.into_iter().flatten().any(|value| value > 0) {
+            return Some(true);
         }
+        counters
+            .into_iter()
+            .all(|value| value == Some(0))
+            .then_some(false)
     }
 
     /// The throttled fraction of the run, for the record's summary line.

@@ -42,7 +42,7 @@ fn adapter_names_and_slot_resolve() {
         pool_bytes: 0,
         expert_pool: None,
         expert_pool_bytes: 0,
-        slots: vec![mk_slot("alpha"), mk_slot("beta")],
+        slots: vec![mk_slot("alpha"), mk_slot("beta"), mk_slot("")],
         active: 0,
         tables: BTreeMap::new(),
         scale_table: DevicePtr(0),
@@ -55,6 +55,7 @@ fn adapter_names_and_slot_resolve() {
     assert_eq!(lw.adapter_names(), vec!["alpha", "beta"]);
     assert_eq!(lw.slot_of("beta"), Some(1));
     assert_eq!(lw.slot_of("missing"), None);
+    assert_eq!(lw.slot_of(""), None, "empty cache slots are not resident");
 
     // Task #24: stable adapter_id resolution. Name-derived, `-1 -> active`.
     // Task #25: gen 0 keeps these byte-identical to the #24 name-only value.
@@ -68,6 +69,7 @@ fn adapter_names_and_slot_resolve() {
     // slot >= 0 keys under that slot's name.
     assert_eq!(lw.adapter_id_for_slot(0), id_alpha);
     assert_eq!(lw.adapter_id_for_slot(1), id_beta);
+    assert_eq!(lw.adapter_id_for_slot(2), 0, "empty cache slot is base");
     // slot == -1 defers to the active adapter (slot 0 = alpha here).
     assert_eq!(lw.adapter_id_for_slot(-1), id_alpha);
     // Out-of-range slot falls back to the base sentinel.
@@ -124,7 +126,7 @@ fn slot_generation_bump_freshens_adapter_id() {
 }
 
 #[test]
-fn ref_count_acquire_release_balance_and_busy_gate() {
+fn ref_count_and_lru_bookkeeping_follow_resolved_slots() {
     // Task #25 ref_count invariants on a hand-built (no-GPU) LoraWeights.
     let peft = PeftAdapterConfig {
         r: 4,
@@ -165,6 +167,7 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     // acquire(0) returns the resolved index 0 and increments its counter.
     assert_eq!(lw.acquire_slot(0), 0);
     assert_eq!(lw.slot_ref_count(0), 1);
+    assert_eq!(lw.slot_last_used(0), 1);
     // The busy gate (exact read the swap bail uses) now fires for slot 0.
     assert!(lw.slot_ref_count(0) > 0);
     assert_eq!(lw.slot_ref_count(1), 0, "other slots untouched");
@@ -172,10 +175,12 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     // -1 resolves to active (=1) and increments slot 1.
     assert_eq!(lw.acquire_slot(-1), 1);
     assert_eq!(lw.slot_ref_count(1), 1);
+    assert_eq!(lw.slot_last_used(1), 2);
 
     // Two seqs on slot 0.
     assert_eq!(lw.acquire_slot(0), 0);
     assert_eq!(lw.slot_ref_count(0), 2);
+    assert_eq!(lw.slot_last_used(0), 3);
 
     // Release by the RESOLVED index; balance returns each to 0.
     lw.release_slot(0);
@@ -185,6 +190,11 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
     assert!(lw.slot_ref_count(0) == 0, "gate clears after full release");
     lw.release_slot(1);
     assert_eq!(lw.slot_ref_count(1), 0);
+    assert_eq!(lw.slot_last_used(0), 3, "release does not change recency");
+    assert_eq!(lw.slot_last_used(1), 2, "release does not change recency");
+
+    lw.touch_slot(1);
+    assert_eq!(lw.slot_last_used(1), 4, "promotion touch advances recency");
 
     // Saturating: a stray double-release cannot wrap below 0.
     lw.release_slot(0);

@@ -17,7 +17,9 @@ pub struct MockGpuBackend {
     op_cache: crate::op_cache::OpCache,
     allocs: Mutex<HashMap<u64, MockAlloc>>,
     next_ptr: Mutex<u64>,
+    max_allocation_bytes: AtomicUsize,
     launches: Mutex<Vec<MockLaunch>>,
+    kernel_lookups: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
     /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
@@ -25,6 +27,9 @@ pub struct MockGpuBackend {
     syncs: AtomicUsize,
     d2h_blocking: AtomicUsize,
     d2h_async: AtomicUsize,
+    d2h_async_streams: Mutex<Vec<u64>>,
+    /// `(stream, completed D2H enqueue count)` at every synchronize call.
+    sync_d2h_async_counts: Mutex<Vec<(u64, usize)>>,
     /// `copy_d2d`/`copy_d2d_async` calls — one eager launch each on the real
     /// backend. The SSM verify rollback issued 2 per SSM layer per sequence
     /// (96 on the 27B), so this counter is what proves a batched form
@@ -34,6 +39,11 @@ pub struct MockGpuBackend {
     /// backend regardless of `height`. Counted apart from `d2d` so a test can
     /// assert the SHAPE of the transfer, not just the bytes.
     d2d_2d: AtomicUsize,
+    /// Streams supplied to asynchronous D2D copies, in dispatch order. Byte
+    /// movement alone cannot expose an ordering bug caused by enqueuing a copy
+    /// on the wrong stream, so stream-sensitive tests inspect this trace.
+    d2d_async_streams: Mutex<Vec<u64>>,
+    d2d_2d_async_streams: Mutex<Vec<u64>>,
     host_pinned_allocs: AtomicUsize,
 }
 
@@ -42,6 +52,16 @@ pub struct MockLaunch {
     pub func: u64,
     pub grid: [u32; 3],
     pub block: [u32; 3],
+    pub shared_mem: u32,
+    pub stream: u64,
+    pub args: Vec<MockArg>,
+}
+
+/// Owned copy of a typed kernel argument at mock dispatch time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockArg {
+    Buffer(DevicePtr),
+    Bytes(Vec<u8>),
 }
 
 impl Default for MockGpuBackend {
@@ -56,18 +76,30 @@ impl MockGpuBackend {
             op_cache: crate::op_cache::OpCache::new(),
             allocs: Mutex::new(HashMap::new()),
             next_ptr: Mutex::new(0x1000_0000),
+            max_allocation_bytes: AtomicUsize::new(usize::MAX),
             launches: Mutex::new(Vec::new()),
+            kernel_lookups: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
+            d2h_async_streams: Mutex::new(Vec::new()),
+            sync_d2h_async_counts: Mutex::new(Vec::new()),
             d2d: AtomicUsize::new(0),
             d2d_2d: AtomicUsize::new(0),
+            d2d_async_streams: Mutex::new(Vec::new()),
+            d2d_2d_async_streams: Mutex::new(Vec::new()),
             host_pinned_allocs: AtomicUsize::new(0),
         }
     }
 
     pub fn alloc_count(&self) -> usize {
         self.allocs.lock().len()
+    }
+
+    /// Reject individual allocations above `bytes`, for exercising
+    /// production fallback paths without exhausting host memory.
+    pub fn set_max_allocation_bytes(&self, bytes: usize) {
+        self.max_allocation_bytes.store(bytes, Ordering::Relaxed);
     }
 
     pub fn launch_count(&self) -> usize {
@@ -91,6 +123,14 @@ impl MockGpuBackend {
         self.d2h_async.load(Ordering::Relaxed)
     }
 
+    pub fn d2h_async_streams(&self) -> Vec<u64> {
+        self.d2h_async_streams.lock().clone()
+    }
+
+    pub fn sync_d2h_async_counts(&self) -> Vec<(u64, usize)> {
+        self.sync_d2h_async_counts.lock().clone()
+    }
+
     /// `copy_d2d` + `copy_d2d_async` calls so far — one eager launch each on
     /// the real backend.
     pub fn d2d_count(&self) -> usize {
@@ -101,6 +141,16 @@ impl MockGpuBackend {
     /// whatever the row count.
     pub fn d2d_2d_count(&self) -> usize {
         self.d2d_2d.load(Ordering::Relaxed)
+    }
+
+    /// Streams supplied to `copy_d2d_async`, in dispatch order.
+    pub fn d2d_async_streams(&self) -> Vec<u64> {
+        self.d2d_async_streams.lock().clone()
+    }
+
+    /// Streams supplied to `copy_d2d_2d_async`, in dispatch order.
+    pub fn d2d_2d_async_streams(&self) -> Vec<u64> {
+        self.d2d_2d_async_streams.lock().clone()
     }
 
     /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
@@ -150,6 +200,11 @@ impl MockGpuBackend {
     pub fn launches_snapshot(&self) -> Vec<MockLaunch> {
         self.launches.lock().clone()
     }
+
+    /// Module/function pairs requested through `kernel`, in lookup order.
+    pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
+        self.kernel_lookups.lock().clone()
+    }
 }
 
 /// Find the allocation containing `ptr` (supports offset pointers).
@@ -181,6 +236,10 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
+        let limit = self.max_allocation_bytes.load(Ordering::Relaxed);
+        if bytes > limit {
+            anyhow::bail!("alloc: requested {bytes} bytes exceeds mock limit {limit}");
+        }
         let mut next = self.next_ptr.lock();
         let ptr = *next;
         *next += bytes as u64;
@@ -201,7 +260,12 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn free(&self, ptr: DevicePtr) -> Result<()> {
-        self.allocs.lock().remove(&ptr.0);
+        if ptr.is_null() {
+            return Ok(());
+        }
+        if self.allocs.lock().remove(&ptr.0).is_none() {
+            anyhow::bail!("free: ptr {ptr} is not an allocation base or is already free");
+        }
         Ok(())
     }
 
@@ -224,11 +288,12 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], _stream: u64) -> Result<()> {
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
         // Counted separately from `copy_d2h` and NOT delegating to it, so a
         // test can distinguish the batched shape from the blocking one (the
         // trait's default impl forwards, which would make them indistinguishable).
         self.d2h_async.fetch_add(1, Ordering::Relaxed);
+        self.d2h_async_streams.lock().push(stream);
         let allocs = self.allocs.lock();
         let (offset, alloc) = find_alloc(&allocs, src)
             .ok_or_else(|| anyhow::anyhow!("copy_d2h_async: ptr {src} not allocated"))?;
@@ -246,13 +311,14 @@ impl GpuBackend for MockGpuBackend {
         src: DevicePtr,
         dst: DevicePtr,
         bytes: usize,
-        _stream: u64,
+        stream: u64,
     ) -> Result<()> {
         // NOT delegating to `copy_d2d`: the trait default forwards, which
         // would make the two indistinguishable to `d2d_count` consumers only
         // by accident. Counted here so both forms land in one counter on
         // purpose.
         self.d2d.fetch_add(1, Ordering::Relaxed);
+        self.d2d_async_streams.lock().push(stream);
         self.blit(src, dst, bytes)
     }
 
@@ -264,12 +330,13 @@ impl GpuBackend for MockGpuBackend {
         dst_pitch: usize,
         width_bytes: usize,
         height: usize,
-        _stream: u64,
+        stream: u64,
     ) -> Result<()> {
         // ONE launch on the real backend (`cudaMemcpy2DAsync`), so ONE tick —
         // the row loop below is emulation, not dispatch, and must not inflate
         // `d2d_count` (which exists to prove a batched form batched).
         self.d2d_2d.fetch_add(1, Ordering::Relaxed);
+        self.d2d_2d_async_streams.lock().push(stream);
         if width_bytes > src_pitch || width_bytes > dst_pitch {
             anyhow::bail!(
                 "copy_d2d_2d_async: width {width_bytes} exceeds pitch \
@@ -291,19 +358,52 @@ impl GpuBackend for MockGpuBackend {
         func: KernelHandle,
         grid: [u32; 3],
         block: [u32; 3],
-        _shared_mem: u32,
-        _stream: u64,
+        shared_mem: u32,
+        stream: u64,
         _params: &mut [*mut std::ffi::c_void],
     ) -> Result<()> {
         self.launches.lock().push(MockLaunch {
             func: func.0,
             grid,
             block,
+            shared_mem,
+            stream,
+            args: Vec::new(),
         });
         Ok(())
     }
 
-    fn synchronize(&self, _stream: u64) -> Result<()> {
+    fn launch_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        let args = args
+            .iter()
+            .map(|arg| match arg {
+                KernelArg::Buffer(ptr) => MockArg::Buffer(*ptr),
+                KernelArg::Bytes(bytes) => MockArg::Bytes(bytes.to_vec()),
+            })
+            .collect();
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            args,
+        });
+        Ok(())
+    }
+
+    fn synchronize(&self, stream: u64) -> Result<()> {
+        self.sync_d2h_async_counts
+            .lock()
+            .push((stream, self.d2h_async.load(Ordering::Relaxed)));
         self.syncs.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -313,7 +413,10 @@ impl GpuBackend for MockGpuBackend {
     }
 
     #[track_caller]
-    fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
+    fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        self.kernel_lookups
+            .lock()
+            .push((module.to_owned(), func_name.to_owned()));
         Ok(KernelHandle(0xDEAD))
     }
 

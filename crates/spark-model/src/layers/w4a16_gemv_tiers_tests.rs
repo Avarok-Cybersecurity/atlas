@@ -9,6 +9,7 @@
 //! on `OnceLock` latch order.
 
 use super::{W4A16_BATCHM_WIDTHS, W4a16BatchmTiers, select_tier};
+use spark_runtime::gpu::mock::MockGpuBackend;
 
 /// Every tier resolved — the shipping GB10 target after this change.
 const ALL: [bool; 5] = [true; 5];
@@ -121,9 +122,17 @@ fn default_table_is_empty_and_declines() {
     }
 }
 
-/// The width table must stay sorted ascending — `select_tier` returns the
-/// FIRST covering entry and would otherwise pick a wider tier than necessary.
+/// The width table must stay sorted ascending, and the production resolver
+/// must request that same family in the same order. A typo here silently
+/// produces a zero handle and widens dispatch even when the tier was shipped.
 #[test]
-fn widths_are_ascending() {
+fn width_table_and_resolver_stay_in_lockstep() {
     assert!(W4A16_BATCHM_WIDTHS.windows(2).all(|w| w[0] < w[1]));
+    let gpu = MockGpuBackend::new();
+    let tiers = W4a16BatchmTiers::resolve(&gpu);
+    assert!(tiers.handles.iter().all(|h| h.0 != 0));
+    assert_eq!(
+        gpu.kernel_lookups_snapshot(),
+        W4A16_BATCHM_WIDTHS.map(|w| ("w4a16_gemv".to_owned(), format!("w4a16_gemv_batch{w}")))
+    );
 }

@@ -18,6 +18,7 @@ fn expert_and_router_dims_use_moe_intermediate() {
     assert_eq!(router_dims(&cfg), (512, 2048));
     // peft_name leaves.
     assert_eq!(ExpertProj::Gate.peft_name(), "gate_proj");
+    assert_eq!(ExpertProj::Up.peft_name(), "up_proj");
     assert_eq!(ExpertProj::Down.peft_name(), "down_proj");
 }
 
@@ -26,12 +27,16 @@ fn expert_router_bytes_golden() {
     let cfg = cfg();
     // gate: (16*2048 + 512*16)*2 = 81920 ; down: (16*512 + 2048*16)*2 = 81920
     // router: (16*2048 + 512*16)*2 = 81920
-    let ek = vec![(7usize, ExpertProj::Gate), (7usize, ExpertProj::Down)];
+    let ek = vec![
+        (7usize, ExpertProj::Gate),
+        (7usize, ExpertProj::Gate),
+        (7usize, ExpertProj::Down),
+    ];
     let rl = vec![3usize];
-    assert_eq!(expert_router_bytes(&cfg, &ek, &rl, 16), 81_920 * 3);
+    assert_eq!(expert_router_bytes(&cfg, &ek, &rl, 16), 81_920 * 4);
     // A non-multiple-of-8 rank cap sizes at the uint4-PADDED stride (12 → 16),
     // matching the pack loop's derived stride byte-for-byte (SSOT).
-    assert_eq!(expert_router_bytes(&cfg, &ek, &rl, 12), 81_920 * 3);
+    assert_eq!(expert_router_bytes(&cfg, &ek, &rl, 12), 81_920 * 4);
     // Empty audit → zero bytes (no expert pool allocated).
     assert_eq!(expert_router_bytes(&cfg, &[], &[], 16), 0);
 }

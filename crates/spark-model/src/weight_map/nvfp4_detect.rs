@@ -405,56 +405,30 @@ mod ep_detection_tests {
         WeightStore::from_map(map)
     }
 
-    /// Detection must not depend on which EP rank is asking.
-    ///
-    /// ★ CHARACTERISATION, not a regression test — it passes with the bug too,
-    /// and that is worth stating rather than hiding. The old expression indexed
-    /// the second FP8 prefix by `local_expert_range().0`, a global EXPERT index
-    /// used as a LAYER index, so rank 1 of 2 probed layer 47 where rank 0
-    /// probed layer 0. That is genuinely wrong, but UNREACHABLE: the global
-    /// `.weight_scale_inv` fallback below the per-prefix probes catches the
-    /// marker wherever it sits, so both ranks answer the same either way.
-    ///
-    /// This pins the property we want to keep — rank-independence — so that if
-    /// someone tightens or removes that fallback, the latent bug surfaces here
-    /// instead of in a two-rank EP deployment.
     #[test]
-    fn variant_detection_is_identical_across_ep_ranks() {
-        // Only a deep-layer FP8 attention marker: present at the layer rank 1
-        // used to probe, absent at layer 0. Under the bug the ranks disagree.
+    fn alternate_layer0_fp8_dtype_is_detected_on_every_ep_rank() {
         let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
-        // Reach the tensor-name sniffing path: a present `quantization_config`
-        // short-circuits detection before any prefix is built, so leaving it
-        // set makes this test assert the early return, not the bug.
         cfg.quantization_config = None;
-        let deep = cfg.num_hidden_layers.saturating_sub(1);
-        let store = store_with(&[format!(
-            "model.language_model.layers.{deep}.self_attn.q_proj.weight_scale_inv"
-        )]);
+        let store =
+            store_with(&["model.language_model.layers.0.self_attn.q_proj.weight".to_string()]);
 
         cfg.ep_world_size = 2;
-        cfg.ep_rank = 0;
-        let rank0 = detect_nvfp4_variant(&store, &cfg);
-        cfg.ep_rank = 1;
-        let rank1 = detect_nvfp4_variant(&store, &cfg);
-
-        assert_eq!(
-            rank0, rank1,
-            "EP rank changed the detected variant for one checkpoint: \
-             rank0={rank0:?} rank1={rank1:?}. Detection reads a file every rank \
-             sees identically, so it must not depend on the expert split."
-        );
+        for ep_rank in 0..2 {
+            cfg.ep_rank = ep_rank;
+            assert_eq!(
+                detect_nvfp4_variant(&store, &cfg),
+                Nvfp4Variant::Fp8Dequanted,
+                "EP rank {ep_rank} must inspect the same layer-zero checkpoint marker"
+            );
+        }
     }
 
-    /// The layer-0 spelling still detects FP8 — the fix must not break the
-    /// case the buggy expression happened to get right.
     #[test]
-    fn the_alternate_layer0_spelling_still_detects_fp8() {
+    fn scale_inv_suffix_fallback_detects_an_unexpected_prefix() {
         let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
         cfg.quantization_config = None;
-        let store = store_with(&[
-            "model.language_model.layers.0.self_attn.q_proj.weight_scale_inv".to_string(),
-        ]);
+        let store =
+            store_with(&["third_party.transformer.blocks.17.attn.q.weight_scale_inv".to_string()]);
         assert_eq!(
             detect_nvfp4_variant(&store, &cfg),
             Nvfp4Variant::Fp8Dequanted

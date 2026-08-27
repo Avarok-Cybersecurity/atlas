@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::benchmarks::vision::provision::FIXTURES;
+use crate::benchmarks::vision::score::reply_matches;
 
 #[test]
 fn every_referenced_fixture_exists() {
@@ -28,14 +29,22 @@ fn expectations_are_lowercase_and_not_self_contradictory() {
     // match — it would fail silently and forever.
     for p in PROBES.iter().chain(std::iter::once(&CONTROL)) {
         for w in p.want_all.iter().chain(p.want_none.iter()) {
-            assert_eq!(*w, w.to_lowercase(), "{}: {w:?} must be lowercase", p.id);
-        }
-        for w in p.want_all {
             assert!(
-                !p.want_none.contains(w),
-                "{}: {w:?} is in both want_all and want_none",
+                !w.is_empty(),
+                "{}: empty expectation matches every reply",
                 p.id
             );
+            assert_eq!(*w, w.trim(), "{}: {w:?} has invisible padding", p.id);
+            assert_eq!(*w, w.to_lowercase(), "{}: {w:?} must be lowercase", p.id);
+        }
+        for required in p.want_all {
+            for forbidden in p.want_none {
+                assert!(
+                    !required.contains(forbidden),
+                    "{}: required {required:?} necessarily contains forbidden {forbidden:?}",
+                    p.id
+                );
+            }
         }
     }
 }
@@ -80,6 +89,7 @@ fn the_control_sends_no_image_and_guards_a_real_probe() {
 fn probe_ids_are_unique_and_filename_safe() {
     let mut seen = std::collections::BTreeSet::new();
     for p in PROBES.iter().chain(std::iter::once(&CONTROL)) {
+        assert!(!p.id.is_empty(), "probe id must not be empty");
         assert!(seen.insert(p.id), "duplicate probe id {}", p.id);
         assert!(
             p.id.chars()
@@ -88,4 +98,61 @@ fn probe_ids_are_unique_and_filename_safe() {
             p.id
         );
     }
+}
+
+#[test]
+fn probe_definitions_match_the_committed_measurement() {
+    let got: Vec<_> = PROBES
+        .iter()
+        .chain(std::iter::once(&CONTROL))
+        .map(|p| (p.id, p.images, p.prompt, p.want_all, p.want_none))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (
+                "sees-an-image",
+                &["01_square_224.png"][..],
+                "Describe what you see in this image in one short sentence.",
+                &[][..],
+                &["cannot see", "no image", "unable to see", "don't see"][..],
+            ),
+            (
+                "reads-the-size-label",
+                &["07_hd_1280x720.png"][..],
+                "This image has a size label drawn on it. Read the label exactly.",
+                &["1280"][..],
+                &["cannot see", "no image"][..],
+            ),
+            (
+                "multi-image-order",
+                &["01_square_224.png", "08_portrait_480x854.png"][..],
+                "You are shown two images. Is the FIRST one square or portrait? Answer with one word.",
+                &["square"][..],
+                &["portrait"][..],
+            ),
+            (
+                "control-no-image",
+                &[][..],
+                "This image has a size label drawn on it. Read the label exactly.",
+                &[][..],
+                &["1280"][..],
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_concurrency_probe_requires_image_specific_evidence() {
+    let probe = concurrency_probe();
+    assert_eq!(probe.images, &["07_hd_1280x720.png"]);
+    assert!(
+        !reply_matches("OK", probe.want_all, probe.want_none),
+        "a generic non-empty reply does not show that concurrent vision worked"
+    );
+    assert!(reply_matches(
+        "The label reads 1280 x 720.",
+        probe.want_all,
+        probe.want_none
+    ));
 }

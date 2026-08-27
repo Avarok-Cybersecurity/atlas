@@ -101,27 +101,61 @@ fn read_server_rails_rejects_mismatch() {
 }
 
 #[test]
-fn read_server_rails_rejects_zero_count() {
-    // A zero rail count is a corrupt/hostile frame.
-    let buf = [0u8; 1];
-    assert!(read_server_rails(&mut &buf[..], 1).is_err());
+fn read_server_rails_rejects_implausible_counts_before_the_body() {
+    for (count, want) in [(0u8, 1usize), (9, 9)] {
+        let err = read_server_rails(&mut &[count][..], want).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("implausible server rail count: {count}")
+        );
+    }
 }
 
 #[test]
-fn write_server_rails_rejects_empty() {
+fn write_server_rails_enforces_count_bounds_before_writing() {
+    let sp = VerbsServerParams {
+        qpn: 1,
+        psn: 2,
+        gid: [3u8; 16],
+        layers: vec![(4, 5)],
+    };
     let mut buf = Vec::new();
-    assert!(write_server_rails(&mut buf, &[]).is_err());
+    let err = write_server_rails(&mut buf, &[]).unwrap_err();
+    assert_eq!(err.to_string(), "implausible server rail count: 0");
+    assert!(buf.is_empty(), "rejected empty input writes no frame");
+
+    write_server_rails(&mut buf, &vec![sp.clone(); 8]).expect("eight rails is the maximum");
+    assert_eq!(buf[0], 8);
+
+    buf.clear();
+    let err = write_server_rails(&mut buf, &vec![sp; 9]).unwrap_err();
+    assert_eq!(err.to_string(), "implausible server rail count: 9");
+    assert!(buf.is_empty(), "rejected excess input writes no frame");
 }
 
 #[test]
-fn verbs_server_params_reject_absurd_layer_count() {
-    // A corrupt/hostile count must Err, not attempt a huge allocation.
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&1u32.to_le_bytes()); // qpn
-    buf.extend_from_slice(&2u32.to_le_bytes()); // psn
-    buf.extend_from_slice(&[0u8; 16]); // gid
-    buf.extend_from_slice(&99_999u32.to_le_bytes()); // n_layers (absurd)
-    assert!(VerbsServerParams::read_from(&mut &buf[..]).is_err());
+fn verbs_server_params_enforces_layer_count_bounds() {
+    let encoded = |count: u32, body_layers: usize| {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u32.to_le_bytes()); // qpn
+        buf.extend_from_slice(&2u32.to_le_bytes()); // psn
+        buf.extend_from_slice(&[0u8; 16]); // gid
+        buf.extend_from_slice(&count.to_le_bytes());
+        buf.extend(std::iter::repeat_n(0u8, body_layers * 12));
+        buf
+    };
+
+    let zero = encoded(0, 0);
+    let err = VerbsServerParams::read_from(&mut &zero[..]).unwrap_err();
+    assert_eq!(err.to_string(), "implausible verbs layer count: 0");
+
+    let maximum = encoded(4096, 4096);
+    let parsed = VerbsServerParams::read_from(&mut &maximum[..]).expect("4096 is accepted");
+    assert_eq!(parsed.layers.len(), 4096);
+
+    let excess = encoded(4097, 0);
+    let err = VerbsServerParams::read_from(&mut &excess[..]).unwrap_err();
+    assert_eq!(err.to_string(), "implausible verbs layer count: 4097");
 }
 
 #[test]

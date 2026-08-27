@@ -33,6 +33,22 @@ const SCORE_PY: &str = include_str!("../../../assets/bfcl/score.py");
 /// typing syntax.
 const MIN_PYTHON: (u32, u32) = (3, 10);
 
+fn stamp_value(requirements: &str, provision: &str, scorer: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    for asset in [requirements, provision, scorer] {
+        digest.update((asset.len() as u64).to_le_bytes());
+        digest.update(asset.as_bytes());
+    }
+    format!(
+        "v2 py>={}.{} assets={:x}",
+        MIN_PYTHON.0,
+        MIN_PYTHON.1,
+        digest.finalize()
+    )
+}
+
 /// The provisioned artifact set.
 #[derive(Clone, Debug)]
 pub struct Artifacts {
@@ -72,14 +88,7 @@ pub async fn ensure(store: &ArtifactStore, handle: &PluginHandle) -> Result<Arti
     let stamp = Stamp::new(
         &dir,
         ".provisioned",
-        format!(
-            "v1 py>={}.{} req={} prov={} score={}",
-            MIN_PYTHON.0,
-            MIN_PYTHON.1,
-            REQUIREMENTS.len(),
-            PROVISION_PY.len(),
-            SCORE_PY.len()
-        ),
+        stamp_value(REQUIREMENTS, PROVISION_PY, SCORE_PY),
     );
 
     if stamp.is_current() && dataset.is_file() && interpreter.is_file() {
@@ -157,34 +166,188 @@ fn read_totals(dir: &Path) -> Result<std::collections::BTreeMap<String, usize>> 
 mod tests {
     use super::*;
 
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-bfcl-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn python() -> &'static str {
+        ["python3", "python"]
+            .into_iter()
+            .find(|candidate| {
+                std::process::Command::new(candidate)
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|out| out.status.success())
+            })
+            .expect("the committed Python assets require a Python interpreter")
+    }
+
+    fn write_jsonl(path: &Path, rows: &[serde_json::Value]) {
+        let text = rows
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(path, format!("{text}\n")).unwrap();
+    }
+
     #[test]
     fn the_committed_python_assets_are_non_empty_and_own_their_cli() {
-        assert!(PROVISION_PY.contains("--out"));
-        assert!(SCORE_PY.contains("--dataset") && SCORE_PY.contains("--responses"));
+        assert!(!PROVISION_PY.trim().is_empty());
+        assert!(!SCORE_PY.trim().is_empty());
+        let pins: Vec<&str> = REQUIREMENTS
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        assert_eq!(pins, ["bfcl-eval==2026.3.23"]);
+
+        let dir = temp_dir("cli");
+        let provision = dir.join("provision.py");
+        let scorer = dir.join("score.py");
+        std::fs::write(&provision, PROVISION_PY).unwrap();
+        std::fs::write(&scorer, SCORE_PY).unwrap();
+
+        let out = std::process::Command::new(python())
+            .arg(&provision)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "provision.py accepted no --out");
+        let stderr = String::from_utf8(out.stderr).unwrap();
         assert!(
-            REQUIREMENTS.contains("bfcl-eval=="),
-            "the pin must be exact"
+            stderr.contains("the following arguments are required: --out"),
+            "provision.py did not require --out: {stderr}"
         );
+
+        for (provided, missing) in [
+            (["--dataset", "unused"], "--responses"),
+            (["--responses", "unused"], "--dataset"),
+        ] {
+            let out = std::process::Command::new(python())
+                .arg(&scorer)
+                .args(provided)
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(2), "score.py accepted no {missing}");
+            let stderr = String::from_utf8(out.stderr).unwrap();
+            assert!(
+                stderr.contains(&format!("the following arguments are required: {missing}")),
+                "score.py did not require {missing}: {stderr}"
+            );
+        }
     }
 
     #[test]
     fn the_scorer_reproduces_the_reference_aggregation_strategies() {
-        // These three strings ARE the normalized score. A silent edit to any of
-        // them would move every recorded baseline without any other signal.
-        assert!(SCORE_PY.contains("\"live\": \"sample_weighted\""));
-        assert!(SCORE_PY.contains("\"non_live\": \"hierarchical\""));
-        assert!(SCORE_PY.contains("\"hallucination\": \"unweighted\""));
-        assert!(SCORE_PY.contains("gpt-4o-2024-11-20-FC"));
+        let dir = temp_dir("score");
+        let fake = dir.join("bfcl_eval");
+        for package in [
+            fake.clone(),
+            fake.join("constants"),
+            fake.join("eval_checker"),
+            fake.join("eval_checker/ast_eval"),
+        ] {
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(package.join("__init__.py"), "").unwrap();
+        }
+        std::fs::write(
+            fake.join("constants/enums.py"),
+            "from enum import Enum\nclass Language(Enum):\n    PYTHON='PYTHON'\n    JAVA='JAVA'\n    JAVASCRIPT='JAVASCRIPT'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            fake.join("eval_checker/ast_eval/ast_checker.py"),
+            "def ast_checker(**kwargs):\n    return {'valid': bool(kwargs['model_output']) and kwargs['model_name'] == 'gpt-4o-2024-11-20-FC'}\n",
+        )
+        .unwrap();
+
+        let mut dataset = Vec::new();
+        let mut responses = Vec::new();
+        let cases = [
+            ("simple_python", [true, true, false]),
+            ("simple_java", [false, false, false]),
+            ("multiple", [false, false, false]),
+            ("live_simple", [true, true, true]),
+            ("live_multiple", [false, false, false]),
+            ("irrelevance", [true, true, true]),
+            ("live_irrelevance", [false, false, false]),
+        ];
+        let counts = [2, 1, 1, 3, 1, 3, 1];
+        for ((subset, outcomes), count) in cases.into_iter().zip(counts) {
+            for (index, passes) in outcomes.into_iter().take(count).enumerate() {
+                let id = format!("{subset}-{index}");
+                dataset.push(serde_json::json!({
+                    "sample_id": id,
+                    "subset": subset,
+                    "ground_truth": "[1]",
+                    "func_description": "[]"
+                }));
+                responses.push(serde_json::json!({
+                    "sample_id": id,
+                    "has_tool_calls": if subset.contains("irrelevance") { !passes } else { passes },
+                    "tool_calls": if passes && !subset.contains("irrelevance") {
+                        serde_json::json!([{"name": "f", "arguments": {}}])
+                    } else {
+                        serde_json::json!([])
+                    }
+                }));
+            }
+        }
+        let dataset_path = dir.join("dataset.jsonl");
+        let responses_path = dir.join("responses.jsonl");
+        let scorer_path = dir.join("score.py");
+        write_jsonl(&dataset_path, &dataset);
+        write_jsonl(&responses_path, &responses);
+        std::fs::write(&scorer_path, SCORE_PY).unwrap();
+
+        let out = std::process::Command::new(python())
+            .args([
+                scorer_path.as_os_str(),
+                "--dataset".as_ref(),
+                dataset_path.as_os_str(),
+                "--responses".as_ref(),
+                responses_path.as_os_str(),
+            ])
+            .env("PYTHONPATH", &dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "scorer failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(result["category_scores"]["non_live"], 25.0);
+        assert_eq!(result["category_scores"]["live"], 75.0);
+        assert_eq!(result["category_scores"]["hallucination"], 50.0);
+        assert_eq!(result["normalized_single_turn_score"], 50.0);
+        assert_eq!(result["overall_accuracy"], 66.67);
+        assert_eq!(result["total_samples"], 12);
+        assert_eq!(result["unmatched_responses"], 0);
     }
 
     #[test]
-    fn the_stamp_changes_when_a_shipped_script_changes() {
-        let dir = std::env::temp_dir().join(format!("atlas-bfcl-stamp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = Stamp::new(&dir, ".provisioned", "v1 req=10 prov=20");
+    fn the_stamp_changes_when_any_shipped_asset_changes() {
+        let dir = temp_dir("stamp");
+        let original = stamp_value(REQUIREMENTS, PROVISION_PY, SCORE_PY);
+        let a = Stamp::new(&dir, ".provisioned", &original);
         a.commit().unwrap();
         assert!(a.is_current());
-        assert!(!Stamp::new(&dir, ".provisioned", "v1 req=10 prov=21").is_current());
+        for changed in [
+            stamp_value(&REQUIREMENTS.replacen('#', "!", 1), PROVISION_PY, SCORE_PY),
+            stamp_value(REQUIREMENTS, &PROVISION_PY.replacen('#', "!", 1), SCORE_PY),
+            stamp_value(REQUIREMENTS, PROVISION_PY, &SCORE_PY.replacen('#', "!", 1)),
+        ] {
+            assert_eq!(changed.len(), original.len());
+            assert_ne!(changed, original);
+            assert!(!Stamp::new(&dir, ".provisioned", changed).is_current());
+        }
     }
 }

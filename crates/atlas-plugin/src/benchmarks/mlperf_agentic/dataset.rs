@@ -95,19 +95,38 @@ pub fn load(path: &Path, spec: &DrawSpec) -> Result<Vec<Conversation>> {
     Ok(taken)
 }
 
-/// The draw fingerprint: SHA256 over the ordered drawn conversation ids and
-/// their client-turn counts. Two runs with equal fingerprints replayed the
-/// same prompts in the same order; a differing fingerprint means the numbers
-/// are not comparable, whatever the sample counts say. This is the content
-/// identity the BFCL legs never had (their provisioning digest is computed
-/// and then dropped), recorded here into the gate record itself.
+/// The draw fingerprint: SHA256 over the ordered conversations and every
+/// prompt/scoring field they contain. Two runs with equal fingerprints
+/// replayed the same teacher-forced messages, tools, and ground truth in the
+/// same order; a differing fingerprint means the numbers are not comparable,
+/// whatever the sample counts say. This is the content identity the BFCL legs
+/// never had (their provisioning digest is computed and then dropped),
+/// recorded here into the gate record itself.
 pub fn draw_fingerprint(conversations: &[Conversation]) -> String {
     let mut digest = Sha256::new();
+    let update = |digest: &mut Sha256, bytes: &[u8]| {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    };
     for conv in conversations {
-        digest.update(conv.id.as_bytes());
-        digest.update(b"\n");
-        digest.update(conv.client_turns.len().to_string().as_bytes());
-        digest.update(b"\n");
+        digest.update(b"conversation\0");
+        update(&mut digest, conv.id.as_bytes());
+        update(
+            &mut digest,
+            &serde_json::to_vec(&conv.tools).expect("JSON values serialize"),
+        );
+        for turn in &conv.client_turns {
+            digest.update(b"turn\0");
+            digest.update(turn.turn.to_le_bytes());
+            update(
+                &mut digest,
+                &serde_json::to_vec(&turn.messages).expect("JSON values serialize"),
+            );
+            update(
+                &mut digest,
+                &serde_json::to_vec(&turn.ground_truth).expect("JSON values serialize"),
+            );
+        }
     }
     format!("{:x}", digest.finalize())
 }
@@ -177,15 +196,15 @@ fn turn_of(row: &Map<String, Value>) -> Result<i64> {
         .context("row is missing an integer 'turn'")
 }
 
-fn build_conversation(id: String, mut rows: Vec<Map<String, Value>>) -> Result<Conversation> {
+fn build_conversation(id: String, rows: Vec<Map<String, Value>>) -> Result<Conversation> {
     for row in &rows {
         turn_of(row).with_context(|| format!("conversation {id:?}"))?;
     }
-    rows.sort_by_key(|r| turn_of(r).expect("checked above"));
     let turns: Vec<i64> = rows.iter().map(|r| turn_of(r).unwrap()).collect();
     if turns.iter().enumerate().any(|(i, &t)| t != i as i64 + 1) {
         bail!(
-            "conversation {id:?}: turn numbers must be exactly 1..={}, got {turns:?}",
+            "conversation {id:?}: turn numbers must be exactly 1..={} in file order, got \
+             {turns:?}",
             rows.len()
         );
     }

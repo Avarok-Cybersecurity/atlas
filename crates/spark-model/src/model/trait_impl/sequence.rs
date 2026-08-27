@@ -219,10 +219,10 @@ impl TransformerModel {
         // every replay. A new occupant of this slot can replay them; LRU in
         // `insert_batch_decode_graph` bounds batched-graph memory. Recapturing
         // on every completion was an extra eager step per request. Policy is
-        // pinned by `decode_graph_key` tests (`*_graph_on_free` → Retain).
+        // covered at the cache-key/LRU layer in `decode_graph_key`.
         //
         // verify_kgamma / fused still drop below: they bake a per-occupant
-        // LoRA adapter index (`lora_baked_graph_on_free` → DropThisSlot).
+        // LoRA adapter index, so they must be dropped for this slot.
         // verify_kgamma_graph + fused_graph are keyed by (slot, K). They now
         // capture the LoRA bgmv-vs-installed-pair branch and read the per-seq
         // seq_slot buffer, so a freed slot's entries MUST be destroyed — else a

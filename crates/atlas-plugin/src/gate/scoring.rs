@@ -91,6 +91,13 @@ pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<
             )),
         }
     }
+    for (k, got) in &record.serve_overrides {
+        if !entry.serve_overrides.contains_key(k) {
+            problems.push(format!(
+                "serve override {k}={got} is present on the record but not pinned by the baseline"
+            ));
+        }
+    }
     // Baseline-declared PARAM pins must be on the record too, at the pinned
     // value — the same argument as the serve pins one loop up: BENCH.toml is
     // outside the closure hash, so pinning a gate to a calibrated instrument
@@ -99,10 +106,10 @@ pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<
     // for an instrument it never ran. Compared whitespace-insensitively:
     // records render int lists as "1, 4, 8, 16" while pins are typed
     // "1,4,8,16", and both name the same value.
-    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let normalize = |s: &str| s.split(',').map(str::trim).collect::<Vec<_>>().join(",");
     for (k, want) in &entry.param_overrides {
         match record.params.get(k) {
-            Some(got) if squash(got) == squash(want) => {}
+            Some(got) if normalize(got) == normalize(want) => {}
             Some(got) => problems.push(format!(
                 "param {k}={got} does not match the baseline pin {k}={want} — the run \
                  measured a different instrument than the one these thresholds describe"

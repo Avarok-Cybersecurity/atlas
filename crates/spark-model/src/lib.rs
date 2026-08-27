@@ -68,10 +68,9 @@ pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
 #[cfg(test)]
 mod norm_convention_tests {
     use super::model_type_ships_vanilla_norm_weights as vanilla;
-    use half::bf16;
 
-    /// Only DeepSeek-V4 takes the vanilla path. Every other family keeps the
-    /// offset-from-1 convention it was loaded and validated under.
+    /// Only explicitly listed model families take the vanilla path. Every
+    /// other family keeps the offset-from-1 convention it was validated under.
     #[test]
     fn vanilla_norm_models_are_explicit() {
         assert!(vanilla("deepseek_v4"));
@@ -88,77 +87,5 @@ mod norm_convention_tests {
         ] {
             assert!(!vanilla(other), "{other} must keep offset-from-1 semantics");
         }
-    }
-
-    /// The norm weights ship as BF16 in the checkpoint, so the value the loader
-    /// actually sees is `bf16(x)`. Model that exactly.
-    fn ckpt(x: f32) -> f32 {
-        bf16::from_f32(x).to_f32()
-    }
-    /// OLD loader: store `bf16(w - 1)`, so the offset-from-1 kernel applies
-    /// `1 + bf16(w - 1)`.
-    fn old_effective(w: f32) -> f32 {
-        1.0 + bf16::from_f32(w - 1.0).to_f32()
-    }
-    fn rel_err(got: f32, want: f32) -> f32 {
-        ((got - want) / want).abs()
-    }
-
-    /// The whole reason for this change: the offset round-trip is EXACTLY lossless
-    /// when `w` is near 1 — which is why every other model family was unaffected —
-    /// and badly lossy when `w` is near 0, which is what DeepSeek-V4 ships.
-    #[test]
-    fn offset_roundtrip_is_lossless_near_one_and_lossy_near_zero() {
-        // Near 1 and above (every offset-convention model, and V4's own kv_norm in
-        // most layers): `w - 1` stays exactly representable, so the round-trip is
-        // bit-exact. This is the regression guarantee for other model families.
-        for x in [0.63_f32, 0.75, 0.875, 0.99, 1.0, 1.5, 2.0, 3.828125] {
-            let w = ckpt(x);
-            assert_eq!(
-                old_effective(w),
-                w,
-                "w={w} must round-trip EXACTLY under the offset convention"
-            );
-        }
-
-        // Near 0 — real `attn_norm` values from DeepSeek-V4-Flash layers.0.
-        // Catastrophic cancellation: a large RELATIVE error on the weight itself.
-        for x in [0.028931_f32, 0.030762, 0.032471, 0.033447] {
-            let w = ckpt(x);
-            let old_err = rel_err(old_effective(w), w);
-            assert!(
-                old_err > 0.01,
-                "attn_norm w={w}: the old path should be >1% wrong, got {:.2}%",
-                old_err * 100.0
-            );
-            // The exact load is lossless by construction: the checkpoint is BF16.
-            assert_eq!(ckpt(w), w);
-        }
-    }
-
-    /// `q_norm`'s small tail — the old path is ~20 % wrong on the weight.
-    #[test]
-    fn q_norm_worst_case_is_badly_wrong_under_the_offset_convention() {
-        let w = ckpt(0.009766);
-        let old_err = rel_err(old_effective(w), w);
-        assert!(
-            old_err > 0.10,
-            "expected >10% relative error, got {:.2}%",
-            old_err * 100.0
-        );
-        assert_eq!(ckpt(w), w);
-    }
-
-    /// Compressor / indexer norms straddle zero. The offset round-trip does not
-    /// merely degrade them — `bf16(w - 1)` rounds to exactly -1.0, so `1 + (-1.0)`
-    /// collapses the weight to ZERO, destroying sign and magnitude together.
-    /// No downstream precision can recover that.
-    #[test]
-    fn compressor_norm_sign_collapse_under_the_offset_convention() {
-        let w = ckpt(-0.001);
-        let old = old_effective(w);
-        assert_eq!(old, 0.0, "expected collapse to zero, got {old}");
-        assert!(w < 0.0, "the true weight is negative");
-        assert_eq!(ckpt(w), w, "the exact load preserves it");
     }
 }

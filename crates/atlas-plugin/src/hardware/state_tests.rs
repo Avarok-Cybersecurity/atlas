@@ -148,6 +148,14 @@ fn perf_class_pairs_the_silicon_class_with_the_box() {
     assert_eq!(MachineIdentity::default().perf_class(), "unknown@unknown");
     assert_eq!(
         MachineIdentity {
+            gpu: Some("NVIDIA GB10".into()),
+            ..MachineIdentity::default()
+        }
+        .perf_class(),
+        "gb10@unknown"
+    );
+    assert_eq!(
+        MachineIdentity {
             hostname: Some("dgx2".into()),
             ..MachineIdentity::default()
         }

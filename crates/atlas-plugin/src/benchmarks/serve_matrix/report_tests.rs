@@ -36,8 +36,65 @@ fn every_candidate_gets_a_row_including_the_ones_that_were_skipped() {
     }];
     let t = table(&plan, &results);
     assert_eq!(t.rows.len(), 2);
+    assert_eq!(
+        t.rows[0]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "a · nvfp4",
+            "PASS",
+            "2/2",
+            "PASS",
+            "N/A",
+            "PASS",
+            "41.5",
+            "PASS",
+        ]
+    );
+    assert_eq!(
+        t.rows[0].iter().map(|cell| cell.style).collect::<Vec<_>>(),
+        [
+            crate::result::CellStyle::Neutral,
+            crate::result::CellStyle::Good,
+            crate::result::CellStyle::Good,
+            crate::result::CellStyle::Good,
+            crate::result::CellStyle::Warn,
+            crate::result::CellStyle::Good,
+            crate::result::CellStyle::Accent,
+            crate::result::CellStyle::Good,
+        ]
+    );
     let skipped = &t.rows[1];
-    assert!(skipped[0].text.starts_with('b'));
+    assert_eq!(
+        skipped
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "b · fp8",
+            "—",
+            "—",
+            "—",
+            "—",
+            "—",
+            "—",
+            "SKIP · weights not fully downloaded",
+        ]
+    );
+    assert_eq!(
+        skipped.iter().map(|cell| cell.style).collect::<Vec<_>>(),
+        [
+            crate::result::CellStyle::Neutral,
+            crate::result::CellStyle::Dim,
+            crate::result::CellStyle::Dim,
+            crate::result::CellStyle::Dim,
+            crate::result::CellStyle::Dim,
+            crate::result::CellStyle::Dim,
+            crate::result::CellStyle::Dim,
+            crate::result::CellStyle::Dim,
+        ]
+    );
     // The LAST cell, not a magic index: the verdict is the last column and
     // adding a signal column must not silently move what this asserts on.
     let verdict = skipped.last().expect("a verdict cell");
@@ -53,13 +110,9 @@ fn every_candidate_gets_a_row_including_the_ones_that_were_skipped() {
 fn a_planned_round_with_no_result_renders_as_a_failure_not_a_blank() {
     let plan = Plan::build(&[ServeCandidate::ready("a", "")], "");
     let t = table(&plan, &[]);
-    assert!(
-        t.rows[0]
-            .last()
-            .expect("a verdict cell")
-            .text
-            .contains("did not run")
-    );
+    let verdict = t.rows[0].last().expect("a verdict cell");
+    assert_eq!(verdict.text, "FAIL · no result — did not run");
+    assert_eq!(verdict.style, crate::result::CellStyle::Bad);
 }
 
 #[test]
@@ -84,6 +137,7 @@ fn a_round_line_attributes_a_failure_to_the_signal_that_caused_it() {
     assert!(line.contains("codegen FAIL"), "{line}");
     assert!(line.contains("FAIL codegen"), "{line}");
     assert!(line.contains("no baseline"), "{line}");
+    assert!(line.contains("no indented body"), "{line}");
 }
 
 #[test]
@@ -93,5 +147,5 @@ fn a_boot_failure_line_says_so_in_words() {
         outcome: Outcome::BootFailed("CUDA out of memory".into()),
         baseline_tps: None,
     };
-    assert!(round_line(&r).contains("DID NOT BOOT — CUDA out of memory"));
+    assert_eq!(round_line(&r), "org/m: DID NOT BOOT — CUDA out of memory");
 }

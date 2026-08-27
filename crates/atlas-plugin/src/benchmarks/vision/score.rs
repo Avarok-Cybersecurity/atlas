@@ -66,7 +66,12 @@ impl fmt::Display for Verdict {
 /// the probe rather than of the matcher.
 pub fn reply_matches(reply: &str, want_all: &[&str], want_none: &[&str]) -> bool {
     let hay = reply.to_lowercase();
-    want_all.iter().all(|w| hay.contains(w)) && !want_none.iter().any(|w| hay.contains(w))
+    want_all
+        .iter()
+        .all(|term| crate::benchmarks::first_standalone_term(&hay, term).is_some())
+        && !want_none
+            .iter()
+            .any(|term| crate::benchmarks::first_standalone_term(&hay, term).is_some())
 }
 
 /// Fold the legs into one verdict.
@@ -91,6 +96,19 @@ pub fn verdict(geom: &[GeomCell], probes: &[ProbeCell], control_held: bool) -> V
         return Verdict::Fail;
     }
     Verdict::Pass
+}
+
+/// Fold the runtime integrity legs into the geometry/capability verdict.
+/// A broken control remains `Vacuous`; the extra legs cannot rehabilitate it.
+pub fn with_runtime_checks(
+    base: Verdict,
+    integrity_failed: bool,
+    concurrency_clean: bool,
+) -> Verdict {
+    match base {
+        Verdict::Pass if integrity_failed || !concurrency_clean => Verdict::Fail,
+        other => other,
+    }
 }
 
 /// How many geometry cells actually asserted something.

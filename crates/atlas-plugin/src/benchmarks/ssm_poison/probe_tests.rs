@@ -5,66 +5,62 @@
 
 use super::{LONG_PREFIX, TURNS, first_turn, request_body, validate_reference};
 use crate::benchmarks::transcript::Transcript;
+use sha2::{Digest, Sha256};
 
-#[test]
-fn the_script_is_four_turns() {
-    assert_eq!(TURNS.len(), 4);
-}
-
-#[test]
-fn the_prefix_is_long_enough_to_force_a_prefill_restore() {
-    // The probe exists to exercise the prefix-cache restore path. A prefix
-    // too short to survive a chunk boundary would never populate a Marconi
-    // checkpoint, and the gate would pass vacuously. ~1.5K tokens ≈ 6K+
-    // chars; require a floor well above any chunk.
-    assert!(
-        LONG_PREFIX.chars().count() > 4000,
-        "prefix is {} chars — too short to force prefix-cache state",
-        LONG_PREFIX.chars().count()
-    );
+fn sha256(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
 #[test]
 fn the_first_turn_carries_the_prefix() {
-    let t1 = first_turn();
-    assert!(t1.starts_with(LONG_PREFIX));
-    assert!(t1.contains(TURNS[0]));
+    assert_eq!(first_turn(), format!("{LONG_PREFIX}\n\n{}", TURNS[0]));
 }
 
 #[test]
-fn the_script_is_deterministic_by_construction() {
-    // No run-id, no date, no randomness: two calls produce identical bytes.
-    // (Trivially true for consts, but the test documents the invariant the
-    // gate depends on.)
-    assert_eq!(first_turn(), first_turn());
-    for t in TURNS {
-        assert!(!t.is_empty());
-    }
+fn the_complete_script_bytes_are_pinned() {
+    assert!(LONG_PREFIX.chars().count() > 4000);
+    assert_eq!(
+        sha256(LONG_PREFIX),
+        "ed401b9b80fb43644e0349ebf1a16fdef6662769726979732b2c9369a906d853"
+    );
+    assert_eq!(
+        TURNS.map(sha256),
+        [
+            "4720e48d963d43e9e7d780c0f29520f1482f6dffca19891cd36932c0aa06fe3b",
+            "fdd0b1c5475654d1d531f869143fc0643b33a67a6988fb71b6ee833d249c021f",
+            "fcd408a20bee1a9189721e626e1025d5fe0ebdc1de6e2b145a744e18b9006062",
+            "647d6d2b92ce20ad171a672d49c1608e262e989c0467a4f98027ede0db3e5a9b",
+        ]
+    );
+    assert_eq!(
+        sha256(&first_turn()),
+        "2f0b09e5c479bcc17b1aa2e1e60d6c7fab057a8b87eb3efb2fb4c16b6a58fdf0"
+    );
 }
 
 #[test]
 fn request_body_is_greedy_pinned_seed_stream() {
-    let body = request_body("m", &[], 256);
-    assert_eq!(body["temperature"], 0.0);
-    assert_eq!(body["seed"], 0);
-    assert_eq!(body["stream"], true);
+    let messages = vec![serde_json::json!({"role": "user", "content": "hello"})];
+    let body = request_body("m", &messages, 256);
     // The OpenAI streaming contract only ships `usage` when asked. Without
     // this, `completion_tokens` and the `cached_tokens` vacuity attestation
     // depend on Atlas volunteering usage frames — correct against Atlas,
     // silently zero against any contract-faithful server.
-    assert_eq!(body["stream_options"]["include_usage"], true);
-    assert_eq!(body["max_tokens"], 256);
-    assert_eq!(body["model"], "m");
-    // The replay invariant only holds when the sampler cannot vary: if the
-    // temperature were > 0 the gate would measure sampling noise, not state.
-    assert_eq!(body["temperature"].as_f64(), Some(0.0));
-    // Thinking is disabled via the SERVE CONFIG (--serve-override
-    // disable_thinking=true), NOT per request: the per-request
-    // chat_template_kwargs.enable_thinking:false path degenerates to a ~2-token
-    // stop on this qwen3_6_moe checkpoint (measured 2026-08-15). The request
-    // body must therefore carry NO chat_template_kwargs — the serve owns the
-    // thinking mode, matching the working path BFCL uses.
-    assert!(body.get("chat_template_kwargs").is_none());
+    // Thinking is disabled via the serve configuration, not via a
+    // per-request chat_template_kwargs field. The complete object below owns
+    // that absence as well as every field that changes the instrument.
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "model": "m",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+            "temperature": 0.0,
+            "seed": 0,
+            "max_tokens": 256,
+            "messages": messages,
+        })
+    );
 }
 
 // ---- reference anchors (B4) ----------------------------------------------
@@ -88,12 +84,14 @@ fn healthy_reference() -> Vec<Transcript> {
               3. Closed membership via signed admission and departure.",
         ),
         turn(
-            "The envelope checksum covers the header fields in serialized order. It excludes \
-              the payload, and the archive tier quarantines mismatches.",
+            "The envelope checksum covers batch id, sequence number, node id, timestamp, then \
+              payload length in serialized order, and excludes the payload itself. The archive tier \
+              recomputes it, refuses and quarantines a mismatch, with the recomputed value \
+              attached.",
         ),
         turn(
             "The checksum covers batch id, sequence number, node id, timestamp, then payload \
-              length; the payload itself is excluded; a mismatching recomputation quarantines \
+              length; it excludes the payload itself; a mismatching recomputation quarantines \
               the record with the recomputed value attached.",
         ),
     ]
@@ -141,6 +139,16 @@ fn a_reference_with_the_wrong_section_count_is_rejected() {
 }
 
 #[test]
+fn the_section_count_must_be_a_whole_token() {
+    let mut reference = healthy_reference();
+    reference[0] = turn("ACK 7741-C — seventeen sections.");
+    assert_eq!(
+        validate_reference(&reference),
+        ["turn 1: does not state the document's section count (7)"]
+    );
+}
+
+#[test]
 fn a_two_line_invariant_list_is_rejected() {
     // Turn 2 demands exactly three numbered lines; an early-EOS stub that
     // dropped one is the batch4 shape showing up in the REFERENCE.
@@ -166,6 +174,20 @@ fn unnumbered_invariant_lines_are_rejected() {
 }
 
 #[test]
+fn larger_number_prefixes_do_not_count_as_one_through_three() {
+    let mut reference = healthy_reference();
+    reference[1] = turn("10. Monotonic sequence.\n20. Bounded drift.\n30. Closed membership.");
+    assert_eq!(
+        validate_reference(&reference),
+        [
+            "turn 2: line 1 does not start with its number: \"10. Monotonic sequence.\"",
+            "turn 2: line 2 does not start with its number: \"20. Bounded drift.\"",
+            "turn 2: line 3 does not start with its number: \"30. Closed membership.\"",
+        ]
+    );
+}
+
+#[test]
 fn a_budget_truncated_reference_is_rejected() {
     // A reference turn that hit max_tokens caps every collapse ratio near
     // 1.0 and makes the runaway ceiling unreachable — the budget must let
@@ -176,6 +198,32 @@ fn a_budget_truncated_reference_is_rejected() {
     assert!(
         v.iter().any(|s| s.contains("token budget")),
         "expected a budget violation, got {v:?}"
+    );
+}
+
+#[test]
+fn every_reference_turn_must_finish_normally() {
+    let mut reference = healthy_reference();
+    reference[2].finish_reason = None;
+    assert_eq!(
+        validate_reference(&reference),
+        ["turn 3: reference did not finish normally (finish_reason=None)"]
+    );
+}
+
+#[test]
+fn the_later_reference_turns_must_answer_their_prompts() {
+    let mut reference = healthy_reference();
+    reference[2] = turn("Nothing relevant. Still nothing.");
+    reference[3] = turn("A checksum exists.");
+    let violations = validate_reference(&reference);
+    assert!(
+        violations.iter().any(|v| v.starts_with("turn 3:")),
+        "{violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.starts_with("turn 4:")),
+        "{violations:?}"
     );
 }
 

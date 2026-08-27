@@ -186,11 +186,26 @@ fn now_secs() -> u64 {
 /// free, which is what makes "two runs never collide" a property rather than a
 /// probability.
 pub fn save(store: &ArtifactStore, record: &mut RunRecord) -> Result<PathBuf> {
-    let dir = store.runs_dir(&record.benchmark_id)?;
-    let mut nanos = SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or_default();
+    save_at(store, record, nanos, |_| {})
+}
+
+/// The deterministic seam for collision and publication checks. Production
+/// supplies the current clock and no hook; tests can force the same first
+/// candidate and inspect the claimed placeholder before it is published.
+fn save_at<F>(
+    store: &ArtifactStore,
+    record: &mut RunRecord,
+    mut nanos: u64,
+    after_claim: F,
+) -> Result<PathBuf>
+where
+    F: FnOnce(&Path),
+{
+    let dir = store.runs_dir(&record.benchmark_id)?;
     // Claim the id with `create_new`, not `exists()`. This directory is shared:
     // the dashboard and `spark benchmark` are separate processes writing the
     // same tree, and check-then-write lets both conclude the same name is free
@@ -214,6 +229,7 @@ pub fn save(store: &ArtifactStore, record: &mut RunRecord) -> Result<PathBuf> {
         }
     };
     record.run_id = run_id;
+    after_claim(&path);
     let json = serde_json::to_string_pretty(&record).context("serializing the run record")?;
     // Write beside it and rename over the claim. `rename` is atomic, so the
     // History pane reads either the empty placeholder or the finished record —

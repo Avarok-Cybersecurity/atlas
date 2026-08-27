@@ -33,9 +33,8 @@ const ALL: &[&BenchmarkDescriptor] = &[
     // path-based and has no per-model dimension. A text-only target has no
     // entry and the gate does not apply to it.
     &vision::DESCRIPTOR,
-    // Runnable, NOT gated: no reference run exists on any target yet, and a
-    // gate without a measured baseline either passes vacuously or fails
-    // honest work. Promote it once each vision target has a record.
+    // Required where a target's BENCH.toml declares video-fidelity. The
+    // per-model applicability lives there because coverage is path-based.
     &video::DESCRIPTOR,
     // Cheaper than the agentic gate (~10 min vs ~17 min) and catches a
     // class the agentic run only surfaces by accident, so it is listed
@@ -70,6 +69,7 @@ mod tests {
     fn ids_are_unique_and_filename_safe() {
         let mut seen = std::collections::BTreeSet::new();
         for d in all() {
+            assert!(!d.id.is_empty(), "benchmark ids address history files");
             assert!(seen.insert(d.id), "duplicate benchmark id {}", d.id);
             assert!(
                 d.id.chars()

@@ -28,6 +28,17 @@ fn test_mock_alloc_free() {
 }
 
 #[test]
+fn mock_free_rejects_interior_and_repeated_pointers() {
+    let gpu = MockGpuBackend::new();
+    let ptr = gpu.alloc(1024).unwrap();
+    let interior = ptr.offset(256);
+    assert!(gpu.free(interior).is_err());
+    assert_eq!(gpu.alloc_count(), 1, "interior free must preserve owner");
+    gpu.free(ptr).unwrap();
+    assert!(gpu.free(ptr).is_err());
+}
+
+#[test]
 fn test_mock_copy_roundtrip() {
     let gpu = MockGpuBackend::new();
     let ptr = gpu.alloc(8).unwrap();

@@ -66,17 +66,27 @@ impl Directions {
     }
 }
 
-/// An ephemeral port that is free right now.
+/// Return an OS-assigned ephemeral port for a caller that will spawn immediately.
+///
+/// Gate self-start uses this after all fallible resolution work and directly
+/// before spawning the model server. The scorer has a longer Cargo-build gap,
+/// so it uses the private reservation path below and retains the listener
+/// through that gap.
+pub fn free_port() -> Result<u16> {
+    let listener = reserve_port()?;
+    Ok(listener.local_addr()?.port())
+}
+
+/// Hold an OS-assigned ephemeral port until the scored project is ready to run.
 ///
 /// A fresh OS-assigned port per iteration is what makes this self-isolating: a
 /// zombie server from an earlier run can neither collide with ours nor answer
 /// our `curl` — the bug class that invalidated every earlier `webserver_ok`
-/// number when the port was hardcoded.
-pub fn free_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+/// number when the port was hardcoded. Keeping the listener through the Cargo
+/// build closes the minutes-long window in which another process could take a
+/// port that was free only before compilation started.
+fn reserve_port() -> Result<std::net::TcpListener> {
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?)
 }
 
 /// Build the project, run it on `port`, and check `/ping` answers `pong`.
@@ -99,10 +109,17 @@ pub async fn webserver_test(
         out.error = "no src/ was written — skipping webserver test".into();
         return out;
     }
-    let port = match free_port() {
-        Ok(p) => p,
+    let port_reservation = match reserve_port() {
+        Ok(reservation) => reservation,
         Err(e) => {
             out.error = format!("could not reserve a port: {e}");
+            return out;
+        }
+    };
+    let port = match port_reservation.local_addr() {
+        Ok(address) => address.port(),
+        Err(e) => {
+            out.error = format!("could not inspect the reserved port: {e}");
             return out;
         }
     };
@@ -112,6 +129,10 @@ pub async fn webserver_test(
     build
         .args(["build", "--release"])
         .current_dir(sandbox)
+        // The reference harness exports this for the whole project lifecycle,
+        // and an agent may compile it with `env!` as well as read it at runtime.
+        // The listener remains held while the build receives the number.
+        .env("ATLAS_HARNESS_PORT", port.to_string())
         // The harness's cargo shim detaches `cargo run` only when
         // ATLAS_AGENT_SHELL is set, and its own comment reserves that for the
         // agent: "The SCORER (no ATLAS_AGENT_SHELL) + build/test pass through."
@@ -182,6 +203,9 @@ pub async fn webserver_test(
     if let Some(dir) = cargo_target_dir {
         serve.env("CARGO_TARGET_DIR", dir);
     }
+    // Release only when the child is ready to bind. A small spawn race remains,
+    // but the potentially minutes-long build no longer leaves the port open.
+    drop(port_reservation);
     let mut child = match serve.spawn() {
         Ok(c) => c,
         Err(e) => {

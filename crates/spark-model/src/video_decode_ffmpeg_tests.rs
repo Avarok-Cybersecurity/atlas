@@ -225,6 +225,37 @@ fn a_non_video_payload_fails_cleanly() {
     assert!(err.contains("decoder failed"), "{err}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_hanging_decoder_is_killed_at_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("atlas-hanging-ffmpeg-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("hanging-ffmpeg");
+    std::fs::write(&binary, "#!/bin/sh\nexec sleep 10\n").unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    let policy = FfmpegPolicy {
+        enabled: true,
+        binary: binary.display().to_string(),
+        timeout_secs: 1,
+        ..Default::default()
+    };
+    let started = std::time::Instant::now();
+    let err = decode_frames(b"input", 2.0, &policy)
+        .unwrap_err()
+        .to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(err.contains("decoding exceeded 1s"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
 /// H.265 in the same container — the case a linked H.264-only decoder could
 /// not have served, and the reason this backend exists.
 #[test]
@@ -256,8 +287,8 @@ fn an_empty_stream_splits_to_nothing() {
 #[test]
 fn a_stream_of_two_pngs_splits_into_two_frames() {
     let mut buf = Vec::new();
-    for (w, h) in [(4u32, 3u32), (4, 3)] {
-        let img = image::RgbImage::from_pixel(w, h, image::Rgb([1, 2, 3]));
+    for pixel in [[1, 2, 3], [4, 5, 6]] {
+        let img = image::RgbImage::from_pixel(4, 3, image::Rgb(pixel));
         let mut one = Vec::new();
         image::DynamicImage::ImageRgb8(img)
             .write_to(&mut std::io::Cursor::new(&mut one), image::ImageFormat::Png)
@@ -267,4 +298,6 @@ fn a_stream_of_two_pngs_splits_into_two_frames() {
     let frames = split_png_stream(&buf).expect("split");
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0].dimensions(), (4, 3));
+    assert_eq!(frames[0].get_pixel(0, 0).0, [1, 2, 3]);
+    assert_eq!(frames[1].get_pixel(0, 0).0, [4, 5, 6]);
 }

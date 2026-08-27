@@ -6,13 +6,29 @@ fn sse(payload: &str) -> Value {
     serde_json::from_str(payload).unwrap()
 }
 
+async fn endpoint_answering(response: String) -> TargetEndpoint {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("address").port();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut request = [0u8; 4096];
+        let _ = socket.read(&mut request).await.expect("read request");
+        socket.write_all(response.as_bytes()).await.expect("reply");
+    });
+    TargetEndpoint::local(port, "mock")
+}
+
 #[test]
 fn chunked_body_split_mid_line_still_yields_one_intact_line() {
     // The failure this decoder exists to prevent: a chunk boundary in the
     // middle of a `data:` line. Naive line-splitting emits two broken halves,
     // both fail to parse as JSON, and the token vanishes from the count.
     let mut r = Reader::default();
-    let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\n";
     assert!(r.push(head).unwrap().is_empty());
 
     let first = "data: {\"choices\":[{\"de";
@@ -25,9 +41,7 @@ fn chunked_body_split_mid_line_still_yields_one_intact_line() {
     let mut wire2 = Vec::new();
     wire2.extend_from_slice(format!("{:x}\r\n{second}\r\n", second.len()).as_bytes());
     let lines = r.push(&wire2).unwrap();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].ends_with("}]}"), "{:?}", lines[0]);
-    assert!(serde_json::from_str::<Value>(lines[0].strip_prefix("data: ").unwrap()).is_ok());
+    assert_eq!(lines, [r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#]);
 }
 
 #[test]
@@ -50,6 +64,23 @@ fn a_non_200_status_is_an_error_not_an_empty_stream() {
     assert!(lines.is_empty(), "a failed response yields no data lines");
     let err = r.finish().unwrap_err().to_string();
     assert!(err.contains("404"), "{err}");
+
+    let mut lookalike = Reader::default();
+    lookalike
+        .push(b"HTTP/1.1 2000 Not-A-Status\r\nContent-Length: 0\r\n\r\n")
+        .expect_err("only the exact 200 status is successful");
+}
+
+#[tokio::test]
+async fn endpoint_probe_rejects_a_status_code_lookalike() {
+    let target = endpoint_answering(
+        "HTTP/1.1 2000 Not-A-Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+    )
+    .await;
+    let err = probe(&target, Duration::from_secs(2))
+        .await
+        .expect_err("only status 200 is reachable");
+    assert!(err.to_string().contains("2000"), "{err}");
 }
 
 #[test]
@@ -116,20 +147,32 @@ fn an_empty_reasoning_delta_carries_nothing() {
 #[test]
 fn tool_call_deltas_assemble_by_index() {
     let mut out = ChatOutcome::default();
-    apply_chunk(
+    assert!(apply_chunk(
         &sse(r#"{"choices":[{"delta":{"tool_calls":[
                 {"index":0,"id":"c1","function":{"name":"get_","arguments":"{\"a\""}}]}}]}"#),
         &mut out,
-    );
-    apply_chunk(
+    ));
+    assert!(apply_chunk(
         &sse(r#"{"choices":[{"delta":{"tool_calls":[
+                {"index":1,"id":"c2","function":{"name":"clock","arguments":"{}"}},
                 {"index":0,"function":{"name":"weather","arguments":":1}"}}]}}]}"#),
         &mut out,
+    ));
+    assert_eq!(
+        out.tool_calls,
+        [
+            ToolCall {
+                id: "c1".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"a":1}"#.into(),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "clock".into(),
+                arguments: "{}".into(),
+            },
+        ]
     );
-    assert_eq!(out.tool_calls.len(), 1);
-    assert_eq!(out.tool_calls[0].id, "c1");
-    assert_eq!(out.tool_calls[0].name, "get_weather");
-    assert_eq!(out.tool_calls[0].arguments, r#"{"a":1}"#);
 }
 
 #[test]
@@ -333,7 +376,20 @@ fn a_huge_error_body_is_capped_rather_than_buffered_without_limit() {
     let raw = format!("HTTP/1.1 503 Service Unavailable\r\n\r\n{big}");
     // Bails at the cap rather than growing until the sender stops.
     assert!(r.push(raw.as_bytes()).is_err());
-    assert!(r.body.len() <= MAX_ERROR_BODY + 4096);
+    assert_eq!(r.body.len(), MAX_ERROR_BODY, "the retained body is capped");
+
+    let mut chunked = Reader::default();
+    let wire = format!(
+        "HTTP/1.1 503 Service Unavailable\r\nTransfer-Encoding: chunked\r\n\r\n\
+         {:X}\r\n{big}\r\n0\r\n\r\n",
+        big.len()
+    );
+    assert!(chunked.push(wire.as_bytes()).is_err());
+    assert_eq!(
+        chunked.body.len(),
+        MAX_ERROR_BODY,
+        "chunk framing cannot bypass the same cap"
+    );
 }
 
 #[test]
@@ -373,4 +429,25 @@ fn a_successful_response_has_no_error_message_to_extract() {
 fn an_error_response_with_an_unreadable_body_yields_nothing_rather_than_junk() {
     let raw = "HTTP/1.1 502 Bad Gateway\r\n\r\n<html>nope</html>";
     assert_eq!(error_message_from_response(raw.as_bytes()), None);
+}
+
+#[tokio::test]
+async fn blocking_client_reports_the_decoded_openai_error() {
+    let response = format!(
+        "HTTP/1.1 503 Service Unavailable\r\nTransfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n{:X}\r\n{NO_MODEL_BODY}\r\n0\r\n\r\n",
+        NO_MODEL_BODY.len()
+    );
+    let target = endpoint_answering(response).await;
+    let err = chat_blocking(
+        &target,
+        &serde_json::json!({"messages": []}),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect_err("503 is an error");
+    let message = err.to_string();
+    assert!(message.contains("503"), "{message}");
+    assert!(message.contains("Library"), "{message}");
+    assert!(!message.contains(r#"{"error"#), "decoded detail: {message}");
 }

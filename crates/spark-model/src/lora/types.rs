@@ -292,12 +292,18 @@ impl LoraWeights {
 
     /// Resolve an adapter NAME to its slot index (for runtime rotation).
     pub fn slot_of(&self, name: &str) -> Option<usize> {
-        self.slots.iter().position(|s| s.name == name)
+        self.slots
+            .iter()
+            .position(|s| !s.name.is_empty() && s.name == name)
     }
 
     /// All resident adapter names in slot order (for `/v1/models`).
     pub fn adapter_names(&self) -> Vec<String> {
-        self.slots.iter().map(|s| s.name.clone()).collect()
+        self.slots
+            .iter()
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.clone())
+            .collect()
     }
 
     /// Stable adapter_id (Task #24) for a pool slot request selector. `slot`
@@ -314,8 +320,8 @@ impl LoraWeights {
             self.active
         };
         match self.slots.get(resolved) {
-            Some(s) => adapter_id_hash(&s.name, s.generation),
-            None => 0,
+            Some(s) if !s.name.is_empty() => adapter_id_hash(&s.name, s.generation),
+            Some(_) | None => 0,
         }
     }
 

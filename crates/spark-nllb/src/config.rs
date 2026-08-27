@@ -2,7 +2,7 @@
 
 //! NLLB / M2M-100 model configuration, parsed from HuggingFace `config.json`.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
 /// M2M-100 / NLLB encoder-decoder configuration.
@@ -73,7 +73,42 @@ fn default_max_length() -> usize {
 impl NllbConfig {
     /// Parse a HuggingFace `config.json` string.
     pub fn from_json(json: &str) -> Result<Self> {
-        serde_json::from_str(json).context("failed to parse NLLB config.json")
+        let config: Self =
+            serde_json::from_str(json).context("failed to parse NLLB config.json")?;
+        config
+            .validate_runtime_contract()
+            .context("invalid NLLB config.json")?;
+        Ok(config)
+    }
+
+    fn validate_runtime_contract(&self) -> Result<()> {
+        ensure!(self.d_model > 0, "d_model must be greater than zero");
+        ensure!(
+            self.encoder_attention_heads > 0,
+            "encoder_attention_heads must be greater than zero"
+        );
+        ensure!(
+            self.decoder_attention_heads > 0,
+            "decoder_attention_heads must be greater than zero"
+        );
+        ensure!(
+            self.decoder_attention_heads == self.encoder_attention_heads,
+            "decoder_attention_heads ({}) must equal encoder_attention_heads ({})",
+            self.decoder_attention_heads,
+            self.encoder_attention_heads
+        );
+        ensure!(
+            self.d_model % self.encoder_attention_heads == 0,
+            "d_model ({}) must be divisible by encoder_attention_heads ({})",
+            self.d_model,
+            self.encoder_attention_heads
+        );
+        ensure!(
+            self.activation_function == "relu",
+            "unsupported activation_function {:?}; spark-nllb implements only \"relu\"",
+            self.activation_function
+        );
+        Ok(())
     }
 
     /// Head dimension (shared by encoder + decoder — NLLB uses one `d_model`).

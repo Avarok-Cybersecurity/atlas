@@ -62,6 +62,20 @@ fn a_known_gap_tool_parser_is_not_a_failure_but_a_missing_call_is() {
 }
 
 #[test]
+fn not_applicable_is_reserved_for_the_tool_call_probe() {
+    let mut wrong_model = clean();
+    wrong_model.identity = Signal::NotApplicable("identity probe unavailable".into());
+    assert_eq!(
+        result("m", wrong_model).bars(),
+        vec!["wrong-model(not-applicable)"]
+    );
+
+    let mut codegen = clean();
+    codegen.codegen = Signal::NotApplicable("code parser unavailable".into());
+    assert_eq!(result("m", codegen).bars(), vec!["codegen(not-applicable)"]);
+}
+
+#[test]
 fn long_context_is_reported_but_does_not_gate() {
     // gate_results.py never scored the long-context leg. Adding a bar here
     // would make this run's PASS incomparable with every recorded one.
@@ -78,6 +92,17 @@ fn a_dead_server_fails_the_throughput_bar_even_with_no_baseline() {
 }
 
 #[test]
+fn nonfinite_throughput_is_invalid_evidence() {
+    for tps in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut s = clean();
+        s.tps = Some(tps);
+        let r = result("m", s);
+        assert_eq!(r.bars(), vec!["tps(non-finite)"], "tps={tps:?}");
+        assert_eq!(r.tps_note(), None, "tps={tps:?}");
+    }
+}
+
+#[test]
 fn without_a_baseline_throughput_is_liveness_only_and_says_so() {
     let r = result("m", clean());
     assert!(r.bars().is_empty());
@@ -88,12 +113,39 @@ fn without_a_baseline_throughput_is_liveness_only_and_says_so() {
 fn with_a_baseline_a_ten_percent_drop_is_a_regression() {
     let mut r = result("m", clean());
     r.baseline_tps = Some(120.0);
-    // 100 < 120 * 0.9 = 108
-    assert_eq!(r.bars(), vec!["tps(100.0<108.0)"]);
+    match &mut r.outcome {
+        Outcome::Probed(signals) => signals.tps = Some(107.9),
+        _ => panic!("fixture must be probed"),
+    }
+    assert_eq!(r.bars(), vec!["tps(107.9<108.0)"]);
     assert_eq!(r.tps_note(), None, "a real bar is not a 'no baseline' note");
 
-    r.baseline_tps = Some(105.0); // floor 94.5, 100 clears it
+    match &mut r.outcome {
+        Outcome::Probed(signals) => signals.tps = Some(108.0),
+        _ => panic!("fixture must be probed"),
+    }
     assert!(r.bars().is_empty());
+}
+
+#[test]
+fn an_invalid_baseline_is_not_a_regression_floor() {
+    for baseline in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut r = result("m", clean());
+        r.baseline_tps = Some(baseline);
+        assert!(r.bars().is_empty(), "baseline={baseline:?}");
+        assert_eq!(
+            r.tps_note(),
+            Some("no baseline — liveness only"),
+            "baseline={baseline:?}"
+        );
+    }
+}
+
+#[test]
+fn coherence_pass_count_cannot_exceed_the_probe_count() {
+    let mut s = clean();
+    s.coherence_pass = 3;
+    assert_eq!(result("m", s).bars(), vec!["coherence(3/2)"]);
 }
 
 #[test]
@@ -121,18 +173,15 @@ fn an_unprobed_signal_fails_rather_than_scoring_clean() {
     // `Signals::default()` is all-`NotRun`. If that scored zero bars, any
     // early return between booting and probing — or any probe that becomes
     // conditional later — would manufacture a verified round.
-    let bars = result("m", Signals::default()).bars();
-    for expected in [
-        "wrong-model(not-probed)",
-        "codegen(not-probed)",
-        "tool_call(not-probed)",
-        "coherence(0/0)",
-    ] {
-        assert!(
-            bars.iter().any(|b| b == expected),
-            "{expected} missing from {bars:?}"
-        );
-    }
+    assert_eq!(
+        result("m", Signals::default()).bars(),
+        [
+            "wrong-model(not-probed)",
+            "codegen(not-probed)",
+            "tool_call(not-probed)",
+            "coherence(0/0)",
+        ]
+    );
 }
 
 // ── coverage enforcement ────────────────────────────────────────────────
@@ -149,15 +198,16 @@ fn a_checkpoint_that_failed_to_boot_is_a_failure_not_an_absence() {
         },
     ];
     let t = tally(&plan, &results);
-    assert_eq!((t.verified, t.planned), (1, 2));
+    assert_eq!((t.verified, t.planned, t.skipped, t.excluded), (1, 2, 0, 0));
     assert!(!t.passed());
-    assert_eq!(t.failures.len(), 1);
-    assert!(
-        t.failures[0].1[0].starts_with("did-not-boot"),
-        "the reason has to survive into the verdict: {:?}",
-        t.failures[0]
+    assert_eq!(
+        t.failures,
+        [("b".into(), vec!["did-not-boot (CUDA out of memory)".into()])]
     );
-    assert!(verdict_text(&t, &plan).contains("CUDA out of memory"));
+    assert_eq!(
+        verdict_text(&t, &plan),
+        "1/2 planned checkpoints verified — 1 below bar: b: did-not-boot (CUDA out of memory)"
+    );
 }
 
 #[test]
@@ -166,9 +216,14 @@ fn a_planned_round_that_produced_no_result_at_all_fails() {
     // disappears from the denominator entirely.
     let plan = plan_of(&["a", "b", "c"]);
     let t = tally(&plan, &[result("a", clean())]);
-    assert_eq!((t.verified, t.planned), (1, 3));
-    assert_eq!(t.failures.len(), 2);
-    assert!(t.failures.iter().all(|(_, bars)| bars == &["no-result"]));
+    assert_eq!((t.verified, t.planned, t.skipped, t.excluded), (1, 3, 0, 0));
+    assert_eq!(
+        t.failures,
+        [
+            ("b".into(), vec!["no-result".into()]),
+            ("c".into(), vec!["no-result".into()]),
+        ]
+    );
     assert!(!t.passed());
 }
 
@@ -181,36 +236,12 @@ fn a_checkpoint_the_box_cannot_serve_is_skipped_not_failed() {
     let plan = Plan::build(&roster, "");
     let t = tally(&plan, &[result("a", clean())]);
     assert!(t.passed(), "an absent checkpoint must not fail the matrix");
-    assert_eq!((t.verified, t.planned, t.skipped), (1, 1, 1));
-    let text = verdict_text(&t, &plan);
-    assert!(
-        text.contains("not runnable") && text.contains(Absence::NoWeights.reason()),
-        "the skip has to be visible in the verdict, or 1/1 lies: {text}"
+    assert_eq!((t.verified, t.planned, t.skipped, t.excluded), (1, 1, 1, 0));
+    assert!(t.failures.is_empty());
+    assert_eq!(
+        verdict_text(&t, &plan),
+        "1/1 planned checkpoints verified · 1 not runnable on this box: b (weights not fully downloaded)"
     );
-}
-
-#[test]
-fn skipped_and_failed_to_boot_never_read_the_same() {
-    let absent = Plan::build(&[ServeCandidate::absent("b", "", Absence::NoWeights)], "");
-    let absent_tally = tally(&absent, &[]);
-
-    let planned = plan_of(&["b"]);
-    let crashed = tally(
-        &planned,
-        &[RoundResult {
-            label: "b".into(),
-            outcome: Outcome::BootFailed("no kernels".into()),
-            baseline_tps: None,
-        }],
-    );
-    // Absent: nothing was planned, so nothing is below bar — and nothing is
-    // claimed either (`report::verdict` renders that as Info, not PASS).
-    assert!(absent_tally.failures.is_empty());
-    assert_eq!((absent_tally.planned, absent_tally.skipped), (0, 1));
-    // Crashed: planned, attempted, gone. That is a FAIL with a reason.
-    assert_eq!(crashed.failures.len(), 1);
-    assert_eq!((crashed.planned, crashed.skipped), (1, 0));
-    assert!(!crashed.passed());
 }
 
 #[test]

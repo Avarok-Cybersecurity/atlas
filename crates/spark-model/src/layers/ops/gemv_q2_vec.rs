@@ -60,6 +60,17 @@ fn batchm_row_chunks(m: u32) -> impl Iterator<Item = (u32, u32)> {
         .map(move |r0| (r0, (m - r0).min(Q2_BATCHM_MAX_M)))
 }
 
+/// `(input_byte_offset, output_byte_offset, rows)` for each kernel launch.
+fn batchm_launch_chunks(m: u32, k: u32, n: u32) -> impl Iterator<Item = (usize, usize, u32)> {
+    batchm_row_chunks(m).map(move |(r0, rows)| {
+        (
+            r0 as usize * k as usize * 2,
+            r0 as usize * n as usize * 2,
+            rows,
+        )
+    })
+}
+
 /// Q2_0 batched GEMV (M>=1 decode), CANDIDATE B: `C[M,N] = A[M,K] @ dequant(B)`.
 ///
 /// Reads each weight word once and MAC's it into all `m` accumulators (all `m`
@@ -85,15 +96,13 @@ pub fn q2_0_gemv_vec_batchm(
     stream: u64,
 ) -> Result<()> {
     // BF16 row strides: input is [M,K], output is [M,N].
-    let k_row_bytes = weight.k as usize * 2;
-    let n_row_bytes = weight.n as usize * 2;
-    for (r0, m_chunk) in batchm_row_chunks(m) {
+    for (input_offset, output_offset, m_chunk) in batchm_launch_chunks(m, weight.k, weight.n) {
         KernelLaunch::new(gpu, kernel)
             .grid([div_ceil(weight.n, 8), 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(input.offset(r0 as usize * k_row_bytes))
+            .arg_ptr(input.offset(input_offset))
             .arg_ptr(weight.weight)
-            .arg_ptr(output.offset(r0 as usize * n_row_bytes))
+            .arg_ptr(output.offset(output_offset))
             .arg_u32(weight.n)
             .arg_u32(weight.k)
             .arg_u32(weight.group as u32)
@@ -105,7 +114,7 @@ pub fn q2_0_gemv_vec_batchm(
 
 #[cfg(test)]
 mod tests {
-    use super::batchm_row_chunks;
+    use super::{batchm_launch_chunks, batchm_row_chunks};
 
     use half::{bf16, f16};
 
@@ -171,6 +180,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn launch_chunks_advance_bf16_input_and_output_rows_independently() {
+        assert_eq!(
+            batchm_launch_chunks(17, 256, 5).collect::<Vec<_>>(),
+            vec![(0, 0, 8), (4096, 80, 8), (8192, 160, 1)]
+        );
+    }
+
     /// The invariant the wiring relies on: driving the batchm kernel via the
     /// chunking loop (row-group launches with `r0*K` / `r0*N` pointer offsets)
     /// reproduces the per-row M=1 GEMV for EVERY row, bit-for-bit — including the
@@ -191,9 +208,13 @@ mod tests {
             // Simulate the wrapper: iterate chunk boundaries, offset the [M,K]
             // input by r0*K and write [M,N] output at r0*N per chunk row.
             let mut got = vec![0u16; m * n];
-            for (r0, mc) in batchm_row_chunks(m as u32) {
+            for (input_offset, output_offset, mc) in
+                batchm_launch_chunks(m as u32, k as u32, n as u32)
+            {
+                let r0 = input_offset / (k * 2);
+                assert_eq!(output_offset, r0 * n * 2);
                 for i in 0..mc as usize {
-                    let row = r0 as usize + i;
+                    let row = r0 + i;
                     let r = gemv_row(&act[row * k..(row + 1) * k], &codes, &scales, n, k);
                     got[row * n..(row + 1) * n].copy_from_slice(&r);
                 }

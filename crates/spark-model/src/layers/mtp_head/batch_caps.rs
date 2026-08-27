@@ -64,17 +64,17 @@ pub(crate) const PROPOSE_META_SEQS: usize = 32;
 
 /// Pure stride computation: header + one i32 block-table entry per KV block a
 /// `max_seq_len`-token drafter sequence can reference, 8-byte aligned, never
-/// below [`PROPOSE_META_STRIDE_FLOOR`].
+/// below [`PROPOSE_META_STRIDE_FLOOR`] or above [`PROPOSE_META_STRIDE_CAP`].
 ///
 /// The `+ 1` mirrors the allocator in `forward_batch_position`
 /// (`blocks_needed = seq_len/bs + 1`): without it, a sequence sitting exactly
 /// at `max_seq_len` needs one more entry than `align8(256 + (max/bs)*4)`
 /// provides and the stride `ensure!` fires at the boundary.
 pub(crate) fn propose_meta_stride_bytes(max_seq_len: usize, kv_block_size: usize) -> usize {
-    let entries = max_seq_len / kv_block_size.max(1) + 1;
-    let raw = PROPOSE_META_HEADER + entries * 4;
-    let aligned = (raw + 7) & !7;
-    aligned.max(PROPOSE_META_STRIDE_FLOOR)
+    let entries = (max_seq_len / kv_block_size.max(1)).saturating_add(1);
+    let raw = PROPOSE_META_HEADER.saturating_add(entries.saturating_mul(4));
+    let aligned = raw.saturating_add(7) & !7;
+    aligned.clamp(PROPOSE_META_STRIDE_FLOOR, PROPOSE_META_STRIDE_CAP)
 }
 
 /// Ceiling for the env override. A 1M-token context needs ~262KB of block
@@ -92,12 +92,19 @@ pub(crate) const PROPOSE_META_STRIDE_CAP: usize = 1 << 24;
 /// [`PROPOSE_META_STRIDE_CAP`] so the `16 x stride` allocation cannot
 /// overflow.
 pub(crate) fn propose_meta_stride_env(max_seq_len: usize, kv_block_size: usize) -> usize {
-    if let Ok(v) = std::env::var("ATLAS_PROPOSE_META_STRIDE")
-        && let Ok(bytes) = v.trim().parse::<usize>()
-    {
-        return clamp_stride_override(bytes);
+    let value = std::env::var("ATLAS_PROPOSE_META_STRIDE").ok();
+    if let Some(stride) = parse_stride_override(value.as_deref()) {
+        return stride;
     }
     propose_meta_stride_bytes(max_seq_len, kv_block_size)
+}
+
+fn parse_stride_override(value: Option<&str>) -> Option<usize> {
+    value?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .map(clamp_stride_override)
 }
 
 /// Align-up + floor + cap for an override value; saturating so no input
@@ -262,6 +269,19 @@ mod tests {
     }
 
     #[test]
+    fn computed_stride_caps_extreme_contexts_without_overflow() {
+        assert_eq!(
+            propose_meta_stride_bytes(usize::MAX, 1),
+            PROPOSE_META_STRIDE_CAP
+        );
+        assert!(
+            PROPOSE_META_SEQS
+                .checked_mul(propose_meta_stride_bytes(usize::MAX, 1))
+                .is_some()
+        );
+    }
+
+    #[test]
     fn stride_override_is_panic_and_overflow_safe() {
         // Hostile env values must neither panic under overflow checks
         // (usize::MAX + 7) nor produce a stride whose 16x allocation wraps
@@ -274,6 +294,34 @@ mod tests {
         }
         // Zero/small values clamp up to the floor; normal values align up.
         assert_eq!(clamp_stride_override(0), PROPOSE_META_STRIDE_FLOOR);
+        assert_eq!(clamp_stride_override(2047), PROPOSE_META_STRIDE_FLOOR);
+        assert_eq!(clamp_stride_override(2048), PROPOSE_META_STRIDE_FLOOR);
+        assert_eq!(clamp_stride_override(2049), 2056);
         assert_eq!(clamp_stride_override(4361), 4368);
+        assert_eq!(
+            clamp_stride_override(PROPOSE_META_STRIDE_CAP - 1),
+            PROPOSE_META_STRIDE_CAP
+        );
+        assert_eq!(
+            clamp_stride_override(PROPOSE_META_STRIDE_CAP),
+            PROPOSE_META_STRIDE_CAP
+        );
+        assert_eq!(
+            clamp_stride_override(PROPOSE_META_STRIDE_CAP + 1),
+            PROPOSE_META_STRIDE_CAP
+        );
+    }
+
+    #[test]
+    fn stride_override_parser_accepts_trimmed_bytes_and_rejects_invalid_values() {
+        assert_eq!(parse_stride_override(Some(" 4361 ")), Some(4368));
+        assert_eq!(
+            parse_stride_override(Some("0")),
+            Some(PROPOSE_META_STRIDE_FLOOR)
+        );
+        assert_eq!(parse_stride_override(None), None);
+        assert_eq!(parse_stride_override(Some("")), None);
+        assert_eq!(parse_stride_override(Some("not-bytes")), None);
+        assert_eq!(parse_stride_override(Some("-1")), None);
     }
 }

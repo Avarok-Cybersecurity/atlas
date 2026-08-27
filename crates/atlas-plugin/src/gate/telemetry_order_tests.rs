@@ -35,14 +35,12 @@ const MOE: &str = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/x.cu";
 fn the_chart_is_the_first_thing_in_the_comment() {
     let root = repo_root();
     let body = render(&root, &[pr(1, &[FLAGSHIP]), pr(2, &[MOE])]);
-    let chart = body.find("```mermaid").expect("a chart rendered");
     assert!(
-        chart < body.find("Advisory.").unwrap(),
-        "chart before advisory"
-    );
-    assert!(
-        chart < body.find("###").unwrap(),
-        "chart before every section"
+        body.starts_with(
+            "<!-- atlas-pr-telemetry:start -->\n## Open-PR telemetry\n\n```mermaid\ngitGraph\n  \
+             commit id: \"main\"\n"
+        ),
+        "only the replacement marker and title may precede the chart: {body}"
     );
 }
 
@@ -84,7 +82,10 @@ fn truncation_is_disclosed_with_showing_n_of_m() {
 fn a_small_input_is_not_truncated() {
     let root = repo_root();
     let body = render(&root, &[pr(1, &[FLAGSHIP]), pr(2, &[MOE])]);
-    assert!(body.contains("Showing 2 of 2 open PRs"), "{body}");
+    assert!(
+        body.contains("Showing 2 of 2 open PRs, left to right in recommended merge order.\nOrder:"),
+        "{body}"
+    );
     assert!(!body.contains("Not charted"), "nothing was dropped");
 }
 
@@ -95,9 +96,11 @@ fn only_merged_prs_yield_a_note_not_a_degenerate_chart() {
     let root = repo_root();
     let mut merged = pr(1, &[FLAGSHIP]);
     merged.merged = true;
-    let body = render(&root, &[merged]);
-    assert!(!body.contains("```mermaid"), "no empty gitGraph: {body}");
-    assert!(body.contains("No open, non-draft PRs to order."), "{body}");
+    let v = views(&root, &[merged]);
+    assert_eq!(
+        render_order_chart(&v),
+        "_No open, non-draft PRs to order._\n"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -185,11 +188,8 @@ fn a_hostile_title_cannot_break_the_chart() {
     let root = repo_root();
     let mut hostile = pr(9, &[FLAGSHIP]);
     hostile.title = "evil \"quote\"\ninject".into();
-    let body = render(&root, &[hostile]);
-    assert!(
-        body.contains("commit id: \"#9 evil 'quote' inject\""),
-        "quotes folded, newline flattened: {body}"
-    );
+    let v = views(&root, &[hostile]);
+    assert_eq!(commit_label(&v[0]), "#9 evil 'quote' inject");
 }
 
 /// Long titles are clipped so ten branches stay legible side by side.
@@ -198,13 +198,8 @@ fn a_long_title_is_clipped_in_the_chart() {
     let root = repo_root();
     let mut long = pr(9, &[FLAGSHIP]);
     long.title = "a".repeat(80);
-    let body = render(&root, &[long]);
-    let line = body
-        .lines()
-        .find(|l| l.trim_start().starts_with("commit id: \"#9"))
-        .expect("the commit line rendered");
-    assert!(line.contains('…'), "clip is visible: {line}");
-    assert!(line.len() < 60, "clipped, not 80 chars wide: {line}");
+    let v = views(&root, &[long]);
+    assert_eq!(commit_label(&v[0]), format!("#9 {}…", "a".repeat(24)));
 }
 
 // ---------------------------------------------------------------------------
@@ -253,10 +248,15 @@ fn next_steps_surface_merged_promotion_debt() {
 #[test]
 fn next_steps_admit_what_they_cannot_know() {
     let root = repo_root();
-    let body = render(&root, &[pr(1, &[FLAGSHIP])]);
+    let v = views(&root, &[pr(1, &[FLAGSHIP])]);
+    let body = render_next_steps(&v);
     assert!(
-        body.contains("cannot") && body.contains("required-context"),
-        "the limits must be printed: {body}"
+        body.ends_with(
+            "\n_Derived only from changed paths and merge state. This section cannot see check \
+             or required-context status, review state, true git mergeability, or whether one PR \
+             unblocks another — those live on each PR._\n"
+        ),
+        "the complete limits must close the section: {body}"
     );
 }
 
@@ -270,8 +270,7 @@ fn next_steps_admit_what_they_cannot_know() {
 fn cap_prs_caps_at_the_bound_and_discloses_the_rest() {
     let numbers: Vec<u64> = (1..=12).collect();
     let capped = cap_prs(&numbers);
-    assert_eq!(capped.matches('#').count(), CHART_PR_BOUND);
-    assert!(capped.ends_with("… +2 more"), "{capped}");
+    assert_eq!(capped, "#1, #2, #3, #4, #5, #6, #7, #8, #9, #10 … +2 more");
     assert_eq!(cap_prs(&[1, 2]), "#1, #2", "no noise under the bound");
 }
 

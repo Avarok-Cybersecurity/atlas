@@ -12,7 +12,9 @@ fn args(extra: &[&str]) -> cli::ServeArgs {
     argv.extend_from_slice(extra);
     match cli::Cli::parse_from(argv).command {
         cli::Command::Serve(a) => a,
-        cli::Command::Benchmark(_) => unreachable!("parsed a serve command"),
+        cli::Command::Benchmark(_) | cli::Command::DumpServeOptions => {
+            unreachable!("parsed a serve command")
+        }
     }
 }
 

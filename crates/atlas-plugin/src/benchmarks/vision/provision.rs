@@ -188,18 +188,13 @@ pub const EXIF_PAIR: &[(&str, &[u8])] = &[
 /// different size. The stamp is content-derived rather than a hand-maintained
 /// version so a regenerated PNG re-provisions by itself.
 fn stamp_value() -> String {
-    let mut acc: u64 = 1469598103934665603; // FNV-1a offset basis
-    for (name, bytes) in FIXTURES
-        .iter()
-        .map(|(n, b, _, _)| (*n, *b))
-        .chain(EXIF_PAIR.iter().copied())
-    {
-        for b in name.as_bytes().iter().chain(bytes.iter()) {
-            acc ^= *b as u64;
-            acc = acc.wrapping_mul(1099511628211);
-        }
-    }
-    format!("vision-fixtures-v1-{acc:016x}")
+    crate::benchmarks::content_stamp(
+        "vision-fixtures-v1",
+        FIXTURES
+            .iter()
+            .map(|(name, bytes, _, _)| (*name, *bytes))
+            .chain(EXIF_PAIR.iter().copied()),
+    )
 }
 
 /// `~/.atlas/artifacts/vision`, matching BFCL's `~/.atlas/artifacts/bfcl`.

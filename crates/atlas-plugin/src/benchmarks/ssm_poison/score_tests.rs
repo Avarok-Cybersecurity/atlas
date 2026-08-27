@@ -66,6 +66,7 @@ fn all_invariant_is_pass() {
     let replays: Vec<_> = (1..=12).map(inv).collect();
     let v = verdict(&score(&replays), 12);
     assert_eq!(v.kind, VerdictKind::Pass);
+    assert_eq!(v.reason, "12 of 12 replays byte-identical to the reference");
 }
 
 #[test]
@@ -74,11 +75,22 @@ fn jitter_is_recorded_but_passes() {
     // selection varies). That is a healthy engine, not a failure.
     let replays: Vec<_> = (1..=12).map(jit).collect();
     let s = score(&replays);
+    assert_eq!(s.rounds, 12);
+    assert_eq!(s.invariant, 0);
     assert_eq!(s.jittered, 12);
     assert_eq!(s.collapsed, 0);
+    assert_eq!(s.unmeasured, 0);
+    assert_eq!(s.jittered_rounds.len(), 12);
+    assert!(s.collapsed_rounds.is_empty());
+    assert!(s.unmeasured_rounds.is_empty());
+    assert!(s.vacuous_rounds.is_empty());
+    assert_eq!(s.min_turn1_cached, WARM);
     let v = verdict(&s, 12);
     assert_eq!(v.kind, VerdictKind::Pass);
-    assert!(v.reason.contains("jittered"), "{}", v.reason);
+    assert_eq!(
+        v.reason,
+        "0 of 12 replays byte-identical, 12 jittered within bounds (restore anchor selection varies between rounds on a healthy engine), 0 collapsed"
+    );
 }
 
 #[test]
@@ -89,20 +101,51 @@ fn a_single_collapse_is_fail_and_names_the_round() {
     replays.push(inv(9));
     replays.push(jit(10));
     let s = score(&replays);
-    assert_eq!(s.collapsed, 1);
-    assert_eq!(s.collapsed_rounds[0].0, 8);
+    assert_eq!(
+        (s.rounds, s.invariant, s.jittered, s.collapsed, s.unmeasured),
+        (10, 8, 1, 1, 0)
+    );
+    assert_eq!(
+        s.collapsed_rounds,
+        [(
+            8,
+            vec![TurnDelta {
+                turn: 2,
+                ref_tokens: 200,
+                replay_tokens: 3,
+                ref_finish: Some("stop".into()),
+                replay_finish: Some("stop".into()),
+            }],
+        )]
+    );
     let v = verdict(&s, 10);
     assert_eq!(v.kind, VerdictKind::Fail);
-    assert!(v.reason.contains("COLLAPSED"), "{}", v.reason);
-    assert!(v.reason.contains("round 8"), "{}", v.reason);
+    assert_eq!(
+        v.reason,
+        "1 of 10 replays COLLAPSED against the reference: round 8: turn 2 (200 -> 3 tokens, finish Some(\"stop\") -> Some(\"stop\")) — a restored prefix produced degenerate output (early-EOS or runaway), the SSM state poisoning signature"
+    );
 }
 
 #[test]
 fn an_unmeasured_round_fails_the_gate() {
-    let replays = vec![inv(1), unm(2), inv(3)];
-    let v = verdict(&score(&replays), 3);
+    let replays = vec![
+        inv(1),
+        unm(2),
+        inv(3),
+        record(
+            4,
+            RoundVerdict::Unmeasured {
+                reason: "timeout".into(),
+            },
+            None,
+        ),
+    ];
+    let v = verdict(&score(&replays), 4);
     assert_eq!(v.kind, VerdictKind::Fail);
-    assert!(v.reason.contains("unmeasurable"), "{}", v.reason);
+    assert_eq!(
+        v.reason,
+        "2 of 4 replays were unmeasurable (transport errors): round 2: reset | round 4: timeout — the replay invariant is unproven for those rounds"
+    );
 }
 
 #[test]
@@ -110,7 +153,7 @@ fn a_short_run_cannot_pass_by_running_fewer_replays() {
     let replays = vec![inv(1), inv(2)];
     let v = verdict(&score(&replays), 12);
     assert_eq!(v.kind, VerdictKind::Fail);
-    assert!(v.reason.contains("2 of 12"), "{}", v.reason);
+    assert_eq!(v.reason, "2 of 12 replay rounds completed");
 }
 
 #[test]
@@ -120,7 +163,10 @@ fn collapse_wins_over_jitter_in_the_reason() {
     let replays = vec![jit(1), col(2)];
     let v = verdict(&score(&replays), 2);
     assert_eq!(v.kind, VerdictKind::Fail);
-    assert!(v.reason.contains("COLLAPSED"), "{}", v.reason);
+    assert_eq!(
+        v.reason,
+        "1 of 2 replays COLLAPSED against the reference: round 2: turn 2 (200 -> 3 tokens, finish Some(\"stop\") -> Some(\"stop\")) — a restored prefix produced degenerate output (early-EOS or runaway), the SSM state poisoning signature"
+    );
 }
 
 #[test]
@@ -135,8 +181,10 @@ fn a_zero_cache_replay_fails_even_when_every_transcript_matched() {
     assert_eq!(s.min_turn1_cached, Some(0));
     let v = verdict(&s, 3);
     assert_eq!(v.kind, VerdictKind::Fail);
-    assert!(v.reason.contains("0 cached prompt tokens"), "{}", v.reason);
-    assert!(v.reason.contains("[3]"), "{}", v.reason);
+    assert_eq!(
+        v.reason,
+        "replay round(s) [3] attested 0 cached prompt tokens on turn 1 — the prefix restore path this gate polices was never exercised, so their transcripts prove nothing about the poisoning class (is prefix caching enabled on the served recipe?)"
+    );
 }
 
 #[test]
@@ -147,9 +195,14 @@ fn an_all_cold_run_fails_on_every_round() {
         .map(|n| record(n, RoundVerdict::Invariant, Some(0)))
         .collect();
     let s = score(&replays);
-    assert_eq!(s.vacuous_rounds.len(), 12);
+    assert_eq!(s.vacuous_rounds, (1..=12).collect::<Vec<_>>());
+    assert_eq!(s.min_turn1_cached, Some(0));
     let v = verdict(&s, 12);
     assert_eq!(v.kind, VerdictKind::Fail);
+    assert_eq!(
+        v.reason,
+        "replay round(s) [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] attested 0 cached prompt tokens on turn 1 — the prefix restore path this gate polices was never exercised, so their transcripts prove nothing about the poisoning class (is prefix caching enabled on the served recipe?)"
+    );
 }
 
 #[test]
@@ -171,7 +224,10 @@ fn collapse_outranks_vacuity_in_the_reason() {
     )];
     let v = verdict(&score(&replays), 1);
     assert_eq!(v.kind, VerdictKind::Fail);
-    assert!(v.reason.contains("COLLAPSED"), "{}", v.reason);
+    assert_eq!(
+        v.reason,
+        "1 of 1 replays COLLAPSED against the reference: round 1: turn 1 (200 -> 3 tokens, finish Some(\"stop\") -> Some(\"stop\")) — a restored prefix produced degenerate output (early-EOS or runaway), the SSM state poisoning signature"
+    );
 }
 
 #[test]
@@ -180,9 +236,7 @@ fn unmeasured_rounds_carry_their_number_and_reason() {
     // number was how the table misattributed transport failures.
     let replays = vec![inv(1), unm(2), inv(3)];
     let s = score(&replays);
-    assert_eq!(s.unmeasured_rounds.len(), 1);
-    assert_eq!(s.unmeasured_rounds[0].0, 2);
-    assert_eq!(s.unmeasured_rounds[0].1, "reset");
+    assert_eq!(s.unmeasured_rounds, [(2, "reset".into())]);
     // A never-completed turn 1 (None) is not a vacuous round: it is already
     // an unmeasured failure, and claiming zero cache for it would be data
     // the server never attested.

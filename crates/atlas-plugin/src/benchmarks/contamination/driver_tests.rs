@@ -7,7 +7,7 @@
 
 use super::super::prompts;
 use super::super::transcript::{RequestOutcome, Transcript};
-use super::{CrossContamination, request_body, rung_slots, to_outcome};
+use super::{CrossContamination, Phase, request_body, rung_slots, to_outcome};
 use crate::benchmark::Benchmark;
 use crate::params::{ParamValue, ParamValues};
 use crate::result::VerdictKind;
@@ -42,29 +42,42 @@ fn defaults_validate_and_are_the_documented_ladder() {
     assert_eq!(b.concurrencies, vec![2, 4, 8]);
     assert_eq!(b.min_completion_tokens, 16);
     assert_eq!(b.max_tokens, 256);
+    assert_eq!(b.timeout, std::time::Duration::from_secs(300));
 }
 
 /// Positive: defaults configure. Negative: a floor at or above the output
 /// budget is rejected against the field, before any request is sent.
 #[test]
 fn a_floor_at_or_above_the_budget_is_rejected() {
-    let mut b = CrossContamination::default();
-    let mut v = ParamValues::defaults(&b.parameters());
-    v.set("min_completion_tokens", ParamValue::Int(256));
-    v.set("max_tokens", ParamValue::Int(256));
-    let err = b.configure(&v).unwrap_err().to_string();
-    assert!(err.contains("floor"), "{err}");
-    assert!(err.contains("Unmeasured by construction"), "{err}");
+    for floor in [256, 257] {
+        let mut b = CrossContamination::default();
+        let mut v = ParamValues::defaults(&b.parameters());
+        v.set("min_completion_tokens", ParamValue::Int(floor));
+        v.set("max_tokens", ParamValue::Int(256));
+        let err = b.configure(&v).unwrap_err().to_string();
+        assert!(err.contains("floor"), "{err}");
+        assert!(err.contains("Unmeasured by construction"), "{err}");
+    }
 }
 
 #[test]
-fn reconfiguring_clears_prior_legs() {
+fn reconfiguring_clears_prior_run_state() {
     let mut b = configured();
     b.ref_a.push(honest(0));
+    b.ref_b.push(honest(0));
     b.rungs.push(("c2".into(), vec![honest(0)]));
+    b.post.push(honest(0));
+    b.phase = Phase::Done;
+    b.probed = true;
     let v = ParamValues::defaults(&b.parameters());
     b.configure(&v).unwrap();
-    assert!(b.ref_a.is_empty() && b.rungs.is_empty() && b.rung_cursor == 0);
+    assert_eq!(b.phase, Phase::Prime);
+    assert!(!b.probed);
+    assert_eq!(b.rung_cursor, 0);
+    assert!(b.ref_a.is_empty());
+    assert!(b.ref_b.is_empty());
+    assert!(b.rungs.is_empty());
+    assert!(b.post.is_empty());
 }
 
 /// The slot layout `Legs` depends on: the first `n` slots are the measured
@@ -98,14 +111,27 @@ fn to_outcome_keeps_errors_as_errors() {
     let ok = to_outcome(Ok(crate::http::ChatOutcome {
         text: "body".into(),
         reasoning: "thought".into(),
+        tool_calls: vec![crate::http::ToolCall {
+            id: "call-1".into(),
+            name: "lookup".into(),
+            arguments: "{\"x\":1}".into(),
+        }],
+        finish_reason: Some("tool_calls".into()),
         completion_tokens: 21,
+        cached_prompt_tokens: 13,
         ..Default::default()
     }));
     match &ok {
         RequestOutcome::Ok(t) => {
             assert_eq!(t.text, "body");
             assert_eq!(t.reasoning, "thought");
+            assert_eq!(
+                t.tool_calls,
+                vec![("lookup".to_string(), "{\"x\":1}".to_string())]
+            );
+            assert_eq!(t.finish_reason.as_deref(), Some("tool_calls"));
             assert_eq!(t.completion_tokens, 21);
+            assert_eq!(t.cached_prompt_tokens, 13);
         }
         RequestOutcome::Error(e) => panic!("a completed request read as an error: {e}"),
     }
@@ -130,8 +156,8 @@ fn request_body_is_greedy_streamed_and_carries_the_prompt() {
     assert_eq!(b["max_tokens"], 256);
     assert_eq!(b["model"], "m-x");
     assert_eq!(
-        b["messages"][0]["content"],
-        serde_json::Value::String(prompt)
+        b["messages"],
+        serde_json::json!([{"role": "user", "content": prompt}])
     );
 }
 

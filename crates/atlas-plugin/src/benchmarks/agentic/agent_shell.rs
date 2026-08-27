@@ -42,6 +42,9 @@ const CAPTURE_END: usize = 16 * MAX_TOOL_OUTPUT;
 /// around the first one.
 const ELISION_NOTE: usize = 96;
 
+#[cfg(test)]
+pub(super) const TEST_ELISION_NOTE: usize = ELISION_NOTE;
+
 pub(crate) async fn run_shell(cfg: &AgentConfig, command: &str, limit: Duration) -> Result<String> {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")

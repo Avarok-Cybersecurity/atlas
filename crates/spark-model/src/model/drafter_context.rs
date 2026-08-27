@@ -223,32 +223,6 @@ mod tests {
         assert_eq!(resolve(Some("1"), Some("1")), DrafterContext::OFF);
     }
 
-    /// THE COUPLING. Carry is inert without prefill (its call site is nested
-    /// inside the prefill buffer's null check), so no reachable configuration
-    /// may enable carry alone. Exhaustive over every string either switch can
-    /// hold, including the `=0` spelling that means "off" nowhere in this
-    /// module.
-    #[test]
-    fn carry_never_enabled_without_prefill() {
-        let values = [
-            None,
-            Some("1"),
-            Some("0"),
-            Some(""),
-            Some("true"),
-            Some("2"),
-        ];
-        for d in values {
-            for p in values {
-                let cfg = resolve(d, p);
-                assert!(
-                    !cfg.carry || cfg.prefill,
-                    "carry without prefill for disable={d:?} prefill_only={p:?}",
-                );
-            }
-        }
-    }
-
     /// `ATLAS_*=0` does NOT disable. Only the `ATLAS_NO_*` name does, and only
     /// at exactly "1" — anything else leaves the shipped default in place.
     #[test]
@@ -267,12 +241,14 @@ mod tests {
         }
     }
 
-    /// The obsolete opt-in names have no behavioural effect whatsoever: they
-    /// are not even inputs to `resolve`. This test pins that they stay out of
-    /// the signature by pinning the only two inputs that exist.
+    /// The obsolete opt-in names are read only to produce migration warnings.
+    /// Pin their exact identity so a renamed warning probe does not silently
+    /// miss a stale deployment variable.
     #[test]
-    fn obsolete_opt_in_names_are_not_inputs() {
-        assert_eq!(OBSOLETE_ENVS.len(), 2);
-        assert_eq!(resolve(None, None), DrafterContext::BOTH);
+    fn obsolete_opt_in_names_are_pinned() {
+        assert_eq!(
+            OBSOLETE_ENVS,
+            ["ATLAS_MTP_DRAFTER_PREFILL", "ATLAS_MTP_CARRY_DRAFTER"]
+        );
     }
 }

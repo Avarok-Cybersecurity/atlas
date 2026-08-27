@@ -11,6 +11,7 @@ mod bench_resolve;
 pub mod bench_run;
 mod bench_selfstart;
 pub(crate) mod flag_values;
+pub(crate) mod manifest;
 mod serve_args;
 mod validate;
 pub use bench_args::BenchmarkArgs;
@@ -42,6 +43,15 @@ pub enum Command {
     Serve(ServeArgs),
     /// Run and inspect the benchmark suite, without the dashboard.
     Benchmark(BenchmarkArgs),
+    /// Print the serve flag surface as JSON.
+    ///
+    /// Hidden because it is a build tool, not part of the supported CLI: it
+    /// exists so downstream tooling can be GENERATED from clap rather than
+    /// transcribed from it. `ServeArgs` still has no `Serialize` derive and
+    /// this does not promise that any flag keeps its name — a rename shows up
+    /// as a diff in whatever consumes the output.
+    #[command(hide = true)]
+    DumpServeOptions,
 }
 
 #[cfg(test)]

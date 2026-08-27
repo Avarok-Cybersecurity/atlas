@@ -186,10 +186,35 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_command_reports_stderr_not_just_the_code() {
-        let err = run(Path::new("sh"), &["-c", "echo boom >&2; exit 3"], None)
+        let script =
+            "i=1; while [ $i -le 14 ]; do printf 'line-%02d\\n' $i >&2; i=$((i + 1)); done; exit 3";
+        let err = run(Path::new("sh"), &["-c", script], None)
             .await
             .unwrap_err()
             .to_string();
-        assert!(err.contains("boom"), "{err}");
+        assert!(err.contains("failed (exit status: 3)"), "{err}");
+        assert!(!err.contains("line-01\n"), "tail excludes line 1: {err}");
+        assert!(!err.contains("line-02\n"), "tail excludes line 2: {err}");
+        assert!(err.contains("line-03\n"), "tail begins at line 3: {err}");
+        assert!(err.ends_with("line-14"), "tail preserves order: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_command_captures_both_streams_and_honors_cwd() {
+        let dir = std::env::temp_dir().join(format!("atlas-python-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let out = run(
+            Path::new("sh"),
+            &["-c", "pwd; printf warning >&2"],
+            Some(&dir),
+        )
+        .await
+        .expect("runs");
+        assert_eq!(
+            PathBuf::from(out.stdout.trim()),
+            dir.canonicalize().expect("canonical scratch")
+        );
+        assert_eq!(out.stderr, "warning");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

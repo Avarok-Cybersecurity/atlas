@@ -82,6 +82,19 @@ async fn main() -> Result<()> {
     // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
     // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
+
+    // Answered before anything else initialises. This prints a document and
+    // exits: no subscriber, no TUI, no GPU. A dashboard would take the
+    // terminal and garble the only output the caller wants.
+    if matches!(cli.command, Command::DumpServeOptions) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&cli::manifest::build())
+                .expect("the manifest is plain data and always serialises")
+        );
+        return Ok(());
+    }
+
     let no_tui = match &cli.command {
         // `--check-kernels` is a script's entry point too: it prints a report
         // and a JSON line on stdout and exits, so a dashboard would take the
@@ -90,6 +103,8 @@ async fn main() -> Result<()> {
         // The benchmark subcommand is a script's entry point: always plain, so
         // nothing here reaches `tui::start` or takes the terminal.
         Command::Benchmark(_) => true,
+        // Handled above; it never reaches here.
+        Command::DumpServeOptions => true,
     };
 
     let tui_channels = if tui::plain_mode(no_tui) {
@@ -116,6 +131,10 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
     tui::shutdown::arm_startup_escape(shutdown_tx);
     let result = match cli.command {
+        // Returned above, before anything initialised. Kept as an explicit arm
+        // rather than a wildcard so a future subcommand cannot land here by
+        // accident and silently do nothing.
+        Command::DumpServeOptions => unreachable!("handled before initialisation"),
         Command::Benchmark(args) => {
             // No model load, so none of the startup-escape plumbing below
             // applies — `dispatch` installs its own Ctrl-C handling. Drop the

@@ -37,6 +37,17 @@ pub(crate) const MTP_META_HEADER_BYTES: usize = 256;
 /// allocation instead and passes that region's stride as `region_bytes`.
 pub(crate) const MTP_META_OFFSET: usize = 49152;
 
+fn mtp_meta_len(block_entries: usize) -> Result<usize> {
+    block_entries
+        .checked_mul(4)
+        .and_then(|bt_bytes| MTP_META_HEADER_BYTES.checked_add(bt_bytes))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "MTP attention metadata exceeds meta stride: byte size overflows for a {block_entries}-entry block table"
+            )
+        })
+}
+
 /// Pack one MTP attention-metadata slab, refusing up front to build one that
 /// would not fit `region_bytes`.
 ///
@@ -58,8 +69,7 @@ pub(crate) fn pack_mtp_attn_meta(
     block_table: &[u32],
     region_bytes: usize,
 ) -> Result<Vec<u8>> {
-    let bt_bytes = block_table.len() * 4;
-    let need = MTP_META_HEADER_BYTES + bt_bytes;
+    let need = mtp_meta_len(block_table.len())?;
     // ★ The phrase "exceeds meta stride" is LOAD-BEARING, not decoration:
     // `scheduler/mtp_bootstrap_step.rs` matches it (`msg.contains`) to demote
     // this one overflow to debug while every other propose failure stays at
@@ -135,7 +145,13 @@ mod tests {
     /// a short buffer whose scalar writes would panic on the slice index.
     #[test]
     fn refuses_a_region_too_small_for_the_header() {
-        assert!(pack_mtp_attn_meta(0, 0, 1, &[], 64).is_err());
+        assert!(pack_mtp_attn_meta(0, 0, 1, &[], MTP_META_HEADER_BYTES - 1).is_err());
         assert!(pack_mtp_attn_meta(0, 0, 1, &[], MTP_META_HEADER_BYTES).is_ok());
+    }
+
+    #[test]
+    fn refuses_an_unrepresentable_block_table_length() {
+        let err = mtp_meta_len(usize::MAX).unwrap_err();
+        assert!(err.to_string().contains("exceeds meta stride"), "{err}");
     }
 }

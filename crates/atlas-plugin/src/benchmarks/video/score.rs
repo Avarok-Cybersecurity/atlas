@@ -84,7 +84,7 @@ pub fn colors_in_order(reply: &str, palette: &[&str]) -> Vec<String> {
     let lower = reply.to_lowercase();
     let mut hits: Vec<(usize, String)> = Vec::new();
     for c in palette {
-        if let Some(at) = lower.find(c) {
+        if let Some(at) = crate::benchmarks::first_standalone_term(&lower, c) {
             hits.push((at, (*c).to_string()));
         }
     }
@@ -98,21 +98,30 @@ pub fn order_matches(reply: &str, want: &[&str], palette: &[&str]) -> bool {
     got.len() == want.len() && got.iter().zip(want).all(|(g, w)| g == w)
 }
 
-/// Legs that produced an actual reading — the denominator that says whether
-/// the run measured anything at all.
+/// Legs that were attempted and produced a pass/fail classification. A
+/// deployment skip is not asserted; a request or decode error is a failed
+/// assertion and must not masquerade as an all-skipped run.
 pub fn asserted(order: &[OrderCell], counts: &[CountCell]) -> usize {
     order
         .iter()
         .filter(|c| {
             matches!(
                 c,
-                OrderCell::Match { .. } | OrderCell::WrongOrder { .. } | OrderCell::NotSeen { .. }
+                OrderCell::Match { .. }
+                    | OrderCell::WrongOrder { .. }
+                    | OrderCell::NotSeen { .. }
+                    | OrderCell::Error { .. }
             )
         })
         .count()
         + counts
             .iter()
-            .filter(|c| matches!(c, CountCell::Match { .. } | CountCell::Mismatch { .. }))
+            .filter(|c| {
+                matches!(
+                    c,
+                    CountCell::Match { .. } | CountCell::Mismatch { .. } | CountCell::Error { .. }
+                )
+            })
             .count()
 }
 

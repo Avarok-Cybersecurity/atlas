@@ -54,7 +54,7 @@ pub fn table(plan: &Plan, results: &[RoundResult]) -> ResultTable {
         let found = results.iter().find(|r| r.label == label);
         match found {
             Some(r) => t.push(result_row(&label, r)),
-            None => t.push(skipped_row(&label, "no result — did not run")),
+            None => t.push(missing_result_row(&label)),
         }
     }
     t
@@ -64,6 +64,16 @@ fn skipped_row(label: &str, why: &str) -> Vec<Cell> {
     let mut row = vec![Cell::new(label)];
     row.extend((0..6).map(|_| Cell::styled("—", CellStyle::Dim)));
     row.push(Cell::styled(format!("SKIP · {why}"), CellStyle::Dim));
+    row
+}
+
+fn missing_result_row(label: &str) -> Vec<Cell> {
+    let mut row = vec![Cell::new(label)];
+    row.extend((0..6).map(|_| Cell::styled("—", CellStyle::Dim)));
+    row.push(Cell::styled(
+        "FAIL · no result — did not run",
+        CellStyle::Bad,
+    ));
     row
 }
 

@@ -182,6 +182,29 @@ fn section_count() -> usize {
         .count()
 }
 
+fn contains_token(text: &str, expected: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric())
+        .any(|token| token.eq_ignore_ascii_case(expected))
+}
+
+fn has_number_prefix(line: &str, number: usize) -> bool {
+    line.strip_prefix(&number.to_string())
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|c| c.is_whitespace() || matches!(c, '.' | ')' | ':'))
+}
+
+fn contains_in_order(text: &str, phrases: &[&str]) -> bool {
+    let text = text.to_lowercase();
+    let mut cursor = 0;
+    phrases.iter().all(|phrase| {
+        let Some(found) = text[cursor..].find(phrase) else {
+            return false;
+        };
+        cursor += found + phrase.len();
+        true
+    })
+}
+
 /// Semantic anchors on the REFERENCE round. Every violation found, or empty.
 ///
 /// The comparison in `compare.rs` is purely relative: replays are held to
@@ -211,12 +234,17 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
         return violations;
     }
     for (i, t) in reference.iter().enumerate() {
-        if t.finish_reason.as_deref() == Some("length") {
-            violations.push(format!(
+        match t.finish_reason.as_deref() {
+            Some("stop") => {}
+            Some("length") => violations.push(format!(
                 "turn {}: reference hit the token budget (finish_reason=length) — a \
                  truncated reference cannot anchor the collapse ratios",
                 i + 1
-            ));
+            )),
+            other => violations.push(format!(
+                "turn {}: reference did not finish normally (finish_reason={other:?})",
+                i + 1
+            )),
         }
     }
     let t1 = &reference[0].text;
@@ -231,10 +259,10 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     ];
     let stripped = t1.replace("7741-C", "");
-    let has_digit = stripped.contains(&sections.to_string());
+    let has_digit = contains_token(&stripped, &sections.to_string());
     let has_word = words
         .get(sections)
-        .is_some_and(|w| stripped.to_lowercase().contains(w));
+        .is_some_and(|word| contains_token(&stripped, word));
     if !has_digit && !has_word {
         violations.push(format!(
             "turn 1: does not state the document's section count ({sections})"
@@ -253,8 +281,7 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
         ));
     } else {
         for (i, line) in lines.iter().enumerate() {
-            let number = (i + 1).to_string();
-            if !line.starts_with(&number) {
+            if !has_number_prefix(line, i + 1) {
                 violations.push(format!(
                     "turn 2: line {} does not start with its number: {:?}",
                     i + 1,
@@ -262,6 +289,62 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
                 ));
             }
         }
+    }
+    let t3 = reference[2].text.to_lowercase();
+    let t3_sentences = t3
+        .split_terminator(['.', '!', '?'])
+        .filter(|sentence| !sentence.trim().is_empty())
+        .count();
+    // Each anchor named once, and used both to decide and to report. The
+    // message used to lump all five under "does not preserve Section 4 in
+    // exactly two sentences", so a field-order failure and a sentence-count
+    // failure read identically.
+    let t3_fields = contains_in_order(
+        &t3,
+        &[
+            "batch id",
+            "sequence number",
+            "node id",
+            "timestamp",
+            "payload length",
+        ],
+    );
+    // Stemmed, like `recompute` and `quarantin` beside it. The literal
+    // "excludes payload" cannot match the document this reference is
+    // rewriting: Section 4 says "The checksum excludes the payload itself",
+    // and the definite article sits between the two words. A model quoting the
+    // source faithfully — which at temperature 0 is exactly what it does —
+    // failed an anchor that no wording in the document, and nothing the prompt
+    // asked for, could satisfy.
+    let t3_exclusion = t3.contains("exclud") && t3.contains("payload");
+    let t3_recompute = t3.contains("recompute");
+    let t3_quarantine = t3.contains("quarantin");
+    if t3_sentences != 2 || !t3_fields || !t3_exclusion || !t3_recompute || !t3_quarantine {
+        violations.push(format!(
+            "turn 3: Section 4 rewrite failed an anchor (sentences={t3_sentences}, \
+             fields_in_order={t3_fields}, exclusion={t3_exclusion}, \
+             recompute={t3_recompute}, quarantine={t3_quarantine})"
+        ));
+    }
+    let t4 = reference[3].text.to_lowercase();
+    if !contains_in_order(
+        &t4,
+        &[
+            "batch id",
+            "sequence number",
+            "node id",
+            "timestamp",
+            "payload length",
+        ],
+        // Stemmed for the same reason as turn 3: the document says "excludes",
+        // and "excluded" only matches a passive rewording the prompt never asked
+        // for. `payload` is still required independently on the next line.
+    ) || !t4.contains("exclud")
+        || !t4.contains("payload")
+        || !t4.contains("recompute")
+        || !t4.contains("quarantin")
+    {
+        violations.push("turn 4: does not answer every checksum question".into());
     }
     violations
 }

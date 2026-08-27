@@ -260,6 +260,7 @@ impl Benchmark for SsmPoison {
         self.rounds = values.usize("rounds")?;
         self.max_tokens = values.usize("max_tokens")?;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.probed = false;
         self.phase = Phase::Baseline;
         self.reference.clear();
         self.replays.clear();

@@ -158,3 +158,74 @@ fn load_dir_roundtrip() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn rejects_tensor_rank_that_disagrees_with_config() {
+    let dir = std::env::temp_dir().join(format!("nllb_lora_rank_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("adapter_config.json"),
+        r#"{"r":4,"lora_alpha":4.0,"target_modules":["q_proj"]}"#,
+    )
+    .unwrap();
+
+    let a = vec![0.1f32; 2 * 3];
+    let b = vec![0.2f32; 2 * 2];
+    let (a_shape, a_bytes) = f32_view(vec![2, 3], &a);
+    let (b_shape, b_bytes) = f32_view(vec![2, 2], &b);
+    let tensors = vec![
+        (
+            "base_model.model.model.encoder.layers.0.self_attn.q_proj.lora_A.weight",
+            TensorView::new(Dtype::F32, a_shape, &a_bytes).unwrap(),
+        ),
+        (
+            "base_model.model.model.encoder.layers.0.self_attn.q_proj.lora_B.weight",
+            TensorView::new(Dtype::F32, b_shape, &b_bytes).unwrap(),
+        ),
+    ];
+    let st = safetensors::serialize(tensors, None).unwrap();
+    std::fs::write(dir.join("adapter_model.safetensors"), st).unwrap();
+
+    let result = LoraSet::load_dir(&dir);
+    std::fs::remove_dir_all(&dir).ok();
+    let error = result.err().expect("rank mismatch must fail loading");
+    assert!(
+        format!("{error:#}").contains("config rank 4 != tensor rank 2"),
+        "got: {error:#}"
+    );
+}
+
+#[test]
+fn load_dir_uses_rslora_sqrt_rank_scale() {
+    let dir = std::env::temp_dir().join(format!("nllb_rslora_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("adapter_config.json"),
+        r#"{"r":4,"lora_alpha":8.0,"use_rslora":true,"target_modules":["q_proj"]}"#,
+    )
+    .unwrap();
+
+    let module = "model.encoder.layers.0.self_attn.q_proj";
+    let a = vec![1.0f32; 4 * 3];
+    let b = vec![1.0f32; 4];
+    let (a_shape, a_bytes) = f32_view(vec![4, 3], &a);
+    let (b_shape, b_bytes) = f32_view(vec![1, 4], &b);
+    let tensors = vec![
+        (
+            format!("base_model.model.{module}.lora_A.weight"),
+            TensorView::new(Dtype::F32, a_shape, &a_bytes).unwrap(),
+        ),
+        (
+            format!("base_model.model.{module}.lora_B.weight"),
+            TensorView::new(Dtype::F32, b_shape, &b_bytes).unwrap(),
+        ),
+    ];
+    let st = safetensors::serialize(tensors, None).unwrap();
+    std::fs::write(dir.join("adapter_model.safetensors"), st).unwrap();
+
+    let set = LoraSet::load_dir(&dir).unwrap();
+    let delta = set.delta(module, &[1.0, 0.0, 0.0], 1).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(delta, vec![16.0]);
+}
