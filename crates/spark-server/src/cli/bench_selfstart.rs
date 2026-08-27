@@ -176,7 +176,9 @@ pub async fn serve_for(
         .with_context(|| {
             format!(
                 "recipe {recipe_id:?} is not in the local index ({} cached). The index is read \
-                 from {}/atlas-recipes/index.json; open the TUI Library once to populate it.",
+                 from {}/atlas-recipes/index.json. Populate it with:\n    spark sync-recipes\n\
+                 (this used to say \"open the TUI Library once\", which a CI runner, a \
+                 container, or a machine reached over ssh cannot do.)",
                 index.recipes.len(),
                 store.root().display()
             )

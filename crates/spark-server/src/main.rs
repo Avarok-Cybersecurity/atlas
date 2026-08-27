@@ -95,6 +95,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Same treatment as `DumpServeOptions`: it talks to the network and prints
+    // a line. No subscriber, no TUI, no GPU — and no reason to initialise a
+    // dashboard for a command whose whole output is two lines of text.
+    if matches!(cli.command, Command::SyncRecipes) {
+        return cli::sync_recipes::run();
+    }
+
     let no_tui = match &cli.command {
         // `--check-kernels` is a script's entry point too: it prints a report
         // and a JSON line on stdout and exits, so a dashboard would take the
@@ -104,7 +111,7 @@ async fn main() -> Result<()> {
         // nothing here reaches `tui::start` or takes the terminal.
         Command::Benchmark(_) => true,
         // Handled above; it never reaches here.
-        Command::DumpServeOptions => true,
+        Command::DumpServeOptions | Command::SyncRecipes => true,
     };
 
     let tui_channels = if tui::plain_mode(no_tui) {
@@ -134,7 +141,9 @@ async fn main() -> Result<()> {
         // Returned above, before anything initialised. Kept as an explicit arm
         // rather than a wildcard so a future subcommand cannot land here by
         // accident and silently do nothing.
-        Command::DumpServeOptions => unreachable!("handled before initialisation"),
+        Command::DumpServeOptions | Command::SyncRecipes => {
+            unreachable!("handled before initialisation")
+        }
         Command::Benchmark(args) => {
             // No model load, so none of the startup-escape plumbing below
             // applies — `dispatch` installs its own Ctrl-C handling. Drop the
