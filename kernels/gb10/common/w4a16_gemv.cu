@@ -767,6 +767,572 @@ extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch8(
     w4a16_gemv_batchm_impl<8>(A, B_packed, B_scale, scale2, C, M, N, K);
 }
 
+// ── Software-pipelined batchm (weight prefetch) ─────────────────────────
+// provenance-id: 526f6e616c6420522e205374657369616b
+//
+// Identical math to `w4a16_gemv_batchm_impl`: same virtual-lane chunk
+// order, same per-chunk FMA sequence, same pair-fold + reduction tree, so
+// outputs are BIT-IDENTICAL by construction (proven by batchm_bench gate 4,
+// never assumed). The only change is scheduling: the NEXT chunk's 8-byte
+// packed weight + scale byte are loaded BEFORE the current chunk's FMA
+// work, overlapping the weight stream's DRAM latency with compute.
+//
+// Motivation (nsys node-trace 2026-08-19, DFlash2 M=8 verify): the
+// shallow-K legs (K=5120 — gate/up, GDN qkvz, lm_head) run at ~147 GB/s
+// while the deep-K down_proj leg runs 204 GB/s in the SAME kernel. At
+// K=5120 each thread walks only ~2-3 chunks per phase, so the unpipelined
+// loop exposes nearly a full DRAM latency per chunk; deep K amortizes it.
+template <int MAX_M>
+__device__ __forceinline__ void w4a16_gemv_batchm_impl_pf(
+    const __nv_bfloat16* __restrict__ A,         // [M, K]
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,    // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [M, N]
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
+
+    __shared__ float s_lut[16];
+    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
+    __syncthreads();
+
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    float acc[MAX_M];
+    __shared__ float s_vl[MAX_M][N_PER_BLOCK][2 * WARP_SIZE];
+
+    #pragma unroll 1
+    for (unsigned int phase = 0; phase < 2u; phase++) {
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
+
+        // Prime the pipeline: first chunk's weight bytes in flight before
+        // the loop body. Same kk sequence as the unpipelined body.
+        unsigned int kk = lane + phase * threads_per_out;
+        unsigned long long packed8 = 0;
+        unsigned char scale_byte = 0;
+        if (kk < K16) {
+            packed8 =
+                *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + kk * 8);
+            scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
+        }
+
+        while (kk < K16) {
+            // Issue the NEXT chunk's loads before touching this chunk's
+            // bytes — this is the entire diff vs the unpipelined body.
+            const unsigned int kn = kk + threads_per_out * 2u;
+            unsigned long long packed8_n = 0;
+            unsigned char scale_byte_n = 0;
+            if (kn < K16) {
+                packed8_n = *(const unsigned long long*)(B_packed +
+                                                         (unsigned long long)n * half_K + kn * 8);
+                scale_byte_n = B_scale[(unsigned long long)n * num_groups + kn];
+            }
+
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            float scale = scl_fp8(scale_byte) * scale2;
+#else
+            float scale = (float)fp8 * scale2;
+#endif
+            float wl[16];
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                wl[b * 2]     = s_lut[byte_val & 0xF];   // W[2j]   <-> act 2j
+                wl[b * 2 + 1] = s_lut[byte_val >> 4];    // W[2j+1] <-> act 2j+1
+            }
+
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                const __nv_bfloat16* At = A + (unsigned long long)t * K;
+                uint4 a_lo = ((const uint4*)At)[kk * 2];
+                uint4 a_hi = ((const uint4*)At)[kk * 2 + 1];
+                const unsigned int ar[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+                // TWO separate fmaf per byte — the M=1 kernel's exact order.
+                float part = 0.0f;
+                #pragma unroll
+                for (int b = 0; b < 8; b++) {
+                    float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&ar[b]);
+                    part = fmaf(af.x, wl[b * 2], part);
+                    part = fmaf(af.y, wl[b * 2 + 1], part);
+                }
+                acc[t] = fmaf(scale, part, acc[t]);
+            }
+
+            kk = kn;
+            packed8 = packed8_n;
+            scale_byte = scale_byte_n;
+        }
+
+        // Pair-fold + virtual-lane landing: verbatim from the base impl.
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) {
+            if ((unsigned int)t >= M) continue;
+            const float v = acc[t] + __shfl_xor_sync(0xFFFFFFFF, acc[t], 1);
+            if ((lane & 1u) == 0u) {
+                s_vl[t][local_out][phase * WARP_SIZE + (lane >> 1)] = v;
+            }
+        }
+    }
+    __syncthreads();
+
+    __shared__ float smem[MAX_M][N_PER_BLOCK * 2];  // 2 warps/output, per row
+    const unsigned int warp_in_out = lane / WARP_SIZE;
+    #pragma unroll
+    for (int t = 0; t < MAX_M; t++) {
+        if ((unsigned int)t >= M) continue;
+        float a = s_vl[t][local_out][lane];
+        #pragma unroll
+        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+            a += __shfl_down_sync(0xFFFFFFFF, a, offset);
+        }
+        if (lane % WARP_SIZE == 0) smem[t][local_out * 2 + warp_in_out] = a;
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) {
+            if ((unsigned int)t >= M) continue;
+            float r = smem[t][local_out * 2] + smem[t][local_out * 2 + 1];
+            C[(unsigned long long)t * N + n] = __float2bfloat16(r);
+        }
+    }
+}
+
+// Pipelined batch8, pinned like the shipping batch8 (48 regs / 5 CTA per
+// SM). The prefetch registers may interact with the pin — the _free twin
+// below lets batchm_bench price that interaction instead of guessing.
+extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch8_pf(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_pf<8>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+// Pipelined batch8 with free register allocation (no __launch_bounds__).
+extern "C" __global__ void w4a16_gemv_batch8_pf_free(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_pf<8>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+// ── Activation row-ahead prefetch (lever-1 v2) ──────────────────────────
+// provenance-id: 526f6e616c6420522e205374657369616b
+//
+// batchm_bench 2026-08-19 killed the weight-prefetch hypothesis (wash at
+// M=8) and exposed the real scaling law: efficiency degrades with M, not
+// K — 241 GB/s at M=1 down to 142 at M=8 on the same shape. Each row adds
+// two DEPENDENT activation loads per chunk (a_lo/a_hi -> immediate FMAs);
+// at K=5120 a thread walks only ~2-3 chunks per phase, so that L2 latency
+// never gets hidden. Deep-K legs (down_proj, 8.5 chunks/thread) hide it,
+// which is why they measured 204 GB/s live.
+//
+// Fix: while row t's FMA chain runs, issue row t+1's a_lo/a_hi loads
+// (+2 uint4 registers); row 0's loads are issued BEFORE the 16-lookup LUT
+// expansion so they overlap it. Math order is UNTOUCHED — same chunk walk,
+// same per-row FMA chain, same reductions — so bit-identity vs batch8 is
+// by construction, and batchm_bench gate 4 still proves it, never assumes.
+// `WPF` folds the weight-prefetch pipeline from impl_pf on top (pf3 arm).
+template <int MAX_M, bool WPF>
+__device__ __forceinline__ void w4a16_gemv_batchm_impl_apf(
+    const __nv_bfloat16* __restrict__ A,         // [M, K]
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,    // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [M, N]
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
+
+    __shared__ float s_lut[16];
+    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
+    __syncthreads();
+
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    float acc[MAX_M];
+    __shared__ float s_vl[MAX_M][N_PER_BLOCK][2 * WARP_SIZE];
+
+    #pragma unroll 1
+    for (unsigned int phase = 0; phase < 2u; phase++) {
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
+
+        unsigned long long packed8 = 0;
+        unsigned char scale_byte = 0;
+        if (WPF) {
+            const unsigned int kk0 = lane + phase * threads_per_out;
+            if (kk0 < K16) {
+                packed8 = *(const unsigned long long*)(B_packed +
+                                                       (unsigned long long)n * half_K + kk0 * 8);
+                scale_byte = B_scale[(unsigned long long)n * num_groups + kk0];
+            }
+        }
+
+        for (unsigned int kk = lane + phase * threads_per_out; kk < K16;
+             kk += threads_per_out * 2u) {
+            if (WPF) {
+                // rotate happens at loop tail; nothing to do at head
+            } else {
+                packed8 = *(const unsigned long long*)(B_packed +
+                                                       (unsigned long long)n * half_K + kk * 8);
+                scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
+            }
+            // Row 0's activation loads in flight BEFORE the LUT expansion
+            // (M >= 1 always, so row 0 is always live).
+            uint4 a_lo_c = ((const uint4*)A)[kk * 2];
+            uint4 a_hi_c = ((const uint4*)A)[kk * 2 + 1];
+
+            unsigned long long packed8_n = 0;
+            unsigned char scale_byte_n = 0;
+            if (WPF) {
+                const unsigned int kn = kk + threads_per_out * 2u;
+                if (kn < K16) {
+                    packed8_n = *(const unsigned long long*)(B_packed +
+                                                             (unsigned long long)n * half_K +
+                                                             kn * 8);
+                    scale_byte_n = B_scale[(unsigned long long)n * num_groups + kn];
+                }
+            }
+
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            float scale = scl_fp8(scale_byte) * scale2;
+#else
+            float scale = (float)fp8 * scale2;
+#endif
+            float wl[16];
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                wl[b * 2]     = s_lut[byte_val & 0xF];   // W[2j]   <-> act 2j
+                wl[b * 2 + 1] = s_lut[byte_val >> 4];    // W[2j+1] <-> act 2j+1
+            }
+
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                // Issue row t+1's loads before row t's FMA chain consumes
+                // the current registers — the entire point of this variant.
+                uint4 a_lo_n = a_lo_c;
+                uint4 a_hi_n = a_hi_c;
+                if (t + 1 < MAX_M && (unsigned int)(t + 1) < M) {
+                    const __nv_bfloat16* At_n = A + (unsigned long long)(t + 1) * K;
+                    a_lo_n = ((const uint4*)At_n)[kk * 2];
+                    a_hi_n = ((const uint4*)At_n)[kk * 2 + 1];
+                }
+                const unsigned int ar[8] = {a_lo_c.x, a_lo_c.y, a_lo_c.z, a_lo_c.w,
+                                            a_hi_c.x, a_hi_c.y, a_hi_c.z, a_hi_c.w};
+                // TWO separate fmaf per byte — the M=1 kernel's exact order.
+                float part = 0.0f;
+                #pragma unroll
+                for (int b = 0; b < 8; b++) {
+                    float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&ar[b]);
+                    part = fmaf(af.x, wl[b * 2], part);
+                    part = fmaf(af.y, wl[b * 2 + 1], part);
+                }
+                acc[t] = fmaf(scale, part, acc[t]);
+                a_lo_c = a_lo_n;
+                a_hi_c = a_hi_n;
+            }
+
+            if (WPF) {
+                packed8 = packed8_n;
+                scale_byte = scale_byte_n;
+            }
+        }
+
+        // Pair-fold + virtual-lane landing: verbatim from the base impl.
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) {
+            if ((unsigned int)t >= M) continue;
+            const float v = acc[t] + __shfl_xor_sync(0xFFFFFFFF, acc[t], 1);
+            if ((lane & 1u) == 0u) {
+                s_vl[t][local_out][phase * WARP_SIZE + (lane >> 1)] = v;
+            }
+        }
+    }
+    __syncthreads();
+
+    __shared__ float smem[MAX_M][N_PER_BLOCK * 2];  // 2 warps/output, per row
+    const unsigned int warp_in_out = lane / WARP_SIZE;
+    #pragma unroll
+    for (int t = 0; t < MAX_M; t++) {
+        if ((unsigned int)t >= M) continue;
+        float a = s_vl[t][local_out][lane];
+        #pragma unroll
+        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+            a += __shfl_down_sync(0xFFFFFFFF, a, offset);
+        }
+        if (lane % WARP_SIZE == 0) smem[t][local_out * 2 + warp_in_out] = a;
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) {
+            if ((unsigned int)t >= M) continue;
+            float r = smem[t][local_out * 2] + smem[t][local_out * 2 + 1];
+            C[(unsigned long long)t * N + n] = __float2bfloat16(r);
+        }
+    }
+}
+
+// ── Register-tiled batchm (lever-1 v3: T outputs per thread) ────────────
+// provenance-id: 526f6e616c6420522e205374657369616b
+//
+// The M-sweep verdict (batchm_bench 2026-08-19, clean runs): near-peak at
+// M=1 (250 GB/s), monotonic decay to ~143 at M=8; batch16-vs-batch8 at
+// equal M shows template footprint alone costs bandwidth; both prefetch
+// families were washes. The remaining suspects — L2 activation traffic
+// (256 B per (chunk,row) re-read per output), activation load-instruction
+// count, and single-dependent-FMA-chain ILP — are ALL divided by T when
+// each thread computes T adjacent output rows from ONE set of activation
+// registers. Layout: N_PER_BLOCK lane-groups of 64 as before, each group
+// covering T ADJACENT n rows; grid shrinks to ceil(N / (N_PER_BLOCK*T)).
+// Each output row\'s chunk walk, per-chunk FMA sequence, pair-fold and
+// reduction tree are IDENTICAL to `w4a16_gemv_batchm_impl` — bit-exact by
+// construction, and batchm_bench gate 4 proves it, never assumes it.
+template <int MAX_M, int T>
+__device__ __forceinline__ void w4a16_gemv_batchm_impl_rt(
+    const __nv_bfloat16* __restrict__ A,         // [M, K]
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,    // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [M, N]
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    // This lane group covers T ADJACENT output rows n0 .. n0+T-1.
+    const unsigned int n0 = (blockIdx.x * N_PER_BLOCK + local_out) * T;
+
+    __shared__ float s_lut[16];
+    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
+    __syncthreads();
+
+    if (n0 >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    float acc[T][MAX_M];
+    // Virtual-lane slab per (row, group, OUTPUT) — the T dimension is what
+    // the first draft of this kernel missed.
+    __shared__ float s_vl[MAX_M][N_PER_BLOCK][T][2 * WARP_SIZE];
+
+    #pragma unroll 1
+    for (unsigned int phase = 0; phase < 2u; phase++) {
+        #pragma unroll
+        for (int o = 0; o < T; o++)
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) acc[o][t] = 0.0f;
+
+        for (unsigned int kk = lane + phase * threads_per_out; kk < K16;
+             kk += threads_per_out * 2u) {
+            // T weight chunks (one per adjacent output row) + T scales.
+            unsigned long long packed8[T];
+            float scale[T];
+            #pragma unroll
+            for (int o = 0; o < T; o++) {
+                const unsigned long long n = n0 + o;
+                if (n < N) {
+                    packed8[o] = *(const unsigned long long*)(B_packed + n * half_K + kk * 8);
+                    const unsigned char sb = B_scale[n * num_groups + kk];
+                    __nv_fp8_e4m3 fp8;
+                    *(unsigned char*)&fp8 = sb;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+                    scale[o] = scl_fp8(sb) * scale2;
+#else
+                    scale[o] = (float)fp8 * scale2;
+#endif
+                } else {
+                    packed8[o] = 0ull;
+                    scale[o] = 0.0f;
+                }
+            }
+            float wl[T][16];
+            #pragma unroll
+            for (int o = 0; o < T; o++) {
+                #pragma unroll
+                for (int b = 0; b < 8; b++) {
+                    unsigned char byte_val = (unsigned char)(packed8[o] >> (b * 8));
+                    wl[o][b * 2]     = s_lut[byte_val & 0xF];
+                    wl[o][b * 2 + 1] = s_lut[byte_val >> 4];
+                }
+            }
+
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                const __nv_bfloat16* At = A + (unsigned long long)t * K;
+                // ONE activation load per (chunk, row) feeding T chains.
+                uint4 a_lo = ((const uint4*)At)[kk * 2];
+                uint4 a_hi = ((const uint4*)At)[kk * 2 + 1];
+                const unsigned int ar[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+                #pragma unroll
+                for (int o = 0; o < T; o++) {
+                    // Per-output chain: the M=1 kernel\'s exact FMA order.
+                    float part = 0.0f;
+                    #pragma unroll
+                    for (int b = 0; b < 8; b++) {
+                        float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&ar[b]);
+                        part = fmaf(af.x, wl[o][b * 2], part);
+                        part = fmaf(af.y, wl[o][b * 2 + 1], part);
+                    }
+                    acc[o][t] = fmaf(scale[o], part, acc[o][t]);
+                }
+            }
+        }
+
+        // Pair-fold + virtual-lane landing, per output row — same tree.
+        #pragma unroll
+        for (int o = 0; o < T; o++) {
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                const float v = acc[o][t] + __shfl_xor_sync(0xFFFFFFFF, acc[o][t], 1);
+                if ((lane & 1u) == 0u) {
+                    s_vl[t][local_out][o][phase * WARP_SIZE + (lane >> 1)] = v;
+                }
+            }
+        }
+    }
+    __syncthreads();
+
+    __shared__ float smem[MAX_M][N_PER_BLOCK * T * 2];  // 2 warps per (out,o)
+    const unsigned int warp_in_out = lane / WARP_SIZE;
+    #pragma unroll
+    for (int o = 0; o < T; o++) {
+        #pragma unroll
+        for (int t = 0; t < MAX_M; t++) {
+            if ((unsigned int)t >= M) continue;
+            float a = s_vl[t][local_out][o][lane];
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+                a += __shfl_down_sync(0xFFFFFFFF, a, offset);
+            }
+            if (lane % WARP_SIZE == 0)
+                smem[t][(local_out * T + o) * 2 + warp_in_out] = a;
+        }
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        #pragma unroll
+        for (int o = 0; o < T; o++) {
+            const unsigned int n = n0 + o;
+            if (n >= N) continue;
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                float r = smem[t][(local_out * T + o) * 2]
+                        + smem[t][(local_out * T + o) * 2 + 1];
+                C[(unsigned long long)t * N + n] = __float2bfloat16(r);
+            }
+        }
+    }
+}
+
+// Register-tiled batch8, T=2 outputs/thread. Grid: ceil(N/8).
+extern "C" __global__ void w4a16_gemv_batch8_rt2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_rt<8, 2>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+// Register-tiled batch8, T=4 outputs/thread. Grid: ceil(N/16).
+extern "C" __global__ void w4a16_gemv_batch8_rt4(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_rt<8, 4>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+// Activation row-ahead prefetch only (free register allocation).
+extern "C" __global__ void w4a16_gemv_batch8_pf2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_apf<8, false>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
+// Activation row-ahead prefetch + weight prefetch pipeline.
+extern "C" __global__ void w4a16_gemv_batch8_pf3(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl_apf<8, true>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
 // M<=16 (high-concurrency decode, n=5..16) — sibling of w8a16_gemv_batch16.
 extern "C" __global__ void w4a16_gemv_batch16(
     const __nv_bfloat16* __restrict__ A,

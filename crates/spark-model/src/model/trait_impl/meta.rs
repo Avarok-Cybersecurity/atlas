@@ -226,7 +226,7 @@ impl TransformerModel {
         self.gpu.bind_to_thread()
     }
 
-    pub(super) fn alloc_sequence_dispatch(&self) -> Result<SequenceState> {
+    pub(super) fn alloc_sequence_dispatch(&self, budget_tokens: usize) -> Result<SequenceState> {
         // Claim via the RAII guard so the slot is returned to the pool on EVERY
         // sequence-exit path (normal finish, abort/cancel, decode error,
         // swap-out failure, panic). The explicit `free_sequence`/
@@ -329,9 +329,9 @@ impl TransformerModel {
         // Double-check: explicit sync to guarantee zero is complete
         self.gpu.synchronize(self.gpu.default_stream())?;
 
-        // Allocate MTP proposer state (owns its own KV cache block table)
+        // MTP proposer state; sized to this request's reach, not --max-seq-len.
         let proposer_state = match &self.proposer {
-            Some(p) => Some(p.alloc_state(self.gpu.as_ref())?),
+            Some(p) => Some(p.alloc_state_for(self.gpu.as_ref(), budget_tokens)?),
             None => None,
         };
 

@@ -104,7 +104,9 @@ fn warn_pinned_transient_source() {
 }
 
 impl GpuBackend for AtlasCudaBackend {
+    #[track_caller]
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
+        let site = std::panic::Location::caller();
         let mut dptr: u64 = 0;
         let status = unsafe { cuMemAlloc_v2(&mut dptr, bytes) };
         if status != 0 {
@@ -118,11 +120,13 @@ impl GpuBackend for AtlasCudaBackend {
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
         }
-        self.record_alloc(DevicePtr(dptr));
+        self.record_alloc(DevicePtr(dptr), bytes, site);
         Ok(DevicePtr(dptr))
     }
 
+    #[track_caller]
     fn alloc_managed(&self, bytes: usize) -> Result<DevicePtr> {
+        let site = std::panic::Location::caller();
         let mut dptr: u64 = 0;
         const CU_MEM_ATTACH_GLOBAL: u32 = 0x1;
         let status = unsafe { cuMemAllocManaged(&mut dptr, bytes, CU_MEM_ATTACH_GLOBAL) };
@@ -132,7 +136,7 @@ impl GpuBackend for AtlasCudaBackend {
                  Check system swap space: swapon --show"
             );
         }
-        self.record_alloc(DevicePtr(dptr));
+        self.record_alloc(DevicePtr(dptr), bytes, site);
         Ok(DevicePtr(dptr))
     }
 
@@ -156,6 +160,14 @@ impl GpuBackend for AtlasCudaBackend {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
+    }
+
+    fn live_bytes(&self) -> Option<usize> {
+        Some(AtlasCudaBackend::live_bytes(self))
+    }
+
+    fn alloc_report(&self, top_n: usize, min_mb: usize) -> Option<String> {
+        Some(AtlasCudaBackend::alloc_report(self, top_n, min_mb))
     }
 
     fn sweep_unreleased(&self) -> usize {

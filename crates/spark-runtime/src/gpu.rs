@@ -86,11 +86,19 @@ pub use crate::gpu_args::pack_kernel_args;
 /// Implementations: `AtlasCudaBackend` (production), `MockGpuBackend` (tests).
 pub trait GpuBackend: Send + Sync {
     /// Allocate `bytes` of device memory.
+    ///
+    /// `#[track_caller]` so the CUDA backend's ledger records WHICH code
+    /// asked for the memory. It must stay on the trait declaration as well as
+    /// the impl: nearly every caller goes through `&dyn GpuBackend`, and
+    /// without it here the vtable would attribute every allocation in the
+    /// process to the one line inside the backend.
+    #[track_caller]
     fn alloc(&self, bytes: usize) -> Result<DevicePtr>;
 
     /// Allocate managed (unified) memory. On GB10, this allows over-subscribing
     /// physical GPU memory — Linux pages overflow to NVMe swap automatically.
     /// Managed memory is slower than device memory but avoids OOM.
+    #[track_caller]
     fn alloc_managed(&self, bytes: usize) -> Result<DevicePtr>;
 
     /// Free device memory.
@@ -109,6 +117,18 @@ pub trait GpuBackend: Send + Sync {
     /// sweep, which is honest for the mock and for Metal.
     fn sweep_unreleased(&self) -> usize {
         0
+    }
+
+    /// Live device bytes this backend has allocated and not freed, if it
+    /// tracks them. `None` for backends with no ledger (mock/CPU).
+    fn live_bytes(&self) -> Option<usize> {
+        None
+    }
+
+    /// Attribution of live device memory by allocating call site, biggest
+    /// first. `None` for backends with no ledger.
+    fn alloc_report(&self, _top_n: usize, _min_mb: usize) -> Option<String> {
+        None
     }
 
     /// Copy from host to device.

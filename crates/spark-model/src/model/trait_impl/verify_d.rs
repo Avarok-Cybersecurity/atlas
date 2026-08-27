@@ -301,8 +301,10 @@ impl TransformerModel {
                 // the WRONG token's hidden and rows 1.. are stale garbage
                 // (2026-07-09 accept-collapse root cause: EAGLE_FIX=0 under
                 // UNIFIED=1 starved this capture and poisoned drafter ctx).
+                // EAGLE_FIX default ON since the 54.5 record config
+                // (2026-08-19); `=0` is the kill switch.
                 let capture_all = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref()
-                    == Some("1")
+                    != Some("0")
                     || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1");
                 if capture_all {
                     self.try_dflash_capture_all(layer_idx, k, stream)?;

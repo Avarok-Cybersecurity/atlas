@@ -427,6 +427,15 @@ pub trait Model: Send + Sync {
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
+    /// [`Self::alloc_sequence`] told what this request can actually reach
+    /// (`prompt_len + max_tokens`). Proposer state that scales with context is
+    /// sized to THAT instead of `--max-seq-len`; see
+    /// `DraftProposer::alloc_state_for`. Defaults to the unsized form.
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        let _ = budget_tokens;
+        self.alloc_sequence()
+    }
+
     /// Copy logits from device to host buffer (for CPU-side sampling).
     ///
     /// `logits_ptr` points to `[vocab_size]` BF16 values on device.
@@ -545,6 +554,13 @@ pub trait Model: Send + Sync {
 
     /// Check if speculative decoding is available (MTP or self-speculative).
     fn has_proposer(&self) -> bool;
+    /// The installed DFlash drafter's block size γ, when one is installed.
+    /// The serve layer derives `num_drafts = γ - 1` from THIS (the head is
+    /// the SSOT — it resolved the drafter config's trained block size),
+    /// never from a CLI default that may not match the checkpoint.
+    fn dflash_gamma(&self) -> Option<usize> {
+        None
+    }
 
     /// Check if self-speculative decoding is enabled.
     fn has_self_speculative(&self) -> bool;
