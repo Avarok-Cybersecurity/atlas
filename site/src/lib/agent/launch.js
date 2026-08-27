@@ -296,10 +296,22 @@ export function mayCommit(state) {
  * @returns {object}
  */
 export function started(state, reply) {
+  const ranks = Array.isArray(reply?.ranks) ? reply.ranks : [];
+  // The same guard `previewed` and `prepared` carry, and it was missing here.
+  // `phase: 'running'` with nothing started renders neither the running panel
+  // (which needs `started.length > 0`) nor the local panel (which needs a
+  // recipe running here) — so the operator gets a screen with no commands, no
+  // error and no button, after the one action that actually spends machines.
+  if (ranks.length === 0) {
+    return failed(
+      state,
+      'The agent reported the launch started but named no machine. Nothing is known to be running.'
+    );
+  }
   return {
     ...state,
     phase: 'running',
-    started: Array.isArray(reply?.ranks) ? reply.ranks : [],
+    started: ranks,
   };
 }
 
