@@ -357,7 +357,15 @@ impl SafetensorsLoader {
     /// Check if a tensor should be skipped under EP.
     /// Skips `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
-    fn should_skip_tensor(&self, name: &str) -> bool {
+    ///
+    /// 🪤 The MTP exemption keys on a leading `mtp.` — a DeepSeek-style name.
+    /// GLM-5.3 puts its MTP head at `model.language_model.layers.45.*` with no
+    /// `mtp.` prefix, so that layer's routed experts ARE sharded on GLM. Fine
+    /// while the MTP head is out of scope; revisit before enabling it.
+    ///
+    /// `pub` so residency can be PROVEN against a real checkpoint index
+    /// without collectives (see `spark-model/tests/glm53_ep_residency.rs`).
+    pub fn should_skip_tensor(&self, name: &str) -> bool {
         // MTP head weights for a model whose loader does not build one.
         if self.skip_mtp && name.starts_with("mtp.") {
             return true;
