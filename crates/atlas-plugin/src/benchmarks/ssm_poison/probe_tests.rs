@@ -85,13 +85,13 @@ fn healthy_reference() -> Vec<Transcript> {
         ),
         turn(
             "The envelope checksum covers batch id, sequence number, node id, timestamp, then \
-              payload length in serialized order, and excludes payload. The archive tier \
+              payload length in serialized order, and excludes the payload itself. The archive tier \
               recomputes it, refuses and quarantines a mismatch, with the recomputed value \
               attached.",
         ),
         turn(
             "The checksum covers batch id, sequence number, node id, timestamp, then payload \
-              length; the payload itself is excluded; a mismatching recomputation quarantines \
+              length; it excludes the payload itself; a mismatching recomputation quarantines \
               the record with the recomputed value attached.",
         ),
     ]

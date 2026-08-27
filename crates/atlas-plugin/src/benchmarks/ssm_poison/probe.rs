@@ -295,22 +295,36 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
         .split_terminator(['.', '!', '?'])
         .filter(|sentence| !sentence.trim().is_empty())
         .count();
-    if t3_sentences != 2
-        || !contains_in_order(
-            &t3,
-            &[
-                "batch id",
-                "sequence number",
-                "node id",
-                "timestamp",
-                "payload length",
-            ],
-        )
-        || !t3.contains("excludes payload")
-        || !t3.contains("recompute")
-        || !t3.contains("quarantin")
-    {
-        violations.push("turn 3: does not preserve Section 4 in exactly two sentences".into());
+    // Each anchor named once, and used both to decide and to report. The
+    // message used to lump all five under "does not preserve Section 4 in
+    // exactly two sentences", so a field-order failure and a sentence-count
+    // failure read identically.
+    let t3_fields = contains_in_order(
+        &t3,
+        &[
+            "batch id",
+            "sequence number",
+            "node id",
+            "timestamp",
+            "payload length",
+        ],
+    );
+    // Stemmed, like `recompute` and `quarantin` beside it. The literal
+    // "excludes payload" cannot match the document this reference is
+    // rewriting: Section 4 says "The checksum excludes the payload itself",
+    // and the definite article sits between the two words. A model quoting the
+    // source faithfully — which at temperature 0 is exactly what it does —
+    // failed an anchor that no wording in the document, and nothing the prompt
+    // asked for, could satisfy.
+    let t3_exclusion = t3.contains("exclud") && t3.contains("payload");
+    let t3_recompute = t3.contains("recompute");
+    let t3_quarantine = t3.contains("quarantin");
+    if t3_sentences != 2 || !t3_fields || !t3_exclusion || !t3_recompute || !t3_quarantine {
+        violations.push(format!(
+            "turn 3: Section 4 rewrite failed an anchor (sentences={t3_sentences}, \
+             fields_in_order={t3_fields}, exclusion={t3_exclusion}, \
+             recompute={t3_recompute}, quarantine={t3_quarantine})"
+        ));
     }
     let t4 = reference[3].text.to_lowercase();
     if !contains_in_order(
@@ -322,7 +336,10 @@ pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
             "timestamp",
             "payload length",
         ],
-    ) || !t4.contains("excluded")
+        // Stemmed for the same reason as turn 3: the document says "excludes",
+        // and "excluded" only matches a passive rewording the prompt never asked
+        // for. `payload` is still required independently on the next line.
+    ) || !t4.contains("exclud")
         || !t4.contains("payload")
         || !t4.contains("recompute")
         || !t4.contains("quarantin")
