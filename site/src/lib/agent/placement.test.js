@@ -117,3 +117,27 @@ suite('how a machine is described', () => {
     expect(d).toBe('');
   });
 });
+
+test('a launchable machine with an unreported fleet runs here, it does not despair', () => {
+  // First launch on a brand-new Spark: the fleet session has not started, so
+  // `nodes` is empty. The agent this dialog is connected to has already said it
+  // can launch. Telling the operator "No machine here can run this yet" sent
+  // them off to onboard a second machine to fix a machine that was fine.
+  const d = P.decide([], { id: 'solo' }, true);
+  expect(d.kind).toBe('here');
+});
+
+test('but an unknown local capability still asks rather than assuming', () => {
+  // null means the agent has not said. Guessing "it can" would flash a
+  // launchable UI at a control-only laptop — the same mistake pointing the
+  // other way.
+  const d = P.decide([], { id: 'solo' }, null);
+  expect(d.kind).toBe('none');
+  expect(d.canOnboard).toBe(true);
+});
+
+test('a machine that has said it cannot launch is still told so plainly', () => {
+  const d = P.decide([], { id: 'solo' }, false);
+  expect(d.kind).toBe('none');
+  expect(d.reason).toMatch(/cannot run models/);
+});
