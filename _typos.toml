@@ -118,6 +118,14 @@ oints = "oints"
 # third-party identifier we call, not prose we wrote, so it is spelled the way
 # the crate spells it.
 numer = "numer"
+# `exclud` — a deliberate STEM in the ssm-poison reference anchors, matching
+# `recompute`/`quarantin` beside it. The source document says "The checksum
+# excludes the payload itself"; the anchor previously demanded the literal
+# "excludes payload" and so rejected the document's own wording, and turn 4
+# demanded "excluded" where the text says "excludes". Stemming is the fix, and
+# spelling it "exclude" here would re-break the thing it repairs — the same
+# rationale as the `paramete`/`parame` close-tag ladder above.
+exclud = "exclud"
 # `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
 # (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.
