@@ -64,7 +64,10 @@ pub(super) fn try_refresh(root: &Path, cancel: &AtomicBool) -> Result<Index> {
         // sends this down the offline path, which serves the existing cache
         // untouched. Returning `Ok` with no recipes would have replaced a good
         // cache with an empty one BEFORE the caller could refuse it.
-        bail!("{REPO}@{tree_sha} listed {} recipe file(s) but none could be fetched", paths.len());
+        bail!(
+            "{REPO}@{tree_sha} listed {} recipe file(s) but none could be fetched",
+            paths.len()
+        );
     }
 
     let mut files: BTreeMap<String, String> = BTreeMap::new();
