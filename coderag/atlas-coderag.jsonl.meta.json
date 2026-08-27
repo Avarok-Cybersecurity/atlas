@@ -1,0 +1,19 @@
+{
+  "format": "lattice-jsonl",
+  "version": 1,
+  "dim": 2048,
+  "points": 5831,
+  "files": 1942,
+  "embedded": 14,
+  "reused": 5817,
+  "model": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+  "endpoint": "https://openrouter.ai/api/v1",
+  "repo": "Avarok-Cybersecurity/atlas",
+  "commit_sha": "6cd39ba02a54af98db4454a4c078cd5a05dfed6b",
+  "generated_at": "2026-08-27T20:56:53.113Z",
+  "bytes": 286235134,
+  "gz_bytes": 98625375,
+  "sha256": "c2a10a35852aa053721374146919696c230c89a58f1c5293f7bd2af18aa82c4a",
+  "action_version": "local",
+  "lattice_version": "v0.3.3"
+}
