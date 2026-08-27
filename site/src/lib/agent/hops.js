@@ -111,11 +111,15 @@ export function provenance(node, all) {
     return `Reached through ${who}. It is not directly reachable from here, so control of it is carried by that machine.`;
   }
 
-  // Vouched but not carried: somebody claimed it exists and we can reach it
-  // ourselves. Worth saying, because nothing about it has been verified
-  // first-hand until a ceremony runs.
+  // Vouched with no route. Two different situations wear the same shape, and
+  // telling them apart is the whole value of saying anything here: either the
+  // voucher is fine and this machine is simply not reachable from here, or the
+  // voucher itself has gone quiet and that is why there is no route.
   if (node?.pairing === 'vouched' && claimer) {
     const who = claimer.name || claimer.id.slice(0, 8);
+    if (claimer.pairing === 'unreachable') {
+      return `Vouched for by ${who}, which is not answering — so this machine cannot be reached until it comes back. It has not been removed from your fleet.`;
+    }
     return `Known only because ${who} vouched for it. Nothing here has been verified first-hand — pair with it to do that.`;
   }
   return 'Reached directly from this machine.';

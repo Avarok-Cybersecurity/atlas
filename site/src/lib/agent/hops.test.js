@@ -81,3 +81,16 @@ test('vouched-but-directly-reachable is described as unverified, not as relayed'
   expect(p).toContain('vouched for it');
   expect(p).not.toContain('carried by');
 });
+
+test('a silent voucher is named as the reason there is no route', () => {
+  // The agent keeps the row with reached_via cleared when a voucher goes quiet,
+  // so this is the shape the page actually receives. Saying only "nothing has
+  // been verified first-hand" would be true and would hide the actionable part:
+  // the machine to go and check is the voucher.
+  const quiet = { ...DGX1, pairing: 'unreachable' };
+  const behind = { ...node('i'), name: 'behind', pairing: 'vouched', vouchedBy: DGX1.id };
+  const p = provenance(behind, [LOCAL, quiet, behind]);
+  expect(p).toContain('dgx1');
+  expect(p).toContain('not answering');
+  expect(p).toContain('has not been removed');
+});
