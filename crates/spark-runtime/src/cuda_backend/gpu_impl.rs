@@ -119,6 +119,17 @@ impl GpuBackend for AtlasCudaBackend {
             );
         }
         self.record_alloc(DevicePtr(dptr));
+        // Large-allocation tracing for memory attribution (GB10 unified
+        // memory: every cuMemAlloc consumes host RAM, and a runtime alloc
+        // outside the util pledge is how the box ends up in swap). Debug
+        // level so production INFO stays quiet; RUST_LOG=spark_runtime=debug
+        // turns the trail on.
+        if bytes >= 32 * 1024 * 1024 {
+            tracing::debug!(
+                "alloc {:.1} MB (device ptr {dptr:#x})",
+                bytes as f64 / (1024.0 * 1024.0)
+            );
+        }
         Ok(DevicePtr(dptr))
     }
 
@@ -452,6 +463,12 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
+        if bytes >= 32 * 1024 * 1024 {
+            tracing::debug!(
+                "alloc_host_pinned {:.1} MB",
+                bytes as f64 / (1024.0 * 1024.0)
+            );
+        }
         self.alloc_host_pinned_cu(bytes)
     }
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {

@@ -46,7 +46,11 @@ exec target/release/spark serve \
   --max-seq-len "${MAX_SEQ_LEN:-8192}" \
   --max-num-seqs "${MAX_NUM_SEQS:-4}" \
   --max-batch-size "${MAX_BATCH_SIZE:-4}" \
-  --gpu-memory-utilization "${GPU_UTIL:-0.80}" \
+  # 0.82, NOT 0.85: at 0.85 the box idles at ~8.8 GB avail and a C=4
+  # warm-restore burst costs ~8 GB of KERNEL-side (UVM) memory -- invisible
+  # in process RSS -- which spirals the box into reclaim (load 20-37,
+  # earlyoom). 0.82 leaves ~12 GB headroom; both C=4 passes measured flat.
+  --gpu-memory-utilization "${GPU_UTIL:-0.82}" \
   --fast-load-prefetch-shards \
   --enable-prefix-caching \
   --default-chat-template-kwargs "${REASONING_KWARGS:-{\"reasoning_effort\":\"low\"}}" \
