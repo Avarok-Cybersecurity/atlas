@@ -32,6 +32,13 @@ use crate::api::InferenceRequest;
 use crate::main_modules::AppState;
 use crate::main_modules::serve_phases;
 use crate::tokenizer::ChatTokenizer;
+
+/// Rank the LoRA pool pads to when `--max-lora-rank` is unset AND the rank
+/// cannot be derived (a stageable adapter may arrive at any rank). Historical
+/// fixed default; see `max_lora_rank` in `serve_args.rs` for why deriving is
+/// preferred when the resident set is known.
+const DEFAULT_MAX_LORA_RANK: usize = 64;
+
 use crate::{
     cli, conversation_store, rate_limiter, response_store, scheduler, scheduling_policy,
     session_manager,
@@ -581,6 +588,28 @@ pub(crate) fn load_model(
              TP adapter sharding is M3"
         );
     }
+    // Pool rank: what the adapters ACTUALLY need, unless the operator pinned a
+    // ceiling. Both delta stages contract at this width and the B operand is
+    // `[n_out, max_rank]`, so padding an r=8 adapter to the old fixed 64 moved
+    // 8x the bytes for identical math — measured 5392 -> 674 MiB of pool and
+    // prefill 608 -> 730 tok/s on qwen3.8-27B.
+    //
+    // A configured stageable adapter keeps the historical 64: the pool layout
+    // is frozen at startup and a peer can hand us an adapter whose rank we
+    // cannot know here, so sizing to the resident set would turn a later
+    // stage-in into a hard reject.
+    let max_lora_rank = args.max_lora_rank.unwrap_or_else(|| {
+        if !args.lora_stageable.is_empty() || !args.lora_stageable_disk.is_empty() {
+            DEFAULT_MAX_LORA_RANK
+        } else {
+            lora_states
+                .iter()
+                .map(|l| l.peft_config.r)
+                .max()
+                .unwrap_or(DEFAULT_MAX_LORA_RANK)
+                .max(1)
+        }
+    });
     let lora_args = if lora_states.is_empty() {
         None
     } else {
@@ -593,7 +622,7 @@ pub(crate) fn load_model(
                     peft: l.peft_config.clone(),
                 })
                 .collect(),
-            max_lora_rank: args.max_lora_rank,
+            max_lora_rank,
             max_loras: args.max_loras,
         })
     };
@@ -603,7 +632,7 @@ pub(crate) fn load_model(
             .map(|(s, c)| spark_model::factory::DflashBuildArgs {
                 drafter_store: s,
                 drafter_config: c.clone(),
-                gamma: Some(args.dflash_gamma),
+                gamma: args.dflash_gamma, // None → head resolves effective_block_size()
                 window_size: if args.dflash_window_size > 0 {
                     Some(args.dflash_window_size)
                 } else {
@@ -805,7 +834,13 @@ pub(crate) fn load_model(
     // proposer for γ tokens (DraftProposer::propose semantics: "up to
     // num_drafts" → drafts.len() = γ → routes to step_verify_dflash).
     let num_drafts = if args.dflash {
-        args.dflash_gamma.saturating_sub(1).max(1)
+        // γ must match what the drafter head resolved (block-diffusion
+        // drafters are trained at ONE block size): the head's own gamma is
+        // the SSOT once built.
+        let g = scheduler_model
+            .dflash_gamma()
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None));
+        g.saturating_sub(1).max(1)
     } else {
         args.resolved_num_drafts()
     };
@@ -813,7 +848,7 @@ pub(crate) fn load_model(
     if args.dflash {
         tracing::info!(
             "DFlash speculative decoding: ENABLED (γ={}, window={}, drafter installed)",
-            args.dflash_gamma,
+            num_drafts + 1,
             if args.dflash_window_size == 0 {
                 "full".to_string()
             } else {
@@ -1041,11 +1076,11 @@ pub(crate) fn load_model(
                 cfg_path.display()
             )
         })?;
-        if peft.r > args.max_lora_rank {
+        let ceiling = args.max_lora_rank.unwrap_or(DEFAULT_MAX_LORA_RANK);
+        if peft.r > ceiling {
             anyhow::bail!(
-                "--lora-stageable-disk '{name}' r={} > --max-lora-rank {}",
-                peft.r,
-                args.max_lora_rank
+                "--lora-stageable-disk '{name}' r={} > --max-lora-rank {ceiling}",
+                peft.r
             );
         }
         lora_disk_stageable.insert(name.clone(), (dir, peft));

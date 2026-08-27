@@ -57,6 +57,11 @@ pub struct DflashConfig {
     /// Drafter base RoPE θ. Defaults to 10M (matches Qwen3.6-DFlash).
     #[serde(default = "default_rope_theta")]
     pub rope_theta: f32,
+    /// transformers-5.x home for rope settings (DFlash2 ships
+    /// `rope_parameters: {rope_theta, rope_type}` and NO top-level
+    /// `rope_theta`). When present, its theta wins over the field above.
+    #[serde(default)]
+    pub rope_parameters: Option<DflashRopeParameters>,
     /// HF-style `rope_scaling` block. `None` ⇒ plain RoPE (the v2 2026-04-27
     /// Qwen3.6-DFlash drafter ships `rope_scaling: null`). When present and
     /// `rope_type == "yarn"`, the drafter's YaRN parameters are used to
@@ -67,6 +72,35 @@ pub struct DflashConfig {
 
 fn default_rope_theta() -> f32 {
     10_000_000.0
+}
+
+/// transformers-5.x `rope_parameters` block (subset).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DflashRopeParameters {
+    #[serde(default)]
+    pub rope_theta: Option<f32>,
+    #[serde(default)]
+    pub rope_type: Option<String>,
+}
+
+impl DflashConfig {
+    /// Resolved RoPE θ: `rope_parameters.rope_theta` (transformers 5.x /
+    /// DFlash2) wins over the legacy top-level field.
+    pub fn effective_rope_theta(&self) -> f32 {
+        self.rope_parameters
+            .as_ref()
+            .and_then(|r| r.rope_theta)
+            .unwrap_or(self.rope_theta)
+    }
+    /// Resolved block size γ: DFlash2 ships it INSIDE `dflash_config`
+    /// (`block_size: 8`); DFlash1 ships it top-level. The top-level default
+    /// (16) must not shadow a sub-config value.
+    pub fn effective_block_size(&self) -> usize {
+        self.dflash_config
+            .as_ref()
+            .and_then(|c| c.block_size)
+            .unwrap_or(self.block_size)
+    }
 }
 
 /// Subset of HF `rope_scaling` block consumed by Atlas. Mirrors the field
@@ -102,6 +136,33 @@ pub struct DflashSubConfig {
     /// `[1, 10, 19, 28, 37]` for Qwen3.6-35B-A3B-DFlash. Order matters:
     /// shallow-to-deep concatenation is what `fc` expects.
     pub target_layer_ids: Vec<usize>,
+
+    // ── DFlash2 (incoai/Qwen3.8-27B-DFlash2, z-lab `DFlash2DraftModel`) ──
+    // All four ship together; absence of all four = DFlash1. Field names
+    // mirror the checkpoint's `dflash_config` block verbatim.
+    /// Causal-conv tap count. `2` for Qwen3.8-27B-DFlash2.
+    #[serde(default)]
+    pub conv_kernel_size: Option<usize>,
+    /// Channels sharing one dynamic kernel scalar. `16` (⇒ 320 groups at
+    /// hidden 5120) for Qwen3.8-27B-DFlash2.
+    #[serde(default)]
+    pub conv_group_size: Option<usize>,
+    /// Rank of the bilinear pair-scoring codebooks. `256`.
+    #[serde(default)]
+    pub selector_rank: Option<usize>,
+    /// Candidates retained per draft position before the selector walk. `16`.
+    #[serde(default)]
+    pub selector_top_k: Option<usize>,
+    /// DFlash2 ships block size γ HERE (8), not top-level.
+    #[serde(default)]
+    pub block_size: Option<usize>,
+}
+
+impl DflashSubConfig {
+    /// True when the checkpoint declares the DFlash2 selector+conv config.
+    pub fn is_dflash2(&self) -> bool {
+        self.selector_rank.is_some() && self.conv_kernel_size.is_some()
+    }
 }
 
 /// Raw weight bundle for the DFlash drafter, post-load.
@@ -133,6 +194,36 @@ pub struct DflashWeights {
     /// `draft_vocab_size != target_vocab_size`). Absent for
     /// Qwen3.6-35B-A3B-DFlash (both vocabs = 248320).
     pub draft_id_to_target_id: Option<Vec<i64>>,
+
+    /// DFlash2 only: the candidate-path selector.
+    pub candidate_selector: Option<DflashSelectorWeights>,
+}
+
+/// DFlash2 `GroupedDynamicCausalConv` weights for ONE sublayer site
+/// (attention or MLP). Reference: z-lab/dflash `model.py`.
+///
+/// `base_kernel` is `[2, kernel_size, hidden]` — index 0 is the "prepare"
+/// kernel (conv on the normed sublayer INPUT), index 1 the "finish" kernel
+/// (conv on the sublayer OUTPUT, pre-residual). `kernel_projection` is
+/// `[2 * kernel_size * groups, hidden]`; ONE projection of the normed input
+/// yields the per-position dynamic kernels for BOTH stages.
+#[allow(dead_code)]
+pub struct DflashConvWeights {
+    pub base_kernel: DenseWeight,
+    pub kernel_projection: DenseWeight,
+}
+
+/// DFlash2 `CandidateSelector` weights. Codebooks are `[vocab, rank]` and
+/// ship WITHOUT a `.weight` suffix (the reference loader remaps them — see
+/// `DFlash2DraftModel::from_pretrained`'s `key_mapping`).
+#[allow(dead_code)]
+pub struct DflashSelectorWeights {
+    /// `[rank, hidden]` — projects the drafter's final hidden to rank space.
+    pub hidden_projection: DenseWeight,
+    /// `[vocab, rank]` — row for the PRECEDING (chosen) token.
+    pub predecessor_codebook: DenseWeight,
+    /// `[vocab, rank]` — row for each CANDIDATE successor.
+    pub successor_codebook: DenseWeight,
 }
 
 /// Per-drafter-layer raw weights (BF16). Same shape across all 8 layers.
@@ -149,6 +240,10 @@ pub struct DflashLayerWeights {
     pub gate_proj: DenseWeight,
     pub up_proj: DenseWeight,
     pub down_proj: DenseWeight,
+    /// DFlash2 only: dynamic causal conv around the attention sublayer.
+    pub attention_conv: Option<DflashConvWeights>,
+    /// DFlash2 only: dynamic causal conv around the MLP sublayer.
+    pub mlp_conv: Option<DflashConvWeights>,
 }
 
 /// Probe a [`WeightStore`] for the presence of DFlash drafter weights.
@@ -250,6 +345,10 @@ pub fn load_dflash_weights(
             gate_proj: dense(drafter_store, &format!("{lp}.mlp.gate_proj.weight"))?,
             up_proj: dense(drafter_store, &format!("{lp}.mlp.up_proj.weight"))?,
             down_proj: dense(drafter_store, &format!("{lp}.mlp.down_proj.weight"))?,
+            // DFlash2: per-sublayer dynamic causal convs. Probed per layer so
+            // a DFlash1 checkpoint (no conv tensors) loads exactly as before.
+            attention_conv: load_conv(drafter_store, &format!("{lp}.attention_conv"))?,
+            mlp_conv: load_conv(drafter_store, &format!("{lp}.mlp_conv"))?,
         };
         layers.push(layer);
     }
@@ -258,6 +357,49 @@ pub fn load_dflash_weights(
     // both vocabs are 248320. If a future drafter ships a smaller vocab
     // (vLLM supports this via `draft_vocab_size`), the int64 mapping table
     // would land here. Probing first to keep this loader compatible.
+    // DFlash2 candidate selector. The codebooks ship WITHOUT a `.weight`
+    // suffix (reference `from_pretrained` remaps them; we address them by
+    // their on-disk names directly).
+    let candidate_selector = if drafter_store.contains(&format!(
+        "{prefix}candidate_selector.hidden_projection.weight"
+    )) {
+        Some(DflashSelectorWeights {
+            hidden_projection: dense(
+                drafter_store,
+                &format!("{prefix}candidate_selector.hidden_projection.weight"),
+            )
+            .context("DFlash2: load candidate_selector.hidden_projection")?,
+            predecessor_codebook: dense(
+                drafter_store,
+                &format!("{prefix}candidate_selector.predecessor_codebook"),
+            )
+            .context("DFlash2: load predecessor_codebook")?,
+            successor_codebook: dense(
+                drafter_store,
+                &format!("{prefix}candidate_selector.successor_codebook"),
+            )
+            .context("DFlash2: load successor_codebook")?,
+        })
+    } else {
+        None
+    };
+    if candidate_selector.is_some()
+        != drafter_config
+            .dflash_config
+            .as_ref()
+            .is_some_and(|c| c.is_dflash2())
+    {
+        anyhow::bail!(
+            "DFlash2 mismatch: config declares selector_rank/conv_kernel_size = {:?} but \
+             candidate_selector tensors present = {} — checkpoint and config disagree",
+            drafter_config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.is_dflash2()),
+            candidate_selector.is_some(),
+        );
+    }
+
     let draft_id_to_target_id = if drafter_store.contains(&format!("{prefix}d2t"))
         || drafter_store.contains(&format!("{prefix}draft_id_to_target_id"))
     {
@@ -277,7 +419,7 @@ pub fn load_dflash_weights(
         layers.len(),
         drafter_config.hidden_size,
         drafter_config.vocab_size,
-        drafter_config.block_size,
+        drafter_config.effective_block_size(),
         drafter_config
             .dflash_config
             .as_ref()
@@ -292,6 +434,22 @@ pub fn load_dflash_weights(
         norm,
         layers,
         draft_id_to_target_id,
+        candidate_selector,
+    }))
+}
+
+/// Probe-and-load one DFlash2 `GroupedDynamicCausalConv` site
+/// (`layers.N.attention_conv` / `layers.N.mlp_conv`). Returns `Ok(None)`
+/// when the site is absent (DFlash1 checkpoints).
+fn load_conv(store: &WeightStore, site: &str) -> Result<Option<DflashConvWeights>> {
+    if !store.contains(&format!("{site}.base_kernel")) {
+        return Ok(None);
+    }
+    Ok(Some(DflashConvWeights {
+        base_kernel: dense(store, &format!("{site}.base_kernel"))
+            .with_context(|| format!("DFlash2: load {site}.base_kernel"))?,
+        kernel_projection: dense(store, &format!("{site}.kernel_projection.weight"))
+            .with_context(|| format!("DFlash2: load {site}.kernel_projection"))?,
     }))
 }
 

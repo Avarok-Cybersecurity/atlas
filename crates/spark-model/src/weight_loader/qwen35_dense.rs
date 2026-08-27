@@ -382,7 +382,30 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             dffn.finalize_q4k_load(gpu, h as u32, config.intermediate_size as u32, stream)?;
             // ATLAS_FFN_NVFP4_MMQ: same discipline for the W4A4 FP4-MMQ arm — repack
             // gate/up to block_nvfp4 + free their `_t` copies (net ~0 footprint).
-            dffn.finalize_nvfp4_mmq_load(gpu, h as u32, config.intermediate_size as u32, stream)?;
+            //
+            // SKIPPED when a LoRA adapter is pending. The forward-time FP4-MMQ
+            // arm is disabled while an adapter is installed (it leaves gate/up
+            // UNSCALED and folds weight_scale_2 inside the SiLU-mul, which
+            // would silently scale a true-valued delta). But this finalize
+            // FREES the transposed `_t` copies on the assumption that the MMQ
+            // arm will serve prefill — so running it and then disabling the arm
+            // left prefill on the slowest non-transposed GEMM with nothing to
+            // fall back to: 176 tok/s against 841 on a 2K prompt, and it had
+            // NOTHING to do with the cost of applying the deltas (measured with
+            // the deltas skipped entirely).
+            //
+            // `adapter_max_rank` is the load-time signal that `--lora-adapter`
+            // was given; the adapter itself is installed later (build step 8),
+            // so this is the only point where the decision can be made before
+            // the twins are freed.
+            if config.adapter_max_rank == 0 {
+                dffn.finalize_nvfp4_mmq_load(
+                    gpu,
+                    h as u32,
+                    config.intermediate_size as u32,
+                    stream,
+                )?;
+            }
             // Native-BF16 dense-FFN overlay (Bf16Raw, no-metadata Holo dense): install the
             // live BF16 gate/up/down snapshot so forward/forward_prefill's bf16 branch
             // (preferred over the NVFP4 fallback) reads valid memory. The NVFP4 weights built

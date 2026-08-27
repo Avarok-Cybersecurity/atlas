@@ -55,12 +55,47 @@ impl TransformerModel {
     /// outside falls back to the per-seq loop.
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
         let n = ks.len();
+        // Two admissible shapes:
+        //  * MTP ladder — every k in 2..=4, no DFlash capture buffer.
+        //  * DFlash — every k EXACTLY γ+1 (uniform; the block drafter has no
+        //    ragged ladder), and the per-sequence capture bands must fit.
+        //    K=γ+1 has no fused WY kernel, so the GDN body takes the
+        //    per-sequence fallback inside `decode_verify_multi` — byte-
+        //    identical to the single-sequence K=γ path it replaces, while
+        //    every weight-bearing op (QKVZ / o_proj / FFN / lm_head) batches
+        //    across all R rows. That is where the win is: measured gemm_t
+        //    M=9 3679us vs M=36 3837us, i.e. 4x the rows for +4%.
+        let shape_ok = if self.dflash_hidden_save.is_some() {
+            // UNIFORM k, any width the capture band holds. k is
+            // `drafts + 1` and the block drafter returns γ-1 drafts on a
+            // first propose and γ later, so k ranges over 2..=γ+1 — pinning
+            // it to exactly γ+1 silently refused every real batch.
+            self.dflash_kgamma >= 2
+                && ks.iter().all(|&k| (2..=self.dflash_kgamma).contains(&k))
+                && ks.iter().all(|&k| k == ks[0])
+                && n * self.dflash_kgamma <= self.dflash_hidden_save_rows
+        } else {
+            ks.iter().all(|k| (2..=4).contains(k))
+        };
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
-            && ks.iter().all(|k| (2..=4).contains(k))
+            && shape_ok
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
             && self.comm.is_none()
-            && self.lora.is_none()
-            && self.dflash_hidden_save.is_none()
+            // LoRA is NOT a barrier here. Every weight-bearing op this path
+            // batches — QKVZ, o_proj, the dense FFN, lm_head — carries its
+            // delta on the batched variants (`forward_km` and the multi_seq
+            // qkv/o_proj), so the rows are adapted whether they are verified
+            // together or one at a time. And all rows necessarily share ONE
+            // adapter: a batch containing a sequence routed to a non-active
+            // slot is already refused upstream by the single-active guard, so
+            // a uniform delta across the batch is the correct delta.
+            //
+            // Refusing it cost the whole point of the batched path. With an
+            // adapter resident, DFlash aggregate throughput was FLAT at ~34
+            // tok/s from C=1 to C=4 (against 39 -> 71 -> 79 without one)
+            // because every sequence fell back to the per-sequence verify
+            // loop. `ATLAS_LORA_NO_BATCH_VERIFY=1` restores the refusal.
+            && !(self.lora.is_some() && crate::lora::no_batch_verify())
             && !self.verify_hidden_stash.is_null()
             // HSS: the paged-decode kernel reads HBM only, missing on-disk
             // history (see verify_c2's HSS fallback) — batched path unsupported.
@@ -115,12 +150,20 @@ impl TransformerModel {
         off.push(acc);
         let r_total = acc;
         let k_max = ks.iter().copied().max().unwrap_or(0);
+        // Width contract mirrors `can_batch_verify_dispatch`: the MTP ladder
+        // range, or DFlash's uniform K=γ+1.
+        let dflash_k = self
+            .dflash_hidden_save
+            .is_some()
+            .then_some(self.dflash_kgamma);
         ensure!(
             n >= 2
                 && ks.len() == n
-                && ks.iter().all(|k| (2..=4).contains(k))
+                && ks
+                    .iter()
+                    .all(|&k| dflash_k.map_or((2..=4).contains(&k), |g| (2..=g).contains(&k)))
                 && tokens.len() == r_total,
-            "batched verify: n={n} ks={ks:?} tokens={}",
+            "batched verify: n={n} ks={ks:?} tokens={} dflash_k={dflash_k:?}",
             tokens.len()
         );
         // R ≤ VERIFY_ROW_CAP (96): the exact capacity of the meta gaps below
@@ -504,6 +547,26 @@ impl TransformerModel {
                         &ctx,
                         stream,
                     )?;
+                }
+
+                // DFlash per-sequence hidden capture. The rows of this
+                // batched forward are seq-major, so sequence i's k rows start
+                // at `off[i]` and land in ITS OWN capture band at
+                // `i * dflash_kgamma` — the `scratch_row` the scheduler then
+                // passes to `commit_ctx`. Without the band offset every
+                // sequence would overwrite band 0 (the single-sequence
+                // assumption that made batched decode drop ctx rows).
+                // No-op unless DFlash is on and this is a capture layer.
+                if self.dflash_hidden_save.is_some() {
+                    for i in 0..n {
+                        self.try_dflash_capture_all_at(
+                            layer_idx,
+                            off[i],
+                            ks[i],
+                            i * self.dflash_kgamma,
+                            stream,
+                        )?;
+                    }
                 }
 
                 if k4_diag && let Err(e) = self.gpu.synchronize(stream) {

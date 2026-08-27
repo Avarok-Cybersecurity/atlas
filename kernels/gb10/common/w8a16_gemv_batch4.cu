@@ -118,7 +118,11 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
     s_lut[threadIdx.x] = E4M3_LUT_B4[threadIdx.x];
     __syncthreads();
 
-    if (n >= N) return;
+    // Tail threads (n >= N) must NOT return here: the cross-warp reduction
+    // below has a second __syncthreads(), and exiting before a barrier that
+    // other threads still reach is UB (same class as the w4a16_gemv tail
+    // fix). Keep them alive and inert instead.
+    const bool active = n < N;
 
     const unsigned int K16 = K / 16;
     const unsigned int k_blocks = (K + FP8_BLOCK - 1) / FP8_BLOCK;
@@ -128,7 +132,7 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
     #pragma unroll
     for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
 
-    for (unsigned int k16 = lane; k16 < K16; k16 += threads_per_out) {
+    for (unsigned int k16 = lane; active && k16 < K16; k16 += threads_per_out) {
         const unsigned int base_k = k16 * 16;
         const unsigned int k_block = base_k / FP8_BLOCK;
         const float scale = block_scale[n_block * k_blocks + k_block];
@@ -161,8 +165,19 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
                 __nv_bfloat16 lo, hi;
                 *(unsigned short*)&lo = (unsigned short)(ar[j] & 0xFFFF);
                 *(unsigned short*)&hi = (unsigned short)(ar[j] >> 16);
-                acc[t] += __bfloat162float(lo) * wf[j * 2]
-                        + __bfloat162float(hi) * wf[j * 2 + 1];
+                // ONE element per statement, exactly like w8a16_gemv's
+                // `acc += a*w` chain. The old paired form
+                // (`acc += lo*w0 + hi*w1`) contracts the pair before the
+                // accumulate — one fewer rounding step per pair — so the
+                // per-row reduction was NOT bit-identical to M=1 despite
+                // the header's claim: at qwen3.8's GDN shapes the final
+                // BF16 store flips by 1 ULP on scattered rows (measured
+                // max|delta|=2.0 at |C|~512 — see
+                // w8a16_batch_bitparity_microtest). Those flips are the
+                // verify-vs-decode logit divergence behind the qwen3.8
+                // temp-0 spec-decode wrong answers.
+                acc[t] += __bfloat162float(lo) * wf[j * 2];
+                acc[t] += __bfloat162float(hi) * wf[j * 2 + 1];
             }
         }
     }
@@ -182,7 +197,7 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
     }
     __syncthreads();
 
-    if (lane == 0) {
+    if (lane == 0 && active) {
         #pragma unroll
         for (int t = 0; t < MAX_M; t++) {
             if ((unsigned int)t >= M) continue;

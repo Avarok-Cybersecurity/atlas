@@ -137,6 +137,15 @@ pub(super) fn try_chat_fast_path(
             all_clear = false;
             break;
         }
+        // In-flight repeat within the block: sequential decode's penalty
+        // history at this position contains the earlier occurrence; the
+        // immunity proof does not cover it — slow path.
+        if penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
+            && argmax_ids[..i].contains(&tok)
+        {
+            all_clear = false;
+            break;
+        }
         if penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
             && !crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
                 crate::scheduler::fast_greedy::logit_is_positive(

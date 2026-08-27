@@ -46,9 +46,12 @@
 //! masked at position 0's state — a `\n` legal at JSON-value-start
 //! is not legal at JSON-comma-or-closebrace).
 //!
-//! Other state-dependent masks (mid-word lookback, last_token reads)
-//! still see slightly stale `output_tokens` for positions ≥ 1 —
-//! best-effort, mirrors greedy unroll.
+//! Penalty history is NOT stale: positions ≥ 1 thread the block's
+//! earlier picks into `apply_penalties_and_bias` (2026-08-18), so the
+//! penalty-aware argmax is byte-identical to sequential decode. Other
+//! state-dependent masks (mid-word lookback, last_token reads) still see
+//! slightly stale `output_tokens` for positions ≥ 1 — best-effort,
+//! mirrors greedy unroll.
 
 mod argmax;
 mod fast_masked;
@@ -91,6 +94,10 @@ pub fn verify_pick_with_pipeline(
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
     verify_pos: usize,
+    // Picks from positions 0..verify_pos of the SAME verify block, in order.
+    // Threaded into the penalty history so penalty-aware verify argmax is
+    // byte-identical to sequential decode (see process_position_logits).
+    pending_picks: &[u32],
 ) -> u32 {
     use crate::scheduler::mtp_timing::Phase;
     // 1. Dequant per the same scheme as `process_seq_logits`, into a REUSED
@@ -157,6 +164,7 @@ pub fn verify_pick_with_pipeline(
         ctx,
         &penalties,
         crate::scheduler::sample_step::PositionKind::Verify,
+        pending_picks,
     ) {
         ctx.timing.record(Phase::PipelineProc, t_proc);
         return tok;
@@ -249,6 +257,18 @@ pub fn verify_pick_all_with_pipeline(
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
     row_base: usize,
+    // The step's draft tokens, when the caller has them. Position i's pick is
+    // compared against drafts[i]: at the FIRST mismatch the pipeline STOPS —
+    // sequential decode never scores positions past the correction token, and
+    // running the stateful stages there (F2 confidence, defer counters — the
+    // pipeline mutates `a` in place, and only the grammar matcher is rolled
+    // back) drifts seq state ahead of the real output. Measured 2026-08-18 on
+    // qwen3.8 video-fidelity: FTZ bypass = 13/13 both legs (forward exact),
+    // pipeline-on + spec-on = FAIL — the divergence lives in these extra
+    // stateful runs. Positions past the stop are padded with the RAW argmax:
+    // the accept chain short-circuits before reading them, so they only feed
+    // shadow logging. `None` preserves the old process-all behavior.
+    drafts: Option<&[u32]>,
 ) -> Vec<u32> {
     use crate::scheduler::mtp_timing::Phase;
     let k = argmax_ids.len();
@@ -353,6 +373,16 @@ pub fn verify_pick_all_with_pipeline(
             for (i, &tok) in argmax_ids.iter().enumerate() {
                 // ReduceOnly regime: the argmax must be penalty-immune (not in
                 // the scoped history + raw logit > 0) or we take the slow path.
+                // In-flight repeat: a token already picked earlier in THIS
+                // block is in sequential decode's penalty history for this
+                // position even though output_tokens has not grown yet. The
+                // immunity proof does not cover it — slow path.
+                if fast_penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
+                    && fast.contains(&tok)
+                {
+                    all_allowed = false;
+                    break;
+                }
                 if fast_penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
                     && !crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
                         crate::scheduler::fast_greedy::logit_is_positive(
@@ -455,15 +485,16 @@ pub fn verify_pick_all_with_pipeline(
             };
         let all_immune = argmax_ids.iter().enumerate().all(|(i, &tok)| {
             chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
-                || crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
-                    crate::scheduler::fast_greedy::logit_is_positive(
-                        model,
-                        logits_base,
-                        row_base + i,
-                        vocab,
-                        tok,
-                    )
-                })
+                || (!argmax_ids[..i].contains(&tok)
+                    && crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
+                        crate::scheduler::fast_greedy::logit_is_positive(
+                            model,
+                            logits_base,
+                            row_base + i,
+                            vocab,
+                            tok,
+                        )
+                    }))
         });
         ctx.timing.record(Phase::FastGreedy, t_fast);
         if all_immune {
@@ -506,8 +537,20 @@ pub fn verify_pick_all_with_pipeline(
         let slice = &buf[i * vocab * elem_bytes..(i + 1) * vocab * elem_bytes];
         // P1-3 (2026-07-09): `i` threads the verify-position index down for
         // the per-position seed offset of the temp>0 sampling branch.
-        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx, i);
+        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx, i, &picks);
         picks.push(pick);
+
+        // Early stop at the first draft mismatch (see fn doc): `pick` is the
+        // correction token; sequential decode re-scores everything after it
+        // from the corrected prefix next step. Pad the tail with raw argmax
+        // (read only by shadow logging) and run NO further stateful stages.
+        if let Some(d) = drafts
+            && i < d.len()
+            && pick != d[i]
+        {
+            picks.extend_from_slice(&argmax_ids[i + 1..]);
+            break;
+        }
 
         // Speculatively advance the matcher with `pick[i]` so the next
         // position's bitmask reflects post-emit state. Skip on the last

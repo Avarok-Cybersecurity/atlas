@@ -248,6 +248,11 @@ pub fn process_position_logits(
     ctx: &LogitsContext,
     penalties: &SamplingParams,
     kind: PositionKind,
+    // Picks already made at EARLIER positions of the same verify block —
+    // tokens sequential decode would have emitted before scoring this
+    // position, but which are not yet in `seq.output_tokens` (emit_token
+    // runs after the verify helper returns). Empty for FinalDecode.
+    pending_picks: &[u32],
 ) -> Option<u32> {
     // 1. ATLAS_FORCE_TEMP_ZERO: pure argmax on raw logits — no pipeline, no
     //    penalties, no bias. Eligible on both kinds (the diagnostic's point
@@ -283,14 +288,39 @@ pub fn process_position_logits(
     //    parallel calls and crush the next call's structural scaffold (see
     //    `sample_step::penalty_history_scope`).
     let t_pen = std::time::Instant::now();
-    apply_penalties_and_bias(
-        logits,
-        penalties,
-        crate::scheduler::sample_step::penalty_history_scope(
+    if pending_picks.is_empty() {
+        apply_penalties_and_bias(
+            logits,
+            penalties,
+            crate::scheduler::sample_step::penalty_history_scope(
+                &seq.output_tokens,
+                ctx.tool_call_end_token,
+            ),
+        );
+    } else {
+        // Verify positions >= 1: sequential temp-0 decode applies penalties
+        // over the COMPLETE emitted history, which at this position includes
+        // the block's earlier picks. Scoring against `output_tokens` alone
+        // (which does not grow until emit_token) made the penalty context
+        // STALE, so penalty-aware verify argmax diverged from sequential at
+        // low-margin positions — the qwen3.8 temp-0 spec-decode divergence
+        // (video-fidelity video-before-image: ',' flipped to ' frames' /
+        // <|im_end|>, SHADOW_TGT raw-vs-v evidence 2026-08-18). Concatenate,
+        // then re-scope so a tool_call_end INSIDE the pending picks resets
+        // the window exactly as it would after those tokens were emitted.
+        let scoped = crate::scheduler::sample_step::penalty_history_scope(
             &seq.output_tokens,
             ctx.tool_call_end_token,
-        ),
-    );
+        );
+        let mut hist: Vec<u32> = Vec::with_capacity(scoped.len() + pending_picks.len());
+        hist.extend_from_slice(scoped);
+        hist.extend_from_slice(pending_picks);
+        apply_penalties_and_bias(
+            logits,
+            penalties,
+            crate::scheduler::sample_step::penalty_history_scope(&hist, ctx.tool_call_end_token),
+        );
+    }
     if kind == PositionKind::Verify {
         ctx.timing
             .record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);

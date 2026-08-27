@@ -41,6 +41,11 @@ pub(super) fn build_choice_message(
     let mut msg_refusal: Option<String> = None;
     let mut finish_reason_i = response.finish_reason.clone();
 
+    // Permanent diagnostic (RUST_LOG=...,spark::api::chat_blocking_choice=debug):
+    // the choice's final decoded text, before tool parsing. The A/B that
+    // pinned the qwen3.8 spec-decode divergence needed byte-exact response
+    // texts from both legs, and nothing on the serve side logged them.
+    tracing::debug!("chat response (choice {choice_idx}): {output_text_i:?}");
     if tools_active {
         if std::env::var("ATLAS_LOG_TOOL_RAW").as_deref() == Ok("1") {
             tracing::info!(

@@ -20,13 +20,38 @@
 #define TC_PAD 8      // shared memory padding for bank-conflict-free access
 #define TC_BLOCK 128   // threads per block (4 warps)
 
-extern "C" __global__ void dense_gemm_tc(
+// Epilogue store. Plain write, or the parity-preserving fold (see the note at
+// the store site).
+template <bool ACC>
+__device__ __forceinline__ void store(
+    __nv_bfloat16* __restrict__ C, unsigned int idx, float a, float scale
+) {
+    if (ACC) {
+        float d = __bfloat162float(__float2bfloat16(a));
+        C[idx] = __float2bfloat16(__bfloat162float(C[idx]) + scale * d);
+    } else {
+        C[idx] = __float2bfloat16(a);
+    }
+}
+
+// Shared body. `ACC=false` writes C (the original kernel, unchanged
+// behaviour). `ACC=true` FOLDS into C instead: C += scale * bf16(A@B^T).
+//
+// The fused form exists for LoRA. The unfused sequence — GEMM into a [M,N]
+// scratch, then a separate scaled_add over M*N — costs an extra full write and
+// two extra reads of an [M, n_out] tensor per module per layer. On a 27B with
+// n_out=17408 and a 2K-token prefill that is ~72 MB of scratch traffic per
+// module, 64 layers deep, which measured as a 5.6x prefill slowdown once a
+// LoRA adapter was resident.
+template <bool ACC>
+__device__ __forceinline__ void dense_gemm_tc_body(
     const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
     const __nv_bfloat16* __restrict__ B,  // [N, K] row-major (read as B^T)
     __nv_bfloat16* __restrict__ C,         // [M, N] row-major
     unsigned int M,
     unsigned int N,
-    unsigned int K
+    unsigned int K,
+    float scale
 ) {
     const unsigned int m_block = blockIdx.y * TC_TM;
     const unsigned int n_block = blockIdx.x * TC_TN;
@@ -73,9 +98,17 @@ extern "C" __global__ void dense_gemm_tc(
             // Load B tile: B[N,K] read as B^T[K,N] → smem_B[k][n]
             // B[n, k] at offset n*K + k → store at smem_B[k][n]
             // 128 threads load 16*64 = 1024 elements → 8 per thread
+            // Thread-to-element mapping walks K fastest, NOT N. B is
+            // [N, K] row-major, so consecutive k IS contiguous in memory:
+            // this makes each warp's loads coalesce along a B row instead of
+            // striding K*2 bytes between neighbouring threads. Costs some
+            // smem bank spread on the write (TC_PAD already offsets it) and
+            // buys coalesced global reads, which is the expensive side —
+            // especially for LoRA, whose B is [n_out, max_rank] with a tiny
+            // K, so the strided form issued one transaction per element.
             for (unsigned int i = tid; i < TC_TK * TC_TN; i += TC_BLOCK) {
-                unsigned int bk = i / TC_TN;
-                unsigned int bn = i % TC_TN;
+                unsigned int bn = i / TC_TK;
+                unsigned int bk = i % TC_TK;
                 unsigned int gn = n_block + bn;
                 unsigned int gk = k_base + bk;
                 smem_B[bk][bn] = (gn < N && gk < K) ? B[(unsigned long long)gn * K + gk] : __float2bfloat16(0.0f);
@@ -137,9 +170,38 @@ extern "C" __global__ void dense_gemm_tc(
         unsigned int c0 = n_block + n_warp_base + nt * 8 + tid_in_group * 2;
         unsigned int c1 = c0 + 1;
 
-        if (r0 < M && c0 < N) C[r0 * N + c0] = __float2bfloat16(acc[nt][0]);
-        if (r0 < M && c1 < N) C[r0 * N + c1] = __float2bfloat16(acc[nt][1]);
-        if (r1 < M && c0 < N) C[r1 * N + c0] = __float2bfloat16(acc[nt][2]);
-        if (r1 < M && c1 < N) C[r1 * N + c1] = __float2bfloat16(acc[nt][3]);
+        // BIT-PARITY NOTE. The fold reproduces the unfused sequence exactly:
+        // the delta is rounded to BF16 FIRST (what the GEMM used to store),
+        // then `out = bf16(f32(out) + scale * f32(delta_bf16))` — the body of
+        // `bf16_scaled_add`. Folding the fp32 accumulator directly would be
+        // more accurate and would NOT match, so it is deliberately not done.
+        if (r0 < M && c0 < N) store<ACC>(C, r0 * N + c0, acc[nt][0], scale);
+        if (r0 < M && c1 < N) store<ACC>(C, r0 * N + c1, acc[nt][1], scale);
+        if (r1 < M && c0 < N) store<ACC>(C, r1 * N + c0, acc[nt][2], scale);
+        if (r1 < M && c1 < N) store<ACC>(C, r1 * N + c1, acc[nt][3], scale);
     }
+}
+
+extern "C" __global__ void dense_gemm_tc(
+    const __nv_bfloat16* __restrict__ A,
+    const __nv_bfloat16* __restrict__ B,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    dense_gemm_tc_body<false>(A, B, C, M, N, K, 0.0f);
+}
+
+// C[M,N] += scale * bf16(A[M,K] @ B[N,K]^T) — the LoRA expand+fold in one pass.
+extern "C" __global__ void dense_gemm_tc_scaled_acc(
+    const __nv_bfloat16* __restrict__ A,
+    const __nv_bfloat16* __restrict__ B,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K,
+    float scale
+) {
+    dense_gemm_tc_body<true>(A, B, C, M, N, K, scale);
 }

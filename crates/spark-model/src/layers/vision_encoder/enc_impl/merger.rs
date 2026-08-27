@@ -58,7 +58,7 @@ impl VisionEncoder {
             .grid([merged_p, 1, 1])
             .block([merged_in.min(1024), 1, 1])
             .arg_ptr(hidden_src)
-            .arg_ptr(self.buf_merge_in)
+            .arg_ptr(self.scratch().buf_merge_in)
             .arg_u32(grid_h as u32)
             .arg_u32(grid_w as u32)
             .arg_u32(self.hidden_size as u32)
@@ -67,10 +67,10 @@ impl VisionEncoder {
         // fc1 GEMM → buf_merge_fc1
         self.vit_gemm_bias(
             gpu,
-            self.buf_merge_in,
+            self.scratch().buf_merge_in,
             m.fc1_w,
             m.fc1_b,
-            self.buf_merge_fc1,
+            self.scratch().buf_merge_fc1,
             merged_p,
             merged_in,
             merged_in,
@@ -80,13 +80,13 @@ impl VisionEncoder {
         KernelLaunch::new(gpu, self.k_gelu)
             .grid([div_ceil(merged_p * merged_in, 256), 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(self.buf_merge_fc1)
+            .arg_ptr(self.scratch().buf_merge_fc1)
             .arg_u32(merged_p * merged_in)
             .launch(stream)?;
         // fc2 GEMM → out_slice
         self.vit_gemm_bias(
             gpu,
-            self.buf_merge_fc1,
+            self.scratch().buf_merge_fc1,
             m.fc2_w,
             m.fc2_b,
             out_slice,

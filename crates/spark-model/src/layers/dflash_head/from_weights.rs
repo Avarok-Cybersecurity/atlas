@@ -6,7 +6,7 @@
 //! [`BlockDiffusionDraftHead::from_weights`] (kernel resolution + KV
 //! cache setup) and [`BlockDiffusionDraftHead::validate_against_target`].
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
@@ -22,12 +22,19 @@ impl BlockDiffusionDraftHead {
         embed_tokens_shared: DevicePtr,
         lm_head_shared: DevicePtr,
         lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
+        lm_head_native_fp8: Option<(crate::weight_map::Fp8DenseWeight, usize)>,
         target_hidden_size: usize,
         gamma: Option<usize>,
         window_size: Option<usize>,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
+        // Widest cross-sequence batch the drafter must serve in ONE forward.
+        // The gamma-sized scratch below is allocated in per-sequence BANDS of
+        // gamma rows so a batched propose can stack n sequences; n=1 keeps
+        // the original single-band sizes.
+        max_batch: usize,
     ) -> Result<Self> {
+        let nb = max_batch.max(1);
         // Drafter's `fc` is `[draft_hidden, len(target_layer_ids) * target_hidden]`.
         // We rely on the drafter config's `hidden_size` and the parsed
         // `target_layer_ids` to derive the expected target_hidden, then
@@ -61,7 +68,7 @@ impl BlockDiffusionDraftHead {
         let num_kv_heads = weights.config.num_key_value_heads;
         let head_dim = weights.config.head_dim;
         let vocab_size = weights.config.vocab_size;
-        let gamma_val = gamma.unwrap_or(weights.config.block_size);
+        let gamma_val = gamma.unwrap_or(weights.config.effective_block_size());
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
         // sized for `max_seq_len + γ + 1` positions (prompt + γ drafts +
@@ -94,6 +101,28 @@ impl BlockDiffusionDraftHead {
         // `mtp_head.rs` plus the `extern "C" __global__` declarations under
         // `kernels/gb10/common/`.
         let kernels = DflashKernels {
+            // DFlash2 conv — probe-only: absent on kernel sets built before
+            // dflash2_conv.cu landed, and unused on DFlash1 drafters.
+            dflash2_conv: super::super::try_kernel(
+                gpu,
+                "dflash2_conv",
+                "dflash2_grouped_dynamic_causal_conv_bf16",
+            ),
+            dflash2_selector_topk16: super::super::try_kernel(
+                gpu,
+                "dflash2_selector",
+                "dflash2_selector_topk16",
+            ),
+            dflash2_selector_proj: super::super::try_kernel(
+                gpu,
+                "dflash2_selector",
+                "dflash2_selector_proj",
+            ),
+            dflash2_selector_chain: super::super::try_kernel(
+                gpu,
+                "dflash2_selector",
+                "dflash2_selector_chain",
+            ),
             // DFlash drafter uses HF's vanilla RMSNorm convention
             // (`out = x * w / RMS(x)`), NOT Atlas's default offset-from-1
             // form (`out = x * (1 + w) / RMS(x)`). Atlas's standard
@@ -198,6 +227,14 @@ impl BlockDiffusionDraftHead {
                 "w4a16",
                 "fp8_gemm_t_row_scaled_m16",
             ),
+            // Register-tiled M<=8 FP8 GEMV (fp8_gemv_rt.cu, common) —
+            // ported from PR #648 (acaf9533). try_kernel: targets built
+            // before that module resolve 0 and keep the tile GEMMs.
+            fp8_gemv_rt2: crate::layers::try_kernel(
+                gpu,
+                "fp8_gemv_rt",
+                "fp8_gemv_rowscale_batch8_rt2",
+            ),
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.
@@ -238,8 +275,49 @@ impl BlockDiffusionDraftHead {
         let n_attn = g + ctx_window; // total attention slots
         let q_dim = num_q_heads * head_dim;
         let kv_dim = num_kv_heads * head_dim;
+        let (selector_rank, selector_top_k, conv_kernel_size, conv_group_size) = weights
+            .config
+            .dflash_config
+            .as_ref()
+            .map(|c| {
+                (
+                    c.selector_rank.unwrap_or(0),
+                    c.selector_top_k.unwrap_or(0),
+                    c.conv_kernel_size.unwrap_or(0),
+                    c.conv_group_size.unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
         let scratch = DflashScratch {
             stream_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
+            // DFlash2 conv scratch (~120 KB total at γ=8/h=5120): allocated
+            // unconditionally — trivial next to the 250 MB scratch block, and
+            // it keeps DflashScratch construction branch-free.
+            dflash2_conv_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
+            // GPU selector scratch (tiny; allocated unconditionally so the
+            // struct stays Option-free — 16·γ·8 + γ·rank·4 bytes).
+            sel_cand_ids: gpu.alloc(nb * gamma_val * 16 * 4)?,
+            sel_cand_vals: gpu.alloc(nb * gamma_val * 16 * 4)?,
+            sel_g: gpu.alloc(nb * gamma_val * selector_rank.max(1) * 4)?,
+            // Batched-propose descriptors (tiny: <= a few hundred bytes).
+            batch_bt_ptrs: gpu.alloc(nb * 8)?,
+            batch_kv_lens: gpu.alloc(nb * 4)?,
+            batch_cu_seqlens: gpu.alloc((nb + 1) * 4)?,
+            batch_anchors: gpu.alloc(nb * 4)?,
+            dflash2_dyn_attn: gpu.alloc(
+                n_attn
+                    * 2
+                    * conv_kernel_size.max(1)
+                    * (hidden_size / conv_group_size.max(1))
+                    * bf16,
+            )?,
+            dflash2_dyn_mlp: gpu.alloc(
+                n_attn
+                    * 2
+                    * conv_kernel_size.max(1)
+                    * (hidden_size / conv_group_size.max(1))
+                    * bf16,
+            )?,
             norm_buf: gpu.alloc(n_attn * hidden_size * bf16)?,
             q_buf: gpu.alloc(n_attn * q_dim * bf16)?,
             k_buf: gpu.alloc(n_attn * kv_dim * bf16)?,
@@ -263,7 +341,7 @@ impl BlockDiffusionDraftHead {
             // `[u32 kv_len, u32 q_offset, u32 q_rope_pos]` that the indirect
             // paged-attention kernel reads at entry. Host writes via H2D
             // BEFORE entering the captured region.
-            option_b_indirect_args_dev: gpu.alloc(12)?,
+            option_b_indirect_args_dev: gpu.alloc(nb * 12)?,
             // Phase E.2: pinned host buffer + event for the per-propose
             // drafter D2H. Pinned memory lets cuMemcpyDtoHAsync issue a
             // true async DMA on the caller's stream (vs. the synchronous
@@ -272,14 +350,14 @@ impl BlockDiffusionDraftHead {
             // so target-model verify work issued on the same stream can
             // proceed in parallel.
             draft_tokens_host_pinned: std::sync::atomic::AtomicPtr::new(
-                gpu.alloc_host_pinned(gamma_val * 4)?,
+                gpu.alloc_host_pinned(nb * gamma_val * 4)?,
             ),
             draft_tokens_event: gpu.create_event()?,
             // γ rows only — NOT n_attn. The lm_head GEMM writes M=γ rows,
             // argmax + BLOCK_DUMP read rows 0..γ, and no path indexes logits
             // by ctx offset. Sizing at n_attn×vocab would cost 2.04 GB at
             // cw=4096 for rows nothing ever touches (γ rows ≈ 8.4 MB).
-            logits: gpu.alloc(g * vocab_size * bf16)?,
+            logits: gpu.alloc(nb * g * vocab_size * bf16)?,
             draft_tokens_dev: gpu.alloc(n_attn * 4)?,
             position_ids: gpu.alloc(n_attn * 4)?,
         };
@@ -297,7 +375,7 @@ impl BlockDiffusionDraftHead {
         // 64, pairs 11..26 ramped). Result: drafter Q/K rotations landed in
         // the wrong angular basis at every layer → 0% draft acceptance. Now
         // we read the drafter's own scaling block instead of guessing.
-        let rope_theta = weights.config.rope_theta;
+        let rope_theta = weights.config.effective_rope_theta();
         let rotary_dim = head_dim; // Qwen3.6-DFlash applies rope to full head_dim
         let dim_f = rotary_dim as f32;
         let n_pairs = rotary_dim / 2;
@@ -418,6 +496,55 @@ impl BlockDiffusionDraftHead {
             num_layers,
         );
 
+        // ── DFlash2 selector: host copies (see Dflash2Selector docs) ──
+        let dflash2_selector = match weights.candidate_selector {
+            Some(sel) if selector_rank > 0 => {
+                let d2h_u16 = |ptr: spark_runtime::gpu::DevicePtr,
+                               elems: usize,
+                               what: &str|
+                 -> Result<Vec<u16>> {
+                    let mut bytes = vec![0u8; elems * 2];
+                    gpu.copy_d2h(ptr, &mut bytes)
+                        .with_context(|| format!("DFlash2 selector D2H: {what}"))?;
+                    Ok(bytes
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect())
+                };
+                let hidden_projection_dev = sel.hidden_projection.weight;
+                let predecessor_codebook_dev = sel.predecessor_codebook.weight;
+                let successor_codebook_dev = sel.successor_codebook.weight;
+                let sel = super::Dflash2Selector {
+                    hidden_projection: d2h_u16(
+                        sel.hidden_projection.weight,
+                        selector_rank * hidden_size,
+                        "hidden_projection",
+                    )?,
+                    predecessor_codebook: d2h_u16(
+                        sel.predecessor_codebook.weight,
+                        vocab_size * selector_rank,
+                        "predecessor_codebook",
+                    )?,
+                    successor_codebook: d2h_u16(
+                        sel.successor_codebook.weight,
+                        vocab_size * selector_rank,
+                        "successor_codebook",
+                    )?,
+                    rank: selector_rank,
+                    top_k: selector_top_k,
+                    hidden_projection_dev,
+                    predecessor_codebook_dev,
+                    successor_codebook_dev,
+                };
+                tracing::info!(
+                    "DFlash2 selector loaded host-side: rank={selector_rank}, top_k={selector_top_k},                      codebooks 2x[{vocab_size}, {selector_rank}] (~{} MiB host)",
+                    (2 * vocab_size * selector_rank * 2) / (1024 * 1024),
+                );
+                Some(sel)
+            }
+            _ => None,
+        };
+
         let mut head = Self {
             num_layers,
             hidden_size,
@@ -428,10 +555,14 @@ impl BlockDiffusionDraftHead {
             vocab_size,
             draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
+            max_batch: nb,
             mask_token_id,
             window_size,
             target_layer_ids,
             target_hidden_size,
+            dflash2_selector,
+            conv_kernel_size,
+            conv_group_size,
 
             embed_tokens_shared,
             lm_head_shared,
@@ -456,6 +587,15 @@ impl BlockDiffusionDraftHead {
                     gate_proj: l.gate_proj,
                     up_proj: l.up_proj,
                     down_proj: l.down_proj,
+                    // DFlash2 convs (None on DFlash1 checkpoints).
+                    attention_conv: l.attention_conv.map(|c| super::Dflash2Conv {
+                        base_kernel: c.base_kernel,
+                        kernel_projection: c.kernel_projection,
+                    }),
+                    mlp_conv: l.mlp_conv.map(|c| super::Dflash2Conv {
+                        base_kernel: c.base_kernel,
+                        kernel_projection: c.kernel_projection,
+                    }),
                     // Phase G — populated below if ATLAS_DFLASH_DRAFTER_FP8=1.
                     q_proj_fp8: None,
                     k_proj_fp8: None,
@@ -482,6 +622,7 @@ impl BlockDiffusionDraftHead {
             // Phase F: per-subgraph graph state — empty until the first
             // capture pass lands. Layout: [pre_0, post_0, ..., tail].
             propose_graphs: parking_lot::Mutex::new(None),
+            propose_mono_graph: parking_lot::Mutex::new(None),
             suppress_graphs: std::sync::atomic::AtomicBool::new(false),
             propose_warmup_count: std::sync::atomic::AtomicUsize::new(0),
             quant: DflashQuantization::Bf16,
@@ -502,23 +643,42 @@ impl BlockDiffusionDraftHead {
             head.target_layer_ids,
         );
 
-        // Phase G — opt-in drafter MLP FP8. Quantize the seven dense-GEMM
-        // weights per layer (q/k/v/o/gate/up/down) BF16 → FP8 E4M3 with
-        // per-row f32 scales. One-shot at model load; runtime hot path
-        // consumes the Fp8DenseWeight via fp8_gemm_n128 in pre/post_attn
-        // (wired in G.3). Default OFF — bit-identical to F.2 baseline.
+        // Phase G — drafter MLP FP8. Quantize the seven dense-GEMM weights
+        // per layer (q/k/v/o/gate/up/down) BF16 → FP8 E4M3 with per-row f32
+        // scales. One-shot at model load; the runtime hot path consumes the
+        // Fp8DenseWeight via fp8_gemm_n128 in pre/post_attn.
         //
-        // Acceptance gate (G.4 design doc §16.7): bench must hold
-        // ≥43% accept (vs 44.9% BF16) AND ≥11.0 tok/s (vs 8.70). If hard
-        // fail, layer-by-layer ablation; skip layer 0 first.
-        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() == Some("1");
+        // DEFAULT-ON since 2026-08-19 (`ATLAS_DFLASH_DRAFTER_FP8=0` opts out).
+        // The G.4 design-doc gate (≥43% accept vs 44.9% BF16, ≥11.0 tok/s vs
+        // 8.70) predated the batched verify/propose work and could no longer
+        // decide this, so it was re-measured head-to-head on the current
+        // build, same boot shape, qwen3.8-27B + DFlash2:
+        //
+        //          BF16 (off)          FP8 (on)
+        //   C=1    34.8 tok/s @85%     37.7 @86%
+        //   C=2    33.5      @78%      47.9 @79%   (+43%)
+        //   C=4    55.5      @69%      57.1 @70%
+        //   prefill 854/840 tok/s      857/844     (unchanged)
+        //
+        // FP8 wins every leg and ACCEPTANCE IS EQUAL-OR-BETTER on all three,
+        // so the quality risk the opt-in guarded against does not appear —
+        // which is the expected shape, since a drafter is only ever a
+        // proposal the target verifies. Cost is ~1.92 GB of FP8 mirrors
+        // (footprint 5.20 → 7.12 GB).
+        //
+        // Self-disabling: the kernel probe below leaves BF16 in place on any
+        // target whose PTX lacks the Phase G kernels, so default-on cannot
+        // break a target that never had this path.
+        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
         let fp8_kernels_present = head.kernels.fp8_gemm_n128_row_scaled.0 != 0
             && head.kernels.fp8_gemm_n128_row_scaled_m16.0 != 0;
         if fp8_requested && !fp8_kernels_present {
             tracing::warn!(
-                "ATLAS_DFLASH_DRAFTER_FP8=1 but fp8_gemm_t_row_scaled(_m16) kernels are \
-                 not in this target's w4a16 PTX module — staying on the BF16 drafter path. \
-                 Port the Phase G kernels from kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu."
+                "Drafter FP8 (default-on) requested but fp8_gemm_t_row_scaled(_m16) \
+                 kernels are not in this target's w4a16 PTX module — staying on the BF16 \
+                 drafter path, which costs throughput but is otherwise correct. Port the \
+                 Phase G kernels from kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu, or set \
+                 ATLAS_DFLASH_DRAFTER_FP8=0 to silence this."
             );
         }
         if fp8_requested && fp8_kernels_present {
@@ -581,26 +741,52 @@ impl BlockDiffusionDraftHead {
                 );
                 tracing::debug!("DFlash Phase G: layer {} quantized", layer_idx);
             }
-            // Phase G — also quantize the shared lm_head weight. It's the
-            // largest GEMM in the drafter (vocab × hidden = 248320 × 5120 ≈
-            // 1.27B weights, ~14× any per-layer GEMM). We allocate a SEPARATE
-            // FP8 buffer so we don't mutate the target model's BF16 lm_head
-            // (the BF16 ptr stays valid for the BF16 path).
-            tracing::info!(
-                "DFlash Phase G: quantizing shared lm_head [{} × {}]",
-                head.vocab_size,
-                head.hidden_size
-            );
-            let lm_head_bf16 = crate::weight_map::DenseWeight {
-                weight: head.lm_head_shared,
-            };
-            head.lm_head_shared_fp8 = Some(lm_head_bf16.quantize_to_fp8(
-                gpu,
-                quant_k,
-                head.vocab_size,
-                head.hidden_size,
-                stream,
-            )?);
+            // Phase G — the shared lm_head, the largest GEMM in the drafter
+            // (vocab × hidden = 248320 × 5120 ≈ 1.27B weights, ~14× any
+            // per-layer GEMM).
+            //
+            // Preferred: SHARE the checkpoint's NATIVE FP8 lm_head
+            // (`lm_head_native_fp8`, built in factory/lm_head_setup.rs).
+            // Checkpoints like unsloth Qwen3.8-27B-NVFP4 ship the head as
+            // FP8 E4M3 + per-row scale, and those bytes stay resident in the
+            // adopted weight store anyway — re-quantizing the BF16 dequant
+            // was a lossy FP8→BF16→FP8 round trip AND a duplicate 1.27 GB
+            // allocation. The row_scale convention is identical (per-row f32
+            // multiplier), so the tail GEMM kernels are unchanged.
+            //
+            // Fallback (BF16-native checkpoints): runtime-quantize a SEPARATE
+            // FP8 buffer so the target's BF16 lm_head ptr stays valid.
+            if let Some((shared, rows)) = lm_head_native_fp8 {
+                anyhow::ensure!(
+                    rows == head.vocab_size,
+                    "native FP8 lm_head share rows ({rows}) != drafter vocab ({}) — \
+                     the drafter's tail GEMM iterates head.vocab_size rows",
+                    head.vocab_size
+                );
+                tracing::info!(
+                    "DFlash Phase G: sharing the checkpoint's NATIVE FP8 lm_head \
+                     [{} × {}] (1.27 GB runtime mirror skipped)",
+                    head.vocab_size,
+                    head.hidden_size
+                );
+                head.lm_head_shared_fp8 = Some(shared);
+            } else {
+                tracing::info!(
+                    "DFlash Phase G: quantizing shared lm_head [{} × {}]",
+                    head.vocab_size,
+                    head.hidden_size
+                );
+                let lm_head_bf16 = crate::weight_map::DenseWeight {
+                    weight: head.lm_head_shared,
+                };
+                head.lm_head_shared_fp8 = Some(lm_head_bf16.quantize_to_fp8(
+                    gpu,
+                    quant_k,
+                    head.vocab_size,
+                    head.hidden_size,
+                    stream,
+                )?);
+            }
             head.quant = DflashQuantization::Fp8Weights;
             tracing::info!(
                 "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \

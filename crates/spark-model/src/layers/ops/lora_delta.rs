@@ -17,6 +17,9 @@ use crate::weight_map::DenseWeight;
 pub struct LoraKernels {
     pub gemv_k: KernelHandle,
     pub gemm_tc_k: KernelHandle, // KernelHandle(0) on miss -> gemm_k fallback
+    /// Fused expand+fold (`C += scale * A@B^T`). `0` on miss -> the
+    /// unfused gemm_tc + scaled_add pair, which is what this replaces.
+    pub gemm_tc_acc_k: KernelHandle,
     pub gemm_k: KernelHandle,
     pub scaled_add_k: KernelHandle,
     /// M2 fused batched bgmv (per-request routing): shrink then expand+fold.
@@ -43,6 +46,7 @@ impl LoraKernels {
         Ok(Self {
             gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             gemm_tc_k: crate::layers::try_kernel(gpu, "gemm_tc", "dense_gemm_tc"),
+            gemm_tc_acc_k: crate::layers::try_kernel(gpu, "gemm_tc", "dense_gemm_tc_scaled_acc"),
             gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             scaled_add_k: gpu.kernel("residual_add", "bf16_scaled_add")?,
             bgmv_shrink_k: gpu.kernel("lora_bgmv", "lora_bgmv_shrink")?,
@@ -174,6 +178,59 @@ pub struct LoraFfnWeights {
 /// shrink n = max_rank (xa pad cols come out zero), expand k = max_rank
 /// (matches B's row stride; zero pads contribute nothing) — bit-identical
 /// to a true-rank product.
+/// `ATLAS_LORA_NO_APPLY=1` — keep the adapter RESIDENT but skip every delta.
+///
+/// A measurement lever, not a serving one: it separates "what does applying
+/// the adapter cost" from "what does having an adapter loaded cost", which are
+/// different numbers and were conflated the first time this path was profiled.
+/// Output is base-like while set, so it is useless for serving and is never a
+/// default.
+pub fn lora_no_apply() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_LORA_NO_APPLY").as_deref() == Ok("1"))
+}
+
+/// Row count at or below which the delta runs as `m` row-wise GEMVs instead
+/// of one GEMM (`ATLAS_LORA_GEMV_MAX_M`, default 8).
+///
+/// `dense_gemm_tc` tiles 16 rows. At m=2 it does the FULL B-matrix traffic —
+/// B is [n_out, max_rank] and independent of m — to produce 2 useful rows out
+/// of 16, at one row-block of grid. Measured on qwen3.8-27B + an r=64 adapter:
+/// the FFN deltas cost ~8% of a decode step at m=1 (GEMV) and ~64% at m=2
+/// (GEMM). Same work, 8x the price, purely from crossing this boundary.
+///
+/// The GEMV loop is also the canonical form: `apply_lora_bgmv` documents
+/// itself as byte-identical to `n` single-row `apply_lora_delta` calls, so
+/// this makes the small-m path agree with that oracle rather than diverge
+/// from it.
+///
+/// Default 48 covers the plain decode ladder (C=1..8) AND the speculative
+/// verify shapes, which present n*k rows — up to 4 seqs x k=9 = 36 under
+/// cross-sequence batched DFlash verify. 8 left those on the GEMM: raising it
+/// took DFlash+LoRA from 34.8 to 48.6 tok/s at C=2 and 47.6 to 54.2 at C=4,
+/// with accepts and output unchanged. Prefill's m is orders of magnitude
+/// larger and keeps the GEMM.
+pub fn lora_gemv_max_m() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_LORA_GEMV_MAX_M")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(48)
+    })
+}
+
+/// `ATLAS_LORA_NO_FFN=1` — skip the dense-FFN and GDN-out_proj deltas, keep
+/// the attention ones.
+///
+/// The companion to `ATLAS_LORA_NO_APPLY`: that one answers "deltas or
+/// residency", this one answers "which deltas". Measurement only; output is
+/// wrong while set.
+pub fn lora_no_ffn() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_LORA_NO_FFN").as_deref() == Ok("1"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn apply_lora_delta(
     gpu: &dyn GpuBackend,
@@ -186,6 +243,22 @@ pub fn apply_lora_delta(
     lora_delta: DevicePtr, // arena scratch >= m * n_out BF16
     stream: u64,
 ) -> Result<()> {
+    if lora_no_apply() {
+        return Ok(());
+    }
+    // Small-m: run `m` single-row deltas rather than one 16-row-tiled GEMM.
+    // Rows are contiguous by this function's contiguity contract, so a row is
+    // just a pointer offset. See `lora_gemv_max_m` for why.
+    if m > 1 && m <= lora_gemv_max_m() {
+        for row in 0..m {
+            let x_row = DevicePtr(x.0 + (row as u64) * (pair.k_in as u64) * 2);
+            let out_row = DevicePtr(base_out.0 + (row as u64) * (pair.n_out as u64) * 2);
+            apply_lora_delta(
+                gpu, kernels, pair, x_row, out_row, 1, lora_xa, lora_delta, stream,
+            )?;
+        }
+        return Ok(());
+    }
     if m == 1 {
         // shrink: [1,k_in] @ A[max_rank,k_in]^T -> xa[1,max_rank]
         ops::dense_gemv(
@@ -209,6 +282,33 @@ pub fn apply_lora_delta(
             pair.max_rank,
             stream,
         )?;
+    } else if kernels.gemm_tc_acc_k.0 != 0 && kernels.gemm_tc_k.0 != 0 {
+        // FUSED path: shrink, then expand-and-fold in one launch. Skips the
+        // [m, n_out] scratch entirely — no write, no read-back, and no
+        // separate scaled_add pass over it. Bit-identical to the pair below.
+        ops::dense_gemm_tc(
+            gpu,
+            kernels.gemm_tc_k,
+            x,
+            &pair.a,
+            lora_xa,
+            m,
+            pair.max_rank,
+            pair.k_in,
+            stream,
+        )?;
+        return ops::dense_gemm_tc_scaled_acc(
+            gpu,
+            kernels.gemm_tc_acc_k,
+            lora_xa,
+            &pair.b,
+            base_out,
+            m,
+            pair.n_out,
+            pair.max_rank,
+            pair.scale,
+            stream,
+        );
     } else if kernels.gemm_tc_k.0 != 0 {
         ops::dense_gemm_tc(
             gpu,

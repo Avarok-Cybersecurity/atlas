@@ -18,6 +18,17 @@ pub fn emit_token(
     logprobs: Option<crate::api::TokenLogprobs>,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
+    // Per-token ledger (debug): every emission path funnels through here,
+    // so `slot + out_idx + tok` gives a diffable per-stream token stream.
+    // The C>=2 temp-0 fork forensics reads this to find the first token
+    // where a concurrent run diverges from the C=1 run of the same prompt
+    // (step type comes from adjacent CTX_VERIFY / CTX_COMMIT debug lines).
+    tracing::debug!(
+        "TOK slot={} out_idx={} tok={}",
+        a.seq.slot_idx,
+        a.output_tokens.len(),
+        tok,
+    );
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
     // perm-fail, loop-watchdog, client stop-sequence match) flip this
@@ -58,6 +69,7 @@ pub fn emit_token(
         // The streamed-text path strips stop tokens server-side, so the
         // client never sees the literal `<|im_start|>` bytes.
         a.output_tokens.push(tok);
+        crate::metrics::GENERATION_TOKENS_TOTAL.inc();
         a.finished = true;
         tracing::debug!(
             "<|im_start|> hard-stop fired (id={ims}); ending turn before grammar/suppress_eos"
@@ -73,6 +85,7 @@ pub fn emit_token(
         && tok == trs
     {
         a.output_tokens.push(tok);
+        crate::metrics::GENERATION_TOKENS_TOTAL.inc();
         a.finished = true;
         // Name the cut -- MTP twin of the decode_logits_step site.
         a.guard_stop = Some(GUARD_STOP_TOOL_RESPONSE);
@@ -202,6 +215,12 @@ pub fn emit_token(
     }
 
     a.output_tokens.push(tok);
+    crate::metrics::GENERATION_TOKENS_TOTAL.inc();
+    // Permanent diagnostic (RUST_LOG=...,spark::scheduler::emit_step=debug):
+    // the emitted token id at the single choke point every path funnels
+    // through — the token-exact stream needed for byte-level A/B of two
+    // serve configs (e.g. the qwen3.8 spec-decode divergence hunt).
+    tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
 
     // Spec-resume guard bookkeeping: count tokens emitted after `</think>`.
     // The `</think>` token itself is not counted (think_ended is still false
@@ -519,6 +538,7 @@ pub(crate) fn emit_grammar_close(a: &mut ActiveSeq) {
     for tok in close {
         let tok = tok as u32;
         a.output_tokens.push(tok);
+        crate::metrics::GENERATION_TOKENS_TOTAL.inc();
         if !send_stream_event(a, StreamEvent::Token(tok)) {
             break;
         }

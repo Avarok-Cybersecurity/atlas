@@ -281,6 +281,14 @@ impl TransformerModel {
             );
         }
 
+        // Secondary stream is safe here: every caller reaches this commit
+        // only after a host-blocking D2H of the verify argmaxes, so the
+        // default stream's intermediate WRITES have fully drained before
+        // these copies are enqueued. (The 2026-08-19 DFlash zero-state bug
+        // looked like an ordering race here but was actually the seam
+        // dispatch passing the full γ-draft slice into the K=4 verdict —
+        // see mtp_step.rs / verify_k4_verdict.rs.)
+        self.gdn_dump_probe_l0(seq, "commit_entry");
         let stream = self.secondary_stream;
         let mut ssm_layer_idx = 0usize;
         // Two plans, not one interleaved loop: h blobs and conv blobs have
@@ -327,6 +335,7 @@ impl TransformerModel {
         }
         run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         self.gpu.record_event(self.secondary_event, stream)?;
+        self.gdn_dump_probe_l0(seq, "commit_exit");
         Ok(())
     }
 }

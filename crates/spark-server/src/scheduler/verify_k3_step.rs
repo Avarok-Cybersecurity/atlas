@@ -207,6 +207,7 @@ pub fn step_verify_k3(
             a,
             verify_ctx,
             0,
+            Some(drafts),
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),

@@ -63,6 +63,8 @@ impl TransformerModel {
         let m = tokens.len(); // 1 + k
         let vocab = self.config.vocab_size;
 
+        // ATLAS_GDN_VERIFY_DUMP diagnostic: bracket the fused verify.
+        self.gdn_dump_probe_l0(seq, "fused_entry");
         // In-place verify: h_state IS canonical — no pre_verify_copy_async
         // needed. Modeled on verify_b.rs (K=2 in-place).
 
@@ -383,6 +385,7 @@ impl TransformerModel {
         }
         seq.seq_len += m;
 
+        self.gdn_dump_probe_l0(seq, "fused_exit");
         Ok(result)
     }
 }

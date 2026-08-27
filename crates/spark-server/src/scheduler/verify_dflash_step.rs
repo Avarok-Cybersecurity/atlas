@@ -81,6 +81,7 @@ pub fn step_verify_dflash(
             a,
             verify_ctx,
             0,
+            Some(drafts),
         )
     };
 
@@ -137,8 +138,15 @@ pub fn step_verify_dflash(
     // Unified ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1): ONE unconditional
     // commit at the K=gamma point — rows 0..=num_accepted at RoPE base
     // pre_verify_len. Structural replacement for dflash_eagle_kgamma_append.
+    tracing::debug!(
+        "CTX_VERIFY slot={} pre_verify_len={} na={} k={}",
+        a.seq.slot_idx,
+        pre_verify_len,
+        num_accepted,
+        drafts.len() + 1,
+    );
     if sched.levers.dflash_unified_ctx {
-        if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len) {
+        if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len, 0) {
             tracing::error!("commit_ctx (kgamma): {e:#}");
         }
     } else {
@@ -171,16 +179,22 @@ pub fn step_verify_dflash(
         a.last_token = bonus;
     }
 
+    // Accept telemetry, in DRAFT TOKENS not steps. A gamma-block drafter
+    // accepts 0..gamma per step, so a per-step accept/reject binary carries
+    // no information — and the two labels this used to emit ("accept_all" /
+    // "accept_partial") BOTH matched the TUI's `outcome.contains("accept")`
+    // test, which pinned the Stats page's `accept k=dflash` bar at 100%
+    // forever. Counting tokens makes that bar the real draft-acceptance
+    // rate, the same number the benchmarks report.
+    let rejected = drafts.len().saturating_sub(num_accepted);
     crate::metrics::SPEC_DECODE_VERIFY
-        .with_label_values(&[
-            "dflash",
-            if num_accepted == drafts.len() {
-                "accept_all"
-            } else {
-                "accept_partial"
-            },
-        ])
-        .inc();
+        .with_label_values(&["dflash", "accept"])
+        .inc_by(num_accepted as u64);
+    if rejected > 0 {
+        crate::metrics::SPEC_DECODE_VERIFY
+            .with_label_values(&["dflash", "reject"])
+            .inc_by(rejected as u64);
+    }
 
     tracing::info!(
         "DFLASH K=γ verify: γ={} accepted={}/{} ({:.0}%) seq_len={}",

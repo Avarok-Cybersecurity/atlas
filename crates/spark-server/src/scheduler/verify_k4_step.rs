@@ -105,6 +105,7 @@ pub fn step_verify_k4(
             a,
             verify_ctx,
             0,
+            Some(drafts),
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),
@@ -127,8 +128,14 @@ pub fn step_verify_k4(
     // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
     if sched.levers.shadow_topk > 0 {
+        // raw= is the argmax BEFORE verify_pick_all_with_pipeline (rep_pen +
+        // DRY + presence). raw!=v at a position means the PIPELINE flipped the
+        // pick; raw==v with a wrong token means the verify FORWARD itself
+        // diverges from sequential decode. This is the discriminator for the
+        // qwen3.8 temp-0 spec-decode divergence (memory: video-fidelity
+        // video-before-image loses ", yellow" to an <|im_end|> pick).
         tracing::info!(
-            "SHADOW_TGT base={shadow_base} v=[{v0},{v1},{v2},{v3}] drafts=[{},{},{}]",
+            "SHADOW_TGT base={shadow_base} raw=[{v0_argmax},{v1_argmax},{v2_argmax},{v3_argmax}] v=[{v0},{v1},{v2},{v3}] drafts=[{},{},{}]",
             drafts[0],
             drafts[1],
             drafts[2],

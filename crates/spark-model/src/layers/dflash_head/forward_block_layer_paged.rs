@@ -73,6 +73,21 @@ pub(super) struct PagedLayerArgs {
     /// ATLAS_DFLASH_BLOCK_DUMP=1 upstream; forces the eager path (graph
     /// capture cannot contain the D2H/sync this dump injects).
     pub block_dump: bool,
+    /// Sequences packed into this forward. Rows are seq-major: sequence i owns
+    /// `[i*gamma, (i+1)*gamma)`. Every WEIGHT-BEARING op below runs over all
+    /// `n_seq * gamma` rows at once — that is the entire point, the drafter
+    /// weights are read once instead of n times. Attention is the exception:
+    /// it reads no weights (only Q/K/V scratch and each sequence's own KV
+    /// pages), so batching it would save nothing and it stays a per-sequence
+    /// loop over its own block table. `1` is the single-sequence path.
+    pub n_seq: u32,
+    /// Per-sequence drafter block tables and ctx counts, `n_seq` long.
+    /// Attention is the ONLY op that needs them: it reads each sequence's own
+    /// KV pages, so it runs as `n_seq` launches over row bands rather than one
+    /// batched launch. That costs only launch overhead — attention reads no
+    /// WEIGHTS, so there is nothing to amortise across sequences. Empty on the
+    /// single-sequence path, which uses `block_table_dev` / `ctx_count`.
+    pub seq_block_tables: Vec<DevicePtr>,
 }
 
 impl BlockDiffusionDraftHead {
@@ -155,6 +170,128 @@ impl BlockDiffusionDraftHead {
     /// block runs — that path injects D2H + sync, but it's gated by an
     /// env var that already disables graph eligibility upstream
     /// (`forward_block.rs:438`).
+    /// DFlash2 conv gate: the layer carries conv weights, the kernel is in
+    /// this target's module set, and the operator has not killed it
+    /// (`ATLAS_NO_DFLASH2_CONV`, presence).
+    fn dflash2_conv_armed<'a>(
+        &self,
+        conv: Option<&'a super::Dflash2Conv>,
+    ) -> Option<&'a super::Dflash2Conv> {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let off = *OFF.get_or_init(|| std::env::var_os("ATLAS_NO_DFLASH2_CONV").is_some());
+        // One-shot arming report: whether the conv path is actually live has
+        // already been mis-assumed once (an A/B measured byte-identical
+        // accepts with the conv 'on' vs off), so state the three gate inputs
+        // plainly the first time through.
+        static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        REPORTED.get_or_init(|| {
+            tracing::info!(
+                "DFlash2 conv gate: weights_present={} kernel_loaded={} kill_switch={} -> armed={}",
+                conv.is_some(),
+                self.kernels.dflash2_conv.0 != 0,
+                off,
+                conv.is_some() && self.kernels.dflash2_conv.0 != 0 && !off,
+            );
+        });
+        conv.filter(|_| self.kernels.dflash2_conv.0 != 0 && !off)
+    }
+
+    /// DFlash2 "prepare" (pre-sublayer) conv: dyn = kernel_projection(normed)
+    /// (BOTH stages' dynamic kernels, stashed in `dyn_buf` for the finish
+    /// call after the sublayer), then stage-0 conv of the normed input.
+    /// Returns the conv output buffer to feed the sublayer's projections.
+    #[allow(clippy::too_many_arguments)]
+    fn dflash2_conv_prepare(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        conv: &super::Dflash2Conv,
+        normed: spark_runtime::gpu::DevicePtr,
+        dyn_buf: spark_runtime::gpu::DevicePtr,
+        g: u32,
+        // Causal-reset stride: rows per sequence. Equals `g` on the
+        // single-sequence path; a cross-sequence batch passes gamma so the
+        // conv's causal pad restarts at every sequence boundary.
+        block_len: u32,
+        h: u32,
+        stream: u64,
+    ) -> Result<spark_runtime::gpu::DevicePtr> {
+        use crate::layers::ops;
+        let ks = self.conv_kernel_size as u32;
+        let gs = self.conv_group_size as u32;
+        let dyn_n = 2 * ks * (h / gs.max(1));
+        ops::dense_gemm_bf16_pipelined(
+            gpu,
+            self.kernels.dense_gemm_pipelined,
+            normed,
+            &conv.kernel_projection,
+            dyn_buf,
+            g,
+            dyn_n,
+            h,
+            stream,
+        )?;
+        ops::dflash2_conv(
+            gpu,
+            self.kernels.dflash2_conv,
+            normed,
+            dyn_buf,
+            conv.base_kernel.weight,
+            self.scratch.dflash2_conv_buf,
+            g,
+            h,
+            ks,
+            gs,
+            0,
+            block_len,
+            stream,
+        )?;
+        Ok(self.scratch.dflash2_conv_buf)
+    }
+
+    /// DFlash2 "finish" (post-sublayer) conv: stage-1 conv of the sublayer
+    /// OUTPUT using the dynamic kernels computed at prepare. Returns the
+    /// buffer the residual add should consume.
+    #[allow(clippy::too_many_arguments)]
+    fn dflash2_conv_finish(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        conv: &super::Dflash2Conv,
+        sublayer_out: spark_runtime::gpu::DevicePtr,
+        dyn_buf: spark_runtime::gpu::DevicePtr,
+        g: u32,
+        // Causal-reset stride: rows per sequence. Equals `g` on the
+        // single-sequence path; a cross-sequence batch passes gamma so the
+        // conv's causal pad restarts at every sequence boundary.
+        block_len: u32,
+        h: u32,
+        stream: u64,
+    ) -> Result<spark_runtime::gpu::DevicePtr> {
+        use crate::layers::ops;
+        let ks = self.conv_kernel_size as u32;
+        let gs = self.conv_group_size as u32;
+        // base_kernel is [2, ks, h] BF16; stage 1 starts ks*h elements in.
+        let base1 = conv
+            .base_kernel
+            .weight
+            .offset((ks as usize) * (h as usize) * 2);
+        ops::dflash2_conv(
+            gpu,
+            self.kernels.dflash2_conv,
+            sublayer_out,
+            dyn_buf,
+            base1,
+            self.scratch.dflash2_conv_buf,
+            g,
+            h,
+            ks,
+            gs,
+            1,
+            block_len,
+            stream,
+        )?;
+        Ok(self.scratch.dflash2_conv_buf)
+    }
+
     pub(super) fn forward_block_layer_pre_attn(
         &self,
         layer: &DflashLayer,
@@ -175,8 +312,13 @@ impl BlockDiffusionDraftHead {
             ..
         } = *args;
         let gpu = ctx.gpu;
-        let g = self.gamma as u32;
-        let kv_len = ctx_count + g;
+        // `block_g` = rows per sequence (the gamma block). `g` = TOTAL rows in
+        // this forward, which is what every row-generic / weight-bearing op
+        // below wants. They coincide at n_seq = 1.
+        let block_g = self.gamma as u32;
+        let n_seq = args.n_seq.max(1);
+        let g = block_g * n_seq;
+        let kv_len = ctx_count + block_g;
 
         // 3a. input_layernorm — γ rows.
         // dflash.py:125  hidden_states = self.input_layernorm(hidden_states)
@@ -207,6 +349,25 @@ impl BlockDiffusionDraftHead {
             )?;
         }
 
+        // DFlash2 attention "prepare" conv (reference: GroupedDynamicCausalConv
+        // .prepare on the normed input, before q/k/v). The dynamic kernels for
+        // BOTH stages land in dflash2_dyn_attn; the finish half runs in
+        // post_attn after o_proj.
+        let qkv_src = if let Some(conv) = self.dflash2_conv_armed(layer.attention_conv.as_ref()) {
+            self.dflash2_conv_prepare(
+                gpu,
+                conv,
+                self.scratch.norm_buf,
+                self.scratch.dflash2_dyn_attn,
+                g,
+                block_g,
+                h,
+                stream,
+            )?
+        } else {
+            self.scratch.norm_buf
+        };
+
         // Phase G: when self.quant == Fp8Weights, swap each dense_gemm
         // for fp8_gemm_n128_row_scaled against the FP8 mirror weight.
         // Per-row f32 scales (built at load time by quantize_bf16_to_fp8)
@@ -221,6 +382,30 @@ impl BlockDiffusionDraftHead {
                          k_in: u32|
          -> Result<()> {
             if use_fp8 && let Some(fp8) = w_fp8 {
+                // Register-tiled M<=8 FP8 GEMV (rt2 twin, PR #648 acaf9533):
+                // the M64-tile GEMM below pads 87% of its tile at M=8. `g` is
+                // the TOTAL rows this forward (γ * n_seq), so this admits C=1
+                // and the tile keeps the wider batches, where its padding is
+                // already amortised. Drafter-side numerics are correctness-
+                // free under strict-argmax accept — only the accept RATE can
+                // move, never an output token. A/B: ATLAS_NO_DFLASH_FP8_RT=1.
+                if self.kernels.fp8_gemv_rt2.0 != 0
+                    && g <= 8
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch8_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -253,7 +438,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.q_proj,
             &layer.q_proj_fp8,
-            self.scratch.norm_buf,
+            qkv_src,
             self.scratch.q_buf,
             q_dim,
             h,
@@ -302,7 +487,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.k_proj,
             &layer.k_proj_fp8,
-            self.scratch.norm_buf,
+            qkv_src,
             self.scratch.k_buf,
             kv_dim,
             h,
@@ -347,7 +532,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.v_proj,
             &layer.v_proj_fp8,
-            self.scratch.norm_buf,
+            qkv_src,
             self.scratch.v_buf,
             kv_dim,
             h,
@@ -570,24 +755,44 @@ impl BlockDiffusionDraftHead {
         // as scalar args, so the captured launch survives per-call value
         // changes. Host writes the 8-byte pair in forward_block.rs
         // pre-graph; replays pick up whatever's there.
-        ops::prefill_attention_paged_dflash_bf16_indirect(
-            gpu,
-            self.kernels.prefill_attn_dflash_bf16_indirect,
-            self.scratch.q_buf,
-            k_pool,
-            v_pool,
-            self.scratch.attn_out,
-            block_table_dev,
-            g,
-            self.scratch.option_b_indirect_args_dev,
-            self.num_q_heads as u32,
-            self.num_kv_heads as u32,
-            self.head_dim as u32,
-            16, // cache_block_size
-            0,  // sliding_window — drafter not windowed for now
-            inv_sqrt_d,
-            stream,
-        )?;
+        // One launch per sequence over its own row band. `g` here is the
+        // PER-SEQUENCE block length (q_len), never the batch total: each
+        // sequence's gamma queries attend over its own ctx+gamma KV.
+        let n_seq = args.n_seq.max(1) as usize;
+        let q_dim_bytes = (self.num_q_heads * self.head_dim) * 2;
+        for i in 0..n_seq {
+            let (bt_i, args_i) = if n_seq == 1 {
+                (block_table_dev, self.scratch.option_b_indirect_args_dev)
+            } else {
+                (
+                    // Batched: sequence i's own drafter block table, and its
+                    // own [kv_len, q_offset, q_rope_pos] triple written by the
+                    // caller at slot i.
+                    *args.seq_block_tables.get(i).ok_or_else(|| {
+                        anyhow::anyhow!("dflash attn: no block table for seq {i}")
+                    })?,
+                    self.scratch.option_b_indirect_args_dev.offset(i * 12),
+                )
+            };
+            ops::prefill_attention_paged_dflash_bf16_indirect(
+                gpu,
+                self.kernels.prefill_attn_dflash_bf16_indirect,
+                self.scratch.q_buf.offset(i * g as usize * q_dim_bytes),
+                k_pool,
+                v_pool,
+                self.scratch.attn_out.offset(i * g as usize * q_dim_bytes),
+                bt_i,
+                g,
+                args_i,
+                self.num_q_heads as u32,
+                self.num_kv_heads as u32,
+                self.head_dim as u32,
+                16, // cache_block_size
+                0,  // sliding_window — drafter not windowed for now
+                inv_sqrt_d,
+                stream,
+            )?;
+        }
 
         // id259 per-layer dump: post-attention output (pre o_proj), γ × q_dim.
         if args.block_dump {
@@ -835,7 +1040,11 @@ impl BlockDiffusionDraftHead {
             ..
         } = *args;
         let gpu = ctx.gpu;
-        let g = self.gamma as u32;
+        // Same convention as pre_attn: `block_g` = rows per sequence,
+        // `g` = TOTAL rows this forward (weight-bearing ops want the total).
+        let block_g = self.gamma as u32;
+        let n_seq = args.n_seq.max(1);
+        let g = block_g * n_seq;
 
         // Phase G — same swap helper as pre_attn (q/k/v). Single call
         // site per logical GEMM; the row-scaled FP8 GEMM kernel applies
@@ -849,6 +1058,30 @@ impl BlockDiffusionDraftHead {
                          k_in: u32|
          -> Result<()> {
             if use_fp8 && let Some(fp8) = w_fp8 {
+                // Register-tiled M<=8 FP8 GEMV (rt2 twin, PR #648 acaf9533):
+                // the M64-tile GEMM below pads 87% of its tile at M=8. `g` is
+                // the TOTAL rows this forward (γ * n_seq), so this admits C=1
+                // and the tile keeps the wider batches, where its padding is
+                // already amortised. Drafter-side numerics are correctness-
+                // free under strict-argmax accept — only the accept RATE can
+                // move, never an output token. A/B: ATLAS_NO_DFLASH_FP8_RT=1.
+                if self.kernels.fp8_gemv_rt2.0 != 0
+                    && g <= 8
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch8_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -889,6 +1122,26 @@ impl BlockDiffusionDraftHead {
             q_dim,
         )?;
 
+        // DFlash2 attention "finish" conv: stage-1 over the o_proj output
+        // (HF's attention module includes o_proj, so the reference's
+        // `attention_conv.finish(self_attn(...))` lands exactly here),
+        // consuming the dynamic kernels stashed by pre_attn.
+        let attn_add_src =
+            if let Some(conv) = self.dflash2_conv_armed(layer.attention_conv.as_ref()) {
+                self.dflash2_conv_finish(
+                    gpu,
+                    conv,
+                    self.scratch.stream_acc,
+                    self.scratch.dflash2_dyn_attn,
+                    g,
+                    block_g,
+                    h,
+                    stream,
+                )?
+            } else {
+                self.scratch.stream_acc
+            };
+
         // 3h. First residual add: hidden = residual + attn_output.
         // dflash.py:138  hidden_states = residual + hidden_states
         //   stream_buf (residual = pre-3a noise hidden states)
@@ -898,7 +1151,7 @@ impl BlockDiffusionDraftHead {
             gpu,
             self.kernels.residual_add,
             self.scratch.stream_buf,
-            self.scratch.stream_acc,
+            attn_add_src,
             g * h,
             stream,
         )?;
@@ -921,6 +1174,22 @@ impl BlockDiffusionDraftHead {
             stream,
         )?;
 
+        // DFlash2 MLP "prepare" conv on the post-attention-norm output.
+        let mlp_src = if let Some(conv) = self.dflash2_conv_armed(layer.mlp_conv.as_ref()) {
+            self.dflash2_conv_prepare(
+                gpu,
+                conv,
+                self.scratch.norm_buf,
+                self.scratch.dflash2_dyn_mlp,
+                g,
+                block_g,
+                h,
+                stream,
+            )?
+        } else {
+            self.scratch.norm_buf
+        };
+
         // 3j. MLP: gate_proj + up_proj + silu_mul + down_proj — γ rows.
         // dflash.py:141  hidden_states = self.mlp(hidden_states)
         //   Qwen3MLP: down_proj(silu(gate_proj(x)) * up_proj(x)).
@@ -930,7 +1199,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.gate_proj,
             &layer.gate_proj_fp8,
-            self.scratch.norm_buf,
+            mlp_src,
             self.scratch.mlp_intermediate,
             inter,
             h,
@@ -938,7 +1207,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.up_proj,
             &layer.up_proj_fp8,
-            self.scratch.norm_buf,
+            mlp_src,
             self.scratch.mlp_up,
             inter,
             h,
@@ -961,6 +1230,22 @@ impl BlockDiffusionDraftHead {
             inter,
         )?;
 
+        // DFlash2 MLP "finish" conv: stage-1 over the down_proj output.
+        let mlp_add_src = if let Some(conv) = self.dflash2_conv_armed(layer.mlp_conv.as_ref()) {
+            self.dflash2_conv_finish(
+                gpu,
+                conv,
+                self.scratch.stream_acc,
+                self.scratch.dflash2_dyn_mlp,
+                g,
+                block_g,
+                h,
+                stream,
+            )?
+        } else {
+            self.scratch.stream_acc
+        };
+
         // 3k. Second residual add: hidden = (residual + attn) + mlp_output.
         // dflash.py:142  hidden_states = residual + hidden_states
         //   stream_buf (= residual + attn_output, the line-139 residual)
@@ -971,7 +1256,7 @@ impl BlockDiffusionDraftHead {
             gpu,
             self.kernels.residual_add,
             self.scratch.stream_buf,
-            self.scratch.stream_acc,
+            mlp_add_src,
             g * h,
             stream,
         )?;

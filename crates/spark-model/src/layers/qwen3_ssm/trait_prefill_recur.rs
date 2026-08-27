@@ -358,6 +358,30 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         }
+        // ATLAS_GDN_VERIFY_DUMP diagnostic (no-op unless set): record the
+        // prefill-side h_state pointer + a 64KB prefix after the recurrence,
+        // so the verify-side dumps can be checked against what prefill wrote.
+        if let Ok(dir) = std::env::var("ATLAS_GDN_VERIFY_DUMP") {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static PF_CALL: AtomicUsize = AtomicUsize::new(0);
+            let c = PF_CALL.fetch_add(1, Ordering::Relaxed);
+            if c < 96 && !ctx.graph_capture {
+                ctx.gpu.synchronize(stream)?;
+                let mut host = vec![0u8; 65536];
+                ctx.gpu.copy_d2h(h_state, &mut host)?;
+                let _ = std::fs::write(format!("{dir}/pf{c:04}_h.bin"), &host);
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(format!("{dir}/pf_meta.txt"))
+                {
+                    let _ = f.write_all(
+                        format!("pf{c:04} h_state=0x{:x} k={k}\n", h_state.0).as_bytes(),
+                    );
+                }
+            }
+        }
         Ok(())
     }
 

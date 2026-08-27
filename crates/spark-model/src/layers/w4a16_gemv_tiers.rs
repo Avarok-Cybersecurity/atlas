@@ -133,7 +133,19 @@ impl W4a16BatchmTiers {
     pub fn resolve(gpu: &dyn GpuBackend) -> Self {
         let mut handles = [KernelHandle(0); W4A16_BATCHM_WIDTHS.len()];
         for (h, w) in handles.iter_mut().zip(W4A16_BATCHM_WIDTHS) {
-            *h = super::try_kernel(gpu, "w4a16_gemv", &format!("w4a16_gemv_batch{w}"));
+            // Width 8 goes through `batch8_kernel`, which prefers the
+            // register-tiled rt2 variant ported from PR #648 and falls back to
+            // the classic entry point. Resolved HERE rather than at the call
+            // sites because this loop is the single place every M<=8 consumer
+            // (dense FFN, both SSM paths, attention, MTP head) gets its
+            // handle — the upstream branch had to patch four sites for the
+            // same effect, and a fifth consumer added later would have missed
+            // it. Launch geometry is identical, so nothing downstream changes.
+            *h = if w == 8 {
+                super::batch8_kernel(gpu)
+            } else {
+                super::try_kernel(gpu, "w4a16_gemv", &format!("w4a16_gemv_batch{w}"))
+            };
         }
         Self { handles }
     }

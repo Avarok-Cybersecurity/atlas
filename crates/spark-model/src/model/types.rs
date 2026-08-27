@@ -273,6 +273,12 @@ pub struct TransformerModel {
     /// `try_dflash_capture_all` must never write past this many rows. Single
     /// source of truth for the buffer's KMAX; 0 when DFlash is disabled.
     pub(super) dflash_hidden_save_rows: usize,
+    /// Rows per per-sequence capture BAND in `dflash_hidden_save` (= γ+1).
+    /// Sequence `i` of a batched K=γ verify owns rows
+    /// `[i * dflash_kgamma, i * dflash_kgamma + k)`; single-sequence paths
+    /// use band 0. This is the stride the scheduler passes to `commit_ctx`
+    /// as `scratch_row`.
+    pub(super) dflash_kgamma: usize,
     /// Cached CUDA graphs for K=2 verification, **keyed by `seq.slot_idx`**.
     /// Same rationale as `decode_graph`: the captured graph has SSM
     /// h_state/conv_state pointers baked in as kernel arguments, so replay for

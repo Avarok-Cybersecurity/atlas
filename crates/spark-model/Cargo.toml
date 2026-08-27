@@ -145,6 +145,10 @@ name = "w8a16_gemv_batch4_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "w8a16_batch_bitparity_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "q2_0_gemv_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -173,6 +177,10 @@ name = "gdn_wyn_bench"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_verify_fused_qwen38_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_verify_fused_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -186,6 +194,10 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "verify_exact_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_conv_kn_qwen38_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]

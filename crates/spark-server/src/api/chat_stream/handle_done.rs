@@ -31,6 +31,16 @@ pub(super) fn handle_done(
 ) -> DeltaVec {
     let mut deltas: DeltaVec = Vec::new();
 
+    // Permanent diagnostic (RUST_LOG=...,spark::api::chat_stream=debug): the
+    // stream's full accumulated text at finalize — the streaming twin of the
+    // chat_blocking_choice response log. Needed for byte-exact A/B of gate
+    // cells (the media benches stream), e.g. the qwen3.8 spec-decode
+    // divergence hunt.
+    tracing::debug!(
+        "stream response ({finish_reason}, {completion_tokens} tok): {:?}",
+        state.accumulated_content
+    );
+
     // ── Stop-string hold-back flush ─────────────────────────────────
     // vLLM's `IncrementalDetokenizer` releases any bytes still in the
     // hold-back window when the stream finalises (see
@@ -222,8 +232,14 @@ pub(super) fn handle_done(
     // Metrics. (REQUESTS_ACTIVE is released by the ActiveRequestGuard in
     // StreamCtx when the stream is dropped — not here, so a stream that ends
     // without a terminal event still decrements.)
-    crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(ctx.prompt_len as u64);
-    crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(completion_tokens as u64);
+    // PROMPT_TOKENS_TOTAL is incremented per chunk at ingest
+    // (scheduler/phase_continue_prefills/*). Counting it here too
+    // would double-count.
+    // GENERATION_TOKENS_TOTAL is incremented PER TOKEN as the scheduler
+    // emits it (scheduler/emit_step.rs, decode_logits_step.rs). Adding the
+    // completion total here too would double-count — and counting only
+    // here is what made the TUI throughput graph flat-then-spiky: the
+    // counter did not move until a request finished.
     crate::metrics::TTFT_SECONDS
         .with_label_values(&[ctx.model.as_str()])
         .observe(time_to_first_token_ms / 1000.0);

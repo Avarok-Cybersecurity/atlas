@@ -14,6 +14,7 @@ mod main_tab_kernels;
 mod network_tab;
 mod overlay;
 mod stats_tab;
+mod stats_tab_panels;
 mod terminal_tab;
 
 use ratatui::Frame;

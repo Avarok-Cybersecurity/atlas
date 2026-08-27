@@ -119,7 +119,32 @@ pub fn step_mtp(
                 _gmask.as_deref(),
             ) {
                 Ok(init) if !init.is_empty() => {
-                    if eff >= 3 && init.len() >= 3 {
+                    // Route by the ACTUAL draft count, exactly like the
+                    // Phase-B dispatch below. Before this arm existed, a
+                    // DFlash γ-block first-propose (init.len() = γ-1 ≥ 4)
+                    // fell into `step_verify_k4`, which verifies only
+                    // [last, d0..d2] but hands the FULL init slice to
+                    // `k4_apply_verdict` — so `k_rows = init.len()+1 = γ`,
+                    // the full-accept check `na == k` never fired, and a
+                    // 3/3-accept "rewound" to intermediate[3], WHICH A K=4
+                    // VERIFY NEVER WRITES (K-1 dead-write shrink). The
+                    // zero-initialized snapshot was restored over the live
+                    // SSM state — h_state AND conv_state, every GDN layer —
+                    // on the sequence's FIRST verify, and the whole DFlash
+                    // default chain decoded garbage from there (the bug that
+                    // made the recipe require --exact-verify; root-caused
+                    // via ATLAS_GDN_VERIFY_DUMP, 2026-08-19, PR #604).
+                    if init.len() >= 4 {
+                        step_verify_dflash(
+                            model,
+                            a,
+                            sched,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else if eff >= 3 && init.len() >= 3 {
                         step_verify_k4(
                             model,
                             a,
@@ -267,7 +292,7 @@ pub fn step_mtp(
             // so commit and propose decode-append never both cover a token.
             if !will_propose || reprobe_resume {
                 let base_pos = a.seq.seq_len.saturating_sub(1);
-                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos) {
+                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos, 0) {
                     tracing::error!("commit_ctx (mtp serial): {e:#}");
                 }
             }
@@ -343,6 +368,91 @@ pub fn step_mtp(
     // (PRESENCE check) forces the serialized loop for A/B.
     let mut serial_idxs: Vec<usize> = Vec::new();
     let mut batchable_idxs: Vec<usize> = Vec::new();
+    // ── DFlash: cross-sequence batched K=γ verify ──
+    // The block drafter has no ragged ladder, so the batch is the set of
+    // grammarless sequences carrying the SAME γ drafts; anything else falls
+    // to the per-sequence step. One R=n*(γ+1)-row forward replaces n full
+    // weight sweeps (the per-step verify wall was flat ~115ms per SEQUENCE
+    // from C=1..4 before this). Kill switch: ATLAS_DFLASH_BATCH_VERIFY=0.
+    if dflash_verify_raw_argmax
+        && verify_idxs.len() >= 2
+        && sched.levers.dflash_batch_verify
+        && !batch_verify_disabled()
+    {
+        let mut gamma = 0usize;
+        for &idx in &verify_idxs {
+            let a = &active[idx];
+            let g = a.pending_drafts.len();
+            if a.grammar_state.is_some() || g < 1 {
+                serial_idxs.push(idx);
+            } else if gamma == 0 || g == gamma {
+                gamma = g;
+                batchable_idxs.push(idx);
+            } else {
+                serial_idxs.push(idx);
+            }
+        }
+        if batchable_idxs.len() >= 2
+            && model.can_batch_verify(&vec![gamma + 1; batchable_idxs.len()])
+        {
+            let mut asc = batchable_idxs.clone();
+            asc.sort_unstable();
+            let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(asc.len());
+            let mut it = active.iter_mut();
+            let mut consumed = 0usize;
+            for &i in &asc {
+                let a = it.nth(i - consumed).expect("verify index within active");
+                consumed = i + 1;
+                refs.push(a);
+            }
+            step_verify_dflash_batched(model, &mut refs, sched, gamma, num_drafts, verify_ctx);
+        } else {
+            // Loud on the FIRST decline only: a silently-refused gate looks
+            // exactly like "the batched path is off", which cost a whole
+            // validation cycle when k=γ-1+1 failed an over-strict width check.
+            if !batchable_idxs.is_empty() && sched.stats.once("log:dflash_batch_decline") {
+                tracing::info!(
+                    "DFlash batched verify DECLINED: n={} k={} (model.can_batch_verify said no) \
+                     — running the per-sequence loop",
+                    batchable_idxs.len(),
+                    gamma + 1,
+                );
+            }
+            serial_idxs.extend_from_slice(&batchable_idxs);
+        }
+        batchable_idxs.clear();
+        for &idx in &serial_idxs {
+            let a = &mut active[idx];
+            let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+            a.pending_draft_conf.clear();
+            if drafts.is_empty() {
+                continue;
+            }
+            if let Some(ref mut gs) = a.grammar_state {
+                let kept = truncate_drafts_at_grammar_boundary(gs, &drafts);
+                drafts.truncate(kept);
+                if drafts.is_empty() {
+                    continue;
+                }
+            }
+            step_verify_dflash(
+                model,
+                a,
+                sched,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
+        }
+        // Same StepOuter record the shared tail makes — this arm returns
+        // early, and dropping it would blind the phase telemetry exactly
+        // where the batched path is meant to show its win.
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
+        return;
+    }
     if verify_idxs.len() >= 2
         && spark_model::speculative::mtp_multi_seq_mode()
         && !dflash_verify_raw_argmax

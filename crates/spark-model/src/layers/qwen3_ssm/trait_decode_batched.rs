@@ -37,6 +37,58 @@ fn batched_norm_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_NO_BATCHED_GDN_NORM").is_err())
 }
 
+/// `ATLAS_GDN_VERIFY_DUMP=<dir>`: dump the GDN verify chain's inputs/outputs
+/// for the first 96 single-sequence K>=5 layer invocations to `<dir>` as raw
+/// binaries (`c{call:04}_{tag}.bin`). Diagnostic for the K>=6 DFlash verify
+/// corruption: run once with the default chain and once with `--exact-verify`,
+/// then diff per tag offline — the first divergent tag names the broken stage.
+/// Eager-mode only (skipped under graph capture); pair with
+/// `ATLAS_NO_DECODE_GRAPHS=1` (the corruption reproduces eager).
+fn gdn_verify_dump_dir() -> Option<&'static str> {
+    static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| std::env::var("ATLAS_GDN_VERIFY_DUMP").ok())
+        .as_deref()
+}
+
+fn gdn_verify_dump(
+    ctx: &ForwardContext,
+    call: usize,
+    stream: u64,
+    tags: &[(&str, DevicePtr, usize)],
+) -> Result<()> {
+    let Some(dir) = gdn_verify_dump_dir() else {
+        return Ok(());
+    };
+    if ctx.graph_capture || call >= 96 {
+        return Ok(());
+    }
+    ctx.gpu.synchronize(stream)?;
+    let mut meta = String::new();
+    for &(tag, ptr, bytes) in tags {
+        meta.push_str(&format!("{tag} ptr=0x{:x} bytes={bytes}\n", ptr.0));
+        if ptr.0 == 0 || bytes == 0 {
+            continue;
+        }
+        let mut host = vec![0u8; bytes];
+        ctx.gpu.copy_d2h(ptr, &mut host)?;
+        std::fs::write(format!("{dir}/c{call:04}_{tag}.bin"), &host)?;
+    }
+    // Append (pre and post dumps of one call share the meta file).
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("{dir}/c{call:04}_meta.txt"))
+    {
+        let _ = f.write_all(meta.as_bytes());
+    }
+    Ok(())
+}
+
+/// Monotone counter for K>=5 single-seq GDN verify invocations (dump keying).
+static GDN_VERIFY_DUMP_CALL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Row count above which the batched decode/verify GDN projections stop taking
 /// the FP8 PREFILL arm (`fp8_gemm_n128` on the single-scale FP8 copy) and read
 /// the NVFP4 twin through a tile GEMM instead. SSOT for both projections —
@@ -648,6 +700,10 @@ impl Qwen3SsmLayer {
         let h_bytes = self.h_slot_stride_bytes();
         let conv_bytes = self.conv_state_bytes;
 
+        // ATLAS_GDN_VERIFY_DUMP: call id claimed in the Single arm, reused by
+        // the post-norm dump below so all of one invocation's files share a key.
+        let mut norm_dump_call: Option<usize> = None;
+
         match gdn {
             GdnStates::Single(state) => {
                 let ssm_state = state
@@ -699,7 +755,56 @@ impl Qwen3SsmLayer {
                     fp32,
                     stream,
                 };
+                // ATLAS_GDN_VERIFY_DUMP diagnostic (no-op unless set): capture
+                // the chain's inputs before and its state/outputs after, keyed
+                // by a monotone call counter shared with the post-norm dump.
+                let dump_call = if gdn_verify_dump_dir().is_some() && num_tokens >= 5 {
+                    let c = GDN_VERIFY_DUMP_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    gdn_verify_dump(
+                        ctx,
+                        c,
+                        stream,
+                        &[
+                            ("deint", deinterleaved, num_tokens * qkvz_size * bf16),
+                            ("gates", gates_buf, num_tokens * nv * 2 * fp32),
+                            ("h_pre", ssm_state.h_state, 65536.min(h_bytes)),
+                            ("conv_pre", ssm_state.conv_state, conv_bytes),
+                        ],
+                    )?;
+                    Some(c)
+                } else {
+                    None
+                };
+                norm_dump_call = dump_call;
                 self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
+                if let Some(c) = dump_call {
+                    gdn_verify_dump(
+                        ctx,
+                        c,
+                        stream,
+                        &[
+                            ("gdn_out", gdn_out_buf, num_tokens * value_dim * bf16),
+                            ("conv_rows", conv_out_buf, num_tokens * conv_dim * bf16),
+                            (
+                                "conv_f32",
+                                ctx.buffers.ssm_conv_out_f32(),
+                                num_tokens * conv_dim * fp32,
+                            ),
+                            ("h_post", ssm_state.h_state, 65536.min(h_bytes)),
+                            (
+                                "h_inter0",
+                                ssm_state.h_state_intermediates[0],
+                                65536.min(h_bytes),
+                            ),
+                            ("conv_post", ssm_state.conv_state, conv_bytes),
+                            (
+                                "conv_inter0",
+                                ssm_state.conv_state_intermediates[0],
+                                conv_bytes,
+                            ),
+                        ],
+                    )?;
+                }
             }
             GdnStates::Multi {
                 states,
@@ -908,6 +1013,15 @@ impl Qwen3SsmLayer {
         }
 
         k4_diag_checkpoint(ctx, "8:gated_rms_norm", stream)?;
+
+        if let Some(c) = norm_dump_call {
+            gdn_verify_dump(
+                ctx,
+                c,
+                stream,
+                &[("normed", normed_out_buf, num_tokens * value_dim * bf16)],
+            )?;
+        }
 
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
@@ -1164,7 +1278,7 @@ impl Qwen3SsmLayer {
 
         // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
         // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
-        self.ssm_tp_all_reduce(out_proj_buf, num_tokens, ctx, stream)?;
+        self.ssm_tp_all_reduce(out_proj_buf, normed_out_buf, num_tokens, ctx, stream)?;
 
         k4_diag_checkpoint(ctx, "9:out_proj", stream)?;
 

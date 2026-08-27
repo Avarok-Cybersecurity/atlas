@@ -258,6 +258,9 @@ impl Qwen3AttentionLayer {
                     hd,
                     bs_u,
                     self.sliding_window.unwrap_or(0),
+                    // Target-model prefill is causal — the pre-existing
+                    // hardcoded behaviour, now explicit.
+                    1,
                     inv_sqrt_d,
                     stream,
                 )?;

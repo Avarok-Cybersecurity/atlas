@@ -49,6 +49,13 @@ pub fn prefill_attention_paged_batched(
     head_dim: u32,
     cache_block_size: u32,
     sliding_window: u32,
+    // 1 = causal (the prefill default). 0 = BIDIRECTIONAL, which the DFlash
+    // gamma-block needs: its gamma queries attend across the whole block.
+    // With it 0 the kernel's `q_rope_pos` is dead (read only inside the
+    // causal-mask branch), so a batch of sequences with DIFFERENT position
+    // bases is still correct off one scalar — the drafter ropes Q/K itself
+    // beforehand via `rope_yarn` with a per-row positions array.
+    causal_mask_enabled: u32,
     inv_sqrt_d: f32,
     stream: u64,
 ) -> Result<()> {
@@ -72,7 +79,7 @@ pub fn prefill_attention_paged_batched(
         .arg_u32(head_dim)
         .arg_u32(cache_block_size)
         .arg_u32(sliding_window)
-        .arg_u32(1u32)
+        .arg_u32(causal_mask_enabled)
         .arg_f32(inv_sqrt_d)
         .launch(stream)
 }

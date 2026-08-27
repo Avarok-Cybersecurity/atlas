@@ -46,7 +46,8 @@ const ITERS: usize = 50;
 /// Weight bytes to cycle through so back-to-back launches miss L2/SLC.
 const COLD_CYCLE_BYTES: usize = 256 << 20;
 const M_SWEEP: &[u32] = &[1, 3, 4, 5, 6, 8];
-const M_MAX: usize = 8;
+const M_WIDE: &[u32] = &[1, 8, 9, 12, 18, 24, 36]; // GEMM-only: batched verify = n seqs × 9 rows
+const M_MAX: usize = 36;
 /// N rows checked against the CPU reference (full N for GPU-GPU bit checks).
 const CPU_CHECK_ROWS: usize = 256;
 
@@ -134,6 +135,34 @@ fn launch_batchm(
         .launch(0)
 }
 
+/// Launch the row-parallel M=8 tier: grid ceil(N/2), block 256, same args
+/// as the batchm family (M, N, K trailing).
+#[allow(clippy::too_many_arguments)]
+fn launch_batchm_rp(
+    g: &dyn GpuBackend,
+    kh: KernelHandle,
+    a: DevicePtr,
+    b: DevicePtr,
+    bs: DevicePtr,
+    c: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+) -> Result<()> {
+    KernelLaunch::new(g, kh)
+        .grid([div_ceil(n, 2), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(b)
+        .arg_ptr(bs)
+        .arg_f32(1.0)
+        .arg_ptr(c)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(0)
+}
+
 /// Launch a tile GEMM: base w4a16_gemm grid (N/64, M/64) or transposed
 /// w4a16_gemm_t grid (N/128, M/64), block 128 — mirrors ops::w4a16_gemm /
 /// ops::w4a16_gemm_n128.
@@ -149,8 +178,14 @@ fn launch_gemm(
     m: u32,
     n: u32,
     k: u32,
+    // `w4a16_gemm_t` grew a trailing `ldb` param (padded-B stride; the
+    // production caller passes the twin's padded row count). Contiguous
+    // bench pack ⇒ ldb = n. `None` for kernels without the param — an
+    // extra trailing arg is a CUDA_ERROR_INVALID_VALUE, which is exactly
+    // how the drift surfaced (grid=[40,1,1] crash at the gemm_t arm).
+    ldb: Option<u32>,
 ) -> Result<()> {
-    KernelLaunch::new(g, kh)
+    let mut l = KernelLaunch::new(g, kh)
         .grid([div_ceil(n, n_tile), div_ceil(m, 64), 1])
         .block([128, 1, 1])
         .arg_ptr(a)
@@ -160,8 +195,11 @@ fn launch_gemm(
         .arg_ptr(c)
         .arg_u32(m)
         .arg_u32(n)
-        .arg_u32(k)
-        .launch(0)
+        .arg_u32(k);
+    if let Some(v) = ldb {
+        l = l.arg_u32(v);
+    }
+    l.launch(0)
 }
 
 #[derive(Clone, Copy)]
@@ -169,6 +207,8 @@ enum Kind {
     Batchm {
         max_m: u32,
     },
+    /// Row-parallel M=8 tier: grid ceil(N/2), block 256, batchm signature.
+    BatchmRp,
     /// Base w4a16_gemm: grid (N/64, M/64).
     Gemm,
     /// Transposed small-M w4a16_gemm_t: grid (N/128, M/64). Timing only —
@@ -235,6 +275,30 @@ fn correctness_gate(
         }
     }
     eprintln!("  gate 1/2 PASS: batch8 BIT-EXACT vs batch4 @M<=4 and batch16 @M=5..8");
+
+    // Gates 2b/2c: the experimental M=8 tiers are bit-exact vs batch8 at
+    // every M — same per-row reference chains, different thread layouts.
+    for (gate, name) in [("2b", "batch8rp"), ("2c", "batch8pp")] {
+        let Ok(kh) = handle(name) else { continue };
+        for &m in M_SWEEP {
+            zero_c(g)?;
+            launch_batchm(g, b8, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let reference = read_c(g, c, m as usize * n_us)?;
+            zero_c(g)?;
+            launch_batchm_rp(g, kh, a, b, bs, c, m, n, k)?;
+            g.synchronize(0)?;
+            let got = read_c(g, c, m as usize * n_us)?;
+            if reference != got {
+                let bad = reference.iter().zip(&got).filter(|(x, y)| x != y).count();
+                bail!(
+                    "GATE FAIL: {name} != batch8 at M={m} ({bad}/{} elems differ)",
+                    got.len()
+                );
+            }
+        }
+        eprintln!("  gate {gate} PASS: {name} BIT-EXACT vs batch8 @M in sweep");
+    }
 
     // Gate 3: batch8 @M=8 vs CPU f64 dequant reference (first CPU_CHECK_ROWS).
     zero_c(g)?;
@@ -318,6 +382,18 @@ fn main() -> Result<()> {
             "w4a16_gemv_batch16",
             Kind::Batchm { max_m: 16 },
         ),
+        (
+            "batch8rp",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_rp",
+            Kind::BatchmRp,
+        ),
+        (
+            "batch8pp",
+            "w4a16_gemv",
+            "w4a16_gemv_batch8_pp",
+            Kind::BatchmRp,
+        ),
         ("gemm_m64", "w4a16", "w4a16_gemm", Kind::Gemm),
         ("gemm_t", "w4a16", "w4a16_gemm_t", Kind::GemmT),
     ]
@@ -377,7 +453,7 @@ fn main() -> Result<()> {
         correctness_gate(g, &kernels, a, b0, bs0, c, n, k, &a_host, &b_host, &bs_host)?;
 
         for &(kname, kh, kind) in &kernels {
-            for &m in M_SWEEP {
+            for &m in [M_SWEEP, M_WIDE][matches!(kind, Kind::Gemm | Kind::GemmT) as usize] {
                 if let Kind::Batchm { max_m } = kind
                     && m > max_m
                 {
@@ -387,8 +463,9 @@ fn main() -> Result<()> {
                     let (b, bs) = b_copies[i % copies];
                     match kind {
                         Kind::Batchm { .. } => launch_batchm(g, kh, a, b, bs, c, m, n, k),
-                        Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k),
-                        Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k),
+                        Kind::BatchmRp => launch_batchm_rp(g, kh, a, b, bs, c, m, n, k),
+                        Kind::Gemm => launch_gemm(g, kh, 64, a, b, bs, c, m, n, k, None),
+                        Kind::GemmT => launch_gemm(g, kh, 128, a, b, bs, c, m, n, k, Some(n)),
                     }
                 };
                 for i in 0..WARMUP {

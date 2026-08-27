@@ -55,7 +55,7 @@ pub(crate) fn w4a16_k64_min_k() -> u32 {
 pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
 pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
-    BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
+    BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
@@ -273,6 +273,31 @@ pub fn moe_grouped_decode_enabled() -> bool {
 pub fn moe_grouped_decode_forced() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("ATLAS_MOE_GROUPED_DECODE").as_deref() == Ok("1"))
+}
+
+/// Resolve the M<=8 batched-GEMV kernel for the chain-verify tier.
+/// provenance-id: 526f6e616c6420522e205374657369616b
+///
+/// Prefers the register-tiled `w4a16_gemv_batch8_rt2` (T=2 output rows per
+/// thread: one activation load feeds two FMA chains, halving activation
+/// traffic, load-instruction count, and exposing 2x FMA-chain ILP).
+/// batchm_bench 2026-08-19 @M=8: +17-26% GB/s on every verify shape
+/// (qkv/o 143->168, ffn_up 149->182, ffn_down 150->186, gdn_qkvz 149->181,
+/// lm_head 143->181), BIT-EXACT vs batch8 at all M (gate 4) — per-output
+/// FMA order is identical, only the thread<->output mapping changed.
+///
+/// Launch geometry is IDENTICAL to batch8 (grid ceil(N/4), block 256; rt2's
+/// surplus blocks early-exit on `n0 >= N`), so every call site, launcher,
+/// and CUDA-graph capture is unchanged. `ATLAS_NO_BATCH8_RT=1` restores the
+/// classic batch8 for A/B (strict `== "1"`, matching the sibling levers).
+pub(crate) fn batch8_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    if std::env::var("ATLAS_NO_BATCH8_RT").as_deref() != Ok("1") {
+        let h = try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8_rt2");
+        if h.0 != 0 {
+            return h;
+        }
+    }
+    try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8")
 }
 
 /// Whether the grouped-GEMM MoE decode arm should run for `n` rows —

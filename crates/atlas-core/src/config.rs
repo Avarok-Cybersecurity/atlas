@@ -444,6 +444,12 @@ pub struct ModelConfig {
     /// is what the drafter's `fc` projection expects.
     #[serde(default)]
     pub dflash_capture_layers: Vec<usize>,
+    /// Resolved DFlash drafter γ (block size), set by the factory alongside
+    /// `dflash_capture_layers`. Sizes the SSM verify intermediate pools at
+    /// the ACTUAL K = γ+1 instead of the legacy 17-wide ceiling — at γ=8,
+    /// C=8 that ceiling alone cost ~12 GB of pool (2026-08-19 256K/C8 boot
+    /// ledger). `None` = DFlash inactive (or unknown → 17-wide fallback).
+    pub dflash_gamma: Option<usize>,
 
     /// LoRA adapter rank ceiling (`--max-lora-rank`). `0` = LoRA disabled.
     /// Set programmatically before model build (never parsed from the HF
@@ -584,7 +590,7 @@ mod tests;
 pub use dispatch::parse_config;
 pub use gguf::{GgufConfigInputs, GgufMeta, config_from_gguf};
 pub use parsers::{
-    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, parse_mistral_params,
+    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, allow_partial_targets, parse_mistral_params,
     parse_peft_adapter_config, parse_quantization_config,
 };
 pub(crate) use parsers::{

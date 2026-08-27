@@ -58,6 +58,9 @@ impl TransformerModel {
         // scratch/canonical split — dual-buffer pre-verify copy eliminated.
         // Modeled on verify_b.rs (K=2 in-place).
 
+        // ATLAS_GDN_VERIFY_DUMP diagnostic: bracket the pre-layer-loop setup.
+        self.gdn_dump_probe_l0(seq, "verify_entry");
+
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -226,6 +229,10 @@ impl TransformerModel {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
 
+            // ATLAS_GDN_VERIFY_DUMP diagnostic: state after phase-1 setup,
+            // immediately before the layer loop.
+            self.gdn_dump_probe_l0(seq, "verify_preloop");
+
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
@@ -301,9 +308,17 @@ impl TransformerModel {
                 // the WRONG token's hidden and rows 1.. are stale garbage
                 // (2026-07-09 accept-collapse root cause: EAGLE_FIX=0 under
                 // UNIFIED=1 starved this capture and poisoned drafter ctx).
-                let capture_all = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref()
-                    == Some("1")
-                    || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1");
+                // UNIFIED_CTX is DEFAULT-ON (=0 opts out) since 2026-08-19 —
+                // must mirror the scheduler lever (levers.rs
+                // `dflash_unified_ctx: on_unless_zero`), because the
+                // scheduler's commit_ctx copies scratch rows 0..=num_accepted
+                // and only capture_all fills them. Read ONCE: this site runs
+                // under CUDA-graph capture.
+                static CAPTURE_ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let capture_all = *CAPTURE_ALL.get_or_init(|| {
+                    std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1")
+                        || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() != Some("0")
+                });
                 if capture_all {
                     self.try_dflash_capture_all(layer_idx, k, stream)?;
                 } else {

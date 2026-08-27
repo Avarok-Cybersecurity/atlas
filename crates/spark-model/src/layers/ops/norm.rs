@@ -284,3 +284,139 @@ pub fn gated_rms_norm_prefill(
 }
 
 // ── GEMM ───────────────────────────────────────────────────────────
+
+/// DFlash2 grouped dynamic causal conv (`kernels/gb10/common/dflash2_conv.cu`).
+///
+/// `out[t,c] = sum_o (base[o,c] + dyn[t, (stage*ks+o)*groups + c/G]) * x[t-o,c]`
+/// with causal zero-pad inside the block. `base` must be pre-offset to the
+/// stage (`base_ptr + stage * ks * hidden * 2` bytes); `dyn` is the FULL
+/// `[n, 2*ks*groups]` projection output — the kernel indexes the stage half.
+///
+/// `block_len` is the causal-reset stride: rows are treated as
+/// `n / block_len` INDEPENDENT blocks so a cross-sequence batch cannot
+/// convolve one sequence's first row with the previous sequence's tail.
+/// Pass `n` (or 0) for the single-block case — bit-identical to the
+/// pre-batch kernel.
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_conv(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    x: DevicePtr,
+    dyn_kernels: DevicePtr,
+    base_stage: DevicePtr,
+    out: DevicePtr,
+    n: u32,
+    hidden: u32,
+    conv_kernel_size: u32,
+    group_size: u32,
+    stage: u32,
+    block_len: u32,
+    stream: u64,
+) -> Result<()> {
+    let total = n * hidden;
+    KernelLaunch::new(gpu, kernel)
+        .grid([total.div_ceil(256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(x)
+        .arg_ptr(dyn_kernels)
+        .arg_ptr(base_stage)
+        .arg_ptr(out)
+        .arg_u32(n)
+        .arg_u32(hidden)
+        .arg_u32(conv_kernel_size)
+        .arg_u32(group_size)
+        .arg_u32(stage)
+        .arg_u32(block_len)
+        .launch(stream)
+}
+
+/// DFlash2 GPU selector, stage 1: per-draft-row top-16 of the tail logits.
+/// grid.x = gamma-1 (block b handles row b+1), grid.y = `n_seq` bands.
+/// `n_seq = 1` is the single-sequence launch, unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_selector_topk16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    logits: DevicePtr,
+    cand_ids: DevicePtr,
+    cand_vals: DevicePtr,
+    gamma: u32,
+    vocab: u32,
+    n_seq: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([gamma - 1, n_seq.max(1), 1])
+        .block([256, 1, 1])
+        .arg_ptr(logits)
+        .arg_ptr(cand_ids)
+        .arg_ptr(cand_vals)
+        .arg_u32(vocab)
+        .arg_u32(gamma)
+        .launch(stream)
+}
+
+/// DFlash2 GPU selector, stage 2: `g[t] = hidden_projection @ normed[t]`.
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_selector_proj(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    hidden_projection: DevicePtr,
+    normed_hidden: DevicePtr,
+    g_out: DevicePtr,
+    gamma: u32,
+    rank: u32,
+    hidden: u32,
+    n_seq: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rank, gamma - 1, n_seq.max(1)])
+        .block([128, 1, 1])
+        .arg_ptr(hidden_projection)
+        .arg_ptr(normed_hidden)
+        .arg_ptr(g_out)
+        .arg_u32(rank)
+        .arg_u32(hidden)
+        .arg_u32(gamma)
+        .launch(stream)
+}
+
+/// DFlash2 GPU selector, stage 3: greedy chain walk; rewrites `drafts[1..]`.
+///
+/// grid.y = `n_seq` independent chains (band b walks its own rows seeded
+/// from `anchors[b]`). Pass `anchors = DevicePtr::NULL` with `n_seq = 1` for
+/// the single-sequence launch, which then reads the scalar `anchor` — the
+/// pre-batch behaviour exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn dflash2_selector_chain(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    cand_ids: DevicePtr,
+    cand_vals: DevicePtr,
+    g: DevicePtr,
+    pred_cb: DevicePtr,
+    succ_cb: DevicePtr,
+    drafts: DevicePtr,
+    gamma: u32,
+    rank: u32,
+    anchor: u32,
+    anchors: DevicePtr,
+    n_seq: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, n_seq.max(1), 1])
+        .block([256, 1, 1])
+        .arg_ptr(cand_ids)
+        .arg_ptr(cand_vals)
+        .arg_ptr(g)
+        .arg_ptr(pred_cb)
+        .arg_ptr(succ_cb)
+        .arg_ptr(drafts)
+        .arg_u32(gamma)
+        .arg_u32(rank)
+        .arg_u32(anchor)
+        .arg_ptr(anchors)
+        .launch(stream)
+}

@@ -421,7 +421,47 @@ impl TransformerModel {
     ) -> Result<Vec<u32>> {
         // MTP loads ALL experts on every rank — no EP all_reduce needed.
         // Rank 1 does not participate in MTP propose.
-        self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)
+        //
+        // ATLAS_GDN_VERIFY_DUMP diagnostic (no-op unless set): probe layer-0's
+        // SSM h_state before/after the propose, bracketing the prefill-end →
+        // first-verify window where the state is observed to become zero.
+        self.gdn_dump_probe_l0(seq, "propose_pre");
+        let r = self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask);
+        self.gdn_dump_probe_l0(seq, "propose_post");
+        r
+    }
+
+    /// `ATLAS_GDN_VERIFY_DUMP` helper: dump a 64KB prefix of layer 0's SSM
+    /// h_state (and conv_state) with a tag, to `<dir>/probe_<n>_<tag>_{h,conv}.bin`.
+    pub(super) fn gdn_dump_probe_l0(&self, seq: &mut SequenceState, tag: &str) {
+        let Ok(dir) = std::env::var("ATLAS_GDN_VERIFY_DUMP") else {
+            return;
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        if n >= 64 {
+            return;
+        }
+        let Some(state) = seq.layer_states.get_mut(0) else {
+            return;
+        };
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
+            return;
+        };
+        let _ = self.gpu.synchronize(self.gpu.default_stream());
+        for (name, ptr, bytes) in [
+            ("h", ssm.h_state, 65536usize),
+            ("conv", ssm.conv_state, 65536usize),
+        ] {
+            let mut host = vec![0u8; bytes];
+            if self.gpu.copy_d2h(ptr, &mut host).is_ok() {
+                let _ = std::fs::write(format!("{dir}/probe_{n:03}_{tag}_{name}.bin"), &host);
+            }
+        }
     }
 
     /// Batched cross-sequence propose (batched K=4 verify path). Target

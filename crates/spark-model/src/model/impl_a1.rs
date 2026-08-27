@@ -172,10 +172,15 @@ impl TransformerModel {
         // For DFlash K=γ verify: K = γ + 1 (drafter's γ drafts + 1 verified bonus slot).
         // Pool size = max of both so DFlash and MTP can coexist on the same model.
         let dflash_kgamma = if !config.dflash_capture_layers.is_empty() {
-            // Drafter's γ is fixed in dflash config; use the largest known γ
-            // (16 for `Qwen3.6-DFlash`). The +1 is the prefix bonus position
-            // in the verify input `[last_token, draft_0, ..., draft_{γ-1}]`.
-            17
+            // The +1 is the prefix bonus position in the verify input
+            // `[last_token, draft_0, ..., draft_{γ-1}]`. Sized from the
+            // RESOLVED drafter γ (factory sets `config.dflash_gamma` from the
+            // drafter checkpoint / --dflash-gamma): the legacy 17-wide
+            // ceiling (γ=16-era) cost ~1.5 GB of intermediates per slot per
+            // GB at γ=8 — ~12 GB across 8 slots on qwen3.8-27B — for slots
+            // the verify never touches (2026-08-19 256K/C8 boot ledger).
+            // Unknown γ keeps the 17-wide fallback.
+            config.dflash_gamma.map(|g| g + 1).unwrap_or(17)
         } else {
             0
         };
@@ -190,10 +195,27 @@ impl TransformerModel {
         let has_mtp = self_speculative
             || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
             || dflash_kgamma > 0;
-        let num_intermediates = if has_mtp {
-            (num_drafts + 1).max(dflash_kgamma)
-        } else {
+        let num_intermediates = if !has_mtp {
             0
+        } else if dflash_kgamma > 0 {
+            // DFlash serve: the block drafter OWNS the verify path, so the
+            // widest verify is K = gamma + 1 and `num_drafts` never reaches
+            // the pool. Taking max(num_drafts+1, kgamma) sized these pools for
+            // the MTP K=2/3/4 ladder that a DFlash serve never runs: at
+            // num_drafts=15 that is 16 wide against a real ceiling of 9, and
+            // these pools are the single largest non-weight allocation on the
+            // box — 21.9 GB at 8 slots x 48 layers, as large as the model
+            // itself. Sizing to the real ceiling reclaims ~9.6 GB
+            // (2026-08-19 128K/C8 boot ledger; observed verify widths were
+            // K=8 and ks=[8;n], never above).
+            //
+            // The K2/K3/K4 arms still reachable on a DFlash serve (when the
+            // drafter returns <4 drafts) verify at K<=4, comfortably inside
+            // this. `require_verify_rollback_supported` remains the backstop
+            // if a future path asks for more.
+            dflash_kgamma
+        } else {
+            num_drafts + 1
         };
         let ssm_pool = std::sync::Arc::new(SsmStatePool::new(
             &config,
@@ -425,12 +447,35 @@ impl TransformerModel {
             && mtp_quant.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled(&levers)
         {
-            let bytes = max_seq_len * config.hidden_size * 2;
+            // Bound the capture to what the drafter can actually CONSUME.
+            // `prefill_drafter` writes into the drafter's own KV, which is
+            // capped at the DFlash ctx window, so a capture longer than that
+            // window is memory nothing can read: 1342 MB at --max-seq-len
+            // 131072 against a 16K window that can hold 168 MB of it.
+            // A prompt past the window simply does not get the whole-prompt
+            // drafter prefill (the coverage check at the consume site already
+            // handles that — blind beats poisoned); it costs acceptance on
+            // very long cold turns, not correctness.
+            //
+            // Pure-MTP serves keep the full ceiling: this narrowing is only
+            // sound because the DFlash drafter's own capacity is the binding
+            // constraint, and that reasoning does not transfer.
+            let capture_rows = if dflash_kgamma > 0 {
+                let cap = crate::layers::dflash_ctx_cap();
+                if cap == 0 {
+                    max_seq_len
+                } else {
+                    max_seq_len.min(cap)
+                }
+            } else {
+                max_seq_len
+            };
+            let bytes = capture_rows * config.hidden_size * 2;
             tracing::info!(
                 "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
                  ({} x {} BF16)",
                 bytes as f64 / 1e6,
-                max_seq_len,
+                capture_rows,
                 config.hidden_size,
             );
             gpu.alloc(bytes)?
@@ -457,10 +502,17 @@ impl TransformerModel {
         // max verify K = gamma) so the K=gamma EAGLE path can capture every verify row;
         // pre-fix paths use only rows 0-1. Stored on the model as the single
         // source of truth so `try_dflash_capture_all` can bound its writes.
+        //
+        // Widened to `max_batch_size` K-row BANDS: a cross-sequence batched
+        // K=gamma verify (and batched decode) captures every (sequence, row)
+        // pair, sequence i writing band i at row `i * dflash_kgamma`. The
+        // scheduler reads a band back through `commit_ctx`'s `scratch_row`.
+        // Cost is trivial (8 seqs x 9 rows x 5 layers x 5120 x 2 B ~ 3.7 MB)
+        // and the single-sequence paths keep using band 0 unchanged.
         let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
             0
         } else {
-            dflash_kgamma.max(2)
+            dflash_kgamma.max(2) * max_batch_size.max(1)
         };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
@@ -759,6 +811,7 @@ impl TransformerModel {
             mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
             dflash_hidden_save_rows,
+            dflash_kgamma,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),

@@ -67,6 +67,7 @@ mod test_support;
 #[cfg(test)]
 mod think_skip_tests;
 mod types;
+mod verify_dflash_batch_step;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
@@ -103,6 +104,7 @@ use sample_step::*;
 use spec_step::*;
 use ssm_decode_ring::SsmDecodeRing;
 use types::*;
+use verify_dflash_batch_step::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
@@ -445,6 +447,7 @@ pub fn run(
         snapshot_steps += 1;
         let t_loop = std::time::Instant::now();
         {
+            let last_chunk = sched.snapshot.last_prefill_chunk();
             let (mtp_mode, delivered_tps) = match mtp_gate.as_ref() {
                 Some(g) => g.observe(),
                 None => (snapshot::MtpModeSnap::Off, 0.0),
@@ -461,6 +464,15 @@ pub fn run(
                 mtp_mode,
                 delivered_tps,
                 steps_total: snapshot_steps,
+                // O(prefilling) over a list bounded by --max-num-seqs, of two
+                // field reads each, once per tick.
+                prefill_tokens_done: prefilling.iter().map(|p| p.chunk_offset as u32).sum(),
+                prefill_tokens_total: prefilling
+                    .iter()
+                    .map(|p| p.prompt_tokens.len() as u32)
+                    .sum(),
+                prefill_chunk_width: last_chunk.0,
+                prefill_fused: last_chunk.1,
                 published_at: std::time::Instant::now(),
             });
         }
@@ -804,7 +816,20 @@ pub fn run(
                         .map(|a| a.post_think_emitted)
                         .min()
                         .unwrap_or(u32::MAX);
-                    if mtp_gate::entry_pin_forces_verify(min_post_think_emitted)
+                    // DFlash C<=2 pin: hold the verify arm whenever <=2
+                    // sequences are active. Arbitration is par on tok/s
+                    // there, but its serial<->batch-K forward flips fork
+                    // the temp-0 token stream mid-answer and the bad
+                    // attractor degenerates into repetition loops (see
+                    // `dflash_gate_pin_c2` lever doc for the measurements).
+                    // Pinned steps skip recording exactly like the
+                    // entry pin: charging verify walls to a Serial-mode
+                    // accumulator would corrupt the arbitration baselines
+                    // it resumes with at C>=3.
+                    let dflash_pin = dflash_verify_raw_argmax
+                        && active.len() <= 2
+                        && sched.levers.dflash_gate_pin_c2;
+                    if (dflash_pin || mtp_gate::entry_pin_forces_verify(min_post_think_emitted))
                         && gate.next_step() == mtp_gate::GateStep::MeasureDecode
                     {
                         let lens_before: Vec<usize> =
