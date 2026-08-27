@@ -6,6 +6,8 @@ pub mod dflash_head;
 pub mod ep_dispatch;
 pub mod fp8_calibration;
 mod gemv_tier;
+/// GLM-5.3-Flash KDA CPU reference (Slice 2 design artifact -- not a production forward path).
+pub mod glm5next_kda_ref;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
