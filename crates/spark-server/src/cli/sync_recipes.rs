@@ -19,7 +19,12 @@ use std::sync::atomic::AtomicBool;
 /// # Errors
 /// When the refresh did not actually reach the repository, or reached it and
 /// found nothing.
-pub fn verdict(offline: Option<&str>, recipes: usize, before: usize) -> Result<(), String> {
+pub fn verdict(
+    offline: Option<&str>,
+    incomplete: Option<&str>,
+    recipes: usize,
+    before: usize,
+) -> Result<(), String> {
     // `refresh` serves the CACHE when the network fails, annotated with why.
     // Reporting that as a successful sync is how a CI job ends up believing it
     // has a fresh index and then failing to resolve a recipe added yesterday —
@@ -35,10 +40,25 @@ pub fn verdict(offline: Option<&str>, recipes: usize, before: usize) -> Result<(
     }
     if recipes == 0 {
         // A reachable repository that returned nothing is not a success either.
-        // Writing an empty index over a good one would be worse than failing.
         return Err(
             "the repository returned no recipes; refusing to call that a synced index".to_owned(),
         );
+    }
+    // Reached the repository, got something back, and still could not put it on
+    // disk — some files did not arrive, or the write failed. The fetch layer
+    // leaves the cache ALONE in both cases, so what is on disk is still the
+    // complete thing it was; it is simply not what was just asked for.
+    //
+    // This must be an error rather than a note. `sync-recipes` runs before the
+    // tracing subscriber exists, so anything reported at `warn!` on this path is
+    // discarded — the command would print "recipe index written to …" over a
+    // file it did not write, which is the success-with-stale-data this command
+    // exists to prevent.
+    if let Some(why) = incomplete {
+        return Err(format!(
+            "the recipe index was not written: {why}\n\
+             The cache is unchanged ({before} recipe(s)) — nothing was replaced."
+        ));
     }
     Ok(())
 }
@@ -61,7 +81,12 @@ pub fn run() -> Result<()> {
     // `refresh` serves the CACHE when the network fails, annotated with why.
     // Reporting that as a successful sync is how a CI job ends up believing it
     // has a fresh index and then failing to resolve a recipe added yesterday.
-    if let Err(why) = verdict(index.offline.as_deref(), index.recipes.len(), before) {
+    if let Err(why) = verdict(
+        index.offline.as_deref(),
+        index.incomplete.as_deref(),
+        index.recipes.len(),
+        before,
+    ) {
         bail!("{why}");
     }
 
@@ -83,7 +108,7 @@ mod tests {
 
     #[test]
     fn a_real_fetch_with_recipes_is_a_sync() {
-        assert!(verdict(None, 30, 0).is_ok());
+        assert!(verdict(None, None, 30, 0).is_ok());
     }
 
     /// The case this command exists to refuse.
@@ -92,7 +117,7 @@ mod tests {
         // `refresh` returns the cached index annotated with why the network
         // failed, so the recipe count looks healthy. A command that reported
         // success here would leave CI believing it had fresh data.
-        let e = verdict(Some("dns failure"), 30, 30).expect_err("must refuse");
+        let e = verdict(Some("dns failure"), None, 30, 30).expect_err("must refuse");
         assert!(e.contains("could not reach"), "{e}");
         assert!(
             e.contains("30 recipe(s)"),
@@ -106,14 +131,59 @@ mod tests {
 
     #[test]
     fn falling_back_with_no_cache_at_all_is_also_refused() {
-        assert!(verdict(Some("timed out"), 0, 0).is_err());
+        assert!(verdict(Some("timed out"), None, 0, 0).is_err());
     }
 
     /// A reachable repository that returns nothing is not success either:
     /// writing an empty index over a good one is worse than failing.
     #[test]
     fn an_empty_index_is_refused_even_when_the_network_worked() {
-        let e = verdict(None, 0, 30).expect_err("must refuse");
+        let e = verdict(None, None, 0, 30).expect_err("must refuse");
         assert!(e.contains("no recipes"), "{e}");
+    }
+
+    /// The failure an operator actually hits on a locked-down box: the fetch
+    /// worked, the write did not. It used to be a `warn!` that nothing was
+    /// listening for, so the command printed a success line naming a file it
+    /// had never written.
+    #[test]
+    fn a_fetch_that_could_not_be_cached_is_not_a_sync() {
+        let e = verdict(
+            None,
+            Some("the index could not be cached: permission denied"),
+            30,
+            12,
+        )
+        .expect_err("an uncached fetch is not a synced index");
+        assert!(e.contains("permission denied"), "{e}");
+        assert!(
+            e.contains("unchanged (12 recipe(s))"),
+            "the operator needs to know what is still on disk: {e}"
+        );
+    }
+
+    /// A partial fetch is the dangerous one: it looks like a success, and it is
+    /// the case where a complete cache would have been silently shrunk.
+    #[test]
+    fn a_partial_fetch_is_not_a_sync_even_though_recipes_arrived() {
+        let e = verdict(
+            None,
+            Some("27 of 30 recipe file(s) could not be fetched"),
+            3,
+            30,
+        )
+        .expect_err("3 of 30 recipes is not a synced index");
+        assert!(e.contains("27 of 30"), "{e}");
+    }
+
+    /// Offline is reported ahead of everything else: it is the more basic
+    /// failure, and naming a write problem for a fetch that never happened
+    /// would send the operator after the wrong thing.
+    #[test]
+    fn being_offline_is_reported_before_any_write_problem() {
+        let e = verdict(Some("dns failure"), Some("could not be cached"), 30, 30)
+            .expect_err("must refuse");
+        assert!(e.contains("dns failure"), "{e}");
+        assert!(!e.contains("could not be cached"), "{e}");
     }
 }
