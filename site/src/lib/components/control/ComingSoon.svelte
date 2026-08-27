@@ -51,11 +51,18 @@
     return () => window.removeEventListener('pointerdown', onDown, true);
   });
 
-  function onKey(ev) {
+  function onBtnKey(ev) {
+    if (open && ev.key === 'Escape') {
+      ev.stopPropagation();
+      close(true);
+    }
+  }
+
+  function onPopKey(ev) {
     if (ev.key === 'Escape') {
       ev.stopPropagation();
       close(true);
-    } else if (ev.key === 'Tab' && open) {
+    } else if (ev.key === 'Tab') {
       // The dialog holds exactly one focusable control, so the trap is a
       // single stop: Tab in any direction lands on Close.
       ev.preventDefault();
@@ -64,7 +71,7 @@
   }
 </script>
 
-<span class="cs-wrap" onkeydown={onKey}>
+<span class="cs-wrap">
   <button
     type="button"
     class="cs-btn cs-{kind}"
@@ -72,6 +79,7 @@
     aria-expanded={open}
     bind:this={btn}
     onclick={() => (open ? close(true) : (open = true))}
+    onkeydown={onBtnKey}
   >
     <span class="cs-label">{entry.label}</span>
     <span class="cs-chip">soon</span>
@@ -84,6 +92,7 @@
       aria-label="{entry.label} — coming soon"
       tabindex="-1"
       bind:this={pop}
+      onkeydown={onPopKey}
     >
       <p class="cs-text">{entry.soon}</p>
       <button type="button" class="cs-close" bind:this={closeBtn} onclick={() => close(true)}>
