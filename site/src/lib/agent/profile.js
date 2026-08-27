@@ -56,10 +56,24 @@ export function empty() {
  * @param {number} max
  * @returns {string|null}
  */
+/**
+ * Keys that are not data, whatever a JSON document calls them.
+ *
+ * `JSON.parse` makes `__proto__` an ordinary own property, and `Object.entries`
+ * duly hands it over — but writing it back with `obj[key] = value` goes through
+ * the inherited setter and changes the object's prototype instead of adding a
+ * key. The result reads as empty (`Object.keys` shows nothing) while
+ * `overrides.anything` silently resolves through the attacker's object. `load`
+ * is documented as total; returning a value whose prototype came from
+ * localStorage is not what that promises.
+ */
+const NOT_A_KEY = ['__proto__', 'constructor', 'prototype'];
+
 function str(raw, max) {
   if (typeof raw !== 'string') return null;
   const s = raw.trim();
   if (s.length === 0 || s.length > max) return null;
+  if (NOT_A_KEY.includes(s)) return null;
   return s;
 }
 
