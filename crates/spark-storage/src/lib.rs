@@ -106,6 +106,8 @@ pub mod expert_tier;
 // primitive as the expert tier.
 #[cfg(feature = "cuda")]
 pub mod ngram_cache;
+#[cfg(feature = "cuda")]
+mod ngram_cache_fault;
 // RDMA expert staging needs rdma-core (libibverbs), which is Linux-only.
 #[cfg(all(feature = "cuda", unix))]
 pub mod expert_tier_rdma;
