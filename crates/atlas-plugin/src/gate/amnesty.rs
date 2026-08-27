@@ -67,17 +67,29 @@ pub struct AmnestyEntry {
     pub grant: &'static str,
 }
 
-/// End of the PR #701 grant day: 2026-08-22T00:00:00Z. A record counts as
+/// End of the PR #648 grant day: 2026-08-28T00:00:00Z. A record counts as
 /// fresh only when it postdates the whole grant day.
-pub const AMNESTY_EPOCH: u64 = 1_787_356_800;
+/// (The PR #701 grant used 1_787_356_800, end of 2026-08-21 UTC; its table
+/// was emptied once every gate re-recorded past that epoch.)
+pub const AMNESTY_EPOCH: u64 = 1_787_875_200;
 
-/// The PR #701 grant, now EMPTY — it has been fully re-earned and removed.
+/// The PR #648 grant: one file, the KV-budget accounting fix.
 ///
-/// It covered three boundary files whose landing invalidated all ten GPU
-/// records before the narrower test-only rule could help. Every required gate
-/// has since been re-recorded at 2026-08-22, past `AMNESTY_EPOCH`, so the table
-/// protects nothing; `amnesty_expires_once_every_gate_has_a_fresh_record`
-/// asserts exactly that and demands this removal, which is the designed end of
+/// `factory/build.rs`'s self-relative (auto) KV budget charged the weight
+/// loader's transient footprint (checkpoint mapping/staging, ~the size of the
+/// safetensors file) as if it were permanent — measured free-delta ~61 GB vs
+/// ~27 GB actual steady state on a 27B NVFP4 load (bug shipped in #281). At
+/// 0.85 util the phantom alone overruns the decode-floor budget on any box,
+/// making the gate unpassable while the fix — being a `crates/` change —
+/// would invalidate the nine records already earned on this branch. Exactly
+/// the bootstrap shape PR #701 established; same mechanism, one pinned file.
+///
+/// The prior PR #701 grant covered three boundary files whose landing
+/// invalidated all ten GPU records before the narrower test-only rule could
+/// help. Every required gate was re-recorded at 2026-08-22, past that grant's
+/// epoch, and its table was emptied —
+/// `amnesty_expires_once_every_gate_has_a_fresh_record`
+/// asserts exactly that and demands such removal, which is the designed end of
 /// a one-time grant rather than a change of policy.
 ///
 /// The mechanism is deliberately kept rather than deleted: the module docs
@@ -85,7 +97,17 @@ pub const AMNESTY_EPOCH: u64 = 1_787_356_800;
 /// `excused_by` plus its tests stay exercised so the next bootstrap does not
 /// have to re-derive it. An empty table is fail-closed by construction — every
 /// lookup falls through to "not excused".
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [];
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 1] = [AmnestyEntry {
+    path: "crates/spark-model/src/factory/build.rs",
+    // Pinned in the pin phase: `git hash-object crates/spark-model/src/factory/build.rs`
+    // over the fix's final content, immediately before the landing commit.
+    head_blob_oid: "01068a74c5068fb65b25b044d7580df3b36e39ed",
+    grant: "PR #648 KV-budget fix: stop charging the weight loader's transient \
+            (checkpoint staging, ~34 GB on 27B NVFP4) as permanent in the \
+            self-relative (auto) budget — the #281 accounting bug made \
+            decode-floor unpassable at 0.85 util on any box, and the fix would \
+            otherwise invalidate the nine records already earned on this branch",
+}];
 
 /// Whether the one-time grant excuses `path` at `head`.
 pub fn excused(root: &Path, head: &str, path: &str) -> bool {

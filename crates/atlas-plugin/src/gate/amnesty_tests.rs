@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The one-time PR #701 amnesty must excuse exactly the pinned bytes,
+//! The one-time PR #648 amnesty must excuse exactly the pinned bytes,
 //! fail closed on everything else, and demand its own removal.
 //!
-//! `the_table_is_exactly_the_pr_701_grant` is deliberately red while the
+//! `the_table_is_exactly_the_pr_648_grant` is deliberately red while the
 //! table holds `"PENDING"` OIDs: the pin phase (compute the landed blob OIDs
 //! with `git hash-object` once content is final) is what turns it green, so
 //! the grant cannot ship half-armed by accident.
@@ -155,25 +155,23 @@ fn invalidating_paths_drops_exactly_what_the_grant_excuses() {
     );
 }
 
-/// The PR #701 grant is exactly the three boundary files in that change.
+/// The PR #648 grant is exactly the one KV-budget file in that change.
 /// Placeholder OIDs keep this test red until the final-content pin commit.
+/// (The PR #701 grant — three boundary files — completed this same lifecycle:
+/// pinned, re-earned, emptied.)
 #[test]
-fn the_table_is_exactly_the_pr_701_grant() {
+fn the_table_is_exactly_the_pr_648_grant() {
     let paths: Vec<&str> = ONE_TIME_AMNESTY.iter().map(|e| e.path).collect();
-    // The grant has exactly two legal shapes: the three PR #701 boundary files,
-    // or EMPTY once `amnesty_expires_once_every_gate_has_a_fresh_record` has
-    // demanded its removal. Anything else is the grant growing, which is what
-    // this test exists to prevent. Removal is the designed end of a one-time
-    // grant, so it must not read as a violation of it.
+    // The grant has exactly two legal shapes: PR #648's single accounting-fix
+    // file, or EMPTY once `amnesty_expires_once_every_gate_has_a_fresh_record`
+    // has demanded its removal. Anything else is the grant growing, which is
+    // what this test exists to prevent. Removal is the designed end of a
+    // one-time grant, so it must not read as a violation of it.
     if !paths.is_empty() {
         assert_eq!(
             paths,
-            vec![
-                "crates/atlas-plugin/src/gate/check.rs",
-                "crates/atlas-plugin/src/gate/coverage.rs",
-                "crates/atlas-plugin/src/gate/required.rs",
-            ],
-            "the grant must not grow beyond PR #701's boundary files"
+            vec!["crates/spark-model/src/factory/build.rs"],
+            "the grant must not grow beyond PR #648's KV-budget fix"
         );
     }
     for entry in &ONE_TIME_AMNESTY {
@@ -189,7 +187,7 @@ fn the_table_is_exactly_the_pr_701_grant() {
             entry.path
         );
         assert!(
-            entry.grant.contains("PR #701"),
+            entry.grant.contains("PR #648"),
             "{} lacks its grant",
             entry.path
         );
@@ -225,7 +223,7 @@ fn amnesty_expires_once_every_gate_has_a_fresh_record() {
     assert!(
         !stale.is_empty(),
         "every required gate now has a record newer than AMNESTY_EPOCH \
-         (end of 2026-08-21 UTC): the one-time grant has been fully re-earned \
+         (end of 2026-08-27 UTC): the one-time grant has been fully re-earned \
          and protects nothing. EMPTY THE TABLE in \
          crates/atlas-plugin/src/gate/amnesty.rs — the amnesty must not \
          outlive the records it existed to protect."
