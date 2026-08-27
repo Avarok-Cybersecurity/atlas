@@ -204,13 +204,33 @@ fn config_rejects_a_topk_that_is_not_a_multiple_of_kpool() {
     assert!(e.to_string().contains("multiple"), "unexpected: {e}");
 }
 
+/// 🔴 The bound is **8**, not the 64 this test originally asserted.
+/// `dsa_kpool_compress` keeps the pool logits in `float lg[8]` and loops
+/// `s < KP && s < 8`, so a kpool of 9..=64 pools only the first 8 slots while
+/// marking all KP valid — a wrong pooled key with no crash. Corrected 2026-08-27;
+/// GLM's kpool is 4, so nothing shipped through the window.
 #[test]
 fn config_rejects_a_kpool_beyond_the_kernel_bound() {
     let mut c = cfg(64);
     c.index_kpool = 128;
     c.index_topk = 128 * 16;
     let e = c.validate().unwrap_err();
-    assert!(e.to_string().contains("64-slot"), "unexpected: {e}");
+    assert!(e.to_string().contains("8-slot"), "unexpected: {e}");
+
+    // The window the old bound admitted: rejected now, accepted before.
+    let mut mid = cfg(64);
+    mid.index_kpool = 16;
+    mid.index_topk = 16 * 32;
+    assert!(
+        mid.validate().is_err(),
+        "kpool 16 is past `lg[8]` and must be refused"
+    );
+
+    // 8 is exactly the kernel's capacity and stays legal.
+    let mut edge = cfg(64);
+    edge.index_kpool = 8;
+    edge.index_topk = 8 * 64;
+    assert!(edge.validate().is_ok(), "kpool 8 fits `lg[8]`");
 }
 
 #[test]

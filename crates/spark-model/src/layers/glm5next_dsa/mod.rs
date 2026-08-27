@@ -47,6 +47,7 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod binding;
+pub mod select;
 pub mod tp;
 
 /// Module name the DSA kernels resolve from. Unlisted `.cu` files take their file
@@ -58,6 +59,12 @@ pub const DSA_MODULE: &str = "dsa_indexer";
 /// Mirrored here so the config can refuse a checkpoint the kernel cannot read.
 /// Changing the kernel without changing this constant is the bug this guards.
 pub const KERNEL_KV_LORA_DIM: usize = 512;
+
+/// `float lg[8]` in `dsa_kpool_compress` — the most pool slots the compression
+/// kernel can hold. The kernel loops `s < KP && s < 8`, so a larger `index_kpool`
+/// is silently truncated rather than rejected. Mirrored here so config validation
+/// refuses it instead.
+pub const KERNEL_MAX_KPOOL: usize = 8;
 
 /// Every kernel the DSA path launches.
 ///
@@ -177,11 +184,20 @@ impl Glm5NextDsaConfig {
                 self.index_kpool
             );
         }
-        if self.index_kpool > 64 {
+        // 🔴 CORRECTED 2026-08-27 (was 64). `dsa_kpool_compress` holds the pool
+        // logits in `float lg[8]` and loops `s < KP && s < 8`. A kpool in 9..=64
+        // therefore pools only the FIRST 8 slots while `pool_indices`/`pool_valid`
+        // are still written for all KP — a silently wrong pooled key, no crash and
+        // no shape error. The prior bound of 64 admitted exactly that window. GLM's
+        // kpool is 4, so nothing shipped through the gap; the guard was simply
+        // describing a register budget the kernel does not have.
+        if self.index_kpool > KERNEL_MAX_KPOOL {
             bail!(
-                "DSA: index_kpool {} exceeds the 64-slot bound the pooling kernel keeps \
-                 in registers",
-                self.index_kpool
+                "DSA: index_kpool {} exceeds the {}-slot bound dsa_kpool_compress keeps \
+                 in registers (`float lg[8]`); slots past it are silently dropped from \
+                 the pooled key while still counting as valid",
+                self.index_kpool,
+                KERNEL_MAX_KPOOL,
             );
         }
         if self.kv_lora_rank == 0 {
