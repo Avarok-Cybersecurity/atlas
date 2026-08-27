@@ -509,6 +509,15 @@ pub struct ModelConfig {
     /// 0 = no indexer.
     #[serde(default)]
     pub index_compress_ratio: usize,
+    /// GLM-5.3 DSA: tokens per k-pool (`index_kpool`). The pool budget is
+    /// `index_topk / index_kpool`, so this is not cosmetic — it sets how many
+    /// candidates the top-k actually ranks. 0 = model has no k-pooling.
+    #[serde(default)]
+    pub index_kpool: usize,
+    /// GLM-5.3 DSA: always append the trailing partial pool's tokens to the
+    /// selection, widening the emitted index row by `index_kpool - 1`.
+    #[serde(default)]
+    pub index_kpool_always_select_tail: bool,
     /// Number of hash-based attention layers (DeepSeek-V4 HCA). 0 = none.
     #[serde(default)]
     pub num_hash_layers: usize,

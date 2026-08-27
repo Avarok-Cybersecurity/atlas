@@ -167,6 +167,18 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     {
         config.index_topk = v as usize;
     }
+    // `index_kpool` sets the pool budget (`index_topk / index_kpool`), so a missing
+    // value is not a cosmetic default — it would silently change how many candidates
+    // the top-k ranks. Read it, never guess it.
+    if let Some(v) = text.get("index_kpool").and_then(|v| v.as_u64()) {
+        config.index_kpool = v as usize;
+    }
+    if let Some(v) = text
+        .get("index_kpool_always_select_tail")
+        .and_then(|v| v.as_bool())
+    {
+        config.index_kpool_always_select_tail = v;
+    }
 
     // ---- Layer types ------------------------------------------------------
     config.layer_types = build_layer_types(text, config.num_hidden_layers)?;

@@ -116,6 +116,8 @@ impl ModelConfig {
             index_n_heads: 0,
             index_head_dim: 0,
             index_topk: 0,
+            index_kpool: 0,
+            index_kpool_always_select_tail: false,
             num_hash_layers: 0,
             yarn_factor: 0.0,
             yarn_beta_slow: 0.0,

@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! GLM-5.3-Flash **DSA (DeepSeek Sparse Attention) production surface**.
+//!
+//! Scoped to `LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3`.
+//!
+//! The CUDA kernels already exist and are numerically proven against HF 5.16.1 on
+//! real weights — `kernels/gb10/common/dsa_indexer.cu`, gated by
+//! `examples/dsa_indexer_microtest.rs` (GATE 4 kpool indexer, GATE 5 NoPE MLA over
+//! the selected tokens). What was missing, and is what this module adds, is the
+//! **production** surface: kernel resolution and geometry that a real layer can
+//! bind, rather than an example wiring pointers by hand.
+//!
+//! The CPU reference in [`crate::layers::glm5next_dsa_ref`] stays the source of
+//! truth for the equations. Nothing here re-derives them.
+//!
+//! # Shape of the pipeline
+//!
+//! ```text
+//! k,gate,valid,ape -> kpool_compress -> pool keys/indices/valid
+//!                  -> index_scores  -> [Q, P] scores + candidate validity
+//!                  -> topk_pools    -> [Q, select_k] pool ids
+//!                  -> expand_selection -> [Q, out_width] token ids (-1 = invalid)
+//!                  -> NoPE MLA restricted to those tokens
+//! ```
+//!
+//! # 🪤 Traps carried from Slice 8 (do not re-derive)
+//!
+//! * `indexer.k_norm` is a **`nn.LayerNorm`** — mean-subtracting, **with a bias** —
+//!   not an RMSNorm. `indexer.k_norm.bias` existing in the checkpoint is the only
+//!   tell; every other norm in GLM-5.3 is a bias-free RMSNorm.
+//! * The pool softmax runs over the **pool-slot axis, per channel**, not over
+//!   `head_dim` and not over pools.
+//! * Pooling starts at the **first valid token**, so left padding is skipped rather
+//!   than pooled.
+//! * A pool counts only if **every** `kpool` slot is valid — a trailing partial pool
+//!   is not a pool.
+//! * **NoPE**: `qk_rope_head_dim == 0`, so the `k_rot` slice is zero-width. See the
+//!   `rope > 0` guards in `qwen3_attention` — a NoPE checkpoint carries no
+//!   `wkv_a_rope` and leaves `rope_theta` unset.
+//! * The `-1` sentinel destination must be **fully written**. vLLM's day-0 GLM bug
+//!   was a `torch.empty` top-k buffer whose tail was never written, so uninitialised
+//!   memory became "token indices".
+
+use anyhow::{Result, bail};
+use atlas_core::config::ModelConfig;
+use spark_runtime::gpu::{GpuBackend, KernelHandle};
+
+pub mod tp;
+
+/// Module name the DSA kernels resolve from. Unlisted `.cu` files take their file
+/// stem as the module name, so `kernels/gb10/common/dsa_indexer.cu` is `dsa_indexer`.
+pub const DSA_MODULE: &str = "dsa_indexer";
+
+/// Every kernel the DSA path launches.
+///
+/// Resolved with `kernel()` (not `try_kernel`): a missing DSA entry point is a hard
+/// error, never a silent fallback onto a dense-attention path. A sparse layer that
+/// quietly runs dense is a correctness bug that looks like a performance bug.
+#[derive(Clone, Copy)]
+pub struct Glm5NextDsaKernels {
+    pub kpool_compress: KernelHandle,
+    pub compact_pools: KernelHandle,
+    pub index_scores: KernelHandle,
+    pub topk_pools: KernelHandle,
+    pub expand_selection: KernelHandle,
+    pub topk_to_mask: KernelHandle,
+    pub mla_masked_attn: KernelHandle,
+}
+
+impl Glm5NextDsaKernels {
+    pub fn resolve(gpu: &dyn GpuBackend) -> Result<Self> {
+        Ok(Self {
+            kpool_compress: gpu.kernel(DSA_MODULE, "dsa_kpool_compress")?,
+            compact_pools: gpu.kernel(DSA_MODULE, "dsa_compact_pools")?,
+            index_scores: gpu.kernel(DSA_MODULE, "dsa_index_scores")?,
+            topk_pools: gpu.kernel(DSA_MODULE, "dsa_topk_pools")?,
+            expand_selection: gpu.kernel(DSA_MODULE, "dsa_expand_selection")?,
+            topk_to_mask: gpu.kernel(DSA_MODULE, "dsa_topk_to_mask")?,
+            mla_masked_attn: gpu.kernel(DSA_MODULE, "dsa_mla_masked_attn")?,
+        })
+    }
+}
+
+/// DSA geometry for one layer, read from the checkpoint config — never defaulted.
+///
+/// Head counts are **per-rank local** for the MLA side and **full** for the indexer,
+/// which is replicated. See [`tp`] for why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glm5NextDsaConfig {
+    pub hidden: usize,
+    // ── indexer (replicated) ──
+    pub index_heads: usize,
+    pub index_head_dim: usize,
+    pub index_kpool: usize,
+    pub index_topk: usize,
+    pub always_select_tail: bool,
+    // ── MLA ──
+    /// Attention heads **this rank owns**.
+    pub local_heads: usize,
+    pub q_lora_rank: usize,
+    pub kv_lora_rank: usize,
+    pub qk_nope_head_dim: usize,
+    /// **Zero** on GLM-5.3. Kept explicit so a nonzero value is a loud change.
+    pub qk_rope_head_dim: usize,
+    pub v_head_dim: usize,
+}
+
+impl Glm5NextDsaConfig {
+    /// `config` carries per-rank-local attention head counts: `serve_phases::topology`
+    /// divides `num_attention_heads` by `tp_size` before any loader runs.
+    pub fn from_config(config: &ModelConfig) -> Result<Self> {
+        let c = Self {
+            hidden: config.hidden_size,
+            index_heads: config.index_n_heads,
+            index_head_dim: config.index_head_dim,
+            index_kpool: config.index_kpool,
+            index_topk: config.index_topk,
+            always_select_tail: config.index_kpool_always_select_tail,
+            local_heads: config.num_attention_heads,
+            q_lora_rank: config.q_lora_rank,
+            kv_lora_rank: config.kv_lora_rank,
+            qk_nope_head_dim: config.qk_nope_head_dim,
+            qk_rope_head_dim: config.qk_rope_head_dim,
+            v_head_dim: config.v_head_dim,
+        };
+        c.validate()?;
+        Ok(c)
+    }
+
+    pub fn qk_head_dim(&self) -> usize {
+        self.qk_nope_head_dim + self.qk_rope_head_dim
+    }
+    /// True when there is no RoPE section at all — GLM-5.3.
+    pub fn is_nope(&self) -> bool {
+        self.qk_rope_head_dim == 0
+    }
+    /// Pools selected per query, capped by how many pools exist.
+    pub fn select_k(&self, n_pools: usize) -> usize {
+        (self.index_topk / self.index_kpool).min(n_pools)
+    }
+    /// Width of the emitted index row; the tail adds `kpool - 1` slots.
+    pub fn out_width(&self) -> usize {
+        self.index_topk
+            + if self.always_select_tail {
+                self.index_kpool - 1
+            } else {
+                0
+            }
+    }
+    /// KV latent cache width. **No rope section under NoPE**, so this is exactly
+    /// `kv_lora_rank` — 512 for GLM-5.3, where DeepSeek-V4-Flash uses 576.
+    pub fn kv_cache_dim(&self) -> usize {
+        self.kv_lora_rank + self.qk_rope_head_dim
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.index_kpool == 0 || self.index_topk == 0 {
+            bail!(
+                "DSA needs index_kpool>0 and index_topk>0; got {}/{}",
+                self.index_kpool,
+                self.index_topk
+            );
+        }
+        if !self.index_topk.is_multiple_of(self.index_kpool) {
+            bail!(
+                "DSA: index_topk ({}) must be a multiple of index_kpool ({}) — \
+                 the pool budget is index_topk/index_kpool",
+                self.index_topk,
+                self.index_kpool
+            );
+        }
+        if self.index_kpool > 64 {
+            bail!(
+                "DSA: index_kpool {} exceeds the 64-slot bound the pooling kernel keeps \
+                 in registers",
+                self.index_kpool
+            );
+        }
+        if self.kv_lora_rank == 0 {
+            bail!("DSA is MLA: kv_lora_rank must be > 0");
+        }
+        if self.local_heads == 0 {
+            bail!("DSA: this rank owns zero attention heads");
+        }
+        Ok(())
+    }
+}
