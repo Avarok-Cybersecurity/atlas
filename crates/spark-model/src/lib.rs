@@ -62,7 +62,12 @@ pub fn ships_vanilla_norm_weights(config: &atlas_core::config::ModelConfig) -> b
 /// The dispatch predicate itself, on the bare `model_type`, so it is unit-testable
 /// without constructing a full `ModelConfig`.
 pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
-    matches!(model_type, "deepseek_v4" | "laguna")
+    // 🪤 `glm5_next` added 2026-08-27. GLM-5.3's norms are PLAIN `x * rms * w` — the same
+    // trap `glm5next_layer` documents for its per-layer norms. This predicate additionally
+    // picks the kernel for the MODEL-LEVEL final norm (`model/impl_a1.rs`), which is applied
+    // outside any layer, so omitting GLM here silently normalises the final hidden state with
+    // the `(1 + w)` offset and corrupts every token's logits. Nothing about the shapes says so.
+    matches!(model_type, "deepseek_v4" | "laguna" | "glm5_next")
 }
 
 #[cfg(test)]
@@ -75,6 +80,8 @@ mod norm_convention_tests {
     fn vanilla_norm_models_are_explicit() {
         assert!(vanilla("deepseek_v4"));
         assert!(vanilla("laguna"));
+        // GLM-5.3's norms are plain; the final norm is applied outside any layer.
+        assert!(vanilla("glm5_next"));
         for other in [
             "qwen3_next",
             "qwen3_5_moe",
