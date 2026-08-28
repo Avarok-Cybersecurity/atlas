@@ -17,7 +17,7 @@
   import SettingsEditor from './SettingsEditor.svelte';
   import { onTarget, route, travelWarning } from '$lib/agent/verbs.js';
   import { nameOf, refusal } from '$lib/agent/refusal.js';
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import ComingSoon from './ComingSoon.svelte';
 
   let { fleet, node, nodes = [], onlog } = $props();
@@ -32,7 +32,10 @@
   let problem = $state(null);
   let confirming = $state(false);
   let started = $state(null);
-  let copied = $state(false);
+  let copied = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  let endpointEl = $state(null);
+  $effect(() => () => clearTimeout(copyTimer));
 
   const trusted = $derived(
     Boolean(node && (node.isLocal || node.pairing === 'paired' || node.pairing === 'vouched'))
@@ -154,8 +157,13 @@
   }
 
   async function copyEndpoint() {
-    copied = (await copyText(started.endpoint)) === 'copied';
-    if (copied) setTimeout(() => (copied = false), 1500);
+    clearTimeout(copyTimer);
+    // Was `copied = (await copyText(…)) === 'copied'`: a refusal set it FALSE,
+    // so the button simply stayed "copy" and said nothing. This page is served
+    // over plain http on a LAN address — the least secure context there is,
+    // and the one where the clipboard most often refuses.
+    copied = await copyOrSelect(started.endpoint, endpointEl);
+    copyTimer = setTimeout(() => (copied = 'idle'), 2400);
   }
 </script>
 
@@ -269,9 +277,9 @@
             </p>
             {#if started.endpoint}
               <p class="dt-endpoint">
-                <code class="mono">{started.endpoint}</code>
+                <code class="mono" bind:this={endpointEl}>{started.endpoint}</code>
                 <button type="button" class="dt-copy" onclick={copyEndpoint}>
-                  {copied ? 'copied' : 'copy'}
+                  {copyLabel(copied, 'copy').toLowerCase()}
                 </button>
               </p>
             {:else}
