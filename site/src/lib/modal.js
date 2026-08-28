@@ -57,6 +57,16 @@ export function modal(node) {
   function onKeydown(ev) {
     if (ev.key !== 'Tab') return;
     if (stack[stack.length - 1] !== node) return;
+    // Another dialog is managing its own focus — `CodeChat` hand-rolls a trap
+    // it needs (its focusable set includes `summary`, and it returns focus to
+    // `.nav-toggle` rather than to whatever was active, because the chat
+    // skeleton it replaces would otherwise be the "opener"). It is not in this
+    // stack, so without this the window-level handler would reach across and
+    // yank focus out of it on every Tab. Focus dropped to <body> has no such
+    // owner and still belongs to us — that is the case this listener is
+    // window-level for.
+    const owner = document.activeElement;
+    if (!node.contains(owner) && owner?.closest?.('[role="dialog"]')) return;
     // Window-level, because a step change can unmount the focused control
     // and drop focus to <body> — a dialog-scoped listener goes deaf exactly
     // then, and the next Tab walks the page behind the modal.
