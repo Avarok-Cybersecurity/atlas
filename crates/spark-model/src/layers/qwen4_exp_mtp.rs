@@ -106,6 +106,19 @@ pub struct Qwen4ExpMtpState {
     /// Shadow mode: the token drafted at the PREVIOUS decode step, awaiting
     /// comparison against the token the target actually emits this step.
     pub pending_draft: Option<u32>,
+    /// How many drafts the last `propose` produced, so `after_verify` knows how
+    /// many rows to unwind when some are rejected.
+    pub last_num_drafted: usize,
+    /// Rows the draft must unwind before its next round. Set by `after_verify`
+    /// (which gets no GPU handle) and APPLIED at the top of the next `propose`,
+    /// where `ctx.gpu` is available. Deferring is safe: nothing reads the draft
+    /// body's state in between.
+    pub pending_rewind: usize,
+    /// The draft BODY's aux carry (its own QSA indexer state) snapshotted before
+    /// this round's drafts. The draft body advances its carry exactly like the
+    /// target does, and its ingest asserts `pos == ingested` — so a rejected
+    /// draft must rewind it or the NEXT draft trips that assert.
+    pub pre_draft_aux: Option<Vec<u8>>,
 }
 
 /// Private device buffers. The head owns every buffer it writes so it cannot
@@ -316,7 +329,61 @@ impl Qwen4ExpMtpHead {
             seq_len: 0,
             body_state: self.module.body.alloc_state(gpu)?,
             pending_draft: None,
+            last_num_drafted: 0,
+            pending_rewind: 0,
+            pre_draft_aux: None,
         })
+    }
+
+    /// Snapshot the draft body's own carry before a round of drafts.
+    pub fn snapshot_draft_aux(
+        &self,
+        st: &Qwen4ExpMtpState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        self.module
+            .body
+            .snapshot_aux(st.body_state.as_ref(), gpu, stream)
+    }
+
+    /// Rewind the draft body's own state by `rows` after a rejected draft.
+    ///
+    /// Mirrors the target-side rollback: the draft advanced its seq_len, its KV
+    /// and its QSA carry for every row it produced, but only the accepted ones
+    /// are real. The KV past `seq_len` is left alone — the next draft overwrites
+    /// it — but the QSA carry must be restored, because its ingest asserts hard
+    /// on `pos == ingested`.
+    pub fn rewind_draft(
+        &self,
+        st: &mut Qwen4ExpMtpState,
+        rows: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        st.seq_len = st.seq_len.saturating_sub(rows);
+        if let Some(blob) = st.pre_draft_aux.take() {
+            self.module
+                .body
+                .restore_aux(st.body_state.as_mut(), &blob, gpu, stream)?;
+        }
+        Ok(())
+    }
+
+    /// Scratch the draft writes its post-mHC-head hidden into. Lives in the
+    /// draft's own arena, so it cannot collide with the target's.
+    pub fn draft_h_out(&self) -> DevicePtr {
+        self.arena.hidden_states()
+    }
+
+    /// The DRAFT's highway after a `draft_hidden` call. Chaining a second draft
+    /// feeds this back in as the next step's input — draft j+1 continues from
+    /// the body's own state, not the target's.
+    pub fn draft_streams(&self) -> DevicePtr {
+        self.arena.hc_streams()
     }
 
     /// Turn the draft's final hidden into a token id, entirely inside the
