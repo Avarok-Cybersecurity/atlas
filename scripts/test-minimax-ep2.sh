@@ -126,7 +126,10 @@ python3 "$ATLAS_ROOT/tests/single_gpu_suite.py" \
   --model "$MODEL" \
   --output "$OUT_JSON" \
   2>&1 | tee "$LOG"
-STATUS=$?
+# PIPESTATUS[0], not $?: `$?` after a pipeline is the LAST command's status,
+# which here is `tee` — and tee succeeds whenever it can write the log. A
+# failing suite therefore reported "exit: 0" and the run read as a pass.
+STATUS=${PIPESTATUS[0]}
 set -e
 
 echo ""
