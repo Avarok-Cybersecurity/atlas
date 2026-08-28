@@ -98,6 +98,7 @@ pub struct StatsModel {
 struct Prev {
     requests: u64,
     gen_tok: u64,
+    decoded: u64,
     prompt: u64,
     bytes_in: u64,
     bytes_out: u64,
@@ -163,6 +164,7 @@ impl StatsModel {
         self.requests_total = metrics::REQUESTS_TOTAL.get();
         self.requests_active = metrics::REQUESTS_ACTIVE.get();
         self.gen_tokens_total = metrics::GENERATION_TOKENS_TOTAL.get();
+        let decoded_total = metrics::DECODED_TOKENS_TOTAL.get();
         self.prompt_tokens_total = metrics::PROMPT_TOKENS_TOTAL.get();
         self.tool_calls_total = metrics::TOOL_CALLS_TOTAL.get();
         self.bytes_in_total = metrics::HTTP_BYTES_IN.get();
@@ -170,7 +172,14 @@ impl StatsModel {
 
         if let Some((t0, prev)) = self.last_sample {
             let dt = now.duration_since(t0).as_secs_f64().max(0.05);
-            self.gen_tps = (self.gen_tokens_total.saturating_sub(prev.gen_tok)) as f64 / dt;
+            // Prefer the per-token counter: it advances DURING generation, so
+            // this is a live rate. `GENERATION_TOKENS_TOTAL` only moves when a
+            // request finishes, which reads as 0 tok/s then one spike — fall
+            // back to it only for paths that never stream (blocking requests),
+            // where a lump at completion is all there is.
+            let decoded_delta = decoded_total.saturating_sub(prev.decoded);
+            let gen_delta = self.gen_tokens_total.saturating_sub(prev.gen_tok);
+            self.gen_tps = decoded_delta.max(gen_delta) as f64 / dt;
             self.prompt_tps = (self.prompt_tokens_total.saturating_sub(prev.prompt)) as f64 / dt;
             self.req_rate = (self.requests_total.saturating_sub(prev.requests)) as f64 / dt;
             self.bytes_in_rate = (self.bytes_in_total.saturating_sub(prev.bytes_in)) as f64 / dt;
@@ -183,6 +192,7 @@ impl StatsModel {
             Prev {
                 requests: self.requests_total,
                 gen_tok: self.gen_tokens_total,
+                decoded: decoded_total,
                 prompt: self.prompt_tokens_total,
                 bytes_in: self.bytes_in_total,
                 bytes_out: self.bytes_out_total,

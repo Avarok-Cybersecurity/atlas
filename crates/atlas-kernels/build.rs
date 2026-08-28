@@ -26,6 +26,7 @@ struct SamplingCat {
     // Model-declared min-p. None = MODEL.toml is silent, so the server's
     // --default-min-p stands (see SamplingCategory in src/lib.rs).
     min_p: Option<f32>,
+    top_n_sigma: Option<f32>,
 }
 
 impl Default for SamplingCat {
@@ -42,6 +43,7 @@ impl Default for SamplingCat {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         }
     }
 }

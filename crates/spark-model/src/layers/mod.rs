@@ -11,6 +11,7 @@ pub(crate) mod mtp_meta;
 pub mod mtp_multi;
 pub mod nemotron_mamba2;
 pub mod nemotron_moe;
+pub mod ngram_embed;
 pub mod ops;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;

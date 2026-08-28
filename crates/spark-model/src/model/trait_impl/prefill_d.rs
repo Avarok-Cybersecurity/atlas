@@ -45,16 +45,24 @@ impl TransformerModel {
         let token_id_dev = self.buffers.scratch();
         self.gpu
             .copy_h2d_async(last_tok_bytes, token_id_dev, stream)?;
-        ops::batched_embed(
-            self.gpu.as_ref(),
-            self.batched_embed_kernel,
-            token_id_dev,
-            self.embed_tokens.weight,
-            hidden,
-            1,
-            h,
-            stream,
-        )?;
+        if self.has_ngram_embedding() {
+            // The n-gram hash for this token reads back over the tokens that
+            // precede it in the same prompt.
+            let lb = self.ngram_lookbehind();
+            let cs = total_len.saturating_sub(lb + 1);
+            self.embed_tokens_fused(&tokens[cs..total_len], 1, hidden, stream)?;
+        } else {
+            ops::batched_embed(
+                self.gpu.as_ref(),
+                self.batched_embed_kernel,
+                token_id_dev,
+                self.embed_tokens.weight,
+                hidden,
+                1,
+                h,
+                stream,
+            )?;
+        }
         self.scale_embeddings(hidden, 1usize, stream)?;
         // Run final norm + LM head on the single re-embedded token.
         let normed = self.buffers.norm_output();

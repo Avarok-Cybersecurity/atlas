@@ -207,6 +207,12 @@ pub(super) fn parse_sampling_presets(
                 // NO unwrap_or: an absent min_p must stay None so the
                 // server's --default-min-p keeps owning the field.
                 min_p: v.get("min_p").and_then(|t| t.as_float()).map(|p| p as f32),
+                // Same rule as min_p: absent stays None so --default-top-n-sigma
+                // keeps owning the field for every model that does not declare it.
+                top_n_sigma: v
+                    .get("top_n_sigma")
+                    .and_then(|t| t.as_float())
+                    .map(|p| p as f32),
             },
             None => SamplingCat::default(),
         }

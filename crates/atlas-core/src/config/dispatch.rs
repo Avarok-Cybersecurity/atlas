@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_laguna,
-    parse_minimax_m2, parse_mistral_params, parse_quantization_config, parse_step3p7,
-    parse_vision_config, validate_config,
+    parse_longcat_ngram, parse_minimax_m2, parse_mistral_params, parse_quantization_config,
+    parse_step3p7, parse_vision_config, validate_config,
 };
 
 fn required_u64(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<u64> {
@@ -43,9 +43,28 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
     let raw: serde_json::Value =
         serde_json::from_str(json).context("Invalid JSON in config.json")?;
 
+    // A remote-code checkpoint may declare ONLY `architectures` + `auto_map`
+    // and no `model_type` at all — LongCat-Flash-Lite ships exactly that
+    // (`architectures: ["LongcatFlashNgramForCausalLM"]`). Without this
+    // fallback such a config silently falls through to the generic parse and
+    // loses its family, so map the known architecture names onto their
+    // model_type. Only consulted when `model_type` is absent/empty, so no
+    // existing checkpoint changes behaviour.
     let top_model_type = raw
         .get("model_type")
         .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            raw.get("architectures")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(serde_json::Value::as_str)
+                .and_then(|arch| match arch {
+                    "LongcatFlashNgramForCausalLM" => Some("longcat_flash_ngram"),
+                    "LongcatFlashForCausalLM" => Some("longcat_flash"),
+                    _ => None,
+                })
+        })
         .unwrap_or("");
 
     match top_model_type {
@@ -212,6 +231,7 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         }
         "gemma4" => parse_gemma4_params(&raw),
         "laguna" => parse_laguna(&raw),
+        "longcat_flash_ngram" | "longcat_flash" => parse_longcat_ngram(&raw),
         "m2m_100" | "nllb" => {
             let mut config = ModelConfig::qwen3_next_80b_nvfp4();
             config.model_type = "m2m_100".to_string();

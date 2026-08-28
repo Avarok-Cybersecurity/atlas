@@ -25,13 +25,17 @@ use crate::layers::vision_encoder::VisionEncoder;
 use crate::weight_loader::ModelWeightLoader;
 use crate::weight_map::{DenseWeight, MtpWeights, dense};
 
-mod ctx;
+// `ctx` + the three name-independent transform phases are `pub(crate)` so the
+// LongCat MLA loader reuses the SAME per-head transpose / absorbed-QK /
+// block-diagonal math instead of duplicating it (only the two name-bound
+// phases — lora_qkv and o_proj — are Mistral-specific).
+pub(crate) mod ctx;
 mod phase_assemble;
-mod phase_block_diag;
+pub(crate) mod phase_block_diag;
 mod phase_lora_qkv;
 mod phase_o_proj;
-mod phase_per_head;
-mod phase_qk_absorbed;
+pub(crate) mod phase_per_head;
+pub(crate) mod phase_qk_absorbed;
 mod yarn;
 
 impl ModelWeightLoader for MistralWeightLoader {
@@ -119,7 +123,7 @@ impl ModelWeightLoader for MistralWeightLoader {
 
 /// Inherent helpers — outside the trait impl block.
 impl MistralWeightLoader {
-    pub(super) fn load_layers_inner(
+    pub(crate) fn load_layers_inner(
         &self,
         store: &WeightStore,
         config: &ModelConfig,

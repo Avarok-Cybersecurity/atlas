@@ -688,6 +688,7 @@ impl TransformerModel {
                 }
             }),
             embed_tokens,
+            ngram_embed: None,
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,

@@ -77,6 +77,16 @@ pub struct Qwen3AttentionLayer {
     pub(crate) layer_scalar: Option<f32>,
     /// Secondary FFN (Gemma-4 26B MoE): runs in parallel with primary FFN (dense).
     pub(crate) moe_ffn: Option<FfnComponent>,
+    /// LongCat shortcut-MoE PRODUCER: this sublayer computes `moe_ffn` on its
+    /// post-attention normed input and STASHES the result into the carry
+    /// buffer `(ptr, token_capacity)` instead of adding it — the paired NEXT
+    /// sublayer adds it at its end. Gated separately from the Gemma-4 dual-FFN
+    /// arm (which requires the three Gemma norms, absent here).
+    pub(crate) shortcut_carry_out: Option<(spark_runtime::gpu::DevicePtr, usize)>,
+    /// LongCat shortcut-MoE CONSUMER: after this sublayer's FFN residual add,
+    /// `hidden += carry` (the shortcut MoE output stashed by the previous
+    /// sublayer).
+    pub(crate) shortcut_carry_in: Option<(spark_runtime::gpu::DevicePtr, usize)>,
     /// Pre-norm for MoE input (pre_feedforward_layernorm_2).
     pub(crate) pre_moe_norm: Option<DenseWeight>,
     /// Post-norm for MoE output (post_feedforward_layernorm_2).

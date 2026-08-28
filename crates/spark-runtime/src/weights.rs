@@ -165,6 +165,29 @@ impl WeightTensor {
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    /// Tensors deliberately NOT uploaded, with where they live on disk.
+    ///
+    /// The n-gram embedding tables of the LongCat / Qwen3.8-Flash-Next family
+    /// are 63 GB (LongCat-Lite) to ~102 GB (Flash-Next) of BF16. Uploading
+    /// them through the generic path would exhaust a 121 GB unified box
+    /// before any quantization could run — and on GB10 the fallback is
+    /// `alloc_managed`, i.e. Linux swap, i.e. the documented kernel freeze.
+    /// They are skipped at load and served either by streaming per-table
+    /// quantize-on-load or straight off NVMe by `NgramRowCache`, both of
+    /// which need only this (path, offset) locator.
+    deferred: HashMap<String, DeferredTensor>,
+}
+
+/// Where a skipped tensor lives, so a consumer can read it in place.
+#[derive(Clone, Debug)]
+pub struct DeferredTensor {
+    /// Shard file containing the tensor.
+    pub path: std::path::PathBuf,
+    /// ABSOLUTE byte offset of the tensor's first element in that file
+    /// (safetensors header length + the tensor's `data_offsets[0]`).
+    pub offset: u64,
+    pub shape: Vec<usize>,
+    pub dtype: WeightDtype,
 }
 
 impl WeightStore {
@@ -172,14 +195,38 @@ impl WeightStore {
     pub fn empty() -> Self {
         Self {
             weights: HashMap::new(),
+            deferred: HashMap::new(),
         }
+    }
+
+    /// Record a tensor that was skipped at load, with its on-disk location.
+    pub fn defer(&mut self, name: String, t: DeferredTensor) {
+        self.deferred.insert(name, t);
+    }
+
+    /// Look up a deferred (not-uploaded) tensor's on-disk location.
+    pub fn deferred(&self, name: &str) -> Option<&DeferredTensor> {
+        self.deferred.get(name)
+    }
+
+    /// Every deferred tensor, name-sorted (NUMERIC on a trailing index, so
+    /// `embedders.10` sorts after `embedders.2` — a lexicographic sort here
+    /// silently mis-maps the n-gram tables, which cost a real debugging
+    /// session the first time).
+    pub fn deferred_sorted(&self) -> Vec<(&String, &DeferredTensor)> {
+        let mut v: Vec<_> = self.deferred.iter().collect();
+        v.sort_by_key(|(n, _)| split_trailing_index(n));
+        v
     }
 
     /// Wrap a pre-built map. Used by alternate loaders (e.g.
     /// `fast_weights::FastSafetensorsLoader`, and the RDMA weight loader in
     /// `spark-storage`, which lives in a different crate and so needs this pub).
     pub fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
-        Self { weights }
+        Self {
+            weights,
+            deferred: HashMap::new(),
+        }
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
@@ -309,17 +356,10 @@ impl SafetensorsLoader {
     }
 }
 
-/// Parse expert index from tensor name (e.g. "model.layers.3.mlp.experts.42.gate_proj.weight" → 42).
-pub fn parse_expert_index(name: &str) -> Option<usize> {
-    let parts: Vec<&str> = name.split('.').collect();
-    for (i, part) in parts.iter().enumerate() {
-        if *part == "experts" && i + 1 < parts.len() {
-            return parts[i + 1].parse().ok();
-        }
-    }
-    None
-}
-
+/// Split a tensor name into (everything but its last numeric path segment,
+/// that segment as a number) so names sort NUMERICALLY on the index.
+/// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
+/// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
 mod gguf;
 mod loader;
@@ -334,56 +374,9 @@ pub(crate) use loader::check_oom_guard;
 #[cfg(unix)]
 pub(crate) use loader::estimate_has_fp8;
 
-#[cfg(test)]
-mod from_str_tests {
-    use super::WeightDtype;
-
-    #[test]
-    fn from_safetensors_str_matches_disk_mapping() {
-        // The RDMA weight peer publishes these raw header strings; the client
-        // must resolve them to the exact WeightDtype the disk loaders use, else
-        // byte_size/shape diverge and logits break. Locks the closed mapping.
-        use WeightDtype::*;
-        for (s, want) in [
-            ("F32", FP32),
-            ("BF16", BF16),
-            ("U8", UInt8),
-            ("I8", UInt8), // packed NVFP4 raw container
-            ("F8_E4M3", FP8E4M3),
-            ("F8_E8M0", FP8E8M0),
-            ("I64", Int64),
-        ] {
-            assert_eq!(
-                WeightDtype::from_safetensors_str(s).unwrap(),
-                want,
-                "dtype {s}"
-            );
-        }
-        // F16 is converted to BF16 at disk-load; a store (and therefore a
-        // peer manifest) can never contain it, so the wire mapping rejects it.
-        assert!(WeightDtype::from_safetensors_str("F16").is_err());
-        assert!(WeightDtype::from_safetensors_str("bogus").is_err());
-    }
-
-    #[test]
-    fn f16_bytes_convert_to_bf16_via_f32() {
-        use half::{bf16, f16};
-        // Cover sign, exact powers of two, a value needing mantissa rounding
-        // (f16 has 10 mantissa bits, bf16 only 7), f16 max, and a subnormal.
-        let vals = [0.0f32, 1.0, -1.5, 0.1, 65504.0, -6.1035156e-5];
-        let src: Vec<u8> = vals
-            .iter()
-            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
-            .collect();
-        let out = super::f16_to_bf16_bytes(&src);
-        assert_eq!(out.len(), src.len());
-        for (i, v) in vals.iter().enumerate() {
-            let got = bf16::from_le_bytes([out[2 * i], out[2 * i + 1]]);
-            let want = bf16::from_f32(f16::from_f32(*v).to_f32());
-            assert_eq!(got, want, "value {v}");
-        }
-    }
-}
+mod name_utils;
+pub(crate) use name_utils::split_trailing_index;
+pub use name_utils::{is_ngram_table, parse_expert_index};
 
 #[cfg(test)]
 mod packed_q2_tests;

@@ -155,6 +155,11 @@ pub fn build_model(
 
     let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
     let embed = loader.load_embedding(&store, &config, gpu.as_ref())?;
+    // n-gram fused embedding (LongCat family; None everywhere else). Built
+    // before `config` is moved into the model. Staged for `max_batch_tokens`
+    // because that is exactly the widest embed the arena can be handed.
+    let ngram_embed =
+        loader.load_ngram_embedding(&store, &config, gpu.as_ref(), max_batch_tokens)?;
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
@@ -632,6 +637,9 @@ pub fn build_model(
     // The pool/tables were loaded up top (pre-KV-sizing); this walk copies
     // the per-layer pairs into the layer structs. M0: layers only STORE the
     // adapter — base output is unchanged until the M1 compute insertions.
+    if let Some(ngram) = ngram_embed {
+        model.set_ngram_embedding(ngram);
+    }
     model.set_lora_weights(lora_weights)?;
 
     // Every layer has taken the pointers it needs; hand the ledger to the model

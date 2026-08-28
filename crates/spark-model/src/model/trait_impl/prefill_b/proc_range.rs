@@ -82,16 +82,22 @@ impl TransformerModel {
                     let token_id_dev = self.buffers.scratch();
                     self.gpu
                         .copy_h2d_async(last_tok_bytes, token_id_dev, stream)?;
-                    ops::batched_embed(
-                        self.gpu.as_ref(),
-                        self.batched_embed_kernel,
-                        token_id_dev,
-                        self.embed_tokens.weight,
-                        hidden,
-                        1,
-                        h as u32,
-                        stream,
-                    )?;
+                    if self.has_ngram_embedding() {
+                        let last = chunk_start + chunk_len;
+                        let cs = last.saturating_sub(self.ngram_lookbehind() + 1);
+                        self.embed_tokens_fused(&tokens[cs..last], 1, hidden, stream)?;
+                    } else {
+                        ops::batched_embed(
+                            self.gpu.as_ref(),
+                            self.batched_embed_kernel,
+                            token_id_dev,
+                            self.embed_tokens.weight,
+                            hidden,
+                            1,
+                            h as u32,
+                            stream,
+                        )?;
+                    }
                     self.scale_embeddings(hidden, 1usize, stream)?;
                     Ok(ProcRange::Compute {
                         proc_start: chunk_start + chunk_len - 1,
@@ -120,16 +126,26 @@ impl TransformerModel {
                 let token_ids_dev = self.buffers.scratch();
                 self.gpu
                     .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
-                ops::batched_embed(
-                    self.gpu.as_ref(),
-                    self.batched_embed_kernel,
-                    token_ids_dev,
-                    self.embed_tokens.weight,
-                    hidden,
-                    uncached_count as u32,
-                    h as u32,
-                    stream,
-                )?;
+                if self.has_ngram_embedding() {
+                    let cs = uncached_start.saturating_sub(self.ngram_lookbehind());
+                    self.embed_tokens_fused(
+                        &tokens[cs..uncached_start + uncached_count],
+                        uncached_count,
+                        hidden,
+                        stream,
+                    )?;
+                } else {
+                    ops::batched_embed(
+                        self.gpu.as_ref(),
+                        self.batched_embed_kernel,
+                        token_ids_dev,
+                        self.embed_tokens.weight,
+                        hidden,
+                        uncached_count as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                }
                 self.scale_embeddings(hidden, uncached_count, stream)?;
                 // Real prefill path: KV written for [uncached_start, end).
                 seq.kv_valid_tokens = seq.kv_valid_tokens.max(uncached_start + uncached_count);

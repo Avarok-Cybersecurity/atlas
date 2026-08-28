@@ -587,8 +587,9 @@ impl TransformerModel {
 
         let mut kv_cache = self.kv_cache.lock();
 
-        // 1. Embedding lookup
-        self.embed(token, hidden, stream)?;
+        // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`
+        // (pushed after the forward) — exactly the n-gram contract.
+        self.embed_ctx(&seq.tokens, token, hidden, stream)?;
 
         // 2. Pre-allocate KV cache blocks + upload attention metadata
         let bs = kv_cache.block_size();

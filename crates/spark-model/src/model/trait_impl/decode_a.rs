@@ -101,8 +101,10 @@ impl TransformerModel {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
-        // 1. Embedding lookup
-        self.embed(token, hidden, stream)?;
+        // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`
+        // (it is pushed after the forward), which is exactly the n-gram
+        // contract: preceding context, then the token being embedded.
+        self.embed_ctx(&seq.tokens, token, hidden, stream)?;
 
         // 2. Pre-allocate KV cache blocks + upload attention metadata
         let bs = kv_cache.block_size();

@@ -44,15 +44,17 @@ impl TransformerModel {
             // position — a cache/Marconi skip would leave gaps. Force the
             // full-recompute path (documented perf cost, scoring calls only).
             let reserved = reserved_match.is_some();
-            let mut prefix_match =
-                if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
-                    PrefixMatch::empty()
-                } else if let Some(prefix_match) = reserved_match {
-                    prefix_match
-                } else {
-                    self.prefix_cache
-                        .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
-                };
+            let mut prefix_match = if self.tokens_have_vision_pad(tokens)
+                || seq.collect_prompt_logprobs.is_some()
+                || self.mla_prefill_needs_full_recompute()
+            {
+                PrefixMatch::empty()
+            } else if let Some(prefix_match) = reserved_match {
+                prefix_match
+            } else {
+                self.prefix_cache
+                    .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+            };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert

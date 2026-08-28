@@ -121,6 +121,13 @@ pub struct SamplingCategory {
     /// `generation_config.json` — the same precedence temperature/top_k/top_p
     /// already follow. `None` preserves the CLI-owned behaviour exactly.
     pub min_p: Option<f32>,
+    /// Model-declared top-n-sigma, or `None` when MODEL.toml is silent.
+    ///
+    /// Same absence-vs-zero problem as `min_p`: the server ships
+    /// `--default-top-n-sigma 1.0`, so a model whose card asks for NO sigma
+    /// filter had no way to say so. `Some(0.0)` disables it; `None` leaves the
+    /// CLI default owning the field.
+    pub top_n_sigma: Option<f32>,
 }
 
 /// Model-specific sampling presets loaded from MODEL.toml `[sampling.*]`.
@@ -150,6 +157,7 @@ impl Default for SamplingPresets {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         };
         let tools_cat = SamplingCategory {
             temperature: 0.6,
@@ -163,6 +171,7 @@ impl Default for SamplingPresets {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         };
         Self {
             thinking_text: default_cat,

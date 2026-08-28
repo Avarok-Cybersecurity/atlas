@@ -304,6 +304,20 @@ impl Qwen3AttentionLayer {
             nq * hd,
             stream,
         )?;
+        // ATLAS_OP_DUMP hooks: the assembled V and the attention output, the
+        // two tensors that decide an L=1 MLA result (softmax over one key is
+        // 1.0, so the output reduces to V0 @ o_proj).
+        if n > 0 {
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                v_contiguous,
+                (num_tokens - 1) * nkv as usize * hd as usize * 2,
+                nkv as usize * hd as usize,
+                self.attn_layer_idx,
+                "mla_v",
+                stream,
+            )?;
+        }
         let attn_out_fb = ctx.buffers.attn_output();
         ops::prefill_attention_64(
             ctx.gpu,
@@ -317,12 +331,23 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
-            1.0f32 / (hd as f32).sqrt(),
+            self.effective_attn_scale(hd),
             true,
             0,
             stream,
         )
         .map_err(|e| anyhow::anyhow!("MLA flash_attn_64 fallback: {e}"))?;
+        if n > 0 {
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                attn_out_fb,
+                (num_tokens - 1) * nq as usize * hd as usize * 2,
+                nq as usize * hd as usize,
+                self.attn_layer_idx,
+                "mla_attn_out",
+                stream,
+            )?;
+        }
         // wo projection — output to qkv_output (norm_output aliases downstream)
         let o_out = ctx.buffers.qkv_output();
         if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {

@@ -191,6 +191,31 @@ impl Qwen3AttentionLayer {
         self.post_dense_ffn_norm = Some(post_dense_norm);
     }
 
+    /// LongCat: install the shortcut MoE on the FIRST sublayer of a
+    /// dual-sublayer block. The MoE runs on this sublayer's post-attention
+    /// normed input; its output is stashed into `carry` (capacity
+    /// `carry_tokens` tokens) and added by the SECOND sublayer via
+    /// [`Self::set_shortcut_carry_in`].
+    pub fn set_shortcut_moe(
+        &mut self,
+        moe: FfnComponent,
+        carry: spark_runtime::gpu::DevicePtr,
+        carry_tokens: usize,
+    ) {
+        self.moe_ffn = Some(moe);
+        self.shortcut_carry_out = Some((carry, carry_tokens));
+    }
+
+    /// LongCat: the SECOND sublayer of a dual-sublayer block adds the paired
+    /// first sublayer's stashed shortcut-MoE output at its end.
+    pub fn set_shortcut_carry_in(
+        &mut self,
+        carry: spark_runtime::gpu::DevicePtr,
+        carry_tokens: usize,
+    ) {
+        self.shortcut_carry_in = Some((carry, carry_tokens));
+    }
+
     /// Apply layer_scalar in-place: `hidden *= scalar`. Uses
     /// `bf16_scale_inplace` for the (always BF16) residual stream.
     pub(crate) fn apply_layer_scalar(

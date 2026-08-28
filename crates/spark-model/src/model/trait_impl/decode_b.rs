@@ -116,7 +116,14 @@ impl TransformerModel {
 
         // 1a. Decode tokens → hidden[0..n_decode*H)
         for (i, &tok) in decode_tokens.iter().enumerate() {
-            self.embed(tok, hidden.offset(i * h * fp32), stream)?;
+            // Each decode slot is a DIFFERENT sequence, so the n-gram context
+            // must come from that sequence's own history.
+            self.embed_ctx(
+                &decode_seqs[i].tokens,
+                tok,
+                hidden.offset(i * h * fp32),
+                stream,
+            )?;
         }
         // 1b. Zero padding for decode [n_decode..padded_n)
         for i in n_decode..padded_n {
@@ -141,16 +148,28 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.norm_output();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
-                prefill_hidden,
-                n_prefill as u32,
-                h as u32,
-                stream,
-            )?;
+            if self.has_ngram_embedding() {
+                // n-gram hashes read BEHIND the chunk, so hand it the earlier
+                // tokens of this same prefill too.
+                let cs = prefill_chunk_start.saturating_sub(self.ngram_lookbehind());
+                self.embed_tokens_fused(
+                    &prefill_tokens[cs..prefill_chunk_start + n_prefill],
+                    n_prefill,
+                    prefill_hidden,
+                    stream,
+                )?;
+            } else {
+                ops::batched_embed(
+                    self.gpu.as_ref(),
+                    self.batched_embed_kernel,
+                    token_ids_dev,
+                    self.embed_tokens.weight,
+                    prefill_hidden,
+                    n_prefill as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
             self.scale_embeddings(prefill_hidden, n_prefill, stream)?;
         }
 

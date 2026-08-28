@@ -130,9 +130,15 @@ impl WeightLoader for FastSafetensorsLoader {
             resolve_shards(model_dir)?;
 
         // Pre-flight OOM estimate (identical to SafetensorsLoader).
+        //
+        // The n-gram tables are DEFERRED further down — they are never
+        // uploaded, so counting them here refuses a model that fits. On
+        // LongCat-Flash-Lite they are 62.8 of the checkpoint's 138 GB, which
+        // is the difference between a 167 GB "peak" and a 98 GB one.
+        let preflight_skip = |name: &str| skip_fn(name) || crate::weights::is_ngram_table(name);
         {
-            let estimated = estimate_load_bytes(&shard_files, &skip_fn)?;
-            let has_fp8 = estimate_has_fp8(&shard_files, &skip_fn)?;
+            let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;
+            let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip)?;
             let mult = self
                 .peak_memory_multiplier
                 .unwrap_or(if has_fp8 { 1.5 } else { 1.3 });
@@ -163,6 +169,8 @@ impl WeightLoader for FastSafetensorsLoader {
 
         // Load each shard. Loaded tensors filtered by EP rules upstream.
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
+        // Locations of tensors deliberately NOT uploaded (the n-gram tables).
+        let mut deferred: HashMap<String, crate::weights::DeferredTensor> = HashMap::new();
         let total_shards = shard_files.len();
         let initial_free = gpu.free_memory()?;
         let mut offload_logged = false;
@@ -202,6 +210,7 @@ impl WeightLoader for FastSafetensorsLoader {
                 self.direct_io_tensor_cap,
                 self.prefetch_shards,
                 &mut weights,
+                &mut deferred,
                 &mut offload_logged,
             )?;
 
@@ -244,12 +253,17 @@ impl WeightLoader for FastSafetensorsLoader {
                 self.direct_io_tensor_cap,
                 self.prefetch_shards,
                 &mut weights,
+                &mut deferred,
                 &mut extra_offload,
             )?;
         }
 
         tracing::info!("Fast-loaded {} weight tensors", weights.len());
-        Ok(WeightStore::from_map(weights))
+        let mut store = WeightStore::from_map(weights);
+        for (name, d) in deferred {
+            store.defer(name, d);
+        }
+        Ok(store)
     }
 }
 
@@ -272,6 +286,7 @@ fn load_shard_fast(
     direct_io_tensor_cap: usize,
     prefetch_shards: bool,
     out: &mut HashMap<String, WeightTensor>,
+    deferred_out: &mut HashMap<String, crate::weights::DeferredTensor>,
     offload_logged: &mut bool,
 ) -> Result<()> {
     // Header parsing uses a buffered fd — header is a few KB, cache pollution
@@ -286,7 +301,37 @@ fn load_shard_fast(
         let allow_set: std::collections::HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
         tensors.retain(|t| allow_set.contains(t.name.as_str()));
     }
-    tensors.retain(|t| !skip_fn(&t.name));
+    // The n-gram embedding TABLES are never uploaded with the checkpoint —
+    // 63 GB (LongCat-Lite) to ~102 GB (Flash-Next) of BF16 would exhaust a
+    // 121 GB unified box before any quantization could run, and the fallback
+    // on GB10 is managed memory, i.e. Linux swap, i.e. a kernel freeze. They
+    // are recorded with their on-disk location and served either by streaming
+    // per-table quantize-on-load or straight off NVMe by the row cache.
+    let mut deferred_here: Vec<(String, crate::weights::DeferredTensor)> = Vec::new();
+    #[allow(clippy::items_after_statements)]
+    tensors.retain(|t| {
+        if crate::weights::is_ngram_table(&t.name) {
+            deferred_here.push((
+                t.name.clone(),
+                crate::weights::DeferredTensor {
+                    path: shard_path.to_path_buf(),
+                    offset: t.abs_offset,
+                    shape: t.shape.clone(),
+                    dtype: t.dtype,
+                },
+            ));
+            return false;
+        }
+        !skip_fn(&t.name)
+    });
+    if !deferred_here.is_empty() {
+        tracing::info!(
+            "Deferred {} n-gram table(s) in {} — served from disk, not uploaded",
+            deferred_here.len(),
+            shard_path.display()
+        );
+        deferred_out.extend(deferred_here);
+    }
 
     // Per-shard heuristic: above `direct_io_tensor_cap` tensors, O_DIRECT's
     // per-tensor syscall + 4 KiB alignment overhead costs more than kernel

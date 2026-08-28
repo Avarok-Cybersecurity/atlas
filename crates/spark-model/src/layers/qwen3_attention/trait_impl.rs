@@ -90,6 +90,10 @@ pub fn diag_norm_f32(
 // and carried on `ForwardContext`.
 
 impl TransformerLayer for Qwen3AttentionLayer {
+    fn uses_local_mla_prefill(&self) -> bool {
+        self.mla.is_some()
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }

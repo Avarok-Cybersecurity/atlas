@@ -339,6 +339,18 @@ impl Qwen3AttentionLayer {
                     &format!("L{:02} normed2", self.attn_layer_idx),
                 );
             }
+            // LongCat shortcut MoE (producer): run on the SAME normed input
+            // as the dense FFN, fold the zero-expert identity contribution,
+            // stash into the carry buffer BEFORE the dense FFN overwrites
+            // moe_output. Added by the NEXT sublayer.
+            if let (Some(moe_ffn), Some((carry, cap))) = (&self.moe_ffn, self.shortcut_carry_out) {
+                anyhow::ensure!(1 <= cap, "shortcut carry capacity");
+                let moe_out = moe_ffn.forward(normed2, ctx, stream)?;
+                if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
+                    m.apply_zero_expert(moe_out, normed2, 1, ctx, stream)?;
+                }
+                ctx.gpu.copy_d2d_async(moe_out, carry, h * 2, stream)?;
+            }
             let dense_out = self.ffn.forward(normed2, ctx, stream)?;
             if gemma4_diag {
                 diag_norm(
@@ -379,6 +391,18 @@ impl Qwen3AttentionLayer {
                 h as u32,
                 stream,
             )?;
+            // LongCat shortcut MoE (consumer): the paired previous sublayer's
+            // stashed MoE output lands at the very end of THIS sublayer.
+            if let Some((carry, _cap)) = self.shortcut_carry_in {
+                ops::residual_add(
+                    ctx.gpu,
+                    self.residual_add_k,
+                    hidden,
+                    carry,
+                    h as u32,
+                    stream,
+                )?;
+            }
         }
 
         if gemma4_diag {

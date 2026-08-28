@@ -11,6 +11,7 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;
+use crate::weight_loader::LongcatWeightLoader;
 use crate::weight_loader::{
     DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, LagunaWeightLoader,
     MinimaxM2WeightLoader, ModelWeightLoader, NemotronHWeightLoader, NllbWeightLoader,
@@ -99,6 +100,9 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         "gemma4" | "gemma_4" => Ok(Box::new(Gemma4WeightLoader)),
         // Mistral family (MLA + MoE, GQA fallback for initial bring-up)
         "mistral" => Ok(Box::new(MistralWeightLoader)),
+        // LongCat-Flash(-Lite): MLA dual-sublayer blocks + shortcut MoE with
+        // zero-computation experts (+ n-gram input embeddings).
+        "longcat_flash_ngram" | "longcat_flash" => Ok(Box::new(LongcatWeightLoader)),
         // MiniMax M2 family (M2.1 / M2.7) — full attention + 256-expert
         // sigmoid-routed MoE + 3-module MTP.
         "minimax_m2" => Ok(Box::new(MinimaxM2WeightLoader)),

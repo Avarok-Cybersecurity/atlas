@@ -311,6 +311,45 @@ impl Qwen3AttentionLayer {
         // prefill_b/forward_layers.rs for why.
         let t_ffn = (std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1"))
             .then(std::time::Instant::now);
+        // LongCat shortcut MoE (producer): run BEFORE the dense FFN (both
+        // write moe_output), fold zero-experts, stash into the carry buffer.
+        if let (Some(moe_ffn), Some((carry, cap))) = (&self.moe_ffn, self.shortcut_carry_out)
+            && self.pre_moe_norm.is_none()
+        {
+            anyhow::ensure!(
+                num_tokens <= cap,
+                "shortcut carry capacity {cap} < prefill chunk {num_tokens}"
+            );
+            moe_ffn
+                .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)
+                .map_err(|e| anyhow::anyhow!("shortcut moe forward_prefill failed: {e}"))?;
+            let moe_out = ctx.buffers.moe_output();
+            if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
+                m.apply_zero_expert(
+                    moe_out,
+                    ctx.buffers.norm_output(),
+                    num_tokens as u32,
+                    ctx,
+                    stream,
+                )?;
+            }
+            // ATLAS_OP_DUMP hook: the SHORTCUT MoE output (zero-experts already
+            // folded in), captured before the dense FFN reuses this buffer.
+            // Distinct from "moe_out" below, which is the dense FFN delta.
+            if num_tokens > 0 {
+                super::super::op_dump::dump_bf16(
+                    ctx.gpu,
+                    moe_out,
+                    (num_tokens - 1) * h * bf16,
+                    h,
+                    self.attn_layer_idx,
+                    "shortcut_moe_out",
+                    stream,
+                )?;
+            }
+            ctx.gpu
+                .copy_d2d_async(moe_out, carry, num_tokens * h * 2, stream)?;
+        }
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)
             .map_err(|e| anyhow::anyhow!("ffn.forward_prefill failed: {e}"))?;
@@ -446,6 +485,22 @@ impl Qwen3AttentionLayer {
                 stream,
             )
             .map_err(|e| anyhow::anyhow!("residual_add failed: n={num_tokens} h={h}: {e}"))?;
+            // LongCat shortcut MoE (consumer): add the paired previous
+            // sublayer's stashed output at the end of THIS sublayer.
+            if let Some((carry, cap)) = self.shortcut_carry_in {
+                anyhow::ensure!(
+                    num_tokens <= cap,
+                    "shortcut carry capacity {cap} < prefill chunk {num_tokens}"
+                );
+                ops::residual_add(
+                    ctx.gpu,
+                    self.residual_add_k,
+                    hidden,
+                    carry,
+                    (num_tokens * h) as u32,
+                    stream,
+                )?;
+            }
         }
 
         // Gemma-4: hidden *= layer_scalar at end of layer (applied to ALL tokens)

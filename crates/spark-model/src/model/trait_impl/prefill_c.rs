@@ -118,16 +118,21 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
-                hidden,
-                total_len as u32,
-                h as u32,
-                stream,
-            )?;
+            if self.has_ngram_embedding() {
+                // Whole prompt in one go: `tokens` IS the context.
+                self.embed_tokens_fused(tokens, total_len, hidden, stream)?;
+            } else {
+                ops::batched_embed(
+                    self.gpu.as_ref(),
+                    self.batched_embed_kernel,
+                    token_ids_dev,
+                    self.embed_tokens.weight,
+                    hidden,
+                    total_len as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
             self.scale_embeddings(hidden, total_len, stream)?;
         }
 
@@ -272,16 +277,26 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
-                hidden,
-                proc_count as u32,
-                h as u32,
-                stream,
-            )?;
+            if self.has_ngram_embedding() {
+                let cs = proc_start.saturating_sub(self.ngram_lookbehind());
+                self.embed_tokens_fused(
+                    &tokens[cs..proc_start + proc_count],
+                    proc_count,
+                    hidden,
+                    stream,
+                )?;
+            } else {
+                ops::batched_embed(
+                    self.gpu.as_ref(),
+                    self.batched_embed_kernel,
+                    token_ids_dev,
+                    self.embed_tokens.weight,
+                    hidden,
+                    proc_count as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
             self.scale_embeddings(hidden, proc_count, stream)?;
         }
 

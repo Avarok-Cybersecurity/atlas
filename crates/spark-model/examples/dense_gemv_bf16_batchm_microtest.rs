@@ -120,8 +120,8 @@ fn main() -> Result<()> {
     let mut fail = 0usize;
 
     println!(
-        "{:<12} {:>5} {:>10} {:>12} {:>12} {:>9}  {}",
-        "shape", "M", "N", "Mx M=1 (ms)", "batchm (ms)", "speedup", "bit-identical"
+        "{:<12} {:>5} {:>10} {:>12} {:>12} {:>9}  bit-identical",
+        "shape", "M", "N", "Mx M=1 (ms)", "batchm (ms)", "speedup"
     );
 
     for &(n, k_dim, label) in SHAPES {

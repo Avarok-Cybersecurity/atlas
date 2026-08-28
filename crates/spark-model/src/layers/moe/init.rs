@@ -317,6 +317,25 @@ impl MoeLayer {
             // Hash routing (DeepSeek-V4 hash_moe layers): lazy-loaded so other
             // models start fine. `tid2eid_dev` is the per-layer table (Some
             // only for hash layers).
+            router_logits_n: (config.num_experts + config.zero_expert_num) as u32,
+            moe_topk_softmax_bias_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_topk_softmax_bias",
+            ),
+            moe_topk_softmax_bias_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_topk_softmax_bias_batched",
+            ),
+            moe_zero_expert_add_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_zero_expert_add",
+            ),
+            // 64 KB, unconditional: written by the softmax+bias router even
+            // with zero_expert_num == 0 (always zeros then).
+            zero_accum_dev: gpu.alloc(16384 * 4)?,
             moe_hash_route_k: super::super::try_kernel(gpu, "moe_hash_route", "moe_hash_route"),
             moe_hash_route_batched_k: super::super::try_kernel(
                 gpu,

@@ -303,6 +303,11 @@ impl MoeLayer {
         super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM
         let gate_logits = ctx.buffers.gate_logits();
+        // Router width: `router_logits_n` == `num_experts` on every model
+        // except LongCat, where the router also scores the zero-computation
+        // (identity) experts. Passing `num_experts` here would compute 256 of
+        // 384 logits and route on a truncated distribution — wrong, and
+        // silent. Mirrors the NVFP4 twin in `forward_prefill.rs`.
         if let Some(ref nvfp4) = self.gate_nvfp4 {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -311,14 +316,22 @@ impl MoeLayer {
                 nvfp4,
                 gate_logits,
                 n,
-                num_experts,
+                self.router_logits_n,
                 h,
                 stream,
             )?;
         } else {
             // Selection numerics — see router_gate_gemm_dense for why this
             // must stay on the scalar kernel (2026-08-12 BFCL regression).
-            self.router_gate_gemm_dense(router_in, gate_logits, n, num_experts, h, ctx, stream)?;
+            self.router_gate_gemm_dense(
+                router_in,
+                gate_logits,
+                n,
+                self.router_logits_n,
+                h,
+                ctx,
+                stream,
+            )?;
         }
 
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
@@ -334,21 +347,42 @@ impl MoeLayer {
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
         if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
-                ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
-                gate_logits,
-                bias,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                n,
-                stream,
-            )?;
-            mprof!("routing_topk");
+            if ctx.config.scoring_func == "softmax" {
+                // LongCat: softmax scores + correction bias for SELECTION,
+                // unbiased softmax for the blend weights, and the zero
+                // (identity) experts folded into `zero_accum` for the caller's
+                // `apply_zero_expert`. Same helper the NVFP4 prefill uses —
+                // expert-weight precision is downstream of routing, so the two
+                // must agree here or FP8 and NVFP4 pick different experts.
+                self.router_softmax_bias_batched(
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    n,
+                    ctx,
+                    stream,
+                )?;
+                mprof!("routing_topk");
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    n,
+                    stream,
+                )?;
+                mprof!("routing_topk");
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,

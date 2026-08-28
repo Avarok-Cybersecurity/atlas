@@ -264,14 +264,17 @@ impl TransformerModel {
             // layers read `tid2eid[token_id]` per token, in this same order.
             self.gpu
                 .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
+            // `proc_tokens` is always a SUFFIX of `tokens` (all three arms of
+            // the binding above slice from the tail), so the tokens preceding
+            // it are exactly `tokens[..start]` — which is what the n-gram hash
+            // needs to read backwards into. `ngram_lookbehind()` is 0 for
+            // models without one, making `ctx` just the processed tokens.
+            let start = tokens.len() - proc_count;
+            let ctx_start = start.saturating_sub(self.ngram_lookbehind());
+            self.embed_tokens_fused(
+                &tokens[ctx_start..start + proc_count],
+                proc_count,
                 hidden,
-                proc_count as u32,
-                h as u32,
                 stream,
             )?;
             self.scale_embeddings(hidden, proc_count, stream)?;

@@ -291,7 +291,9 @@ impl TransformerModel {
 
         // 1a. Embed active tokens into hidden[0..n)
         for (i, &tok) in tokens.iter().enumerate() {
-            self.embed(tok, hidden.offset(i * h * fp32), stream)?;
+            // Each batch slot is a DIFFERENT sequence: the n-gram context must
+            // come from that sequence's own history, never the batch's.
+            self.embed_ctx(&seqs[i].tokens, tok, hidden.offset(i * h * fp32), stream)?;
         }
 
         // 1b. Zero padding hidden[n..dispatch_n)

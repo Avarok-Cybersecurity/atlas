@@ -374,12 +374,14 @@ impl BufferSizes {
                     0
                 }),
             gate_logits: if config.num_experts > 0 {
-                m * config.num_experts * bf16
+                // LongCat zero-experts: the router scores (routed + zero)
+                // logits even though only `num_experts` expert FFNs exist.
+                m * (config.num_experts + config.zero_expert_num) * bf16
             } else {
                 256
             },
             gate_logits_f32: if config.num_experts > 0 {
-                m * config.num_experts * 4
+                m * (config.num_experts + config.zero_expert_num) * 4
             } else {
                 256
             },

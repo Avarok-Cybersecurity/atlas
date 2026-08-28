@@ -70,6 +70,12 @@ pub struct ModelConfig {
     // ── MoE ──
     #[serde(default)]
     pub num_experts: usize,
+    /// LongCat-Flash zero-computation "identity" experts: the router scores
+    /// `num_experts + zero_expert_num` logits, and a token routed to an
+    /// expert id `>= num_experts` receives the INPUT itself scaled by the
+    /// routing weight instead of an expert FFN. 0 = no zero-experts.
+    #[serde(default)]
+    pub zero_expert_num: usize,
     /// Top-K experts activated per token (the "A" in 35B-A3B = 3B
     /// active params).
     #[serde(default = "default_one")]
@@ -229,6 +235,26 @@ pub struct ModelConfig {
     /// Value dimension per head (may differ from head_dim in MLA).
     #[serde(default)]
     pub v_head_dim: usize,
+
+    // ── N-gram embeddings — LongCat-Flash-Lite / Qwen3.8-Flash-Next ──
+    // (arxiv 2601.21204: capacity via hashed n-gram lookup tables instead of
+    // more experts.) `emb_split_num * (emb_neighbor_num - 1)` embedding
+    // tables, each ~`ngram_vocab_size_ratio * vocab_size` rows at
+    // `hidden_size / num_tables` dims; ids are a polynomial rolling hash of
+    // the current + previous n-1 TOKEN IDS (never hidden states), each
+    // looked-up vector is projected to hidden and ADDED to the base token
+    // embedding, and the sum is scaled by 1/(1 + num_tables). Reference:
+    // bench/ngram_ref/{modeling_longcat_ngram.py, ngram_parity.py}.
+    /// N-gram table size multiplier: each table has ~ratio*vocab_size rows
+    /// (LongCat-Lite: 78 → ~10.2M rows/table). 0 = no n-gram embeddings.
+    #[serde(default)]
+    pub ngram_vocab_size_ratio: usize,
+    /// Largest n-gram size N (LongCat-Lite: 4 → bigram/trigram/4-gram).
+    #[serde(default)]
+    pub emb_neighbor_num: usize,
+    /// Independent hash splits K per n-gram size (LongCat-Lite: 4).
+    #[serde(default)]
+    pub emb_split_num: usize,
 
     // ── DeepSeek-V4 low-rank / grouped output projection + mHC ──
     /// Output projection latent dimension for low-rank O projection.
@@ -588,8 +614,8 @@ pub use parsers::{
     parse_peft_adapter_config, parse_quantization_config,
 };
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_minimax_m2, parse_step3p7,
-    parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_longcat_ngram, parse_minimax_m2,
+    parse_step3p7, parse_vision_config,
 };
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {

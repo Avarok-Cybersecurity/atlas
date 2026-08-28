@@ -187,7 +187,8 @@ impl MoeLayer {
                 fp8,
                 gate_logits,
                 n,
-                num_experts,
+                // = num_experts everywhere except LongCat (zero-expert logits).
+                self.router_logits_n,
                 h,
                 stream,
             )?;
@@ -199,7 +200,7 @@ impl MoeLayer {
                 nvfp4,
                 gate_logits,
                 n,
-                num_experts,
+                self.router_logits_n,
                 h,
                 stream,
             )?;
@@ -208,7 +209,15 @@ impl MoeLayer {
             // must stay on the scalar kernel and why ATLAS_CUBLAS_GEMM must
             // not reroute it either (2026-08-12 BFCL regression: a rerouted
             // router GEMM flips top-k on borderline tokens deterministically).
-            self.router_gate_gemm_dense(router_in, gate_logits, n, num_experts, h, ctx, stream)?;
+            self.router_gate_gemm_dense(
+                router_in,
+                gate_logits,
+                n,
+                self.router_logits_n,
+                h,
+                ctx,
+                stream,
+            )?;
         }
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");
@@ -265,6 +274,18 @@ impl MoeLayer {
                     ctx.config.norm_topk_prob,
                     ctx.config.routed_scaling_factor as f32,
                     n,
+                    stream,
+                )?;
+            } else if ctx.config.scoring_func == "softmax" {
+                self.router_softmax_bias_batched(
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    n,
+                    ctx,
                     stream,
                 )?;
             } else {

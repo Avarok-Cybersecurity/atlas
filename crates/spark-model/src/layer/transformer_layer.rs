@@ -42,6 +42,14 @@ pub const VERIFY_WY_LAYER_STRIDE_BYTES: usize =
     VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES;
 
 pub trait TransformerLayer: Send + Sync {
+    /// True when this layer's PREFILL attends only over the tokens it is
+    /// handed, so a prefix-cache skip would hide the cached prefix from
+    /// attention entirely. MLA layers on the paged path do; everything else
+    /// reads the paged cache and is unaffected.
+    fn uses_local_mla_prefill(&self) -> bool {
+        false
+    }
+
     /// `&mut dyn Any` downcast hook for post-construction weight overlays (e.g.
     /// the LoRA install walk). Default `None`; overlay-capable layers override.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
