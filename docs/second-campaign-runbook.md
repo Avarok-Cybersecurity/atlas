@@ -51,9 +51,24 @@ campaign entirely.
     done
 
 Cheap gates first, so a config mistake surfaces in minutes rather than after the
-1.6h BFCL leg. TTFT gates listed **twice** each: on a box with no stored
-baseline the first run only creates it and records `info`, which the gate does
-not accept — that is how a ten-gate campaign silently comes back eight.
+1.6h BFCL leg.
+
+TTFT gates listed **twice** each — but only on a box with **no stored
+baseline**. There, the first run merely creates it and records `info`, which the
+gate does not accept, and that is how a ten-gate campaign silently comes back
+eight.
+
+Once a baseline exists the doubling is waste. Measured 2026-08-28: a second
+campaign on the same box had its FIRST `ttft-cold-gate` run record
+
+    PASS — median +0.5% (limit +3.0%) · p90 -0.2% (limit +5.0%)
+
+because the earlier campaign had left
+`$ATLAS_HOME/runs/ttft-cold-gate/baseline-<model>.json`. Listing them twice
+anyway costs about two extra gate runs, which is cheap insurance and never
+wrong — but check for that file before assuming you need it:
+
+    ls $ATLAS_HOME/runs/ttft-{cold,warm}-gate/baseline-*.json
 
 ## Judge by the record, never by rc
 
