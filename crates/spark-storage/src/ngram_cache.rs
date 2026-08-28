@@ -112,7 +112,12 @@ struct Segments {
 /// `[slots]` array indexed by SLOT (parallel to the arena).
 struct ScaleCache {
     arena: ExpertArena,
-    file: File,
+    /// `None` for a table whose scale is a single constant for every row: the
+    /// arena is filled once at open and never faulted. The released
+    /// Qwen3.8-Flash-Next PLE table is that shape — one
+    /// `ngram_embedding.weight_scale`, BF16, shape [1] — while LongCat's is
+    /// per-row and reads from this file.
+    file: Option<File>,
 }
 
 /// A 4 KiB-aligned host buffer for O_DIRECT reads.
@@ -188,7 +193,7 @@ impl NgramRowCache {
                 Some(ScaleCache {
                     arena: ExpertArena::new(1, sblocks as u32, BLOCK)
                         .context("NgramRowCache: scale arena")?,
-                    file: open_direct(sp)?,
+                    file: Some(open_direct(sp)?),
                 })
             }
             None => None,
@@ -270,6 +275,32 @@ impl NgramRowCache {
         self.arena.slot_dev_va(0, 0)
     }
 
+    /// Give every slot the same scale, for an FP8 table quantized with ONE
+    /// factor rather than per row.
+    ///
+    /// Filled once here instead of faulted per row: the value does not depend
+    /// on which row landed in the slot, so a per-fault read would be the same
+    /// four bytes fetched again for every miss. The gather kernel is the FP8
+    /// one either way — it multiplies by `scales[slot]` and does not care where
+    /// that came from.
+    ///
+    /// # Errors
+    /// If the scale arena cannot be allocated.
+    pub fn set_constant_scale(&mut self, scale: f32) -> Result<()> {
+        let sbytes = self.slots * 4;
+        let sblocks = sbytes.div_ceil(BLOCK);
+        let arena = ExpertArena::new(1, sblocks as u32, BLOCK)
+            .context("NgramRowCache: constant scale arena")?;
+        let p = arena.slot_host_ptr(0, 0)?.cast::<f32>();
+        for i in 0..self.slots {
+            // SAFETY: the arena is at least `slots * 4` bytes and was just
+            // allocated here, so nothing else holds a reference into it.
+            unsafe { p.add(i).write(scale) };
+        }
+        self.scales = Some(ScaleCache { arena, file: None });
+        Ok(())
+    }
+
     /// Device VA of the `[slots]` f32 scale array (FP8 tables only).
     pub fn scale_dev_va(&self) -> Result<Option<u64>> {
         match &self.scales {
@@ -332,7 +363,7 @@ impl NgramRowCache {
             let r = crate::ngram_cache_fault::fault_all(
                 &jobs,
                 &files,
-                self.scales.as_ref().map(|sc| &sc.file),
+                self.scales.as_ref().and_then(|sc| sc.file.as_ref()),
                 self.row_stride,
                 &mut self.bounce,
             );
@@ -367,7 +398,9 @@ impl NgramRowCache {
                 .add(slot as usize * self.row_stride)
         } as usize;
         let scale = match &self.scales {
-            Some(sc) => {
+            // A constant scale has no file and never faults: the arena was
+            // filled at open and every slot already holds the right value.
+            Some(sc) if sc.file.is_some() => {
                 let sbyte = id * 4;
                 let sblock = sbyte - (sbyte % BLOCK as u64);
                 let swithin = (sbyte - sblock) as usize;
@@ -375,7 +408,8 @@ impl NgramRowCache {
                 let sdst = unsafe { sc.arena.slot_host_ptr(0, 0)?.add(slot as usize * 4) };
                 Some((sblock, swithin, sdst as usize))
             }
-            None => None,
+            // No scales at all, or a constant one already resident.
+            Some(_) | None => None,
         };
         Ok(crate::ngram_cache_fault::FaultJob {
             row_id: id,

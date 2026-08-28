@@ -66,6 +66,35 @@ fn i64_host(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) -> Result<Vec
         .collect())
 }
 
+/// Read a one-element scale tensor back to the host as f32.
+///
+/// The same trick as `i64_host` and for the same reason: it is four bytes, and
+/// the weight is already on the device. It accepts BF16 or FP32 because the
+/// checkpoints differ on which they use for a scalar.
+#[cfg(feature = "cuda")]
+fn f32_scalar(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) -> Result<f32> {
+    let t = store.get(name).with_context(|| format!("PLE: {name}"))?;
+    anyhow::ensure!(
+        t.num_elements() == 1,
+        "PLE: {name} has {} elements; a table-wide scale is one",
+        t.num_elements()
+    );
+    match t.dtype {
+        spark_runtime::weights::WeightDtype::FP32 => {
+            let mut raw = [0u8; 4];
+            gpu.copy_d2h(t.ptr, &mut raw)?;
+            Ok(f32::from_le_bytes(raw))
+        }
+        spark_runtime::weights::WeightDtype::BF16 => {
+            let mut raw = [0u8; 2];
+            gpu.copy_d2h(t.ptr, &mut raw)?;
+            // BF16 is the top 16 bits of an f32.
+            Ok(f32::from_bits(u32::from(u16::from_le_bytes(raw)) << 16))
+        }
+        other => anyhow::bail!("PLE: {name} is {other:?}; expected a BF16 or FP32 scalar"),
+    }
+}
+
 /// Build the PLE layer for `layer_idx`, or `None` if this model has none.
 #[cfg(feature = "cuda")]
 pub(super) fn load(
@@ -115,6 +144,7 @@ pub(super) fn load(
     let mut shards: Vec<(std::path::PathBuf, u64)> = Vec::new();
     let mut rows_per = 0usize;
     let mut head_dim = 0usize;
+    let mut dtype = None;
     for i in 0.. {
         let name = format!("{lp}.ple_embedding.ngram_embedding.shard_{i}.weight");
         let Some(d) = store.deferred(&name) else {
@@ -128,7 +158,15 @@ pub(super) fn load(
         if i == 0 {
             rows_per = d.shape[0];
             head_dim = d.shape[1];
+            dtype = Some(d.dtype);
         } else {
+            anyhow::ensure!(
+                Some(d.dtype) == dtype,
+                "PLE: shard {i} is {:?} but shard 0 is {:?}; one row stride covers \
+                 the whole table",
+                d.dtype,
+                dtype
+            );
             // Equal row counts are still required: the cache maps a global id
             // to its shard with one divide, and that is only valid when every
             // shard holds the same number of rows. Differing FILES are fine —
@@ -149,15 +187,47 @@ pub(super) fn load(
          the checkpoint has none, or they were UPLOADED whole — which for this \
          table is 102 GB of BF16 and would not have fit."
     );
+    // The stride comes from the DTYPE, not from an assumption. LongCat ships
+    // this table as BF16; the released Qwen3.8-Flash-Next NVFP4 checkpoint
+    // ships it as FP8 E4M3 in files literally named `model-plefp8-*`. Hardcoding
+    // `head_dim * 2` read two bytes per element out of a one-byte table: every
+    // row came back as the wrong bytes, and once the doubled stride walked past
+    // the end of the last file it failed outright.
+    let dtype = dtype.context("PLE: no shard dtype")?;
+    let elem = match dtype {
+        spark_runtime::weights::WeightDtype::BF16 => 2,
+        spark_runtime::weights::WeightDtype::FP8E4M3 => 1,
+        other => anyhow::bail!(
+            "PLE: n-gram table is {other:?}; the row cache reads raw rows and the \
+             gather kernel has a path for BF16 and FP8 E4M3 only"
+        ),
+    };
     let slots = slots_from_env();
-    let cache = spark_storage::NgramRowCache::open_segmented(
+    let mut cache = spark_storage::NgramRowCache::open_segmented(
         &shards,
         rows_per as u64,
-        None, // BF16 rows, no per-row scale file
-        head_dim * 2,
+        None, // scales are not per-row here; see the constant below
+        head_dim * elem,
         slots,
     )
     .context("PLE: n-gram row cache")?;
+
+    // An FP8 table needs a scale for the gather to dequantize with. This
+    // checkpoint carries ONE for the whole table
+    // (`ngram_embedding.weight_scale`, BF16, shape [1]) rather than one per
+    // row, so every slot gets the same value and nothing is faulted for it.
+    if elem == 1 {
+        let name = format!("{lp}.ple_embedding.ngram_embedding.weight_scale");
+        let scale = f32_scalar(store, &name, gpu)
+            .with_context(|| format!("PLE: FP8 table needs {name}"))?;
+        anyhow::ensure!(
+            scale.is_finite() && scale > 0.0,
+            "PLE: n-gram weight_scale is {scale}, which cannot dequantize anything"
+        );
+        cache
+            .set_constant_scale(scale)
+            .context("PLE: constant scale")?;
+    }
 
     let weights = PleWeights {
         key_proj: dense(store, &format!("{lp}.key_proj.weight"))?,
