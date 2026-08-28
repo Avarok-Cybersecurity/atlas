@@ -378,6 +378,18 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 2]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // ★ ROUTE BEFORE CAPTURE. Under an mHC highway the graphed dispatch
+        // reaches `qwen3_ssm::decode_batched`, which REFUSES — and it refuses
+        // INSIDE the capture region, leaving the stream recording so every
+        // later op dies with status 901 (measured: alloc_sequence,
+        // free_sequence and the next prefill all failed after one refusal).
+        // Taking the mHC path here means the refusal never happens; taking it
+        // BEFORE capture starts means a future refusal is survivable.
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 2, "verify_hc returned {} rows, want 2", v.len());
+            return Ok([v[0], v[1]]);
+        }
         self.decode_verify_graphed_dispatch(tokens, seq, _stream)
     }
     fn decode_verify_graphed_k3(
@@ -387,6 +399,11 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 3]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 3, "verify_hc returned {} rows, want 3", v.len());
+            return Ok([v[0], v[1], v[2]]);
+        }
         self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream)
     }
     fn decode_verify_graphed_k4(
@@ -396,6 +413,11 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 4]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 4, "verify_hc returned {} rows, want 4", v.len());
+            return Ok([v[0], v[1], v[2], v[3]]);
+        }
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {

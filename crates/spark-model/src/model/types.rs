@@ -217,7 +217,7 @@ pub struct TransformerModel {
     /// owns the module. Present INSTEAD of `qwen4_exp_mtp` when shadow is on.
     /// It drafts a token each decode step and records whether the target's next
     /// token matches — nothing is ever fed back, so no speculation occurs.
-    pub(super) qwen4_exp_mtp_head: Option<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead>,
+    pub(super) qwen4_exp_mtp_head: Option<Arc<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead>>,
     /// Aux carries (QSA marks + PLE conv/history) snapshotted between the
     /// committed row and the draft rows of an mHC K-row verify, so a rejected
     /// draft can be rolled back to exactly "token_0 committed". See verify_hc.

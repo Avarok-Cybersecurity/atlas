@@ -289,14 +289,17 @@ pub fn build_model(
     if use_speculative && mtp_weights.is_empty() {
         if qwen4_exp_mtp_module.is_some() {
             // Saying "no MTP weights were loaded" here would be a lie: the
-            // block IS loaded and audited. What is missing is the proposer.
+            // block IS loaded and audited. Whether a proposer gets wired
+            // depends on ATLAS_QWEN4EXP_MTP_VERIFY — this arm only fires when
+            // it is OFF, since the proposer install path logs its own line.
             tracing::warn!(
-                "qwen4_exp: the MTP module is loaded and audited, but no \
-                 proposer is wired yet — speculative decoding stays OFF. This \
-                 is deliberate: a proposer installed today would route the \
-                 draft into `refuse_batched_under_hc` mid-verify, which the \
-                 scheduler turns into a truncated response rather than a \
-                 fallback."
+                "qwen4_exp: the MTP module is loaded and audited, but the \
+                 proposer is NOT armed — speculative decoding stays OFF. Set \
+                 ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
+                 with the mHC K-row verify path it needs; the two arm together \
+                 because a proposer without that verify path routes the draft \
+                 into `refuse_batched_under_hc` mid-step, which the scheduler \
+                 turns into a truncated response rather than a fallback."
             );
         } else {
             tracing::warn!(
@@ -713,11 +716,19 @@ pub fn build_model(
         // ATLAS_QWEN4EXP_MTP_SHADOW the module is just held (unchanged
         // behaviour), because the head's pool is real memory outside the util
         // pledge and nothing should pay for it unless it is being measured.
-        if crate::layers::qwen4_exp_mtp::shadow_enabled() {
-            if let Err(e) = model.set_qwen4_exp_mtp_head(*module, target_embed_for_mtp, max_seq_len)
+        // Speculation needs the head installed as the ACTIVE proposer; shadow
+        // needs it held but inert. `ATLAS_QWEN4EXP_MTP_VERIFY=1` is the same
+        // flag the mHC K-row verify path is gated on, so the two arm together
+        // or not at all — a proposer without that verify path would produce
+        // drafts the verify step then refuses on, mid-request.
+        let arm_spec =
+            use_speculative && std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
+        if crate::layers::qwen4_exp_mtp::shadow_enabled() || arm_spec {
+            if let Err(e) =
+                model.set_qwen4_exp_mtp_head(*module, target_embed_for_mtp, max_seq_len, arm_spec)
             {
                 tracing::error!(
-                    "qwen4_exp MTP shadow head FAILED to build: {e:#}. \
+                    "qwen4_exp MTP head FAILED to build: {e:#}. \
                      Serving continues with no MTP."
                 );
             }

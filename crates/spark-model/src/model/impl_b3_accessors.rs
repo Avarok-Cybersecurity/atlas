@@ -71,6 +71,10 @@ impl TransformerModel {
         module: crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule,
         embed_tokens: crate::weight_map::DenseWeight,
         max_seq_len: usize,
+        // Install the head as the ACTIVE proposer, so the scheduler drafts and
+        // verifies with it. Separate from merely holding the head: shadow mode
+        // holds it without ever feeding a draft back.
+        install_as_proposer: bool,
     ) -> anyhow::Result<()> {
         // Built here rather than in the factory because the model owns `gpu`
         // by this point.
@@ -87,14 +91,27 @@ impl TransformerModel {
             max_seq_len,
         )?;
         let state = head.alloc_state(self.gpu.as_ref())?;
-        tracing::warn!(
-            "qwen4_exp MTP SHADOW MODE is on: the draft head runs every decode \
-             step and its accept rate is logged. Verified INERT — shadow-on \
-             output is byte-identical to a shadow-off control — because the \
-             draft runs in its own BufferArena. It still costs a FULL EXTRA \
-             draft forward per token and produces NO speedup (nothing is fed \
-             back), so do not benchmark with it on."
-        );
+        if !install_as_proposer {
+            tracing::warn!(
+                "qwen4_exp MTP SHADOW MODE is on: the draft head runs every decode \
+                 step and its accept rate is logged. Verified INERT — shadow-on \
+                 output is byte-identical to a shadow-off control — because the \
+                 draft runs in its own BufferArena. It still costs a FULL EXTRA \
+                 draft forward per token and produces NO speedup (nothing is fed \
+                 back), so do not benchmark with it on."
+            );
+        }
+        let head = std::sync::Arc::new(head);
+        if install_as_proposer {
+            tracing::warn!(
+                "qwen4_exp MTP SPECULATION ARMED: the draft head is installed as \
+                 the active proposer, and the mHC K-row verify path is live. \
+                 Measured draft accept is 86.5-95.5%, but this is the FIRST \
+                 configuration in which a draft is actually fed back — treat \
+                 output quality as unproven until the agentic battery runs."
+            );
+            self.proposer = Some(head.clone());
+        }
         self.qwen4_exp_mtp_head = Some(head);
         self.qwen4_exp_mtp_state = Some(std::sync::Mutex::new(state));
         Ok(())
