@@ -135,6 +135,46 @@ impl TransformerLayer for Qwen3AttentionLayer {
         }
     }
 
+    fn align_aux(
+        &self,
+        state: &mut dyn LayerState,
+        to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.align_seq_state(st, to_pos);
+        }
+        Ok(())
+    }
+
+    fn rewind_aux(
+        &self,
+        state: &mut dyn LayerState,
+        rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.rewind_seq_state(st, rows);
+        }
+        Ok(())
+    }
+
     fn restore_aux(
         &self,
         state: &mut dyn LayerState,

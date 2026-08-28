@@ -289,6 +289,22 @@ impl QsaIndexer {
     /// Decode-step ingest + selection for the token at `pos` (0-based;
     /// `pos + 1` visible). `None` inside the inert bound (dense is exact).
     #[allow(clippy::too_many_arguments)]
+    /// Align this sequence's indexer carry to an ABSOLUTE position.
+    ///
+    /// Prefer this over `rewind_seq_state` whenever the caller knows where the
+    /// carry SHOULD be rather than how far it drifted. A verify replay overlaps
+    /// the current position by an amount that is not constant — rewinding by a
+    /// fixed 1 overshot and produced the mirror-image failure ("starts at 366
+    /// but 365 ingested") of the one it fixed. Never advances: ingesting is the
+    /// only thing that may move the mark forward.
+    pub fn align_seq_state(&self, st: &mut QsaSeqState, to_pos: usize) {
+        if st.ingested <= to_pos {
+            return;
+        }
+        st.ingested = to_pos;
+        st.pooled = st.ingested / (self.ratio as usize).max(1);
+    }
+
     /// Roll this sequence's indexer carry back by `rows`, after a rejected
     /// speculative draft.
     ///

@@ -30,6 +30,38 @@
 //! would disagree about what row a stream belongs to. Uniform K keeps one
 //! layout.
 //!
+//! # MEASURED END TO END (2026-08-28) — RUNS, BUT WRONG AND SLOW
+//!
+//! With the proposer armed (`--speculative --num-drafts 1` +
+//! `ATLAS_QWEN4EXP_MTP_VERIFY=1`), 4K ctx, greedy, vs a same-config baseline:
+//! ```text
+//!   baseline     19.8 tok/s   correct output
+//!   speculative   2.5 tok/s   output degenerates after ~12 tokens
+//!   errors: 0
+//! ```
+//! The chain is COMPLETE — draft, verify, rollback and both carries run without
+//! a single error, which no earlier revision managed. Two problems remain, and
+//! both were predicted rather than surprising:
+//!
+//! 1. CORRECTNESS. The first ~12 tokens match the baseline exactly, then the
+//!    output collapses. A prefix that is right and then drifts is the signature
+//!    of a per-step state leak, not a wrong combiner — the draft head itself
+//!    measures 86.5-95.5% accept in shadow mode, where nothing is fed back.
+//!    Suspect order: (a) the accepted-row bookkeeping in the scheduler's K=2
+//!    path vs what this verify advances, (b) `rollback_verify_hc` is written but
+//!    NOTHING CALLS IT — the scheduler does its own rewind arithmetic, so a
+//!    rejected draft currently leaves the aux carries un-restored.
+//!
+//! 2. COST. 398 ms/token against a 50 ms decode: verify-by-mini-prefill is ~8x
+//!    a decode step. Expected in kind — prefill kernels are small-M inefficient
+//!    on this model (the recorded "~1.1-1.3 s floor regardless of slice") — but
+//!    8x means even a 100% accept rate loses. A K=2 verify must cost less than
+//!    2 decodes to break even, so this path needs a decode-shaped verify, not a
+//!    prefill-shaped one, before speculation can pay.
+//!
+//! Speculation therefore stays behind BOTH `--speculative` and
+//! `ATLAS_QWEN4EXP_MTP_VERIFY=1`, and neither is a default.
+//!
 //! # What the caller still owes
 //!
 //! This advances sequence state by K rows and does NOT roll back. The caller
@@ -180,6 +212,24 @@ impl TransformerModel {
             seq.block_table.push(blk);
         }
 
+        // ── Align the QSA carry with the rows about to be replayed ──
+        // The graphed K=2 verify re-processes the CURRENT position: row 0 is
+        // token_0, which the bootstrap decode already emitted — and already
+        // ingested into the indexer. Replaying it without rewinding trips
+        // `QSA: prefill chunk starts at 367 but 368 tokens are ingested`.
+        // ALIGN to seq_len — absolute, not a fixed rewind. The overlap is not
+        // constant: rewinding by 1 unconditionally produced the mirror-image
+        // failure ("starts at 366 but 365 ingested"). Aligning never advances
+        // the mark, so a carry that is already correct is untouched.
+        for (i, layer) in self.layers.iter().enumerate() {
+            layer.align_aux(
+                seq.layer_states[i].as_mut(),
+                seq.seq_len,
+                self.gpu.as_ref(),
+                stream,
+            )?;
+        }
+
         // ── Embed the K candidates into hidden[K, H] ──
         // FP32 stride: `hidden_states` is the FP32 residual-stream buffer on
         // this path, matching verify_a.
@@ -217,6 +267,23 @@ impl TransformerModel {
         // chunked-prefill path uses. `needs_paged` is always true here: verify
         // only ever runs at seq_len_start > 0.
         if meta.needs_paged {
+            // GROW the paged metadata. It was allocated for the ORIGINAL
+            // prefill and verify extends past it — measured: "chunked prefill
+            // metadata capacity 4 < required 7 blocks". `ensure_...` BAILS on a
+            // short capacity rather than growing, so drop the old one first and
+            // let it allocate at the size this verify needs. The old device
+            // buffers are freed explicitly: `DevicePtr` has no Drop.
+            let bs_meta = kv_cache.block_size();
+            let need_blocks = all_tokens.len().saturating_sub(1) / bs_meta + 1;
+            let too_small = seq
+                .chunked_prefill_meta
+                .as_ref()
+                .is_some_and(|m| m.block_capacity < need_blocks);
+            if too_small && let Some(old) = seq.chunked_prefill_meta.take() {
+                let _ = self.gpu.free(old.block_table);
+                let _ = self.gpu.free(old.seq_len);
+            }
+            self.ensure_chunked_prefill_meta(seq, all_tokens.len(), bs_meta)?;
             self.prefill_b_upload_paged(
                 seq,
                 all_tokens.len(),

@@ -365,11 +365,15 @@ impl Qwen4ExpMtpHead {
             return Ok(());
         }
         st.seq_len = st.seq_len.saturating_sub(rows);
-        if let Some(blob) = st.pre_draft_aux.take() {
-            self.module
-                .body
-                .restore_aux(st.body_state.as_mut(), &blob, gpu, stream)?;
-        }
+        // MARK REWIND, not snapshot/restore. `snapshot_aux` returns None until
+        // the sequence has reached the layer's ingest, so the snapshot pair
+        // cannot undo the FIRST draft — it leaves the carry ahead of the
+        // sequence and the next draft dies on
+        // `QSA: decode at pos 0 but 1 tokens ingested`. Measured, not theorised.
+        self.module
+            .body
+            .rewind_aux(st.body_state.as_mut(), rows, gpu, stream)?;
+        st.pre_draft_aux = None;
         Ok(())
     }
 
