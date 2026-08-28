@@ -27,6 +27,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { writeStable } from './lib/write-stable.mjs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -168,7 +169,7 @@ const out = {
   }
 };
 
-writeFileSync(OUT, `${JSON.stringify(out, null, 2)}\n`);
+writeStable(OUT, out, ['generated_utc'], (o) => `${JSON.stringify(o, null, 2)}\n`);
 console.log(
   `gen-ladder: ${out.summary.won}/${out.summary.rungs} rungs won ` +
     `(${out.summary.min_ratio}x..${out.summary.max_ratio}x vs best baseline) -> ${OUT}`
