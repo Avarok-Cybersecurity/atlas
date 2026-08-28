@@ -135,3 +135,29 @@ test('a /0 is refused rather than masked, so the mask never shifts by 32', () =>
   expect(subnetOf('192.168.68.67', 1)).toBe('128.0.0.0/1');
   expect(subnetOf('0.0.0.0', 32)).toBe('0.0.0.0/32');
 });
+
+// The manual-entry box exists to catch a paste that is not an address. These
+// four are not typos — each is a real string sitting one panel away on this
+// same page, and each used to be accepted whole and then fail later as an
+// unresolvable hostname, which is the confusing half of the failure.
+test('the pastes this box exists to catch are refused, with a reason', () => {
+  const cases = [
+    ['10.0.0.5,10.0.0.6', 'list'],       // what joinCommand renders
+    ['ABC123@10.0.0.5', '@'],            // the join line's code@host
+    ['example.com/path', 'path'],        // a URL minus its scheme
+    ['[]', 'bracket'],                   // an empty bracketed host
+    ['[::1', 'bracket']                  // a bracket that never closes
+  ];
+  for (const [input] of cases) {
+    const r = checkTarget(input);
+    expect(r.ok).toBe(false);
+    expect(typeof r.why).toBe('string');
+    expect(r.why.length).toBeGreaterThan(0);
+  }
+});
+
+test('and the forms an operator legitimately types still pass', () => {
+  for (const ok of ['10.0.0.5', 'spark-256a', 'host:9000', '::1', '[fe80::1]:34334']) {
+    expect(checkTarget(ok).ok).toBe(true);
+  }
+});
