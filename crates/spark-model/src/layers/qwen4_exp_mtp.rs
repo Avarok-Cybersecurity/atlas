@@ -34,45 +34,36 @@
 //! so no reference activations can be generated. The argument above is
 //! structural, not numerical.
 //!
-//! # STATUS: NOT WORKING. The SHARING MODEL is wrong — do not keep patching.
+//! # STATUS: the harness is INERT; the draft is not yet numerically right.
 //!
-//! **1. The body forward corrupts the target, and buffer-by-buffer isolation
-//! does NOT fix it.** Bisect via `ATLAS_QWEN4EXP_MTP_SHADOW_STAGE` (250-token
-//! greedy completion against a shadow-off control):
-//! ```text
-//!   observe  -> output matches control exactly      INERT
-//!   combine  -> output matches control exactly      INERT
-//!   body     -> degenerate / empty, watchdog fires  CORRUPTS
-//! ```
-//! Four separate causes were found and fixed, and the corruption SURVIVED all
-//! of them:
+//! **1. Target corruption: FIXED, by isolation by construction.** The draft
+//! runs inside its OWN `BufferArena` (`max_batch_tokens = 1`, measured <1 MB),
+//! so the body cannot reach any buffer the target owns. Verified: shadow-on
+//! output is BYTE-IDENTICAL to a shadow-off control, `finish: stop`, 0 failures.
+//!
+//! Getting here took four rounds of "find the shared buffer, save and restore
+//! it" — each fixed a REAL bug and none of them stopped the corruption:
 //!   - `hc_streams` is FP32 (`m*hc_mult*h*4`); a BF16-sized save/restore covered
-//!     only half the highway. Fixed — the buffer diff now shows hc_streams
-//!     unchanged across the body, so that restore is proven correct.
-//!   - `head_scratch` was under-allocated by `hc_lowrank*4` = 1280 B, because
-//!     `hc_head_lowrank`'s split layout is `t*(hc*h + rank)*4`, not `hc*h*4`.
-//!     A real heap overflow. Fixed.
-//!   - a local `MTP_META_OFFSET = 40960` sat inside the target's metadata block
-//!     table region; now uses the shared 49152. Latent at long context. Fixed.
-//!   - `hc_post` / `hc_lowrank_scratch` / `norm_output` (every buffer the diff
-//!     named) are now saved and restored around the body. Fixed.
+//!     only half the highway.
+//!   - `head_scratch` was under-allocated by `hc_lowrank*4` = 1280 B: a real
+//!     heap overflow, because `hc_head_lowrank`'s split layout is
+//!     `t*(hc*h + rank)*4`, not `hc*h*4`.
+//!   - a local `MTP_META_OFFSET = 40960` sat inside the target's metadata
+//!     block-table region (the shared constant is 49152).
+//!   - `hc_post` / `hc_lowrank_scratch` / `norm_output` were all restored too.
+//! ★ THE LESSON: enumerating shared buffers to save NEVER converged, because a
+//! full decoder layer touches state this file cannot name. One private arena
+//! did it, and let every save/restore be deleted. Isolate structurally; do not
+//! enumerate.
 //!
-//! ★ CONCLUSION: the corruption is NOT in `ctx.buffers`. Enumerating buffers to
-//! save is the wrong strategy — the draft body inherits the target's whole
-//! `ForwardContext` via `..*ctx` and shares everything reachable through it,
-//! including state that is not a buffer this file can name. The sound fix is
-//! ISOLATION BY CONSTRUCTION: give the draft its OWN `BufferArena` (sized for
-//! T=1, a few MB) and build its `ForwardContext` from that, so it cannot reach
-//! the target's state at all. Do that before spending another round here.
-//!
-//! **2. The combiner is dtype-mismatched.** Same root discovery: the highway is
+//! **2. NEXT BLOCKER — the combiner is dtype-mismatched.** Same root discovery: the highway is
 //! FP32, but `rms_norm_strided` / `dense_gemv` / `residual_add` are BF16 ops, so
 //! this reads the FP32 streams as BF16 and writes BF16 back into an FP32 buffer.
 //! The draft is therefore numerically meaningless and the 0% accept rate
 //! measured so far says NOTHING about the combiner reading. Needs FP32-aware
 //! ops (no BF16->FP32 convert primitive exists today).
 //!
-//! **3. The combiner READING is genuinely open — two candidates.** The `[10240]`
+//! **3. Then: the combiner READING is genuinely open — two candidates.** The `[10240]`
 //! grouped-norm width argues for the per-stream form implemented here. But the
 //! loader's own note says the body runs "MIDDLE mHC mixing only — the proposer
 //! owns BOTH ENDS", i.e. the proposer is expected to supply an `hc_expand` at
@@ -102,11 +93,6 @@ use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 // to be shared rather than mirrored"; this is the third caller.
 use crate::layers::mtp_meta::MTP_META_OFFSET;
 
-/// Bytes of `hc_post` (and `hc_comb`) saved around the draft body. Both are
-/// `m * hc_mult * {1,hc_mult} * 4`; the draft is a single row, so a small fixed
-/// slab covers the rows it can touch.
-const HC_POST_SAVE_BYTES: usize = 256;
-
 /// Per-sequence MTP draft state.
 pub struct Qwen4ExpMtpState {
     pub block_table: Vec<u32>,
@@ -134,14 +120,6 @@ struct MtpBuffers {
     residual: DevicePtr,
     /// `[hc_mult * hidden]` low-rank head scratch.
     head_scratch: DevicePtr,
-    /// Save slots for the OTHER shared buffers the draft body writes. The
-    /// buffer diff (`ATLAS_QWEN4EXP_MTP_DIFF=1`) named exactly these three, and
-    /// reasoning that they "look transient" is what kept the corruption alive
-    /// through several rounds — so they are saved and restored like the highway
-    /// rather than argued about.
-    hc_post_save: DevicePtr,
-    hc_lowrank_save: DevicePtr,
-    norm_output_save: DevicePtr,
     /// `[vocab]` BF16. The shadow step reuses the TARGET's `lm_head` (so the
     /// draft's logits go through the same quantization ladder the real token
     /// did), and that writes `buffers.logits()` — the buffer the scheduler is
@@ -154,6 +132,15 @@ pub struct Qwen4ExpMtpHead {
     module: Qwen4ExpMtpModule,
     embed_tokens: DenseWeight,
     kv_cache: Mutex<PagedKvCache>,
+    /// ★ THE DRAFT'S OWN BUFFER ARENA — isolation by CONSTRUCTION.
+    ///
+    /// The draft body used to inherit the target's `ForwardContext` (and so its
+    /// arena) via `..*ctx`. Four rounds of "find the shared buffer, save and
+    /// restore it" each fixed a real bug and none of them stopped the target's
+    /// output being corrupted, because a full decoder layer touches state this
+    /// file cannot enumerate. Sized for ONE token, so the draft physically
+    /// cannot reach anything the target owns.
+    arena: spark_runtime::buffers::BufferArena,
     buf: MtpBuffers,
     rms_norm_k: KernelHandle,
     rms_norm_strided_k: KernelHandle,
@@ -252,10 +239,23 @@ impl Qwen4ExpMtpHead {
             (num_blocks * bs * kvh * hd * 2 * 2) as f64 / 1e9,
         );
 
+        // T=1 arena for the draft. `max_batch_tokens = 1` keeps every
+        // token-scaled buffer at one row; `max_seq_len` still sizes the scratch
+        // block-table region, and kv_block_size must match this head's own pool.
+        let free_before = gpu.free_memory().unwrap_or(0);
+        let arena = spark_runtime::buffers::BufferArena::new(config, 1, max_seq_len, 16, 1, gpu)?;
+        let free_after = gpu.free_memory().unwrap_or(0);
+        tracing::info!(
+            "qwen4_exp MTP head: private T=1 buffer arena costs {:.3} GB. The draft \
+             runs entirely inside it, so it cannot reach the target's buffers.",
+            (free_before.saturating_sub(free_after)) as f64 / 1e9,
+        );
+
         Ok(Self {
             module,
             embed_tokens,
             kv_cache: Mutex::new(kv_cache),
+            arena,
             buf: MtpBuffers {
                 streams: gpu.alloc(streams_bytes)?,
                 normed_streams: gpu.alloc(streams_bytes)?,
@@ -270,9 +270,6 @@ impl Qwen4ExpMtpHead {
                 // alone) under-allocates by `rank*4` = 1280 B and the collapse
                 // writes past the end of the allocation. Measured, not guessed.
                 head_scratch: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
-                hc_post_save: gpu.alloc(HC_POST_SAVE_BYTES)?,
-                hc_lowrank_save: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
-                norm_output_save: gpu.alloc(row)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
             // Atlas's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
@@ -422,7 +419,9 @@ impl Qwen4ExpMtpHead {
             .map(|(_, p, n)| crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2))
             .collect();
 
-        let body_streams = ctx.buffers.hc_streams();
+        // The draft's highway lives in the DRAFT's arena, not the target's.
+        // Nothing below writes a buffer the target owns.
+        let body_streams = self.arena.hc_streams();
         ctx.gpu
             .copy_d2d_async(target_streams, self.buf.streams, hc_bytes, stream)?;
 
@@ -509,26 +508,7 @@ impl Qwen4ExpMtpHead {
             return Ok(());
         }
 
-        // ★ SAVE the other shared buffers the body writes. Named by the buffer
-        // diff, not by reasoning: hc_post, hc_lowrank_scratch, norm_output.
-        let lr_bytes = (hc as usize * h as usize + ctx.config.hc_lowrank.max(1)) * 4;
-        let saves: [(DevicePtr, DevicePtr, usize); 3] = [
-            (
-                ctx.buffers.hc_post(),
-                self.buf.hc_post_save,
-                HC_POST_SAVE_BYTES,
-            ),
-            (
-                ctx.buffers.hc_lowrank_scratch(),
-                self.buf.hc_lowrank_save,
-                lr_bytes,
-            ),
-            (ctx.buffers.norm_output(), self.buf.norm_output_save, row),
-        ];
-        for (src, dst, n) in saves {
-            ctx.gpu.copy_d2d_async(src, dst, n, stream)?;
-        }
-
+        // No save/restore of target buffers: the draft runs in its own arena.
         // ── 3. Body decode against the module's OWN cache ──
         let mut kv_cache = self.kv_cache.lock().expect("mtp kv cache poisoned");
         let bs = kv_cache.block_size();
@@ -573,6 +553,8 @@ impl Qwen4ExpMtpHead {
             routed_lora_layers: None,
             midchunk_capture: None,
             moe_lora_route: crate::layer::MoeLoraRoute::Skip,
+            // ★ the draft's OWN arena — the whole point of this design.
+            buffers: &self.arena,
             ..*ctx
         };
 
@@ -596,9 +578,6 @@ impl Qwen4ExpMtpHead {
         if body_res.is_err() {
             ctx.gpu
                 .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
-            for (dst, src, n) in saves {
-                ctx.gpu.copy_d2d_async(src, dst, n, stream)?;
-            }
             body_res?;
         }
 
@@ -635,10 +614,6 @@ impl Qwen4ExpMtpHead {
         // exactly how this bug first showed up (a truncated, rewritten answer).
         ctx.gpu
             .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
-        // …and the other three, same contract: restore before any return.
-        for (dst, src, n) in saves {
-            ctx.gpu.copy_d2d_async(src, dst, n, stream)?;
-        }
 
         if diff {
             ctx.gpu.synchronize(stream).ok();
