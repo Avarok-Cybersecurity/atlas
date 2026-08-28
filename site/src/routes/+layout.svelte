@@ -114,7 +114,10 @@
 </script>
 
 <svelte:head>
-  <title>Atlas, pure Rust inference for DGX Spark</title>
+  <!-- No <title> here. A layout title and a page title compete for the single
+       head slot and the LAYOUT's wins, so /control shipped with the homepage's
+       title while its own two <meta>s came through -- the page head renders,
+       only its title is discarded. Every route owns its own title instead. -->
   <link rel="canonical" href={canonical} />
   {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
