@@ -190,7 +190,7 @@ impl Glm5NextDsaWorkspace {
         let geom =
             super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), 1)?;
         let bt_cap = super::state::max_dsa_context(cfg).max(1);
-        let persist = std::env::var("ATLAS_GLM_DSA_PERSIST_BT").is_ok_and(|v| v == "1" || v == "true");
+        let persist = std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1");
         Ok(Self {
             q_a: gpu.alloc(cfg.q_lora_rank * 2)?,
             q_resid: gpu.alloc(cfg.q_lora_rank * 2)?,
@@ -236,9 +236,8 @@ pub struct Glm5NextDsaLayer {
     pub rms_eps: f32,
     /// FP8 latent-cache scale. Reads and writes must agree; the write takes `1/scale`.
     pub kv_scale: f32,
-    /// `ATLAS_GLM_DSA_PERSIST_BT=1`. See the long note at the use site: worth 1.1 ms/token
-    /// but it moves the model's output through the device-heap-layout channel of A55, so
-    /// it defaults OFF and exists as a one-flag A55 reproducer.
+    /// Persistent block-table buffers instead of a `gpu.alloc`/`gpu.free` per DSA layer per
+    /// token. ON by default; `ATLAS_GLM_DSA_ALLOC_PER_STEP=1` restores the old path.
     pub persist_bt: bool,
 }
 
@@ -544,24 +543,16 @@ impl TransformerLayer for Glm5NextDsaLayer {
                 w.bt_cap
             );
         }
-        // 🔴 `ATLAS_GLM_DSA_PERSIST_BT=1` — OFF BY DEFAULT, and the default is the SLOW path
-        // on purpose. Reusing the persistent `w.bt`/`w.sl` instead of a `gpu.alloc` +
-        // `gpu.free` per DSA layer per token is worth a measured 1.1 ms/token (13.0 ->
-        // 13.2 tok/s, nsys 2026-08-28: 11 x ~98 us of GPU idle for the alloc/copy/free
-        // cluster). It is gated OFF because it MOVES THE MODEL'S OUTPUT:
+        // Persistent `w.bt`/`w.sl` instead of a `gpu.alloc` + `gpu.free` per DSA layer per
+        // token: worth a measured 1.1 ms/token (nsys 2026-08-28 — 11 x ~98 us of GPU idle
+        // for the alloc/copy/free cluster). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1`.
         //
-        //   t20/t23 (alloc+free per step)  France/2+2/pyadd -> a3ede213 0e25c5c8 517fa3b6
-        //   t25/t26 (persistent buffers)                    -> d1dafb3a ba5afdfa 893c3ea6
-        //
-        // Both are deterministic and reproduce across container launches; the
-        // deterministic counting control (`1, 2, 3, 4,`) is IDENTICAL in both, so this is
-        // divergence at near-ties, not gross corruption. The block table's contents are
-        // ruled out as the channel: filling every entry past `block_table.len()` with
-        // 0xEE gives BYTE-IDENTICAL output to leaving it at 0 (t26 == t25). What changed
-        // is only WHERE THINGS LIVE IN THE DEVICE HEAP — which is exactly the signature
-        // of ANOMALIES A55 (spark-bench/.planning/ANOMALIES.md), still OPEN. Turning this
-        // on is a one-flag reproducer for A55; do not flip the default until A55 has an
-        // answer and an oracle says which of the two outputs is right.
+        // 🪤 This was gated OFF for most of a day because turning it on changed the model's
+        // output — which turned out to be ANOMALIES A55 and not this code at all: the DSA
+        // indexer was reading 5120 bytes past `q_resid`, so the answer depended on what the
+        // allocator had put next. With that fixed the two settings are byte-identical, and
+        // the whole engine is layout-independent (verified by 4 KB poisoned guard bands on
+        // 3431 allocations producing the same completions as no guard bands at all).
         let (d_bt, d_sl) = if self.persist_bt {
             (w.bt, w.sl)
         } else {

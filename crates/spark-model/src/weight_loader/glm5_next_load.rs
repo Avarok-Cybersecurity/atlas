@@ -375,8 +375,11 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     let load = |n: &str| src.f32(n);
                     let w = build_dsa_weights(gpu, &dsa_cfg, &dsa_plan, &load)?;
                     Glm5NextMixer::Dsa(Box::new(Glm5NextDsaLayer {
-                        persist_bt: std::env::var("ATLAS_GLM_DSA_PERSIST_BT")
-                            .is_ok_and(|v| v == "1" || v == "true"),
+                        // ON by default since A55 was closed (the `weights_proj` overrun
+                        // fix). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1` restores the
+                        // per-step `gpu.alloc` + `gpu.free`.
+                        persist_bt: std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref()
+                            != Ok("1"),
                         cfg: dsa_cfg,
                         weights: w,
                         kernels: dsa_layer_kernels,
