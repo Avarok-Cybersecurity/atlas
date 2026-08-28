@@ -62,7 +62,7 @@
       <p class="hero-sub">{hero.sub}</p>
 
       <div class="hero-cmd" role="group" aria-label="Run Atlas">
-        <span class="prompt">$</span>
+        <span class="prompt">{install.prompt}</span>
         <code bind:this={cmdEl}>{install.command}</code>
         <button type="button" class="copy-btn" onclick={copy} aria-label="Copy run command">
           {copyLabel(copyState)}

@@ -65,9 +65,19 @@ export function joinCommandPowerShell(join, grantControl = false) {
   if (!code || !CODE_OK.test(code)) return '';
   const hosts = dialableAddresses(join?.addresses);
   if (hosts.length === 0) return '';
+  // The operand is SINGLE-QUOTED, and that is load-bearing. Unquoted, a comma
+  // in PowerShell's argument mode builds an ARRAY — `-Join a@h1,h2` binds
+  // `@('a@h1','h2')` and stringifies it with a SPACE, so the far machine
+  // receives `a@h1 h2` and the multi-homed case this function exists for fails
+  // remotely after a clean install. Verified against pwsh 7.4.6.
+  //
+  // No escaping is needed inside the quotes: CODE_OK and HOST_OK both exclude
+  // `'`, so nothing that reaches here can close the string. Quoting also
+  // neutralises a code beginning with `-`, which would otherwise parse as an
+  // unknown parameter and silently install without joining.
   const base =
     `& ([scriptblock]::Create((irm ${powershellInstallerUrl}))) ` +
-    `-Join ${code}@${hosts.join(',')}`;
+    `-Join '${code}@${hosts.join(',')}'`;
   return grantControl ? `${base} -GrantControl` : base;
 }
 

@@ -157,7 +157,7 @@ describe('joinCommandPowerShell', () => {
     expect(cmd).toContain('install.ps1');
     // `irm | iex` cannot take arguments; this is the idiom that can.
     expect(cmd).toContain('[scriptblock]::Create');
-    expect(cmd).toContain('-Join 12345678@10.10.10.1');
+    expect(cmd).toContain("-Join '12345678@10.10.10.1'");
   });
 
   test('carries the grant as a visible switch, never implied', () => {
@@ -174,8 +174,20 @@ describe('joinCommandPowerShell', () => {
     expect(joinCommandPowerShell({ code: '1234;rm -rf /', addresses: ['10.0.0.1'] })).toBe('');
   });
 
-  test('names every address, like the shell form', () => {
+  // The multi-homed case, and the reason the operand is quoted. Unquoted, a
+  // comma in PowerShell's argument mode builds an array and the far machine
+  // receives the hosts SPACE-separated — verified against pwsh 7.4.6 — so the
+  // DGX-with-RoCE-and-LAN scenario this whole list exists for fails remotely
+  // after a clean install.
+  test('names every address, and quotes them so the comma survives', () => {
     const cmd = joinCommandPowerShell({ code: '12345678', addresses: ['10.10.10.1', '192.168.1.5'] });
-    expect(cmd).toContain('10.10.10.1,192.168.1.5');
+    expect(cmd).toContain("'12345678@10.10.10.1,192.168.1.5'");
+  });
+
+  // A code starting with `-` would parse as an unknown parameter and install
+  // without joining, silently. Quoting removes the question.
+  test('quotes the operand so it can never parse as a parameter', () => {
+    const cmd = joinCommandPowerShell({ code: '-abc1234', addresses: ['10.0.0.1'] });
+    if (cmd) expect(cmd).toContain("-Join '-abc1234@10.0.0.1'");
   });
 });
