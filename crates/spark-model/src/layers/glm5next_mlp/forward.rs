@@ -23,6 +23,7 @@ const ACT_BLOCK: u32 = 256;
 fn gemm(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
+    gemv: KernelHandle,
     a: DevicePtr,
     b: DevicePtr,
     c: DevicePtr,
@@ -31,6 +32,21 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // 🔴 M=1 IS A GEMV — see `glm5next_kda::Glm5NextKdaLayer::gemm`. The router is the worst
+    // case in the whole stack: N = 288 tiles to **18 blocks**, measured 6.8 GB/s.
+    //
+    // 🪤 Grid COUPLED to the kernel's `N_PER_BLOCK` = 4; `ops::dense_gemv` is the SSOT.
+    if m == 1 && gemv.0 != 0 {
+        return KernelLaunch::new(gpu, gemv)
+            .grid([spark_runtime::kernel_args::div_ceil(n as u32, 4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a)
+            .arg_ptr(b)
+            .arg_ptr(c)
+            .arg_u32(n as u32)
+            .arg_u32(kk as u32)
+            .launch(stream);
+    }
     KernelLaunch::new(gpu, k)
         .grid([
             (n as u32).div_ceil(GEMM_TILE),
@@ -202,6 +218,7 @@ pub fn forward_dense(
     gemm(
         gpu,
         k.gemm,
+        k.gemv,
         x,
         w.gate_proj,
         ws.a_gate,
@@ -211,7 +228,7 @@ pub fn forward_dense(
         stream,
     )?;
     gemm(
-        gpu, k.gemm, x, w.up_proj, ws.a_up, 1, inter, cfg.hidden, stream,
+        gpu, k.gemm, k.gemv, x, w.up_proj, ws.a_up, 1, inter, cfg.hidden, stream,
     )?;
     swiglu(
         gpu,
@@ -226,6 +243,7 @@ pub fn forward_dense(
     gemm(
         gpu,
         k.gemm,
+        k.gemv,
         ws.a_act,
         w.down_proj,
         out,
@@ -274,6 +292,7 @@ pub fn forward_moe(
     gemm(
         gpu,
         k.gemm_f32,
+        k.gemv_f32,
         x,
         w.router,
         ws.logits,

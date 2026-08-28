@@ -95,6 +95,10 @@ pub struct Glm5NextMlpKernels {
     /// Same, FP32 out. 🪤 The router GEMM MUST take this one: `glm5next_router_topk` reads
     /// `const float* logits`, while `gate.weight` is BF16 on disk.
     pub gemm_f32: KernelHandle,
+    /// M=1 twins of `gemm` / `gemm_f32`. `gemv_f32` may be a 0 handle on a target that
+    /// predates `dense_gemv_bf16_fp32out`; `gemm()` falls back to the tile arm then.
+    pub gemv: KernelHandle,
+    pub gemv_f32: KernelHandle,
     /// NVFP4 `C = A @ B^T`, tile GEMM. Kept for any M > 1 caller; the decode path
     /// must not use it — see [`W4A16_GEMV_MODULE`].
     pub w4a16: KernelHandle,
@@ -114,6 +118,8 @@ impl Glm5NextMlpKernels {
         Ok(Self {
             gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
             gemm_f32: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16_f32out")?,
+            gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            gemv_f32: crate::layers::try_kernel(gpu, "gemv", "dense_gemv_bf16_fp32out"),
             w4a16: gpu.kernel(W4A16_MODULE, "w4a16_gemm")?,
             w4a16_gemv: gpu.kernel(W4A16_GEMV_MODULE, "w4a16_gemv")?,
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,

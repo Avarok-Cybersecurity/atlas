@@ -158,6 +158,10 @@ pub struct Glm5NextKdaWeights {
 #[derive(Clone, Copy)]
 pub struct Glm5NextKdaKernels {
     pub gemm: KernelHandle,
+    /// 🔴 The DECODE weight kernel. `dense_gemm_bf16` tiles 16x16 over (N, M); at M=1 the
+    /// grid collapses and it measured 58 GB/s against a 254 GB/s part — 32 % of the whole
+    /// GLM decode step (2026-08-28 profile). Every KDA projection is M=1 at decode.
+    pub gemv: KernelHandle,
     pub conv_decode: KernelHandle,
     pub conv_prefill: KernelHandle,
     pub l2: KernelHandle,
@@ -173,12 +177,13 @@ pub struct Glm5NextKdaKernels {
 }
 
 impl Glm5NextKdaKernels {
-    pub const ENTRY_POINTS: usize = 13;
+    pub const ENTRY_POINTS: usize = 14;
 
     pub fn resolve(gpu: &dyn GpuBackend) -> Result<Self> {
         Ok(Self {
             // Scalar strict-order BF16 GEMM: `C = A @ B^T`, no reassociation.
             gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             conv_decode: gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,
             conv_prefill: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
             l2: gpu.kernel("norm", "l2_norm_bf16")?,
@@ -333,6 +338,19 @@ impl Glm5NextKdaLayer {
         k: usize,
         stream: u64,
     ) -> Result<()> {
+        // Decode is M=1 on every one of these; prefill keeps the tile GEMM.
+        if m == 1 {
+            return ops::dense_gemv(
+                gpu,
+                self.kernels.gemv,
+                input,
+                weight,
+                out,
+                n as u32,
+                k as u32,
+                stream,
+            );
+        }
         ops::dense_gemm(
             gpu,
             self.kernels.gemm,

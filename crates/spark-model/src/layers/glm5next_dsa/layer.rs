@@ -47,6 +47,7 @@ const GEMM_TILE: u32 = 16;
 fn gemm(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
+    gemv: KernelHandle,
     a: DevicePtr,
     b: DevicePtr,
     c: DevicePtr,
@@ -55,6 +56,24 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // 🔴 M=1 IS A GEMV. `dense_gemm_bf16` tiles 16x16 over (N, M); at M=1 the M axis is a
+    // single row and the grid collapses — 73 GB/s measured against a 254 GB/s part. Every
+    // call in this file passes m = 1. The tile arm survives for a future batched caller.
+    //
+    // 🪤 Grid is COUPLED to the kernel's `N_PER_BLOCK` (4 outputs / 256-thread block).
+    // `ops::dense_gemv` is the SSOT; a hand-written div_ceil here would write wrong outputs
+    // the day the define moves.
+    if m == 1 && gemv.0 != 0 {
+        return KernelLaunch::new(gpu, gemv)
+            .grid([spark_runtime::kernel_args::div_ceil(n as u32, 4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a)
+            .arg_ptr(b)
+            .arg_ptr(c)
+            .arg_u32(n as u32)
+            .arg_u32(kk as u32)
+            .launch(stream);
+    }
     KernelLaunch::new(gpu, k)
         .grid([
             (n as u32).div_ceil(GEMM_TILE),
@@ -79,6 +98,10 @@ pub struct Glm5NextDsaLayerKernels {
     pub gemm: KernelHandle,
     /// Same, FP32 out — the selector wants `q_idx` and the head weights in FP32.
     pub gemm_f32: KernelHandle,
+    /// M=1 twins of the two above. `gemv_f32` may be a 0 handle on a target that predates
+    /// `dense_gemv_bf16_fp32out`; `gemm` refuses nothing and falls back to the tile arm.
+    pub gemv: KernelHandle,
+    pub gemv_f32: KernelHandle,
     /// 🪤 **vanilla** = `x * rms * w`. The other `rms_norm` adds 1 to the weight.
     pub rms_norm: KernelHandle,
     /// RMSNorm + FP8 + paged slot write, GLM-target.
@@ -94,6 +117,10 @@ impl Glm5NextDsaLayerKernels {
             // here resolved to nothing and would have failed at first construction.
             gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
             gemm_f32: gpu.kernel("gemm", "dense_gemm_bf16_f32out")?,
+            gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            // 🪤 try_kernel, not kernel: this entry point had ZERO Rust callers before
+            // 2026-08-28, so a target that never compiled it must fall back, not refuse.
+            gemv_f32: crate::layers::try_kernel(gpu, "gemv", "dense_gemv_bf16_fp32out"),
             rms_norm: gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?,
             latent_write: gpu
                 .kernel("glm5next_mla_latent_write", "glm5next_mla_latent_write_fp8")?,
@@ -210,6 +237,7 @@ impl Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm,
+            self.kernels.gemv,
             hidden,
             self.weights.wk,
             state.k_normed.offset(off),
@@ -234,6 +262,7 @@ impl Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm,
+            self.kernels.gemv,
             hidden,
             self.weights.compress_gate,
             state.gate.offset(off),
@@ -253,6 +282,7 @@ impl Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm_f32,
+            self.kernels.gemv_f32,
             hidden,
             self.weights.weights_proj,
             self.workspace.head_weights,
@@ -286,6 +316,7 @@ impl Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm_f32,
+            self.kernels.gemv_f32,
             w.q_resid,
             self.weights.wq_b,
             w.q_idx,
@@ -397,6 +428,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm,
+            self.kernels.gemv,
             hidden,
             self.weights.q_a_proj,
             w.q_a,
@@ -419,6 +451,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm,
+            self.kernels.gemv,
             w.q_resid,
             self.weights.q_absorb,
             w.q_abs,
@@ -432,6 +465,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm,
+            self.kernels.gemv,
             hidden,
             self.weights.kv_a_proj,
             w.kv_a,
@@ -497,6 +531,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
         gemm(
             gpu,
             self.kernels.gemm,
+            self.kernels.gemv,
             attn,
             self.weights.o_absorb,
             hidden,
