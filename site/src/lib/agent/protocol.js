@@ -33,6 +33,8 @@
 // mDNS is link-local — it does not cross a router and is off on plenty of
 // managed networks — so without it the page could only reach machines on one
 // broadcast domain. Additive, but the handshake is exact-match by design.
+import { installerUrl } from '../data.js';
+
 export const PROTOCOL_VERSION = 4;
 
 // The agent binds loopback only. Connecting to anything else would defeat the
@@ -168,7 +170,7 @@ export function versionAdvice(page, min, max) {
     return {
       ok: false,
       side: 'agent',
-      message: 'The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: curl -fsSL https://atlasinference.io/install.sh | sh'
+      message: `The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: curl -fsSL ${installerUrl} | sh`
     };
   }
   if (page >= min && page <= max) return { ok: true };
@@ -177,7 +179,7 @@ export function versionAdvice(page, min, max) {
     return {
       ok: false,
       side: 'agent',
-      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: curl -fsSL https://atlasinference.io/install.sh | sh`
+      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: curl -fsSL ${installerUrl} | sh`
     };
   }
   return {

@@ -100,3 +100,18 @@ test('a detail the agent DID send is still shown', () => {
   expect(describeError({ code: 'docker_unavailable', detail: 'no socket' })).toContain('no socket');
   expect(describeError({ code: 'launch_failed', detail: 'oom' })).toContain('oom');
 });
+
+// data.js declares `installerUrl` the one authority and says so: "a second copy
+// is how the two drift". joincommand.js builds its one-liner from it; these two
+// remediation messages carried their own copies of the value. They are what an
+// operator is told to run when their agent is too old — a stale URL there is a
+// dead end at exactly the wrong moment.
+test('the reinstall instructions are built from the declared installer URL', async () => {
+  const { installerUrl } = await import('../data.js');
+  const agentOld = versionAdvice(4, 1, 2);
+  expect(agentOld.side).toBe('agent');
+  expect(agentOld.message).toContain(installerUrl);
+
+  const noVersion = versionAdvice(4, undefined, null);
+  expect(noVersion.message).toContain(installerUrl);
+});
