@@ -668,6 +668,10 @@ pub fn build_model(
         vision_encoder,
         ssm_cache_slots,
         ssm_checkpoint_interval,
+        // A bespoke MTP module is present, so the SSM verify pools must exist
+        // even though `mtp_weights` is empty. Known here: the module is loaded
+        // in Step 5 above, before construction.
+        qwen4_exp_mtp_module.is_some(),
     )?;
 
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──

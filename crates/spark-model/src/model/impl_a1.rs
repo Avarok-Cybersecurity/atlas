@@ -73,6 +73,11 @@ impl TransformerModel {
         vision_encoder: Option<crate::layers::VisionEncoder>,
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
+        // A BESPOKE MTP module is installed post-construction (qwen4_exp's
+        // Track-B head). Such a model leaves `mtp_weights` EMPTY, so the
+        // `!mtp_weights.is_empty()` term below is false and the SSM verify
+        // pools would never be allocated — see the has_mtp comment.
+        bespoke_mtp: bool,
     ) -> Result<Self> {
         // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
         // checkpoint tensor). Models that ship HF-vanilla norm weights load it
@@ -187,8 +192,22 @@ impl TransformerModel {
         // main head (NVFP4 default) or the draft-only head built when the main
         // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
+        // ★ `!mtp_weights.is_empty()` is the wrong test for a BESPOKE proposer.
+        // qwen4_exp's MTP is a Track-B module installed after construction, so
+        // `mtp_weights` stays EMPTY and this term is false even under
+        // --speculative — leaving `num_intermediates` at 0, so NO SSM
+        // checkpoint pools exist. `verify_draft_capacity` then returns
+        // usize::MAX (ssm_pool.rs) and the scheduler never clamps, while this
+        // model's 36 GDN layers read exactly those pools for partial-accept
+        // rollback. DeepSeek-V4 never hit it because it is all-attention.
+        //
+        // `bespoke_mtp` is a threaded BOOL, deliberately not a
+        // `model_type == "qwen4_exp"` test: string gates on model_type are
+        // fragile and the capability, not the name, is what matters here.
+        // DFlash already needed the same escape hatch (`dflash_kgamma > 0`).
         let has_mtp = self_speculative
             || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+            || (use_speculative && bespoke_mtp)
             || dflash_kgamma > 0;
         let num_intermediates = if has_mtp {
             (num_drafts + 1).max(dflash_kgamma)
