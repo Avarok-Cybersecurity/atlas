@@ -95,12 +95,19 @@
       }
     ]
   };
+
+  // JSON.stringify does not escape the less-than character, so a closing
+  // script tag appearing anywhere in the FAQ copy would end the emitted block
+  // early and spill the rest of the page's markup into the document. Escaping
+  // it as \u003c keeps the JSON parseable and identical in value to consumers.
+  // (Writing that tag literally in this comment would end THIS block, too.)
+  const ldjson = JSON.stringify(graph).replace(/</g, '\\u003c');
 </script>
 
 <svelte:head>
   <title>Atlas, pure Rust inference for DGX Spark</title>
   <link rel="canonical" href={canonical} />
-  {@html `<script type="application/ld+json">${JSON.stringify(graph)}<\/script>`}
+  {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
 
 {@render children()}

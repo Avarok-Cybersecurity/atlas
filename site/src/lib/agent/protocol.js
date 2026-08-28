@@ -74,12 +74,19 @@ export function clearToken() {
 
 /** A token is 32 bytes of hex. Checked here only to catch a bad paste early. */
 export function looksLikeToken(value) {
+  // Every other export here tolerates junk; this one used to throw on a
+  // non-string, which is the wrong answer to "does this look like a token".
+  if (typeof value !== 'string') return false;
   return /^[0-9a-f]{64}$/.test(value.trim());
 }
 
+// Said when the agent reports something this page cannot name. Kept in one
+// place so every unnameable path says the same thing rather than going blank.
+const UNKNOWN_PROBLEM = 'The agent reported an unknown problem.';
+
 /** Human text for an agent error code. */
 export function describeError(error) {
-  if (!error || typeof error !== 'object') return 'The agent reported an unknown problem.';
+  if (!error || typeof error !== 'object') return UNKNOWN_PROBLEM;
   switch (error.code) {
     case 'not_paired':
       return 'The agent did not accept that pairing token. Run `atlasctl agent token` and paste the value it prints.';
@@ -89,8 +96,19 @@ export function describeError(error) {
       return `Your agent does not have a recipe called “${error.recipe}”. Update atlasctl to get the latest recipe set.`;
     case 'not_launchable':
       return `That recipe cannot run here: ${error.reason}`;
-    case 'bad_settings':
-      return (error.errors ?? []).map((e) => e.key ?? 'setting').join(', ');
+    case 'bad_settings': {
+      // This arrives over the socket, so `errors` is whatever the agent sent.
+      // A non-array used to throw here — turning the one function whose job is
+      // to explain a failure into a second failure.
+      const listed = Array.isArray(error.errors)
+        ? error.errors.map((e) => (typeof e?.key === 'string' ? e.key : 'setting'))
+        : [];
+      // An empty list rendered as an empty string: something was rejected and
+      // the screen said nothing at all.
+      return listed.length > 0
+        ? `The agent rejected these settings: ${listed.join(', ')}`
+        : 'The agent rejected the settings but did not say which.';
+    }
     case 'already_running':
       return 'That recipe is already running.';
     case 'docker_unavailable':
@@ -98,7 +116,9 @@ export function describeError(error) {
     case 'launch_failed':
       return `The launch failed: ${error.detail}`;
     default:
-      return error.code ?? 'The agent reported an unknown problem.';
+      // A non-string code would otherwise be returned as-is and reach the UI
+      // as "[object Object]".
+      return typeof error.code === 'string' && error.code !== '' ? error.code : UNKNOWN_PROBLEM;
   }
 }
 
