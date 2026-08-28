@@ -141,8 +141,7 @@ impl TransformerModel {
         // read row 0 of each token-major arena, so `zero_all_rows` clears exactly the rows
         // this step can touch. Same buffers, same values, ~1/4096 of the bytes.
         if self.config.kv_lora_rank > 0 && self.config.o_lora_rank == 0 {
-            self.buffers
-                .zero_all_rows(self.gpu.as_ref(), stream, 1)?;
+            self.buffers.zero_all_rows(self.gpu.as_ref(), stream, 1)?;
         }
 
         // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`
@@ -315,6 +314,7 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: true,
             gdn_exact_replay: false,
             // Hash-MoE: the single decode token ID (uploaded above every step
             // before graph replay). MoE reads it at offset 0.

@@ -25,8 +25,13 @@ use spark_runtime::kernel_args::KernelLaunch;
 /// `(hidden, hc_mult, tokens)`. GLM's own shape first, then the register-bound edge.
 /// GLM-5.3-Flash is `hidden_size = 4096, hc_mult = 4` — that case leads, and it is the one
 /// the timing block below reports. The rest exercise the grid arithmetic and the register bound.
-const CASES: [(usize, usize, usize); 5] =
-    [(4096, 4, 1), (5120, 4, 1), (5120, 4, 7), (1024, 2, 3), (256, 4, 1)];
+const CASES: [(usize, usize, usize); 5] = [
+    (4096, 4, 1),
+    (5120, 4, 1),
+    (5120, 4, 7),
+    (1024, 2, 3),
+    (256, 4, 1),
+];
 const SINKHORN_ITERS: u32 = 20;
 const HC_EPS: f32 = 1e-6;
 const NORM_EPS: f32 = 1e-5;

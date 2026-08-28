@@ -382,6 +382,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: true,
             gdn_exact_replay: false,
             token_ids: None,
             // The batch's token ids: the hc multi-seq PLE rows read their

@@ -279,6 +279,82 @@ extern "C" __global__ void w4a16_gemv_sw(
 }
 
 // ============================================================
+// W4A16 GEMV — GROUPED MoE variant. All top-k slots in ONE launch.
+//
+// BIT-IDENTICAL to `w4a16_gemv_sw` for every slot it computes: same
+// `w4a16_gemv_partial` per orig-lane, same shuffle tree, same two-term FP32
+// combine. The only additions are the pointer-table indirection and the slot
+// skip, both OUTSIDE the arithmetic.
+//
+// Why it exists: the host loop it replaces read `expert_ids` back to the host
+// with a full stream sync once per routed layer (42x/token on GLM-5.3) and then
+// issued one launch per local expert per projection. Both are gone — routing
+// stays on device, so the decode step is capturable.
+//
+// `packed_ptrs[id] == 0` means another EP rank owns that expert: this kernel
+// writes NOTHING for that slot, and the caller's pre-zeroed output row stands.
+//
+// Grid: (ceil(N / 8), top_k, 1)   Block: (256, 1, 1)
+// ============================================================
+
+extern "C" __global__ void w4a16_gemv_sw_moe(
+    const __nv_bfloat16* __restrict__ A,                 // [1, K] or [top_k, K]
+    const unsigned long long* __restrict__ packed_ptrs,  // [num_experts], 0 = remote
+    const unsigned long long* __restrict__ scale_ptrs,   // [num_experts]
+    const float* __restrict__ scale2_vals,               // [num_experts]
+    __nv_bfloat16* __restrict__ C,                       // [top_k, N]
+    const int* __restrict__ expert_ids,                  // [top_k], < 0 = unfilled
+    unsigned int N,
+    unsigned int K,
+    unsigned int num_experts,
+    unsigned int input_stride                            // 0 = shared A, K = per-slot A
+) {
+    const unsigned int slot = blockIdx.y;
+    const int eid = expert_ids[slot];
+    // Unfilled sentinel or an id the table does not cover: leave the row alone.
+    if (eid < 0 || (unsigned int)eid >= num_experts) return;
+    const unsigned char* B_packed = (const unsigned char*)packed_ptrs[eid];
+    if (B_packed == 0) return;   // remote expert — the caller's zero row stands
+    const unsigned char* B_scale = (const unsigned char*)scale_ptrs[eid];
+    const float scale2 = scale2_vals[eid];
+
+    const __nv_bfloat16* __restrict__ Ain =
+        A + (unsigned long long)slot * (unsigned long long)input_stride;
+    __nv_bfloat16* __restrict__ Cout = C + (unsigned long long)slot * (unsigned long long)N;
+
+    const unsigned int local_out = threadIdx.x / WARP_SIZE;       // 0..7
+    const unsigned int lane = threadIdx.x % WARP_SIZE;            // 0..31
+    const unsigned int n = blockIdx.x * N_PER_BLOCK_SW + local_out;
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    __shared__ float s_lut[N_PER_BLOCK_SW][16];
+    stage_e2m1_lut_warp(s_lut[local_out], lane);
+#if ATLAS_WARP_LUT_STAGED
+    const float* __restrict__ warp_lut = s_lut[local_out];
+#else
+    const float* __restrict__ warp_lut = E2M1_LUT;
+#endif
+
+    float acc_a = w4a16_gemv_partial(Ain, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane, warp_lut);
+    float acc_b = w4a16_gemv_partial(Ain, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane + 32u, warp_lut);
+
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc_a += __shfl_down_sync(0xFFFFFFFF, acc_a, offset);
+        acc_b += __shfl_down_sync(0xFFFFFFFF, acc_b, offset);
+    }
+
+    if (lane == 0) {
+        float result = acc_a + acc_b;
+        Cout[n] = __float2bfloat16(result);
+    }
+}
+
+// ============================================================
 // W4A16 GEMV with FP32 output (for LM head logits).
 // Identical to w4a16_gemv but writes float instead of BF16.
 // FP32 logits are critical for sampling quality — BF16 collapses

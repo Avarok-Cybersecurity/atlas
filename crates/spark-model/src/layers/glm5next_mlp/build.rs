@@ -20,7 +20,10 @@ use anyhow::{Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::Glm5NextMlpConfig;
-use super::weights::{Glm5NextDenseMlpWeights, Glm5NextExpertWeights, Glm5NextMoeWeights};
+use super::weights::{
+    Glm5NextDenseMlpWeights, Glm5NextExpertPtrTable, Glm5NextExpertWeights, Glm5NextMoePtrTables,
+    Glm5NextMoeWeights, Nvfp4Proj,
+};
 
 /// A BF16/F32 tensor as host `f32`, by layer-relative name.
 pub type LoadFn<'a> = &'a dyn Fn(&str) -> Result<Vec<f32>>;
@@ -108,6 +111,43 @@ pub fn build_dense_mlp(
     })
 }
 
+/// One projection's device pointer table over the FULL expert set.
+///
+/// 🪤 Indexed by GLOBAL id — remote ids get a **null** pointer, not a wrapped local slot. The
+/// grouped kernel's only remote test is `packed == 0`; handing it a local expert's pointer for
+/// a remote id would silently run the wrong expert on both ranks.
+fn build_expert_ptr_table(
+    gpu: &dyn GpuBackend,
+    cfg: &Glm5NextMlpConfig,
+    experts: &[Glm5NextExpertWeights],
+    proj: impl Fn(&Glm5NextExpertWeights) -> Nvfp4Proj,
+) -> Result<Glm5NextExpertPtrTable> {
+    let n = cfg.num_experts;
+    let mut packed = vec![0u8; n * 8];
+    let mut scale = vec![0u8; n * 8];
+    let mut scale2 = vec![0u8; n * 4];
+    for id in 0..n {
+        let Some(local) = cfg.local_slot(id) else {
+            continue; // remote — null stays, and the kernel skips the slot
+        };
+        let p = proj(&experts[local]);
+        packed[id * 8..id * 8 + 8].copy_from_slice(&(p.packed.0 as u64).to_le_bytes());
+        scale[id * 8..id * 8 + 8].copy_from_slice(&(p.scale.0 as u64).to_le_bytes());
+        scale2[id * 4..id * 4 + 4].copy_from_slice(&p.scale_2.to_le_bytes());
+    }
+    let packed_ptrs = gpu.alloc(packed.len())?;
+    gpu.copy_h2d(&packed, packed_ptrs)?;
+    let scale_ptrs = gpu.alloc(scale.len())?;
+    gpu.copy_h2d(&scale, scale_ptrs)?;
+    let scale2_vals = gpu.alloc(scale2.len())?;
+    gpu.copy_h2d(&scale2, scale2_vals)?;
+    Ok(Glm5NextExpertPtrTable {
+        packed_ptrs,
+        scale_ptrs,
+        scale2_vals,
+    })
+}
+
 /// Bind one routed MoE site for this rank: replicated router, TP-sharded shared expert, and
 /// exactly the `local_experts` routed experts this EP rank owns.
 pub fn build_moe(
@@ -156,12 +196,19 @@ pub fn build_moe(
         experts.push(expert(id)?);
     }
 
+    let ptrs = Glm5NextMoePtrTables {
+        gate: build_expert_ptr_table(gpu, cfg, &experts, |e| e.gate_proj)?,
+        up: build_expert_ptr_table(gpu, cfg, &experts, |e| e.up_proj)?,
+        down: build_expert_ptr_table(gpu, cfg, &experts, |e| e.down_proj)?,
+    };
+
     Ok(Glm5NextMoeWeights {
         router: up_bf16(gpu, &router)?,
         // F32 in the checkpoint and `const float*` at the kernel — uploaded as F32, not BF16.
         router_bias: up_f32(gpu, &bias)?,
         shared,
         experts,
+        ptrs,
     })
 }
 

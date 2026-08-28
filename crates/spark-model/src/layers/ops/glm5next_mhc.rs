@@ -233,7 +233,11 @@ pub fn glm_hc_post(
 /// bit-identical at any value of it. 256 is the block width both kernels launch at.
 const fn collapse_blocks(hidden_size: u32) -> u32 {
     // `max(1)` by hand: `Ord::max` is not const yet.
-    if hidden_size < 256 { 1 } else { hidden_size.div_ceil(256) }
+    if hidden_size < 256 {
+        1
+    } else {
+        hidden_size.div_ceil(256)
+    }
 }
 
 /// `mix_hc` — the row count of `hc_fn` and `hc_base`: `(2 + hc_mult) * hc_mult`.

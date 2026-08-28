@@ -190,10 +190,15 @@ impl Glm5NextMlpWorkspace {
             .max(cfg.moe_intermediate)
             .max(cfg.local_shared_intermediate)
             .max(1);
+        // The grouped MoE path activates all `top_k` slots in one launch, so the three
+        // activation buffers are slot-major and `top_k` times a routed expert's width. The
+        // dense path still writes only the first `inter` elements — `max_inter` stays the
+        // guard for it.
+        let act_elems = max_inter.max(cfg.top_k * cfg.moe_intermediate).max(1);
         Ok(Self {
-            a_gate: gpu.alloc(max_inter * 2)?,
-            a_up: gpu.alloc(max_inter * 2)?,
-            a_act: gpu.alloc(max_inter * 2)?,
+            a_gate: gpu.alloc(act_elems * 2)?,
+            a_up: gpu.alloc(act_elems * 2)?,
+            a_act: gpu.alloc(act_elems * 2)?,
             logits: gpu.alloc(cfg.num_experts * 4)?,
             ids: gpu.alloc(cfg.top_k * 4)?,
             wts: gpu.alloc(cfg.top_k * 4)?,
@@ -263,6 +268,67 @@ pub fn forward_dense(
         inter,
         stream,
     )
+}
+
+/// `C[top_k, N] = A @ dequant(expert[ids[slot]])^T` — every routed slot in ONE launch.
+///
+/// Bit-identical per slot to the [`w4a16_gemv`] loop it replaces; see the kernel's header.
+/// Slots whose expert this rank does not own are skipped, so `c` must already hold whatever
+/// those rows should contribute (zero, for the routed sum).
+#[allow(clippy::too_many_arguments)]
+fn w4a16_gemv_moe(
+    gpu: &dyn GpuBackend,
+    k: KernelHandle,
+    a: DevicePtr,
+    t: &super::weights::Glm5NextExpertPtrTable,
+    c: DevicePtr,
+    ids: DevicePtr,
+    n: usize,
+    kk: usize,
+    top_k: usize,
+    num_experts: usize,
+    input_stride: usize,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, k)
+        // 🪤 COUPLED to the kernel's `N_PER_BLOCK_SW` = 8, and grid.y IS the slot.
+        .grid([
+            crate::layers::ops::w4a16_gemv_sw_grid_x(n as u32),
+            top_k as u32,
+            1,
+        ])
+        .block([256, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(t.packed_ptrs)
+        .arg_ptr(t.scale_ptrs)
+        .arg_ptr(t.scale2_vals)
+        .arg_ptr(c)
+        .arg_ptr(ids)
+        .arg_u32(n as u32)
+        .arg_u32(kk as u32)
+        .arg_u32(num_experts as u32)
+        .arg_u32(input_stride as u32)
+        .launch(stream)
+}
+
+/// Kill switch for the grouped path: `ATLAS_GLM_MOE_HOST_DISPATCH=1` restores the
+/// read-ids-to-host expert loop. Read once — this sits on the per-layer decode path.
+fn host_dispatch_forced() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("ATLAS_GLM_MOE_HOST_DISPATCH").as_deref() == Ok("1"))
+}
+
+/// Say once which expert-dispatch path this process took. A missing `w4a16_gemv_sw_moe`
+/// entry point falls back SILENTLY otherwise, and the fallback is the slow one.
+fn announce_dispatch(grouped: bool) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if grouped {
+            tracing::info!("GLM MoE: grouped device dispatch (no per-layer D2H)");
+        } else {
+            tracing::info!("GLM MoE: host dispatch (per-layer stream sync + D2H)");
+        }
+    });
 }
 
 /// One routed MoE site, one token. Leaves a **partial sum** in `out` whenever this rank shares
@@ -335,97 +401,179 @@ pub fn forward_moe(
     // that only appears at EP > 1 and only for tokens whose routing moved.
     gpu.memset_async(ws.expert_out, 0, cfg.top_k * cfg.hidden * 2, stream)?;
 
-    // 🚩 A FULL STREAM SYNC + D2H IN THE MIDDLE OF EVERY MoE LAYER. The routing decision
-    // is read back to the host so the expert GEMMs can be launched by id. Timed on its own
-    // because it is the one span here that is pure latency and scales with layer count,
-    // not with weight bytes.
-    let t = profile::start();
-    let mut ids = vec![0u8; cfg.top_k * 4];
-    gpu.synchronize(stream)?;
-    gpu.copy_d2h(ws.ids, &mut ids)?;
-    profile::end(profile::MOE_HOSTSYNC, t, gpu, stream);
-
-    if profile::trace_on() {
-        let decoded: Vec<i32> = (0..cfg.top_k)
-            .map(|k| {
-                i32::from_le_bytes([ids[k * 4], ids[k * 4 + 1], ids[k * 4 + 2], ids[k * 4 + 3]])
-            })
-            .collect();
-        profile::stash_route(&decoded);
-    }
-
-    let t = profile::start();
-    for slot in 0..cfg.top_k {
-        let id = i32::from_le_bytes([
-            ids[slot * 4],
-            ids[slot * 4 + 1],
-            ids[slot * 4 + 2],
-            ids[slot * 4 + 3],
-        ]);
-        // -1 is the kernel's "slot unfilled" sentinel; it is reachable only if top_k exceeded
-        // the expert count, which `validate` refuses. Treat it as zero rather than as an index.
-        if id < 0 {
-            continue;
-        }
-        let id = id as usize;
-        if id >= cfg.num_experts {
-            bail!(
-                "GLM MoE: router selected expert {id} of {}",
-                cfg.num_experts
-            );
-        }
-        let Some(local) = cfg.local_slot(id) else {
-            continue; // another rank owns it; its zero row is already in place.
-        };
-        let e = &w.experts[local];
-        let dst = ws.expert_out.offset(slot * cfg.hidden * 2);
+    let grouped = !host_dispatch_forced() && k.w4a16_gemv_sw_moe.0 != 0;
+    announce_dispatch(grouped);
+    if grouped {
+        // ── grouped, device-dispatched: routing never leaves the GPU ──
+        //
+        // 🔴 The host loop this replaces did `synchronize` + `copy_d2h(ids)` once per routed
+        // layer — 42 full stream drains per decode token on GLM-5.3, and the reason the
+        // decode step could not be graph-captured. It also issued one launch per LOCAL
+        // expert per projection (~16/layer); this is four, whatever the routing picks.
+        let t = profile::start();
         let mi = cfg.moe_intermediate;
-        w4a16_gemv(
+        // gate and up: every slot reads the SAME x, so input_stride = 0.
+        w4a16_gemv_moe(
             gpu,
-            k.w4a16_gemv,
-            k.w4a16_gemv_sw,
+            k.w4a16_gemv_sw_moe,
             x,
-            &e.gate_proj,
+            &w.ptrs.gate,
             ws.a_gate,
+            ws.ids,
             mi,
             cfg.hidden,
+            cfg.top_k,
+            cfg.num_experts,
+            0,
             stream,
         )?;
-        w4a16_gemv(
+        w4a16_gemv_moe(
             gpu,
-            k.w4a16_gemv,
-            k.w4a16_gemv_sw,
+            k.w4a16_gemv_sw_moe,
             x,
-            &e.up_proj,
+            &w.ptrs.up,
             ws.a_up,
+            ws.ids,
             mi,
             cfg.hidden,
+            cfg.top_k,
+            cfg.num_experts,
+            0,
             stream,
         )?;
+        // Elementwise over all slots at once. Remote slots activate uninitialised rows; the
+        // down projection skips them, so those rows are never read.
         swiglu(
             gpu,
             k.swiglu,
             ws.a_gate,
             ws.a_up,
             ws.a_act,
-            mi,
+            cfg.top_k * mi,
             cfg.swiglu_limit,
             stream,
         )?;
-        w4a16_gemv(
+        // down: slot-major activations, so input_stride = one expert's width.
+        w4a16_gemv_moe(
             gpu,
-            k.w4a16_gemv,
-            k.w4a16_gemv_sw,
+            k.w4a16_gemv_sw_moe,
             ws.a_act,
-            &e.down_proj,
-            dst,
+            &w.ptrs.down,
+            ws.expert_out,
+            ws.ids,
             cfg.hidden,
+            mi,
+            cfg.top_k,
+            cfg.num_experts,
             mi,
             stream,
         )?;
-    }
+        profile::end(profile::MOE_EXPERTS, t, gpu, stream);
 
-    profile::end(profile::MOE_EXPERTS, t, gpu, stream);
+        if profile::trace_on() {
+            let mut ids = vec![0u8; cfg.top_k * 4];
+            gpu.synchronize(stream)?;
+            gpu.copy_d2h(ws.ids, &mut ids)?;
+            let decoded: Vec<i32> = (0..cfg.top_k)
+                .map(|k| {
+                    i32::from_le_bytes([ids[k * 4], ids[k * 4 + 1], ids[k * 4 + 2], ids[k * 4 + 3]])
+                })
+                .collect();
+            profile::stash_route(&decoded);
+        }
+    } else {
+        // 🚩 A FULL STREAM SYNC + D2H IN THE MIDDLE OF EVERY MoE LAYER. The routing decision
+        // is read back to the host so the expert GEMMs can be launched by id. Timed on its own
+        // because it is the one span here that is pure latency and scales with layer count,
+        // not with weight bytes.
+        let t = profile::start();
+        let mut ids = vec![0u8; cfg.top_k * 4];
+        gpu.synchronize(stream)?;
+        gpu.copy_d2h(ws.ids, &mut ids)?;
+        profile::end(profile::MOE_HOSTSYNC, t, gpu, stream);
+
+        if profile::trace_on() {
+            let decoded: Vec<i32> = (0..cfg.top_k)
+                .map(|k| {
+                    i32::from_le_bytes([ids[k * 4], ids[k * 4 + 1], ids[k * 4 + 2], ids[k * 4 + 3]])
+                })
+                .collect();
+            profile::stash_route(&decoded);
+        }
+
+        let t = profile::start();
+        for slot in 0..cfg.top_k {
+            let id = i32::from_le_bytes([
+                ids[slot * 4],
+                ids[slot * 4 + 1],
+                ids[slot * 4 + 2],
+                ids[slot * 4 + 3],
+            ]);
+            // -1 is the kernel's "slot unfilled" sentinel; it is reachable only if top_k exceeded
+            // the expert count, which `validate` refuses. Treat it as zero rather than as an index.
+            if id < 0 {
+                continue;
+            }
+            let id = id as usize;
+            if id >= cfg.num_experts {
+                bail!(
+                    "GLM MoE: router selected expert {id} of {}",
+                    cfg.num_experts
+                );
+            }
+            let Some(local) = cfg.local_slot(id) else {
+                continue; // another rank owns it; its zero row is already in place.
+            };
+            let e = &w.experts[local];
+            let dst = ws.expert_out.offset(slot * cfg.hidden * 2);
+            let mi = cfg.moe_intermediate;
+            w4a16_gemv(
+                gpu,
+                k.w4a16_gemv,
+                k.w4a16_gemv_sw,
+                x,
+                &e.gate_proj,
+                ws.a_gate,
+                mi,
+                cfg.hidden,
+                stream,
+            )?;
+            w4a16_gemv(
+                gpu,
+                k.w4a16_gemv,
+                k.w4a16_gemv_sw,
+                x,
+                &e.up_proj,
+                ws.a_up,
+                mi,
+                cfg.hidden,
+                stream,
+            )?;
+            swiglu(
+                gpu,
+                k.swiglu,
+                ws.a_gate,
+                ws.a_up,
+                ws.a_act,
+                mi,
+                cfg.swiglu_limit,
+                stream,
+            )?;
+            w4a16_gemv(
+                gpu,
+                k.w4a16_gemv,
+                k.w4a16_gemv_sw,
+                ws.a_act,
+                &e.down_proj,
+                dst,
+                cfg.hidden,
+                mi,
+                stream,
+            )?;
+        }
+
+        profile::end(profile::MOE_EXPERTS, t, gpu, stream);
+    }
 
     // ── shared expert: BF16, TP-sharded, NOT routed-scaled ──
     let t = profile::start();

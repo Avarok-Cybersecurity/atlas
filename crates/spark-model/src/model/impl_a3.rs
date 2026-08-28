@@ -316,9 +316,7 @@ impl TransformerModel {
     /// head — the FP8 / NVFP4 / FP32-logits heads keep their existing path untouched.
     fn lmhead_vocab_shard(&self, v: u32) -> Option<(usize, usize)> {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *OFF.get_or_init(|| {
-            std::env::var("ATLAS_NO_LMHEAD_VOCAB_TP").as_deref() == Ok("1")
-        }) {
+        if *OFF.get_or_init(|| std::env::var("ATLAS_NO_LMHEAD_VOCAB_TP").as_deref() == Ok("1")) {
             return None;
         }
         let comm = self.comm_ref()?;
@@ -409,8 +407,7 @@ impl TransformerModel {
             // point. It is: the last thing the layer stack does is an all-reduce, which
             // lands the same bytes everywhere. The byte-identity gate is what actually
             // checks it — if that assumption ever breaks, the completions diverge.
-            self.gpu
-                .memset_async(logits, 0, v as usize * 2, stream)?;
+            self.gpu.memset_async(logits, 0, v as usize * 2, stream)?;
             ops::dense_gemv(
                 self.gpu.as_ref(),
                 self.dense_gemv_kernel,

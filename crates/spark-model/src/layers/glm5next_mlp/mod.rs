@@ -117,6 +117,13 @@ pub struct Glm5NextMlpKernels {
     /// `ops::w4a16_decode_gemv`, which couples the two; swapping the kernel without
     /// swapping the grid writes half the outputs.
     pub w4a16_gemv_sw: KernelHandle,
+    /// Grouped MoE sibling of `w4a16_gemv_sw`: all `top_k` slots in ONE launch, expert
+    /// weights reached through a device pointer table indexed by the router's on-device ids.
+    /// **Bit-identical** per slot — same `w4a16_gemv_partial`, same shuffle tree.
+    ///
+    /// 🪤 Grid is `(ceil(N/8), top_k, 1)`. `try_kernel` — a target without it falls back to
+    /// the host-dispatch loop.
+    pub w4a16_gemv_sw_moe: KernelHandle,
     /// 🪤 **Clamped** SwiGLU, asymmetric. Not `moe_silu_mul`.
     pub swiglu: KernelHandle,
     pub router: KernelHandle,
@@ -133,6 +140,11 @@ impl Glm5NextMlpKernels {
             w4a16: gpu.kernel(W4A16_MODULE, "w4a16_gemm")?,
             w4a16_gemv: gpu.kernel(W4A16_GEMV_MODULE, "w4a16_gemv")?,
             w4a16_gemv_sw: crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw"),
+            w4a16_gemv_sw_moe: crate::layers::try_kernel(
+                gpu,
+                W4A16_GEMV_MODULE,
+                "w4a16_gemv_sw_moe",
+            ),
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,
             router: gpu.kernel(FFN_MODULE, "glm5next_router_topk")?,
             combine: gpu.kernel(FFN_MODULE, "glm5next_moe_combine")?,

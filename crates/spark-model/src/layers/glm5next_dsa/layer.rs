@@ -199,7 +199,14 @@ impl Glm5NextDsaWorkspace {
             q_idx: gpu.alloc(cfg.index_heads * cfg.index_head_dim * 4)?,
             head_weights: gpu.alloc(cfg.index_heads * 4)?,
             q_pos: gpu.alloc(4)?,
-            q_mask: gpu.alloc(1)?,
+            q_mask: {
+                // Decode always presents one real query position. Set ONCE — writing it per
+                // token cost a blocking H2D per DSA layer and made the step uncapturable.
+                let p = gpu.alloc(1)?;
+                gpu.memset_async(p, 1, 1, 0)?;
+                gpu.synchronize(0)?;
+                p
+            },
             slot: gpu.alloc(8)?,
             attn_out: gpu.alloc(cfg.local_heads * cfg.kv_lora_rank * 2)?,
             // One entry per cached token is the worst case (block_size == 1), so the
@@ -209,7 +216,11 @@ impl Glm5NextDsaWorkspace {
             // making these two allocations UNCONDITIONALLY — even leaving them unused —
             // is by itself enough to change the model's sampled output (measured t27,
             // 2026-08-28). See A55 and the note at the use site.
-            bt: if persist { gpu.alloc(bt_cap * 4)? } else { DevicePtr(0) },
+            bt: if persist {
+                gpu.alloc(bt_cap * 4)?
+            } else {
+                DevicePtr(0)
+            },
             sl: if persist { gpu.alloc(4)? } else { DevicePtr(0) },
             bt_cap,
             select: DsaSelectScratch::alloc(gpu, cfg, &geom)?,
@@ -331,6 +342,7 @@ impl Glm5NextDsaLayer {
         kv_cache: &PagedKvCache,
         block_table_dev: DevicePtr,
         seq_lens_dev: DevicePtr,
+        q_pos_dev: DevicePtr,
         paging: &DsaDecodePaging,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -367,7 +379,8 @@ impl Glm5NextDsaLayer {
             ape: self.weights.ape,
             q: w.q_idx,
             weights: w.head_weights,
-            q_pos: w.q_pos,
+            q_pos: q_pos_dev,
+            // Always 1 for a decode step; written once at workspace alloc, never per token.
             q_mask: w.q_mask,
             first_key: 0,
         };
@@ -500,24 +513,50 @@ impl TransformerLayer for Glm5NextDsaLayer {
             stream,
         )?;
         let block_size = kv_cache.config().block_size;
-        let logical = seq_len / block_size;
-        let physical = *block_table.get(logical).ok_or_else(|| {
-            anyhow::anyhow!(
-                "DSA layer {}: block table has {} entries, needs logical block {logical} \
-                 for position {seq_len}",
-                self.layer_idx,
-                block_table.len()
-            )
-        })? as usize;
-        let slot = (physical * block_size + seq_len % block_size) as i64;
-        gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
+        // 🔴 Every per-step scalar this layer needs — position, KV slot, seq_len, block
+        // table — is ALREADY uploaded once per decode step by `decode_a` into
+        // `attn_metadata`, at stable addresses, BEFORE any graph capture or replay. Reading
+        // those pointers instead of doing our own `copy_h2d` removes FIVE blocking H2Ds
+        // (each one a `cuStreamSynchronize`) per DSA layer per token — 55 stream drains on
+        // this model — and is what makes the decode step capturable at all: an H2D inside a
+        // capturing stream fails with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED.
+        //
+        // 🪤 The two encodings must agree byte for byte, and they do: `positions` is the
+        // u32 `seq_len` (same bits as our i32), `slot` the same i64 `block*block_size +
+        // seq_len % block_size`, `seq_len` the same i32 `seq_len + 1`, and `block_table`
+        // the same ids as i32 rather than u32.
+        // 🪤 ONLY on a real decode step — `prefill_default` calls this same `decode` per
+        // token with the prefill context, where these are arrays or NULL. See
+        // `ForwardContext::decode_step`.
+        let meta = if ctx.decode_step {
+            ctx.attn_metadata.as_ref()
+        } else {
+            None
+        };
+        let slot_dev = match meta {
+            Some(m) => m.slot,
+            None => {
+                let logical = seq_len / block_size;
+                let physical = *block_table.get(logical).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "DSA layer {}: block table has {} entries, needs logical block \
+                         {logical} for position {seq_len}",
+                        self.layer_idx,
+                        block_table.len()
+                    )
+                })? as usize;
+                let slot = (physical * block_size + seq_len % block_size) as i64;
+                gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
+                w.slot
+            }
+        };
         KernelLaunch::new(gpu, self.kernels.latent_write)
             .grid([1, 1, 1])
             .block([self.cfg.kv_lora_rank as u32, 1, 1])
             .arg_ptr(w.kv_a)
             .arg_ptr(self.weights.kv_a_layernorm)
             .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
-            .arg_ptr(w.slot)
+            .arg_ptr(slot_dev)
             .arg_u32(self.cfg.kv_lora_rank as u32)
             .arg_f32(self.rms_eps)
             .arg_f32(1.0 / self.kv_scale)
@@ -530,36 +569,49 @@ impl TransformerLayer for Glm5NextDsaLayer {
         self.indexer_forward(gpu, hidden, st, stream)?;
         profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
-        let pos = seq_len as i32;
-        gpu.copy_h2d(&pos.to_le_bytes(), w.q_pos)?;
-        gpu.copy_h2d(&[1u8], w.q_mask)?;
-        let bt: Vec<u8> = block_table.iter().flat_map(|b| b.to_le_bytes()).collect();
-        if block_table.len() > w.bt_cap {
-            anyhow::bail!(
-                "DSA layer {}: block table {} entries exceeds the {}-entry persistent \
-                 buffer; raise max_dsa_context, do not write past the allocation.",
-                self.layer_idx,
-                block_table.len(),
-                w.bt_cap
-            );
-        }
-        // Persistent `w.bt`/`w.sl` instead of a `gpu.alloc` + `gpu.free` per DSA layer per
-        // token: worth a measured 1.1 ms/token (nsys 2026-08-28 — 11 x ~98 us of GPU idle
-        // for the alloc/copy/free cluster). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1`.
-        //
-        // 🪤 This was gated OFF for most of a day because turning it on changed the model's
-        // output — which turned out to be ANOMALIES A55 and not this code at all: the DSA
-        // indexer was reading 5120 bytes past `q_resid`, so the answer depended on what the
-        // allocator had put next. With that fixed the two settings are byte-identical, and
-        // the whole engine is layout-independent (verified by 4 KB poisoned guard bands on
-        // 3431 allocations producing the same completions as no guard bands at all).
-        let (d_bt, d_sl) = if self.persist_bt {
-            (w.bt, w.sl)
-        } else {
-            (gpu.alloc(bt.len().max(4))?, gpu.alloc(4)?)
+        let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
+            Some(m) => (m.positions, Some(m.block_table), Some(m.seq_len)),
+            None => {
+                let pos = seq_len as i32;
+                gpu.copy_h2d(&pos.to_le_bytes(), w.q_pos)?;
+                (w.q_pos, None, None)
+            }
         };
-        gpu.copy_h2d(&bt, d_bt)?;
-        gpu.copy_h2d(&((seq_len + 1) as i32).to_le_bytes(), d_sl)?;
+        let (d_bt, d_sl) = match (bt_dev_meta, sl_dev_meta) {
+            // The step-scoped upload already holds both; nothing to copy.
+            (Some(b), Some(l)) => (b, l),
+            _ => {
+                let bt: Vec<u8> = block_table.iter().flat_map(|b| b.to_le_bytes()).collect();
+                if block_table.len() > w.bt_cap {
+                    anyhow::bail!(
+                        "DSA layer {}: block table {} entries exceeds the {}-entry persistent \
+                 buffer; raise max_dsa_context, do not write past the allocation.",
+                        self.layer_idx,
+                        block_table.len(),
+                        w.bt_cap
+                    );
+                }
+                // Persistent `w.bt`/`w.sl` instead of a `gpu.alloc` + `gpu.free` per DSA layer per
+                // token: worth a measured 1.1 ms/token (nsys 2026-08-28 — 11 x ~98 us of GPU idle
+                // for the alloc/copy/free cluster). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1`.
+                //
+                // 🪤 This was gated OFF for most of a day because turning it on changed the model's
+                // output — which turned out to be ANOMALIES A55 and not this code at all: the DSA
+                // indexer was reading 5120 bytes past `q_resid`, so the answer depended on what the
+                // allocator had put next. With that fixed the two settings are byte-identical, and
+                // the whole engine is layout-independent (verified by 4 KB poisoned guard bands on
+                // 3431 allocations producing the same completions as no guard bands at all).
+                let (d_bt, d_sl) = if self.persist_bt {
+                    (w.bt, w.sl)
+                } else {
+                    (gpu.alloc(bt.len().max(4))?, gpu.alloc(4)?)
+                };
+                gpu.copy_h2d(&bt, d_bt)?;
+                gpu.copy_h2d(&((seq_len + 1) as i32).to_le_bytes(), d_sl)?;
+                (d_bt, d_sl)
+            }
+        };
+        let owns_bt = bt_dev_meta.is_none();
 
         let paging = DsaDecodePaging {
             num_seqs: 1,
@@ -569,8 +621,9 @@ impl TransformerLayer for Glm5NextDsaLayer {
             block_size,
             cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
         };
-        let attn = self.select_and_attend(gpu, st, kv_cache, d_bt, d_sl, &paging, stream)?;
-        if !self.persist_bt {
+        let attn =
+            self.select_and_attend(gpu, st, kv_cache, d_bt, d_sl, q_pos_dev, &paging, stream)?;
+        if owns_bt && !self.persist_bt {
             gpu.free(d_bt)?;
             gpu.free(d_sl)?;
         }

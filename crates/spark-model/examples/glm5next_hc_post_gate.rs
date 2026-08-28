@@ -173,17 +173,8 @@ fn main() -> Result<()> {
                 })?;
                 let t_new = time_us(&gpu, reps, || {
                     glm_hc_post(
-                        &gpu,
-                        k.hc_post,
-                        d_block,
-                        rb,
-                        d_post,
-                        d_comb,
-                        ob,
-                        t as u32,
-                        hid as u32,
-                        hc as u32,
-                        0,
+                        &gpu, k.hc_post, d_block, rb, d_post, d_comb, ob, t as u32, hid as u32,
+                        hc as u32, 0,
                     )
                 })?;
                 println!(

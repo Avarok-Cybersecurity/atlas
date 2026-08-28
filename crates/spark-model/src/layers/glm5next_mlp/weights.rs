@@ -44,6 +44,30 @@ pub struct Glm5NextExpertWeights {
     pub down_proj: Nvfp4Proj,
 }
 
+/// Device-side pointer tables for ONE projection across the **full** expert set.
+///
+/// Indexed by GLOBAL expert id, so the grouped kernel can go straight from the router's
+/// on-device `ids` to weights with no host round trip. Experts another EP rank owns carry a
+/// **null** `packed`/`scale` pointer; the kernel writes nothing for those slots and the
+/// caller's pre-zeroed output row stands.
+#[derive(Debug, Clone, Copy)]
+pub struct Glm5NextExpertPtrTable {
+    /// `[num_experts]` U64 device pointers to each expert's packed NVFP4 weight.
+    pub packed_ptrs: DevicePtr,
+    /// `[num_experts]` U64 device pointers to each expert's block scales.
+    pub scale_ptrs: DevicePtr,
+    /// `[num_experts]` F32 per-expert `weight_scale_2`.
+    pub scale2_vals: DevicePtr,
+}
+
+/// The three projections' pointer tables for one routed site.
+#[derive(Debug, Clone, Copy)]
+pub struct Glm5NextMoePtrTables {
+    pub gate: Glm5NextExpertPtrTable,
+    pub up: Glm5NextExpertPtrTable,
+    pub down: Glm5NextExpertPtrTable,
+}
+
 /// A routed MoE site's weights for this rank.
 pub struct Glm5NextMoeWeights {
     /// `[num_experts, hidden]` BF16 router. 🪤 **REPLICATED, and it must stay that way** — see
@@ -59,4 +83,7 @@ pub struct Glm5NextMoeWeights {
     ///
     /// 🪤 Indexed by `Glm5NextMlpConfig::local_slot(global_id)`, never by the global id.
     pub experts: Vec<Glm5NextExpertWeights>,
+    /// Global-id-indexed device pointer tables over the same experts, for the grouped
+    /// device-dispatch forward. Null entries mark remote ids.
+    pub ptrs: Glm5NextMoePtrTables,
 }

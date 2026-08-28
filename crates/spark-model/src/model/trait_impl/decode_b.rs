@@ -459,6 +459,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             // PLE (qwen4_exp n-gram) computes its hash rows from HOST ids;
@@ -485,6 +486,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             // The chunk's ids, for the PLE prefill hash on the fused path.

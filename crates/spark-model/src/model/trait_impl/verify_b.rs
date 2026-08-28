@@ -253,6 +253,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: Some(self.buffers.token_ids()),
             host_token_ids: None,
