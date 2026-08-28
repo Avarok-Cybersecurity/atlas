@@ -496,6 +496,43 @@ test.describe('error states', () => {
     // A chat-time fault must not knock the corpus out of ready.
     await expect(statusText(page)).toContainText('ready ·');
   });
+
+  // The rerank API returns positions into the documents WE sent. rag.js used
+  // them to index `candidates` directly, so an index the response invented
+  // produced `undefined` in `picked` and the next line read `.payload` off it —
+  // a bare TypeError that took the whole answer down instead of degrading.
+  test('a rerank index that points nowhere does not take the answer down', async ({
+    page,
+    context
+  }) => {
+    await routeCorpus(context);
+    await context.route(OR_EMBEDDINGS, embeddingsHandler({ dim: META.dim }));
+    await context.route(OR_CHAT, chatHandler('The KV pool lives in `kv_pool.rs` [1].'));
+    await context.route(OR_RERANK, async (route) => {
+      const body = route.request().postDataJSON();
+      // One real position and two that do not exist.
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          results: [
+            { index: 0, relevance_score: 0.9 },
+            { index: body.documents.length + 5, relevance_score: 0.8 },
+            { index: -1, relevance_score: 0.7 }
+          ]
+        })
+      });
+    });
+    await withKey(page);
+    await page.goto('/');
+    await openChat(page);
+    await waitReady(page);
+
+    await askQuestion(page, 'where is the kv pool?');
+    // The answer still arrives, built from the position that did resolve.
+    await expect(page.locator('.cm-body').first()).toBeVisible({ timeout: 20_000 });
+    await expect(statusText(page)).toContainText('ready ·');
+  });
 });
 
 // =============================================================================

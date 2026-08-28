@@ -81,7 +81,14 @@ export async function askCodebase(question, history, { apiKey, corpus, onPhase, 
       apiKey,
       TOP_K
     );
-    picked = ranked.slice(0, TOP_K).map(({ index }) => candidates[index]);
+    // `index` is a position into the documents WE sent, but it arrives from the
+    // rerank service, so it is not ours to trust. An index outside the array
+    // yields `undefined`, and the `sources` map below reads `.payload` off it —
+    // a bare TypeError that loses the whole answer instead of the one result.
+    picked = ranked
+      .slice(0, TOP_K)
+      .map(({ index }) => candidates[index])
+      .filter(Boolean);
   } else {
     picked = candidates.slice(0, TOP_K);
   }
