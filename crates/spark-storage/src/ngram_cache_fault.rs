@@ -41,6 +41,10 @@ pub(super) struct FaultJob {
     pub(super) within: usize,
     /// 1, or 2 when the row straddles a block boundary.
     pub(super) nblocks: usize,
+    /// Which backing file `block_off` is an offset INTO. A segmented table's
+    /// shards can live in different safetensors files, so the offset alone
+    /// named a byte in whichever file happened to be open.
+    pub(super) file_idx: usize,
     /// Destination (pinned arena slot bytes) as an address; the region
     /// `[dst, dst + row_stride)` is disjoint per job.
     pub(super) dst: usize,
@@ -88,14 +92,26 @@ fn serial_forced() -> bool {
 /// Fault every job in, serial below [`PARALLEL_MIN`], scoped threads above.
 pub(super) fn fault_all(
     jobs: &[FaultJob],
-    file: &File,
+    files: &[&File],
     scale_file: Option<&File>,
     row_stride: usize,
     bounce: &mut AlignedBlock,
 ) -> Result<()> {
+    // Indexed per job, not per call: two jobs in one batch can name rows in
+    // different shards, and therefore in different files.
+    let pick = |job: &FaultJob| -> Result<&File> {
+        files.get(job.file_idx).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NgramRowCache: row {} names backing file {} of {}",
+                job.row_id,
+                job.file_idx,
+                files.len()
+            )
+        })
+    };
     if jobs.len() < PARALLEL_MIN || serial_forced() {
         for job in jobs {
-            run_one(job, file, scale_file, row_stride, bounce)?;
+            run_one(job, pick(job)?, scale_file, row_stride, bounce)?;
         }
         return Ok(());
     }
@@ -109,7 +125,14 @@ pub(super) fn fault_all(
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(job) = jobs.get(i) else { break };
-                    if let Err(e) = run_one(job, file, scale_file, row_stride, &mut bounce) {
+                    let f = match pick(job) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            *first_err.lock().unwrap() = Some(e);
+                            break;
+                        }
+                    };
+                    if let Err(e) = run_one(job, f, scale_file, row_stride, &mut bounce) {
                         *first_err.lock().unwrap() = Some(e);
                         break;
                     }

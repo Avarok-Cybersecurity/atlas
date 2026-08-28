@@ -304,12 +304,13 @@ fn ple_gather_reads_the_right_rows() {
 
     // Rebuild the segmented cache exactly as the loader does, straight from
     // the safetensors header — no model load.
-    let (path, bases, rows_per) =
+    let (shards, rows_per) =
         crate::weight_loader::qwen4_exp::ple_shard_layout(&snap).expect("PLE shard layout");
+    let files: std::collections::BTreeSet<_> = shards.iter().map(|(p, _)| p).collect();
     println!(
-        "shards={} rows_per={rows_per} file={}",
-        bases.len(),
-        path.display()
+        "shards={} rows_per={rows_per} across {} file(s)",
+        shards.len(),
+        files.len()
     );
     // CUDA FIRST: the cache's arena is pinned, GPU-addressable memory, so it
     // needs a live context. The loader gets one for free; a bare test does not.
@@ -320,8 +321,7 @@ fn ple_gather_reads_the_right_rows() {
     let k = g.kernel("embed_from_argmax", "batched_embed").unwrap();
 
     let mut cache = spark_storage::NgramRowCache::open_segmented(
-        &path,
-        bases,
+        &shards,
         rows_per,
         None,
         head_dim * 2,

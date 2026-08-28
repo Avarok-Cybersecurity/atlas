@@ -55,6 +55,15 @@ pub struct NgramRowCache {
     /// or re-save is needed. Because that offset is only 8-byte aligned, a
     /// row may straddle a 4 KiB O_DIRECT block; `fetch_into` handles the seam.
     file: File,
+    /// Additional backing files, for a segmented table whose shards do NOT all
+    /// live in one safetensors shard. Index 0 is `file`; `Segments::shard_file`
+    /// indexes into this list.
+    ///
+    /// Qwen3.8-Flash-Next needs this and LongCat does not: the released
+    /// NVFP4 checkpoint spreads its 128 PLE shards across TEN
+    /// `model-plefp8-*.safetensors` files, so requiring one file refused the
+    /// model outright ("PLE: shard 2 lives in a different file from shard 0").
+    extra_files: Vec<File>,
     base_offset: u64,
     /// SEGMENTED tables: one base offset per equal-sized shard.
     ///
@@ -89,6 +98,10 @@ pub struct NgramRowCache {
 struct Segments {
     /// Byte offset of each shard's first row, indexed by shard.
     bases: Vec<u64>,
+    /// Which backing file each shard lives in: 0 is `file`, n>0 indexes
+    /// `extra_files[n - 1]`. All zeroes when the table is one file, which is
+    /// the LongCat shape and stays byte-for-byte what it was.
+    shard_file: Vec<usize>,
     /// Rows per shard. Every shard but conceivably the last holds exactly
     /// this many; `open_segmented` requires them all equal so the mapping is
     /// a divide rather than a search.
@@ -185,6 +198,7 @@ impl NgramRowCache {
             file,
             base_offset,
             segments: None,
+            extra_files: Vec::new(),
             scales,
             row_stride,
             slots,
@@ -208,24 +222,43 @@ impl NgramRowCache {
     /// `rows_per_shard` rows.
     #[allow(clippy::too_many_arguments)]
     pub fn open_segmented(
-        path: &Path,
-        bases: Vec<u64>,
+        shards: &[(std::path::PathBuf, u64)],
         rows_per_shard: u64,
         scale_path: Option<&Path>,
         row_stride: usize,
         slots: usize,
     ) -> Result<Self> {
-        if bases.is_empty() || rows_per_shard == 0 {
+        if shards.is_empty() || rows_per_shard == 0 {
             bail!(
                 "NgramRowCache: segmented table needs shards and rows \
                  (shards={}, rows_per_shard={rows_per_shard})",
-                bases.len()
+                shards.len()
             );
         }
+        // One File per DISTINCT path, in first-seen order, so a table split
+        // across ten files costs ten descriptors rather than one per shard.
+        // Shard 0's file is the cache's own `file`; the rest are `extra_files`.
+        let mut order: Vec<&Path> = Vec::new();
+        let mut shard_file = Vec::with_capacity(shards.len());
+        for (p, _) in shards {
+            let idx = order
+                .iter()
+                .position(|q| *q == p.as_path())
+                .unwrap_or_else(|| {
+                    order.push(p.as_path());
+                    order.len() - 1
+                });
+            shard_file.push(idx);
+        }
+        let bases: Vec<u64> = shards.iter().map(|(_, o)| *o).collect();
         let rows_total = bases.len() as u64 * rows_per_shard;
-        let mut c = Self::open_at(path, 0, scale_path, rows_total, row_stride, slots)?;
+        let mut c = Self::open_at(order[0], 0, scale_path, rows_total, row_stride, slots)?;
+        for p in &order[1..] {
+            c.extra_files.push(open_direct(p)?);
+        }
         c.segments = Some(Segments {
             bases,
+            shard_file,
             rows_per: rows_per_shard,
         });
         Ok(c)
@@ -292,9 +325,13 @@ impl NgramRowCache {
         // Phase 2 — fault every miss in, parallel past a few (the serial
         // QD=1 pread-per-miss loop was the diverse-prefill stall).
         if !jobs.is_empty() {
+            // Every backing file, in index order, so a job can name its own.
+            let files: Vec<&File> = std::iter::once(&self.file)
+                .chain(self.extra_files.iter())
+                .collect();
             let r = crate::ngram_cache_fault::fault_all(
                 &jobs,
-                &self.file,
+                &files,
                 self.scales.as_ref().map(|sc| &sc.file),
                 self.row_stride,
                 &mut self.bounce,
@@ -318,7 +355,7 @@ impl NgramRowCache {
     /// bookkeeping-free half of the old `fetch_into`, consumed by
     /// [`crate::ngram_cache_fault::fault_all`].
     fn fault_job(&self, id: u64, slot: u32) -> Result<crate::ngram_cache_fault::FaultJob> {
-        let byte = self.row_byte(id);
+        let (file_idx, byte) = self.row_byte(id);
         let block_off = byte - (byte % BLOCK as u64);
         let within = (byte - block_off) as usize;
         let nblocks = crate::ngram_cache_fault::nblocks_for(within, self.row_stride);
@@ -348,6 +385,7 @@ impl NgramRowCache {
             nblocks,
             dst,
             scale,
+            file_idx,
         })
     }
 
@@ -384,14 +422,21 @@ impl NgramRowCache {
         )
     }
 
-    /// Byte offset of row `id` in the backing file.
-    fn row_byte(&self, id: u64) -> u64 {
+    /// Byte offset of row `id`, and which backing file holds it.
+    ///
+    /// The file index is part of the answer because a segmented table's shards
+    /// may live in different safetensors files — an offset alone named a byte
+    /// in the wrong one.
+    fn row_byte(&self, id: u64) -> (usize, u64) {
         match &self.segments {
-            None => self.base_offset + id * self.row_stride as u64,
+            None => (0, self.base_offset + id * self.row_stride as u64),
             Some(seg) => {
                 let shard = (id / seg.rows_per) as usize;
                 let local = id % seg.rows_per;
-                seg.bases[shard] + local * self.row_stride as u64
+                (
+                    seg.shard_file[shard],
+                    seg.bases[shard] + local * self.row_stride as u64,
+                )
             }
         }
     }

@@ -108,10 +108,13 @@ pub(super) fn load(
     let heads = dims.ngram_heads();
 
     // ── the segmented table ──
-    let mut bases = Vec::new();
+    // (path, byte offset) per shard. The path is carried PER SHARD because the
+    // released NVFP4 checkpoint spreads these 128 shards across ten
+    // `model-plefp8-*.safetensors` files; requiring one file refused the model
+    // outright at shard 2.
+    let mut shards: Vec<(std::path::PathBuf, u64)> = Vec::new();
     let mut rows_per = 0usize;
     let mut head_dim = 0usize;
-    let mut path = None;
     for i in 0.. {
         let name = format!("{lp}.ple_embedding.ngram_embedding.shard_{i}.weight");
         let Some(d) = store.deferred(&name) else {
@@ -125,8 +128,11 @@ pub(super) fn load(
         if i == 0 {
             rows_per = d.shape[0];
             head_dim = d.shape[1];
-            path = Some(d.path.clone());
         } else {
+            // Equal row counts are still required: the cache maps a global id
+            // to its shard with one divide, and that is only valid when every
+            // shard holds the same number of rows. Differing FILES are fine —
+            // each shard names its own.
             anyhow::ensure!(
                 d.shape[0] == rows_per && d.shape[1] == head_dim,
                 "PLE: shard {i} is {:?} but shard 0 is [{rows_per}, {head_dim}]. \
@@ -134,25 +140,18 @@ pub(super) fn load(
                  requires every shard to hold the same number of rows.",
                 d.shape
             );
-            anyhow::ensure!(
-                Some(&d.path) == path.as_ref(),
-                "PLE: shard {i} lives in a different file from shard 0; the row \
-                 cache opens ONE backing file"
-            );
         }
-        bases.push(d.offset);
+        shards.push((d.path.clone(), d.offset));
     }
     anyhow::ensure!(
-        !bases.is_empty(),
+        !shards.is_empty(),
         "PLE: no `{lp}.ple_embedding.ngram_embedding.shard_*` was deferred. Either \
          the checkpoint has none, or they were UPLOADED whole — which for this \
          table is 102 GB of BF16 and would not have fit."
     );
-    let path = path.expect("checked non-empty");
     let slots = slots_from_env();
     let cache = spark_storage::NgramRowCache::open_segmented(
-        &path,
-        bases.clone(),
+        &shards,
         rows_per as u64,
         None, // BF16 rows, no per-row scale file
         head_dim * 2,
@@ -176,9 +175,9 @@ pub(super) fn load(
          served off NVMe with {slots} cached slots ({:.1} MB); {heads} heads, \
          conv k={} dilation={dilation} (state {} steps)",
         config.ple_layer_ids,
-        bases.len(),
-        bases.len() * rows_per,
-        (bases.len() * rows_per * head_dim * 2) as f64 / 1e9,
+        shards.len(),
+        shards.len() * rows_per,
+        (shards.len() * rows_per * head_dim * 2) as f64 / 1e9,
         (slots * head_dim * 2) as f64 / 1e6,
         config.ple_conv_kernel_size,
         (config.ple_conv_kernel_size - 1) * dilation,
