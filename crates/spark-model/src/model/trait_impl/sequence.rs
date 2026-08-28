@@ -199,22 +199,48 @@ impl TransformerModel {
             }
         }
 
-        // 🔴 Drop this slot's captured decode graph when any layer owns per-SEQUENCE device
-        // state. The cache is keyed by slot on the premise that the only baked per-sequence
-        // addresses are the SSM pool's, which are slot-stable; a layer that allocates its own
-        // state per sequence (GLM-5.3's indexer cache and KDA state) breaks it, and the next
-        // request replays this one's buffers — observed as request 2 continuing request 1's
-        // text. Costs one re-capture per request on those models and nothing on the others.
-        if !slot_reused_by_compact
-            && self.layers.iter().any(|l| l.graph_stale_on_new_sequence())
-            && let Some(g) = self.decode_graph.lock().remove(&seq.slot_idx)
-            && g.0 != 0
-            && let Err(e) = self.gpu.destroy_graph(g)
-        {
-            tracing::warn!(
-                "free_sequence: destroy decode_graph({}): {e:#}",
-                seq.slot_idx
-            );
+        // 🔴 Drop the graphs captured for THIS slot when a layer owns per-SEQUENCE device
+        // state. The caches are slot-keyed on the premise that the only per-sequence
+        // addresses a capture bakes live in the slot-addressed SSM pool; a layer that
+        // allocates its own state per sequence (GLM-5.3's indexer cache and KDA state)
+        // breaks it, and the next request replays — and writes — this one's freed buffers.
+        // Observed as request 2 continuing request 1's text.
+        //
+        // 🪤 NOT an unconditional drain. `decode_graph_key::tests` pins that, and it is
+        // right: recapturing on every completion is a real cost, and it must not come back
+        // for the models whose premise still holds. This is one slot, and only when a layer
+        // says so.
+        if !slot_reused_by_compact && self.layers.iter().any(|l| l.graph_stale_on_new_sequence()) {
+            let slot = seq.slot_idx as u32;
+            let mut stale: Vec<spark_runtime::gpu::GraphHandle> = self
+                .decode_graph
+                .lock()
+                .remove(&seq.slot_idx)
+                .into_iter()
+                .collect();
+            {
+                // A batched graph bakes EVERY row's state pointers, so one retired
+                // sequence poisons every key it appears in.
+                let mut batch = self.batch_decode_graphs.lock();
+                let keys: Vec<Vec<u32>> = batch
+                    .0
+                    .keys()
+                    .filter(|k| k.contains(&slot))
+                    .cloned()
+                    .collect();
+                for k in keys {
+                    if let Some((g, _)) = batch.0.remove(&k) {
+                        stale.push(g);
+                    }
+                }
+            }
+            for g in stale {
+                if g.0 != 0
+                    && let Err(e) = self.gpu.destroy_graph(g)
+                {
+                    tracing::warn!("free_sequence: destroy graph for slot {slot}: {e:#}");
+                }
+            }
         }
 
         // All SSM buffers (h_state, conv_state, checkpoints, intermediates) belong

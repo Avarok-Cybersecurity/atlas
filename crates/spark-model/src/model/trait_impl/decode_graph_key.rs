@@ -239,4 +239,55 @@ mod tests {
         assert_eq!(batch_decode_graph_cap(32), 48);
         assert_eq!(batch_decode_graph_cap(64), 80);
     }
+
+    /// NEGATIVE: `free_sequence_dispatch` must not drain slot-keyed decode graphs.
+    /// Recapturing on every completion was the cost that removal bought back.
+    /// LoRA-baked `verify_kgamma` / `fused` still drop (adapter index baked).
+    ///
+    /// AMENDED 2026-08-28: the slot key is sound only while every per-sequence address a
+    /// capture bakes lives in the slot-addressed SSM pool. GLM-5.3 allocates its DSA
+    /// indexer cache and KDA state per SEQUENCE, so a slot's graph really does go stale
+    /// and the next request replayed the last one's freed buffers — request 2 continued
+    /// request 1's text. So a `graph_stale_on_new_sequence()`-guarded removal of THIS
+    /// slot's entries is now allowed, and an unguarded or wholesale one is still not.
+    ///
+    /// PROVEN BY: dropping the `graph_stale_on_new_sequence()` guard, or swapping the
+    /// per-slot `remove` for a `drain`/`clear`, turns this red.
+    #[test]
+    fn free_sequence_only_drops_slot_graphs_a_layer_calls_stale() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/model/trait_impl/sequence.rs"),
+        )
+        .unwrap();
+        let start = src
+            .find("fn free_sequence_dispatch")
+            .expect("free_sequence_dispatch");
+        let body = &src[start..];
+        let end = body.find("\n    pub(super) fn ").unwrap_or(body.len());
+        let body = &body[..end];
+        // Wholesale invalidation is still forbidden on both caches.
+        for bad in ["decode_graph.lock().drain()", "decode_graph.lock().clear()"] {
+            assert!(
+                !body.contains(bad),
+                "free_sequence must not invalidate decode graphs wholesale ({bad})"
+            );
+        }
+        assert!(
+            !body.contains("batch.0.drain()") && !body.contains("batch.0.clear()"),
+            "free_sequence must not invalidate batch decode graphs wholesale"
+        );
+        // Any touch of either cache must be under the layer-declared staleness guard.
+        let touches_graphs = body.contains("self.decode_graph.lock()")
+            || body.contains("self.batch_decode_graphs.lock()");
+        assert_eq!(
+            touches_graphs,
+            body.contains("graph_stale_on_new_sequence"),
+            "free_sequence may drop slot graphs ONLY behind graph_stale_on_new_sequence()"
+        );
+        assert!(
+            body.contains("verify_kgamma_graph") && body.contains("fused_graph"),
+            "LoRA-baked graphs still drop"
+        );
+    }
 }
