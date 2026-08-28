@@ -13,7 +13,7 @@
   // and the card cannot show that without becoming unreadable.
 
   import { linkWarns } from '$lib/agent/fleet.svelte.js';
-  import { modal } from './modal.js';
+  import { modal } from '$lib/modal.js';
 
   let { node, onclose } = $props();
 

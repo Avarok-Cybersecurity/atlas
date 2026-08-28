@@ -1,4 +1,5 @@
 <script>
+  import { modal } from '$lib/modal.js';
   import { hero, runCommand, githubUrl, discordUrl } from '$lib/data.js';
   import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import Receipt from './Receipt.svelte';
@@ -103,7 +104,15 @@
     <!-- Same .bd-backdrop/.bd classes as the real dialog: identical dimensions,
          so the swap from skeleton to dashboard causes zero layout shift. -->
     <div class="bd-backdrop" onclick={closeDashboard} role="presentation">
-      <div class="bd bd-skeleton" role="dialog" aria-modal="true" aria-label="Benchmark dashboard, loading" aria-busy="true" onclick={(e) => e.stopPropagation()}>
+      <div
+        class="bd bd-skeleton"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Benchmark dashboard, loading"
+        aria-busy="true"
+        onclick={(e) => e.stopPropagation()}
+        use:modal
+      >
         {#if dashboardError}
           <p class="bd-skeleton-error">Couldn’t load the dashboard (network?). Close and try again.</p>
         {:else}

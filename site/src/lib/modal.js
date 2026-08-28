@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The one focus-trap for every dialog on the control surface.
+// The one focus-trap for every dialog on the site.
 //
-// DOM plumbing, not business logic — it lives beside the components it
-// serves, kept thin for the same reason client.svelte.js is: the test runner
-// has no DOM, so anything here is untestable by construction and must stay
-// too small to hide a rule.
+// It sat in `components/control/` while only the control surface used it, and
+// three dialogs outside that folder claimed `aria-modal="true"` without any
+// of the duties below — LaunchModal, the chat skeleton in Nav, and
+// GatePointCard. `aria-modal` tells assistive tech the rest of the page is
+// inert; with no trap, Tab walks straight out into content the screen reader
+// has been told to ignore, which is worse than never claiming it.
+//
+// DOM plumbing, not business logic. Kept thin for the same reason
+// client.svelte.js is: the test runner has no DOM, so anything here is
+// untestable by construction and must stay too small to hide a rule.
 //
 // Three duties, all of them WCAG's, none of them optional once a surface
 // claims `aria-modal="true"`:

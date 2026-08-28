@@ -6,7 +6,7 @@
   // regardless used to leave a machine trusted while the interface implied it
   // had been removed, the worst of the three possible outcomes.
 
-  import { modal } from './modal.js';
+  import { modal } from '$lib/modal.js';
 
   let { fleet, node, onclose } = $props();
 
