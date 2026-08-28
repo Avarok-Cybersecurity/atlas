@@ -384,7 +384,7 @@ pub fn build_model(
         //     (LoRA pool + buffer arena), transient-cancelling because the
         //     transient is present in both samples.
         // Charge the smaller of measured and known: the delta can only
-        // OVERcount (transients), the known sum can only UNDERcount (CUDA
+        // overstate (transients), the known sum can only understate (CUDA
         // context overhead), and the `.min(actual_free − reserve)` clamp
         // below still guarantees a physical fit at allocation time either
         // way.

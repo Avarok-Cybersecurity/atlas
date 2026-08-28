@@ -100,7 +100,10 @@ pub const ONE_TIME_AMNESTY: [AmnestyEntry; 1] = [AmnestyEntry {
     path: "crates/spark-model/src/factory/build.rs",
     // Pinned in the pin phase: `git hash-object crates/spark-model/src/factory/build.rs`
     // over the fix's final content, immediately before the landing commit.
-    head_blob_oid: "01068a74c5068fb65b25b044d7580df3b36e39ed",
+    // Re-pinned 2026-08-28 after a comment-only wording fix for the typos CI
+    // check (OVERcount -> overstate); same commit updates file and pin so the
+    // grant never covers unreviewed bytes.
+    head_blob_oid: "3d79c147db23ce7d81d35815b37e17a00bd4c488",
     grant: "PR #648 KV-budget fix: stop charging the weight loader's transient \
             (checkpoint staging, ~34 GB on 27B NVFP4) as permanent in the \
             self-relative (auto) budget — the #281 accounting bug made \
