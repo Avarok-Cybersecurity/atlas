@@ -13,6 +13,10 @@ pub mod glm5next_dsa_ref;
 pub mod glm5next_kda;
 /// GLM-5.3-Flash KDA CPU reference (Slice 2 design artifact -- not a production forward path).
 pub mod glm5next_kda_ref;
+/// GLM-5.3-Flash composite decoder layer -- mixer (KDA|DSA) + MLP (dense|MoE) + mHC.
+pub mod glm5next_layer;
+/// GLM-5.3-Flash MLP production surface -- dense FFN + routed NVFP4 MoE (TP + EP sharded).
+pub mod glm5next_mlp;
 /// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
 pub mod glm5next_skeleton;
 pub mod moe;

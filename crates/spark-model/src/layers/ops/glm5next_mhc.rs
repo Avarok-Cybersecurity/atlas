@@ -18,7 +18,17 @@ use spark_runtime::kernel_args::KernelLaunch;
 ///
 /// The point of this struct is target independence: a GLM kernel target must not have to carry
 /// the DeepSeek-V4 `hyper_connection` module to resolve half of its own mHC.
+/// `Copy` so all 45 layers can share one resolution — these are opaque handles, not state.
+#[derive(Clone, Copy)]
 pub struct Glm5NextMhcKernels {
+    /// Broadcast the embedding into the `hc_mult` streams. First text layer only.
+    ///
+    /// 🪤 This is an architecture-neutral broadcast that Atlas already had — and GLM still
+    /// needs its own, because `hyper_connection::hc_expand` lives in the **DeepSeek-V4
+    /// target directory**. A kernel target merges `common/` plus its OWN model dir and
+    /// cannot reach into another target's, so for the GLM target that module does not
+    /// exist. Resolving it would fail at first construction, not fall back.
+    pub hc_expand: KernelHandle,
     pub hc_pre: KernelHandle,
     pub hc_post: KernelHandle,
     pub hc_head: KernelHandle,
@@ -28,15 +38,37 @@ pub struct Glm5NextMhcKernels {
 pub const GLM5NEXT_MHC_MODULE: &str = "glm5next_mhc";
 
 impl Glm5NextMhcKernels {
-    /// Resolve all three. `kernel()` (not `try_kernel`) — a missing mHC kernel is a hard error,
+    /// Resolve all four. `kernel()` (not `try_kernel`) — a missing mHC kernel is a hard error,
     /// never a silent fallback onto the DeepSeek variant.
     pub fn resolve(gpu: &dyn GpuBackend) -> Result<Self> {
         Ok(Self {
+            hc_expand: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_expand")?,
             hc_pre: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_pre")?,
             hc_post: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_post")?,
             hc_head: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_head")?,
         })
     }
+}
+
+/// Expand one BF16 hidden state into the `hc_mult` FP32 highway streams. First layer only.
+pub fn glm_hc_expand(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    hidden: DevicePtr,
+    streams: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(hidden)
+        .arg_ptr(streams)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .launch(stream)
 }
 
 /// Final collapse before the LM head: an **unweighted mean** over the `hc_mult` streams.

@@ -338,6 +338,19 @@ pub struct ModelConfig {
     /// Nemotron-H routed scaling factor for expert outputs.
     #[serde(default = "default_one_f64")]
     pub routed_scaling_factor: f64,
+    /// KDA forget-gate lower bound (`linear_attn_config.gate_lower_bound`). GLM-5.3 declares
+    /// -5.0; it bounds the log-decay `kda_gate` produces, so a defaulted 0.0 would clamp the
+    /// decay to a completely different range. Read by the `glm5_next` parser, never guessed.
+    #[serde(default)]
+    pub linear_gate_lower_bound: f32,
+    /// SwiGLU clamp bound (`swiglu_limit`). 0.0 = the model does not clamp.
+    ///
+    /// 🔴 GLM-5.3-Flash declares `swiglu_limit = 10.0`, and the clamp is **asymmetric**:
+    /// `gate` is upper-bounded only, `up` is bounded both ways. Read, never defaulted for a
+    /// model that declares it — a missing clamp is invisible on well-scaled activations and
+    /// silently wrong on the tails (see `kernels/gb10/common/glm5next_ffn.cu`).
+    #[serde(default)]
+    pub swiglu_limit: f32,
     /// Decoder-layer indices that use a dense MLP instead of routed experts.
     #[serde(default)]
     pub mlp_only_layers: Vec<usize>,

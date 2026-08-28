@@ -157,6 +157,15 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
         if let Some(v) = g("short_conv_kernel_size") {
             config.linear_conv_kernel_dim = v;
         }
+        // Bounds the log-decay `kda_gate` emits. Absent means an unfamiliar KDA variant, not
+        // "no bound" — 0.0 would clamp every decay to <= 0 and is a different model.
+        match lac.get("gate_lower_bound").and_then(|v| v.as_f64()) {
+            Some(v) => config.linear_gate_lower_bound = v as f32,
+            None => bail!(
+                "glm5_next: linear_attn_config has no gate_lower_bound; refusing to guess the \
+                 KDA decay bound (GLM-5.3-Flash declares -5.0)"
+            ),
+        }
     }
 
     // ---- DSA indexer ------------------------------------------------------
@@ -214,6 +223,36 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     // `mlp_layer_types` array when the checkpoint carries one, the same way
     // `build_layer_types` cross-checks the mixer map.
     config.mlp_only_layers = build_mlp_only_layers(text, config.num_hidden_layers)?;
+
+    // ---- SwiGLU clamp -----------------------------------------------------
+    // 🔴 GLM clamps its SwiGLU and the clamp is ASYMMETRIC (`gate` upper-bounded only, `up`
+    // both ways). Nothing in Atlas read this before, so the value would have had to be
+    // hardcoded at a call site or defaulted to "no clamp" — and an absent clamp is INVISIBLE
+    // on well-scaled activations, firing only on the tails. Read it, never guess it.
+    config.swiglu_limit = match text.get("swiglu_limit").and_then(|v| v.as_f64()) {
+        Some(v) if v > 0.0 => v as f32,
+        Some(v) => bail!("glm5_next: swiglu_limit is {v}, which cannot bound anything"),
+        None => bail!(
+            "glm5_next config.json has no swiglu_limit; refusing to guess whether this \
+             checkpoint clamps its SwiGLU (GLM-5.3-Flash declares 10.0)"
+        ),
+    };
+
+    // ---- Grouped expert routing -------------------------------------------
+    // `n_group`/`topk_group` are 1 here, which makes the group mask all-ones and grouped
+    // routing a NO-OP. `glm5next_router_topk` implements plain top-k and takes `n_group`
+    // only to REFUSE a checkpoint where the machinery would matter. Refuse at parse time
+    // too, so the failure names the config rather than surfacing as a silent kernel return.
+    for key in ["n_group", "topk_group"] {
+        if let Some(v) = text.get(key).and_then(|v| v.as_u64())
+            && v != 1
+        {
+            bail!(
+                "glm5_next: {key} = {v}. Grouped expert routing is not implemented — \
+                 glm5next_router_topk ranks every expert in one group."
+            );
+        }
+    }
 
     // ---- Router dtype ladder ---------------------------------------------
     // 🔴 SEMANTIC, not precision. Default = HF 5.16.1's explicit fp32 router. The checkpoint may
@@ -567,6 +606,11 @@ mod tests {
     "num_experts_per_tok": 8,
     "moe_intermediate_size": 2048,
     "first_k_dense_replace": 3,
+    "swiglu_limit": 10.0,
+    "routed_scaling_factor": 2.5,
+    "norm_topk_prob": true,
+    "n_group": 1,
+    "topk_group": 1,
     "scoring_func": "sigmoid",
     "topk_method": "noaux_tc",
     "rms_norm_eps": 1e-05,
@@ -823,6 +867,45 @@ mod tests {
             err.to_string().contains("refusing to guess"),
             "unexpected error: {err}"
         );
+    }
+
+    /// GLM's SwiGLU clamp is asymmetric and fires only on the activation tails, so a
+    /// checkpoint that declares it and a parser that defaults it disagree SILENTLY on
+    /// well-scaled inputs. The parser must refuse rather than fall back to "no clamp".
+    #[test]
+    fn a_missing_swiglu_limit_is_refused_not_defaulted() {
+        let mut v: serde_json::Value = serde_json::from_str(&glm53_config_json()).unwrap();
+        v["text_config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("swiglu_limit");
+        let err = parse_glm5_next(&v.to_string()).unwrap_err();
+        assert!(
+            err.to_string().contains("swiglu_limit"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn the_swiglu_limit_is_read_verbatim() {
+        let c = parse_glm5_next(&glm53_config_json()).unwrap();
+        assert_eq!(c.swiglu_limit, 10.0);
+    }
+
+    /// `n_group`/`topk_group` > 1 would make the group mask load-bearing, and
+    /// `glm5next_router_topk` returns without writing rather than implementing it. Refuse at
+    /// parse time so the failure names the config, not an empty selection row.
+    #[test]
+    fn grouped_expert_routing_is_refused() {
+        for key in ["n_group", "topk_group"] {
+            let mut v: serde_json::Value = serde_json::from_str(&glm53_config_json()).unwrap();
+            v["text_config"][key] = serde_json::json!(8);
+            let err = parse_glm5_next(&v.to_string()).unwrap_err();
+            assert!(
+                err.to_string().contains("Grouped expert routing"),
+                "{key}: unexpected error: {err}"
+            );
+        }
     }
 
     #[test]

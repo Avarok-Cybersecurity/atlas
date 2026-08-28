@@ -260,3 +260,33 @@ extern "C" __global__ void glm5next_hc_head(
         y_out[(size_t)t * H + d] = __float2bfloat16(acc * inv);
     }
 }
+
+// ── glm5next_hc_expand ──
+// Broadcast the single embedding stream into the `hc_mult` highway streams at the FIRST
+// layer: streams[t, i, d] = hidden[t, d].
+//
+// 🪤 This is byte-for-byte the same broadcast as `hyper_connection::hc_expand`, and it is
+// duplicated here ANYWAY because that file lives in `kernels/gb10/deepseek-v4-flash/nvfp4/`.
+// A kernel target merges `common/` plus its OWN model dir and cannot reach into another
+// target's, so the GLM target could never resolve it — the module simply would not exist.
+// Copying ~10 lines of a parameterless broadcast is the whole cost of that isolation.
+//
+// The highway is FP32 (see `buffers/sizes.rs`: mHC mixing is norm-preserving, so BF16
+// storage swamps the per-layer signal at depth). The input embedding is BF16.
+// Grid: (T,1,1)  Block: (256,1,1).
+extern "C" __global__ void glm5next_hc_expand(
+    const __nv_bfloat16* __restrict__ hidden, // [T, H]
+    float* __restrict__ streams,              // [T, hc, H] FP32 highway
+    const unsigned int hidden_size,
+    const unsigned int hc_mult
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    const __nv_bfloat16* x = hidden + (size_t)t * H;
+    float* s = streams + (size_t)t * hc_mult * H;
+    for (unsigned int d = tid; d < H; d += GLM_HC_BLOCK) {
+        float v = (float)x[d];
+        for (unsigned int i = 0; i < hc_mult; ++i) s[i * H + d] = v;
+    }
+}

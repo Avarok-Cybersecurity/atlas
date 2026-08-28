@@ -77,6 +77,9 @@ impl ModelConfig {
             conv_kernel: 0,
             moe_shared_expert_intermediate_size: 0,
             routed_scaling_factor: 1.0,
+            linear_gate_lower_bound: 0.0,
+            // 0.0 = no SwiGLU clamp. The glm5_next parser refuses to leave it here.
+            swiglu_limit: 0.0,
             mlp_only_layers: Vec::new(),
             moe_latent_size: 0,
             moe_intermediate_sizes: Vec::new(),

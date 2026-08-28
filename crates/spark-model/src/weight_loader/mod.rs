@@ -37,7 +37,9 @@ pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
+pub mod glm5_next_load;
 pub use gemma4::Gemma4WeightLoader;
+pub use glm5_next_load::Glm5NextWeightLoader;
 pub use laguna::LagunaWeightLoader;
 pub use longcat::LongcatWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
