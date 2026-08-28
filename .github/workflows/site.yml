@@ -81,19 +81,24 @@ jobs:
       # correct even when it predates the release it installs. Failing the build
       # is right: serving a 404 for the headline command on the front page would
       # be worse than a red pipeline.
-      - name: Copy the installer from atlas-recipes
+      - name: Copy the installers from atlas-recipes
         run: |
-          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
-          if [ ! -f "$src" ]; then
-            echo "::error::scripts/install.sh is not on atlas-recipes main yet."
-            echo "The front page's install command is served from that file, so building"
-            echo "without it would ship a 404 for the headline instruction. Merge the"
-            echo "atlasctl launcher PR in Avarok-Cybersecurity/atlas-recipes first, then"
-            echo "re-run this build."
-            exit 1
-          fi
-          cp "$src" static/install.sh
-          chmod 0755 static/install.sh
+          # Both, and both required. The page picks between them by detected
+          # OS, so a missing install.ps1 is a 404 served to exactly the
+          # visitors who have no other command to fall back to.
+          for f in install.sh install.ps1; do
+            src="${{ github.workspace }}/atlas-recipes-src/scripts/$f"
+            if [ ! -f "$src" ]; then
+              echo "::error::scripts/$f is not on atlas-recipes main yet."
+              echo "The front page's install command is served from that file, so building"
+              echo "without it would ship a 404 for the headline instruction. Merge the"
+              echo "atlasctl launcher PR in Avarok-Cybersecurity/atlas-recipes first, then"
+              echo "re-run this build."
+              exit 1
+            fi
+            cp "$src" "static/$f"
+            chmod 0755 "static/$f"
+          done
 
       - name: Build
         run: bun x --bun vite build

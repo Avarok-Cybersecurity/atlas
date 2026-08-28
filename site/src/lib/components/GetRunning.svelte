@@ -1,5 +1,11 @@
 <script>
-  import { getRunning, runCommand, quickInstall, runCommandRaw, guideUrl, githubUrl } from '$lib/data.js';
+  import { getRunning, quickInstall, runCommandRaw, guideUrl, githubUrl } from '$lib/data.js';
+  import { currentInstall } from '$lib/install/host.svelte.js';
+
+  // The command, the shell it goes in, and where it lands all move together:
+  // a Windows visitor shown `bash` and `~/.local/bin` has been told three
+  // things, none of which are true on their machine.
+  const install = $derived(currentInstall());
   import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
 
   let copied = $state('');
@@ -40,14 +46,14 @@
         <div class="term">
           <div class="term-head">
             <div class="term-dots"><span></span><span></span><span></span></div>
-            <span class="term-title">bash</span>
+            <span class="term-title">{install.shell}</span>
           </div>
-          <pre class="term-body"><span class="p">$</span> <span class="c" bind:this={termEl}>{runCommand}</span>
-<span class="d"># downloads atlasctl, verifies its checksum, installs to ~/.local/bin</span></pre>
+          <pre class="term-body"><span class="p">$</span> <span class="c" bind:this={termEl}>{install.command}</span>
+<span class="d"># downloads atlasctl, verifies its checksum, installs to {install.installDir}</span></pre>
         </div>
         <div class="run-copy">
-          <button type="button" class="btn btn-secondary" onclick={() => copy(runCommand, termEl)}>
-            {copied === runCommand ? copyLabel(copyState, 'Copy command') : 'Copy command'}
+          <button type="button" class="btn btn-secondary" onclick={() => copy(install.command, termEl)}>
+            {copied === install.command ? copyLabel(copyState, 'Copy command') : 'Copy command'}
           </button>
         </div>
         <p class="run-note">{getRunning.quickstartHint}</p>

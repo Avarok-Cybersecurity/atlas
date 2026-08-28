@@ -19,7 +19,7 @@ const CACHE = `atlas-site-${version}`;
 // The install scripts are excluded and stay excluded: someone piping
 // install.sh into a shell must get exactly what the server has at that moment,
 // never a copy this worker happened to keep.
-const INSTALL_SCRIPTS = ['/install.sh', '/quickstart.sh'];
+const INSTALL_SCRIPTS = ['/install.sh', '/install.ps1', '/quickstart.sh'];
 const PRECACHE = [
   '/',
   ...build,

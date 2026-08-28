@@ -15,9 +15,14 @@
   // restarting the list at 1 or hard-coding "3" here.
 
   import CommandRow from './CommandRow.svelte';
-  import { runCommand, startAgentCommand } from '$lib/data.js';
+  import { startAgentCommand } from '$lib/data.js';
+  import { currentInstall } from '$lib/install/host.svelte.js';
 
   let { after } = $props();
+
+  // Not `runCommand`: on Windows that line cannot run at all, and this guide is
+  // the first thing a new machine's operator is asked to paste.
+  const install = $derived(currentInstall());
 </script>
 
 <ol class="ld-steps">
@@ -25,7 +30,7 @@
     <span class="ld-step-n">1</span>
     <div>
       <p class="ld-step-t">Install the launcher</p>
-      <CommandRow command={runCommand} />
+      <CommandRow command={install.command} />
     </div>
   </li>
   <li>

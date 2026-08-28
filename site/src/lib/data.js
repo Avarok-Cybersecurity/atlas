@@ -74,6 +74,13 @@ export const quickInstall = 'cargo install atlasctl';
 /// Where install.sh is served from. One authority: the join one-liner in
 /// `joincommand.js` builds on this too, and a second copy is how the two drift.
 export const installerUrl = 'https://atlasinference.io/install.sh';
+/// The Windows counterpart. Windows visitors were shown the `curl … | sh` line
+/// too, which cannot run there: PowerShell has no `sh`, and Git Bash reaches
+/// install.sh only to be refused by it.
+export const powershellInstallerUrl = 'https://atlasinference.io/install.ps1';
+/// The shell one-liner, and the prerendered default. `currentInstall()` in
+/// `$lib/install/host.svelte.js` is what a page should print once it knows
+/// which machine it is talking to.
 export const runCommand = `curl -fsSL ${installerUrl} | sh`;
 /// Install the agent as a service — deliberately `install`, not `run`: a bare
 /// `run` dies with the terminal that started it, and the machine silently
