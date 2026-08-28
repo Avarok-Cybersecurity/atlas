@@ -32,7 +32,13 @@ export function nameOf(id, nodes) {
   if (typeof id !== 'string' || id.length === 0) return 'an unknown machine';
   const found = (Array.isArray(nodes) ? nodes : []).find((n) => n?.id === id);
   const name = found?.name ? sanitize(found.name, 63) : '';
-  return name || id.slice(0, 8);
+  // The id is sanitised too. It arrives off the peer wire like the name does,
+  // and only the name was being cleaned — so a fingerprint carrying a bidi
+  // override (U+202E and friends) reordered the refusal line around it, which
+  // is the exact attack `sanitize` exists to stop. A blank or all-whitespace
+  // id then renders as no name at all ("  refused: …"), so fall through.
+  const short = sanitize(id, 63).trim().slice(0, 8);
+  return name || short || 'an unknown machine';
 }
 
 /** Verbatim error text, capped and stripped of anything that could restyle the page. */
@@ -89,7 +95,11 @@ export function refusal(outcome, ctx) {
     // (no `ControlRep` was ever received, so there is no `by`).
     // `outcome.by` second, for a refusal read straight off the peer wire.
     case 'relay_refused': {
-      const who = error.via ?? outcome?.by ?? null;
+      // `||`, not `??`: an empty string is not a relay. A Rust `Default` or a
+      // `Display` slip serialises an absent node as "", which `??` accepts as
+      // present — and the reply's `by`, which does name the relay, is then
+      // discarded in favour of nothing.
+      const who = error.via || outcome?.by || null;
       const relay = who ? nameOf(who, nodes) : 'the relay';
       return {
         text: `${relay} could not reach ${nameOf(error.node, nodes)}: ${verbatim(error.detail)}`,
