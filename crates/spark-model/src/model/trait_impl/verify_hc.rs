@@ -40,8 +40,32 @@
 //!     has no rewind API;
 //!   * PLE host history advances per row with a documented corruption class.
 //!
-//! `snapshot_aux`/`restore_aux` already serialize both carries, but are wired
-//! only into the prefix-cache path.
+//! # The rewind design (step 4), worked out but not yet wired
+//!
+//! The two carries need DIFFERENT mechanisms, which is why one blanket
+//! "restore the snapshot" does not work:
+//!
+//! * **QSA is a mark rewind and is now implemented** —
+//!   `QsaIndexer::rewind_seq_state`. `ingested`/`pooled` are contiguous marks
+//!   and both device buffers are written forward from them, so moving the marks
+//!   back is sufficient; stale bytes past the mark are overwritten by the next
+//!   ingest. Cheap, no replay.
+//! * **PLE needs a SNAPSHOT.** `PleSeqState::conv` is a rolling FP32 device
+//!   convolution state and `history` is a fixed-length window whose oldest
+//!   entries have already rolled off, so neither can be reconstructed by
+//!   truncation. `snapshot_aux`/`restore_aux` already serialize both.
+//!
+//! ★ The placement is the subtle part. Restoring a PRE-verify snapshot leaves
+//! the carries at `seq_len`, but a partial accept lands the sequence at
+//! `seq_len + accepted` — one or more rows short. Taking the snapshot AFTER the
+//! committed row 0 (the real sampled token) and before the DRAFT rows makes
+//! restore land exactly right for the common γ=1 case: accept keeps everything,
+//! reject restores to precisely "token_0 committed, draft discarded". That
+//! argues for running verify as row-0-then-drafts rather than one K-row pass,
+//! and is the open design decision for step 4.
+//!
+//! `snapshot_aux`/`restore_aux` are today wired only into the prefix-cache
+//! path.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
