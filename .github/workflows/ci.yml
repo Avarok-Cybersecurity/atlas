@@ -776,7 +776,7 @@ jobs:
   # the image path depend on them would halt releases on a missing record rather
   # than on a real defect.
   pr-benchmark-gate:
-    name: PR benchmark gate
+    name: PR Benchmark Certifications
     runs-on: ubuntu-latest
     # Runs under `merge_group` too, deliberately. There the checkout is the
     # queue's temporary merge commit (latest main + this PR), and the gate
