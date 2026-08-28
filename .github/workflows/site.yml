@@ -100,6 +100,15 @@ jobs:
             chmod 0755 "static/$f"
           done
 
+      # Before the build, against the atlas-recipes checkout above — the corpus
+      # this deploy actually ships against, not whatever a local mirror is on.
+      # The front page prints `atlasctl run <flagship>` as its headline
+      # instruction, and nothing else ties that name to a recipe that exists.
+      - name: The advertised recipe exists
+        run: bun scripts/check-flagship.mjs
+        env:
+          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+
       - name: Build
         run: bun x --bun vite build
         env:

@@ -30,9 +30,13 @@
 export function detectOs(userAgent, uaDataPlatform) {
   const structured = String(uaDataPlatform ?? '').toLowerCase();
   if (structured) {
-    if (structured.includes('win')) return 'windows';
-    if (structured.includes('mac')) return 'macos';
-    if (structured.includes('linux') || structured.includes('android')) return 'linux';
+    // `startsWith`, and mac first. `'Darwin'.includes('win')` is TRUE, so a
+    // substring test in this order hands a Mac the PowerShell line — from the
+    // one code path that exists to stop exactly that.
+    if (structured.startsWith('mac') || structured.startsWith('darwin')) return 'macos';
+    if (structured.startsWith('win')) return 'windows';
+    if (structured.startsWith('linux') || structured.startsWith('android')) return 'linux';
+    if (structured.startsWith('chrome os') || structured.startsWith('cros')) return 'linux';
   }
   const ua = String(userAgent ?? '');
   // Checked before Windows: "Windows Phone" is gone, but a UA claiming both is

@@ -43,6 +43,13 @@ describe('detectOs', () => {
     expect(detectOs(REAL.windows, 'macOS')).toBe('macos');
   });
 
+  // 'Darwin'.includes('win') is true, so a substring test in the wrong order
+  // hands a Mac the PowerShell line — from the module that exists to stop it.
+  it('does not read a Darwin platform as Windows', () => {
+    expect(detectOs(REAL.macos, 'Darwin')).toBe('macos');
+    expect(detectOs('', 'darwin')).toBe('macos');
+  });
+
   it('answers unknown rather than guessing', () => {
     expect(detectOs('', undefined)).toBe('unknown');
     expect(detectOs(undefined, undefined)).toBe('unknown');
