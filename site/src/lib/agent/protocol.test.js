@@ -68,3 +68,35 @@ test('a version mismatch names the side that is behind', () => {
   // A welcome with no usable versions must not guess a side at random.
   expect(versionAdvice(4, undefined, null).ok).toBe(false);
 });
+
+// An agent that omits a detail field is not hypothetical — an older build
+// simply does not send the newer ones. Interpolating a missing field put the
+// literal "undefined" in front of an operator who is, by definition, already
+// looking at something that went wrong.
+test('a message never shows the word undefined for a field the agent omitted', () => {
+  for (const error of [
+    { code: 'unsupported_protocol' },
+    { code: 'unsupported_protocol', min: 1 },
+    { code: 'unsupported_protocol', min: null, max: null },
+    { code: 'unknown_recipe' },
+    { code: 'not_launchable' },
+    { code: 'docker_unavailable' },
+    { code: 'launch_failed' },
+    { code: 'unknown_recipe', recipe: '' },
+    { code: 'launch_failed', detail: '   ' }
+  ]) {
+    const msg = describeError(error);
+    expect(typeof msg).toBe('string');
+    expect(msg.length).toBeGreaterThan(0);
+    expect(msg).not.toContain('undefined');
+    expect(msg).not.toContain('null');
+  }
+});
+
+test('a detail the agent DID send is still shown', () => {
+  expect(describeError({ code: 'unsupported_protocol', min: 1, max: 2 })).toContain('1–2');
+  expect(describeError({ code: 'unknown_recipe', recipe: 'qwen' })).toContain('qwen');
+  expect(describeError({ code: 'not_launchable', reason: 'no gpu' })).toContain('no gpu');
+  expect(describeError({ code: 'docker_unavailable', detail: 'no socket' })).toContain('no socket');
+  expect(describeError({ code: 'launch_failed', detail: 'oom' })).toContain('oom');
+});
