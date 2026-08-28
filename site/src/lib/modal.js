@@ -34,12 +34,29 @@ const FOCUSABLE =
  *
  * @param {HTMLElement} node
  */
+// Open dialogs, innermost last. Only the top one may steal focus: with two
+// trapped dialogs on screen, every Tab ran BOTH handlers — the first forced
+// its own first-focusable, the second saw focus outside itself and forced
+// ITS first-focusable — so the top dialog's second control was unreachable
+// and Tab looked dead.
+const stack = [];
+
 export function modal(node) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  // `focus()` is a no-op on an element that cannot hold focus, and a
+  // `<div role="dialog">` cannot unless it is given a tabindex. The control
+  // dialogs each wrote `tabindex="-1"` into their own markup; the four this
+  // action was later applied to did not, so the trap silently did nothing —
+  // focus stayed on the opener BEHIND the modal, which is the whole defect
+  // the action exists to prevent. Setting it here fixes every host at once,
+  // and is idempotent for the ones that already declare it.
+  node.tabIndex = -1;
+  stack.push(node);
   node.focus();
 
   function onKeydown(ev) {
     if (ev.key !== 'Tab') return;
+    if (stack[stack.length - 1] !== node) return;
     // Window-level, because a step change can unmount the focused control
     // and drop focus to <body> — a dialog-scoped listener goes deaf exactly
     // then, and the next Tab walks the page behind the modal.
@@ -68,6 +85,8 @@ export function modal(node) {
   return {
     destroy() {
       window.removeEventListener('keydown', onKeydown);
+      const at = stack.lastIndexOf(node);
+      if (at !== -1) stack.splice(at, 1);
       // The opener can be gone — a row that vanished, a button the close
       // re-rendered away. Focusing a detached element is a silent no-op, so
       // the check is only about not throwing on a null.
