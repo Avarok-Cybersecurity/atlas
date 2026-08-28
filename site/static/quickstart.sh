@@ -18,6 +18,10 @@ cat >&2 <<'MSG'
 
       curl -fsSL https://atlasinference.io/install.sh | sh
 
+  Or, on Windows, in PowerShell:
+
+      irm https://atlasinference.io/install.ps1 | iex
+
   Why the change: sparkrun redirects the Atlas recipe registry to a repository
   Atlas does not control, and marks it trusted — which lets recipe-supplied
   shell commands run on your host. If you have sparkrun installed, run
