@@ -56,7 +56,19 @@ export const nvidiaInceptionUrl = 'https://www.nvidia.com/en-us/startups/';
 export const tagline =
   'Pure Rust inference, from the device in your hand to the datacenter rack.';
 
-// --- commands (one flagship recipe, kept in lockstep with static/install.sh)
+// --- commands (one flagship recipe) ------------------------------------------
+//
+// The recipe name has a SECOND home, in another repository: the installer's
+// closing hint, `scripts/install.sh` in Avarok-Cybersecurity/atlas-recipes
+// (`info "    $BIN_NAME run <recipe>"`). A constant cannot span repos, so that
+// copy has to be changed by hand when this one changes.
+//
+// The previous note here said "kept in lockstep with static/install.sh". There
+// is no such file in this repository, so a maintainer following it found
+// nothing and the lockstep it asked for could not happen.
+//
+// `llms.txt` needs no such care: gen-llms.mjs emits `data.runCommandRaw`, so it
+// follows this constant on its own.
 export const flagshipRecipe = 'qwen3.6-35b-a3b-fp8-mtp';
 export const quickInstall = 'cargo install atlasctl';
 /// Where install.sh is served from. One authority: the join one-liner in
@@ -67,8 +79,13 @@ export const runCommand = `curl -fsSL ${installerUrl} | sh`;
 /// `run` dies with the terminal that started it, and the machine silently
 /// leaves the fleet the next time someone closes an ssh session.
 export const startAgentCommand = 'atlasctl agent install';
-export const runCommandRaw =
-  'atlasctl run qwen3.6-35b-a3b-fp8-mtp';
+/// Built from `flagshipRecipe`, not repeating it. The constant existed and was
+/// referenced by nothing while its value sat hardcoded eleven lines below —
+/// so changing the flagship recipe would have updated the obvious place and
+/// left the command the site tells people to copy pointing at the old one.
+/// `installerUrl` above already states this rule: "a second copy is how the two
+/// drift".
+export const runCommandRaw = `atlasctl run ${flagshipRecipe}`;
 
 // --- hardware acknowledgment (modest banner) ---------------------------------
 // --- announcement band (the strip above the hero) ----------------------------
