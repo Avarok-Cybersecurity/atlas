@@ -4,7 +4,7 @@
 //!
 //! # The grant
 //!
-//! The current grant is documented on [`ONE_TIME_AMNESTY`] itself: PR #648's
+//! The current grant is documented on `ONE_TIME_AMNESTY` itself: PR #648's
 //! KV-budget accounting fix, one pinned file. (The prior PR #701 grant —
 //! three coverage-policy boundary files — completed the full lifecycle here:
 //! pinned, re-earned, emptied.)
