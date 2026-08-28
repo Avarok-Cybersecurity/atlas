@@ -4,10 +4,18 @@
 //!
 //! # The grant
 //!
-//! The current grant is documented on `ONE_TIME_AMNESTY` itself: PR #648's
-//! KV-budget accounting fix, one pinned file. (The prior PR #701 grant —
-//! three coverage-policy boundary files — completed the full lifecycle here:
-//! pinned, re-earned, emptied.)
+//! There is no current grant. Two have completed the full lifecycle here —
+//! pinned, re-earned, emptied: PR #701's three coverage-policy boundary files,
+//! and PR #648's KV-budget accounting fix
+//! (`crates/spark-model/src/factory/build.rs`, blob
+//! `01068a74c5068fb65b25b044d7580df3b36e39ed`).
+//!
+//! #648's grant was emptied when every required gate had a record newer than
+//! `AMNESTY_EPOCH` — the ten taken at `0c402bac00` for #754 — which is exactly
+//! the condition `amnesty_expires_once_every_gate_has_a_fresh_record` exists to
+//! detect, and it detected it. The machinery below stays because the next
+//! bootstrap should not have to re-derive it, and an empty table is fail-closed
+//! by construction: every lookup falls through to "not excused".
 //!
 //! A grant covers only the final reviewed blobs of the listed files. It is
 //! the same mechanism accepted for the 2026-08-16 governance bootstrap:
@@ -96,17 +104,7 @@ pub const AMNESTY_EPOCH: u64 = 1_787_875_200;
 /// `excused_by` plus its tests stay exercised so the next bootstrap does not
 /// have to re-derive it. An empty table is fail-closed by construction — every
 /// lookup falls through to "not excused".
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 1] = [AmnestyEntry {
-    path: "crates/spark-model/src/factory/build.rs",
-    // Pinned in the pin phase: `git hash-object crates/spark-model/src/factory/build.rs`
-    // over the fix's final content, immediately before the landing commit.
-    head_blob_oid: "01068a74c5068fb65b25b044d7580df3b36e39ed",
-    grant: "PR #648 KV-budget fix: stop charging the weight loader's transient \
-            (checkpoint staging, ~34 GB on 27B NVFP4) as permanent in the \
-            self-relative (auto) budget — the #281 accounting bug made \
-            decode-floor unpassable at 0.85 util on any box, and the fix would \
-            otherwise invalidate the nine records already earned on this branch",
-}];
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [];
 
 /// Whether the one-time grant excuses `path` at `head`.
 pub fn excused(root: &Path, head: &str, path: &str) -> bool {

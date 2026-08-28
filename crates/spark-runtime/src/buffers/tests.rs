@@ -132,6 +132,21 @@ fn test_buffer_arena_alloc() {
         ("lora_delta", arena.lora_delta(), sizes.lora_delta),
         ("lora_hact", arena.lora_hact(), sizes.lora_hact),
         ("lora_seq_slot", arena.lora_seq_slot(), sizes.lora_seq_slot),
+        // Added by the qwen4_exp work merged alongside this branch. The
+        // assertion below is `alloc_count() == allocated.len()`, so a buffer the
+        // arena allocates and this list omits fails the test rather than being
+        // quietly uncounted — which is how the omission surfaced: 31 allocated,
+        // 29 enumerated.
+        (
+            "hc_lowrank_scratch",
+            arena.hc_lowrank_scratch(),
+            sizes.hc_lowrank_scratch,
+        ),
+        (
+            "qsa_select_scratch",
+            arena.qsa_select_scratch(),
+            sizes.qsa_select_scratch,
+        ),
     ];
     let mut allocated = HashSet::new();
     for (name, ptr, bytes) in buffers {
