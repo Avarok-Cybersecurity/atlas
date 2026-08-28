@@ -40,6 +40,23 @@ impl TransformerModel {
         self.proposer = Some(proposer);
     }
 
+    /// Take ownership of a loaded qwen4_exp MTP draft module.
+    ///
+    /// This is NOT decoration. `DevicePtr` has no `Drop`, so a module that is
+    /// built and then dropped leaks its quantized MoE and attention buffers.
+    /// Nothing reads the field yet: no proposer consumes it, so
+    /// `has_proposer()` stays false and speculation stays off.
+    pub fn set_qwen4_exp_mtp(
+        &mut self,
+        module: Box<crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule>,
+    ) {
+        tracing::info!(
+            "qwen4_exp MTP module installed on the served model (held so its \
+             device buffers are not leaked; no proposer consumes it yet)"
+        );
+        self.qwen4_exp_mtp = Some(module);
+    }
+
     /// Install the fused n-gram input embedding (LongCat family). Once set,
     /// every embedding site routes through it instead of the plain
     /// `embed_tokens` gather.

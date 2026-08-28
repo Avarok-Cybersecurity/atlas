@@ -744,6 +744,9 @@ impl TransformerModel {
             profile,
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
+            // Installed post-construction via `set_qwen4_exp_mtp` (the module
+            // is loaded in `factory::build`, which owns the WeightStore).
+            qwen4_exp_mtp: None,
             mtp_hidden_save,
             verify_hidden_stash,
             mtp_catchup_ring,

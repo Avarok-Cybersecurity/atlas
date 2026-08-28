@@ -204,6 +204,15 @@ pub struct TransformerModel {
     pub(super) suppress_graphs: std::sync::atomic::AtomicBool,
     /// MTP draft proposer (built from mtp_weights at init).
     pub(super) proposer: Option<Arc<dyn DraftProposer>>,
+    /// The qwen4_exp MTP draft module, when one was loaded.
+    ///
+    /// Held so it is not DROPPED: `DevicePtr` has no `Drop`, so a module built
+    /// and let go leaks its quantized MoE and attention buffers (~1.5 GB) for
+    /// the process lifetime. Nothing reads this yet — the proposer that will
+    /// consume it is not written — but the alternative to storing it is a leak,
+    /// not a saving. It is deliberately NOT in `layers`: its body was built at
+    /// `attn_idx = 0` and must never be handed the shared paged KV pool.
+    pub(super) qwen4_exp_mtp: Option<Box<crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule>>,
     /// Dedicated buffer for saving hidden state before MTP head runs.
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
