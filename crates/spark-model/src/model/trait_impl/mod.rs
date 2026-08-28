@@ -392,6 +392,36 @@ impl Model for TransformerModel {
         }
         self.decode_verify_graphed_dispatch(tokens, seq, _stream)
     }
+
+    /// mHC verify advances the QSA carry by K rows; on reject the scheduler's
+    /// generic `seq_len` rewind leaves that carry one row ahead. Restore it.
+    ///
+    /// ⚠ OFF BY DEFAULT (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm) — UNPROVEN.
+    /// The un-restored aux carry was the leading suspect for this model's
+    /// degenerate speculative output. Wiring it up settles that: armed and
+    /// unarmed diverge at the SAME point (~token 2-3 against a coherent
+    /// baseline), with 0 rollback errors and 0 panics. So this is neither the
+    /// fix nor a regression — it ships off because nothing yet demonstrates it
+    /// is needed, and shipping an unexercised rewind on by default would only
+    /// add a suspect. See `verify_hc.rs` for the four-arm table and for why the
+    /// remaining signature (early divergence + leaked special-token ids) points
+    /// at the verify's LOGITS rather than at any carry.
+    fn rollback_verify_rows(&self, seq: &mut SequenceState, rows: usize) -> Result<bool> {
+        if rows == 0 || !self.verify_needs_hc_path() {
+            return Ok(false);
+        }
+        let armed = {
+            static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ARMED.get_or_init(|| {
+                std::env::var("ATLAS_QWEN4EXP_MTP_ROLLBACK").as_deref() == Ok("1")
+            })
+        };
+        if !armed {
+            return Ok(false);
+        }
+        self.restore_verify_aux(seq, 0)?;
+        Ok(true)
+    }
     fn decode_verify_graphed_k3(
         &self,
         tokens: &[u32; 3],

@@ -35,47 +35,95 @@
 //! With the proposer armed (`--speculative --num-drafts 1` +
 //! `ATLAS_QWEN4EXP_MTP_VERIFY=1`), 4K ctx, greedy, vs a same-config baseline:
 //! ```text
-//!   baseline     19.8 tok/s   correct output
-//!   speculative   2.5 tok/s   output degenerates after ~12 tokens
+//!   baseline      19.8 tok/s  (50.5 ms/token)  correct output
+//!   speculative,
+//!     before      ~4.9 tok/s  (205 ms/token)   degenerate output
+//!     after        8.3 tok/s  (120 ms/token)   degenerate output
 //!   errors: 0
 //! ```
 //! The chain is COMPLETE — draft, verify, rollback and both carries run without
-//! a single error, which no earlier revision managed. Two problems remain, and
-//! both were predicted rather than surprising:
+//! a single error, which no earlier revision managed. Two problems remain. The
+//! COST one is now largely understood and 1.7x better (item 2); the CORRECTNESS
+//! one is still open and its leading hypothesis has been disproved (item 1).
 //!
-//! 1. CORRECTNESS. The first ~12 tokens match the baseline exactly, then the
-//!    output collapses. A prefix that is right and then drifts is the signature
-//!    of a per-step state leak, not a wrong combiner — the draft head itself
-//!    measures 86.5-95.5% accept in shadow mode, where nothing is fed back.
-//!    Suspect order: (a) the accepted-row bookkeeping in the scheduler's K=2
-//!    path vs what this verify advances, (b) `rollback_verify_hc` is written but
-//!    NOTHING CALLS IT — the scheduler does its own rewind arithmetic, so a
-//!    rejected draft currently leaves the aux carries un-restored.
-//!
-//! 2. COST — and this is the STRUCTURAL blocker. Measured costs, gamma=1:
+//! 1. CORRECTNESS - STILL OPEN, and the leading hypothesis was TESTED AND
+//!    DISPROVED. Four arms, same prompts, greedy, 4K ctx:
 //!    ```text
-//!      decode step          50.5 ms
-//!      draft forward         2.6 ms   (shadow-on 53.1 vs baseline 50.5)
-//!      verify, 2-row prefill ~395 ms
+//!      spec off (baseline)              "Red, blue, and green."   coherent
+//!      spec on, rollback off            "Red light")..."          diverges ~tok 2-3
+//!      spec on, rollback on             "Redaccion, 1."           diverges ~tok 2
+//!      spec on, rollback on, old MoE    "Redaccion, ..."          diverges ~tok 2
+//!      rollback errors: 0   panics: 0
 //!    ```
-//!    ★ THE DRAFT IS ESSENTIALLY FREE — 5% of a decode. So the economics are
-//!    entirely about verify. Break-even at 91% accept needs
-//!    `draft + verify2 < 95 ms`, i.e. verify under ~92 ms. The mini-prefill is
-//!    4x over that budget, and TWO SEQUENTIAL DECODES (~101 ms) are over it
-//!    too — so a cheaper serial verify does not rescue this either. Only a
-//!    genuinely BATCHED K-row step can pay.
+//!    Read these carefully, because two plausible culprits are ELIMINATED:
 //!
-//!    That is blocked, not merely unoptimised: the GDN prefill path has a
-//!    documented FLOOR ("the fused chunk has a ~1.1-1.3 s floor regardless of
-//!    slice — small-M prefill inefficiency"), so a 2-row prefill pays close to
-//!    what a large chunk pays. And the decode-shaped alternative is exactly
-//!    what `refuse_batched_under_hc` refuses: "the mHC highway has no batched
-//!    GDN path yet" (Avarok #753 item B).
+//!    * The missing rollback was the leading suspect - `rollback_verify_hc` was
+//!      written but NOTHING CALLED IT, so a rejected draft left the aux carries
+//!      un-restored. It is now wired (`Model::rollback_verify_rows`, called from
+//!      the scheduler's K=2 reject branch) and it changes NOTHING: armed and
+//!      unarmed diverge at the same point. It ships OFF
+//!      (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm) as unproven, not as harmful.
+//!    * The small-M FFN substitution below is likewise exonerated - forcing the
+//!      OLD grouped-MoE verify reproduces the identical corruption.
 //!
-//!    CONCLUSION: the draft head is done and cheap; MTP speculation on this
-//!    model cannot pay until a cheap multi-row GDN step under the highway
-//!    exists. That feature also unblocks DFlash and DSpark here — `verify_e.rs`
-//!    routes their GDN body through the same refusing `decode_verify_multi`.
+//!    Note also that the "first ~12 tokens match the baseline" behaviour an
+//!    earlier revision recorded DOES NOT REPRODUCE under this harness; every
+//!    speculative arm diverges within 2-3 tokens. Treat the 12-token figure as
+//!    prompt-specific and do not reason from it.
+//!
+//!    Divergence that early, with leaked raw special-token ids in the output
+//!    (`| 100257`, `<|fim_prefix|>`), is a wrong-LOGITS signature rather than a
+//!    slow state leak - the verify appears to return bad rows from nearly the
+//!    first step, which no rewind can repair. Next suspects, in order: (a) the
+//!    K-row logits the mini-prefill hands back - row indexing/aliasing into the
+//!    logits buffer, the defect class this repo has hit repeatedly; (b) what
+//!    `apply_aux_states` restores, PLE's rolling conv/history window especially,
+//!    since unlike QSA's contiguous marks it cannot be rebuilt by truncation;
+//!    (c) the scheduler's accepted-row bookkeeping vs what this verify advances.
+//!    A row-by-row A/B of verify logits against a serial decode of the same
+//!    tokens would settle (a) immediately and is the cheapest next experiment.
+//!
+//! 2. COST. Measured, gamma=1:
+//!    ```text
+//!      decode step           50.5 ms
+//!      draft forward          2.6 ms   (shadow-on 53.1 vs baseline 50.5)
+//!      verify (before)      ~395 ms  -> 205 ms/token end to end
+//!      verify (after)                   120 ms/token end to end
+//!    ```
+//!    ★ THE DRAFT IS ESSENTIALLY FREE - 5% of a decode. The economics are
+//!    entirely about verify. Break-even at ~91% accept needs
+//!    `draft + verify < 95 ms`.
+//!
+//!    AN EARLIER REVISION OF THIS BLOCK CALLED THAT STRUCTURALLY BLOCKED, on
+//!    the theory that the GDN prefill floor made a 2-row verify cost what a
+//!    large chunk costs. PROFILING DISPROVED IT. Per-layer, per-verify-row:
+//!    ```text
+//!                  before    after
+//!      moe        2700 us    191 us   (14x)
+//!      gdn_block   860 us    862 us   (unchanged)
+//!    ```
+//!    The dominant term was never the GDN. It was the MoE: `forward_prefill`
+//!    routes through the grouped GEMM, which streams every one of the 512
+//!    experts' weights regardless of row count, so ONE row paid nearly what a
+//!    28-row chunk paid (T=16 6.7-9.6 ms, T=28 8.5-12.3 ms -- 1.75x the rows
+//!    for 1.2x the time). Substituting the single-token/K=2/K=3 MoE kernels at
+//!    small row counts (`ATLAS_QWEN4EXP_HC_SMALL_M_FFN`, default on) cut it 14x.
+//!
+//!    NOTE the K=1 arm is the one that matters: `decode_verify_hc` splits a
+//!    verify into row-0-then-drafts, so at gamma=1 BOTH calls arrive as a
+//!    single row and the k2/k3 arms never fire.
+//!
+//!    WHERE IT STANDS: 120 ms/token vs a 50 ms decode -- speculation still does
+//!    not pay, but it is now ~2.4x rather than ~4x, and the remaining cost has
+//!    moved to the GDN: 36 layers x 862 us x 2 rows ~= 62 ms.
+//!
+//!    NEXT LEVER, and it is the same shape as the fix above: at T=1 a "prefill"
+//!    row under the highway is just a decode step, so the hc decode body
+//!    (`qwen3_ssm/trait_decode_hc.rs`) should serve it instead of the chunk
+//!    scan. That is a 1-row substitution -- it does NOT require the batched
+//!    multi-row GDN feature (#753 item B) that the earlier conclusion pinned
+//!    this on. A batched K-row step remains the better endpoint, since two
+//!    serial decodes (~101 ms) still exceed the ~92 ms budget on their own.
 //!
 //! Speculation therefore stays behind BOTH `--speculative` and
 //! `ATLAS_QWEN4EXP_MTP_VERIFY=1`, and neither is a default.
@@ -174,6 +222,29 @@ impl TransformerModel {
     ///
     /// The KV written for the discarded positions is left alone deliberately:
     /// it is past `seq_len` and the next step overwrites it.
+    /// Restore ONLY the auxiliary carries stashed by `decode_verify_hc`, leaving
+    /// `seq_len`/`tokens` to the caller.
+    ///
+    /// The scheduler's reject branch already owns the token/seq_len rewind
+    /// (`seq_len -= 1` + `commit_accepted_prefix`); what it cannot do is rewind
+    /// the QSA `ingested`/`pooled` marks a mini-prefill advanced. Splitting the
+    /// aux half out lets the scheduler call exactly the missing piece instead of
+    /// rewinding `seq_len` a second time.
+    pub(super) fn restore_verify_aux(&self, seq: &mut SequenceState, stream: u64) -> Result<()> {
+        let stash = self
+            .pending_verify_aux
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
+            .take();
+        let Some(blobs) = stash else {
+            anyhow::bail!(
+                "restore_verify_aux with no stashed aux snapshot — decode_verify_hc \
+                 must run first, or the carries cannot be rewound"
+            );
+        };
+        self.apply_aux_states(seq, &blobs, stream)
+    }
+
     pub(super) fn rollback_verify_hc(
         &self,
         seq: &mut SequenceState,
@@ -183,18 +254,7 @@ impl TransformerModel {
         if rows == 0 {
             return Ok(());
         }
-        let stash = self
-            .pending_verify_aux
-            .lock()
-            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
-            .take();
-        let Some(blobs) = stash else {
-            anyhow::bail!(
-                "rollback_verify_hc with no stashed aux snapshot — decode_verify_hc \
-                 must run first, or the carries cannot be rewound"
-            );
-        };
-        self.apply_aux_states(seq, &blobs, stream)?;
+        self.restore_verify_aux(seq, stream)?;
         seq.seq_len = seq.seq_len.saturating_sub(rows);
         let keep = seq.tokens.len().saturating_sub(rows);
         seq.tokens.truncate(keep);

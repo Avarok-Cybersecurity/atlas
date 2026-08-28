@@ -277,6 +277,23 @@ pub fn step_verify_k2(
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
 
+        // Models that verify by K-row mini-prefill (mHC highway) also advanced
+        // auxiliary carries the rewind above does not touch — notably the QSA
+        // `ingested`/`pooled` marks, guarded by a hard `pos == st.ingested`
+        // equality. Without this the desync compounds one row per rejection and
+        // output degenerates a dozen tokens in. No-op (`Ok(false)`) for every
+        // model without such a path.
+        match model.rollback_verify_rows(&mut a.seq, 1) {
+            Ok(_) => {}
+            Err(e) => {
+                // The carries are now untrustworthy; emitting from them would
+                // produce coherent-looking tokens off desynced state.
+                tracing::error!("rollback_verify_rows (reject): {e:#}");
+                a.finished = true;
+                return;
+            }
+        }
+
         let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
