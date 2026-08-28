@@ -193,6 +193,29 @@ pub(super) fn load(
     // `head_dim * 2` read two bytes per element out of a one-byte table: every
     // row came back as the wrong bytes, and once the doubled stride walked past
     // the end of the last file it failed outright.
+    // The shard walk above stops at the FIRST gap, so a checkpoint that lost
+    // `shard_5` in transfer loads as a 5-shard table and serves — until a token
+    // hashes past the rows that exist and `resolve` bails mid-request, at an
+    // arbitrary later time, on a machine nobody is watching. The shipped id
+    // tables say exactly how many rows the hash can produce, so compare them
+    // here, where the answer is a refusal instead of a 500 an hour from now.
+    let rows_total = rows_per as u64 * shards.len() as u64;
+    let highest_id = dims
+        .head_offsets
+        .iter()
+        .zip(dims.head_vocab_sizes.iter())
+        .map(|(off, vocab)| off + vocab)
+        .max()
+        .unwrap_or(0);
+    anyhow::ensure!(
+        highest_id <= rows_total,
+        "PLE: the checkpoint's id tables reach row {highest_id}, but only \
+         {rows_total} rows are present ({} shards x {rows_per}). Either a \
+         `shard_*` tensor is missing from this checkpoint — the walk stops at the \
+         first gap — or the id tables belong to a different conversion.",
+        shards.len()
+    );
+
     let dtype = dtype.context("PLE: no shard dtype")?;
     let elem = match dtype {
         spark_runtime::weights::WeightDtype::BF16 => 2,

@@ -55,6 +55,43 @@ pub fn read_exact_at(f: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Fill as much of `buf` as the file holds, and succeed as long as the first
+/// `needed` bytes arrived. Returns how many bytes were read.
+///
+/// This exists for O_DIRECT block reads at the tail of a file. A block read is
+/// issued in whole blocks, but a file's length is whatever its content is: a
+/// safetensors file is `8 + header + tensors` and nothing pads it to a block. So
+/// the block covering a tensor's LAST rows runs past EOF, the kernel returns a
+/// short read, and [`read_exact_at`] calls that an error -- failing a request
+/// over bytes that were never part of any row. The rows themselves are always
+/// inside the file; only the padding is not.
+///
+/// A short read before `needed` is still an error: that is a real truncation.
+pub fn read_at_least_at(f: &File, buf: &mut [u8], offset: u64, needed: usize) -> io::Result<usize> {
+    debug_assert!(needed <= buf.len());
+    let (mut off, mut done) = (offset, 0usize);
+    while done < buf.len() {
+        let n = read_at(f, &mut buf[done..], off)?;
+        // EOF. Under O_DIRECT this is the only way a block-aligned read comes up
+        // short, and it is expected on the final block of a file.
+        if n == 0 {
+            break;
+        }
+        done += n;
+        off += n as u64;
+    }
+    if done < needed {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "positional read got {done} bytes at offset {offset}, needed {needed} \
+                 — the file is shorter than the data it is supposed to hold"
+            ),
+        ));
+    }
+    Ok(done)
+}
+
 #[cfg(unix)]
 fn write_at(f: &File, buf: &[u8], offset: u64) -> io::Result<usize> {
     use std::os::unix::fs::FileExt;
@@ -82,6 +119,39 @@ fn read_at(f: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tail case this exists for: a file whose length is NOT a multiple of
+    /// the block size, read in whole blocks. `read_exact_at` calls that EOF and
+    /// fails; `read_at_least_at` must succeed as long as the real bytes arrived,
+    /// and must still fail when they did not.
+    #[test]
+    fn a_block_read_past_eof_succeeds_for_the_bytes_that_exist() {
+        let dir = std::env::temp_dir().join(format!("atlas_pio_tail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tail.bin");
+        // 4096 + 288: exactly the shape of the shipped checkpoint's shards, which
+        // end 288 bytes into their final block.
+        let len = 4096usize + 288;
+        std::fs::write(&path, vec![7u8; len]).unwrap();
+        let f = std::fs::File::open(&path).unwrap();
+
+        let mut buf = vec![0u8; 8192];
+        // The row lives at 4096..4096+288 — inside the file, inside a block that
+        // is not.
+        let n = read_at_least_at(&f, &mut buf, 4096, 288).unwrap();
+        assert_eq!(n, 288, "should read to EOF and no further");
+        assert!(buf[..288].iter().all(|&b| b == 7), "the row's bytes must arrive");
+
+        // Demanding more than the file holds is a real truncation and must fail.
+        let e = read_at_least_at(&f, &mut buf, 4096, 289).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+
+        // And the strict reader still refuses the same read, which is the bug.
+        assert!(read_exact_at(&f, &mut buf[..8192], 4096).is_err());
+
+        drop(f);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // Round-trips at a non-zero offset on whichever platform runs the tests:
     // the point is that both arms agree on positional semantics, including

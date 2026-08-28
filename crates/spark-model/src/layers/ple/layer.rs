@@ -426,6 +426,24 @@ impl PleLayer {
                 let bytes: Vec<u8> = slots.iter().flat_map(|s| s.to_le_bytes()).collect();
                 gpu.copy_h2d_async(&bytes, self.slots_dev, stream)?;
                 let va = cache.table_dev_va()?;
+                // ⚠ KNOWN, and narrower than it looks. `end_batch`'s contract is
+                // "call once the gather has been ISSUED", and this releases the
+                // pins here — before `gather_embed` runs the kernel, which under
+                // CUDA graphs is an entire replay later. A `resolve` for the next
+                // chunk could then evict one of these slots and fault different
+                // bytes into the arena from the HOST, which is not stream-ordered,
+                // and the in-flight kernel would gather the wrong row silently.
+                //
+                // Reaching a just-used slot needs the CLOCK hand to clear its
+                // refbit and come all the way around inside one resolve — order
+                // 65_536 misses, against a 32_768-id prefill chunk. Close enough
+                // to matter later, not reachable now. It is left alone tonight
+                // because moving the release into `gather_embed` changes when
+                // pins are dropped on every error path too, and a leaked pin
+                // exhausts the cache — a worse failure than the race it closes,
+                // and not one to introduce unattended. `NgramEmbeddings` (LongCat)
+                // already does it in the documented order; copy that, with a
+                // prefill-scale test, when this is picked up.
                 cache.end_batch();
                 DevicePtr(va)
             }

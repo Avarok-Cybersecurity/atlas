@@ -64,15 +64,27 @@ fn run_one(
     row_stride: usize,
     bounce: &mut AlignedBlock,
 ) -> Result<()> {
-    atlas_tier::pio::read_exact_at(file, bounce.blocks(job.nblocks), job.block_off)
-        .with_context(|| format!("NgramRowCache: read row {}", job.row_id))?;
+    // `read_at_least_at`, not `read_exact_at`: the block covering a row near the
+    // tail of a shard runs past EOF (no safetensors file is block-aligned -- all
+    // 21 shards of the shipped checkpoint end mid-block), and demanding the whole
+    // block failed the request over padding that was never part of a row. The row
+    // itself must arrive in full, which is what `within + row_stride` asserts.
+    atlas_tier::pio::read_at_least_at(
+        file,
+        bounce.blocks(job.nblocks),
+        job.block_off,
+        job.within + row_stride,
+    )
+    .with_context(|| format!("NgramRowCache: read row {}", job.row_id))?;
     // SAFETY: disjoint per-job region inside the live pinned arena.
     let dst = unsafe { std::slice::from_raw_parts_mut(job.dst as *mut u8, row_stride) };
     dst.copy_from_slice(&bounce.blocks(job.nblocks)[job.within..job.within + row_stride]);
 
     if let Some((sblock, swithin, sdst)) = job.scale {
         let sf = scale_file.expect("scale job without scale file");
-        atlas_tier::pio::read_exact_at(sf, bounce.blocks(1), sblock)
+        // Same tail: a per-row scale near the end of its file sits in a block
+        // that runs past EOF.
+        atlas_tier::pio::read_at_least_at(sf, bounce.blocks(1), sblock, swithin + 4)
             .with_context(|| format!("NgramRowCache: read scale {}", job.row_id))?;
         // SAFETY: disjoint 4-byte per-job region in the scale arena.
         let sdst = unsafe { std::slice::from_raw_parts_mut(sdst as *mut u8, 4) };
