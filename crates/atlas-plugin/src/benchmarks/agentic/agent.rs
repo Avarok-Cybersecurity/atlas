@@ -38,8 +38,8 @@ pub mod shell;
 pub mod tools;
 #[path = "trace.rs"]
 pub mod trace;
-pub use path_guard::resolve;
 use history::{assistant_message, call_id, compact, preserve_thinking};
+pub use path_guard::resolve;
 pub(crate) use shell::run_shell;
 pub use shell::truncate;
 pub use tools::{glob_match, tool_schema};
