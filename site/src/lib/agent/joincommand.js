@@ -8,7 +8,7 @@
 // is subtly wrong is worse than no command, because it fails on the far
 // machine where the operator has the least context.
 
-import { installerUrl } from '../data.js';
+import { installerUrl, powershellInstallerUrl } from '../data.js';
 
 /**
  * Build the install-and-join one-liner.
@@ -42,6 +42,33 @@ export function joinCommand(join, grantControl = false) {
   // this machine granting the new one control of itself — is a different
   // decision and is not what "add a machine I can run models on" means.
   return grantControl ? `${base} --grant-control` : base;
+}
+
+/**
+ * The same invitation, for a machine running Windows.
+ *
+ * A separate function and not a flag, because BOTH lines are shown: the
+ * operator is standing at the machine being added and this one cannot see it,
+ * so guessing its platform would be guessing about a computer that is not
+ * here. Showing the wrong single line is a paste that fails on the far machine,
+ * where they have the least context — the exact failure `joinCommand`'s header
+ * already warns about.
+ *
+ * `irm | iex` cannot pass arguments, so this uses `[scriptblock]::Create`,
+ * which is the idiom every Windows installer that takes options uses.
+ *
+ * @param {{code: string, addresses: string[]}|null} join
+ * @returns {string}
+ */
+export function joinCommandPowerShell(join, grantControl = false) {
+  const code = typeof join?.code === 'string' ? join.code.trim() : '';
+  if (!code || !CODE_OK.test(code)) return '';
+  const hosts = dialableAddresses(join?.addresses);
+  if (hosts.length === 0) return '';
+  const base =
+    `& ([scriptblock]::Create((irm ${powershellInstallerUrl}))) ` +
+    `-Join ${code}@${hosts.join(',')}`;
+  return grantControl ? `${base} -GrantControl` : base;
 }
 
 /**

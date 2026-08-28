@@ -3,8 +3,13 @@
 // This string carries a credential to another machine. The cases below are the
 // ones where rendering *something* would be worse than rendering nothing.
 
-import { expect, test } from 'bun:test';
-import { bestAddress, dialableAddresses, joinCommand } from './joincommand.js';
+import { describe, expect, test } from 'bun:test';
+import {
+  bestAddress,
+  dialableAddresses,
+  joinCommand,
+  joinCommandPowerShell
+} from './joincommand.js';
 
 test('an ordinary invitation renders one pasteable line', () => {
   const cmd = joinCommand({ code: '12345678', addresses: ['10.10.10.1'] });
@@ -137,4 +142,40 @@ test('every spelling of loopback is refused, not just 127.0.0.1', () => {
 test('the forms an operator actually needs still render', () => {
   expect(dialableAddresses(['10.10.10.9', '[fe80::1]:34334', 'spark-256a', 'host:9000']))
     .toEqual(['10.10.10.9', '[fe80::1]:34334', 'spark-256a', 'host:9000']);
+});
+
+// A Windows machine could be installed but never INVITED: the only line the UI
+// offered was `curl … | sh`, which does not run there. The fleet-onboarding
+// flow was unavailable on a platform whose binaries we ship.
+describe('joinCommandPowerShell', () => {
+  const join = { code: '12345678', addresses: ['10.10.10.1'] };
+
+  test('emits a line PowerShell can actually run', () => {
+    const cmd = joinCommandPowerShell(join);
+    expect(cmd).not.toContain('curl');
+    expect(cmd).not.toContain('| sh');
+    expect(cmd).toContain('install.ps1');
+    // `irm | iex` cannot take arguments; this is the idiom that can.
+    expect(cmd).toContain('[scriptblock]::Create');
+    expect(cmd).toContain('-Join 12345678@10.10.10.1');
+  });
+
+  test('carries the grant as a visible switch, never implied', () => {
+    expect(joinCommandPowerShell(join)).not.toContain('-GrantControl');
+    expect(joinCommandPowerShell(join, true)).toContain('-GrantControl');
+  });
+
+  // The same refusals as the shell form. Half an invitation looks pasteable
+  // and is not, and this one fails on the far machine.
+  test('renders nothing rather than half a command', () => {
+    expect(joinCommandPowerShell(null)).toBe('');
+    expect(joinCommandPowerShell({ code: '', addresses: ['10.0.0.1'] })).toBe('');
+    expect(joinCommandPowerShell({ code: '12345678', addresses: [] })).toBe('');
+    expect(joinCommandPowerShell({ code: '1234;rm -rf /', addresses: ['10.0.0.1'] })).toBe('');
+  });
+
+  test('names every address, like the shell form', () => {
+    const cmd = joinCommandPowerShell({ code: '12345678', addresses: ['10.10.10.1', '192.168.1.5'] });
+    expect(cmd).toContain('10.10.10.1,192.168.1.5');
+  });
 });
