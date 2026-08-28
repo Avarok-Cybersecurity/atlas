@@ -7,15 +7,47 @@
 // happened. Both were reachable from a malformed frame.
 
 import { expect, test } from 'bun:test';
-import { describeError, looksLikeToken, versionAdvice, PROTOCOL_VERSION } from './protocol.js';
+import {
+  describeError,
+  looksLikeToken,
+  normaliseToken,
+  versionAdvice,
+  PROTOCOL_VERSION,
+} from './protocol.js';
 
 test('a token check answers "no" for junk instead of throwing', () => {
   for (const junk of [undefined, null, 42, {}, [], true]) {
     expect(looksLikeToken(junk)).toBe(false);
   }
   expect(looksLikeToken('a'.repeat(63))).toBe(false);
-  expect(looksLikeToken('A'.repeat(64))).toBe(false); // hex is lowercase
   expect(looksLikeToken(`  ${'a'.repeat(64)}  `)).toBe(true);
+});
+
+test('a token that wrapped in the terminal is still the token', () => {
+  // The agent prints it on a labelled line, so a narrow window wraps it and the
+  // copy carries a newline through the middle of 64 perfect hex characters.
+  // That was refused, while the operator looked straight at what they pasted.
+  const t = 'a'.repeat(64);
+  const wrapped = `${t.slice(0, 40)}\n${t.slice(40)}`;
+  expect(normaliseToken(wrapped)).toBe(t);
+  expect(normaliseToken(`${t.slice(0, 20)} ${t.slice(20)}`)).toBe(t);
+});
+
+test('an uppercased paste is normalised, not refused', () => {
+  // The agent only ever emits lowercase, so uppercase means the paste came
+  // through something that changed it. The BYTES are the same, and the agent
+  // compares the string exactly — so the fix is to fold the case before
+  // sending, not to teach the operator about hex.
+  expect(normaliseToken('A'.repeat(64))).toBe('a'.repeat(64));
+  expect(looksLikeToken('A'.repeat(64))).toBe(true);
+});
+
+test('removing whitespace cannot turn a wrong paste into a right one', () => {
+  // The laxness has to stop somewhere: what survives must still be exactly 64
+  // hex characters, so a short token padded with spaces stays refused.
+  expect(normaliseToken(`  ${'a'.repeat(63)}  `)).toBe(null);
+  expect(normaliseToken(`${'a'.repeat(64)} deadbeef`)).toBe(null);
+  expect(normaliseToken('g'.repeat(64))).toBe(null);
 });
 
 test('a malformed bad_settings frame explains itself instead of throwing', () => {

@@ -42,3 +42,14 @@
   </li>
   {@render after?.()}
 </ol>
+<!--
+  The commonest reason someone is looking at this guide is NOT that they have
+  never installed atlasctl: it is that they installed it, the agent is not
+  running, and this page says it cannot see one. Both commands are safe to
+  re-run and the second starts a stopped agent — but nothing said so, so a
+  returning operator reads step 1 as "the page has not noticed".
+-->
+<p class="ld-steps-note">
+  Already installed? Run them anyway — the first keeps the version you have,
+  and the second starts an agent that is installed but stopped.
+</p>

@@ -78,8 +78,32 @@ export function clearToken() {
 export function looksLikeToken(value) {
   // Every other export here tolerates junk; this one used to throw on a
   // non-string, which is the wrong answer to "does this look like a token".
-  if (typeof value !== 'string') return false;
-  return /^[0-9a-f]{64}$/.test(value.trim());
+  return normaliseToken(value) !== null;
+}
+
+/**
+ * The token a paste MEANT, or `null` if it was not one.
+ *
+ * Whitespace is removed everywhere, not just at the ends. The agent prints the
+ * token on a labelled line, so a narrow terminal wraps it, and the copy carries
+ * a newline through the middle of 64 otherwise-perfect hex characters — which
+ * was rejected as "that does not look like a pairing token" while the operator
+ * looked at the very thing they had pasted.
+ *
+ * Case is folded for the same reason. The agent only ever emits lowercase, so
+ * an uppercase paste came through something that changed it, and refusing it
+ * teaches nothing.
+ *
+ * Removing interior whitespace cannot turn a wrong paste into a right one:
+ * what survives still has to be exactly 64 hex characters.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+export function normaliseToken(value) {
+  if (typeof value !== 'string') return null;
+  const cleaned = value.replace(/\s+/g, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(cleaned) ? cleaned : null;
 }
 
 // Said when the agent reports something this page cannot name. Kept in one

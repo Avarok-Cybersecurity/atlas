@@ -18,7 +18,7 @@ import { joinState } from './joinstate.svelte.js';
 import { AgentClient } from './client.svelte.js';
 import { fleet } from './fleet.svelte.js';
 import * as Placement from './placement.js';
-import { looksLikeToken, storeToken } from './protocol.js';
+import { normaliseToken, storeToken } from './protocol.js';
 
 class LaunchSession {
   /** The one client every card shares. */
@@ -105,13 +105,17 @@ class LaunchSession {
 
   /** Submit a pairing token the user pasted. */
   async pair(token) {
-    const trimmed = token.trim();
-    if (!looksLikeToken(trimmed)) {
+    // The NORMALISED value is what gets stored and sent. Trimming only the ends
+    // and then storing that meant a paste which wrapped in the terminal was
+    // both rejected and — had the check been looser — persisted with the
+    // newline still in it.
+    const clean = normaliseToken(token);
+    if (clean === null) {
       this.detail = 'That does not look like a pairing token — it is 64 hexadecimal characters.';
       return false;
     }
-    storeToken(trimmed);
-    await this.#connect(trimmed);
+    storeToken(clean);
+    await this.#connect(clean);
     return this.phase !== 'pairing';
   }
 
