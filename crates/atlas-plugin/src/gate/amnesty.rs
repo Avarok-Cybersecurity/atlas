@@ -4,14 +4,13 @@
 //!
 //! # The grant
 //!
-//! PR #701 changes the benchmark coverage policy so exact Rust modules proven
-//! to be reachable only through `#[cfg(test)]` no longer invalidate GPU
-//! records. The policy, coverage check, and required-set documentation are all
-//! verdict-defining boundary files, so the change invalidates all ten records
-//! before its narrower rule can help later PRs.
+//! The current grant is documented on [`ONE_TIME_AMNESTY`] itself: PR #648's
+//! KV-budget accounting fix, one pinned file. (The prior PR #701 grant —
+//! three coverage-policy boundary files — completed the full lifecycle here:
+//! pinned, re-earned, emptied.)
 //!
-//! The grant below covers only the final reviewed blobs of those three files.
-//! It is the same mechanism accepted for the 2026-08-16 governance bootstrap:
+//! A grant covers only the final reviewed blobs of the listed files. It is
+//! the same mechanism accepted for the 2026-08-16 governance bootstrap:
 //! a table anyone can read, a pin no later edit can inherit, and a test that
 //! demands removal after all ten records have been re-earned.
 //!
@@ -38,11 +37,11 @@
 //! own landing would then invalidate everything it exists to protect. It is
 //! covered only by `GATE_MACHINERY`'s cargo-test rationale, like the rest of
 //! the gate bookkeeping. Compensations: the table's exact contents are pinned
-//! by `the_table_is_exactly_the_pr_701_grant` (entry count, paths, OID
-//! format), every application is logged loudly by `check.rs`, CODEOWNERS
+//! by `the_table_is_exactly_the_pr_648_grant` (paths, OID format, grant
+//! text), every application is logged loudly by `check.rs`, CODEOWNERS
 //! review covers the gate directory, and the gate already executes
 //! PR-checkout code — so this adds no new attack class, only a reviewed
-//! two-file exception to one rule.
+//! single-file exception to one rule.
 //!
 //! # Removal condition
 //!
