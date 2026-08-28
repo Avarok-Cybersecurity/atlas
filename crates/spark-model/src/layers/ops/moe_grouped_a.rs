@@ -12,6 +12,14 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
+// Explicit `#[path]`: `ops.rs` loads THIS file with one too, so a child
+// module resolves against `ops/` rather than a `moe_grouped_a/` subdirectory.
+#[path = "moe_grouped_a/topk.rs"]
+mod topk;
+// Re-exported, so every existing `ops::moe_topk_*` path still resolves and the
+// split is invisible to callers.
+pub use topk::{moe_topk_sigmoid_batched, moe_topk_softmax_batched, moe_topk_sqrtsoftplus_batched};
+
 /// MoE grouped GEMM: per-expert W4A16 matrix multiply.
 pub fn moe_w4a16_grouped_gemm(
     gpu: &dyn GpuBackend,
@@ -39,104 +47,6 @@ pub fn moe_w4a16_grouped_gemm(
         .arg_u32(num_experts)
         .arg_u32(n)
         .arg_u32(k)
-        .launch(stream)
-}
-
-// ── Grouped MoE prefill ops ─────────────────────────────────────
-
-/// Batched top-K softmax: N tokens in parallel.
-///
-/// Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn moe_topk_softmax_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    gate_logits: DevicePtr,
-    expert_indices: DevicePtr,
-    expert_weights: DevicePtr,
-    num_experts: u32,
-    top_k: u32,
-    normalize: bool,
-    num_tokens: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(gate_logits)
-        .arg_ptr(expert_indices)
-        .arg_ptr(expert_weights)
-        .arg_u32(num_experts)
-        .arg_u32(top_k)
-        .arg_u32(if normalize { 1 } else { 0 })
-        .launch(stream)
-}
-
-/// Batched sigmoid + correction-bias top-K MoE routing.
-///
-/// Kernel: `moe_topk_sigmoid_batched(gate_logits, bias, expert_indices,
-///         expert_weights, num_experts, top_k, normalize, scaling_factor)`
-/// Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn moe_topk_sigmoid_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    gate_logits: DevicePtr,
-    bias: DevicePtr,
-    expert_indices: DevicePtr,
-    expert_weights: DevicePtr,
-    num_experts: u32,
-    top_k: u32,
-    normalize: bool,
-    scaling_factor: f32,
-    num_tokens: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(gate_logits)
-        .arg_ptr(bias)
-        .arg_ptr(expert_indices)
-        .arg_ptr(expert_weights)
-        .arg_u32(num_experts)
-        .arg_u32(top_k)
-        .arg_u32(if normalize { 1 } else { 0 })
-        .arg_f32(scaling_factor)
-        .launch(stream)
-}
-
-/// Batched sqrtsoftplus + correction-bias routing (DeepSeek-V4 prefill).
-///
-/// Same I/O as [`moe_topk_sigmoid_batched`] but scores experts with
-/// `sqrt(log(1+exp(logits)))` (matching the single-token decode path), so
-/// V4 prefill and decode route identically. Grid (N) / Block (256).
-#[allow(clippy::too_many_arguments)]
-pub fn moe_topk_sqrtsoftplus_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    gate_logits: DevicePtr,
-    bias: DevicePtr,
-    expert_indices: DevicePtr,
-    expert_weights: DevicePtr,
-    num_experts: u32,
-    top_k: u32,
-    normalize: bool,
-    scaling_factor: f32,
-    num_tokens: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(gate_logits)
-        .arg_ptr(bias)
-        .arg_ptr(expert_indices)
-        .arg_ptr(expert_weights)
-        .arg_u32(num_experts)
-        .arg_u32(top_k)
-        .arg_u32(if normalize { 1 } else { 0 })
-        .arg_f32(scaling_factor)
         .launch(stream)
 }
 
