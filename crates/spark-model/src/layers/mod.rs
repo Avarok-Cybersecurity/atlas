@@ -17,6 +17,8 @@ pub mod ple;
 pub mod qsa;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;
+pub mod qwen4_exp_mtp;
+pub mod qwen4_exp_mtp_proposer;
 pub mod vision_encoder;
 pub mod w4a16_gemv_tiers;
 

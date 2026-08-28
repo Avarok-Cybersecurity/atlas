@@ -119,6 +119,40 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// Align this layer's aux carry to an ABSOLUTE sequence position.
+    ///
+    /// Used before a verify replays rows the carry may already have ingested.
+    /// Absolute, because the overlap is not a constant — see
+    /// `QsaIndexer::align_seq_state`.
+    fn align_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Roll this layer's aux carry back by `rows`, after a rejected
+    /// speculative draft.
+    ///
+    /// Distinct from `restore_aux` on purpose. `snapshot_aux` returns `None`
+    /// when a sequence has not reached this layer's ingest yet, so a
+    /// snapshot/restore pair CANNOT undo the very first draft — there is
+    /// nothing to restore, and the carry is left ahead of the sequence
+    /// (measured: `QSA: decode at pos 0 but 1 tokens ingested`). A mark rewind
+    /// has no such hole and needs no blob.
+    fn rewind_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Restore the aux state captured by [`Self::snapshot_aux`] on a
     /// prefix-cache hit, BEFORE the resumed prefill runs.
     fn restore_aux(
