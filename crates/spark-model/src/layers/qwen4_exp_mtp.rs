@@ -34,22 +34,36 @@
 //! so no reference activations can be generated. The argument above is
 //! structural, not numerical.
 //!
-//! # STATUS: NOT WORKING. Three open defects, in the order they must be fixed.
+//! # STATUS: NOT WORKING. The SHARING MODEL is wrong — do not keep patching.
 //!
-//! **1. The body forward corrupts the target.** Bisect via
-//! `ATLAS_QWEN4EXP_MTP_SHADOW_STAGE` (measured, 250-token greedy completion
-//! against a shadow-off control):
+//! **1. The body forward corrupts the target, and buffer-by-buffer isolation
+//! does NOT fix it.** Bisect via `ATLAS_QWEN4EXP_MTP_SHADOW_STAGE` (250-token
+//! greedy completion against a shadow-off control):
 //! ```text
 //!   observe  -> output matches control exactly      INERT
 //!   combine  -> output matches control exactly      INERT
 //!   body     -> degenerate / empty, watchdog fires  CORRUPTS
 //! ```
-//! So the combiner and the highway save/restore are proven clean, and the draft
-//! BODY mutates state the target still needs. One cause was found and fixed —
-//! `hc_streams` is FP32 (`m*hc_mult*h*4`), and sizing the save/restore as BF16
-//! restored only HALF the highway — but that fix changed the SYMPTOM (degenerate
-//! text -> empty text) without curing it. At least one more shared-state
-//! dependency remains unidentified. Do not enable `body`/`full`.
+//! Four separate causes were found and fixed, and the corruption SURVIVED all
+//! of them:
+//!   - `hc_streams` is FP32 (`m*hc_mult*h*4`); a BF16-sized save/restore covered
+//!     only half the highway. Fixed — the buffer diff now shows hc_streams
+//!     unchanged across the body, so that restore is proven correct.
+//!   - `head_scratch` was under-allocated by `hc_lowrank*4` = 1280 B, because
+//!     `hc_head_lowrank`'s split layout is `t*(hc*h + rank)*4`, not `hc*h*4`.
+//!     A real heap overflow. Fixed.
+//!   - a local `MTP_META_OFFSET = 40960` sat inside the target's metadata block
+//!     table region; now uses the shared 49152. Latent at long context. Fixed.
+//!   - `hc_post` / `hc_lowrank_scratch` / `norm_output` (every buffer the diff
+//!     named) are now saved and restored around the body. Fixed.
+//!
+//! ★ CONCLUSION: the corruption is NOT in `ctx.buffers`. Enumerating buffers to
+//! save is the wrong strategy — the draft body inherits the target's whole
+//! `ForwardContext` via `..*ctx` and shares everything reachable through it,
+//! including state that is not a buffer this file can name. The sound fix is
+//! ISOLATION BY CONSTRUCTION: give the draft its OWN `BufferArena` (sized for
+//! T=1, a few MB) and build its `ForwardContext` from that, so it cannot reach
+//! the target's state at all. Do that before spending another round here.
 //!
 //! **2. The combiner is dtype-mismatched.** Same root discovery: the highway is
 //! FP32, but `rms_norm_strided` / `dense_gemv` / `residual_add` are BF16 ops, so
@@ -79,10 +93,19 @@ use crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule;
 use crate::weight_map::DenseWeight;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 
-/// Scratch offset for the MTP body's attention metadata. Mirrors the
-/// DeepSeek-V4 head's use of a DISTINCT offset so the draft forward does not
-/// clobber the target metadata the main decode wrote at 32768.
-const MTP_META_OFFSET: usize = 40960;
+// Use the SHARED constant (49152), not a local one. An earlier local 40960 sat
+// INSIDE the region the target's metadata slab reserves for its block table
+// (32768 + 256 + 4 bytes/block ⇒ 49152 covers 4096 blocks = 65536 tokens). It
+// happens not to collide at short contexts — the target only fills as many
+// entries as it has blocks — which is exactly what makes it the kind of latent
+// bug that shows up first at long context. mtp_meta.rs says the constant "wanted
+// to be shared rather than mirrored"; this is the third caller.
+use crate::layers::mtp_meta::MTP_META_OFFSET;
+
+/// Bytes of `hc_post` (and `hc_comb`) saved around the draft body. Both are
+/// `m * hc_mult * {1,hc_mult} * 4`; the draft is a single row, so a small fixed
+/// slab covers the rows it can touch.
+const HC_POST_SAVE_BYTES: usize = 256;
 
 /// Per-sequence MTP draft state.
 pub struct Qwen4ExpMtpState {
@@ -111,6 +134,14 @@ struct MtpBuffers {
     residual: DevicePtr,
     /// `[hc_mult * hidden]` low-rank head scratch.
     head_scratch: DevicePtr,
+    /// Save slots for the OTHER shared buffers the draft body writes. The
+    /// buffer diff (`ATLAS_QWEN4EXP_MTP_DIFF=1`) named exactly these three, and
+    /// reasoning that they "look transient" is what kept the corruption alive
+    /// through several rounds — so they are saved and restored like the highway
+    /// rather than argued about.
+    hc_post_save: DevicePtr,
+    hc_lowrank_save: DevicePtr,
+    norm_output_save: DevicePtr,
     /// `[vocab]` BF16. The shadow step reuses the TARGET's `lm_head` (so the
     /// draft's logits go through the same quantization ladder the real token
     /// did), and that writes `buffers.logits()` — the buffer the scheduler is
@@ -233,7 +264,15 @@ impl Qwen4ExpMtpHead {
                 embed_proj: gpu.alloc(row)?,
                 body_scratch: gpu.alloc(row)?,
                 residual: gpu.alloc(row)?,
-                head_scratch: gpu.alloc(streams_bytes.max(row * 4))?,
+                // `hc_head_lowrank`'s decode-split layout is
+                // `t * (hc_mult*h + hc_lowrank) * 4` — normed FP32 [t, hc*H]
+                // THEN low FP32 [t, rank]. Sizing this `hc*h*4` (the streams
+                // alone) under-allocates by `rank*4` = 1280 B and the collapse
+                // writes past the end of the allocation. Measured, not guessed.
+                head_scratch: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
+                hc_post_save: gpu.alloc(HC_POST_SAVE_BYTES)?,
+                hc_lowrank_save: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
+                norm_output_save: gpu.alloc(row)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
             // Atlas's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
@@ -350,6 +389,39 @@ impl Qwen4ExpMtpHead {
         // clean precisely BECAUSE it only ever touched, and then restored, that
         // same first half.
         let hc_bytes = hc as usize * h as usize * 4;
+
+        // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
+        // The bisect proved the BODY forward dirties state the target still
+        // needs, but not WHICH buffer. Rather than keep guessing, fingerprint
+        // the shared buffers either side of the call and name the ones that
+        // changed. Taken BEFORE the combiner runs, so the baseline is the
+        // TARGET's state — an earlier version sampled it after the combiner had
+        // already written hc_streams, which made hc_streams a false positive.
+        let diff = std::env::var("ATLAS_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
+        let probes: Vec<(&str, DevicePtr, usize)> = if diff {
+            ctx.gpu.synchronize(stream).ok();
+            vec![
+                ("hc_streams", ctx.buffers.hc_streams(), hc_bytes.min(4096)),
+                ("hc_post", ctx.buffers.hc_post(), 256),
+                ("hc_comb", ctx.buffers.hc_comb(), 256),
+                ("hc_lowrank_scratch", ctx.buffers.hc_lowrank_scratch(), 4096),
+                ("hidden_states", ctx.buffers.hidden_states(), row),
+                ("residual", ctx.buffers.residual(), row),
+                ("norm_output", ctx.buffers.norm_output(), row),
+                (
+                    "scratch@target_meta",
+                    ctx.buffers.scratch().offset(32768),
+                    4096,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        let before: Vec<u64> = probes
+            .iter()
+            .map(|(_, p, n)| crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2))
+            .collect();
+
         let body_streams = ctx.buffers.hc_streams();
         ctx.gpu
             .copy_d2d_async(target_streams, self.buf.streams, hc_bytes, stream)?;
@@ -437,6 +509,26 @@ impl Qwen4ExpMtpHead {
             return Ok(());
         }
 
+        // ★ SAVE the other shared buffers the body writes. Named by the buffer
+        // diff, not by reasoning: hc_post, hc_lowrank_scratch, norm_output.
+        let lr_bytes = (hc as usize * h as usize + ctx.config.hc_lowrank.max(1)) * 4;
+        let saves: [(DevicePtr, DevicePtr, usize); 3] = [
+            (
+                ctx.buffers.hc_post(),
+                self.buf.hc_post_save,
+                HC_POST_SAVE_BYTES,
+            ),
+            (
+                ctx.buffers.hc_lowrank_scratch(),
+                self.buf.hc_lowrank_save,
+                lr_bytes,
+            ),
+            (ctx.buffers.norm_output(), self.buf.norm_output_save, row),
+        ];
+        for (src, dst, n) in saves {
+            ctx.gpu.copy_d2d_async(src, dst, n, stream)?;
+        }
+
         // ── 3. Body decode against the module's OWN cache ──
         let mut kv_cache = self.kv_cache.lock().expect("mtp kv cache poisoned");
         let bs = kv_cache.block_size();
@@ -504,6 +596,9 @@ impl Qwen4ExpMtpHead {
         if body_res.is_err() {
             ctx.gpu
                 .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
+            for (dst, src, n) in saves {
+                ctx.gpu.copy_d2d_async(src, dst, n, stream)?;
+            }
             body_res?;
         }
 
@@ -540,6 +635,28 @@ impl Qwen4ExpMtpHead {
         // exactly how this bug first showed up (a truncated, rewritten answer).
         ctx.gpu
             .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
+        // …and the other three, same contract: restore before any return.
+        for (dst, src, n) in saves {
+            ctx.gpu.copy_d2d_async(src, dst, n, stream)?;
+        }
+
+        if diff {
+            ctx.gpu.synchronize(stream).ok();
+            let changed: Vec<&str> = probes
+                .iter()
+                .zip(before.iter())
+                .filter(|((_, p, n), b)| {
+                    crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2) != **b
+                })
+                .map(|((name, _, _), _)| *name)
+                .collect();
+            tracing::info!(
+                "qwen4_exp MTP diff: buffers changed across the draft body = {:?} \
+                 (hc_streams should NOT appear — it is restored above; anything \
+                 else that appears is shared state the target still needs)",
+                changed
+            );
+        }
         collapse?;
 
         state.seq_len += 1;
