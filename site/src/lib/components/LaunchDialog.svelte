@@ -14,14 +14,13 @@
 
   import { launch } from '$lib/agent/session.svelte.js';
 
-  import { copyText } from '$lib/clipboard.js';
   import InstallSteps from './InstallSteps.svelte';
+  import CommandRow from './CommandRow.svelte';
   import { describe } from '$lib/agent/placement.js';
   import { joinCommand } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
 
   let tokenInput = $state('');
-  let copied = $state('');
 
   // Derived once. Built three times inline before — in the `{#if}`, the click
   // handler and the label — so the guard and the thing being rendered could
@@ -31,12 +30,6 @@
   let dialogEl = $state(null);
 
   // `install`, not `run`: `run` holds the terminal and the agent dies with it.
-
-  async function copy(text) {
-    if ((await copyText(text)) !== 'copied') return;
-    copied = text;
-    setTimeout(() => { if (copied === text) copied = ''; }, 1600);
-  }
 
   // A loopback connection either answers or is refused within a few
   // milliseconds, so rendering the "looking for your agent" panel the instant
@@ -143,12 +136,7 @@
             machine, once, for {Math.round((launch.join?.expiresInS ?? 600) / 60)} minutes.
           </p>
           {#if joinCmd}
-            <div class="ld-cmd ld-place-cmd">
-              <code class="mono">{joinCmd}</code>
-              <button type="button" class="cmd-copy" onclick={() => copy(joinCmd)}>
-                {copied === joinCmd ? 'Copied' : 'Copy'}
-              </button>
-            </div>
+            <CommandRow command={joinCmd} extra="ld-place-cmd" />
             <p class="ld-watching">
               <span class="ld-pulse" aria-hidden="true"></span>
               Watching for it — this dialog will continue on its own.
@@ -213,12 +201,7 @@
             The agent prints a token when it starts. Paste it once so it knows
             this browser is yours.
           </p>
-          <div class="ld-cmd">
-            <code class="mono">atlasctl agent token</code>
-            <button type="button" class="cmd-copy" onclick={() => copy('atlasctl agent token')}>
-              {copied === 'atlasctl agent token' ? 'Copied' : 'Copy'}
-            </button>
-          </div>
+          <CommandRow command="atlasctl agent token" />
           <form onsubmit={submitToken}>
             <input
               class="mono ld-token"
