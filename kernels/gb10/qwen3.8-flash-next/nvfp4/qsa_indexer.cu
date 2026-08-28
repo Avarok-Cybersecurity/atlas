@@ -304,6 +304,121 @@ extern "C" __global__ void qsa_score_rows(
 // and rope is baked into cached K, so this equals the reference mask.
 // Grid: (rows, nq)  Block: (256,1,1) = 8 warps, warp-striped online softmax.
 #define QSA_PA_WARPS 8
+// Tensor-core `qsa_score_rows`, split-q. Same result, ~14x faster.
+//
+// The shipped kernel above launches ONE CTA PER (row, block) — 57.3M of them
+// at 28K context — and inside each runs four sequential 128-thread block
+// reductions with only lane 0 accumulating: measured 1.3 TFLOP/s, 13.1% of
+// prefill (nsys, 2026-08-27). But
+//     scores[r,b] = rsqrt(hd) * SUM_h relu(q[r,h,:] . k[b,:])
+// is four matmuls Q_h[rows,hd] x K^T[hd,blocks] with a ReLU between the
+// product and the head-sum, so each head keeps its own accumulator.
+//
+// PRECISION — why q is SPLIT. block_keys are already bf16, hence exact under
+// a bf16 mma; only q (f32) would lose mantissa. A plain bf16 cast measured a
+// worst relative error of 66 and dropped up to 16 of 2048 selected blocks per
+// row — the ReLU sits at zero, which is exactly where cancellation bites.
+// Splitting ONLY q,
+//     q ~ q_hi + q_lo,  q_hi = bf16(q),  q_lo = bf16(q - q_hi)
+//     q.k = q_hi.k + q_lo.k        (two mma into the same f32 accumulator)
+// carries ~17 mantissa bits of q for 2x the mma work: worst relative error
+// 2.3e-3 and IDENTICAL top-2048 selection on every sampled row. Selection
+// identity — not bit-exactness — is the correctness bar here, because this
+// feeds a top-k and float addition is not associative anyway.
+//
+// Grid: (ceil(rows/16), ceil(blocks/64))  Block: (256) = 8 warps, one warp
+// per 8-block n-tile.
+#define QSA_TC_TR 16
+#define QSA_TC_TB 64
+#define QSA_TC_H 4
+#define QSA_TC_HD 128
+#define QSA_TC_APAD 8
+#define QSA_TC_BPAD 8
+extern "C" __global__ __launch_bounds__(256) void qsa_score_rows_tc(
+    const float* __restrict__ q,                // [rows, H, HD] f32
+    const __nv_bfloat16* __restrict__ block_keys,
+    float* __restrict__ scores,                 // [rows, score_stride]
+    const unsigned int first_pos,
+    const unsigned int score_stride,
+    const unsigned int ratio,
+    const unsigned int n_blocks
+) {
+    const int TR = QSA_TC_TR, TB = QSA_TC_TB, H = QSA_TC_H, HD = QSA_TC_HD;
+    __shared__ __nv_bfloat16 sqh[QSA_TC_TR][QSA_TC_H][QSA_TC_HD + QSA_TC_APAD];
+    __shared__ __nv_bfloat16 sql[QSA_TC_TR][QSA_TC_H][QSA_TC_HD + QSA_TC_APAD];
+    __shared__ __nv_bfloat16 skT[QSA_TC_HD][QSA_TC_TB + QSA_TC_BPAD];
+
+    const unsigned int r0 = blockIdx.x * TR, b0 = blockIdx.y * TB;
+    const unsigned int tidx = threadIdx.x, NT = 256;
+
+    for (unsigned int i = tidx; i < (unsigned int)(TR * H * HD); i += NT) {
+        unsigned int rr = i / (H * HD), rem = i % (H * HD);
+        float v = q[(size_t)(r0 + rr) * H * HD + rem];
+        __nv_bfloat16 hi = __float2bfloat16(v);
+        __nv_bfloat16 lo = __float2bfloat16(v - __bfloat162float(hi));
+        sqh[rr][rem / HD][rem % HD] = hi;
+        sql[rr][rem / HD][rem % HD] = lo;
+    }
+    for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
+        unsigned int bb = i / HD, dd = i % HD;
+        skT[dd][bb] = (b0 + bb) < n_blocks ? block_keys[(size_t)(b0 + bb) * HD + dd]
+                                           : __float2bfloat16(0.0f);
+    }
+    __syncthreads();
+
+    const unsigned int warp = tidx >> 5, lane = tidx & 31u;
+    const unsigned int gid = lane >> 2, tid = lane & 3u;
+    float acc[QSA_TC_H][4];
+#pragma unroll
+    for (int h = 0; h < H; h++) { acc[h][0]=0.f; acc[h][1]=0.f; acc[h][2]=0.f; acc[h][3]=0.f; }
+
+    const unsigned short* sB = (const unsigned short*)skT;
+    const int b_stride = TB + QSA_TC_BPAD;
+    const int a_row = H * (HD + QSA_TC_APAD);
+#pragma unroll
+    for (int h = 0; h < H; h++) {
+        const unsigned short* sAh = (const unsigned short*)&sqh[0][h][0];
+        const unsigned short* sAl = (const unsigned short*)&sql[0][h][0];
+#pragma unroll
+        for (int d0 = 0; d0 < HD; d0 += 16) {
+            unsigned int fr0 = gid, fr1 = gid + 8;
+            unsigned int fc0 = d0 + tid * 2, fc1 = fc0 + 8;
+            unsigned int nc = warp * 8 + gid;
+            unsigned int k0 = d0 + tid * 2, k1 = k0 + 8;
+            unsigned int br0 = ((unsigned int)sB[(k0+1)*b_stride+nc]<<16) | (unsigned int)sB[k0*b_stride+nc];
+            unsigned int br1 = ((unsigned int)sB[(k1+1)*b_stride+nc]<<16) | (unsigned int)sB[k1*b_stride+nc];
+#pragma unroll
+            for (int part = 0; part < 2; part++) {
+                const unsigned short* sA = part ? sAl : sAh;
+                unsigned int a0 = ((unsigned int)sA[fr0*a_row+fc0+1]<<16) | (unsigned int)sA[fr0*a_row+fc0];
+                unsigned int a1 = ((unsigned int)sA[fr1*a_row+fc0+1]<<16) | (unsigned int)sA[fr1*a_row+fc0];
+                unsigned int a2 = ((unsigned int)sA[fr0*a_row+fc1+1]<<16) | (unsigned int)sA[fr0*a_row+fc1];
+                unsigned int a3 = ((unsigned int)sA[fr1*a_row+fc1+1]<<16) | (unsigned int)sA[fr1*a_row+fc1];
+                asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+                    :"=f"(acc[h][0]),"=f"(acc[h][1]),"=f"(acc[h][2]),"=f"(acc[h][3])
+                    :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(br0),"r"(br1),
+                     "f"(acc[h][0]),"f"(acc[h][1]),"f"(acc[h][2]),"f"(acc[h][3]));
+            }
+        }
+    }
+
+    const float inv = rsqrtf((float)HD);
+#pragma unroll
+    for (int part = 0; part < 2; part++) {
+        unsigned int r = r0 + gid + part * 8;
+        unsigned int complete = (first_pos + r + 1) / ratio;
+#pragma unroll
+        for (int cc = 0; cc < 2; cc++) {
+            unsigned int b = b0 + warp * 8 + tid * 2 + cc;
+            if (b >= n_blocks) continue;
+            float sum = 0.f;
+#pragma unroll
+            for (int h = 0; h < H; h++) sum += fmaxf(acc[h][part*2+cc], 0.0f);
+            scores[(size_t)r * score_stride + b] = (b >= complete) ? -1e30f : sum * inv;
+        }
+    }
+}
+
 extern "C" __global__ void qsa_prefill_attn(
     const __nv_bfloat16* __restrict__ q,        // [rows, nq, hd] (roped)
     const __nv_bfloat16* __restrict__ k_cache,  // paged NHD

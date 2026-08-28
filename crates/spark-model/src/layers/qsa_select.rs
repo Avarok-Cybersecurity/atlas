@@ -186,21 +186,46 @@ impl QsaIndexer {
                 stream,
             )?;
             let n_blocks_max = (first_pos + rows) / ratio; // last row's complete
-            ops::qsa_score_rows(
-                gpu,
-                self.k_score_rows_k,
-                qpost,
-                st.block_keys,
-                scores,
-                rows as u32,
-                n_blocks_max as u32,
-                first_pos as u32,
-                stride as u32,
-                self.ratio,
-                self.n_heads,
-                self.hd,
-                stream,
-            )?;
+            // Tensor-core scorer when the target ships it. ~14x measured on
+            // the production shape with IDENTICAL top-k selection (the bar
+            // that matters — this feeds a top-k, and the scalar path's own
+            // tree reduction is not bit-reproducible either).
+            // ATLAS_QSA_SCORE_SCALAR=1 forces the original.
+            let tc = self.k_score_rows_tc_k.0 != 0
+                && self.n_heads == 4
+                && self.hd == 128
+                && std::env::var("ATLAS_QSA_SCORE_SCALAR").as_deref() != Ok("1");
+            if tc {
+                ops::qsa_score_rows_tc(
+                    gpu,
+                    self.k_score_rows_tc_k,
+                    qpost,
+                    st.block_keys,
+                    scores,
+                    rows as u32,
+                    n_blocks_max as u32,
+                    first_pos as u32,
+                    stride as u32,
+                    self.ratio,
+                    stream,
+                )?;
+            } else {
+                ops::qsa_score_rows(
+                    gpu,
+                    self.k_score_rows_k,
+                    qpost,
+                    st.block_keys,
+                    scores,
+                    rows as u32,
+                    n_blocks_max as u32,
+                    first_pos as u32,
+                    stride as u32,
+                    self.ratio,
+                    self.n_heads,
+                    self.hd,
+                    stream,
+                )?;
+            }
 
             // Host top-k per row (sync D2H drains the stream first). Torch
             // tie-break: larger score first, lower index on ties.

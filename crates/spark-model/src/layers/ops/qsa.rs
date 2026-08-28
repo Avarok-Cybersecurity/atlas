@@ -170,6 +170,40 @@ pub fn qsa_qprep_rows(
         .launch(stream)
 }
 
+/// Tensor-core `qsa_score_rows` (split-q). Geometry differs from the
+/// per-(row,block) kernel: one CTA covers 16 rows x 64 blocks with 8 warps,
+/// so the launch count drops from rows*blocks to ~1/1000th of that.
+///
+/// Measured 39.010 → 1.831 ms average per call under nsys on a 28K prefill
+/// (qwen4_exp, GB10): ~21x. Selection-equivalent, not bit-exact — split-q
+/// carries ~17 mantissa bits, and the consumer is a top-k.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_score_rows_tc(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    block_keys: DevicePtr,
+    scores: DevicePtr,
+    rows: u32,
+    n_blocks_max: u32,
+    first_pos: u32,
+    score_stride: u32,
+    ratio: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows.div_ceil(16), n_blocks_max.div_ceil(64), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(block_keys)
+        .arg_ptr(scores)
+        .arg_u32(first_pos)
+        .arg_u32(score_stride)
+        .arg_u32(ratio)
+        .arg_u32(n_blocks_max)
+        .launch(stream)
+}
+
 /// Stage 2: per-row block scores, -inf beyond each row's complete count.
 #[allow(clippy::too_many_arguments)]
 pub fn qsa_score_rows(

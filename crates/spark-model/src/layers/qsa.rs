@@ -82,6 +82,9 @@ pub struct QsaIndexer {
     k_gather_k: KernelHandle,
     k_qprep_rows_k: KernelHandle,
     k_score_rows_k: KernelHandle,
+    /// Tensor-core split-q scorer. `try_kernel` — absent on any target
+    /// whose shadow predates it, which falls back to the scalar path.
+    k_score_rows_tc_k: KernelHandle,
     k_prefill_attn_k: KernelHandle,
 
     qk_scratch: DevicePtr, // [INGEST_SLAB, (n_heads+1)*hd] BF16
@@ -152,6 +155,7 @@ impl QsaIndexer {
             k_gather_k: gpu.kernel("qsa_indexer", "qsa_gather")?,
             k_qprep_rows_k: gpu.kernel("qsa_indexer", "qsa_qprep_rows")?,
             k_score_rows_k: gpu.kernel("qsa_indexer", "qsa_score_rows")?,
+            k_score_rows_tc_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_score_rows_tc"),
             k_prefill_attn_k: gpu.kernel("qsa_indexer", "qsa_prefill_attn")?,
             qk_scratch: gpu.alloc(INGEST_SLAB * qk_width * 2)?,
             q_post: gpu.alloc(n_heads * hd * 4)?,
