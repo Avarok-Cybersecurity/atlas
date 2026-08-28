@@ -100,6 +100,15 @@ pub fn build_model(
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
 
+    // Entry free-memory sample for the KV-budget transient correction below.
+    // Taken BEFORE the LoRA load and buffer arena — the delta from here to
+    // the budget-time sample then isolates exactly what build_model itself
+    // allocated, with the weight loader's transient footprint present in
+    // BOTH samples so it cancels out. The LoRA-ordering invariant in the
+    // next comment is about the BUDGET sample and is unaffected: LoRA still
+    // lands between these two samples and is therefore charged.
+    let build_entry_free = gpu.free_memory().ok();
+
     // ── LoRA adapter load (pre-arena, pre-KV-sizing) ──
     // MUST run before `BufferArena::new` and the `gpu.free_memory()`
     // snapshot below: the pool allocation then lands in `used_so_far`, so
@@ -389,22 +398,51 @@ pub fn build_model(
     } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
         // AUTO: bytes this process consumed since context init.
         let atlas_own = baseline.saturating_sub(actual_free);
-        // Sanity-gate: baseline must be ≥ free-now, atlas_own positive and no
-        // larger than total used (co-tenants can't be negative). If a co-tenant
-        // *freed* memory during our load, baseline > free-now still holds and
-        // atlas_own just slightly overcounts (conservative — fine). If the
-        // numbers are implausible, fall back to raw used_so_far.
-        if atlas_own > 0 && atlas_own <= used_so_far {
+        // The free-delta above charges the weight loader's TRANSIENT
+        // footprint — checkpoint mapping/staging still resident at this
+        // instant — as if it were permanent. On a 27B NVFP4 load the delta
+        // reads ~61 GB while the process's steady state is ~27 GB; the
+        // difference is the size of the safetensors file, released once the
+        // loader settles, and it is charged here regardless of page-cache
+        // warmth. The footprint that actually PERSISTS is knowable without
+        // heuristics:
+        //   * `store.total_bytes()` — every weight tensor on the GPU;
+        //   * entry-free − free-now — what build_model itself allocated
+        //     (LoRA pool + buffer arena), transient-cancelling because the
+        //     transient is present in both samples.
+        // Charge the smaller of measured and known: the delta can only
+        // OVERcount (transients), the known sum can only UNDERcount (CUDA
+        // context overhead), and the `.min(actual_free − reserve)` clamp
+        // below still guarantees a physical fit at allocation time either
+        // way.
+        let build_own = build_entry_free
+            .map(|e| e.saturating_sub(actual_free))
+            .unwrap_or(0);
+        let known_own = store.total_bytes().saturating_add(build_own);
+        let settled = atlas_own.min(known_own);
+        // Sanity-gate: baseline must be ≥ free-now, the charge positive and
+        // no larger than total used (co-tenants can't be negative). If a
+        // co-tenant *freed* memory during our load, baseline > free-now
+        // still holds and the charge just slightly overcounts (conservative
+        // — fine). If the numbers are implausible, fall back to raw
+        // used_so_far.
+        if settled > 0 && settled <= used_so_far {
             tracing::info!(
                 "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
-                 {:.1} GB = Atlas-own {:.1} GB; co-tenants {:.1} GB excluded \
+                 {:.1} GB = {:.1} GB measured; charging settled Atlas-own {:.1} GB \
+                 (weights {:.1} GB + build allocs {:.1} GB, loader transient \
+                 {:.1} GB released from the charge); co-tenants {:.1} GB excluded \
                  (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(baseline),
                 gib(actual_free),
                 gib(atlas_own),
-                gib(used_so_far - atlas_own),
+                gib(settled),
+                gib(store.total_bytes()),
+                gib(build_own),
+                gib(atlas_own.saturating_sub(settled)),
+                gib(used_so_far - atlas_own.min(used_so_far)),
             );
-            used_so_far = atlas_own;
+            used_so_far = settled;
         } else {
             tracing::warn!(
                 "KV budget auto-measure implausible (baseline {:.1} GB, free-now \

@@ -133,7 +133,14 @@ impl W4a16BatchmTiers {
     pub fn resolve(gpu: &dyn GpuBackend) -> Self {
         let mut handles = [KernelHandle(0); W4A16_BATCHM_WIDTHS.len()];
         for (h, w) in handles.iter_mut().zip(W4A16_BATCHM_WIDTHS) {
-            *h = super::try_kernel(gpu, "w4a16_gemv", &format!("w4a16_gemv_batch{w}"));
+            *h = if w == 8 {
+                // Prefer the register-tiled rt2 batch8 GEMV (#648) when the
+                // target ships it; ATLAS_NO_BATCH8_RT=1 reverts to the plain
+                // tier. Miss falls through to `w4a16_gemv_batch8` inside.
+                super::batch8_kernel(gpu)
+            } else {
+                super::try_kernel(gpu, "w4a16_gemv", &format!("w4a16_gemv_batch{w}"))
+            };
         }
         Self { handles }
     }

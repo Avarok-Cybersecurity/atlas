@@ -198,6 +198,24 @@ impl BlockDiffusionDraftHead {
                 "w4a16",
                 "fp8_gemm_t_row_scaled_m16",
             ),
+            // Register-tiled M<=8 FP8 GEMV (fp8_gemv_rt.cu, common) —
+            // preferred over both tile GEMMs above for the M=γ propose
+            // GEMMs; try_kernel so targets without the module fall back.
+            fp8_gemv_rt2: crate::layers::try_kernel(
+                gpu,
+                "fp8_gemv_rt",
+                "fp8_gemv_rowscale_batch8_rt2",
+            ),
+            // DFlash2 kernels (kernels/gb10/common/dflash2.cu). try_kernel:
+            // absent on stale kernel builds — DFlash2 then refuses to arm
+            // rather than failing DFlash1/DSpark drafters at load.
+            dflash2_conv2: crate::layers::try_kernel(gpu, "dflash2", "dflash2_conv2"),
+            dflash2_topk16: crate::layers::try_kernel(gpu, "dflash2", "dflash2_topk16"),
+            dflash2_selector_walk: crate::layers::try_kernel(
+                gpu,
+                "dflash2",
+                "dflash2_selector_walk",
+            ),
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.
@@ -282,6 +300,61 @@ impl BlockDiffusionDraftHead {
             logits: gpu.alloc(g * vocab_size * bf16)?,
             draft_tokens_dev: gpu.alloc(n_attn * 4)?,
             position_ids: gpu.alloc(n_attn * 4)?,
+            // DSpark Markov scratch. Only allocated when the drafter config
+            // declares a Markov head; `DevicePtr(0)` otherwise so the plain
+            // DFlash path costs nothing.
+            markov_embed: if weights.config.markov_rank > 0 {
+                gpu.alloc(weights.config.markov_rank * bf16)?
+            } else {
+                DevicePtr(0)
+            },
+            markov_bias: if weights.config.markov_rank > 0 {
+                gpu.alloc(vocab_size * bf16)?
+            } else {
+                DevicePtr(0)
+            },
+            conf_out: if weights.confidence_proj.is_some() {
+                gpu.alloc(g * bf16)?
+            } else {
+                DevicePtr(0)
+            },
+            // DFlash2 scratch — only when the checkpoint ships the selector
+            // (conv-only checkpoints are not a thing in the DFlash2 lineage).
+            conv_dyn: if weights.selector_pred.is_some() {
+                let cfg = weights.config.dflash_config.as_ref();
+                let ksz = cfg.map(|c| c.conv_kernel_size).unwrap_or(0).max(1);
+                let gsz = cfg.map(|c| c.conv_group_size).unwrap_or(0).max(1);
+                gpu.alloc(g * 2 * ksz * (hidden_size / gsz) * bf16)?
+            } else {
+                DevicePtr(0)
+            },
+            conv_tmp: if weights.selector_pred.is_some() {
+                gpu.alloc(g * hidden_size * bf16)?
+            } else {
+                DevicePtr(0)
+            },
+            sel_vals: if weights.selector_pred.is_some() {
+                gpu.alloc(g * 16 * 4)?
+            } else {
+                DevicePtr(0)
+            },
+            sel_idx: if weights.selector_pred.is_some() {
+                gpu.alloc(g * 16 * 4)?
+            } else {
+                DevicePtr(0)
+            },
+            sel_hproj: if weights.selector_pred.is_some() {
+                let rank = weights
+                    .config
+                    .dflash_config
+                    .as_ref()
+                    .map(|c| c.selector_rank)
+                    .unwrap_or(256)
+                    .max(1);
+                gpu.alloc(g * rank * bf16)?
+            } else {
+                DevicePtr(0)
+            },
         };
 
         // Pre-compute inv_freq table for drafter RoPE.
@@ -464,6 +537,10 @@ impl BlockDiffusionDraftHead {
                     gate_proj_fp8: None,
                     up_proj_fp8: None,
                     down_proj_fp8: None,
+                    attention_conv_base: l.attention_conv_base,
+                    attention_conv_proj: l.attention_conv_proj,
+                    mlp_conv_base: l.mlp_conv_base,
+                    mlp_conv_proj: l.mlp_conv_proj,
                 })
                 .collect(),
             // Phase 2 stage 2: fused KV weight built above by copy_d2d
@@ -485,7 +562,71 @@ impl BlockDiffusionDraftHead {
             suppress_graphs: std::sync::atomic::AtomicBool::new(false),
             propose_warmup_count: std::sync::atomic::AtomicUsize::new(0),
             quant: DflashQuantization::Bf16,
+            // DSpark heads. `markov_rank` is zeroed when the tensors are
+            // absent so the runtime gate is a single field check.
+            markov_rank: if weights.markov_w1.is_some() {
+                weights.config.markov_rank
+            } else {
+                0
+            },
+            markov_w1: weights.markov_w1,
+            markov_w2: weights.markov_w2,
+            confidence_proj: weights.confidence_proj,
+            confidence_bias: weights.confidence_bias,
+            confidence_with_markov: weights.config.confidence_head_with_markov,
+            shifted_rows: weights
+                .config
+                .dflash_config
+                .as_ref()
+                .and_then(|c| c.projector_type.as_deref())
+                == Some("dspark"),
+            conv_kernel_size: weights
+                .config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.conv_kernel_size)
+                .unwrap_or(0),
+            conv_group_size: weights
+                .config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.conv_group_size)
+                .unwrap_or(0),
+            selector_rank: weights
+                .config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.selector_rank)
+                .unwrap_or(0),
+            selector_top_k: weights
+                .config
+                .dflash_config
+                .as_ref()
+                .map(|c| c.selector_top_k)
+                .unwrap_or(0),
+            selector_pred: weights.selector_pred,
+            selector_succ: weights.selector_succ,
+            selector_hidden_proj: weights.selector_hidden_proj,
         };
+        if head.selector_pred.is_some() {
+            tracing::info!(
+                "DFlash2 armed: conv k={} group={} selector rank={} top_k={} \
+                 (kernels present: conv={} topk={} walk={})",
+                head.conv_kernel_size,
+                head.conv_group_size,
+                head.selector_rank,
+                head.selector_top_k,
+                head.kernels.dflash2_conv2.0 != 0,
+                head.kernels.dflash2_topk16.0 != 0,
+                head.kernels.dflash2_selector_walk.0 != 0,
+            );
+        }
+        if head.shifted_rows {
+            tracing::info!(
+                "DSpark drafter: SpecForge shifted row convention active \
+                 (projector_type=dspark) — draft vector rotates right by 1"
+            );
+        }
 
         tracing::info!(
             "BlockDiffusionDraftHead loaded: {} layers, hidden={}, intermediate={}, \
