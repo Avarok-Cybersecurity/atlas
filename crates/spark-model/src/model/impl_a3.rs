@@ -308,6 +308,28 @@ impl TransformerModel {
         Ok(logits)
     }
 
+    /// Row range of the BF16 LM head this rank should compute, or `None` to keep the
+    /// replicated whole-vocab projection.
+    ///
+    /// `None` unless there is a real multi-rank communicator and the vocab divides evenly.
+    /// Kill switch: `ATLAS_NO_LMHEAD_VOCAB_TP=1`. Only reachable from the plain BF16 dense
+    /// head — the FP8 / NVFP4 / FP32-logits heads keep their existing path untouched.
+    fn lmhead_vocab_shard(&self, v: u32) -> Option<(usize, usize)> {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| {
+            std::env::var("ATLAS_NO_LMHEAD_VOCAB_TP").as_deref() == Ok("1")
+        }) {
+            return None;
+        }
+        let comm = self.comm_ref()?;
+        let ws = comm.world_size();
+        if ws < 2 || v as usize % ws != 0 {
+            return None;
+        }
+        let len = v as usize / ws;
+        Some((comm.rank() * len, len))
+    }
+
     pub(super) fn lm_head(&self, hidden: DevicePtr, stream: u64) -> Result<DevicePtr> {
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
@@ -369,6 +391,41 @@ impl TransformerModel {
                 h,
                 stream,
             )?;
+        } else if let Some((begin, len)) = self.lmhead_vocab_shard(v) {
+            // VOCAB-PARALLEL BF16 head. The BF16 `lm_head` is REPLICATED on every rank —
+            // no loader shards it — so at TP=2 both ranks stream the whole vocab weight
+            // for the same logits. On GLM-5.3 that is 1.27 GB and **5.49 ms of an 79 ms
+            // decode step** (nsys, 2026-08-28), the single largest kernel after the KDA
+            // projections.
+            //
+            // Each rank computes a contiguous row range instead. This is BYTE-IDENTICAL
+            // by construction, not by tolerance: logit `n` is one full dot product over
+            // K=hidden run by the same kernel with the same reduction order — only WHICH
+            // rank runs it changes. The rest of the buffer is zeroed and the pieces are
+            // summed, and BF16 `x + 0` is exact, so the assembled vector is the same
+            // bytes the replicated head produced.
+            //
+            // 🪤 Correctness rests on `hidden` being bit-identical on every rank at this
+            // point. It is: the last thing the layer stack does is an all-reduce, which
+            // lands the same bytes everywhere. The byte-identity gate is what actually
+            // checks it — if that assumption ever breaks, the completions diverge.
+            self.gpu
+                .memset_async(logits, 0, v as usize * 2, stream)?;
+            ops::dense_gemv(
+                self.gpu.as_ref(),
+                self.dense_gemv_kernel,
+                hidden,
+                &crate::weight_map::DenseWeight {
+                    weight: self.lm_head_weight.weight.offset(begin * h as usize * 2),
+                },
+                logits.offset(begin * 2),
+                len as u32,
+                h,
+                stream,
+            )?;
+            if let Some(comm) = self.comm_ref() {
+                comm.all_reduce_async(logits.0, v as usize * 2, stream)?;
+            }
         } else {
             ops::dense_gemv(
                 self.gpu.as_ref(),

@@ -570,6 +570,16 @@ impl TransformerModel {
                 Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
             }
+            //   - logits: the vocab-parallel BF16 LM head's all-reduce target
+            //     (`impl_a3::lm_head`). Unregistered it is the only per-step collective
+            //     whose SEND pointer NCCL has never seen, which costs an ibv_reg_mr on
+            //     the critical path of every token.
+            let logits_ptr = buffers.logits().0;
+            let logits_bytes = buffers.sizes().logits;
+            match comm.register_buffer(logits_ptr, logits_bytes) {
+                Ok(_) => tracing::info!("Registered logits ({logits_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister logits failed (non-fatal): {e}"),
+            }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
                 Err(e) => {
