@@ -1,6 +1,10 @@
 <script>
   import { modal } from '$lib/modal.js';
-  import { hero, runCommand, githubUrl, discordUrl } from '$lib/data.js';
+  import { hero, githubUrl, discordUrl } from '$lib/data.js';
+  import { currentInstall } from '$lib/install/host.svelte.js';
+
+  // Windows visitors were shown `curl … | sh`, which cannot run there.
+  const install = $derived(currentInstall());
   import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import Receipt from './Receipt.svelte';
   import DiscordIcon from './DiscordIcon.svelte';
@@ -41,7 +45,7 @@
     clearTimeout(copyTimer);
     // Was a silent `return` on refusal: the button did not change, which is
     // indistinguishable from success to the person who clicked it.
-    copyState = await copyOrSelect(runCommand, cmdEl);
+    copyState = await copyOrSelect(install.command, cmdEl);
     copyTimer = setTimeout(() => (copyState = 'idle'), 2400);
   }
 </script>
@@ -58,8 +62,8 @@
       <p class="hero-sub">{hero.sub}</p>
 
       <div class="hero-cmd" role="group" aria-label="Run Atlas">
-        <span class="prompt">$</span>
-        <code bind:this={cmdEl}>{runCommand}</code>
+        <span class="prompt">{install.prompt}</span>
+        <code bind:this={cmdEl}>{install.command}</code>
         <button type="button" class="copy-btn" onclick={copy} aria-label="Copy run command">
           {copyLabel(copyState)}
         </button>

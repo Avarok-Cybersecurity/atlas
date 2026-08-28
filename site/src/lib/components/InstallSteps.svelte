@@ -15,9 +15,14 @@
   // restarting the list at 1 or hard-coding "3" here.
 
   import CommandRow from './CommandRow.svelte';
-  import { runCommand, startAgentCommand } from '$lib/data.js';
+  import { startAgentCommand } from '$lib/data.js';
+  import { currentInstall } from '$lib/install/host.svelte.js';
 
   let { after } = $props();
+
+  // Not `runCommand`: on Windows that line cannot run at all, and this guide is
+  // the first thing a new machine's operator is asked to paste.
+  const install = $derived(currentInstall());
 </script>
 
 <ol class="ld-steps">
@@ -25,7 +30,7 @@
     <span class="ld-step-n">1</span>
     <div>
       <p class="ld-step-t">Install the launcher</p>
-      <CommandRow command={runCommand} />
+      <CommandRow command={install.command} />
     </div>
   </li>
   <li>
@@ -37,3 +42,14 @@
   </li>
   {@render after?.()}
 </ol>
+<!--
+  The commonest reason someone is looking at this guide is NOT that they have
+  never installed atlasctl: it is that they installed it, the agent is not
+  running, and this page says it cannot see one. Both commands are safe to
+  re-run and the second starts a stopped agent — but nothing said so, so a
+  returning operator reads step 1 as "the page has not noticed".
+-->
+<p class="ld-steps-note">
+  Already installed? Run them anyway — the first keeps the version you have,
+  and the second starts an agent that is installed but stopped.
+</p>

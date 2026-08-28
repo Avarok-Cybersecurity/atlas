@@ -16,7 +16,16 @@
   import '../styles/mobile.css';
   import { page } from '$app/state';
   import { tagline, hero, faq, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
+  import { onMount } from 'svelte';
+  import { detectHost } from '$lib/install/host.svelte.js';
   let { children } = $props();
+
+  // Once, here, rather than in each surface that prints an install line: three
+  // components sniffing separately is how the hero and the control page end up
+  // disagreeing about which machine the visitor is on. In `onMount` because
+  // the prerendered HTML has no navigator, and rendering a guess into it would
+  // make the page rewrite itself for every visitor it guessed wrong about.
+  onMount(detectHost);
 
   // Route-aware: a hardcoded canonical meant /control emitted two of them,
   // which is the same as emitting none.
