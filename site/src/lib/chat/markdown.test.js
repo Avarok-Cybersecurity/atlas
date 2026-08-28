@@ -97,3 +97,42 @@ test('empty and non-string input render nothing rather than throwing', () => {
   expect(renderMarkdown(null)).toBe('');
   expect(renderMarkdown(42)).toBe('');
 });
+
+// The header claims "the only attributes ever emitted are a fixed rel/target
+// pair and an https?-validated href". That was untrue in the DOM: the bold and
+// citation passes run over a string already containing the emitted anchor, so a
+// URL carrying `[`, `]` or `*` had its own href rewritten — closing the
+// attribute early and dropping rel and target. The allowlist test above cannot
+// see it: the injected attribute is not an `on*` handler and the href still
+// begins `https:`.
+function anchorAttrs(html) {
+  return [...html.matchAll(/<a\b([^>]*)>/g)].map((m) =>
+    [...m[1].matchAll(/([a-zA-Z-]+)\s*=/g)].map((a) => a[1]).sort()
+  );
+}
+
+test('every emitted anchor carries exactly href, rel and target', () => {
+  for (const src of [
+    '[t](https://a.com)',
+    '[**b**](https://a.com)',
+    'See [1] and [t](https://a.com)',
+    '[a](https://a.com) and [b](https://b.com)',
+    '[x](https://e.com/[1]z)',
+    '[x](https://e.com/**a) more **b',
+    '[x](https://e.com/a[0]b*c)'
+  ]) {
+    for (const attrs of anchorAttrs(renderMarkdown(src))) {
+      expect(attrs).toEqual(['href', 'rel', 'target']);
+    }
+  }
+});
+
+test('a URL carrying the rewrite characters produces no anchor at all', () => {
+  // Left as text, which is the safe direction: a link that does not render is
+  // visibly wrong, an anchor with its rel silently stripped is not.
+  for (const src of ['[x](https://e.com/[1]z)', '[x](https://e.com/**a)']) {
+    expect(renderMarkdown(src)).not.toContain('<a ');
+  }
+  // And the ordinary case still links.
+  expect(renderMarkdown('[t](https://a.com/ok)')).toContain('<a href="https://a.com/ok"');
+});
