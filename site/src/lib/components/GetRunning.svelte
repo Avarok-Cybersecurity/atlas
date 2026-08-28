@@ -48,7 +48,7 @@
             <div class="term-dots"><span></span><span></span><span></span></div>
             <span class="term-title">{install.shell}</span>
           </div>
-          <pre class="term-body"><span class="p">$</span> <span class="c" bind:this={termEl}>{install.command}</span>
+          <pre class="term-body"><span class="p">{install.prompt}</span> <span class="c" bind:this={termEl}>{install.command}</span>
 <span class="d"># downloads atlasctl, verifies its checksum, installs to {install.installDir}</span></pre>
         </div>
         <div class="run-copy">

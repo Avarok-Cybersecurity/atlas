@@ -67,6 +67,10 @@ export function installCommandFor(os, urls) {
       // Windows user recognises as "the install line".
       command: `irm ${urls.powershellUrl} | iex`,
       shell: 'PowerShell',
+      // The prompt glyph belongs with the shell that draws it. A `$` beside a
+      // window labelled PowerShell is a small lie of the same kind as `bash`
+      // beside an `irm` line, and this module exists to stop those.
+      prompt: 'PS>',
       // Where install.ps1 actually puts it. Printed beside the command, so a
       // caller cannot narrate a path the installer never writes to.
       installDir: '%LOCALAPPDATA%\\Programs\\atlasctl',
@@ -77,6 +81,7 @@ export function installCommandFor(os, urls) {
     os: os === 'unknown' ? 'linux' : os,
     command: `curl -fsSL ${urls.shellUrl} | sh`,
     shell: os === 'macos' ? 'Terminal' : 'bash',
+    prompt: '$',
     installDir: '~/.local/bin',
     note: '',
   };

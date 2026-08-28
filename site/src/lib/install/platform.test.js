@@ -84,6 +84,14 @@ describe('installCommandFor', () => {
   // The narration beside the command must describe the command that is there:
   // a Windows visitor told the binary lands in ~/.local/bin has been told
   // something no installer on their machine will do.
+  it('draws the prompt the named shell actually draws', () => {
+    // A `$` beside a window labelled PowerShell is the same kind of small lie
+    // as `bash` beside an `irm` line.
+    expect(installCommandFor('windows', URLS).prompt).toBe('PS>');
+    expect(installCommandFor('linux', URLS).prompt).toBe('$');
+    expect(installCommandFor('macos', URLS).prompt).toBe('$');
+  });
+
   it('describes the install directory its own installer writes to', () => {
     expect(installCommandFor('windows', URLS).installDir).toContain('LOCALAPPDATA');
     expect(installCommandFor('linux', URLS).installDir).toBe('~/.local/bin');
