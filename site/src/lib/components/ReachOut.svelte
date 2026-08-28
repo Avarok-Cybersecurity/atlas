@@ -1,13 +1,26 @@
 <script>
   import { reachout, discordUrl } from '$lib/data.js';
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import DiscordIcon from './DiscordIcon.svelte';
 
   let copied = $state('');
-  async function copy(addr) {
-    if ((await copyText(addr)) !== 'copied') return;
-    copied = addr;
-    setTimeout(() => { if (copied === addr) copied = ''; }, 1600);
+  let copyState = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  // The flash outlives the component on navigation without this.
+  $effect(() => () => clearTimeout(copyTimer));
+
+  async function copy(cmd, el) {
+    clearTimeout(copyTimer);
+    copied = cmd;
+    // Was a silent `return` on refusal, leaving the button unchanged — which
+    // the person clicking it reads as success.
+    copyState = await copyOrSelect(cmd, el);
+    copyTimer = setTimeout(() => {
+      if (copied === cmd) {
+        copied = '';
+        copyState = 'idle';
+      }
+    }, 2400);
   }
   import SectionHead from './SectionHead.svelte';
 </script>
@@ -22,10 +35,13 @@
         {#each reachout.emails as e}
           <div class="email-btn">
             <a class="email-btn-addr" href={`mailto:${e}`}>
-              <span class="email-ico" aria-hidden="true">✉</span> {e}
+              <span class="email-ico" aria-hidden="true">✉</span><span class="email-addr">{e}</span>
             </a>
-            <button type="button" class="email-btn-copy" onclick={() => copy(e)} aria-label={`Copy ${e}`}>
-              {copied === e ? 'Copied' : 'Copy'}
+            <button type="button" class="email-btn-copy" onclick={(ev) =>
+                copy(e, ev.currentTarget.closest('.email-btn')?.querySelector('.email-addr'))}
+              aria-label={`Copy ${e}`}
+            >
+              {copied === e ? copyLabel(copyState) : 'Copy'}
             </button>
           </div>
         {/each}

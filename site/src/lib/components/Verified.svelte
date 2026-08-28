@@ -3,7 +3,7 @@
   // ladder is the strongest verified artifact the project owns, and it used to
   // be hidden behind a click on the hero receipt. The methodology that makes
   // the chart credible sits directly under it rather than in a modal.
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import {
     verified, mlperfCopy, mlperfTrademark, mlcommons, verifiedAnchor, gateSrcUrl, recipesUrl
   } from '$lib/data.js';
@@ -22,11 +22,17 @@
   const mlperfLine = mlperfCopy[mlperf.status] ?? mlperfCopy.preparing;
   const stamp = `atlas ${bench.generated_sha} · ${bench.generated_date}`;
 
-  let copied = $state(false);
+  let copyState = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  // The flash outlives the component on navigation without this.
+  $effect(() => () => clearTimeout(copyTimer));
+  let cmdEl = $state(null);
   async function copyRepro() {
-    if ((await copyText(bench.repro_cmd)) !== 'copied') return;
-    copied = true;
-    setTimeout(() => (copied = false), 1600);
+    clearTimeout(copyTimer);
+    // A reproduce command someone retypes by eye is a reproduction that does
+    // not reproduce; a refusal has to say so.
+    copyState = await copyOrSelect(bench.repro_cmd, cmdEl);
+    copyTimer = setTimeout(() => (copyState = 'idle'), 2400);
   }
 </script>
 
@@ -69,8 +75,8 @@
         <p class="trademark">{mlperfTrademark}</p>
 
         <div class="repro" aria-label="Reproduce command">
-          <code>{bench.repro_cmd}</code>
-          <button type="button" class="copy-btn" onclick={copyRepro} aria-label="Copy reproduce command">{copied ? 'Copied' : 'Copy'}</button>
+          <code bind:this={cmdEl}>{bench.repro_cmd}</code>
+          <button type="button" class="copy-btn" onclick={copyRepro} aria-label="Copy reproduce command">{copyLabel(copyState)}</button>
         </div>
         <p class="mlperf-note" style="font-weight:650;color:var(--t1)">{verified.challengeLine}</p>
         <p class="mlperf-note" style="font-size:0.84rem">Every model card comes from a recipe in <a class="link" href={recipesUrl} target="_blank" rel="noopener">atlas-recipes</a>.</p>
