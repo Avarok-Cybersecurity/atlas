@@ -77,20 +77,23 @@ impl TransformerModel {
         let head = crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead::new(
             module,
             embed_tokens,
+            // Share the target's NVFP4 vocab head (Copy pointers) so the draft
+            // goes through the SAME quantization ladder the real token does —
+            // a drafter scored against a different head measures the head, not
+            // the draft.
+            self.lm_head_nvfp4,
             &self.config,
             self.gpu.as_ref(),
             max_seq_len,
         )?;
         let state = head.alloc_state(self.gpu.as_ref())?;
         tracing::warn!(
-            "qwen4_exp MTP SHADOW MODE is on. ⚠ THE DEFAULT `full`/`body` STAGE \
-             IS KNOWN TO CORRUPT THIS SERVER'S OUTPUT — the draft body forward \
-             mutates state the target still needs, and generation degenerates \
-             (thinking-loop watchdog / empty or truncated answers). Only \
-             ATLAS_QWEN4EXP_MTP_SHADOW_STAGE=observe and =combine are verified \
-             inert against a shadow-off control. Do NOT serve real traffic with \
-             this on, and do not benchmark with it: it also costs a full extra \
-             draft forward per token and produces no speedup."
+            "qwen4_exp MTP SHADOW MODE is on: the draft head runs every decode \
+             step and its accept rate is logged. Verified INERT — shadow-on \
+             output is byte-identical to a shadow-off control — because the \
+             draft runs in its own BufferArena. It still costs a FULL EXTRA \
+             draft forward per token and produces NO speedup (nothing is fed \
+             back), so do not benchmark with it on."
         );
         self.qwen4_exp_mtp_head = Some(head);
         self.qwen4_exp_mtp_state = Some(std::sync::Mutex::new(state));
@@ -148,38 +151,12 @@ impl TransformerModel {
             return;
         }
 
-        // Finish with the target's own head so the draft's logits go through
-        // the same quantization ladder the real token did.
-        //
-        // ⚠ `lm_head` writes `buffers.logits()` — the SAME buffer the scheduler
-        // is about to sample the real token from. Park it and put it back, or
-        // this diagnostic would silently change the model's output.
-        let logits = self.decode_logits_ptr();
-        let vocab = self.config.vocab_size;
-        if head
-            .stash_logits(self.gpu.as_ref(), logits, vocab, stream)
-            .is_err()
-        {
-            return;
-        }
-        let normed = self.buffers.norm_output();
-        let h = self.config.hidden_size as u32;
-        let eps = self.config.rms_norm_eps as f32;
-        let drafted = self
-            .final_norm_apply(h_out, normed, 1, h, eps, stream)
-            .and_then(|()| self.lm_head(normed, stream))
-            .and_then(|_| self.argmax_on_device(logits, 0));
-        // Restore FIRST, unconditionally — an error above must not leave the
-        // scheduler reading the draft's logits.
-        if let Err(e) = head.restore_logits(self.gpu.as_ref(), logits, vocab, stream) {
-            tracing::error!(
-                "qwen4_exp MTP shadow could not restore the target logits ({e:#}); \
-                 the emitted token for this step may be the DRAFT's. Disable \
-                 ATLAS_QWEN4EXP_MTP_SHADOW."
-            );
-            return;
-        }
-        match drafted {
+        // The draft's logits go into the DRAFT's arena, so nothing here can
+        // touch the buffer the scheduler is about to sample from. The earlier
+        // stash/restore of the target's logits existed only because the draft
+        // borrowed the target's LM-head buffer; private-arena isolation removed
+        // the need for it entirely.
+        match head.draft_token(h_out, ctx, stream) {
             Ok(d) => st.pending_draft = Some(d),
             Err(e) => tracing::warn!("qwen4_exp MTP shadow draft head failed: {e:#}"),
         }

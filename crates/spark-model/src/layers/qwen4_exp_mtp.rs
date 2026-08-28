@@ -153,6 +153,14 @@ pub struct Qwen4ExpMtpHead {
     rms_norm_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     hc_head_k: KernelHandle,
+    /// The target's NVFP4 vocab head, shared (Copy pointers). The draft writes
+    /// its logits into the DRAFT arena, so it never touches the buffer the
+    /// scheduler samples from — the stash/restore the shadow path needed is
+    /// unnecessary once the arena is private.
+    lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
+    w4a16_gemv_k: KernelHandle,
+    w4a16_gemv_sw_k: KernelHandle,
+    argmax_k: KernelHandle,
     /// FP32 highway -> BF16 grouped norm (the combiner's hidden branch).
     hc_stage_k: KernelHandle,
     /// BF16 per-stream + broadcast -> FP32 highway (the combiner's tail).
@@ -204,9 +212,11 @@ pub fn shadow_stage() -> ShadowStage {
 }
 
 impl Qwen4ExpMtpHead {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         module: Qwen4ExpMtpModule,
         embed_tokens: DenseWeight,
+        lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
         config: &atlas_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
@@ -288,6 +298,10 @@ impl Qwen4ExpMtpHead {
             // the qwen4_exp tree.
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            lm_head_nvfp4,
+            w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_sw_k: KernelHandle(0),
+            argmax_k: gpu.kernel("argmax", "argmax_bf16")?,
             hc_head_k: gpu.kernel("hyper_connection", "hc_head")?,
             hc_stage_k: gpu.kernel("hyper_connection", "hc_pre_stage_bf16")?,
             combine_k: gpu.kernel("hyper_connection", "qhc_mtp_combine_streams")?,
@@ -303,6 +317,39 @@ impl Qwen4ExpMtpHead {
             body_state: self.module.body.alloc_state(gpu)?,
             pending_draft: None,
         })
+    }
+
+    /// Turn the draft's final hidden into a token id, entirely inside the
+    /// draft's own arena.
+    ///
+    /// qwen4_exp sets `final_norm_identity`, so there is NO final norm here —
+    /// the mHC head's own `hc_norm` plays that role. Applying one would be an
+    /// uninvited extra RMS divide (a bug this model already shipped once).
+    pub fn draft_token(&self, h_out: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<u32> {
+        let vocab = ctx.config.vocab_size as u32;
+        let h = ctx.config.hidden_size as u32;
+        let logits = self.arena.logits();
+        let w = self
+            .lm_head_nvfp4
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: no NVFP4 lm_head for the draft head"))?;
+        ops::w4a16_decode_gemv(
+            ctx.gpu,
+            self.w4a16_gemv_k,
+            self.w4a16_gemv_sw_k,
+            false,
+            h_out,
+            w,
+            logits,
+            vocab,
+            h,
+            stream,
+        )?;
+        let out_ptr = self.arena.scratch();
+        ops::argmax_bf16(ctx.gpu, self.argmax_k, logits, out_ptr, vocab, stream)?;
+        let mut b = [0u8; 4];
+        ctx.gpu.copy_d2h(out_ptr, &mut b)?;
+        Ok(u32::from_le_bytes(b))
     }
 
     /// Park the target's logits so the draft's `lm_head` cannot change what the
