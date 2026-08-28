@@ -194,6 +194,25 @@ pub struct DsaSelectInputs {
     pub q_mask: DevicePtr,
     /// Index of the first valid key; pooling starts here so left padding is skipped.
     pub first_key: i32,
+    /// `[5]` i32 DEVICE geometry (`dsa_write_geom`), or NULL for the scalar path.
+    ///
+    /// 🔴 Non-null is what makes a captured decode step replay correctly: S, the pool
+    /// count, the padded sort axis and `select_k` all grow with the context, and a graph
+    /// freezes every scalar it was captured with. Decode-only — see `Replay` below.
+    pub geom_dev: DevicePtr,
+}
+
+/// How a pass is launched: exactly, or at the context ceiling so one graph serves any length.
+///
+/// 🪤 `Ceiling` REQUIRES `DsaSelectInputs::geom_dev` and `q_rows == 1`. The kernels read
+/// their row strides (`out`/`valid_cand` stride `P`, `selected` stride `select_k`) from the
+/// same varying geometry, which is only sound because every `r * stride` is `0 * stride`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsaSelectLaunch {
+    /// This step's exact grid. The shipping eager path.
+    Exact,
+    /// Grid and shared memory fixed at `max_pools`; live extents come from `geom_dev`.
+    Ceiling { max_pools: usize },
 }
 
 /// Scratch the pipeline writes through, allocated once and reused across steps.
@@ -300,6 +319,7 @@ pub fn select_tokens(
     geom: &DsaSelectGeometry,
     inputs: &DsaSelectInputs,
     scratch: &DsaSelectScratch,
+    launch: DsaSelectLaunch,
     stream: u64,
 ) -> Result<()> {
     scratch.fits(cfg, geom)?;
@@ -307,18 +327,43 @@ pub fn select_tokens(
     let d = geom.index_head_dim;
     let kp = geom.index_kpool;
 
+    let ceiling = match launch {
+        DsaSelectLaunch::Exact => None,
+        DsaSelectLaunch::Ceiling { max_pools } => {
+            if inputs.geom_dev.0 == 0 {
+                bail!(
+                    "DSA select: a ceiling launch has no host geometry to fall back on and \
+                     needs `geom_dev`; passing NULL would run the frozen scalars."
+                );
+            }
+            if geom.q_rows != 1 {
+                bail!(
+                    "DSA select: ceiling launch is decode-only (q_rows must be 1, got {}). \
+                     At q_rows > 1 the row strides vary with the context and a replayed \
+                     graph would index the wrong rows.",
+                    geom.q_rows
+                );
+            }
+            Some(max_pools)
+        }
+    };
+    let gd = inputs.geom_dev;
+
     // 🪤 Below `index_kpool` tokens there are no pools to score or sort, and a
     // zero-extent grid is an illegal launch, not a no-op. Stages 2 and 3 are
     // skipped; stage 1 still runs (`n_pools_full >= 1`) and stage 4 still runs,
     // writing the whole row -1 and then appending the visible tail — which is the
     // entire selection in this regime.
-    let has_pools = geom.n_pools > 0;
+    // Under a ceiling launch stages 2 and 3 ALWAYS run: the grid is >= 1 whatever the
+    // context, and with a live pool count of zero every block returns — the same nothing
+    // the host branch produces, but decided on device so a graph can replay it.
+    let has_pools = geom.n_pools > 0 || ceiling.is_some();
 
     // ── 1. pool compression ─────────────────────────────────────────────────────
     // Launched over the FULL pool count, exactly as the microtest does; the trailing
     // partial pool is written, marked invalid, and never read downstream.
     KernelLaunch::new(gpu, kernels.kpool_compress)
-        .grid([geom.n_pools_full as u32, 1, 1])
+        .grid([ceiling.map_or(geom.n_pools_full, |m| m + 1) as u32, 1, 1])
         .block([d.min(1024) as u32, 1, 1])
         .arg_ptr(inputs.k_normed)
         .arg_ptr(inputs.gate)
@@ -331,6 +376,7 @@ pub fn select_tokens(
         .arg_u32(d as u32)
         .arg_u32(kp as u32)
         .arg_i32(inputs.first_key)
+        .arg_ptr(gd)
         .launch(stream)?;
 
     // 🪤 No `dsa_compact_pools` launch: over a contiguous cache the kept set is the
@@ -340,7 +386,11 @@ pub fn select_tokens(
     // ── 2. per-(query, pool) index scores ───────────────────────────────────────
     if has_pools {
         KernelLaunch::new(gpu, kernels.index_scores)
-            .grid([geom.n_pools as u32, geom.q_rows as u32, 1])
+            .grid([
+                ceiling.unwrap_or(geom.n_pools) as u32,
+                geom.q_rows as u32,
+                1,
+            ])
             .block([SCORES_BLOCK, 1, 1])
             .shared_mem(SCORES_BLOCK)
             .arg_ptr(inputs.q)
@@ -359,6 +409,7 @@ pub fn select_tokens(
             .arg_u32(kp as u32)
             .arg_u32(geom.seq as u32)
             .arg_f32((d as f32).powf(-0.5))
+            .arg_ptr(gd)
             .launch(stream)?;
 
         // ── 3. top-k over pools ─────────────────────────────────────────────────────
@@ -366,13 +417,14 @@ pub fn select_tokens(
         KernelLaunch::new(gpu, kernels.topk_pools)
             .grid([geom.q_rows as u32, 1, 1])
             .block([ROW_BLOCK, 1, 1])
-            .shared_mem(geom.topk_smem as u32)
+            .shared_mem(ceiling.map_or(geom.topk_smem, |m| m.next_power_of_two() * 8) as u32)
             .arg_ptr(scratch.scores)
             .arg_ptr(scratch.selected)
             .arg_u32(geom.q_rows as u32)
             .arg_u32(geom.n_pools as u32)
             .arg_u32(geom.topk_np2 as u32)
             .arg_u32(geom.select_k as u32)
+            .arg_ptr(gd)
             .launch(stream)?;
     }
 
@@ -395,6 +447,7 @@ pub fn select_tokens(
         .arg_u32(geom.out_width as u32)
         .arg_i32(inputs.first_key)
         .arg_i32(cfg.always_select_tail as i32)
+        .arg_ptr(gd)
         .launch(stream)?;
 
     Ok(())

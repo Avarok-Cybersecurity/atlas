@@ -199,6 +199,24 @@ impl TransformerModel {
             }
         }
 
+        // 🔴 Drop this slot's captured decode graph when any layer owns per-SEQUENCE device
+        // state. The cache is keyed by slot on the premise that the only baked per-sequence
+        // addresses are the SSM pool's, which are slot-stable; a layer that allocates its own
+        // state per sequence (GLM-5.3's indexer cache and KDA state) breaks it, and the next
+        // request replays this one's buffers — observed as request 2 continuing request 1's
+        // text. Costs one re-capture per request on those models and nothing on the others.
+        if !slot_reused_by_compact
+            && self.layers.iter().any(|l| l.graph_stale_on_new_sequence())
+            && let Some(g) = self.decode_graph.lock().remove(&seq.slot_idx)
+            && g.0 != 0
+            && let Err(e) = self.gpu.destroy_graph(g)
+        {
+            tracing::warn!(
+                "free_sequence: destroy decode_graph({}): {e:#}",
+                seq.slot_idx
+            );
+        }
+
         // All SSM buffers (h_state, conv_state, checkpoints, intermediates) belong
         // to the pool — do NOT gpu.free() them. Just clear the references.
         for state in &mut seq.layer_states {

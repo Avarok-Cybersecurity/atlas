@@ -188,6 +188,30 @@ pub trait TransformerLayer: Send + Sync {
     /// populated (prefix caching). Attention layers skip KV writes for
     /// positions `< kv_write_start`. SSM layers ignore this (recurrent).
     #[allow(clippy::too_many_arguments)]
+    /// Does a captured decode graph go STALE when a new sequence takes this slot?
+    ///
+    /// 🔴 `decode_graph` is keyed by `slot_idx` on the premise that the only per-sequence
+    /// addresses a capture bakes live in the SSM pool, which is slot-addressed and stable.
+    /// A layer that allocates its own per-sequence state (GLM-5.3 allocates a fresh indexer
+    /// cache and KDA state per sequence) breaks that premise: the next sequence gets new
+    /// buffers and the old graph still reads and writes the freed ones — the second request
+    /// continues the first one's text. Such a layer says so here and `free_sequence` drops
+    /// the slot's graph, costing one re-capture per request.
+    fn graph_stale_on_new_sequence(&self) -> bool {
+        false
+    }
+
+    /// Advance whatever HOST-side per-sequence bookkeeping a decode step would have
+    /// advanced, when that step was served by a replayed CUDA graph instead of being run.
+    ///
+    /// 🔴 A graph replay executes kernels and nothing else: the layer's `decode` never runs,
+    /// so a layer that tracks its own cache length on the host silently stops advancing and
+    /// every replayed step overwrites the same row. Default is a no-op — only a layer with
+    /// host-side state (GLM-5.3's DSA indexer cache) needs this.
+    fn advance_replayed_step(&self, _state: &mut dyn LayerState) -> Result<()> {
+        Ok(())
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,

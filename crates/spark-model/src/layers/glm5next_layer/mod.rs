@@ -476,6 +476,12 @@ impl TransformerLayer for Glm5NextLayer {
         }))
     }
 
+    /// Both mixers allocate their per-sequence state with `gpu.alloc` in `alloc_state`, so
+    /// the addresses a capture bakes belong to THAT sequence, not to the slot.
+    fn graph_stale_on_new_sequence(&self) -> bool {
+        true
+    }
+
     /// GLM's KDA blocks are `linear_attention` in `layer_types` but carry
     /// `Glm5NextLayerState::Kda`, not the pool's `SsmLayerState`.
     fn uses_ssm_pool(&self) -> bool {

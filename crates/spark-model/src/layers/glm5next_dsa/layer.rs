@@ -181,6 +181,16 @@ pub struct Glm5NextDsaWorkspace {
     sl: DevicePtr,
     /// Capacity of `bt` in ENTRIES, so the forward can refuse rather than overrun it.
     bt_cap: usize,
+    /// `[index_head_dim]` BF16 staging for the indexer row, at a FIXED address.
+    ///
+    /// 🔴 The projections used to write straight into `k_normed`/`gate` at
+    /// `offset(pos * D * 2)` — a host-computed address, which a captured graph freezes at
+    /// the capture-time row. Under capture they land here and `dsa_indexer_store` places
+    /// them from a device-side `pos`. Same arithmetic, one extra 256-byte copy.
+    stage_k: DevicePtr,
+    stage_gate: DevicePtr,
+    /// `[5]` i32 selector geometry, written on device once per step by `dsa_write_geom`.
+    geom_dev: DevicePtr,
     select: DsaSelectScratch,
 }
 
@@ -223,6 +233,9 @@ impl Glm5NextDsaWorkspace {
             },
             sl: if persist { gpu.alloc(4)? } else { DevicePtr(0) },
             bt_cap,
+            stage_k: gpu.alloc(cfg.index_head_dim * 2)?,
+            stage_gate: gpu.alloc(cfg.index_head_dim * 2)?,
+            geom_dev: gpu.alloc(5 * 4)?,
             select: DsaSelectScratch::alloc(gpu, cfg, &geom)?,
         })
     }
@@ -263,11 +276,19 @@ impl Glm5NextDsaLayer {
         gpu: &dyn GpuBackend,
         hidden: DevicePtr,
         state: &mut Glm5NextDsaState,
+        // Some(pos) => write through the FIXED staging row and let `dsa_indexer_store`
+        // place it from this device-side position. None => the host-offset path.
+        pos_dev: Option<DevicePtr>,
         stream: u64,
     ) -> Result<()> {
         let d = self.cfg.index_head_dim;
         let pos = state.len();
         let off = state.row_offset(pos);
+        let w = &self.workspace;
+        let (k_dst, gate_dst) = match pos_dev {
+            Some(_) => (w.stage_k, w.stage_gate),
+            None => (state.k_normed.offset(off), state.gate.offset(off)),
+        };
 
         // k_raw -> the state row, then LayerNorm in place.
         gemm(
@@ -276,7 +297,7 @@ impl Glm5NextDsaLayer {
             self.kernels.gemv,
             hidden,
             self.weights.wk,
-            state.k_normed.offset(off),
+            k_dst,
             1,
             d,
             self.cfg.hidden,
@@ -287,7 +308,7 @@ impl Glm5NextDsaLayer {
             .grid([1, 1, 1])
             .block([d.min(1024) as u32, 1, 1])
             .shared_mem((d.min(1024) * 4) as u32)
-            .arg_ptr(state.k_normed.offset(off))
+            .arg_ptr(k_dst)
             .arg_ptr(self.weights.k_norm_weight)
             .arg_ptr(self.weights.k_norm_bias)
             .arg_u32(1)
@@ -301,7 +322,7 @@ impl Glm5NextDsaLayer {
             self.kernels.gemv,
             hidden,
             self.weights.compress_gate,
-            state.gate.offset(off),
+            gate_dst,
             1,
             d,
             self.cfg.hidden,
@@ -328,8 +349,25 @@ impl Glm5NextDsaLayer {
             stream,
         )?;
 
-        // Validity is per position and this one is real.
-        gpu.memset_async(state.valid.offset(pos), 1, 1, stream)?;
+        match pos_dev {
+            // 🔴 Placement and the validity mark both from a DEVICE position — a memset at
+            // `valid.offset(pos)` is one more host-baked address a graph would freeze.
+            Some(pd) => {
+                KernelLaunch::new(gpu, self.select_kernels.indexer_store)
+                    .grid([1, 1, 1])
+                    .block([d.min(1024) as u32, 1, 1])
+                    .arg_ptr(w.stage_k)
+                    .arg_ptr(w.stage_gate)
+                    .arg_ptr(pd)
+                    .arg_ptr(state.k_normed)
+                    .arg_ptr(state.gate)
+                    .arg_ptr(state.valid)
+                    .arg_u32(d as u32)
+                    .launch(stream)?;
+            }
+            // Validity is per position and this one is real.
+            None => gpu.memset_async(state.valid.offset(pos), 1, 1, stream)?,
+        }
         state.advance(1)
     }
 
@@ -344,6 +382,7 @@ impl Glm5NextDsaLayer {
         seq_lens_dev: DevicePtr,
         q_pos_dev: DevicePtr,
         paging: &DsaDecodePaging,
+        replay_safe: bool,
         stream: u64,
     ) -> Result<DevicePtr> {
         let w = &self.workspace;
@@ -383,6 +422,23 @@ impl Glm5NextDsaLayer {
             // Always 1 for a decode step; written once at workspace alloc, never per token.
             q_mask: w.q_mask,
             first_key: 0,
+            geom_dev: if replay_safe {
+                w.geom_dev
+            } else {
+                DevicePtr::NULL
+            },
+        };
+        // Under capture the grid and the shared-memory request go to the context CEILING and
+        // the live extents come off `geom_dev`, so ONE graph serves every context length.
+        let launch = if replay_safe {
+            super::select::DsaSelectLaunch::Ceiling {
+                max_pools: super::select::contiguous_pool_count(
+                    self.cfg.index_kpool,
+                    super::state::max_dsa_context(&self.cfg),
+                ),
+            }
+        } else {
+            super::select::DsaSelectLaunch::Exact
         };
         let t = crate::layers::glm5next_layer::profile::start();
         select_tokens(
@@ -392,6 +448,7 @@ impl Glm5NextDsaLayer {
             &geom,
             &inputs,
             &w.select,
+            launch,
             stream,
         )?;
 
@@ -426,6 +483,21 @@ impl Glm5NextDsaLayer {
 impl TransformerLayer for Glm5NextDsaLayer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(Box::new(Glm5NextDsaState::alloc(gpu, &self.cfg)?))
+    }
+
+    /// The indexer cache length is the one thing this layer keeps on the host. A replayed
+    /// graph writes the next row (the store kernel reads its position from device memory)
+    /// but never calls `decode`, so the counter has to be advanced here or the NEXT eager
+    /// step plans its selection over a stale length — and `decode`'s own lockstep check
+    /// would fire.
+    fn advance_replayed_step(&self, state: &mut dyn LayerState) -> Result<()> {
+        state
+            .as_any_mut()
+            .downcast_mut::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
+            })?
+            .advance(1)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -566,7 +638,18 @@ impl TransformerLayer for Glm5NextDsaLayer {
         use crate::layers::glm5next_layer::profile;
         profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
         let t = profile::start();
-        self.indexer_forward(gpu, hidden, st, stream)?;
+        // Replay-safe placement only while a graph is RECORDING. An eager step keeps the
+        // host-offset path, so the shipping numbers and byte-identity are untouched.
+        let replay_safe = ctx.graph_capture
+            && meta.is_some()
+            && self.select_kernels.indexer_store.0 != 0
+            && self.select_kernels.write_geom.0 != 0;
+        let pos_dev = if replay_safe {
+            meta.map(|m| m.positions)
+        } else {
+            None
+        };
+        self.indexer_forward(gpu, hidden, st, pos_dev, stream)?;
         profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
         let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
@@ -621,8 +704,29 @@ impl TransformerLayer for Glm5NextDsaLayer {
             block_size,
             cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
         };
-        let attn =
-            self.select_and_attend(gpu, st, kv_cache, d_bt, d_sl, q_pos_dev, &paging, stream)?;
+        if replay_safe {
+            // S is exactly the `seq_len + 1` the attention metadata already holds, which is
+            // `st.len()` after the indexer advance. Nothing about the pass is host-decided.
+            KernelLaunch::new(gpu, self.select_kernels.write_geom)
+                .grid([1, 1, 1])
+                .block([1, 1, 1])
+                .arg_ptr(d_sl)
+                .arg_ptr(w.geom_dev)
+                .arg_u32(self.cfg.index_kpool as u32)
+                .arg_u32(self.cfg.index_topk as u32)
+                .launch(stream)?;
+        }
+        let attn = self.select_and_attend(
+            gpu,
+            st,
+            kv_cache,
+            d_bt,
+            d_sl,
+            q_pos_dev,
+            &paging,
+            replay_safe,
+            stream,
+        )?;
         if owns_bt && !self.persist_bt {
             gpu.free(d_bt)?;
             gpu.free(d_sl)?;

@@ -98,6 +98,13 @@ pub struct Glm5NextDsaKernels {
     /// into every target. Found by grepping `kernels/` before scoping a build, per the
     /// campaign's standing rule; this is the fifth thing that turned out to already exist.
     pub k_norm: KernelHandle,
+    /// Derives this step's selector geometry ON DEVICE from `seq_len`, so a captured
+    /// graph replays over the live context instead of the capture-time one.
+    /// `try_kernel` — without it the layer keeps the host-scalar path and graphs stay off.
+    pub write_geom: KernelHandle,
+    /// Places the staged indexer row at a DEVICE-side position and marks it valid.
+    /// The host `k_normed.offset(pos * D * 2)` it replaces was the other frozen scalar.
+    pub indexer_store: KernelHandle,
     /// 🔬 ORACLE ONLY — see [`MASKED_ATTN_MAX_KEYS`].
     pub topk_to_mask: KernelHandle,
     /// 🔬 ORACLE ONLY — see [`MASKED_ATTN_MAX_KEYS`].
@@ -138,6 +145,8 @@ impl Glm5NextDsaKernels {
             topk_pools: gpu.kernel(DSA_MODULE, "dsa_topk_pools")?,
             expand_selection: gpu.kernel(DSA_MODULE, "dsa_expand_selection")?,
             k_norm: gpu.kernel(LAYERNORM_MODULE, "nllb_layernorm_bf16")?,
+            write_geom: crate::layers::try_kernel(gpu, DSA_MODULE, "dsa_write_geom"),
+            indexer_store: crate::layers::try_kernel(gpu, DSA_MODULE, "dsa_indexer_store"),
             topk_to_mask: gpu.kernel(DSA_MODULE, "dsa_topk_to_mask")?,
             mla_masked_attn: gpu.kernel(DSA_MODULE, "dsa_mla_masked_attn")?,
         })

@@ -49,6 +49,69 @@ __device__ __forceinline__ float dsa_block_sum(float v, float* smem, unsigned ti
 // Pools are formed from `first_key + p*KP + s`: pooling starts at the first VALID token, so
 // left padding is skipped rather than pooled. A pool counts only if EVERY slot is valid, which
 // is why a trailing partial pool is never a pool.
+
+// ── Replay-safe geometry ────────────────────────────────────────────────────────────────
+//
+// 🔴 Under CUDA-graph capture every scalar below is FROZEN at capture time, and the DSA
+// selector's scalars all grow with the context: S, the pool count, the padded sort axis and
+// select_k. A replayed graph would select over the capture-time context for ever.
+//
+// So each selector kernel optionally takes `geom` — a 5-int DEVICE vector written once per
+// step by `dsa_write_geom` from the same `seq_len` the attention metadata already carries.
+// When `geom` is null the scalar arguments are used verbatim and the kernel is exactly what
+// it was; the eager path passes null and is bit-identical by construction.
+//
+// Blocks past the live pool count return immediately, so the launcher can fix the grid at the
+// context CEILING under capture and let one graph serve every length.
+#define DSA_GEOM_S        0   // tokens resident in the indexer cache
+#define DSA_GEOM_NPOOLS_F 1   // pools including the trailing partial one
+#define DSA_GEOM_NPOOLS   2   // complete pools — the prefix everything downstream reads
+#define DSA_GEOM_SELECT_K 3   // pools selected per query
+#define DSA_GEOM_NP2      4   // padded pool axis the bitonic sort runs over
+
+// One thread. Derives the selector geometry on device from `seq_len` (the same `[seq_len+1]`
+// i32 the attention metadata holds), so nothing about the pass is decided on the host.
+extern "C" __global__ void dsa_write_geom(
+    const int* __restrict__ seq_len,   // [1] tokens in the cache
+    int* __restrict__ geom,            // [5] out
+    unsigned int KP,
+    unsigned int topk                  // index_topk
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    const int S = seq_len[0];
+    const int np = S / (int)KP;
+    int np2 = 2;
+    while (np2 < np) np2 <<= 1;
+    const int cap = (int)(topk / KP);
+    geom[DSA_GEOM_S] = S;
+    geom[DSA_GEOM_NPOOLS_F] = (S + (int)KP - 1) / (int)KP;
+    geom[DSA_GEOM_NPOOLS] = np;
+    geom[DSA_GEOM_SELECT_K] = np < cap ? np : cap;
+    geom[DSA_GEOM_NP2] = np2;
+}
+
+// Copy one staged indexer row into the cache at a DEVICE-side position, and mark it valid.
+//
+// 🔴 The write offset used to be `k_normed.offset(pos * D * 2)` computed on the HOST, which is
+// exactly what froze under graph capture: every replayed step rewrote the capture-time row.
+// The projections now land in a fixed staging row and this kernel places them.
+extern "C" __global__ void dsa_indexer_store(
+    const __nv_bfloat16* __restrict__ stage_k,     // [D]
+    const __nv_bfloat16* __restrict__ stage_gate,  // [D]
+    const int* __restrict__ pos,                   // [1] row to write
+    __nv_bfloat16* __restrict__ k_normed,          // [capacity, D]
+    __nv_bfloat16* __restrict__ gate,              // [capacity, D]
+    unsigned char* __restrict__ valid,             // [capacity]
+    unsigned int D
+) {
+    const size_t base = (size_t)pos[0] * D;
+    for (unsigned int d = threadIdx.x; d < D; d += blockDim.x) {
+        k_normed[base + d] = stage_k[d];
+        gate[base + d] = stage_gate[d];
+    }
+    if (threadIdx.x == 0) valid[pos[0]] = 1;
+}
+
 extern "C" __global__ void dsa_kpool_compress(
     const __nv_bfloat16* __restrict__ k,      // [S, D] bf16
     const __nv_bfloat16* __restrict__ gate,   // [S, D] bf16
@@ -60,10 +123,16 @@ extern "C" __global__ void dsa_kpool_compress(
     unsigned int S,
     unsigned int D,
     unsigned int KP,
-    int first_key
+    int first_key,
+    const int* __restrict__ geom              // [5] or null — see "Replay-safe geometry"
 ) {
     const unsigned int p = blockIdx.x;
     const unsigned int tid = threadIdx.x;
+    if (geom) {
+        S = (unsigned int)geom[DSA_GEOM_S];
+        // Grid is fixed at the context ceiling under capture; this pool is not live yet.
+        if (p >= (unsigned int)geom[DSA_GEOM_NPOOLS_F]) return;
+    }
 
     // Slot bookkeeping is identical for every channel, so thread 0 owns the index/validity write.
     bool all_valid = true;
@@ -125,12 +194,21 @@ extern "C" __global__ void dsa_index_scores(
     unsigned int D,
     unsigned int KP,
     unsigned int S,
-    float scale
+    float scale,
+    const int* __restrict__ geom              // [5] or null
 ) {
     const unsigned int p = blockIdx.x;
     const unsigned int r = blockIdx.y;
     const unsigned int tid = threadIdx.x;
     extern __shared__ float sh[];
+    if (geom) {
+        S = (unsigned int)geom[DSA_GEOM_S];
+        P = (unsigned int)geom[DSA_GEOM_NPOOLS];
+        // 🪤 `P` is also the row stride of `out`/`valid_cand`. Legal to vary ONLY because the
+        // device-geometry path is decode-only (Q == 1), so every `r * P` is `0 * P`. The
+        // launcher refuses Q > 1 rather than writing a stride the next step disagrees with.
+        if (p >= P) return;
+    }
 
     // A pool is a candidate only when it is complete AND its LAST token is visible to this
     // query (causal + not padding). The clamp mirrors HF's `pool_end.clamp(0, kv_len-1)`.
@@ -174,8 +252,16 @@ extern "C" __global__ void dsa_topk_pools(
     unsigned int Q,
     unsigned int P,
     unsigned int NP2,                   // next power of two >= P
-    unsigned int select_k
+    unsigned int select_k,
+    const int* __restrict__ geom        // [5] or null
 ) {
+    if (geom) {
+        P = (unsigned int)geom[DSA_GEOM_NPOOLS];
+        NP2 = (unsigned int)geom[DSA_GEOM_NP2];
+        select_k = (unsigned int)geom[DSA_GEOM_SELECT_K];
+    }
+    // Dynamic shared memory is requested at the CEILING under capture; the layout and the
+    // sort still run over this step's `NP2`, so the result is the eager result.
     extern __shared__ char raw_sh[];
     float* sv = (float*)raw_sh;
     int* si = (int*)(raw_sh + (size_t)NP2 * sizeof(float));
@@ -228,10 +314,16 @@ extern "C" __global__ void dsa_expand_selection(
     unsigned int select_k,
     unsigned int width,
     int first_key,
-    int always_tail
+    int always_tail,
+    const int* __restrict__ geom                    // [5] or null
 ) {
     const unsigned int r = blockIdx.x;
     const unsigned int tid = threadIdx.x;
+    if (geom) {
+        S = (unsigned int)geom[DSA_GEOM_S];
+        P = (unsigned int)geom[DSA_GEOM_NPOOLS];
+        select_k = (unsigned int)geom[DSA_GEOM_SELECT_K];
+    }
     int* row = out + (size_t)r * width;
 
     for (unsigned int i = tid; i < width; i += blockDim.x) row[i] = DSA_INVALID;
