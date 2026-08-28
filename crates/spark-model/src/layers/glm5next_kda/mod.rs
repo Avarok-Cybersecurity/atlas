@@ -155,6 +155,19 @@ pub struct Glm5NextKdaWeights {
 
 /// Every kernel the block launches. Resolved with `kernel()` (not `try_kernel`) so a missing
 /// entry point is a hard error rather than a silent fallback. Shareable across all 34 layers.
+/// V-columns one block of the 1R+1W recurrent kernel owns. One warp: 32 threads, and at
+/// `head_dim = 128` a 17.9 KiB scratch that leaves two blocks resident per SM.
+const KDA_V_PER_BLOCK: usize = 32;
+/// Shared memory the launcher will request without opting in past the default limit.
+const KDA_SMEM_BUDGET: usize = 48 * 1024;
+
+/// `ATLAS_GLM_KDA_NO_SMEM=1` restores the 2R+2W recurrent kernel. Read once — this is on
+/// the per-layer decode path.
+fn kda_no_smem() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("ATLAS_GLM_KDA_NO_SMEM").as_deref() == Ok("1"))
+}
+
 #[derive(Clone, Copy)]
 pub struct Glm5NextKdaKernels {
     pub gemm: KernelHandle,
@@ -169,6 +182,10 @@ pub struct Glm5NextKdaKernels {
     pub chunk_prepare: KernelHandle,
     pub chunk_scan: KernelHandle,
     pub recurrent: KernelHandle,
+    /// 1R+1W sibling of `recurrent`, **bit-identical**: the decayed state column lives in
+    /// shared memory between the two passes instead of being re-read from global.
+    /// `try_kernel` — a target without it falls back to the 2R+2W kernel.
+    pub recurrent_smem: KernelHandle,
     pub o_norm: KernelHandle,
     pub split_widen: KernelHandle,
     pub sigmoid: KernelHandle,
@@ -191,6 +208,11 @@ impl Glm5NextKdaKernels {
             chunk_prepare: gpu.kernel("kda_chunk", "kda_chunk_prepare")?,
             chunk_scan: gpu.kernel("kda_chunk", "kda_chunk_scan")?,
             recurrent: gpu.kernel("kda_recurrent", "kda_recurrent_decode_bf16")?,
+            recurrent_smem: crate::layers::try_kernel(
+                gpu,
+                "kda_recurrent",
+                "kda_recurrent_decode_bf16_smem",
+            ),
             o_norm: gpu.kernel("kda_layer_ops", "kda_o_norm_gated_bf16")?,
             split_widen: gpu.kernel("kda_layer_ops", "kda_split_widen")?,
             sigmoid: gpu.kernel("kda_layer_ops", "kda_sigmoid_bf16_f32")?,
@@ -554,21 +576,52 @@ impl Glm5NextKdaLayer {
             stream,
         )?;
 
-        KernelLaunch::new(gpu, self.kernels.recurrent)
-            .grid([c.heads as u32, 1, 1])
-            .block([BLOCK.min(c.head_dim as u32), 1, 1])
-            .shared_mem((3 * c.head_dim * 4) as u32)
-            .arg_ptr(ws.conv_out)
-            .arg_ptr(ws.conv_out.offset(qkv * 2))
-            .arg_ptr(ws.conv_out.offset(qkv * 4))
-            .arg_ptr(ws.gate)
-            .arg_ptr(ws.beta)
-            .arg_ptr(state.recurrent)
-            .arg_ptr(ws.core)
-            .arg_u32(c.heads as u32)
-            .arg_u32(c.head_dim as u32)
-            .arg_f32(1.0 / (c.head_dim as f32).sqrt())
-            .launch(stream)?;
+        let d = c.head_dim;
+        // 1R+1W when the target carries the shared-memory sibling. The V axis has no
+        // cross-thread dependency, so a block owns a SLICE of it: `vpb` columns need
+        // `vpb * (d + 1)` floats of scratch (the `+1` is the bank-conflict pad the kernel
+        // documents) and grid.y covers the rest. One warp per block keeps the request
+        // inside the 48 KiB default at the production `head_dim = 128`.
+        let vpb = KDA_V_PER_BLOCK.min(d);
+        let smem_smem = (3 * d + vpb * (d + 1)) * 4;
+        if self.kernels.recurrent_smem.0 != 0
+            && d.is_multiple_of(vpb)
+            && smem_smem <= KDA_SMEM_BUDGET
+            && !kda_no_smem()
+        {
+            KernelLaunch::new(gpu, self.kernels.recurrent_smem)
+                .grid([c.heads as u32, (d / vpb) as u32, 1])
+                .block([vpb as u32, 1, 1])
+                .shared_mem(smem_smem as u32)
+                .arg_ptr(ws.conv_out)
+                .arg_ptr(ws.conv_out.offset(qkv * 2))
+                .arg_ptr(ws.conv_out.offset(qkv * 4))
+                .arg_ptr(ws.gate)
+                .arg_ptr(ws.beta)
+                .arg_ptr(state.recurrent)
+                .arg_ptr(ws.core)
+                .arg_u32(c.heads as u32)
+                .arg_u32(d as u32)
+                .arg_f32(1.0 / (d as f32).sqrt())
+                .arg_u32(vpb as u32)
+                .launch(stream)?;
+        } else {
+            KernelLaunch::new(gpu, self.kernels.recurrent)
+                .grid([c.heads as u32, 1, 1])
+                .block([BLOCK.min(d as u32), 1, 1])
+                .shared_mem((3 * d * 4) as u32)
+                .arg_ptr(ws.conv_out)
+                .arg_ptr(ws.conv_out.offset(qkv * 2))
+                .arg_ptr(ws.conv_out.offset(qkv * 4))
+                .arg_ptr(ws.gate)
+                .arg_ptr(ws.beta)
+                .arg_ptr(state.recurrent)
+                .arg_ptr(ws.core)
+                .arg_u32(c.heads as u32)
+                .arg_u32(d as u32)
+                .arg_f32(1.0 / (d as f32).sqrt())
+                .launch(stream)?;
+        }
 
         self.back_end(gpu, 1, ws, stream)
     }
