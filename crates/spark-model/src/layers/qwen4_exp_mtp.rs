@@ -32,9 +32,40 @@
 //! ⚠ UNVERIFIED AGAINST A GOLDEN. HF's `modeling_qwen4_exp.py` carries
 //! `_keys_to_ignore_on_load_unexpected = [r"^mtp.*"]` and ships no MTP class,
 //! so no reference activations can be generated. The argument above is
-//! structural, not numerical. `ATLAS_QWEN4EXP_MTP_SHADOW=1` exists to settle it
-//! empirically: a wrong combiner costs ~100% of ACCEPTANCE and 0% of
-//! correctness, so a near-zero shadow accept rate falsifies it.
+//! structural, not numerical.
+//!
+//! # STATUS: NOT WORKING. Three open defects, in the order they must be fixed.
+//!
+//! **1. The body forward corrupts the target.** Bisect via
+//! `ATLAS_QWEN4EXP_MTP_SHADOW_STAGE` (measured, 250-token greedy completion
+//! against a shadow-off control):
+//! ```text
+//!   observe  -> output matches control exactly      INERT
+//!   combine  -> output matches control exactly      INERT
+//!   body     -> degenerate / empty, watchdog fires  CORRUPTS
+//! ```
+//! So the combiner and the highway save/restore are proven clean, and the draft
+//! BODY mutates state the target still needs. One cause was found and fixed —
+//! `hc_streams` is FP32 (`m*hc_mult*h*4`), and sizing the save/restore as BF16
+//! restored only HALF the highway — but that fix changed the SYMPTOM (degenerate
+//! text -> empty text) without curing it. At least one more shared-state
+//! dependency remains unidentified. Do not enable `body`/`full`.
+//!
+//! **2. The combiner is dtype-mismatched.** Same root discovery: the highway is
+//! FP32, but `rms_norm_strided` / `dense_gemv` / `residual_add` are BF16 ops, so
+//! this reads the FP32 streams as BF16 and writes BF16 back into an FP32 buffer.
+//! The draft is therefore numerically meaningless and the 0% accept rate
+//! measured so far says NOTHING about the combiner reading. Needs FP32-aware
+//! ops (no BF16->FP32 convert primitive exists today).
+//!
+//! **3. The combiner READING is genuinely open — two candidates.** The `[10240]`
+//! grouped-norm width argues for the per-stream form implemented here. But the
+//! loader's own note says the body runs "MIDDLE mHC mixing only — the proposer
+//! owns BOTH ENDS", i.e. the proposer is expected to supply an `hc_expand` at
+//! the front, which this form has no place for; that argues for a collapse-then-
+//! `hc_expand` form, which would equally explain the square `fc_hidden`. Decide
+//! it by implementing both behind `ATLAS_QWEN4EXP_MTP_COMBINER` and comparing
+//! shadow accept rates — but only AFTER (1) and (2), or the comparison is noise.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,6 +111,12 @@ struct MtpBuffers {
     residual: DevicePtr,
     /// `[hc_mult * hidden]` low-rank head scratch.
     head_scratch: DevicePtr,
+    /// `[vocab]` BF16. The shadow step reuses the TARGET's `lm_head` (so the
+    /// draft's logits go through the same quantization ladder the real token
+    /// did), and that writes `buffers.logits()` — the buffer the scheduler is
+    /// about to sample from. The target's logits are parked here first and put
+    /// back afterwards, so the draft cannot change what the model emits.
+    logits_stash: DevicePtr,
 }
 
 pub struct Qwen4ExpMtpHead {
@@ -105,6 +142,39 @@ pub fn shadow_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_SHADOW").as_deref() == Ok("1"))
 }
 
+/// How far the shadow step runs — a BISECTION handle, not a feature.
+///
+/// Shadow mode was observed to change the target's own output (a thinking-loop
+/// degeneration, watchdog-forced `</think>`), which means something in the draft
+/// step mutates state the target still needs. Rather than guess which buffer,
+/// this walks the step forward one stage at a time and the operator watches for
+/// the first stage whose output stops matching the shadow-off control.
+///
+/// `ATLAS_QWEN4EXP_MTP_SHADOW_STAGE` = observe | combine | body | full (default).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShadowStage {
+    /// argmax the target's logits and count only. Touches NOTHING else.
+    Observe,
+    /// + the combiner (writes `hc_streams`, then restores it).
+    Combine,
+    /// + the draft body forward.
+    Body,
+    /// + the draft's own final norm / LM head / argmax.
+    Full,
+}
+
+pub fn shadow_stage() -> ShadowStage {
+    static S: std::sync::OnceLock<ShadowStage> = std::sync::OnceLock::new();
+    *S.get_or_init(
+        || match std::env::var("ATLAS_QWEN4EXP_MTP_SHADOW_STAGE").as_deref() {
+            Ok("observe") => ShadowStage::Observe,
+            Ok("combine") => ShadowStage::Combine,
+            Ok("body") => ShadowStage::Body,
+            _ => ShadowStage::Full,
+        },
+    )
+}
+
 impl Qwen4ExpMtpHead {
     pub fn new(
         module: Qwen4ExpMtpModule,
@@ -116,7 +186,8 @@ impl Qwen4ExpMtpHead {
         let h = config.hidden_size;
         let hc = config.hc_mult.max(1);
         let row = h * 2;
-        let streams_bytes = hc * row;
+        // FP32 highway (4 B/elem) — see the note in `draft_hidden`.
+        let streams_bytes = hc * h * 4;
 
         // The body was built with `attn_idx = 0`, so this pool needs exactly
         // ONE layer — and the body must NEVER be handed the main model's pool,
@@ -163,12 +234,13 @@ impl Qwen4ExpMtpHead {
                 body_scratch: gpu.alloc(row)?,
                 residual: gpu.alloc(row)?,
                 head_scratch: gpu.alloc(streams_bytes.max(row * 4))?,
+                logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
             // Atlas's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
             // this checkpoint's norm weights are offset-from-1 like the rest of
             // the qwen4_exp tree.
-            rms_norm_k: gpu.kernel("rms_norm", "rms_norm")?,
-            rms_norm_strided_k: gpu.kernel("rms_norm", "rms_norm_strided")?,
+            rms_norm_k: gpu.kernel("norm", "rms_norm")?,
+            rms_norm_strided_k: gpu.kernel("norm", "rms_norm_strided")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             hc_head_k: gpu.kernel("hyper_connection", "hc_head")?,
@@ -186,6 +258,29 @@ impl Qwen4ExpMtpHead {
         })
     }
 
+    /// Park the target's logits so the draft's `lm_head` cannot change what the
+    /// model emits. MUST be paired with [`Self::restore_logits`].
+    pub fn stash_logits(
+        &self,
+        gpu: &dyn GpuBackend,
+        logits: DevicePtr,
+        vocab: usize,
+        stream: u64,
+    ) -> Result<()> {
+        gpu.copy_d2d_async(logits, self.buf.logits_stash, vocab * 2, stream)
+    }
+
+    /// Put the target's logits back after the draft has used the buffer.
+    pub fn restore_logits(
+        &self,
+        gpu: &dyn GpuBackend,
+        logits: DevicePtr,
+        vocab: usize,
+        stream: u64,
+    ) -> Result<()> {
+        gpu.copy_d2d_async(self.buf.logits_stash, logits, vocab * 2, stream)
+    }
+
     /// Record a shadow observation and return the running accept rate.
     pub fn shadow_observe(&self, drafted: Option<u32>, actual: u32) {
         if let Some(d) = drafted {
@@ -194,7 +289,7 @@ impl Qwen4ExpMtpHead {
                 self.shadow_hits.fetch_add(1, Ordering::Relaxed);
             }
             let n = self.shadow_drafts.load(Ordering::Relaxed);
-            if n.is_multiple_of(32) {
+            if n.is_multiple_of(16) {
                 let hits = self.shadow_hits.load(Ordering::Relaxed);
                 tracing::info!(
                     "qwen4_exp MTP shadow: {hits}/{n} drafts matched the target \
@@ -226,10 +321,38 @@ impl Qwen4ExpMtpHead {
         let eps = ctx.config.rms_norm_eps as f32;
         let row = h as usize * 2;
 
-        // Copy the target's streams into private memory FIRST. The body writes
-        // through its own highway, and the target's buffer must not be touched.
+        // ★ THE BODY'S HIGHWAY IS `ctx.buffers.hc_streams()`, NOT a buffer we
+        // can hand it. `decode_inner_hc` reads and writes the multi-stream state
+        // through that buffer directly — the `hidden` argument is only the
+        // single-stream scratch hc_pre collapses into. Two consequences, both
+        // measured the hard way (0/240 accept AND a corrupted, truncated target
+        // response when this was got wrong):
+        //
+        //   1. the combiner's output must be written INTO `hc_streams`, or the
+        //      body silently runs on the target's highway and the draft is
+        //      meaningless;
+        //   2. that highway is PERSISTENT per-sequence state, so it must be
+        //      saved and put back, or the draft destroys the target's next step.
+        //
+        // `buf.streams` is the save slot; the combiner reads from it and writes
+        // into `hc_streams`.
+        //
+        // ★★ THE HIGHWAY IS FP32, NOT BF16. `BufferSizes` allocates it as
+        // `m * hc_mult * h * 4` with the comment "the residual streams grow
+        // large across the blocks ... so BF16 storage swamps the small
+        // per-layer signal at scale and collapses generation".
+        //
+        // Sizing this as BF16 was a REAL corruption: the save/restore covered
+        // only the first HALF of the highway, so the body's full-width FP32
+        // writes survived the restore and poisoned every later target step
+        // (measured: a thinking-loop degeneration, watchdog-forced `</think>`,
+        // truncated answer). The bisect is the proof — the `combine` stage was
+        // clean precisely BECAUSE it only ever touched, and then restored, that
+        // same first half.
+        let hc_bytes = hc as usize * h as usize * 4;
+        let body_streams = ctx.buffers.hc_streams();
         ctx.gpu
-            .copy_d2d_async(target_streams, self.buf.streams, hc as usize * row, stream)?;
+            .copy_d2d_async(target_streams, self.buf.streams, hc_bytes, stream)?;
 
         // ── 1. Embedding branch ──
         let src = self.embed_tokens.weight.offset(last_token as usize * row);
@@ -281,12 +404,16 @@ impl Qwen4ExpMtpHead {
             )?;
             // fc_hidden is shared across streams; apply it to this stream and
             // add the (broadcast) embedding projection in place.
+            //
+            // Destination is `body_streams` (= ctx.buffers.hc_streams()), which
+            // is where the body will look. `buf.streams` must stay untouched —
+            // it is the target's saved highway, restored below.
             ops::dense_gemv(
                 ctx.gpu,
                 self.dense_gemv_k,
                 self.buf.normed_streams.offset(off),
                 &self.module.fc_hidden,
-                self.buf.streams.offset(off),
+                body_streams.offset(off),
                 h,
                 h,
                 stream,
@@ -294,11 +421,20 @@ impl Qwen4ExpMtpHead {
             ops::residual_add(
                 ctx.gpu,
                 self.residual_add_k,
-                self.buf.streams.offset(off),
+                body_streams.offset(off),
                 self.buf.embed_proj,
                 h,
                 stream,
             )?;
+        }
+
+        // BISECTION: stop after the combiner, restoring the highway. If the
+        // target's output is clean here but dirty at `body`, the body forward
+        // owns the corruption.
+        if shadow_stage() < ShadowStage::Body {
+            ctx.gpu
+                .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
+            return Ok(());
         }
 
         // ── 3. Body decode against the module's OWN cache ──
@@ -350,7 +486,9 @@ impl Qwen4ExpMtpHead {
 
         let mut disk_block_ids: Vec<u32> = Vec::new();
         let mut disk_last_offloaded: Vec<u32> = vec![0u32; 1];
-        self.module.body.decode(
+        // Result captured, NOT `?`: an early return here would leave the
+        // draft's streams in the target's persistent highway.
+        let body_res = self.module.body.decode(
             self.buf.body_scratch,
             self.buf.residual,
             state.body_state.as_mut(),
@@ -361,8 +499,13 @@ impl Qwen4ExpMtpHead {
             &mut disk_last_offloaded,
             &mtp_ctx,
             stream,
-        )?;
+        );
         drop(kv_cache);
+        if body_res.is_err() {
+            ctx.gpu
+                .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
+            body_res?;
+        }
 
         // ── 4. mHC head: collapse the module's streams → h_out ──
         // qwen4_exp's head is LOW-RANK, which is exactly the arm DeepSeek-V4's
@@ -375,10 +518,12 @@ impl Qwen4ExpMtpHead {
         let lowrank = head.lowrank.as_ref().ok_or_else(|| {
             anyhow::anyhow!("qwen4_exp MTP: hc_head is not low-rank; this model's is")
         })?;
-        ops::hc_head_lowrank(
+        // Collapse the DRAFT's highway (which the body just wrote through
+        // `body_streams`), not the saved target one.
+        let collapse = ops::hc_head_lowrank(
             ctx.gpu,
             self.hc_head_k,
-            self.buf.streams,
+            body_streams,
             lowrank,
             h_out,
             self.buf.head_scratch,
@@ -387,7 +532,15 @@ impl Qwen4ExpMtpHead {
             hc,
             eps,
             stream,
-        )?;
+        );
+
+        // ★ RESTORE THE TARGET'S HIGHWAY, unconditionally and before returning
+        // any error. `hc_streams` is persistent per-sequence state: leaving the
+        // draft's streams in it corrupts every subsequent target step, which is
+        // exactly how this bug first showed up (a truncated, rewritten answer).
+        ctx.gpu
+            .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
+        collapse?;
 
         state.seq_len += 1;
         Ok(())

@@ -747,6 +747,8 @@ impl TransformerModel {
             // Installed post-construction via `set_qwen4_exp_mtp` (the module
             // is loaded in `factory::build`, which owns the WeightStore).
             qwen4_exp_mtp: None,
+            qwen4_exp_mtp_head: None,
+            qwen4_exp_mtp_state: None,
             mtp_hidden_save,
             verify_hidden_stash,
             mtp_catchup_ring,

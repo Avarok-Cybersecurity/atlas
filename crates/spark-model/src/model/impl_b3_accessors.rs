@@ -8,6 +8,8 @@ use spark_runtime::gpu::GpuBackend;
 
 use super::types::TransformerModel;
 use crate::speculative::DraftProposer;
+// `argmax_on_device` lives on the Model trait; the shadow step calls it.
+use crate::traits::Model;
 
 impl TransformerModel {
     /// Borrow the GPU backend for post-construction wiring (e.g. installing
@@ -55,6 +57,132 @@ impl TransformerModel {
              device buffers are not leaked; no proposer consumes it yet)"
         );
         self.qwen4_exp_mtp = Some(module);
+    }
+
+    /// Install the qwen4_exp MTP draft head for SHADOW measurement.
+    ///
+    /// The head owns the module, so this replaces `set_qwen4_exp_mtp` rather
+    /// than accompanying it. Installing it does NOT enable speculation:
+    /// `has_proposer()` is unaffected and nothing feeds a draft back into the
+    /// sequence. It only lets the decode path ask "would this draft have been
+    /// right?" and count.
+    pub fn set_qwen4_exp_mtp_head(
+        &mut self,
+        module: crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule,
+        embed_tokens: crate::weight_map::DenseWeight,
+        max_seq_len: usize,
+    ) -> anyhow::Result<()> {
+        // Built here rather than in the factory because the model owns `gpu`
+        // by this point.
+        let head = crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead::new(
+            module,
+            embed_tokens,
+            &self.config,
+            self.gpu.as_ref(),
+            max_seq_len,
+        )?;
+        let state = head.alloc_state(self.gpu.as_ref())?;
+        tracing::warn!(
+            "qwen4_exp MTP SHADOW MODE is on. ⚠ THE DEFAULT `full`/`body` STAGE \
+             IS KNOWN TO CORRUPT THIS SERVER'S OUTPUT — the draft body forward \
+             mutates state the target still needs, and generation degenerates \
+             (thinking-loop watchdog / empty or truncated answers). Only \
+             ATLAS_QWEN4EXP_MTP_SHADOW_STAGE=observe and =combine are verified \
+             inert against a shadow-off control. Do NOT serve real traffic with \
+             this on, and do not benchmark with it: it also costs a full extra \
+             draft forward per token and produces no speedup."
+        );
+        self.qwen4_exp_mtp_head = Some(head);
+        self.qwen4_exp_mtp_state = Some(std::sync::Mutex::new(state));
+        Ok(())
+    }
+
+    /// Run one shadow draft step: score the previous step's draft against the
+    /// token the target just produced, then draft the next one.
+    ///
+    /// `target_streams` is the four-stream mHC highway for the row that
+    /// produced `actual_token`. No-op unless shadow mode is installed.
+    pub(super) fn qwen4_exp_mtp_shadow_step(
+        &self,
+        actual_token: u32,
+        target_streams: spark_runtime::gpu::DevicePtr,
+        position: usize,
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+    ) {
+        let (Some(head), Some(state)) = (&self.qwen4_exp_mtp_head, &self.qwen4_exp_mtp_state)
+        else {
+            return;
+        };
+        use crate::layers::qwen4_exp_mtp::{ShadowStage, shadow_stage};
+        let Ok(mut st) = state.lock() else { return };
+        // Score the draft made LAST step against what the target actually just
+        // emitted. This is the whole measurement.
+        head.shadow_observe(st.pending_draft.take(), actual_token);
+
+        // BISECTION stage 1: count only. If the target's output is DIRTY even
+        // here, the corruption is the extra `argmax_on_device` itself (it writes
+        // `buffers.scratch()` and runs on the DEFAULT stream, not this one) —
+        // not the draft forward.
+        if shadow_stage() == ShadowStage::Observe {
+            return;
+        }
+
+        // Draft the NEXT token from (token just emitted, this row's highway).
+        let h_out = self.mtp_hidden_save;
+        if let Err(e) = head.draft_hidden(
+            actual_token,
+            target_streams,
+            position,
+            &mut st,
+            h_out,
+            ctx,
+            stream,
+        ) {
+            // Shadow is diagnostic: never fail the real decode over it.
+            tracing::warn!("qwen4_exp MTP shadow draft failed, disabling: {e:#}");
+            return;
+        }
+        // BISECTION stage 3: stop before the draft's own LM head.
+        if shadow_stage() < ShadowStage::Full {
+            return;
+        }
+
+        // Finish with the target's own head so the draft's logits go through
+        // the same quantization ladder the real token did.
+        //
+        // ⚠ `lm_head` writes `buffers.logits()` — the SAME buffer the scheduler
+        // is about to sample the real token from. Park it and put it back, or
+        // this diagnostic would silently change the model's output.
+        let logits = self.decode_logits_ptr();
+        let vocab = self.config.vocab_size;
+        if head
+            .stash_logits(self.gpu.as_ref(), logits, vocab, stream)
+            .is_err()
+        {
+            return;
+        }
+        let normed = self.buffers.norm_output();
+        let h = self.config.hidden_size as u32;
+        let eps = self.config.rms_norm_eps as f32;
+        let drafted = self
+            .final_norm_apply(h_out, normed, 1, h, eps, stream)
+            .and_then(|()| self.lm_head(normed, stream))
+            .and_then(|_| self.argmax_on_device(logits, 0));
+        // Restore FIRST, unconditionally — an error above must not leave the
+        // scheduler reading the draft's logits.
+        if let Err(e) = head.restore_logits(self.gpu.as_ref(), logits, vocab, stream) {
+            tracing::error!(
+                "qwen4_exp MTP shadow could not restore the target logits ({e:#}); \
+                 the emitted token for this step may be the DRAFT's. Disable \
+                 ATLAS_QWEN4EXP_MTP_SHADOW."
+            );
+            return;
+        }
+        match drafted {
+            Ok(d) => st.pending_draft = Some(d),
+            Err(e) => tracing::warn!("qwen4_exp MTP shadow draft head failed: {e:#}"),
+        }
     }
 
     /// Install the fused n-gram input embedding (LongCat family). Once set,

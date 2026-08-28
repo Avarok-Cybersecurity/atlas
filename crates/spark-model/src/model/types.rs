@@ -213,6 +213,16 @@ pub struct TransformerModel {
     /// not a saving. It is deliberately NOT in `layers`: its body was built at
     /// `attn_idx = 0` and must never be handed the shared paged KV pool.
     pub(super) qwen4_exp_mtp: Option<Box<crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule>>,
+    /// SHADOW MODE ONLY (`ATLAS_QWEN4EXP_MTP_SHADOW=1`): the draft head, which
+    /// owns the module. Present INSTEAD of `qwen4_exp_mtp` when shadow is on.
+    /// It drafts a token each decode step and records whether the target's next
+    /// token matches — nothing is ever fed back, so no speculation occurs.
+    pub(super) qwen4_exp_mtp_head: Option<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead>,
+    /// The head's single-sequence draft state. Shadow mode is C=1 only: one
+    /// state, so a concurrent batch would interleave two sequences' drafts into
+    /// it. The shadow step refuses to run when the batch is wider than one.
+    pub(super) qwen4_exp_mtp_state:
+        Option<std::sync::Mutex<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpState>>,
     /// Dedicated buffer for saving hidden state before MTP head runs.
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.

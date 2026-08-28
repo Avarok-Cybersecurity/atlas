@@ -605,6 +605,12 @@ impl TransformerModel {
                 }
             }
 
+            // NOTE: the MTP shadow hook is NOT here. `decode_batch_dispatch`
+            // returns early for n == 1 (delegating to `decode()`), so a hook on
+            // this batched path would never fire on the single-sequence decode
+            // it is meant to measure. It lives in `decode_a.rs` instead. Shadow
+            // mode is C=1 only anyway — the head keeps one draft state.
+
             // Restore real layer_states to sequences (dummy states dropped)
             for (seq, ls) in seqs.iter_mut().zip(all_layer_states.drain(..n)) {
                 seq.layer_states = ls;

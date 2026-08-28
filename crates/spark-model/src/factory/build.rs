@@ -634,6 +634,9 @@ pub fn build_model(
     // shares embed_tokens + lm_head with the target). DenseWeight is Copy
     // so this clones the device pointer cheaply.
     let target_embed_for_dflash = embed.weight;
+    // Same trick for the MTP draft head: it gathers the next-token embedding
+    // from the shared table. `DenseWeight` is Copy, so this is a pointer.
+    let target_embed_for_mtp = embed;
     let target_lm_head_for_dflash = lm_head.weight;
     // NVFP4 lm_head (Copy) shared with the DFlash drafter so its final logits
     // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
@@ -701,7 +704,22 @@ pub fn build_model(
     // buffers for the process lifetime. No proposer is built from it yet, so
     // `has_proposer()` stays false and speculation stays off.
     if let Some(module) = qwen4_exp_mtp_module {
-        model.set_qwen4_exp_mtp(module);
+        // SHADOW MODE builds the draft head, which consumes the module and
+        // allocates its own single-layer KV pool. Off by default: without
+        // ATLAS_QWEN4EXP_MTP_SHADOW the module is just held (unchanged
+        // behaviour), because the head's pool is real memory outside the util
+        // pledge and nothing should pay for it unless it is being measured.
+        if crate::layers::qwen4_exp_mtp::shadow_enabled() {
+            if let Err(e) = model.set_qwen4_exp_mtp_head(*module, target_embed_for_mtp, max_seq_len)
+            {
+                tracing::error!(
+                    "qwen4_exp MTP shadow head FAILED to build: {e:#}. \
+                     Serving continues with no MTP."
+                );
+            }
+        } else {
+            model.set_qwen4_exp_mtp(module);
+        }
     }
 
     // ── Step 7: DFlash drafter (optional, post-construction) ──
