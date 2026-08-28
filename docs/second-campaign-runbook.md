@@ -70,6 +70,27 @@ wrong — but check for that file before assuming you need it:
 
     ls $ATLAS_HOME/runs/ttft-{cold,warm}-gate/baseline-*.json
 
+## Check the branch has not moved, between gates AND during them
+
+`scripts/campaign-guard.sh <anchor-sha> <branch>` answers that in seconds:
+
+    scripts/campaign-guard.sh 0c402bac0 wip/radixark-qwen4-exp
+
+    0  the anchor still describes the branch (unmoved, or moved harmlessly)
+    1  a PERF_PATH moved; whatever is running is measuring a dead tree
+    2  it could not answer — treat as a stop, never as safe
+
+It asks a CONTENT question, not a SHA one: a branch that moved for a docs or
+scripts commit leaves the anchor intact and exits 0. Aborting a nine-hour
+campaign over a README would be self-inflicted waste.
+
+Call it before each gate AND on a timer during them. A pre-gate check alone
+leaves a two-hour blind window on the BFCL legs, and that is exactly where the
+2026-08-28 invalidation landed — a push twenty minutes INTO the final gate.
+
+On a perf-path move, kill the running gate rather than letting it finish. A
+completed record for a superseded tree is the mistake repeated, not salvage.
+
 ## Judge by the record, never by rc
 
     ./target/release/spark benchmark --pull-request-gate-check --pr 746
