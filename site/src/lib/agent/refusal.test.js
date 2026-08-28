@@ -35,6 +35,27 @@ describe('each failure names the machine it belongs to', () => {
     expect(r.text).toBe('the relay could not reach dgx3: answer budget elapsed');
   });
 
+  test('the relay is named from inside the error, where `by` never reaches', () => {
+    // The browser frame the agent actually sends: no `by` at all, because
+    // `session/remote.rs` keeps only the error. Before `via` existed this
+    // read "the relay could not reach dgx3" — true, useless, and one box
+    // short of telling the operator where to look.
+    const r = refusal({ error: { code: 'relay_refused', node: DGX3, via: DGX1, detail: 'dial timed out' } }, CTX);
+    expect(r.blame).toBe('relay');
+    expect(r.text).toBe('dgx1 could not reach dgx3: dial timed out');
+  });
+
+  test('`via` outranks `by`: it is built where the failure happened', () => {
+    // They agree on one hop, so a disagreement means something is wrong and
+    // the structural field — written by the code that produced the error,
+    // not by whoever forwarded it — is the one to believe.
+    const r = refusal(
+      { by: DGX3, error: { code: 'relay_refused', node: DGX3, via: DGX1, detail: 'dial timed out' } },
+      CTX
+    );
+    expect(r.text).toBe('dgx1 could not reach dgx3: dial timed out');
+  });
+
   test('no route is a local fact: the fix is pairing, not a relay log', () => {
     const r = refusal(
       { error: { code: 'not_routable', node: DGX3, reason: 'not pinned and no reachable voucher' } },

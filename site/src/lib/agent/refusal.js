@@ -46,15 +46,13 @@ function verbatim(text) {
  * @param {{by?: string|null, error?: object|null, message?: string|null}|null} outcome
  *   `by` is who refused, when anything told us.
  *
- *   Nothing does today, and saying otherwise would document plumbing that does
- *   not exist: the agent drops `ControlRep::Refused.by` when it translates a
- *   peer's refusal into a browser frame (`session/remote.rs`), so every call
- *   site here passes nothing and the `?? target` default is the whole
- *   attribution. That default is right for the ordinary case — a forwarded
- *   verb's errors do come from the target — and WRONG for an error the relay
- *   itself emitted, which is then labelled as the target's. The parameter is
- *   kept because the fix is to thread `by` through the agent, not to pretend
- *   the distinction does not exist.
+ *   The agent still drops `ControlRep::Refused.by` when it translates a peer's
+ *   refusal into a browser frame (`session/remote.rs`), so on this page `by`
+ *   is normally absent and the `?? target` default carries the attribution.
+ *   That default is right for the ordinary case — a forwarded verb's errors do
+ *   come from the target. For the case it got WRONG, a relay's own failure
+ *   worn as the target's, the relay is now named structurally inside the
+ *   error (`RelayRefused.via`), which survives the translation losing `by`.
  *   `error` is the `AgentError`; `message` is transport-level prose.
  * @param {{target: string|null, nodes: object[]}} ctx
  *   `target` is who the verb was aimed at (`on`), null for this machine.
@@ -82,10 +80,17 @@ export function refusal(outcome, ctx) {
         blame: 'target'
       };
 
-    // The relay declined or failed to carry it. `error.node` is the TARGET;
-    // the refusing relay is named by `by` when the reply carried one.
+    // The relay declined or failed to carry it. `error.node` is the TARGET,
+    // so the relay's own name has to come from somewhere else.
+    //
+    // `error.via` first: it rides inside the error, so it is the only one of
+    // the two that survives being translated into a browser frame, and the
+    // only one that exists at all when the ORIGIN could not dial the relay
+    // (no `ControlRep` was ever received, so there is no `by`).
+    // `outcome.by` second, for a refusal read straight off the peer wire.
     case 'relay_refused': {
-      const relay = outcome?.by ? nameOf(outcome.by, nodes) : 'the relay';
+      const who = error.via ?? outcome?.by ?? null;
+      const relay = who ? nameOf(who, nodes) : 'the relay';
       return {
         text: `${relay} could not reach ${nameOf(error.node, nodes)}: ${verbatim(error.detail)}`,
         blame: 'relay'
