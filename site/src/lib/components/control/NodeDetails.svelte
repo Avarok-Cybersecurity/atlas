@@ -13,6 +13,7 @@
   // and the card cannot show that without becoming unreadable.
 
   import { linkWarns } from '$lib/agent/fleet.svelte.js';
+  import { modal } from './modal.js';
 
   let { node, onclose } = $props();
 
@@ -22,8 +23,9 @@
   // markup claims `role="dialog" aria-modal="true"` while Tab walks straight
   // into the page behind it and Escape does nothing — an assistive-technology
   // user is told they are in a modal and then handed no way out of it.
+  // Focus in, Tab trap and focus-return live in modal.js (use:modal below);
+  // Esc keeps its window listener so it works wherever focus wanders.
   $effect(() => {
-    dialogEl?.focus();
     const onKey = (ev) => {
       if (ev.key === 'Escape') onclose?.();
     };
@@ -55,6 +57,7 @@
   aria-labelledby="nd-title"
   tabindex="-1"
   bind:this={dialogEl}
+  use:modal
 >
   <header class="ld-head">
     <h3 class="ld-title" id="nd-title">{node.name}</h3>

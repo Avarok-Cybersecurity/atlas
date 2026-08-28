@@ -13,6 +13,7 @@ import {
   storedToken,
   versionAdvice
 } from './protocol.js';
+import * as msgs from './control-msgs.js';
 
 /** How long to wait for an agent before deciding there is not one. */
 const CONNECT_TIMEOUT_MS = 1500;
@@ -190,19 +191,38 @@ export class AgentClient {
     return true;
   }
 
+  // The control verbs delegate every frame they put on the wire to
+  // `control-msgs.js`, where the shapes are built pure and tested byte-exact
+  // against protocol 4. This file is transport only.
+  //
+  // `on` defaults to null — this machine — and `allow_control` to false at
+  // THIS layer only: existing call sites are all local and consentless, and
+  // the builders still demand the value written out, so the default is said
+  // exactly once, here, rather than implied at every call site.
+
   /** Render the command a launch would run, without running it. */
-  async preview(recipe, settings = {}) {
-    return this.#request({ type: 'preview', recipe, settings });
+  async preview(recipe, settings = {}, on = null) {
+    return this.#dispatch((id) => msgs.preview(id, recipe, settings, on));
   }
 
   /** Start a recipe. */
-  async launch(recipe, settings = {}) {
-    return this.#request({ type: 'launch', recipe, settings });
+  async launch(recipe, settings = {}, on = null) {
+    return this.#dispatch((id) => msgs.launch(id, recipe, settings, on));
   }
 
   /** Stop a recipe. */
-  async stop(recipe) {
-    return this.#request({ type: 'stop', recipe });
+  async stop(recipe, on = null) {
+    return this.#dispatch((id) => msgs.stop(id, recipe, on));
+  }
+
+  /** What is running on a node right now. */
+  async status(on = null) {
+    return this.#dispatch((id) => msgs.status(id, on));
+  }
+
+  /** The recipe inventory of any node, not just this one. */
+  async listRecipes(on = null) {
+    return this.#dispatch((id) => msgs.listRecipes(id, on));
   }
 
   /** The fleet as the agent currently sees it. */
@@ -237,8 +257,8 @@ export class AgentClient {
   }
 
   /** Trust a peer whose exchange completed and whose words the operator accepted. */
-  confirmPairing(node) {
-    return this.#request({ type: 'confirm_pairing', node });
+  confirmPairing(node, allowControl = false) {
+    return this.#dispatch((id) => msgs.confirmPairing(id, node, allowControl));
   }
 
   /** Discard a completed exchange. Nothing was written, so nothing is undone. */
@@ -252,8 +272,8 @@ export class AgentClient {
    * Answers with the digits and this node's dialable addresses, which is
    * everything needed to build the command the operator pastes elsewhere.
    */
-  mintJoinCode() {
-    return this.#request({ type: 'mint_join_code' });
+  mintJoinCode(allowControl = false) {
+    return this.#dispatch((id) => msgs.mintJoinCode(id, allowControl));
   }
 
   /** Close an outstanding join window. */
@@ -283,13 +303,13 @@ export class AgentClient {
 
   /** Abandon a prepare, releasing every reservation. */
   /** How a running launch is doing. */
-  launchStats(recipe) {
-    return this.#request({ type: 'launch_stats', recipe });
+  launchStats(recipe, on = null) {
+    return this.#dispatch((id) => msgs.launchStats(id, recipe, on));
   }
 
   /** The tail of a launch's log. */
-  launchLogs(recipe, lines = 200) {
-    return this.#request({ type: 'launch_logs', recipe, lines });
+  launchLogs(recipe, lines = 200, on = null) {
+    return this.#dispatch((id) => msgs.launchLogs(id, recipe, lines, on));
   }
 
   /** Stop every rank of the cluster this agent started. */
@@ -320,6 +340,32 @@ export class AgentClient {
     if (this.phase !== 'ready') return { ok: false, message: 'No agent is connected.' };
     const id = this.#nextId++;
     this.#send({ ...msg, id });
+    return this.#settle(id);
+  }
+
+  /**
+   * Send a frame built by `control-msgs.js`, which receives the correlation
+   * id because the builders emit it in wire order rather than appended.
+   *
+   * A builder throw is a caller bug — a malformed recipe id, a forgotten
+   * target — but this class's contract is that every method resolves, so it
+   * is reported the same way every other local failure is.
+   */
+  async #dispatch(build) {
+    if (this.phase !== 'ready') return { ok: false, message: 'No agent is connected.' };
+    const id = this.#nextId++;
+    let frame;
+    try {
+      frame = build(id);
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+    this.#send(frame);
+    return this.#settle(id);
+  }
+
+  /** Wait for the reply to `id` and fold it into the resolve-only contract. */
+  async #settle(id) {
     const reply = await this.#awaitId(id);
     if (!reply) return { ok: false, message: 'The agent did not reply.' };
     if (reply.type === 'error') return { ok: false, message: describeError(reply.error), error: reply.error };

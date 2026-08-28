@@ -18,9 +18,11 @@
   import LaunchStats from './LaunchStats.svelte';
   import LaunchLogs from './LaunchLogs.svelte';
 
-  let { fleet } = $props();
+  // `flow` is BOUND from the page, not owned here: the prepare survives the
+  // overlay closing, the rail's cluster summary reads the same state, and
+  // the overlay's pinned footer drives `abandon()` from outside.
+  let { fleet, flow = $bindable(L.initial()) } = $props();
 
-  let flow = $state(L.initial());
   let overrides = $state({});
   let showSettings = $state(false);
   let copied = $state('');
@@ -52,11 +54,6 @@
   const busy = $derived(L.BUSY.includes(flow.phase));
   const held = $derived(flow.epoch != null && flow.phase === 'prepared');
 
-  // Whatever this machine is serving, however it was launched — including a
-  // launch from a previous run of the agent, which it re-adopts rather than
-  // forgetting.
-  const runningHere = $derived(fleet.local?.running ?? null);
-
   const defaults = $derived(recipe?.defaults ?? {});
   const changed = $derived(O.changedCount(overrides, defaults));
   const wire = $derived(O.toWire(overrides, defaults));
@@ -75,6 +72,10 @@
   $effect(() => {
     if (recipeRestored || recipes.length === 0) return;
     recipeRestored = true;
+    // Only a fresh flow restores. This surface now unmounts with its overlay
+    // while the flow lives on at the page, so a remount mid-ceremony would
+    // otherwise overwrite a held prepare with last week's preference.
+    if (flow.phase !== 'choosing' || flow.recipe != null) return;
     const id = profile.recipe;
     if (id == null || !recipes.some((r) => r.id === id)) return;
     flow = L.setRecipe(L.initial(), id);
@@ -89,6 +90,8 @@
     // operator who never selected anything has nothing to restore, and
     // latching on their behalf costs nothing either way.
     selectionRestored = true;
+    // Same guard as the recipe restore: never touch a flow that has moved.
+    if (flow.phase !== 'choosing' || flow.selected.length > 0) return;
     if (profile.selected.length === 0) return;
 
     const live = new Set(candidates.map((n) => n.id));
@@ -152,7 +155,7 @@
 
   const doStop = () => run(L.beginStop, () => fleet.agent.stopCluster(), L.stopped);
 
-  async function doAbandon() {
+  export async function abandon() {
     const epoch = flow.epoch;
     // Optimistic: the reservations are released whether or not this reply
     // arrives, and leaving the operator staring at a spinner would tempt them
@@ -205,16 +208,6 @@
 </script>
 
 <div class="lc">
-  {#if runningHere && flow.started.length === 0}
-    <div class="lc-here">
-      <p class="lc-here-head">
-        <strong>{runningHere}</strong> is running on {fleet.local?.name ?? 'this machine'}.
-      </p>
-      <LaunchStats {fleet} recipe={runningHere} />
-      <LaunchLogs {fleet} recipe={runningHere} />
-    </div>
-  {/if}
-
   <div class="lc-pick">
     <label class="lc-field">
       <span>Recipe</span>
@@ -371,14 +364,13 @@
       {#if L.mayCommit(flow)}
         <div class="lc-commit">
           <button class="btn btn-primary" onclick={doCommit}>Start the cluster</button>
-          <button class="btn" onclick={doAbandon}>Release the reservations</button>
         </div>
+        <p class="lc-note">Changed your mind? Abort below releases every reservation.</p>
       {:else if held}
         <p class="lc-note">
           Not every machine agreed, so nothing can start. The reservations that were taken have already been
-          released.
+          released — Abort below returns to the plan.
         </p>
-        <button class="btn" onclick={doAbandon}>Back to the plan</button>
       {/if}
     </div>
   {/if}

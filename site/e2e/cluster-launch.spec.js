@@ -15,15 +15,22 @@ test.describe('@live cluster launch', () => {
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((t) => {
-      window.localStorage.setItem('atlasctl.token', t);
+      // The key the app actually reads (`TOKEN_KEY` in protocol.js). It was
+      // 'atlasctl.token' here, which stores a value nothing looks for: the page
+      // never dials, `fleet.mode` never reaches 'live', and every assertion
+      // below times out waiting for a surface that cannot mount. A @live spec
+      // that cannot pass is worse than no spec, because it reads as coverage.
+      window.localStorage.setItem('atlas.agent.token', t);
     }, TOKEN);
   });
 
   test('previews a two-node launch with a command per machine', async ({ page }) => {
-    await page.goto('/control');
+    // The pre-bridge anchor survives as a deep link: #launch opens the
+    // cluster overlay, which carries the id.
+    await page.goto('/control#launch');
 
     const launch = page.locator('#launch');
-    await expect(launch).toBeVisible();
+    await expect(launch).toBeVisible({ timeout: 20_000 });
 
     // The recipe list comes from the agent, so its arrival proves the socket is
     // live rather than that the page rendered.
@@ -50,8 +57,9 @@ test.describe('@live cluster launch', () => {
   });
 
   test('reserves both machines and then releases them', async ({ page }) => {
-    await page.goto('/control');
+    await page.goto('/control#launch');
     const launch = page.locator('#launch');
+    await expect(launch).toBeVisible({ timeout: 20_000 });
 
     const select = launch.locator('select');
     await expect(select).toBeEnabled({ timeout: 20_000 });
@@ -75,7 +83,10 @@ test.describe('@live cluster launch', () => {
     await expect(launch.locator('.lc-running')).toHaveCount(0);
 
     // And the reservations must be releasable, or the fleet stays stuck.
-    await launch.getByRole('button', { name: /release the reservations/i }).click();
+    // Abort is pinned in the overlay footer, visible without scrolling.
+    const abort = launch.getByRole('button', { name: /abort/i });
+    await expect(abort).toBeInViewport();
+    await abort.click();
     await expect(launch.locator('.lc-prepared')).toHaveCount(0, { timeout: 15_000 });
   });
 });
