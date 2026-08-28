@@ -128,6 +128,27 @@ pub(super) fn continue_in_progress_prefills(
         if fusable_mixed {
             // Compute the prefill slice (cost-driven; 0 == hard-deadline suppress).
             slice_budget = policy.prefill_slice_budget(&timings, max_prefill_tokens);
+            // ATLAS_MIXED_SLICE_TOKENS: experimental override of the
+            // policy's full-chunk default. MEASURED on qwen4_exp
+            // (2026-08-27): the Holo full-chunk lesson HOLDS here too — a
+            // fused chunk has a ~1.1-1.3 s FLOOR regardless of slice size
+            // (small-M prefill inefficiency across 48 layers; QSA
+            // exonerated by an under-bound A/B), so slice=256 on a
+            // 1598-token prompt cut the co-tenant's worst gap 2.8->1.3 s
+            // but cost the prefill 3->10 s TTFT. Wrong trade; default
+            // stays full-chunk. The real lever is the small-M prefill
+            // floor itself. Knob kept for re-measurement after that work.
+            // 0/unset = policy default. Never overrides a hard suppress.
+            static MIXED_SLICE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            let cap = *MIXED_SLICE.get_or_init(|| {
+                std::env::var("ATLAS_MIXED_SLICE_TOKENS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0)
+            });
+            if cap > 0 && slice_budget > 0 {
+                slice_budget = slice_budget.min(cap);
+            }
             // Hard-deadline suppress: decode already past its TBT deadline —
             // skip prefill this tick, decode runs standalone at mod.rs:307.
             if slice_budget == 0 {
@@ -181,6 +202,12 @@ pub(super) fn continue_in_progress_prefills(
     let any_collecting = prefilling
         .iter()
         .any(|p| p.seq.collect_prompt_logprobs.is_some());
+    // hc models ran these serialized (#753 item B v1) while per-stream aux
+    // state was still shared; per-seq PLE/QSA/SSM carries shipped with the
+    // concurrency milestones and the highway scratch is per-chunk transient
+    // (hc_expand re-derives it from hidden every forward), so the
+    // round-robin batched dispatch is safe for them now. The dispatch is
+    // per-stream underneath (Q12 phase 1) — no cross-stream kernel state.
     let can_batch_prefill_only = !q12_dispatch_disabled
         && !any_collecting
         && prefilling.len() >= 2

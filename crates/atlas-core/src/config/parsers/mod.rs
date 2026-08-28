@@ -11,6 +11,7 @@ mod lora;
 mod minimax;
 mod mistral;
 mod quantization;
+mod qwen4_exp;
 mod step3p7;
 mod vision;
 
@@ -22,5 +23,6 @@ pub use lora::{PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, parse_peft_adap
 pub(crate) use minimax::parse_minimax_m2;
 pub use mistral::parse_mistral_params;
 pub use quantization::parse_quantization_config;
+pub(crate) use qwen4_exp::parse_qwen4_exp;
 pub(crate) use step3p7::parse_step3p7;
 pub(crate) use vision::parse_vision_config;

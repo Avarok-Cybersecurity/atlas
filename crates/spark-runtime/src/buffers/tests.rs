@@ -70,10 +70,16 @@ fn test_buffer_arena_alloc() {
     // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
     //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
     //     allocated unconditionally). 27 + 2 = 29.
-    // (wip-laguna-lora counts 30 here: its keep-packed GGUF grouped MoE adds
-    // a moe_grouped_q8 arena buffer (06c89a33) that this branch does not
-    // carry. Re-sync this count if that work is ever picked.)
-    assert_eq!(gpu.alloc_count(), 29);
+    // plus 2 added by the qwen4_exp enablement:
+    //   - hc_lowrank_scratch (mHC GEMM-formulation staging, .max(256) floor
+    //     so allocated unconditionally),
+    //   - qsa_select_scratch (QSA prefill/decode selection scratch, sized 0
+    //     -> .max floor for non-QSA configs but still allocated). 29 + 2 = 31.
+    // (wip-laguna-lora counts 30 above the pre-qwen4exp 29: its keep-packed
+    // GGUF grouped MoE adds a moe_grouped_q8 arena buffer (06c89a33) that
+    // this branch does not carry. Re-sync this count if that work is ever
+    // picked.)
+    assert_eq!(gpu.alloc_count(), 31);
 }
 
 #[test]

@@ -49,6 +49,11 @@ impl Qwen3AttentionLayer {
         self.hc = Some(hc);
     }
 
+    /// Attach the QSA indexer (Qwen3.8-Flash-Next full-attention layers).
+    pub fn set_qsa(&mut self, qsa: crate::layers::qsa::QsaIndexer) {
+        self.qsa = Some(qsa);
+    }
+
     /// Set per-layer dimension overrides for heterogeneous models (Gemma-4).
     /// Full-attention layers have different Q/KV head counts and head_dim
     /// than sliding layers.
@@ -244,6 +249,23 @@ impl Qwen3AttentionLayer {
         self.attn_scale_override
             .unwrap_or_else(|| 1.0f32 / (head_dim as f32).sqrt())
     }
+}
+
+/// The QSA per-seq carry from a sequence's [`crate::layer::AttnLayerState`],
+/// lazily created on first use (Avarok #753 item B).
+pub(in crate::layers::qwen3_attention) fn qsa_seq_state<'a>(
+    qsa: &crate::layers::qsa::QsaIndexer,
+    state: &'a mut dyn crate::layer::LayerState,
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+) -> anyhow::Result<&'a mut crate::layers::qsa::QsaSeqState> {
+    let attn = state
+        .as_any_mut()
+        .downcast_mut::<crate::layer::AttnLayerState>()
+        .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+    if attn.qsa.is_none() {
+        attn.qsa = Some(qsa.new_seq_state(gpu)?);
+    }
+    Ok(attn.qsa.as_mut().expect("just created"))
 }
 
 #[cfg(test)]

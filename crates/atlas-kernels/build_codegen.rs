@@ -179,6 +179,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20               honor_eos_inside_thinking: {},\n\
              \x20               cap_thinking_at_max_tokens: {},\n\
              \x20               min_p_floor: {:?},\n\
+             \x20               min_reasoning_floor_tokens: {},\n\
              \x20               temperature_max: {:?},\n\
              \x20               think_loop_min_repeats: {},\n\
              \x20               think_loop_scan_window: {},\n\
@@ -221,6 +222,7 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_honor_eos_inside_thinking,
             target.behavior_cap_thinking_at_max_tokens,
             target.behavior_min_p_floor,
+            target.behavior_min_reasoning_floor_tokens,
             target.behavior_temperature_max,
             target.behavior_think_loop_min_repeats,
             target.behavior_think_loop_scan_window,

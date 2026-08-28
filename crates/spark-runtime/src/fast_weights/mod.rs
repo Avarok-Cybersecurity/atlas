@@ -19,7 +19,7 @@
 use crate::gpu::GpuBackend;
 use crate::weights::{
     WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
-    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes, parse_expert_index,
+    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -39,6 +39,27 @@ pub struct FastSafetensorsLoader {
     pub ep_world_size: usize,
     pub num_experts: usize,
     pub peak_memory_multiplier: Option<f64>,
+    /// Skip the W4A4 `*.input_scale` activation scales at load.
+    ///
+    /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
+    /// projection. On a 512-expert model that is ~74k four-byte allocations,
+    /// each taking a full allocation granule — GBs of padding for values
+    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
+    /// NVFP4 loader already treats the key as optional.
+    ///
+    /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off
+    /// unless the model's loader is known not to need it.
+    pub skip_activation_scales: bool,
+    /// Skip `mtp.*` tensors at load.
+    ///
+    /// For models whose loader deliberately does not build an MTP head,
+    /// uploading its weights is pure waste — on Qwen3.8-Flash-Next that is a
+    /// 1.49 GB expert shard plus the MTP backbone, held resident while the KV
+    /// cache goes without.
+    ///
+    /// OPT-IN: a model that DOES build an MTP head must keep them, so this is
+    /// set only where `load_mtp_weights` is known to return `None`.
+    pub skip_mtp: bool,
     /// When true (default), attempt `O_DIRECT`; fall back to buffered reads if
     /// the filesystem rejects it (tmpfs, overlayfs, some FUSE backends).
     pub try_direct_io: bool,
@@ -69,6 +90,9 @@ impl Default for FastSafetensorsLoader {
     }
 }
 
+#[path = "skip.rs"]
+mod skip;
+
 impl FastSafetensorsLoader {
     pub fn new() -> Self {
         Self {
@@ -76,6 +100,8 @@ impl FastSafetensorsLoader {
             ep_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
@@ -88,30 +114,11 @@ impl FastSafetensorsLoader {
             ep_world_size,
             num_experts,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
-        }
-    }
-
-    fn should_skip_tensor(&self, name: &str) -> bool {
-        if self.ep_world_size <= 1 {
-            return false;
-        }
-        if name.starts_with("mtp.") {
-            return false;
-        }
-        if let Some(idx) = parse_expert_index(name) {
-            let per_rank = self.num_experts / self.ep_world_size;
-            let local_start = self.ep_rank * per_rank;
-            let local_end = if self.ep_rank == self.ep_world_size - 1 {
-                self.num_experts
-            } else {
-                local_start + per_rank
-            };
-            idx < local_start || idx >= local_end
-        } else {
-            false
         }
     }
 }

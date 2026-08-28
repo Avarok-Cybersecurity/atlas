@@ -252,6 +252,9 @@ pub struct ModelBehavior {
     /// See build_parse_behavior.rs: honor a mid-`<think>` EOS by implicitly
     /// closing the block. Defaults FALSE (pre-p350 behaviour).
     pub honor_eos_inside_thinking: bool,
+    /// A4 floor: suppress `</think>` until this many think tokens
+    /// (16 = historical constant; 0 disables — card-native brief thinking).
+    pub min_reasoning_floor_tokens: u32,
     /// Cap the thinking budget at 90% of the request's `max_tokens` (true), or
     /// let `max_thinking_budget` be the sole cap (false = vLLM single-budget:
     /// reasoning may use the full generation budget). See thinking.rs::resolve.
@@ -391,6 +394,7 @@ impl Default for ModelBehavior {
             enable_loop_watchdog: false,
             enable_think_loop_watchdog: true,
             honor_eos_inside_thinking: false,
+            min_reasoning_floor_tokens: 16,
             cap_thinking_at_max_tokens: true,
             min_p_floor: 0.0,
             temperature_max: 0.0,

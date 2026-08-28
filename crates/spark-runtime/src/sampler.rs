@@ -163,6 +163,28 @@ impl Sampler {
         for i in 0..self.vocab_size {
             self.logits_f32[i] = bf16_to_f32(self.logits_host[i * 2], self.logits_host[i * 2 + 1]);
         }
+        // Raw-logits dump for numerics triage (`ATLAS_DUMP_LOGITS_PATH=/dir`):
+        // appends each stochastic-sample step's FP32 logits as one row of a
+        // flat binary file. The reporting APIs only expose post-softmax
+        // values, which cannot distinguish a genuinely flat distribution
+        // from a mis-scaled one — the raw values can.
+        if let Ok(dir) = std::env::var("ATLAS_DUMP_LOGITS_PATH") {
+            use std::io::Write;
+            let path = std::path::Path::new(&dir).join("logits_fetch.bin");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(
+                        self.logits_f32.as_ptr() as *const u8,
+                        self.vocab_size * 4,
+                    )
+                };
+                let _ = f.write_all(bytes);
+            }
+        }
         Ok(&self.logits_f32[..self.vocab_size])
     }
 

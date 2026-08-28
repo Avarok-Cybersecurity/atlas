@@ -31,6 +31,7 @@ pub(crate) mod impl_a1_init;
 pub(crate) mod impl_a2;
 pub(crate) mod impl_a3;
 mod impl_a3_embed;
+mod impl_a3_norm;
 pub(crate) mod impl_b1;
 pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;

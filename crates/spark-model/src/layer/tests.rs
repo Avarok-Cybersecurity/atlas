@@ -20,6 +20,7 @@ fn test_ssm_layer_state_downcast() {
         conv_state_intermediates: Vec::new(),
         h_is_f16: false,
         h_prefill_stage: None,
+        ple: None,
     });
     let ssm = state.as_any().downcast_ref::<SsmLayerState>().unwrap();
     assert_eq!(ssm.h_state.0, 0x1000);
@@ -37,6 +38,7 @@ fn test_ssm_layer_state_mut() {
         conv_state_intermediates: Vec::new(),
         h_is_f16: false,
         h_prefill_stage: None,
+        ple: None,
     });
     let ssm = state.as_any_mut().downcast_mut::<SsmLayerState>().unwrap();
     ssm.h_state = DevicePtr(0x3000);
@@ -63,6 +65,7 @@ fn test_forward_context_lifetime() {
         levers: &levers,
         stats: &stats,
         buffers: &buffers,
+        hc_row_offset: 0,
         gpu: &gpu,
         config: &config,
         attn_metadata: None,
@@ -71,6 +74,7 @@ fn test_forward_context_lifetime() {
         graph_capture: false,
         gdn_exact_replay: false,
         token_ids: None,
+        host_token_ids: None,
         routed_lora_layers: None,
         midchunk_capture: None,
         moe_lora_route: crate::layer::MoeLoraRoute::Fold,

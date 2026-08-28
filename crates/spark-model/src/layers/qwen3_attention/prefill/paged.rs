@@ -13,6 +13,7 @@ use crate::layers::ops;
 impl Qwen3AttentionLayer {
     pub(in crate::layers::qwen3_attention) fn prefill_attention_paged(
         &self,
+        state: &mut dyn crate::layer::LayerState,
         normed: DevicePtr,
         num_tokens: usize,
         seq_len_start: usize,
@@ -682,6 +683,41 @@ impl Qwen3AttentionLayer {
                 nq_hd,
                 self.attn_layer_idx,
                 "attn_out_pre_gate",
+                stream,
+            )?;
+        }
+
+        // ── 8b. QSA stage-2: per-query prefill selection for CHUNKED
+        // prefills (>8K prompts). Same overwrite-the-context hook as the
+        // chunk-0 cache-skip path; the paged cache already holds every
+        // prior chunk plus this one, and this path's host block table is
+        // the real physical mapping. Pre-gate so q_contiguous is intact
+        // and the gates/o_proj apply uniformly afterwards.
+        if let Some(ref qsa) = self.qsa
+            && seq_len_start + num_tokens > qsa.inert_bound()
+        {
+            anyhow::ensure!(
+                batched_meta.is_none(),
+                "QSA prefill selection is single-stream (batched paged \
+                 prefill is refused upstream for this model)"
+            );
+            let qsa_st =
+                crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, state, ctx.gpu)?;
+            qsa.prefill_select(
+                qsa_st,
+                normed,
+                q_contiguous,
+                attn_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                block_table,
+                seq_len_start,
+                num_tokens,
+                nq,
+                bs as u32,
+                inv_sqrt_d,
+                ctx.buffers.qsa_select_scratch(),
+                ctx.gpu,
                 stream,
             )?;
         }

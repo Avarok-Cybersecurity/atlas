@@ -84,6 +84,8 @@ pub fn load_all_layers(
                 hc_fn: fn_ptr,
                 hc_base: base_ptr,
                 hc_scale: scale_ptr,
+                // DeepSeek-V4 keeps the Sinkhorn mixer; None selects it.
+                lowrank: None,
             }),
             (fn_ok, base_ok, scale_ok) => {
                 anyhow::bail!(

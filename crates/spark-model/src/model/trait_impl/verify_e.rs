@@ -410,6 +410,7 @@ impl TransformerModel {
 
             let ctx = ForwardContext {
                 buffers: &self.buffers,
+                hc_row_offset: 0,
                 gpu: self.gpu.as_ref(),
                 config: &self.config,
                 dispatch: &self.dispatch,
@@ -426,6 +427,7 @@ impl TransformerModel {
                 graph_capture: capture,
                 gdn_exact_replay: false,
                 token_ids: None,
+                host_token_ids: None,
                 routed_lora_layers: None,
                 midchunk_capture: None,
             };
@@ -515,11 +517,8 @@ impl TransformerModel {
 
             // ── Phase 4: final norm [R, H] + lm_head + per-row argmax ──
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 r_total as u32,
                 h as u32,

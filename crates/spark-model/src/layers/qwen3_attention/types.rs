@@ -113,6 +113,11 @@ pub struct Qwen3AttentionLayer {
     /// in which case the attn/ffn residual sites use `hc_pre`/`hc_post`
     /// against the `hc_streams` buffer instead of the standard residual add.
     pub(crate) hc: Option<HcWeights>,
+    // ── QSA indexer (Qwen3.8-Flash-Next) ──
+    /// Decode-side sparse-attention selection. `Some` only on the 12
+    /// full-attention layers of qwen4_exp. Presence vetoes decode-graph
+    /// capture (the selection top-k is a host round trip).
+    pub(crate) qsa: Option<crate::layers::qsa::QsaIndexer>,
     /// HC `hc_pre` kernel handle (NULL when HC disabled).
     pub(super) hc_pre_k: KernelHandle,
     /// HC `hc_post` kernel handle (NULL when HC disabled).

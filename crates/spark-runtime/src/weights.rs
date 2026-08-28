@@ -300,6 +300,27 @@ pub struct SafetensorsLoader {
     /// Set from QuantFormat::peak_memory_multiplier() in the caller.
     /// When None, the pre-flight uses its own heuristic (1.3x NVFP4 / 1.5x FP8).
     pub peak_memory_multiplier: Option<f64>,
+    /// Skip the W4A4 `*.input_scale` activation scales at load.
+    ///
+    /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
+    /// projection. On a 512-expert model that is ~74k four-byte allocations,
+    /// each taking a full allocation granule — GBs of padding for values
+    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
+    /// NVFP4 loader already treats the key as optional.
+    ///
+    /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off
+    /// unless the model's loader is known not to need it.
+    pub skip_activation_scales: bool,
+    /// Skip `mtp.*` tensors at load.
+    ///
+    /// For models whose loader deliberately does not build an MTP head,
+    /// uploading its weights is pure waste — on Qwen3.8-Flash-Next that is a
+    /// 1.49 GB expert shard plus the MTP backbone, held resident while the KV
+    /// cache goes without.
+    ///
+    /// OPT-IN: a model that DOES build an MTP head must keep them, so this is
+    /// set only where `load_mtp_weights` is known to return `None`.
+    pub skip_mtp: bool,
 }
 
 impl Default for SafetensorsLoader {
@@ -316,6 +337,8 @@ impl SafetensorsLoader {
             ep_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
         }
     }
 
@@ -326,6 +349,8 @@ impl SafetensorsLoader {
             ep_world_size,
             num_experts,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
         }
     }
 
@@ -333,6 +358,16 @@ impl SafetensorsLoader {
     /// Skips `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
     fn should_skip_tensor(&self, name: &str) -> bool {
+        // MTP head weights for a model whose loader does not build one.
+        if self.skip_mtp && name.starts_with("mtp.") {
+            return true;
+        }
+        // W4A4 activation scales: never read on the w4a16 path (the NVFP4
+        // loader falls back to `DevicePtr::NULL`), and 4-byte allocations are
+        // almost pure granule padding at expert scale.
+        if self.skip_activation_scales && name.ends_with(".input_scale") {
+            return true;
+        }
         if self.ep_world_size <= 1 {
             return false;
         }

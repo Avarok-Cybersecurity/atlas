@@ -12,7 +12,7 @@ use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_laguna,
     parse_longcat_ngram, parse_minimax_m2, parse_mistral_params, parse_quantization_config,
-    parse_step3p7, parse_vision_config, validate_config,
+    parse_qwen4_exp, parse_step3p7, parse_vision_config, validate_config,
 };
 
 fn required_u64(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<u64> {
@@ -62,6 +62,8 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                 .and_then(|arch| match arch {
                     "LongcatFlashNgramForCausalLM" => Some("longcat_flash_ngram"),
                     "LongcatFlashForCausalLM" => Some("longcat_flash"),
+                    "Qwen4ExpForConditionalGeneration"
+                    | "Qwen3_8FlashNextForConditionalGeneration" => Some("qwen4_exp"),
                     _ => None,
                 })
         })
@@ -232,6 +234,16 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         "gemma4" => parse_gemma4_params(&raw),
         "laguna" => parse_laguna(&raw),
         "longcat_flash_ngram" | "longcat_flash" => parse_longcat_ngram(&raw),
+        // Nested text_config like qwen3_5_moe, but hyper-connections, the QSA
+        // indexer and PLE n-gram injection put it outside that arm.
+        //
+        // TWO NAMES, ONE ARCHITECTURE. Qwen3.8-Flash-Next shipped under
+        // `qwen3_8_flash_next` and was later renamed `qwen4_exp`; quantizers
+        // pinned to different transformers revisions emit different names
+        // (RadixArk -> qwen4_exp, Inferact -> qwen3_8_flash_next). Their
+        // `text_config`s are otherwise IDENTICAL field-for-field, so the
+        // alias is the whole difference at the config layer.
+        "qwen4_exp" | "qwen3_8_flash_next" => parse_qwen4_exp(&raw),
         "m2m_100" | "nllb" => {
             let mut config = ModelConfig::qwen3_next_80b_nvfp4();
             config.model_type = "m2m_100".to_string();

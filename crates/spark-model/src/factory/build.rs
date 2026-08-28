@@ -153,7 +153,29 @@ pub fn build_model(
     // "use global num_kv_heads/head_dim for all layers" (backward compatible).
     config.kv_layer_dims = loader.kv_layer_dims(&config);
 
+    // Attribute the memory the BUILD spends, not just the shards.
+    //
+    // Weight upload reports itself per shard, and the buffer arena reports its
+    // own total, but everything between — per-layer construction, runtime
+    // requantization, derived weights — was invisible. On qwen4_exp that gap
+    // is ~8.5 GB: shards end at 85.2 GB and the KV budget sees 94.7 GB
+    // pre-KV, of which the arena (872 MB) and the GDN prefill scratch (88 MB)
+    // explain under a gigabyte. Without these three lines the only way to
+    // find the rest is to guess.
+    let free_before_layers = gpu.free_memory().unwrap_or(0);
     let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
+    let free_after_layers = gpu.free_memory().unwrap_or(0);
+    tracing::info!(
+        "Layer construction: {:.2} GB consumed ({:.2} GB free -> {:.2} GB free) \
+         across {} layers, {:.1} MB/layer average",
+        (free_before_layers.saturating_sub(free_after_layers)) as f64 / 1e9,
+        free_before_layers as f64 / 1e9,
+        free_after_layers as f64 / 1e9,
+        config.num_hidden_layers,
+        (free_before_layers.saturating_sub(free_after_layers)) as f64
+            / 1e6
+            / config.num_hidden_layers.max(1) as f64,
+    );
     let embed = loader.load_embedding(&store, &config, gpu.as_ref())?;
     // n-gram fused embedding (LongCat family; None everywhere else). Built
     // before `config` is moved into the model. Staged for `max_batch_tokens`

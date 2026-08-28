@@ -67,17 +67,7 @@ impl TransformerModel {
         // Run final norm + LM head on the single re-embedded token.
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
         // Prefix cache insert (no new snapshot needed — SSM state unchanged).
         if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
@@ -274,6 +264,17 @@ impl TransformerModel {
                         tokens.len(),
                         seq.block_table.len(),
                     );
+                    // See finalize_last: aux layer state rides the snapshot.
+                    // This fn is infallible; an aux collection failure just
+                    // leaves the slot aux-less (aux-carrying models then
+                    // decline it on restore — a slower miss, never stale).
+                    match self.collect_aux_states(seq, stream) {
+                        Ok(aux) if !aux.is_empty() => {
+                            self.ssm_snapshots.set_aux(snap_id, aux);
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("aux snapshot skipped: {e:#}"),
+                    }
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
                         tokens,
                         &seq.block_table,

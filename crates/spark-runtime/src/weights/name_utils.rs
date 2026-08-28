@@ -15,16 +15,32 @@ pub(crate) fn split_trailing_index(name: &str) -> (String, u64) {
     (name.to_string(), u64::MAX)
 }
 
-/// Whether a tensor is an n-gram embedding TABLE — the huge
-/// `*.ngram_embeddings.embedders.{i}.weight` blobs (~5.2 GB each on
-/// LongCat-Flash-Lite, 12 of them).
+/// Whether a tensor is an n-gram embedding TABLE — the huge blobs that are
+/// served off NVMe instead of being uploaded with the rest of the checkpoint.
 ///
-/// These are deliberately not uploaded with the rest of the checkpoint: they
-/// are served either by streaming per-table quantize-on-load or straight off
-/// NVMe by the row cache, both of which read them in place. The small
-/// `post_projs` are NOT matched — those are ordinary tensors.
+/// TWO NAMING FAMILIES, because two model families ship this mechanism:
+///
+///   LongCat-Flash-Lite  `*.ngram_embeddings.embedders.{i}.weight`
+///                       12 tables, ~5.2 GB each
+///   Qwen3.8-Flash-Next  `*.ple.ple_embedding.ngram_embedding.shard_{i}.weight`
+///                       128 shards of one logical table, 47.7 GB (FP8) to
+///                       95.4 GB (BF16) in total
+///
+/// Matching is by TENSOR NAME rather than by file, deliberately: RadixArk
+/// isolates the Qwen shards in dedicated `model-plefp8-*` files, but Inferact
+/// buries all 128 inside one 95.4 GB `model-00001-of-00004.safetensors`. A
+/// filename rule would work for one release and silently fail the other,
+/// where "silently" means a 221 GB OOM pre-flight on a 121 GB box.
+///
+/// What must NOT match, because the loader needs these resident:
+///   - LongCat's small `post_projs`
+///   - Qwen's `ngram_embedding.weight_scale` (one BF16 scalar)
+///   - Qwen's `ngram_heads_offsets` / `ngram_heads_vocab_sizes` (I64, 16 each)
 pub fn is_ngram_table(name: &str) -> bool {
-    name.contains("ngram_embeddings.embedders.") && name.ends_with(".weight")
+    if !name.ends_with(".weight") {
+        return false;
+    }
+    name.contains("ngram_embeddings.embedders.") || name.contains("ngram_embedding.shard_")
 }
 
 #[cfg(test)]
@@ -43,6 +59,36 @@ mod ngram_defer_tests {
         assert!(!is_ngram_table("model.embed_tokens.weight"));
         assert!(!is_ngram_table(
             "model.layers.0.mlp.experts.3.gate_proj.weight"
+        ));
+    }
+
+    /// Qwen3.8-Flash-Next stores ONE logical table as 128 `shard_{i}` tensors
+    /// under a PLE block, rather than LongCat's 12 separate embedders.
+    #[test]
+    fn ngram_table_predicate_matches_the_qwen_ple_shards() {
+        let base = "model.language_model.layers.1.ple.ple_embedding.ngram_embedding";
+        assert!(is_ngram_table(&format!("{base}.shard_0.weight")));
+        assert!(is_ngram_table(&format!("{base}.shard_127.weight")));
+
+        // The per-table scalar scale (RadixArk's FP8 release) must stay
+        // resident — the row cache needs it to dequantize.
+        assert!(!is_ngram_table(&format!("{base}.weight_scale")));
+        // The head range tables are 16 I64 values the loader reads directly.
+        assert!(!is_ngram_table(
+            "model.language_model.layers.1.ple.ple_embedding.ngram_heads_offsets"
+        ));
+        assert!(!is_ngram_table(
+            "model.language_model.layers.1.ple.ple_embedding.ngram_heads_vocab_sizes"
+        ));
+        // The PLE block's own projections are ordinary tensors.
+        assert!(!is_ngram_table(
+            "model.language_model.layers.1.ple.key_proj.weight"
+        ));
+        assert!(!is_ngram_table(
+            "model.language_model.layers.1.ple.value_proj.weight"
+        ));
+        assert!(!is_ngram_table(
+            "model.language_model.layers.1.ple.conv1d.weight"
         ));
     }
 

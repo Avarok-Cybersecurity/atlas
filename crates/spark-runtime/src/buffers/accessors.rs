@@ -150,6 +150,17 @@ impl BufferArena {
     pub fn hc_streams(&self) -> DevicePtr {
         self.hc_streams
     }
+
+    /// Low-rank mHC split-collapse scratch: `[T<=64, hc*H]` normed followed
+    /// by `[T<=64, rank]` low, both F32. See `sizes.rs`.
+    pub fn hc_lowrank_scratch(&self) -> DevicePtr {
+        self.hc_lowrank_scratch
+    }
+    /// QSA stage-2 prefill-selection scratch, shared by the indexer layers
+    /// (serial). Layout managed by `layers::qsa`; see `sizes.rs`.
+    pub fn qsa_select_scratch(&self) -> DevicePtr {
+        self.qsa_select_scratch
+    }
     /// HC `post` mixing weights [M, hc_mult] F32.
     pub fn hc_post(&self) -> DevicePtr {
         self.hc_post

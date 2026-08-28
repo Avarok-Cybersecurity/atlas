@@ -43,7 +43,7 @@ use anyhow::{Context, Result, bail};
 use crate::expert_arena::ExpertArena;
 
 /// O_DIRECT transfer granularity (also `ExpertArena`'s stride requirement).
-const BLOCK: usize = 4096;
+pub(crate) const BLOCK: usize = 4096;
 
 /// One table's on-NVMe backing file plus its resident row cache.
 pub struct NgramRowCache {
@@ -56,6 +56,15 @@ pub struct NgramRowCache {
     /// row may straddle a 4 KiB O_DIRECT block; `fetch_into` handles the seam.
     file: File,
     base_offset: u64,
+    /// SEGMENTED tables: one base offset per equal-sized shard.
+    ///
+    /// LongCat ships each n-gram table as ONE contiguous safetensors tensor,
+    /// so `base_offset` alone locates every row. Qwen3.8-Flash-Next splits its
+    /// single 320M-row table across 128 shard tensors which are NOT laid out
+    /// consecutively in the file — the shards interleave with other weights,
+    /// so a global row id needs its shard's own base. `None` keeps the
+    /// original single-offset behaviour byte for byte.
+    segments: Option<Segments>,
     /// Per-row scale file mirror (FP8 tables), `None` for BF16 tables.
     scales: Option<ScaleCache>,
     row_stride: usize,
@@ -76,6 +85,16 @@ pub struct NgramRowCache {
     pub evictions: u64,
 }
 
+/// A table split across equal-sized shards at scattered file offsets.
+struct Segments {
+    /// Byte offset of each shard's first row, indexed by shard.
+    bases: Vec<u64>,
+    /// Rows per shard. Every shard but conceivably the last holds exactly
+    /// this many; `open_segmented` requires them all equal so the mapping is
+    /// a divide rather than a search.
+    rows_per: u64,
+}
+
 /// Per-row f32 scales for an FP8 table, mirrored into a device-visible
 /// `[slots]` array indexed by SLOT (parallel to the arena).
 struct ScaleCache {
@@ -84,7 +103,7 @@ struct ScaleCache {
 }
 
 /// A 4 KiB-aligned host buffer for O_DIRECT reads.
-struct AlignedBlock {
+pub(crate) struct AlignedBlock {
     buf: Vec<u8>,
     off: usize,
 }
@@ -93,7 +112,7 @@ impl AlignedBlock {
     /// Two blocks: a row whose base offset is not 4 KiB-aligned (every row of
     /// a table read in place from a safetensors shard) can straddle one
     /// boundary, and two blocks always cover it since `row_stride <= BLOCK`.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // Over-allocate and take an aligned window (portable, no libc::memalign).
         let buf = vec![0u8; BLOCK * 3];
         let addr = buf.as_ptr() as usize;
@@ -101,7 +120,7 @@ impl AlignedBlock {
         Self { buf, off }
     }
     /// `n` whole blocks of aligned scratch (`n <= 2`).
-    fn blocks(&mut self, n: usize) -> &mut [u8] {
+    pub(crate) fn blocks(&mut self, n: usize) -> &mut [u8] {
         &mut self.buf[self.off..self.off + n * BLOCK]
     }
 }
@@ -165,6 +184,7 @@ impl NgramRowCache {
             arena,
             file,
             base_offset,
+            segments: None,
             scales,
             row_stride,
             slots,
@@ -179,6 +199,36 @@ impl NgramRowCache {
             misses: 0,
             evictions: 0,
         })
+    }
+
+    /// As [`Self::open_at`], but for a table split across equal-sized shards
+    /// at SCATTERED file offsets — Qwen3.8-Flash-Next's PLE table, whose 128
+    /// shard tensors are not laid out consecutively inside the safetensors
+    /// file. `bases[i]` is shard `i`'s first row; every shard holds
+    /// `rows_per_shard` rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_segmented(
+        path: &Path,
+        bases: Vec<u64>,
+        rows_per_shard: u64,
+        scale_path: Option<&Path>,
+        row_stride: usize,
+        slots: usize,
+    ) -> Result<Self> {
+        if bases.is_empty() || rows_per_shard == 0 {
+            bail!(
+                "NgramRowCache: segmented table needs shards and rows \
+                 (shards={}, rows_per_shard={rows_per_shard})",
+                bases.len()
+            );
+        }
+        let rows_total = bases.len() as u64 * rows_per_shard;
+        let mut c = Self::open_at(path, 0, scale_path, rows_total, row_stride, slots)?;
+        c.segments = Some(Segments {
+            bases,
+            rows_per: rows_per_shard,
+        });
+        Ok(c)
     }
 
     /// Device VA of the cache's row table — the `embed_table` argument of the
@@ -208,6 +258,10 @@ impl NgramRowCache {
     pub fn resolve(&mut self, row_ids: &[u64], out_slots: &mut Vec<u32>) -> Result<()> {
         out_slots.clear();
         out_slots.reserve(row_ids.len());
+        // Phase 1 — bookkeeping only: pin hits, assign a victim slot to every
+        // miss (a repeated missing id hits the map on its second occurrence,
+        // so each unique row faults once). No I/O under this loop.
+        let mut jobs: Vec<crate::ngram_cache_fault::FaultJob> = Vec::new();
         for &id in row_ids {
             if id >= self.rows_total {
                 bail!(
@@ -225,13 +279,76 @@ impl NgramRowCache {
                 None => {
                     self.misses += 1;
                     let s = self.victim()?;
-                    self.fetch_into(id, s)?;
+                    self.map.insert(id, s);
+                    self.slot_row[s as usize] = id;
+                    self.refbit[s as usize] = true;
+                    self.pinned[s as usize] = true;
+                    jobs.push(self.fault_job(id, s)?);
                     s
                 }
             };
             out_slots.push(slot);
         }
+        // Phase 2 — fault every miss in, parallel past a few (the serial
+        // QD=1 pread-per-miss loop was the diverse-prefill stall).
+        if !jobs.is_empty() {
+            let r = crate::ngram_cache_fault::fault_all(
+                &jobs,
+                &self.file,
+                self.scales.as_ref().map(|sc| &sc.file),
+                self.row_stride,
+                &mut self.bounce,
+            );
+            if let Err(e) = r {
+                // Roll the failed batch's map entries back: they were
+                // inserted in phase 1 and now describe slots holding garbage.
+                for j in &jobs {
+                    self.map.remove(&j.row_id);
+                    self.slot_row[j.slot as usize] = u64::MAX;
+                    self.pinned[j.slot as usize] = false;
+                    self.refbit[j.slot as usize] = false;
+                }
+                return Err(e);
+            }
+        }
         Ok(())
+    }
+
+    /// Resolve one miss to byte offsets + destination addresses — the
+    /// bookkeeping-free half of the old `fetch_into`, consumed by
+    /// [`crate::ngram_cache_fault::fault_all`].
+    fn fault_job(&self, id: u64, slot: u32) -> Result<crate::ngram_cache_fault::FaultJob> {
+        let byte = self.row_byte(id);
+        let block_off = byte - (byte % BLOCK as u64);
+        let within = (byte - block_off) as usize;
+        let nblocks = crate::ngram_cache_fault::nblocks_for(within, self.row_stride);
+        // SAFETY: address arithmetic only; the fault worker writes the
+        // disjoint `[dst, dst+row_stride)` region while the arena is live.
+        let dst = unsafe {
+            self.arena
+                .slot_host_ptr(0, 0)?
+                .add(slot as usize * self.row_stride)
+        } as usize;
+        let scale = match &self.scales {
+            Some(sc) => {
+                let sbyte = id * 4;
+                let sblock = sbyte - (sbyte % BLOCK as u64);
+                let swithin = (sbyte - sblock) as usize;
+                // SAFETY: as above, 4-byte disjoint region.
+                let sdst = unsafe { sc.arena.slot_host_ptr(0, 0)?.add(slot as usize * 4) };
+                Some((sblock, swithin, sdst as usize))
+            }
+            None => None,
+        };
+        Ok(crate::ngram_cache_fault::FaultJob {
+            row_id: id,
+            slot,
+            block_off,
+            within,
+            nblocks,
+            dst,
+            scale,
+        })
     }
 
     /// Release the batch's pins (call after the gather kernels are issued).
@@ -267,51 +384,16 @@ impl NgramRowCache {
         )
     }
 
-    /// Read row `id` off NVMe straight into `slot`'s pinned (GPU-addressable)
-    /// bytes, via the containing 4 KiB block.
-    fn fetch_into(&mut self, id: u64, slot: u32) -> Result<()> {
-        let byte = self.base_offset + id * self.row_stride as u64;
-        let block_off = byte - (byte % BLOCK as u64);
-        let within = (byte - block_off) as usize;
-        // One block unless the row crosses the boundary (possible whenever the
-        // table's base offset is not 4 KiB-aligned, i.e. reading in place from
-        // a safetensors shard).
-        let nblocks = if within + self.row_stride > BLOCK {
-            2
-        } else {
-            1
-        };
-        atlas_tier::pio::read_exact_at(&self.file, self.bounce.blocks(nblocks), block_off)
-            .with_context(|| format!("NgramRowCache: read row {id}"))?;
-        // SAFETY: slot < self.slots and the arena holds slots*row_stride bytes.
-        let dst = unsafe {
-            let base = self.arena.slot_host_ptr(0, 0)?;
-            std::slice::from_raw_parts_mut(
-                base.add(slot as usize * self.row_stride),
-                self.row_stride,
-            )
-        };
-        dst.copy_from_slice(&self.bounce.blocks(nblocks)[within..within + self.row_stride]);
-
-        if let Some(sc) = &self.scales {
-            let sbyte = id * 4;
-            let sblock = sbyte - (sbyte % BLOCK as u64);
-            let swithin = (sbyte - sblock) as usize;
-            atlas_tier::pio::read_exact_at(&sc.file, self.bounce.blocks(1), sblock)
-                .with_context(|| format!("NgramRowCache: read scale {id}"))?;
-            // SAFETY: slot < slots, scale arena holds slots*4 bytes.
-            let sdst = unsafe {
-                let base = sc.arena.slot_host_ptr(0, 0)?;
-                std::slice::from_raw_parts_mut(base.add(slot as usize * 4), 4)
-            };
-            sdst.copy_from_slice(&self.bounce.blocks(1)[swithin..swithin + 4]);
+    /// Byte offset of row `id` in the backing file.
+    fn row_byte(&self, id: u64) -> u64 {
+        match &self.segments {
+            None => self.base_offset + id * self.row_stride as u64,
+            Some(seg) => {
+                let shard = (id / seg.rows_per) as usize;
+                let local = id % seg.rows_per;
+                seg.bases[shard] + local * self.row_stride as u64
+            }
         }
-
-        self.map.insert(id, slot);
-        self.slot_row[slot as usize] = id;
-        self.refbit[slot as usize] = true;
-        self.pinned[slot as usize] = true;
-        Ok(())
     }
 }
 

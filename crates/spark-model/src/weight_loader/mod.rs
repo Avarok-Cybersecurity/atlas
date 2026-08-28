@@ -26,6 +26,8 @@ mod qwen3;
 mod qwen35;
 mod qwen35_dense;
 mod qwen3_vl;
+#[cfg_attr(test, allow(unreachable_pub))]
+pub(crate) mod qwen4_exp;
 mod step3p7;
 
 pub use deepseek_v4::DeepSeekV4WeightLoader;
@@ -41,6 +43,7 @@ pub use nemotron::NemotronHWeightLoader;
 pub use nllb::NllbWeightLoader;
 pub use qwen3::Qwen3WeightLoader;
 pub use qwen3_vl::Qwen3VLWeightLoader;
+pub use qwen4_exp::Qwen4ExpWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
 pub use qwen35_dense::Qwen35DenseWeightLoader;
 pub use step3p7::Step3p7WeightLoader;

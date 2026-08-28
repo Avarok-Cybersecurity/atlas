@@ -41,7 +41,6 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        let _ = states; // Attention layers use EmptyLayerState — no per-seq state.
         let bs = kv_cache.block_size() as u32;
         let mut c = ctx::MultiSeqCtx::new(self, ctx, hidden, residual, num_seqs, bs, stream);
         // Per-request LoRA routing slot buffer for this step (from metadata).
@@ -49,10 +48,11 @@ impl Qwen3AttentionLayer {
             c.seq_slot = m.seq_slot;
         }
 
-        // DeepSeek-V4: Manifold-Constrained Hyper-Connections (mHC).
+        // DeepSeek-V4 / Qwen4-exp: Manifold-Constrained Hyper-Connections.
         if self.hc.is_some() {
-            return self.decode_multi_seq_inner_hc(c, kv_cache, ctx, stream);
+            return self.decode_multi_seq_inner_hc(c, states, _seq_lens, kv_cache, ctx, stream);
         }
+        let _ = states; // Non-hc attention keeps no per-seq state.
 
         // ── Phase 1: RMS norm + residual for N tokens ──
         ops::rms_norm_residual(
@@ -118,9 +118,11 @@ impl Qwen3AttentionLayer {
     /// HC-enabled batched multi-sequence decode.  Only the sequential
     /// per-token FFN branch is implemented (DeepSeek-V4 MLA always
     /// takes this path).
-    fn decode_multi_seq_inner_hc(
+    fn decode_multi_seq_inner_hc<'a, 'b: 'a>(
         &self,
         c: ctx::MultiSeqCtx<'_>,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        seq_lens: &[usize],
         kv_cache: &mut PagedKvCache,
         ctx: &ForwardContext,
         stream: u64,
@@ -130,8 +132,9 @@ impl Qwen3AttentionLayer {
         let n = c.n;
         let hc = self.hc.as_ref().unwrap();
         let hc_mult = hc.hc_mult as u32;
-        let is_first_layer = self.attn_layer_idx == 0;
-        let is_last_layer = self.attn_layer_idx + 1 == ctx.config.num_hidden_layers;
+        // MODEL layer indices — see the note in `prefill_inner.rs`.
+        let is_first_layer = hc.is_first_model_layer;
+        let is_last_layer = hc.is_last_model_layer;
         let hc_streams = ctx.buffers.hc_streams();
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
@@ -152,22 +155,19 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Phase 1: collapse + norm for N tokens ──
-        ops::hc_pre(
+        ops::hc_pre_site(
             ctx.gpu,
             self.hc_pre_k,
             hc_streams,
-            hc.attn.hc_fn,
-            hc.attn.hc_scale,
-            hc.attn.hc_base,
+            &hc.attn,
+            hc,
             c.hidden,
             post,
             comb,
+            ctx.buffers.hc_lowrank_scratch(),
             n as u32,
             h as u32,
-            hc_mult,
-            hc.sinkhorn_iters as u32,
             eps,
-            hc.hc_eps,
             stream,
         )?;
         if diag_this {
@@ -193,17 +193,23 @@ impl Qwen3AttentionLayer {
                 &format!("V4-msdecode L{} comb-attn", self.attn_layer_idx),
             );
         }
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_w_k,
-            c.hidden,
-            &self.input_norm,
-            c.normed,
-            n as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        if ops::HcVariant::of(hc).applies_block_input_norm() {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                c.hidden,
+                &self.input_norm,
+                c.normed,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            // See `prefill_inner.rs`: `hc_norm` is the input norm on Qwen.
+            ctx.gpu
+                .copy_d2d_async(c.hidden, c.normed, n * h * 2, stream)?;
+        }
 
         let meta = ctx
             .attn_metadata
@@ -227,10 +233,41 @@ impl Qwen3AttentionLayer {
             comm.all_reduce_async(o_out.0, bytes, c.stream)?;
         }
 
+        // ── QSA ingest continuity (per-seq) ──
+        // Below the inert bound `decode_select` is ingest-only and returns
+        // `None`; the dispatch gate (decode_a2) routes any batch with an
+        // ACTIVE-selection sequence to the per-seq loop, so a `Some` here
+        // means the gate and this path disagree — refuse loudly rather than
+        // serve dense-past-budget (not the reference model).
+        if let Some(qsa) = self.qsa.as_ref() {
+            for (i, state) in states.iter_mut().enumerate().take(n) {
+                let st =
+                    crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, *state, ctx.gpu)?;
+                let sel = qsa.decode_select(
+                    st,
+                    c.normed.offset(i * h * c.bf16),
+                    seq_lens[i],
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    meta.block_table
+                        .offset(i * meta.max_blocks_per_seq as usize * 4),
+                    c.bs,
+                    ctx.gpu,
+                    stream,
+                )?;
+                anyhow::ensure!(
+                    sel.is_none(),
+                    "QSA selection active for seq {i} on the batched ms path; \
+                     the dispatch gate should have routed this batch per-seq"
+                );
+            }
+        }
+
         // Expand attention output back into multi-stream state.
-        ops::hc_post(
+        ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
+            hc,
             o_out,
             hc_streams,
             post,
@@ -238,18 +275,17 @@ impl Qwen3AttentionLayer {
             hc_streams,
             n as u32,
             h as u32,
-            hc_mult,
             stream,
         )?;
         if diag_this {
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 h,
                 stream,
                 &format!("V4-msdecode L{} hc_post-attn", self.attn_layer_idx),
             );
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 n * (hc_mult as usize) * h,
@@ -264,19 +300,17 @@ impl Qwen3AttentionLayer {
         // Standalone attention (no FFN)
         if self.ffn.is_none() {
             if is_last_layer && let Some(ref head) = hc.head {
-                ops::hc_head(
+                ops::hc_head_site(
                     ctx.gpu,
                     self.hc_head_k,
                     hc_streams,
-                    head.hc_fn,
-                    head.hc_scale,
-                    head.hc_base,
+                    head,
+                    hc,
                     c.hidden,
+                    ctx.buffers.hc_lowrank_scratch(),
                     n as u32,
                     h as u32,
-                    hc_mult,
                     eps,
-                    hc.hc_eps,
                     stream,
                 )?;
                 if diag_this {
@@ -298,22 +332,19 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Phase 7: FFN + hc_post (per-token sequential only) ──
-        ops::hc_pre(
+        ops::hc_pre_site(
             ctx.gpu,
             self.hc_pre_k,
             hc_streams,
-            hc.ffn.hc_fn,
-            hc.ffn.hc_scale,
-            hc.ffn.hc_base,
+            &hc.ffn,
+            hc,
             c.hidden,
             post,
             comb,
+            ctx.buffers.hc_lowrank_scratch(),
             n as u32,
             h as u32,
-            hc_mult,
-            hc.sinkhorn_iters as u32,
             eps,
-            hc.hc_eps,
             stream,
         )?;
         if diag_this {
@@ -339,17 +370,22 @@ impl Qwen3AttentionLayer {
                 &format!("V4-msdecode L{} comb-ffn", self.attn_layer_idx),
             );
         }
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_w_k,
-            c.hidden,
-            &self.post_attn_norm,
-            c.normed,
-            n as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        if ops::HcVariant::of(hc).applies_block_input_norm() {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                c.hidden,
+                &self.post_attn_norm,
+                c.normed,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            ctx.gpu
+                .copy_d2d_async(c.hidden, c.normed, n * h * 2, stream)?;
+        }
 
         // Per-token sequential FFN (MLA models always take this path).
         for i in 0..n {
@@ -359,9 +395,10 @@ impl Qwen3AttentionLayer {
             let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
             let post_i = post.offset(i * hc.hc_mult * 4);
             let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
-            ops::hc_post(
+            ops::hc_post_site(
                 ctx.gpu,
                 self.hc_post_k,
+                hc,
                 moe_out,
                 hc_streams_i,
                 post_i,
@@ -369,19 +406,18 @@ impl Qwen3AttentionLayer {
                 hc_streams_i,
                 1,
                 h as u32,
-                hc_mult,
                 stream,
             )?;
         }
         if diag_this {
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 h,
                 stream,
                 &format!("V4-msdecode L{} hc_post-ffn", self.attn_layer_idx),
             );
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 n * (hc_mult as usize) * h,
@@ -394,19 +430,17 @@ impl Qwen3AttentionLayer {
         }
 
         if is_last_layer && let Some(ref head) = hc.head {
-            ops::hc_head(
+            ops::hc_head_site(
                 ctx.gpu,
                 self.hc_head_k,
                 hc_streams,
-                head.hc_fn,
-                head.hc_scale,
-                head.hc_base,
+                head,
+                hc,
                 c.hidden,
+                ctx.buffers.hc_lowrank_scratch(),
                 n as u32,
                 h as u32,
-                hc_mult,
                 eps,
-                hc.hc_eps,
                 stream,
             )?;
             if diag_this {

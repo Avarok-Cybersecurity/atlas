@@ -282,7 +282,7 @@ fn unified_fn_includes_a4_and_b1_stages() {
     // kind (reaches verify too).
     const SAMPLE_STEP_SRC: &str = include_str!("../sample_step.rs");
     assert!(
-        SAMPLE_STEP_SRC.contains("A4_MIN_REASONING_TOKENS")
+        SAMPLE_STEP_SRC.contains("min_reasoning_floor()")
             && SAMPLE_STEP_SRC.contains("a.think_end_token"),
         "A4 POST_THINK_MIN_REASONING floor must live in penalty_params_for"
     );

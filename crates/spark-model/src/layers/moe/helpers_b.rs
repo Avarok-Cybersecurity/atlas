@@ -201,3 +201,90 @@ impl MoeLayer {
             && self.down_t_scratch_packed.is_none()
     }
 }
+
+impl super::MoeLayer {
+    /// The routed grouped-GEMM kernel: the bit-exact wider-K twin when it
+    /// resolved (ATLAS_MOE_GROUPED_K32=1 and the target ships it), else the
+    /// original. Both take the same grid/block, so the launcher is shared.
+    pub(super) fn grouped_gemm_kernel(&self) -> spark_runtime::gpu::KernelHandle {
+        if self.moe_grouped_gemm_k32.0 != 0 {
+            self.moe_grouped_gemm_k32
+        } else {
+            self.moe_grouped_gemm
+        }
+    }
+}
+
+impl super::MoeLayer {
+    /// Launch the routed grouped GEMM, choosing the widest tiling this build
+    /// resolved. M_TILE=256 re-reads the expert weights ONCE instead of three
+    /// times at ~160 rows/expert, so `max_m_tiles` must be recomputed against
+    /// 256 — the same adjustment the m128 path makes with `div_ceil(2)`.
+    /// All arms are bit-exact with each other.
+    ///
+    /// ⚠ BOTH WIDE ARMS MEASURED AS NON-WINS (qwen4_exp, GB10, 2026-08-27) and
+    /// are default-OFF. Controlled four-arm sweep at 28K prefill, same box,
+    /// back-to-back: baseline 272 → +QSA-TC 286 → +k32 289 → +m256 290 tok/s.
+    /// The k32/m256 deltas (+1.0% / +1.4% over the QSA-TC arm) are inside
+    /// run-to-run noise; the entire +5.1% came from the QSA tensor-core
+    /// scorer, NOT from this GEMM.
+    ///
+    /// nsys proves the null is real rather than a silent `try_kernel`
+    /// fallback: `..._m256` appears in the trace with 540 calls / 38.1% of GPU
+    /// time, and averages 31.30 ms/call against the base kernel's 26.17 ms —
+    /// i.e. ~20% SLOWER per call at matched shapes. A DRAM-bound standalone
+    /// harness predicted 1.43x for it. Do not re-enable either arm on
+    /// microbenchmark evidence; re-measure end-to-end first.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn launch_grouped_gemm(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        a: spark_runtime::gpu::DevicePtr,
+        packed_ptrs: spark_runtime::gpu::DevicePtr,
+        scale_ptrs: spark_runtime::gpu::DevicePtr,
+        scale2_vals: spark_runtime::gpu::DevicePtr,
+        c: spark_runtime::gpu::DevicePtr,
+        expert_offsets: spark_runtime::gpu::DevicePtr,
+        sorted_token_ids: spark_runtime::gpu::DevicePtr,
+        num_experts: u32,
+        n_out: u32,
+        k: u32,
+        max_m_tiles: u32,
+        stream: u64,
+    ) -> anyhow::Result<()> {
+        if self.moe_grouped_gemm_m256.0 != 0 {
+            return crate::layers::ops::moe_w4a16_grouped_gemm_ptrtable_m256(
+                gpu,
+                self.moe_grouped_gemm_m256,
+                a,
+                packed_ptrs,
+                scale_ptrs,
+                scale2_vals,
+                c,
+                expert_offsets,
+                sorted_token_ids,
+                num_experts,
+                n_out,
+                k,
+                max_m_tiles.div_ceil(4).max(1),
+                stream,
+            );
+        }
+        crate::layers::ops::moe_w4a16_grouped_gemm_ptrtable(
+            gpu,
+            self.grouped_gemm_kernel(),
+            a,
+            packed_ptrs,
+            scale_ptrs,
+            scale2_vals,
+            c,
+            expert_offsets,
+            sorted_token_ids,
+            num_experts,
+            n_out,
+            k,
+            max_m_tiles,
+            stream,
+        )
+    }
+}

@@ -158,6 +158,7 @@ impl Qwen3AttentionLayer {
             // when the hyper_connection module is absent), so non-V4 models
             // still start cleanly.
             hc: None,
+            qsa: None,
             hc_pre_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_pre"),
             hc_post_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_post"),
             hc_expand_k: gate(

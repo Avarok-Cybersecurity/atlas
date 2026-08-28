@@ -121,6 +121,7 @@ fn mk_state(gpu: &MockGpuBackend, layer: &Qwen3SsmLayer, n_inter: usize) -> SsmL
             .collect(),
         h_is_f16: false,
         h_prefill_stage: None,
+        ple: None,
     }
 }
 
@@ -143,6 +144,7 @@ fn run_batched_verify(
         levers: &levers,
         stats: &stats,
         buffers: &buffers,
+        hc_row_offset: 0,
         gpu,
         config,
         attn_metadata: None,
@@ -151,6 +153,7 @@ fn run_batched_verify(
         graph_capture: false,
         gdn_exact_replay: false,
         token_ids: None,
+        host_token_ids: None,
         routed_lora_layers: None,
         midchunk_capture: None,
         // Merge-interaction (#334/#335 stack): this main-side helper postdates

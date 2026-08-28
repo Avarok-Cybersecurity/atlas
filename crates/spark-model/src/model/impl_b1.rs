@@ -447,6 +447,7 @@ impl TransformerModel {
             // Suppress per-op profiling by creating a non-profile context
             &ForwardContext {
                 buffers: ctx.buffers,
+                hc_row_offset: ctx.hc_row_offset,
                 gpu: ctx.gpu,
                 config: ctx.config,
                 dispatch: ctx.dispatch,
@@ -459,6 +460,7 @@ impl TransformerModel {
                 graph_capture: ctx.graph_capture,
                 gdn_exact_replay: false,
                 token_ids: None,
+                host_token_ids: None,
                 // #30: forward the parent's routing (None on this decode-profiling
                 // path, but never silently drop it if a prefill ever re-wraps).
                 routed_lora_layers: ctx.routed_lora_layers,
@@ -522,17 +524,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
         self.gpu.synchronize(stream)?;
         let head_us = t0.elapsed().as_micros() as u64;
@@ -657,6 +649,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -669,6 +662,7 @@ impl TransformerModel {
             graph_capture: false, // Eager mode — no CUDA graph
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: offline single-seq decode; no prefill route.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) skips fold, adapter folds (single-seq reject lifted)
@@ -697,17 +691,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
 
         seq.tokens.push(token);

@@ -69,6 +69,8 @@ pub(crate) fn load_weight_store(
                 spark_runtime::fast_weights::FastSafetensorsLoader::new()
             };
             loader.peak_memory_multiplier = mult;
+            loader.skip_activation_scales = skip_activation_scales(config);
+            loader.skip_mtp = skip_mtp(config);
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -91,6 +93,8 @@ pub(crate) fn load_weight_store(
             spark_runtime::weights::SafetensorsLoader::new()
         };
         loader.peak_memory_multiplier = mult;
+        loader.skip_activation_scales = skip_activation_scales(config);
+        loader.skip_mtp = skip_mtp(config);
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
             .context("Failed to load model weights")?
@@ -221,4 +225,33 @@ pub(crate) fn load_lora_adapters(
         });
     }
     Ok(states)
+}
+
+/// Whether this model's loader can skip the W4A4 `*.input_scale` activation
+/// scales.
+///
+/// ModelOpt NVFP4 ships one 0-dim F32 scalar per quantized projection. On
+/// Qwen3.8-Flash-Next that is ~74k four-byte allocations (48 layers x 512
+/// experts x 3 projections), each taking a full allocation granule — GBs of
+/// padding for values the w4a16 path never reads. The NVFP4 loader already
+/// treats the key as optional (`if store.contains(..) else NULL`), so not
+/// uploading them is identical to loading a checkpoint that never had them.
+///
+/// Deliberately an ALLOW-LIST, not a blanket skip: `step3p7` reads
+/// `input_scale` on its own loader path, and silently withholding a tensor a
+/// loader DOES read is exactly the class of bug that stays invisible until
+/// the output is subtly wrong.
+fn skip_activation_scales(config: &ModelConfig) -> bool {
+    matches!(config.model_type.as_str(), "qwen4_exp")
+}
+
+/// Whether this model's loader builds no MTP head, so `mtp.*` need not be
+/// uploaded at all.
+///
+/// `Qwen4ExpWeightLoader::load_mtp_weights` returns `None` (#753 item I: the
+/// MTP block is effectively a second model — its own 512-expert MoE, its own
+/// hyper-connection mixer, its own indexer). Uploading ~1.5 GB of weights
+/// that are then discarded is memory the KV cache needs.
+fn skip_mtp(config: &ModelConfig) -> bool {
+    matches!(config.model_type.as_str(), "qwen4_exp")
 }
