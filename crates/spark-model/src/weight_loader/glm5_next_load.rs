@@ -45,7 +45,7 @@ use crate::layers::glm5next_layer::{Glm5NextLayer, Glm5NextMhc, Glm5NextMixer, G
 use crate::layers::glm5next_mlp::weights::{Glm5NextExpertWeights, Nvfp4Proj};
 use crate::layers::glm5next_mlp::{Glm5NextMlpConfig, Glm5NextMlpKernels, build as mlp_build};
 use crate::layers::glm5next_skeleton::{Glm5NextTextSkeleton, Mixer, Mlp};
-use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, mix_hc};
+use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX_TOKENS, mix_hc};
 use crate::weight_map::DenseWeight;
 
 pub struct Glm5NextWeightLoader;
@@ -236,6 +236,8 @@ fn bind_mhc_site(
         hc_fn: upload_f32(gpu, &f)?,
         hc_scale: upload_f32(gpu, &scale)?,
         hc_base: upload_f32(gpu, &base)?,
+        // `hc_mix` -> `hc_finish` handoff. Per site so the layer's two sites cannot alias.
+        mix: gpu.alloc(MHC_MIX_MAX_TOKENS * mix_hc(hc_mult) * 4)?,
     })
 }
 

@@ -85,7 +85,20 @@ extern "C" __global__ void glm5next_swiglu_clamp_f32out(
 // in bf16. Production (HF semantics) passes 0 and stays in fp32 throughout.
 //
 // Sentinel discipline: all K slots are written unconditionally; an unfilled slot is -1.
-// Grid: (T,1,1)  Block: (256,1,1) — thread 0 does the tiny top-k for a deterministic order.
+// Grid: (T,1,1)  Block: (256,1,1). ONE BLOCK PER TOKEN, blockDim.x a POWER OF TWO.
+//
+// 🔴 This was a single-thread kernel (`if (threadIdx.x != 0) return;`) doing K passes over all
+// E experts — 8 x 288 sigmoids serially, measured 571 us/call x 42 layers = 24 ms/token, 14.6 %
+// of the decode step, on a grid of [1,1,1]. It is now block-parallel over the EXPERT axis:
+// every thread scans its strided slice, then a tree reduction picks the winner. The arithmetic
+// per expert is UNCHANGED, so the result is bit-identical.
+//
+// 🪤 TIE-BREAK IS LOAD-BEARING. The serial version scanned e ascending with a STRICT `c > best`,
+// so an exact tie kept the LOWEST expert id. The reduction reproduces that explicitly
+// (`c == best && id < best_id`); a plain `>` reduction picks whichever half won the last
+// comparison and silently routes a different expert on a tie.
+// 🪤 The per-k `sum` accumulation stays SEQUENTIAL in thread 0 — under the bf16 ladder it
+// rounds after every add, so a parallel reduction would change the value.
 extern "C" __global__ void glm5next_router_topk(
     const float* __restrict__ logits,   // [T, E]
     const float* __restrict__ bias,     // [E]
@@ -99,56 +112,92 @@ extern "C" __global__ void glm5next_router_topk(
     const unsigned int bf16_ladder
 ) {
     const unsigned int t = blockIdx.x;
-    if (threadIdx.x != 0) return;
+    const unsigned int tid = threadIdx.x;
     if (n_group != 1) return; // caller must refuse; grouped routing is not implemented here.
 
     const float* row = logits + (size_t)t * num_experts;
     int* ids = topk_ids + (size_t)t * top_k;
     float* wts = topk_weights + (size_t)t * top_k;
 
-    // Full-write first: an early return must never leave a stale tail behind.
-    for (unsigned int k = 0; k < top_k; ++k) {
-        ids[k] = -1;
-        wts[k] = 0.0f;
-    }
+    // Reduction scratch. 1024 is the max legal blockDim; `best_id` doubles as the "no candidate"
+    // sentinel at INT_MAX so an empty lane loses the lower-index tie-break instead of winning it.
+    __shared__ float red_c[1024];
+    __shared__ int   red_i[1024];
+    // K slots, matching the 16 the serial version kept in registers (host validates top_k <= 16).
+    __shared__ int   sel_id[16];
+    __shared__ float sel_w[16];
 
-    float best_w[16];
-    for (unsigned int k = 0; k < top_k && k < 16; ++k) best_w[k] = 0.0f;
+    // Full-write first: an early return must never leave a stale tail behind.
+    if (tid == 0) {
+        for (unsigned int k = 0; k < top_k; ++k) {
+            ids[k] = -1;
+            wts[k] = 0.0f;
+        }
+    }
+    __syncthreads();
 
     for (unsigned int k = 0; k < top_k; ++k) {
         float best = -1e30f;
-        int arg = -1;
-        for (unsigned int e = 0; e < num_experts; ++e) {
+        int arg = 2147483647;
+        for (unsigned int e = tid; e < num_experts; e += blockDim.x) {
             bool taken = false;
             for (unsigned int j = 0; j < k; ++j)
-                if (ids[j] == (int)e) { taken = true; break; }
+                if (sel_id[j] == (int)e) { taken = true; break; }
             if (taken) continue;
             float s = 1.0f / (1.0f + expf(-row[e]));
             if (bf16_ladder) s = (float)__float2bfloat16(s);
             float c = s + bias[e];
             if (bf16_ladder) c = (float)__float2bfloat16(c);
-            if (c > best) { best = c; arg = (int)e; }
+            if (c > best || (c == best && (int)e < arg)) { best = c; arg = (int)e; }
         }
-        ids[k] = arg;
-        // The WEIGHT is the unbiased score of the chosen expert.
-        float s = 1.0f / (1.0f + expf(-row[arg]));
-        if (bf16_ladder) s = (float)__float2bfloat16(s);
-        best_w[k] = s;
+        red_c[tid] = best;
+        red_i[tid] = arg;
+        __syncthreads();
+        for (unsigned int w = blockDim.x >> 1; w > 0; w >>= 1) {
+            if (tid < w) {
+                const float oc = red_c[tid + w];
+                const int   oi = red_i[tid + w];
+                if (oc > red_c[tid] || (oc == red_c[tid] && oi < red_i[tid])) {
+                    red_c[tid] = oc;
+                    red_i[tid] = oi;
+                }
+            }
+            __syncthreads();
+        }
+        if (tid == 0) {
+            const int win = red_i[0];
+            if (win == 2147483647) {
+                // Unreachable while the host guards top_k <= num_experts; the serial version
+                // would have dereferenced row[-1] here.
+                sel_id[k] = -1;
+                sel_w[k] = 0.0f;
+            } else {
+                sel_id[k] = win;
+                // The WEIGHT is the unbiased score of the chosen expert.
+                float s = 1.0f / (1.0f + expf(-row[win]));
+                if (bf16_ladder) s = (float)__float2bfloat16(s);
+                sel_w[k] = s;
+            }
+        }
+        __syncthreads();
     }
+
+    if (tid != 0) return;
 
     float sum = 0.0f;
     for (unsigned int k = 0; k < top_k; ++k) {
-        sum += best_w[k];
+        sum += sel_w[k];
         if (bf16_ladder) sum = (float)__float2bfloat16(sum);
     }
     for (unsigned int k = 0; k < top_k; ++k) {
-        float w = best_w[k];
+        float w = sel_w[k];
         if (renormalize) {
             w = w / (sum + 1e-20f);
             if (bf16_ladder) w = (float)__float2bfloat16(w);
         }
         w *= routed_scale;
         if (bf16_ladder) w = (float)__float2bfloat16(w);
+        ids[k] = sel_id[k];
         wts[k] = w;
     }
 }

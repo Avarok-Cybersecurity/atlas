@@ -179,6 +179,183 @@ extern "C" __global__ void glm5next_hc_pre(
     }
 }
 
+// ── glm5next_hc_mix + glm5next_hc_finish ──
+// `glm5next_hc_pre` SPLIT IN TWO, and the split is the whole point.
+//
+// 🔴 The fused kernel runs on grid (T,1,1) — ONE BLOCK, one SM. Its pass 2 walks the
+// [mix_hc, hc*H] mixing matrix ROW BY ROW, so a single block pulls mix_hc x hc*H floats of
+// `hc_fn` plus mix_hc re-reads of the stream vector: at hc=4, H=5120 that is ~3.9 MB through
+// one SM, per site, per layer. Measured 2026-08-28 at ~193 us/call averaged over the three
+// mHC launches, 26.1 ms/token, 21 % of the decode step — the same low-parallelism defect as
+// `glm5next_router_topk`, in a different kernel.
+//
+// `glm5next_hc_mix` gives every mixing row its OWN block: grid (T, mix_hc). The reduction is
+// unchanged — same 256-wide block, same strided accumulation order, same tree reduce — so the
+// mixes come out BIT-IDENTICAL, which `examples/glm5next_hc_split_gate.rs` asserts against the
+// fused kernel byte for byte.
+//
+// 🪤 `glm5next_hc_pre` is KEPT and still built. It is the oracle the split is gated against,
+// and `examples/mhc_microtest.rs` (the Slice-9 numeric gate vs HF, and the V4-divergence
+// control) launches it through the shared `ops::hc_pre` signature. Deleting it would delete
+// both gates.
+// 🪤 Each `hc_mix` block recomputes the RMS over the same stream vector. That is hc*H floats
+// (80 KB at GLM's shape) re-read per block, L2-resident after the first, and it is what keeps
+// the kernel free of a cross-block dependency. Do not "optimise" it into a separate pass
+// without re-running the bit-identity gate: the redundancy IS the bit-identity.
+
+// streams [T, hc, H] -> mix_out [T, mix_hc].  Grid: (T, mix_hc, 1)  Block: (256,1,1).
+extern "C" __global__ void glm5next_hc_mix(
+    const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
+    const float* __restrict__ hc_fn,    // [mix_hc, hc*H]
+    float* __restrict__ mix_out,        // [T, mix_hc]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const float norm_eps
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int m = blockIdx.y;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int hc_dim = hc_mult * hidden_size;
+    const unsigned int mix_hc = (2 + hc_mult) * hc_mult;
+
+    const float* x = streams + (size_t)t * hc_dim;
+    __shared__ float red[GLM_HC_BLOCK];
+
+    // Pass 1: RMS over the flattened hc*H vector — identical order to the fused kernel.
+    float ss = 0.f;
+    for (unsigned int k = tid; k < hc_dim; k += GLM_HC_BLOCK) {
+        float v = (float)x[k];
+        ss += v * v;
+    }
+    red[tid] = ss;
+    __syncthreads();
+    const float ssum = glm_hc_block_reduce(red, tid);
+    const float rsqrt = rsqrtf(ssum / (float)hc_dim + norm_eps);
+    // Every thread read red[0] above; `red` is reused below, so nobody may write it yet.
+    __syncthreads();
+
+    // Pass 2: this block's ONE mixing row.
+    const float* fn_row = hc_fn + (size_t)m * hc_dim;
+    float acc = 0.f;
+    for (unsigned int k = tid; k < hc_dim; k += GLM_HC_BLOCK) {
+        acc += fn_row[k] * (float)x[k];
+    }
+    red[tid] = acc;
+    __syncthreads();
+    const float r = glm_hc_block_reduce(red, tid);
+    if (tid == 0) mix_out[(size_t)t * mix_hc + m] = r * rsqrt;
+}
+
+// mix [T, mix_hc] -> y_out [T, H], post_out [T, hc], comb_out [T, hc, hc].
+// Grid: (T,1,1)  Block: (256,1,1). Body copied verbatim from `glm5next_hc_pre`'s passes 3+4;
+// the only change is that `s_mix` is read from global instead of computed in shared.
+extern "C" __global__ void glm5next_hc_finish(
+    const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
+    const float* __restrict__ mix,      // [T, mix_hc]
+    const float* __restrict__ hc_scale, // [3]
+    const float* __restrict__ hc_base,  // [mix_hc]
+    __nv_bfloat16* __restrict__ y_out,
+    float* __restrict__ post_out,
+    float* __restrict__ comb_out,
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const unsigned int sinkhorn_iters,
+    const float hc_eps
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    const unsigned int hc = hc_mult;
+    const unsigned int mix_hc = (2 + hc) * hc;
+
+    const float* x = streams + (size_t)t * hc * H;
+    const float* s_mix = mix + (size_t)t * mix_hc;
+    __shared__ float s_pre[GLM_HC_MAX_MULT];
+    // 🔴 SHARED, not a thread-local array. `comb[i * hc + j]` indexes with a RUNTIME `hc`, so a
+    // local `float comb[16]` cannot live in registers — nvcc puts it in local memory and every
+    // one of the Sinkhorn's ~1,280 accesses becomes a memory op. Measured 2026-08-28 on GLM's
+    // shape: hc_finish 68.1 us at sinkhorn_iters=20 vs 13.2 us at 1, i.e. 2.9 us per iteration
+    // for 64 flops. Shared memory is the same arithmetic in the same order — bit-identical, and
+    // `examples/glm5next_hc_split_gate.rs` asserts exactly that against the fused kernel.
+    __shared__ float comb[GLM_HC_MAX_MULT * GLM_HC_MAX_MULT];
+
+    // 🔴 ONE THREAD PER ROW / PER COLUMN, not one thread for the whole Sinkhorn.
+    // Every accumulation a thread performs is still the reference's own sequential order — row
+    // i sums j ascending, column j sums i ascending, both starting from `hc_eps` — so this is
+    // BIT-IDENTICAL to the serial form and the split gate asserts it. What changes is that the
+    // hc row (and then column) normalisations run concurrently instead of chained, which is
+    // what the divides were waiting on: measured 2.9 us per Sinkhorn iteration serial, for 64
+    // flops, because a single thread cannot overlap `div.rn.f32` latency with anything.
+    // 🪤 Do NOT "simplify" a normalisation to `x * (1/r)`. That is not the same float, and it
+    // is not what HF computes.
+    const bool lane = tid < hc;
+
+    if (lane) {
+        const unsigned int i = tid;
+        float pr = s_mix[i] * hc_scale[0] + hc_base[i];
+        s_pre[i] = 1.f / (1.f + expf(-pr)) + hc_eps;
+        float po = s_mix[hc + i] * hc_scale[1] + hc_base[hc + i];
+        post_out[(size_t)t * hc + i] = 2.f * (1.f / (1.f + expf(-po)));
+        for (unsigned int j = 0; j < hc; ++j)
+            comb[i * hc + j] =
+                s_mix[2 * hc + i * hc + j] * hc_scale[2] + hc_base[2 * hc + i * hc + j];
+    }
+    __syncthreads();
+
+    // softmax over j (dim=-1) + eps — row i, sequential in j.
+    if (lane) {
+        const unsigned int i = tid;
+        float mx = -1e30f;
+        for (unsigned int j = 0; j < hc; ++j) mx = fmaxf(mx, comb[i * hc + j]);
+        float sum = 0.f;
+        for (unsigned int j = 0; j < hc; ++j) {
+            float e = expf(comb[i * hc + j] - mx);
+            comb[i * hc + j] = e;
+            sum += e;
+        }
+        for (unsigned int j = 0; j < hc; ++j) comb[i * hc + j] = comb[i * hc + j] / sum + hc_eps;
+    }
+    __syncthreads();
+
+    // col-norm first (dim=-2, over i) — column j, sequential in i.
+    if (lane) {
+        const unsigned int j = tid;
+        float c = hc_eps;
+        for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
+        for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
+    }
+    __syncthreads();
+
+    // Sinkhorn: (iters - 1) alternating row/col passes.
+    for (unsigned int it = 0; it + 1 < sinkhorn_iters; ++it) {
+        if (lane) {
+            const unsigned int i = tid;
+            float r = hc_eps;
+            for (unsigned int j = 0; j < hc; ++j) r += comb[i * hc + j];
+            for (unsigned int j = 0; j < hc; ++j) comb[i * hc + j] /= r;
+        }
+        __syncthreads();
+        if (lane) {
+            const unsigned int j = tid;
+            float c = hc_eps;
+            for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
+            for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
+        }
+        __syncthreads();
+    }
+    // 🔴 AND STOP — see `glm5next_hc_pre`. No final exact column projection.
+    for (unsigned int k = tid; k < hc * hc; k += GLM_HC_BLOCK)
+        comb_out[(size_t)t * hc * hc + k] = comb[k];
+    __syncthreads();
+
+    // Collapse y[d] = sum_i pre[i] * x[i, d]
+    for (unsigned int d = tid; d < H; d += GLM_HC_BLOCK) {
+        float acc = 0.f;
+        for (unsigned int i = 0; i < hc; ++i) acc += s_pre[i] * (float)x[i * H + d];
+        y_out[(size_t)t * H + d] = __float2bfloat16(acc);
+    }
+}
+
 // ── glm5next_hc_post ──
 // out[t,j,d] = post[t,j]*block_out[t,d] + sum_i comb[t,i,j]*residual[t,i,d].
 // `out` may alias `residual` (all hc residual values are read before write).

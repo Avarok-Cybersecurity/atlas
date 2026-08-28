@@ -29,7 +29,27 @@ pub const MOE_EXPERTS: usize = 11;
 pub const MOE_SHARED: usize = 12;
 pub const MOE_COMBINE: usize = 13;
 pub const REDUCE_MLP: usize = 14;
-const N: usize = 15;
+/// Host-side ENQUEUE cost of the two collectives — the driver/NCCL calls only, no sync.
+/// Paired with [`REDUCE_ATTN`]/[`REDUCE_MLP`], which then time ONLY the `synchronize` that
+/// follows, i.e. the device + network + rank-skew wait. Splitting them is the difference
+/// between "the fabric is slow" and "we call it 90 times a token".
+pub const REDUCE_ATTN_ENQ: usize = 15;
+pub const REDUCE_MLP_ENQ: usize = 16;
+/// A 2-BYTE collective issued immediately before the real one, PROFILING ONLY. It is a
+/// rendezvous: neither rank leaves it until both have arrived, so it absorbs the per-call
+/// arrival jitter and charges the minimum-payload NCCL latency. The real 8 KB reduce that
+/// follows therefore starts with both ranks synchronised, which is what makes
+/// [`REDUCE_ATTN`]/[`REDUCE_MLP`] readable as network-and-kernel cost rather than "network
+/// plus whatever the other rank was still doing".
+///
+/// 🪤 Aggregate rank skew being ~0 does NOT mean per-call wait is ~0 — the two ranks trade the
+/// lead call by call, so the NET cancels while every individual call still pays |jitter|.
+/// That is exactly why this probe exists and why the both-rank profile diff was not enough.
+pub const REDUCE_ATTN_BAR: usize = 17;
+pub const REDUCE_MLP_BAR: usize = 18;
+/// mHC split by kernel: `hc_pre` (the mix + finish pair) vs `hc_post` (+ expand/head).
+pub const MHC_POST: usize = 19;
+const N: usize = 20;
 
 const NAMES: [&str; N] = [
     "mhc",
@@ -47,6 +67,11 @@ const NAMES: [&str; N] = [
     "moe_shared",
     "moe_combine",
     "reduce_mlp",
+    "reduce_attn_enq",
+    "reduce_mlp_enq",
+    "reduce_attn_bar",
+    "reduce_mlp_bar",
+    "mhc_post",
 ];
 
 static NANOS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
@@ -66,6 +91,19 @@ pub fn start() -> Option<Instant> {
 pub fn end(bucket: usize, t0: Option<Instant>, gpu: &dyn GpuBackend, stream: u64) {
     let Some(t0) = t0 else { return };
     let _ = gpu.synchronize(stream);
+    NANOS[bucket].fetch_add(t0.elapsed().as_nanos() as u64, Relaxed);
+    CALLS[bucket].fetch_add(1, Relaxed);
+}
+
+/// 4-byte device scratch for the rendezvous probe. Allocated once, PROFILING ONLY.
+pub fn probe_buf(gpu: &dyn GpuBackend) -> u64 {
+    static P: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *P.get_or_init(|| gpu.alloc(4).map(|p| p.0).unwrap_or(0))
+}
+
+/// Record a span WITHOUT synchronising — host-side wall time only.
+pub fn end_nosync(bucket: usize, t0: Option<Instant>) {
+    let Some(t0) = t0 else { return };
     NANOS[bucket].fetch_add(t0.elapsed().as_nanos() as u64, Relaxed);
     CALLS[bucket].fetch_add(1, Relaxed);
 }

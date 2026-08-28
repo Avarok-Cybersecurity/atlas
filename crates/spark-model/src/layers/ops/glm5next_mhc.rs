@@ -29,7 +29,14 @@ pub struct Glm5NextMhcKernels {
     /// cannot reach into another target's, so for the GLM target that module does not
     /// exist. Resolving it would fail at first construction, not fall back.
     pub hc_expand: KernelHandle,
+    /// The FUSED single-block `hc_pre`. Still resolved, and still the oracle
+    /// `examples/glm5next_hc_split_gate.rs` gates the split pair against — but the serve path
+    /// goes through `hc_mix` + `hc_finish`, which are bit-identical and ~mix_hc times wider.
     pub hc_pre: KernelHandle,
+    /// One block per mixing row: grid `(T, mix_hc)`.
+    pub hc_mix: KernelHandle,
+    /// Split + Sinkhorn + collapse, reading the mixes from global.
+    pub hc_finish: KernelHandle,
     pub hc_post: KernelHandle,
     pub hc_head: KernelHandle,
 }
@@ -38,12 +45,14 @@ pub struct Glm5NextMhcKernels {
 pub const GLM5NEXT_MHC_MODULE: &str = "glm5next_mhc";
 
 impl Glm5NextMhcKernels {
-    /// Resolve all four. `kernel()` (not `try_kernel`) — a missing mHC kernel is a hard error,
+    /// Resolve all six. `kernel()` (not `try_kernel`) — a missing mHC kernel is a hard error,
     /// never a silent fallback onto the DeepSeek variant.
     pub fn resolve(gpu: &dyn GpuBackend) -> Result<Self> {
         Ok(Self {
             hc_expand: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_expand")?,
             hc_pre: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_pre")?,
+            hc_mix: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_mix")?,
+            hc_finish: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_finish")?,
             hc_post: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_post")?,
             hc_head: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_head")?,
         })
@@ -109,7 +118,15 @@ pub struct Glm5NextMhcSiteWeights {
     pub hc_scale: DevicePtr,
     /// `[mix_hc]` FP32.
     pub hc_base: DevicePtr,
+    /// `[MHC_MIX_MAX_TOKENS, mix_hc]` FP32 scratch: `hc_mix` writes it, `hc_finish` reads it.
+    /// Per-site, so the two sites of a layer cannot alias; both run on one stream in order.
+    pub mix: DevicePtr,
 }
+
+/// Token bound on the `mix` scratch. The GLM stack drives mHC one token at a time (the highway
+/// forces a serial prefill), so this is slack, not a shape — but `glm_hc_pre` REFUSES above it
+/// rather than writing past the allocation.
+pub const MHC_MIX_MAX_TOKENS: usize = 256;
 
 /// `hc_pre`: collapse the `hc_mult` FP32 streams to one BF16 sequence and emit this site's
 /// `post` / `comb` mixing coefficients.
@@ -126,7 +143,7 @@ pub struct Glm5NextMhcSiteWeights {
 #[allow(clippy::too_many_arguments)]
 pub fn glm_hc_pre(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
+    kernels: &Glm5NextMhcKernels,
     streams: DevicePtr,
     w: &Glm5NextMhcSiteWeights,
     y_out: DevicePtr,
@@ -140,11 +157,28 @@ pub fn glm_hc_pre(
     hc_eps: f32,
     stream: u64,
 ) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
+    let mix_hc = (2 + hc_mult) * hc_mult;
+    if num_tokens as usize > MHC_MIX_MAX_TOKENS {
+        anyhow::bail!(
+            "glm_hc_pre: {num_tokens} tokens exceeds the {MHC_MIX_MAX_TOKENS}-token `mix` \
+             scratch. Raise MHC_MIX_MAX_TOKENS and rebind; do not launch past the allocation."
+        );
+    }
+    KernelLaunch::new(gpu, kernels.hc_mix)
+        .grid([num_tokens, mix_hc, 1])
         .block([256, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.hc_fn)
+        .arg_ptr(w.mix)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .arg_f32(norm_eps)
+        .launch(stream)?;
+    KernelLaunch::new(gpu, kernels.hc_finish)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(streams)
+        .arg_ptr(w.mix)
         .arg_ptr(w.hc_scale)
         .arg_ptr(w.hc_base)
         .arg_ptr(y_out)
@@ -153,7 +187,6 @@ pub fn glm_hc_pre(
         .arg_u32(hidden_size)
         .arg_u32(hc_mult)
         .arg_u32(sinkhorn_iters)
-        .arg_f32(norm_eps)
         .arg_f32(hc_eps)
         .launch(stream)
 }

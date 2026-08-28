@@ -203,6 +203,22 @@ impl Glm5NextLayer {
         }
     }
 
+    /// PROFILING ONLY: a 2-byte collective that both ranks must reach before either leaves.
+    /// Charged to `bar`, it drains the per-call arrival jitter so the real reduce that follows
+    /// measures network + kernel rather than "network + how late the other rank was".
+    fn reduce_probe(&self, bar: usize, ctx: &ForwardContext, stream: u64) {
+        if !profile::on() {
+            return;
+        }
+        let Some(comm) = ctx.comm else { return };
+        let t = profile::start();
+        let p = profile::probe_buf(ctx.gpu);
+        if p != 0 {
+            let _ = comm.all_reduce_async(p, 2, stream);
+        }
+        profile::end(bar, t, ctx.gpu, stream);
+    }
+
     /// `all_reduce(SUM)` a `[1, hidden]` BF16 partial, when one is needed and a comm exists.
     fn reduce_partial(&self, p: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
         if let Some(comm) = ctx.comm {
@@ -256,8 +272,12 @@ impl Glm5NextLayer {
         // before `hc_post` folds the output into the highway — reducing afterwards would mix a
         // half-answer into the residual stream of every later layer.
         if self.mlp_cfg.needs_all_reduce() {
+            self.reduce_probe(profile::REDUCE_MLP_BAR, ctx, stream);
             let t = profile::start();
             self.reduce_partial(out, ctx, stream)?;
+            profile::end_nosync(profile::REDUCE_MLP_ENQ, t);
+            // Second span times ONLY the sync: device + network + rank skew.
+            let t = profile::start();
             profile::end(profile::REDUCE_MLP, t, ctx.gpu, stream);
         }
         Ok(())
@@ -312,7 +332,7 @@ impl Glm5NextLayer {
         // ── attention site ──
         glm_hc_pre(
             gpu,
-            mhc.kernels.hc_pre,
+            &mhc.kernels,
             streams,
             &mhc.attn,
             hidden,
@@ -345,11 +365,15 @@ impl Glm5NextLayer {
         // 🔴 Row-parallel `o_proj` ⇒ `attn_out` is a PARTIAL SUM at TP>1. Reduce it here,
         // before it enters the highway.
         if self.mixer_all_reduce {
+            self.reduce_probe(profile::REDUCE_ATTN_BAR, ctx, stream);
             let t = profile::start();
             self.reduce_partial(attn_out, ctx, stream)?;
+            profile::end_nosync(profile::REDUCE_ATTN_ENQ, t);
+            // Second span times ONLY the sync: device + network + rank skew.
+            let t = profile::start();
             profile::end(profile::REDUCE_ATTN, t, ctx.gpu, stream);
         }
-        let t_mhc = profile::start();
+        let t_mhc_post = profile::start();
         glm_hc_post(
             gpu,
             mhc.kernels.hc_post,
@@ -363,11 +387,13 @@ impl Glm5NextLayer {
             hc as u32,
             stream,
         )?;
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
 
         // ── FFN site ──
+        let t_mhc = profile::start();
         glm_hc_pre(
             gpu,
-            mhc.kernels.hc_pre,
+            &mhc.kernels,
             streams,
             &mhc.ffn,
             hidden,
@@ -386,7 +412,7 @@ impl Glm5NextLayer {
         self.norm(gpu, hidden, self.post_attn_norm, normed, stream)?;
         profile::end(profile::NORM, t_norm, gpu, stream);
         self.mlp_forward(normed, ffn_out, ctx, stream)?;
-        let t_mhc = profile::start();
+        let t_mhc_post = profile::start();
         glm_hc_post(
             gpu,
             mhc.kernels.hc_post,
@@ -414,7 +440,7 @@ impl Glm5NextLayer {
                 stream,
             )?;
         }
-        profile::end(profile::MHC, t_mhc, gpu, stream);
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
         if self.is_last {
             profile::step();
         }
