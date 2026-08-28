@@ -49,3 +49,12 @@
   border-bottom: 1px solid rgba(124, 92, 255, 0.35);
 }
 .ann-cta:hover { border-bottom-color: var(--accent); }
+
+/* A hover lift is small, but it is still a transform. Dropping only the
+   transition would leave the -3px jump applying INSTANTLY, which is worse than
+   animating it — so the translate goes too. `border-color` is what actually
+   signals the hover, and it stays. */
+@media (prefers-reduced-motion: reduce) {
+  .news-card { transition: border-color 0.2s; }
+  .news-card:hover { transform: none; }
+}
