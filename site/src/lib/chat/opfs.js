@@ -106,8 +106,19 @@ export async function listCached() {
   return out.sort((a, b) => b.lastModified - a.lastModified);
 }
 
-/** Delete every cached corpus except the one for `keepSha`. */
+/**
+ * Delete every cached corpus except the one for `keepSha`.
+ *
+ * Refuses a falsy or non-string sha. Both callers pass `meta.commit_sha`, which
+ * `ensureReady` has already rejected the manifest for lacking, so this cannot
+ * fire today — but the failure mode if it ever did is not "prunes the wrong
+ * file", it is "deletes ALL of them": `latticeFileName(undefined)` is
+ * `lattice-db-undefined.jsonl`, which matches nothing, so every real corpus
+ * takes the delete branch. A precondition is cheap; re-downloading a corpus
+ * because a caller passed the wrong thing is not.
+ */
 export async function pruneStale(keepSha) {
+  if (typeof keepSha !== 'string' || keepSha === '') return;
   const dir = await root();
   if (!dir) return;
   const keep = latticeFileName(keepSha);
