@@ -113,6 +113,34 @@ pub async fn ensure(store: &ArtifactStore, handle: &PluginHandle) -> Result<Arti
     handle.status("BFCL: downloading bfcl-eval (needs network)");
     python::pip_install(&interpreter, &dir.join("requirements.txt")).await?;
 
+    // Prove the SCORER can import before spending an hour and a half
+    // generating responses for it. `pip install` succeeding is not the same
+    // claim: bfcl-eval pulls `qwen_agent`, which imports `soundfile`, which
+    // the pinned requirements did not carry — and because the AST checker is
+    // imported inside a function, nothing at module scope touched it. A run
+    // on 2026-08-28 generated all 995 responses, failed here, and wrote no
+    // gate record, because a record is evidence a benchmark RAN.
+    //
+    // `--selftest` lives in `score.py` so the list of what scoring needs
+    // cannot drift from what scoring does.
+    handle.status("BFCL: checking the scorer can import");
+    python::run(
+        &interpreter,
+        &[
+            dir.join("score.py")
+                .to_str()
+                .context("artifact path is not valid UTF-8")?,
+            "--selftest",
+        ],
+        Some(&dir),
+    )
+    .await
+    .context(
+        "the BFCL scorer cannot import its dependencies. Delete \
+         ~/.atlas/artifacts/bfcl to re-provision; if it recurs, a transitive \
+         dependency is missing from requirements.txt",
+    )?;
+
     handle.status("BFCL: materializing the single-turn dataset");
     let out = python::run(
         &interpreter,
@@ -220,6 +248,23 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(2), "provision.py accepted no --out");
+
+        // `--selftest` must exist and must be the thing provisioning calls.
+        // Against a bare system python it will FAIL (no bfcl-eval), which is
+        // the point: the exit code has to distinguish "cannot import" from
+        // "argument not recognised". Argparse answers an unknown flag with 2.
+        let selftest = std::process::Command::new(python())
+            .arg(&scorer)
+            .arg("--selftest")
+            .output()
+            .unwrap();
+        assert_ne!(
+            selftest.status.code(),
+            Some(2),
+            "score.py does not recognise --selftest, so provisioning's check \
+             would pass for the wrong reason: {}",
+            String::from_utf8_lossy(&selftest.stderr)
+        );
         let stderr = String::from_utf8(out.stderr).unwrap();
         assert!(
             stderr.contains("the following arguments are required: --out"),
