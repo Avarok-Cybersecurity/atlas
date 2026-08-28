@@ -141,3 +141,94 @@ fn o_proj_is_sliced_on_columns_not_rows() {
         "same length, wrong values — the real failure mode"
     );
 }
+
+/// 🔴 `o_absorb` must be numerically identical to the path it replaces: expand the latent
+/// through `kv_b_proj`'s V half, then apply the raw `o_proj`.
+///
+/// The expansion side is computed by `glm5next_dsa_ref::expand_kv` — the HF-gated
+/// reference — rather than restated here, so this asserts agreement with HF's
+/// `kv_b_proj` split (V starts at `qk_nope_head_dim`), not with our own belief about it.
+///
+/// Absorbed decode leaves `attn_out[h] = Σ_t p[h][t] · latent[t]` in latent space. Since
+/// `v_t[h] = KV_B_V[h] · latent[t]` is linear, `Σ_t p[h][t] · v_t[h] = KV_B_V[h] · attn_out[h]`,
+/// so applying the absorbed weight to `attn_out` is exact, not an approximation.
+#[test]
+fn absorb_o_equals_expand_then_project() {
+    use crate::layers::glm5next_dsa_ref::{DsaDims, expand_kv};
+
+    let mut c = cfg(2);
+    c.hidden = 7;
+    c.kv_lora_rank = 4;
+    let (heads, nope, vd, kvl, hidden) = (
+        2usize,
+        c.qk_nope_head_dim,
+        c.v_head_dim,
+        c.kv_lora_rank,
+        c.hidden,
+    );
+
+    // Deterministic, and asymmetric enough that a K/V-half swap or a stride mix-up cannot
+    // coincidentally agree.
+    let f = |i: usize, salt: usize| ((i * 37 + salt * 11) % 23) as f32 * 0.031 - 0.29;
+    let o_proj: Vec<f32> = (0..hidden * heads * vd).map(|i| f(i, 1)).collect();
+    let kv_b: Vec<f32> = (0..heads * (nope + vd) * kvl).map(|i| f(i, 5)).collect();
+    let latent: Vec<f32> = (0..heads * kvl).map(|i| f(i, 9)).collect();
+
+    let o_absorb = absorb_o(&c, &o_proj, &kv_b, heads).unwrap();
+    assert_eq!(o_absorb.len(), hidden * heads * kvl);
+
+    let dims = DsaDims {
+        hidden,
+        index_heads: c.index_heads,
+        index_head_dim: c.index_head_dim,
+        index_kpool: c.index_kpool,
+        index_topk: c.index_topk,
+        always_select_tail: c.always_select_tail,
+        heads,
+        q_lora_rank: c.q_lora_rank,
+        kv_lora_rank: kvl,
+        qk_nope_head_dim: nope,
+        qk_rope_head_dim: 0,
+        v_head_dim: vd,
+    };
+
+    // Reference: expand each head's latent row through kv_b, keep that head's V slice.
+    let mut v = vec![0f32; heads * vd];
+    for h in 0..heads {
+        let (_, v_all) = expand_kv(&latent[h * kvl..(h + 1) * kvl], &kv_b, dims, 1);
+        v[h * vd..(h + 1) * vd].copy_from_slice(&v_all[h * vd..(h + 1) * vd]);
+    }
+
+    for i in 0..hidden {
+        let reference: f32 = (0..heads * vd)
+            .map(|j| o_proj[i * heads * vd + j] * v[j])
+            .sum();
+        let absorbed: f32 = (0..heads * kvl)
+            .map(|j| o_absorb[i * heads * kvl + j] * latent[j])
+            .sum();
+        assert!(
+            (reference - absorbed).abs() < 1e-4,
+            "row {i}: expand-then-project {reference} != absorbed {absorbed}"
+        );
+    }
+}
+
+/// The absorbed weight is exactly the width the decode GEMM's `kk` claims. This is the
+/// assertion that would have caught the illegal access: `local_heads * kv_lora_rank`, not
+/// `local_heads * v_head_dim`.
+#[test]
+fn absorb_o_width_matches_the_decode_contraction() {
+    let mut c = cfg(2);
+    c.hidden = 7;
+    c.kv_lora_rank = 4;
+    let (heads, nope, vd, kvl) = (2usize, c.qk_nope_head_dim, c.v_head_dim, c.kv_lora_rank);
+    assert_ne!(kvl, vd, "the widths must differ or this proves nothing");
+    let o = absorb_o(
+        &c,
+        &vec![0.5f32; c.hidden * heads * vd],
+        &vec![0.25f32; heads * (nope + vd) * kvl],
+        heads,
+    )
+    .unwrap();
+    assert_eq!(o.len(), c.hidden * heads * kvl);
+}

@@ -185,12 +185,78 @@ fn scratch_refuses_a_pass_larger_than_its_reservation() {
 fn plan_refuses_degenerate_geometry() {
     let c = cfg();
     assert!(DsaSelectGeometry::plan(&c, 4_096, 0).is_err(), "q_rows = 0");
-    assert!(
-        DsaSelectGeometry::plan(&c, 3, 1).is_err(),
-        "fewer tokens than one pool"
-    );
+    assert!(DsaSelectGeometry::plan(&c, 0, 1).is_err(), "seq = 0");
     assert!(
         DsaSelectGeometry::plan(&c, 4, 1).is_ok(),
         "exactly one pool is fine"
     );
+    // 🔴 NOT degenerate: fewer tokens than one pool is a legal, tail-only pass.
+    // See `sub_pool_selection_is_dense_over_the_visible_tokens`.
+    assert!(
+        DsaSelectGeometry::plan(&c, 3, 1).is_ok(),
+        "fewer tokens than one pool is the tail-only regime, not a refusal"
+    );
+}
+
+/// 🔴 The `seq < index_kpool` regime, resolved from HF 5.16.1 rather than invented.
+///
+/// `Glm5NextTextIndexer.forward` has NO short-sequence branch. Below `index_kpool`
+/// tokens `pool_valid` is all-false (a pool counts only when every slot is real),
+/// `keep = pool_valid.any(0)` empties the pool axis, and
+/// `select_k = min(index_topk // index_kpool, 0)` is 0 — so the pool arm selects
+/// nothing and `append_visible_tail` writes the raw visible tokens. Every token of a
+/// sub-pool sequence lives in the incomplete pool, so the emitted row is exactly
+/// `[0 .. seq)` padded with -1: **dense attention, reached by the ordinary path.**
+///
+/// Checked against `glm5next_dsa_ref`, which is the HF-gated reference (GATE 4/5),
+/// so this asserts agreement with HF rather than restating this launcher's belief.
+#[test]
+fn sub_pool_selection_is_dense_over_the_visible_tokens() {
+    use crate::layers::glm5next_dsa_ref::{INVALID, Pools, expand_selection};
+
+    let c = cfg();
+    let d = dims(&c);
+    let width = d.out_width();
+
+    for seq in 1usize..c.index_kpool {
+        let g = DsaSelectGeometry::plan(&c, seq, 1).unwrap();
+        assert_eq!(g.n_pools, 0, "seq={seq}: no complete pool");
+        assert_eq!(g.select_k, 0, "seq={seq}: nothing to select");
+        assert_eq!(g.out_width, width, "seq={seq}: row width is unchanged");
+
+        let valid = vec![1u8; seq];
+        assert!(
+            kept_pools(&valid, d, seq).is_empty(),
+            "seq={seq}: the reference keeps no pool either"
+        );
+
+        // The query is the newest token, exactly as decode/per-token prefill issues it.
+        let pools = Pools {
+            keys: Vec::new(),
+            indices: Vec::new(),
+            valid: Vec::new(),
+            n_pools: 0,
+        };
+        let row = expand_selection(&[], &pools, &[], &valid, &[seq - 1], &[1u8], d, seq, 0);
+
+        let mut expected = vec![INVALID; width];
+        for (t, e) in expected.iter_mut().enumerate().take(seq) {
+            *e = t as i32;
+        }
+        assert_eq!(
+            row, expected,
+            "seq={seq}: the row must be every visible token, then -1 padding"
+        );
+    }
+}
+
+/// The boundary is not off by one: at exactly `index_kpool` tokens the pool arm
+/// engages and the tail contributes nothing.
+#[test]
+fn the_first_complete_pool_switches_the_sparse_arm_on() {
+    let c = cfg();
+    let g3 = DsaSelectGeometry::plan(&c, 3, 1).unwrap();
+    let g4 = DsaSelectGeometry::plan(&c, 4, 1).unwrap();
+    assert_eq!((g3.n_pools, g3.select_k), (0, 0));
+    assert_eq!((g4.n_pools, g4.select_k), (1, 1));
 }

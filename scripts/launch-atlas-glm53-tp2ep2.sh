@@ -51,6 +51,7 @@ for RANK in 0 1; do
       -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \
       -e NCCL_IB_DISABLE=0 \
       -e NCCL_DEBUG=INFO \
+      -e CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0} \
       -e NCCL_NVLS_ENABLE=0 \
       -e RUST_LOG=info \
       -v $MODEL_DIR:/model:ro \

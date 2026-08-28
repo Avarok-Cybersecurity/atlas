@@ -539,7 +539,10 @@ mod prune_tests {
             "model.language_model.layers.0.self_attn.q_proj.weight",
             n
         ));
-        assert!(is_reuploaded("model.language_model.layers.44.mlp.gate.weight", n));
+        assert!(is_reuploaded(
+            "model.language_model.layers.44.mlp.gate.weight",
+            n
+        ));
         assert!(is_reuploaded(
             "model.language_model.layers.3.hc_attn_fn.weight",
             n
@@ -555,7 +558,10 @@ mod prune_tests {
             n
         ));
         // Not a layer tensor at all.
-        assert!(!is_reuploaded("model.language_model.embed_tokens.weight", n));
+        assert!(!is_reuploaded(
+            "model.language_model.embed_tokens.weight",
+            n
+        ));
         assert!(!is_reuploaded("lm_head.weight", n));
         // Malformed / non-numeric index is never a match.
         assert!(!is_reuploaded("model.language_model.layers.x.foo", n));

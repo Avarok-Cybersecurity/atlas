@@ -111,8 +111,13 @@ pub struct Glm5NextDsaWeights {
     pub q_absorb: DevicePtr,
     pub kv_a_proj: DevicePtr,
     pub kv_a_layernorm: DevicePtr,
-    /// `[hidden, local_heads * v_head_dim]` BF16, row-parallel — all-reduced by the caller.
-    pub o_proj: DevicePtr,
+    /// `[hidden, local_heads * kv_lora_rank]` BF16, row-parallel — all-reduced by the caller.
+    ///
+    /// 🪤 **Absorbed**, not the raw checkpoint `o_proj`: the decode kernel leaves its output
+    /// in the 512-dim LATENT space, so the projection carries `kv_b_proj`'s V half folded in.
+    /// The raw weight is `local_heads * v_head_dim` wide — half of this — and feeding the
+    /// latent to it reads 2x past every row rather than merely computing the wrong thing.
+    pub o_absorb: DevicePtr,
     // ── indexer (REPLICATED across ranks; see `tp`) ──
     pub wk: DevicePtr,
     pub k_norm_weight: DevicePtr,
@@ -465,7 +470,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             attn,
-            self.weights.o_proj,
+            self.weights.o_absorb,
             hidden,
             1,
             self.cfg.hidden,

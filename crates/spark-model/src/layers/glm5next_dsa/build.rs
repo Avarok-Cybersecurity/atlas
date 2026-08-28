@@ -14,7 +14,14 @@
 //!    a second GEMM on the critical path for a weight that never changes.
 //! 2. **`weights_proj` scaled by `index_heads^-0.5`** — `dsa_index_scores` does not apply
 //!    the factor. Folding it into the weight is exact (a positive scalar) and free.
-//! 3. **`ape` upconverted BF16 → F32** — the kernel's parameter is `const float*` while
+//! 3. **`o_absorb`** — `o_proj` pre-multiplied by `kv_b_proj`'s V half, the counterpart of
+//!    `q_absorb` and the half that was missing. The decode kernel consumes the latent KV
+//!    directly, so its output is `[local_heads, kv_lora_rank]` in LATENT space; the raw
+//!    checkpoint `o_proj` expects `[local_heads, v_head_dim]` in V space. Feeding one to the
+//!    other is not a numeric drift — the GEMM reads `kv_lora_rank / v_head_dim` = 2x past
+//!    the end of every weight row. Measured 2026-08-28: `CUDA_ERROR_ILLEGAL_ADDRESS` at
+//!    layer 3, `grid=[256,1,1] block=[16,16,1]`, on the first forward that reached it.
+//! 4. **`ape` upconverted BF16 → F32** — the kernel's parameter is `const float*` while
 //!    the checkpoint stores BF16. This is the #341/#347 dtype-mismatch class: reading it
 //!    at the wrong width is silent.
 
@@ -89,6 +96,92 @@ pub fn absorb_q(
     Ok(out)
 }
 
+/// `o_absorb[i][h*kvl + c] = Σ_r o_proj[i][h*vd + r] · kv_b[h*(nope+vd) + nope + r][c]`.
+///
+/// The output-side twin of [`absorb_q`]. Absorbed MLA is a PAIR of transforms — Q into the
+/// latent space on the way in, the output projection back out of it on the way out — and
+/// shipping only the first leaves the decode kernel's latent output being read by a
+/// V-space weight.
+///
+/// 🪤 Unlike `absorb_q`, this one is done AFTER sharding, and that is not an optimisation
+/// that happens to be safe — it is exact. `absorb_q` pairs `q_b` head `h` with `kv_b` head
+/// `h`, so slicing before pairing would cross heads. Here both operands are indexed by the
+/// SAME `h` and the head axis is a plain outer sum, so this rank's heads never touch
+/// another rank's rows. Doing it on full heads would double the load-time cost for an
+/// identical result.
+///
+/// 🪤 `kv_b`'s V half starts at `nope`, not 0. Using the K half compiles, runs, and gives a
+/// well-formed wrong answer — the same trap `absorb_q` documents from the other side.
+pub fn absorb_o(
+    cfg: &Glm5NextDsaConfig,
+    o_local: &[f32],
+    kv_b_local: &[f32],
+    local_heads: usize,
+) -> Result<Vec<f32>> {
+    let (nope, vd, kvl, hidden) = (
+        cfg.qk_nope_head_dim,
+        cfg.v_head_dim,
+        cfg.kv_lora_rank,
+        cfg.hidden,
+    );
+    if cfg.qk_rope_head_dim != 0 {
+        bail!(
+            "absorb_o: NoPE only; qk_rope_head_dim is {}",
+            cfg.qk_rope_head_dim
+        );
+    }
+    let in_w = local_heads * vd;
+    let out_w = local_heads * kvl;
+    if o_local.len() != hidden * in_w {
+        bail!(
+            "absorb_o: o_proj has {} elems, expected {} ([{hidden}, {in_w}])",
+            o_local.len(),
+            hidden * in_w
+        );
+    }
+    if kv_b_local.len() != local_heads * (nope + vd) * kvl {
+        bail!(
+            "absorb_o: kv_b_proj slice has {} elems, expected {}",
+            kv_b_local.len(),
+            local_heads * (nope + vd) * kvl
+        );
+    }
+
+    let mut out = vec![0f32; hidden * out_w];
+    // Rows are independent and contiguous, so a plain row split is the whole story.
+    // Single-threaded this is `hidden * local_heads * kvl * vd` MACs — 17 G at GLM-5.3's
+    // TP=2 shape, per layer, times 11 layers, on the GB10's CPU. That is minutes of load
+    // time, paid on every bring-up.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, hidden);
+    let rows = hidden.div_ceil(threads);
+    std::thread::scope(|sc| {
+        for (o_chunk, i_chunk) in out
+            .chunks_mut(rows * out_w)
+            .zip(o_local.chunks(rows * in_w))
+        {
+            sc.spawn(move || {
+                for (dst_row, src_row) in o_chunk.chunks_mut(out_w).zip(i_chunk.chunks(in_w)) {
+                    for h in 0..local_heads {
+                        let dst = &mut dst_row[h * kvl..(h + 1) * kvl];
+                        let v_base = h * (nope + vd) + nope;
+                        for r in 0..vd {
+                            let w = src_row[h * vd + r];
+                            let src = &kv_b_local[(v_base + r) * kvl..(v_base + r) * kvl + kvl];
+                            for (d, k) in dst.iter_mut().zip(src) {
+                                *d += w * k;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    Ok(out)
+}
+
 /// Rows `[start, end)` of a `[rows, row_elems]` row-major tensor.
 fn row_slice(v: &[f32], row_elems: usize, start: usize, end: usize) -> Vec<f32> {
     v[start * row_elems..end * row_elems].to_vec()
@@ -151,19 +244,33 @@ pub fn build_dsa_weights(
         Ok(shard_host(p, &full))
     };
 
+    let kv_b = get("kv_b_proj.weight")?;
+
     // ── transform 1: absorb Q into latent space, THEN shard by head ──
     // Absorption is over full heads because it pairs q_b and kv_b head-for-head; slicing
     // first would pair this rank's q_b heads with the wrong kv_b rows.
-    let q_absorb_full = absorb_q(
-        cfg,
-        &get("q_b_proj.weight")?,
-        &get("kv_b_proj.weight")?,
-        plan.full_heads,
-    )?;
+    let q_absorb_full = absorb_q(cfg, &get("q_b_proj.weight")?, &kv_b, plan.full_heads)?;
     let per_head = cfg.kv_lora_rank;
     let start = plan.tp_rank * plan.local_heads * per_head;
     let len = plan.local_heads * per_head;
     let q_absorb = row_slice(&q_absorb_full, cfg.q_lora_rank, start, start + len);
+
+    // ── transform 3: absorb the output projection back OUT of latent space ──
+    // Sharded first (see `absorb_o`): both operands index the same head, so this rank's
+    // slice is exact and costs half the arithmetic.
+    let kv_b_rows = cfg.qk_nope_head_dim + cfg.v_head_dim;
+    let kv_b_local = row_slice(
+        &kv_b,
+        cfg.kv_lora_rank,
+        plan.tp_rank * plan.local_heads * kv_b_rows,
+        (plan.tp_rank + 1) * plan.local_heads * kv_b_rows,
+    );
+    let o_absorb = absorb_o(
+        cfg,
+        &shard("o_proj", get("o_proj.weight")?)?,
+        &kv_b_local,
+        plan.local_heads,
+    )?;
 
     // ── transform 2: fold index_heads^-0.5 into weights_proj ──
     let scale = (cfg.index_heads as f32).powf(-0.5);
@@ -172,7 +279,7 @@ pub fn build_dsa_weights(
         .map(|x| x * scale)
         .collect();
 
-    // ── transform 3: ape BF16 on disk -> F32 for the kernel ──
+    // ── transform 4: ape BF16 on disk -> F32 for the kernel ──
     let ape = get("indexer.index_kpool_compress_ape")?;
 
     Ok(Glm5NextDsaWeights {
@@ -181,7 +288,7 @@ pub fn build_dsa_weights(
         q_absorb: up_bf16(gpu, &q_absorb)?,
         kv_a_proj: up_bf16(gpu, &get("kv_a_proj_with_mqa.weight")?)?,
         kv_a_layernorm: up_bf16(gpu, &get("kv_a_layernorm.weight")?)?,
-        o_proj: up_bf16(gpu, &shard("o_proj", get("o_proj.weight")?)?)?,
+        o_absorb: up_bf16(gpu, &o_absorb)?,
         wk: up_bf16(gpu, &get("indexer.wk.weight")?)?,
         k_norm_weight: up_bf16(gpu, &get("indexer.k_norm.weight")?)?,
         // 🪤 REQUIRED — LayerNorm bias, not optional.

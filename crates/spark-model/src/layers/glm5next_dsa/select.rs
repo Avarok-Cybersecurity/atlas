@@ -108,14 +108,21 @@ impl DsaSelectGeometry {
         if q_rows == 0 {
             bail!("DSA select: q_rows must be > 0");
         }
+        if seq == 0 {
+            bail!("DSA select: seq must be > 0");
+        }
         let kp = cfg.index_kpool;
         let n_pools = contiguous_pool_count(kp, seq);
-        if n_pools == 0 {
-            bail!(
-                "DSA select: {seq} tokens form no complete pool at index_kpool={kp}; \
-                 the caller must run dense attention below {kp} tokens"
-            );
-        }
+        // 🔴 `n_pools == 0` is a LEGAL regime, not a refusal. HF 5.16.1
+        // `Glm5NextTextIndexer.forward` has no short-sequence branch: below
+        // `index_kpool` tokens `pool_valid` is all-false, `keep = pool_valid.any(0)`
+        // empties the pool axis, and `select_k = min(index_topk // index_kpool, 0)`
+        // is 0 — so nothing is selected and `append_visible_tail` supplies the raw
+        // visible tokens. Since every token of a sub-pool sequence is in the
+        // incomplete pool, that IS dense attention; the sparse path is unchanged
+        // from `seq >= index_kpool` on. `glm5next_dsa_ref::{kept_pools,
+        // expand_selection}` already model this; only this launcher refused it,
+        // which stopped the first forward at layer 3 (2026-08-28).
         let topk_np2 = n_pools.next_power_of_two().max(2);
         let topk_smem = topk_np2 * 8;
         if topk_smem > TOPK_SMEM_CEILING {
@@ -300,6 +307,13 @@ pub fn select_tokens(
     let d = geom.index_head_dim;
     let kp = geom.index_kpool;
 
+    // 🪤 Below `index_kpool` tokens there are no pools to score or sort, and a
+    // zero-extent grid is an illegal launch, not a no-op. Stages 2 and 3 are
+    // skipped; stage 1 still runs (`n_pools_full >= 1`) and stage 4 still runs,
+    // writing the whole row -1 and then appending the visible tail — which is the
+    // entire selection in this regime.
+    let has_pools = geom.n_pools > 0;
+
     // ── 1. pool compression ─────────────────────────────────────────────────────
     // Launched over the FULL pool count, exactly as the microtest does; the trailing
     // partial pool is written, marked invalid, and never read downstream.
@@ -324,41 +338,43 @@ pub fn select_tokens(
     // header — a left-padded batch would need it.
 
     // ── 2. per-(query, pool) index scores ───────────────────────────────────────
-    KernelLaunch::new(gpu, kernels.index_scores)
-        .grid([geom.n_pools as u32, geom.q_rows as u32, 1])
-        .block([SCORES_BLOCK, 1, 1])
-        .shared_mem(SCORES_BLOCK)
-        .arg_ptr(inputs.q)
-        .arg_ptr(scratch.pool_keys)
-        .arg_ptr(inputs.weights)
-        .arg_ptr(scratch.pool_indices)
-        .arg_ptr(scratch.pool_valid)
-        .arg_ptr(inputs.valid)
-        .arg_ptr(inputs.q_pos)
-        .arg_ptr(scratch.scores)
-        .arg_ptr(scratch.valid_cand)
-        .arg_u32(geom.q_rows as u32)
-        .arg_u32(geom.n_pools as u32)
-        .arg_u32(geom.index_heads as u32)
-        .arg_u32(d as u32)
-        .arg_u32(kp as u32)
-        .arg_u32(geom.seq as u32)
-        .arg_f32((d as f32).powf(-0.5))
-        .launch(stream)?;
+    if has_pools {
+        KernelLaunch::new(gpu, kernels.index_scores)
+            .grid([geom.n_pools as u32, geom.q_rows as u32, 1])
+            .block([SCORES_BLOCK, 1, 1])
+            .shared_mem(SCORES_BLOCK)
+            .arg_ptr(inputs.q)
+            .arg_ptr(scratch.pool_keys)
+            .arg_ptr(inputs.weights)
+            .arg_ptr(scratch.pool_indices)
+            .arg_ptr(scratch.pool_valid)
+            .arg_ptr(inputs.valid)
+            .arg_ptr(inputs.q_pos)
+            .arg_ptr(scratch.scores)
+            .arg_ptr(scratch.valid_cand)
+            .arg_u32(geom.q_rows as u32)
+            .arg_u32(geom.n_pools as u32)
+            .arg_u32(geom.index_heads as u32)
+            .arg_u32(d as u32)
+            .arg_u32(kp as u32)
+            .arg_u32(geom.seq as u32)
+            .arg_f32((d as f32).powf(-0.5))
+            .launch(stream)?;
 
-    // ── 3. top-k over pools ─────────────────────────────────────────────────────
-    // Capacity was refused at plan time; this launch cannot overflow shared memory.
-    KernelLaunch::new(gpu, kernels.topk_pools)
-        .grid([geom.q_rows as u32, 1, 1])
-        .block([ROW_BLOCK, 1, 1])
-        .shared_mem(geom.topk_smem as u32)
-        .arg_ptr(scratch.scores)
-        .arg_ptr(scratch.selected)
-        .arg_u32(geom.q_rows as u32)
-        .arg_u32(geom.n_pools as u32)
-        .arg_u32(geom.topk_np2 as u32)
-        .arg_u32(geom.select_k as u32)
-        .launch(stream)?;
+        // ── 3. top-k over pools ─────────────────────────────────────────────────────
+        // Capacity was refused at plan time; this launch cannot overflow shared memory.
+        KernelLaunch::new(gpu, kernels.topk_pools)
+            .grid([geom.q_rows as u32, 1, 1])
+            .block([ROW_BLOCK, 1, 1])
+            .shared_mem(geom.topk_smem as u32)
+            .arg_ptr(scratch.scores)
+            .arg_ptr(scratch.selected)
+            .arg_u32(geom.q_rows as u32)
+            .arg_u32(geom.n_pools as u32)
+            .arg_u32(geom.topk_np2 as u32)
+            .arg_u32(geom.select_k as u32)
+            .launch(stream)?;
+    }
 
     // ── 4. expand pools to raw token ids ────────────────────────────────────────
     KernelLaunch::new(gpu, kernels.expand_selection)
