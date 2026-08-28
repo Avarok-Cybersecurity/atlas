@@ -34,43 +34,48 @@
 //! so no reference activations can be generated. The argument above is
 //! structural, not numerical.
 //!
-//! # STATUS: the harness is INERT; the draft is not yet numerically right.
+//! # STATUS: the draft head WORKS — 86.5% shadow accept, harness inert.
 //!
-//! **1. Target corruption: FIXED, by isolation by construction.** The draft
-//! runs inside its OWN `BufferArena` (`max_batch_tokens = 1`, measured <1 MB),
-//! so the body cannot reach any buffer the target owns. Verified: shadow-on
-//! output is BYTE-IDENTICAL to a shadow-off control, `finish: stop`, 0 failures.
+//! Measured (250-token greedy completion, `ATLAS_QWEN4EXP_MTP_SHADOW=1`):
+//! ```text
+//!   shadow off -> full answer, finish: stop
+//!   shadow on  -> BYTE-IDENTICAL output, finish: stop, 0 failures
+//!   accept      -> 83/96 drafts matched the target's next token = 86.5%
+//! ```
+//! ★ That accept rate VALIDATES the per-stream combiner reading empirically.
+//! The alternative (collapse-then-`hc_expand`) is not needed and was removed.
 //!
-//! Getting here took four rounds of "find the shared buffer, save and restore
-//! it" — each fixed a REAL bug and none of them stopped the corruption:
-//!   - `hc_streams` is FP32 (`m*hc_mult*h*4`); a BF16-sized save/restore covered
-//!     only half the highway.
-//!   - `head_scratch` was under-allocated by `hc_lowrank*4` = 1280 B: a real
-//!     heap overflow, because `hc_head_lowrank`'s split layout is
-//!     `t*(hc*h + rank)*4`, not `hc*h*4`.
-//!   - a local `MTP_META_OFFSET = 40960` sat inside the target's metadata
-//!     block-table region (the shared constant is 49152).
-//!   - `hc_post` / `hc_lowrank_scratch` / `norm_output` were all restored too.
-//! ★ THE LESSON: enumerating shared buffers to save NEVER converged, because a
-//! full decoder layer touches state this file cannot name. One private arena
-//! did it, and let every save/restore be deleted. Isolate structurally; do not
-//! enumerate.
+//! What it took, in the order the bugs were found — every one invisible to
+//! review, each caught only by running it:
+//!   1. kernel module is `norm::rms_norm`, not `rms_norm::rms_norm` (the engine
+//!      refused to start rather than serve on a null handle).
+//!   2. the hook must live in `decode_a.rs`: `decode_batch_dispatch` returns
+//!      early for n == 1, so a hook on the batched path never fires here.
+//!   3. the body's highway is `ctx.buffers.hc_streams()`, not a buffer you can
+//!      hand it, and it is PERSISTENT per-sequence state.
+//!   4. that highway is FP32 (`m*hc_mult*h*4`), not BF16.
+//!   5. `head_scratch` needs `t*(hc*h + hc_lowrank)*4`; sizing it `hc*h*4` is a
+//!      1280 B heap overflow.
+//!   6. `MTP_META_OFFSET` must be the SHARED 49152.
+//!   7. ★ the decisive one: buffer-by-buffer isolation NEVER converged. A full
+//!      decoder layer touches state the caller cannot enumerate. Giving the
+//!      draft its OWN `BufferArena` (T=1, <1 MB) fixed it at once and let every
+//!      save/restore be deleted. ISOLATE STRUCTURALLY; DO NOT ENUMERATE.
+//!   8. the combiner must be dtype-correct across the FP32/BF16 seam:
+//!      `hc_pre_stage_bf16` (FP32 highway -> BF16 grouped norm, offset-from-1,
+//!      per-stream RMS — the model's own kernel for exactly this) then BF16
+//!      GEMVs then `qhc_mtp_combine_streams` (BF16 -> FP32 highway). Running
+//!      BF16 ops directly over the FP32 highway is SILENT garbage, and it is
+//!      what made every earlier accept measurement meaningless.
 //!
-//! **2. NEXT BLOCKER — the combiner is dtype-mismatched.** Same root discovery: the highway is
-//! FP32, but `rms_norm_strided` / `dense_gemv` / `residual_add` are BF16 ops, so
-//! this reads the FP32 streams as BF16 and writes BF16 back into an FP32 buffer.
-//! The draft is therefore numerically meaningless and the 0% accept rate
-//! measured so far says NOTHING about the combiner reading. Needs FP32-aware
-//! ops (no BF16->FP32 convert primitive exists today).
+//! # NOT YET SPECULATION
 //!
-//! **3. Then: the combiner READING is genuinely open — two candidates.** The `[10240]`
-//! grouped-norm width argues for the per-stream form implemented here. But the
-//! loader's own note says the body runs "MIDDLE mHC mixing only — the proposer
-//! owns BOTH ENDS", i.e. the proposer is expected to supply an `hc_expand` at
-//! the front, which this form has no place for; that argues for a collapse-then-
-//! `hc_expand` form, which would equally explain the square `fc_hidden`. Decide
-//! it by implementing both behind `ATLAS_QWEN4EXP_MTP_COMBINER` and comparing
-//! shadow accept rates — but only AFTER (1) and (2), or the comparison is noise.
+//! `--speculative` still produces no speedup: this drafts and scores, nothing
+//! is fed back. The verify path is the remaining work — `decode_batched` and
+//! `decode_verify_multi` both refuse under the highway (they keep their own
+//! residual, which the highway replaces), so K-row verification has to route
+//! through `prefill_inner_hc`, and a rejected draft needs QSA/PLE rewind that
+//! has no API today. 86.5% accept is what makes that work worth doing.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,6 +123,9 @@ struct MtpBuffers {
     /// `[hidden]` single-stream scratch the body collapses into.
     body_scratch: DevicePtr,
     residual: DevicePtr,
+    /// `[hc_mult * hidden]` BF16 — `fc_hidden` applied per stream, before the
+    /// combine tail writes the FP32 highway.
+    per_stream: DevicePtr,
     /// `[hc_mult * hidden]` low-rank head scratch.
     head_scratch: DevicePtr,
     /// `[vocab]` BF16. The shadow step reuses the TARGET's `lm_head` (so the
@@ -143,10 +151,12 @@ pub struct Qwen4ExpMtpHead {
     arena: spark_runtime::buffers::BufferArena,
     buf: MtpBuffers,
     rms_norm_k: KernelHandle,
-    rms_norm_strided_k: KernelHandle,
     dense_gemv_k: KernelHandle,
-    residual_add_k: KernelHandle,
     hc_head_k: KernelHandle,
+    /// FP32 highway -> BF16 grouped norm (the combiner's hidden branch).
+    hc_stage_k: KernelHandle,
+    /// BF16 per-stream + broadcast -> FP32 highway (the combiner's tail).
+    combine_k: KernelHandle,
     /// Shadow counters: drafts made, drafts that matched the target's token.
     shadow_drafts: AtomicU64,
     shadow_hits: AtomicU64,
@@ -269,6 +279,7 @@ impl Qwen4ExpMtpHead {
                 // THEN low FP32 [t, rank]. Sizing this `hc*h*4` (the streams
                 // alone) under-allocates by `rank*4` = 1280 B and the collapse
                 // writes past the end of the allocation. Measured, not guessed.
+                per_stream: gpu.alloc(hc * h * 2)?,
                 head_scratch: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
@@ -276,10 +287,10 @@ impl Qwen4ExpMtpHead {
             // this checkpoint's norm weights are offset-from-1 like the rest of
             // the qwen4_exp tree.
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
-            rms_norm_strided_k: gpu.kernel("norm", "rms_norm_strided")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
-            residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             hc_head_k: gpu.kernel("hyper_connection", "hc_head")?,
+            hc_stage_k: gpu.kernel("hyper_connection", "hc_pre_stage_bf16")?,
+            combine_k: gpu.kernel("hyper_connection", "qhc_mtp_combine_streams")?,
             shadow_drafts: AtomicU64::new(0),
             shadow_hits: AtomicU64::new(0),
         })
@@ -450,63 +461,53 @@ impl Qwen4ExpMtpHead {
             stream,
         )?;
 
-        // ── 2. Hidden branch: GROUPED norm, then fc_hidden PER STREAM ──
-        // `rms_norm_strided` applies ONE weight to every row it normalizes, but
-        // each stream owns its own `[hidden]` slice of the `[hc*hidden]` scale
-        // — so this is one call per stream, each over that stream's rows with
-        // `row_stride = hc*hidden`. At T=1 that is a single row per call.
+        // ── 2. Hidden branch — DTYPE-CORRECT end to end ──
+        // The highway is FP32; the projections are BF16 GEMVs. So:
+        //   a) `hc_pre_stage_bf16` reads the FP32 streams and writes the GROUPED
+        //      norm as BF16. It is the model's own kernel for exactly this
+        //      (per-stream RMS, offset-from-1 scale, `[hc*H]` weight) — which is
+        //      also independent confirmation that `pre_fc_norm_hidden [10240]`
+        //      normalizes the four-stream highway.
+        //   b) `fc_hidden` is applied PER STREAM as a BF16 GEMV.
+        //   c) `qhc_mtp_combine_streams` writes the FP32 highway from those
+        //      per-stream BF16 rows plus the broadcast embedding projection.
+        // An earlier version ran BF16 ops directly over the FP32 buffer — silent
+        // garbage, and the reason the first accept measurements were meaningless.
+        ops::hc_pre_stage_bf16_norm(
+            ctx.gpu,
+            self.hc_stage_k,
+            self.buf.streams,
+            self.module.pre_fc_norm_hidden.weight,
+            self.buf.normed_streams,
+            1,
+            h,
+            hc,
+            eps,
+            stream,
+        )?;
         for i in 0..hc as usize {
             let off = i * row;
-            let w = DenseWeight {
-                weight: self.module.pre_fc_norm_hidden.weight.offset(off),
-            };
-            ops::rms_norm_strided(
-                ctx.gpu,
-                self.rms_norm_strided_k,
-                self.buf.streams.offset(off),
-                &w,
-                self.buf.normed_streams.offset(off),
-                1,
-                1,
-                h,
-                eps,
-                hc * h,
-                stream,
-            )?;
-            // fc_hidden is shared across streams; apply it to this stream and
-            // add the (broadcast) embedding projection in place.
-            //
-            // Destination is `body_streams` (= ctx.buffers.hc_streams()), which
-            // is where the body will look. `buf.streams` must stay untouched —
-            // it is the target's saved highway, restored below.
             ops::dense_gemv(
                 ctx.gpu,
                 self.dense_gemv_k,
                 self.buf.normed_streams.offset(off),
                 &self.module.fc_hidden,
-                body_streams.offset(off),
+                self.buf.per_stream.offset(off),
                 h,
                 h,
                 stream,
             )?;
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                body_streams.offset(off),
-                self.buf.embed_proj,
-                h,
-                stream,
-            )?;
         }
-
-        // BISECTION: stop after the combiner, restoring the highway. If the
-        // target's output is clean here but dirty at `body`, the body forward
-        // owns the corruption.
-        if shadow_stage() < ShadowStage::Body {
-            ctx.gpu
-                .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
-            return Ok(());
-        }
+        ops::qhc_mtp_combine_streams(
+            ctx.gpu,
+            self.combine_k,
+            self.buf.per_stream,
+            self.buf.embed_proj,
+            body_streams,
+            h,
+            hc,
+            stream,
+        )?;
 
         // No save/restore of target buffers: the draft runs in its own arena.
         // ── 3. Body decode against the module's OWN cache ──
