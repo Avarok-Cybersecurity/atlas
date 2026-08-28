@@ -284,6 +284,30 @@ if (emitted !== recipeCount || emitted !== files.length) {
   process.exit(1);
 }
 
+// The front page prints `atlasctl run <flagshipRecipe>` as the headline
+// instruction, and nothing tied that name to the corpus — so renaming or
+// retiring a recipe in atlas-recipes would leave the site confidently
+// advertising a command that fails on the user's machine, silently and only
+// for them. This is the same guard the build already applies to install.sh,
+// applied to the other half of the same sentence.
+//
+// Read out of data.js rather than duplicated: a second copy of the name is how
+// the check ends up agreeing with itself instead of with the page.
+const dataJs = readFileSync(resolve(here, '..', 'src', 'lib', 'data.js'), 'utf8');
+const flagship = /flagshipRecipe\s*=\s*'([^']+)'/.exec(dataJs)?.[1];
+if (!flagship) {
+  console.error('could not read flagshipRecipe out of src/lib/data.js');
+  process.exit(1);
+}
+const allIds = vendors.flatMap((v) => v.subfamilies.flatMap((s) => s.recipes.map((r) => r.recipeId)));
+if (!allIds.includes(flagship)) {
+  console.error(
+    `data.js advertises \`atlasctl run ${flagship}\`, and no such recipe exists in the corpus.\n` +
+      `The front page would print a command that fails. SSOT: ${SSOT_URL}`
+  );
+  process.exit(1);
+}
+
 const subCount = vendors.reduce((n, v) => n + v.subfamilies.length, 0);
 console.log(
   `Wrote ${OUT}\n  ${files.length} recipes across ${subCount} subfamilies` +
