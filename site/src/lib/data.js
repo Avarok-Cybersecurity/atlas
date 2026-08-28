@@ -67,8 +67,13 @@ export const runCommand = `curl -fsSL ${installerUrl} | sh`;
 /// `run` dies with the terminal that started it, and the machine silently
 /// leaves the fleet the next time someone closes an ssh session.
 export const startAgentCommand = 'atlasctl agent install';
-export const runCommandRaw =
-  'atlasctl run qwen3.6-35b-a3b-fp8-mtp';
+/// Built from `flagshipRecipe`, not repeating it. The constant existed and was
+/// referenced by nothing while its value sat hardcoded eleven lines below —
+/// so changing the flagship recipe would have updated the obvious place and
+/// left the command the site tells people to copy pointing at the old one.
+/// `installerUrl` above already states this rule: "a second copy is how the two
+/// drift".
+export const runCommandRaw = `atlasctl run ${flagshipRecipe}`;
 
 // --- hardware acknowledgment (modest banner) ---------------------------------
 // --- announcement band (the strip above the hero) ----------------------------
