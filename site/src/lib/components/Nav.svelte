@@ -1,4 +1,5 @@
 <script>
+  import { modal } from '$lib/modal.js';
   // Desktop bar + mobile drawer render from the SAME `nav.links` in data.js.
   // Below the drawer breakpoint (styles/mobile.css) the bar hides and the
   // toggle appears, so phones keep every link the desktop has.
@@ -143,6 +144,7 @@
         role="dialog"
         aria-modal="true"
         aria-label="{codeChat.navLabel}, loading"
+        use:modal
         aria-busy="true"
         onclick={(e) => e.stopPropagation()}
       >

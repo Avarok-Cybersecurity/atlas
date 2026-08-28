@@ -242,7 +242,10 @@ run_ep2_model() {
 
 log "Building ${IMAGE} (multi-target, all models)..."
 sudo docker build -f docker/gb10/Dockerfile -t "$IMAGE" "$REPO_ROOT" 2>&1 | tail -5
-if [ $? -ne 0 ]; then
+# PIPESTATUS[0], not $?: after a pipeline `$?` is `tail`'s status, and tail
+# succeeds on any input. A failed build passed this check and the script went
+# on to benchmark whatever stale image was still tagged.
+if [ "${PIPESTATUS[0]}" -ne 0 ]; then
   log "ERROR: Build failed for ${IMAGE}"
   exit 1
 fi

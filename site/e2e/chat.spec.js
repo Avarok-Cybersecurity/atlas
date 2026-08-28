@@ -272,6 +272,37 @@ test('manifest failure falls back to the cached corpus with the offline badge', 
   expect(hits.gz).toBe(1); // never re-downloaded
 });
 
+// A manifest that PARSES but whose commit_sha is not a string used to pass
+// validation on truthiness alone. It is then coerced into a filename
+// (lattice-db-12345.jsonl) and later fails pruneStale's typeof precondition,
+// which returns early — so pruning is silently disabled and cached corpora
+// accumulate in OPFS with nothing reporting it. Treated as a bad manifest now,
+// which takes the same offline path as an unreachable one.
+test('a manifest whose commit_sha is not a string is refused, not coerced', async ({
+  page,
+  context
+}) => {
+  const hits = await routeCorpus(context);
+  await page.goto('/');
+  await openChat(page);
+  await waitReady(page);
+
+  await context.unroute(CORPUS_META_URL);
+  await context.route(CORPUS_META_URL, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...META, commit_sha: 12345 })
+    });
+  });
+
+  await page.reload();
+  await openChat(page);
+  await waitReady(page);
+  await expect(statusText(page)).toContainText('cached · offline');
+  expect(hits.gz).toBe(1); // and it did not re-download under a coerced name
+});
+
 // =============================================================================
 // abort on close mid-download: no partial cache, clean re-run
 // =============================================================================
@@ -494,6 +525,51 @@ test.describe('error states', () => {
       `returned 16 dimensions but this corpus was built with ${META.dim}`
     );
     // A chat-time fault must not knock the corpus out of ready.
+    await expect(statusText(page)).toContainText('ready ·');
+  });
+
+  // The rerank API returns positions into the documents WE sent. rag.js used
+  // them to index `candidates` directly, so an index the response invented
+  // produced `undefined` in `picked` and the next line read `.payload` off it —
+  // a bare TypeError that took the whole answer down instead of degrading.
+  test('a rerank index that points nowhere does not take the answer down', async ({
+    page,
+    context
+  }) => {
+    await routeCorpus(context);
+    await context.route(OR_EMBEDDINGS, embeddingsHandler({ dim: META.dim }));
+    await context.route(OR_CHAT, chatHandler('The KV pool lives in `kv_pool.rs` [1].'));
+    await context.route(OR_RERANK, async (route) => {
+      const body = route.request().postDataJSON();
+      // One real position and two that do not exist.
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          // Scores matter: rag.js takes .slice(0, TOP_K) of the RANKED list,
+          // so a bad index only reaches the guard if it scores into the top
+          // few. The first version of this test put them last, and passed
+          // against a guard that did not hold.
+          results: [
+            { index: 'length', relevance_score: 0.99 },
+            { index: 'map', relevance_score: 0.98 },
+            { index: 0, relevance_score: 0.97 },
+            { index: body.documents.length + 5, relevance_score: 0.8 },
+            { index: -1, relevance_score: 0.7 },
+            { index: 1.5, relevance_score: 0.4 },
+            { index: null, relevance_score: 0.3 }
+          ]
+        })
+      });
+    });
+    await withKey(page);
+    await page.goto('/');
+    await openChat(page);
+    await waitReady(page);
+
+    await askQuestion(page, 'where is the kv pool?');
+    // The answer still arrives, built from the position that did resolve.
+    await expect(page.locator('.cm-body').first()).toBeVisible({ timeout: 20_000 });
     await expect(statusText(page)).toContainText('ready ·');
   });
 });

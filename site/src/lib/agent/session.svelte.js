@@ -14,6 +14,7 @@
 // Hoisting the dialog to the page root is the fix. Hoisting the client is the
 // tidy-up that belongs with it.
 
+import { joinState } from './joinstate.svelte.js';
 import { AgentClient } from './client.svelte.js';
 import { fleet } from './fleet.svelte.js';
 import * as Placement from './placement.js';
@@ -51,7 +52,7 @@ class LaunchSession {
    * `{ code, addresses, expiresInS }`, or null when this agent cannot take
    * members — which is a normal thing to be, not an error.
    */
-  join = $state(null);
+
 
   /** Detail for the current phase — an error message, usually. */
   detail = $state('');
@@ -67,7 +68,9 @@ class LaunchSession {
     this.openRecipe = recipeId;
     this.target = null;
     this.placement = null;
-    this.join = null;
+    // NOT cleared here. The offer belongs to the shared store now, and this
+    // dialog opening is no reason to invalidate a code the operator may be
+    // carrying to another machine from the control page. It expires on its own.
     this.detail = '';
     this.endpoint = '';
     await this.#connect();
@@ -205,16 +208,18 @@ class LaunchSession {
    * is a normal thing to be, and the panel falls back to telling the operator
    * how to do it by hand.
    */
+  /** The join offer currently on show, or null. */
+  get join() {
+    return joinState.current;
+  }
+
   async mintJoin() {
-    this.join = null;
-    const res = await this.agent.mintJoinCode();
-    if (res?.ok && res.reply?.code) {
-      this.join = {
-        code: res.reply.code,
-        addresses: res.reply.addresses ?? [],
-        expiresInS: res.reply.expires_in_s ?? 0
-      };
-    }
+    // Delegated to the shared store. A join code is a ONE-USE credential and
+    // two surfaces display it — this dialog and the control page's join guide.
+    // Two independent copies would each mint their own, so the operator could
+    // be carrying a command from one screen that the other had already
+    // invalidated, with nothing on either to say which was live.
+    await joinState.mint(this.agent);
   }
 
   /** Send this launch to a specific machine. */

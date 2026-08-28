@@ -1,9 +1,15 @@
 <script>
+  import { modal } from '$lib/modal.js';
   import { hero, runCommand, githubUrl, discordUrl } from '$lib/data.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import Receipt from './Receipt.svelte';
   import DiscordIcon from './DiscordIcon.svelte';
 
-  let copied = $state(false);
+  let copyState = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  // The flash outlives the component on navigation without this.
+  $effect(() => () => clearTimeout(copyTimer));
+  let cmdEl = $state(null);
   let dashboardOpen = $state(false);
 
   // PRPL "lazy-load": the dashboard is on-click only, so its component (and the
@@ -32,11 +38,11 @@
   }
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(runCommand);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
-    } catch {}
+    clearTimeout(copyTimer);
+    // Was a silent `return` on refusal: the button did not change, which is
+    // indistinguishable from success to the person who clicked it.
+    copyState = await copyOrSelect(runCommand, cmdEl);
+    copyTimer = setTimeout(() => (copyState = 'idle'), 2400);
   }
 </script>
 
@@ -53,9 +59,9 @@
 
       <div class="hero-cmd" role="group" aria-label="Run Atlas">
         <span class="prompt">$</span>
-        <code>{runCommand}</code>
+        <code bind:this={cmdEl}>{runCommand}</code>
         <button type="button" class="copy-btn" onclick={copy} aria-label="Copy run command">
-          {copied ? 'Copied' : 'Copy'}
+          {copyLabel(copyState)}
         </button>
       </div>
 
@@ -98,7 +104,15 @@
     <!-- Same .bd-backdrop/.bd classes as the real dialog: identical dimensions,
          so the swap from skeleton to dashboard causes zero layout shift. -->
     <div class="bd-backdrop" onclick={closeDashboard} role="presentation">
-      <div class="bd bd-skeleton" role="dialog" aria-modal="true" aria-label="Benchmark dashboard, loading" aria-busy="true" onclick={(e) => e.stopPropagation()}>
+      <div
+        class="bd bd-skeleton"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Benchmark dashboard, loading"
+        aria-busy="true"
+        onclick={(e) => e.stopPropagation()}
+        use:modal
+      >
         {#if dashboardError}
           <p class="bd-skeleton-error">Couldn’t load the dashboard (network?). Close and try again.</p>
         {:else}

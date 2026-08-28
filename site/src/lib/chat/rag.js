@@ -81,7 +81,22 @@ export async function askCodebase(question, history, { apiKey, corpus, onPhase, 
       apiKey,
       TOP_K
     );
-    picked = ranked.slice(0, TOP_K).map(({ index }) => candidates[index]);
+    // `index` is a position into the documents WE sent, but it arrives from the
+    // rerank service, so it is not ours to trust. The `sources` map below reads
+    // `.payload` off whatever comes back, so a bad index costs the whole answer
+    // rather than the one result.
+    //
+    // Checked as an INDEX, not for truthiness. `candidates` is an Array, so a
+    // string index reaches its properties: `"length"` returns a number and
+    // `"map"` a function, both of which survive a `.filter(Boolean)` and then
+    // throw on `.payload`. That was the first version of this guard, and it
+    // reinstated the exact TypeError it was written to remove.
+    picked = ranked
+      .slice(0, TOP_K)
+      .filter(
+        ({ index }) => Number.isInteger(index) && index >= 0 && index < candidates.length
+      )
+      .map(({ index }) => candidates[index]);
   } else {
     picked = candidates.slice(0, TOP_K);
   }

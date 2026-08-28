@@ -5,6 +5,18 @@
 // @live because it needs `atlasctl agent run` on this machine with at least one
 // paired peer. Without that there is nothing to launch across, and a mocked
 // agent would only prove the mock agrees with itself.
+//
+// Run it as:  atlasctl agent run --dev-origins
+//
+// The --dev-origins flag is not optional here and its absence does not look
+// like a configuration problem. The agent's origin allowlist is
+// ALLOWED_ORIGINS = ["https://atlasinference.io"] and nothing else unless that
+// flag is passed (atlasctl-agent/src/guard.rs). Playwright serves this suite
+// from http://127.0.0.1:4173, which is in DEV_ORIGINS but gated behind the
+// flag -- so a default agent answers the WebSocket upgrade with 403 before any
+// token is read. The browser cannot expose a handshake response body, so the
+// page can only say "no agent connected", and every assertion below times out
+// waiting for a socket that was refused for a reason nothing on screen names.
 
 import { expect, test } from '@playwright/test';
 
@@ -15,15 +27,22 @@ test.describe('@live cluster launch', () => {
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((t) => {
-      window.localStorage.setItem('atlasctl.token', t);
+      // The key the app actually reads (`TOKEN_KEY` in protocol.js). It was
+      // 'atlasctl.token' here, which stores a value nothing looks for: the page
+      // never dials, `fleet.mode` never reaches 'live', and every assertion
+      // below times out waiting for a surface that cannot mount. A @live spec
+      // that cannot pass is worse than no spec, because it reads as coverage.
+      window.localStorage.setItem('atlas.agent.token', t);
     }, TOKEN);
   });
 
   test('previews a two-node launch with a command per machine', async ({ page }) => {
-    await page.goto('/control');
+    // The pre-bridge anchor survives as a deep link: #launch opens the
+    // cluster overlay, which carries the id.
+    await page.goto('/control#launch');
 
     const launch = page.locator('#launch');
-    await expect(launch).toBeVisible();
+    await expect(launch).toBeVisible({ timeout: 20_000 });
 
     // The recipe list comes from the agent, so its arrival proves the socket is
     // live rather than that the page rendered.
@@ -50,8 +69,9 @@ test.describe('@live cluster launch', () => {
   });
 
   test('reserves both machines and then releases them', async ({ page }) => {
-    await page.goto('/control');
+    await page.goto('/control#launch');
     const launch = page.locator('#launch');
+    await expect(launch).toBeVisible({ timeout: 20_000 });
 
     const select = launch.locator('select');
     await expect(select).toBeEnabled({ timeout: 20_000 });
@@ -75,7 +95,10 @@ test.describe('@live cluster launch', () => {
     await expect(launch.locator('.lc-running')).toHaveCount(0);
 
     // And the reservations must be releasable, or the fleet stays stuck.
-    await launch.getByRole('button', { name: /release the reservations/i }).click();
+    // Abort is pinned in the overlay footer, visible without scrolling.
+    const abort = launch.getByRole('button', { name: /abort/i });
+    await expect(abort).toBeInViewport();
+    await abort.click();
     await expect(launch.locator('.lc-prepared')).toHaveCount(0, { timeout: 15_000 });
   });
 });

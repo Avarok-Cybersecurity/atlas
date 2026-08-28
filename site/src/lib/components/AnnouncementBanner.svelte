@@ -11,4 +11,14 @@
     <span class="ann-sub">{announcement.sub}</span>
     <a class="ann-cta" href={announcement.ctaUrl} target="_blank" rel="noopener">{announcement.ctaText} ↗</a>
   </div>
+  {#if announcement.note}
+    <!-- A second row rather than more words in the first: the partnership line
+         and the launcher change are unrelated pieces of news, and running them
+         together reads as one long sentence about neither. -->
+    <div class="ann-inner ann-note">
+      <span class="ann-tag">New</span>
+      <span class="ann-sub">{announcement.note}</span>
+      <a class="ann-cta" href="/control.html">Control plane →</a>
+    </div>
+  {/if}
 </div>

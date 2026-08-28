@@ -18,8 +18,16 @@
 //      selection, pairing, launching — uses the fingerprint, because Sparks
 //      ship with colliding names like spark-256a.
 //
-// PRIVACY. Fleet data lives in memory for the life of the tab, no fleet value
-// ever reaches a URL, and the prerendered page contains no fleet data at all.
+// PRIVACY. Fleet data lives in memory for the life of the tab, and the
+// prerendered page contains no fleet data at all.
+//
+// ONE fleet value does reach a URL, and it is worth stating rather than
+// leaving the older blanket claim to rot: the control page persists the
+// SELECTED node's fingerprint as `#node=<64-hex>` via `replaceState`, so a
+// reload or a deep link returns to the machine you were looking at. That
+// fingerprint is a public key hash, not a secret — it is broadcast in mDNS
+// beacons on the LAN — but it does enter browser history and travels if the
+// URL is pasted. It is `replaceState`, so it does not accumulate entries.
 // Two things are written to storage, both by other modules and neither by this
 // one: the browser-pairing token (`protocol.js`) and the operator's own
 // preferences (`profile.js`). The latter includes the fingerprints of machines
@@ -30,6 +38,7 @@ import { AgentClient } from './client.svelte.js';
 
 /** Longest display string we will render. */
 import { DETAIL_MAX, MAX_NODES, alert, ingestNode, sanitize, vitals } from './ingest.js';
+import { readDecision, readExchange, readExchangeAt } from './pairing.js';
 
 /** Poll cadence while waiting for an agent to appear, and its ceiling. */
 const PROBE_START_MS = 1200;
@@ -223,21 +232,67 @@ class FleetSession {
   }
 
   /** Pair a discovered peer with a code read off that machine. */
+  /**
+   * Run the pairing exchange. This establishes NO trust.
+   *
+   * `ok` means the two machines derived the same key and there are words to
+   * compare — not that anything is pinned. `confirm` is what trusts.
+   */
   async pair(nodeId, code) {
     const res = await this.agent.pairPeer(nodeId, code);
     if (!res.ok) return { ok: false, detail: res.message };
-    const reply = res.reply;
-    return {
-      ok: reply.paired === true,
-      verification: reply.verification ?? null,
-      detail: sanitize(reply.detail, DETAIL_MAX)
-    };
+    return readExchange(res.reply);
   }
 
-  /** Drop trust in a peer. */
+  /**
+   * Run the ceremony against an address the operator typed.
+   *
+   * Returns the identity that answered as well as the words, because nothing
+   * was discovered: this reply is the first statement of who is at that
+   * address, and the operator needs it before they decide.
+   */
+  async pairAt(target, code) {
+    const res = await this.agent.pairPeerAt(target, code);
+    if (!res.ok) return { ok: false, node: null, name: '', address: '', detail: res.message };
+    return readExchangeAt(res.reply);
+  }
+
+  /**
+   * Trust a peer after a human compared the words.
+   *
+   * `allowControl` is the second, separate decision the ceremony asks:
+   * whether the newly trusted machine may drive THIS one (launch and stop
+   * models here). Trust without it is one-way — this machine can still see
+   * and drive the peer wherever the peer has granted control.
+   */
+  async confirm(nodeId, allowControl = false) {
+    const res = await this.agent.confirmPairing(nodeId, allowControl);
+    if (!res.ok) return { ok: false, detail: res.message };
+    return readDecision(res.reply, true);
+  }
+
+  /**
+   * Refuse a completed exchange.
+   *
+   * Distinct from `unpair`: nothing was written, so this discards rather than
+   * removes. The difference matters when it fails — a failed reject leaves no
+   * trust behind, whereas a failed unpair leaves a machine trusted.
+   */
+  async reject(nodeId) {
+    const res = await this.agent.rejectPairing(nodeId);
+    if (!res.ok) return { ok: false, detail: res.message };
+    // Not an unconditional `ok: true`. This asked the agent to leave the peer
+    // untrusted, so the answer worth reporting is whether it IS untrusted — an
+    // affirmative here would tell the operator their refusal took effect
+    // without ever having read what the agent said about it.
+    return readDecision(res.reply, false);
+  }
+
   async unpair(nodeId) {
     const res = await this.agent.unpairPeer(nodeId);
-    return { ok: res.ok, detail: res.ok ? '' : res.message };
+    if (!res.ok) return { ok: false, detail: res.message };
+    // `unpair_peer` answers a decision now, not a pairing result.
+    return readDecision(res.reply, false);
   }
 
   // ---- internals ---------------------------------------------------------

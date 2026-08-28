@@ -321,4 +321,50 @@ img, svg, video { max-width: 100%; }
 @media (pointer: coarse) {
   /* Touch targets. */
   .topo-act-btn, .fp-chip, .fl-unpair { min-height: 34px; }
+  .ab-btn, .cmd-seg-btn, .dock-tab, .cs-btn, .cmd-help, .rail-cl-btn, .ov-abort,
+  .ov-close { min-height: 34px; }
+  .cmd-help { min-width: 34px; }
+}
+
+/* ---- the /control bridge ---------------------------------------------------
+   Below 1200px the one-screen grid cannot hold its min widths
+   (280 + 560 + 336 + 2 = 1178), so the columns stack and the page scrolls:
+   sticky command strip, fleet aggregate + roster as a horizontally scrolling
+   chip row, then stage, then rail. */
+@media (max-width: 1199.98px) {
+  .bridge {
+    display: flex; flex-direction: column; height: auto; overflow: visible;
+    row-gap: 0; background: var(--bg);
+  }
+  .bridge > .cmd {
+    position: sticky; top: 0; z-index: 40; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; height: auto; min-height: 48px; padding: 0.3rem 0.9rem;
+  }
+  /* The roster flattens into the aggregate plus a 64px horizontally
+     scrolling chip row; the comparative columns return at desktop widths. */
+  .roster { display: block; border-bottom: 1px solid var(--border); }
+  .roster-hdr { display: none; }
+  .roster-rows {
+    display: flex; flex-direction: row; overflow-x: auto; overflow-y: hidden;
+    height: 64px; align-items: stretch;
+  }
+  .rr { height: auto; border-bottom: 0; border-right: 1px solid var(--border); flex-shrink: 0; }
+  .rr-main { border-left: 0; border-top: 3px solid transparent; padding: 0 0.8rem; }
+  .rr-selected .rr-main { border-top-color: var(--ch-cyan); }
+  .rr-cols { display: none; }
+  .roster-foot { border-top: 1px solid var(--border); padding: 0.4rem 0.8rem; }
+  .stage, .rail { overflow: visible; }
+
+  /* The stage's fixed rows are a desktop budget. Stacked, the page scrolls,
+     so every row sizes to its content and the dock stops being the one
+     scroller — its content joins the page flow. */
+  .stage { display: block; }
+  .ih { flex-wrap: wrap; overflow: visible; }
+  .vg-grid { grid-template-columns: repeat(2, 1fr); }
+  .io-rowa, .io-rowb { grid-template-columns: repeat(2, 1fr); height: auto; }
+  .io { padding: 8px 9px; }
+  .io-off { min-height: 4rem; }
+  .ab { flex-wrap: wrap; padding: 0.4rem 0.9rem; }
+  .dock-body { overflow-y: visible; padding-bottom: 2rem; }
+  .dt-log { max-height: 45vh; }
 }
