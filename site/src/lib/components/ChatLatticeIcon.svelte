@@ -6,7 +6,7 @@
   let { size = 20 } = $props();
 </script>
 
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
   <path
     d="M4.5 7.5 12 4M4.5 7.5 12 12M4.5 7.5 12 20M4.5 16.5 12 4M4.5 16.5 12 12M4.5 16.5 12 20M12 4 19.5 7.5M12 12 19.5 7.5M12 20 19.5 7.5M12 4 19.5 16.5M12 12 19.5 16.5M12 20 19.5 16.5"
     stroke="currentColor"
