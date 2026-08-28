@@ -78,21 +78,102 @@ static NANOS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static CALLS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static STEPS: AtomicU64 = AtomicU64::new(0);
 
+/// `ATLAS_GLM_PROFILE=1` full · `=2` COLLECTIVES ONLY.
+///
+/// 🔴 Level 2 exists because level 1 cannot answer its own biggest question. Every span ends in
+/// a `synchronize`, ~15 of them per layer per rank, and any host-side scheduling difference
+/// between the two ranks accumulates between rendezvous points and is then charged to the next
+/// `reduce_*_bar`. Level 2 syncs ONLY the collective spans, so the bar it reports is arrival
+/// jitter the model actually has — not jitter the profiler manufactured.
+fn level() -> u8 {
+    static L: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *L.get_or_init(|| match std::env::var("ATLAS_GLM_PROFILE").as_deref() {
+        Ok("1") => 1,
+        Ok("2") => 2,
+        _ => 0,
+    })
+}
+
 pub fn on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GLM_PROFILE").as_deref() == Ok("1"))
+    level() != 0
+}
+
+/// True only at level 1 — the per-kernel spans.
+pub fn full() -> bool {
+    level() == 1
 }
 
 /// Open a span. `None` when profiling is off, which makes [`end`] a no-op.
 pub fn start() -> Option<Instant> {
+    full().then(Instant::now)
+}
+
+/// A span that survives level 2: the collectives and their rendezvous probe.
+pub fn start_hot() -> Option<Instant> {
     on().then(Instant::now)
 }
 
 pub fn end(bucket: usize, t0: Option<Instant>, gpu: &dyn GpuBackend, stream: u64) {
-    let Some(t0) = t0 else { return };
+    let _ = end_us(bucket, t0, gpu, stream);
+}
+
+/// Same, returning the measured microseconds (0.0 when profiling is off).
+pub fn end_us(bucket: usize, t0: Option<Instant>, gpu: &dyn GpuBackend, stream: u64) -> f64 {
+    let Some(t0) = t0 else { return 0.0 };
     let _ = gpu.synchronize(stream);
-    NANOS[bucket].fetch_add(t0.elapsed().as_nanos() as u64, Relaxed);
+    let ns = t0.elapsed().as_nanos() as u64;
+    NANOS[bucket].fetch_add(ns, Relaxed);
     CALLS[bucket].fetch_add(1, Relaxed);
+    ns as f64 / 1e3
+}
+
+/// `ATLAS_GLM_ROUTE_TRACE=1` — emit one line per reduce site per layer per token carrying the
+/// router's selected GLOBAL expert ids and the measured rendezvous (arrival-skew) time.
+///
+/// The router is REPLICATED and bit-identical on every rank, so rank 0's ids are the whole
+/// picture: any static ownership map can be scored offline from this one trace without a
+/// second run. Costly (one log line per MoE layer per token) — trace, then turn it off.
+pub fn trace_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_GLM_ROUTE_TRACE").as_deref() == Ok("1"))
+}
+
+thread_local! {
+    /// The ids `forward_moe` last read back to the host, for the trace line that follows.
+    static ROUTE: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Called from `forward_moe` right after the routing D2H. No-op unless tracing.
+pub fn stash_route(ids: &[i32]) {
+    if !trace_on() {
+        return;
+    }
+    ROUTE.with(|r| {
+        let mut v = r.borrow_mut();
+        v.clear();
+        v.extend_from_slice(ids);
+    });
+}
+
+/// Emit the joined line. `site` is `attn` or `mlp`; `moe` says whether THIS layer's MLP is
+/// routed (the 3 dense layers are the natural control: no EP imbalance is possible there).
+pub fn trace_bar(site: &str, layer: usize, moe: bool, us: f64) {
+    if !trace_on() {
+        return;
+    }
+    let step = STEPS.load(Relaxed);
+    ROUTE.with(|r| {
+        let v = r.borrow();
+        let ids = v
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        tracing::warn!(
+            "GLMTRACE step={step} site={site} L={layer} moe={} bar_us={us:.1} ids={ids}",
+            u8::from(moe)
+        );
+    });
 }
 
 /// 4-byte device scratch for the rendezvous probe. Allocated once, PROFILING ONLY.

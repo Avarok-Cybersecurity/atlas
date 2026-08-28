@@ -334,6 +334,15 @@ pub fn forward_moe(
     gpu.copy_d2h(ws.ids, &mut ids)?;
     profile::end(profile::MOE_HOSTSYNC, t, gpu, stream);
 
+    if profile::trace_on() {
+        let decoded: Vec<i32> = (0..cfg.top_k)
+            .map(|k| {
+                i32::from_le_bytes([ids[k * 4], ids[k * 4 + 1], ids[k * 4 + 2], ids[k * 4 + 3]])
+            })
+            .collect();
+        profile::stash_route(&decoded);
+    }
+
     let t = profile::start();
     for slot in 0..cfg.top_k {
         let id = i32::from_le_bytes([
