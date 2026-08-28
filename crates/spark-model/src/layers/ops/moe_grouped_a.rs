@@ -12,6 +12,14 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
+// Explicit `#[path]`: `ops.rs` loads THIS file with one too, so a child
+// module resolves against `ops/` rather than a `moe_grouped_a/` subdirectory.
+#[path = "moe_grouped_a/topk.rs"]
+mod topk;
+// Re-exported, so every existing `ops::moe_topk_*` path still resolves and the
+// split is invisible to callers.
+pub use topk::{moe_topk_sigmoid_batched, moe_topk_softmax_batched, moe_topk_sqrtsoftplus_batched};
+
 /// MoE grouped GEMM: per-expert W4A16 matrix multiply.
 pub fn moe_w4a16_grouped_gemm(
     gpu: &dyn GpuBackend,
@@ -42,108 +50,50 @@ pub fn moe_w4a16_grouped_gemm(
         .launch(stream)
 }
 
-// ── Grouped MoE prefill ops ─────────────────────────────────────
-
-/// Batched top-K softmax: N tokens in parallel.
-///
-/// Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn moe_topk_softmax_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    gate_logits: DevicePtr,
-    expert_indices: DevicePtr,
-    expert_weights: DevicePtr,
-    num_experts: u32,
-    top_k: u32,
-    normalize: bool,
-    num_tokens: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(gate_logits)
-        .arg_ptr(expert_indices)
-        .arg_ptr(expert_weights)
-        .arg_u32(num_experts)
-        .arg_u32(top_k)
-        .arg_u32(if normalize { 1 } else { 0 })
-        .launch(stream)
-}
-
-/// Batched sigmoid + correction-bias top-K MoE routing.
-///
-/// Kernel: `moe_topk_sigmoid_batched(gate_logits, bias, expert_indices,
-///         expert_weights, num_experts, top_k, normalize, scaling_factor)`
-/// Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn moe_topk_sigmoid_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    gate_logits: DevicePtr,
-    bias: DevicePtr,
-    expert_indices: DevicePtr,
-    expert_weights: DevicePtr,
-    num_experts: u32,
-    top_k: u32,
-    normalize: bool,
-    scaling_factor: f32,
-    num_tokens: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(gate_logits)
-        .arg_ptr(bias)
-        .arg_ptr(expert_indices)
-        .arg_ptr(expert_weights)
-        .arg_u32(num_experts)
-        .arg_u32(top_k)
-        .arg_u32(if normalize { 1 } else { 0 })
-        .arg_f32(scaling_factor)
-        .launch(stream)
-}
-
-/// Batched sqrtsoftplus + correction-bias routing (DeepSeek-V4 prefill).
-///
-/// Same I/O as [`moe_topk_sigmoid_batched`] but scores experts with
-/// `sqrt(log(1+exp(logits)))` (matching the single-token decode path), so
-/// V4 prefill and decode route identically. Grid (N) / Block (256).
-#[allow(clippy::too_many_arguments)]
-pub fn moe_topk_sqrtsoftplus_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    gate_logits: DevicePtr,
-    bias: DevicePtr,
-    expert_indices: DevicePtr,
-    expert_weights: DevicePtr,
-    num_experts: u32,
-    top_k: u32,
-    normalize: bool,
-    scaling_factor: f32,
-    num_tokens: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(gate_logits)
-        .arg_ptr(bias)
-        .arg_ptr(expert_indices)
-        .arg_ptr(expert_weights)
-        .arg_u32(num_experts)
-        .arg_u32(top_k)
-        .arg_u32(if normalize { 1 } else { 0 })
-        .arg_f32(scaling_factor)
-        .launch(stream)
-}
-
 const PTRTABLE_LEGACY_N_TILE: u32 = 64;
 
 fn ptrtable_legacy_grid_x(n_out: u32) -> u32 {
     div_ceil(n_out, PTRTABLE_LEGACY_N_TILE)
+}
+
+/// `moe_w4a16_grouped_gemm_ptrtable` with M_TILE=256 (512-thread block, 16
+/// warps). Caller must pass `max_m_tiles` computed against 256, not 64 —
+/// see the `div_ceil(4)` at the call site, mirroring the m128 variant's
+/// `div_ceil(2)`.
+///
+/// DEFAULT-OFF, measured non-win — ~20% slower per call than the base kernel
+/// end-to-end (31.30 vs 26.17 ms avg under nsys). See `launch_grouped_gemm`.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w4a16_grouped_gemm_ptrtable_m256(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a: DevicePtr,
+    b_packed_ptrs: DevicePtr,
+    b_scale_ptrs: DevicePtr,
+    scale2_vals: DevicePtr,
+    c: DevicePtr,
+    expert_offsets: DevicePtr,
+    sorted_token_ids: DevicePtr,
+    num_experts: u32,
+    n_out: u32,
+    k: u32,
+    max_m_tiles: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([ptrtable_legacy_grid_x(n_out), max_m_tiles, num_experts])
+        .block([512, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(b_packed_ptrs)
+        .arg_ptr(b_scale_ptrs)
+        .arg_ptr(scale2_vals)
+        .arg_ptr(c)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n_out)
+        .arg_u32(k)
+        .launch(stream)
 }
 
 /// Pointer-table grouped GEMM: one launch covers all experts.

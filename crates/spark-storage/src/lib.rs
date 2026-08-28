@@ -101,6 +101,13 @@ pub mod cascade_backend;
 pub mod expert_arena;
 #[cfg(feature = "cuda")]
 pub mod expert_tier;
+// NVMe-backed n-gram embedding row cache (LongCat / Qwen3.8-Flash-Next):
+// pinned GPU-addressable slots + host-side CLOCK eviction, same arena
+// primitive as the expert tier.
+#[cfg(feature = "cuda")]
+pub mod ngram_cache;
+#[cfg(feature = "cuda")]
+mod ngram_cache_fault;
 // RDMA expert staging needs rdma-core (libibverbs), which is Linux-only.
 #[cfg(all(feature = "cuda", unix))]
 pub mod expert_tier_rdma;
@@ -149,6 +156,8 @@ pub use expert_tier_rdma::RdmaTier;
 pub use high_speed_swap::{HighSpeedSwap, install_local, local_installed, with_local};
 #[cfg(all(feature = "cuda", atlas_rdma_verbs))]
 pub use kv_paging::KvPagingBackend;
+#[cfg(feature = "cuda")]
+pub use ngram_cache::NgramRowCache;
 #[cfg(all(feature = "cuda", atlas_rdma_verbs))]
 pub use rdma_kv_backend::RdmaKvBackend;
 pub use rdma_snapshot::RdmaSnapshotArena;

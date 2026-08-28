@@ -51,6 +51,24 @@ pub fn process_seq_logits(
         }));
     };
 
+    // Raw-logits dump for numerics triage (`ATLAS_DUMP_LOGITS_PATH=/dir`):
+    // appends the RAW dequantised row (pre-pipeline, pre-penalty) so it can
+    // be compared against the post-pipeline ATLAS_LOGIT_DUMP view.
+    if let Ok(dir) = std::env::var("ATLAS_DUMP_LOGITS_PATH") {
+        use std::io::Write;
+        let path = std::path::Path::new(&dir).join("logits_seq.bin");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4)
+            };
+            let _ = f.write_all(bytes);
+        }
+    }
+
     // ── Adaptive sampling: update zone, observe entropy, check greedy gate ──
     // Disabled by default (--adaptive-sampling flag). Each call scans the
     // full vocab (262k) on CPU: entropy O(V) exp+log, greedy gate O(V) exp.

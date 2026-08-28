@@ -226,6 +226,7 @@ pub(crate) fn quantized_any(
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
 ) -> Result<QuantizedWeight> {
+    let _t_detect = std::time::Instant::now();
     // Per-key fallback (B8 #bugs RedHatAI/Qwen3-Coder-Next-NVFP4): some
     // models that are CompressedTensors overall keep certain projections
     // (e.g. `linear_attn.out_proj`) as raw BF16 with no quantization
@@ -272,6 +273,7 @@ pub(crate) fn quantized_any(
         variant
     };
 
+    let _t_detect_ns = _t_detect.elapsed().as_nanos() as u64;
     match effective_variant {
         Nvfp4Variant::Standard => quantized(store, prefix, gpu),
         Nvfp4Variant::CompressedTensors => quantized_v2(store, prefix, gpu),
@@ -286,9 +288,19 @@ pub(crate) fn quantized_any(
             qctx.stream,
         ),
         Nvfp4Variant::Bf16Raw => {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static T_DETECT: AtomicU64 = AtomicU64::new(0);
+            static T_GET: AtomicU64 = AtomicU64::new(0);
+            static T_QUANT: AtomicU64 = AtomicU64::new(0);
+            static T_FREE: AtomicU64 = AtomicU64::new(0);
+            static N: AtomicU64 = AtomicU64::new(0);
+            T_DETECT.fetch_add(_t_detect_ns, Ordering::Relaxed);
             // Raw BF16/FP16 fine-tune: load the dense weight then runtime-quantize.
+            let _t = std::time::Instant::now();
             let w = store.get(&format!("{prefix}.weight"))?;
             let bf16 = DenseWeight { weight: w.ptr };
+            T_GET.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let _t = std::time::Instant::now();
             let q = quantize_to_nvfp4(
                 &bf16,
                 n,
@@ -298,6 +310,8 @@ pub(crate) fn quantized_any(
                 qctx.quantize_k,
                 qctx.stream,
             )?;
+            T_QUANT.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let _t = std::time::Instant::now();
             // Free the BF16 source: the NVFP4 buffer is a fresh allocation, so the
             // on-disk BF16 weight is now redundant. Without this a 35B BF16 MoE
             // (Bf16Raw, SEPARATE per-expert layout routed through here by #200's
@@ -305,6 +319,21 @@ pub(crate) fn quantized_any(
             // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
             // `quantized_from_fp8` which frees its BF16 intermediate the same way.
             gpu.free(w.ptr)?;
+            T_FREE.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let c = N.fetch_add(1, Ordering::Relaxed) + 1;
+            if c.is_multiple_of(512) {
+                let ms = |a: &AtomicU64| a.load(Ordering::Relaxed) as f64 / 1.0e6;
+                tracing::info!(
+                    "quantized_any(Bf16Raw) PROFILE after {c} calls (ms total): detect={:.1} \
+                     store_get={:.1} quantize={:.1} free={:.1} | sum={:.1} per_call={:.3}ms",
+                    ms(&T_DETECT),
+                    ms(&T_GET),
+                    ms(&T_QUANT),
+                    ms(&T_FREE),
+                    ms(&T_DETECT) + ms(&T_GET) + ms(&T_QUANT) + ms(&T_FREE),
+                    (ms(&T_DETECT) + ms(&T_GET) + ms(&T_QUANT) + ms(&T_FREE)) / c as f64,
+                );
+            }
             Ok(q)
         }
     }

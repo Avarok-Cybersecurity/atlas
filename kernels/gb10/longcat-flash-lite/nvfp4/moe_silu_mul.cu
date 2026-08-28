@@ -1,0 +1,1 @@
+../../deepseek-v4-flash/nvfp4/moe_silu_mul.cu

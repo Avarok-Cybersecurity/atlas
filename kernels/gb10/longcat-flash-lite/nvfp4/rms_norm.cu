@@ -1,0 +1,1 @@
+../../minimax-m2-229b/nvfp4/rms_norm.cu

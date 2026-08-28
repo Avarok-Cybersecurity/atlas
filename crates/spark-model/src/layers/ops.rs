@@ -66,6 +66,13 @@ mod gemv_q2_vec;
 mod gemv_sw;
 #[path = "ops/hyper_connection.rs"]
 mod hyper_connection;
+#[path = "ops/hyper_connection_dispatch.rs"]
+mod hyper_connection_dispatch;
+#[path = "ops/hyper_connection_lowrank.rs"]
+mod hyper_connection_lowrank;
+#[cfg(test)]
+#[path = "ops/hyper_connection_lowrank_tests.rs"]
+mod hyper_connection_lowrank_tests;
 #[path = "ops/kv_cache.rs"]
 mod kv_cache;
 #[path = "ops/kv_cache_fp8k.rs"]
@@ -99,6 +106,11 @@ mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
 mod nvfp4_mmq;
+#[path = "ops/ple.rs"]
+mod ple;
+#[cfg(test)]
+#[path = "ops/ple_tests.rs"]
+mod ple_tests;
 #[path = "ops/prefill_attn_a.rs"]
 mod prefill_attn_a;
 #[path = "ops/prefill_attn_b.rs"]
@@ -115,6 +127,8 @@ mod prefill_attn_main_b;
 mod prefill_attn_turbok;
 mod q2_0_mmq;
 mod q4k_mmq;
+#[path = "ops/qsa.rs"]
+mod qsa;
 #[path = "ops/quant_dispatch.rs"]
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
@@ -161,6 +175,8 @@ pub use gemv_q2::*;
 pub use gemv_q2_vec::*;
 pub use gemv_sw::*;
 pub use hyper_connection::*;
+pub use hyper_connection_dispatch::*;
+pub use hyper_connection_lowrank::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
@@ -178,6 +194,7 @@ pub use moe_lora_grouped::*;
 pub use moe_prefill::*;
 pub use norm::*;
 pub use nvfp4_mmq::*;
+pub use ple::*;
 pub use prefill_attn_a::*;
 pub use prefill_attn_b::*;
 pub use prefill_attn_batched::*;
@@ -187,6 +204,7 @@ pub use prefill_attn_main_b::*;
 pub use prefill_attn_turbok::*;
 pub use q2_0_mmq::*;
 pub use q4k_mmq::*;
+pub use qsa::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
 pub use ssm_gdn_a::*;

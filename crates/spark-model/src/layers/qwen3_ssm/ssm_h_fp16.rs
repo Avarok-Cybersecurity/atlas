@@ -290,6 +290,7 @@ mod prefill_narrowing_tests {
             conv_state_intermediates: Vec::new(),
             h_is_f16,
             h_prefill_stage: stage,
+            ple: None,
         }
     }
 

@@ -119,6 +119,17 @@ impl GpuBackend for AtlasCudaBackend {
             );
         }
         self.record_alloc(DevicePtr(dptr));
+        // Large-allocation tracing for memory attribution (GB10 unified
+        // memory: every cuMemAlloc consumes host RAM, and a runtime alloc
+        // outside the util pledge is how the box ends up in swap). Debug
+        // level so production INFO stays quiet; RUST_LOG=spark_runtime=debug
+        // turns the trail on.
+        if bytes >= 32 * 1024 * 1024 {
+            tracing::debug!(
+                "alloc {:.1} MB (device ptr {dptr:#x})",
+                bytes as f64 / (1024.0 * 1024.0)
+            );
+        }
         Ok(DevicePtr(dptr))
     }
 
@@ -333,7 +344,13 @@ impl GpuBackend for AtlasCudaBackend {
     ) -> Result<()> {
         let status = unsafe { cuMemcpyDtoDAsync_v2(dst.0, src.0, bytes, stream) };
         if status != 0 {
-            bail!("cuMemcpyDtoDAsync_v2 failed: status {status}");
+            // See copy_d2d_impl: on 901 the backtrace names the reporter,
+            // which bounds where the capture-poisoning op ran.
+            tracing::error!(
+                "copy_d2d_async failed (status {status}) at:\n{}",
+                std::backtrace::Backtrace::force_capture()
+            );
+            bail!("cuMemcpyDtoDAsync_v2 (copy_d2d_async) failed: status {status}");
         }
         Ok(())
     }
@@ -446,6 +463,12 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
+        if bytes >= 32 * 1024 * 1024 {
+            tracing::debug!(
+                "alloc_host_pinned {:.1} MB",
+                bytes as f64 / (1024.0 * 1024.0)
+            );
+        }
         self.alloc_host_pinned_cu(bytes)
     }
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {

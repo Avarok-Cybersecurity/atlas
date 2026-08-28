@@ -14,6 +14,12 @@ qwen3_5     = "qwen3_coder"    # Qwen3.5-27B Dense — native XML format
 qwen3_6_moe = "qwen3_coder"    # Qwen3.6-35B — same XML format; MRoPE-interleaved only differs at kernel layer
 holo3_1_moe = "qwen3_coder"    # Holo3.1-35B-A3B — Qwen3.5 MoE VLM, native XML format
 nemotron_h  = "qwen3_coder"    # Nemotron-H 30B — native XML format
+qwen4_exp   = "qwen3_coder"    # Qwen3.8-Flash-Next — emits the native XML
+                               # <function=f><parameter=k> format; without this
+                               # mapping the parser is DISABLED and every tool
+                               # call passes through as plain text (agentic
+                               # harnesses then loop on "re-issue as a real
+                               # tool call" forever, 2026-08-27).
 qwen3_next  = "hermes"        # Qwen3-Next-80B
 qwen3_vl_moe = "hermes"       # Qwen3-VL-30B
 mistral     = "mistral"       # Mistral Small 4 — native [TOOL_CALLS]name[ARGS]{json}

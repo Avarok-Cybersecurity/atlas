@@ -20,7 +20,7 @@ use crate::weight_map::{
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_full_attention_nvfp4(
+pub(crate) fn build_full_attention_nvfp4(
     layer_idx: usize,
     store: &WeightStore,
     lp: &str,

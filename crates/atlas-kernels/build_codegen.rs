@@ -131,7 +131,7 @@ pub(super) fn generate_target_ptx_rs(
         };
         let fmt_cat = |c: &SamplingCat| -> String {
             format!(
-                "SamplingCategory {{ temperature: {:.2}, top_p: {:.2}, top_k: {}, presence_penalty: {:.2}, frequency_penalty: {:.2}, repetition_penalty: {:.2}, dry_multiplier: {:.2}, dry_base: {:.2}, dry_allowed_length: {}, lz_penalty: {:.2}, min_p: {} }}",
+                "SamplingCategory {{ temperature: {:.2}, top_p: {:.2}, top_k: {}, presence_penalty: {:.2}, frequency_penalty: {:.2}, repetition_penalty: {:.2}, dry_multiplier: {:.2}, dry_base: {:.2}, dry_allowed_length: {}, lz_penalty: {:.2}, min_p: {}, top_n_sigma: {} }}",
                 c.temperature,
                 c.top_p,
                 c.top_k,
@@ -143,6 +143,10 @@ pub(super) fn generate_target_ptx_rs(
                 c.dry_allowed_length,
                 c.lz_penalty,
                 match c.min_p {
+                    Some(v) => format!("Some({v:.4})"),
+                    None => "None".to_string(),
+                },
+                match c.top_n_sigma {
                     Some(v) => format!("Some({v:.4})"),
                     None => "None".to_string(),
                 },
@@ -175,6 +179,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20               honor_eos_inside_thinking: {},\n\
              \x20               cap_thinking_at_max_tokens: {},\n\
              \x20               min_p_floor: {:?},\n\
+             \x20               min_reasoning_floor_tokens: {},\n\
              \x20               temperature_max: {:?},\n\
              \x20               think_loop_min_repeats: {},\n\
              \x20               think_loop_scan_window: {},\n\
@@ -217,6 +222,7 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_honor_eos_inside_thinking,
             target.behavior_cap_thinking_at_max_tokens,
             target.behavior_min_p_floor,
+            target.behavior_min_reasoning_floor_tokens,
             target.behavior_temperature_max,
             target.behavior_think_loop_min_repeats,
             target.behavior_think_loop_scan_window,

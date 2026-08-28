@@ -411,6 +411,9 @@ impl WatchdogParams {
         max_inter_tool_prose_cli: Option<u32>,
         content_loop_min_repeats_cli: Option<u32>,
     ) -> Self {
+        // Install the per-model A4 reasoning floor alongside the watchdog
+        // config (same boot-time, same behavior source).
+        crate::scheduler::sample_step::set_min_reasoning_floor(b.min_reasoning_floor_tokens);
         let mut p = Self {
             think_loop_min_repeats: b.think_loop_min_repeats as usize,
             think_loop_scan_window: b.think_loop_scan_window as usize,

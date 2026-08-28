@@ -70,6 +70,12 @@ pub struct ModelConfig {
     // ── MoE ──
     #[serde(default)]
     pub num_experts: usize,
+    /// LongCat-Flash zero-computation "identity" experts: the router scores
+    /// `num_experts + zero_expert_num` logits, and a token routed to an
+    /// expert id `>= num_experts` receives the INPUT itself scaled by the
+    /// routing weight instead of an expert FFN. 0 = no zero-experts.
+    #[serde(default)]
+    pub zero_expert_num: usize,
     /// Top-K experts activated per token (the "A" in 35B-A3B = 3B
     /// active params).
     #[serde(default = "default_one")]
@@ -230,6 +236,56 @@ pub struct ModelConfig {
     #[serde(default)]
     pub v_head_dim: usize,
 
+    // ── N-gram embeddings — LongCat-Flash-Lite / Qwen3.8-Flash-Next ──
+    // (arxiv 2601.21204: capacity via hashed n-gram lookup tables instead of
+    // more experts.) `emb_split_num * (emb_neighbor_num - 1)` embedding
+    // tables, each ~`ngram_vocab_size_ratio * vocab_size` rows at
+    // `hidden_size / num_tables` dims; ids are a polynomial rolling hash of
+    // the current + previous n-1 TOKEN IDS (never hidden states), each
+    // looked-up vector is projected to hidden and ADDED to the base token
+    // embedding, and the sum is scaled by 1/(1 + num_tables). Reference:
+    // bench/ngram_ref/{modeling_longcat_ngram.py, ngram_parity.py}.
+    /// N-gram table size multiplier: each table has ~ratio*vocab_size rows
+    /// (LongCat-Lite: 78 → ~10.2M rows/table). 0 = no n-gram embeddings.
+    #[serde(default)]
+    pub ngram_vocab_size_ratio: usize,
+    /// Largest n-gram size N (LongCat-Lite: 4 → bigram/trigram/4-gram).
+    #[serde(default)]
+    pub emb_neighbor_num: usize,
+    /// Independent hash splits K per n-gram size (LongCat-Lite: 4).
+    #[serde(default)]
+    pub emb_split_num: usize,
+    /// Rows per n-gram HEAD, absolute (`ngram_vocab_size_base`).
+    ///
+    /// The Qwen4-Exp form of the same idea LongCat expresses as a ratio:
+    /// LongCat says "ratio x vocab_size rows per table", Qwen says
+    /// "20,000,000 rows per head" outright. Mutually exclusive with
+    /// `ngram_vocab_size_ratio` — whichever the checkpoint declares wins,
+    /// and the authoritative per-head sizes/offsets ship as I64 tensors
+    /// (`ngram_heads_vocab_sizes` / `ngram_heads_offsets`) which the loader
+    /// reads rather than re-deriving. 0 = not a base-form checkpoint.
+    #[serde(default)]
+    pub ngram_vocab_size_base: usize,
+    /// Physical shard count of the n-gram table (`split_ngram_parts`).
+    ///
+    /// PURELY a file-layout fact, NOT an architectural one: Qwen4-Exp stores
+    /// one logical `[sum(head_vocabs), ngram_dim]` table as 128 equal
+    /// `shard_N.weight` tensors. The head ranges are independent of the
+    /// shard boundaries and a head can straddle several shards, so the row
+    /// cache must address the logical table and translate. 0 = unsharded.
+    #[serde(default)]
+    pub ngram_split_parts: usize,
+    /// Decoder layers that carry a PLE (per-layer-embedding) n-gram
+    /// injection (`ple_layer_ids`). Qwen4-Exp injects at ONE layer, not at
+    /// the token embedding the way LongCat does — which is why this is a
+    /// layer list and not a flag. Empty = no PLE.
+    #[serde(default)]
+    pub ple_layer_ids: Vec<usize>,
+    /// Depthwise conv width inside the PLE block (`ple_conv_kernel_size`).
+    /// 0 = no conv.
+    #[serde(default)]
+    pub ple_conv_kernel_size: usize,
+
     // ── DeepSeek-V4 low-rank / grouped output projection + mHC ──
     /// Output projection latent dimension for low-rank O projection.
     /// DeepSeek-V4 uses `o_lora_rank` to compress the output projection.
@@ -264,6 +320,26 @@ pub struct ModelConfig {
     /// DeepSeek-V4 default is 1e-6.
     #[serde(default)]
     pub hc_eps: f32,
+    /// Rank of the hyper-connection input mixer (`hc_lowrank`).
+    ///
+    /// Qwen4-Exp mixes the `hc_mult` residual streams through a LOW-RANK
+    /// pair — `input_mix_weight_down [r, hc_mult*hidden]` then
+    /// `input_mix_weight_up [hc_mult*hidden, r]` — where DeepSeek-V4 uses a
+    /// Sinkhorn-normalized square matrix. The two share `hc_mult` and the
+    /// stream-major layout but NOT the mixing math, so a non-zero value here
+    /// selects the low-rank variant. 0 = DeepSeek-V4's Sinkhorn form.
+    #[serde(default)]
+    pub hc_lowrank: usize,
+    /// The checkpoint carries NO final normalization before `lm_head`: the
+    /// real one is applied inside the hyper-connection mixer while the
+    /// residual streams collapse. Applying the engine's ones-placeholder RMS
+    /// anyway still DIVIDES the hidden by its per-token RMS, which flattens
+    /// the logits by a per-token factor (measured 1.16-1.63x vs the reference
+    /// forward on qwen4_exp) -- an uninvited temperature multiplier that
+    /// argmax survives but sampling does not. When set, the final-norm step
+    /// becomes an identity copy.
+    #[serde(default)]
+    pub final_norm_identity: bool,
     /// Per-layer compression ratios for hybrid attention (CSA/HCA).
     /// 0 = full attention, >0 = compressed attention with that ratio.
     /// Length equals num_hidden_layers. Empty = all layers full attention.
@@ -278,6 +354,18 @@ pub struct ModelConfig {
     /// Maximum compressed-history rows selected per query by the semantic indexer.
     #[serde(default)]
     pub index_topk: usize,
+    /// Indexer compression ratio, recorded WITHOUT populating
+    /// `compress_ratios`.
+    ///
+    /// Qwen3.8-Flash-Next's QSA indexer is inert below its budget — selection
+    /// is `topk(min(budget/ratio, complete_blocks))`, so at
+    /// `seq_len <= index_topk` every block is chosen and dense attention is
+    /// exact. Keeping `compress_ratios` empty stops DeepSeek-V4's compressor
+    /// being dispatched in its place; keeping the ratio here lets a loader
+    /// refuse above the budget instead of silently attending densely.
+    /// 0 = no indexer.
+    #[serde(default)]
+    pub index_compress_ratio: usize,
     /// Number of hash-based attention layers (DeepSeek-V4 HCA). 0 = none.
     #[serde(default)]
     pub num_hash_layers: usize,
@@ -331,6 +419,17 @@ pub struct ModelConfig {
     /// False for Qwen3-VL, Nemotron-H, Mistral (ungated Q).
     #[serde(skip)]
     pub attn_gated: bool,
+    /// The GDN gated-norm's gate activation is SIGMOID rather than SiLU.
+    ///
+    /// The reference constructs its `RMSNormGated` with
+    /// `activation = output_gate_type or hidden_act`, so on a checkpoint
+    /// with `output_gate_type: "sigmoid"` (Qwen3.8-Flash-Next) BOTH the
+    /// attention output gate and the GDN norm gate are sigmoid. Every other
+    /// Qwen-family GDN model gates with SiLU. Found by the qwen4_exp phase-E
+    /// bisect: recurrence proven correct, norm stage off at cos 0.81, and
+    /// sigmoid closed it to 0.0.
+    #[serde(default)]
+    pub gdn_norm_sigmoid: bool,
     /// Whether config.json wraps the LLM config in a nested field (e.g., `text_config`).
     /// Determines weight prefix auto-detection behavior.
     #[serde(skip)]
@@ -588,8 +687,8 @@ pub use parsers::{
     parse_peft_adapter_config, parse_quantization_config,
 };
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_minimax_m2, parse_step3p7,
-    parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_longcat_ngram, parse_minimax_m2,
+    parse_qwen4_exp, parse_step3p7, parse_vision_config,
 };
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {

@@ -42,7 +42,9 @@ pub use innerq_driver::InnerQDriver;
 // existing ones. These are only constructed under DeepSeek-V4 detection.
 pub(crate) use types::HeadGateActivation;
 pub use types::Qwen3AttentionLayer;
-pub use types_weights::{CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights};
+pub use types_weights::{
+    CompressorWeights, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+};
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the
 /// dtype's dispatch arms require (chunked-prefill kernel, WHT bookends) and

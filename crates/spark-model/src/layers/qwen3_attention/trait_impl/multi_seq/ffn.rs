@@ -37,6 +37,17 @@ fn grouped_routed_decode_min() -> usize {
 
 impl Qwen3AttentionLayer {
     pub(super) fn ms_phase_ffn(&self, c: &MultiSeqCtx<'_>, o_out: DevicePtr) -> Result<()> {
+        // A model with a shortcut MoE (LongCat) has an architectural component
+        // that ONLY the per-token branch below implements. Every other arm
+        // would compute a structurally incomplete block and return no error —
+        // so refuse instead of serving it. `force_seq_ffn` is true whenever
+        // `mla.is_some()`, which is exactly the LongCat case, but assert it
+        // rather than rely on that coupling holding forever.
+        anyhow::ensure!(
+            (self.shortcut_carry_out.is_none() && self.shortcut_carry_in.is_none())
+                || self.mla.is_some(),
+            "shortcut-MoE model reached the batched FFN ladder, which does not              implement the shortcut; only the per-token branch does"
+        );
         let MultiSeqCtx {
             fwd,
             n,
@@ -324,6 +335,33 @@ impl Qwen3AttentionLayer {
                 for i in 0..n {
                     let hidden_i = hidden.offset(i * h * residual_elem);
                     let normed2_i = normed_base.offset(i * h * bf16);
+                    // LongCat shortcut MoE (producer). MUST run before the
+                    // dense FFN below, which reuses `moe_output`. This is the
+                    // BATCHED mirror of the single-token path in
+                    // `decode_inner`: without it, batched decode silently drops
+                    // the block's entire 256-expert shortcut contribution for
+                    // every sequence — attention still reads the right tokens,
+                    // so the topic survives while the distribution does not,
+                    // which reads as words fragmenting mid-answer rather than
+                    // as anything crashing.
+                    if let (Some(moe_ffn), Some((carry, cap))) =
+                        (&self.moe_ffn, self.shortcut_carry_out)
+                    {
+                        anyhow::ensure!(
+                            n <= cap,
+                            "shortcut carry capacity {cap} < decode batch {n}"
+                        );
+                        let sc_out = moe_ffn.forward(normed2_i, fwd, stream)?;
+                        if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
+                            m.apply_zero_expert(sc_out, normed2_i, 1, fwd, stream)?;
+                        }
+                        fwd.gpu.copy_d2d_async(
+                            sc_out,
+                            carry.offset(i * h * bf16),
+                            h * bf16,
+                            stream,
+                        )?;
+                    }
                     let moe_out = self.ffn.forward(normed2_i, fwd, stream)?;
                     ops::residual_add(
                         fwd.gpu,
@@ -333,6 +371,18 @@ impl Qwen3AttentionLayer {
                         h as u32,
                         stream,
                     )?;
+                    // LongCat shortcut carry (consumer): the paired previous
+                    // sublayer's stashed MoE output, this sequence's row.
+                    if let Some((carry, _cap)) = self.shortcut_carry_in {
+                        ops::residual_add(
+                            fwd.gpu,
+                            self.residual_add_k,
+                            hidden_i,
+                            carry.offset(i * h * bf16),
+                            h as u32,
+                            stream,
+                        )?;
+                    }
                 }
             }
         }

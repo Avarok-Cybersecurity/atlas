@@ -121,6 +121,13 @@ pub struct SamplingCategory {
     /// `generation_config.json` — the same precedence temperature/top_k/top_p
     /// already follow. `None` preserves the CLI-owned behaviour exactly.
     pub min_p: Option<f32>,
+    /// Model-declared top-n-sigma, or `None` when MODEL.toml is silent.
+    ///
+    /// Same absence-vs-zero problem as `min_p`: the server ships
+    /// `--default-top-n-sigma 1.0`, so a model whose card asks for NO sigma
+    /// filter had no way to say so. `Some(0.0)` disables it; `None` leaves the
+    /// CLI default owning the field.
+    pub top_n_sigma: Option<f32>,
 }
 
 /// Model-specific sampling presets loaded from MODEL.toml `[sampling.*]`.
@@ -150,6 +157,7 @@ impl Default for SamplingPresets {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         };
         let tools_cat = SamplingCategory {
             temperature: 0.6,
@@ -163,6 +171,7 @@ impl Default for SamplingPresets {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         };
         Self {
             thinking_text: default_cat,
@@ -243,6 +252,9 @@ pub struct ModelBehavior {
     /// See build_parse_behavior.rs: honor a mid-`<think>` EOS by implicitly
     /// closing the block. Defaults FALSE (pre-p350 behaviour).
     pub honor_eos_inside_thinking: bool,
+    /// A4 floor: suppress `</think>` until this many think tokens
+    /// (16 = historical constant; 0 disables — card-native brief thinking).
+    pub min_reasoning_floor_tokens: u32,
     /// Cap the thinking budget at 90% of the request's `max_tokens` (true), or
     /// let `max_thinking_budget` be the sole cap (false = vLLM single-budget:
     /// reasoning may use the full generation budget). See thinking.rs::resolve.
@@ -382,6 +394,7 @@ impl Default for ModelBehavior {
             enable_loop_watchdog: false,
             enable_think_loop_watchdog: true,
             honor_eos_inside_thinking: false,
+            min_reasoning_floor_tokens: 16,
             cap_thinking_at_max_tokens: true,
             min_p_floor: 0.0,
             temperature_max: 0.0,

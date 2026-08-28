@@ -86,6 +86,9 @@ pub(super) fn strip_bare_role_literal(delta: &mut String, inside_tool_call: bool
 /// through is taken, leaving the doom-loop case (long suppressed
 /// stream of orphan `<tool_call>` openers) uncaught.
 pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> DeltaVec {
+    // Count the token HERE, as it is produced, so the dashboard's tok/s is a
+    // live rate rather than one spike at completion. See DECODED_TOKENS_TOTAL.
+    crate::metrics::DECODED_TOKENS_TOTAL.inc();
     let result = handle_token_inner(state, ctx, tok);
     // TTFT forensics companion to the stable-delta line inside the body:
     // brackets everything after it (sanitizer, detector, watchdogs) so a

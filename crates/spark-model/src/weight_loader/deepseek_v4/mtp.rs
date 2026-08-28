@@ -120,6 +120,8 @@ pub fn load_v4_mtp_module(
             hc_fn: head_fn,
             hc_base: head_base,
             hc_scale: head_scale,
+            // DeepSeek-V4 keeps the Sinkhorn mixer; None selects it.
+            lowrank: None,
         })
     } else {
         None

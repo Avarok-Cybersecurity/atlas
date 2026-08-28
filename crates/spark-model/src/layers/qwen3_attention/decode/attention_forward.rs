@@ -19,6 +19,7 @@ use crate::layers::ops;
 impl Qwen3AttentionLayer {
     pub(in super::super) fn attention_forward(
         &self,
+        state: &mut dyn crate::layer::LayerState,
         normed: DevicePtr,
         seq_len: usize,
         block_table: &mut Vec<u32>,
@@ -595,6 +596,47 @@ impl Qwen3AttentionLayer {
         // and the bookend kernels recover real-V.
         let use_orchestrator = self.high_speed_swap_engaged(kv_cache);
 
+        // ── QSA indexer (Qwen3.8-Flash-Next) ──
+        // Ingest this token's raw indexer key EVERY step; once the visible
+        // prefix exceeds the inert bound, select the reference's top-512
+        // 4-token blocks (+ tail) and gather their K/V into contiguous
+        // scratch — which, through an identity block table, IS a valid paged
+        // cache for the standard decode attention below. Runs AFTER
+        // write_kv_cache so the current token is gatherable.
+        let qsa_sel = if let Some(ref qsa) = self.qsa {
+            anyhow::ensure!(
+                matches!(self.kv_dtype.kv_pair().0, KvCacheDtype::Bf16)
+                    && matches!(self.kv_dtype.kv_pair().1, KvCacheDtype::Bf16),
+                "QSA selection requires a plain BF16 KV cache (the gather \
+                 copies raw NHD rows); serve with --kv-cache-dtype bf16"
+            );
+            anyhow::ensure!(
+                !use_orchestrator,
+                "QSA + --high-speed-swap is not wired (the gather reads the \
+                 HBM pool)"
+            );
+            // `seq_len` here is the PRE-APPEND length (decode_a bumps
+            // `seq.seq_len` after the step), so the token being decoded
+            // sits at position `seq_len` — verified live: a 35-token
+            // prompt's first decode arrives with seq_len=35 and 35 raw
+            // keys already ingested by prefill.
+            let qsa_st =
+                crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, state, ctx.gpu)?;
+            qsa.decode_select(
+                qsa_st,
+                normed,
+                seq_len,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                meta.block_table,
+                bs as u32,
+                ctx.gpu,
+                stream,
+            )?
+        } else {
+            None
+        };
+
         if use_orchestrator {
             // Phase 6.3: per-layer K/V offload to disk. The alloc-time
             // helper (`ensure_blocks_through_decode`) already grew
@@ -623,6 +665,32 @@ impl Qwen3AttentionLayer {
                 )
             })
             .expect("local installed checked in high_speed_swap_engaged")?;
+        } else if let Some(sel) = qsa_sel {
+            // Attention over ONLY the selected tokens: same BF16 kernel the
+            // dense path uses, pointed at the gathered scratch. Rope is
+            // already baked into the cached K rows and softmax is
+            // order-invariant, so this equals the reference's masked
+            // attention exactly.
+            ops::paged_decode_attn_bf16(
+                ctx.gpu,
+                self.paged_decode_k,
+                q_out,
+                sel.k_scratch,
+                sel.v_scratch,
+                attn_out,
+                sel.table_dev,
+                sel.seq_len_dev,
+                sel.max_blocks,
+                1,
+                nq,
+                nkv,
+                hd,
+                bs as u32,
+                inv_sqrt_d,
+                nq * hd,
+                0,
+                stream,
+            )?;
         } else {
             self.run_paged_decode(
                 ctx.gpu,

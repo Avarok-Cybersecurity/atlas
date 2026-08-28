@@ -128,6 +128,19 @@ impl TransformerModel {
             tracing::warn!("decode Marconi checkpoint: record snapshot event: {e}");
         }
         drop(kv);
+        // Aux (PLE + QSA lexical state) is canonical at exactly
+        // seq.tokens.len() here (same post-commit point the SSM save reads),
+        // matching the snap_tokens registration below. A collection failure
+        // leaves the snapshot aux-less: the restore gate then declines it —
+        // slower, never stale.
+        match self.collect_aux_states(seq, stream) {
+            Ok(aux) => {
+                if !aux.is_empty() {
+                    self.ssm_snapshots.set_aux(snap_id, aux);
+                }
+            }
+            Err(e) => tracing::warn!("decode Marconi checkpoint: aux collect failed: {e:#}"),
+        }
         // #155 MTP×cache root cause: the live state just saved (post
         // sync_secondary, post-commit) is canonical at exactly
         // seq.tokens.len() tokens — under MTP K=2 the verify stride (+2 on
@@ -237,6 +250,17 @@ impl TransformerModel {
             // Order any later warm restore (prefill stream) after this save.
             if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                 tracing::warn!("finish-leaf snapshot: record snapshot event: {e}");
+            }
+            // Aux (PLE + QSA lexical state) at retire covers prompt +
+            // generated tokens — the deepest anchor a chat continuation can
+            // match. Failure => aux-less snapshot, declined on restore.
+            match self.collect_aux_states(seq, stream) {
+                Ok(aux) => {
+                    if !aux.is_empty() {
+                        self.ssm_snapshots.set_aux(id, aux);
+                    }
+                }
+                Err(e) => tracing::warn!("finish-leaf snapshot: aux collect failed: {e:#}"),
             }
             tracing::info!(
                 "Saved finish-leaf SSM snapshot {} for {} tokens",

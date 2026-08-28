@@ -178,7 +178,18 @@ impl Qwen3SsmLayer {
         // path the clean pre-FLA baseline used. Replay segments are short
         // (suffix after a ≥10k skipped prefix), so the FLA speed loss is nil.
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
-        if !ctx.gdn_exact_replay
+        // ATLAS_NO_GDN_FLA=1: force the WY4 fallback. Diagnostic lever for the
+        // qwen4_exp bisect — layer 0's recurrence output diverges from the
+        // reference at cos 0.83 with everything upstream verified (projection,
+        // conv, gates all match), and the FLA chunked path is the component
+        // that has never been exercised at vpg=3 (48 v-heads / 16 k-heads;
+        // every FLA-validated model is vpg<=2). A/B-ing the recurrence
+        // implementation is the decisive split.
+        static NO_FLA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_fla =
+            *NO_FLA.get_or_init(|| std::env::var("ATLAS_NO_GDN_FLA").as_deref() == Ok("1"));
+        if !no_fla
+            && !ctx.gdn_exact_replay
             && kd == 128
             && vd == 128
             && fla_scratch.0 != 0

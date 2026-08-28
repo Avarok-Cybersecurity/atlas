@@ -450,7 +450,7 @@ fn a_tool_call_left_in_the_message_body_is_not_a_turn_that_finished() {
         ..Default::default()
     };
     assert!(
-        emitted_unparsed_call(&degenerate),
+        tools::emitted_unparsed_call(&degenerate),
         "tool-call syntax in the body with nothing parsed must be re-asked"
     );
     // ★ and it is NOT the truncation case — that is why it needed its own arm.
@@ -463,7 +463,7 @@ fn a_tool_call_left_in_the_message_body_is_not_a_turn_that_finished() {
         finish_reason: Some("stop".into()),
         ..Default::default()
     };
-    assert!(!emitted_unparsed_call(&done));
+    assert!(!tools::emitted_unparsed_call(&done));
 
     // Prose that TALKS about tool calls without emitting the wire syntax is
     // ordinary text — the detector keys on the markers, not on the words.
@@ -472,7 +472,7 @@ fn a_tool_call_left_in_the_message_body_is_not_a_turn_that_finished() {
         finish_reason: Some("stop".into()),
         ..Default::default()
     };
-    assert!(!emitted_unparsed_call(&talks_about_it));
+    assert!(!tools::emitted_unparsed_call(&talks_about_it));
 
     // A turn whose call DID parse never reaches this branch, however much
     // syntax the accompanying prose quotes.
@@ -486,5 +486,46 @@ fn a_tool_call_left_in_the_message_body_is_not_a_turn_that_finished() {
         finish_reason: Some("stop".into()),
         ..Default::default()
     };
-    assert!(!emitted_unparsed_call(&parsed));
+    assert!(!tools::emitted_unparsed_call(&parsed));
+}
+
+// ── preserve-thinking history (ATLAS_AGENTIC_PRESERVE_THINKING) ─────
+
+/// Old reasoning is elided to a MARKER, never dropped: a turn with the field
+/// removed renders an empty `<think></think>` wrapper, which is the
+/// empty-think poisoning the flag exists to avoid. Recent turns keep their
+/// full reasoning because that is what the model is working from.
+#[test]
+fn compaction_elides_old_reasoning_to_a_marker_and_keeps_the_recent() {
+    let big = "r".repeat(20_000);
+    let mut msgs = vec![json!({"role": "user", "content": "task"})];
+    for i in 0..10 {
+        msgs.push(json!({"role": "assistant", "content": Value::Null,
+            "reasoning_content": big,
+            "tool_calls": [{"id": format!("c{i}")}]}));
+        msgs.push(json!({"role": "tool", "tool_call_id": format!("c{i}"), "content": "ok"}));
+    }
+    compact(&mut msgs);
+
+    let think: Vec<&str> = msgs
+        .iter()
+        .filter_map(|m| m["reasoning_content"].as_str())
+        .collect();
+    assert_eq!(think.len(), 10, "reasoning must never be removed outright");
+    assert!(
+        think[0].contains("elided"),
+        "the oldest reasoning should be elided: {}",
+        &think[0][..think[0].len().min(60)]
+    );
+    for kept in think.iter().rev().take(LIVE_REASONING) {
+        assert_eq!(*kept, big, "the live window keeps full reasoning");
+    }
+    let total: usize = msgs
+        .iter()
+        .map(|m| {
+            m["content"].as_str().map_or(64, str::len)
+                + m["reasoning_content"].as_str().map_or(0, str::len)
+        })
+        .sum();
+    assert!(total <= HISTORY_BUDGET, "{total}");
 }

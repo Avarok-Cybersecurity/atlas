@@ -34,6 +34,24 @@ lazy_static! {
     .unwrap();
     pub static ref GENERATION_TOKENS_TOTAL: IntCounter =
         register_int_counter!("atlas_generation_tokens_total", "Total tokens generated").unwrap();
+    /// Tokens counted AS THEY ARE DECODED, not at request completion.
+    ///
+    /// `GENERATION_TOKENS_TOTAL` is incremented once per request, from the
+    /// final usage block. That is correct for a total and useless for a RATE:
+    /// differentiating it at 1 Hz reads 0 tok/s for the whole generation and
+    /// then one spike at the end, which is exactly how a live dashboard
+    /// renders as "nothing, then a burst". This one advances per token so the
+    /// derivative is the real decode rate.
+    ///
+    /// It counts tokens the engine DECODED, which is the honest quantity for a
+    /// throughput view: a token suppressed by the tool-call sanitizer still
+    /// cost a decode step. So this can run slightly ahead of
+    /// `GENERATION_TOKENS_TOTAL`, and the two are not interchangeable.
+    pub static ref DECODED_TOKENS_TOTAL: IntCounter =
+        register_int_counter!(
+            "atlas_decoded_tokens_total",
+            "Tokens decoded, counted as they are produced (rate-friendly)"
+        ).unwrap();
     // ── HTTP byte accounting (Atlas TUI Server Stats) ──
     //
     // Request side counts body bytes as received by the byte-count

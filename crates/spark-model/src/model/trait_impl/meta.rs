@@ -270,7 +270,6 @@ impl TransformerModel {
         for (i, layer) in self.layers.iter().enumerate() {
             if self.config.layer_type(i) == LayerType::LinearAttention {
                 // Layer-independent (one FP32 staging blob per SLOT), so it is
-                // the same pointer for every SSM layer of this sequence.
                 let stage = self.ssm_pool.h_prefill_stage(slot);
                 let mut ssm_state = SsmLayerState {
                     h_state: self.ssm_pool.h_state(ssm_layer_idx, slot),
@@ -290,6 +289,7 @@ impl TransformerModel {
                     // until the mixer converts.
                     h_is_f16: stage.is_some(),
                     h_prefill_stage: stage,
+                    ple: None,
                 };
 
                 if has_mtp {

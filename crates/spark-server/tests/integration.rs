@@ -73,6 +73,8 @@ fn setup_model(
         ep_world_size: 1,
         num_experts: 0,
         peak_memory_multiplier: None,
+        skip_activation_scales: false,
+        skip_mtp: false,
     };
     use spark_runtime::weights::WeightLoader;
     let store = loader.load(model_dir, gpu.as_ref(), 1024 * 1024 * 1024)?;

@@ -18,6 +18,7 @@ pub(crate) mod deepseek_v4;
 pub mod dflash_loader;
 mod gemma4;
 mod laguna;
+mod longcat;
 mod minimax;
 mod nemotron;
 mod nllb;
@@ -25,6 +26,8 @@ mod qwen3;
 mod qwen35;
 mod qwen35_dense;
 mod qwen3_vl;
+#[cfg_attr(test, allow(unreachable_pub))]
+pub(crate) mod qwen4_exp;
 mod step3p7;
 
 pub use deepseek_v4::DeepSeekV4WeightLoader;
@@ -34,11 +37,13 @@ pub use dflash_loader::{
 };
 pub use gemma4::Gemma4WeightLoader;
 pub use laguna::LagunaWeightLoader;
+pub use longcat::LongcatWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
 pub use nllb::NllbWeightLoader;
 pub use qwen3::Qwen3WeightLoader;
 pub use qwen3_vl::Qwen3VLWeightLoader;
+pub use qwen4_exp::Qwen4ExpWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
 pub use qwen35_dense::Qwen35DenseWeightLoader;
 pub use step3p7::Step3p7WeightLoader;
@@ -227,6 +232,23 @@ pub trait ModelWeightLoader {
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight>;
+
+    /// Build the n-gram embedding, when this architecture fuses hashed
+    /// n-gram lookups into the input embedding (LongCat / Qwen3.8-Flash-Next).
+    ///
+    /// Separate from `load_embedding` because the result is NOT a weight: it
+    /// is a small engine that needs the sequence's CONTEXT token ids at
+    /// forward time, not just the id being embedded. Returning `None` — the
+    /// default — leaves the plain `embed_tokens` gather in place.
+    fn load_ngram_embedding(
+        &self,
+        _store: &WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+        _max_tokens: usize,
+    ) -> Result<Option<crate::layers::ngram_embed::NgramEmbedding>> {
+        Ok(None)
+    }
     /// Load the final RMSNorm weight used before the LM head.
     ///
     /// `gpu` is passed so model-specific loaders can do on-device weight

@@ -16,6 +16,19 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // LongCat zero-experts ARE wired here (softmax+bias arm below); the
+        // other scoring functions on this variant are not, and would silently
+        // mis-route the 384-wide router. Named refusal, not silent wrongness.
+        //
+        // This path is load-bearing for LongCat: `forward_prefill` only takes
+        // the grouped GEMM above 64 tokens, so every FP8/BF16-expert prefill
+        // shorter than that — i.e. most conversational turns — lands here.
+        anyhow::ensure!(
+            self.router_logits_n as usize == ctx.config.num_experts
+                || (self.correction_bias_dev.is_some() && ctx.config.scoring_func == "softmax"),
+            "zero-expert MoE routing is not wired on this dispatch variant yet (forward_batched)"
+        );
+
         // SOLID Incr-4: batched decode folds the routed-expert gate/up + down
         // LoRA delta per token (below) AND the router (mlp.gate) delta on the
         // whole-batch gate_logits before top-k (`apply_router_lora_batched`,
@@ -42,8 +55,13 @@ impl MoeLayer {
         let n = num_tokens as u32;
         let bf16 = 2usize;
 
+        // Router width, not expert count — they differ only on LongCat, where
+        // the router also scores the zero-computation experts. This value also
+        // strides `gate_t` below; getting it wrong reads each token's logits
+        // from the wrong offset rather than failing.
+        let router_n = self.router_logits_n;
         let (gate_logits, fp32_gate, gate_elem) =
-            self.batched_gate_logits(input, n, h, num_experts, row_adapter_base, ctx, stream)?;
+            self.batched_gate_logits(input, n, h, router_n, row_adapter_base, ctx, stream)?;
 
         // Per-token: topK routing + expert dispatch + weighted sum
         let h_usize = h as usize;
@@ -59,7 +77,7 @@ impl MoeLayer {
 
         for t in 0..num_tokens {
             let input_t = input.offset(t * h_usize * bf16);
-            let gate_t = gate_logits.offset(t * num_experts as usize * gate_elem);
+            let gate_t = gate_logits.offset(t * router_n as usize * gate_elem);
             let output_t = ctx.buffers.moe_output().offset(t * h_usize * bf16);
 
             let scratch = ctx.buffers.scratch();
@@ -102,36 +120,17 @@ impl MoeLayer {
                     stream,
                 )?;
             } else if let Some(bias) = self.correction_bias_dev {
-                // DeepSeek-V4: sqrt-softplus expert scoring (replaces sigmoid).
-                if ctx.config.scoring_func == "sqrtsoftplus" {
-                    ops::moe_topk_sqrtsoftplus(
-                        ctx.gpu,
-                        self.moe_topk_sqrtsoftplus_k,
-                        gate_t,
-                        bias,
-                        indices_dev,
-                        weights_dev,
-                        num_experts,
-                        top_k,
-                        ctx.config.norm_topk_prob,
-                        ctx.config.routed_scaling_factor as f32,
-                        stream,
-                    )?;
-                } else {
-                    ops::moe_topk_sigmoid(
-                        ctx.gpu,
-                        self.moe_topk_sigmoid_k,
-                        gate_t,
-                        bias,
-                        indices_dev,
-                        weights_dev,
-                        num_experts,
-                        top_k,
-                        ctx.config.norm_topk_prob,
-                        ctx.config.routed_scaling_factor as f32,
-                        stream,
-                    )?;
-                }
+                self.router_bias_one(
+                    gate_t,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    t,
+                    ctx,
+                    stream,
+                )?;
             } else {
                 ops::moe_topk_softmax(
                     ctx.gpu,

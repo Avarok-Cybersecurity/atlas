@@ -782,6 +782,17 @@ pub(crate) fn load_model(
     } else {
         args.max_batch_size
     };
+    // mHC highway models (#753 item B): multi-seq decode runs the per-seq
+    // highway loop (decode_a2) with per-sequence PLE/QSA state; batched
+    // prefill/mixed steps are serialized scheduler-side. Concurrency is
+    // honored — the earlier clamp-to-1 mitigation is lifted.
+    if scheduler_model.hc_mult() > 0 && max_batch_size > 1 {
+        tracing::info!(
+            "mHC highway model: concurrency {max_batch_size} via the per-seq \
+             highway decode loop (batched highway kernels are the perf \
+             follow-up)"
+        );
+    }
     // Derived ceiling (wave-14a): the decode-metadata layout, logits rows and
     // scratch block-table envelope are all DERIVED from max_batch_size
     // (`spark_runtime::buffers::DecodeMetaLayout`, rows = max(32, bs) —

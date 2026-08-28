@@ -179,7 +179,16 @@ fn check_layer_count(store: &WeightStore, config: &ModelConfig) -> Result<usize>
     observed.sort_unstable();
     observed.dedup();
     let max_idx = *observed.last().unwrap();
-    let expected = config.num_hidden_layers;
+    // LongCat-Flash serves each CHECKPOINT layer as TWO engine sublayers
+    // (dual-sublayer "shortcut" blocks — the HF modeling file makes the same
+    // 2x expansion), so the checkpoint legitimately carries half as many
+    // `layers.N` indices as `num_hidden_layers`. Comparing against the engine
+    // count would reject every valid LongCat checkpoint.
+    let expected = if config.model_type.starts_with("longcat_flash") {
+        config.num_hidden_layers / 2
+    } else {
+        config.num_hidden_layers
+    };
     if max_idx + 1 < expected {
         bail!(
             "Pre-flight: checkpoint has layers 0..{} but config.num_hidden_layers = {}. \
@@ -313,12 +322,18 @@ fn check_correction_bias_shape(store: &WeightStore, config: &ModelConfig) -> Res
         }
         let t = store.get(name)?;
         let n_elems = t.num_elements();
-        if n_elems != config.num_experts {
+        // The bias is per ROUTER LOGIT, and a zero-expert model (LongCat)
+        // scores `num_experts + zero_expert_num` of them — the identity
+        // experts are selectable but have no FFN weights.
+        let expected = config.num_experts + config.zero_expert_num;
+        if n_elems != expected {
             bail!(
-                "Pre-flight: '{name}' has {n_elems} elements but config.num_experts = {}. \
-                 The checkpoint is for a different expert count; EP sharding math would \
-                 be wrong and the MoE router would route to non-existent experts.",
+                "Pre-flight: '{name}' has {n_elems} elements but config declares {expected} \
+                 router logits (num_experts = {} + zero_expert_num = {}). The checkpoint is \
+                 for a different expert count; EP sharding math would be wrong and the MoE \
+                 router would route to non-existent experts.",
                 config.num_experts,
+                config.zero_expert_num,
             );
         }
     }
