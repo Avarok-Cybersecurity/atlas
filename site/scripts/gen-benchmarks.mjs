@@ -24,6 +24,7 @@
 // =============================================================================
 
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { writeStable } from './lib/write-stable.mjs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -103,5 +104,5 @@ const obj = {
   entries
 };
 
-writeFileSync(OUT, JSON.stringify(obj, null, 2) + '\n');
+writeStable(OUT, obj, ['generated_sha', 'generated_date'], (o) => JSON.stringify(o, null, 2) + '\n');
 console.log(`gen-benchmarks: status=${status}, ${entries.length} entries -> ${OUT}`);

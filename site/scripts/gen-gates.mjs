@@ -26,6 +26,7 @@
 // =============================================================================
 
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { writeStable } from './lib/write-stable.mjs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -159,7 +160,7 @@ const obj = {
   sources: { committed: committedCount, branches_scanned: branchesScanned, from_branches: fromBranches },
   benchmarks
 };
-writeFileSync(OUT, JSON.stringify(obj) + '\n');
+writeStable(OUT, obj, ['generated_sha', 'generated_date'], (o) => JSON.stringify(o) + '\n');
 console.log(
   `gen-gates: ${records.size} records (${committedCount} committed, +${fromBranches} from ${branchesScanned} branches) -> ${OUT}`
 );
