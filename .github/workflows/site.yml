@@ -172,6 +172,20 @@ jobs:
           DEPLOY_PATH:     ${{ secrets.DEPLOY_PATH }}
         run: |
           PORT="${DEPLOY_SSH_PORT:-22}"
-          rsync -az --delete --chmod=D755,F644 \
+          # `--delete-delay`, not a bare `--delete`: rsync's default removes files
+          # AS IT GOES, so an old content-hashed chunk can be deleted while a
+          # visitor is still loading the previous index.html that references it —
+          # a 404 on a lazily-imported chunk, mid-session, for the duration of a
+          # deploy. Deferring the deletions to the end means the old bundle stays
+          # whole until the new one is entirely in place.
+          #
+          # It does not make the deploy atomic, and the ordering does not help:
+          # `--itemize-changes` shows rsync sending `index.html` BEFORE the
+          # `_app/` chunks it references, so a visitor can still fetch a document
+          # naming a chunk that has not landed. What the service worker's
+          # network-first documents plus its previous cache cover, they cover;
+          # this flag closes the half that is ours to close — never deleting the
+          # old bundle out from under a session before the new one exists.
+          rsync -az --delete-delay --chmod=D755,F644 \
             -e "ssh -p ${PORT}" \
             site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"

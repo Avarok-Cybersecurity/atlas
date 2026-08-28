@@ -10,7 +10,8 @@ import {
   AGENT_URL,
   PROTOCOL_VERSION,
   describeError,
-  storedToken
+  storedToken,
+  versionAdvice
 } from './protocol.js';
 import * as msgs from './control-msgs.js';
 
@@ -167,7 +168,11 @@ export class AgentClient {
       return this.#abandon(socket, 'unavailable');
     }
     if (PROTOCOL_VERSION < welcome.protocol_min || PROTOCOL_VERSION > welcome.protocol_max) {
-      this.message = `This page speaks protocol ${PROTOCOL_VERSION}; your agent speaks ${welcome.protocol_min}–${welcome.protocol_max}. Update whichever is older.`;
+      this.message = versionAdvice(
+        PROTOCOL_VERSION,
+        welcome.protocol_min,
+        welcome.protocol_max
+      ).message;
       return this.#abandon(socket, 'error');
     }
 
