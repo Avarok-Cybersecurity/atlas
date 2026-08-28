@@ -33,6 +33,8 @@
 // mDNS is link-local — it does not cross a router and is off on plenty of
 // managed networks — so without it the page could only reach machines on one
 // broadcast domain. Additive, but the handshake is exact-match by design.
+import { installerUrl } from '../data.js';
+
 export const PROTOCOL_VERSION = 4;
 
 // The agent binds loopback only. Connecting to anything else would defeat the
@@ -84,6 +86,14 @@ export function looksLikeToken(value) {
 // place so every unnameable path says the same thing rather than going blank.
 const UNKNOWN_PROBLEM = 'The agent reported an unknown problem.';
 
+// Whether a detail field actually arrived. Interpolating one that did not put
+// the literal "undefined" in front of an operator who is, by definition,
+// already looking at something that went wrong — "your agent speaks
+// undefined–undefined" was the worst of them.
+function said(v) {
+  return typeof v === 'string' && v.trim() !== '';
+}
+
 /** Human text for an agent error code. */
 export function describeError(error) {
   if (!error || typeof error !== 'object') return UNKNOWN_PROBLEM;
@@ -91,11 +101,17 @@ export function describeError(error) {
     case 'not_paired':
       return 'The agent did not accept that pairing token. Run `atlasctl agent token` and paste the value it prints.';
     case 'unsupported_protocol':
-      return `This page speaks protocol ${PROTOCOL_VERSION}; your agent speaks ${error.min}–${error.max}. Update whichever is older.`;
+      return Number.isInteger(error.min) && Number.isInteger(error.max)
+        ? `This page speaks protocol ${PROTOCOL_VERSION}; your agent speaks ${error.min}–${error.max}. Update whichever is older.`
+        : `This page speaks protocol ${PROTOCOL_VERSION}, and your agent did not say which it speaks. Reinstall the agent on that machine.`;
     case 'unknown_recipe':
-      return `Your agent does not have a recipe called “${error.recipe}”. Update atlasctl to get the latest recipe set.`;
+      return said(error.recipe)
+        ? `Your agent does not have a recipe called “${error.recipe}”. Update atlasctl to get the latest recipe set.`
+        : 'Your agent does not have that recipe. Update atlasctl to get the latest recipe set.';
     case 'not_launchable':
-      return `That recipe cannot run here: ${error.reason}`;
+      return said(error.reason)
+        ? `That recipe cannot run here: ${error.reason}`
+        : 'That recipe cannot run here, and the agent did not say why.';
     case 'bad_settings': {
       // This arrives over the socket, so `errors` is whatever the agent sent.
       // A non-array used to throw here — turning the one function whose job is
@@ -112,9 +128,13 @@ export function describeError(error) {
     case 'already_running':
       return 'That recipe is already running.';
     case 'docker_unavailable':
-      return `Docker is not available on that machine: ${error.detail}`;
+      return said(error.detail)
+        ? `Docker is not available on that machine: ${error.detail}`
+        : 'Docker is not available on that machine.';
     case 'launch_failed':
-      return `The launch failed: ${error.detail}`;
+      return said(error.detail)
+        ? `The launch failed: ${error.detail}`
+        : 'The launch failed, and the agent did not say why.';
     default:
       // A non-string code would otherwise be returned as-is and reach the UI
       // as "[object Object]".
@@ -150,7 +170,7 @@ export function versionAdvice(page, min, max) {
     return {
       ok: false,
       side: 'agent',
-      message: 'The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: curl -fsSL https://atlasinference.io/install.sh | sh'
+      message: `The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: curl -fsSL ${installerUrl} | sh`
     };
   }
   if (page >= min && page <= max) return { ok: true };
@@ -159,7 +179,7 @@ export function versionAdvice(page, min, max) {
     return {
       ok: false,
       side: 'agent',
-      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: curl -fsSL https://atlasinference.io/install.sh | sh`
+      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: curl -fsSL ${installerUrl} | sh`
     };
   }
   return {
