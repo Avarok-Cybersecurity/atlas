@@ -1,26 +1,35 @@
 <script>
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   // A command an analyst is expected to paste. Copy is the point of the
   // component: a step someone has to retype by eye is a step they will get
   // wrong and then report as a failure to reproduce.
   let { label = '', lines = [], note = '' } = $props();
 
-  let copied = $state(false);
+  let state = $state('idle'); // idle | copied | manual | blocked
+  let preEl = $state(null);
+  let timer;
   const text = $derived(lines.join('\n'));
 
+  // A slide can advance while the flash is pending; without this the timeout
+  // fires against a component that is gone.
+  $effect(() => () => clearTimeout(timer));
+
   async function copy() {
-    if ((await copyText(text)) !== 'copied') return;
-    copied = true;
-    setTimeout(() => (copied = false), 1600);
+    clearTimeout(timer);
+    // Was `if (… !== 'copied') return;` — a refusal rendered nothing, and a
+    // command someone retypes by eye is the failure this component exists to
+    // prevent.
+    state = await copyOrSelect(text, preEl);
+    timer = setTimeout(() => (state = 'idle'), 2400);
   }
 </script>
 
 <figure class="cmd">
   <figcaption>
     {#if label}<span class="cmd-label mono">{label}</span>{/if}
-    <button type="button" class="cmd-copy mono" onclick={copy}>{copied ? 'copied' : 'copy'}</button>
+    <button type="button" class="cmd-copy mono" onclick={copy}>{copyLabel(state, 'copy').toLowerCase()}</button>
   </figcaption>
-  <pre class="mono">{#each lines as line}<span class="cmd-line">{line}</span>{/each}</pre>
+  <pre class="mono" bind:this={preEl}>{#each lines as line}<span class="cmd-line">{line}</span>{/each}</pre>
   {#if note}<p class="cmd-note">{note}</p>{/if}
 </figure>
 

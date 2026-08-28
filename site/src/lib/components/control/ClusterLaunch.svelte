@@ -11,7 +11,7 @@
   // The head does not know another machine's recipe revision or hardware, so a
   // preview it invented would be a guess presented as the thing that executes.
   import * as L from '$lib/agent/launch.js';
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import * as O from '$lib/agent/overrides.js';
   import * as Prof from '$lib/agent/profile.js';
   import SettingsEditor from './SettingsEditor.svelte';
@@ -26,6 +26,10 @@
   let overrides = $state({});
   let showSettings = $state(false);
   let copied = $state('');
+  let copyState = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  // A launch can navigate away while the flash is pending.
+  $effect(() => () => clearTimeout(copyTimer));
 
   // The operator's remembered preferences. Loaded at init rather than in an
   // effect: there is no storage during prerender, so this is `empty()` on the
@@ -188,14 +192,18 @@
     remember({ selected: flow.selected, head: flow.head });
   }
 
-  async function copy(text, key) {
-    try {
-      if ((await copyText(text)) !== 'copied') return;
-      copied = key;
-      setTimeout(() => (copied = copied === key ? '' : copied), 1600);
-    } catch {
-      copied = '';
-    }
+  // The `try/catch` here was load-bearing for the wrong reason: `copyText`
+  // already cannot throw. What was missing is the refusal REPORT.
+  async function copy(text, key, el) {
+    clearTimeout(copyTimer);
+    copied = key;
+    copyState = await copyOrSelect(text, el);
+    copyTimer = setTimeout(() => {
+      if (copied === key) {
+        copied = '';
+        copyState = 'idle';
+      }
+    }, 2400);
   }
 </script>
 
@@ -319,8 +327,12 @@
               nothing on that machine.
             </p>
           {/if}
-          <button class="lc-copy" onclick={() => copy(r.command, r.node)}>
-            {copied === r.node ? 'Copied' : 'Copy'}
+          <button
+            class="lc-copy"
+            onclick={(ev) =>
+              copy(r.command, r.node, ev.currentTarget.closest('article')?.querySelector('pre'))}
+          >
+            {copied === r.node ? copyLabel(copyState) : 'Copy'}
           </button>
         </article>
       {/each}

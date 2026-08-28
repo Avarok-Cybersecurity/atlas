@@ -3,7 +3,7 @@
   // via site/scripts/gen-models.mjs -> models.generated.json.
   // 3-level tree: vendor (brand) -> subfamily (recipe dir) -> recipes.
   import vendorsRaw from '$lib/models.generated.json';
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import { models as mcopy, recipesUrl } from '$lib/data.js';
   import RunButton from './RunButton.svelte';
 
@@ -46,10 +46,27 @@
     selectedSub[selectedVendor] = i;
   }
 
-  async function copyCmd(cmd) {
-    if ((await copyText(cmd)) !== 'copied') return;
+  // Keyed by command: several rows are on screen and only the one clicked
+  // may change. The state travels with the key, because a refusal on one row
+  // must not read as a refusal on another.
+  let copyState = $state('idle');
+  let copyTimer;
+
+  // The slider unmounts on navigation while a flash is pending.
+  $effect(() => () => clearTimeout(copyTimer));
+
+  async function copyCmd(cmd, el) {
+    clearTimeout(copyTimer);
     copied = cmd;
-    setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
+    // Was `if (… !== 'copied') return;`, which left the button unchanged on a
+    // refusal — indistinguishable from success to the person clicking it.
+    copyState = await copyOrSelect(cmd, el);
+    copyTimer = setTimeout(() => {
+      if (copied === cmd) {
+        copied = '';
+        copyState = 'idle';
+      }
+    }, 2400);
   }
 
   const quantClass = (q) => {
@@ -129,10 +146,10 @@
                 <button
                   type="button"
                   class="cmd-copy"
-                  onclick={() => copyCmd(r.command)}
+                  onclick={(e) => copyCmd(r.command, e.currentTarget.closest('.cmd-pill')?.querySelector('code'))}
                   aria-label={`Copy ${r.command}`}
                 >
-                  {copied === r.command ? 'Copied' : 'Copy'}
+                  {copied === r.command ? copyLabel(copyState) : 'Copy'}
                 </button>
                 <RunButton recipeId={r.recipeId ?? r.recipeStem} runnable={r.runnable ?? true} />
               </div>

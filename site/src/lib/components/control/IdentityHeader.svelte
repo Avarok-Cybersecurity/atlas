@@ -10,7 +10,7 @@
   // carries control to it. They are usually the same peer and still not the
   // same statement.
 
-  import { copyText } from '$lib/clipboard.js';
+  import { copyOrSelect } from '$lib/clipboard.js';
   import { nameOf } from '$lib/agent/refusal.js';
   import { isStale } from '$lib/agent/fleet.svelte.js';
   import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
@@ -47,10 +47,18 @@
     return parts.join(' · ');
   });
 
-  let copied = $state(false);
+  let copyState = $state('idle'); // idle | copied | blocked
+  let copyTimer;
+  $effect(() => () => clearTimeout(copyTimer));
+
   async function copyFp() {
-    copied = (await copyText(node.id)) === 'copied';
-    if (copied) setTimeout(() => (copied = false), 1500);
+    clearTimeout(copyTimer);
+    // No element to fall back to ON PURPOSE. This copies the FULL fingerprint
+    // while only the short form is rendered, so selecting what is on screen
+    // would hand over a truncated value that looks like the real one — worse
+    // than the refusal it was covering for.
+    copyState = await copyOrSelect(node.id, null);
+    copyTimer = setTimeout(() => (copyState = 'idle'), 2400);
   }
 </script>
 
@@ -71,7 +79,9 @@
         stroke-linejoin="round"
       />
     </svg>
-    {copied ? 'copied' : short}
+    <!-- Not "select it manually": the full fingerprint is not on screen to
+         select. `ondetails` is where it lives. -->
+    {copyState === 'copied' ? 'copied' : copyState === 'idle' ? short : 'copy failed'}
   </button>
   <span class="trust-chip trust-{node.pairing}" class:trust-this={node.isLocal}>
     <span class="dot" aria-hidden="true"></span>{trustLabel}

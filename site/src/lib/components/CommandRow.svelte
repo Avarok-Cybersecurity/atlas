@@ -12,9 +12,9 @@
   // worked, a refusal selects the text so the operator can copy it with the
   // keyboard, and says so.
 
-  import { copyText, selectText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
 
-  let { command, label = 'Copy' } = $props();
+  let { command, label = 'Copy', extra = '' } = $props();
 
   let state = $state('idle'); // idle | copied | manual | blocked
   let codeEl = $state(null);
@@ -26,26 +26,24 @@
 
   async function copy() {
     clearTimeout(timer);
-    if ((await copyText(command)) === 'copied') {
-      state = 'copied';
-    } else {
-      // Select it instead, so the next keystroke can copy it. Flashing nothing
-      // would leave the operator believing they had it.
-      state = selectText(codeEl) ? 'manual' : 'blocked';
-    }
+    // Select-on-refusal lives in `clipboard.js` now: three other components
+    // had the version that renders nothing instead.
+    state = await copyOrSelect(command, codeEl);
     timer = setTimeout(() => (state = 'idle'), 2400);
   }
 </script>
 
-<div class="ld-cmd">
-  <code class="mono" bind:this={codeEl}>{command}</code>
-  <button type="button" class="cmd-copy" onclick={copy}>
-    {state === 'copied'
-      ? 'Copied'
-      : state === 'manual'
-        ? 'Press ⌘/Ctrl+C'
-        : state === 'blocked'
-          ? 'Select it above'
-          : label}
-  </button>
+<div class="ld-cmd {extra}">
+  <!-- `tabindex` because this scrolls horizontally: a join command naming
+       every address a machine offers is reliably wider than the box, and a
+       scrollable region a keyboard cannot reach is content a keyboard cannot
+       read. Not a button — it is text, and `role`/`aria-label` name it so the
+       stop is explicable rather than a mystery focus. -->
+  <code
+    class="mono"
+    bind:this={codeEl}
+    tabindex="0"
+    role="group"
+    aria-label="Command, scrollable">{command}</code>
+  <button type="button" class="cmd-copy" onclick={copy}>{copyLabel(state, label)}</button>
 </div>

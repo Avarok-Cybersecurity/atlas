@@ -1,10 +1,14 @@
 <script>
   import { hero, runCommand, githubUrl, discordUrl } from '$lib/data.js';
-  import { copyText } from '$lib/clipboard.js';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import Receipt from './Receipt.svelte';
   import DiscordIcon from './DiscordIcon.svelte';
 
-  let copied = $state(false);
+  let copyState = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  // The flash outlives the component on navigation without this.
+  $effect(() => () => clearTimeout(copyTimer));
+  let cmdEl = $state(null);
   let dashboardOpen = $state(false);
 
   // PRPL "lazy-load": the dashboard is on-click only, so its component (and the
@@ -33,9 +37,11 @@
   }
 
   async function copy() {
-    if ((await copyText(runCommand)) !== 'copied') return;
-    copied = true;
-    setTimeout(() => (copied = false), 1600);
+    clearTimeout(copyTimer);
+    // Was a silent `return` on refusal: the button did not change, which is
+    // indistinguishable from success to the person who clicked it.
+    copyState = await copyOrSelect(runCommand, cmdEl);
+    copyTimer = setTimeout(() => (copyState = 'idle'), 2400);
   }
 </script>
 
@@ -52,9 +58,9 @@
 
       <div class="hero-cmd" role="group" aria-label="Run Atlas">
         <span class="prompt">$</span>
-        <code>{runCommand}</code>
+        <code bind:this={cmdEl}>{runCommand}</code>
         <button type="button" class="copy-btn" onclick={copy} aria-label="Copy run command">
-          {copied ? 'Copied' : 'Copy'}
+          {copyLabel(copyState)}
         </button>
       </div>
 

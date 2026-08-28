@@ -60,3 +60,48 @@ export function selectText(el) {
     return false;
   }
 }
+
+/**
+ * Copy, or fall back to selecting the text so the keyboard can.
+ *
+ * `copyText` fixed half of the original defect — the swallowed exception. This
+ * is the other half, and three components still had the first version of it:
+ * `if (await copyText(t) !== 'copied') return;`, which renders NOTHING on a
+ * refusal. The button does not change, so the operator reads the absence as
+ * either "it worked" or "I mis-clicked", walks to the other machine and pastes
+ * whatever was on the clipboard before.
+ *
+ * @param {string} text
+ * @param {Element|null|undefined} el the element holding the visible text
+ * @returns {Promise<'copied'|'manual'|'blocked'>} `manual` — it is selected,
+ *   press ⌘/Ctrl+C. `blocked` — not even that worked; the text is on screen.
+ */
+export async function copyOrSelect(text, el) {
+  if ((await copyText(text)) === 'copied') return 'copied';
+  return selectText(el) ? 'manual' : 'blocked';
+}
+
+/**
+ * The button's label for a copy state.
+ *
+ * Pure, and shared, so a refusal cannot be worded as a success in one place and
+ * a failure in another. `idle` differs per call site ("Copy", "Copy command").
+ *
+ * @param {'idle'|'copied'|'manual'|'blocked'} state
+ * @param {string} [idle]
+ * @returns {string}
+ */
+export function copyLabel(state, idle = 'Copy') {
+  switch (state) {
+    case 'copied':
+      return 'Copied';
+    case 'manual':
+      return 'Press ⌘/Ctrl+C';
+    case 'blocked':
+      // Not "above": in every one of these layouts the text sits BESIDE the
+      // button, and a direction that is wrong is worse than none.
+      return 'Select it manually';
+    default:
+      return idle;
+  }
+}
