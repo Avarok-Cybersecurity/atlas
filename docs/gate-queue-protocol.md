@@ -50,3 +50,41 @@ certified. The alternative — letting records compose — would declare unmeasu
 interactions measured, which is precisely the class of silent regression the
 gate exists to prevent (see the SPLIT=4, tree-scan, and P3 incidents: every
 one was invisible to isolated numeric checks and caught only by task gates).
+
+## Which gates want `mtp_gate=force`, and which must not have it
+
+`atlas-recipes#16` pinned `mtp_gate: force` on the recipes backing the gates,
+because in `auto` the MTP gate is a bandit arbiter that switches MTP↔serial at
+runtime on wall-clock tok/s, and speculation is not output-neutral at
+temperature 0. A campaign on 2026-08-28 confirmed the effect end to end:
+`agentic-webserver` scored `followed_directions` **9/10 under `auto`** and
+**10/10 under `force`**, one binary, one box, minutes apart. The 9/10 iteration
+was not a broken build — the agent burned its turns on a `tower` 0.4-vs-0.5
+dependency fight and stopped mid-repair.
+
+That is not a reason to pin everything, and the same campaign showed why. The
+rule is about the **shape of the bar**, not the engine:
+
+| bar | example | mode |
+|---|---|---|
+| absolute / exact-match | `agentic-webserver` `followed_directions min = 10.0`, "takes no noise" | **pin `force`** — nondeterminism against a zero-headroom bar is a coin flip, and re-running until it passes is retry-until-green |
+| empirical, measured | `bfcl-subset` `overall_accuracy min = 83.82` — "measured 84.22, less the documented ±0.4 MTP-nondeterminism noise floor" | **run in the mode the bar was measured in** |
+| wall-clock / throughput | `decode-floor`, `concurrency-sweep` | **leave `auto`** — the arbiter optimises the metric under test; it is part of the product being benchmarked |
+
+The middle row is the one that bites. `bfcl-subset`'s bar already *prices in*
+the nondeterminism, quantified under `auto`, with 0.40 of headroom. Switching
+that gate to `force` trades a bounded, documented band for an unquantified
+systematic offset — `force` removes the exact serial episodes `auto` mixes in,
+and MTP rollback/SSM-conv restore is inexact. A run judged that way is
+uninterpretable against its own bar.
+
+**Ordering.** To pin an empirically-barred gate, re-measure the bar under
+`force` first, then pin. Never pin against a bar measured the other way — that
+is `measure-then-declare` read backwards.
+
+**Scope goes stale.** `#16` named the recipes backing the gates *on
+2026-08-09*. The required `bfcl-subset` subject flipped from Qwen3.6-27B to
+Qwen3.8-27B on 2026-08-15, so its pin followed the old subject and the gate it
+was written for ran unpinned. When a `BENCH.toml` `default = true` moves to a
+new recipe, the pin does not follow it. Check the gate→recipe map, not the
+recipe list.
