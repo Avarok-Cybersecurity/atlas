@@ -203,7 +203,9 @@ pub(super) fn load(
         ),
     };
     let slots = slots_from_env();
-    let mut cache = spark_storage::NgramRowCache::open_segmented(
+    // No longer `mut`: the only mutation was the constant scale, which the
+    // gather cannot use and which is now a refusal (below).
+    let cache = spark_storage::NgramRowCache::open_segmented(
         &shards,
         rows_per as u64,
         None, // scales are not per-row here; see the constant below
@@ -224,9 +226,27 @@ pub(super) fn load(
             scale.is_finite() && scale > 0.0,
             "PLE: n-gram weight_scale is {scale}, which cannot dequantize anything"
         );
-        cache
-            .set_constant_scale(scale)
-            .context("PLE: constant scale")?;
+        // ...and the gather cannot use it, so REFUSE rather than answer wrongly.
+        //
+        // `PleLayer` binds `embed_from_argmax::batched_embed`, whose table
+        // pointer is `__nv_bfloat16*`. Pointed at an arena packed one byte per
+        // element it strides twice as far as a row, so every row but the first
+        // is read from the middle of another row, those bytes are reinterpreted
+        // as BF16, this scale is multiplied in nowhere, and slots past the
+        // halfway mark read beyond the allocation. The model loads, serves, and
+        // is fluently wrong -- the one failure no operator can attribute to the
+        // checkpoint they chose, which is why it is a refusal and not a warning.
+        //
+        // `batched_embed_fp8` already exists in that same .cu file; wiring it to
+        // `PleLayer` and checking its numerics on a GPU is the fix. Until that is
+        // measured, an honest error at load beats a model that answers.
+        anyhow::bail!(
+            "PLE: this checkpoint stores the n-gram table in FP8 (1 byte/element, \
+             scale {scale:.6e}), but the gather kernel wired to PleLayer reads BF16 \
+             (2 bytes/element) and applies no scale -- loading it would produce \
+             silently wrong output rather than an error. Use a BF16 conversion of \
+             this model, or wire `batched_embed_fp8` into PleLayer first."
+        );
     }
 
     let weights = PleWeights {

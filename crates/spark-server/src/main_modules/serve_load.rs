@@ -443,7 +443,18 @@ pub(crate) fn load_model(
         &store,
         &config,
         args.speculative,
-        args.kv_cache_dtype.as_deref(),
+        // The RESOLVED dtype, not the raw flag. An omitted `--kv-cache-dtype`
+        // is not "bf16": it resolves to the engine default, which is fp8. Passed
+        // raw, the QSA check saw `None`, called it safe, and let the bare
+        // invocation -- the obvious one -- load a hundred-plus gigabytes before
+        // the decode path refused it on the first request. Resolving here keeps
+        // the default's definition in one place instead of copying it into a
+        // preflight that cannot see the server's CLI.
+        Some(
+            args.kv_cache_dtype
+                .as_deref()
+                .unwrap_or(crate::cli::DEFAULT_KV_CACHE_DTYPE),
+        ),
     )
     .context("Checkpoint pre-flight check failed")?;
 

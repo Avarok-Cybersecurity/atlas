@@ -95,19 +95,26 @@ fn check_qsa_kv_dtype<'a>(
     if !has_qsa {
         return Ok(());
     }
-    // `None` is the default, which IS bf16; only an explicit other value is a
-    // problem. Matching loosely because the flag is a free-form string here and
-    // is parsed downstream.
+    // `None` means the caller genuinely has no KV cache to speak of, NOT "the
+    // default is fine": the engine default is fp8, and reading an absent flag as
+    // bf16 made this check inert on the bare `spark serve <model>` -- the exact
+    // invocation it exists to catch, and the one that pays a hundred-plus
+    // gigabytes of load before the decode path refuses on the first request.
+    // Callers resolve the default before calling; see `serve_load`.
     let Some(dt) = kv_cache_dtype else {
         return Ok(());
     };
+    // Only `bf16` parses downstream (`KvCacheDtype::FromStr`); `bfloat16` and
+    // `auto` were accepted here but are rejected by CLI validation before they
+    // could ever arrive, so listing them only made the rule look laxer than it is.
     let d = dt.trim().to_ascii_lowercase();
     anyhow::ensure!(
-        d == "bf16" || d == "bfloat16" || d == "auto",
+        d == "bf16",
         "this checkpoint uses QSA sparse attention, whose selection gather \
          copies raw NHD rows, so it needs a plain BF16 KV cache — but \
-         --kv-cache-dtype was given as `{dt}`.\n  \
-         Serve with `--kv-cache-dtype bf16`, or drop the flag.\n  \
+         the KV cache resolves to `{dt}`.\n  \
+         Serve with `--kv-cache-dtype bf16`. Dropping the flag does NOT do \
+         that -- the default is fp8.\n  \
          Said here rather than on your first request, which is where the \
          decode path notices."
     );
@@ -418,23 +425,50 @@ mod qsa_kv_tests {
         let msg = format!("{e}");
         assert!(msg.contains("--kv-cache-dtype bf16"), "{msg}");
         assert!(msg.contains("fp8"), "must quote what was given: {msg}");
+        // The old text said "or drop the flag", which is the one thing that
+        // cannot work: dropping it resolves to fp8, which is how we got here.
+        assert!(
+            !msg.contains("drop the flag"),
+            "must not advise dropping the flag: {msg}"
+        );
     }
 
-    /// bf16 in its spellings, and the DEFAULT — which is bf16 — must pass. A
-    /// check that refused the default would refuse every correct invocation.
+    /// bf16, in the spellings that actually parse downstream.
     #[test]
-    fn a_qsa_checkpoint_accepts_bf16_and_the_default() {
-        for dt in [
-            None,
-            Some("bf16"),
-            Some("BF16"),
-            Some(" bfloat16 "),
-            Some("auto"),
-        ] {
+    fn a_qsa_checkpoint_accepts_bf16() {
+        for dt in [Some("bf16"), Some("BF16"), Some(" bf16 ")] {
             assert!(
                 check_qsa_kv_dtype(QSA.into_iter(), dt).is_ok(),
                 "{dt:?} must pass"
             );
+        }
+    }
+
+    /// The regression this check was written for and then could not catch: the
+    /// engine default is fp8, so an unresolved `None` read as "bf16, fine" made
+    /// the check inert on `spark serve <model>` with no flag — the invocation
+    /// most operators type. Callers resolve before calling; if one forgets, this
+    /// is the test that says so.
+    #[test]
+    fn the_engine_default_is_not_something_a_qsa_checkpoint_can_use() {
+        assert_eq!(spark_server_default_kv_dtype(), "fp8");
+        check_qsa_kv_dtype(QSA.into_iter(), Some(spark_server_default_kv_dtype()))
+            .expect_err("the resolved default must be refused, not waved through");
+    }
+
+    /// Spelled out rather than imported: `spark-server` depends on this crate,
+    /// so the constant cannot come the other way. If the server's default ever
+    /// changes, the assertion above fails here and names this comment.
+    fn spark_server_default_kv_dtype() -> &'static str {
+        "fp8"
+    }
+
+    /// Spellings the CLI rejects before preflight can see them. Accepting them
+    /// here only made the rule look laxer than it is.
+    #[test]
+    fn spellings_that_do_not_parse_downstream_are_not_accepted() {
+        for dt in [Some("bfloat16"), Some("auto")] {
+            check_qsa_kv_dtype(QSA.into_iter(), dt).expect_err("{dt:?} must not pass");
         }
     }
 }
