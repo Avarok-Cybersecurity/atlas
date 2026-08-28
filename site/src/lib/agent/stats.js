@@ -119,3 +119,60 @@ export function hasAnything(stats) {
   if (stats == null) return false;
   return Object.values(stats).some((v) => Number.isFinite(v));
 }
+
+/**
+ * Format an uptime given in seconds, coarsely — an uptime is read for its
+ * order of magnitude, not its precision.
+ *
+ * @param {number|null|undefined} v seconds
+ * @returns {string}
+ */
+export function uptime(v) {
+  if (!Number.isFinite(v) || v < 0) return '—';
+  const s = Math.floor(v);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+/**
+ * Slots a held sparkline leaves empty at its right edge, so "the page stopped
+ * asking" is visible as the line stopping short of now.
+ */
+export const HOLD_GAP = 12;
+
+/**
+ * A history pinned to the strip's fixed time axis of `HISTORY` slots.
+ *
+ * Samples fill from the left, so a young session's line ends short of the
+ * right edge instead of being stretched across it — the x-axis means time,
+ * not "however long we happen to have been looking".
+ *
+ * `held` is required: when the operator paused polling, or the launch stopped
+ * answering, the line must end visibly short of the right edge — a line
+ * touching "now" claims the last pixel is current, which is exactly what a
+ * held reading is not. When the natural padding already leaves the gap,
+ * nothing is moved.
+ *
+ * @param {Array<number|null>} history
+ * @param {{held: boolean}} opts
+ * @returns {Array<number|null>} exactly `HISTORY` entries
+ */
+export function timeline(history, opts) {
+  if (opts?.held !== true && opts?.held !== false) {
+    throw new TypeError('timeline must be told whether the reading is held');
+  }
+  const list = Array.isArray(history) ? history : [];
+  const win = list.length > HISTORY ? list.slice(-HISTORY) : list;
+  const padded =
+    win.length < HISTORY ? [...win, ...new Array(HISTORY - win.length).fill(null)] : [...win];
+  if (!opts.held) return padded;
+  let trailing = 0;
+  for (let i = padded.length - 1; i >= 0 && padded[i] == null; i--) trailing++;
+  if (trailing >= HOLD_GAP) return padded;
+  const shift = HOLD_GAP - trailing;
+  return [...padded.slice(shift), ...new Array(shift).fill(null)];
+}

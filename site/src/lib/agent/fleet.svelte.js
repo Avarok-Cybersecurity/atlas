@@ -18,8 +18,16 @@
 //      selection, pairing, launching — uses the fingerprint, because Sparks
 //      ship with colliding names like spark-256a.
 //
-// PRIVACY. Fleet data lives in memory for the life of the tab, no fleet value
-// ever reaches a URL, and the prerendered page contains no fleet data at all.
+// PRIVACY. Fleet data lives in memory for the life of the tab, and the
+// prerendered page contains no fleet data at all.
+//
+// ONE fleet value does reach a URL, and it is worth stating rather than
+// leaving the older blanket claim to rot: the control page persists the
+// SELECTED node's fingerprint as `#node=<64-hex>` via `replaceState`, so a
+// reload or a deep link returns to the machine you were looking at. That
+// fingerprint is a public key hash, not a secret — it is broadcast in mDNS
+// beacons on the LAN — but it does enter browser history and travels if the
+// URL is pasted. It is `replaceState`, so it does not accumulate entries.
 // Two things are written to storage, both by other modules and neither by this
 // one: the browser-pairing token (`protocol.js`) and the operator's own
 // preferences (`profile.js`). The latter includes the fingerprints of machines
@@ -249,9 +257,16 @@ class FleetSession {
     return readExchangeAt(res.reply);
   }
 
-  /** Trust a peer after a human compared the words. */
-  async confirm(nodeId) {
-    const res = await this.agent.confirmPairing(nodeId);
+  /**
+   * Trust a peer after a human compared the words.
+   *
+   * `allowControl` is the second, separate decision the ceremony asks:
+   * whether the newly trusted machine may drive THIS one (launch and stop
+   * models here). Trust without it is one-way — this machine can still see
+   * and drive the peer wherever the peer has granted control.
+   */
+  async confirm(nodeId, allowControl = false) {
+    const res = await this.agent.confirmPairing(nodeId, allowControl);
     if (!res.ok) return { ok: false, detail: res.message };
     return readDecision(res.reply, true);
   }

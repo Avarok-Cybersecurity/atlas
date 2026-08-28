@@ -1,30 +1,48 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script>
-  // The control plane.
+  // The control plane, as one surface: the bridge.
   //
   // Prerendered in its no-agent state, which is what most visitors get, what
   // crawlers get, and what Lighthouse measures. It also means the shipped HTML
   // contains no fleet data at all — the privacy property falls out of the
   // architecture rather than being maintained by hand.
   //
-  // Hydration then probes ws://127.0.0.1:34333 and the page advances in place,
-  // the same way the launch dialog does. A background probe never repaints what
-  // the reader is looking at; it may only move the page forward.
+  // Hydration then probes ws://127.0.0.1:34333 and the page advances in place.
+  // Once the agent answers, the marketing chrome steps aside and the viewport
+  // becomes the bridge: command strip across the top, roster left, stage
+  // center, rail right — one screen, no page scroll at desktop widths. The
+  // no-agent, lost-agent and unpaired-browser states keep their full-page
+  // invitations, because a person with no fleet needs prose, not panels.
+  //
+  // This file is composition only: which panel goes where, and which machine
+  // is selected. Every rule — row order, hotkeys, what happens when the
+  // selected machine vanishes — lives in selection.js, where it is tested.
 
+  import { browser } from '$app/environment';
+  import { replaceState } from '$app/navigation';
   import Nav from '$lib/components/Nav.svelte';
   import Footer from '$lib/components/Footer.svelte';
   import SectionHead from '$lib/components/SectionHead.svelte';
-  import NodeCard from '$lib/components/control/NodeCard.svelte';
-  import ClusterLaunch from '$lib/components/control/ClusterLaunch.svelte';
-  import TopologyMap from '$lib/components/control/TopologyMap.svelte';
-  import ReachMap from '$lib/components/control/ReachMap.svelte';
-  import PairDialog from '$lib/components/control/PairDialog.svelte';
-  import FleetScan from '$lib/components/control/FleetScan.svelte';
-  import JoinGuide from '$lib/components/control/JoinGuide.svelte';
   import InstallSteps from '$lib/components/InstallSteps.svelte';
+  import CommandStrip from '$lib/components/control/CommandStrip.svelte';
+  import Roster from '$lib/components/control/Roster.svelte';
+  import NodeStage from '$lib/components/control/NodeStage.svelte';
+  import FleetRail from '$lib/components/control/FleetRail.svelte';
   import NodeDetails from '$lib/components/control/NodeDetails.svelte';
+  import PairDialog from '$lib/components/control/PairDialog.svelte';
+  import UnpairDialog from '$lib/components/control/UnpairDialog.svelte';
+  import PairingOverlay from '$lib/components/control/PairingOverlay.svelte';
+  import ClusterOverlay from '$lib/components/control/ClusterOverlay.svelte';
+  import ShortcutSheet from '$lib/components/control/ShortcutSheet.svelte';
+  import TopologyMap from '$lib/components/control/TopologyMap.svelte';
   import { fleet } from '$lib/agent/fleet.svelte.js';
+  import { fromHash, reselect, selectByKey, toHash } from '$lib/agent/selection.js';
+  import { shortcut } from '$lib/agent/shortcuts.js';
   import { storedToken } from '$lib/agent/protocol.js';
+  import { CADENCES, isPaused } from '$lib/agent/cadence.js';
+  import { StatsPoller } from '$lib/agent/statspoll.svelte.js';
+  import * as A from '$lib/agent/actionlog.js';
+  import * as L from '$lib/agent/launch.js';
   import { startAgentCommand } from '$lib/data.js';
 
   // `install`, not `run`. `run` holds the terminal and the agent dies with it,
@@ -34,29 +52,71 @@
   let pairing = $state(null);
   let details = $state(null);
   let unpairing = $state(null);
-  let unpairConfirm = $state('');
   let head = $state(null);
+  let pairingOpen = $state(false);
+  let clusterOpen = $state(false);
+  let sheetOpen = $state(false);
 
-  const nodes = $derived(fleet.nodes);
-  const solo = $derived(fleet.mode === 'live' && fleet.peers.length === 0);
-  const remoteCount = $derived(fleet.remoteLaunchable.length);
+  // The cluster flow lives HERE, not in the overlay: closing the overlay is
+  // not abandoning a prepare, so the reservations survive it, the rail's D3
+  // summary reads the same state, and reopening lands mid-ceremony.
+  let clusterFlow = $state(L.initial());
+
+  // The dock tab is page state so the keyboard map can reach it.
+  let tab = $state('launch');
+  let stageEl = $state(null);
+
+  // ---- telemetry ---------------------------------------------------------
+
+  // 2s: fast enough to feel live, half the load of 1s on a relayed fleet.
+  // The operator owns it from the command strip; it is a starting position,
+  // not a policy.
+  let cadenceId = $state('2s');
+  let vitalsOn = $state(true);
+  const cadenceMs = $derived(CADENCES.find((c) => c.id === cadenceId).ms);
+  const paused = $derived(isPaused(cadenceMs));
+
+  // The one stats poller. Schedule rules live in cadence.js; this page only
+  // tells it what the fleet looks like and which node is selected.
+  const poller = new StatsPoller(fleet.agent);
+  $effect(() => {
+    if (fleet.mode !== 'live') return;
+    poller.start();
+    return () => poller.stop();
+  });
+  $effect(() => {
+    poller.configure(
+      fleet.nodes.map((n) => ({
+        id: n.id,
+        selected: n.id === selectedId,
+        running: n.running !== null,
+        recipe: n.running,
+        on: n.isLocal ? null : n.id
+      })),
+      cadenceMs
+    );
+  });
+
+  // The session action log: what this page asked the fleet to do. Page
+  // memory, dead with the tab — the Status tab says so.
+  let log = $state([]);
+  function record(fields) {
+    log = A.append(log, A.entry(fields, Date.now()));
+  }
 
   /** Whether a connection to the local agent has been attempted yet. */
   let attempted = $state(false);
 
   // Start only. The session is an app-wide singleton the nav indicator shares,
   // so tearing it down when this effect re-runs would kill a connection some
-  // other caller is still using — and did: the page connected, then lost its
-  // event listener mid-open and rendered an empty fleet.
+  // other caller is still using.
   //
   // **Only if this browser has paired before.** Opening a loopback socket makes
   // the browser ask for "access other apps and services on this device", and
-  // asking that of someone who has just arrived — before they have said they
-  // want anything from a local machine — is asking for a permission that is not
-  // yet needed. A stored token is proof this browser has been paired, which
-  // means the permission was already granted and re-dialing prompts nobody.
-  // Without one, the page renders its install invitation and waits for the
-  // operator to press Connect below.
+  // asking that of someone who has just arrived is asking for a permission
+  // that is not yet needed. A stored token is proof this browser was paired,
+  // so re-dialing prompts nobody. Without one, the page renders its install
+  // invitation and waits for the operator to press Connect below.
   $effect(() => {
     if (attempted || !storedToken()) return;
     attempted = true;
@@ -68,6 +128,97 @@
     attempted = true;
     fleet.start({ watch: true });
   }
+
+  // ---- selection ----------------------------------------------------------
+
+  let selectedId = $state(null);
+  /** A #node= hash captured at arrival, honoured once its machine appears. */
+  let wantedHash = browser ? location.hash : '';
+
+  // The pre-bridge #launch anchor: deep links and the @live e2e spec target
+  // it, and the panel it named now lives in the cluster overlay — so the
+  // anchor opens the overlay instead of scrolling to a section.
+  if (wantedHash === '#launch') {
+    clusterOpen = true;
+    wantedHash = '';
+  }
+
+  $effect(() => {
+    const nodes = fleet.nodes;
+    if (wantedHash) {
+      const id = fromHash(wantedHash, nodes);
+      if (id) {
+        wantedHash = '';
+        selectedId = id;
+        return;
+      }
+    }
+    // The reselect rule: keep a valid selection, else local, else first row.
+    selectedId = reselect(nodes, selectedId);
+  });
+
+  // Persist by node id, never by index — the roster reorders as machines come
+  // and go, and "the third row" is a different machine after every reorder.
+  $effect(() => {
+    if (!browser || fleet.mode !== 'live') return;
+    const h = toHash(selectedId);
+    replaceState(h || location.pathname + location.search, {});
+  });
+
+  const selectedNode = $derived(fleet.nodes.find((n) => n.id === selectedId) ?? null);
+  const select = (id) => (selectedId = id);
+
+  // ---- keyboard map -------------------------------------------------------
+
+  // Which key does what — and when a key must do nothing — is shortcuts.js's
+  // tested rule; this handler only carries out the verdict. Arrows are
+  // deliberately not here: they rove only while the roster has focus
+  // (Roster.svelte), so they never steal scrolling from the dock or rail.
+  let lastCadence = '2s';
+
+  function onKeydown(e) {
+    if (fleet.mode !== 'live') return;
+    // The roster's own handler (arrows, 1–8 while focused) runs first and
+    // prevents default; dispatching again would double-move the selection.
+    if (e.defaultPrevented) return;
+    const t = e.target;
+    const typing = Boolean(
+      t instanceof Element && t.closest('input, textarea, select, [contenteditable="true"]')
+    );
+    const overlayOpen = Boolean(
+      pairingOpen || clusterOpen || sheetOpen || pairing || unpairing || details
+    );
+    const act = shortcut(e.key, {
+      typing,
+      overlayOpen,
+      modified: e.ctrlKey || e.metaKey || e.altKey
+    });
+    if (!act) return;
+    e.preventDefault();
+    if (act.kind === 'select') {
+      const id = selectByKey(fleet.nodes, act.key);
+      if (id) selectedId = id;
+    } else if (act.kind === 'tab') {
+      tab = act.tab;
+    } else if (act.kind === 'stop') {
+      stageEl?.armStop();
+    } else if (act.kind === 'alerts') {
+      document.getElementById('alert-lane')?.focus();
+    } else if (act.kind === 'cluster') {
+      clusterOpen = true;
+    } else if (act.kind === 'pause') {
+      if (cadenceId === 'pause') {
+        cadenceId = lastCadence;
+      } else {
+        lastCadence = cadenceId;
+        cadenceId = 'pause';
+      }
+    } else if (act.kind === 'sheet') {
+      sheetOpen = !sheetOpen;
+    }
+  }
+
+  // ---- cluster head -------------------------------------------------------
 
   // Default the head to this machine — but only if this machine can actually
   // hold rank 0. On a control-only node it cannot, and defaulting to it drew
@@ -86,52 +237,6 @@
     if (head === null) return;
     if (!fleet.launchable.some((n) => n.id === head)) head = null;
   });
-
-  const unpairReady = $derived(
-    unpairing ? unpairConfirm.trim().toLowerCase() === unpairing.id.slice(0, 8) : false
-  );
-
-  /** Set when an unpair was refused, so the dialog can say so. */
-  let unpairError = $state('');
-
-  let unpairEl = $state(null);
-
-  /** Dismiss the unpair dialog, clearing what it was showing. */
-  function closeUnpair() {
-    unpairing = null;
-    unpairConfirm = '';
-    unpairError = '';
-  }
-
-  // Declaring `aria-modal="true"` and then leaving the dialog unfocused with no
-  // Escape handler tells an assistive-technology user they are in a modal and
-  // gives them no way out. PairDialog and LaunchDialog both do this properly;
-  // this one and NodeDetails did not.
-  $effect(() => {
-    if (!unpairing) return;
-    unpairEl?.focus();
-    const onKey = (ev) => {
-      if (ev.key === 'Escape') closeUnpair();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
-
-  async function doUnpair() {
-    if (!unpairReady) return;
-    unpairError = '';
-    const res = await fleet.unpair(unpairing.id);
-    if (!res.ok) {
-      // The dialog used to close here regardless. The node stayed trusted and
-      // the interface implied it had been removed, which is the worst of the
-      // three possible outcomes: the operator believes a machine is out of
-      // their fleet when it is still in it.
-      unpairError = res.detail || 'The agent refused to remove this pairing.';
-      return;
-    }
-    unpairing = null;
-    unpairConfirm = '';
-  }
 </script>
 
 <svelte:head>
@@ -142,276 +247,192 @@
   />
 </svelte:head>
 
-<Nav />
+<svelte:window onkeydown={onKeydown} />
 
-<main class="control">
-  <section id="fleet" class="sx-cyan">
-    <div class="container">
-      <SectionHead
-        level={1}
-        label="// 01 · fleet"
-        title="Your machines, one panel."
-        sub="This page talks only to an agent on the computer you are using. That agent finds the others. Nothing here leaves your network, and none of it is in the page you downloaded."
-        prov={fleet.mode === 'live' ? 'local agent · 127.0.0.1:34333' : 'no agent connected'}
-      />
+{#if fleet.mode === 'live'}
+  <div class="bridge">
+    <CommandStrip
+      {fleet}
+      onselect={select}
+      cadence={cadenceId}
+      oncadence={(id) => (cadenceId = id)}
+      vitals={vitalsOn}
+      onvitals={(v) => (vitalsOn = v)}
+      onhelp={() => (sheetOpen = true)}
+    />
+    <Roster
+      {fleet}
+      {selectedId}
+      {poller}
+      {paused}
+      onselect={select}
+      onadd={() => (pairingOpen = true)}
+      onpair={(n) => (pairing = n)}
+    />
+    <NodeStage
+      bind:this={stageEl}
+      {fleet}
+      node={selectedNode}
+      {poller}
+      {paused}
+      {vitalsOn}
+      {tab}
+      ontab={(t) => (tab = t)}
+      {log}
+      onlog={record}
+      onpair={(n) => (pairing = n)}
+      onunpair={(n) => (unpairing = n)}
+      ondetails={(n) => (details = n)}
+    />
+    <FleetRail
+      {fleet}
+      {head}
+      {clusterFlow}
+      oncluster={() => (clusterOpen = true)}
+      onmakehead={(id) => (head = id)}
+      onselect={select}
+      onpair={(n) => (pairing = n)}
+      onunpair={(n) => (unpairing = n)}
+    />
+  </div>
+{:else}
+  <Nav />
 
-      <div class="ctl-modes">
-      {#if fleet.mode === 'live'}
-        {#if fleet.alerts.length > 0}
-          <div class="al-strip al-{fleet.worstSeverity}" role="status">
-            <strong>{fleet.alerts[0].nodeName}:</strong>
-            {fleet.alerts[0].detail || fleet.alerts[0].kind.replaceAll('_', ' ')}
-            {#if fleet.alerts.length > 1}
-              <a href="#alerts">and {fleet.alerts.length - 1} more</a>
-            {/if}
-          </div>
-        {/if}
+  <main class="control">
+    <section id="fleet" class="sx-cyan">
+      <div class="container">
+        <SectionHead
+          level={1}
+          label="// 01 · fleet"
+          title="Your machines, one panel."
+          sub="This page talks only to an agent on the computer you are using. That agent finds the others. Nothing here leaves your network, and none of it is in the page you downloaded."
+          prov="no agent connected"
+        />
 
-        <div class="fl-grid">
-          {#each nodes as node (node.id)}
-            <NodeCard
-              {nodes}
-              {node}
-              ondetails={(n) => (details = n)}
-              onpair={(n) => (pairing = n)}
-              onunpair={(n) => {
-                unpairing = n;
-                unpairConfirm = '';
-              }}
-            />
-          {/each}
-        </div>
-
-        {#if fleet.controlOnly}
-          <div class="fl-control-only" role="status">
-            <p class="fl-co-head">
-              <span class="fl-co-chip">Control only</span>
-              This machine drives the fleet; it does not run models itself.
-            </p>
-            <!-- The agent's own reason is on the card above; repeating it
-                 here verbatim read as a stutter. This says what it means. -->
-            <p class="fl-co-why">
-              {#if remoteCount === 0}
-                Pair a machine that can run models and everything on this page —
-                topology, launching, alerts — applies to it.
-              {:else}
-                Everything on this page — topology, launching, alerts — applies
-                to the {remoteCount === 1 ? 'machine' : `${remoteCount} machines`}
-                you have paired.
-              {/if}
-            </p>
-            {#if remoteCount === 0}
-              <JoinGuide {fleet} />
-            {/if}
-          </div>
-        {/if}
-
-        {#if solo}
-          <!-- Shown whether or not this machine can launch. A control-only node
-               with no peers is the case that needs this MOST: it can do nothing
-               at all until a machine is added, and the old copy only appeared
-               on nodes that could already run models. -->
-          {#if !fleet.controlOnly}
-            <p class="fl-solo-note">
-              No peers yet. Pairing a second machine also unlocks the EP=2
-              recipes, which need exactly two nodes.
-            </p>
-            <!-- A machine that CAN launch and has no peers wants to add one
-                 just as much; it simply is not stuck without one. The guide is
-                 rendered here rather than in both places so it appears exactly
-                 once — the control-only panel above already carries it, and
-                 two "Show me how" buttons on one screen is two live join
-                 codes and a question about which is real. -->
-            <JoinGuide {fleet} />
-          {/if}
-          <FleetScan {fleet} />
-        {/if}
-      {:else if fleet.mode === 'reconnecting'}
-        <!-- The agent was here a moment ago and went away — a restart, a
-             reboot, an ssh session closing. Falling through to the "install the
-             agent" invitation below would tell someone who plainly HAS one to
-             go and get one. -->
-        <div class="ctl-setup">
-          <h2>Lost the agent</h2>
-          <p>
-            The connection to the local agent dropped. This page is trying again on
-            its own, and will pick up where it left off as soon as the agent answers.
-          </p>
-          <p class="ld-watching">Reconnecting…</p>
-          <p>
-            If it does not come back, the agent may have stopped. Check it with
-            <code class="mono">atlasctl agent status</code>, or start it again with
-            <code class="mono">{startAgentCommand}</code>.
-          </p>
-        </div>
-      {:else if fleet.mode === 'browser_unpaired'}
-        <div class="ctl-setup">
-          <h2>Pair this browser with your agent</h2>
-          <p>
-            An agent is running, but it has not seen this browser before. Run
-            <code class="mono">atlasctl agent token</code> and paste the value the
-            launch dialog asks for. This is separate from pairing machines to each
-            other.
-          </p>
-        </div>
-      {:else}
-        <!-- Prerendered. Most visitors see this, and it must read as an
-             invitation rather than an error. -->
-        <div class="ctl-setup">
-          <h2>Nothing is running here yet</h2>
-          <p>
-            Atlas runs on your hardware, not ours. Install the agent on a machine
-            and this page becomes its control panel.
-          </p>
-          <InstallSteps />
-          {#if attempted}
-            <p class="ld-watching">
-              <span class="ld-pulse" aria-hidden="true"></span>
-              Watching for it — this page will continue on its own.
-            </p>
-          {:else}
-            <!-- Not "watching": nothing is being watched until the operator
-                 asks. Saying otherwise would be a claim about behaviour that is
-                 deliberately not happening yet. -->
-            <button type="button" class="btn btn-primary" onclick={connectNow}>
-              Connect to the agent on this machine
-            </button>
-            <p class="ctl-safety">
-              Your browser will ask permission to reach other apps on this
-              device. That is this page opening a connection to the agent on
-              127.0.0.1, and nothing else — it is asked now, rather than on
-              arrival, because until now there was nothing to connect to.
-            </p>
-          {/if}
-          <p class="ctl-safety">
-            Any web page can show you an install command. Check the address bar says
-            <strong>atlasinference.io</strong> before running one.
-          </p>
-        </div>
-      {/if}
-      </div>
-    </div>
-  </section>
-
-  <section id="topology" class="section-alt sx-cyan">
-    <div class="container">
-      <SectionHead
-        label="// 02 · topology"
-        title="How they reach each other."
-        sub="Two views: how you reach each machine, and how the machines reach each other. Multi-node decode is all-reduce bound, so the link between two machines decides the throughput. A cluster that falls back to ethernet still runs — several times slower — while every correctness check keeps passing, so the fabric is called out here rather than left to be discovered in a benchmark."
-      />
-
-      <div class="topo-wrap">
-        <!-- Two graphs, because there are two questions and one picture cannot
-             answer both. This one is reachability from where the operator is
-             sitting — how do I get to that machine. The mesh below is the
-             cluster question — can these machines talk to each other, and over
-             what. Drawing only the mesh left "why can I not see dgx3?"
-             unanswerable. -->
-        {#if nodes.length > 0}
-          <!-- Only once there is something to be connected TO. This section is
-               not gated on a live agent, so without this a visitor with no
-               agent gets a lone box labelled "You" wired to nothing. -->
-          <ReachMap {nodes} />
-        {/if}
-        <TopologyMap {nodes} {head} />
-
-        <div class="topo-actions">
-          <h3 class="topo-actions-title">Nodes</h3>
-          {#each nodes as node (node.id)}
-            <div class="topo-act-group">
-              <p class="topo-act-name">
-                {node.name}
-                <span class="mono topo-act-fp">{node.id.slice(0, 8)}</span>
+        <div class="ctl-modes">
+          {#if fleet.mode === 'reconnecting'}
+            <!-- The agent was here a moment ago and went away — a restart, a
+                 reboot, an ssh session closing. Falling through to the
+                 "install the agent" invitation below would tell someone who
+                 plainly HAS one to go and get one. -->
+            <div class="ctl-setup">
+              <h2>Lost the agent</h2>
+              <p>
+                The connection to the local agent dropped. This page is trying again on
+                its own, and will pick up where it left off as soon as the agent answers.
               </p>
-              {#if node.isLocal || node.pairing === 'paired'}
-                {#if node.canLaunch}
-                  <button
-                    type="button"
-                    class="topo-act-btn"
-                    disabled={head === node.id}
-                    onclick={() => (head = node.id)}
-                  >
-                    {head === node.id ? 'Head (rank 0)' : 'Make head'}
-                  </button>
-                {:else}
-                  <!-- A disabled "Make head" reads as something broken. Say
-                       what this machine is instead: rank 0 serves the API, so
-                       a machine that cannot run models can never hold it. -->
-                  <span class="topo-act-note">Control only — cannot hold a rank</span>
-                {/if}
-                {#if !node.isLocal}
-                  <button
-                    type="button"
-                    class="topo-act-btn topo-act-danger"
-                    onclick={() => {
-                      unpairing = node;
-                      unpairConfirm = '';
-                    }}>Unpair…</button
-                  >
-                {/if}
-              {:else}
-                <button type="button" class="topo-act-btn" onclick={() => (pairing = node)}>
-                  Pair…
-                </button>
-              {/if}
+              <p class="ld-watching">Reconnecting…</p>
+              <p>
+                If it does not come back, the agent may have stopped. Check it with
+                <code class="mono">atlasctl agent status</code>, or start it again with
+                <code class="mono">{startAgentCommand}</code>.
+              </p>
+            </div>
+          {:else if fleet.mode === 'browser_unpaired'}
+            <div class="ctl-setup">
+              <h2>Pair this browser with your agent</h2>
+              <p>
+                An agent is running, but it has not seen this browser before. Run
+                <code class="mono">atlasctl agent token</code> and paste the value the
+                launch dialog asks for. This is separate from pairing machines to each
+                other.
+              </p>
             </div>
           {:else}
-            <p class="topo-act-empty">No machines yet.</p>
-          {/each}
+            <!-- Prerendered. Most visitors see this, and it must read as an
+                 invitation rather than an error. -->
+            <div class="ctl-setup">
+              <h2>Nothing is running here yet</h2>
+              <p>
+                Atlas runs on your hardware, not ours. Install the agent on a machine
+                and this page becomes its control panel.
+              </p>
+              <InstallSteps />
+              {#if attempted}
+                <p class="ld-watching">
+                  <span class="ld-pulse" aria-hidden="true"></span>
+                  Watching for it — this page will continue on its own.
+                </p>
+              {:else}
+                <!-- Not "watching": nothing is being watched until the operator
+                     asks. Saying otherwise would be a claim about behaviour that
+                     is deliberately not happening yet. -->
+                <button type="button" class="btn btn-primary" onclick={connectNow}>
+                  Connect to the agent on this machine
+                </button>
+                <p class="ctl-safety">
+                  Your browser will ask permission to reach other apps on this
+                  device. That is this page opening a connection to the agent on
+                  127.0.0.1, and nothing else — it is asked now, rather than on
+                  arrival, because until now there was nothing to connect to.
+                </p>
+              {/if}
+              <p class="ctl-safety">
+                Any web page can show you an install command. Check the address bar says
+                <strong>atlasinference.io</strong> before running one.
+              </p>
+            </div>
+          {/if}
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section id="launch" class="sx-cyan">
-    <div class="container">
-      <SectionHead
-        label="// 03 · launch"
-        title="Run one model across them."
-        sub="Two phases, because one cannot fail cleanly. Every machine checks it can run this and holds its place; nothing starts until all of them have agreed. If one refuses, the reservations the others took are released — so a cluster is either whole or absent, never a half that hangs waiting on a rendezvous."
-      />
+    <section id="topology" class="section-alt sx-cyan">
+      <div class="container">
+        <SectionHead
+          label="// 02 · topology"
+          title="How they reach each other."
+          sub="Two views: how you reach each machine, and how the machines reach each other. Multi-node decode is all-reduce bound, so the link between two machines decides the throughput. A cluster that falls back to ethernet still runs — several times slower — while every correctness check keeps passing, so the fabric is called out here rather than left to be discovered in a benchmark."
+        />
+        <!-- Without an agent there are no machines to draw, so this section is
+             the promise of the picture rather than the picture. The live
+             topology, with its head-picking and pair actions, lives on the
+             bridge's fleet rail. -->
+        <TopologyMap nodes={fleet.nodes} {head} />
+      </div>
+    </section>
 
-      {#if fleet.mode === 'live'}
-        <ClusterLaunch {fleet} />
-      {:else}
+    <section id="launch" class="sx-cyan">
+      <div class="container">
+        <SectionHead
+          label="// 03 · launch"
+          title="Run one model across them."
+          sub="Two phases, because one cannot fail cleanly. Every machine checks it can run this and holds its place; nothing starts until all of them have agreed. If one refuses, the reservations the others took are released — so a cluster is either whole or absent, never a half that hangs waiting on a rendezvous."
+        />
         <p class="lc-offline">Connect an agent to launch anything.</p>
-      {/if}
-    </div>
-  </section>
+      </div>
+    </section>
 
-  <section id="alerts" class="section-alt sx-cyan">
-    <div class="container">
-      <SectionHead
-        label="// 04 · alerts"
-        title="What needs looking at."
-        sub="Idle machines matter as much as busy ones. A clamped clock, a failing fan or a full cache filesystem is something to know before a launch, not after a benchmark comes back wrong."
-      />
-
-      {#if fleet.alerts.length === 0}
+    <section id="alerts" class="section-alt sx-cyan">
+      <div class="container">
+        <SectionHead
+          label="// 04 · alerts"
+          title="What needs looking at."
+          sub="Idle machines matter as much as busy ones. A clamped clock, a failing fan or a full cache filesystem is something to know before a launch, not after a benchmark comes back wrong."
+        />
         <h3 class="al-empty-title">Nothing to report</h3>
         <p class="al-empty">
           No alerts. This section stays here so you never have to wonder where they
           would appear.
         </p>
-      {:else}
-        <h3 class="visually-hidden">Active alerts</h3>
-        <ul class="al-list">
-          {#each fleet.alerts as a (a.node + a.kind)}
-            <li class="al-row">
-              <span class="al-sev al-{a.severity}">{a.severity}</span>
-              <span class="al-node">{a.nodeName}</span>
-              <span class="al-kind">{a.kind.replaceAll('_', ' ')}</span>
-              <span class="al-detail">{a.detail}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
-  </section>
-</main>
+      </div>
+    </section>
+  </main>
 
-<Footer />
+  <Footer />
+{/if}
+
+{#if fleet.mode === 'live' && pairingOpen}
+  <PairingOverlay {fleet} onclose={() => (pairingOpen = false)} />
+{/if}
+
+{#if fleet.mode === 'live' && clusterOpen}
+  <ClusterOverlay {fleet} bind:flow={clusterFlow} onclose={() => (clusterOpen = false)} />
+{/if}
+
+{#if sheetOpen}
+  <ShortcutSheet onclose={() => (sheetOpen = false)} />
+{/if}
 
 {#if details}
   <NodeDetails node={details} onclose={() => (details = null)} />
@@ -422,46 +443,5 @@
 {/if}
 
 {#if unpairing}
-  <div class="ld-backdrop" role="presentation" onclick={closeUnpair}></div>
-  <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-  <div
-    class="ld"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="unpair-title"
-    tabindex="-1"
-    bind:this={unpairEl}
-  >
-    <header class="ld-head">
-      <h3 class="ld-title" id="unpair-title">Unpair {unpairing.name}?</h3>
-      <button type="button" class="ld-close" onclick={closeUnpair} aria-label="Close"
-        >×</button
-      >
-    </header>
-    <div class="ld-body">
-      <p>
-        {unpairing.name} will stop trusting this machine, any cluster launch that
-        includes it will be stopped, and pairing again needs someone at that machine
-        to read a new code.
-      </p>
-      <p class="unpair-confirm-note">
-        Type <code class="mono">{unpairing.id.slice(0, 8)}</code> to confirm.
-      </p>
-      <input
-        class="pair-code mono"
-        bind:value={unpairConfirm}
-        aria-label="Type the fingerprint prefix to confirm"
-        placeholder={unpairing.id.slice(0, 8)}
-      />
-      {#if unpairError}
-        <p class="ld-error" role="alert">{unpairError}</p>
-      {/if}
-      <div class="ld-actions">
-        <button type="button" class="btn btn-ghost" onclick={closeUnpair}>Cancel</button>
-        <button type="button" class="btn btn-danger" disabled={!unpairReady} onclick={doUnpair}>
-          Unpair
-        </button>
-      </div>
-    </div>
-  </div>
+  <UnpairDialog {fleet} node={unpairing} onclose={() => (unpairing = null)} />
 {/if}

@@ -1,0 +1,245 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The /control bridge surface. control.css predates the 500-line rule and is
+   already over it, so everything the bridge adds lives here instead. Loaded
+   after control.css, before mobile.css. */
+
+/* ---- coming-soon placeholders ---------------------------------------------
+   The fourth honesty class: dashed outline, no fill, label in --t2, a `soon`
+   chip in --t3, and no value at all. The whole thing is a button that opens a
+   popover naming the specific missing capability. */
+.cs-wrap { position: relative; display: inline-flex; }
+.cs-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  background: none; border: 1px dashed var(--border); border-radius: 6px;
+  color: var(--t2); cursor: pointer; font-family: inherit;
+}
+.cs-btn:hover { border-color: var(--border-strong); }
+.cs-chip {
+  font-family: var(--font-mono); font-size: 0.58rem; font-weight: 700;
+  letter-spacing: 0.05em; color: var(--t3); text-transform: uppercase;
+}
+.cs-chip::before { content: '['; }
+.cs-chip::after { content: ']'; }
+/* Chip: sits in an actions bar or the command strip beside real controls. */
+.cs-chip-kind, .cs-btn.cs-chip { font-size: 0.74rem; }
+.cs-btn.cs-chip { padding: 0.3rem 0.6rem; }
+/* Tile: the I/O-strip footprint — identical geometry to its live neighbours,
+   so lighting up later changes the border and content, never the layout. */
+.cs-btn.cs-tile {
+  flex-direction: column; gap: 0.15rem; align-items: flex-start;
+  min-height: 3.5rem; width: 100%; padding: 0.45rem 0.5rem; border-radius: 8px;
+}
+.cs-btn.cs-tile .cs-label {
+  font-family: var(--font-mono); font-size: 0.58rem; font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.cs-btn.cs-chip .cs-label { font-size: 0.74rem; font-weight: 600; }
+.cs-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  width: min(280px, 78vw); padding: 0.7rem 0.8rem;
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 8px;
+}
+.cs-text { font-size: 0.8rem; color: var(--t2); line-height: 1.55; }
+.cs-close {
+  margin-top: 0.55rem; padding: 0.25rem 0.6rem; font-size: 0.74rem;
+  font-family: inherit; color: var(--t2); background: none;
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.cs-close:hover { color: var(--t1); border-color: var(--border-strong); }
+
+/* ---- the bridge grid -------------------------------------------------------
+   §1 draw-to-scale: columns 280 + 1 + 982(1fr, min 560) + 1 + 336 = 1600 at
+   the draw target; command strip 48px across the top. The 1px columns and the
+   1px row gap are the hairlines: the bridge's own background is --border and
+   every region paints --card over it.
+
+   Vertical budget (checked at 1366×768, the worst common laptop): the body
+   row is 768 − 48 − 1 = 719px. The recomposed stage's fixed rows are
+   48 + 144 + 120 + 44 = 356px, leaving the console dock 363px ≥ its 320px
+   minimum. The roster's fixed parts are 72 + 24 + 8×56 + 44 = 588px ≤ 719.
+   No page scroll at ≥1200px: the bridge is exactly 100dvh and hides its own
+   overflow; only regions scroll. */
+.bridge {
+  display: grid;
+  grid-template-columns: 280px 1px minmax(560px, 1fr) 1px 336px;
+  grid-template-rows: 48px minmax(0, 1fr);
+  row-gap: 1px;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--border);
+}
+.bridge > .cmd { grid-column: 1 / -1; grid-row: 1; }
+.bridge > .roster { grid-column: 1; grid-row: 2; }
+.bridge > .stage { grid-column: 3; grid-row: 2; }
+.bridge > .rail { grid-column: 5; grid-row: 2; }
+
+/* ---- A: command strip ------------------------------------------------------ */
+.cmd {
+  display: flex; align-items: center; gap: 1rem; padding: 0 0.9rem;
+  background: var(--card); min-width: 0;
+}
+.cmd-left { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.cmd-mark {
+  display: inline-flex; align-items: center; gap: 0.4rem; text-decoration: none;
+  color: var(--t1); font-weight: 700; font-size: 0.9rem;
+}
+.cmd-chip {
+  font-family: var(--font-mono); font-size: 0.62rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase; padding: 0.16rem 0.5rem;
+  border-radius: 999px; color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+}
+.cmd-chip-amber {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+.cmd-counts { display: flex; gap: 0.45rem; font-size: 0.74rem; color: var(--t2); }
+.cmd-count { white-space: nowrap; }
+.cmd-count-paired { color: var(--green); }
+/* Second-hand identity never wears a verified pin's green. */
+.cmd-count-vouched { color: var(--ch-cyan); }
+.cmd-count-unreachable { color: var(--amber); }
+.cmd-center { flex: 1; min-width: 0; display: flex; justify-content: center; }
+.cmd-alert {
+  display: inline-flex; align-items: baseline; gap: 0.4rem; max-width: 100%;
+  background: none; border: 0; cursor: pointer; font-family: inherit;
+  font-size: 0.8rem; color: var(--t1); padding: 0.25rem 0.5rem; border-radius: 6px;
+}
+.cmd-alert.al-warning { color: var(--amber); }
+.cmd-alert.al-critical { color: var(--red); }
+.cmd-alert.al-info { color: var(--t2); }
+.cmd-alert-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.cmd-alert-more {
+  font-family: var(--font-mono); font-size: 0.66rem; color: var(--t3); flex-shrink: 0;
+}
+.cmd-quiet { font-size: 0.78rem; color: var(--t3); }
+.cmd-right { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.cmd-range { display: inline-flex; align-items: center; gap: 0.3rem; }
+.cmd-range-live {
+  font-size: 0.72rem; color: var(--t2); padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border-strong); border-radius: 6px; white-space: nowrap;
+}
+
+/* ---- B: roster ------------------------------------------------------------- */
+.roster {
+  display: grid; grid-template-rows: 72px 24px minmax(0, 1fr) 44px;
+  background: var(--card); min-height: 0;
+}
+.fa { padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border); min-width: 0; }
+.fa-nums { display: flex; gap: 1.1rem; }
+.fa-stat { display: flex; flex-direction: column; }
+.fa-label {
+  font-family: var(--font-mono); font-size: 0.56rem; font-weight: 700;
+  letter-spacing: 0.06em; color: var(--t3); text-transform: uppercase;
+}
+.fa-val { font-size: 0.94rem; font-weight: 700; color: var(--t1); font-variant-numeric: tabular-nums; }
+.fa-unit { font-size: 0.64rem; font-weight: 600; color: var(--t3); }
+.fa-caption {
+  font-size: 0.58rem; color: var(--t3); margin-top: 0.2rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.roster-hdr {
+  display: flex; align-items: center; padding: 0 0.8rem;
+  font-family: var(--font-mono); font-size: 0.56rem; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--t3); text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+.roster-hdr-node { flex: 1; }
+.roster-hdr-col { width: 3.2rem; text-align: right; }
+.roster-rows { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.roster-empty { padding: 0.8rem; font-size: 0.8rem; color: var(--t3); }
+.rr { display: flex; align-items: stretch; height: 56px; border-bottom: 1px solid var(--border); }
+.rr-main {
+  flex: 1; display: flex; align-items: center; gap: 0.5rem; min-width: 0;
+  background: none; border: 0; border-left: 3px solid transparent;
+  padding: 0 0.6rem 0 calc(0.8rem - 3px); cursor: pointer; font-family: inherit;
+  text-align: left; color: var(--t1);
+}
+.rr-selected .rr-main { border-left-color: var(--ch-cyan); background: var(--bg2); }
+.rr-main:hover { background: var(--bg2); }
+.rr-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.rr-id { display: flex; align-items: baseline; gap: 0.4rem; min-width: 0; }
+.rr-name {
+  font-size: 0.84rem; font-weight: 650; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0;
+}
+.rr-fp { font-size: 0.62rem; color: var(--t3); flex-shrink: 0; }
+.rr-meta { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+.rr-trust {
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--t3); white-space: nowrap;
+}
+.rr-trust-local, .rr-trust-paired { color: var(--green); }
+.rr-trust-vouched { color: var(--ch-cyan); }
+.rr-trust-unreachable { color: var(--amber); }
+.rr-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.rr-dot-warning, .rr-dot-info { background: var(--amber); }
+.rr-dot-critical { background: var(--red); }
+.rr-via, .rr-recipe {
+  font-size: 0.6rem; color: var(--t3); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rr-cols { display: flex; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.rr-col { width: 3.2rem; text-align: right; font-size: 0.74rem; color: var(--t2); }
+.rr-pair {
+  align-self: center; margin-right: 0.6rem; padding: 0.3rem 0.6rem; flex-shrink: 0;
+  font-size: 0.72rem; font-family: inherit; color: var(--ch-cyan);
+  background: none; border: 1px solid var(--border-strong); border-radius: 6px; cursor: pointer;
+}
+.roster-foot { display: flex; align-items: center; padding: 0 0.8rem; border-top: 1px solid var(--border); }
+.roster-add { width: 100%; padding: 0.35rem 0; font-size: 0.78rem; }
+
+/* ---- C: stage — recomposed to the spec's fixed rows ------------------------
+   48 (identity, allowed one extra line) / 144 (vitals 2×4) / 120 (I/O strip,
+   two 56px rows + 8px gap) / 44 (actions) / remainder (console dock, the only
+   scroll region). 356px of fixed rows leaves the dock ≥363px at 1366×768.
+   The stage itself never scrolls; row internals live in stage.css. */
+.stage {
+  /* padding: 0 beats app.css's global `section` padding — the stage budgets
+     its own rows and a global 7rem would silently halve the dock. */
+  background: var(--card); min-height: 0; overflow: hidden; padding: 0;
+  display: grid;
+  grid-template-rows: minmax(48px, auto) 144px 120px 44px minmax(0, 1fr);
+}
+.stage-none { color: var(--t3); font-size: 0.9rem; padding: 1rem 1.2rem; }
+.stage-h { font-size: 1rem; font-weight: 700; color: var(--t1); margin-bottom: 0.3rem; }
+.stage-sub { font-size: 0.82rem; color: var(--t2); line-height: 1.55; max-width: 62ch; }
+
+/* ---- D: rail --------------------------------------------------------------- */
+.rail { background: var(--card); overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+.rail-sec { padding: 0.8rem 0.9rem; border-bottom: 1px solid var(--border); }
+.rail-h {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-family: var(--font-mono); font-size: 0.62rem; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--t3); text-transform: uppercase; margin-bottom: 0.5rem;
+}
+.rail-warn {
+  font-size: 0.58rem; color: var(--amber); border: 1px solid
+  color-mix(in srgb, var(--amber) 45%, transparent); border-radius: 999px;
+  padding: 0.1rem 0.45rem; letter-spacing: 0.04em;
+}
+.rail-quiet { font-size: 0.78rem; color: var(--t3); line-height: 1.55; }
+.rail-alerts { min-height: 200px; }
+.rail-al-list {
+  list-style: none; margin: 0; padding: 0; max-height: 340px; overflow-y: auto;
+}
+.rail-al-row {
+  display: flex; gap: 0.5rem; width: 100%; text-align: left; align-items: flex-start;
+  background: none; border: 0; padding: 0.4rem 0.2rem; cursor: pointer;
+  font-family: inherit; color: var(--t1); border-radius: 6px;
+}
+.rail-al-row:hover { background: var(--bg2); }
+.rail-al-body { display: flex; flex-direction: column; min-width: 0; }
+.rail-al-node { font-size: 0.78rem; font-weight: 650; }
+.rail-al-kind { font-size: 0.68rem; color: var(--t2); }
+.rail-al-detail { font-size: 0.68rem; color: var(--t3); overflow-wrap: anywhere; }
+.rail-nodes { margin-top: 0.7rem; display: flex; flex-direction: column; gap: 0.5rem; }
+
+/* Viewport rules for the bridge live in mobile.css, the stated SSOT for
+   every viewport rule. The breakpoint is 1200px: the grid's min widths are
+   280 + 560 + 336 + 2 = 1178, so 1200 is the first safe stop. */

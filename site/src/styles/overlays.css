@@ -1,0 +1,101 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The bridge's overlays (step 7) and the last placeholder surfaces (step 8).
+   Split from bridge.css/stage.css on the 500-line rule; loaded after
+   stage.css, before mobile.css — mobile.css stays the SSOT for every
+   viewport rule. */
+
+/* ---- the shared overlay shell ----------------------------------------------
+   .ld gives the centred card; .ov adds the column layout whose middle is the
+   ONLY scroll region, so a footer snippet is pinned — the Cluster overlay's
+   Abort must never scroll out of view. */
+.ov { display: flex; flex-direction: column; max-height: min(86dvh, 920px); }
+.ov .ld-body { margin: 0; }
+.ov-body { flex: 1; min-height: 0; overflow-y: auto; }
+.ov-foot {
+  display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0;
+  padding: 0.7rem 1.2rem; border-top: 1px solid var(--border-strong);
+  background: var(--bg);
+}
+.ov-epoch { font-size: 0.7rem; color: var(--ch-cyan); margin-right: auto; }
+.ov-foot .ov-abort { margin-left: auto; }
+.ov-epoch + .ov-abort { margin-left: 0; }
+.ov-abort {
+  padding: 0.4rem 0.8rem; font-size: 0.78rem; color: var(--t3);
+  border: 1px solid var(--border); cursor: not-allowed;
+}
+.ov-abort-live, .ov-abort.ov-abort-live {
+  color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  cursor: pointer;
+}
+.ov-abort-live:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+.ov-close { padding: 0.4rem 0.8rem; font-size: 0.78rem; }
+
+/* ---- pairing overlay -------------------------------------------------------- */
+.po-scan { margin-top: 1.4rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.po-note { margin-top: 1rem; font-size: 0.76rem; color: var(--t3); line-height: 1.55; }
+
+/* ---- "?" shortcut sheet ------------------------------------------------------ */
+.ks-list {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 1.1rem; row-gap: 0.45rem;
+  margin: 0; align-items: baseline;
+}
+.ks-keys {
+  font-size: 0.74rem; color: var(--t1); white-space: nowrap; text-align: right;
+  padding: 0.1rem 0.45rem; border: 1px solid var(--border-strong); border-radius: 6px;
+  justify-self: end;
+}
+.ks-what { margin: 0; font-size: 0.8rem; color: var(--t2); }
+.ks-note { margin-top: 1rem; font-size: 0.72rem; color: var(--t3); line-height: 1.55; }
+
+/* ---- command strip: the sheet's click/touch door ----------------------------- */
+.cmd-help {
+  width: 26px; height: 26px; display: inline-flex; align-items: center;
+  justify-content: center; padding: 0; font-size: 0.78rem; font-weight: 700;
+  color: var(--t2); background: none; border: 1px solid var(--border-strong);
+  border-radius: 50%; cursor: pointer; flex-shrink: 0;
+}
+.cmd-help:hover { color: var(--t1); background: var(--bg2); }
+
+/* ---- placeholder strip (Launch tab's phase strip) ----------------------------
+   Same grammar as chip and tile — dashed, no fill, no value — stretched to a
+   slim full-width row so lighting up later becomes a phase progression in
+   this exact footprint. */
+.dt-phase { margin: 0.2rem 0 0.8rem; max-width: 62ch; }
+.dt-phase .cs-wrap { display: flex; }
+.cs-btn.cs-strip {
+  width: 100%; justify-content: flex-start; padding: 0.35rem 0.6rem;
+  font-size: 0.72rem; border-radius: 6px;
+}
+.cs-btn.cs-strip .cs-label { font-size: 0.72rem; font-weight: 600; }
+
+/* ---- D1: alert ack/silence/routing placeholders ------------------------------
+   The chips sit UNDER the entry, right-aligned: beside it they crushed the
+   alert text into a one-character column in the rail's 336px. */
+.rail-al-item { display: flex; flex-direction: column; }
+.rail-al-item .rail-al-row { width: 100%; min-width: 0; }
+.rail-al-acts { display: inline-flex; gap: 0.25rem; align-self: flex-end; padding: 0 0.2rem 0.35rem; }
+.rail-al-acts .cs-btn.cs-chip { padding: 0.12rem 0.4rem; }
+.rail-al-acts .cs-btn.cs-chip .cs-label { font-size: 0.62rem; }
+.rail-al-acts .cs-chip { font-size: 0.5rem; }
+/* The lane's popovers open leftward: the rail is the viewport's right edge. */
+.rail-al-acts .cs-pop, .rail-al-foot .cs-pop { left: auto; right: 0; }
+.rail-al-foot { margin-top: 0.5rem; }
+
+/* ---- D3: cluster summary ----------------------------------------------------- */
+.rail-cl-state { font-size: 0.78rem; font-weight: 650; color: var(--t1); }
+.rail-cl-members { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.rail-cl-member {
+  display: flex; gap: 0.45rem; align-items: baseline; font-size: 0.74rem;
+  color: var(--t2); padding: 0.15rem 0;
+}
+.rail-cl-rank { font-size: 0.64rem; color: var(--t3); }
+.rail-cl-refused, .rail-cl-member.rail-cl-refused { color: var(--red); }
+.rail-cl-no { font-size: 0.64rem; }
+.rail-cl-warn { margin-top: 0.4rem; font-size: 0.7rem; color: var(--amber); line-height: 1.5; }
+.rail-cl-btn { margin-top: 0.6rem; width: 100%; padding: 0.4rem 0; font-size: 0.78rem; }
+
+/* ---- roster: solo prose ------------------------------------------------------- */
+.roster-solo {
+  padding: 0.6rem 0.8rem; font-size: 0.72rem; color: var(--t3); line-height: 1.5;
+}
