@@ -16,7 +16,7 @@
 
   import { VERBS, availability, onTarget, route, travelWarning } from '$lib/agent/verbs.js';
   import { refusal } from '$lib/agent/refusal.js';
-  import { placeholder, placeholdersFor } from '$lib/agent/placeholders.js';
+  import { placeholdersFor } from '$lib/agent/placeholders.js';
   import ComingSoon from './ComingSoon.svelte';
 
   let { fleet, node, nodes = [], solo = false, onverb, onlog, onstats } = $props();
@@ -28,7 +28,6 @@
 
   let confirmingStop = $state(false);
   let stopping = $state(false);
-  let soonOpen = $state(false);
 
   // The id, not the object: `node` is a new object on every 1Hz vitals event,
   // and an effect keyed on it would disarm the Stop confirm once a second —
@@ -138,27 +137,13 @@
     {#if chip.id === 'soon-menu'}
       <!-- Solo mode: the chips collapse into one, so a single-machine console
            never reads as a roadmap. The popover still names every missing
-           capability, one sentence each. -->
-      <span class="cs-wrap">
-        <button
-          type="button"
-          class="cs-btn cs-chip"
-          aria-haspopup="dialog"
-          aria-expanded={soonOpen}
-          onclick={() => (soonOpen = !soonOpen)}
-          onkeydown={(e) => e.key === 'Escape' && (soonOpen = false)}
-        >
-          <span class="cs-label">soon ▾</span>
-        </button>
-        {#if soonOpen}
-          <div class="cs-pop" role="dialog" aria-label="Coming soon" tabindex="-1">
-            {#each chip.collapsed as e (e.id)}
-              <p class="cs-text"><strong>{placeholder(e.id).label}</strong> — {placeholder(e.id).soon}</p>
-            {/each}
-            <button type="button" class="cs-close" onclick={() => (soonOpen = false)}>Close</button>
-          </div>
-        {/if}
-      </span>
+           capability, one sentence each.
+
+           `ComingSoon` rather than a second popover written here: this one was
+           hand-rolled and skipped the whole ceremony — the dialog never took
+           focus, so it was never announced; Tab left it; Escape only worked
+           while the BUTTON still had focus; and nothing closed it on click-out. -->
+      <ComingSoon ids={chip.collapsed.map((e) => e.id)} label={chip.label} kind="chip" />
     {:else}
       <ComingSoon id={chip.id} kind="chip" />
     {/if}
