@@ -71,6 +71,7 @@ fn gemm(
 fn w4a16_gemv(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
+    k_sw: KernelHandle,
     a: DevicePtr,
     w: &Nvfp4Proj,
     c: DevicePtr,
@@ -78,6 +79,16 @@ fn w4a16_gemv(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // Prefer the single-warp sibling when the target carries it. BIT-IDENTICAL — the
+    // per-orig-lane partial is the same function, the shuffle tree is the same tree, and
+    // the final combine is the same two-term FP32 add; only the block packing differs.
+    // This site launched the base kernel directly and so had never picked up the SW win
+    // that `ops::w4a16_decode_gemv` has been handing every other decode GEMV.
+    if k_sw.0 != 0 {
+        return crate::layers::ops::w4a16_gemv_sw_raw(
+            gpu, k_sw, a, w.packed, w.scale, w.scale_2, c, n as u32, kk as u32, stream,
+        );
+    }
     KernelLaunch::new(gpu, k)
         .grid([crate::layers::ops::w4a16_gemv_grid_x(n as u32), 1, 1])
         .block([256, 1, 1])
@@ -372,6 +383,7 @@ pub fn forward_moe(
         w4a16_gemv(
             gpu,
             k.w4a16_gemv,
+            k.w4a16_gemv_sw,
             x,
             &e.gate_proj,
             ws.a_gate,
@@ -382,6 +394,7 @@ pub fn forward_moe(
         w4a16_gemv(
             gpu,
             k.w4a16_gemv,
+            k.w4a16_gemv_sw,
             x,
             &e.up_proj,
             ws.a_up,
@@ -402,6 +415,7 @@ pub fn forward_moe(
         w4a16_gemv(
             gpu,
             k.w4a16_gemv,
+            k.w4a16_gemv_sw,
             ws.a_act,
             &e.down_proj,
             dst,

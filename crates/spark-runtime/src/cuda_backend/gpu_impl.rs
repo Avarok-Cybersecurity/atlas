@@ -42,6 +42,7 @@ use super::{
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
+
 /// D2H call counter + one-shot caller identification
 /// (`ATLAS_D2H_TRACE=<N>`: log a backtrace on the Nth call, and the running
 /// count on every 10000th).

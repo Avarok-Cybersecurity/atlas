@@ -107,6 +107,16 @@ pub struct Glm5NextMlpKernels {
     /// 🪤 Its grid is COUPLED to the kernel's `N_PER_BLOCK`; use
     /// `ops::gemv_sw::w4a16_gemv_grid_x`, never a hand-written `div_ceil`.
     pub w4a16_gemv: KernelHandle,
+    /// Single-warp-per-output sibling of `w4a16_gemv`, **bit-identical** to it
+    /// (`examples/w4a16_gemv_sw_microtest.rs`): same `w4a16_gemv_partial` per orig-lane,
+    /// 8 outputs per 256-thread block instead of 4, and no cross-warp `__syncthreads()` +
+    /// shared-memory round trip. `try_kernel` — a target without it falls back to the base
+    /// kernel rather than failing to load.
+    ///
+    /// 🪤 Its grid is `ceil(N/8)`, NOT `ceil(N/4)`. Dispatch through
+    /// `ops::w4a16_decode_gemv`, which couples the two; swapping the kernel without
+    /// swapping the grid writes half the outputs.
+    pub w4a16_gemv_sw: KernelHandle,
     /// 🪤 **Clamped** SwiGLU, asymmetric. Not `moe_silu_mul`.
     pub swiglu: KernelHandle,
     pub router: KernelHandle,
@@ -122,6 +132,7 @@ impl Glm5NextMlpKernels {
             gemv_f32: crate::layers::try_kernel(gpu, "gemv", "dense_gemv_bf16_fp32out"),
             w4a16: gpu.kernel(W4A16_MODULE, "w4a16_gemm")?,
             w4a16_gemv: gpu.kernel(W4A16_GEMV_MODULE, "w4a16_gemv")?,
+            w4a16_gemv_sw: crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw"),
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,
             router: gpu.kernel(FFN_MODULE, "glm5next_router_topk")?,
             combine: gpu.kernel(FFN_MODULE, "glm5next_moe_combine")?,

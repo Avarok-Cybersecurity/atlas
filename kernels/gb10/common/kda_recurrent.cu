@@ -90,6 +90,16 @@
     float* S = state + hd * D;                                                        \
     for (unsigned int vi = threadIdx.x; vi < D; vi += blockDim.x) {                    \
         float kv = 0.0f;                                                              \
+        /* 🔴 `#pragma unroll 8` is a MEMORY-LEVEL-PARALLELISM fix, not a code-size one. \
+           Production geometry is grid (H,1,1) x 128 threads = 4096 threads per rank, \
+           each walking D=128 state elements ONE dependent global load at a time, so   \
+           the kernel had at most 4096 loads in flight and measured 69 us/call at ~121 \
+           GB/s — half of what every other decode GEMV on this model reaches. Eight     \
+           independent loads per thread give it 8x the outstanding requests.            \
+           BIT-IDENTICAL: unrolling does not reassociate. The `kv`/`o` accumulator      \
+           chains stay strictly kk = 0..D-1, which is the ordering the CPU reference and \
+           the byte-identity gate pin. nvcc emits a remainder loop for the runtime D. */ \
+        _Pragma("unroll 8")                                                           \
         for (unsigned int kk = 0; kk < D; ++kk) {                                      \
             const size_t idx = (size_t)kk * D + vi;                                   \
             const float s = S[idx] * sh_decay[kk];                                    \
@@ -98,6 +108,7 @@
         }                                                                             \
         const float delta = (LOAD_QKV(v[hd + vi]) - kv) * b;                          \
         float o = 0.0f;                                                               \
+        _Pragma("unroll 8")                                                           \
         for (unsigned int kk = 0; kk < D; ++kk) {                                      \
             const size_t idx = (size_t)kk * D + vi;                                   \
             const float s = S[idx] + sh_k[kk] * delta;                                \
