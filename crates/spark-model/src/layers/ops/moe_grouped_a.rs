@@ -146,6 +146,46 @@ fn ptrtable_legacy_grid_x(n_out: u32) -> u32 {
     div_ceil(n_out, PTRTABLE_LEGACY_N_TILE)
 }
 
+/// `moe_w4a16_grouped_gemm_ptrtable` with M_TILE=256 (512-thread block, 16
+/// warps). Caller must pass `max_m_tiles` computed against 256, not 64 —
+/// see the `div_ceil(4)` at the call site, mirroring the m128 variant's
+/// `div_ceil(2)`.
+///
+/// DEFAULT-OFF, measured non-win — ~20% slower per call than the base kernel
+/// end-to-end (31.30 vs 26.17 ms avg under nsys). See `launch_grouped_gemm`.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w4a16_grouped_gemm_ptrtable_m256(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a: DevicePtr,
+    b_packed_ptrs: DevicePtr,
+    b_scale_ptrs: DevicePtr,
+    scale2_vals: DevicePtr,
+    c: DevicePtr,
+    expert_offsets: DevicePtr,
+    sorted_token_ids: DevicePtr,
+    num_experts: u32,
+    n_out: u32,
+    k: u32,
+    max_m_tiles: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([ptrtable_legacy_grid_x(n_out), max_m_tiles, num_experts])
+        .block([512, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(b_packed_ptrs)
+        .arg_ptr(b_scale_ptrs)
+        .arg_ptr(scale2_vals)
+        .arg_ptr(c)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n_out)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Pointer-table grouped GEMM: one launch covers all experts.
 ///
 /// Grid: (ceil(n_out/64), max_m_tiles, num_experts)  Block: (128, 1, 1)

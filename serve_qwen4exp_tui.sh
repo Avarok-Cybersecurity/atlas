@@ -49,6 +49,17 @@ if [ -z "${REASONING_KWARGS:-}" ]; then
   REASONING_KWARGS='{"reasoning_effort":"low"}'
 fi
 
+# Routed-MoE GEMM variants (ATLAS_MOE_GROUPED_K32 / _M256) default OFF —
+# both MEASURED AS NON-WINS on 2026-08-27 and left opt-in for the record.
+# Controlled four-arm sweep at 28K prefill, one box, back-to-back:
+#   baseline 272 | +QSA-TC 286 | +QSA-TC+k32 289 | +QSA-TC+m256 290 tok/s
+# k32 and m256 are +1.0%/+1.4% over the QSA-TC arm, i.e. inside run-to-run
+# noise. nsys confirms m256 genuinely RAN (540 calls, 38.1% of GPU time) and
+# is ~20% SLOWER PER CALL than the base kernel (31.30 vs 26.17 ms avg) — the
+# DRAM-bound microbenchmark that predicted 1.43x does NOT model production.
+# The whole +5.1% comes from the QSA tensor-core scorer, not from MoE.
+export ATLAS_MOE_GROUPED_K32="${ATLAS_MOE_GROUPED_K32:-0}"
+
 exec target/release/spark serve \
   --model-from-path "$SNAP" \
   --model-name "${MODEL_NAME:-qwen4exp}" \

@@ -163,6 +163,16 @@ pub struct MoeLayer {
     moe_sorted_gate_up: KernelHandle,
     moe_sorted_silu_down: KernelHandle,
     moe_grouped_gemm: KernelHandle,
+    /// Wider-K, grouped-dequant twin of `moe_grouped_gemm`, bit-exact with
+    /// it. `try_kernel` — absent on targets whose shadow predates it.
+    /// Opt-in via ATLAS_MOE_GROUPED_K32=1: measured on qwen4_exp only, and
+    /// the win is shape-dependent, so it is not switched on for every model
+    /// that happens to compile it.
+    moe_grouped_gemm_k32: KernelHandle,
+    /// M_TILE=256 twin: ONE pass over the expert weights instead of three
+    /// when rows/expert <= 256. Bit-exact. Opt-in via ATLAS_MOE_GROUPED_M256
+    /// because the win inverts for models with many rows per expert.
+    moe_grouped_gemm_m256: KernelHandle,
     moe_silu_mul: KernelHandle,
     /// Activation kernel for sorted/unfused path. SiLU by default, GeGLU for Gemma-4.
     moe_act_mul: KernelHandle,
