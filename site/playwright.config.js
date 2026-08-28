@@ -31,7 +31,22 @@ export default defineConfig({
   webServer: {
     command: `bun x --bun vite build && bun x --bun vite preview --host 127.0.0.1 --port ${PORT} --strictPort`,
     url: `http://127.0.0.1:${PORT}/`,
-    reuseExistingServer: !process.env.CI,
+    // Never reused, not even locally. `reuseExistingServer: !CI` sounds like a
+    // developer convenience and behaves like a trap: a `vite preview` left
+    // running from an earlier session keeps answering on 4173, so the whole
+    // suite runs against whatever bundle that process built — days old, and
+    // silently. The run goes green and proves nothing about the working tree,
+    // which is the worst outcome a test suite has.
+    //
+    // The cost is that a leftover preview now collides instead of being used:
+    // `--strictPort` makes vite refuse, and the fix is to stop the process on
+    // 4173. A suite that will not start beats one that starts and lies.
+    //
+    // Set ALLOW_STALE_PREVIEW=1 to opt back in when you know the server on 4173
+    // is yours and current. Naming it that way means whoever turns it on has
+    // read what they are turning on. Never honoured in CI, where "the server
+    // someone left running" is not a thing that should exist.
+    reuseExistingServer: !process.env.CI && process.env.ALLOW_STALE_PREVIEW === '1',
     timeout: 240_000
   },
   projects: [
