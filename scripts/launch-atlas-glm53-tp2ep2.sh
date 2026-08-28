@@ -12,12 +12,17 @@
 #   TP=2 + EP=2   10,665 MB/rank/token   roofline 23.8 tok/s   88.713 GiB/rank resident
 #   EP=2 only     18,952 MB/rank/token   roofline 13.4 tok/s   — 87 % replicated, rejected
 #
+# 🪤 `--device=/dev/infiniband --ulimit memlock=-1` is what makes RoCE work. Without it the
+# image's libibverbs sees no uverbs nodes, NCCL logs `NET/IB : No device found.` and silently
+# falls back to `NET/Socket` (measured 2026-08-28, first 2-node bring-up). Same flags as the
+# known-good `start-ep2.sh` / `start-deepseek-ep2.sh` EP launchers.
+#
 # 🪤 VERIFY THE FABRIC BEFORE TRUSTING ANY NUMBER. grep rank 0's log for NET/IB dual-rail
 # RoCE (`[0]rocep1s0f0 [1]roceP2p1s0f0`). `NET/Socket` means it silently fell back to
 # TCP — STOP, do not benchmark, do not believe a tok/s figure taken that way.
 set -euo pipefail
 
-IMAGE="${IMAGE:-atlas-glm53:e2f58e0a}"
+IMAGE="${IMAGE:-atlas-glm53:t3}"
 MODEL_DIR="${MODEL_DIR:-/home/cluster/glm53-ckpt}"
 NODES=(10.10.10.1 10.10.10.2)
 MASTER=10.10.10.1
@@ -39,7 +44,8 @@ for RANK in 0 1; do
   ssh "cluster@$IP" "docker rm -f $NAME 2>/dev/null; \
     docker run -d --name $NAME \
       --network host --gpus all --ipc=host \
-      --cap-add=IPC_LOCK --cap-add=SYS_NICE \
+      --device=/dev/infiniband \
+      --cap-add=IPC_LOCK --cap-add=SYS_NICE --ulimit memlock=-1 \
       --security-opt seccomp=unconfined \
       -e NCCL_IB_HCA=rocep1s0f0,roceP2p1s0f0 \
       -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \

@@ -643,4 +643,19 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// Does this layer's recurrent state live in the shared SSM pool?
+    ///
+    /// `true` (the default) is the long-standing arrangement: sequence setup
+    /// sees `LayerType::LinearAttention` and hands the layer an `SsmLayerState`
+    /// pointing at pool-owned addresses, so `alloc_state` is never consulted.
+    ///
+    /// 🪤 A linear-attention mixer with its OWN state type must return `false`,
+    /// or it is handed an `SsmLayerState` and the downcast in its forward path
+    /// fails at layer 0 on the first request. GLM-5.3's KDA blocks are the case:
+    /// they are `linear_attention` in `layer_types` but carry
+    /// `Glm5NextLayerState::Kda`.
+    fn uses_ssm_pool(&self) -> bool {
+        true
+    }
 }

@@ -68,3 +68,11 @@ hc_sinkhorn_iters = 20
 [[model_types]]
 model_type = "glm5_next"
 hidden_size = 4096
+
+# ── Kernels this target legitimately does not compile ──
+#
+# `layers::tgemm_kernel` probes the 3-deep pipeline twin with `try_kernel` and
+# takes the resolved `w4a16_gemm_t` when it comes back 0. Same entry as
+# qwen3.5-122b-a10b / mistral-small-4 / nemotron-3-nano-30b-a3b.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = "3-deep p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves). Unmeasured for this target."

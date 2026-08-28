@@ -87,20 +87,24 @@ impl ModelConfig {
         }
     }
 
-    /// Number of attention (KV-cache-consuming) layers: full attention plus
-    /// sliding attention. Sliding-attention layers write to the paged KV cache
-    /// exactly like full-attention ones (only their attention window differs),
-    /// so every consumer sized from this count — KV pool `num_layers`,
+    /// Number of attention (KV-cache-consuming) layers: full, sliding, and
+    /// sparse. All three write to the paged KV cache — only *which* keys they
+    /// read differs (all / a window / a runtime-selected top-k) — so every
+    /// consumer sized from this count — KV pool `num_layers`,
     /// `attn_layer_dtypes`, loader `layer_kv_dtypes` indexing — must see them
     /// all. Step 3.7 is the only model emitting `SlidingAttention` layer types
     /// (12 full + 33 sliding); counting full-only there undersized the dtype
     /// vec and panicked the loader at layer 13.
+    ///
+    /// 🪤 The same omission recurred for `SparseAttention`: GLM-5.3-Flash is
+    /// 34 `linear_attention` + 11 `deepseek_sparse_attention`, so a full/sliding
+    /// filter returned **0** and the KV pool came out zero-sized ("KV cache block
+    /// size is zero", measured 2026-08-28). Delegating to
+    /// [`LayerType::is_attention`] is what keeps this honest: the predicate lives
+    /// next to the enum, so a new variant is answered in one place.
     pub fn num_attention_layers(&self) -> usize {
         if !self.layer_types.is_empty() {
-            self.layer_types
-                .iter()
-                .filter(|t| matches!(t, LayerType::FullAttention | LayerType::SlidingAttention))
-                .count()
+            self.layer_types.iter().filter(|t| t.is_attention()).count()
         } else {
             self.num_hidden_layers
                 .checked_div(self.full_attention_interval)

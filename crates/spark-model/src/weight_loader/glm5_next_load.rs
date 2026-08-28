@@ -58,6 +58,34 @@ fn qualify(layer: usize, leaf: &str) -> String {
     format!("model.language_model.layers.{layer}.{leaf}")
 }
 
+/// Is this store tensor one the binders have already re-uploaded a copy of?
+///
+/// `load_layers` pulls every non-expert layer tensor to the host
+/// (`LayerSource::collect`) and the binders upload fresh device buffers — a TP
+/// shard for KDA/DSA, a dtype-converted copy for mHC. The store's originals are
+/// dead from that moment, and on GB10 they are 15.7 GB of unified memory the KV
+/// cache never gets. Measured 2026-08-28: the first 2-node bring-up died with
+/// "No memory left for KV cache" at 112.8 GB resident against a 99.64 GB load.
+///
+/// 🪤 Two things must NOT match:
+/// * `mlp.experts.*` — bound **zero-copy** from these very pointers
+///   (`bind_expert`). Freeing them is a use-after-free with no diagnostic.
+/// * `layers.{num_layers}` — GLM's MTP/draft block sits one past the skeleton
+///   (`layers.45` at `num_hidden_layers = 45`) and is read by
+///   `load_mtp_weights_multi`, not by `load_layers`.
+fn is_reuploaded(name: &str, num_layers: usize) -> bool {
+    let Some(rest) = name.strip_prefix("model.language_model.layers.") else {
+        return false;
+    };
+    let Some((idx, rel)) = rest.split_once('.') else {
+        return false;
+    };
+    let Ok(idx) = idx.parse::<usize>() else {
+        return false;
+    };
+    idx < num_layers && !rel.starts_with("mlp.experts.")
+}
+
 /// Read a device tensor back as host bytes.
 fn host_bytes(gpu: &dyn GpuBackend, t: &WeightTensor) -> Result<Vec<u8>> {
     let mut b = vec![0u8; t.byte_size()];
@@ -318,6 +346,12 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         let last = skeleton.layers.len() - 1;
         let mut out: Vec<Box<dyn TransformerLayer>> = Vec::with_capacity(skeleton.layers.len());
 
+        // 🪤 The KV pool is sized to `num_attention_layers()` (11 on GLM-5.3 — the
+        // sparse blocks), so a DSA layer must address it by its ordinal among
+        // KV-consuming layers, NOT by its index in the 45-layer model stack. The
+        // 34 KDA blocks carry recurrent state and take no pool slot.
+        let mut attn_layer_idx = 0usize;
+
         for sl in &skeleton.layers {
             let idx = sl.index;
             let src = LayerSource::collect(gpu, store, idx)
@@ -351,6 +385,11 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                             gpu, &dsa_cfg,
                         )?,
                         layer_idx: idx,
+                        attn_layer_idx: {
+                            let a = attn_layer_idx;
+                            attn_layer_idx += 1;
+                            a
+                        },
                         rms_eps: config.rms_norm_eps as f32,
                         kv_scale: 1.0,
                     }))
@@ -459,6 +498,23 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
     ) -> Result<Option<crate::weight_loader::MtpWeights>> {
         Ok(None)
     }
+
+    /// Drop the store's copy of everything `load_layers` re-uploaded.
+    fn prune_after_load(
+        &self,
+        store: &mut WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        let n = config.num_hidden_layers;
+        let (count, bytes) = store.free_matching(gpu, |name| is_reuploaded(name, n))?;
+        tracing::info!(
+            "glm5_next: released {count} store tensors ({:.2} GB) already re-uploaded by the \
+             binders; routed experts and the MTP block kept",
+            bytes as f64 / 1e9,
+        );
+        Ok(())
+    }
 }
 
 fn upload_f32_as_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
@@ -469,4 +525,39 @@ fn upload_f32_as_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
     let p = gpu.alloc(b.len().max(1))?;
     gpu.copy_h2d(&b, p)?;
     Ok(p)
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::is_reuploaded;
+
+    #[test]
+    fn prunes_only_the_reuploaded_layer_tensors() {
+        let n = 45;
+        // Re-uploaded by the binders -> free.
+        assert!(is_reuploaded(
+            "model.language_model.layers.0.self_attn.q_proj.weight",
+            n
+        ));
+        assert!(is_reuploaded("model.language_model.layers.44.mlp.gate.weight", n));
+        assert!(is_reuploaded(
+            "model.language_model.layers.3.hc_attn_fn.weight",
+            n
+        ));
+        // Bound zero-copy from the store -> use-after-free if freed.
+        assert!(!is_reuploaded(
+            "model.language_model.layers.7.mlp.experts.12.down_proj.weight",
+            n
+        ));
+        // MTP block, one past the skeleton -> read by load_mtp_weights_multi.
+        assert!(!is_reuploaded(
+            "model.language_model.layers.45.self_attn.q_proj.weight",
+            n
+        ));
+        // Not a layer tensor at all.
+        assert!(!is_reuploaded("model.language_model.embed_tokens.weight", n));
+        assert!(!is_reuploaded("lm_head.weight", n));
+        // Malformed / non-numeric index is never a match.
+        assert!(!is_reuploaded("model.language_model.layers.x.foo", n));
+    }
 }

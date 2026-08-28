@@ -28,7 +28,9 @@ pub fn build_model(
     // weight pointer, and it used to be a local in `startup()` that was dropped
     // once the layers had copied pointers out of it: the memory stayed live
     // with nothing able to free it. The model owns it now, so `teardown` can.
-    store: WeightStore,
+    // `mut` for `prune_after_load` (Step 3c), which lets a loader drop the
+    // originals of tensors it re-uploaded before the KV budget is computed.
+    mut store: WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
     kv_block_size: usize,
@@ -320,6 +322,16 @@ pub fn build_model(
     // gemma4) still call `transpose_for_prefill` inline during layer
     // construction; this default-no-op hook doesn't perturb them.
     maybe_run_minimax_m2_moe_transpose(&config, gpu.as_ref(), &mut layers)?;
+
+    // ── Step 3c: Let the loader drop store tensors it has finished with ──
+    //
+    // Default is a no-op. Loaders that upload their OWN copies (a TP shard, a
+    // host round-trip) leave the store's originals resident for nothing; on
+    // unified-memory GB10 that duplicate is subtracted from the KV budget
+    // computed a few lines below, so it has to happen HERE — after every
+    // `load_*` reader above, before `BufferArena::new` and `gpu.free_memory()`.
+    loader.prune_after_load(&mut store, &config, gpu.as_ref())?;
+
     // ── Step 4: Create buffer arena ──
     let buffers = BufferArena::new(
         &config,

@@ -218,6 +218,26 @@ pub trait ModelWeightLoader {
         layer_kv_dtypes: &[KvCacheDtype],
     ) -> Result<Vec<Box<dyn TransformerLayer>>>;
 
+    /// Drop store tensors this loader has finished with, after every
+    /// `load_*` reader has run and before the buffer arena / KV cache are sized.
+    ///
+    /// Default: keep everything. That is correct for the loaders that bind
+    /// **zero-copy** from the store's device pointers — the store IS the model's
+    /// weights, and `TransformerModel` releases it at teardown.
+    ///
+    /// Override only when the loader uploads its own copies (a TP shard, a host
+    /// round-trip, a dtype conversion), because then the store's originals are
+    /// dead the moment the binder returns. On unified-memory GB10 that duplicate
+    /// comes straight out of the KV budget.
+    fn prune_after_load(
+        &self,
+        _store: &mut WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Per-(layer, role) weight precision schedule (C.3, 2026-04-25).
     /// Default impl returns the empty schedule (every lookup yields
     /// `Dtype::Inherit`), preserving the existing per-checkpoint

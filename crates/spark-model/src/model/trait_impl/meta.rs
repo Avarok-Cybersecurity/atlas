@@ -261,14 +261,16 @@ impl TransformerModel {
         // append can only ever read rows THIS sequence's prefill wrote.
         *self.mtp_store_range.lock() = (0, 0);
 
-        // Build layer states: SSM layers point into the pool (fixed addresses),
-        // attention layers use their own alloc_state (EmptyLayerState).
+        // Build layer states: pool-backed SSM layers point into the pool (fixed
+        // addresses); everything else — attention layers, and linear-attention
+        // layers that own their state (`uses_ssm_pool() == false`, e.g. GLM-5.3
+        // KDA) — uses its own `alloc_state`.
         // When MTP is available, pre-allocate checkpoint + K=2 intermediate
         // buffers so CUDA graph capture doesn't trigger lazy allocation.
         let mut ssm_layer_idx = 0usize;
         let mut layer_states: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
         for (i, layer) in self.layers.iter().enumerate() {
-            if self.config.layer_type(i) == LayerType::LinearAttention {
+            if self.config.layer_type(i) == LayerType::LinearAttention && layer.uses_ssm_pool() {
                 // Layer-independent (one FP32 staging blob per SLOT), so it is
                 let stage = self.ssm_pool.h_prefill_stage(slot);
                 let mut ssm_state = SsmLayerState {

@@ -420,6 +420,12 @@ impl TransformerLayer for Glm5NextLayer {
         }))
     }
 
+    /// GLM's KDA blocks are `linear_attention` in `layer_types` but carry
+    /// `Glm5NextLayerState::Kda`, not the pool's `SsmLayerState`.
+    fn uses_ssm_pool(&self) -> bool {
+        false
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn decode(
         &self,

@@ -170,7 +170,15 @@ pub struct Glm5NextDsaLayer {
     pub select_kernels: Glm5NextDsaKernels,
     pub decode_kernel: Glm5NextDsaDecodeKernel,
     pub workspace: Glm5NextDsaWorkspace,
+    /// Index in the MODEL stack (0..num_hidden_layers). Diagnostics only.
     pub layer_idx: usize,
+    /// Index in the KV POOL — the running ordinal over KV-cache-consuming layers,
+    /// which for GLM-5.3 is 0..11 over the sparse layers, not 0..45.
+    ///
+    /// 🪤 These two are NOT interchangeable. The pool is sized to
+    /// `ModelConfig::num_attention_layers()`; indexing it with `layer_idx` reads
+    /// past the end of the allocation on every layer after the first.
+    pub attn_layer_idx: usize,
     pub rms_eps: f32,
     /// FP8 latent-cache scale. Reads and writes must agree; the write takes `1/scale`.
     pub kv_scale: f32,
@@ -295,7 +303,7 @@ impl Glm5NextDsaLayer {
             stream,
         )?;
 
-        let pool = kv_cache.k_pool_ptr(self.layer_idx);
+        let pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
         decode_attention(
             gpu,
             self.decode_kernel,
@@ -421,7 +429,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             .block([self.cfg.kv_lora_rank as u32, 1, 1])
             .arg_ptr(w.kv_a)
             .arg_ptr(self.weights.kv_a_layernorm)
-            .arg_ptr(kv_cache.k_pool_ptr(self.layer_idx))
+            .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
             .arg_ptr(w.slot)
             .arg_u32(self.cfg.kv_lora_rank as u32)
             .arg_f32(self.rms_eps)
