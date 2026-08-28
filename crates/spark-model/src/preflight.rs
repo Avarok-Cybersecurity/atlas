@@ -34,7 +34,12 @@ mod deepseek_v4;
 /// OR model default). It gates MiniMax-specific MTP-presence diagnostics:
 /// if the user didn't ask for speculative decoding, MTP tensors in the
 /// checkpoint are harmless dead weight and do not warrant a bail.
-pub fn preflight(store: &WeightStore, config: &ModelConfig, use_speculative: bool) -> Result<()> {
+pub fn preflight(
+    store: &WeightStore,
+    config: &ModelConfig,
+    use_speculative: bool,
+    kv_cache_dtype: Option<&str>,
+) -> Result<()> {
     // NLLB / M2M-100 is an encoder-decoder checkpoint: the tied embedding is
     // `model.shared.weight`, layers span separate encoder + decoder stacks, and
     // there is cross-attention — none of which fit these decoder-only checks.
@@ -54,6 +59,7 @@ pub fn preflight(store: &WeightStore, config: &ModelConfig, use_speculative: boo
     let max_layer_idx = check_layer_count(store, config)?;
     check_expert_count(store, config)?;
     check_correction_bias_shape(store, config)?;
+    check_qsa_kv_dtype(store.names(), kv_cache_dtype)?;
 
     // If the checkpoint has layers beyond `config.num_hidden_layers` AND
     // the user asked for speculative decoding, warn/error about MTP
@@ -65,6 +71,46 @@ pub fn preflight(store: &WeightStore, config: &ModelConfig, use_speculative: boo
     }
 
     tracing::info!("Pre-flight checks passed");
+    Ok(())
+}
+
+/// A QSA checkpoint served with a non-BF16 KV cache cannot decode.
+///
+/// The selection gather copies raw NHD rows out of the paged cache, so a
+/// quantized cache has nothing it can copy. The decode path already refuses —
+/// but it refuses on the FIRST REQUEST, which is after the weights have loaded
+/// (three minutes and a hundred-plus gigabytes for Qwen3.8-Flash-Next) and
+/// after the operator has sent something and waited for it. The fact is known
+/// as soon as the store is populated, so it is said here instead.
+///
+/// Presence of `self_attn.indexer.*` is what makes a checkpoint QSA — the same
+/// thing the loader keys on. Nothing in `config.json` records it.
+fn check_qsa_kv_dtype<'a>(
+    names: impl Iterator<Item = &'a str>,
+    kv_cache_dtype: Option<&str>,
+) -> Result<()> {
+    // Names, not the store: this needs nothing else, and taking the store would
+    // have meant a test-only way to put a name into one.
+    let has_qsa = names.into_iter().any(|n| n.contains(".self_attn.indexer."));
+    if !has_qsa {
+        return Ok(());
+    }
+    // `None` is the default, which IS bf16; only an explicit other value is a
+    // problem. Matching loosely because the flag is a free-form string here and
+    // is parsed downstream.
+    let Some(dt) = kv_cache_dtype else {
+        return Ok(());
+    };
+    let d = dt.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        d == "bf16" || d == "bfloat16" || d == "auto",
+        "this checkpoint uses QSA sparse attention, whose selection gather \
+         copies raw NHD rows, so it needs a plain BF16 KV cache — but \
+         --kv-cache-dtype was given as `{dt}`.\n  \
+         Serve with `--kv-cache-dtype bf16`, or drop the flag.\n  \
+         Said here rather than on your first request, which is where the \
+         decode path notices."
+    );
     Ok(())
 }
 
@@ -338,4 +384,57 @@ fn check_correction_bias_shape(store: &WeightStore, config: &ModelConfig) -> Res
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod qsa_kv_tests {
+    use super::check_qsa_kv_dtype;
+
+    /// Names from a checkpoint with no indexer: not QSA, so the flag is none of
+    /// this check's business.
+    const PLAIN: [&str; 2] = [
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.embed_tokens.weight",
+    ];
+    /// Presence of an indexer tensor is what makes a checkpoint QSA — the same
+    /// thing the loader keys on.
+    const QSA: [&str; 2] = [
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.self_attn.indexer.index_qk_proj.weight",
+    ];
+
+    #[test]
+    fn a_non_qsa_checkpoint_accepts_any_kv_dtype() {
+        for dt in [None, Some("fp8"), Some("bf16"), Some("nonsense")] {
+            assert!(check_qsa_kv_dtype(PLAIN.into_iter(), dt).is_ok(), "{dt:?}");
+        }
+    }
+
+    /// The refusal has to name the flag AND the value, because the operator is
+    /// reading it three minutes into a load they will have to repeat.
+    #[test]
+    fn a_qsa_checkpoint_refuses_a_quantized_kv_cache_by_name() {
+        let e = check_qsa_kv_dtype(QSA.into_iter(), Some("fp8")).expect_err("must refuse");
+        let msg = format!("{e}");
+        assert!(msg.contains("--kv-cache-dtype bf16"), "{msg}");
+        assert!(msg.contains("fp8"), "must quote what was given: {msg}");
+    }
+
+    /// bf16 in its spellings, and the DEFAULT — which is bf16 — must pass. A
+    /// check that refused the default would refuse every correct invocation.
+    #[test]
+    fn a_qsa_checkpoint_accepts_bf16_and_the_default() {
+        for dt in [
+            None,
+            Some("bf16"),
+            Some("BF16"),
+            Some(" bfloat16 "),
+            Some("auto"),
+        ] {
+            assert!(
+                check_qsa_kv_dtype(QSA.into_iter(), dt).is_ok(),
+                "{dt:?} must pass"
+            );
+        }
+    }
 }

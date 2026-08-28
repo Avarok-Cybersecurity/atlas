@@ -439,8 +439,13 @@ pub(crate) fn load_model(
     // MiniMax M2.7 hang on NCCL init today because the actual mismatch
     // only surfaces later inside `build_model`; this check surfaces it
     // up-front.
-    spark_model::preflight::preflight(&store, &config, args.speculative)
-        .context("Checkpoint pre-flight check failed")?;
+    spark_model::preflight::preflight(
+        &store,
+        &config,
+        args.speculative,
+        args.kv_cache_dtype.as_deref(),
+    )
+    .context("Checkpoint pre-flight check failed")?;
 
     // Resolve and log the QuantFormat dispatch decision now so a silent
     // fallback is visible in the server log (and not just in the
