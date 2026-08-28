@@ -515,10 +515,18 @@ test.describe('error states', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
+          // Scores matter: rag.js takes .slice(0, TOP_K) of the RANKED list,
+          // so a bad index only reaches the guard if it scores into the top
+          // few. The first version of this test put them last, and passed
+          // against a guard that did not hold.
           results: [
-            { index: 0, relevance_score: 0.9 },
+            { index: 'length', relevance_score: 0.99 },
+            { index: 'map', relevance_score: 0.98 },
+            { index: 0, relevance_score: 0.97 },
             { index: body.documents.length + 5, relevance_score: 0.8 },
-            { index: -1, relevance_score: 0.7 }
+            { index: -1, relevance_score: 0.7 },
+            { index: 1.5, relevance_score: 0.4 },
+            { index: null, relevance_score: 0.3 }
           ]
         })
       });
