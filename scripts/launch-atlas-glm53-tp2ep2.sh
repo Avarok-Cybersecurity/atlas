@@ -26,6 +26,10 @@ MAX_SEQ_LEN="${MAX_SEQ_LEN:-4096}"
 # the rest is KV + activations + the mHC highway. Start conservative and raise only with
 # a measured residency number.
 GPU_UTIL="${GPU_UTIL:-0.90}"
+# The fast loader's OOM pre-flight gate is `on-disk x multiplier + oom_guard <= free`.
+# At 99.64 GB/rank the default 4 GB guard leaves the gate 1.7 GB short of a load that
+# fits. 🪤 This shrinks the LOAD-TIME margin only; the OOM watchdog still runs.
+OOM_GUARD_MB="${OOM_GUARD_MB:-1024}"
 
 for RANK in 0 1; do
   IP=${NODES[$RANK]}
@@ -51,6 +55,7 @@ for RANK in 0 1; do
       --master-addr $MASTER --master-port 29500 \
       --max-seq-len $MAX_SEQ_LEN --kv-cache-dtype fp8 \
       --gpu-memory-utilization $GPU_UTIL \
+      --oom-guard-mb $OOM_GUARD_MB \
       --max-batch-size 1"
   [ "$RANK" -eq 0 ] && echo "waiting 10s for rank 0 to bind the master port..." && sleep 10
 done
