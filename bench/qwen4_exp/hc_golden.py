@@ -42,6 +42,14 @@ from transformers.models.qwen4_exp.modeling_qwen4_exp import (
     Qwen4ExpTextGatedResidual,
 )
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Resolves the snapshot on whichever box this is; the DEFAULT_SNAP below
+# is one machine's path and is kept as the first thing tried.
+from snap_path import resolve_snapshot  # noqa: E402
+
 DEFAULT_SNAP = (
     '/tank/hf/hub/models--Inferact--Qwen3.8-Flash-Next-NVFP4/snapshots/'
     '129972269565f7f4f664fdf8dd42268d3bbda9fd'
@@ -150,8 +158,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--bin-dir', default=os.environ.get('ATLAS_HC_TEST_DATA'),
                     help='also emit raw .bin + meta.json for the Rust probe')
-    ap.add_argument('--snapshot', default=os.environ.get('QWEN4EXP_PATH',
-                                                         DEFAULT_SNAP))
+    ap.add_argument('--snapshot', default=resolve_snapshot(DEFAULT_SNAP))
     ap.add_argument('--out', default=os.path.join(os.path.dirname(__file__),
                                                   'hc_golden.npz'))
     ap.add_argument('--tokens', type=int, default=NUM_TOKENS)

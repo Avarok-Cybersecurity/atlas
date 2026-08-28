@@ -36,6 +36,14 @@ import numpy as np
 import torch
 from safetensors import safe_open
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Resolves the snapshot on whichever box this is; the DEFAULT_SNAP below
+# is one machine's path and is kept as the first thing tried.
+from snap_path import resolve_snapshot  # noqa: E402
+
 DEFAULT_SNAP = (
     '/tank/hf/hub/models--Inferact--Qwen3.8-Flash-Next-NVFP4/snapshots/'
     '129972269565f7f4f664fdf8dd42268d3bbda9fd'
@@ -69,7 +77,7 @@ def compare(label: str, got: np.ndarray, want: np.ndarray) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--snapshot', default=os.environ.get('QWEN4EXP_PATH', DEFAULT_SNAP))
+    ap.add_argument('--snapshot', default=resolve_snapshot(DEFAULT_SNAP))
     ap.add_argument('--dump-dir', required=True,
                     help='directory ATLAS_QWEN4EXP_DUMP wrote')
     ap.add_argument('--tokens', default='',
