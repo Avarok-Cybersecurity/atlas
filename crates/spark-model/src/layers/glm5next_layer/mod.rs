@@ -70,6 +70,7 @@ use crate::layers::ops::{
 
 pub mod state;
 
+pub mod profile;
 pub use state::{Glm5NextLayerState, OwnedKdaState};
 
 /// Which mixer this layer runs. Both halves already exist and are GPU-gated; this enum is the
@@ -175,7 +176,9 @@ impl Glm5NextLayer {
         match &self.mixer {
             Glm5NextMixer::Kda { layer, ws, .. } => {
                 let kda = st.kda()?;
+                let t = profile::start();
                 layer.decode(ctx.gpu, normed, &kda.inner, ws, stream)?;
+                profile::end(profile::KDA, t, ctx.gpu, stream);
                 Ok(ws.final_out)
             }
             Glm5NextMixer::Dsa(layer) => {
@@ -221,6 +224,9 @@ impl Glm5NextLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        let t_dense = matches!(self.mlp, Glm5NextMlpSite::Dense(_))
+            .then(profile::start)
+            .flatten();
         match &self.mlp {
             Glm5NextMlpSite::Dense(w) => forward_dense(
                 ctx.gpu,
@@ -244,12 +250,15 @@ impl Glm5NextLayer {
                 stream,
             )?,
         }
+        profile::end(profile::MLP_DENSE, t_dense, ctx.gpu, stream);
         // 🔴 ONE collective for both partials: the routed experts are EP-sharded and the
         // dense/shared half is TP-sharded, and `all_reduce(SUM)` is linear. It must land here,
         // before `hc_post` folds the output into the highway — reducing afterwards would mix a
         // half-answer into the residual stream of every later layer.
         if self.mlp_cfg.needs_all_reduce() {
+            let t = profile::start();
             self.reduce_partial(out, ctx, stream)?;
+            profile::end(profile::REDUCE_MLP, t, ctx.gpu, stream);
         }
         Ok(())
     }
@@ -286,6 +295,7 @@ impl Glm5NextLayer {
         let normed = ctx.buffers.norm_output();
         let ffn_out = ctx.buffers.moe_output();
 
+        let t_mhc = profile::start();
         if self.is_first {
             glm_hc_expand(
                 gpu,
@@ -316,7 +326,10 @@ impl Glm5NextLayer {
             mhc.hc_eps,
             stream,
         )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
         self.norm(gpu, hidden, self.input_norm, normed, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
         let attn_out = self.mixer_forward(
             normed,
             residual,
@@ -332,8 +345,11 @@ impl Glm5NextLayer {
         // 🔴 Row-parallel `o_proj` ⇒ `attn_out` is a PARTIAL SUM at TP>1. Reduce it here,
         // before it enters the highway.
         if self.mixer_all_reduce {
+            let t = profile::start();
             self.reduce_partial(attn_out, ctx, stream)?;
+            profile::end(profile::REDUCE_ATTN, t, ctx.gpu, stream);
         }
+        let t_mhc = profile::start();
         glm_hc_post(
             gpu,
             mhc.kernels.hc_post,
@@ -365,8 +381,12 @@ impl Glm5NextLayer {
             mhc.hc_eps,
             stream,
         )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
         self.norm(gpu, hidden, self.post_attn_norm, normed, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
         self.mlp_forward(normed, ffn_out, ctx, stream)?;
+        let t_mhc = profile::start();
         glm_hc_post(
             gpu,
             mhc.kernels.hc_post,
@@ -393,6 +413,10 @@ impl Glm5NextLayer {
                 hc as u32,
                 stream,
             )?;
+        }
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        if self.is_last {
+            profile::step();
         }
         Ok(())
     }

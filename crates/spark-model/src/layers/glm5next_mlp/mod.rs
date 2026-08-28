@@ -76,6 +76,10 @@ pub const FFN_MODULE: &str = "glm5next_ffn";
 pub const GEMM_MODULE: &str = "gemm";
 /// `[modules]`: `w4a16_gemm = "w4a16"`.
 pub const W4A16_MODULE: &str = "w4a16";
+/// 🔴 The DECODE weight kernel. `w4a16_gemm` is a tile GEMM: at M=1 it measured
+/// **9.7 GB/s** on the routed experts — 26x off the 254 GB/s roofline and 45 % of the
+/// whole decode step (2026-08-28 profile). Every routed-expert projection here is M=1.
+pub const W4A16_GEMV_MODULE: &str = "w4a16_gemv";
 
 /// `float best_w[16]` in `glm5next_router_topk` — the most experts it can select per token.
 pub const KERNEL_MAX_TOP_K: usize = 16;
@@ -91,8 +95,14 @@ pub struct Glm5NextMlpKernels {
     /// Same, FP32 out. 🪤 The router GEMM MUST take this one: `glm5next_router_topk` reads
     /// `const float* logits`, while `gate.weight` is BF16 on disk.
     pub gemm_f32: KernelHandle,
-    /// NVFP4 `C = A @ B^T` for the routed experts.
+    /// NVFP4 `C = A @ B^T`, tile GEMM. Kept for any M > 1 caller; the decode path
+    /// must not use it — see [`W4A16_GEMV_MODULE`].
     pub w4a16: KernelHandle,
+    /// NVFP4 `C[1, N] = A[1, K] @ B[N, K]^T` — the M=1 decode kernel.
+    ///
+    /// 🪤 Its grid is COUPLED to the kernel's `N_PER_BLOCK`; use
+    /// `ops::gemv_sw::w4a16_gemv_grid_x`, never a hand-written `div_ceil`.
+    pub w4a16_gemv: KernelHandle,
     /// 🪤 **Clamped** SwiGLU, asymmetric. Not `moe_silu_mul`.
     pub swiglu: KernelHandle,
     pub router: KernelHandle,
@@ -105,6 +115,7 @@ impl Glm5NextMlpKernels {
             gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
             gemm_f32: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16_f32out")?,
             w4a16: gpu.kernel(W4A16_MODULE, "w4a16_gemm")?,
+            w4a16_gemv: gpu.kernel(W4A16_GEMV_MODULE, "w4a16_gemv")?,
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,
             router: gpu.kernel(FFN_MODULE, "glm5next_router_topk")?,
             combine: gpu.kernel(FFN_MODULE, "glm5next_moe_combine")?,

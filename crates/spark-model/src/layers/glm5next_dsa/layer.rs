@@ -315,6 +315,7 @@ impl Glm5NextDsaLayer {
             q_mask: w.q_mask,
             first_key: 0,
         };
+        let t = crate::layers::glm5next_layer::profile::start();
         select_tokens(
             gpu,
             &self.select_kernels,
@@ -325,6 +326,9 @@ impl Glm5NextDsaLayer {
             stream,
         )?;
 
+        use crate::layers::glm5next_layer::profile;
+        profile::end(profile::DSA_SELECT, t, gpu, stream);
+        let t = profile::start();
         let pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
         decode_attention(
             gpu,
@@ -345,6 +349,7 @@ impl Glm5NextDsaLayer {
             },
             stream,
         )?;
+        profile::end(profile::DSA_ATTEND, t, gpu, stream);
         Ok(w.attn_out)
     }
 }
@@ -386,6 +391,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
         }
         let gpu = ctx.gpu;
         let w = &self.workspace;
+        let t_proj = crate::layers::glm5next_layer::profile::start();
 
         // ── q path ──
         gemm(
@@ -459,7 +465,11 @@ impl TransformerLayer for Glm5NextDsaLayer {
             .launch(stream)?;
 
         // ── indexer stream, then select + gather-attend ──
+        use crate::layers::glm5next_layer::profile;
+        profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
+        let t = profile::start();
         self.indexer_forward(gpu, hidden, st, stream)?;
+        profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
         let pos = seq_len as i32;
         gpu.copy_h2d(&pos.to_le_bytes(), w.q_pos)?;
@@ -483,6 +493,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
         gpu.free(d_sl)?;
 
         // ── output projection, row-parallel: the caller all-reduces ──
+        let t_proj = profile::start();
         gemm(
             gpu,
             self.kernels.gemm,
@@ -494,6 +505,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             self.cfg.local_heads * self.cfg.kv_lora_rank,
             stream,
         )?;
+        profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
         Ok(())
     }
 }

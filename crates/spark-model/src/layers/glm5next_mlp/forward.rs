@@ -48,8 +48,38 @@ fn gemm(
     Ok(())
 }
 
+/// `C[1, N] = A[1, K] @ dequant(B)[N, K]^T` — the M=1 decode kernel.
+///
+/// Same NVFP4 operand triple as [`w4a16`], one output row. Used for every routed-expert
+/// projection because they are all M=1 and the tile GEMM measured 9.7 GB/s there.
+fn w4a16_gemv(
+    gpu: &dyn GpuBackend,
+    k: KernelHandle,
+    a: DevicePtr,
+    w: &Nvfp4Proj,
+    c: DevicePtr,
+    n: usize,
+    kk: usize,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, k)
+        .grid([crate::layers::ops::w4a16_gemv_grid_x(n as u32), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(w.packed)
+        .arg_ptr(w.scale)
+        // 🪤 by VALUE, as in `w4a16`.
+        .arg_f32(w.scale_2)
+        .arg_ptr(c)
+        .arg_u32(n as u32)
+        .arg_u32(kk as u32)
+        .launch(stream)?;
+    Ok(())
+}
+
 /// `C[M, N] = A[M, K] @ dequant(B)[N, K]^T` — NVFP4 weight, BF16 activation and output.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn w4a16(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
@@ -237,7 +267,10 @@ pub fn forward_moe(
         );
     }
 
+    use crate::layers::glm5next_layer::profile;
+
     // ── router: FULL expert set, FP32 logits, replicated on every rank ──
+    let t = profile::start();
     gemm(
         gpu,
         k.gemm_f32,
@@ -265,15 +298,24 @@ pub fn forward_moe(
         .arg_u32(u32::from(cfg.router_bf16_ladder))
         .launch(stream)?;
 
+    profile::end(profile::MOE_ROUTER, t, gpu, stream);
+
     // 🪤 Zero FIRST. A slot this rank does not own must contribute exactly zero to the
     // all-reduced sum; leaving the previous token's expert output there is a wrong answer
     // that only appears at EP > 1 and only for tokens whose routing moved.
     gpu.memset_async(ws.expert_out, 0, cfg.top_k * cfg.hidden * 2, stream)?;
 
+    // 🚩 A FULL STREAM SYNC + D2H IN THE MIDDLE OF EVERY MoE LAYER. The routing decision
+    // is read back to the host so the expert GEMMs can be launched by id. Timed on its own
+    // because it is the one span here that is pure latency and scales with layer count,
+    // not with weight bytes.
+    let t = profile::start();
     let mut ids = vec![0u8; cfg.top_k * 4];
     gpu.synchronize(stream)?;
     gpu.copy_d2h(ws.ids, &mut ids)?;
+    profile::end(profile::MOE_HOSTSYNC, t, gpu, stream);
 
+    let t = profile::start();
     for slot in 0..cfg.top_k {
         let id = i32::from_le_bytes([
             ids[slot * 4],
@@ -299,19 +341,25 @@ pub fn forward_moe(
         let e = &w.experts[local];
         let dst = ws.expert_out.offset(slot * cfg.hidden * 2);
         let mi = cfg.moe_intermediate;
-        w4a16(
+        w4a16_gemv(
             gpu,
-            k.w4a16,
+            k.w4a16_gemv,
             x,
             &e.gate_proj,
             ws.a_gate,
-            1,
             mi,
             cfg.hidden,
             stream,
         )?;
-        w4a16(
-            gpu, k.w4a16, x, &e.up_proj, ws.a_up, 1, mi, cfg.hidden, stream,
+        w4a16_gemv(
+            gpu,
+            k.w4a16_gemv,
+            x,
+            &e.up_proj,
+            ws.a_up,
+            mi,
+            cfg.hidden,
+            stream,
         )?;
         swiglu(
             gpu,
@@ -323,20 +371,22 @@ pub fn forward_moe(
             cfg.swiglu_limit,
             stream,
         )?;
-        w4a16(
+        w4a16_gemv(
             gpu,
-            k.w4a16,
+            k.w4a16_gemv,
             ws.a_act,
             &e.down_proj,
             dst,
-            1,
             cfg.hidden,
             mi,
             stream,
         )?;
     }
 
+    profile::end(profile::MOE_EXPERTS, t, gpu, stream);
+
     // ── shared expert: BF16, TP-sharded, NOT routed-scaled ──
+    let t = profile::start();
     forward_dense(
         gpu,
         k,
@@ -353,6 +403,8 @@ pub fn forward_moe(
     // EP-partial routed sum reduce together in one collective. Adding the shared output after
     // a reduce — the `layers::moe` pattern, written for a replicated shared expert — would
     // keep only this rank's half of it.
+    profile::end(profile::MOE_SHARED, t, gpu, stream);
+    let t = profile::start();
     KernelLaunch::new(gpu, k.combine)
         .grid([1, 1, 1])
         .block([ACT_BLOCK, 1, 1])
@@ -363,5 +415,6 @@ pub fn forward_moe(
         .arg_u32(cfg.hidden as u32)
         .arg_u32(cfg.top_k as u32)
         .launch(stream)?;
+    profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())
 }
