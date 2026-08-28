@@ -44,6 +44,8 @@
 
 pub mod binding;
 pub mod tp;
+/// Applying the TP plan: the shard copies, as an upstream adapter so the binder is untouched.
+pub mod tp_bind;
 
 use anyhow::{Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};

@@ -13,15 +13,16 @@
 //! `linear_attn_config` index lists and `first_k_dense_replace`, cross-checked against the
 //! textual arrays, and refuses anything it was not taught. This loader iterates that.
 //!
-//! # 🔴 TP is wired for DSA and the MLP, NOT for KDA
+//! # TP, on every half
 //!
-//! `glm5next_kda::tp` is a written, tested shard PLAN, but `bind_kda_weights` uploads verbatim —
-//! the `tp_shard` copies were never wired. A TP>1 run would therefore give every rank the FULL
-//! KDA head set while the DSA and MLP halves were correctly sharded: no crash, no shape error,
-//! and each rank computing a whole KDA block whose output is then all-reduced with the other
-//! rank's whole block — **double-counted attention**. So TP>1 is REFUSED here rather than
-//! silently half-applied. Wiring it is the next step, and Slice 14's gate order (TP=1 against the
-//! HF oracles first) does not need it.
+//! DSA shards through `DsaTpPlan`, the MLP through `Glm5NextMlpConfig`, and KDA through
+//! [`KdaShardedSource`] — an adapter that slices the host bytes **before** the proven
+//! `bind_kda_weights` sees them, so TP=1 and TP=2 take the identical binder code path.
+//!
+//! 🪤 Both mixers end in a **row-parallel** `o_proj`, so the attention output is a partial sum
+//! at TP>1 and `Glm5NextLayer::mixer_all_reduce` reduces it before the mHC highway sees it.
+//! Half-applying the sharding — the state before this was wired — meant every rank computed a
+//! WHOLE KDA block and the all-reduce double-counted it: no crash, no shape error.
 
 use anyhow::{Context, Result, bail};
 use atlas_core::config::ModelConfig;
@@ -37,6 +38,8 @@ use crate::layers::glm5next_dsa::{Glm5NextDsaConfig, Glm5NextDsaKernels};
 use crate::layers::glm5next_kda::binding::{
     KdaDtype, KdaTensorSource, RawTensor, bind_kda_weights,
 };
+use crate::layers::glm5next_kda::tp::KdaTpPlan;
+use crate::layers::glm5next_kda::tp_bind::KdaShardedSource;
 use crate::layers::glm5next_kda::{Glm5NextKdaConfig, Glm5NextKdaKernels, Glm5NextKdaLayer};
 use crate::layers::glm5next_layer::{Glm5NextLayer, Glm5NextMhc, Glm5NextMixer, Glm5NextMlpSite};
 use crate::layers::glm5next_mlp::weights::{Glm5NextExpertWeights, Nvfp4Proj};
@@ -250,10 +253,10 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
-    /// The DSA and MLP halves are TP-aware; KDA is not yet wired. `load_layers` refuses TP>1
-    /// rather than shipping a half-sharded stack — see the module header.
+    /// All three halves shard: DSA by head, KDA by head/channel, the MLP by width (TP) and by
+    /// expert set (EP).
     fn supports_tp(&self) -> bool {
-        false
+        true
     }
 
     fn load_layers(
@@ -263,15 +266,6 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         gpu: &dyn GpuBackend,
         _layer_kv_dtypes: &[KvCacheDtype],
     ) -> Result<Vec<Box<dyn TransformerLayer>>> {
-        if config.tp_world_size > 1 {
-            bail!(
-                "glm5_next: tp_world_size = {}, but the KDA shard COPIES are not wired yet — \
-                 only the plan is (`glm5next_kda::tp`). Sharding DSA and the MLP while KDA \
-                 stays replicated double-counts every KDA block through the output all-reduce, \
-                 with no crash and no shape error. Re-gate at TP=1 first.",
-                config.tp_world_size
-            );
-        }
         let skeleton = Glm5NextTextSkeleton::from_config(config)?;
         // 🪤 `l2_eps` and `chunk` are NOT config keys — `l2_eps` is FLA's `1/sqrt(sum + eps)`
         // convention and `chunk` is a prefill tiling width whose results are identical over
@@ -288,6 +282,17 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
             chunk: 32,
         };
         kda_cfg.validate()?;
+        // 🪤 `gate_rank` is not a config key — it is `f_a_proj`'s row count, read off the
+        // checkpoint (128 on GLM-5.3). Reading it from layer 0 rather than assuming it means a
+        // checkpoint revision that changes the gate bottleneck fails loudly at load.
+        let gate_rank = {
+            let n = qualify(0, "self_attn.f_a_proj.weight");
+            let t = store.get(&n).with_context(|| {
+                format!("glm5_next: {n} is needed to size the KDA gate bottleneck")
+            })?;
+            *t.shape.first().context("f_a_proj has no rows")?
+        };
+        let kda_plan = KdaTpPlan::from_config(config, gate_rank)?;
         let dsa_cfg = Glm5NextDsaConfig::from_config(config)?;
         let mlp_cfg = Glm5NextMlpConfig::from_config(config)?;
 
@@ -320,7 +325,10 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
 
             let mixer = match sl.mixer {
                 Mixer::Kda => {
-                    let (w, _report) = bind_kda_weights(gpu, &kda_cfg, idx, &src)?;
+                    // The adapter yields THIS RANK's slice with local shapes; the binder
+                    // validates against the (already local) config exactly as at TP=1.
+                    let sharded = KdaShardedSource::new(&src, &kda_plan)?;
+                    let (w, _report) = bind_kda_weights(gpu, &kda_cfg, idx, &sharded)?;
                     Glm5NextMixer::Kda {
                         layer: Box::new(Glm5NextKdaLayer::new(idx, kda_cfg, w, kda_kernels)?),
                         ws: kda_ws.clone(),
@@ -403,6 +411,10 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 rms_norm_k,
                 rms_eps: config.rms_norm_eps as f32,
                 hidden: config.hidden_size,
+                mixer_all_reduce: match sl.mixer {
+                    Mixer::Kda => kda_plan.needs_output_all_reduce(),
+                    Mixer::Dsa => dsa_plan.needs_output_all_reduce(),
+                },
                 is_first: idx == 0,
                 is_last: idx == last,
             }));

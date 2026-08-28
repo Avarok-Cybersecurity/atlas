@@ -124,6 +124,12 @@ pub struct Glm5NextLayer {
     pub rms_norm_k: KernelHandle,
     pub rms_eps: f32,
     pub hidden: usize,
+    /// 🔴 Whether the MIXER output is a partial sum. Both mixers end in a **row-parallel**
+    /// `o_proj` (`KdaShard::ChannelCols` / `DsaShard::HeadCols`), so at TP>1 each rank holds
+    /// only part of the attention output and it must be all-reduced **before** `hc_post` folds
+    /// it into the highway. Reducing after would mix a half-answer into every later layer's
+    /// residual stream; not reducing at all is a plausible, wrong output with no shape error.
+    pub mixer_all_reduce: bool,
     /// Expand the highway here. True for layer 0 only.
     pub is_first: bool,
     /// Collapse the highway here. True for the last TEXT layer only.
@@ -194,6 +200,19 @@ impl Glm5NextLayer {
         }
     }
 
+    /// `all_reduce(SUM)` a `[1, hidden]` BF16 partial, when one is needed and a comm exists.
+    fn reduce_partial(&self, p: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+        if let Some(comm) = ctx.comm {
+            let bytes = self.hidden * 2;
+            if ctx.graph_capture {
+                comm.all_reduce(p.0, bytes)?;
+            } else {
+                comm.all_reduce_async(p.0, bytes, stream)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Run the MLP on `normed` into `out`, then reduce if this rank holds only part of it.
     fn mlp_forward(
         &self,
@@ -229,15 +248,8 @@ impl Glm5NextLayer {
         // dense/shared half is TP-sharded, and `all_reduce(SUM)` is linear. It must land here,
         // before `hc_post` folds the output into the highway — reducing afterwards would mix a
         // half-answer into the residual stream of every later layer.
-        if self.mlp_cfg.needs_all_reduce()
-            && let Some(comm) = ctx.comm
-        {
-            let bytes = self.hidden * 2;
-            if ctx.graph_capture {
-                comm.all_reduce(out.0, bytes)?;
-            } else {
-                comm.all_reduce_async(out.0, bytes, stream)?;
-            }
+        if self.mlp_cfg.needs_all_reduce() {
+            self.reduce_partial(out, ctx, stream)?;
         }
         Ok(())
     }
@@ -317,6 +329,11 @@ impl Glm5NextLayer {
             ctx,
             stream,
         )?;
+        // 🔴 Row-parallel `o_proj` ⇒ `attn_out` is a PARTIAL SUM at TP>1. Reduce it here,
+        // before it enters the highway.
+        if self.mixer_all_reduce {
+            self.reduce_partial(attn_out, ctx, stream)?;
+        }
         glm_hc_post(
             gpu,
             mhc.kernels.hc_post,
