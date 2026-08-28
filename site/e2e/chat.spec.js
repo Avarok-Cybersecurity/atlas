@@ -272,6 +272,37 @@ test('manifest failure falls back to the cached corpus with the offline badge', 
   expect(hits.gz).toBe(1); // never re-downloaded
 });
 
+// A manifest that PARSES but whose commit_sha is not a string used to pass
+// validation on truthiness alone. It is then coerced into a filename
+// (lattice-db-12345.jsonl) and later fails pruneStale's typeof precondition,
+// which returns early — so pruning is silently disabled and cached corpora
+// accumulate in OPFS with nothing reporting it. Treated as a bad manifest now,
+// which takes the same offline path as an unreachable one.
+test('a manifest whose commit_sha is not a string is refused, not coerced', async ({
+  page,
+  context
+}) => {
+  const hits = await routeCorpus(context);
+  await page.goto('/');
+  await openChat(page);
+  await waitReady(page);
+
+  await context.unroute(CORPUS_META_URL);
+  await context.route(CORPUS_META_URL, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...META, commit_sha: 12345 })
+    });
+  });
+
+  await page.reload();
+  await openChat(page);
+  await waitReady(page);
+  await expect(statusText(page)).toContainText('cached · offline');
+  expect(hits.gz).toBe(1); // and it did not re-download under a coerced name
+});
+
 // =============================================================================
 // abort on close mid-download: no partial cache, clean re-run
 // =============================================================================
