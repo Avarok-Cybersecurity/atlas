@@ -63,12 +63,12 @@
         <h3>Prefer to inspect first?</h3>
         <p class="run-note">{getRunning.inspectNote}</p>
         <div class="hero-cmd" style="margin-top:0.6rem">
-          <span class="prompt">$</span>
+          <span class="prompt">{install.prompt}</span>
           <code bind:this={quickEl}>{quickInstall}</code>
           <button type="button" class="copy-btn" onclick={() => copy(quickInstall, quickEl)}>{copied === quickInstall ? copyLabel(copyState) : 'Copy'}</button>
         </div>
         <div class="hero-cmd" style="margin-top:0.5rem">
-          <span class="prompt">$</span>
+          <span class="prompt">{install.prompt}</span>
           <code bind:this={rawEl}>{runCommandRaw}</code>
           <button type="button" class="copy-btn" onclick={() => copy(runCommandRaw, rawEl)}>{copied === runCommandRaw ? copyLabel(copyState) : 'Copy'}</button>
         </div>

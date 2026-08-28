@@ -129,4 +129,25 @@ jobs:
               ;;
           esac
 
+          # The SAME check for the Windows line, which is the ONLY command a
+          # Windows visitor is given. `install.sh` got this check because the SPA
+          # fallback answers 200 with the HOMEPAGE rather than 404 -- the failure
+          # that took /control down -- and install.ps1 is served by that same
+          # fallback out of that same static dir, so it fails the same way. Piped
+          # into `iex`, an HTML body is not a 404 anyone can read: it is a wall of
+          # parse errors, on the platform with the least fallback.
+          head=$(curl --fail --silent --show-error --location \
+                   --retry 3 --retry-delay 5 https://atlasinference.io/install.ps1 | head -1)
+          case "$head" in
+            '<'*)
+              echo "::error::/install.ps1 served HTML -- the SPA fallback is answering for it: $head"
+              fail=1
+              ;;
+            '#'*) echo "ok   /install.ps1 -> $head" ;;
+            *)
+              echo "::error::/install.ps1 does not start with a comment; it served: $head"
+              fail=1
+              ;;
+          esac
+
           exit "$fail"

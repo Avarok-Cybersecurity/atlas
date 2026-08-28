@@ -15,6 +15,11 @@ import {
   PROTOCOL_VERSION,
 } from './protocol.js';
 
+// The remedy is now the CALLER's to supply, because only the caller knows
+// which machine the visitor is on. These tests pass the unix line except
+// where they are specifically about a Windows visitor.
+const UNIX = 'curl -fsSL https://atlasinference.io/install.sh | sh';
+
 test('a token check answers "no" for junk instead of throwing', () => {
   for (const junk of [undefined, null, 42, {}, [], true]) {
     expect(looksLikeToken(junk)).toBe(false);
@@ -90,15 +95,15 @@ test('the codes the agent actually sends still read as sentences', () => {
 // versionAdvice is the first thing an operator sees when a fleet of older
 // agents meets a newer page, so its two branches must name different remedies.
 test('a version mismatch names the side that is behind', () => {
-  expect(versionAdvice(PROTOCOL_VERSION, 1, PROTOCOL_VERSION).ok).toBe(true);
-  const agentOld = versionAdvice(4, 1, 2);
+  expect(versionAdvice(PROTOCOL_VERSION, 1, PROTOCOL_VERSION, UNIX).ok).toBe(true);
+  const agentOld = versionAdvice(4, 1, 2, UNIX);
   expect(agentOld.side).toBe('agent');
   expect(agentOld.message).toContain('install.sh');
-  const pageOld = versionAdvice(2, 3, 4);
+  const pageOld = versionAdvice(2, 3, 4, UNIX);
   expect(pageOld.side).toBe('page');
   expect(pageOld.message).toContain('Shift-R');
   // A welcome with no usable versions must not guess a side at random.
-  expect(versionAdvice(4, undefined, null).ok).toBe(false);
+  expect(versionAdvice(4, undefined, null, UNIX).ok).toBe(false);
 });
 
 // An agent that omits a detail field is not hypothetical — an older build
@@ -140,10 +145,10 @@ test('a detail the agent DID send is still shown', () => {
 // dead end at exactly the wrong moment.
 test('the reinstall instructions are built from the declared installer URL', async () => {
   const { installerUrl } = await import('../data.js');
-  const agentOld = versionAdvice(4, 1, 2);
+  const agentOld = versionAdvice(4, 1, 2, UNIX);
   expect(agentOld.side).toBe('agent');
   expect(agentOld.message).toContain(installerUrl);
 
-  const noVersion = versionAdvice(4, undefined, null);
+  const noVersion = versionAdvice(4, undefined, null, UNIX);
   expect(noVersion.message).toContain(installerUrl);
 });

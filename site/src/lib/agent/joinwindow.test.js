@@ -18,7 +18,7 @@ import {
   shortForm,
   stalled
 } from './joinwindow.js';
-import { joinCommand } from './joincommand.js';
+import { joinCommand, joinCommandPowerShell } from './joincommand.js';
 
 // --- normalizeJoinReply ------------------------------------------------------
 
@@ -145,7 +145,14 @@ test('odd lengths group without a trailing space', () => {
 test('the carry tail matches the command it came from', () => {
   const join = { code: '84315907', addresses: ['10.10.10.1'] };
   expect(shortForm(join)).toBe('84315907@10.10.10.1');
-  expect(joinCommand(join).endsWith(shortForm(join))).toBe(true);
+  // The invariant is that the tail on screen IS the operand in the command --
+  // not that it is the command's last characters. `endsWith` stopped being able
+  // to say that when the sh operand gained its quotes; both now come from
+  // joinOperand, so assert the relationship that actually matters.
+  expect(joinCommand(join)).toContain(`'${shortForm(join)}'`);
+  expect(joinCommandPowerShell(join)).toContain(`'${shortForm(join)}'`);
+  // and the tail itself is never quoted: it is prose on screen, not a paste.
+  expect(shortForm(join)).not.toContain("'");
 });
 
 test('shortForm is empty exactly when joinCommand is — never half a credential', () => {

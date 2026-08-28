@@ -28,13 +28,38 @@ import { installerUrl, powershellInstallerUrl } from '../data.js';
  * @param {{code: string, addresses: string[]}|null} join
  * @returns {string}
  */
-export function joinCommand(join, grantControl = false) {
+/**
+ * The `code@host,host` operand itself, unquoted and unwrapped.
+ *
+ * Extracted because THREE places need it and two of them used to get it by
+ * string surgery on the finished command: `shortForm` took everything after the
+ * last space, which quietly became `'code@host'` -- quotes and all, on screen --
+ * the moment the sh line started quoting its operand. A shared builder cannot
+ * drift like that.
+ *
+ * @param {{code: string, addresses: string[]}|null} join
+ * @returns {string} '' when there is no usable code or no dialable address
+ */
+export function joinOperand(join) {
   const code = typeof join?.code === 'string' ? join.code.trim() : '';
   // Same reasoning as the host allowlist: this ends up in a shell line.
   if (!code || !CODE_OK.test(code)) return '';
   const hosts = dialableAddresses(join?.addresses);
   if (hosts.length === 0) return '';
-  const base = `curl -fsSL ${installerUrl} | sh -s -- --join ${code}@${hosts.join(',')}`;
+  return `${code}@${hosts.join(',')}`;
+}
+
+export function joinCommand(join, grantControl = false) {
+  const operand = joinOperand(join);
+  if (!operand) return '';
+  // SINGLE-QUOTED, for the same reason the PowerShell line below is. HOST_OK
+  // admits `[` and `]` so a bracketed IPv6 address can reach this string, and
+  // bare brackets in an operand are a GLOB: zsh — the default shell on macOS —
+  // refuses the whole line with `no matches found` rather than running it. No
+  // address we mint today is bracketed, so this is latent, not broken; it stops
+  // being latent the first time an address carries a port or a v6 literal.
+  // Nothing needs escaping inside the quotes: CODE_OK and HOST_OK both exclude `'`.
+  const base = `curl -fsSL ${installerUrl} | sh -s -- --join '${operand}'`;
   // The grant is a VISIBLE flag on the line the operator pastes, never an
   // implication of joining. It is also the only direction that does what
   // someone adding a GPU box actually wants: it is written into THAT machine's
@@ -61,10 +86,8 @@ export function joinCommand(join, grantControl = false) {
  * @returns {string}
  */
 export function joinCommandPowerShell(join, grantControl = false) {
-  const code = typeof join?.code === 'string' ? join.code.trim() : '';
-  if (!code || !CODE_OK.test(code)) return '';
-  const hosts = dialableAddresses(join?.addresses);
-  if (hosts.length === 0) return '';
+  const operand = joinOperand(join);
+  if (!operand) return '';
   // The operand is SINGLE-QUOTED, and that is load-bearing. Unquoted, a comma
   // in PowerShell's argument mode builds an ARRAY — `-Join a@h1,h2` binds
   // `@('a@h1','h2')` and stringifies it with a SPACE, so the far machine
@@ -77,7 +100,7 @@ export function joinCommandPowerShell(join, grantControl = false) {
   // unknown parameter and silently install without joining.
   const base =
     `& ([scriptblock]::Create((irm ${powershellInstallerUrl}))) ` +
-    `-Join '${code}@${hosts.join(',')}'`;
+    `-Join '${operand}'`;
   return grantControl ? `${base} -GrantControl` : base;
 }
 

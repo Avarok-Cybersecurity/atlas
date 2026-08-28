@@ -13,7 +13,7 @@
 // machine, comes back, and the counter claims minutes that are gone. Computing
 // against `mintedAtMs + expiresInS` cannot drift.
 
-import { bestAddress, joinCommand } from './joincommand.js';
+import { bestAddress, joinCommand, joinOperand } from './joincommand.js';
 
 /**
  * How long the guide watches for the new machine before escalating: the
@@ -136,7 +136,7 @@ export function groupedCode(code) {
 /**
  * The carry-note tail — `CODE@HOST` — or ''.
  *
- * Extracted from `joinCommand`'s output rather than rebuilt, so it can never
+ * Built from the same operand builder `joinCommand` uses, so it can never
  * disagree with the line on screen and never renders half a credential: if
  * there is no complete command, there is no tail.
  *
@@ -144,9 +144,10 @@ export function groupedCode(code) {
  * @returns {string}
  */
 export function shortForm(join) {
-  const cmd = joinCommand(join);
-  if (!cmd) return '';
-  return cmd.slice(cmd.lastIndexOf(' ') + 1);
+  // From the shared builder, NOT by slicing the finished command: that took
+  // everything after the last space, so it inherited the sh line's quotes and
+  // rendered them on screen.
+  return joinOperand(join);
 }
 
 /**
