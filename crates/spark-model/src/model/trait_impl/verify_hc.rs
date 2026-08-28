@@ -81,10 +81,78 @@ impl TransformerModel {
         self.config.hc_mult > 0
     }
 
-    /// Verify `tokens` (K rows) by mini-prefill. Returns the argmax token for
-    /// each row, so the caller can compare row `i`'s output against draft
-    /// `i + 1` exactly as on the non-hc path.
+    /// Verify `tokens` by mini-prefill, SPLIT so a rejected draft can be rolled
+    /// back exactly.
+    ///
+    /// Row 0 is the already-sampled real token and is always kept; rows 1.. are
+    /// the drafts. The aux carries (QSA marks + PLE conv/history) are
+    /// snapshotted BETWEEN the two, which is what makes `rollback_verify_hc`
+    /// land on "token_0 committed, drafts discarded" rather than on pre-verify.
+    /// Restoring a pre-verify snapshot would leave the carries a row SHORT of
+    /// the sequence, which is a silent desync, not an error.
     pub(super) fn decode_verify_hc(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        let k = tokens.len();
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let stream_d = self.gpu.default_stream();
+        // Committed row first, on its own.
+        let mut out = self.verify_hc_rows(&tokens[..1], seq, stream)?;
+        if k == 1 {
+            return Ok(out);
+        }
+        // Snapshot the carries with token_0 committed and no draft applied.
+        // `collect_aux_states` covers BOTH: qwen3_attention's snapshot_aux
+        // serializes the QSA carry, qwen3_ssm's serializes PLE's.
+        let stash = self.collect_aux_states(seq, stream_d)?;
+        *self
+            .pending_verify_aux
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+
+        out.extend(self.verify_hc_rows(&tokens[1..], seq, stream)?);
+        Ok(out)
+    }
+
+    /// Undo `rows` draft rows after a rejected verify, restoring both aux
+    /// carries to the snapshot taken after the committed row.
+    ///
+    /// The KV written for the discarded positions is left alone deliberately:
+    /// it is past `seq_len` and the next step overwrites it.
+    pub(super) fn rollback_verify_hc(
+        &self,
+        seq: &mut SequenceState,
+        rows: usize,
+        stream: u64,
+    ) -> Result<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        let stash = self
+            .pending_verify_aux
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
+            .take();
+        let Some(blobs) = stash else {
+            anyhow::bail!(
+                "rollback_verify_hc with no stashed aux snapshot — decode_verify_hc \
+                 must run first, or the carries cannot be rewound"
+            );
+        };
+        self.apply_aux_states(seq, &blobs, stream)?;
+        seq.seq_len = seq.seq_len.saturating_sub(rows);
+        let keep = seq.tokens.len().saturating_sub(rows);
+        seq.tokens.truncate(keep);
+        Ok(())
+    }
+
+    /// One K-row mini-prefill. Advances sequence state by K rows.
+    fn verify_hc_rows(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,

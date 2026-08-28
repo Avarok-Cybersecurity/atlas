@@ -218,6 +218,10 @@ pub struct TransformerModel {
     /// It drafts a token each decode step and records whether the target's next
     /// token matches — nothing is ever fed back, so no speculation occurs.
     pub(super) qwen4_exp_mtp_head: Option<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead>,
+    /// Aux carries (QSA marks + PLE conv/history) snapshotted between the
+    /// committed row and the draft rows of an mHC K-row verify, so a rejected
+    /// draft can be rolled back to exactly "token_0 committed". See verify_hc.
+    pub(super) pending_verify_aux: std::sync::Mutex<Option<Vec<(u32, Vec<u8>)>>>,
     /// The head's single-sequence draft state. Shadow mode is C=1 only: one
     /// state, so a concurrent batch would interleave two sequences' drafts into
     /// it. The shadow step refuses to run when the batch is wider than one.
