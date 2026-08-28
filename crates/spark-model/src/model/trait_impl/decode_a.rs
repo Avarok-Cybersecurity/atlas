@@ -134,8 +134,15 @@ impl TransformerModel {
         // full-arena zero (~1.7GB memset/step, sized for max prefill tokens) is
         // unnecessary — skip it for V4 to reclaim that decode-step memset
         // bandwidth. (Other MLA models keep the zero.)
+        // 🔴 ROW-SCALED. `zero_all` wipes the arena at its PREFILL size — at
+        // max_batch_tokens=4096 that is 1.59 GB of memset, measured at 8.01 ms on every
+        // decode token of GLM-5.3 (nsys, 2026-08-28: 9.4 % of an 85 ms step, all of it
+        // GPU idle before the first kernel). A decode step carries ONE token and can only
+        // read row 0 of each token-major arena, so `zero_all_rows` clears exactly the rows
+        // this step can touch. Same buffers, same values, ~1/4096 of the bytes.
         if self.config.kv_lora_rank > 0 && self.config.o_lora_rank == 0 {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            self.buffers
+                .zero_all_rows(self.gpu.as_ref(), stream, 1)?;
         }
 
         // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`

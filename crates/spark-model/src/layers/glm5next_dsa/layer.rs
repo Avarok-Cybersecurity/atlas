@@ -171,6 +171,16 @@ pub struct Glm5NextDsaWorkspace {
     q_mask: DevicePtr,
     slot: DevicePtr,
     attn_out: DevicePtr,
+    /// Block table for the paged gather, `[max_dsa_context]` i32. PERSISTENT.
+    /// 🔴 This used to be a `gpu.alloc` + `gpu.free` on EVERY DSA layer of EVERY
+    /// decode token — 11 allocs + 11 frees per token. `cuMemAlloc` serialises against
+    /// the driver, and nsys (2026-08-28) charged the alloc/copy/free cluster ~98 us of
+    /// GPU-idle per DSA layer, 1.08 ms of an 79 ms step.
+    bt: DevicePtr,
+    /// Sequence length for the paged gather, one i32. PERSISTENT, same reason.
+    sl: DevicePtr,
+    /// Capacity of `bt` in ENTRIES, so the forward can refuse rather than overrun it.
+    bt_cap: usize,
     select: DsaSelectScratch,
 }
 
@@ -179,6 +189,8 @@ impl Glm5NextDsaWorkspace {
         // Sized at the DSA context cap so a growing sequence never reallocates.
         let geom =
             super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), 1)?;
+        let bt_cap = super::state::max_dsa_context(cfg).max(1);
+        let persist = std::env::var("ATLAS_GLM_DSA_PERSIST_BT").is_ok_and(|v| v == "1" || v == "true");
         Ok(Self {
             q_a: gpu.alloc(cfg.q_lora_rank * 2)?,
             q_resid: gpu.alloc(cfg.q_lora_rank * 2)?,
@@ -190,6 +202,16 @@ impl Glm5NextDsaWorkspace {
             q_mask: gpu.alloc(1)?,
             slot: gpu.alloc(8)?,
             attn_out: gpu.alloc(cfg.local_heads * cfg.kv_lora_rank * 2)?,
+            // One entry per cached token is the worst case (block_size == 1), so the
+            // DSA context cap bounds it for every block size.
+            //
+            // 🔴 Allocated ONLY when `ATLAS_GLM_DSA_PERSIST_BT=1`. Not a micro-optimisation:
+            // making these two allocations UNCONDITIONALLY — even leaving them unused —
+            // is by itself enough to change the model's sampled output (measured t27,
+            // 2026-08-28). See A55 and the note at the use site.
+            bt: if persist { gpu.alloc(bt_cap * 4)? } else { DevicePtr(0) },
+            sl: if persist { gpu.alloc(4)? } else { DevicePtr(0) },
+            bt_cap,
             select: DsaSelectScratch::alloc(gpu, cfg, &geom)?,
         })
     }
@@ -214,6 +236,10 @@ pub struct Glm5NextDsaLayer {
     pub rms_eps: f32,
     /// FP8 latent-cache scale. Reads and writes must agree; the write takes `1/scale`.
     pub kv_scale: f32,
+    /// `ATLAS_GLM_DSA_PERSIST_BT=1`. See the long note at the use site: worth 1.1 ms/token
+    /// but it moves the model's output through the device-heap-layout channel of A55, so
+    /// it defaults OFF and exists as a one-flag A55 reproducer.
+    pub persist_bt: bool,
 }
 
 impl Glm5NextDsaLayer {
@@ -509,9 +535,39 @@ impl TransformerLayer for Glm5NextDsaLayer {
         gpu.copy_h2d(&pos.to_le_bytes(), w.q_pos)?;
         gpu.copy_h2d(&[1u8], w.q_mask)?;
         let bt: Vec<u8> = block_table.iter().flat_map(|b| b.to_le_bytes()).collect();
-        let d_bt = gpu.alloc(bt.len().max(4))?;
+        if block_table.len() > w.bt_cap {
+            anyhow::bail!(
+                "DSA layer {}: block table {} entries exceeds the {}-entry persistent \
+                 buffer; raise max_dsa_context, do not write past the allocation.",
+                self.layer_idx,
+                block_table.len(),
+                w.bt_cap
+            );
+        }
+        // 🔴 `ATLAS_GLM_DSA_PERSIST_BT=1` — OFF BY DEFAULT, and the default is the SLOW path
+        // on purpose. Reusing the persistent `w.bt`/`w.sl` instead of a `gpu.alloc` +
+        // `gpu.free` per DSA layer per token is worth a measured 1.1 ms/token (13.0 ->
+        // 13.2 tok/s, nsys 2026-08-28: 11 x ~98 us of GPU idle for the alloc/copy/free
+        // cluster). It is gated OFF because it MOVES THE MODEL'S OUTPUT:
+        //
+        //   t20/t23 (alloc+free per step)  France/2+2/pyadd -> a3ede213 0e25c5c8 517fa3b6
+        //   t25/t26 (persistent buffers)                    -> d1dafb3a ba5afdfa 893c3ea6
+        //
+        // Both are deterministic and reproduce across container launches; the
+        // deterministic counting control (`1, 2, 3, 4,`) is IDENTICAL in both, so this is
+        // divergence at near-ties, not gross corruption. The block table's contents are
+        // ruled out as the channel: filling every entry past `block_table.len()` with
+        // 0xEE gives BYTE-IDENTICAL output to leaving it at 0 (t26 == t25). What changed
+        // is only WHERE THINGS LIVE IN THE DEVICE HEAP — which is exactly the signature
+        // of ANOMALIES A55 (spark-bench/.planning/ANOMALIES.md), still OPEN. Turning this
+        // on is a one-flag reproducer for A55; do not flip the default until A55 has an
+        // answer and an oracle says which of the two outputs is right.
+        let (d_bt, d_sl) = if self.persist_bt {
+            (w.bt, w.sl)
+        } else {
+            (gpu.alloc(bt.len().max(4))?, gpu.alloc(4)?)
+        };
         gpu.copy_h2d(&bt, d_bt)?;
-        let d_sl = gpu.alloc(4)?;
         gpu.copy_h2d(&((seq_len + 1) as i32).to_le_bytes(), d_sl)?;
 
         let paging = DsaDecodePaging {
@@ -523,8 +579,10 @@ impl TransformerLayer for Glm5NextDsaLayer {
             cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
         };
         let attn = self.select_and_attend(gpu, st, kv_cache, d_bt, d_sl, &paging, stream)?;
-        gpu.free(d_bt)?;
-        gpu.free(d_sl)?;
+        if !self.persist_bt {
+            gpu.free(d_bt)?;
+            gpu.free(d_sl)?;
+        }
 
         // ── output projection, row-parallel: the caller all-reduces ──
         let t_proj = profile::start();

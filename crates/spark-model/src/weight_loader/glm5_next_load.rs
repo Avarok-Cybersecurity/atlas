@@ -375,6 +375,8 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     let load = |n: &str| src.f32(n);
                     let w = build_dsa_weights(gpu, &dsa_cfg, &dsa_plan, &load)?;
                     Glm5NextMixer::Dsa(Box::new(Glm5NextDsaLayer {
+                        persist_bt: std::env::var("ATLAS_GLM_DSA_PERSIST_BT")
+                            .is_ok_and(|v| v == "1" || v == "true"),
                         cfg: dsa_cfg,
                         weights: w,
                         kernels: dsa_layer_kernels,
