@@ -368,3 +368,12 @@ img, svg, video { max-width: 100%; }
   .dock-body { overflow-y: visible; padding-bottom: 2rem; }
   .dt-log { max-height: 45vh; }
 }
+
+/* The burger bars rotate into a cross and slide (`top`), and the drawer slides
+   down from -6px. Both are motion; the opacity halves are not and stay, so the
+   cross still fades rather than snapping. `.nav-burger span`, not
+   `.nav-toggle span`: the transition lives on the inner bars. */
+@media (prefers-reduced-motion: reduce) {
+  .nav-burger span { transition: opacity 0.18s; }
+  .nav-drawer { animation: none; }
+}
