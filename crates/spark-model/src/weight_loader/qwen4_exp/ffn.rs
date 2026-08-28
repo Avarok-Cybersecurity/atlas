@@ -61,6 +61,28 @@ pub(super) fn build_moe(
         stream,
     )?);
 
-    let moe = MoeLayer::new(weights, config.num_experts, gate_nvfp4, gpu, config)?;
+    let mut moe = MoeLayer::new(weights, config.num_experts, gate_nvfp4, gpu, config)?;
+
+    // CUTLASS grouped NVFP4 gate_up/down (ATLAS_HOLO_MOE_GROUPED_CUTLASS).
+    // qwen4_exp serves from the checkpoint-native ORIGINAL [N,K/16] scales — it
+    // never builds the transposed gate_ptrs_t/up_ptrs_t that qwen35 gates this
+    // on — so it takes build_cutlass_grouped_sfb's n-major fallback, which
+    // exists for exactly this layout. Without this call the CUTLASS flags are
+    // INERT on this model: the dispatch site requires cutlass_grouped_host,
+    // and nothing else populates it (measured: "CUTLASS SFB layers: 0" with the
+    // full flag set).
+    //
+    // Opt-in because the SFB atoms are not free: ~100 KB per expert per
+    // projection, x512 experts x3 projections x48 layers ~ 7 GB resident, which
+    // comes straight out of the KV budget. Read the alloc ledger before
+    // adopting it as a default.
+    if std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        moe.build_cutlass_grouped_sfb(gpu, config, stream)?;
+    }
+
     Ok(FfnComponent::Moe(moe))
 }
