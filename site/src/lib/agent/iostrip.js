@@ -132,9 +132,11 @@ const TILES = [
 /**
  * Tile view-models for one node's strip.
  *
- * The placeholder tiles carry NO `text` property — not '—', not ''. The
- * em-dash means "the engine was asked and does not report this", which is a
- * claim; for a field the protocol cannot carry yet, the claim would be false.
+ * This no longer emits a `placeholder` kind: ISL and OSL were the only two, and
+ * the agent reports them now. The rule stands for whenever one returns — a
+ * placeholder carries NO `text`, not '—' and not '', because the em-dash means
+ * "the engine was asked and does not report this", and for a field the protocol
+ * cannot carry yet that claim would be false.
  *
  * @param {object|null} reading already gated by `gateRates`
  * @param {{paused: boolean}} opts

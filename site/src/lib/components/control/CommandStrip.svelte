@@ -19,7 +19,7 @@
   // interrupting a screen-reader user for, and `announce.js` decides that.
   // The timer here only lets the fleet settle before the sentence is read.
 
-  import { ANNOUNCE_DEBOUNCE_MS, announcement } from '$lib/agent/announce.js';
+  import { makeAnnouncer } from '$lib/agent/announce.js';
   import { CADENCES } from '$lib/agent/cadence.js';
   import { placeholdersFor } from '$lib/agent/placeholders.js';
   import ComingSoon from './ComingSoon.svelte';
@@ -40,18 +40,23 @@
   const solo = $derived(fleet.peers.length === 0);
   const rangeSegments = $derived(placeholdersFor('command', { solo }));
 
-  // The one live region. `announced` is written only when announce.js says a
-  // severity transition happened, and only after the debounce window — so a
-  // storm that escalates twice inside it is read once, at its worst.
+  // The one live region.
+  //
+  // The timer is owned by `makeAnnouncer`, NOT by this effect. It used to live
+  // in the effect's cleanup, and this effect re-runs on every vitals event —
+  // `fleet.alerts` derives from `fleet.nodes`, rebuilt about once a second — so
+  // each tick cancelled the pending announcement while the severity had already
+  // advanced, and nothing re-armed it. The region stayed empty on any wire
+  // carrying telemetry, which is every real one. Quiet wires announced fine,
+  // which is exactly why it survived being tried by hand.
   let announced = $state('');
-  let prevSeverity = null;
+  const announcer = makeAnnouncer((text) => (announced = text));
   $effect(() => {
-    const a = announcement(prevSeverity, fleet.alerts);
-    if (!a) return;
-    prevSeverity = a.severity;
-    const timer = setTimeout(() => (announced = a.text), ANNOUNCE_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    announcer.update(fleet.alerts);
   });
+  // Teardown only: no dependencies, so this cleanup runs when the component
+  // goes away and never on a re-render.
+  $effect(() => () => announcer.dispose());
 </script>
 
 <header class="cmd" aria-label="Fleet command strip">

@@ -42,3 +42,55 @@ export function announcement(prevSeverity, alerts) {
   const who = sanitize(worst.nodeName ?? '', 63) || 'a machine';
   return { severity: next, text: `${next}: ${who}: ${what}` };
 }
+
+/**
+ * A debouncer that survives being re-run.
+ *
+ * The component's effect re-runs on every vitals event — `fleet.alerts` derives
+ * from `fleet.nodes`, which is rebuilt about once a second — so the timer
+ * cannot live in the effect's cleanup. It did, and the sequence was:
+ *
+ *   1. an alert is raised; the effect advances `prevSeverity` and arms a timer
+ *   2. a vitals event arrives inside the debounce window
+ *   3. the effect re-runs, and its cleanup CLEARS the pending timer
+ *   4. the severity has already advanced, so `announcement` returns null and
+ *      nothing re-arms it
+ *
+ * The live region then never fires — measured: still empty 5.7 s after a
+ * critical alert, on a wire with ordinary 1 Hz telemetry. Quiet wires
+ * announced fine, which is why it survived every hand test.
+ *
+ * So the timer is owned here. It is cleared only when a NEW announcement
+ * supersedes a pending one, or when the caller disposes it.
+ *
+ * @param {(text: string) => void} emit called with the text to announce
+ * @param {{setTimeout: Function, clearTimeout: Function}} [timers] injected for
+ *   tests, which must not wait 1.5 real seconds. Wrapped, never destructured:
+ *   a browser's `setTimeout` is a `Window` method and rejects a foreign `this`.
+ */
+export function makeAnnouncer(emit, timers) {
+  const t = timers ?? {
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (h) => clearTimeout(h)
+  };
+  let handle = null;
+  let prevSeverity = null;
+
+  return {
+    /** Feed the current alerts. Safe to call on every render. */
+    update(alerts) {
+      const a = announcement(prevSeverity, alerts);
+      if (!a) return;
+      prevSeverity = a.severity;
+      // A newer transition replaces a pending one: a storm that escalates
+      // twice inside the window is read once, at its worst.
+      t.clearTimeout(handle);
+      handle = t.setTimeout(() => emit(a.text), ANNOUNCE_DEBOUNCE_MS);
+    },
+    /** Drop any pending announcement. For component teardown only. */
+    dispose() {
+      t.clearTimeout(handle);
+      handle = null;
+    }
+  };
+}

@@ -44,7 +44,17 @@ function verbatim(text) {
  * Attribute a failed control reply to the machine that failed it.
  *
  * @param {{by?: string|null, error?: object|null, message?: string|null}|null} outcome
- *   `by` is `ControlRep::Refused.by` when the transport surfaced one;
+ *   `by` is who refused, when anything told us.
+ *
+ *   Nothing does today, and saying otherwise would document plumbing that does
+ *   not exist: the agent drops `ControlRep::Refused.by` when it translates a
+ *   peer's refusal into a browser frame (`session/remote.rs`), so every call
+ *   site here passes nothing and the `?? target` default is the whole
+ *   attribution. That default is right for the ordinary case — a forwarded
+ *   verb's errors do come from the target — and WRONG for an error the relay
+ *   itself emitted, which is then labelled as the target's. The parameter is
+ *   kept because the fix is to thread `by` through the agent, not to pretend
+ *   the distinction does not exist.
  *   `error` is the `AgentError`; `message` is transport-level prose.
  * @param {{target: string|null, nodes: object[]}} ctx
  *   `target` is who the verb was aimed at (`on`), null for this machine.

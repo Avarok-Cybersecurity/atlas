@@ -49,12 +49,22 @@
   });
   const v = $derived(paused && held?.forNode === node.id ? held.vitals : node.vitals);
 
-  const clockAlert = $derived(
-    node.alerts.some((a) => a.kind === 'sm_clock_clamped') ? 'critical' : null
-  );
-  const memAlert = $derived(node.alerts.some((a) => a.kind === 'memory_pressure') ? 'warning' : null);
-  const tempAlert = $derived(node.alerts.some((a) => a.kind === 'thermal_throttle') ? 'warning' : null);
-  const diskAlert = $derived(node.alerts.some((a) => a.kind === 'disk_low') ? 'warning' : null);
+  /**
+   * The severity the AGENT raised for a kind, or null if it raised none.
+   *
+   * Not a severity this file chose. Each of these tiles used to hardcode one —
+   * `sm_clock_clamped` was always drawn critical, the rest always warning —
+   * which contradicts this page's own rule that it invents no thresholds. An
+   * agent that raises a clamp at `warning` must not be redrawn as critical
+   * here; the machine that measured it is the one entitled to say how bad it is.
+   */
+  const severityOf = (alerts, kind) => alerts.find((a) => a.kind === kind)?.severity ?? null;
+
+
+  const clockAlert = $derived(severityOf(node.alerts, 'sm_clock_clamped'));
+  const memAlert = $derived(severityOf(node.alerts, 'memory_pressure'));
+  const tempAlert = $derived(severityOf(node.alerts, 'thermal_throttle'));
+  const diskAlert = $derived(severityOf(node.alerts, 'disk_low'));
 
   const gb = (bytes) => (bytes / 1e9).toFixed(0);
   // Plain values become the metric shape here so VitalTile stays the one

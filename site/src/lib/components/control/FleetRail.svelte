@@ -125,7 +125,13 @@
             {node.name}
             <span class="mono topo-act-fp">{node.id.slice(0, 8)}</span>
           </p>
-          {#if node.isLocal || node.pairing === 'paired'}
+          <!-- `unreachable` is a PAIRED machine that is not answering, so it
+               keeps its identity and its Unpair. Falling through to the else
+               branch offered "Pair…" — a ceremony that needs someone standing
+               at a machine which is, by definition, not responding — and hid
+               the one action that does work. IdentityHeader already gets this
+               right; the rail contradicted it. -->
+          {#if node.isLocal || node.pairing === 'paired' || node.pairing === 'unreachable'}
             {#if node.canLaunch}
               <button
                 type="button"

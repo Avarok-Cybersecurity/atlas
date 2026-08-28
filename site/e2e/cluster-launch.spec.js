@@ -15,7 +15,12 @@ test.describe('@live cluster launch', () => {
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((t) => {
-      window.localStorage.setItem('atlasctl.token', t);
+      // The key the app actually reads (`TOKEN_KEY` in protocol.js). It was
+      // 'atlasctl.token' here, which stores a value nothing looks for: the page
+      // never dials, `fleet.mode` never reaches 'live', and every assertion
+      // below times out waiting for a surface that cannot mount. A @live spec
+      // that cannot pass is worse than no spec, because it reads as coverage.
+      window.localStorage.setItem('atlas.agent.token', t);
     }, TOKEN);
   });
 
