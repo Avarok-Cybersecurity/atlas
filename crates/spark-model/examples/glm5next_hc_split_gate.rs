@@ -23,7 +23,10 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
 /// `(hidden, hc_mult, tokens)`. GLM's own shape first, then the register-bound edge.
-const CASES: [(usize, usize, usize); 4] = [(5120, 4, 1), (5120, 4, 7), (1024, 2, 3), (256, 4, 1)];
+/// GLM-5.3-Flash is `hidden_size = 4096, hc_mult = 4` — that case leads, and it is the one
+/// the timing block below reports. The rest exercise the grid arithmetic and the register bound.
+const CASES: [(usize, usize, usize); 5] =
+    [(4096, 4, 1), (5120, 4, 1), (5120, 4, 7), (1024, 2, 3), (256, 4, 1)];
 const SINKHORN_ITERS: u32 = 20;
 const HC_EPS: f32 = 1e-6;
 const NORM_EPS: f32 = 1e-5;
@@ -189,7 +192,7 @@ fn main() -> Result<()> {
         println!("  H={hid:>5} hc={hc} T={t}  mix_hc={m:>2}  y/post/comb BYTE-IDENTICAL");
 
         // ── timing, GLM's own shape only: which half of the split actually costs ──
-        if (hid, hc, t) == (5120, 4, 1) {
+        if (hid, hc, t) == (4096, 4, 1) {
             let reps = 300;
             let t_fused = time_us(&gpu, reps, || {
                 KernelLaunch::new(&gpu, k.hc_pre)
@@ -255,12 +258,39 @@ fn main() -> Result<()> {
                     .arg_f32(HC_EPS)
                     .launch(0)
             })?;
+            // `t_fin` above launches `hc_finish` on the OLD grid (T,1,1) directly, so it is
+            // the before-picture. This one goes through the production launcher, which grids it
+            // (T, 1 + ceil(H/256)) and spreads the collapse.
+            let t_prod = time_us(&gpu, reps, || {
+                glm_hc_pre(
+                    &gpu,
+                    &k,
+                    d_streams,
+                    &w,
+                    yb,
+                    pb,
+                    cb,
+                    t as u32,
+                    hid as u32,
+                    hc as u32,
+                    SINKHORN_ITERS,
+                    NORM_EPS,
+                    HC_EPS,
+                    0,
+                )
+            })?;
             println!("    hc_finish@iters=1 {t_fin1:8.1}  (Sinkhorn cost = (fin - fin1) * 20/19)");
+            println!(
+                "    PRODUCTION mix+finish (wide collapse) {t_prod:8.1} us/call = {:8.3} ms/token over 90 sites",
+                t_prod * 90.0 / 1000.0
+            );
             println!(
                 "\n  TIMING (GLM shape, {reps} reps, us/call):\n    \
                  fused hc_pre {t_fused:8.1}\n    hc_mix       {t_mix:8.1}\n    \
-                 hc_finish    {t_fin:8.1}\n    split total  {:8.1}\n",
-                t_mix + t_fin
+                 hc_finish    {t_fin:8.1}\n    split total  {:8.1}\n    \
+                 per token (90 sites) {:8.3} ms\n",
+                t_mix + t_fin,
+                (t_mix + t_fin) * 90.0 / 1000.0
             );
         }
     }

@@ -175,7 +175,8 @@ pub fn glm_hc_pre(
         .arg_f32(norm_eps)
         .launch(stream)?;
     KernelLaunch::new(gpu, kernels.hc_finish)
-        .grid([num_tokens, 1, 1])
+        // `1 +` — `blockIdx.y == 0` runs the Sinkhorn and does NOT take a share of the collapse.
+        .grid([num_tokens, 1 + collapse_blocks(hidden_size), 1])
         .block([256, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.mix)
@@ -211,7 +212,7 @@ pub fn glm_hc_post(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
+        .grid([num_tokens, collapse_blocks(hidden_size), 1])
         .block([256, 1, 1])
         .arg_ptr(block_out)
         .arg_ptr(residual)
@@ -221,6 +222,18 @@ pub fn glm_hc_post(
         .arg_u32(hidden_size)
         .arg_u32(hc_mult)
         .launch(stream)
+}
+
+/// Blocks to spread an `H`-wide, per-element-independent pass over — `hc_finish`'s collapse and
+/// all of `hc_post`.
+///
+/// 🔴 Both used to run on grid `(T, 1, 1)`: one block, i.e. ONE of the GB10's 48 SMs, moving
+/// `hc_mult * H` floats, 90 times per token each. Nothing in either is a reduction — every `d`
+/// is an independent output element — so the block count is free parallelism and the result is
+/// bit-identical at any value of it. 256 is the block width both kernels launch at.
+const fn collapse_blocks(hidden_size: u32) -> u32 {
+    // `max(1)` by hand: `Ord::max` is not const yet.
+    if hidden_size < 256 { 1 } else { hidden_size.div_ceil(256) }
 }
 
 /// `mix_hc` — the row count of `hc_fn` and `hc_base`: `(2 + hc_mult) * hc_mult`.
