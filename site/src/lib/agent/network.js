@@ -129,6 +129,19 @@ export function checkTarget(s) {
   }
   if (/\s/.test(t)) return { ok: false, why: 'An address has no spaces in it.' };
 
+  // The three shapes this box is most likely to be handed, all of which used
+  // to be accepted whole and then fail as an unresolvable hostname. They are
+  // not typos — each is a real thing sitting one panel away on this page.
+  if (t.includes(',')) {
+    return { ok: false, why: 'One machine at a time — that looks like a list of addresses.' };
+  }
+  if (t.includes('@')) {
+    return { ok: false, why: 'That is a join line. Paste only the address, after the @.' };
+  }
+  if (t.includes('/')) {
+    return { ok: false, why: 'Just the address — no path or URL after it.' };
+  }
+
   // Split off a port, being careful that a bare IPv6 literal is all colons.
   let host = t;
   let port = null;
@@ -136,6 +149,11 @@ export function checkTarget(s) {
   if (bracketed) {
     host = bracketed[1];
     port = bracketed[2] ?? null;
+  } else if (t.startsWith('[')) {
+    // A bracket that opened and did not close around a host. Falling through
+    // let `[` and `[]` past as whole "hostnames"; a shape that announces
+    // itself as bracketed and is not must be refused, not reinterpreted.
+    return { ok: false, why: 'That bracket does not close around an address.' };
   } else if (t.includes(':') && t.indexOf(':') === t.lastIndexOf(':')) {
     [host, port] = t.split(':');
   }

@@ -21,7 +21,7 @@
   // that the operator had explicitly rejected.
 
   import { fleet } from '$lib/agent/fleet.svelte.js';
-  import { modal } from './modal.js';
+  import { modal } from '$lib/modal.js';
 
   let { node, onclose } = $props();
 

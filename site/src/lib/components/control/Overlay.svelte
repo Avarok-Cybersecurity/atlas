@@ -9,7 +9,7 @@
   // must never scroll its own escape hatch out of view, so the Cluster
   // overlay's Abort lives in this slot and cannot leave the screen.
 
-  import { modal } from './modal.js';
+  import { modal } from '$lib/modal.js';
 
   let {
     /** Accessible name; also the visible heading. */

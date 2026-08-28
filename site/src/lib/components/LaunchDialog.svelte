@@ -16,6 +16,7 @@
 
   import InstallSteps from './InstallSteps.svelte';
   import CommandRow from './CommandRow.svelte';
+  import { modal } from '$lib/modal.js';
   import { describe } from '$lib/agent/placement.js';
   import { joinCommand } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
@@ -66,10 +67,13 @@
     return () => { cancelled = true; clearTimeout(timer); };
   });
 
-  // Escape closes, and focus moves into the dialog when it opens.
+  // Escape closes. Focus-in, the Tab trap and focus-return are `use:modal`'s
+  // — this used to call `dialogEl?.focus()` and stop there, which claims
+  // `aria-modal` while Tab still walks the page behind the dialog. Escape
+  // stays here on purpose: `modal.js` leaves dismissal to each dialog,
+  // because in the pairing ceremony it is a rejection, not a close.
   $effect(() => {
     if (launch.openRecipe === null) return;
-    dialogEl?.focus();
     const onKey = (e) => { if (e.key === 'Escape') launch.close(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -100,6 +104,7 @@
       aria-labelledby="ld-title"
       tabindex="-1"
       bind:this={dialogEl}
+      use:modal
     >
       <header class="ld-head">
         <h3 class="ld-title" id="ld-title">

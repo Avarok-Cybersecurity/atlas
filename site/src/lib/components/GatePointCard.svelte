@@ -1,4 +1,5 @@
 <script>
+  import { modal } from '$lib/modal.js';
   // The per-point metadata card ("mini modal"). Every row is a verbatim field
   // of the gate record — nothing synthesized. Raised by clicking a chart point.
   import { GH_COMMIT, shortModel, colorFor, fmtDateTime, sampleCount } from '$lib/gates.js';
@@ -19,6 +20,7 @@
     role="dialog"
     aria-modal="true"
     aria-label="Gate record {r.git_sha}"
+    use:modal
     onclick={(e) => e.stopPropagation()}
   >
     <div class="receipt-body">

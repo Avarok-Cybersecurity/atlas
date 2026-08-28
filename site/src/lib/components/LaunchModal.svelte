@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script>
+  import { modal } from '$lib/modal.js';
   // Launch settings for one recipe.
   //
   // The modal shows the recipe's own values as a read-only base and tracks only
@@ -102,7 +103,13 @@
   }
 </script>
 
-<div class="lm" role="dialog" aria-modal="true" aria-label={`Launch settings for ${recipeId}`}>
+<div
+  class="lm"
+  role="dialog"
+  aria-modal="true"
+  aria-label={`Launch settings for ${recipeId}`}
+  use:modal
+>
   <header class="lm-head">
     <div>
       <h3 class="lm-title mono">{recipeId}</h3>

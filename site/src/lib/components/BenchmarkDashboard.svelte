@@ -1,4 +1,5 @@
 <script>
+  import { modal } from '$lib/modal.js';
   // The hero's benchmark dashboard modal. One tab per benchmark family, a
   // model switcher that filters but never relabels, and a metadata card on
   // every chart point. Data: gates.generated.json — the union of gate records
@@ -27,9 +28,13 @@
   );
   const src = gateData.sources;
 
+  // Focus-in, the Tab trap and focus-return all live in `use:modal` below.
+  // This effect used to call `dialogEl?.focus()` and stop there — a dialog
+  // that claims `aria-modal="true"` while Tab still walks the page behind it,
+  // which is the half of the contract that actually keeps a keyboard operator
+  // inside. Body-scroll lock stays here: it is this dialog's own concern.
   $effect(() => {
     document.body.style.overflow = 'hidden';
-    dialogEl?.focus();
     return () => (document.body.style.overflow = '');
   });
 
@@ -48,6 +53,7 @@
     aria-label="Atlas benchmark dashboard"
     tabindex="-1"
     bind:this={dialogEl}
+    use:modal
     onclick={(e) => e.stopPropagation()}
   >
     <header class="bd-head">

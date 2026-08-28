@@ -24,6 +24,17 @@
   // the timeout fires against a component that no longer exists.
   $effect(() => () => clearTimeout(timer));
 
+  // "Copied" describes the CLIPBOARD, so it must not outlive the command it
+  // described. `command` is reactive: in the join guide it is derived from the
+  // grant-control checkbox, so an operator could copy, then toggle the grant,
+  // and read "Copied" while the clipboard still held the other variant —
+  // carrying the wrong privilege decision to the machine they walked to.
+  $effect(() => {
+    command;
+    clearTimeout(timer);
+    state = 'idle';
+  });
+
   async function copy() {
     clearTimeout(timer);
     // Select-on-refusal lives in `clipboard.js` now: three other components

@@ -30,7 +30,8 @@ import { installerUrl } from '../data.js';
  */
 export function joinCommand(join, grantControl = false) {
   const code = typeof join?.code === 'string' ? join.code.trim() : '';
-  if (!code) return '';
+  // Same reasoning as the host allowlist: this ends up in a shell line.
+  if (!code || !CODE_OK.test(code)) return '';
   const hosts = dialableAddresses(join?.addresses);
   if (hosts.length === 0) return '';
   const base = `curl -fsSL ${installerUrl} | sh -s -- --join ${code}@${hosts.join(',')}`;
@@ -56,13 +57,80 @@ export function joinCommand(join, grantControl = false) {
  * @param {string[]|undefined} addresses
  * @returns {string[]}
  */
+/**
+ * What a host may contain. An allowlist, not an escape: this value is
+ * interpolated into a line built to be pasted into a shell on a machine
+ * someone just walked to, and the control page is served over plain http on a
+ * LAN address, so the socket feeding it is not authenticated.
+ *
+ * Covers IPv4, a bracketed or bare IPv6 literal, a hostname, and `host:port`.
+ * Excludes whitespace (which word-splits into extra flags), the comma (which
+ * is the separator between hosts, so one inside a host forges a second), and
+ * every shell metacharacter.
+ */
+const HOST_OK = /^[A-Za-z0-9._~:[\]-]+$/;
+
+/** Digits and dashes only — the code is minted, never typed into this. */
+const CODE_OK = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The host part of an address, with any port and brackets removed.
+ *
+ * A bare IPv6 literal is all colons, so "strip the port" cannot mean "cut at
+ * the colon": only a bracketed form, or a single colon followed by digits, is
+ * a port. Same rule `network.js` applies to typed input.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function bareHost(s) {
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(s);
+  if (bracketed) return bracketed[1].toLowerCase();
+  const i = s.indexOf(':');
+  if (i !== -1 && i === s.lastIndexOf(':') && /^\d+$/.test(s.slice(i + 1))) {
+    return s.slice(0, i).toLowerCase();
+  }
+  return s.toLowerCase();
+}
+
+/**
+ * Whether this address points back at the machine showing the command.
+ *
+ * The literal `127.0.0.1` was the only form checked, and every other spelling
+ * of loopback walked straight through: `localhost`, `[::1]:8443`, the
+ * IPv4-mapped `::ffff:127.0.0.1`, and the expanded `0:0:0:0:0:0:0:1`. Each
+ * produced a complete, pasteable command that installs cleanly and then fails
+ * to pair — which this file's own header calls the most confusing failure
+ * available here.
+ *
+ * @param {string} host already reduced by `bareHost`
+ * @returns {boolean}
+ */
+function isLoopback(host) {
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host.startsWith('127.')) return true;
+  if (host.startsWith('::ffff:127.')) return true;
+  const groups = host.split(':');
+  if (groups.length > 1 && groups.every((g) => g === '' || /^0+$/.test(g))) {
+    // `::`, `::1` and `0:0:0:0:0:0:0:1` all reduce to all-zero groups; `::1`
+    // ends in a 1, so check it separately.
+    return true;
+  }
+  return host === '::1' || /^(0+:){7}0*1$/.test(host);
+}
+
 export function dialableAddresses(addresses) {
   const list = Array.isArray(addresses) ? addresses : [];
   const out = [];
   for (const a of list) {
-    const s = String(a ?? '').trim();
-    if (!s) continue;
-    if (s === '127.0.0.1' || s === '::1' || s.startsWith('127.')) continue;
+    // A non-string is dropped, not coerced: `String({addr})` yields
+    // "[object Object]", which is non-empty and therefore renders a command
+    // that looks pasteable and cannot work. Node addresses ARE objects
+    // elsewhere in this protocol, so one shape drift would ship exactly that.
+    if (typeof a !== 'string') continue;
+    const s = a.trim();
+    if (!s || !HOST_OK.test(s)) continue;
+    if (isLoopback(bareHost(s))) continue;
     if (!out.includes(s)) out.push(s);
   }
   return out;
