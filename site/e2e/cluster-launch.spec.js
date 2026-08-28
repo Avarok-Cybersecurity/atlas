@@ -5,6 +5,18 @@
 // @live because it needs `atlasctl agent run` on this machine with at least one
 // paired peer. Without that there is nothing to launch across, and a mocked
 // agent would only prove the mock agrees with itself.
+//
+// Run it as:  atlasctl agent run --dev-origins
+//
+// The --dev-origins flag is not optional here and its absence does not look
+// like a configuration problem. The agent's origin allowlist is
+// ALLOWED_ORIGINS = ["https://atlasinference.io"] and nothing else unless that
+// flag is passed (atlasctl-agent/src/guard.rs). Playwright serves this suite
+// from http://127.0.0.1:4173, which is in DEV_ORIGINS but gated behind the
+// flag -- so a default agent answers the WebSocket upgrade with 403 before any
+// token is read. The browser cannot expose a handshake response body, so the
+// page can only say "no agent connected", and every assertion below times out
+// waiting for a socket that was refused for a reason nothing on screen names.
 
 import { expect, test } from '@playwright/test';
 
