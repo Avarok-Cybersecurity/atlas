@@ -52,12 +52,30 @@
 //!    NOTHING CALLS IT — the scheduler does its own rewind arithmetic, so a
 //!    rejected draft currently leaves the aux carries un-restored.
 //!
-//! 2. COST. 398 ms/token against a 50 ms decode: verify-by-mini-prefill is ~8x
-//!    a decode step. Expected in kind — prefill kernels are small-M inefficient
-//!    on this model (the recorded "~1.1-1.3 s floor regardless of slice") — but
-//!    8x means even a 100% accept rate loses. A K=2 verify must cost less than
-//!    2 decodes to break even, so this path needs a decode-shaped verify, not a
-//!    prefill-shaped one, before speculation can pay.
+//! 2. COST — and this is the STRUCTURAL blocker. Measured costs, gamma=1:
+//!    ```text
+//!      decode step          50.5 ms
+//!      draft forward         2.6 ms   (shadow-on 53.1 vs baseline 50.5)
+//!      verify, 2-row prefill ~395 ms
+//!    ```
+//!    ★ THE DRAFT IS ESSENTIALLY FREE — 5% of a decode. So the economics are
+//!    entirely about verify. Break-even at 91% accept needs
+//!    `draft + verify2 < 95 ms`, i.e. verify under ~92 ms. The mini-prefill is
+//!    4x over that budget, and TWO SEQUENTIAL DECODES (~101 ms) are over it
+//!    too — so a cheaper serial verify does not rescue this either. Only a
+//!    genuinely BATCHED K-row step can pay.
+//!
+//!    That is blocked, not merely unoptimised: the GDN prefill path has a
+//!    documented FLOOR ("the fused chunk has a ~1.1-1.3 s floor regardless of
+//!    slice — small-M prefill inefficiency"), so a 2-row prefill pays close to
+//!    what a large chunk pays. And the decode-shaped alternative is exactly
+//!    what `refuse_batched_under_hc` refuses: "the mHC highway has no batched
+//!    GDN path yet" (Avarok #753 item B).
+//!
+//!    CONCLUSION: the draft head is done and cheap; MTP speculation on this
+//!    model cannot pay until a cheap multi-row GDN step under the highway
+//!    exists. That feature also unblocks DFlash and DSpark here — `verify_e.rs`
+//!    routes their GDN body through the same refusing `decode_verify_multi`.
 //!
 //! Speculation therefore stays behind BOTH `--speculative` and
 //! `ATLAS_QWEN4EXP_MTP_VERIFY=1`, and neither is a default.
