@@ -19,12 +19,25 @@
 
   let {
     /** A registered placeholder id — unknown ids throw in `placeholder()`. */
-    id,
+    id = null,
+    /**
+     * Several ids, for the solo-mode chip that collapses the whole set into
+     * one. The alternative was a second popover hand-rolled in `ActionsBar`,
+     * and it was: a `role="dialog"` that never took focus, trapped no Tab and
+     * closed on no click-out. A dialog a screen reader is never moved into is
+     * not announced at all, so the "honest about what is missing" chip was the
+     * one placeholder nobody could read.
+     */
+    ids = null,
+    /** Button text, when the collapsed chip names the group rather than an entry. */
+    label = null,
     /** 'chip' (actions bar, command strip, alert lane) or 'tile' (I/O strip). */
     kind = 'chip'
   } = $props();
 
-  const entry = $derived(placeholder(id));
+  const entries = $derived((ids ?? [id]).map(placeholder));
+  const entry = $derived(entries[0]);
+  const collapsed = $derived(Array.isArray(ids));
 
   let open = $state(false);
   let btn = $state(null);
@@ -81,20 +94,28 @@
     onclick={() => (open ? close(true) : (open = true))}
     onkeydown={onBtnKey}
   >
-    <span class="cs-label">{entry.label}</span>
-    <span class="cs-chip">soon</span>
+    <span class="cs-label">{label ?? entry.label}</span>
+    {#if !collapsed}<span class="cs-chip">soon</span>{/if}
   </button>
 
   {#if open}
     <div
       class="cs-pop"
       role="dialog"
-      aria-label="{entry.label} — coming soon"
+      aria-label={collapsed ? 'Coming soon' : `${entry.label} — coming soon`}
       tabindex="-1"
       bind:this={pop}
       onkeydown={onPopKey}
     >
-      <p class="cs-text">{entry.soon}</p>
+      {#if collapsed}
+        <!-- Each one named, because collapsing them is a layout decision and
+             must not cost the operator the list. -->
+        {#each entries as e (e.id)}
+          <p class="cs-text"><strong>{e.label}</strong> — {e.soon}</p>
+        {/each}
+      {:else}
+        <p class="cs-text">{entry.soon}</p>
+      {/if}
       <button type="button" class="cs-close" bind:this={closeBtn} onclick={() => close(true)}>
         Close
       </button>
