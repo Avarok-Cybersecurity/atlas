@@ -109,13 +109,22 @@ export async function listCached() {
 /**
  * Delete every cached corpus except the one for `keepSha`.
  *
- * Refuses a falsy or non-string sha. Both callers pass `meta.commit_sha`, which
- * `ensureReady` has already rejected the manifest for lacking, so this cannot
- * fire today — but the failure mode if it ever did is not "prunes the wrong
- * file", it is "deletes ALL of them": `latticeFileName(undefined)` is
- * `lattice-db-undefined.jsonl`, which matches nothing, so every real corpus
- * takes the delete branch. A precondition is cheap; re-downloading a corpus
- * because a caller passed the wrong thing is not.
+ * Refuses a falsy or non-string sha. The failure mode if one got through is not
+ * "prunes the wrong file", it is "deletes ALL of them": `latticeFileName(
+ * undefined)` is `lattice-db-undefined.jsonl`, which matches nothing cached, so
+ * every real corpus takes the delete branch.
+ *
+ * Unreachable from both callers today, for two DIFFERENT reasons — an earlier
+ * version of this comment claimed one reason covered both, which would invite a
+ * third caller to rely on a guarantee it does not have:
+ *
+ *   online  `ensureReady` rejects a manifest whose `commit_sha` is not a
+ *           non-empty string, so `meta.commit_sha` is one by the time it is
+ *           passed. That is a VALIDATED value.
+ *   offline `loadFromFile(token, file, cached[0].sha, null)` — `meta` is null
+ *           here. The sha comes from `LATTICE_FILE_RE`'s `(.+)` capture over a
+ *           filename that already matched, so it is a non-empty string
+ *           STRUCTURALLY, and no manifest validation is involved at all.
  */
 export async function pruneStale(keepSha) {
   if (typeof keepSha !== 'string' || keepSha === '') return;
