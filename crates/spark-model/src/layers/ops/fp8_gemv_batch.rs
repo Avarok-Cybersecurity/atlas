@@ -10,7 +10,7 @@
 //! weights but have distinct activations (lm_head, attention Q/K/V/O, SSM
 //! out_proj).
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -94,6 +94,50 @@ pub fn w8a16_gemv_batch2(
         .arg_ptr(weight)
         .arg_ptr(block_scale)
         .arg_ptr(output)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// Batched row-scaled FP8 GEMV (M<=8), BIT-IDENTICAL to `m` separate
+/// `dense_gemv_fp8w` calls: same per-element accumulation chain, same k order,
+/// and the per-row scale applied to each thread's partial BEFORE the reduction
+/// exactly as the M=1 kernel does.
+///
+/// One pass over the weight serves every activation row. At a 248K vocab the
+/// FP8 LM head is ~1.27 GB, so the per-token loop this replaces re-read the
+/// whole head once per token.
+///
+/// `input` `[M, K]` BF16, `output` `[M, N]` BF16.
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1). Requires K % 16 == 0.
+#[allow(clippy::too_many_arguments)]
+pub fn dense_gemv_fp8w_batchm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &Fp8DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=8).contains(&m),
+        "dense_gemv_fp8w_batchm: m={m} outside 1..=8 (kernel BM_MAX_M)"
+    );
+    ensure!(
+        k.is_multiple_of(16),
+        "dense_gemv_fp8w_batchm: K={k} not a multiple of 16"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.row_scale)
+        .arg_ptr(output)
+        .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
         .launch(stream)
