@@ -58,14 +58,25 @@
 
   // Keep probing while we are waiting for the user to start an agent, so the
   // dialog advances by itself the moment one appears.
+  //
+  // 'failed' waits too, and for the same reason. It is not only the state where
+  // nothing answered: it is where an agent answered and was REFUSED, and the
+  // commonest refusal is a protocol mismatch, whose message ends by telling the
+  // visitor to run an installer on that machine. So the dialog sends someone to
+  // a terminal and then, alone among its states, does not watch for them coming
+  // back -- the upgraded agent restarts, speaks the right protocol, and the page
+  // keeps showing the old complaint until a human clicks Try again. Polling here
+  // costs nothing extra: `probe()` is silent, so a failure that persists leaves
+  // this panel exactly as it is, and only success moves the dialog forward.
+  const WATCHED = ['guide', 'failed'];
   $effect(() => {
-    if (launch.phase !== 'guide' || launch.openRecipe === null) return;
+    if (!WATCHED.includes(launch.phase) || launch.openRecipe === null) return;
     let cancelled = false;
     let delay = 1200;
     const tick = async () => {
       if (cancelled) return;
       await launch.probe();
-      if (cancelled || launch.phase !== 'guide') return;
+      if (cancelled || !WATCHED.includes(launch.phase)) return;
       // Back off so a dialog left open does not poll forever at full rate.
       delay = Math.min(delay * 1.4, 8000);
       timer = setTimeout(tick, delay);
