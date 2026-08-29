@@ -508,6 +508,31 @@ impl TransformerModel {
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
                 }
             }
+            crate::speculative::EP_CMD_MTP_PROPOSE => {
+                // Run the SAME drafter forward rank 0 is running, so its collectives have a
+                // partner. The drafts themselves are discarded — rank 0 broadcasts the tokens
+                // it actually verifies — but the drafter KV this writes must stay in lockstep,
+                // which it does because both ranks consume identical `(last_token, position)`
+                // and identical target hiddens (the target forward is already collective-correct).
+                let last_token = self.ep_broadcast_u32(0)?;
+                let position = self.ep_broadcast_u32(0)? as usize;
+                let num_drafts = self.ep_broadcast_u32(0)? as usize;
+                let hidden_idx = self.ep_broadcast_u32(0)? as usize;
+                // Mirror the head's `save_hidden_for_mtp`: the drafter's input vector must be
+                // the SAME on both ranks or the all-reduce sums partials of different inputs.
+                // No worker command arm writes `mtp_hidden_save`, so it has to happen here.
+                if let Err(e) = self.save_hidden_for_mtp(hidden_idx, stream) {
+                    tracing::warn!("EP worker save_hidden_for_mtp({hidden_idx}) failed: {e:#}");
+                }
+                if let Err(e) =
+                    self.run_mtp_propose_inner(last_token, position, num_drafts, seq, None)
+                {
+                    // Never fail the worker on a drafter error: rank 0 decides what is
+                    // verified, so a degraded worker draft costs acceptance, not correctness.
+                    // Bailing here would desynchronise the command stream instead.
+                    tracing::warn!("EP worker MTP propose failed (continuing): {e:#}");
+                }
+            }
             0xFFFFFFF3 => {
                 // Verify K=3: receive 3 tokens, run verify, receive num_accepted (0/1/2)
                 let t0 = self.ep_broadcast_u32(0)?;

@@ -284,6 +284,26 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
     hash
 }
 
+/// EP worker command: run one MTP propose in lockstep with rank 0.
+/// Payload after the code: `last_token`, `position`, `num_drafts` (3 x u32).
+pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
+
+/// `ATLAS_MTP_EP_PROPOSE=1`: run the drafter on EVERY rank with the
+/// communicator, instead of rank-0-only with `comm: None`.
+///
+/// Both halves move together and neither is safe alone:
+/// * the head broadcasts [`EP_CMD_MTP_PROPOSE`] before every propose, so the
+///   worker runs the SAME drafter forward and issues the SAME collectives in
+///   the same stream order;
+/// * [`DraftProposer::needs_comm`] then hands the block a comm.
+///
+/// Opt-in while it is being measured: a wrong answer here is a hang, not a
+/// bad number, and the rank-0-only path is the shipping one until this beats it.
+pub fn mtp_ep_propose_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MTP_EP_PROPOSE").ok().as_deref() == Some("1"))
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
@@ -319,6 +339,27 @@ pub trait DraftProposer: Send + Sync {
     /// 0). `None` = not computed; callers must not gate on it then.
     fn last_confidence(&self) -> Option<f32> {
         None
+    }
+
+    /// True when this proposer's block is SHARDED across ranks and its
+    /// forward therefore needs the communicator (a routed-MoE all-reduce and
+    /// a row-parallel `o_proj` reduce), like any target layer.
+    ///
+    /// Default false, which is correct for the Qwen and DeepSeek-V4 drafters:
+    /// their MTP modules load EVERY expert on EVERY rank, so the output is
+    /// already complete and passing a comm would DOUBLE it via SUM.
+    ///
+    /// 🔴 GLM-5.3 is the opposite and it is not a choice: `load_glm5next_mtp_module`
+    /// builds its MoE through the same `Glm5NextMlpConfig` the target layers use, so
+    /// `build_moe` walks `cfg.local_expert_range()` and loads 144 of 288 experts;
+    /// `DsaTpPlan::new(tp_rank, tp_world_size, ..)` splits the DSA heads the same way.
+    ///
+    /// 🪤 Returning true is NOT sufficient on its own — that is exactly what `t58` did and
+    /// it deadlocked at the first propose. The worker rank must ALSO execute the propose,
+    /// or rank 0's drafter collectives land against whatever the worker issues next. See
+    /// `EP_CMD_MTP_PROPOSE`.
+    fn needs_comm(&self) -> bool {
+        false
     }
 
     /// True when this proposer's context prefill uses the SHARED forward

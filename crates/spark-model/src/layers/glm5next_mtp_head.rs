@@ -11,12 +11,17 @@
 //! draft  = argmax(logits)
 //! ```
 //!
-//! 🔴 **Runs on every rank, and must agree bit for bit across them.** The routed MoE is
-//! EP-sharded and the DSA `o_proj` is row-parallel, so the block all-reduces exactly as a text
-//! layer does; both ranks then hold the same `x`, the same logits and the same argmax. If they
-//! ever disagreed the two ranks would verify different drafts, which is not a quality
-//! regression but a hang or garbage. (This is why it is NOT the rank-0-local drafter DeepSeek-V4
-//! uses — V4's MTP module has all its experts local, GLM's does not.)
+//! 🔴 **This block is SHARDED — EP-sharded routed MoE (144 of 288 experts per rank) and a
+//! row-parallel DSA `o_proj`** — unlike the Qwen and DeepSeek-V4 MTP modules, which load every
+//! expert on every rank. So it needs the communicator exactly as a text layer does.
+//!
+//! 🪤 Historically it ran WITHOUT one and on RANK 0 ONLY (`run_mtp_propose_multi_dispatch`:
+//! *"Rank 1 does not participate in MTP propose"*), which is correct for V4 and wrong here: the
+//! drafter proposed from half the routed sum and half the attention output. Lossless — the
+//! target verifies every draft — so the only symptom was acceptance. `ATLAS_MTP_EP_PROPOSE=1`
+//! turns on BOTH halves of the fix: the worker executes propose on `EP_CMD_MTP_PROPOSE`, and
+//! `needs_comm()` then hands the block a comm. Turning on only the second half is `t58`, which
+//! deadlocked.
 //!
 //! 🪤 The embedding is read as a POINTER into the shared table, not a gather: the row for token
 //! `t` is `embed_tokens + t * hidden * 2`. No kernel, no copy.
@@ -352,6 +357,13 @@ impl DraftProposer for Glm5NextMtpHead {
             logits: gpu.alloc(self.vocab * 2)?,
             arg: gpu.alloc(4)?,
         }))
+    }
+
+    /// 🔴 EP-sharded MoE (144 of 288 experts) + row-parallel DSA `o_proj`. Without the
+    /// communicator this block drafts from HALF of both. See the trait doc for why that is
+    /// only safe once the WORKER rank runs propose too.
+    fn needs_comm(&self) -> bool {
+        crate::speculative::mtp_ep_propose_enabled()
     }
 
     /// 🔴 The GLM context prefill runs the block through `ctx.buffers`. See the trait doc —
