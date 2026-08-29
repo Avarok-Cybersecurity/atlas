@@ -125,6 +125,10 @@ pub struct Glm5NextLayer {
     pub post_attn_norm: DevicePtr,
     /// 🪤 `rms_norm_vanilla`, never `rms_norm`. See the module header.
     pub rms_norm_k: KernelHandle,
+    /// `bf16_add_inplace`, the residual add the MTP layer needs and the text layers do not:
+    /// a text layer's residual lives in the mHC highway and `hc_post` folds the block output
+    /// into it. `0` on a target without the kernel, which the MTP path refuses.
+    pub add_k: KernelHandle,
     pub rms_eps: f32,
     pub hidden: usize,
     /// 🔴 Whether the MIXER output is a partial sum. Both mixers end in a **row-parallel**
@@ -317,6 +321,82 @@ impl Glm5NextLayer {
         Ok(())
     }
 
+    /// `dst += src` over `n` BF16 elements.
+    fn add_inplace(
+        &self,
+        gpu: &dyn GpuBackend,
+        dst: DevicePtr,
+        src: DevicePtr,
+        n: usize,
+        stream: u64,
+    ) -> Result<()> {
+        if self.add_k.0 == 0 {
+            bail!(
+                "GLM layer {}: bf16_add_inplace is not loaded on this target; the MTP layer's \
+                 plain residual path needs it",
+                self.layer_idx
+            );
+        }
+        KernelLaunch::new(gpu, self.add_k)
+            .grid([(n as u32).div_ceil(256), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(dst)
+            .arg_ptr(src)
+            .arg_i32(n as i32)
+            .launch(stream)
+    }
+
+    /// One token through a layer with NO hyper-connection — a plain pre-norm residual block.
+    ///
+    /// 🔴 This is the MTP layer, and it is the only GLM-5.3 block shaped this way. Every text
+    /// layer carries `hc_*` tensors and its residual lives in the mHC highway, where `hc_post`
+    /// folds the block output back in; `layers.45` carries none, so it is an ordinary
+    /// `x = x + attn(norm(x))` / `x = x + mlp(norm(x))` block. That asymmetry is why
+    /// [`Glm5NextLayer::mhc`] is an `Option` rather than a field.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_one_plain(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        st: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_offloaded: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let normed = ctx.buffers.norm_output();
+        let ffn_out = ctx.buffers.moe_output();
+
+        self.norm(gpu, hidden, self.input_norm, normed, 1, stream)?;
+        let attn_out = self.mixer_forward(
+            normed,
+            residual,
+            st,
+            kv_cache,
+            seq_len,
+            block_table,
+            disk_block_ids,
+            disk_offloaded,
+            ctx,
+            stream,
+        )?;
+        // 🔴 Row-parallel `o_proj` ⇒ a PARTIAL SUM at TP>1. Reduce before it joins the
+        // residual, exactly as the mHC path reduces before `hc_post`.
+        if self.mixer_all_reduce {
+            self.reduce_partial(attn_out, 1, ctx, stream)?;
+        }
+        self.add_inplace(gpu, hidden, attn_out, h, stream)?;
+
+        self.norm(gpu, hidden, self.post_attn_norm, normed, 1, stream)?;
+        self.mlp_forward(normed, ffn_out, 1, ctx, stream)?;
+        self.add_inplace(gpu, hidden, ffn_out, h, stream)
+    }
+
     /// One token through the whole layer, using highway slot `slot`.
     #[allow(clippy::too_many_arguments)]
     fn forward_one(
@@ -336,10 +416,18 @@ impl Glm5NextLayer {
         let gpu = ctx.gpu;
         let h = self.hidden;
         let Some(mhc) = self.mhc.as_ref() else {
-            bail!(
-                "GLM layer {}: no hyper-connection bound. Every text layer of GLM-5.3 has one; \
-                 only the MTP layer does not, and the MTP layer is not part of this stack.",
-                self.layer_idx
+            // No hyper-connection: the MTP layer, a plain pre-norm residual block.
+            return self.forward_one_plain(
+                hidden,
+                residual,
+                st,
+                kv_cache,
+                seq_len,
+                block_table,
+                disk_block_ids,
+                disk_offloaded,
+                ctx,
+                stream,
             );
         };
         let hc = mhc.hc_mult;

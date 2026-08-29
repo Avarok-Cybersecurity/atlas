@@ -337,6 +337,9 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         let mlp_kernels = Glm5NextMlpKernels::resolve(gpu)?;
         let mhc_kernels_probe = Glm5NextMhcKernels::resolve(gpu)?;
         let rms_norm_k = gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?;
+        // Only the MTP layer's plain residual path uses this; a text layer's residual lives in
+        // the mHC highway. `try_kernel` so a target without it still serves the text stack.
+        let add_k = crate::layers::try_kernel(gpu, "bf16_add", "bf16_add_inplace");
 
         // 🪤 All 34 KDA blocks have identical geometry, so ONE workspace serves them all.
         //
@@ -470,6 +473,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     &src.f32("post_attention_layernorm.weight")?,
                 )?,
                 rms_norm_k,
+                add_k,
                 rms_eps: config.rms_norm_eps as f32,
                 hidden: config.hidden_size,
                 mixer_all_reduce: match sl.mixer {
