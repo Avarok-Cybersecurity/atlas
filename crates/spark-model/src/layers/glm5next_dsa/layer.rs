@@ -243,6 +243,25 @@ impl Glm5NextDsaLayer {
             stream,
         )?;
 
+        // Per-head selector weights, FP32 straight out of the GEMM, from the LAYER INPUT.
+        // `weights_proj` is `[index_heads, hidden]` and the reference is
+        // `weights_proj(hidden) * index_heads**-0.5`, with the scale already folded into the
+        // weight at load (`build.rs` transform 2). Computed here rather than in
+        // `select_and_attend` for the plain reason that this is the function that HAS
+        // `hidden`; `select_and_attend` does not, which is how it came to read `q_resid`
+        // instead and overrun it by 5120 bytes. See A55.
+        gemm(
+            gpu,
+            self.kernels.gemm_f32,
+            hidden,
+            self.weights.weights_proj,
+            self.workspace.head_weights,
+            1,
+            self.cfg.index_heads,
+            self.cfg.hidden,
+            stream,
+        )?;
+
         // Validity is per position and this one is real.
         gpu.memset_async(state.valid.offset(pos), 1, 1, stream)?;
         state.advance(1)
@@ -275,17 +294,15 @@ impl Glm5NextDsaLayer {
             self.cfg.q_lora_rank,
             stream,
         )?;
-        gemm(
-            gpu,
-            self.kernels.gemm_f32,
-            w.q_resid,
-            self.weights.weights_proj,
-            w.head_weights,
-            1,
-            self.cfg.index_heads,
-            self.cfg.hidden,
-            stream,
-        )?;
+        // 🔴 `head_weights` is NOT computed here any more — see `indexer_forward`. It used to
+        // be, from `w.q_resid` with `K = cfg.hidden`, which was wrong twice over: the
+        // reference projects the LAYER INPUT (`gen_dsa_indexer_golden.py`:
+        // `weights_proj(hidden) * NH**-0.5`), and `q_resid` is only `[q_lora_rank] = 1536`
+        // BF16, so reading 4096 of them ran **5120 bytes past the end of the allocation**.
+        // That out-of-bounds read was ANOMALIES A55: the head weights were a function of
+        // whatever the allocator had placed after `q_resid`, which is why the model's output
+        // moved when the heap moved, when allocations were zeroed, and when an unrelated
+        // buffer was added. Found by red-zoning the allocator and bisecting the guard bands.
 
         let inputs = DsaSelectInputs {
             k_normed: state.k_normed,
