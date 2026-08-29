@@ -30,6 +30,7 @@ import { writeStable } from './lib/write-stable.mjs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { assignTrendPredecessors } from '../src/lib/gate-lineage.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
@@ -51,6 +52,62 @@ function gitSoft(args) {
   } catch {
     return '';
   }
+}
+
+const ancestryCache = new Map();
+const resolvedCommitCache = new Map();
+let commitParents;
+
+function loadCommitParents() {
+  if (commitParents) return commitParents;
+  commitParents = new Map();
+  for (const line of gitSoft(['rev-list', '--parents', '--all']).split('\n')) {
+    const [sha, ...parents] = line.trim().split(/\s+/);
+    if (sha) commitParents.set(sha, parents);
+  }
+  return commitParents;
+}
+
+function resolveCommit(sha) {
+  if (!sha) return '';
+  if (resolvedCommitCache.has(sha)) return resolvedCommitCache.get(sha);
+  const parents = loadCommitParents();
+  let resolved = parents.has(sha) ? sha : '';
+  if (!resolved) {
+    const matches = [...parents.keys()].filter((candidate) => candidate.startsWith(sha));
+    if (matches.length === 1) resolved = matches[0];
+  }
+  resolvedCommitCache.set(sha, resolved);
+  return resolved;
+}
+
+function gitIsAncestor(older, newer) {
+  if (!older || !newer) return false;
+  if (older === newer) return true;
+  const key = `${older}>${newer}`;
+  if (ancestryCache.has(key)) return ancestryCache.get(key);
+  let yes = false;
+  const parents = loadCommitParents();
+  const olderCommit = resolveCommit(older);
+  const newerCommit = resolveCommit(newer);
+  const pending = newerCommit ? [newerCommit] : [];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const sha = pending.pop();
+    if (sha === olderCommit) {
+      yes = true;
+      break;
+    }
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    pending.push(...(parents.get(sha) ?? []));
+  }
+  ancestryCache.set(key, yes);
+  return yes;
+}
+
+function gitCommitKnown(sha) {
+  return Boolean(resolveCommit(sha));
 }
 
 // --- registered suite from the descriptor SSOT -------------------------------
@@ -82,7 +139,9 @@ function slim(raw, branch) {
     served_by: raw.served_by,
     atlas_version: raw.atlas_version,
     hardware: raw.hardware,
+    perf_class: raw.hardware_state?.perf_class ?? '',
     params: raw.params,
+    serve_overrides: raw.serve_overrides,
     metrics: raw.metrics,
     frame_status: raw.frame_status,
     verdict: raw.verdict,
@@ -145,12 +204,21 @@ try {
 
 // --- assemble ---------------------------------------------------------------
 const benchmarks = {};
+const generatedHead = gitSoft(['rev-parse', 'HEAD']);
 for (const rec of records.values()) {
   const b = (benchmarks[rec.benchmark_id] ??= { name: rec.benchmark_name, records: [] });
   b.records.push(rec);
 }
 for (const b of Object.values(benchmarks)) {
   b.records.sort((x, y) => x.recorded_at - y.recorded_at);
+  assignTrendPredecessors(b.records, gitIsAncestor);
+  for (const rec of b.records) {
+    rec.generated_ancestry = !gitCommitKnown(rec.git_sha)
+      ? 'unknown'
+      : gitIsAncestor(rec.git_sha, generatedHead)
+        ? 'yes'
+        : 'no';
+  }
 }
 
 const obj = {

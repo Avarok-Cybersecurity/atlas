@@ -116,7 +116,7 @@
     <footer class="bd-foot">
       <span>
         {src.committed + src.from_branches} records · {src.branches_scanned} branches scanned
-        {#if src.from_branches > 0}· {src.from_branches} from unmerged branches{/if}
+        {#if src.from_branches > 0}· {src.from_branches} from remote branch heads{/if}
         · as of {gateData.generated_date} ({gateData.generated_sha})
       </span>
       {#if unpublished.length > 0}

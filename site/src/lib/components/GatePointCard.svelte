@@ -36,7 +36,12 @@
 
       <dl class="gpc-rows">
         <dt>commit</dt>
-        <dd><a href="{GH_COMMIT}{r.git_sha}" target="_blank" rel="noopener">{r.git_sha}</a>{#if r.branch}<span class="gpc-branch"> · {r.branch} (unmerged)</span>{/if}</dd>
+        <dd>
+          <a href="{GH_COMMIT}{r.git_sha}" target="_blank" rel="noopener">{r.git_sha}</a>
+          {#if r.branch}<span class="gpc-branch"> · source {r.branch}</span>{/if}
+          {#if r.generated_ancestry === 'no'}<span class="gpc-branch"> · not in dashboard commit history</span>{/if}
+          {#if r.generated_ancestry === 'unknown'}<span class="gpc-branch"> · commit history unavailable</span>{/if}
+        </dd>
         <dt>recorded</dt>
         <dd>{fmtDateTime(r.recorded_at)}</dd>
         <dt>served by</dt>

@@ -4,6 +4,7 @@
   // any point raising the record for the metadata card. Same hand-rolled SVG
   // dialect as StarChart.svelte — no chart library.
   import { colorFor, fmtDate } from '$lib/gates.js';
+  import { trendEdges } from '$lib/gate-lineage.js';
 
   let { records, panel, onselect } = $props();
 
@@ -11,12 +12,12 @@
 
   const series = $derived(
     panel.metrics
-      .map((m) => ({
-        ...m,
-        pts: records
+      .map((m) => {
+        const pts = records
           .filter((r) => Number.isFinite(r.metrics?.[m.key]))
-          .map((r) => ({ t: r.recorded_at, v: r.metrics[m.key], rec: r }))
-      }))
+          .map((r) => ({ t: r.recorded_at, v: r.metrics[m.key], rec: r }));
+        return { ...m, pts, edges: trendEdges(pts) };
+      })
       .filter((s) => s.pts.length > 0)
   );
 
@@ -100,8 +101,10 @@
 
     {#each series as s}
       {@const c = colorFor(s.pts[0].rec.target_model)}
-      <path d={path(s.pts)} fill="none" stroke={c} stroke-width="2"
-        stroke-dasharray={s.dashed ? '5 4' : 'none'} stroke-linejoin="round" stroke-linecap="round" />
+      {#each s.edges as edge}
+        <path d={path(edge)} fill="none" stroke={c} stroke-width="2"
+          stroke-dasharray={s.dashed ? '5 4' : 'none'} stroke-linejoin="round" stroke-linecap="round" />
+      {/each}
       {#each s.pts as p}
         <g
           class="gc-pt"
