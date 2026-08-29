@@ -100,6 +100,26 @@ pub struct GateRecord {
     /// One line a future reader scans before the numbers: what was measured,
     /// what it hit, and anything the verdict or log makes noteworthy.
     pub summary: String,
+    /// The scheduler performance controls this run actually resolved.
+    ///
+    /// `--pull-request-gate` starts the server as a task INSIDE this process
+    /// (`bench_selfstart::serve_for`), so the scheduler reads these from the
+    /// inherited process environment. Nothing pinned them and nothing recorded
+    /// them, which means two records could share a tree, a recipe and a full
+    /// set of serve overrides and still have executed different admission
+    /// behaviour — the confirmed provenance defect in atlas#812, and the one
+    /// remaining candidate for the C=4 bimodality that the stored fields could
+    /// not separate.
+    ///
+    /// Values are RESOLVED, not raw: an unset variable is recorded as the
+    /// default the scheduler would apply, because "absent" and "set to the
+    /// default" are the same run and must read the same in the record.
+    ///
+    /// Disclosure only — `check_record` does not demand a match. Demanding one
+    /// would invalidate every record written before this field existed, for a
+    /// value none of them could have carried.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub perf_env: BTreeMap<String, String>,
     /// What each kernel target compiled to when this was measured.
     ///
     /// Lets a later `kernels/`-only diff keep this record for the targets whose
@@ -108,6 +128,38 @@ pub struct GateRecord {
     /// records written before this existed behave exactly as they did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub closure: super::closure::Attestation,
+}
+
+/// The scheduler performance controls a gate record discloses, each with the
+/// default the scheduler applies when it is unset.
+///
+/// Kept beside the record rather than imported from the scheduler because
+/// `atlas-plugin` does not depend on `spark-server`. That is a real duplication
+/// and `perf_env_defaults_match_the_scheduler` pins it: if a default moves in
+/// `scheduler::mod_helpers`, that test is what fails.
+const PERF_CONTROLS: [(&str, &str); 3] = [
+    ("ATLAS_PREFILL_CODISPATCH", "0"),
+    ("ATLAS_PREFILL_CODISPATCH_WINDOW_MS", "100"),
+    ("ATLAS_PREFILL_CODISPATCH_SETTLE_MS", "10"),
+];
+
+/// Resolve [`PERF_CONTROLS`] through `lookup`, substituting each default for an
+/// unset or empty variable.
+///
+/// Pure over the lookup so it is testable without mutating the process
+/// environment — `set_var` is unsafe and process-global, and a test that raced
+/// another test's read would be exactly the kind of intermittent this file
+/// exists to make impossible.
+pub fn resolve_perf_env(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    PERF_CONTROLS
+        .iter()
+        .map(|(key, default)| {
+            let value = lookup(key).filter(|v| !v.trim().is_empty());
+            ((*key).to_string(), value.unwrap_or_else(|| (*default).to_string()))
+        })
+        .collect()
 }
 
 /// Comparison against one metric's threshold. `min` fails below (scores),
@@ -380,6 +432,11 @@ impl GateRecord {
             verdict,
             verdict_reason,
             summary: summarize(record),
+            // Read here rather than at run start because the gate serves in
+            // THIS process: the environment the scheduler read is still the
+            // environment this call sees, and there is no second process whose
+            // state could have diverged in between.
+            perf_env: resolve_perf_env(|k| std::env::var(k).ok()),
         })
     }
 

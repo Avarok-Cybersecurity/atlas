@@ -6,6 +6,7 @@
   // low-C half where the single-stream story lives. Same hand-rolled SVG
   // dialect and classes as GateChart.svelte — no chart library.
   import { colorFor, fmtDate, ladderPoints } from '$lib/gates.js';
+  import { dashFor, isLatestOfVariant, variantLabel } from '$lib/gate-variants.js';
 
   let { records, panel, onselect } = $props();
 
@@ -14,10 +15,26 @@
   // Only runs that actually published ladder keys chart; the panel spec is
   // only emitted when at least one exists, but a mixed history (older runs
   // from before the metrics map) must not blank the chart.
+  // `latest` is per VARIANT, not the last element. With two gate ids on one
+  // axis the newest DFlash2 run is usually not the newest run overall, so a
+  // single global latest would leave a whole variant permanently faded and
+  // reading as stale. Dash carries the variant; colour still follows the
+  // model, because both variants serve the same checkpoint.
   const runs = $derived(
     records
-      .map((rec) => ({ rec, pts: ladderPoints(rec) }))
+      .map((rec) => ({
+        rec,
+        pts: ladderPoints(rec),
+        dash: dashFor(rec.benchmark_id),
+        variant: variantLabel(rec.benchmark_id),
+        latest: isLatestOfVariant(rec, records)
+      }))
       .filter((r) => r.pts.length > 0)
+  );
+  // One legend entry per variant actually drawn, so a reader can tell which
+  // line is which without clicking a point.
+  const legend = $derived(
+    [...new Map(runs.filter((r) => r.variant).map((r) => [r.variant, r])).values()]
   );
 
   const ext = $derived.by(() => {
@@ -43,7 +60,19 @@
   <figcaption class="gate-panel-head">
     <span class="gate-panel-title">{panel.title}</span>
     <span class="gate-panel-unit">{panel.unit}</span>
-    {#if runs.length > 1}
+    {#if legend.length > 0}
+      <span class="gate-legend">
+        {#each legend as l}
+          <span class="gate-legend-item">
+            <svg class="gate-legend-line" viewBox="0 0 18 8" aria-hidden="true">
+              <line x1="1" y1="4" x2="17" y2="4" stroke={colorFor(l.rec.target_model)}
+                stroke-width="2" stroke-dasharray={l.dash} stroke-linecap="round" />
+            </svg>
+            {l.variant}
+          </span>
+        {/each}
+      </span>
+    {:else if runs.length > 1}
       <span class="gate-legend">
         <span class="gate-legend-item">latest run solid · older runs faded</span>
       </span>
@@ -59,22 +88,22 @@
       <text class="gc-axis" x={x(c)} y={H - 8} text-anchor="middle">C={c}</text>
     {/each}
 
-    {#each runs as r, i}
-      {@const latest = i === runs.length - 1}
+    {#each runs as r}
+      {@const latest = r.latest}
       {@const col = colorFor(r.rec.target_model)}
       <g opacity={latest ? 1 : 0.28}>
         <path d={path(r.pts)} fill="none" stroke={col} stroke-width={latest ? 2 : 1.5}
-          stroke-linejoin="round" stroke-linecap="round" />
+          stroke-dasharray={r.dash} stroke-linejoin="round" stroke-linecap="round" />
         {#each r.pts as p}
           <g
             class="gc-pt"
             role="button"
             tabindex="0"
-            aria-label="C={p.c}: {fmtV(p.v)} tok/s on {fmtDate(r.rec.recorded_at)}, {r.rec.verdict} — details"
+            aria-label="C={p.c}: {fmtV(p.v)} tok/s{r.variant ? ', ' + r.variant : ''} on {fmtDate(r.rec.recorded_at)}, {r.rec.verdict} — details"
             onclick={() => onselect(r.rec)}
             onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onselect(r.rec))}
           >
-            <title>C={p.c} · {fmtV(p.v)} tok/s · {fmtDate(r.rec.recorded_at)} · {r.rec.verdict} · click for record</title>
+            <title>C={p.c} · {fmtV(p.v)} tok/s{r.variant ? ' · ' + r.variant : ''} · {fmtDate(r.rec.recorded_at)} · {r.rec.verdict} · click for record</title>
             <circle class="gc-hit" cx={x(p.c)} cy={y(p.v)} r="11" />
             {#if r.rec.verdict === 'PASS'}
               <circle class="gc-mark" cx={x(p.c)} cy={y(p.v)} r="3.5" fill={col} />

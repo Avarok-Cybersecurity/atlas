@@ -326,13 +326,16 @@ fn committed_floors() -> Floors {
             .min
             .unwrap_or_else(|| panic!("{metric} must have a minimum"))
     };
+    // Only the rungs that carry a committed bound. A rung the ladder measures
+    // but nobody has bounded yet is absent from BENCH.toml on purpose (see
+    // RUNGS in concurrency.rs) and must not be invented here as 0.0, or this
+    // helper would claim a floor exists where none was measured.
+    let floor = |metric: &str| metrics.get(metric).and_then(|b| b.min);
     Floors {
-        per_c: vec![
-            (1, min("c1_aggregate_tok_s")),
-            (4, min("c4_aggregate_tok_s")),
-            (8, min("c8_aggregate_tok_s")),
-            (16, min("c16_aggregate_tok_s")),
-        ],
+        per_c: [1usize, 2, 4, 8, 16, 32, 64, 128]
+            .into_iter()
+            .filter_map(|c| floor(&format!("c{c}_aggregate_tok_s")).map(|v| (c, v)))
+            .collect(),
         peak: min("peak_aggregate_tok_s"),
     }
 }
@@ -466,15 +469,30 @@ fn an_unobserved_warm_cache_cannot_clear_the_gate() {
 /// default, and `configure` carries the values into the verdict floors.
 #[test]
 fn the_floor_params_are_wired_to_the_gate() {
+    // Derived from RUNGS, so this asserts the DERIVATION rather than
+    // re-typing the list: a rung added there must appear here, paired with
+    // the metric key the BENCH.toml bound is written on, and the peak must
+    // stay last.
     assert_eq!(
         DESCRIPTOR.threshold_params,
         [
             ("min_c1", "c1_aggregate_tok_s"),
+            ("min_c2", "c2_aggregate_tok_s"),
             ("min_c4", "c4_aggregate_tok_s"),
             ("min_c8", "c8_aggregate_tok_s"),
             ("min_c16", "c16_aggregate_tok_s"),
+            ("min_c32", "c32_aggregate_tok_s"),
+            ("min_c64", "c64_aggregate_tok_s"),
+            ("min_c128", "c128_aggregate_tok_s"),
             ("min_peak", "peak_aggregate_tok_s"),
         ]
+    );
+    // Both gate ids share the driver, so they must also share the pairing —
+    // a DFlash2 record scored against a different set of metric names would
+    // silently gate nothing.
+    assert_eq!(
+        DFLASH2_DESCRIPTOR.threshold_params, DESCRIPTOR.threshold_params,
+        "the two concurrency gates must gate on the same metric names"
     );
     let mut b = ConcurrencySweep::default();
     let specs = b.parameters();
@@ -493,7 +511,18 @@ fn the_floor_params_are_wired_to_the_gate() {
     assert!(b.floors.gating());
     assert_eq!(
         b.floors.per_c,
-        vec![(1, 0.0), (4, 0.0), (8, 63.0), (16, 0.0)]
+        vec![
+            (1, 0.0),
+            (2, 0.0),
+            (4, 0.0),
+            (8, 63.0),
+            (16, 0.0),
+            (32, 0.0),
+            (64, 0.0),
+            (128, 0.0)
+        ],
+        "an unbounded rung must carry the 0.0 OFF value, not be absent — \
+         `sweep_verdict` fails a GATED rung that produced no comparable cell"
     );
     assert_eq!(b.floors.peak, 94.0);
 }

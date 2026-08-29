@@ -63,7 +63,7 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "qwen3.8-27b".into(),
                 "concurrency-sweep".into(),
                 "concurrencies".into(),
-                "1,4,8,16".into(),
+                "1,2,4,8,16,32,64,128".into(),
             ),
             (
                 "gb10".into(),
@@ -76,6 +76,32 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "gb10".into(),
                 "qwen3.8-27b".into(),
                 "concurrency-sweep".into(),
+                "osl".into(),
+                "320".into(),
+            ),
+            // The DFlash2 gate's instrument is byte-identical to the plain
+            // one's, deliberately: the two ladders must differ in exactly one
+            // axis (whether the engine speculates) or a shape difference
+            // between them is not attributable to speculation. Listing both
+            // here is what keeps that identity from drifting silently.
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep-dflash2".into(),
+                "concurrencies".into(),
+                "1,2,4,8,16,32,64,128".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep-dflash2".into(),
+                "isls".into(),
+                "512".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep-dflash2".into(),
                 "osl".into(),
                 "320".into(),
             ),

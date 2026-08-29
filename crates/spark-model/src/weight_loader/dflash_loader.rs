@@ -490,6 +490,7 @@ mod tests {
         let error = parse_dflash_config(&malformed).unwrap_err();
         assert_eq!(error.to_string(), "Parsing DFlash drafter config.json");
         assert!(format!("{error:#}").contains("invalid type: string \"bad\""));
+    }
 
     /// A DFlash2 checkpoint states its trained block size INSIDE
     /// `dflash_config`; the top-level field is absent and serde fills its

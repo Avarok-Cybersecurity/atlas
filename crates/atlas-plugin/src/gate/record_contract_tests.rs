@@ -4,6 +4,7 @@
 
 use super::tests::{MODEL, SHA, frame, hw, run_record, tempdir};
 use super::*;
+use super::record::resolve_perf_env;
 use crate::history::RunRecord;
 use crate::result::{RunStatus, Verdict};
 use std::collections::BTreeMap;
@@ -208,4 +209,93 @@ fn a_failed_frame_is_recorded_but_never_passes() {
     assert_eq!(gate.verdict_reason, "scoring crashed");
     assert!(gate.frame_status_failed());
     assert!(!gate.verdict_passes());
+}
+
+// ── scheduler performance-control provenance (atlas#812) ───────────────────
+//
+// The defect these pin: `--pull-request-gate` starts the server inside this
+// process, so the scheduler reads ATLAS_PREFILL_CODISPATCH* from the inherited
+// environment. Nothing pinned or recorded them, so two records could share a
+// tree, a recipe and a full set of serve overrides while executing different
+// admission behaviour — and the investigation that needed to tell those apart
+// found the records could not.
+
+#[test]
+fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
+    // "absent" and "explicitly set to the default" are the SAME run. A record
+    // that showed one as blank and the other as a number would invite a reader
+    // to infer a difference that did not exist.
+    let resolved = resolve_perf_env(|_| None);
+    assert_eq!(resolved.get("ATLAS_PREFILL_CODISPATCH").map(String::as_str), Some("0"));
+    assert_eq!(
+        resolved.get("ATLAS_PREFILL_CODISPATCH_WINDOW_MS").map(String::as_str),
+        Some("100")
+    );
+    assert_eq!(
+        resolved.get("ATLAS_PREFILL_CODISPATCH_SETTLE_MS").map(String::as_str),
+        Some("10")
+    );
+}
+
+#[test]
+fn a_set_control_wins_and_an_empty_one_does_not() {
+    // An exported-but-empty variable is how a shell spells "I did not set
+    // this"; the scheduler's own parse falls back to the default for it, so
+    // recording the empty string would misreport the run.
+    let resolved = resolve_perf_env(|k| match k {
+        "ATLAS_PREFILL_CODISPATCH" => Some("1".into()),
+        "ATLAS_PREFILL_CODISPATCH_WINDOW_MS" => Some("   ".into()),
+        _ => None,
+    });
+    assert_eq!(resolved.get("ATLAS_PREFILL_CODISPATCH").map(String::as_str), Some("1"));
+    assert_eq!(
+        resolved.get("ATLAS_PREFILL_CODISPATCH_WINDOW_MS").map(String::as_str),
+        Some("100"),
+        "an empty value must resolve to the default, not to the empty string"
+    );
+}
+
+/// The defaults above are duplicated from `scheduler::mod_helpers` because
+/// `atlas-plugin` does not depend on `spark-server`. This is the test that
+/// makes the duplication safe: it reads the scheduler's own source and fails
+/// if a default moves there without moving here, which would silently make
+/// every record disclose a value the server never used.
+#[test]
+fn perf_env_defaults_match_the_scheduler() {
+    let path = repo_root().join("crates/spark-server/src/scheduler/mod_helpers.rs");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    // Match the RESOLUTION, not the first mention: each control is named in a
+    // doc comment before it is read, so anchoring on the name alone would
+    // assert against prose and pass whatever the code did.
+    let resolution = |var: &str| -> String {
+        let at = src
+            .find(&format!("std::env::var(\"{var}\")"))
+            .unwrap_or_else(|| panic!("{var} is not read in mod_helpers.rs"));
+        src[at..].chars().take(220).collect()
+    };
+    assert!(
+        resolution("ATLAS_PREFILL_CODISPATCH_WINDOW_MS").contains("unwrap_or(100)"),
+        "the scheduler's co-dispatch WINDOW default moved; PERF_CONTROLS in record.rs still \
+         says 100 and every record would disclose a value the server never used"
+    );
+    assert!(
+        resolution("ATLAS_PREFILL_CODISPATCH_SETTLE_MS").contains("unwrap_or(10)"),
+        "the scheduler's co-dispatch SETTLE default moved; PERF_CONTROLS in record.rs still \
+         says 10"
+    );
+    let enable = resolution("ATLAS_PREFILL_CODISPATCH");
+    assert!(
+        enable.contains("unwrap_or(false)"),
+        "the scheduler's co-dispatch ENABLE default moved; the record's \"0\" default is only \
+         correct while an unset variable means off"
+    );
+}
+
+fn repo_root() -> std::path::PathBuf {
+    let mut d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    while !d.join(".git").exists() {
+        assert!(d.pop(), "no repo root above CARGO_MANIFEST_DIR");
+    }
+    d
 }

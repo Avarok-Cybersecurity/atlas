@@ -411,7 +411,10 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     let sweep = baseline_for(&root, "concurrency-sweep").unwrap();
     let (_, c) = sweep.resolve("gb10", None).unwrap();
     for (key, want) in [
-        ("max_batch_size", "32"),
+        // 128, with the ladder: a batch cap below the widest measured rung
+        // makes that rung serial, which is the recipe's batch-1 defect one
+        // scale up.
+        ("max_batch_size", "128"),
         ("kv_cache_dtype", "fp8"),
         ("ssm_cache_slots", "8"),
         ("max_model_len", "4096"),
@@ -428,6 +431,46 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         !c.serve_overrides.contains_key("lm_head_dtype"),
         "the bf16 head is a correctness pin the gate must not touch"
     );
+
+    // The DFlash2 gate is the same profile PLUS the drafter, and nothing else.
+    // Each of the three drafter keys is load-bearing: without `dflash` the run
+    // measures the base engine under a speculative label, without an explicit
+    // `draft_model` it depends on a MODEL.toml fallback the record would not
+    // disclose, and without `dflash_gamma` the CLI default of 16 shadows this
+    // drafter's trained block size of 8 — which measured 0% accept on every
+    // verify step.
+    let dflash2 = baseline_for(&root, "concurrency-sweep-dflash2").unwrap();
+    let (_, d) = dflash2.resolve("gb10", None).unwrap();
+    for (key, want) in [
+        ("max_batch_size", "128"),
+        ("kv_cache_dtype", "fp8"),
+        ("ssm_cache_slots", "8"),
+        ("max_model_len", "4096"),
+        ("dflash", "true"),
+        ("draft_model", "incoai/Qwen3.8-27B-DFlash2"),
+        ("dflash_gamma", "8"),
+    ] {
+        assert_eq!(
+            d.serve_overrides.get(key).map(String::as_str),
+            Some(want),
+            "concurrency-sweep-dflash2 serve pin {key}: {:?}",
+            d.serve_overrides
+        );
+    }
+    assert_eq!(d.serve_overrides.len(), 7, "{:?}", d.serve_overrides);
+    assert!(
+        !d.serve_overrides.contains_key("speculative"),
+        "--dflash conflicts with --speculative at the CLI: pinning both would not start"
+    );
+    // The one-variable rule, asserted rather than described: every key the
+    // plain gate pins must be pinned identically here.
+    for (key, want) in &c.serve_overrides {
+        assert_eq!(
+            d.serve_overrides.get(key),
+            Some(want),
+            "the two concurrency ladders must differ ONLY in the drafter, but {key} differs"
+        );
+    }
 
     // Everything else keeps the recipe's own config. bfcl-subset in
     // particular: its default subject's bars (Qwen3.8-27B, 2026-08-14) were

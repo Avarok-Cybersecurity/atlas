@@ -495,7 +495,7 @@ const VISION_EXCLUDES: &[Exclusion] = &[
 ];
 
 /// The gates whose records must pass, and what each one ignores.
-pub const REQUIRED: [GateCoverage; 10] = [
+pub const REQUIRED: [GateCoverage; 11] = [
     GateCoverage {
         id: "agentic-webserver",
         excludes: AGENTIC_EXCLUDES,
@@ -574,6 +574,21 @@ pub const REQUIRED: [GateCoverage; 10] = [
     },
     GateCoverage {
         id: "concurrency-sweep",
+        excludes: CONCURRENCY_EXCLUDES,
+    },
+    // The same ladder with the DFlash2 drafter armed, added 2026-08-29. It
+    // shares CONCURRENCY_EXCLUDES because it shares the driver: the two gates
+    // differ only in the recipe their BENCH.toml entries name, so exactly the
+    // same set of foreign drivers cannot reach either number.
+    //
+    // ★ It is REQUIRED, not a promotion candidate, because the speculative
+    // path had NO gate at all. Every other required gate serves a no-drafter
+    // recipe, which is why the 2026-08 C4 investigation could only rule
+    // DFlash2 out by reading source: no committed record spoke for it. A path
+    // that ships and is never certified is the gap this closes; the ongoing
+    // cost is that every future PR owes an eleventh record.
+    GateCoverage {
+        id: "concurrency-sweep-dflash2",
         excludes: CONCURRENCY_EXCLUDES,
     },
 ];

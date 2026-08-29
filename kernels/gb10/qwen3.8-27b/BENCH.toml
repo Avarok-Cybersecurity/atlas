@@ -328,7 +328,14 @@ and cannot calibrate it; the first certified rerun must replace them."""
 # first certified run proved it (C=1..16 all ~19 tok/s, TTFT stacking
 # linearly). 0.85 util + batch 32 verified to boot and serve on 2026-08-15
 # (the calibration ladders ran on it).
-max_batch_size = "32"
+# ⚠ 32 -> 128 on 2026-08-29, with the ladder. A batch cap below the widest
+# rung makes that rung serial by construction, which is the same defect the
+# recipe's batch 1 had at C=16 — the cap must cover the widest measured C or
+# the top of the curve measures the cap, not the engine. Because check_record
+# demands an exact serve-pin match, this INVALIDATES every concurrency-sweep
+# record committed before it; that is correct, they measured a different
+# instrument.
+max_batch_size = "128"
 # The recipe's bf16 KV is its <=32K single-stream reproduction pin. This
 # model's own MODEL.toml carries default_kv_dtype = "fp8" (a property of the
 # shared FP8-KV kernel set), and the serve itself WARNs that bf16 is the
@@ -359,7 +366,11 @@ max_model_len = "4096"
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
 # each parameter's own schema kind, exactly like --param KEY=VALUE.
-concurrencies = "1,4,8,16"
+# 1..128 as of 2026-08-29: the published Atlas-vs-vLLM ladder quotes C=1..128,
+# and a certification that stopped at 16 left the four widest rungs of the
+# claim ungated. C=2 is in because it is the thinnest margin on that ladder
+# and the one most easily lost silently.
+concurrencies = "1,2,4,8,16,32,64,128"
 isls = "512"
 osl = "320"
 
@@ -405,6 +416,84 @@ min = 280.0
 # Zero, absolutely: the driver already refuses to mint throughput keys from
 # vacuous cells, and this pins the same fact at the record level.
 max = 0.0
+
+# --- concurrency-sweep-dflash2 ---------------------------------------------
+# The same ladder with the DFlash2 drafter armed, REQUIRED since 2026-08-29.
+#
+# ★ WHY A SECOND GATE AND NOT A SECOND VARIANT OF THE FIRST. `check_record`'s
+# `record_is_required_subject` refuses a non-default checkpoint for the
+# required verdict — "a pass on the dense 27B is not evidence for the required
+# gate, whose declared subject is the default checkpoint" — so a variant can
+# never satisfy a mandatory gate. Two gate ids is the mechanism the repo
+# already uses for exactly this shape (`bfcl-subset` / `bfcl-subset-echolp`).
+#
+# ★ WHY IT EXISTS AT ALL. Nothing else gates speculation. All ten previous
+# required gates serve a no-drafter recipe, so a DFlash2 regression could only
+# ever be judged by hand — which is precisely what the 2026-08 C4
+# investigation had to do, spending days establishing "not DFlash2" from
+# source reading because no committed record could speak for it.
+#
+# ★ ITS NUMBERS ARE NOT COMPARABLE TO concurrency-sweep's. Speculation moves
+# low-C aggregate throughput by more than any regression either bar is set to
+# catch, so the two carry independent bounds and must never be crossed. The
+# useful comparison is each gate against its own history, never one against
+# the other.
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "concurrency-sweep-dflash2"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-dflash2"
+label = "Qwen3.8-27B dense (NVFP4, unsloth) + DFlash2"
+default = true
+status = "unmeasured"
+note = """\
+UNMEASURED — no thresholds, deliberately. `baseline_for` DROPS an unmeasured \
+entry rather than admitting one with empty bounds, and the schema refuses an \
+unmeasured entry that carries a threshold, so this cannot gate until a run \
+has measured it. That ordering is the point: a guessed floor a run could \
+clear would report PASS for something nobody measured. \
+★ THE FIRST RUN CANNOT BE A GATED ONE. Serve the recipe directly and run the \
+sweep with --url/--model to obtain >=3 reps of the full C=1..128 ladder, cut \
+every floor together from mean - max(3*sigma, ~5%), commit them here as \
+status = "measured", and only then can --pull-request-gate record against \
+them. \
+★ EXPECT THE TWO CURVES TO CONVERGE AT THE WIDE RUNGS. DFlash2's verify \
+batches are bounded (VERIFY_ROW_CAP over gamma=8 rows per sequence, and the \
+MTP max-seqs lever), so above the width where speculation self-limits this \
+gate measures the base engine. That is a fact about the feature, not a fault \
+in the instrument; record it and let the two lines meet on the chart."""
+
+[benchmarks.serve_overrides]
+# The DFlash2 serve, on top of the same batched profile the plain gate pins —
+# the two ladders must differ in ONE axis (speculation) or their shapes are
+# not attributable.
+max_batch_size = "128"
+kv_cache_dtype = "fp8"
+ssm_cache_slots = "8"
+max_model_len = "4096"
+# --dflash is `conflicts_with = "speculative"` at the clap level, so the
+# recipe this names must not also enable MTP; the two drafters are mutually
+# exclusive by construction, not by convention.
+dflash = "true"
+# Named explicitly rather than left to the MODEL.toml [dflash] fallback. A
+# drafter is trained against ONE target's hidden states — this one consumes
+# Qwen3.8-27B layers [5,19,33,47,61] — and a mismatched drafter degrades to
+# near-zero acceptance rather than failing, which is slow and silent. The
+# record therefore has to carry which drafter produced the number.
+draft_model = "incoai/Qwen3.8-27B-DFlash2"
+# gamma=8 is the drafter's OWN trained block_size, stated inside its
+# `dflash_config`. It must be explicit: --dflash-gamma's clap default is 16,
+# which shadows the checkpoint's value, and running an 8-block drafter at 16
+# measured 0% accept on every verify step while sizing its pools for twice
+# the block it can use.
+dflash_gamma = "8"
+
+[benchmarks.param_overrides]
+# Byte-identical to the plain gate's instrument. Anything else and the two
+# ladders stop being one experiment with one variable.
+concurrencies = "1,2,4,8,16,32,64,128"
+isls = "512"
+osl = "320"
 
 # --- vision-fidelity -------------------------------------------------------
 # Vision models only. This gate is declared on the three targets that ship a

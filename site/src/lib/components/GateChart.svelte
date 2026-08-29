@@ -14,6 +14,11 @@
     panel.metrics
       .map((m) => {
         const pts = records
+          // `m.variant` narrows a series to one gate id, so two variants of
+          // one instrument never share a polyline (see gate-variants.js).
+          // Filtering BEFORE trendEdges also keeps lineage honest: an edge
+          // between two different gates' records is not a trend.
+          .filter((r) => !m.variant || r.benchmark_id === m.variant)
           .filter((r) => Number.isFinite(r.metrics?.[m.key]))
           .map((r) => ({ t: r.recorded_at, v: r.metrics[m.key], rec: r }));
         return { ...m, pts, edges: trendEdges(pts) };

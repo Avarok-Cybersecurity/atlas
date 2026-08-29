@@ -110,6 +110,29 @@ const baselines = series.filter((s) => s.role === 'baseline');
 const matched = baselines.find((s) => s.parity === 'matched');
 if (!matched) die('no matched-parity baseline');
 
+// `variant`: another configuration of the SUBJECT engine (e.g. a different
+// drafter). Drawn on the chart, and deliberately absent from `rows`,
+// `ratio_vs_best`, `wins` and `summary` below: the published claim is Atlas
+// against the best vLLM at each rung, and admitting a second Atlas
+// configuration would change what that number means. A variant is evidence
+// about Atlas, not evidence about the comparison.
+//
+// It IS held to the same rung coverage as a baseline, for the same reason: a
+// line that stops partway along a log2 axis reads as a measurement, not as a
+// gap.
+const variants = series.filter((s) => s.role === 'variant');
+for (const v of variants) {
+  for (const row of subject.rungs) {
+    if (!v.rungs.some((r) => r.c === row.c))
+      die(`variant ${v.id} is missing rung C=${row.c}`);
+  }
+}
+const KNOWN_ROLES = new Set(['subject', 'baseline', 'variant']);
+for (const s2 of series) {
+  if (!KNOWN_ROLES.has(s2.role))
+    die(`series ${s2.id} has unknown role ${JSON.stringify(s2.role)}`);
+}
+
 const at = (s, c) => s.rungs.find((r) => r.c === c);
 
 // Every rung the subject measured must exist in every baseline, or the
