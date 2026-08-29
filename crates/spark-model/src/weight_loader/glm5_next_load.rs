@@ -123,13 +123,13 @@ fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
 }
 
 /// One layer's slice of the store, presented to the KDA binder as layer-relative names.
-struct LayerSource {
+pub(super) struct LayerSource {
     names: Vec<String>,
     tensors: std::collections::BTreeMap<String, (WeightDtype, Vec<usize>, Vec<u8>)>,
 }
 
 impl LayerSource {
-    fn collect(gpu: &dyn GpuBackend, store: &WeightStore, layer: usize) -> Result<Self> {
+    pub(super) fn collect(gpu: &dyn GpuBackend, store: &WeightStore, layer: usize) -> Result<Self> {
         let prefix = format!("model.language_model.layers.{layer}.");
         let mut names = Vec::new();
         let mut tensors = std::collections::BTreeMap::new();
@@ -155,7 +155,7 @@ impl LayerSource {
         Ok(Self { names, tensors })
     }
 
-    fn f32(&self, name: &str) -> Result<Vec<f32>> {
+    pub(super) fn f32(&self, name: &str) -> Result<Vec<f32>> {
         let (dtype, _, bytes) = self
             .tensors
             .get(name)
@@ -247,7 +247,7 @@ fn bind_mhc_site(
 }
 
 /// One routed expert, bound straight off the checkpoint's device pointers.
-fn bind_expert(
+pub(super) fn bind_expert(
     gpu: &dyn GpuBackend,
     store: &WeightStore,
     layer: usize,
@@ -543,7 +543,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
     }
 }
 
-fn upload_f32_as_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
+pub(super) fn upload_f32_as_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
     let b: Vec<u8> = v
         .iter()
         .flat_map(|x| half::bf16::from_f32(*x).to_le_bytes())
@@ -592,4 +592,28 @@ mod prune_tests {
         // Malformed / non-numeric index is never a match.
         assert!(!is_reuploaded("model.language_model.layers.x.foo", n));
     }
+}
+
+/// [`LayerSource::collect`], named for the MTP loader's call site.
+pub(super) fn layer_source(
+    gpu: &dyn GpuBackend,
+    store: &WeightStore,
+    layer: usize,
+) -> Result<LayerSource> {
+    LayerSource::collect(gpu, store, layer)
+}
+
+/// [`bind_expert`], named for the MTP loader's call site.
+pub(super) fn bind_expert_at(
+    gpu: &dyn GpuBackend,
+    store: &WeightStore,
+    layer: usize,
+    id: usize,
+) -> Result<Glm5NextExpertWeights> {
+    bind_expert(gpu, store, layer, id)
+}
+
+/// [`upload_f32_as_bf16`], named for the MTP loader's call site.
+pub(super) fn upload_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
+    upload_f32_as_bf16(gpu, v)
 }

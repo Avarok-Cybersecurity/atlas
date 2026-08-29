@@ -38,6 +38,8 @@ pub use dflash_loader::{
     store_has_dflash_weights,
 };
 pub mod glm5_next_load;
+mod glm5_next_mtp;
+pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
 pub use gemma4::Gemma4WeightLoader;
 pub use glm5_next_load::Glm5NextWeightLoader;
 pub use laguna::LagunaWeightLoader;

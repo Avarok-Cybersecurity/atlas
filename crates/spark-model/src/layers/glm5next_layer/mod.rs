@@ -397,6 +397,44 @@ impl Glm5NextLayer {
         self.add_inplace(gpu, hidden, ffn_out, h, stream)
     }
 
+    /// One token through this layer for the MTP drafter.
+    ///
+    /// Only valid on a `mhc: None` block — the drafter's layer. `hidden` is read and written in
+    /// place (the plain residual path accumulates into it), and there are no disk tiers because
+    /// the drafter's KV pool is small, private and fully resident.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_one_for_drafter(
+        &self,
+        hidden: DevicePtr,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if self.mhc.is_some() {
+            bail!(
+                "GLM layer {}: decode_one_for_drafter is the MTP block's path; this layer has a \
+                 hyper-connection",
+                self.layer_idx
+            );
+        }
+        let (mut disk_a, mut disk_b) = (Vec::new(), Vec::new());
+        self.forward_one_plain(
+            hidden,
+            hidden,
+            state,
+            kv_cache,
+            seq_len,
+            block_table,
+            &mut disk_a,
+            &mut disk_b,
+            ctx,
+            stream,
+        )
+    }
+
     /// One token through the whole layer, using highway slot `slot`.
     #[allow(clippy::too_many_arguments)]
     fn forward_one(

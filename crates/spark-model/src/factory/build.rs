@@ -224,6 +224,35 @@ pub fn build_model(
     // verification then dropped.
     // Only rank 0 runs the MTP draft (no-EP, all experts local). Skip loading it
     // on the worker ranks — they never call propose(), so it would be dead weight.
+    // GLM-5.3's MTP block is architecturally distinct in a THIRD way: neither the Qwen-shaped
+    // `MtpWeights` nor DeepSeek's `mtp.0.*` module, but `layers.45` — a DSA mixer + the same
+    // 288-expert routed MoE + `shared_head.norm`, with NO hyper-connection.
+    //
+    // 🔴 Loaded on EVERY rank, unlike the V4 module below. GLM's MTP MoE is EP-sharded exactly
+    // like the text stack, so both ranks hold a half and the block's own all-reduce assembles
+    // it; a rank-0-only drafter would silently drop half the routed sum and draft from a
+    // half-computed hidden.
+    let glm_mtp_module = if config.model_type == "glm5_next" && use_speculative {
+        match crate::weight_loader::load_glm5next_mtp_module(&store, &config, gpu.as_ref()) {
+            Ok(Some(m)) => {
+                tracing::info!("GLM-5.3 MTP draft module loaded (layers.{})", config.num_hidden_layers);
+                Some(m)
+            }
+            Ok(None) => {
+                tracing::info!("GLM-5.3: no MTP block in checkpoint (MTP off)");
+                None
+            }
+            Err(e) => {
+                tracing::error!("GLM-5.3 MTP module load FAILED: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let glm_mtp_embed = embed;
+    let glm_mtp_lm_head = lm_head;
+
     let v4_mtp_module =
         if config.model_type == "deepseek_v4" && use_speculative && config.ep_rank == 0 {
             match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
@@ -830,6 +859,29 @@ pub fn build_model(
             }
             Err(e) => tracing::warn!(
                 "Failed to build DeepSeek-V4 MTP proposer: {e:#}. Speculative decoding disabled."
+            ),
+        }
+    }
+
+    // ── Step 6c: GLM-5.3 MTP proposer (optional, post-construction) ──
+    //
+    // Built here for the same reason as the V4 head: it needs the model's owned GPU backend and
+    // the shared embedding + LM head, neither of which `new()` hands out.
+    if let Some(m) = glm_mtp_module {
+        match crate::layers::Glm5NextMtpHead::new(
+            m,
+            glm_mtp_embed,
+            glm_mtp_lm_head,
+            model.config_ref(),
+            model.gpu_backend(),
+            max_seq_len,
+        ) {
+            Ok(head) => {
+                model.set_dflash_proposer(std::sync::Arc::new(head));
+                tracing::info!("GLM-5.3 MTP speculative decoding: ENABLED");
+            }
+            Err(e) => tracing::warn!(
+                "Failed to build GLM-5.3 MTP proposer: {e:#}. Speculative decoding disabled."
             ),
         }
     }

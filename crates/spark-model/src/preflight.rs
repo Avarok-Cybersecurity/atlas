@@ -344,6 +344,11 @@ fn check_mtp_consumability(config: &ModelConfig) -> Result<()> {
         "holo3_1_moe",
         "qwen3_vl_moe",
         "qwen3_coder_next",
+        // GLM-5.3: the MTP block is `layers.{num_hidden_layers}` (a DSA mixer + the routed MoE
+        // + `shared_head.norm`, no mHC), consumed by `load_glm5next_mtp_module` and driven by
+        // `Glm5NextMtpHead`. 🪤 It does NOT use `mtp.0.*`, so a `grep mtp` over the checkpoint
+        // finds nothing and this list is the only place that records that it is supported.
+        "glm5_next",
     ];
     if MTP_SUPPORTED_MODEL_TYPES.contains(&config.model_type.as_str()) {
         return Ok(());

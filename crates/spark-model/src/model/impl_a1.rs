@@ -192,8 +192,22 @@ impl TransformerModel {
         // main head (NVFP4 default) or the draft-only head built when the main
         // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
+        // 🔴 This flag SIZES THE RECURRENT ROLLBACK POOLS (checkpoints + per-token
+        // intermediates). It has to be true for every proposer that can reject a draft, not
+        // just the Qwen-shaped one.
+        //
+        // 🪤 GLM-5.3 populates NEITHER of the first two signals: its MTP block is
+        // `layers.{num_hidden_layers}`, not the Qwen `MtpWeights`, and its LM head is BF16 so
+        // there is no NVFP4 draft head. Its proposer is installed AFTER construction via
+        // `set_dflash_proposer`, so `new()` cannot see it either. `mtp_layer_types` is what the
+        // config parser records when the CHECKPOINT declares MTP layers — the one signal
+        // available this early. Without it the pools are never allocated and the first decode
+        // panics in `ssm_pool::h_checkpoint` ("len is 0 but the index is 0").
+        let checkpoint_declares_mtp = !config.mtp_layer_types.is_empty();
         let has_mtp = self_speculative
-            || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+            || (use_speculative
+                && ((!mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+                    || checkpoint_declares_mtp))
             || dflash_kgamma > 0;
         let num_intermediates = if !has_mtp {
             0
