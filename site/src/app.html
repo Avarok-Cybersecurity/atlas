@@ -4,7 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Atlas is an open source, pure Rust and CUDA LLM inference engine hand tuned for NVIDIA DGX Spark. What ships is what we verify." />
-    <meta name="theme-color" content="#14111f" />
+    <!-- Must equal --bg in web-shared/atlas-tokens.css. A meta tag cannot read a
+         custom property, so this is the one unavoidable copy of the ground colour;
+         theme-color.test.js fails the build if the two drift. -->
+    <meta name="theme-color" content="#0F1216" />
     <!-- Explicit rather than inherited: several engines treat a missing robots
          directive as a reason to clip snippets and thumbnails. -->
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />

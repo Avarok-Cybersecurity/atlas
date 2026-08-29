@@ -1,5 +1,6 @@
 <script>
   import { modal } from '$lib/modal.js';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   // Desktop bar + mobile drawer render from the SAME `nav.links` in data.js.
   // Below the drawer breakpoint (styles/mobile.css) the bar hides and the
   // toggle appears, so phones keep every link the desktop has.
@@ -58,8 +59,7 @@
 <nav>
   <div class="nav-inner">
     <a class="nav-logo" href="/" aria-label="Atlas home">
-      <img class="nav-mark" src="/favicon.svg" alt="" width="34" height="34" />
-      <span class="nav-wordmark">Atlas</span>
+      <AtlasLockup kind="horizontal" width={122} label="Atlas" />
     </a>
     <div class="nav-links">
       {#each nav.links as l}

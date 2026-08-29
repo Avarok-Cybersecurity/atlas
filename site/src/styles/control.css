@@ -53,7 +53,7 @@
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
 }
 .fl-card {
-  background: var(--card); border: 1px solid rgba(58,48,84,0.45); border-radius: 18px;
+  background: var(--card); border: 1px solid color-mix(in srgb, var(--border-strong) 45%, transparent); border-radius: 18px;
   padding: 1.35rem 1.45rem; display: flex; flex-direction: column; gap: 0.75rem;
   box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
 }
@@ -89,7 +89,7 @@
 .trust-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .trust-paired { color: var(--ch-green); background: color-mix(in srgb, var(--ch-green) 14%, transparent); }
 .trust-this { color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); }
-.trust-pairing, .trust-unreachable { color: var(--amber); background: rgba(251,191,36,0.12); }
+.trust-pairing, .trust-unreachable { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
 
 .fl-untrusted { font-size: 0.85rem; color: var(--t2); line-height: 1.6; }
 .fl-offline { font-size: 0.85rem; color: var(--amber); line-height: 1.6; }
@@ -110,8 +110,8 @@
   border: 1px solid color-mix(in srgb, var(--ch-cyan) 30%, transparent);
 }
 .chip-link-warn {
-  color: var(--amber); background: rgba(251,191,36,0.12);
-  border-color: rgba(251,191,36,0.3);
+  color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 30%, transparent);
 }
 
 /* ---- vitals ---------------------------------------------------------------- */
@@ -149,7 +149,7 @@
 .vt-paused .vt-val { color: var(--t3); }
 .vt-meter { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 0.2rem; }
 .vt-meter-fill { display: block; height: 100%; background: var(--sx); }
-.vt-alert { border-left-color: var(--amber); background: rgba(251,191,36,0.08); }
+.vt-alert { border-left-color: var(--amber); background: color-mix(in srgb, var(--amber) 8%, transparent); }
 /* --t3 measures 3.95:1 against the tinted grounds below, which is under AA for
    text this small. Alerting tiles step their small text up to --t2. */
 .vt-alert .vt-label, .vt-alert .vt-unit, .vt-alert .vt-sub,
@@ -162,7 +162,7 @@
 .fl-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; list-style: none; }
 .al-badge {
   font-size: 0.62rem; font-weight: 700; padding: 0.18rem 0.45rem; border-radius: 4px;
-  background: rgba(251,191,36,0.12); color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--amber);
 }
 .al-badge.al-critical { background: var(--red-soft); color: var(--red); }
 .fl-activity {
@@ -203,7 +203,7 @@
 /* ---- topology -------------------------------------------------------------- */
 .topo-wrap { display: grid; grid-template-columns: 1fr 300px; gap: 2rem; margin-top: 2.5rem; align-items: start; }
 .topo-fig {
-  background: var(--card); border: 1px solid rgba(58,48,84,0.45); border-radius: 18px;
+  background: var(--card); border: 1px solid color-mix(in srgb, var(--border-strong) 45%, transparent); border-radius: 18px;
   padding: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 16px 44px -20px rgba(0,0,0,0.24);
 }
 /* Fixed viewBox: node count changes redraw inside it, never resize it. */
@@ -253,7 +253,7 @@
 .al-strip {
   margin-top: 1.75rem; padding: 0.8rem 1rem; border-radius: 10px;
   font-size: 0.88rem; color: var(--t1); line-height: 1.55;
-  background: rgba(251,191,36,0.10); border: 1px solid rgba(251,191,36,0.28);
+  background: color-mix(in srgb, var(--amber) 10%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 28%, transparent);
 }
 .al-strip.al-critical { background: var(--red-soft); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 .al-strip a { color: var(--accent-deep); }
@@ -267,7 +267,7 @@
 .al-sev {
   font-family: var(--font-mono); font-size: 0.64rem; font-weight: 800;
   text-transform: uppercase; letter-spacing: 0.06em; padding: 0.18rem 0.45rem;
-  border-radius: 4px; background: rgba(251,191,36,0.12); color: var(--amber); text-align: center;
+  border-radius: 4px; background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--amber); text-align: center;
 }
 .al-sev.al-critical { background: var(--red-soft); color: var(--red); }
 .al-node { color: var(--t1); font-weight: 650; }

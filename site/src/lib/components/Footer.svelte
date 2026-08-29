@@ -1,11 +1,12 @@
 <script>
   import { footer, contactEmails, discordUrl, mlperfTrademark, nvidiaInceptionUrl } from '$lib/data.js';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
 </script>
 
 <footer>
   <div class="footer-inner">
     <div class="footer-brand">
-      <div class="flogo"><img src="/favicon.svg" alt="" width="28" height="28" /> Atlas</div>
+      <div class="flogo"><AtlasLockup kind="full" label="Atlas Inference Engine" /></div>
       <p>{footer.tagline}</p>
       <p class="lic">{footer.license}</p>
     </div>

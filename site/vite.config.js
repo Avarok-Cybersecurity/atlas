@@ -3,6 +3,7 @@ import { defineConfig } from 'vite';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { glslStrip } from '../web-shared/glsl-strip.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -44,5 +45,10 @@ function atlasGenerators() {
 }
 
 export default defineConfig({
-  plugins: [atlasGenerators(), sveltekit()]
+  plugins: [glslStrip(), atlasGenerators(), sveltekit()],
+  server: {
+    // app.css and the field import from web-shared/, outside this app's root.
+    // The build resolves it regardless; the dev server has to be told.
+    fs: { allow: [resolve(import.meta.dirname, '..', 'web-shared')] }
+  }
 });

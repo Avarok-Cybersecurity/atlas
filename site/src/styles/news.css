@@ -15,7 +15,7 @@
   flex-direction: column;
   gap: 0.6rem;
   background: var(--card);
-  border: 1px solid rgba(58, 48, 84, 0.45);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 45%, transparent);
   border-radius: 18px;
   padding: 1.6rem 1.7rem;
   overflow: hidden;
@@ -30,7 +30,7 @@
 .news-tag {
   font-family: var(--font-mono); font-size: 0.66rem; font-weight: 700;
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-deep);
-  background: var(--accent-soft); border: 1px solid rgba(124, 92, 255, 0.3);
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 5px; padding: 0.2rem 0.5rem; white-space: nowrap;
 }
 .news-date { font-size: 0.72rem; color: var(--t3); white-space: nowrap; }
@@ -46,7 +46,7 @@
 .ann-cta {
   font-size: 0.82rem; font-weight: 700; color: var(--accent);
   text-decoration: none; white-space: nowrap;
-  border-bottom: 1px solid rgba(124, 92, 255, 0.35);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .ann-cta:hover { border-bottom-color: var(--accent); }
 

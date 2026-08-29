@@ -5,6 +5,12 @@ on:
     branches: [main, master]
     paths:
       - 'site/**'
+      - 'blog/**'
+      # The design tokens both properties import. A change here restyles
+      # atlasinference.io AND blog.atlasinference.io, so it has to trigger the
+      # build that redeploys them — otherwise the two go out of sync until
+      # something unrelated touches one of them.
+      - 'web-shared/**'
       - '.benchmarks/**'
       - '.github/workflows/site.yml'
   # No path filter on pull_request: this check joins the required set, and a
@@ -57,6 +63,24 @@ jobs:
       # build, and are a separate concern from these.
       - name: Run unit tests
         run: bun test --preload ./test-runes.js src/lib
+
+      - name: Install blog dependencies
+        working-directory: blog
+        run: bun install --frozen-lockfile
+
+      - name: Run blog unit tests
+        working-directory: blog
+        run: bun test src/lib
+
+      # The chevron field brightens the page ground behind live text, so its
+      # amplitude is an accessibility constraint, not a taste setting. This
+      # recomputes the bound from the shader, the tokens and the shipped
+      # density and fails if any text token drops below WCAG AA. It is also
+      # what stops a token edit on the marketing site from silently pushing
+      # the blog's metadata gray under 4.5:1.
+      - name: Chevron-field contrast budget
+        working-directory: ${{ github.workspace }}
+        run: bun .contrast-check.mjs
 
   build:
     name: Build SvelteKit site
@@ -150,6 +174,63 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # The blog. Same toolchain, no atlas-recipes dependency — it renders its
+      # own posts and nothing else.
+      - name: Install blog dependencies
+        working-directory: blog
+        run: bun install --frozen-lockfile
+
+      - name: Build blog
+        working-directory: blog
+        run: bun x --bun vite build
+
+      # Same reasoning as the marketing site's title check: a route can lose
+      # its own <title> to the layout's and nothing else about the page looks
+      # wrong. On a blog that means every article shipping under the homepage's
+      # name, which is invisible until someone shares a link.
+      - name: Every blog route kept its own title
+        working-directory: blog
+        run: |
+          fail=0
+          check() { # file  expected-substring
+            got=$(grep -o '<title>[^<]*' "build/$1" | head -1)
+            case "$got" in
+              *"$2"*) echo "ok   $1 -> $got" ;;
+              *) echo "::error::build/$1 has title \"$got\", expected one containing \"$2\""; fail=1 ;;
+            esac
+          }
+          check index.html            'Notes from the inference layer'
+          check 404.html              'Not found'
+          check tags/engineering.html 'Engineering'
+          # Every post, by name. A renamed slug that nothing links to would
+          # otherwise stop being prerendered without failing anything.
+          for f in build/posts/*.html; do
+            got=$(grep -o '<title>[^<]*' "$f" | head -1)
+            case "$got" in
+              '<title>'*' — Atlas blog') echo "ok   ${f#build/} -> $got" ;;
+              *) echo "::error::${f#build/} has title \"$got\""; fail=1 ;;
+            esac
+          done
+          exit "$fail"
+
+      # Both builds exist at this point, which is the only moment either app can
+      # check the other. The blog's footer deep-links into the marketing site's
+      # sections; those ids live in a different app and nothing else connects
+      # them, so a renamed section leaves a link that still loads the page and
+      # silently drops the reader at the top of it. Two such links shipped in
+      # the first draft of the footer, both invented rather than looked up.
+      - name: Blog cross-links resolve on the marketing site
+        working-directory: ${{ github.workspace }}
+        run: bun blog/e2e/check-crosslinks.mjs site/build blog/build
+
+      - name: Upload blog artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: blog-site
+          path: blog/build
+          retention-days: 7
+          if-no-files-found: error
+
   deploy:
     name: Deploy to avarok via rsync
     needs: build
@@ -158,6 +239,11 @@ jobs:
     environment:
       name: production-site
       url: https://atlasinference.io/
+    outputs:
+      # The verify job below needs to know whether anything was actually
+      # deployed; without this it would check a stale production against a
+      # build that never left the runner.
+      configured: ${{ steps.secret_check.outputs.configured }}
     steps:
       - name: Check deploy secret presence
         # Skip deploy entirely when DEPLOY_SSH_PRIVATE_KEY isn't
@@ -181,6 +267,13 @@ jobs:
         with:
           name: marketing-site
           path: site
+
+      - name: Download blog artifact
+        if: steps.secret_check.outputs.configured == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: blog-site
+          path: blog
 
       - name: Install rsync
         if: steps.secret_check.outputs.configured == 'true'
@@ -229,3 +322,67 @@ jobs:
           rsync -az --delete-delay --chmod=D755,F644 \
             -e "ssh -p ${PORT}" \
             site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"
+
+      # blog.atlasinference.io, in the same job and over the same connection.
+      # rsync is already a diff: when the built blog is byte-identical to what
+      # is deployed it transfers nothing and deletes nothing, so a push that
+      # only touched site/ costs one no-op sync rather than a redeploy.
+      - name: Deploy blog
+        if: steps.secret_check.outputs.configured == 'true'
+        env:
+          DEPLOY_SSH_HOST:  ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER:  ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_PORT:  ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_BLOG_PATH: ${{ secrets.DEPLOY_BLOG_PATH }}
+        run: |
+          # Deliberately a hard failure rather than the soft skip the whole
+          # deploy job takes when DEPLOY_SSH_PRIVATE_KEY is absent. That skip is
+          # for an environment with no deploy configured at all; this is an
+          # environment that DOES deploy, where one target has been forgotten.
+          # Skipping quietly there means the blog silently stops updating while
+          # every run stays green.
+          if [ -z "${DEPLOY_BLOG_PATH}" ]; then
+            echo "::error::DEPLOY_BLOG_PATH is not set on the production-site environment."
+            echo "The marketing site deployed; the blog did not. Set it to the blog docroot"
+            echo "on the origin (/var/www/blog.atlasinference.io/html) and re-run."
+            exit 1
+          fi
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          rsync -az --delete-delay --chmod=D755,F644 \
+            -e "ssh -p ${PORT}" \
+            blog/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_BLOG_PATH}/"
+
+
+  verify:
+    name: Verify the deployed blog
+    needs: deploy
+    if: needs.deploy.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # A SEPARATE job, and not three lines inside `deploy`, for a reason worth
+      # writing down. `deploy` deliberately has no checkout: it downloads the
+      # two build artifacts straight into `site/` and `blog/` and rsyncs those
+      # directories wholesale. Checking the repo out there would put source
+      # files in the trees that get uploaded to production. But the check
+      # script lives in the repo, so it needs a checkout — hence its own job,
+      # where a checkout is free of consequences.
+      #
+      # This was wrong for four commits and no PR could have caught it: the
+      # deploy job is push-only, so on a pull request it skips, and a step that
+      # would have failed on the first merge to main reported nothing at all.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      # Against the live origin, because the defect this guards is observable
+      # only from a request: nginx's add_header does not accumulate across
+      # contexts, so one location-level Cache-Control silently drops every
+      # security header from exactly the HTML responses that need them, and
+      # neither the config nor `nginx -t` says so. It also catches a deploy
+      # that landed the wrong tree — the 404 assertion fails if 404.html is
+      # not in the docroot.
+      - name: Headers and routing on blog.atlasinference.io
+        run: bun blog/e2e/check-headers.mjs https://blog.atlasinference.io

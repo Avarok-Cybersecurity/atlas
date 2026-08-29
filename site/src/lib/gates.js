@@ -9,40 +9,8 @@ import gates from '$lib/gates.generated.json';
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
 
-// Series color follows the MODEL (the entity), never the tab or verdict.
-//
-// Re-derived 2026-08-25 when the canvas moved from paper to the deep-violet
-// dark theme. The previous trio (copper #b5622f, steel #1f6a9e, teal #1c7a6b)
-// was validated against #f4f0e8/#fbf9f3 and does not survive the inversion:
-// steel falls to 2.87:1 on the card surface, under the >=3:1 floor this palette
-// has always held to. The old comment asked for all three to be re-derived
-// together if the palette were ever revisited, so they were.
-//
-// Same three hue families, lifted for a near-black canvas. Measured with
-// CIEDE2000 under Vienot dichromat simulation, against #14111f and #201b30.
-// The method reproduces the previous comment's figures exactly on the old
-// surfaces (43.8 / 16.3 / 27.1, 26.1 / 27.5 / 20.3), so these numbers ARE
-// continuous with the 2026-08-14 set and can be compared directly:
-//   copper #ee6f2f  6.15:1 / 5.51:1
-//   steel  #2f88ee  5.20:1 / 4.66:1
-//   teal   #51cdb0  9.48:1 / 8.49:1
-// pairwise, normal / protan / deutan:
-//   copper vs steel  49.6 / 60.2 / 68.3
-//   copper vs teal   55.3 / 25.0 / 26.4
-//   steel  vs teal   39.9 / 42.4 / 32.6   <- the load-bearing comparison
-// Worst case 25.0, against 16.3 before; the steel-teal pair, which is the whole
-// point of the series (3.8 vs 3.6-27B: same architecture, same draw, read as a
-// generation-over-generation delta), improves from 20.3 to 32.6.
-//
-// Lightness was capped during the search. An unconstrained optimum scored 31.4
-// but put teal at 14.4:1 — a near-white cyan that no longer reads as teal, and
-// glares on a dark canvas. Separation is not worth spending the hue identity on.
-const MODEL_COLORS = {
-  'Qwen/Qwen3.6-35B-A3B-FP8': '#ee6f2f',
-  'unsloth/Qwen3.6-27B-NVFP4': '#2f88ee',
-  'unsloth/Qwen3.8-27B-NVFP4': '#51cdb0'
-};
-export const colorFor = (model) => MODEL_COLORS[model] ?? '#6f6a8d';
+export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
+
 export const shortModel = (model) => (model || '').split('/').pop() || model;
 
 // ---- tab taxonomy -----------------------------------------------------------

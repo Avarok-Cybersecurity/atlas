@@ -57,10 +57,10 @@
 .cc-status[data-tone='working'] .cc-status-dot { background: var(--accent); animation: cc-pulse 1.2s ease-in-out infinite; }
 .cc-status[data-tone='ready'] .cc-status-dot { background: var(--green); }
 .cc-status[data-tone='error'] .cc-status-dot { background: var(--amber); }
-.cc-status[data-tone='error'] { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); }
+.cc-status[data-tone='error'] { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
 @keyframes cc-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 92, 255, 0.35); }
-  50% { box-shadow: 0 0 0 5px rgba(124, 92, 255, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent); }
 }
 .cc-close { flex-shrink: 0; }
 
@@ -109,13 +109,13 @@
 .cc-offline {
   align-self: flex-start; padding: 0.2rem 0.6rem; border-radius: 999px;
   font-size: 0.66rem; font-weight: 700; color: var(--amber);
-  background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.3);
+  background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
 }
 .cc-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .cc-chip {
   font-family: inherit; font-size: 0.76rem; font-weight: 600; text-align: left;
   color: var(--accent-deep); background: var(--accent-soft);
-  border: 1px solid rgba(124, 92, 255, 0.3); border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 999px;
   padding: 0.45rem 0.9rem; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
@@ -156,7 +156,7 @@
 }
 /* code fences are screens embedded in the instrument (the .term treatment) */
 .cm-body pre {
-  background: #0d0a16; color: #ddd8f0; border-radius: 8px;
+  background: var(--sunk); color: var(--t2); border-radius: 8px;
   padding: 0.8rem 0.95rem; margin: 0 0 0.7rem; overflow-x: auto; scrollbar-width: thin;
 }
 .cm-body pre:last-child { margin-bottom: 0; }
@@ -174,7 +174,7 @@
 .cm-think[data-open='false'] .cm-think-clip { max-height: 0; }
 .cm-think-text {
   margin: 0.35rem 0 0; padding-left: 0.7rem;
-  border-left: 2px solid rgba(124, 92, 255, 0.4);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
   max-height: 11.5rem; overflow-y: auto; scrollbar-width: thin;
   font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.6;
   color: var(--t3); white-space: pre-wrap; overflow-wrap: anywhere;
@@ -232,8 +232,8 @@
 
 /* ---- error cards ----------------------------------------------------------- */
 .cc-error {
-  border: 1.5px dashed rgba(251, 191, 36, 0.5); border-radius: 4px;
-  background: rgba(251, 191, 36, 0.06); padding: 0.85rem 1rem;
+  border: 1.5px dashed color-mix(in srgb, var(--amber) 50%, transparent); border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 6%, transparent); padding: 0.85rem 1rem;
 }
 .cc-error-tag { font-size: 0.66rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--amber); }
 .cc-error-body { font-family: var(--font-sans); font-size: 0.84rem; color: var(--t2); line-height: 1.55; margin-top: 0.35rem; }
@@ -241,7 +241,7 @@
   margin-top: 0.6rem; padding: 0.4rem 0.85rem; cursor: pointer;
   font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
   color: var(--accent-deep); background: var(--accent-soft);
-  border: 1px solid rgba(124, 92, 255, 0.3); border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 6px;
   transition: background 0.15s, color 0.15s;
 }
 .cc-error-retry:hover { background: var(--accent); color: #fff; }
@@ -305,7 +305,7 @@
 .cc-connected {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.65rem;
   font-size: 0.68rem; font-weight: 700; color: var(--green);
-  background: var(--green-soft); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 999px;
+  background: var(--green-soft); border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); border-radius: 999px;
 }
 .cc-connected .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .cc-keyrow-note { font-size: 0.68rem; color: var(--t3); }

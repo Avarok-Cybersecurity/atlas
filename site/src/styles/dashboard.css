@@ -1,6 +1,6 @@
 /* =============================================================================
    Benchmark dashboard modal — same warm-workshop dialect as app.css.
-   Copper stays the 35B flagship's series color; steel #7ba7d4 is the dense
+   Copper stays the 35B flagship's series color; steel var(--ch-cyan) is the dense
    27B's (pair validated for CVD + contrast on the paper surfaces). Verdict
    colors are STATUS colors (green/red) and never used for a series.
    Viewport rules for these components live in mobile.css (its stated SSOT).
@@ -17,7 +17,7 @@
 .receipt-hit { display: block; width: 100%; max-width: 460px; position: relative; }
 /* Ring is present at REST (1px), not only on hover. */
 .receipt-hit .receipt {
-  box-shadow: var(--shadow-lg), 0 0 0 1.5px rgba(124, 92, 255, 0.38);
+  box-shadow: var(--shadow-lg), 0 0 0 1.5px color-mix(in srgb, var(--accent) 38%, transparent);
   transition: box-shadow 0.16s ease, transform 0.16s ease;
 }
 .receipt-hit:hover .receipt,
@@ -147,7 +147,7 @@
 .gbs-tile-val { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 750; color: var(--t1); }
 .gbs-tile-label { font-size: 0.7rem; color: var(--t3); font-family: var(--font-mono); }
 .gbs-verdict[data-verdict='PASS'] { color: var(--green); }
-.gbs-verdict:not([data-verdict='PASS']) { color: #f87171; }
+.gbs-verdict:not([data-verdict='PASS']) { color: var(--red); }
 
 /* ---- chart panel ---------------------------------------------------------- */
 .gate-panel {
@@ -183,7 +183,7 @@
 .gpc { max-height: min(85vh, 46rem); overflow-y: auto; width: min(430px, 100%); }
 .gpc-verdict { font-size: 0.78rem; font-weight: 800; font-family: var(--font-mono); }
 .gpc-verdict[data-verdict='PASS'] { color: var(--green); }
-.gpc-verdict:not([data-verdict='PASS']) { color: #f87171; }
+.gpc-verdict:not([data-verdict='PASS']) { color: var(--red); }
 .gpc-model-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .gpc-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 .gpc-model { font-size: 0.8rem; font-weight: 700; color: var(--t1); overflow-wrap: anywhere; }
