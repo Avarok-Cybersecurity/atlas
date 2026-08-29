@@ -20,7 +20,10 @@ import { fleet } from './fleet.svelte.js';
 import * as Placement from './placement.js';
 import { normaliseToken, storeToken } from './protocol.js';
 
-class LaunchSession {
+// Exported for tests, like FleetSession. The singleton below is what the app
+// uses; a test needs a fresh instance with a fake agent, because the behaviour
+// worth pinning is what a SILENT probe is allowed to change.
+export class LaunchSession {
   /** The one client every card shares. */
   agent = new AgentClient();
 
