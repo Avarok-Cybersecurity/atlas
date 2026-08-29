@@ -343,6 +343,14 @@
                  invitation rather than an error. -->
             <div class="ctl-setup">
               <h2>Nothing is running here yet</h2>
+              <!-- A refused handshake is not an empty machine. The probe now carries
+                   the reason here (a protocol mismatch names the installer to run),
+                   and without showing it this panel told an operator whose agent WAS
+                   running that nothing was -- then promised to continue on its own
+                   while retrying a handshake that fails the same way every time. -->
+              {#if fleet.detail}
+                <p class="ld-error" role="alert">{fleet.detail}</p>
+              {/if}
               <p>
                 Atlas runs on your hardware, not ours. Install the agent on a machine
                 and this page becomes its control panel.

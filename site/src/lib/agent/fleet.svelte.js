@@ -431,6 +431,28 @@ class FleetSession {
         await this.#openWatch();
         return;
       }
+      // An agent that ANSWERED and was refused is not silence, and the rule above
+      // allows exactly this: a silent probe may move the page forward when an
+      // agent answers. Only `ok` was handled here, so it could not.
+      //
+      // `#connect` has always got this right, and session.svelte.js does too --
+      // the same event with three handlers, one of which did nothing. The cost
+      // was a dead end the page could not leave: install an agent whose browser
+      // token this browser has never seen and `connect()` returns false, so the
+      // mode stayed 'no_agent' and the operator read "Nothing is running here
+      // yet" plus "this page will continue on its own" while it retried an
+      // identically-failing handshake forever. The panel that tells them what to
+      // do already existed and was simply unreachable from here.
+      if (this.agent.phase === 'unpaired') {
+        this.mode = 'browser_unpaired';
+        this.detail = this.agent.message ?? '';
+        return; // needs a token pasted; no amount of probing supplies one
+      }
+      // Anything else keeps probing -- an agent may still be starting -- but
+      // carries the reason, so the page can say WHY instead of claiming nothing
+      // is there. A refused handshake otherwise rendered as "nothing is
+      // running", which is false.
+      this.detail = this.agent.message ?? this.detail;
       this.#probeDelay = Math.min(this.#probeDelay * PROBE_FACTOR, PROBE_MAX_MS);
       this.#scheduleProbe();
     }, this.#probeDelay);
