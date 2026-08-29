@@ -356,7 +356,15 @@ def ready_marker(port: int) -> str:
     downstream connection resets looked exactly like a model regression.
     Match the address we asked for, so a wrong bind cannot read as ready.
     """
-    return f"Listening on {SERVE_BIND}:{port}"
+    # Matched case-insensitively against a lower-cased log: the server does not
+    # start the line with the word. It logs
+    #   `Atlas is listening on 0.0.0.0:8888 — reachable from any host ...`
+    # so the old exact substring `Listening on 0.0.0.0:8888` matched nothing,
+    # wait_listening never saw the server come up, and EVERY model in the roster
+    # failed on a 600s startup timeout while the container sat there serving
+    # requests perfectly well. A readiness check that cannot observe readiness
+    # reports a healthy build as a total regression.
+    return f"listening on {SERVE_BIND}:{port}"
 
 
 def wait_listening(host: str, name: str, port: int,
@@ -371,17 +379,17 @@ def wait_listening(host: str, name: str, port: int,
             print(f"    [{host}/{name}] container exited unexpectedly")
             return False
         r = docker_on(host, f"logs {name} 2>&1", check=False, capture=True)
-        log = r.stdout
+        log = r.stdout.lower()
         if marker in log:
             return True
-        if "Listening on" in log:
+        if "listening on" in log:
             # Bound, but not where we asked. Fail fast and name the cause —
             # never let this fall through to a probe that will be refused.
             print(f"    [{host}/{name}] bound the WRONG address: expected "
                   f"'{marker}'. Not reachable from this harness — check the "
                   f"--bind argument and the container network mode.")
             return False
-        if "Error:" in log and "ERROR" in log:
+        if "error:" in log and "error" in log:
             print(f"    [{host}/{name}] error detected in log")
             return False
         time.sleep(10)
