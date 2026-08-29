@@ -56,6 +56,8 @@ pub struct Glm5NextMtpProposerState {
     x: DevicePtr,
     logits: DevicePtr,
     arg: DevicePtr,
+    /// `[max_r0, max_r1, idx_r0, idx_r1]` f32, for the vocab-sharded head's cross-rank pick.
+    head_xchg: DevicePtr,
 }
 
 impl ProposerState for Glm5NextMtpProposerState {
@@ -80,6 +82,12 @@ pub struct Glm5NextMtpHead {
     hidden: usize,
     vocab: usize,
     max_seq_len: usize,
+    /// Vocab shard of the shared `lm_head` this rank sweeps: `[head_v0, head_v0 + head_n)`.
+    /// `head_n == vocab` when the head is not sharded (single rank, or a vocab that does not
+    /// divide, or EP propose off).
+    head_rank: usize,
+    head_v0: usize,
+    head_n: usize,
 }
 
 impl Glm5NextMtpHead {
@@ -109,6 +117,25 @@ impl Glm5NextMtpHead {
         };
         let blocks = max_seq_len / kv_config.block_size + 2;
         let kv_cache = PagedKvCache::new(kv_config, blocks, gpu)?;
+        // 🔴 THE DRAFTER'S OWN `lm_head` IS 7.3 OF ITS 8.84 ms (measured 2026-08-29,
+        // `ATLAS_GLM_MTP_SKIP=head`: propose 8.84 -> 1.52 ms). It is a 1.27 GB BF16 sweep
+        // (154,880 x 4,096) and the block around it is only 1.5 ms.
+        //
+        // Both ranks now run propose in lockstep, so split the sweep by VOCAB: each reads its
+        // half of the rows and they exchange (max, argmax) through one 16-byte all-reduce. The
+        // drafted token is EXACTLY the unsharded argmax — each rank computes exact logits over
+        // full K for its own rows, so there are no partial sums to reassociate.
+        //
+        // 🪤 Vocab, not hidden. Rows of `[vocab, hidden]` are contiguous, so a vocab shard is a
+        // base-pointer offset and a smaller `n`. A hidden shard would need a row STRIDE the
+        // gemv kernel does not take — it assumes rows are packed at K.
+        let head_world = config.tp_world_size.max(1);
+        let head_rank = config.tp_rank;
+        let head_n = if head_world > 1 && config.vocab_size % head_world == 0 {
+            config.vocab_size / head_world
+        } else {
+            config.vocab_size
+        };
         Ok(Self {
             module,
             embed_tokens,
@@ -120,6 +147,9 @@ impl Glm5NextMtpHead {
             hidden: config.hidden_size,
             vocab: config.vocab_size,
             max_seq_len,
+            head_rank,
+            head_v0: head_rank * head_n,
+            head_n,
         })
     }
 
@@ -185,6 +215,9 @@ impl Glm5NextMtpHead {
         )?;
 
         // The block writes its output back over `st.x` (plain residual, in place).
+        if skip_block() {
+            st.seq_len += 1;
+        } else {
         let mut kv = self.kv_cache.lock();
         let dsa_state: &mut dyn LayerState = &mut st.dsa;
         self.module.layer.decode_one_for_drafter(
@@ -198,25 +231,75 @@ impl Glm5NextMtpHead {
         )?;
         drop(kv);
         st.seq_len += 1;
+        }
 
+        // TIMING ARM `ATLAS_GLM_MTP_SKIP=head`: everything from `shared_head.norm` on is
+        // skipped and the draft is a constant. Drafts become garbage (p1 -> ~0) — the point is
+        // the `propose` ms, which then reads as "the block alone". `=block` is the mirror arm.
+        // Neither is a deployment; both are byte-safe because the target verifies every draft.
+        if skip_head() {
+            return Ok(0);
+        }
         // 🪤 `shared_head.norm`, then the TARGET's own `lm_head`. The drafter ships no head of
         // its own — sharing it is what keeps a draft comparable to what the target would emit.
         self.norm(gpu, st.x, self.module.final_norm, st.x, h, stream)?;
-        ops::dense_gemv(
-            gpu,
-            self.gemv_k,
-            st.x,
-            &self.lm_head,
-            st.logits,
-            self.vocab as u32,
-            h as u32,
-            stream,
-        )?;
-        ops::argmax_bf16(gpu, self.argmax_k, st.logits, st.arg, self.vocab as u32, stream)?;
+        // Sharded only when this rank has a partner in the propose (`ctx.comm`); otherwise
+        // `head_n == vocab` and this is the original full sweep.
+        let sharded = ctx.comm.is_some() && self.head_n != self.vocab;
+        let (w, n, v0) = if sharded {
+            (
+                DenseWeight {
+                    weight: self.lm_head.weight.offset(self.head_v0 * h * 2),
+                },
+                self.head_n,
+                self.head_v0,
+            )
+        } else {
+            (self.lm_head, self.vocab, 0)
+        };
+        ops::dense_gemv(gpu, self.gemv_k, st.x, &w, st.logits, n as u32, h as u32, stream)?;
+        ops::argmax_bf16(gpu, self.argmax_k, st.logits, st.arg, n as u32, stream)?;
         let mut out = [0u8; 4];
         gpu.synchronize(stream)?;
         gpu.copy_d2h(st.arg, &mut out)?;
-        Ok(u32::from_le_bytes(out))
+        let local = u32::from_le_bytes(out) as usize;
+        let Some(comm) = ctx.comm.filter(|_| sharded) else {
+            return Ok((v0 + local) as u32);
+        };
+        // Exchange (max, argmax) in 8 BF16 lanes: `[val_r0, val_r1, then 3 base-256 digits of
+        // each rank's global index]`. Each rank writes only its own lanes and leaves the
+        // others zero, so a SUM all-reduce delivers both ranks' values untouched (`x + 0.0`
+        // is exact).
+        //
+        // 🪤 `CommBackend::all_reduce` IS BF16-TYPED on this backend (`NcclDataType::Bfloat16`,
+        // and at 2 ranks a paired Send/Recv plus a local BF16 add) — the byte count is a BF16
+        // element count, not an opaque buffer. Packing f32s here instead reduced them as 8
+        // BF16 lanes and silently corrupted both the value and the index: p1 0.875 -> 0.636,
+        // measured. A token id needs 18 bits and BF16 carries 8, hence the digits; integers
+        // through 256 are exact in BF16, and the logit lane is already BF16 so it round-trips
+        // bit for bit.
+        let mut lb = [0u8; 2];
+        gpu.copy_d2h(st.logits.offset(local * 2), &mut lb)?;
+        let g = v0 + local;
+        let bf = |x: f32| ((x.to_bits() >> 16) as u16).to_le_bytes();
+        let mut pack = [0u8; 16];
+        pack[self.head_rank * 2..][..2].copy_from_slice(&lb);
+        for d in 0..3 {
+            let digit = ((g >> (8 * d)) & 0xFF) as f32;
+            pack[4 + (self.head_rank * 3 + d) * 2..][..2].copy_from_slice(&bf(digit));
+        }
+        gpu.copy_h2d(&pack, st.head_xchg)?;
+        comm.all_reduce_async(st.head_xchg.0, 16, stream)?;
+        gpu.synchronize(stream)?;
+        gpu.copy_d2h(st.head_xchg, &mut pack)?;
+        let lane = |i: usize| {
+            f32::from_bits((u16::from_le_bytes(pack[i * 2..][..2].try_into().unwrap()) as u32) << 16)
+        };
+        // `>=` makes the LOWER rank win a tie, identically on both ranks — the two drafter KV
+        // streams must not diverge on a coin flip.
+        let win = if lane(0) >= lane(1) { 0 } else { 1 };
+        let idx = (0..3).fold(0usize, |a, d| a + ((lane(2 + win * 3 + d) as usize) << (8 * d)));
+        Ok(idx as u32)
     }
 
     /// Append `tokens.len() - 1` drafter CONTEXT rows: row `r` is pair key `row_base + r` =
@@ -356,6 +439,7 @@ impl DraftProposer for Glm5NextMtpHead {
             x: gpu.alloc(h * 2)?,
             logits: gpu.alloc(self.vocab * 2)?,
             arg: gpu.alloc(4)?,
+            head_xchg: gpu.alloc(16)?,
         }))
     }
 
@@ -503,4 +587,17 @@ impl DraftProposer for Glm5NextMtpHead {
         }
         Ok(())
     }
+}
+
+/// `ATLAS_GLM_MTP_SKIP=head`: stop the drafter after the block, before `shared_head.norm`,
+/// the `lm_head` gemv, the argmax and the D2H. Timing arm only — see `forward_one`.
+fn skip_head() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_GLM_MTP_SKIP").ok().as_deref() == Some("head"))
+}
+
+/// `ATLAS_GLM_MTP_SKIP=block`: skip `layers.45` itself and run only the head. Timing arm.
+fn skip_block() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_GLM_MTP_SKIP").ok().as_deref() == Some("block"))
 }
