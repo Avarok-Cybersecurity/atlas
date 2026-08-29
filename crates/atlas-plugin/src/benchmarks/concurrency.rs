@@ -102,6 +102,7 @@ const CODE_TASK: &str = "Ignore the reference text above. Task: write a complete
 /// its whole cell vacuous. 80%: a natural stop a few tokens early is fine; a
 /// 49-token burst against a 512-token budget is not a throughput measurement.
 const VACUITY_FLOOR: f64 = 0.8;
+const WARM_CACHE_FLOOR: f64 = 0.8;
 
 /// What one completed request actually delivered — the evidence a cell's
 /// tok/s stands on. `http::ChatOutcome` already parses all of this from the
@@ -110,6 +111,7 @@ const VACUITY_FLOOR: f64 = 0.8;
 #[derive(Clone, Debug, Default)]
 struct RequestEvidence {
     completion_tokens: usize,
+    prompt_tokens: usize,
     cached_prompt_tokens: usize,
     finish_reason: Option<String>,
     server_ttft_ms: Option<f64>,
@@ -127,9 +129,11 @@ fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
 
 fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
     warmup > 0
-        && requests
-            .iter()
-            .any(|request| request.cached_prompt_tokens == 0)
+        && requests.iter().any(|request| {
+            request.prompt_tokens == 0
+                || (request.cached_prompt_tokens as f64)
+                    < WARM_CACHE_FLOOR * request.prompt_tokens as f64
+        })
 }
 
 /// The prompt identities one cell executes before and during measurement.
@@ -169,6 +173,18 @@ impl CellRow {
     }
     fn min_cached_prompt(&self) -> Option<usize> {
         self.requests.iter().map(|r| r.cached_prompt_tokens).min()
+    }
+    fn min_cached_prompt_pct(&self) -> Option<f64> {
+        self.requests
+            .iter()
+            .map(|request| {
+                if request.prompt_tokens == 0 {
+                    0.0
+                } else {
+                    request.cached_prompt_tokens as f64 / request.prompt_tokens as f64 * 100.0
+                }
+            })
+            .reduce(f64::min)
     }
     /// Clean and above the vacuity floor — the only rows metrics may quote.
     fn comparable(&self) -> bool {
@@ -310,6 +326,7 @@ impl ConcurrencySweep {
                     tokens += o.completion_tokens;
                     requests.push(RequestEvidence {
                         completion_tokens: o.completion_tokens,
+                        prompt_tokens: o.prompt_tokens,
                         cached_prompt_tokens: o.cached_prompt_tokens,
                         finish_reason: o.finish_reason.clone(),
                         server_ttft_ms: o.server_ttft_ms,
@@ -325,8 +342,8 @@ impl ConcurrencySweep {
         let vacuous = cell_is_vacuous(&requests, self.osl);
         // Matching prompt bytes reach the intended setup, but the endpoint's
         // usage is the oracle for whether the measured request actually used
-        // cached prompt state. A requested warm path with a zero or omitted
-        // cached-token count is a different instrument.
+        // the warmed prompt. A small shared chat-template prefix is not enough:
+        // require a material cached fraction of each measured prompt.
         let cache_uncontrolled = cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
         if vacuous {
@@ -345,7 +362,8 @@ impl ConcurrencySweep {
         if cache_uncontrolled {
             handle.warn(format!(
                 "isl {isl} conc {conc}: warm-up was requested but at least one measured request \
-                 reported zero cached prompt tokens — this cell is NOT comparable"
+                 reported less than {:.0}% of its prompt as cached — this cell is NOT comparable",
+                WARM_CACHE_FLOOR * 100.0,
             ));
         }
         Ok(CellRow {
@@ -500,6 +518,14 @@ impl ConcurrencySweep {
         {
             m.insert("min_cached_prompt_tokens".to_string(), min as f64);
         }
+        if let Some(min) = self
+            .rows
+            .iter()
+            .filter_map(CellRow::min_cached_prompt_pct)
+            .reduce(f64::min)
+        {
+            m.insert("min_cached_prompt_pct".to_string(), min);
+        }
         m.insert(
             "vacuous_cells".to_string(),
             self.rows.iter().filter(|r| r.vacuous).count() as f64,
@@ -522,7 +548,7 @@ fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> Strin
         .collect();
     let cached: Vec<String> = requests
         .iter()
-        .map(|r| r.cached_prompt_tokens.to_string())
+        .map(|r| format!("{}/{}", r.cached_prompt_tokens, r.prompt_tokens))
         .collect();
     let mut finish: BTreeMap<&str, usize> = BTreeMap::new();
     for r in requests {

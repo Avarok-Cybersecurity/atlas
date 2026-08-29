@@ -17,7 +17,8 @@ fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
 fn evidence(completion_tokens: usize) -> RequestEvidence {
     RequestEvidence {
         completion_tokens,
-        cached_prompt_tokens: 1,
+        prompt_tokens: 512,
+        cached_prompt_tokens: 512,
         finish_reason: Some("length".into()),
         server_ttft_ms: None,
         server_tps: None,
@@ -217,9 +218,22 @@ fn a_requested_warm_path_requires_observed_cached_tokens() {
     assert!(missed.cache_uncontrolled);
     assert!(!missed.comparable());
     assert_eq!(missed.min_cached_prompt(), Some(0));
+    assert_eq!(missed.min_cached_prompt_pct(), Some(0.0));
 
     assert!(!cache_is_uncontrolled(&missed.requests, 0));
     assert!(!cache_is_uncontrolled(&[evidence(128), evidence(128)], 1));
+
+    let mut boundary = evidence(128);
+    boundary.prompt_tokens = 100;
+    boundary.cached_prompt_tokens = 80;
+    assert!(!cache_is_uncontrolled(&[boundary.clone()], 1));
+    boundary.cached_prompt_tokens = 79;
+    assert!(cache_is_uncontrolled(&[boundary], 1));
+
+    let mut missing_usage = evidence(128);
+    missing_usage.prompt_tokens = 0;
+    missing_usage.cached_prompt_tokens = 0;
+    assert!(cache_is_uncontrolled(&[missing_usage], 1));
 }
 
 // ---- metrics map ------------------------------------------------------------
@@ -253,7 +267,8 @@ fn metrics_map_reports_the_comparable_curve_and_the_evidence_floor() {
     // The floor sees THROUGH the exclusion: the 1-token requests are the
     // record of what went wrong.
     assert_eq!(m.get("min_completion_tokens"), Some(&1.0));
-    assert_eq!(m.get("min_cached_prompt_tokens"), Some(&1.0));
+    assert_eq!(m.get("min_cached_prompt_tokens"), Some(&512.0));
+    assert_eq!(m.get("min_cached_prompt_pct"), Some(&100.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
     assert_eq!(m.get("cache_uncontrolled_cells"), Some(&0.0));
 }
@@ -451,7 +466,7 @@ fn an_unobserved_warm_cache_cannot_clear_the_gate() {
     let v = sweep_verdict(&m, 4, 0, 0, 1, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
 
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-    assert!(v.reason.contains("cached prompt tokens"), "{}", v.reason);
+    assert!(v.reason.contains("cached-prompt fraction"), "{}", v.reason);
 }
 
 /// The descriptor couples each floor param to the metric its BENCH.toml bound
