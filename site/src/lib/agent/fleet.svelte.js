@@ -68,7 +68,10 @@ export function linkWarns(cls) {
   return cls !== 'roce' && cls !== 'infini_band' && cls !== 'unverified';
 }
 
-class FleetSession {
+// Exported for tests. The singleton below is what the app uses; a test needs a
+// FRESH session with a fake agent, because the interesting behaviour is the
+// probe loop's state machine and a shared instance carries state between cases.
+export class FleetSession {
   /** The one client the whole app shares. */
   agent = new AgentClient();
 

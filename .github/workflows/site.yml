@@ -56,7 +56,7 @@ jobs:
       # `src/lib` only: the e2e specs under `e2e/` need a browser and a served
       # build, and are a separate concern from these.
       - name: Run unit tests
-        run: bun test src/lib
+        run: bun test --preload ./test-runes.js src/lib
 
   build:
     name: Build SvelteKit site
