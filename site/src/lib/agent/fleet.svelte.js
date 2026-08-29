@@ -430,6 +430,9 @@ export class FleetSession {
       const ok = await this.agent.connect();
       if (ok) {
         this.mode = 'live';
+        // Cleared with the mode, as `#connect` does: a detail written by an
+        // earlier failure must not survive into a live fleet.
+        this.detail = '';
         this.#probeDelay = PROBE_START_MS;
         await this.#openWatch();
         return;
@@ -449,7 +452,19 @@ export class FleetSession {
       if (this.agent.phase === 'unpaired') {
         this.mode = 'browser_unpaired';
         this.detail = this.agent.message ?? '';
-        return; // needs a token pasted; no amount of probing supplies one
+        // KEEP PROBING. An earlier version returned here, with the comment
+        // "no amount of probing supplies a token" -- which is exactly backwards.
+        // `connect(token = storedToken())` re-reads localStorage on every call,
+        // so probing is precisely what notices a token pasted anywhere else, and
+        // this loop recovered on its own before that return was added.
+        //
+        // Returning latched the page instead: every re-arm site gates on
+        // `mode === 'no_agent'` (:199, :206, :231), the /control panel for this
+        // mode has no interactive element, and re-entering the page no-ops
+        // because `start()` gates on 'no_agent' too. Only a full reload cleared
+        // it -- a worse dead end than the one that change set out to fix, and
+        // reachable from 'reconnecting' as well when an agent restarts with a
+        // regenerated token.
       }
       // Anything else keeps probing -- an agent may still be starting -- but
       // carries the reason, so the page can say WHY instead of claiming nothing
