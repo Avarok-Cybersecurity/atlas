@@ -830,3 +830,41 @@ CI tick. None was found by re-reading the code.
 **Open, and deliberately not acted on:** `docs.atlasinference.io` still serves
 every HTML document with no `X-Content-Type-Options`, `X-Frame-Options` or
 `Referrer-Policy`. Same defect, same fix, different property.
+
+## Wave 16 — merging main in caught the one surface the palette sweep missed
+
+**The live site still shows the old palette because #800 is unmerged** — it
+serves `--bg:#14111f`, `--accent:#9271f4` and no `class="cf"` canvas, which is
+`main`'s build. Nothing is wrong with the deploy; the change simply has not
+landed.
+
+**#807/#808/#809 are not what is holding it up.** #800 reports `MERGEABLE` /
+`CLEAN` with no failing checks and no required review. The other three are
+`BLOCKED`, and only #808 touches a file #800 also touches
+(`.github/workflows/site.yml`); #807 and #809 touch the control page, which #800
+does not. They are independent — but whichever of #800/#808 merges second will
+need a rebase on `site.yml`.
+
+**Main had moved 7 commits ahead**, three of them `site/` work landed *after*
+the palette sweep, so it was merged in before anything else. Clean, zero
+conflicts, and no old-palette literal or `rgba()` tint came back with it.
+
+**It did surface one the sweep had missed entirely:**
+
+```html
+<meta name="theme-color" content="#14111f" />   <!-- in BOTH app.html files -->
+```
+
+`theme-color` paints the browser chrome and the mobile status bar. It cannot
+read a CSS custom property, so it is the one place the ground colour must be
+written by hand — and therefore the one place it can silently disagree with the
+page. Wave 5 swept every stylesheet and neither `app.html`, so both properties
+would have shipped a violet browser chrome above a `#0F1216` page.
+
+Fixed on both, and pinned: `site/src/lib/theme-color.test.js` reads `--bg` from
+the token file and asserts both `app.html` files match it. Control: putting
+`#14111f` back in one file takes it to **2 pass / 1 fail**.
+
+Post-merge state: 496 site tests, 27 blog tests, contrast PASS, built
+`--bg:#0f1216`, canvas present, `theme-color` correct, and `index` and `control`
+both audit clean including main's new control-page work.

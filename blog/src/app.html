@@ -3,7 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#14111f" />
+    <!-- Must equal --bg in web-shared/atlas-tokens.css. A meta tag cannot read a
+         custom property, so this is the one unavoidable copy of the ground colour;
+         theme-color.test.js fails the build if the two drift. -->
+    <meta name="theme-color" content="#0F1216" />
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
 
     <!-- Same icon set as atlasinference.io: one brand, one tab treatment. -->
