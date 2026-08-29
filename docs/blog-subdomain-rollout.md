@@ -783,3 +783,50 @@ So the verification moved to its own job: `verify`, `needs: deploy`, with its
 own checkout where a checkout costs nothing. It is gated on a new
 `configured` output from the deploy job, so it does not check a live site
 against a build that never left the runner.
+
+## Wave 15 — done
+
+**31 checks pass, none fail.** `Verify the deployed blog` registers and
+correctly reports *skipping* on a pull request, which is the behaviour that hid
+wave 14's bug and is now expected rather than accidental. The still-pending jobs
+are the Rust/CUDA release matrix, `nvcc -> PTX` and CodeQL; this branch touches
+**zero** `.rs`, `.cu`, `.cuh` or `.toml` files, so none of them can be affected
+by it.
+
+**Live, end to end, through Cloudflare:**
+
+| | |
+|---|---|
+| header check | 28/28 |
+| cross-link check | 18/18 |
+| every route (`/`, both posts, two tags, author, RSS, sitemap) | 200 |
+| `/nope` | 404, serving the built document |
+
+### Against the brief
+
+| asked for | state |
+|---|---|
+| nginx vhost on the avarok server | **live**, in-repo as SSOT, security headers proved by request |
+| `blog/` SvelteKit site from `etc/site-blog` | **live**, index / post / tag / author / RSS / sitemap / 404 |
+| raw WebGL chevron field, **not** three.js | raw WebGL2, 2.52 KB brotli; the three.js variant was never wired in |
+| per-merge deploy inside the existing `site.yml` job | wired into `unit`, `build` and `deploy`; the live check is its own job so it can actually run |
+| main site on the same background and colour scheme | one token file, one lockup, one field, both properties |
+| UI/UX polished on both | desktop, 390px, and accessibility clean on all ten routes |
+
+### What this work cost, honestly
+
+Six defects in the work itself (`add_header`, the field's contrast bound, the
+`.html` slug, heading order, the nav highlight, `link-in-text-block`), one
+performance regression severe enough to hang a browser, and **three values that
+were invented rather than looked up**. Plus three instruments of my own that
+gave wrong answers before a right one: two that could not terminate under
+virtual time, and an accessibility rule that could never fire.
+
+The pattern worth carrying: every one of those was found by an instrument
+disagreeing with an assumption — Lighthouse against a green local gate, a
+screenshot against a passing build, a filesystem reconstruction against a green
+CI tick. None was found by re-reading the code.
+
+**Open, and deliberately not acted on:** `docs.atlasinference.io` still serves
+every HTML document with no `X-Content-Type-Options`, `X-Frame-Options` or
+`Referrer-Policy`. Same defect, same fix, different property.
