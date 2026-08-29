@@ -143,8 +143,8 @@ const PERF_CONTROLS: [(&str, &str); 3] = [
     ("ATLAS_PREFILL_CODISPATCH_SETTLE_MS", "10"),
 ];
 
-/// Resolve [`PERF_CONTROLS`] through `lookup`, substituting each default for an
-/// unset or empty variable.
+/// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each
+/// default for an unset or empty variable.
 ///
 /// Pure over the lookup so it is testable without mutating the process
 /// environment — `set_var` is unsafe and process-global, and a test that raced
