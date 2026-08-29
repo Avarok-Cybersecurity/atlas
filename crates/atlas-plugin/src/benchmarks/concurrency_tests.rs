@@ -61,9 +61,6 @@ fn cells_are_isl_major() {
 fn defaults_are_the_campaign_sweep() {
     let b = ConcurrencySweep::default();
     let v = ParamValues::defaults(&b.parameters());
-    // The PARAM DEFAULTS are what actually runs — `configure()` rebuilds
-    // from these, so a descriptor blurb saying "1 → 32" proves nothing on
-    // its own. This assertion is the only thing that pins the sweep.
     assert_eq!(v.int_list("concurrencies").unwrap(), &[1, 2, 4, 8, 16, 32]);
     assert_eq!(v.int_list("isls").unwrap(), &[128, 512, 1024, 2048]);
     assert_eq!(v.usize("osl").unwrap(), 128);
@@ -176,13 +173,9 @@ fn prompt_mode_help_does_not_claim_to_force_the_budget() {
     );
 }
 
-// ---- vacuity floor ----------------------------------------------------------
-
 #[test]
 fn vacuity_flags_any_request_below_80_pct_of_osl() {
     let osl = 100;
-    // Exactly at the floor is NOT vacuous (a natural stop a few tokens early
-    // is fine); one token below it is.
     assert!(!cell_is_vacuous(&[evidence(80), evidence(100)], osl));
     assert!(cell_is_vacuous(&[evidence(79), evidence(100)], osl));
     // ONE short request poisons the whole cell — its wall time is in the
