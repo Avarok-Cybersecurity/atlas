@@ -321,6 +321,22 @@ pub trait DraftProposer: Send + Sync {
         None
     }
 
+    /// True when this proposer's context prefill uses the SHARED forward
+    /// scratch (`ctx.buffers`), so it must not run from the end-of-prefill
+    /// eager hook — only from the first `propose`, where the target owns
+    /// nothing.
+    ///
+    /// MEASURED 2026-08-29 (GLM-5.3, 2x GB10, t61): the eager call site with
+    /// the GLM drafter prefill engaged changed the TARGET's completion on 2 of
+    /// the 6 sealed probes and collapsed p1 from 0.625 to 0.045. The identical
+    /// prefill work moved to the first propose is byte-identical on all six and
+    /// takes p1 to 0.747. The call site is the only variable between the two
+    /// arms; the exact colliding buffer is UNVERIFIED (`norm_output` and
+    /// `moe_output` are the candidates the GLM block writes).
+    fn prefill_uses_shared_buffers(&self) -> bool {
+        false
+    }
+
     /// Current drafter KV length (rows), for the catch-up append point.
     /// 0 = unknown / not applicable (catch-up is skipped).
     fn drafter_rows(&self, _state: &mut dyn ProposerState) -> usize {

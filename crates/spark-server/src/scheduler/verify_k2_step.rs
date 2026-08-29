@@ -176,6 +176,33 @@ pub fn step_verify_k2(
         Vec::new()
     };
 
+    // ATLAS_MTP_CATCHUP: ring the target's true hidden for the positions this step
+    // committed, so the next propose's catch-up feed can write the pair key a K=2 ACCEPT
+    // skips. Mirrors the K=3 hook (`verify_k3_step`), same label convention: label n holds
+    // the hidden that PRODUCED the token at position n, i.e. hidden_{n-1}.
+    //
+    // Why K=2 needs it at all: an accept advances the sequence by 2 while ONE propose writes
+    // ONE drafter row, so pair key `L` (L = the pre-verify seq_len) is never written by any
+    // propose. Its hidden is verify row 0. Without this the drafter silently skips a pair for
+    // every accepted draft — at p1 = 0.625 that is 38 % of committed tokens missing from its
+    // own context. The inclusive `0..=num_accepted` bound is load-bearing for the same reason
+    // it is at K=3: row `num_accepted` closes the ring's contiguous window.
+    //
+    // `a.seq.seq_len` is L+2 here — verify pushed k=2 and the reject branch has not yet
+    // popped.
+    if spark_model::speculative::mtp_catchup_enabled() {
+        let base = a.seq.seq_len.saturating_sub(2);
+        let num_accepted = usize::from(accepted);
+        let shift = spark_model::speculative::mtp_refeed_shift();
+        for t in 0..=num_accepted {
+            let label = ((base + t + 1) as isize + shift).max(0) as usize;
+            if let Err(e) = model.save_hidden_for_catchup(t, label) {
+                tracing::debug!("save_hidden_for_catchup(K=2, t={t}): {e:#} — degrading");
+                break;
+            }
+        }
+    }
+
     // EP: always broadcast accept/reject to worker (prevents deadlock on EOS).
     if let Err(e) = model.ep_broadcast_cmd(accepted as u32) {
         tracing::error!("EP broadcast verify_k2 result: {e:#}");

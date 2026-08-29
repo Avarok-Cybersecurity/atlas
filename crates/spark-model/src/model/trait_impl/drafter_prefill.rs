@@ -185,6 +185,12 @@ impl TransformerModel {
         let Some(proposer) = self.proposer.clone() else {
             return;
         };
+        // A proposer whose prefill writes the shared forward scratch cannot run here — the
+        // target's prefill still owns those buffers. See
+        // `DraftProposer::prefill_uses_shared_buffers` for the measurement.
+        if proposer.prefill_uses_shared_buffers() {
+            return;
+        }
         if seq.proposer_state.is_none() {
             return;
         }

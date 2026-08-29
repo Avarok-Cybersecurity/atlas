@@ -492,6 +492,86 @@ impl Glm5NextDsaLayer {
         profile::end(profile::DSA_ATTEND, t, gpu, stream);
         Ok(w.attn_out.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2))
     }
+    /// ONE drafter CONTEXT row: the KV latent and the indexer entry, with no query, no
+    /// selection and no attend.
+    ///
+    /// The MTP drafter's context rows only have to EXIST in these two caches — their block
+    /// output is discarded. Both caches are pure functions of the row's own input, exactly as
+    /// the Qwen drafter prefill exploits, so a context row costs `kv_a` + `latent_write` + the
+    /// indexer's `wk`, not a decode step. No MoE, no `o_proj`, no `lm_head`.
+    ///
+    /// 🪤 `seq_len` is BOTH the row's KV slot and its RoPE position (the indexer takes its
+    /// position from `state.len()`), so the drafter's row space must stay DENSE — every pair
+    /// key from 0 up must have been written. That is what `prefill_drafter` + the catch-up
+    /// feed are for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_kv_row(
+        &self,
+        hidden: DevicePtr,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let gpu = ctx.gpu;
+        let st = state
+            .as_any_mut()
+            .downcast_mut::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
+            })?;
+        match st.len().cmp(&seq_len) {
+            std::cmp::Ordering::Greater => st.rewind_to(seq_len)?,
+            std::cmp::Ordering::Less => bail!(
+                "DSA layer {}: indexer cache holds {} rows but the drafter is at {seq_len} — \
+                 rows are MISSING, not merely stale.",
+                self.layer_idx,
+                st.len()
+            ),
+            std::cmp::Ordering::Equal => {}
+        }
+        let w = &self.workspace;
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.kv_a_proj,
+            w.kv_a,
+            1,
+            self.cfg.kv_lora_rank,
+            self.cfg.hidden,
+            stream,
+        )?;
+        let block_size = kv_cache.config().block_size;
+        let logical = seq_len / block_size;
+        let physical = *block_table.get(logical).ok_or_else(|| {
+            anyhow::anyhow!(
+                "DSA layer {}: block table has {} entries, needs logical block {logical} for \
+                 drafter row {seq_len}",
+                self.layer_idx,
+                block_table.len()
+            )
+        })? as usize;
+        let slot = (physical * block_size + seq_len % block_size) as i64;
+        gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
+        KernelLaunch::new(gpu, self.kernels.latent_write)
+            .grid([1, 1, 1])
+            .block([self.cfg.kv_lora_rank as u32, 1, 1])
+            .arg_ptr(w.kv_a)
+            .arg_ptr(self.weights.kv_a_layernorm)
+            .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
+            .arg_ptr(w.slot)
+            .arg_u32(self.cfg.kv_lora_rank as u32)
+            .arg_f32(self.rms_eps)
+            .arg_f32(1.0 / self.kv_scale)
+            .launch(stream)?;
+        self.indexer_forward(gpu, hidden, st, None, stream)
+    }
+
     /// K tokens of one sequence: the projections batched, selection and attention NOT.
     ///
     /// The weight-heavy halves — `q_a`, the absorbed `q_b`, `kv_a` and the `o_absorb` output

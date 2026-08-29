@@ -435,6 +435,34 @@ impl Glm5NextLayer {
         )
     }
 
+    /// One drafter CONTEXT row: `input_norm` then the DSA caches only.
+    ///
+    /// `x` is the block input (post `eh_proj`) for a row whose OUTPUT is discarded — a prompt
+    /// or catch-up row. See [`Glm5NextDsaLayer::write_kv_row`] for why that is enough.
+    #[allow(clippy::too_many_arguments)]
+    pub fn drafter_write_kv_row(
+        &self,
+        x: DevicePtr,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let layer = match &self.mixer {
+            Glm5NextMixer::Dsa(l) => l,
+            _ => bail!(
+                "GLM layer {}: drafter_write_kv_row is the MTP block's path; this layer is not \
+                 a DSA layer",
+                self.layer_idx
+            ),
+        };
+        let normed = ctx.buffers.norm_output();
+        self.norm(ctx.gpu, x, self.input_norm, normed, 1, stream)?;
+        layer.write_kv_row(normed, state, kv_cache, seq_len, block_table, ctx, stream)
+    }
+
     /// One token through the whole layer, using highway slot `slot`.
     #[allow(clippy::too_many_arguments)]
     fn forward_one(
