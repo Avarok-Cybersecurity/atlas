@@ -381,3 +381,6 @@ mod loop_tests;
 #[cfg(test)]
 #[path = "agent_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "agent_truncation_tests.rs"]
+mod truncation_tests;

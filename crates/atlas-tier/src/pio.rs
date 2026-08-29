@@ -140,7 +140,10 @@ mod tests {
         // is not.
         let n = read_at_least_at(&f, &mut buf, 4096, 288).unwrap();
         assert_eq!(n, 288, "should read to EOF and no further");
-        assert!(buf[..288].iter().all(|&b| b == 7), "the row's bytes must arrive");
+        assert!(
+            buf[..288].iter().all(|&b| b == 7),
+            "the row's bytes must arrive"
+        );
 
         // Demanding more than the file holds is a real truncation and must fail.
         let e = read_at_least_at(&f, &mut buf, 4096, 289).unwrap_err();

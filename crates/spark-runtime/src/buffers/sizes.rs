@@ -58,7 +58,7 @@ pub struct BufferSizes {
     /// Low-rank mHC split-collapse scratch (Qwen3.8-Flash-Next): the staged
     /// normed vector `[T, hc_mult*hidden]` F32 plus the rank vector
     /// `[T, hc_lowrank]` F32, for SMALL T only — decode runs the collapse as
-    /// three multi-block launches because grid=[1] starves the fused kernel
+    /// three multi-block launches because `grid=[1]` starves the fused kernel
     /// (measured 2.0 ms/call, one SM's bandwidth). Sized for 64 tokens; the
     /// dispatcher falls back to the fused kernel above that.
     pub hc_lowrank_scratch: usize,

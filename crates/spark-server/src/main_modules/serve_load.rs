@@ -439,6 +439,10 @@ pub(crate) fn load_model(
     // MiniMax M2.7 hang on NCCL init today because the actual mismatch
     // only surfaces later inside `build_model`; this check surfaces it
     // up-front.
+    let (kv_dtype, _) = serve_phases::kv_cache::resolve_kv_dtype_str(
+        args.kv_cache_dtype.as_deref(),
+        ptx_set.behavior.default_kv_dtype,
+    );
     spark_model::preflight::preflight(
         &store,
         &config,
@@ -455,13 +459,7 @@ pub(crate) fn load_model(
         // the precedence gets the MODEL.toml layer wrong, and then preflight
         // computes fp8 for a model that will actually run bf16 and REFUSES a
         // deployment that would have worked. One resolver, one answer.
-        Some(
-            &serve_phases::kv_cache::resolve_kv_dtype_str(
-                args.kv_cache_dtype.as_deref(),
-                &ptx_set.behavior.default_kv_dtype,
-            )
-            .0,
-        ),
+        Some(kv_dtype.as_str()),
     )
     .context("Checkpoint pre-flight check failed")?;
 
