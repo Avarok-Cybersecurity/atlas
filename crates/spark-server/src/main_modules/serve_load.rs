@@ -443,17 +443,24 @@ pub(crate) fn load_model(
         &store,
         &config,
         args.speculative,
-        // The RESOLVED dtype, not the raw flag. An omitted `--kv-cache-dtype`
-        // is not "bf16": it resolves to the engine default, which is fp8. Passed
-        // raw, the QSA check saw `None`, called it safe, and let the bare
-        // invocation -- the obvious one -- load a hundred-plus gigabytes before
-        // the decode path refused it on the first request. Resolving here keeps
-        // the default's definition in one place instead of copying it into a
-        // preflight that cannot see the server's CLI.
+        // The RESOLVED dtype, through the ENGINE'S resolver. An omitted
+        // `--kv-cache-dtype` is not "bf16": it resolves to the MODEL.toml
+        // `[behavior] default_kv_dtype` if the model states one, and only then to
+        // the engine default of fp8. Passed raw, the QSA check saw `None`, called
+        // it safe, and let the bare invocation -- the obvious one -- load a
+        // hundred-plus gigabytes before the decode path refused on the first
+        // request.
+        //
+        // `resolve_kv_dtype_str` and not a local `unwrap_or`: a second copy of
+        // the precedence gets the MODEL.toml layer wrong, and then preflight
+        // computes fp8 for a model that will actually run bf16 and REFUSES a
+        // deployment that would have worked. One resolver, one answer.
         Some(
-            args.kv_cache_dtype
-                .as_deref()
-                .unwrap_or(crate::cli::DEFAULT_KV_CACHE_DTYPE),
+            &serve_phases::kv_cache::resolve_kv_dtype_str(
+                args.kv_cache_dtype.as_deref(),
+                &ptx_set.behavior.default_kv_dtype,
+            )
+            .0,
         ),
     )
     .context("Checkpoint pre-flight check failed")?;

@@ -226,6 +226,15 @@ in qwen3.6-27b/nvfp4. Probed handle != 0; absent, the exact chain keeps
 its per-token conv launches (same bits, more launches)."""
 
 [behavior]
+# The ONLY KV dtype this model can run. Its QSA sparse-attention selection gather
+# copies raw NHD rows out of the paged cache, so a quantized cache has nothing it
+# can copy -- the decode path refuses outright. Stated here because the engine
+# default is fp8, and without this line the bare `spark serve qwen3.8-flash-next`
+# refused at startup and told the operator to pass `--kv-cache-dtype bf16`: a
+# correct message for a requirement the model already knows and can simply
+# declare. An explicit --kv-cache-dtype still wins over this, and preflight still
+# refuses it if it is not bf16.
+default_kv_dtype = "bf16"
 # Native tool-call format is Qwen3-Coder XML:
 #   <tool_call><function=fn><parameter=key>value</parameter></function></tool_call>
 # (verified from live emissions, agentic-webserver run 2026-08-27). Without a
