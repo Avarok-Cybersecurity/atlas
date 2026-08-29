@@ -467,6 +467,44 @@ fn an_unobserved_warm_cache_cannot_clear_the_gate() {
 /// The descriptor couples each floor param to the metric its BENCH.toml bound
 /// is written on, every param exists in the schema with the documented OFF
 /// default, and `configure` carries the values into the verdict floors.
+/// Every RUNGS row must spell its own C. A row like
+/// `(32, "min_c32", "c64_aggregate_tok_s", ..)` is silent in both directions:
+/// `apply_threshold_params` would fill the C=32 floor from the C=64 bound, and
+/// `sweep_verdict` would then judge C=32's throughput against it. Nothing
+/// downstream can notice, because both names are well-formed.
+#[test]
+fn every_rung_names_itself_consistently() {
+    for (c, param, metric, label) in RUNGS {
+        assert_eq!(param, format!("min_c{c}"), "rung {c}: floor param");
+        assert_eq!(
+            metric,
+            format!("c{c}_aggregate_tok_s"),
+            "rung {c}: metric key"
+        );
+        assert!(
+            label.contains(&format!("C={c} ")),
+            "rung {c}: label {label:?}"
+        );
+    }
+    let mut seen: Vec<usize> = RUNGS.iter().map(|(c, ..)| *c).collect();
+    let sorted = {
+        let mut v = seen.clone();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(seen, sorted, "rungs must be in ascending order");
+    seen.dedup();
+    assert_eq!(seen.len(), RUNGS.len(), "a rung is declared twice");
+    // The peak is not a rung and must never be mistaken for one: a
+    // `c<N>_aggregate_tok_s` key here would make the peak floor gate a rung.
+    assert_eq!(PEAK_FLOOR.1, "peak_aggregate_tok_s");
+    assert!(
+        RUNGS
+            .iter()
+            .all(|(_, p, m, _)| *p != PEAK_FLOOR.0 && *m != PEAK_FLOOR.1)
+    );
+}
+
 #[test]
 fn the_floor_params_are_wired_to_the_gate() {
     // Derived from RUNGS, so this asserts the DERIVATION rather than
