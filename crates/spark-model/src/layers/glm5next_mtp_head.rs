@@ -88,6 +88,17 @@ pub struct Glm5NextMtpHead {
     head_rank: usize,
     head_v0: usize,
     head_n: usize,
+    /// FP8 E4M3 copy of THIS RANK'S vocab shard of `lm_head`, drafting only.
+    ///
+    /// 🔴 Correctness-safe by construction and not a precision compromise: the target
+    /// verifies every drafted token with its own BF16 `lm_head_batched`, so an approximate
+    /// draft head can only move the ACCEPTANCE rate, never an emitted token. Same argument
+    /// the NVFP4 `mtp_lm_head` decouple already makes in `factory::lm_head_setup`.
+    ///
+    /// Worth 2.66 -> ~1.33 ms per draft sweep, twice a K=3 step, against the 8.14 ms/step
+    /// the whole drafter costs (nsys 2026-08-29). Kill switch `ATLAS_GLM_MTP_HEAD_FP8=0`.
+    head_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    gemv_fp8w_k: KernelHandle,
 }
 
 impl Glm5NextMtpHead {
@@ -136,6 +147,47 @@ impl Glm5NextMtpHead {
         } else {
             config.vocab_size
         };
+        // Quantise ONLY the rows this rank sweeps: `head_n * hidden` bytes, not the whole
+        // vocab. A failure here is not fatal — fall back to the BF16 sweep.
+        let gemv_fp8w_k = crate::layers::try_kernel(gpu, "gemv_fp8w", "dense_gemv_fp8w");
+        let head_fp8 = if std::env::var("ATLAS_GLM_MTP_HEAD_FP8").as_deref() == Ok("0")
+            || gemv_fp8w_k.0 == 0
+        {
+            None
+        } else {
+            let shard = DenseWeight {
+                weight: lm_head
+                    .weight
+                    .offset(head_rank * head_n * config.hidden_size * 2),
+            };
+            match gpu
+                .kernel("gemv_fp8w", "quantize_bf16_to_fp8")
+                .and_then(|qk| {
+                    crate::weight_map::quantize_to_fp8(
+                        &shard,
+                        head_n,
+                        config.hidden_size,
+                        gpu,
+                        qk,
+                        gpu.default_stream(),
+                    )
+                }) {
+                Ok(q) => {
+                    tracing::info!(
+                        "GLM MTP: draft lm_head shard quantised to FP8 ({} rows x {}, {} MB)",
+                        head_n,
+                        config.hidden_size,
+                        head_n * config.hidden_size / (1024 * 1024),
+                    );
+                    Some(q)
+                }
+                Err(e) => {
+                    tracing::warn!("GLM MTP: FP8 draft head unavailable ({e:#}); staying BF16");
+                    None
+                }
+            }
+        };
+
         Ok(Self {
             module,
             embed_tokens,
@@ -150,6 +202,8 @@ impl Glm5NextMtpHead {
             head_rank,
             head_v0: head_rank * head_n,
             head_n,
+            head_fp8,
+            gemv_fp8w_k,
         })
     }
 
@@ -257,7 +311,24 @@ impl Glm5NextMtpHead {
         } else {
             (self.lm_head, self.vocab, 0)
         };
-        ops::dense_gemv(gpu, self.gemv_k, st.x, &w, st.logits, n as u32, h as u32, stream)?;
+        // 🪤 The FP8 copy covers `[head_v0, head_v0 + head_n)` ONLY, so it serves the sharded
+        // sweep and nothing else. Unsharded (no partner in the propose) falls back to BF16
+        // rather than reading rows that were never quantised.
+        match self.head_fp8.filter(|_| sharded && n == self.head_n) {
+            Some(q) => ops::dense_gemv_fp8w(
+                gpu,
+                self.gemv_fp8w_k,
+                st.x,
+                &q,
+                st.logits,
+                n as u32,
+                h as u32,
+                stream,
+            )?,
+            None => {
+                ops::dense_gemv(gpu, self.gemv_k, st.x, &w, st.logits, n as u32, h as u32, stream)?
+            }
+        }
         ops::argmax_bf16(gpu, self.argmax_k, st.logits, st.arg, n as u32, stream)?;
         let mut out = [0u8; 4];
         gpu.synchronize(stream)?;
