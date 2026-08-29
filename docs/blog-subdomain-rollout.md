@@ -699,6 +699,48 @@ from anything, so a wrong one is a dead link that looks entirely plausible, in
 the footer of every page of a live site. Corrected to the value in
 `site/src/lib/data.js`, with a comment saying where it must come from.
 
-**`typos` also failed**: the scaffold's `pn-l` / `pn-t` post-nav classes
-tokenise as `pn` → `on`. Renamed to `postnav-label` / `postnav-title`, which
-reads better regardless.
+**`typos` also failed**: the scaffold's abbreviated post-nav class names
+tokenise as a misspelling of "on". Renamed to `postnav-label` /
+`postnav-title`, which reads better regardless. (Writing the old names out in
+this file failed the same check a second time — the checker reads its own
+documentation.)
+
+## Wave 13 — Lighthouse passes; auditing everything else I invented
+
+**`Lighthouse audit` → pass.** All four categories at their required scores,
+including accessibility back at 1. 27 checks pass, 4 skipping (deploy and
+CodeQL, correctly), and `typos` was the last red.
+
+**`typos` failed on my own record file** — the wave-12 entry described the
+class rename by quoting the old names, which is the same two characters the
+checker objects to. The checker reads its own documentation. Reworded.
+
+**Then the fabricated Discord invite made me audit every other identifier I had
+written**, because an invented invite code is not a one-off: it is a class of
+error, and the only defence is checking rather than remembering.
+
+| identifier | result |
+|---|---|
+| `githubUrl` | matches `site/src/lib/data.js`, resolves 200 |
+| `discordUrl` | matches (after wave 12's fix) |
+| `xUrl` | matches, resolves 200 |
+| `atlasinference.io`, `docs.`, `blog.` | all 200 |
+| **`${MAIN_SITE}/#benchmarks`** | **does not exist** |
+| **`${MAIN_SITE}/#get-running`** | **does not exist** |
+
+Two more invented values. The marketing site's sections are `#verified` and
+`#run`; I had guessed names that read plausibly. This failure is quieter than a
+dead link — the page still loads, the reader simply arrives at the top of it
+and never learns they were meant to be somewhere else.
+
+**Guarded, not just fixed.** `blog/e2e/check-crosslinks.mjs` extracts every
+`atlasinference.io/#fragment` from the built blog and requires it to be an `id`
+in the built marketing site. It runs in the `build` job, which is the only place
+both builds exist at once. Controls:
+
+| | result |
+|---|---|
+| point one link at `#benchmarks` again | **9 of 18 fail**, exit 1 |
+| point it at an empty site build | **refuses to pass vacuously** — "no ids found" |
+| no cross-links present at all | **fails** — a guard that stops finding work must not report success |
+| restored | all 18 resolve |

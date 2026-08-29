@@ -80,8 +80,8 @@ export const footerCols = [
     links: [
       { text: 'atlasinference.io', href: MAIN_SITE },
       { text: 'Documentation', href: DOCS_SITE },
-      { text: 'Benchmarks', href: `${MAIN_SITE}/#benchmarks` },
-      { text: 'Download', href: `${MAIN_SITE}/#get-running` }
+      { text: 'Benchmarks', href: `${MAIN_SITE}/#verified` },
+      { text: 'Download', href: `${MAIN_SITE}/#run` }
     ]
   },
   {

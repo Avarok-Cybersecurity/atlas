@@ -207,6 +207,16 @@ jobs:
           done
           exit "$fail"
 
+      # Both builds exist at this point, which is the only moment either app can
+      # check the other. The blog's footer deep-links into the marketing site's
+      # sections; those ids live in a different app and nothing else connects
+      # them, so a renamed section leaves a link that still loads the page and
+      # silently drops the reader at the top of it. Two such links shipped in
+      # the first draft of the footer, both invented rather than looked up.
+      - name: Blog cross-links resolve on the marketing site
+        working-directory: ${{ github.workspace }}
+        run: bun blog/e2e/check-crosslinks.mjs site/build blog/build
+
       - name: Upload blog artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
