@@ -119,8 +119,17 @@ jobs:
 
           # The one-liner the launch dialog prints. If this is not a shell
           # script, every install instruction on the site is wrong.
-          head=$(curl --fail --silent --show-error --location \
-                   --retry 3 --retry-delay 5 https://atlasinference.io/install.sh | head -1)
+          # The body is captured whole and the first line taken from the
+          # VARIABLE. Piping curl into `head -1` looks equivalent and is not:
+          # `head` exits after one line, curl gets EPIPE, and under this step's
+          # `set -euo pipefail` that fails the whole canary with curl's exit 23
+          # -- a write error, reported as if the site were down. It is a race on
+          # how fast curl finishes, so it passed for weeks and then failed with
+          # the site perfectly healthy (2026-08-29 04:05, in the same run that
+          # confirmed /control.html had been fixed).
+          body=$(curl --fail --silent --show-error --location \
+                   --retry 3 --retry-delay 5 https://atlasinference.io/install.sh)
+          head=$(printf '%s' "$body" | head -1)
           case "$head" in
             '#!'*) echo "ok   /install.sh -> $head" ;;
             *)
@@ -136,8 +145,9 @@ jobs:
           # fallback out of that same static dir, so it fails the same way. Piped
           # into `iex`, an HTML body is not a 404 anyone can read: it is a wall of
           # parse errors, on the platform with the least fallback.
-          head=$(curl --fail --silent --show-error --location \
-                   --retry 3 --retry-delay 5 https://atlasinference.io/install.ps1 | head -1)
+          body=$(curl --fail --silent --show-error --location \
+                   --retry 3 --retry-delay 5 https://atlasinference.io/install.ps1)
+          head=$(printf '%s' "$body" | head -1)
           case "$head" in
             '<'*)
               echo "::error::/install.ps1 served HTML -- the SPA fallback is answering for it: $head"
