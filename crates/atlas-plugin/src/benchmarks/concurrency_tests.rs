@@ -212,6 +212,9 @@ fn a_requested_warm_path_requires_observed_cached_tokens() {
     assert!(!missed.comparable());
     assert_eq!(missed.min_cached_prompt(), Some(0));
     assert_eq!(missed.min_cached_prompt_pct(), Some(0.0));
+    assert!(
+        evidence_line(512, 4, &missed.requests).contains("cached [512/512,512/512,0/512,512/512]")
+    );
 
     assert!(!cache_is_uncontrolled(&missed.requests, 0));
     assert!(!cache_is_uncontrolled(&[evidence(128), evidence(128)], 1));
@@ -384,9 +387,6 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
 }
 
-/// Floors all zero (the schema default) keep the pre-gate info verdicts, both
-/// arms verbatim: a standalone sweep has no committed ladder to be judged
-/// against.
 #[test]
 fn all_floors_zero_keeps_the_info_verdicts() {
     let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
