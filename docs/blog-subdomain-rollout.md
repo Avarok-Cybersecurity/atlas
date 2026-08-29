@@ -487,3 +487,42 @@ With four defects planted in a real page — body copy at 1.77:1, metadata at
 right end state, but the budget has to come from a first observed score rather
 than be declared in the same change that first measures one, so it is a
 follow-up rather than part of this PR.
+
+## Wave 9 — CI confirms the new steps ran, and the nav had the same bug the chips did not
+
+**The CI steps executed, which is not the same as the job being green.** Pulled
+the log rather than trusting the tick:
+
+| step | evidence |
+|---|---|
+| Install blog dependencies | `52 packages installed` |
+| Run blog unit tests | 20 named tests, each printed |
+| Chevron-field contrast budget | `ground #0F1216 density 0.85 … PASS: tightest is 4.61:1` |
+| Build blog | `✔ done`, `Wrote site to "build"` |
+| Every blog route kept its own title | five files checked, real titles printed |
+| Upload blog artifact | `blog-site` uploaded |
+
+`Site unit tests`, `Build SvelteKit site`, `≤500 LoC`, `SPDX`, `cargo deny`,
+`GDN PINS` and the merge-ancestry guards all pass. The deploy job correctly
+reports **skipping** — it is push-only. **Lighthouse is still queued**, and it
+remains the one gate that could reject this.
+
+**The nav had the `.html` bug the chip row did not.** `current()` compared
+`page.url.pathname` to the href directly, so on `/tags/engineering.html` the
+chip lit and the nav entry did not — the chip's state comes from the load
+function, which strips the extension, and the nav's did not. Same defect class
+as wave 5's, in the one place that had its own copy of the comparison.
+
+The rule moved to `navCurrent(pathname, href)` in `content.js` so it could be
+tested at all, and it now also treats a trailing slash as the same page. Eight
+assertions; two controls, both fired:
+
+| defect reintroduced | result |
+|---|---|
+| raw-pathname comparison (the original) | 20 pass / **1 fail** |
+| "Latest" matches every path | 20 pass / **1 fail** |
+| restored | **21 pass / 0 fail** |
+
+**Tag, empty-tag and author pages reviewed at desktop width.** The empty state
+(`Releases`, no posts yet) reads correctly rather than as a broken page, and the
+category chevron takes its tag's colour. No changes needed.

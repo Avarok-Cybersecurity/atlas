@@ -91,3 +91,19 @@ export const footerCols = [
     ]
   }
 ];
+
+/**
+ * Is `href` the nav entry the current path belongs to?
+ *
+ * Two things this has to get right, and the inline version got neither:
+ *   - `/posts/*` belongs to "Latest", so a reader on an article does not see
+ *     an unlit bar;
+ *   - the path may still carry `.html`, because adapter-static writes that
+ *     file and nginx serves both forms — the chip row already handled this
+ *     (its state comes from the load function, which strips it) and the nav
+ *     did not, so on `/tags/engineering.html` the chip lit and the nav did not.
+ */
+export function navCurrent(pathname, href) {
+  const p = cleanSlug(pathname).replace(/\/+$/, '') || '/';
+  return href === '/' ? p === '/' || p.startsWith('/posts') : p === href;
+}

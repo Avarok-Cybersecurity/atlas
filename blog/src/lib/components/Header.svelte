@@ -1,15 +1,10 @@
 <script>
   import { page } from '$app/state';
-  import { nav, githubUrl, MAIN_SITE } from '$lib/content.js';
+  import { nav, githubUrl, MAIN_SITE, navCurrent } from '$lib/content.js';
   import GithubIcon from './GithubIcon.svelte';
   import AtlasLockup from '$shared/components/AtlasLockup.svelte';
 
-  // A tag page is "current" for its own nav entry; everything under /posts
-  // belongs to Latest, so a reader never sees an unlit bar mid-article.
-  const current = (href) =>
-    href === '/'
-      ? page.url.pathname === '/' || page.url.pathname.startsWith('/posts')
-      : page.url.pathname === href;
+  const current = (href) => navCurrent(page.url.pathname, href);
 </script>
 
 <header class="hdr">

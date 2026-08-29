@@ -152,3 +152,24 @@ test('every shipped post resolves from both the clean and the .html URL', async 
     expect(cleanSlug(`${s}.html`)).toBe(s);
   }
 });
+
+/* --- nav highlighting ----------------------------------------------------- */
+
+test('navCurrent lights the entry the path belongs to', async () => {
+  const { navCurrent } = await import('./content.js');
+  // Latest owns the index and every article, so an article is never unlit.
+  expect(navCurrent('/', '/')).toBe(true);
+  expect(navCurrent('/posts/anything', '/')).toBe(true);
+  expect(navCurrent('/posts/anything.html', '/')).toBe(true);
+  // ...and only those. A tag page must not also light Latest.
+  expect(navCurrent('/tags/engineering', '/')).toBe(false);
+  expect(navCurrent('/tags/engineering', '/tags/engineering')).toBe(true);
+  // The .html form is the one that was broken: the chip row lit and the nav
+  // did not, because the chip's state comes from the load function (which
+  // strips the extension) and the nav compared the raw pathname.
+  expect(navCurrent('/tags/engineering.html', '/tags/engineering')).toBe(true);
+  expect(navCurrent('/tags/benchmarks', '/tags/engineering')).toBe(false);
+  // A trailing slash is the same page.
+  expect(navCurrent('/tags/engineering/', '/tags/engineering')).toBe(true);
+  expect(navCurrent('/index.html', '/')).toBe(false); // not a nav href we emit
+});
