@@ -38,6 +38,9 @@ OOM_GUARD_MB="${OOM_GUARD_MB:-1024}"
 # Extra `-e K=V` flags, space separated. Used for profiling (ATLAS_GLM_PROFILE=1) and for
 # NCCL A/Bs (NCCL_MAX_NCHANNELS=...). Empty by default so the serve path is unchanged.
 EXTRA_ENV="${EXTRA_ENV:-}"
+# Extra `serve` flags, space separated (e.g. --ngram-speculative --num-drafts 1). Empty by
+# default so the sealed spec-off command line is exactly what it always was.
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 for RANK in 0 1; do
   IP=${NODES[$RANK]}
@@ -67,7 +70,7 @@ for RANK in 0 1; do
       --max-seq-len $MAX_SEQ_LEN --kv-cache-dtype fp8 \
       --gpu-memory-utilization $GPU_UTIL \
       --oom-guard-mb $OOM_GUARD_MB \
-      --max-batch-size 1"
+      --max-batch-size 1 $EXTRA_ARGS"
   [ "$RANK" -eq 0 ] && echo "waiting 10s for rank 0 to bind the master port..." && sleep 10
 done
 

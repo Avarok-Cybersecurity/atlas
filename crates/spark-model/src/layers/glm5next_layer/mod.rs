@@ -527,6 +527,26 @@ impl TransformerLayer for Glm5NextLayer {
         true
     }
 
+    /// 🔴 A CUDA-graph replay runs kernels and nothing else, so this layer's one piece of
+    /// HOST-side per-sequence bookkeeping — the DSA indexer cache length — has to be advanced
+    /// here. The inner `Glm5NextDsaLayer` implements this too, but the model's layer vec holds
+    /// the COMPOSITE, so the inner impl is never reached and the default no-op left the
+    /// counter frozen at its capture-time value.
+    ///
+    /// 🪤 That was invisible on the spec-off path: after capture, `decode` never runs again, so
+    /// nothing compared the counter to `seq_len`. The first EAGER step after a run of replays —
+    /// which is exactly what a speculative verify is — then failed with "indexer cache holds 5
+    /// tokens but the sequence is at 12". The rows were there; only the counter was stale.
+    ///
+    /// KDA keeps nothing on the host: its recurrent and conv state are device-resident and the
+    /// replayed kernels update them in place.
+    fn advance_replayed_step(&self, state: &mut dyn LayerState) -> Result<()> {
+        match &self.mixer {
+            Glm5NextMixer::Dsa(_) => self.dsa_state(state)?.advance(1),
+            Glm5NextMixer::Kda { .. } => Ok(()),
+        }
+    }
+
     /// GLM's KDA blocks are `linear_attention` in `layer_types` AND carry the pool's
     /// `SsmLayerState`, so they take pool slots like any other recurrent layer. That is what
     /// buys the speculative-verify checkpoints and per-token intermediates for free —
