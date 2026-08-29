@@ -332,13 +332,14 @@ pub(crate) fn load_lora_adapters(
         // per adapter (alpha/r, alpha/sqrt(r) under use_rslora), NEVER defaulted.
         let peft_config = atlas_core::config::parse_peft_adapter_config(&raw)
             .with_context(|| format!("Failed to parse {}", cfg_path.display()))?;
-        if peft_config.r > args.max_lora_rank {
+        let rank_ceiling = args.max_lora_rank.unwrap_or(64);
+        if peft_config.r > rank_ceiling {
             anyhow::bail!(
                 "LoRA adapter '{}' has r={} > --max-lora-rank {} — raise the flag \
                  (slot pool is rank-padded to it) or use a smaller adapter",
                 name,
                 peft_config.r,
-                args.max_lora_rank,
+                rank_ceiling,
             );
         }
         let store = spark_runtime::weights::adapter::load_adapter_safetensors(&adapter_dir, gpu, 0)

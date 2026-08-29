@@ -1047,8 +1047,19 @@ pub struct ServeArgs {
     /// Maximum LoRA adapter rank. The A/B slot pool and delta scratch buffers
     /// are allocated rank-padded to this value at startup (frozen v1 layout
     /// contract); an adapter whose `r` exceeds it is rejected at load.
-    #[arg(long, default_value_t = 64)]
-    pub max_lora_rank: usize,
+    ///
+    /// UNSET (default) derives it from the adapters actually configured, which
+    /// is almost always what you want: BOTH delta stages contract at the padded
+    /// rank, and the B operand is `[n_out, max_rank]`, so padding an r=8 adapter
+    /// to 64 moves 8x the bytes for the same math. Measured on qwen3.8-27B with
+    /// an r=8 adapter: pool 5392 -> 674 MiB and prefill 608 -> 730 tok/s just
+    /// from not padding.
+    ///
+    /// Set it explicitly only to reserve headroom for a LARGER adapter staged
+    /// in later — the pool layout is frozen at startup, so a stage-in above the
+    /// pool's rank is a named reject.
+    #[arg(long)]
+    pub max_lora_rank: Option<usize>,
 
     /// Maximum number of LoRA adapter slots in the rank-padded pool. Slots
     /// beyond the startup-resident adapters are cache headroom for demand

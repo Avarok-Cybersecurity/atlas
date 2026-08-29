@@ -815,6 +815,7 @@ pub fn build_model(
                 args.window_size,
                 model.gpu_backend(),
                 max_seq_len,
+                max_batch_size,
             )?;
             model.set_dflash_proposer(std::sync::Arc::new(head));
             tracing::info!("DFlash drafter installed as the active proposer");

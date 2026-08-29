@@ -502,10 +502,17 @@ impl TransformerModel {
         // max verify K = gamma) so the K=gamma EAGLE path can capture every verify row;
         // pre-fix paths use only rows 0-1. Stored on the model as the single
         // source of truth so `try_dflash_capture_all` can bound its writes.
+        //
+        // Widened to `max_batch_size` K-row BANDS: a cross-sequence batched
+        // K=gamma verify (and batched decode) captures every (sequence, row)
+        // pair, sequence i writing band i at row `i * dflash_kgamma`. The
+        // scheduler reads a band back through `commit_ctx`'s `scratch_row`.
+        // Cost is trivial (8 seqs x 9 rows x 5 layers x 5120 x 2 B ~ 3.7 MB)
+        // and the single-sequence paths keep using band 0 unchanged.
         let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
             0
         } else {
-            dflash_kgamma.max(2)
+            dflash_kgamma.max(2) * max_batch_size.max(1)
         };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
@@ -805,6 +812,7 @@ impl TransformerModel {
             mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
             dflash_hidden_save_rows,
+            dflash_kgamma,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),

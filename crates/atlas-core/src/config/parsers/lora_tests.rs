@@ -83,13 +83,9 @@ fn q_proj_accepted() {
 
 #[test]
 fn gdn_module_rejected_named() {
-    for m in [
-        "in_proj_qkvz",
-        "in_proj_qkv",
-        "in_proj_z",
-        "out_proj",
-        "conv1d",
-    ] {
+    // `out_proj` is deliberately NOT in this list any more — see
+    // `gdn_out_proj_is_accepted` below. Everything here feeds the recurrence.
+    for m in ["in_proj_qkvz", "in_proj_qkv", "in_proj_z", "conv1d"] {
         let mut j = base_json();
         j["target_modules"] = serde_json::json!([m]);
         let err = parse_peft_adapter_config(&j.to_string())
@@ -265,4 +261,23 @@ fn absent_target_modules_with_modules_to_save_accepted() {
     let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
     assert!(cfg.target_modules.is_empty());
     assert_eq!(cfg.modules_to_save, vec!["lm_head"]);
+}
+
+/// The GDN block's OUTPUT projection is supported, unlike its input-side
+/// siblings above.
+///
+/// It is the block's last stage (value_dim -> hidden), downstream of the
+/// recurrence, so a delta there is an ordinary per-token linear delta and
+/// never enters the state update — which is why it does not wait on the
+/// exact-replay parity harness the input-side projections do. Pinned as a
+/// pair with `gdn_module_rejected_named` so the two can never blur back
+/// together: one asserts the family is rejected, this asserts the single
+/// member that is not.
+#[test]
+fn gdn_out_proj_is_accepted() {
+    let mut j = base_json();
+    j["target_modules"] = serde_json::json!(["out_proj"]);
+    let cfg = parse_peft_adapter_config(&j.to_string())
+        .expect("out_proj is supported since the GDN out_proj phase");
+    assert_eq!(cfg.target_modules, vec!["out_proj".to_string()]);
 }

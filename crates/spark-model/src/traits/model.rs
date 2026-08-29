@@ -845,19 +845,32 @@ pub trait Model: Send + Sync {
 
     /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
     /// `num_committed` scratch rows (`dflash_hidden_save` rows
-    /// `0..num_committed`) into `ctx_hidden_acc` at the CURRENT TAIL
-    /// (`ctx_len`), stamping RoPE positions `base_pos..base_pos+num_committed`,
-    /// folding the watermark slide in first. `base_pos` is the RoPE position,
-    /// NOT the acc row index (they diverge after a watermark slide — DDD §4.1
-    /// landmine). The single structural replacement for the ~5 fragmented
-    /// appends. Default no-op for models without a DFlash drafter.
+    /// `scratch_row..scratch_row+num_committed`) into `ctx_hidden_acc` at the
+    /// CURRENT TAIL (`ctx_len`), stamping RoPE positions
+    /// `base_pos..base_pos+num_committed`, folding the watermark slide in
+    /// first. `base_pos` is the RoPE position, NOT the acc row index (they
+    /// diverge after a watermark slide — DDD §4.1 landmine). `scratch_row` is
+    /// 0 on every single-sequence path; batched decode (n>1) captures ALL
+    /// batch rows, so seq i commits from scratch row i. The single structural
+    /// replacement for the ~5 fragmented appends. Default no-op for models
+    /// without a DFlash drafter.
     fn commit_ctx(
         &self,
         _seq: &mut SequenceState,
         _num_committed: usize,
         _base_pos: usize,
+        _scratch_row: usize,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Rows per per-sequence capture BAND in the DFlash hidden scratch (γ+1).
+    /// Sequence `i` of a batched K=γ verify captures into band `i`, so its
+    /// `commit_ctx` `scratch_row` is `i * dflash_capture_band()`. Returning
+    /// the model's own stride keeps the capture and the commit from ever
+    /// disagreeing. `0` when there is no DFlash drafter.
+    fn dflash_capture_band(&self) -> usize {
+        0
     }
 
     /// Run the MTP proposer for one draft token off the saved hidden state.

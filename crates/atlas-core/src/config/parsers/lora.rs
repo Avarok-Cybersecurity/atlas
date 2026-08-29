@@ -33,6 +33,8 @@ pub const PEFT_SUPPORTED_TARGET_MODULES: &[&str] = &[
     "gate_proj",
     "up_proj",
     "down_proj",
+    // GDN / linear-attention block output projection (value_dim -> hidden).
+    "out_proj",
 ];
 
 /// Parsed subset of a PEFT `adapter_config.json` that Atlas consumes.
@@ -51,6 +53,19 @@ pub struct PeftAdapterConfig {
     /// which are validated on their final `.`-segment). The weight loader's
     /// bidirectional audit is the authority on actual per-layer matching.
     pub target_modules: Vec<String>,
+    /// PEFT's REGEX form of `target_modules` (a JSON string rather than a
+    /// list) — e.g. Dxniz/Novelist1.0-27b-Adapter, whose pattern matches
+    /// `q|k|v|o_proj` and `gate|up|down_proj` under several possible
+    /// parent-module spellings.
+    ///
+    /// Held verbatim and NOT expanded: expanding it would mean resolving a
+    /// Python-flavoured regex against a module tree this layer cannot see.
+    /// It does not need to be. The adapter's own TENSOR NAMES are ground
+    /// truth for what it targets, and every one of them still goes through
+    /// `classify_key`, which is strictly stricter than the name-level
+    /// allow-list a pattern bypasses. A pattern therefore DEFERS module
+    /// validation to the per-tensor gate rather than skipping it.
+    pub target_modules_pattern: Option<String>,
     /// rsLoRA flag: switches scaling from `alpha/r` to `alpha/sqrt(r)`.
     /// Hard-required in the on-disk config (never defaulted — a wrong scale
     /// is silent quality loss).
@@ -221,7 +236,7 @@ pub fn parse_peft_adapter_config(json: &str) -> Result<PeftAdapterConfig> {
 
     let trainable_token_indices = parse_trainable_tokens(&raw.trainable_token_indices)?;
 
-    let target_modules = parse_target_modules(&raw.target_modules)?;
+    let (target_modules, target_modules_pattern) = parse_target_modules(&raw.target_modules)?;
     for entry in &target_modules {
         validate_target_module(entry)?;
     }
@@ -230,7 +245,7 @@ pub fn parse_peft_adapter_config(json: &str) -> Result<PeftAdapterConfig> {
     // legitimately targets no LoRA module. Otherwise an empty `target_modules`
     // means the adapter applies nothing at all.
     let has_overlay = !trainable_token_indices.is_empty() || !modules_to_save.is_empty();
-    if target_modules.is_empty() && !has_overlay {
+    if target_modules.is_empty() && target_modules_pattern.is_none() && !has_overlay {
         bail!("REJECT(target_modules): empty list — adapter targets nothing");
     }
 
@@ -238,6 +253,7 @@ pub fn parse_peft_adapter_config(json: &str) -> Result<PeftAdapterConfig> {
         r: raw.r,
         lora_alpha: raw.lora_alpha,
         target_modules,
+        target_modules_pattern,
         use_rslora,
         layers_to_transform,
         trainable_token_indices,
@@ -336,12 +352,28 @@ fn parse_layers_to_transform(v: &Option<serde_json::Value>) -> Result<Option<Vec
     }
 }
 
-fn parse_target_modules(v: &serde_json::Value) -> Result<Vec<String>> {
+fn parse_target_modules(v: &serde_json::Value) -> Result<(Vec<String>, Option<String>)> {
     match v {
-        serde_json::Value::String(s) => bail!(
-            "REJECT(target_modules): string form '{s}' (e.g. 'all-linear') is unsupported — \
-             re-export the adapter with an explicit module list"
+        // PEFT's regex form. Accepted as an opaque pattern (see
+        // `PeftAdapterConfig::target_modules_pattern`): this widens what
+        // PARSES, not what APPLIES, because the per-tensor `classify_key`
+        // gate still decides what loads. `all-linear` lands here too and is
+        // equally safe — its GDN tensors meet the same per-tensor reject they
+        // always did.
+        // `all-linear` is a PEFT KEYWORD, not a regex: it means "every linear
+        // layer", which Atlas cannot enumerate against fused/quantized layouts
+        // (a fused qkv or a packed MoE expert is one tensor here and several
+        // `nn.Linear`s there). It stays a named reject, as it always was.
+        serde_json::Value::String(s) if s == "all-linear" => bail!(
+            "REJECT(target_modules): string form '{s}' is unsupported — Atlas cannot \
+             enumerate 'all linear' against fused/quantized layouts; re-export the \
+             adapter with an explicit module list or a regex"
         ),
+        // Any other string is PEFT's regex form — kept verbatim, never
+        // expanded. See `PeftAdapterConfig::target_modules_pattern`: the
+        // per-tensor `classify_key` gate remains the authority on what loads,
+        // so this widens what PARSES, not what APPLIES.
+        serde_json::Value::String(s) => Ok((Vec::new(), Some(s.clone()))),
         serde_json::Value::Array(arr) => {
             let mods: Vec<String> = arr
                 .iter()
@@ -354,12 +386,12 @@ fn parse_target_modules(v: &serde_json::Value) -> Result<Vec<String>> {
             // Emptiness is judged by the caller: a pure token-overlay adapter
             // (only `trainable_tokens` / `modules_to_save`) legitimately lists
             // no LoRA target module.
-            Ok(mods)
+            Ok((mods, None))
         }
         // Absent / null `target_modules` is legal for a pure token-overlay
         // adapter; the caller enforces "targets nothing" against overlay
         // presence.
-        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Null => Ok((Vec::new(), None)),
         other => bail!("REJECT(target_modules): expected an array of module names, got {other}"),
     }
 }
@@ -369,17 +401,49 @@ fn parse_target_modules(v: &serde_json::Value) -> Result<Vec<String>> {
 /// validate on the final `.`-segment. Per-`LayerType` enforcement (deltas
 /// land on full-attention layers only) is the weight loader's job — this is
 /// the name-level gate.
+/// `ATLAS_LORA_ALLOW_PARTIAL=1` — load an adapter naming target modules Atlas
+/// cannot apply, skipping those and applying the rest.
+///
+/// THE canonical definition; `spark_model::lora::env::allow_partial_targets`
+/// delegates here. It has to live this low because the FIRST gate an adapter
+/// meets is this parse-time allow-list, below the layer that owns the LoRA
+/// runtime — a copy up there alone would be consulted only after this one had
+/// already refused the load.
+///
+/// Default OFF and it must stay OFF: a partially-applied adapter is a model
+/// that quietly does not do what its author trained it to do, and nothing
+/// downstream can tell that apart from the adapter simply being bad.
+pub fn allow_partial_targets() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_LORA_ALLOW_PARTIAL")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
+
 fn validate_target_module(entry: &str) -> Result<()> {
     let leaf = entry.rsplit('.').next().unwrap_or(entry);
     match leaf {
         // GDN / linear-attention projections — reject both the fused
         // (`in_proj_qkvz`/`in_proj_ba`) and split (`in_proj_qkv`/`in_proj_z`/
         // `in_proj_a`/`in_proj_b`) spellings, plus `out_proj`/`conv1d`.
+        // `out_proj` is NO LONGER here: the GDN block's output projection is
+        // supported (it is downstream of the recurrence, so it needs no
+        // exact-replay parity harness). The remaining names all feed the
+        // recurrence, where an error compounds across timesteps.
         "in_proj_qkvz" | "in_proj_ba" | "in_proj_qkv" | "in_proj_z" | "in_proj_a" | "in_proj_b"
-        | "out_proj" | "conv1d" => bail!(
-            "REJECT(gdn): target module '{leaf}' is a GDN/linear-attention projection; GDN \
-             layers are unsupported in v0 (full-attention layers only)"
-        ),
+        | "conv1d"
+            if !allow_partial_targets() =>
+        {
+            bail!(
+                "REJECT(gdn): target module '{leaf}' is a GDN/linear-attention projection; GDN \
+                 layers are unsupported in v0 (full-attention layers only). Set \
+                 ATLAS_LORA_ALLOW_PARTIAL=1 to load the adapter anyway, applying only its \
+                 supported modules — it will then be PARTIALLY applied."
+            )
+        }
+        "in_proj_qkvz" | "in_proj_ba" | "in_proj_qkv" | "in_proj_z" | "in_proj_a" | "in_proj_b"
+        | "conv1d" => Ok(()),
         "embed_tokens" | "lm_head" => {
             bail!("REJECT(embedding): target module '{leaf}' is unsupported in v0")
         }

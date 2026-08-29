@@ -36,12 +36,19 @@ extern "C" __global__ void dflash2_conv2(
     unsigned int h,
     unsigned int group_size,
     unsigned int dyn_stride,   // elements per dyn row (both applications)
-    unsigned int app_off       // 0 (prepare) or kernel_size*groups (finish)
+    unsigned int app_off,      // 0 (prepare) or kernel_size*groups (finish)
+    unsigned int gamma         // rows per SEQUENCE band; 0 == one band (legacy)
 ) {
     const unsigned int t = blockIdx.x;
     const unsigned int groups = h / group_size;
     const __nv_bfloat16* xr = x + (size_t)t * h;
-    const __nv_bfloat16* xp = (t > 0) ? x + (size_t)(t - 1) * h : nullptr;
+    // Row t-1 is this row's convolution predecessor ONLY within its own
+    // sequence. With n sequences packed seq-major as [n*gamma, h], row 0 of
+    // band b must not convolve against row gamma-1 of band b-1 — that is a
+    // different conversation. gamma == 0 keeps the single-band behaviour, and
+    // at n == 1 the test reduces to (t == 0) exactly as before.
+    const bool first_in_band = (gamma == 0u) ? (t == 0u) : (t % gamma == 0u);
+    const __nv_bfloat16* xp = first_in_band ? nullptr : x + (size_t)(t - 1) * h;
     const __nv_bfloat16* dr = dyn + (size_t)t * dyn_stride + app_off;
     __nv_bfloat16* orow = out + (size_t)t * h;
 
@@ -127,10 +134,14 @@ extern "C" __global__ void dflash2_selector_walk(
     const __nv_bfloat16* __restrict__ pred,    // [vocab, rank] A codebook
     const __nv_bfloat16* __restrict__ succ,    // [vocab, rank] B codebook
     unsigned int* __restrict__ tokens,         // [rows] draft token slots
-    unsigned int rows,
+    unsigned int rows,       // rows per BAND (gamma), not the grand total
     unsigned int rank,       // 256
     unsigned int first_row   // 1 (row 0 = anchor, not selected)
 ) {
+    // One block per sequence: block b owns rows [b*rows, (b+1)*rows) and
+    // chains from its OWN anchor. Launched with grid=1 this is byte-identical
+    // to the single-sequence walk it replaces.
+    const size_t base_row = (size_t)blockIdx.x * rows;
     __shared__ float s_gate[256];
     __shared__ float s_score[16];
     __shared__ unsigned int s_prev;
@@ -140,14 +151,15 @@ extern "C" __global__ void dflash2_selector_walk(
     const unsigned int lane = tid & 31;
 
     if (tid == 0) {
-        s_prev = tokens[0];  // last_token — slot 0 pre-argmax state
+        s_prev = tokens[base_row];  // this band's last_token
     }
     __syncthreads();
 
     for (unsigned int t = first_row; t < rows; ++t) {
+        const size_t row = base_row + t;
         // gate[r] = pred[prev][r] * hproj[t][r]
         const __nv_bfloat16* pr = pred + (size_t)s_prev * rank;
-        const __nv_bfloat16* hr = hproj + (size_t)t * rank;
+        const __nv_bfloat16* hr = hproj + row * rank;
         for (unsigned int r = tid; r < rank; r += blockDim.x) {
             s_gate[r] = __bfloat162float(pr[r]) * __bfloat162float(hr[r]);
         }
@@ -155,7 +167,7 @@ extern "C" __global__ void dflash2_selector_walk(
 
         // warp k: score_k = unary_k + Σ_r gate[r] * succ[cand_k][r]
         if (warp < 16) {
-            const unsigned int cand = top_idx[(size_t)t * 16 + warp];
+            const unsigned int cand = top_idx[row * 16 + warp];
             const __nv_bfloat16* sr = succ + (size_t)cand * rank;
             float acc = 0.0f;
             for (unsigned int r = lane; r < rank; r += 32) {
@@ -166,7 +178,7 @@ extern "C" __global__ void dflash2_selector_walk(
                 acc += __shfl_down_sync(0xffffffff, acc, off);
             }
             if (lane == 0) {
-                s_score[warp] = top_vals[(size_t)t * 16 + warp] + acc;
+                s_score[warp] = top_vals[row * 16 + warp] + acc;
             }
         }
         __syncthreads();
@@ -181,8 +193,8 @@ extern "C" __global__ void dflash2_selector_walk(
                     best_k = k;
                 }
             }
-            const unsigned int chosen = top_idx[(size_t)t * 16 + best_k];
-            tokens[t] = chosen;
+            const unsigned int chosen = top_idx[row * 16 + best_k];
+            tokens[row] = chosen;
             s_prev = chosen;
         }
         __syncthreads();
