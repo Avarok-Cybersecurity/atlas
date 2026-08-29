@@ -18,7 +18,7 @@
   import { tick } from 'svelte';
   import { joinState } from '$lib/agent/joinstate.svelte.js';
   import { nowMs, useClock } from '$lib/agent/clock.svelte.js';
-  import { joinCommand } from '$lib/agent/joincommand.js';
+  import { joinCommand, joinCommandPowerShell } from '$lib/agent/joincommand.js';
   import * as JW from '$lib/agent/joinwindow.js';
   import CommandRow from '../CommandRow.svelte';
   import InstallSteps from '../InstallSteps.svelte';
@@ -45,6 +45,12 @@
 
   const join = $derived(joinState.current);
   const command = $derived(join ? joinCommand(join, grantControl) : '');
+  // Both lines, not a guess. The operator is standing at the machine being
+  // added and this page cannot see it, so picking one would be picking for a
+  // computer that is not here — and the wrong pick fails on the far machine,
+  // where they have the least context. Windows was offered no line at all
+  // until now, so a platform we ship binaries for could not join a fleet.
+  const commandPs = $derived(join ? joinCommandPowerShell(join, grantControl) : '');
   const kind = $derived(JW.offerKind(join));
   const left = $derived(
     join ? JW.remaining(JW.deadlineMs(join.mintedAtMs, join.expiresInS), nowMs()) : null
@@ -154,6 +160,10 @@
             <div>
               <p class="ld-step-t">Paste this line there</p>
               <CommandRow {command} />
+              {#if commandPs}
+                <p class="jg-body jg-alt-shell">Or, if that machine runs Windows:</p>
+                <CommandRow command={commandPs} />
+              {/if}
               <label class="jg-grant">
                 <input type="checkbox" bind:checked={grantControl} />
                 <span>

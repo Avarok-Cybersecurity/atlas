@@ -2,7 +2,7 @@
 
 ## The problem, precisely
 
-The PR benchmark gate requires committed records proving the ten mandatory
+The PR Benchmark Certifications check requires committed records proving the ten mandatory
 benchmarks ran against the tree under test. Records are sha-anchored and are
 invalidated by any performance-path change they did not cover — including
 changes that arrive from *underneath*, when the merge queue composes the PR

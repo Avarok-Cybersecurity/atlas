@@ -7,15 +7,52 @@
 // happened. Both were reachable from a malformed frame.
 
 import { expect, test } from 'bun:test';
-import { describeError, looksLikeToken, versionAdvice, PROTOCOL_VERSION } from './protocol.js';
+import {
+  describeError,
+  looksLikeToken,
+  normaliseToken,
+  versionAdvice,
+  PROTOCOL_VERSION,
+} from './protocol.js';
+
+// The remedy is now the CALLER's to supply, because only the caller knows
+// which machine the visitor is on. These tests pass the unix line except
+// where they are specifically about a Windows visitor.
+const UNIX = 'curl -fsSL https://atlasinference.io/install.sh | sh';
 
 test('a token check answers "no" for junk instead of throwing', () => {
   for (const junk of [undefined, null, 42, {}, [], true]) {
     expect(looksLikeToken(junk)).toBe(false);
   }
   expect(looksLikeToken('a'.repeat(63))).toBe(false);
-  expect(looksLikeToken('A'.repeat(64))).toBe(false); // hex is lowercase
   expect(looksLikeToken(`  ${'a'.repeat(64)}  `)).toBe(true);
+});
+
+test('a token that wrapped in the terminal is still the token', () => {
+  // The agent prints it on a labelled line, so a narrow window wraps it and the
+  // copy carries a newline through the middle of 64 perfect hex characters.
+  // That was refused, while the operator looked straight at what they pasted.
+  const t = 'a'.repeat(64);
+  const wrapped = `${t.slice(0, 40)}\n${t.slice(40)}`;
+  expect(normaliseToken(wrapped)).toBe(t);
+  expect(normaliseToken(`${t.slice(0, 20)} ${t.slice(20)}`)).toBe(t);
+});
+
+test('an uppercased paste is normalised, not refused', () => {
+  // The agent only ever emits lowercase, so uppercase means the paste came
+  // through something that changed it. The BYTES are the same, and the agent
+  // compares the string exactly — so the fix is to fold the case before
+  // sending, not to teach the operator about hex.
+  expect(normaliseToken('A'.repeat(64))).toBe('a'.repeat(64));
+  expect(looksLikeToken('A'.repeat(64))).toBe(true);
+});
+
+test('removing whitespace cannot turn a wrong paste into a right one', () => {
+  // The laxness has to stop somewhere: what survives must still be exactly 64
+  // hex characters, so a short token padded with spaces stays refused.
+  expect(normaliseToken(`  ${'a'.repeat(63)}  `)).toBe(null);
+  expect(normaliseToken(`${'a'.repeat(64)} deadbeef`)).toBe(null);
+  expect(normaliseToken('g'.repeat(64))).toBe(null);
 });
 
 test('a malformed bad_settings frame explains itself instead of throwing', () => {
@@ -58,15 +95,23 @@ test('the codes the agent actually sends still read as sentences', () => {
 // versionAdvice is the first thing an operator sees when a fleet of older
 // agents meets a newer page, so its two branches must name different remedies.
 test('a version mismatch names the side that is behind', () => {
-  expect(versionAdvice(PROTOCOL_VERSION, 1, PROTOCOL_VERSION).ok).toBe(true);
-  const agentOld = versionAdvice(4, 1, 2);
+  expect(versionAdvice(PROTOCOL_VERSION, 1, PROTOCOL_VERSION, UNIX).ok).toBe(true);
+  const agentOld = versionAdvice(4, 1, 2, UNIX);
   expect(agentOld.side).toBe('agent');
   expect(agentOld.message).toContain('install.sh');
-  const pageOld = versionAdvice(2, 3, 4);
+  const pageOld = versionAdvice(2, 3, 4, UNIX);
   expect(pageOld.side).toBe('page');
   expect(pageOld.message).toContain('Shift-R');
   // A welcome with no usable versions must not guess a side at random.
-  expect(versionAdvice(4, undefined, null).ok).toBe(false);
+  expect(versionAdvice(4, undefined, null, UNIX).ok).toBe(false);
+  // NUMERIC STRINGS specifically, because they are what a sloppy JSON
+  // encoder actually emits and they are the case a relational comparison
+  // gets wrong quietly: `4 < "1"` and `4 > "4"` are both false, so a
+  // hand-rolled range check waves them through as compatible. Only a type
+  // check catches them, and the client now routes this decision here rather
+  // than comparing for itself.
+  expect(versionAdvice(4, '1', '4', UNIX).ok).toBe(false);
+  expect(versionAdvice(4, '4', '4', UNIX).ok).toBe(false);
 });
 
 // An agent that omits a detail field is not hypothetical — an older build
@@ -108,10 +153,10 @@ test('a detail the agent DID send is still shown', () => {
 // dead end at exactly the wrong moment.
 test('the reinstall instructions are built from the declared installer URL', async () => {
   const { installerUrl } = await import('../data.js');
-  const agentOld = versionAdvice(4, 1, 2);
+  const agentOld = versionAdvice(4, 1, 2, UNIX);
   expect(agentOld.side).toBe('agent');
   expect(agentOld.message).toContain(installerUrl);
 
-  const noVersion = versionAdvice(4, undefined, null);
+  const noVersion = versionAdvice(4, undefined, null, UNIX);
   expect(noVersion.message).toContain(installerUrl);
 });

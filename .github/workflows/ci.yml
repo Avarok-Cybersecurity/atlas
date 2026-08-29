@@ -776,7 +776,7 @@ jobs:
   # the image path depend on them would halt releases on a missing record rather
   # than on a real defect.
   pr-benchmark-gate:
-    name: PR benchmark gate
+    name: PR Benchmark Certifications
     runs-on: ubuntu-latest
     # Runs under `merge_group` too, deliberately. There the checkout is the
     # queue's temporary merge commit (latest main + this PR), and the gate
@@ -850,3 +850,48 @@ jobs:
         if: failure() && github.event_name == 'merge_group'
         run: |
           echo "::error title=Queue-composition failure::This PR's benchmark records were valid at its head; the MERGE GROUP composed other performance changes underneath them, which invalidates records by design (unmeasured interaction). Retrying will not help. Apply the serialized-landing protocol (scripts/queue-perf-pr.sh): update the branch to current main, FREEZE that sha, run the ten gates against exactly that tree, commit the records, and queue with no other performance PR ahead. See docs/gate-queue-protocol.md."
+
+  # ── Rename transition shim ───────────────────────────────────────────────
+  # `main`'s branch protection requires the context "PR benchmark gate" BY NAME.
+  # Renaming the job above to "PR Benchmark Certifications" therefore cannot land
+  # on its own: protection would demand a name nothing emits, and every open PR
+  # (94 at the time of writing) would sit on "Expected — waiting for status to be
+  # reported" until its author rebased. Flipping protection first is no better —
+  # it opens a window where `main` merges ungated, and it strands exactly those
+  # same 94 PRs, which still emit the OLD name from their own heads.
+  #
+  # So the rename lands in two independent steps, and this job is step one: it
+  # re-emits the old context name carrying the real verdict, so protection keeps
+  # its full teeth under either name and no PR is blocked by the rename.
+  #
+  # ★ HOW TO FINISH THE RENAME (repo admin, whenever convenient — nothing is
+  #   waiting on it, and the order is not sensitive once every open PR has
+  #   rebased past this commit):
+  #     1. In `main`'s branch protection, replace the required context
+  #        "PR benchmark gate" with "PR Benchmark Certifications".
+  #     2. Delete this job.
+  #   Doing 1 without 2 is harmless (the shim just becomes an unrequired check);
+  #   doing 2 without 1 blocks every merge, so 1 comes first.
+  pr-benchmark-gate-alias:
+    name: PR benchmark gate
+    needs: [pr-benchmark-gate]
+    # `always()`, or a red certification would SKIP this shim rather than fail
+    # it — and a skipped required check is treated as unsatisfied-but-pending,
+    # which reads as "still running" instead of "the gate said no".
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror the certification verdict
+        env:
+          RESULT: ${{ needs.pr-benchmark-gate.result }}
+        run: |
+          echo "PR Benchmark Certifications => ${RESULT}"
+          # Anything other than success — failure, cancelled, skipped — is not a
+          # pass. Defaulting the unknown case to green would make the shim a hole
+          # in branch protection for as long as it exists.
+          if [ "${RESULT}" != "success" ]; then
+            echo "::error title=Benchmark certifications did not pass::\
+          The job now named \"PR Benchmark Certifications\" reported '${RESULT}'. \
+          This check is a transitional alias for that job — read its log, not this one."
+            exit 1
+          fi

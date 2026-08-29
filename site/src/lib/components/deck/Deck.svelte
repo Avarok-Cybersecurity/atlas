@@ -348,4 +348,22 @@
       display: none;
     }
   }
+
+  /* Slide.svelte in this same directory already honours this; the deck that
+     MOVES the slides did not. `.dk-track` carries a 620ms full-viewport
+     translation — the exact motion the preference exists for — and `.dk-edge`
+     slides its arrows in.
+
+     Only motion is dropped. The background and opacity fades stay: they cause
+     none of what the setting is about, and removing them would make the deck
+     snap rather than settle. */
+  @media (prefers-reduced-motion: reduce) {
+    .dk-track {
+      transition: none;
+    }
+    .dk-edge {
+      transition: opacity 200ms ease;
+      translate: none;
+    }
+  }
 </style>

@@ -18,7 +18,7 @@
   import CommandRow from './CommandRow.svelte';
   import { modal } from '$lib/modal.js';
   import { describe } from '$lib/agent/placement.js';
-  import { joinCommand } from '$lib/agent/joincommand.js';
+  import { joinCommand, joinCommandPowerShell } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
 
   let tokenInput = $state('');
@@ -28,6 +28,13 @@
   // disagree, and did: the guard tested `launch.join` (an object) while the
   // command it rendered could be the empty string.
   const joinCmd = $derived(joinCommand(launch.join));
+  // BOTH lines, exactly as JoinGuide shows them. The operator is standing at
+  // the machine being added and this one cannot see it, so guessing its
+  // platform is guessing about a computer that is not here -- and the wrong
+  // single line is a paste that fails on the far machine, where they have the
+  // least context. This surface offered only the sh line; a Windows GPU box
+  // invited from here got a command it cannot run.
+  const joinCmdPs = $derived(joinCommandPowerShell(launch.join));
   let dialogEl = $state(null);
 
   // `install`, not `run`: `run` holds the terminal and the agent dies with it.
@@ -51,14 +58,25 @@
 
   // Keep probing while we are waiting for the user to start an agent, so the
   // dialog advances by itself the moment one appears.
+  //
+  // 'failed' waits too, and for the same reason. It is not only the state where
+  // nothing answered: it is where an agent answered and was REFUSED, and the
+  // commonest refusal is a protocol mismatch, whose message ends by telling the
+  // visitor to run an installer on that machine. So the dialog sends someone to
+  // a terminal and then, alone among its states, does not watch for them coming
+  // back -- the upgraded agent restarts, speaks the right protocol, and the page
+  // keeps showing the old complaint until a human clicks Try again. Polling here
+  // costs nothing extra: `probe()` is silent, so a failure that persists leaves
+  // this panel exactly as it is, and only success moves the dialog forward.
+  const WATCHED = ['guide', 'failed'];
   $effect(() => {
-    if (launch.phase !== 'guide' || launch.openRecipe === null) return;
+    if (!WATCHED.includes(launch.phase) || launch.openRecipe === null) return;
     let cancelled = false;
     let delay = 1200;
     const tick = async () => {
       if (cancelled) return;
       await launch.probe();
-      if (cancelled || launch.phase !== 'guide') return;
+      if (cancelled || !WATCHED.includes(launch.phase)) return;
       // Back off so a dialog left open does not poll forever at full rate.
       delay = Math.min(delay * 1.4, 8000);
       timer = setTimeout(tick, delay);
@@ -142,6 +160,10 @@
           </p>
           {#if joinCmd}
             <CommandRow command={joinCmd} extra="ld-place-cmd" />
+            {#if joinCmdPs}
+              <p class="ld-place-sub">Or, if that machine runs Windows:</p>
+              <CommandRow command={joinCmdPs} extra="ld-place-cmd" />
+            {/if}
             <p class="ld-watching">
               <span class="ld-pulse" aria-hidden="true"></span>
               Watching for it — this dialog will continue on its own.

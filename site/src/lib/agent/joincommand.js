@@ -8,7 +8,7 @@
 // is subtly wrong is worse than no command, because it fails on the far
 // machine where the operator has the least context.
 
-import { installerUrl } from '../data.js';
+import { installerUrl, powershellInstallerUrl } from '../data.js';
 
 /**
  * Build the install-and-join one-liner.
@@ -28,13 +28,38 @@ import { installerUrl } from '../data.js';
  * @param {{code: string, addresses: string[]}|null} join
  * @returns {string}
  */
-export function joinCommand(join, grantControl = false) {
+/**
+ * The `code@host,host` operand itself, unquoted and unwrapped.
+ *
+ * Extracted because THREE places need it and two of them used to get it by
+ * string surgery on the finished command: `shortForm` took everything after the
+ * last space, which quietly became `'code@host'` -- quotes and all, on screen --
+ * the moment the sh line started quoting its operand. A shared builder cannot
+ * drift like that.
+ *
+ * @param {{code: string, addresses: string[]}|null} join
+ * @returns {string} '' when there is no usable code or no dialable address
+ */
+export function joinOperand(join) {
   const code = typeof join?.code === 'string' ? join.code.trim() : '';
   // Same reasoning as the host allowlist: this ends up in a shell line.
   if (!code || !CODE_OK.test(code)) return '';
   const hosts = dialableAddresses(join?.addresses);
   if (hosts.length === 0) return '';
-  const base = `curl -fsSL ${installerUrl} | sh -s -- --join ${code}@${hosts.join(',')}`;
+  return `${code}@${hosts.join(',')}`;
+}
+
+export function joinCommand(join, grantControl = false) {
+  const operand = joinOperand(join);
+  if (!operand) return '';
+  // SINGLE-QUOTED, for the same reason the PowerShell line below is. HOST_OK
+  // admits `[` and `]` so a bracketed IPv6 address can reach this string, and
+  // bare brackets in an operand are a GLOB: zsh — the default shell on macOS —
+  // refuses the whole line with `no matches found` rather than running it. No
+  // address we mint today is bracketed, so this is latent, not broken; it stops
+  // being latent the first time an address carries a port or a v6 literal.
+  // Nothing needs escaping inside the quotes: CODE_OK and HOST_OK both exclude `'`.
+  const base = `curl -fsSL ${installerUrl} | sh -s -- --join '${operand}'`;
   // The grant is a VISIBLE flag on the line the operator pastes, never an
   // implication of joining. It is also the only direction that does what
   // someone adding a GPU box actually wants: it is written into THAT machine's
@@ -42,6 +67,41 @@ export function joinCommand(join, grantControl = false) {
   // this machine granting the new one control of itself — is a different
   // decision and is not what "add a machine I can run models on" means.
   return grantControl ? `${base} --grant-control` : base;
+}
+
+/**
+ * The same invitation, for a machine running Windows.
+ *
+ * A separate function and not a flag, because BOTH lines are shown: the
+ * operator is standing at the machine being added and this one cannot see it,
+ * so guessing its platform would be guessing about a computer that is not
+ * here. Showing the wrong single line is a paste that fails on the far machine,
+ * where they have the least context — the exact failure `joinCommand`'s header
+ * already warns about.
+ *
+ * `irm | iex` cannot pass arguments, so this uses `[scriptblock]::Create`,
+ * which is the idiom every Windows installer that takes options uses.
+ *
+ * @param {{code: string, addresses: string[]}|null} join
+ * @returns {string}
+ */
+export function joinCommandPowerShell(join, grantControl = false) {
+  const operand = joinOperand(join);
+  if (!operand) return '';
+  // The operand is SINGLE-QUOTED, and that is load-bearing. Unquoted, a comma
+  // in PowerShell's argument mode builds an ARRAY — `-Join a@h1,h2` binds
+  // `@('a@h1','h2')` and stringifies it with a SPACE, so the far machine
+  // receives `a@h1 h2` and the multi-homed case this function exists for fails
+  // remotely after a clean install. Verified against pwsh 7.4.6.
+  //
+  // No escaping is needed inside the quotes: CODE_OK and HOST_OK both exclude
+  // `'`, so nothing that reaches here can close the string. Quoting also
+  // neutralises a code beginning with `-`, which would otherwise parse as an
+  // unknown parameter and silently install without joining.
+  const base =
+    `& ([scriptblock]::Create((irm ${powershellInstallerUrl}))) ` +
+    `-Join '${operand}'`;
+  return grantControl ? `${base} -GrantControl` : base;
 }
 
 /**

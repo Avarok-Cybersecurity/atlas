@@ -6,6 +6,7 @@
 // is an ordinary state, not an exception. The Run button treats "no agent" as
 // something to explain, not something to fail on.
 
+import { currentInstall } from '$lib/install/host.svelte.js';
 import {
   AGENT_URL,
   PROTOCOL_VERSION,
@@ -167,12 +168,23 @@ export class AgentClient {
     if (!welcome) {
       return this.#abandon(socket, 'unavailable');
     }
-    if (PROTOCOL_VERSION < welcome.protocol_min || PROTOCOL_VERSION > welcome.protocol_max) {
-      this.message = versionAdvice(
-        PROTOCOL_VERSION,
-        welcome.protocol_min,
-        welcome.protocol_max
-      ).message;
+    // `versionAdvice` decides, rather than this comparison deciding and
+    // `versionAdvice` only narrating. The two had drifted: a welcome frame
+    // missing `protocol_min`/`protocol_max` made BOTH comparisons `false`
+    // -- undefined compares false either way -- so an agent that never said
+    // which protocol it speaks was treated as compatible and sent `hello`.
+    // The refusal for exactly that case already existed inside
+    // `versionAdvice` and was unreachable from here, with tests covering a
+    // path production could not take.
+    const advice = versionAdvice(
+      PROTOCOL_VERSION,
+      welcome.protocol_min,
+      welcome.protocol_max,
+      // This agent is on 127.0.0.1, so the visitor's own OS is its OS.
+      currentInstall().command
+    );
+    if (!advice.ok) {
+      this.message = advice.message;
       return this.#abandon(socket, 'error');
     }
 

@@ -3,12 +3,17 @@
 // This string carries a credential to another machine. The cases below are the
 // ones where rendering *something* would be worse than rendering nothing.
 
-import { expect, test } from 'bun:test';
-import { bestAddress, dialableAddresses, joinCommand } from './joincommand.js';
+import { describe, expect, test } from 'bun:test';
+import {
+  bestAddress,
+  dialableAddresses,
+  joinCommand,
+  joinCommandPowerShell
+} from './joincommand.js';
 
 test('an ordinary invitation renders one pasteable line', () => {
   const cmd = joinCommand({ code: '12345678', addresses: ['10.10.10.1'] });
-  expect(cmd).toContain('--join 12345678@10.10.10.1');
+  expect(cmd).toContain("--join '12345678@10.10.10.1'");
   expect(cmd).toContain('install.sh');
   expect(cmd.split('\n')).toHaveLength(1);
 });
@@ -65,7 +70,7 @@ test('every network the inviter offered reaches the pasted line', () => {
     code: '71673005',
     addresses: ['10.10.10.9', '10.10.10.13', '192.168.68.68']
   });
-  expect(cmd).toContain('--join 71673005@10.10.10.9,10.10.10.13,192.168.68.68');
+  expect(cmd).toContain("--join '71673005@10.10.10.9,10.10.10.13,192.168.68.68'");
 });
 
 test('order is preserved, because it is the inviter\'s link ranking', () => {
@@ -82,7 +87,7 @@ test('loopback never reaches the command, at any position', () => {
     code: '12345678',
     addresses: ['127.0.0.1', '10.0.0.9', '::1', '127.0.1.1']
   });
-  expect(cmd).toContain('--join 12345678@10.0.0.9');
+  expect(cmd).toContain("--join '12345678@10.0.0.9'");
   expect(cmd).not.toContain('127.');
   expect(cmd).not.toContain('::1');
 });
@@ -137,4 +142,61 @@ test('every spelling of loopback is refused, not just 127.0.0.1', () => {
 test('the forms an operator actually needs still render', () => {
   expect(dialableAddresses(['10.10.10.9', '[fe80::1]:34334', 'spark-256a', 'host:9000']))
     .toEqual(['10.10.10.9', '[fe80::1]:34334', 'spark-256a', 'host:9000']);
+});
+
+// A Windows machine could be installed but never INVITED: the only line the UI
+// offered was `curl … | sh`, which does not run there. The fleet-onboarding
+// flow was unavailable on a platform whose binaries we ship.
+describe('joinCommandPowerShell', () => {
+  const join = { code: '12345678', addresses: ['10.10.10.1'] };
+
+  test('emits a line PowerShell can actually run', () => {
+    const cmd = joinCommandPowerShell(join);
+    expect(cmd).not.toContain('curl');
+    expect(cmd).not.toContain('| sh');
+    expect(cmd).toContain('install.ps1');
+    // `irm | iex` cannot take arguments; this is the idiom that can.
+    expect(cmd).toContain('[scriptblock]::Create');
+    expect(cmd).toContain("-Join '12345678@10.10.10.1'");
+  });
+
+  test('carries the grant as a visible switch, never implied', () => {
+    expect(joinCommandPowerShell(join)).not.toContain('-GrantControl');
+    expect(joinCommandPowerShell(join, true)).toContain('-GrantControl');
+  });
+
+  // The same refusals as the shell form. Half an invitation looks pasteable
+  // and is not, and this one fails on the far machine.
+  test('renders nothing rather than half a command', () => {
+    expect(joinCommandPowerShell(null)).toBe('');
+    expect(joinCommandPowerShell({ code: '', addresses: ['10.0.0.1'] })).toBe('');
+    expect(joinCommandPowerShell({ code: '12345678', addresses: [] })).toBe('');
+    expect(joinCommandPowerShell({ code: '1234;rm -rf /', addresses: ['10.0.0.1'] })).toBe('');
+  });
+
+  // The multi-homed case, and the reason the operand is quoted. Unquoted, a
+  // comma in PowerShell's argument mode builds an array and the far machine
+  // receives the hosts SPACE-separated — verified against pwsh 7.4.6 — so the
+  // DGX-with-RoCE-and-LAN scenario this whole list exists for fails remotely
+  // after a clean install.
+  test('names every address, and quotes them so the comma survives', () => {
+    const cmd = joinCommandPowerShell({ code: '12345678', addresses: ['10.10.10.1', '192.168.1.5'] });
+    expect(cmd).toContain("'12345678@10.10.10.1,192.168.1.5'");
+  });
+
+  // A code starting with `-` would parse as an unknown parameter and install
+  // without joining, silently. Quoting removes the question.
+  test('quotes the operand so it can never parse as a parameter', () => {
+    const cmd = joinCommandPowerShell({ code: '-abc1234', addresses: ['10.0.0.1'] });
+    if (cmd) expect(cmd).toContain("-Join '-abc1234@10.0.0.1'");
+  });
+});
+
+// The quoting is not cosmetic: an unquoted bracketed host is a glob, and zsh
+// (macOS's default shell) refuses the line outright with `no matches found`
+// instead of running it. Brackets survive dialableAddresses by design.
+test('a bracketed IPv6 host stays inside quotes, so no shell globs it', () => {
+  const cmd = joinCommand({ code: '12345678', addresses: ['[fe80::1]'] });
+  expect(cmd).toContain("--join '12345678@[fe80::1]'");
+  expect(cmd).not.toMatch(/--join [^']*\[/);
 });

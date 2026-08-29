@@ -30,6 +30,12 @@ extend-ignore-identifiers-re = [
 # reads it as a misspelling of `RETURNED`, which it is not.
 RETUNED = "RETUNED"
 retuned = "retuned"
+# `CrOS` is the literal platform token Chrome OS puts in its user-agent string
+# ("X11; CrOS x86_64 ..."), matched by the site's install-command detector. It
+# is an identifier we must spell the way Google does, not a misspelling of
+# "cross"; the checker is case-insensitive, so both forms are listed.
+CrOS = "CrOS"
+cros = "cros"
 # `unauthenticate` — used as a verb ("would silently unauthenticate the
 # endpoint") in the model-swap test commentary (#385). Intentional coinage,
 # not a typo of "unauthenticated".

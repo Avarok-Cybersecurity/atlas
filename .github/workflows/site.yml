@@ -21,6 +21,12 @@ on:
   # branches whose PRs have not merged yet (gen-gates.mjs walks all heads).
   schedule:
     - cron: '17 6 * * *'
+  # Manual redeploy. Without this the only ways to refresh production are a push
+  # touching the paths above and the 06:17 cron -- so a fix that ships from
+  # another repo (the installers, copied from atlas-recipes main at build time)
+  # cannot be published on demand. An operator who needs one live has to wait
+  # for the cron or fabricate an unrelated site commit to trigger a deploy.
+  workflow_dispatch:
 
 concurrency:
   group: site-${{ github.ref }}
@@ -81,19 +87,33 @@ jobs:
       # correct even when it predates the release it installs. Failing the build
       # is right: serving a 404 for the headline command on the front page would
       # be worse than a red pipeline.
-      - name: Copy the installer from atlas-recipes
+      - name: Copy the installers from atlas-recipes
         run: |
-          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
-          if [ ! -f "$src" ]; then
-            echo "::error::scripts/install.sh is not on atlas-recipes main yet."
-            echo "The front page's install command is served from that file, so building"
-            echo "without it would ship a 404 for the headline instruction. Merge the"
-            echo "atlasctl launcher PR in Avarok-Cybersecurity/atlas-recipes first, then"
-            echo "re-run this build."
-            exit 1
-          fi
-          cp "$src" static/install.sh
-          chmod 0755 static/install.sh
+          # Both, and both required. The page picks between them by detected
+          # OS, so a missing install.ps1 is a 404 served to exactly the
+          # visitors who have no other command to fall back to.
+          for f in install.sh install.ps1; do
+            src="${{ github.workspace }}/atlas-recipes-src/scripts/$f"
+            if [ ! -f "$src" ]; then
+              echo "::error::scripts/$f is not on atlas-recipes main yet."
+              echo "The front page's install command is served from that file, so building"
+              echo "without it would ship a 404 for the headline instruction. Merge the"
+              echo "atlasctl launcher PR in Avarok-Cybersecurity/atlas-recipes first, then"
+              echo "re-run this build."
+              exit 1
+            fi
+            cp "$src" "static/$f"
+            chmod 0755 "static/$f"
+          done
+
+      # Before the build, against the atlas-recipes checkout above — the corpus
+      # this deploy actually ships against, not whatever a local mirror is on.
+      # The front page prints `atlasctl run <flagship>` as its headline
+      # instruction, and nothing else ties that name to a recipe that exists.
+      - name: The advertised recipe exists
+        run: bun scripts/check-flagship.mjs
+        env:
+          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
 
       - name: Build
         run: bun x --bun vite build
@@ -101,6 +121,26 @@ jobs:
           ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
           ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
           GH_TOKEN: ${{ github.token }}
+
+      # A page's <title> can vanish while the rest of its head survives: a layout
+      # title and a page title compete for one head slot, and /control shipped for
+      # a day with the homepage's title because the layout's won. The deployed
+      # canary caught it -- after the deploy. Catch it here, before.
+      - name: Every route kept its own title
+        # `working-directory: site` is this job's default, so no `cd`.
+        run: |
+          fail=0
+          check() { # file  expected-substring
+            got=$(grep -o '<title>[^<]*' "build/$1" | head -1)
+            case "$got" in
+              *"$2"*) echo "ok   $1 -> $got" ;;
+              *) echo "::error::build/$1 has title \"$got\", expected one containing \"$2\""; fail=1 ;;
+            esac
+          }
+          check index.html     'Atlas, pure Rust inference'
+          check control.html   'Control plane'
+          check diligence.html 'Verification steps'
+          exit "$fail"
 
       - name: Upload site artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -113,7 +153,7 @@ jobs:
   deploy:
     name: Deploy to avarok via rsync
     needs: build
-    if: (github.event_name == 'push' || github.event_name == 'schedule') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     environment:
       name: production-site

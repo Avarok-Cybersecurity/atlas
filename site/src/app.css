@@ -393,6 +393,8 @@ nav {
 .ld-steps li { display: flex; gap: 0.7rem; align-items: flex-start; }
 .ld-step-n { flex-shrink: 0; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent-deep); font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
 .ld-step-t { margin: 0 0 0.3rem; color: var(--t1); font-weight: 600; font-size: 0.8rem; }
+.jg-alt-shell { margin: 0.6rem 0 0.3rem; }
+.ld-steps-note { margin: -0.35rem 0 0.9rem; padding-left: 2.05rem; color: var(--t3); font-size: 0.74rem; line-height: 1.5; }
 .ld-cmd { display: flex; align-items: center; gap: 0.5rem; background: #0d0a16; border: 1px solid var(--border); border-radius: 7px; padding: 0.45rem 0.5rem 0.45rem 0.7rem; }
 .ld-cmd code { flex: 1; min-width: 0; font-size: 0.7rem; color: #ddd8f0; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
 .ld-watching { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--t3); }
