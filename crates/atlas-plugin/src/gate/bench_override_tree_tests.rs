@@ -79,17 +79,18 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "osl".into(),
                 "320".into(),
             ),
-            // The DFlash2 gate's instrument is byte-identical to the plain
-            // one's, deliberately: the two ladders must differ in exactly one
-            // axis (whether the engine speculates) or a shape difference
-            // between them is not attributable to speculation. Listing both
-            // here is what keeps that identity from drifting silently.
+            // The DFlash2 gate's instrument is the plain one's TRUNCATED at
+            // the widest rung its serve can admit — same isl, same osl, so
+            // the rungs they share stay directly comparable. It stops at 16
+            // because a DFlash2 serve refuses to start above a narrow batch
+            // (measured; see the BENCH.toml note), and a rung above the batch
+            // cap would measure the cap rather than the engine.
             (
                 "gb10".into(),
                 "qwen3.8-27b".into(),
                 "concurrency-sweep-dflash2".into(),
                 "concurrencies".into(),
-                "1,2,4,8,16,32,64,128".into(),
+                "1,2,4,8,16".into(),
             ),
             (
                 "gb10".into(),

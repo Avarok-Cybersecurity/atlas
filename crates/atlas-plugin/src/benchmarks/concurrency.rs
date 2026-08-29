@@ -386,8 +386,25 @@ impl ConcurrencySweep {
             // reusing c0/c1/... across later rungs produces a history-dependent
             // mixture of cached and new prompts. A failed warm-up invalidates
             // the declared setup instead of silently changing the instrument.
-            for tag in tags {
-                self.one(isl, tag.clone()).await.with_context(|| {
+            //
+            // CONCURRENTLY, and that is safe here for a specific reason: a
+            // round's tags are `c0..c{conc-1}`, pairwise DISTINCT, so there is
+            // no duplicate-insert race for concurrency to lose — the usual
+            // reason a cache prime is serialised does not apply.
+            //
+            // It is also the stronger guarantee at wide C. Serially, priming
+            // 128 prompts at ~15 s each means prompt c0 has been sitting in
+            // the cache for half an hour by the time c127 is warmed, and is
+            // the likeliest eviction candidate before the measured batch even
+            // starts; a concurrent round keeps the whole set live inside one
+            // window. And it is what makes a wide ladder affordable: serially
+            // the warm-up costs `ΣC × per-request wall`, which at C=1..128 was
+            // measured at ~64 min per rep against ~12 min of measurement — the
+            // instrument spending 84% of its time priming.
+            let warmed =
+                futures::future::join_all(tags.iter().map(|tag| self.one(isl, tag.clone()))).await;
+            for (tag, outcome) in tags.iter().zip(warmed) {
+                outcome.with_context(|| {
                     format!("isl {isl} conc {conc}: warm-up prompt {tag} failed")
                 })?;
             }

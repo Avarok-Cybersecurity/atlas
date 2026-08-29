@@ -113,6 +113,29 @@ fn warmup_and_measurement_share_the_complete_prompt_set() {
     assert_ne!(b.cell_prompt(512, "warm"), measured_prompts[0]);
 }
 
+/// The property that makes a CONCURRENT warm-up round safe: within one round
+/// every tag is distinct, so no two in-flight warm-up requests target the same
+/// prefix-cache key. If a future plan ever repeated a tag inside a round, the
+/// round would race two inserts on one key and the "warmed" claim would become
+/// timing-dependent — so this is asserted rather than assumed.
+#[test]
+fn a_warmup_round_never_repeats_a_prompt() {
+    for conc in [1usize, 2, 4, 16, 128] {
+        let plan = prompt_plan(conc, 1);
+        for round in &plan.warmup_rounds {
+            let mut seen = std::collections::BTreeSet::new();
+            for tag in round {
+                assert!(
+                    seen.insert(tag.clone()),
+                    "conc {conc}: warm-up round repeats {tag}, so its requests \
+                     would race on one cache key"
+                );
+            }
+            assert_eq!(seen.len(), conc, "conc {conc}: round is not the full set");
+        }
+    }
+}
+
 // ---- fixture selection ------------------------------------------------------
 
 /// The default is the natural code-generation fixture — the 2026-08-15

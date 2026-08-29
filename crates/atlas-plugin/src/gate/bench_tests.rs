@@ -442,7 +442,13 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     let dflash2 = baseline_for(&root, "concurrency-sweep-dflash2").unwrap();
     let (_, d) = dflash2.resolve("gb10", None).unwrap();
     for (key, want) in [
-        ("max_batch_size", "128"),
+        // 16, not the plain gate's 128: a DFlash2 serve REFUSES TO START
+        // wider on GB10 — the verify pool is gamma-sized and its slot count
+        // is pinned at 32 for any bs>=32, while the f16-pool relief that lets
+        // MTP reach 128 is rejected with --dflash by design. The BENCH.toml
+        // note carries the measured reserve table. Pinned here so the cap
+        // cannot be quietly raised into a serve that will not boot.
+        ("max_batch_size", "16"),
         ("kv_cache_dtype", "fp8"),
         ("ssm_cache_slots", "8"),
         ("max_model_len", "4096"),
@@ -462,13 +468,28 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         !d.serve_overrides.contains_key("speculative"),
         "--dflash conflicts with --speculative at the CLI: pinning both would not start"
     );
-    // The one-variable rule, asserted rather than described: every key the
-    // plain gate pins must be pinned identically here.
+    // The one-variable rule, asserted rather than described — with exactly
+    // one documented exception. Every key the plain gate pins must be pinned
+    // identically here EXCEPT max_batch_size, which the drafter's memory
+    // footprint forces down (see the BENCH.toml note and its measured reserve
+    // table). Listing the exception rather than skipping the check is the
+    // point: a second axis of difference must never appear silently.
+    const FORCED_BY_THE_DRAFTER: [&str; 1] = ["max_batch_size"];
     for (key, want) in &c.serve_overrides {
+        if FORCED_BY_THE_DRAFTER.contains(&key.as_str()) {
+            assert_ne!(
+                d.serve_overrides.get(key),
+                Some(want),
+                "{key} is listed as forced apart by the drafter but the two gates agree on \
+                 it — drop it from the exception list rather than leaving a stale excuse"
+            );
+            continue;
+        }
         assert_eq!(
             d.serve_overrides.get(key),
             Some(want),
-            "the two concurrency ladders must differ ONLY in the drafter, but {key} differs"
+            "the two concurrency ladders must differ only in the drafter and the batch cap \
+             it forces, but {key} differs"
         );
     }
 

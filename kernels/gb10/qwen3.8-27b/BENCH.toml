@@ -464,10 +464,46 @@ gate measures the base engine. That is a fact about the feature, not a fault \
 in the instrument; record it and let the two lines meet on the chart."""
 
 [benchmarks.serve_overrides]
-# The DFlash2 serve, on top of the same batched profile the plain gate pins —
-# the two ladders must differ in ONE axis (speculation) or their shapes are
-# not attributable.
-max_batch_size = "128"
+# The DFlash2 serve. It matches the plain gate's profile on every axis it CAN
+# match; the batch cap is the one it cannot, and the reason is measured rather
+# than assumed.
+#
+# ★ 16, NOT 128 — a DFlash2 serve refuses to START wider on this box.
+# Measured 2026-08-29, spark-256a, util 0.85, everything else as pinned here:
+#
+#     max_batch_size |  48  |  64  |  96  | 128
+#     reserve        | 56.5 | 59.0 | 63.8 | 68.7  GB
+#
+# against ~46.5 GB left after weights + drafter, so 128 dies with "No memory
+# left for KV cache: 56.9 GB consumed + 67.1 GB inference reserve". The slope
+# is only ~151 MB/slot; the ~49 GB INTERCEPT is the wall.
+#
+# It is the verify pool. `preflight` at bs=64 prints
+# `ssm_pool=53568 MB (64 max_batch blobs + 32 MTP-covered slots x 3 verify
+# blobs)`; the same box with MTP instead prints 32112 MB for 128 max_batch
+# blobs + 32 slots x 5. DFlash blobs are ~2.5x MTP's because the pools are
+# gamma-sized -- uniform K = gamma+1 on every slot -- and this drafter's
+# trained block_size is 8.
+#
+# Three things that look like levers and are not:
+#   * ATLAS_MTP_MAX_SEQS cannot shrink the slot count. `mtp_state_slots_with`
+#     is `max_batch_size.min(cap.max(VERIFY_WY_TABLE_SEQS))` and that floor is
+#     32. Setting it to 8 changed nothing (verified). The floor only lifts
+#     BELOW bs=32, where max_batch_size becomes the binding term -- which is
+#     exactly why 16 is comfortable and 48 is not: it is a knee, not a slope.
+#   * --ssm-h-dtype f16-pool, the lever that took the MTP bs=128 reserve
+#     36.7 -> 22.4 GB, is REJECTED with --dflash by cli/validate.rs: the
+#     DFlash verify width dispatches gated_delta_rule_wy17, which has no FP16
+#     h-state twin and strides its h intermediates in FP32 elements. "Fluent
+#     garbage, not an error." The refusal is right; the relief is unavailable.
+#   * Raising --gpu-memory-utilization past 0.85 is not on the table on GB10.
+#
+# So this gate's ladder stops at C=16 (its param_overrides below), because a
+# rung above the batch cap measures the cap and not the engine -- the same
+# defect as the batch-1 instrument the plain gate's pin exists to correct, one
+# scale up. The real fix is an FP16 h-state twin for gated_delta_rule_wy17;
+# until then this is the honest width.
+max_batch_size = "16"
 kv_cache_dtype = "fp8"
 ssm_cache_slots = "8"
 max_model_len = "4096"
@@ -489,9 +525,11 @@ draft_model = "incoai/Qwen3.8-27B-DFlash2"
 dflash_gamma = "8"
 
 [benchmarks.param_overrides]
-# Byte-identical to the plain gate's instrument. Anything else and the two
-# ladders stop being one experiment with one variable.
-concurrencies = "1,2,4,8,16,32,64,128"
+# The plain gate's instrument, truncated at the widest rung this serve can
+# actually admit (see the batch-cap note above). isl and osl are identical, so
+# the rungs the two ladders SHARE are directly comparable; the plain gate
+# simply continues past where this one can go.
+concurrencies = "1,2,4,8,16"
 isls = "512"
 osl = "320"
 
