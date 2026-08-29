@@ -22,6 +22,7 @@ impl BlockDiffusionDraftHead {
         embed_tokens_shared: DevicePtr,
         lm_head_shared: DevicePtr,
         lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
+        lm_head_native_fp8: Option<(crate::weight_map::Fp8DenseWeight, usize)>,
         target_hidden_size: usize,
         gamma: Option<usize>,
         window_size: Option<usize>,
@@ -652,7 +653,10 @@ impl BlockDiffusionDraftHead {
         // Acceptance gate (G.4 design doc §16.7): bench must hold
         // ≥43% accept (vs 44.9% BF16) AND ≥11.0 tok/s (vs 8.70). If hard
         // fail, layer-by-layer ablation; skip layer 0 first.
-        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (2026-08-19): FP8 drafter
+        // weights are the proven speed lane (accept gate held). `=0` reverts
+        // to the BF16 drafter path.
+        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
         let fp8_kernels_present = head.kernels.fp8_gemm_n128_row_scaled.0 != 0
             && head.kernels.fp8_gemm_n128_row_scaled_m16.0 != 0;
         if fp8_requested && !fp8_kernels_present {
@@ -722,26 +726,52 @@ impl BlockDiffusionDraftHead {
                 );
                 tracing::debug!("DFlash Phase G: layer {} quantized", layer_idx);
             }
-            // Phase G — also quantize the shared lm_head weight. It's the
-            // largest GEMM in the drafter (vocab × hidden = 248320 × 5120 ≈
-            // 1.27B weights, ~14× any per-layer GEMM). We allocate a SEPARATE
-            // FP8 buffer so we don't mutate the target model's BF16 lm_head
-            // (the BF16 ptr stays valid for the BF16 path).
-            tracing::info!(
-                "DFlash Phase G: quantizing shared lm_head [{} × {}]",
-                head.vocab_size,
-                head.hidden_size
-            );
-            let lm_head_bf16 = crate::weight_map::DenseWeight {
-                weight: head.lm_head_shared,
-            };
-            head.lm_head_shared_fp8 = Some(lm_head_bf16.quantize_to_fp8(
-                gpu,
-                quant_k,
-                head.vocab_size,
-                head.hidden_size,
-                stream,
-            )?);
+            // Phase G — the shared lm_head, the largest GEMM in the drafter
+            // (vocab × hidden = 248320 × 5120 ≈ 1.27B weights, ~14× any
+            // per-layer GEMM).
+            //
+            // Preferred: SHARE the checkpoint's NATIVE FP8 lm_head
+            // (`lm_head_native_fp8`, built in factory/lm_head_setup.rs).
+            // Checkpoints like unsloth Qwen3.8-27B-NVFP4 ship the head as
+            // FP8 E4M3 + per-row scale, and those bytes stay resident in the
+            // adopted weight store anyway — re-quantizing the BF16 dequant
+            // was a lossy FP8→BF16→FP8 round trip AND a duplicate 1.27 GB
+            // allocation. The row_scale convention is identical (per-row f32
+            // multiplier), so the tail GEMM kernels are unchanged.
+            //
+            // Fallback (BF16-native checkpoints): runtime-quantize a SEPARATE
+            // FP8 buffer so the target's BF16 lm_head ptr stays valid.
+            if let Some((shared, rows)) = lm_head_native_fp8 {
+                anyhow::ensure!(
+                    rows == head.vocab_size,
+                    "native FP8 lm_head share rows ({rows}) != drafter vocab ({}) — \
+                     the drafter's tail GEMM iterates head.vocab_size rows",
+                    head.vocab_size
+                );
+                tracing::info!(
+                    "DFlash Phase G: sharing the checkpoint's NATIVE FP8 lm_head \
+                     [{} × {}] (1.27 GB runtime mirror skipped)",
+                    head.vocab_size,
+                    head.hidden_size
+                );
+                head.lm_head_shared_fp8 = Some(shared);
+            } else {
+                tracing::info!(
+                    "DFlash Phase G: quantizing shared lm_head [{} × {}]",
+                    head.vocab_size,
+                    head.hidden_size
+                );
+                let lm_head_bf16 = crate::weight_map::DenseWeight {
+                    weight: head.lm_head_shared,
+                };
+                head.lm_head_shared_fp8 = Some(lm_head_bf16.quantize_to_fp8(
+                    gpu,
+                    quant_k,
+                    head.vocab_size,
+                    head.hidden_size,
+                    stream,
+                )?);
+            }
             head.quant = DflashQuantization::Fp8Weights;
             tracing::info!(
                 "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \

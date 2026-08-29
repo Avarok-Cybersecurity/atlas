@@ -142,7 +142,9 @@ pub fn step_verify_dflash(
             tracing::error!("commit_ctx (kgamma): {e:#}");
         }
     } else {
-        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (2026-08-19); `=0` is the
+        // kill switch.
+        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() != Some("0");
         if eagle_fix
             && let Err(e) =
                 model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
