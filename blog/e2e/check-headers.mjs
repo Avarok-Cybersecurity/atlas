@@ -86,7 +86,17 @@ console.log(`checking ${base}`);
   expectSecurityHeaders('missing page', h);
 }
 
-/* 4. Hidden files stay hidden. */
+/* 4. The feed and the sitemap. These are served by `location =` blocks that
+      exist only to set a content type — the exact shape that reintroduces the
+      add_header defect if anyone ever adds a Cache-Control line to one. */
+for (const [path, type] of [['/rss.xml', 'application/rss+xml'], ['/sitemap.xml', 'application/xml']]) {
+  const { res, h } = await get(path);
+  check(`${path}: 200`, res.status === 200, `status ${res.status}`);
+  check(`${path}: ${type}`, h('content-type').startsWith(type), h('content-type') || 'absent');
+  expectSecurityHeaders(path, h);
+}
+
+/* 5. Hidden files stay hidden. */
 {
   const { res } = await get('/.env');
   check('dotfile: refused', res.status === 404 || res.status === 403, `status ${res.status}`);
