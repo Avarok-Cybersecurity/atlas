@@ -71,7 +71,7 @@ struct Weight {
 }
 
 fn gen_weight(rng: &mut Rng, n: usize, k: usize) -> Weight {
-    assert!(k % GROUP_SIZE == 0);
+    assert!(k.is_multiple_of(GROUP_SIZE));
     let half_k = k / 2;
     let num_groups = k / GROUP_SIZE;
     let mut packed = vec![0u8; n * half_k];

@@ -25,6 +25,38 @@ impl MoeLayer {
     ///
     /// When `gelu_activation` is true, falls back to the sorted prefill path
     /// (which uses separate activation kernel) to avoid fused SiLU decode kernels.
+    /// LongCat zero-computation experts: `out[t,:] += zero_accum[t] * x[t,:]`
+    /// where `zero_accum` was written by the softmax+bias router kernels
+    /// (the folded weights of selected identity experts). MUST run after the
+    /// routed blend for the SAME tokens whose routing wrote `zero_accum`.
+    /// No-op (no launch) when the model has no zero-experts.
+    pub fn apply_zero_expert(
+        &self,
+        out: spark_runtime::gpu::DevicePtr,
+        x: spark_runtime::gpu::DevicePtr,
+        n: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if self.router_logits_n as usize == ctx.config.num_experts {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.moe_zero_expert_add_k.0 != 0,
+            "zero-expert model but moe_zero_expert_add kernel is absent from this build"
+        );
+        ops::moe_zero_expert_add(
+            ctx.gpu,
+            self.moe_zero_expert_add_k,
+            out,
+            x,
+            self.zero_accum_dev,
+            n,
+            ctx.config.hidden_size as u32,
+            stream,
+        )
+    }
+
     pub fn forward(
         &self,
         input: DevicePtr,
@@ -124,7 +156,9 @@ impl MoeLayer {
                         router_in,
                         nvfp4,
                         gate_logits,
-                        num_experts,
+                        // = num_experts everywhere except LongCat, whose
+                        // router also scores the zero-expert logits.
+                        self.router_logits_n,
                         h,
                         stream,
                     )
@@ -135,7 +169,7 @@ impl MoeLayer {
                         router_in,
                         &self.weights.gate,
                         gate_logits,
-                        num_experts,
+                        self.router_logits_n,
                         h,
                         stream,
                     )
@@ -189,6 +223,26 @@ impl MoeLayer {
                             bias,
                             indices_dev,
                             weights_dev,
+                            num_experts,
+                            top_k,
+                            ctx.config.norm_topk_prob,
+                            ctx.config.routed_scaling_factor as f32,
+                            stream,
+                        )
+                    } else if ctx.config.scoring_func == "softmax" {
+                        // LongCat-Flash: softmax scores + correction bias for
+                        // SELECTION, unbiased softmax * scaling for weights,
+                        // zero-expert fold into zero_accum (identity experts
+                        // are applied by the caller via apply_zero_expert).
+                        ops::moe_topk_softmax_bias(
+                            ctx.gpu,
+                            self.moe_topk_softmax_bias_k,
+                            gate_logits,
+                            bias,
+                            indices_dev,
+                            weights_dev,
+                            self.zero_accum_dev,
+                            self.router_logits_n,
                             num_experts,
                             top_k,
                             ctx.config.norm_topk_prob,

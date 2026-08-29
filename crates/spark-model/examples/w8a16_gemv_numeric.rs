@@ -252,7 +252,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let n: u32 = args.get(1).map(|s| s.parse()).transpose()?.unwrap_or(18048);
     let k: u32 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(4096);
-    if k % 16 != 0 {
+    if !k.is_multiple_of(16) {
         bail!("w8a16_gemv requires K%16==0");
     }
     let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;

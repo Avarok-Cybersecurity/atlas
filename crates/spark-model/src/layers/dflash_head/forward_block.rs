@@ -569,17 +569,42 @@ impl BlockDiffusionDraftHead {
             let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
             if lm_head_fp8 {
                 if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
-                    ops::fp8_gemm_n128_row_scaled_m16(
-                        gpu,
-                        self.kernels.fp8_gemm_n128_row_scaled_m16,
-                        norm_noise_local,
-                        fp8,
-                        self.scratch.logits,
-                        self.gamma as u32,
-                        self.vocab_size as u32,
-                        h_local,
-                        stream,
-                    )?;
+                    // Register-tiled M<=8 FP8 GEMV (rt2 twin) over the
+                    // vocab: the m16 tile pads 50% of its rows at γ=8 and
+                    // measured 12.2 ms/step (~104 GB/s) in the 2026-08-19
+                    // node trace; rt2-class GEMVs stream 180+ on this
+                    // exact shape (batchm_bench lm_head row). Drafter-side
+                    // numerics are correctness-free under strict-argmax
+                    // accept. ATLAS_NO_DFLASH_FP8_RT=1 restores the tile.
+                    if self.kernels.fp8_gemv_rt2.0 != 0
+                        && self.gamma as u32 <= 8
+                        && h_local.is_multiple_of(16)
+                        && super::fp8_rt_enabled()
+                    {
+                        ops::fp8_gemv_rowscale_batch8_rt2(
+                            gpu,
+                            self.kernels.fp8_gemv_rt2,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            self.gamma as u32,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    } else {
+                        ops::fp8_gemm_n128_row_scaled_m16(
+                            gpu,
+                            self.kernels.fp8_gemm_n128_row_scaled_m16,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            self.gamma as u32,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    }
                 } else {
                     ops::dense_gemm_bf16_pipelined(
                         gpu,
@@ -610,17 +635,33 @@ impl BlockDiffusionDraftHead {
                     stream,
                 )?;
             }
-            for i in 0..self.gamma {
-                let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
-                let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
-                ops::argmax_bf16(
-                    gpu,
-                    self.kernels.argmax,
-                    logits_row,
-                    token_slot,
-                    self.vocab_size as u32,
-                    stream,
-                )?;
+            // DFlash2: selector path — per-row top-16 + single-launch chain
+            // walk (dflash2.rs). Device-side only; captures into the tail
+            // subgraph. Row 0 keeps holding last_token (the walk's anchor
+            // predecessor), which the propose echo-drop discards anyway.
+            if self.dflash2_active() {
+                self.dflash2_select_block(ctx, norm_noise_local, stream)?;
+            } else
+            // DSpark: when the drafter ships a Markov head, sample the block
+            // left-to-right with the low-rank bigram bias (markov.rs). The
+            // sequential chain reads only device memory, so it captures into
+            // the tail subgraph like the plain loop did. Headless drafters
+            // take the original batched argmax bit-for-bit.
+            if self.markov_active() {
+                self.markov_argmax_block(ctx, norm_noise_local, stream)?;
+            } else {
+                for i in 0..self.gamma {
+                    let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
+                    let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
+                    ops::argmax_bf16(
+                        gpu,
+                        self.kernels.argmax,
+                        logits_row,
+                        token_slot,
+                        self.vocab_size as u32,
+                        stream,
+                    )?;
+                }
             }
 
             // ── BLOCK-FORWARD PARITY DUMP (Friday 2026-06-11) ──────────────
@@ -992,10 +1033,73 @@ impl BlockDiffusionDraftHead {
         gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;
         gpu.record_event(self.scratch.draft_tokens_event, stream)?;
         gpu.event_synchronize(self.scratch.draft_tokens_event)?;
-        let drafts: Vec<u32> = host_buf
+        let mut drafts: Vec<u32> = host_buf
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+        // ATLAS_DSPARK_SHIFT=1: SpecForge drafter convention. The checkpoint's
+        // own dflash.py spec_generate maps row j's output to position
+        // start+j+1 (the anchor row's output IS draft #1 — nothing is an
+        // echo), where Atlas's z-lab convention reads row j at position j
+        // with row 0 discarded. Rotating right by one places rows 0..γ-2
+        // where the verify path reads drafts 1..γ-1. Row γ-1's output (a
+        // prediction past the block) lands in the discarded slot 0.
+        // SpecForge shifted-row convention: auto-detected from the drafter
+        // config (projector_type == "dspark"); env overrides both ways for
+        // A/B (`ATLAS_DSPARK_SHIFT=1` forces on, `=0` forces off).
+        let shift = match std::env::var("ATLAS_DSPARK_SHIFT").ok().as_deref() {
+            Some("1") => true,
+            Some("0") => false,
+            _ => self.shifted_rows,
+        };
+        if shift {
+            drafts.rotate_right(1);
+        }
+        // ── DSpark confidence truncation (dynamic block length) ──
+        // Reference policy (DeepSpec draft_ops.py::_confident_prefix_length):
+        // keep drafts up to the FIRST row whose sigmoid(confidence logit)
+        // falls below τ; no row below τ ⇒ full block. Row j's confidence
+        // gates final draft j (post-shift, post-echo-drop indexing is 1:1
+        // with rows 0..γ-2). The γ BF16 logits were written by the captured
+        // tail; the event sync above covers them, so this small D2H is
+        // already-ordered and cheap. Requires anchor bias ON (rows without
+        // the Markov chain never write their confidence slot).
+        if self.markov_active()
+            && self.confidence_active()
+            && std::env::var("ATLAS_DSPARK_ANCHOR_BIAS").ok().as_deref() != Some("0")
+        {
+            let tau = Self::conf_tau();
+            let mut cbuf = vec![0u8; self.gamma * 2];
+            gpu.copy_d2h(self.scratch.conf_out, &mut cbuf)?;
+            if std::env::var("ATLAS_DSPARK_CONF_TRACE").ok().as_deref() == Some("1") {
+                let logits: Vec<f32> = (0..self.gamma)
+                    .map(|j| {
+                        let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
+                        f32::from_bits((bits as u32) << 16)
+                    })
+                    .collect();
+                tracing::info!(
+                    "DSPARK CONF logits (pos={position}, tau={tau}): {:?} sigmoids: {:?}",
+                    logits,
+                    logits
+                        .iter()
+                        .map(|x| 1.0 / (1.0 + (-x).exp()))
+                        .collect::<Vec<f32>>(),
+                );
+            }
+            // sigmoid(x) < τ  ⇔  x < logit(τ) — compare in logit space.
+            let tau_logit = (tau / (1.0 - tau)).ln();
+            let mut keep = self.gamma; // rows kept (slot 0 discard + drafts)
+            for j in 0..self.gamma.saturating_sub(1) {
+                let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
+                let logit = f32::from_bits((bits as u32) << 16);
+                if logit < tau_logit {
+                    keep = j + 1; // slot 0 + drafts 0..j-1 ⇒ j kept drafts
+                    break;
+                }
+            }
+            drafts.truncate(keep.max(1));
+        }
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.

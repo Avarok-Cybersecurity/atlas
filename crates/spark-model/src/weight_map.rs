@@ -33,6 +33,8 @@ mod nvfp4_detect;
 mod quant_helpers;
 #[path = "weight_map/quantize_fns.rs"]
 mod quantize_fns;
+#[path = "weight_map/quantize_fp8_bs.rs"]
+mod quantize_fp8_bs;
 #[path = "weight_map/quantized.rs"]
 mod quantized;
 #[path = "weight_map/ssm_qwen35.rs"]
@@ -49,6 +51,7 @@ pub use moe::*;
 pub use nemotron::*;
 pub use nvfp4_detect::*;
 pub use quantize_fns::*;
+pub use quantize_fp8_bs::*;
 pub use quantized::*;
 pub use ssm_qwen35::*;
 

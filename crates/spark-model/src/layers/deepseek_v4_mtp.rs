@@ -320,6 +320,7 @@ impl DeepseekV4MtpHead {
         // capture).
         let mtp_ctx = ForwardContext {
             buffers: ctx.buffers,
+            hc_row_offset: ctx.hc_row_offset,
             gpu: ctx.gpu,
             config: ctx.config,
             dispatch: ctx.dispatch,
@@ -336,6 +337,7 @@ impl DeepseekV4MtpHead {
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: ctx.token_ids,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: MTP draft body; no prefill LoRA route.
             midchunk_capture: None,
             moe_lora_route: crate::layer::MoeLoraRoute::Skip, // MTP draft body: no lora installed here; Skip = no fold (safe/inert)
@@ -368,6 +370,18 @@ impl DeepseekV4MtpHead {
         // ── 5. mHC head: collapse hc_mult streams → single h_out (is_last) ──
         let h_out = ctx.buffers.hidden_states();
         if let Some(ref head) = self.module.hc_head {
+            // This path stays on DeepSeek's Sinkhorn launch. `hc_head`'s
+            // low-rank twin takes a different argument list behind the same
+            // kernel name, so a low-rank head arriving here would be
+            // dispatched as Sinkhorn and read `hc_fn`/`hc_scale`/`hc_base`,
+            // which are NULL on that variant. Qwen's MTP is dropped for v1
+            // (Avarok #753 item I); if it is ever revived this becomes a
+            // dispatch, not an assert.
+            anyhow::ensure!(
+                head.lowrank.is_none(),
+                "deepseek_v4_mtp: low-rank mHC head reached the Sinkhorn MTP \
+                 path; this module has no low-rank dispatch"
+            );
             ops::hc_head(
                 ctx.gpu,
                 self.hc_head_k,

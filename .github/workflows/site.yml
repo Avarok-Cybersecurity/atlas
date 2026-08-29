@@ -27,6 +27,12 @@ on:
   # branches whose PRs have not merged yet (gen-gates.mjs walks all heads).
   schedule:
     - cron: '17 6 * * *'
+  # Manual redeploy. Without this the only ways to refresh production are a push
+  # touching the paths above and the 06:17 cron -- so a fix that ships from
+  # another repo (the installers, copied from atlas-recipes main at build time)
+  # cannot be published on demand. An operator who needs one live has to wait
+  # for the cron or fabricate an unrelated site commit to trigger a deploy.
+  workflow_dispatch:
 
 concurrency:
   group: site-${{ github.ref }}
@@ -228,7 +234,7 @@ jobs:
   deploy:
     name: Deploy to avarok via rsync
     needs: build
-    if: (github.event_name == 'push' || github.event_name == 'schedule') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     environment:
       name: production-site

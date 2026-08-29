@@ -76,17 +76,7 @@ impl TransformerModel {
             let count = (rows_to_score - start).min(BATCH_ROWS);
             let batch_hidden = hidden.offset((start) * h * elem);
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
-                batch_hidden,
-                &self.final_norm,
-                normed,
-                count as u32,
-                h as u32,
-                eps,
-                stream,
-            )?;
+            self.final_norm_apply(batch_hidden, normed, count as u32, h as u32, eps, stream)?;
             self.lm_head_batched(normed, count as u32, self.buffers.logits(), stream)?;
             self.gpu.synchronize(stream)?;
             let bytes = &mut host[..count * v * 2];

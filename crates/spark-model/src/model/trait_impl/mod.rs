@@ -824,6 +824,10 @@ impl Model for TransformerModel {
     fn is_ep(&self) -> bool {
         self.is_ep_dispatch()
     }
+    fn hc_mult(&self) -> usize {
+        self.config.hc_mult
+    }
+
     fn is_mla(&self) -> bool {
         self.is_mla_dispatch()
     }
@@ -868,5 +872,50 @@ impl Model for TransformerModel {
     }
     fn synchronize(&self, stream: u64) -> Result<()> {
         self.synchronize_dispatch(stream)
+    }
+}
+
+impl TransformerModel {
+    /// Collect chunk-boundary aux layer state (PLE, QSA) for a Marconi
+    /// snapshot. Returns the blobs to attach; empty when no layer carries
+    /// aux state.
+    pub(in crate::model) fn collect_aux_states(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        let mut out = Vec::new();
+        for (i, l) in self.layers.iter().enumerate() {
+            if let Some(blob) =
+                l.snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
+            {
+                out.push((i as u32, blob));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether restoring a snapshot WITHOUT aux blobs would be unsound for
+    /// this model (some layer carries per-sequence aux state).
+    pub(in crate::model) fn requires_aux_state(&self) -> bool {
+        self.layers.iter().any(|l| l.has_aux_state())
+    }
+
+    /// Apply a snapshot's aux blobs to the owning layers.
+    pub(in crate::model) fn apply_aux_states(
+        &self,
+        seq: &mut SequenceState,
+        blobs: &[(u32, Vec<u8>)],
+        stream: u64,
+    ) -> Result<()> {
+        for (i, blob) in blobs {
+            self.layers[*i as usize].restore_aux(
+                seq.layer_states[*i as usize].as_mut(),
+                blob,
+                self.gpu.as_ref(),
+                stream,
+            )?;
+        }
+        Ok(())
     }
 }

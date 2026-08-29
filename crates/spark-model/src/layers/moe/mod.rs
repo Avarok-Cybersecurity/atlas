@@ -13,79 +13,6 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
-/// Device-side pointer table for one projection across all experts.
-///
-/// Enables GPU-side expert dispatch: the batched GEMV kernel reads
-/// expert_id from device memory, then indexes these tables to find
-/// the correct weight pointers — no CPU involvement needed.
-pub(crate) struct ExpertPtrTable {
-    /// `[num_experts]` u64 device pointers to each expert's B_packed.
-    pub(crate) packed_ptrs: DevicePtr,
-    /// `[num_experts]` u64 device pointers to each expert's B_scale.
-    pub(crate) scale_ptrs: DevicePtr,
-    /// `[num_experts]` f32 per-expert scale2 values.
-    pub(crate) scale2_vals: DevicePtr,
-}
-
-/// Device-side pointer table for FP8 expert dispatch (one projection).
-///
-/// FP8 experts use 2 pointer arrays (weight + block_scale) instead of
-/// NVFP4's 3 (packed + scale + scale2). The fused FP8 MoE kernel indexes
-/// these tables by expert_id to load the correct FP8 weight matrix.
-pub(crate) struct Fp8ExpertPtrTable {
-    /// `[num_experts]` u64 device pointers to each expert's FP8 weight.
-    pub(crate) weight_ptrs: DevicePtr,
-    /// `[num_experts]` u64 device pointers to each expert's block scales.
-    pub(crate) scale_ptrs: DevicePtr,
-}
-
-/// Checkpoint-native BF16 weights for a shared expert.
-///
-/// This is intentionally independent of routed-expert precision. Models such
-/// as Laguna ship NVFP4 routed experts but explicitly exempt the shared expert
-/// from quantization, so coupling these pointers to the all-BF16 routed path
-/// silently changes model numerics.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Bf16SharedExpert {
-    gate_proj: DenseWeight,
-    up_proj: DenseWeight,
-    down_proj: DenseWeight,
-}
-
-impl Bf16SharedExpert {
-    fn new(gate_proj: DenseWeight, up_proj: DenseWeight, down_proj: DenseWeight) -> Result<Self> {
-        anyhow::ensure!(
-            !gate_proj.weight.is_null() && !up_proj.weight.is_null() && !down_proj.weight.is_null(),
-            "BF16 shared expert requires non-null gate/up/down weights"
-        );
-        Ok(Self {
-            gate_proj,
-            up_proj,
-            down_proj,
-        })
-    }
-}
-
-/// Unified expert pointer table for any quantization format.
-///
-/// Replaces the separate `ExpertPtrTable` (NVFP4) and `Fp8ExpertPtrTable` (FP8)
-/// with a single enum. The MoE forward path matches on this to select the
-/// correct fused kernel (moe_shared_expert_fused vs moe_shared_expert_fused_fp8).
-#[allow(dead_code)]
-pub(crate) enum ExpertPtrSet {
-    /// NVFP4: 3 pointer arrays (packed_ptrs, scale_ptrs, per-expert scale2 f32).
-    Nvfp4 {
-        packed_ptrs: DevicePtr,
-        scale_ptrs: DevicePtr,
-        scale2_vals: DevicePtr,
-    },
-    /// FP8: 2 pointer arrays (weight_ptrs, block_scale_ptrs).
-    Fp8 {
-        weight_ptrs: DevicePtr,
-        scale_ptrs: DevicePtr,
-    },
-}
-
 /// MoE feed-forward network component.
 ///
 /// Not a `TransformerLayer` — used as a component inside layers
@@ -163,6 +90,16 @@ pub struct MoeLayer {
     moe_sorted_gate_up: KernelHandle,
     moe_sorted_silu_down: KernelHandle,
     moe_grouped_gemm: KernelHandle,
+    /// Wider-K, grouped-dequant twin of `moe_grouped_gemm`, bit-exact with
+    /// it. `try_kernel` — absent on targets whose shadow predates it.
+    /// Opt-in via ATLAS_MOE_GROUPED_K32=1: measured on qwen4_exp only, and
+    /// the win is shape-dependent, so it is not switched on for every model
+    /// that happens to compile it.
+    moe_grouped_gemm_k32: KernelHandle,
+    /// M_TILE=256 twin: ONE pass over the expert weights instead of three
+    /// when rows/expert <= 256. Bit-exact. Opt-in via ATLAS_MOE_GROUPED_M256
+    /// because the win inverts for models with many rows per expert.
+    moe_grouped_gemm_m256: KernelHandle,
     moe_silu_mul: KernelHandle,
     /// Activation kernel for sorted/unfused path. SiLU by default, GeGLU for Gemma-4.
     moe_act_mul: KernelHandle,
@@ -221,6 +158,16 @@ pub struct MoeLayer {
     // ── hash routing (DeepSeek-V4 first `num_hash_layers` MoE layers) ──
     moe_hash_route_k: KernelHandle,
     moe_hash_route_batched_k: KernelHandle,
+    // ── LongCat softmax+bias routing with zero-computation experts ──
+    /// Router logit width = num_experts + zero_expert_num. Equal to
+    /// num_experts on every non-LongCat model (behavior-neutral).
+    pub(crate) router_logits_n: u32,
+    moe_topk_softmax_bias_k: KernelHandle,
+    moe_topk_softmax_bias_batched_k: KernelHandle,
+    moe_zero_expert_add_k: KernelHandle,
+    /// Per-token folded zero-expert weight (f32, written by the softmax+bias
+    /// router kernels). Fixed-size allocation (16K tokens) — graph-safe.
+    zero_accum_dev: DevicePtr,
     /// Static `tid2eid` table [vocab_size, top_k] i64 — present ONLY for the
     /// hash-routed layers (the loader supplies it only for those). `Some`
     /// here is the SSOT that this layer routes via the static hash table
@@ -450,6 +397,11 @@ impl MoeLayer {
     }
 }
 
+mod tables;
+// Re-exported so every `moe::ExpertPtrTable`-style path in the sub-files keeps
+// resolving; the split is invisible to them.
+pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
+
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
 mod forward;
@@ -469,6 +421,7 @@ mod forward_prefill_bf16;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
+mod forward_prefill_router;
 mod forward_token_major;
 mod helpers_a;
 mod helpers_b;

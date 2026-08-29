@@ -371,17 +371,37 @@ impl Qwen3SsmLayer {
                 anyhow::anyhow!("ssm prefill: QKVZ GEMM failed (M={k}, N={qkvz_size}): {e}")
             })?;
         } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
+            // Pure dense-BF16 weights (qwen4_exp keeps the GDN projections
+            // BF16 as shipped): cuBLASLt, NOT the hand-written scalar
+            // `dense_gemm`. Same finding as the `force_bf16` arm above —
+            // measured HERE on Qwen3.8-Flash-Next 2026-08-26: this arm
+            // through `dense_gemm` was 147 ms/call x 36 layers = 5.3 s of an
+            // 8.4 s TTFT (63% of prefill, ~2.7 TFLOPS on an 85-TFLOP part).
+            // The scalar kernel stays as the fallback for backends without
+            // cuBLASLt.
+            if ops::cublas_bf16_proj_dense(
                 normed,
-                &self.ssm.in_proj_qkvz,
+                self.ssm.in_proj_qkvz.weight,
                 proj_dst,
                 k,
                 qkvz_size as u32,
                 h as u32,
                 stream,
-            )?;
+            )
+            .is_err()
+            {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    normed,
+                    &self.ssm.in_proj_qkvz,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
         }
         if !self.sequential_qkvz {
             ops::deinterleave_qkvz(

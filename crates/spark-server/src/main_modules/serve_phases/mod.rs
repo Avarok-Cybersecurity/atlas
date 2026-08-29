@@ -7,7 +7,7 @@
 mod build;
 mod config;
 mod kernel_gate;
-mod kv_cache;
+pub(crate) mod kv_cache;
 mod preflight;
 mod runtime;
 mod tokenizer_runtime;

@@ -49,6 +49,11 @@ impl Qwen3AttentionLayer {
         self.hc = Some(hc);
     }
 
+    /// Attach the QSA indexer (Qwen3.8-Flash-Next full-attention layers).
+    pub fn set_qsa(&mut self, qsa: crate::layers::qsa::QsaIndexer) {
+        self.qsa = Some(qsa);
+    }
+
     /// Set per-layer dimension overrides for heterogeneous models (Gemma-4).
     /// Full-attention layers have different Q/KV head counts and head_dim
     /// than sliding layers.
@@ -191,6 +196,31 @@ impl Qwen3AttentionLayer {
         self.post_dense_ffn_norm = Some(post_dense_norm);
     }
 
+    /// LongCat: install the shortcut MoE on the FIRST sublayer of a
+    /// dual-sublayer block. The MoE runs on this sublayer's post-attention
+    /// normed input; its output is stashed into `carry` (capacity
+    /// `carry_tokens` tokens) and added by the SECOND sublayer via
+    /// [`Self::set_shortcut_carry_in`].
+    pub fn set_shortcut_moe(
+        &mut self,
+        moe: FfnComponent,
+        carry: spark_runtime::gpu::DevicePtr,
+        carry_tokens: usize,
+    ) {
+        self.moe_ffn = Some(moe);
+        self.shortcut_carry_out = Some((carry, carry_tokens));
+    }
+
+    /// LongCat: the SECOND sublayer of a dual-sublayer block adds the paired
+    /// first sublayer's stashed shortcut-MoE output at its end.
+    pub fn set_shortcut_carry_in(
+        &mut self,
+        carry: spark_runtime::gpu::DevicePtr,
+        carry_tokens: usize,
+    ) {
+        self.shortcut_carry_in = Some((carry, carry_tokens));
+    }
+
     /// Apply layer_scalar in-place: `hidden *= scalar`. Uses
     /// `bf16_scale_inplace` for the (always BF16) residual stream.
     pub(crate) fn apply_layer_scalar(
@@ -219,6 +249,23 @@ impl Qwen3AttentionLayer {
         self.attn_scale_override
             .unwrap_or_else(|| 1.0f32 / (head_dim as f32).sqrt())
     }
+}
+
+/// The QSA per-seq carry from a sequence's [`crate::layer::AttnLayerState`],
+/// lazily created on first use (Avarok #753 item B).
+pub(in crate::layers::qwen3_attention) fn qsa_seq_state<'a>(
+    qsa: &crate::layers::qsa::QsaIndexer,
+    state: &'a mut dyn crate::layer::LayerState,
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+) -> anyhow::Result<&'a mut crate::layers::qsa::QsaSeqState> {
+    let attn = state
+        .as_any_mut()
+        .downcast_mut::<crate::layer::AttnLayerState>()
+        .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+    if attn.qsa.is_none() {
+        attn.qsa = Some(qsa.new_seq_state(gpu)?);
+    }
+    Ok(attn.qsa.as_mut().expect("just created"))
 }
 
 #[cfg(test)]

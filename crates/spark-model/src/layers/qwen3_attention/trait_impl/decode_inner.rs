@@ -18,7 +18,7 @@ impl Qwen3AttentionLayer {
         &self,
         hidden: DevicePtr,
         residual: DevicePtr,
-        _state: &mut dyn LayerState,
+        state: &mut dyn LayerState,
         kv_cache: &mut PagedKvCache,
         seq_len: usize,
         block_table: &mut Vec<u32>,
@@ -34,7 +34,7 @@ impl Qwen3AttentionLayer {
             return self.decode_inner_hc(
                 hidden,
                 residual,
-                _state,
+                state,
                 kv_cache,
                 seq_len,
                 block_table,
@@ -90,6 +90,7 @@ impl Qwen3AttentionLayer {
         }
 
         let attn_out = self.attention_forward(
+            state,
             normed,
             seq_len,
             block_table,
@@ -339,6 +340,18 @@ impl Qwen3AttentionLayer {
                     &format!("L{:02} normed2", self.attn_layer_idx),
                 );
             }
+            // LongCat shortcut MoE (producer): run on the SAME normed input
+            // as the dense FFN, fold the zero-expert identity contribution,
+            // stash into the carry buffer BEFORE the dense FFN overwrites
+            // moe_output. Added by the NEXT sublayer.
+            if let (Some(moe_ffn), Some((carry, cap))) = (&self.moe_ffn, self.shortcut_carry_out) {
+                anyhow::ensure!(1 <= cap, "shortcut carry capacity");
+                let moe_out = moe_ffn.forward(normed2, ctx, stream)?;
+                if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
+                    m.apply_zero_expert(moe_out, normed2, 1, ctx, stream)?;
+                }
+                ctx.gpu.copy_d2d_async(moe_out, carry, h * 2, stream)?;
+            }
             let dense_out = self.ffn.forward(normed2, ctx, stream)?;
             if gemma4_diag {
                 diag_norm(
@@ -379,6 +392,18 @@ impl Qwen3AttentionLayer {
                 h as u32,
                 stream,
             )?;
+            // LongCat shortcut MoE (consumer): the paired previous sublayer's
+            // stashed MoE output lands at the very end of THIS sublayer.
+            if let Some((carry, _cap)) = self.shortcut_carry_in {
+                ops::residual_add(
+                    ctx.gpu,
+                    self.residual_add_k,
+                    hidden,
+                    carry,
+                    h as u32,
+                    stream,
+                )?;
+            }
         }
 
         if gemma4_diag {
@@ -418,7 +443,7 @@ impl Qwen3AttentionLayer {
         &self,
         hidden: DevicePtr,
         _residual: DevicePtr,
-        _state: &mut dyn LayerState,
+        state: &mut dyn LayerState,
         kv_cache: &mut PagedKvCache,
         seq_len: usize,
         block_table: &mut Vec<u32>,
@@ -431,14 +456,28 @@ impl Qwen3AttentionLayer {
         let eps = ctx.config.rms_norm_eps as f32;
         let hc = self.hc.as_ref().unwrap();
         let hc_mult = hc.hc_mult as u32;
-        let is_first_layer = self.attn_layer_idx == 0;
-        let is_last_layer = self.attn_layer_idx + 1 == ctx.config.num_hidden_layers;
+        // MODEL layer indices, carried on the weights. `attn_layer_idx`
+        // counts ATTENTION layers: it coincides with the model index only on
+        // an all-attention model like DeepSeek-V4. On a 3:1 GDN:attention
+        // interleave `attn_layer_idx == 0` is model layer 3 (the highway
+        // would seed three layers late) and `attn_layer_idx + 1 ==
+        // num_hidden_layers` is `12 == 48` (hc_head would never fire, and on
+        // Qwen the mixer IS the final norm).
+        let is_first_layer = hc.is_first_model_layer;
+        let is_last_layer = hc.is_last_model_layer;
         let hc_streams = ctx.buffers.hc_streams();
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
+        // Opt-in ONLY (and never under graph capture): `diag_norm` does a
+        // synchronize + copy_d2h per call and SWALLOWS the errors — inside a
+        // recording CUDA graph the sync silently invalidates the capture and
+        // the next checked stream op reports 901 with no pointer back here.
+        // The old `attn_layer_idx == 0 ||` made that happen on EVERY decode
+        // step of the first attention layer (and cost a hidden round-trip per
+        // step even in eager mode).
         let diag_all =
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
-        let diag_this = self.attn_layer_idx == 0 || diag_all;
+        let diag_this = diag_all && !ctx.graph_capture;
 
         // 1. Expand single-stream embedding into hc_mult copies on first layer.
         if is_first_layer {
@@ -455,22 +494,19 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Attention sublayer ──
-        ops::hc_pre(
+        ops::hc_pre_site(
             ctx.gpu,
             self.hc_pre_k,
             hc_streams,
-            hc.attn.hc_fn,
-            hc.attn.hc_scale,
-            hc.attn.hc_base,
+            &hc.attn,
+            hc,
             hidden,
             post,
             comb,
+            ctx.buffers.hc_lowrank_scratch(),
             1,
             h as u32,
-            hc_mult,
-            hc.sinkhorn_iters as u32,
             eps,
-            hc.hc_eps,
             stream,
         )?;
         if diag_this {
@@ -498,19 +534,25 @@ impl Qwen3AttentionLayer {
         }
 
         let normed = ctx.buffers.norm_output();
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_w_k,
-            hidden,
-            &self.input_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        if ops::HcVariant::of(hc).applies_block_input_norm() {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.input_norm,
+                normed,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            // See `prefill_inner.rs`: `hc_norm` is the input norm on Qwen.
+            ctx.gpu.copy_d2d_async(hidden, normed, h * 2, stream)?;
+        }
 
         let attn_out = self.attention_forward(
+            state,
             normed,
             seq_len,
             block_table,
@@ -544,9 +586,10 @@ impl Qwen3AttentionLayer {
 
         // Standalone attention (no FFN)
         if self.ffn.is_none() {
-            ops::hc_post(
+            ops::hc_post_site(
                 ctx.gpu,
                 self.hc_post_k,
+                hc,
                 attn_out,
                 hc_streams,
                 post,
@@ -554,23 +597,20 @@ impl Qwen3AttentionLayer {
                 hc_streams,
                 1,
                 h as u32,
-                hc_mult,
                 stream,
             )?;
             if is_last_layer && let Some(ref head) = hc.head {
-                ops::hc_head(
+                ops::hc_head_site(
                     ctx.gpu,
                     self.hc_head_k,
                     hc_streams,
-                    head.hc_fn,
-                    head.hc_scale,
-                    head.hc_base,
+                    head,
+                    hc,
                     hidden,
+                    ctx.buffers.hc_lowrank_scratch(),
                     1,
                     h as u32,
-                    hc_mult,
                     eps,
-                    hc.hc_eps,
                     stream,
                 )?;
             }
@@ -578,9 +618,10 @@ impl Qwen3AttentionLayer {
         }
 
         // Expand attention output back into multi-stream state.
-        ops::hc_post(
+        ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
+            hc,
             attn_out,
             hc_streams,
             post,
@@ -588,18 +629,17 @@ impl Qwen3AttentionLayer {
             hc_streams,
             1,
             h as u32,
-            hc_mult,
             stream,
         )?;
         if diag_this {
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 h,
                 stream,
                 &format!("V4-decode L{} hc_post-attn", self.attn_layer_idx),
             );
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 (hc_mult as usize) * (h),
@@ -612,22 +652,19 @@ impl Qwen3AttentionLayer {
         }
 
         // ── FFN sublayer ──
-        ops::hc_pre(
+        ops::hc_pre_site(
             ctx.gpu,
             self.hc_pre_k,
             hc_streams,
-            hc.ffn.hc_fn,
-            hc.ffn.hc_scale,
-            hc.ffn.hc_base,
+            &hc.ffn,
+            hc,
             hidden,
             post,
             comb,
+            ctx.buffers.hc_lowrank_scratch(),
             1,
             h as u32,
-            hc_mult,
-            hc.sinkhorn_iters as u32,
             eps,
-            hc.hc_eps,
             stream,
         )?;
         if diag_this {
@@ -655,17 +692,21 @@ impl Qwen3AttentionLayer {
         }
 
         let normed2 = ctx.buffers.norm_output();
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_w_k,
-            hidden,
-            &self.post_attn_norm,
-            normed2,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        if ops::HcVariant::of(hc).applies_block_input_norm() {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.post_attn_norm,
+                normed2,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            ctx.gpu.copy_d2d_async(hidden, normed2, h * 2, stream)?;
+        }
 
         let ffn_out = self.ffn.forward(normed2, ctx, stream)?;
 
@@ -687,9 +728,10 @@ impl Qwen3AttentionLayer {
             self.apply_layer_scalar(ctx.gpu, ffn_out, h, scalar, stream)?;
         }
 
-        ops::hc_post(
+        ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
+            hc,
             ffn_out,
             hc_streams,
             post,
@@ -697,18 +739,17 @@ impl Qwen3AttentionLayer {
             hc_streams,
             1,
             h as u32,
-            hc_mult,
             stream,
         )?;
         if diag_this {
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 h,
                 stream,
                 &format!("V4-decode L{} hc_post-ffn", self.attn_layer_idx),
             );
-            super::diag_norm(
+            super::diag_norm_f32(
                 ctx.gpu,
                 hc_streams,
                 (hc_mult as usize) * (h),
@@ -718,19 +759,17 @@ impl Qwen3AttentionLayer {
         }
 
         if is_last_layer && let Some(ref head) = hc.head {
-            ops::hc_head(
+            ops::hc_head_site(
                 ctx.gpu,
                 self.hc_head_k,
                 hc_streams,
-                head.hc_fn,
-                head.hc_scale,
-                head.hc_base,
+                head,
+                hc,
                 hidden,
+                ctx.buffers.hc_lowrank_scratch(),
                 1,
                 h as u32,
-                hc_mult,
                 eps,
-                hc.hc_eps,
                 stream,
             )?;
             if diag_this {

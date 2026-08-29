@@ -218,7 +218,14 @@ export function versionAdvice(page, min, max, installCommand) {
     return {
       ok: false,
       side: 'agent',
-      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: ${installCommand}`
+        // The closing sentence is a promise both callers keep. `client` hands
+        // this message to the launch dialog and to the fleet page, and each
+        // re-probes while showing it, so an agent that restarts on the new
+        // version is picked up without the visitor returning to the browser.
+        // Worth saying out loud: the remedy sends them to a terminal on another
+        // machine, and the reasonable assumption otherwise is that the page has
+        // given up and is waiting to be clicked.
+      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: ${installCommand} — this page picks it up on its own once you have.`
     };
   }
   return {

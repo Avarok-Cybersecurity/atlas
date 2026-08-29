@@ -139,7 +139,14 @@ impl AtlasCudaBackend {
     pub(crate) fn copy_d2d_impl(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
         let status = unsafe { cuMemcpyDtoDAsync_v2(dst.0, src.0, bytes, self.default_stream) };
         if status != 0 {
-            bail!("cuMemcpyDtoDAsync_v2 failed: status {status}");
+            // 901 = STREAM_CAPTURE_INVALIDATED: some EARLIER op poisoned the
+            // recording and this copy is merely the reporter. The backtrace
+            // still names the captured segment the poison sits in.
+            tracing::error!(
+                "sync copy_d2d failed (status {status}) at:\n{}",
+                std::backtrace::Backtrace::force_capture()
+            );
+            bail!("cuMemcpyDtoDAsync_v2 (sync copy_d2d) failed: status {status}");
         }
         // Synchronize to ensure copy completes before kernels on other streams read it.
         let sync = unsafe { cuStreamSynchronize(self.default_stream) };

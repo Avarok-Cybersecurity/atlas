@@ -104,6 +104,14 @@ test('a version mismatch names the side that is behind', () => {
   expect(pageOld.message).toContain('Shift-R');
   // A welcome with no usable versions must not guess a side at random.
   expect(versionAdvice(4, undefined, null, UNIX).ok).toBe(false);
+  // NUMERIC STRINGS specifically, because they are what a sloppy JSON
+  // encoder actually emits and they are the case a relational comparison
+  // gets wrong quietly: `4 < "1"` and `4 > "4"` are both false, so a
+  // hand-rolled range check waves them through as compatible. Only a type
+  // check catches them, and the client now routes this decision here rather
+  // than comparing for itself.
+  expect(versionAdvice(4, '1', '4', UNIX).ok).toBe(false);
+  expect(versionAdvice(4, '4', '4', UNIX).ok).toBe(false);
 });
 
 // An agent that omits a detail field is not hypothetical — an older build

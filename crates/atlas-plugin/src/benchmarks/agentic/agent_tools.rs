@@ -348,6 +348,21 @@ fn matches_from(pattern: &[u8], text: &[u8]) -> bool {
     }
 }
 
+/// Moved from `agent.rs` (500-LoC cap).
+///
+/// ★ Deliberately narrow. `<tool_call>` and `<function=` are the qwen3_coder
+/// wire forms, not English — prose that merely discusses calling a tool does
+/// not contain them, and a model that writes one in a fenced code block to
+/// explain itself gets one extra turn, not a failed run. It is checked only
+/// after `tool_calls.is_empty()`, so a turn whose call parsed correctly never
+/// reaches it however much syntax the prose quotes.
+pub(super) fn emitted_unparsed_call(outcome: &crate::http::ChatOutcome) -> bool {
+    outcome.tool_calls.is_empty()
+        && ["<tool_call>", "<function="]
+            .iter()
+            .any(|m| outcome.text.contains(m))
+}
+
 #[cfg(test)]
 #[path = "agent_tools_tests.rs"]
 mod tests;

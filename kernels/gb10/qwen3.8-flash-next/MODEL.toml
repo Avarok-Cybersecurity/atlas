@@ -1,0 +1,276 @@
+# Qwen3.8-Flash-Next — hybrid GDN + QSA sparse attention, multi-hyperconnection
+# streams, PLE n-gram injection, 512-expert MoE, ViT tower, 1 MTP layer.
+#
+# Port tracked in Avarok #753. Serving is NOT complete: this target exists so
+# the model can RESOLVE and LOAD. The hyper-connection mixer, the QSA indexer
+# and the PLE n-gram injection are not wired yet and refuse by name.
+#
+# TWO MODEL_TYPE NAMES, ONE ARCHITECTURE. The model shipped as
+# `qwen3_8_flash_next` and was renamed `qwen4_exp`; quantizers pinned to
+# different transformers revisions emit different names (RadixArk ->
+# qwen4_exp, Inferact -> qwen3_8_flash_next). `dispatch.rs` normalizes both to
+# `qwen4_exp`, so only that one is bound below.
+[model]
+name = "qwen3.8-flash-next"
+hf_id = "Qwen/Qwen3.8-Flash-Next"
+architecture = "GDN + QSA sparse attention + mHC + PLE n-gram + MoE"
+params = "180B"
+active_params = "10B"
+
+# 3 linear : 1 full, 48 layers. Only the 12 full-attention layers hold KV;
+# the 36 GDN layers hold recurrent state instead, which is why a ~19-24 GB KV
+# budget goes further here than the layer count suggests.
+layers_total = 48
+layers_linear_attention = 36
+layers_full_attention = 12
+layer_pattern = "3:1 (linear, linear, linear, full)"
+
+moe_experts = 512
+moe_topk = 10
+moe_intermediate = 640
+shared_expert_intermediate = 640
+
+hidden_dim = 2560
+head_dim = 256
+q_heads = 24
+kv_heads = 2
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 48
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+# Multi-hyperconnection: the residual is 4 parallel streams of hidden_dim
+# (4 x 2560 = 10240), mixed through a low-rank pair of rank 320. Atlas's mHC
+# plumbing comes from DeepSeek-V4, whose mixer is Sinkhorn-normalized instead
+# — same stream layout, different mixing math.
+hc_count = 4
+hc_lowrank = 320
+
+# QSA indexer, on the full-attention layers only.
+indexer_n_heads = 4
+indexer_head_dim = 128
+indexer_budget = 2048
+indexer_compress_ratio = 4
+
+# PLE n-gram injection at ONE layer. 16 heads x 160 dims = 2560 = hidden, so
+# the per-head slices are CONCATENATED, not projected-and-summed the way
+# LongCat's are. One logical table of ~320M rows stored as 128 shards; served
+# off NVMe via the row cache rather than resident (47.7 GB FP8 in the RadixArk
+# release, 95.4 GB BF16 in Inferact's).
+ngram_size = 3
+ngram_heads = 16
+ngram_dim = 160
+ngram_split_parts = 128
+ple_layer_ids = [2]
+ple_conv_kernel_size = 4
+
+mtp_layers = 1
+mtp_type = "full_attention"
+vision = true
+
+# Sampling: model-card recommendations (2026-08, relayed from the vendor
+# card): thinking temperature=1.0 top_p=0.95 top_k=20 min_p=0
+# presence_penalty=0 repetition_penalty=1.0; instruct/non-thinking
+# temperature=0.7 top_p=0.80 top_k=20 min_p=0 presence_penalty=1.5
+# repetition_penalty=1.0. Tools follows the instruct row (the card has no
+# tools-specific set).
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+# Card declares NO min_p and no sigma filter: pin both OFF so the CLI
+# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.
+# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly
+# the greedy-thinking loop this model exhibits on short prompts.
+min_p = 0.0
+top_n_sigma = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+# Card declares NO min_p and no sigma filter: pin both OFF so the CLI
+# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.
+# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly
+# the greedy-thinking loop this model exhibits on short prompts.
+min_p = 0.0
+top_n_sigma = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 1.5
+# Card declares NO min_p and no sigma filter: pin both OFF so the CLI
+# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.
+# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly
+# the greedy-thinking loop this model exhibits on short prompts.
+min_p = 0.0
+top_n_sigma = 0.0
+
+[sampling.tools]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 1.5
+# Card declares NO min_p and no sigma filter: pin both OFF so the CLI
+# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.
+# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly
+# the greedy-thinking loop this model exhibits on short prompts.
+min_p = 0.0
+top_n_sigma = 0.0
+
+[[model_types]]
+model_type = "qwen4_exp"
+hidden_size = 2560
+
+# ── Kernel-audit exemptions, mirrored from qwen3.6-35b-a3b ──
+#
+# This target's nvfp4 shadow IS qwen3.6-35b-a3b's (same .cu set, by symlink), so it
+# drops exactly the same kernels and needs the same exemptions. Copied rather
+# than re-derived: each entry below records WHY a dispatch path can live
+# without that kernel, and re-deriving those reasons from scratch for an
+# identical shadow would be inventing justifications.
+#
+# The audit stays fail-closed — an exemption quiets the build warning but the
+# startup gate still hard-errors if a dispatch site actually asks for one.
+
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin of w4a16_gemm_t, shipped ONLY in
+qwen3.6-27b/nvfp4/w4a16_gemm.cu (49 globals vs this target's slimmer
+shadow). layers::tgemm_kernel probes it first, then falls back to
+w4a16_gemm_t, which resolves here. The fallback is the 2-stage parent
+the p3 twin was derived from; the twin is UNMEASURED for this target's
+shapes — treat as a candidate to measure, not a confirmed loss."""
+w4a16_gemm_t_k64_p3 = """
+Same family: shipped only in qwen3.6-27b's shadow. layers::k64_kernel
+probes it, then REQUIRES w4a16_gemm_t_k64, which resolves here."""
+w4a16_gemm_t_k64_n64_p3 = """
+Narrow-N deep-K twin, shipped only in qwen3.6-27b's shadow.
+layers::k64_n64_kernel returns 0-handle when absent; dispatch gates on
+handle != 0 before firing, so the wide-K64 tile serves these shapes."""
+w4a16_gemm_t_m128_bf16 = """
+BF16-projection prefill twin of w4a16_gemm_t_m128. prefill_weights
+gates the probe result (handle != 0); the fallback is the w4a16 m128
+twin that resolves here, applied through the standard dequant."""
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+This model's w4a4_gemm.cu defines only w4a4_gemm; the mfast variant
+exists solely in nemotron-labs-3-puzzle-75b-a9b. Dispatch
+(qwen3_attention/init.rs) falls back to w4a4_gemm — same family the
+27B declares. UNMEASURED for this target."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
+Native-MXFP4 (E8M0) scale-format variant. Shipped only in
+deepseek-v4-flash's moe_w4a16 module (ARM-2 Phase-K). This target is
+NVFP4; the ptrtable grouped GEMM that resolves here serves it."""
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t variant."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t_k64 variant."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up variant."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up_k64 variant."
+moe_w4a16_fused_gate_up_t_k64_m128 = """
+M=128 Block-D variant shipped only in minimax-m2-229b's shadow (per the
+dispatch comment in moe/init.rs). Dispatch falls through to M=64."""
+
+# ⚠ HONESTY NOTE on the four gated_delta_rule f16 arms: unlike every
+# entry above, the FP16-h-state decode arms dispatch these handles
+# UN-PROBED (ssm_batched_recurrent.rs:279/:509) once --ssm-h-dtype f16
+# is active. Preflight refuses f16 for bad env combos but NOT for a
+# target that lacks the twins, so setting the flag on this model is a
+# 0-handle launch, not a fallback. Declared here to unblock the gate;
+# the correct fix is a preflight check on kernel presence. UNMEASURED.
+[expected_absent.gated_delta_rule]
+gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note in this MODEL.toml. F32 fused-norm arm resolves."
+gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note in this MODEL.toml. F32 strided-norm arm resolves."
+gated_delta_rule_decode_f32_strided_norm_half = """
+Half-register twin of the resolved f32_strided_norm; selected only when
+the resolved half-register gate is set, and that gate is off by default
+(ATLAS_GDN_HALF_REG presence). Not a live path as shipped."""
+gated_delta_rule_decode_f32_strided_norm_smem = """
+SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
+default) AND the half-register gate. Not a live path as shipped."""
+
+# #438: the exact-verify `_snap` twins are model-shadow staged in
+# qwen3.6-27b/nvfp4 ONLY (shadow-first; promote to common/ once validated
+# per family). Every dispatch site probes handle != 0, and the whole chain
+# is opt-in via --exact-verify; the fallback stays exact.
+[expected_absent.gated_delta_rule_snap]
+gated_delta_rule_decode_f32_norm_snap = """
+Exact-verify snapshot twin (#435), shipped only in qwen3.6-27b/nvfp4.
+trait_decode_batched_conv_gdn_exact probes handle != 0; absent, the
+exact arm uses the parent gdn_f32_norm kernel + copy_d2d snapshots
+(same bits, more launches)."""
+gated_delta_rule_decode_f32_strided_norm_snap = """
+Batched exact-verify snapshot twin (#435), shipped only in
+qwen3.6-27b/nvfp4. trait_decode_batched_conv_gdn_multi_exact declines
+the batched form on handle 0 and the per-sequence exact loop serves
+(still exact)."""
+
+[expected_absent.gdn_verify_fused_conv_kn_f32]
+gdn_verify_fused_conv_kn_f32 = """
+FP32 fused verify conv for the exact-verify chain (#435), shipped only
+in qwen3.6-27b/nvfp4. Probed handle != 0; absent, the exact chain keeps
+its per-token conv launches (same bits, more launches)."""
+
+[behavior]
+# The ONLY KV dtype this model can run. Its QSA sparse-attention selection gather
+# copies raw NHD rows out of the paged cache, so a quantized cache has nothing it
+# can copy -- the decode path refuses outright. Stated here because the engine
+# default is fp8, and without this line the bare `spark serve qwen3.8-flash-next`
+# refused at startup and told the operator to pass `--kv-cache-dtype bf16`: a
+# correct message for a requirement the model already knows and can simply
+# declare. An explicit --kv-cache-dtype still wins over this, and preflight still
+# refuses it if it is not bf16.
+default_kv_dtype = "bf16"
+# Native tool-call format is Qwen3-Coder XML:
+#   <tool_call><function=fn><parameter=key>value</parameter></function></tool_call>
+# (verified from live emissions, agentic-webserver run 2026-08-27). Without a
+# parser the calls land in content and finish_reason still says tool_calls.
+tool_call_parser = "qwen3_coder"
+# Qwen3.8-Flash-Next is a THINKING model whose chat template gates
+# EVERYTHING on `enable_thinking is undefined or true`: the default render
+# carries a reasoning-effort system preamble ("Reasoning effort is set to
+# xhigh...") and opens the assistant turn with `<think>\n`. Atlas always
+# passes enable_thinking as a DEFINED boolean, and with thinking_default
+# unset (= false) it rendered a bare 13-token prompt the model was never
+# trained on — which collapsed chat to a 2-token EOS while raw completions
+# were fine. Measured 2026-08-26: the checkpoint's own render answers
+# "12 x 8" with a correct reasoned 96; the bare render emits "**<eos>".
+# Same setting as qwen3.8-27b / qwen3.6-35b: reasoning by default.
+thinking_default = true
+thinking_in_tools = true
+# Card sampling presets ([sampling.*] above) apply to core chat/completions
+# requests too — without this a plain request gets Atlas's generic CLI
+# defaults (incl. min_p 0.08 + top_n_sigma 1.0, which gut the card's
+# temp-1.0 thinking distribution). NOTE this key lives in [behavior]; placed
+# after a [sampling.*] header it silently becomes a preset key and does
+# nothing — the exact trap that shipped 2026-08-26.
+use_sampling_presets_for_core = true
+# The A4 POST_THINK_MIN_REASONING floor (-8 on `</think>` for the first 16
+# think tokens) collides with this model's card-native brief thinking:
+# under `reasoning_effort: low` the model closes its think at ~10 tokens,
+# and with `</think>` suppressed the turn-ending mass reroutes to
+# <|im_end|>/<|im_start|> — sampled runs EOS inside think (empty body) or
+# simulate new template turns (word salad). Measured 2026-08-26 via
+# ATLAS_LOGIT_DUMP: steps 11-13 topped by im_end/im_start while </think>
+# reappears at logit ~6 the moment the floor expires. 0 disables the floor.
+min_reasoning_floor_tokens = 0
+# When the model does sample an EOS inside <think> (temp 1.0 makes this
+# reachable), honor it by closing the block instead of swallowing the token
+# and forcing continued reasoning — the swallow path is what turned early
+# closes into <|im_start|>user template simulation.
+honor_eos_inside_thinking = true
+max_thinking_budget = 2048

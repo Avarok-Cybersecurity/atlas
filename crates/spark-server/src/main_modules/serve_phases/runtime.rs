@@ -404,6 +404,7 @@ mod sampling_defaults_tests {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         }
     }
 

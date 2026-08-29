@@ -18,6 +18,7 @@ pub(super) fn load_sharded(
     oom_reserve_bytes: usize,
     skip_fn: &dyn Fn(&str) -> bool,
     peak_multiplier_override: Option<f64>,
+    deferred: &mut HashMap<String, crate::weights::DeferredTensor>,
 ) -> Result<HashMap<String, WeightTensor>> {
     let index_json = std::fs::read_to_string(index_path)
         .with_context(|| format!("Failed to read {}", index_path.display()))?;
@@ -37,8 +38,11 @@ pub(super) fn load_sharded(
     // Pre-flight: estimate bytes from index with model-building overhead.
     let shard_files: Vec<std::path::PathBuf> =
         shard_to_tensors.keys().map(|s| model_dir.join(s)).collect();
-    let estimated = estimate_load_bytes(&shard_files, skip_fn)?;
-    let has_fp8 = estimate_has_fp8(&shard_files, skip_fn)?;
+    // The n-gram tables are deferred below, never uploaded, so they must not
+    // count toward the peak — see the note in `fast_weights`.
+    let preflight_skip = |name: &str| skip_fn(name) || crate::weights::is_ngram_table(name);
+    let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;
+    let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip)?;
     let overhead_multiplier: f64 =
         peak_multiplier_override.unwrap_or(if has_fp8 { 1.5 } else { 1.3 });
     let peak_estimated = (estimated as f64 * overhead_multiplier) as usize;
@@ -95,6 +99,24 @@ pub(super) fn load_sharded(
 
         for name in tensor_names {
             if skip_fn(name) {
+                skipped += 1;
+                continue;
+            }
+            // n-gram TABLES are deferred, not uploaded (see `is_ngram_table`).
+            // The absolute file offset comes from the pointer delta into the
+            // mmap, which is exact and needs no header re-parse.
+            if crate::weights::is_ngram_table(name) {
+                let view = tensors.tensor(name)?;
+                let off = view.data().as_ptr() as usize - mmap.as_ptr() as usize;
+                deferred.insert(
+                    name.to_string(),
+                    crate::weights::DeferredTensor {
+                        path: shard_path.clone(),
+                        offset: off as u64,
+                        shape: view.shape().to_vec(),
+                        dtype: WeightDtype::from_safetensors(view.dtype())?,
+                    },
+                );
                 skipped += 1;
                 continue;
             }

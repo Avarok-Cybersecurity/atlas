@@ -101,8 +101,10 @@ impl TransformerModel {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
-        // 1. Embedding lookup
-        self.embed(token, hidden, stream)?;
+        // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`
+        // (it is pushed after the forward), which is exactly the n-gram
+        // contract: preceding context, then the token being embedded.
+        self.embed_ctx(&seq.tokens, token, hidden, stream)?;
 
         // 2. Pre-allocate KV cache blocks + upload attention metadata
         let bs = kv_cache.block_size();
@@ -147,6 +149,19 @@ impl TransformerModel {
         // layers read the correct `tid2eid[token_id]`). Single token at offset 0.
         self.gpu
             .copy_h2d_async(&token.to_le_bytes(), self.buffers.token_ids(), stream)?;
+
+        // Hoisted host-side per-step layer work (PLE n-gram hash + NVMe
+        // fault-in + slot upload into its stable slots buffer) — BEFORE any
+        // graph replay/capture, same phasing as the token_ids upload above.
+        // A replayed graph then only reads buffers this call refreshed.
+        for (li, l) in self.layers.iter().enumerate() {
+            l.decode_prestage(
+                token,
+                seq.layer_states[li].as_mut(),
+                self.gpu.as_ref(),
+                stream,
+            )?;
+        }
 
         // ── M2 request-scoped LoRA routing (single-seq decode). Upload this
         // request's 1-elem adapter-slot buffer to the free +128 gap (positions
@@ -229,6 +244,10 @@ impl TransformerModel {
         // capture-safe (pool weights / arena scratch / f32 scale are all
         // load-time-fixed). Folded in as one more suppressor.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
+        // A layer that can never be captured (QSA's host top-k) vetoes
+        // graphs for the whole model — a graph captured on the dense path
+        // would silently replay WRONG attention once selection activates.
+        let layer_veto = self.layers.iter().any(|l| l.decode_graph_unsupported());
         let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
             && !self.profile
             && !self
@@ -236,10 +255,12 @@ impl TransformerModel {
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
             && !dump_step0
-            && !lora_eager;
+            && !lora_eager
+            && !layer_veto;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -254,6 +275,9 @@ impl TransformerModel {
             // Hash-MoE: the single decode token ID (uploaded above every step
             // before graph replay). MoE reads it at offset 0.
             token_ids: Some(self.buffers.token_ids()),
+            // The very value uploaded into `token_ids` above — PLE hashes on
+            // the host and must not round-trip it back off the device.
+            host_token_ids: Some(std::slice::from_ref(&token)),
             routed_lora_layers: None, // #30: single-seq decode never routes prefill.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
@@ -335,7 +359,43 @@ impl TransformerModel {
             // graph) before propagating; no-op when not capturing. Graphs stay
             // enabled: the next decode step begins a fresh capture.
             self.gpu.abort_capture_if_active(stream);
-            return Err(e);
+            // A capture-poison error (900 CAPTURE_UNSUPPORTED / 901
+            // CAPTURE_INVALIDATED) is a property of the graph attempt, not of
+            // the request: capture RECORDS without executing, so nothing has
+            // run for this token — re-run the step eagerly and disable graphs,
+            // mirroring the end_capture-failure arm below, instead of failing
+            // the request outright. Other errors (LoRA refusals, OOM) would
+            // fail eagerly too, so they still propagate.
+            let msg = format!("{e:#}");
+            let capture_poison = capture_active
+                && (msg.contains("status 901")
+                    || msg.contains("status 900")
+                    || msg.contains("STREAM_CAPTURE"));
+            if !capture_poison {
+                return Err(e);
+            }
+            tracing::warn!(
+                "decode body failed under CUDA graph capture ({msg}) — \
+                 re-running eagerly and disabling graph capture"
+            );
+            self.suppress_graphs
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            capture_active = false;
+            // The recorded attempt consumed per-step prestaged state (PLE's
+            // parked table VA); restore it without recomputing.
+            for (li, l) in self.layers.iter().enumerate() {
+                l.decode_prestage_rearm(seq.layer_states[li].as_mut());
+            }
+            self.decode_forward_body(
+                hidden,
+                residual,
+                seq,
+                &mut kv_cache,
+                &ctx,
+                false,
+                false,
+                stream,
+            )?;
         }
 
         // Decode-step diagnostic for Gemma-4 degeneration analysis (no-op unless
@@ -371,6 +431,11 @@ impl TransformerModel {
                     );
                     self.suppress_graphs
                         .store(true, std::sync::atomic::Ordering::Relaxed);
+                    // Restore per-step prestaged state the recorded attempt
+                    // consumed (see the mid-body arm above).
+                    for (li, l) in self.layers.iter().enumerate() {
+                        l.decode_prestage_rearm(seq.layer_states[li].as_mut());
+                    }
                     self.decode_forward_body(
                         hidden,
                         residual,

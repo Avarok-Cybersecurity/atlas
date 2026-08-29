@@ -167,6 +167,25 @@ pub fn verify_exact_enabled() -> bool {
     flags().verify_exact_active()
 }
 
+/// Batch width at which the multi-seq decode projections switch to the
+/// 128-row M-tile. `None` (kill switch `ATLAS_NO_SSM_M128`, PRESENCE check —
+/// `=0` is NOT "off") keeps the 64-row twin at every width.
+///
+/// 65 is the DERIVED crossover, not a tuned constant: `ceil(m/64) >
+/// ceil(m/128)` first holds at m=65, so m<=64 gains no weight-read reduction
+/// from the wider tile and would only pad MMA rows. Identical rule to the
+/// dense-FFN prefill macro's `m <= 64` small-M arm.
+pub(crate) fn ssm_m128_min_m() -> Option<u32> {
+    static M: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *M.get_or_init(|| {
+        if std::env::var("ATLAS_NO_SSM_M128").is_ok() {
+            None
+        } else {
+            Some(65)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GdnFlags, ssm_h_dtype_bits};

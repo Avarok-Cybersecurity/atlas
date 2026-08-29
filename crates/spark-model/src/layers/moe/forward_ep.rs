@@ -19,6 +19,14 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
+        // LongCat zero-experts are wired only on the single-token decode
+        // + prefill paths (v1); this variant would silently mis-route the
+        // 384-wide router. Named refusal, not silent wrongness.
+        anyhow::ensure!(
+            self.router_logits_n as usize == ctx.config.num_experts,
+            "zero-expert MoE routing is not wired on this dispatch variant yet (forward_ep)"
+        );
+
         use super::super::ep_dispatch::build_ep_routing_table;
 
         let h = ctx.config.hidden_size as u32;

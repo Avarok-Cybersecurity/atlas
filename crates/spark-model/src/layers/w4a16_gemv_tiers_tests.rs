@@ -125,6 +125,9 @@ fn default_table_is_empty_and_declines() {
 /// The width table must stay sorted ascending, and the production resolver
 /// must request that same family in the same order. A typo here silently
 /// produces a zero handle and widens dispatch even when the tier was shipped.
+/// The batch8 slot prefers the register-tiled `w4a16_gemv_batch8_rt2` (#648);
+/// with every lookup resolving (as on the mock) the rt2 hit needs no
+/// fallback lookup, so exactly one request per width is still the contract.
 #[test]
 fn width_table_and_resolver_stay_in_lockstep() {
     assert!(W4A16_BATCHM_WIDTHS.windows(2).all(|w| w[0] < w[1]));
@@ -133,6 +136,13 @@ fn width_table_and_resolver_stay_in_lockstep() {
     assert!(tiers.handles.iter().all(|h| h.0 != 0));
     assert_eq!(
         gpu.kernel_lookups_snapshot(),
-        W4A16_BATCHM_WIDTHS.map(|w| ("w4a16_gemv".to_owned(), format!("w4a16_gemv_batch{w}")))
+        W4A16_BATCHM_WIDTHS.map(|w| {
+            let func = if w == 8 {
+                "w4a16_gemv_batch8_rt2".to_owned()
+            } else {
+                format!("w4a16_gemv_batch{w}")
+            };
+            ("w4a16_gemv".to_owned(), func)
+        })
     );
 }

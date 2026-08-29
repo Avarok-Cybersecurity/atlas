@@ -56,29 +56,26 @@ impl Qwen3SsmLayer {
     /// are read straight from each `SsmLayerState`, so no contiguous-slot
     /// assumption is required.
     #[allow(clippy::too_many_arguments)]
+    /// `hc` (#753 item B): input rows arrive pre-mixed in `norm_output`
+    /// (hc_pre) and the out_proj rows stay in `moe_output` for the caller's
+    /// hc_post — both norm/residual steps skip; `hidden`/`residual` unused.
     pub(super) fn try_decode_multi_seq_ssm_batched<'a, 'b: 'a>(
         &self,
         hidden: DevicePtr,
         residual: DevicePtr,
         n: usize,
         states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        hc: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<bool> {
         let use_f32_conv = self.conv1d_l2norm_f32_k.0 != 0;
         let use_f32_gdn = self.gdn_f32_k.0 != 0 && self.gated_rms_norm_f32_k.0 != 0;
-        // QKVZ via dense BF16 GEMM or block-scaled FP8 GEMM (w8a16). NVFP4 and
+        // QKVZ via dense-BF16/cuBLASLt, FP8 w8a16 GEMM, or NVFP4 batchm GEMV
+        // (M<=16; tile-GEMM twins `*_nvfp4_t` lift the cap for wide batches
+        // when both twins exist and the TC threshold admits n). Any arm
+        // amortizes the QKVZ/out_proj weight read across the n seqs;
         // interleaved-QKVZ layouts take the proven per-seq loop.
-        // FP8 build → batched w8a16 GEMM; NVFP4 build → batched w4a16 GEMV
-        // (batch4/16, M<=16). Either amortizes the QKVZ/out_proj weight read
-        // across the n seqs; otherwise the per-seq loop re-streams it n times.
-        // n>16: the batchm GEMV family caps at M=16, but the tile-GEMM twins
-        // (`w4a16_gemm_n128` on `qkvz_nvfp4_t`/`out_proj_nvfp4_t`, the
-        // production SSM prefill path) handle any M — so wide batches stay
-        // eligible whenever BOTH twins exist and the TC threshold admits n.
-        // Inert at n<=16: there the GEMV arm of the OR already granted
-        // eligibility and the dispatch match below already picked the tile
-        // path at n>=9.
         let tc_wide_ok = self.qkvz_nvfp4_t.is_some()
             && self.out_proj_nvfp4_t.is_some()
             && ssm_tc_proj_min_n().is_some_and(|min| n >= min);
@@ -192,19 +189,21 @@ impl Qwen3SsmLayer {
             };
         }
 
-        // ── 1. Batched input RMS norm: hidden[0..n] → normed[0..n], residual ──
-        ops::rms_norm_residual(
-            ctx.gpu,
-            self.rms_norm_residual_k,
-            hidden,
-            &self.input_norm,
-            normed_base,
-            residual,
-            n as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        // ── 1. Batched input RMS norm (hc: hc_pre already normed; skip) ──
+        if !hc {
+            ops::rms_norm_residual(
+                ctx.gpu,
+                self.rms_norm_residual_k,
+                hidden,
+                &self.input_norm,
+                normed_base,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
         detail_step!("input_norm");
 
         // ── 2. Batched QKVZ projection: ONE [N,h]→[N,qkvz] GEMM (weights ×1) ──
@@ -320,11 +319,11 @@ impl Qwen3SsmLayer {
                 }
             }
         } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
+            // BF16-kept GDN build: scalar `dense_gemm` costs ~1.03 ms/layer
+            // at n=2 (measured) — cuBLASLt tensor-cores it (381 us).
+            ops::cublas_bf16_proj_dense(
                 normed_base,
-                &self.ssm.in_proj_qkvz,
+                self.ssm.in_proj_qkvz.weight,
                 deinterleaved,
                 n as u32,
                 qkvz_size as u32,
@@ -411,11 +410,10 @@ impl Qwen3SsmLayer {
                 )?;
             }
         } else if let Some(ref out_proj_dense) = self.out_proj_dense {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
+            // Same cuBLASLt swap as the QKVZ arm (513 -> 194 us at n=2).
+            ops::cublas_bf16_proj_dense(
                 normed_out_base,
-                out_proj_dense,
+                out_proj_dense.weight,
                 ssm_out_base,
                 n as u32,
                 h as u32,
@@ -471,20 +469,22 @@ impl Qwen3SsmLayer {
         // ranks (n × h BF16) before the residual add. No-op at tp=1.
         self.ssm_tp_all_reduce(ssm_out_base, n, ctx, stream)?;
 
-        // ── 5. Batched residual add + post-attn RMS norm → norm_output[0..n] ──
-        ops::residual_add_rms_norm(
-            ctx.gpu,
-            self.residual_add_rms_norm_k,
-            hidden,
-            ssm_out_base,
-            &self.post_attn_norm,
-            normed_base,
-            residual,
-            n as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        // ── 5. Residual + post-norm (hc: caller hc_posts moe_output; skip) ──
+        if !hc {
+            ops::residual_add_rms_norm(
+                ctx.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                ssm_out_base,
+                &self.post_attn_norm,
+                normed_base,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
         detail_step!("post_norm", final);
         if detail_profile {
             let summary = detail_parts
