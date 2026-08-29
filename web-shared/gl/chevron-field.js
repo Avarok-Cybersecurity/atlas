@@ -45,7 +45,22 @@ const DEFAULTS = {
      fails the check. */
   density: 0.85,
   maxDpr: 1.5,          // fill cost is quadratic in DPR; 3 -> 1.5 is a 4x saving
+  /* The field drifts at 0.02 units/second. Thirty frames of that is
+     indistinguishable from sixty, and costs half the fill. */
+  maxFps: 30,
 };
+
+/* Renderers that rasterise on the CPU. A fullscreen SDF fragment shader is
+   cheap on any GPU and ruinous on none: measured on two cores under
+   SwiftShader, this field took a page load from 6.5s to 11.2s and stopped the
+   browser making progress at all. Decoration must never cost a visitor their
+   main thread, so on these we do not start — the CSS dot field is the design's
+   own fallback and it costs nothing. */
+const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/i;
+// Capturing a reference screenshot of the field on a headless box means
+// defeating the line above, since the only renderer available there is one it
+// refuses. Replace the regex literal in the BUILT bundle with an unmatchable
+// one — `/(?!)/` — rather than editing this source, and restore afterwards.
 
 const REQUIRED_COLORS = ['ground', 'c1', 'c2', 'c3u', 'c3l'];
 
@@ -80,10 +95,23 @@ export function createChevronField(canvas, fragmentSource, opts = {}) {
   });
   if (!gl) return null;         // caller falls back to the CSS dot field
 
+  /* Bail on CPU rasterisers before building anything. Release the context we
+     just took: they count against the browser's 16-context cap whether or not
+     we ever draw into them, and leaking one here would eventually black out an
+     unrelated canvas elsewhere on the site. */
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+  if (renderer && SOFTWARE_RENDERER.test(renderer)) {
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return null;
+  }
+
   const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
 
   let prog = null, uniforms = {}, vao = null;
   let raf = 0, t0 = performance.now(), clock = 0;
+  let lastDraw = -Infinity;         // frame-rate cap
+  const minFrameMs = 1000 / o.maxFps;
   let scroll = 0, density = o.density;
   let visible = true, onScreen = true, dead = false;
 
@@ -166,9 +194,25 @@ export function createChevronField(canvas, fragmentSource, opts = {}) {
   const running = () => !dead && visible && onScreen && !reduced();
 
   function frame(now) {
+    raf = requestAnimationFrame(frame);
+
+    // Cap the draw rate. rAF still fires at the display rate; we simply skip
+    // the fill, which is the expensive half.
+    const since = now - lastDraw;
+    if (since < minFrameMs - 0.5) return;
+
+    /* A frame-time watchdog was written here and removed. The idea was to
+       freeze the field on a renderer that reports hardware but cannot keep up.
+       It could not be verified in any instrument available: under
+       `--virtual-time-budget` `performance.now()` advances in virtual jumps, so
+       a wall-clock threshold never trips, and without virtual time the headless
+       browser screenshots before the loop has run. An unverifiable guard whose
+       failure mode is disabling the background on a machine that was merely
+       busy for a moment is worse than no guard — the software-renderer bail
+       above already covers the case that was actually measured. */
+    lastDraw = now;
     clock = (now - t0) / 1000;
     draw();
-    raf = requestAnimationFrame(frame);
   }
 
   function start() {
@@ -204,7 +248,11 @@ export function createChevronField(canvas, fragmentSource, opts = {}) {
 
   /* ---------- init ---------- */
 
-  if (!build()) return null;
+  if (!build()) {
+    // Same reason as the software-renderer bail: do not leak the context.
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return null;
+  }
   resize();
   ro.observe(canvas);
   io.observe(canvas);

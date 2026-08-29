@@ -526,3 +526,81 @@ assertions; two controls, both fired:
 **Tag, empty-tag and author pages reviewed at desktop width.** The empty state
 (`Releases`, no posts yet) reads correctly rather than as a broken page, and the
 category chevron takes its tag's colour. No changes needed.
+
+## Wave 10 — Lighthouse failed, and it was right to
+
+**`Lighthouse audit` → fail. `Runtime error: Lighthouse was unable to reliably
+load the URL you requested because the page stopped responding.`** Every audit
+in the run reports `Caught exception: PAGE_HUNG`. This is the gate flagged in
+wave 8 as the one that could reject the work, and it did.
+
+**It is not a CI quirk.** The cause is the chevron field, and the defect is real
+for anyone browsing without hardware acceleration — a GPU on the browser's
+blocklist, a VM, a locked-down corporate image. A fullscreen SDF fragment
+shader is nearly free on any GPU and ruinous on none.
+
+**Measured, on two cores at Lighthouse's desktop viewport** (`taskset -c 0,1`,
+which is what a GitHub-hosted runner has):
+
+| | wall time |
+|---|---|
+| field enabled | **11.2 s / 11.1 s** |
+| field disabled (factory returns null) | 5.9 s / 7.1 s |
+| **after the fix** | **6.6 s** |
+
+**Two instruments were wrong before one was right**, which is worth recording
+because the first two looked plausible:
+
+1. An in-page rAF counter reported `measuring` forever and never finished —
+   under `--virtual-time-budget`, virtual time does not advance while a rAF
+   loop keeps requesting frames, so the probe could not terminate *whatever*
+   the page did. It measured nothing.
+2. Forcing `prefers-reduced-motion` (one frozen frame, no loop) *also* hung the
+   same probe — which briefly looked like evidence that the loop was innocent.
+   It was the same instrument defect, not a finding.
+
+Only the wall-clock A/B against a build with the factory stubbed out
+discriminated, and only once the core count was constrained to match the
+runner: at full core count the difference was 4.2 s vs 3.1 s, easy to dismiss.
+
+**The fix.** The runtime reads `WEBGL_debug_renderer_info` and refuses to start
+on a CPU rasteriser (`swiftshader`, `llvmpipe`, `softpipe`, `software`,
+`basic render`, `microsoft basic`), releasing the context it took rather than
+leaking it toward the browser's 16-context cap. The CSS dot field — already the
+design's fallback for no-WebGL — stays visible. Verified: the canvas now carries
+`cf` without `cf-on`, and `cf-dots` without `cf-muted`, on both properties.
+
+Two other changes came with it:
+
+- **The draw rate is capped at 30fps.** The field drifts at 0.02 units/second;
+  thirty frames of that is indistinguishable from sixty and costs half the fill.
+  rAF still runs at the display rate, and the skip happens before the draw.
+  *This is reviewed, not measured* — see below.
+- **A context leak was fixed.** When `build()` failed the runtime returned
+  `null` without releasing the GL context, so a shader-compile failure leaked
+  one per mount.
+
+**A watchdog was written and removed.** It would have frozen the field on a
+renderer that reports hardware but cannot keep up. It could not be verified in
+any instrument on this box: under virtual time `performance.now()` advances in
+jumps so a wall-clock threshold never trips, and without virtual time the
+headless browser screenshots before the loop has run. Its failure mode is
+disabling the background on a machine that was merely busy for a moment. An
+unverifiable guard with a user-visible false-positive is worse than no guard,
+and the measured case is already covered. The reasoning is in the source where
+the code would have been.
+
+**What is verified and what is not**, stated plainly:
+
+| | status |
+|---|---|
+| software-renderer bail | **measured** — 11.2 s → 6.6 s, canvas inert, dots visible |
+| context leak on build failure | reviewed; the failure path is not reachable on demand here |
+| 30fps cap | **reviewed, not measured** — every instrument available defeats it. Its worst case is the previous 60fps behaviour |
+| Lighthouse passing | **unknown** — CI's real Chrome is the only instrument, and it has not re-run yet |
+
+**Consequence for the screenshots in earlier waves:** they were captured under
+SwiftShader, which is now exactly the configuration where the field does not
+run. They remain valid evidence of what a GPU visitor sees, but they can no
+longer be reproduced without defeating the check — the procedure for doing that
+is documented beside it in the source.
