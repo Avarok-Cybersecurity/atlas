@@ -5,13 +5,21 @@
 // components render what these specs say and add nothing of their own.
 // =============================================================================
 import gates from '$lib/gates.generated.json';
+import { splitByVariant, variantLabel } from './gate-variants.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
 
 export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
-import { splitByVariant } from './gate-variants.js';
-export { dashFor, groupFor, groupRecords, groupedBenches, isLatestOfVariant, splitByVariant, variantLabel } from './gate-variants.js';
+export {
+  dashFor,
+  groupFor,
+  groupRecords,
+  groupedBenches,
+  isLatestOfVariant,
+  splitByVariant,
+  variantLabel
+} from './gate-variants.js';
 
 export const shortModel = (model) => (model || '').split('/').pop() || model;
 
