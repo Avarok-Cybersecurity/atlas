@@ -118,3 +118,98 @@ connection before the new configuration was live. Re-running after the reload
 settled gives the table above every time. Recorded because "a header set I did
 not write" is exactly the shape of a real misconfiguration, and it would have
 been easy to go debugging server_name matching for an hour.
+
+## Wave 3 — the blog application
+
+**Changed.** `blog/` is a SvelteKit app built the same way `site/` is
+(adapter-static, bun, Vite 8, Svelte 5 runes), prerendered to static files.
+
+**Design system: one, not two.** The `:root` token block moved out of
+`site/src/app.css` into `web-shared/atlas-tokens.css`, which both apps now
+import. This is the SSOT the brief implies when it says "the same colour
+scheme" — with two copies, "the same" survives exactly until the first edit.
+`blog/src/app.css` defines only editorial structure (reading column, chevron
+rail, TOC, code blocks, footnotes) and aliases every colour it needs onto a
+shared token or a `color-mix` of one. It introduces exactly one value of its
+own, `--bg-sunk`, because the marketing site has no recessed surface to borrow.
+
+*Control for the extraction:* the emitted stylesheet was diffed before and
+after. Same length to the byte, and the only difference is that `:root` now
+precedes the `*` reset instead of following it — disjoint selectors, disjoint
+properties, no cascade consequence. A pure refactor, proved rather than
+asserted.
+
+**Renderer: raw WebGL2, as instructed.** `blog/src/lib/gl/` is the supplied
+runtime, not the three.js variant. Two changes to it:
+
+- The five colours lost their defaults. They were hardcoded `#0F1216` /
+  `#BE9DF8` / … in `DEFAULTS`, which is a second source of truth for values
+  that live in the token file — and the canvas paints the **ground itself**, so
+  a drifted value shows up as a visible seam between canvas and page with
+  nothing failing. The component now reads them off the cascade with
+  `getComputedStyle` and the runtime refuses to build without them.
+- `density` dropped from 1.0 to 0.45. See below; this is the wave's real finding.
+
+**Posts are Svelte components, not markdown.** These posts carry measured
+tables, annotated code and callouts; markdown reaches that only through mdsvex
+plus a parser plus a highlighter, which would outweigh the entire WebGL
+background by more than an order of magnitude. Front matter is a `meta` export
+from `<script module>`. Dropping a file into `blog/src/lib/posts/` puts it on
+the index, its tag page, its author page, the RSS feed, the sitemap and the
+prev/next chain with nothing else to register.
+
+`postindex.js` holds the rules and `posts.js` holds the `import.meta.glob` —
+split on the SBIO line, so the rules can be tested without a bundler.
+
+### The contrast finding
+
+`FIELD-NOTES.md` derives the field's amplitude from a budget solved against
+ground `#0F1216`, by sampling 14 frames and reporting the worst seen. Neither
+half of that transfers here. The ground is `#14111f`, and sampling cannot see
+the case where all three depth layers land on one pixel at the sweep's peak —
+rare, but exactly the case that puts metadata gray under AA.
+
+`.contrast-check.mjs` therefore computes the **analytic bound**: the most
+luminance the shader can add to any pixel, `DIM_SUM (2.28) × AMT_MAX (0.05) ×
+density`, per hue, normalised the way the shader normalises. No sampling, so no
+case to miss. It reads the ground and the text tokens from the token file and
+the density from the runtime, and it asserts four exact lines of the shader
+still exist — otherwise the gate would keep passing against a field it no
+longer describes.
+
+| density | tightest ratio (`--t3 #8a83af`) | |
+|---|---|---|
+| 1.00 (as supplied) | 3.75 | below AA |
+| 0.60 | 4.35 | below AA |
+| **0.5109** | **4.50** | AA exactly |
+| **0.45 (shipped)** | **4.60** | AA with margin |
+
+*Control:* the gate was run at 0.6 and watched go **red** at 4.35:1 before 0.45
+was chosen. It is not a check that cannot fail.
+
+### Tests, and the three controls that prove they work
+
+`blog/src/lib/postindex.test.js` — 18 tests, 26 assertions. Not coverage
+theatre: each rejection test names the silent failure it prevents (an
+undeclared tag renders an uncoloured dot and drops the post out of its category
+page; an unparseable date sorts it to the top of the index forever). One test
+exists purely to prove the validations are not blanket-rejecting.
+
+Three negative controls, each a real defect reintroduced:
+
+| defect reintroduced | result |
+|---|---|
+| tag validation removed | 17 pass / **1 fail** |
+| sort reversed to oldest-first | 15 pass / **3 fail** |
+| `findIndex` `-1` guard removed from `neighboursOf` | 17 pass / **1 fail** |
+| restored | **18 pass / 0 fail** |
+
+`blog/e2e/check-headers.mjs` is the live check the vhost comment promises: four
+headers across three response classes nginx routes differently. Green on the
+blog (18/18); pointed at `docs.atlasinference.io`, which still has the
+location-level form, it goes **red on exactly the six security-header
+assertions**. That is the control, and it runs against a real server.
+
+**Deployed.** `blog.atlasinference.io` now serves the built site through
+Cloudflare — rsynced by hand this once, with the same flags the workflow will
+use, so the header check had something true to test.

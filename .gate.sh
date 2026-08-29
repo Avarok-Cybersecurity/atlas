@@ -18,7 +18,7 @@ for app in site blog; do
   cd "$ROOT/$app" || exit 1
 
   step "$app: unit tests"
-  if [ -d src/lib ] && ls src/lib/**/*.test.js src/lib/*.test.js >/dev/null 2>&1; then
+  if [ -n "$(find src/lib -name '*.test.js' -print -quit 2>/dev/null)" ]; then
     bun test src/lib || fail=1
   else
     echo "(no unit tests)"

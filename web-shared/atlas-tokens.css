@@ -1,0 +1,64 @@
+/* =============================================================================
+   Atlas design tokens — the single authoritative copy.
+   Imported by BOTH web properties:
+     site/src/app.css   -> atlasinference.io
+     blog/src/app.css   -> blog.atlasinference.io
+   Extracted verbatim from site/src/app.css so the two can never drift. Nothing
+   but the :root block belongs here; anything property-specific stays in that
+   property's app.css.
+   ========================================================================== */
+:root {
+  /* canvas + surfaces */
+  --bg: #14111f;          /* canvas */
+  --bg2: #1a1628;         /* deeper — alt sections, insets */
+  --card: #201b30;        /* raised card / receipt stock */
+  --border: #2b2440;      /* hairline */
+  --border-strong: #3a3054;
+  /* ink */
+  --t1: #f2f0fa;          /* primary */
+  --t2: #a9a2c9;          /* secondary */
+  /* --t3 is used at 0.7rem, which is small text: it needs 4.5:1, not the 3:1
+     that would do for large. #6f6a8d managed only 3.27:1 on the card. This
+     still sits clearly below --t2 (6.90:1) so it reads as faint. */
+  --t3: #8a83af;          /* faint — 4.72:1 worst case */
+  /* accent + signals */
+  /* One accent hue, two tokens, because a single violet cannot be optimal both
+     as text on a dark canvas and as a fill under white. --accent is the text
+     value (4.67:1 on the card, AA body); --accent-fill is the button value
+     (6.56:1 for white on it). The old copper managed only 3.89:1 as link text
+     on paper, so this is a small accessibility gain rather than a trade. */
+  --accent: #9271f4;      /* violet — links, labels, anything read as text */
+  --accent-fill: #662af4; /* solid backgrounds that carry white text */
+  --accent-fill-hover: #560dd3; /* deepens on hover, so white gains contrast rather than losing it */
+  --accent-deep: #b39bf7; /* brighter still: emphasis on a dark canvas */
+  --accent-soft: rgba(146,113,244,0.16);
+  --green: #4ade80;       /* verify */
+  --green-soft: rgba(74,222,128,0.14);
+  --amber: #fbbf24;
+  /* Promoted from literals: #f87171 already appeared in .ld-error and friends.
+     Used as TEXT on dark surfaces, and as a fill only with --bg ink. */
+  --red: #f87171;
+  --red-soft: rgba(248,113,113,0.12);
+  --grad: linear-gradient(135deg, #9d85ff 0%, #6842f5 100%);
+  --bar: linear-gradient(90deg, #9d85ff, #7c5cff);
+  --vllm: #3a3054;
+  /* ---- the mark, as the page's grammar --------------------------------
+     The logo is three chevrons in four colours. Each colour is given one
+     fixed meaning and nothing else may use it: violet = engine, cyan =
+     silicon, green = verified, gold = community. Sections set --sx to their
+     colour; the ledger rail, chips and chart series read --sx and follow.
+     As TEXT all four clear 4.5:1 on --bg and on --card. As a FILL they carry
+     --bg ink, never white — white on gold is 1.88:1. */
+  --ch-violet: #BE9DF8;
+  --ch-cyan:   #49C3DB;
+  --ch-green:  #12B981;
+  --ch-gold:   #EFB338;
+  --sx: var(--ch-violet);
+  /* type */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  /* elevation — on a dark canvas, shadow reads as depth only when it is black */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
+  --shadow: 0 6px 24px rgba(0,0,0,0.42);
+  --shadow-lg: 0 18px 50px rgba(0,0,0,0.55);
+}
