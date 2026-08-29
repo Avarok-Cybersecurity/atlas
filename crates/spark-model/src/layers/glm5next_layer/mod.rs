@@ -261,11 +261,9 @@ impl Glm5NextLayer {
     /// Run the MLP on `rows` rows of `normed` into `out`, then reduce once if this rank holds
     /// only part of the result.
     ///
-    /// ⚠️ The MLP itself is still ONE ROW AT A TIME. The routed experts genuinely do not
-    /// amortize — the measured expert union over K consecutive tokens is 8.00 / 13.74 / 18.76
-    /// at K=1..3, so their weight traffic scales with K whatever the loop looks like — but the
-    /// shared expert and the dense FFN (1,508 MB/rank/token between them) would batch, and do
-    /// not yet. That is the next byte to take, and it needs a K-row MLP workspace.
+    /// The dense FFN and the shared expert sweep their weights ONCE for all rows; only the
+    /// routed experts stay per-row, because their weight traffic genuinely scales with K (the
+    /// measured expert union over K consecutive tokens is 8.00 / 13.74 / 18.76 at K = 1..3).
     fn mlp_forward(
         &self,
         normed: DevicePtr,
@@ -277,9 +275,6 @@ impl Glm5NextLayer {
         let t_dense = matches!(self.mlp, Glm5NextMlpSite::Dense(_))
             .then(profile::start)
             .flatten();
-        for r in 0..rows {
-        let normed = normed.offset(r * self.hidden * 2);
-        let out = out.offset(r * self.hidden * 2);
         match &self.mlp {
             Glm5NextMlpSite::Dense(w) => forward_dense(
                 ctx.gpu,
@@ -289,6 +284,7 @@ impl Glm5NextLayer {
                 self.mlp_cfg.local_dense_intermediate,
                 normed,
                 out,
+                rows,
                 &self.mlp_ws,
                 stream,
             )?,
@@ -299,10 +295,10 @@ impl Glm5NextLayer {
                 w,
                 normed,
                 out,
+                rows,
                 &self.mlp_ws,
                 stream,
             )?,
-        }
         }
         profile::end(profile::MLP_DENSE, t_dense, ctx.gpu, stream);
         // 🔴 ONE collective for both partials: the routed experts are EP-sharded and the

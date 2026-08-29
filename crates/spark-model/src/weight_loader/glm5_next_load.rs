@@ -461,7 +461,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 mlp_cfg,
                 mlp_kernels,
                 mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                    gpu, &mlp_cfg,
+                    gpu, &mlp_cfg, verify_k,
                 )?,
                 mhc,
                 input_norm: upload_f32_as_bf16(gpu, &src.f32("input_layernorm.weight")?)?,
