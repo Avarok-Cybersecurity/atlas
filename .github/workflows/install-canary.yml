@@ -82,7 +82,16 @@ jobs:
           set -euo pipefail
           prefix="$RUNNER_TEMP/atlasctl-bin"
           before_version=$("$prefix/atlasctl" --version)
-          printf '\n# canary marker\n' >> "$prefix/atlasctl"
+          # Replace by RENAME, not by appending in place. The install above
+          # starts the agent, so the binary is being executed and a write to it
+          # fails with ETXTBSY ("Text file busy"). install.sh has the same
+          # constraint and solves it the same way -- `install` to a temp name
+          # then `mv -f` -- because a rename swaps the directory entry while the
+          # running process keeps the old inode.
+          cp "$prefix/atlasctl" "$prefix/.atlasctl.tampered"
+          printf '\n# canary marker\n' >> "$prefix/.atlasctl.tampered"
+          chmod 0755 "$prefix/.atlasctl.tampered"
+          mv -f "$prefix/.atlasctl.tampered" "$prefix/atlasctl"
           tampered=$(sha256sum "$prefix/atlasctl" | cut -d" " -f1)
           # Still runnable, and still claiming the same version: without that the
           # test would be exercising the ordinary upgrade path instead.
