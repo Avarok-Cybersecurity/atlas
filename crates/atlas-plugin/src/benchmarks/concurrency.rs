@@ -102,6 +102,10 @@ const CODE_TASK: &str = "Ignore the reference text above. Task: write a complete
 /// its whole cell vacuous. 80%: a natural stop a few tokens early is fine; a
 /// 49-token burst against a 512-token budget is not a throughput measurement.
 const VACUITY_FLOOR: f64 = 0.8;
+// `make_prompt` puts the distinguishing tag at byte zero of message content;
+// a wrong tag can share only the chat-template prefix, about 12 tokens against
+// the minimum 128-token ISL. An exact warmed prompt is block-aligned near the
+// full length, so 80% separates substantial reuse from incidental template KV.
 const WARM_CACHE_FLOOR: f64 = 0.8;
 
 /// What one completed request actually delivered — the evidence a cell's
