@@ -109,6 +109,77 @@ jobs:
             exit 1
           }
 
+  # Windows had no canary at all. `install.ps1` is served from the front page to
+  # every Windows visitor -- the page picks by detected OS, so those visitors have
+  # no other command to fall back to -- and nothing watched it in production.
+  #
+  # It is also the installer most likely to break quietly: this project has
+  # already shipped Windows-only defects that passed every Linux check (a rename
+  # over a running file, an `Instant` subtraction that panicked on a freshly
+  # booted host, a `canonicalize` that resolved into `C:\$Extend\$Deleted`).
+  # A POSIX-shaped assumption is invisible until a Windows machine runs it.
+  windows-installer:
+    name: production one-liner (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install atlasctl the way the website tells Windows people to
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # A private prefix, for the same reason as the aarch64 job: prove the
+          # installer works rather than inherit the runner image's PATH.
+          $prefix = Join-Path $env:RUNNER_TEMP 'atlasctl-bin'
+          New-Item -ItemType Directory -Force -Path $prefix | Out-Null
+          $env:ATLASCTL_INSTALL_DIR = $prefix
+          # The exact one-liner the site prints for a Windows visitor.
+          irm https://atlasinference.io/install.ps1 | iex
+          "$prefix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: It runs, and it knows its recipes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'atlasctl-bin\atlasctl.exe'
+          & $exe --version
+          # Same corpus check as aarch64: a binary shipped without its recipes
+          # fails here rather than in a user's terminal.
+          $count = (& $exe recipe list | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count
+          Write-Host "recipes: $count"
+          if ($count -lt 10) {
+            Write-Host "::error::atlasctl shipped only $count recipes; the vendored corpus is missing or truncated"
+            exit 1
+          }
+
+      # The same upgrade-path hole the aarch64 job had: a first install is the
+      # one shape that has never broken. Trailing bytes leave a PE image runnable
+      # and its --version unchanged, so this reaches the branch that must decide
+      # on CONTENT rather than on the version string.
+      - name: Re-running the installer over a differing build REPLACES it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:RUNNER_TEMP 'atlasctl-bin'
+          $exe = Join-Path $prefix 'atlasctl.exe'
+          $before = (& $exe --version | Out-String).Trim()
+          Add-Content -Path $exe -Value "`n# canary marker" -Encoding Ascii
+          $tampered = (Get-FileHash $exe -Algorithm SHA256).Hash
+          $after = (& $exe --version | Out-String).Trim()
+          if ($before -ne $after) {
+            Write-Host "::error::tampering changed the reported version ($before -> $after);"
+            Write-Host "this test can no longer reach the same-version/different-content branch"
+            exit 1
+          }
+          $env:ATLASCTL_INSTALL_DIR = $prefix
+          irm https://atlasinference.io/install.ps1 | iex
+          $restored = (Get-FileHash $exe -Algorithm SHA256).Hash
+          if ($restored -eq $tampered) {
+            Write-Host "::error::the installer left the modified binary in place."
+            Write-Host "It decided an upgrade was unnecessary, or announced one and did not perform it."
+            exit 1
+          }
+          Write-Host "replaced: $tampered -> $restored"
+
   pages:
     name: the pages the site links to
     runs-on: ubuntu-24.04
