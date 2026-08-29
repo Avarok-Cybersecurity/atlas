@@ -57,6 +57,12 @@ pub(crate) struct SsmSnapshotPool {
     /// Maps snapshot_slot_id → session_hash for session-scoped isolation.
     /// When restoring, skip snapshots that belong to a different session.
     pub(super) session_tags: Mutex<std::collections::HashMap<usize, u64>>,
+    /// Per-slot AUX layer state (PLE n-gram history/conv, QSA indexer keys)
+    /// captured at CHUNK-BOUNDARY saves as host blobs `(layer_idx, bytes)`.
+    /// Mid-chunk tail captures never carry aux — a model whose layers hold
+    /// aux state DECLINES restoring a slot without it (graceful miss beats
+    /// silently serving another request's lexical state).
+    pub(super) aux_blobs: Mutex<std::collections::HashMap<usize, Vec<(u32, Vec<u8>)>>>,
     /// Decode-rollback region: `h_snapshots` for the Phase-C ring.
     /// Layout per layer: `[max_batch_size * decode_ring_slots * h_bytes]`.
     /// Empty when `decode_ring_slots == 0`.
@@ -137,6 +143,7 @@ impl SsmSnapshotPool {
                 conv_bytes,
                 num_ssm_layers,
                 session_tags: Mutex::new(std::collections::HashMap::new()),
+                aux_blobs: Mutex::new(std::collections::HashMap::new()),
                 decode_h_snapshots: Vec::new(),
                 decode_conv_snapshots: Vec::new(),
                 decode_ring_slots: 0,
@@ -197,6 +204,7 @@ impl SsmSnapshotPool {
             conv_bytes,
             num_ssm_layers,
             session_tags: Mutex::new(std::collections::HashMap::new()),
+            aux_blobs: Mutex::new(std::collections::HashMap::new()),
             decode_h_snapshots,
             decode_conv_snapshots,
             decode_ring_slots: if decode_enabled { decode_ring_slots } else { 0 },
@@ -447,7 +455,18 @@ impl SsmSnapshotPool {
     pub(super) fn free(&self, snap_slot: usize) {
         self.slot_has_hidden.lock().remove(&snap_slot);
         self.session_tags.lock().remove(&snap_slot);
+        self.aux_blobs.lock().remove(&snap_slot);
         self.free_slots.lock().push(snap_slot);
+    }
+
+    /// Attach chunk-boundary aux layer state to a saved snapshot.
+    pub(super) fn set_aux(&self, snap_slot: usize, blobs: Vec<(u32, Vec<u8>)>) {
+        self.aux_blobs.lock().insert(snap_slot, blobs);
+    }
+
+    /// The aux blobs for a slot, if that save carried them.
+    pub(super) fn aux(&self, snap_slot: usize) -> Option<Vec<(u32, Vec<u8>)>> {
+        self.aux_blobs.lock().get(&snap_slot).cloned()
     }
 
     /// Whether any LIVE snapshot slot is tagged with `session_hash` — i.e.

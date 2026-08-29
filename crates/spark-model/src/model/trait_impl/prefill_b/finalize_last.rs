@@ -130,17 +130,7 @@ impl TransformerModel {
         let last_hidden = hidden.offset(last_token_offset * h * fp32);
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            last_hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // Diagnostic: post-norm hidden state
         if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
@@ -390,6 +380,14 @@ impl TransformerModel {
                         tokens.len(),
                         seq.block_table.len(),
                     );
+                    // Chunk-boundary aux layer state (PLE history/conv, QSA
+                    // indexer keys) rides the snapshot — a restore without it
+                    // would serve the previous request's lexical state, so
+                    // aux-carrying models decline aux-less slots on restore.
+                    let aux = self.collect_aux_states(seq, stream)?;
+                    if !aux.is_empty() {
+                        self.ssm_snapshots.set_aux(snap_id, aux);
+                    }
                     // Stash the last-token post-norm hidden so a future exact
                     // full-prompt hit can emit the first token's logits without
                     // re-running the last token through the SSM layers. `normed`

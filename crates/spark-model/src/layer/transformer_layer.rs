@@ -42,6 +42,14 @@ pub const VERIFY_WY_LAYER_STRIDE_BYTES: usize =
     VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES;
 
 pub trait TransformerLayer: Send + Sync {
+    /// True when this layer's PREFILL attends only over the tokens it is
+    /// handed, so a prefix-cache skip would hide the cached prefix from
+    /// attention entirely. MLA layers on the paged path do; everything else
+    /// reads the paged cache and is unaffected.
+    fn uses_local_mla_prefill(&self) -> bool {
+        false
+    }
+
     /// `&mut dyn Any` downcast hook for post-construction weight overlays (e.g.
     /// the LoRA install walk). Default `None`; overlay-capable layers override.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -57,6 +65,70 @@ pub trait TransformerLayer: Send + Sync {
     /// immediately.
     fn fp8_calibration_frozen(&self) -> Option<bool> {
         None
+    }
+
+    /// Hoisted per-step HOST work for layers that do host-side computation
+    /// at decode (PLE: n-gram hash + NVMe fault-in + slot upload). The
+    /// scheduler calls this every single-token decode step BEFORE any CUDA
+    /// graph replay/capture — the same phasing as the `token_ids` upload —
+    /// so the captured graph contains only kernels over stable device
+    /// buffers. Layers with no host-side decode work keep the no-op default.
+    fn decode_prestage(
+        &self,
+        _token: u32,
+        _state: &mut dyn LayerState,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Re-arm consumed prestage state so a failed CUDA-graph capture attempt
+    /// can re-run the SAME step eagerly. Must be idempotent, and must not
+    /// recompute (PLE's history already advanced in `decode_prestage`).
+    fn decode_prestage_rearm(&self, _state: &mut dyn LayerState) {}
+
+    /// True when this layer's decode can NEVER be captured into a CUDA
+    /// graph — e.g. the QSA indexer's host top-k round trip, whose captured
+    /// dense fallback would silently replay WRONG attention once selection
+    /// activates. The scheduler ORs this across layers once and keeps the
+    /// whole model eager.
+    fn decode_graph_unsupported(&self) -> bool {
+        false
+    }
+
+    /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
+    /// travel with an SSM snapshot for a prefix-cache hit to be complete —
+    /// PLE's n-gram history + conv state, QSA's ingested indexer keys.
+    /// Without these a restored prefix would silently serve the PREVIOUS
+    /// request's lexical state. Called at chunk-boundary snapshot saves;
+    /// any D2H inside must be stream-ordered (`copy_d2h_on_stream`).
+    /// Default: the layer carries no aux sequence state.
+    fn snapshot_aux(
+        &self,
+        _state: &dyn LayerState,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// True when this layer WOULD produce aux state — restore sites use it
+    /// to decline snapshots that lack aux rather than restore a stale mix.
+    fn has_aux_state(&self) -> bool {
+        false
+    }
+
+    /// Restore the aux state captured by [`Self::snapshot_aux`] on a
+    /// prefix-cache hit, BEFORE the resumed prefill runs.
+    fn restore_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _blob: &[u8],
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!("restore_aux on a layer with no aux state")
     }
 
     /// Decode one token through this layer, modifying `hidden` in-place.

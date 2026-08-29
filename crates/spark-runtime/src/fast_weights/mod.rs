@@ -19,7 +19,7 @@
 use crate::gpu::GpuBackend;
 use crate::weights::{
     WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
-    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes, parse_expert_index,
+    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -39,6 +39,27 @@ pub struct FastSafetensorsLoader {
     pub ep_world_size: usize,
     pub num_experts: usize,
     pub peak_memory_multiplier: Option<f64>,
+    /// Skip the W4A4 `*.input_scale` activation scales at load.
+    ///
+    /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
+    /// projection. On a 512-expert model that is ~74k four-byte allocations,
+    /// each taking a full allocation granule — GBs of padding for values
+    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
+    /// NVFP4 loader already treats the key as optional.
+    ///
+    /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off
+    /// unless the model's loader is known not to need it.
+    pub skip_activation_scales: bool,
+    /// Skip `mtp.*` tensors at load.
+    ///
+    /// For models whose loader deliberately does not build an MTP head,
+    /// uploading its weights is pure waste — on Qwen3.8-Flash-Next that is a
+    /// 1.49 GB expert shard plus the MTP backbone, held resident while the KV
+    /// cache goes without.
+    ///
+    /// OPT-IN: a model that DOES build an MTP head must keep them, so this is
+    /// set only where `load_mtp_weights` is known to return `None`.
+    pub skip_mtp: bool,
     /// When true (default), attempt `O_DIRECT`; fall back to buffered reads if
     /// the filesystem rejects it (tmpfs, overlayfs, some FUSE backends).
     pub try_direct_io: bool,
@@ -69,6 +90,9 @@ impl Default for FastSafetensorsLoader {
     }
 }
 
+#[path = "skip.rs"]
+mod skip;
+
 impl FastSafetensorsLoader {
     pub fn new() -> Self {
         Self {
@@ -76,6 +100,8 @@ impl FastSafetensorsLoader {
             ep_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
@@ -88,30 +114,11 @@ impl FastSafetensorsLoader {
             ep_world_size,
             num_experts,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
-        }
-    }
-
-    fn should_skip_tensor(&self, name: &str) -> bool {
-        if self.ep_world_size <= 1 {
-            return false;
-        }
-        if name.starts_with("mtp.") {
-            return false;
-        }
-        if let Some(idx) = parse_expert_index(name) {
-            let per_rank = self.num_experts / self.ep_world_size;
-            let local_start = self.ep_rank * per_rank;
-            let local_end = if self.ep_rank == self.ep_world_size - 1 {
-                self.num_experts
-            } else {
-                local_start + per_rank
-            };
-            idx < local_start || idx >= local_end
-        } else {
-            false
         }
     }
 }
@@ -130,9 +137,15 @@ impl WeightLoader for FastSafetensorsLoader {
             resolve_shards(model_dir)?;
 
         // Pre-flight OOM estimate (identical to SafetensorsLoader).
+        //
+        // The n-gram tables are DEFERRED further down — they are never
+        // uploaded, so counting them here refuses a model that fits. On
+        // LongCat-Flash-Lite they are 62.8 of the checkpoint's 138 GB, which
+        // is the difference between a 167 GB "peak" and a 98 GB one.
+        let preflight_skip = |name: &str| skip_fn(name) || crate::weights::is_ngram_table(name);
         {
-            let estimated = estimate_load_bytes(&shard_files, &skip_fn)?;
-            let has_fp8 = estimate_has_fp8(&shard_files, &skip_fn)?;
+            let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;
+            let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip)?;
             let mult = self
                 .peak_memory_multiplier
                 .unwrap_or(if has_fp8 { 1.5 } else { 1.3 });
@@ -163,6 +176,8 @@ impl WeightLoader for FastSafetensorsLoader {
 
         // Load each shard. Loaded tensors filtered by EP rules upstream.
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
+        // Locations of tensors deliberately NOT uploaded (the n-gram tables).
+        let mut deferred: HashMap<String, crate::weights::DeferredTensor> = HashMap::new();
         let total_shards = shard_files.len();
         let initial_free = gpu.free_memory()?;
         let mut offload_logged = false;
@@ -202,6 +217,7 @@ impl WeightLoader for FastSafetensorsLoader {
                 self.direct_io_tensor_cap,
                 self.prefetch_shards,
                 &mut weights,
+                &mut deferred,
                 &mut offload_logged,
             )?;
 
@@ -244,12 +260,17 @@ impl WeightLoader for FastSafetensorsLoader {
                 self.direct_io_tensor_cap,
                 self.prefetch_shards,
                 &mut weights,
+                &mut deferred,
                 &mut extra_offload,
             )?;
         }
 
         tracing::info!("Fast-loaded {} weight tensors", weights.len());
-        Ok(WeightStore::from_map(weights))
+        let mut store = WeightStore::from_map(weights);
+        for (name, d) in deferred {
+            store.defer(name, d);
+        }
+        Ok(store)
     }
 }
 
@@ -272,6 +293,7 @@ fn load_shard_fast(
     direct_io_tensor_cap: usize,
     prefetch_shards: bool,
     out: &mut HashMap<String, WeightTensor>,
+    deferred_out: &mut HashMap<String, crate::weights::DeferredTensor>,
     offload_logged: &mut bool,
 ) -> Result<()> {
     // Header parsing uses a buffered fd — header is a few KB, cache pollution
@@ -286,7 +308,37 @@ fn load_shard_fast(
         let allow_set: std::collections::HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
         tensors.retain(|t| allow_set.contains(t.name.as_str()));
     }
-    tensors.retain(|t| !skip_fn(&t.name));
+    // The n-gram embedding TABLES are never uploaded with the checkpoint —
+    // 63 GB (LongCat-Lite) to ~102 GB (Flash-Next) of BF16 would exhaust a
+    // 121 GB unified box before any quantization could run, and the fallback
+    // on GB10 is managed memory, i.e. Linux swap, i.e. a kernel freeze. They
+    // are recorded with their on-disk location and served either by streaming
+    // per-table quantize-on-load or straight off NVMe by the row cache.
+    let mut deferred_here: Vec<(String, crate::weights::DeferredTensor)> = Vec::new();
+    #[allow(clippy::items_after_statements)]
+    tensors.retain(|t| {
+        if crate::weights::is_ngram_table(&t.name) {
+            deferred_here.push((
+                t.name.clone(),
+                crate::weights::DeferredTensor {
+                    path: shard_path.to_path_buf(),
+                    offset: t.abs_offset,
+                    shape: t.shape.clone(),
+                    dtype: t.dtype,
+                },
+            ));
+            return false;
+        }
+        !skip_fn(&t.name)
+    });
+    if !deferred_here.is_empty() {
+        tracing::info!(
+            "Deferred {} n-gram table(s) in {} — served from disk, not uploaded",
+            deferred_here.len(),
+            shard_path.display()
+        );
+        deferred_out.extend(deferred_here);
+    }
 
     // Per-shard heuristic: above `direct_io_tensor_cap` tensors, O_DIRECT's
     // per-tensor syscall + 4 KiB alignment overhead costs more than kernel

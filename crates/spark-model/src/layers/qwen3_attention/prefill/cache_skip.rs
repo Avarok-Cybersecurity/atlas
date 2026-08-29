@@ -18,9 +18,14 @@ impl Qwen3AttentionLayer {
     #[allow(unreachable_code, unused_variables, unused_assignments)]
     pub(in crate::layers::qwen3_attention) fn prefill_attention_with_cache_skip(
         &self,
+        state: &mut dyn crate::layer::LayerState,
         normed: DevicePtr,
         num_tokens: usize,
         kv_write_start: usize,
+        // The sequence's HOST block table — the QSA stage-2 hook reads the
+        // paged cache by physical block, and chunk-0 metadata does NOT carry
+        // a device block table (cache-skip attention is contiguous).
+        seq_block_table: &[u32],
         kv_cache: &mut PagedKvCache,
         // `Some` = batched co-dispatch chunk-0: positions/slots come from the
         // stacked metadata and the flash kernel runs with batch=batch_size,
@@ -724,6 +729,37 @@ impl Qwen3AttentionLayer {
                 nq_hd,
                 self.attn_layer_idx,
                 "attn_out_pre_gate",
+                stream,
+            )?;
+        }
+
+        // ── 8b. QSA stage-2: per-query prefill selection (Qwen3.8-Flash-
+        // Next). Rows past the inert bound get their attention CONTEXT
+        // overwritten with attention over exactly their reference-selected
+        // block set, read from the paged cache written in section 7. Runs
+        // BEFORE the gates (q_contiguous still intact; gates/o_proj then
+        // apply uniformly). Rows at or below the bound keep the dense flash
+        // output, which is provably identical there.
+        if let Some(ref qsa) = self.qsa
+            && num_tokens > qsa.inert_bound()
+        {
+            let qsa_st =
+                crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, state, ctx.gpu)?;
+            qsa.prefill_select(
+                qsa_st,
+                normed,
+                q_contiguous,
+                attn_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                seq_block_table,
+                0,
+                num_tokens,
+                nq,
+                bs as u32,
+                inv_sqrt_d,
+                ctx.buffers.qsa_select_scratch(),
+                ctx.gpu,
                 stream,
             )?;
         }

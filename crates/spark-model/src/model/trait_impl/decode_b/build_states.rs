@@ -77,6 +77,7 @@ impl TransformerModel {
                         // the dummy slot's geometry matches a real one and a
                         // stray prefill over it stages rather than overruns.
                         h_prefill_stage: self.ssm_pool.h_prefill_stage(dummy_ssm_slot),
+                        ple: None,
                     }));
                     ssm_idx += 1;
                 } else {

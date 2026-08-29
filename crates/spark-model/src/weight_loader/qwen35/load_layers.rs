@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-mod attention_arms;
-mod linear_attn_arms;
+pub(crate) mod attention_arms;
+pub(crate) mod linear_attn_arms;
 mod tq_plus_weight_rotation;
 
 use anyhow::Result;

@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod hc;
 mod ssm_batched;
 mod ssm_batched_recurrent;
 
@@ -112,7 +113,9 @@ impl Qwen3SsmLayer {
         // decode cost, so it is the lever that makes C=N decode scale.
         // The recurrent inner (BA/gates, conv1d, GDN, gated-norm) stays a
         // per-seq loop with byte-identical kernels to `decode()`/`ssm_forward`.
-        if !self.try_decode_multi_seq_ssm_batched(hidden, residual, n, states, ctx, stream)? {
+        if !self
+            .try_decode_multi_seq_ssm_batched(hidden, residual, n, states, false, ctx, stream)?
+        {
             for i in 0..n {
                 let hidden_i = hidden.offset(i * h * residual_elem);
                 let residual_i = residual.offset(i * h * residual_elem);

@@ -966,6 +966,15 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// mHC hyper-connection stream count (0 = no highway). Non-zero means
+    /// the batched GDN decode paths are UNWIRED for this model (they carry
+    /// their own residual, which the highway replaces — see
+    /// `qwen3_ssm::hc::refuse_batched_under_hc`); the scheduler must clamp
+    /// concurrency to 1 until the batched highway lands (Avarok #753 item B).
+    fn hc_mult(&self) -> usize {
+        0
+    }
+
     /// Tokens per paged-KV block, or `None` when the model has no paged KV.
     /// The scheduler uses this to land a prefill chunk boundary exactly on the
     /// block boundary a warm turn will match at (see

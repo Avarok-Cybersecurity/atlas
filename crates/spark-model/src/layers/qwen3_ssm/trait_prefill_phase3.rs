@@ -105,6 +105,7 @@ impl Qwen3SsmLayer {
             // `Layer::alloc_state` is the NON-pooled fallback — it owns a
             // private FP32 `h_state_bytes` blob, so there is nothing to widen.
             h_prefill_stage: None,
+            ple: None,
         }))
     }
 }

@@ -4,6 +4,21 @@
 
 use super::*;
 
+/// A4 POST_THINK_MIN_REASONING floor width, installed once at scheduler
+/// boot from MODEL.toml `[behavior].min_reasoning_floor_tokens`. Default 16
+/// preserves the historical constant for every model that does not set the
+/// key; 0 disables the floor.
+static MIN_REASONING_FLOOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
+
+/// Install the per-model A4 floor (called from `WatchdogCfg::from_behavior`).
+pub fn set_min_reasoning_floor(v: u32) {
+    MIN_REASONING_FLOOR.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn min_reasoning_floor() -> u32 {
+    MIN_REASONING_FLOOR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Which decode position a [`penalty_params_for`] /
 /// [`crate::scheduler::logit_processors::process_position_logits`] call is
 /// building for. The single discriminant that distinguishes the non-MTP
@@ -156,10 +171,19 @@ pub(super) fn penalty_params_for(
     // on the non-MTP path. INTENDED DELTA: because the builder is now the
     // SSOT for BOTH paths, A4 is ALSO active on the MTP verify path (where
     // it was previously dead — the verify path never ran the inline floor).
-    const A4_MIN_REASONING_TOKENS: u32 = 16;
-    if a.inside_thinking
-        && a.thinking_tokens < A4_MIN_REASONING_TOKENS
-        && a.thinking_budget.unwrap_or(A4_MIN_REASONING_TOKENS) >= A4_MIN_REASONING_TOKENS
+    // Floor width is per-model (MODEL.toml `[behavior].min_reasoning_floor_tokens`,
+    // installed at boot via `set_min_reasoning_floor`): 16 is the historical
+    // constant; 0 disables. A model with card-native brief thinking
+    // (reasoning_effort=low closes its think at ~10 tokens) must not have
+    // `</think>` suppressed — the turn-ending mass reroutes to
+    // <|im_end|>/<|im_start|> and sampled runs EOS inside think (empty
+    // body) or simulate new template turns (measured on qwen4_exp,
+    // 2026-08-26, via ATLAS_LOGIT_DUMP).
+    let floor = min_reasoning_floor();
+    if floor > 0
+        && a.inside_thinking
+        && a.thinking_tokens < floor
+        && a.thinking_budget.unwrap_or(floor) >= floor
         && let Some(end_tok) = a.think_end_token
     {
         logit_bias.push((end_tok, -8.0f32));
@@ -304,6 +328,24 @@ pub fn sample_token(
             })
             .collect()
     };
+    // Raw-logits dump for numerics triage (`ATLAS_DUMP_LOGITS_PATH=/dir`):
+    // appends this step's FP32 logits to a flat binary. The reporting APIs
+    // only expose post-softmax values, which cannot distinguish flat from
+    // mis-scaled from stale; raw rows across consecutive steps can.
+    if let Ok(dir) = std::env::var("ATLAS_DUMP_LOGITS_PATH") {
+        use std::io::Write;
+        let path = std::path::Path::new(&dir).join("logits_stok.bin");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4)
+            };
+            let _ = f.write_all(bytes);
+        }
+    }
     // Suppress EOS tokens on first token by setting to -inf.
     for &id in suppress_ids {
         if (id as usize) < vocab_size {

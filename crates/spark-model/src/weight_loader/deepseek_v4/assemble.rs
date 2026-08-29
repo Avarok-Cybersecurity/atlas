@@ -550,6 +550,10 @@ pub fn assemble_layer(
             hc_mult: config.hc_mult,
             sinkhorn_iters: config.hc_sinkhorn_iters,
             hc_eps: config.hc_eps,
+            // V4 is all-attention, so the attention index IS the model index
+            // and these reproduce the guards they replaced exactly.
+            is_first_model_layer: layer_idx == 0,
+            is_last_model_layer: layer_idx + 1 == config.num_hidden_layers,
         });
     }
 
@@ -617,6 +621,8 @@ fn load_hc_site(
         hc_fn,
         hc_base,
         hc_scale,
+        // DeepSeek-V4 keeps the Sinkhorn mixer; None selects it.
+        lowrank: None,
     })
 }
 

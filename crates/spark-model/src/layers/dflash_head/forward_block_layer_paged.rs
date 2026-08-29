@@ -207,6 +207,20 @@ impl BlockDiffusionDraftHead {
             )?;
         }
 
+        // DFlash2: attention_conv.prepare — dynamic-kernel GEMM on the
+        // post-layernorm hidden, first conv application. The q/k/v GEMMs
+        // below read the convolved buffer; the finish application's dynamic
+        // slice stays in scratch.conv_dyn until post_attn consumes it.
+        // (z-lab decoder layer: prepare sits between input_layernorm and
+        // self_attn, so the convolved hidden feeds Q AND the noise K/V.)
+        let qkv_src = self.conv_prepare(
+            layer,
+            super::dflash2::ConvSite::Attention,
+            self.scratch.norm_buf,
+            ctx,
+            stream,
+        )?;
+
         // Phase G: when self.quant == Fp8Weights, swap each dense_gemm
         // for fp8_gemm_n128_row_scaled against the FP8 mirror weight.
         // Per-row f32 scales (built at load time by quantize_bf16_to_fp8)
@@ -221,6 +235,28 @@ impl BlockDiffusionDraftHead {
                          k_in: u32|
          -> Result<()> {
             if use_fp8 && let Some(fp8) = w_fp8 {
+                // Register-tiled M<=8 FP8 GEMV (rt2 twin): the M64-tile GEMM
+                // below pads 87% of its tile at M=γ=8 (~100 GB/s measured);
+                // rt2-class GEMVs stream 180+ on the same shapes. Drafter-side
+                // numerics are correctness-free under strict-argmax accept.
+                // ATLAS_NO_DFLASH_FP8_RT=1 restores the tile path for A/B.
+                if self.kernels.fp8_gemv_rt2.0 != 0
+                    && g <= 8
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch8_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -253,7 +289,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.q_proj,
             &layer.q_proj_fp8,
-            self.scratch.norm_buf,
+            qkv_src,
             self.scratch.q_buf,
             q_dim,
             h,
@@ -302,7 +338,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.k_proj,
             &layer.k_proj_fp8,
-            self.scratch.norm_buf,
+            qkv_src,
             self.scratch.k_buf,
             kv_dim,
             h,
@@ -347,7 +383,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.v_proj,
             &layer.v_proj_fp8,
-            self.scratch.norm_buf,
+            qkv_src,
             self.scratch.v_buf,
             kv_dim,
             h,
@@ -849,6 +885,28 @@ impl BlockDiffusionDraftHead {
                          k_in: u32|
          -> Result<()> {
             if use_fp8 && let Some(fp8) = w_fp8 {
+                // Register-tiled M<=8 FP8 GEMV (rt2 twin): the M64-tile GEMM
+                // below pads 87% of its tile at M=γ=8 (~100 GB/s measured);
+                // rt2-class GEMVs stream 180+ on the same shapes. Drafter-side
+                // numerics are correctness-free under strict-argmax accept.
+                // ATLAS_NO_DFLASH_FP8_RT=1 restores the tile path for A/B.
+                if self.kernels.fp8_gemv_rt2.0 != 0
+                    && g <= 8
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch8_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -889,6 +947,17 @@ impl BlockDiffusionDraftHead {
             q_dim,
         )?;
 
+        // DFlash2: attention_conv.finish — second application on the o_proj
+        // output, using the dynamic slice computed at prepare (pre_attn).
+        // The residual add consumes the convolved buffer.
+        let attn_res_src = self.conv_finish(
+            layer,
+            super::dflash2::ConvSite::Attention,
+            self.scratch.stream_acc,
+            ctx,
+            stream,
+        )?;
+
         // 3h. First residual add: hidden = residual + attn_output.
         // dflash.py:138  hidden_states = residual + hidden_states
         //   stream_buf (residual = pre-3a noise hidden states)
@@ -898,7 +967,7 @@ impl BlockDiffusionDraftHead {
             gpu,
             self.kernels.residual_add,
             self.scratch.stream_buf,
-            self.scratch.stream_acc,
+            attn_res_src,
             g * h,
             stream,
         )?;
@@ -921,6 +990,16 @@ impl BlockDiffusionDraftHead {
             stream,
         )?;
 
+        // DFlash2: mlp_conv.prepare — overwrites scratch.conv_dyn (the
+        // attention conv's dynamics were consumed by conv_finish above).
+        let mlp_src = self.conv_prepare(
+            layer,
+            super::dflash2::ConvSite::Mlp,
+            self.scratch.norm_buf,
+            ctx,
+            stream,
+        )?;
+
         // 3j. MLP: gate_proj + up_proj + silu_mul + down_proj — γ rows.
         // dflash.py:141  hidden_states = self.mlp(hidden_states)
         //   Qwen3MLP: down_proj(silu(gate_proj(x)) * up_proj(x)).
@@ -930,7 +1009,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.gate_proj,
             &layer.gate_proj_fp8,
-            self.scratch.norm_buf,
+            mlp_src,
             self.scratch.mlp_intermediate,
             inter,
             h,
@@ -938,7 +1017,7 @@ impl BlockDiffusionDraftHead {
         gemm_swap(
             &layer.up_proj,
             &layer.up_proj_fp8,
-            self.scratch.norm_buf,
+            mlp_src,
             self.scratch.mlp_up,
             inter,
             h,
@@ -961,6 +1040,15 @@ impl BlockDiffusionDraftHead {
             inter,
         )?;
 
+        // DFlash2: mlp_conv.finish on the down_proj output.
+        let mlp_res_src = self.conv_finish(
+            layer,
+            super::dflash2::ConvSite::Mlp,
+            self.scratch.stream_acc,
+            ctx,
+            stream,
+        )?;
+
         // 3k. Second residual add: hidden = (residual + attn) + mlp_output.
         // dflash.py:142  hidden_states = residual + hidden_states
         //   stream_buf (= residual + attn_output, the line-139 residual)
@@ -971,7 +1059,7 @@ impl BlockDiffusionDraftHead {
             gpu,
             self.kernels.residual_add,
             self.scratch.stream_buf,
-            self.scratch.stream_acc,
+            mlp_res_src,
             g * h,
             stream,
         )?;

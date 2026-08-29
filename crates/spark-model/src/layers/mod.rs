@@ -5,13 +5,17 @@ pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
 pub mod fp8_calibration;
+mod gemv_tier;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
 pub mod mtp_multi;
 pub mod nemotron_mamba2;
 pub mod nemotron_moe;
+pub mod ngram_embed;
 pub mod ops;
+pub mod ple;
+pub mod qsa;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
@@ -471,3 +475,5 @@ impl FfnComponent {
         }
     }
 }
+
+pub(crate) use gemv_tier::batch8_kernel;

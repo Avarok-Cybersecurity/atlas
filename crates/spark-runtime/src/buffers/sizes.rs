@@ -55,6 +55,19 @@ pub struct BufferSizes {
     pub hc_post: usize,
     /// HC `comb` Sinkhorn matrix: `[M, hc_mult, hc_mult]` F32.
     pub hc_comb: usize,
+    /// Low-rank mHC split-collapse scratch (Qwen3.8-Flash-Next): the staged
+    /// normed vector `[T, hc_mult*hidden]` F32 plus the rank vector
+    /// `[T, hc_lowrank]` F32, for SMALL T only — decode runs the collapse as
+    /// three multi-block launches because `grid=[1]` starves the fused kernel
+    /// (measured 2.0 ms/call, one SM's bandwidth). Sized for 64 tokens; the
+    /// dispatcher falls back to the fused kernel above that.
+    pub hc_lowrank_scratch: usize,
+    /// QSA stage-2 prefill-selection scratch (Qwen3.8-Flash-Next), SHARED
+    /// across the 12 indexer layers (they run serially). Layout, slabbed at
+    /// 2048 selective rows: qk [2048, (n_heads+1)*hd] BF16, q_post
+    /// [2048, n_heads, hd] F32, scores [2048, max_seq/ratio] F32, lists
+    /// [2048, topk] i32. 256 (placeholder) when no indexer.
+    pub qsa_select_scratch: usize,
     /// Token IDs `[M]` u32 for the current pass — stable across the layer loop
     /// so DeepSeek-V4 hash-MoE layers can read `tid2eid[token_id]`. Always
     /// allocated (small); unused by models without hash routing.
@@ -374,12 +387,14 @@ impl BufferSizes {
                     0
                 }),
             gate_logits: if config.num_experts > 0 {
-                m * config.num_experts * bf16
+                // LongCat zero-experts: the router scores (routed + zero)
+                // logits even though only `num_experts` expert FFNs exist.
+                m * (config.num_experts + config.zero_expert_num) * bf16
             } else {
                 256
             },
             gate_logits_f32: if config.num_experts > 0 {
-                m * config.num_experts * 4
+                m * (config.num_experts + config.zero_expert_num) * 4
             } else {
                 256
             },
@@ -466,6 +481,33 @@ impl BufferSizes {
             } else {
                 256
             },
+            hc_lowrank_scratch: if config.hc_mult > 0 && config.hc_lowrank > 0 {
+                // Two exclusive layouts share this region:
+                // - decode split path (T <= 64): normed FP32 [64, hc*H] then
+                //   low FP32 [64, rank];
+                // - prefill GEMM path (T > 64, slabbed at <= 2048 tokens):
+                //   normed BF16 [Ts, hc*H], up_pre BF16 [Ts, hc*H],
+                //   low BF16 [Ts, rank], inj_pre BF16 [Ts, hc].
+                let t = m.min(64);
+                let split = t * (config.hc_mult * h + config.hc_lowrank) * 4;
+                let ts = m.min(2048);
+                let gemm = ts * (2 * config.hc_mult * h + config.hc_lowrank + config.hc_mult) * 2;
+                split.max(gemm)
+            } else {
+                256
+            },
+            qsa_select_scratch: if config.index_topk > 0 && config.index_compress_ratio > 0 {
+                const ROWS: usize = 2048;
+                let qkw = (config.index_n_heads + 1) * config.index_head_dim;
+                let n_blocks = max_seq_len.div_ceil(config.index_compress_ratio);
+                let topk = config.index_topk / config.index_compress_ratio;
+                ROWS * qkw * 2
+                    + ROWS * config.index_n_heads * config.index_head_dim * 4
+                    + ROWS * n_blocks * 4
+                    + ROWS * topk * 4
+            } else {
+                256
+            },
             // Token IDs [M] u32 (stable across the layer loop for hash-MoE).
             token_ids: (m * 4).max(256),
             ffn_act_q8,
@@ -502,6 +544,8 @@ impl BufferSizes {
             + self.scratch
             + self.expert_gate_out
             + self.expert_up_out
+            + self.hc_lowrank_scratch
+            + self.qsa_select_scratch
             + self.expert_down_out
             + self.splitk_workspace
             + self.gdn_fla_scratch

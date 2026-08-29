@@ -57,6 +57,11 @@ pub struct TransformerModel {
     /// to `levers`: what the kernels did, rather than what they do.
     pub(super) stats: crate::layers::ops::ModelStats,
     pub(super) embed_tokens: DenseWeight,
+    /// Fused n-gram input embedding (LongCat family), when the architecture
+    /// has one. `Mutex` because the forward path is `&self` while the row
+    /// cache mutates on lookup; the lock is taken once per embed, which is
+    /// nothing beside a transformer forward.
+    pub(super) ngram_embed: Option<std::sync::Mutex<crate::layers::ngram_embed::NgramEmbedding>>,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,

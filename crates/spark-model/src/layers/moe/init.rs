@@ -133,6 +133,17 @@ impl MoeLayer {
             moe_sorted_gate_up: gpu.kernel("moe_sorted", "moe_sorted_gate_up")?,
             moe_sorted_silu_down: gpu.kernel("moe_sorted", "moe_sorted_silu_down")?,
             moe_grouped_gemm: gpu.kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable")?,
+            moe_grouped_gemm_k32: if std::env::var("ATLAS_MOE_GROUPED_K32").as_deref() == Ok("1") {
+                super::super::try_kernel(gpu, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_k32")
+            } else {
+                KernelHandle(0)
+            },
+            moe_grouped_gemm_m256: if std::env::var("ATLAS_MOE_GROUPED_M256").as_deref() == Ok("1")
+            {
+                super::super::try_kernel(gpu, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_m256")
+            } else {
+                KernelHandle(0)
+            },
             moe_grouped_gemm_t: gpu.kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_t")?,
             moe_grouped_gemm_t_k64: gpu
                 .kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_t_k64")?,
@@ -317,6 +328,25 @@ impl MoeLayer {
             // Hash routing (DeepSeek-V4 hash_moe layers): lazy-loaded so other
             // models start fine. `tid2eid_dev` is the per-layer table (Some
             // only for hash layers).
+            router_logits_n: (config.num_experts + config.zero_expert_num) as u32,
+            moe_topk_softmax_bias_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_topk_softmax_bias",
+            ),
+            moe_topk_softmax_bias_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_topk_softmax_bias_batched",
+            ),
+            moe_zero_expert_add_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_zero_expert_add",
+            ),
+            // 64 KB, unconditional: written by the softmax+bias router even
+            // with zero_expert_num == 0 (always zeros then).
+            zero_accum_dev: gpu.alloc(16384 * 4)?,
             moe_hash_route_k: super::super::try_kernel(gpu, "moe_hash_route", "moe_hash_route"),
             moe_hash_route_batched_k: super::super::try_kernel(
                 gpu,

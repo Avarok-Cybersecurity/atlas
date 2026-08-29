@@ -13,7 +13,7 @@ use crate::weight_map::DenseWeight;
 
 /// Per-layer arena for the MLA loading pipeline. Owned by
 /// `load_one_layer`; phase fns mutate the optional fields as they fill in.
-pub(super) struct MistralLayerCtx<'a> {
+pub(crate) struct MistralLayerCtx<'a> {
     // Immutable references / shared state
     pub store: &'a WeightStore,
     pub config: &'a ModelConfig,
@@ -66,7 +66,7 @@ pub(super) struct MistralLayerCtx<'a> {
 }
 
 impl<'a> MistralLayerCtx<'a> {
-    pub(super) fn new(
+    pub(crate) fn new(
         store: &'a WeightStore,
         config: &'a ModelConfig,
         gpu: &'a dyn GpuBackend,
@@ -115,14 +115,14 @@ impl<'a> MistralLayerCtx<'a> {
         }
     }
 
-    pub(super) fn ap(&self) -> String {
+    pub(crate) fn ap(&self) -> String {
         format!("layers.{}.attention", self.layer_idx)
     }
 }
 
 /// Compute or reuse the shared YaRN inv_freq table (computed once at
 /// layer 0, returned by pointer for every subsequent layer).
-pub(super) fn ensure_yarn_inv_freq(
+pub(crate) fn ensure_yarn_inv_freq(
     cached: &mut DevicePtr,
     config: &ModelConfig,
     rope: usize,

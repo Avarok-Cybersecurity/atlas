@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Serve Qwen3.8-Flash-Next (model_type qwen4_exp) — port tracked in Avarok #753.
+#
+# ⚠ SERVING IS NOT WIRED YET. This currently gets as far as LOADING: the
+# hyper-connection residual, the QSA indexer and the PLE n-gram injection are
+# unimplemented and refuse by name at the forward boundary. Use this to
+# exercise the loader and read the alloc ledger, not to generate text.
+#
+# PRIMARY CHECKPOINT is the Inferact NVFP4 release. Against RadixArk's it has
+# the same architecture and the same per-expert ModelOpt NVFP4 layout, but
+# keeps the PLE n-gram tables in BF16 rather than FP8 — simpler to load (no
+# dequant) and more accurate (on LongCat, BF16 n-gram rows measured 0.0050
+# error against the reference vs FP8's 0.0247). It costs 170 GB on disk
+# against 126 GB, but its RESIDENT footprint is smaller (74.9 vs 78.2 GB)
+# because its MTP experts are quantized.
+#
+#   ./serve_qwen4exp_tui.sh                       # Inferact, port 8889
+#   QWEN4EXP_PATH=/path/to/radixark ./serve_qwen4exp_tui.sh
+#
+# ONE Atlas instance at a time: --gpu-memory-utilization RESERVES its whole
+# fraction up front, so a second server fails its OOM pre-flight.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+SNAP="${QWEN4EXP_PATH:-/tank/hf/hub/models--Inferact--Qwen3.8-Flash-Next-NVFP4/snapshots/129972269565f7f4f664fdf8dd42268d3bbda9fd}"
+if [[ ! -f "$SNAP/config.json" ]]; then
+  echo "Qwen3.8-Flash-Next checkpoint not found at: $SNAP" >&2
+  echo "Override with QWEN4EXP_PATH=/path/to/snapshot" >&2
+  exit 1
+fi
+
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ms/nccl/build/lib"
+# INFO so the namespace audit, the placeholder-norm warning and the alloc
+# ledger are all visible — the whole point of a load-only run.
+export RUST_LOG="${RUST_LOG:-info}"
+
+echo "Qwen3.8-Flash-Next  ->  port ${PORT:-8889}"
+echo "  mHC highway + PLE n-gram LIVE (NFS shard prefetch on: /tank is NFS-mounted)"
+echo "  checkpoint: $SNAP"
+# GPU_UTIL default 0.84, NOT 0.85: at 0.85 the box idles at ~8.8 GB avail and
+# a C=4 warm-restore burst costs ~8 GB of KERNEL-side (UVM) memory -- invisible
+# in process RSS -- which spirals the box into reclaim (load 20-37, earlyoom).
+# Fit floor by context: 16K ctx needs >= 0.84 (pre-KV ~100.4 GB); 4K ctx fits
+# at 0.82 (~12 GB headroom -- both C=4 passes measured flat; prefer it there).
+# Inline ${REASONING_KWARGS:-{json}} appended a stray '}' whenever the var was
+# SET (bash pairs the expansion's closing brace with the JSON's braces), which
+# the server rejects as invalid JSON. Plain assignment sidesteps the parsing.
+if [ -z "${REASONING_KWARGS:-}" ]; then
+  REASONING_KWARGS='{"reasoning_effort":"low"}'
+fi
+
+# Routed-MoE GEMM variants (ATLAS_MOE_GROUPED_K32 / _M256) default OFF —
+# both MEASURED AS NON-WINS on 2026-08-27 and left opt-in for the record.
+# Controlled four-arm sweep at 28K prefill, one box, back-to-back:
+#   baseline 272 | +QSA-TC 286 | +QSA-TC+k32 289 | +QSA-TC+m256 290 tok/s
+# k32 and m256 are +1.0%/+1.4% over the QSA-TC arm, i.e. inside run-to-run
+# noise. nsys confirms m256 genuinely RAN (540 calls, 38.1% of GPU time) and
+# is ~20% SLOWER PER CALL than the base kernel (31.30 vs 26.17 ms avg) — the
+# DRAM-bound microbenchmark that predicted 1.43x does NOT model production.
+# The whole +5.1% comes from the QSA tensor-core scorer, not from MoE.
+export ATLAS_MOE_GROUPED_K32="${ATLAS_MOE_GROUPED_K32:-0}"
+
+exec target/release/spark serve \
+  --model-from-path "$SNAP" \
+  --model-name "${MODEL_NAME:-qwen4exp}" \
+  --kernel-target qwen3.8-flash-next \
+  --bind "${BIND:-127.0.0.1}" \
+  --port "${PORT:-8889}" \
+  --max-seq-len "${MAX_SEQ_LEN:-8192}" \
+  --max-num-seqs "${MAX_NUM_SEQS:-4}" \
+  --max-batch-size "${MAX_BATCH_SIZE:-4}" \
+  --gpu-memory-utilization "${GPU_UTIL:-0.84}" \
+  --fast-load-prefetch-shards \
+  --enable-prefix-caching \
+  --default-chat-template-kwargs "$REASONING_KWARGS" \
+  "$@"

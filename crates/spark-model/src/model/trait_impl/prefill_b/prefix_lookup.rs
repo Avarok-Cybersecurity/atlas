@@ -44,15 +44,17 @@ impl TransformerModel {
             // position — a cache/Marconi skip would leave gaps. Force the
             // full-recompute path (documented perf cost, scoring calls only).
             let reserved = reserved_match.is_some();
-            let mut prefix_match =
-                if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
-                    PrefixMatch::empty()
-                } else if let Some(prefix_match) = reserved_match {
-                    prefix_match
-                } else {
-                    self.prefix_cache
-                        .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
-                };
+            let mut prefix_match = if self.tokens_have_vision_pad(tokens)
+                || seq.collect_prompt_logprobs.is_some()
+                || self.mla_prefill_needs_full_recompute()
+            {
+                PrefixMatch::empty()
+            } else if let Some(prefix_match) = reserved_match {
+                prefix_match
+            } else {
+                self.prefix_cache
+                    .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+            };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert
@@ -203,6 +205,10 @@ impl TransformerModel {
                         || self
                             .ssm_snapshots
                             .session_matches(snap_id, seq.session_hash))
+                    // Aux-carrying models (PLE/QSA) decline aux-less slots —
+                    // e.g. mid-chunk tail captures — rather than restore a
+                    // stale lexical state. See prefill_a.
+                    && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
                 {
                     // Cross-stream ordering: the snapshot we are about to read
                     // was SAVED on the default stream (decode_marconi_checkpoint
@@ -220,6 +226,9 @@ impl TransformerModel {
                         self.gpu.as_ref(),
                         stream,
                     )?;
+                    if let Some(aux) = self.ssm_snapshots.aux(snap_id) {
+                        self.apply_aux_states(seq, &aux, stream)?;
+                    }
                     if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
                         self.ssm_pool.debug_state_checksum(
                             seq.slot_idx,

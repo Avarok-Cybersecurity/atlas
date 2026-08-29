@@ -297,9 +297,8 @@ impl MoeLayer {
                     "prefill non-transposed gate_up fallback (no E8M0 variant wired)",
                 );
                 let (gp, up) = (&self.gate_ptrs, &self.up_ptrs);
-                ops::moe_w4a16_grouped_gemm_ptrtable(
+                self.launch_grouped_gemm(
                     ctx.gpu,
-                    self.moe_grouped_gemm,
                     expert_input,
                     gp.packed_ptrs,
                     gp.scale_ptrs,
@@ -313,9 +312,8 @@ impl MoeLayer {
                     max_m_tiles,
                     stream,
                 )?;
-                ops::moe_w4a16_grouped_gemm_ptrtable(
+                self.launch_grouped_gemm(
                     ctx.gpu,
-                    self.moe_grouped_gemm,
                     expert_input,
                     up.packed_ptrs,
                     up.scale_ptrs,
@@ -494,9 +492,8 @@ impl MoeLayer {
                     crate::weight_map::WeightQuantFormat::Nvfp4,
                     "prefill non-transposed down fallback (no E8M0 variant wired)",
                 );
-                ops::moe_w4a16_grouped_gemm_ptrtable(
+                self.launch_grouped_gemm(
                     ctx.gpu,
-                    self.moe_grouped_gemm,
                     expert_gate_out,
                     self.down_ptrs.packed_ptrs,
                     self.down_ptrs.scale_ptrs,

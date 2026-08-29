@@ -36,15 +36,6 @@ fn lmhead_batched_wide_enabled() -> bool {
 }
 
 impl TransformerModel {
-    pub(super) fn embed(&self, token: u32, output: DevicePtr, stream: u64) -> Result<()> {
-        let h = self.config.hidden_size;
-        let row_bytes = h * 2; // BF16 embedding row
-        let src = self.embed_tokens.weight.offset(token as usize * row_bytes);
-        self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
-        // Scale embeddings (Gemma-4: sqrt(hidden_size))
-        self.scale_embeddings(output, 1, stream)
-    }
-
     /// Scale in-place embeddings by config.embed_scale. The residual stream
     /// is always BF16, so this dispatches `embed_scale::bf16_scale_inplace`.
     pub(super) fn scale_embeddings(

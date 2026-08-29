@@ -439,8 +439,29 @@ pub(crate) fn load_model(
     // MiniMax M2.7 hang on NCCL init today because the actual mismatch
     // only surfaces later inside `build_model`; this check surfaces it
     // up-front.
-    spark_model::preflight::preflight(&store, &config, args.speculative)
-        .context("Checkpoint pre-flight check failed")?;
+    let (kv_dtype, _) = serve_phases::kv_cache::resolve_kv_dtype_str(
+        args.kv_cache_dtype.as_deref(),
+        ptx_set.behavior.default_kv_dtype,
+    );
+    spark_model::preflight::preflight(
+        &store,
+        &config,
+        args.speculative,
+        // The RESOLVED dtype, through the ENGINE'S resolver. An omitted
+        // `--kv-cache-dtype` is not "bf16": it resolves to the MODEL.toml
+        // `[behavior] default_kv_dtype` if the model states one, and only then to
+        // the engine default of fp8. Passed raw, the QSA check saw `None`, called
+        // it safe, and let the bare invocation -- the obvious one -- load a
+        // hundred-plus gigabytes before the decode path refused on the first
+        // request.
+        //
+        // `resolve_kv_dtype_str` and not a local `unwrap_or`: a second copy of
+        // the precedence gets the MODEL.toml layer wrong, and then preflight
+        // computes fp8 for a model that will actually run bf16 and REFUSES a
+        // deployment that would have worked. One resolver, one answer.
+        Some(kv_dtype.as_str()),
+    )
+    .context("Checkpoint pre-flight check failed")?;
 
     // Resolve and log the QuantFormat dispatch decision now so a silent
     // fallback is visible in the server log (and not just in the
@@ -782,6 +803,17 @@ pub(crate) fn load_model(
     } else {
         args.max_batch_size
     };
+    // mHC highway models (#753 item B): multi-seq decode runs the per-seq
+    // highway loop (decode_a2) with per-sequence PLE/QSA state; batched
+    // prefill/mixed steps are serialized scheduler-side. Concurrency is
+    // honored — the earlier clamp-to-1 mitigation is lifted.
+    if scheduler_model.hc_mult() > 0 && max_batch_size > 1 {
+        tracing::info!(
+            "mHC highway model: concurrency {max_batch_size} via the per-seq \
+             highway decode loop (batched highway kernels are the perf \
+             follow-up)"
+        );
+    }
     // Derived ceiling (wave-14a): the decode-metadata layout, logits rows and
     // scratch block-table envelope are all DERIVED from max_batch_size
     // (`spark_runtime::buffers::DecodeMetaLayout`, rows = max(32, bs) —
