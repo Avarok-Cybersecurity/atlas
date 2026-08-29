@@ -1,47 +1,54 @@
 /* =============================================================================
    Atlas design tokens — the single authoritative copy.
+
    Imported by BOTH web properties:
      site/src/app.css   -> atlasinference.io
      blog/src/app.css   -> blog.atlasinference.io
-   Extracted verbatim from site/src/app.css so the two can never drift. Nothing
-   but the :root block belongs here; anything property-specific stays in that
-   property's app.css.
+
+   Values come from the brand reference (etc/site-blog): ground #0F1216 is the
+   only dark background the guidelines allow, the text ramp is anchored on the
+   two brand grays, and the four chevron colours are the mark's own. Nothing
+   here may be duplicated into a property's stylesheet — a second copy is the
+   thing this file exists to prevent.
    ========================================================================== */
 :root {
-  /* canvas + surfaces */
-  --bg: #14111f;          /* canvas */
-  --bg2: #1a1628;         /* deeper — alt sections, insets */
-  --card: #201b30;        /* raised card / receipt stock */
-  --border: #2b2440;      /* hairline */
-  --border-strong: #3a3054;
-  /* ink */
-  --t1: #f2f0fa;          /* primary */
-  --t2: #a9a2c9;          /* secondary */
-  /* --t3 is used at 0.7rem, which is small text: it needs 4.5:1, not the 3:1
-     that would do for large. #6f6a8d managed only 3.27:1 on the card. This
-     still sits clearly below --t2 (6.90:1) so it reads as faint. */
-  --t3: #8a83af;          /* faint — 4.72:1 worst case */
-  /* accent + signals */
-  /* One accent hue, two tokens, because a single violet cannot be optimal both
-     as text on a dark canvas and as a fill under white. --accent is the text
-     value (4.67:1 on the card, AA body); --accent-fill is the button value
-     (6.56:1 for white on it). The old copper managed only 3.89:1 as link text
-     on paper, so this is a small accessibility gain rather than a trade. */
-  --accent: #9271f4;      /* violet — links, labels, anything read as text */
-  --accent-fill: #662af4; /* solid backgrounds that carry white text */
-  --accent-fill-hover: #560dd3; /* deepens on hover, so white gains contrast rather than losing it */
-  --accent-deep: #b39bf7; /* brighter still: emphasis on a dark canvas */
-  --accent-soft: rgba(146,113,244,0.16);
-  --green: #4ade80;       /* verify */
-  --green-soft: rgba(74,222,128,0.14);
-  --amber: #fbbf24;
-  /* Promoted from literals: #f87171 already appeared in .ld-error and friends.
-     Used as TEXT on dark surfaces, and as a fill only with --bg ink. */
+  /* canvas + surfaces — lightness stepped off the ground, hue preserved */
+  --bg: #0F1216;          /* the only dark ground */
+  --bg2: #141821;         /* deeper — alt sections, insets */
+  --card: #191E27;        /* raised card / receipt stock */
+  --card-2: #1F252F;      /* a card on a card */
+  --sunk: #0A0C0F;        /* recessed — terminals, code, filename tabs */
+  /* Hairlines. Solid rather than translucent, because these are used as fills
+     in a few places as well as borders, and a translucent fill over a
+     translucent section composites twice. The values are the reference's
+     rgb(201 204 212 / .11) and / .18 flattened onto the ground. */
+  --border: #24262B;
+  --border-strong: #303338;
+  /* ink — the reference ramp. Contrast on --bg: 15.1 / 11.7 / 5.2. */
+  --t1: #E4E7EC;          /* headings */
+  --t2: #C9CCD4;          /* body */
+  --t3: #82868F;          /* metadata. The tightest token on the page: the
+                             chevron field's amplitude is solved against it. */
+  /* accent + signals
+     One accent hue, three tokens, because a single violet cannot be optimal
+     both as text on a dark canvas and as a fill under white. --accent is the
+     brand violet and the text value; --accent-fill is the button value, deep
+     enough to carry white; --accent-fill-hover deepens further, so white gains
+     contrast on hover rather than losing it. */
+  --accent: #BE9DF8;            /* links, labels, anything read as text */
+  --accent-fill: #662af4;       /* solid backgrounds carrying white text */
+  --accent-fill-hover: #560dd3;
+  --accent-deep: #D7C4FC;       /* brighter still: emphasis on a dark canvas */
+  --accent-soft: rgba(190, 157, 248, 0.16);
+  --green: #12B981;             /* verify */
+  --green-soft: rgba(18, 185, 129, 0.14);
+  --amber: #EFB338;
+  /* Used as TEXT on dark surfaces, and as a fill only with --bg ink. */
   --red: #f87171;
-  --red-soft: rgba(248,113,113,0.12);
-  --grad: linear-gradient(135deg, #9d85ff 0%, #6842f5 100%);
-  --bar: linear-gradient(90deg, #9d85ff, #7c5cff);
-  --vllm: #3a3054;
+  --red-soft: rgba(248, 113, 113, 0.12);
+  --grad: linear-gradient(135deg, #D4C0FB 0%, #8E63F0 100%);
+  --bar: linear-gradient(90deg, #D4C0FB, #BE9DF8);
+  --vllm: #3A4049;              /* the other engine's chart series */
   /* ---- the mark, as the page's grammar --------------------------------
      The logo is three chevrons in four colours. Each colour is given one
      fixed meaning and nothing else may use it: violet = engine, cyan =

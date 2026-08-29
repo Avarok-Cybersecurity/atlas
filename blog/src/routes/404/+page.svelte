@@ -1,4 +1,12 @@
+<!--
+  The PRERENDERED 404 document. adapter-static writes this route to
+  `build/404.html`, which is the file the vhost names in `error_page 404`, so
+  it is what nginx returns for a URL that never reaches the app at all. The
+  runtime counterpart is +error.svelte; they are separate because they are
+  reached by different mechanisms, and the copy is shared through NotFound.
+-->
 <script>
+  import NotFound from '$lib/components/NotFound.svelte';
   import { blog } from '$lib/content.js';
 </script>
 
@@ -7,19 +15,4 @@
   <meta name="robots" content="noindex" />
 </svelte:head>
 
-<div class="shell">
-  <div class="band nf">
-    <div class="mono-label">404</div>
-    <h1>That page is not here.</h1>
-    <p>
-      It may have been renamed, or it may never have existed. The
-      <a href="/">front page</a> lists everything published, and
-      <a href="/rss.xml">the feed</a> has the same set in reverse order.
-    </p>
-  </div>
-</div>
-
-<style>
-  .nf { border-bottom: 0; padding-bottom: 120px; }
-  .nf a { color: var(--accent); }
-</style>
+<NotFound />

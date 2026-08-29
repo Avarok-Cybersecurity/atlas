@@ -251,3 +251,106 @@ means the blog stops updating while every run stays green.
 artifact. `blog/e2e/check-headers.mjs` is the only instrument that observes the
 `add_header` defect, and it also catches a deploy that landed the wrong tree —
 the 404 assertion fails if `404.html` is not in the docroot.
+
+## Wave 5 — the reference is the palette, and the field was invisible
+
+**Correction from the user, and it was right.** The reference in
+`/workspace/etc/site-blog` is authoritative for both the palette and the
+artwork. Two things were wrong:
+
+1. The blog was on `#14111f` — the marketing site's ramp — not the reference's
+   `#0F1216`.
+2. The blog's header and footer used `favicon.svg` plus the word "Atlas" set in
+   the UI font. The reference uses the **real lockup**: the mark, the wordmark
+   outlines including the Avarok signature "A" with its arrow shaft, and the
+   tagline. Confirmed by the user: *"the Atlas 'A' does not have an arrow on the
+   current blog, yet the inputted reference does use it."*
+
+**Decided with the user:** both properties move onto the reference ramp, so
+there is one palette rather than two.
+
+### The palette move
+
+`web-shared/atlas-tokens.css` now holds the reference ramp under the marketing
+site's token names, so nothing downstream had to be renamed. The work that was
+not a hex swap:
+
+| what | count | why it mattered |
+|---|---|---|
+| `rgba(124, 92, 255, x)` → `color-mix(… var(--accent) …)` | 13 | hand-written tints of the *old* violet; they would have been the only violet-tinted things left on the page |
+| `rgba(251, 191, 36, x)` → `--amber` | 17 | same, for the gold |
+| `rgba(58, 48, 84, x)` → `--border-strong` | 6 | card hairlines |
+| `#0d0a16` → `--sunk`, `#ddd8f0`/`#e6e2f5` → `--t2`/`--t1`, `#a78bfa` → `--accent`, `#7ba7d4` → `--ch-cyan`, `#f87171` → `--red`, two gradients | 15 | literals duplicating a token's value |
+
+Verified by grep: **zero** old-palette literals survive in either built
+stylesheet. What remains hardcoded is legitimately not brand — Discord's
+`#5865f2`, and the three macOS traffic-light colours in the terminal mock.
+
+**One bug found on the way.** `.btn-primary:hover` and `.nav-star-btn:hover`
+set `background: var(--accent-deep)` while the rule above them sets
+`color: #fff`. `--accent-deep` is the *light* violet — white on it was already
+about 2:1 before this work, and the reference ramp makes it worse. The token
+file already carries `--accent-fill-hover`, documented as *"deepens on hover,
+so white gains contrast rather than losing it"*, and the hovers now use it.
+
+### The artwork
+
+`web-shared/components/AtlasLockup.svelte` carries the reference `<defs>`
+verbatim — mark, wordmark, tagline — with one substitution: the literal brand
+greys and chevron hues became the tokens holding those same values, so the
+lockup follows the palette instead of pinning a second copy of it. Both
+properties render `kind="defs"` once per document and `<use>` it from the nav
+(`horizontal`) and the footer (`full`). Sizing is by width, per the guidelines'
+minimums, with clear space as CSS margin rather than viewBox padding.
+
+### The finding: the contrast bound had deleted the background
+
+The field was live — `cf-on` was on the canvas, WebGL2 was up under SwiftShader
+— and invisible. Measured, in a text-free gutter against ground `#0F1216`:
+
+```
+brightest gutter pixel (21, 24, 28)     # ground (15, 18, 22)
+                                        # +6/+6/+6, and neutral, not tinted
+```
+
+Six of 255 on every channel equally: at that amplitude the chevron hues round
+to grey in 8-bit. The bound was arithmetically correct and the result was
+useless — the amplitude of the whole field was being set by its rarest
+accident, three depth layers landing on one pixel (2.28 layers of luma).
+
+**The fix is in the shader, not the density.** Two lines clamp accumulated luma
+to one layer's worth. Each hue is already unit-luma, so it is a uniform scale on
+the colour vector: hue is preserved exactly and only overlapping pixels are
+touched.
+
+```glsl
+float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+col /= max(1.0, lum);
+```
+
+The bound drops from 2.28 to 1.00, which buys back 2.28× the amplitude for the
+same guarantee.
+
+| | AA boundary density | shipped | tightest ratio | brightest gutter pixel |
+|---|---|---|---|---|
+| unclamped | 0.4438 | 0.38 | 4.60 | `(21,24,28)` — neutral |
+| **clamped** | **1.0119** | **0.85** | **4.61** | **`(23,25,33)` — violet** |
+
+The gate asserts the clamp line still exists in the shader, so removing it
+cannot leave the check describing a field that no longer exists.
+
+### Two defects the screenshots caught
+
+- **`/posts/<slug>.html` 404'd.** adapter-static writes that file and nginx
+  serves both it and the extensionless URL, but on the `.html` one the client
+  router hands `load` a slug of `"foo.html"`, which matches no post: the page
+  server-rendered correctly and then 404'd on hydration. `cleanSlug` strips it
+  in all three dynamic routes and in the canonical. Two tests, and the control
+  (reverting `cleanSlug` to the identity) takes 20 pass → **18 pass / 2 fail**.
+- **No `+error.svelte`.** SvelteKit's default rendered unstyled, flush to the
+  viewport edge, inside the site's chrome. There is now a shared `NotFound`
+  component behind both the prerendered `404.html` and the runtime error page.
+- **The nav's current-page underline floated** three pixels above the header
+  hairline, because it was offset from a shrink-wrapped link by a hand-measured
+  number. The links are full bar height now and the underline is pinned to
+  `bottom: 0`, so it cannot drift when the bar height or the font size moves.

@@ -56,7 +56,7 @@ img, svg, video { max-width: 100%; }
   display: none; flex-direction: column;
   padding: 0.35rem 1.15rem 1.15rem;
   border-top: 1px solid var(--border);
-  background: rgba(20, 17, 31, 0.98);
+  background: color-mix(in srgb, var(--bg) 98%, transparent);
   max-height: calc(100dvh - 56px); overflow-y: auto;
   animation: drawerin 0.18s ease-out both;
 }
@@ -186,8 +186,7 @@ img, svg, video { max-width: 100%; }
   .hero { padding: 2.25rem 1rem 2.5rem; }
   .nav-inner, .ann-inner, .footer-inner { padding-left: 1rem; padding-right: 1rem; }
   footer { padding: 2.25rem 1rem 1.75rem; }
-  .nav-wordmark { font-size: 1.2rem; }
-  .nav-mark { height: 30px; width: 30px; }
+
 
   .hero-challenge { font-size: 0.86rem; }
   .receipt-body { padding: 1.15rem 1.05rem 1.3rem; }

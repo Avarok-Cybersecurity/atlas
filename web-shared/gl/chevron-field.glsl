@@ -98,8 +98,7 @@ void main(){
   // slightly, so it reads as sitting behind the page.
   float sc = u_scroll * 0.35;
 
-  vec3  col = vec3(0.0);
-  float cov = 0.0;
+  vec3 col = vec3(0.0);
 
   // three depth layers, back to front — mirroring the three chevrons
   for (int i = 0; i < 3; i++){
@@ -125,8 +124,27 @@ void main(){
     hue /= max(dot(hue, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
 
     col += hue * l.x * dim;
-    cov  = max(cov, l.x * dim);
   }
+
+  /* Cap the accumulated luma at ONE layer's worth.
+
+     Three depth layers can, in principle, put a mark on the same pixel at the
+     same instant. Unclamped that triples the luminance the field may add, and
+     since the amplitude has to be safe for the worst pixel rather than the
+     usual one, the whole field then has to be divided by three to stay inside
+     the contrast budget — paying for a rare accident by making the field
+     invisible everywhere else. Measured: at the amplitude that bound allows,
+     the brightest pixel the field produced was 5/255 above the ground.
+
+     Clamping bounds the worst pixel directly instead, so the amplitude is set
+     by what the field normally does. Each hue is already normalised to unit
+     luma, so this is a uniform scale on the colour vector — hue is preserved
+     exactly, and the only pixels it touches are the ones where layers overlap.
+
+     `.contrast-check.mjs` reads this cap. Removing it without changing that
+     file would leave the gate describing a field that no longer exists. */
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col /= max(1.0, lum);
 
   /* Falloff — the whole reason this is safe to put under text.
      The field is strongest at the top of the viewport and is gone

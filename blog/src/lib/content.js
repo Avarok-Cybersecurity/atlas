@@ -6,6 +6,16 @@
  * through markup for the third copy of a URL.
  */
 
+/**
+ * adapter-static writes /posts/foo to `posts/foo.html`, and nginx serves BOTH
+ * that path and the extensionless one. The extensionless form is canonical, but
+ * the `.html` URL is real, shareable, and what someone lands on if they copy a
+ * link out of a directory listing or a crawler's index — and on that URL the
+ * client router hands `load` a slug of "foo.html", which matches no post. So
+ * every route strips it, and the layout canonicalises to the clean form.
+ */
+export const cleanSlug = (s) => s.replace(/\.html$/, '');
+
 export const SITE = 'https://blog.atlasinference.io';
 export const MAIN_SITE = 'https://atlasinference.io';
 export const DOCS_SITE = 'https://docs.atlasinference.io';

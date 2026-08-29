@@ -1,17 +1,20 @@
 <script>
   import '../app.css';
   import { page } from '$app/state';
-  import ChevronField from '$lib/components/ChevronField.svelte';
+  import ChevronField from '$shared/components/ChevronField.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   import Header from '$lib/components/Header.svelte';
   import Footer from '$lib/components/Footer.svelte';
-  import { SITE, blog } from '$lib/content.js';
+  import { SITE, blog, cleanSlug } from '$lib/content.js';
 
   let { children } = $props();
 
   /* adapter-static writes a sub-page to `<name>.html` and nginx resolves the
      extensionless URL onto it, so the canonical is the extensionless form —
      the one a visitor can actually paste. */
-  const canonical = $derived(SITE + (page.url.pathname === '/' ? '/' : page.url.pathname));
+  const canonical = $derived(
+    SITE + (page.url.pathname === '/' ? '/' : cleanSlug(page.url.pathname))
+  );
 </script>
 
 <svelte:head>
@@ -28,6 +31,9 @@
      descendants, and the background would silently start scrolling with the
      content instead of staying put. -->
 <ChevronField />
+
+<!-- The brand vector, defined once and <use>d by every lockup below. -->
+<AtlasLockup kind="defs" />
 
 <a class="skip" href="#main">Skip to content</a>
 <div class="page">

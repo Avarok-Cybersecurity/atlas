@@ -5,6 +5,8 @@
   // section (it reuses dashboard's chart primitives, so it loads after those),
   // mobile.css is the SSOT for every viewport rule and must land last.
   import '../app.css';
+  import ChevronField from '$shared/components/ChevronField.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   import '../styles/news.css';
   import '../styles/dashboard.css';
   import '../styles/chat.css';
@@ -122,4 +124,21 @@
   {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
 
-{@render children()}
+<!-- The ambient chevron field: one fullscreen triangle, one fragment shader,
+     the same code blog.atlasinference.io renders. It paints the page ground
+     itself, so `body`'s background sits behind it rather than beside it.
+
+     It must stay a DIRECT child of the layout root. A `transform`, `filter`,
+     `perspective`, `will-change` or `contain: paint` on any ancestor would
+     make that ancestor the containing block for fixed-position descendants,
+     and the background would start scrolling with the content. -->
+<ChevronField />
+
+<!-- The brand vector, defined once and <use>d by the nav and the footer. -->
+<AtlasLockup kind="defs" />
+
+<!-- Everything else goes above the canvas. Without this wrapper, only the
+     POSITIONED elements would: a fixed canvas at z-index 0 paints above the
+     block-level layer, so `footer` — which sets no position — would render
+     underneath it and vanish. -->
+<div class="page">{@render children()}</div>

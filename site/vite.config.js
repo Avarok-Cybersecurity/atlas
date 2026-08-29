@@ -44,5 +44,10 @@ function atlasGenerators() {
 }
 
 export default defineConfig({
-  plugins: [atlasGenerators(), sveltekit()]
+  plugins: [atlasGenerators(), sveltekit()],
+  server: {
+    // app.css and the field import from web-shared/, outside this app's root.
+    // The build resolves it regardless; the dev server has to be told.
+    fs: { allow: [resolve(import.meta.dirname, '..', 'web-shared')] }
+  }
 });

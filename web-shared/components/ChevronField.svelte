@@ -14,8 +14,8 @@
   Put it once in the root layout, above the page content.
 -->
 <script>
-  import { createChevronField } from '$lib/gl/chevron-field.js';
-  import FRAG from '$lib/gl/chevron-field.glsl?raw';
+  import { createChevronField } from '../gl/chevron-field.js';
+  import FRAG from '../gl/chevron-field.glsl?raw';
 
   let {
     /** 0-1, multiplies the field. The default in chevron-field.js is the

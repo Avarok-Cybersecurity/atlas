@@ -2,6 +2,7 @@
   import { page } from '$app/state';
   import { nav, githubUrl, MAIN_SITE } from '$lib/content.js';
   import GithubIcon from './GithubIcon.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
 
   // A tag page is "current" for its own nav entry; everything under /posts
   // belongs to Latest, so a reader never sees an unlit bar mid-article.
@@ -14,8 +15,7 @@
 <header class="hdr">
   <div class="hdr-in">
     <a class="brand" href="/" aria-label="Atlas blog, home">
-      <img src="/favicon.svg" alt="" width="30" height="30" />
-      <span class="brand-word">Atlas</span>
+      <AtlasLockup kind="horizontal" label="Atlas" />
       <span class="brand-div" aria-hidden="true"></span>
       <span class="brand-sub">Blog</span>
     </a>

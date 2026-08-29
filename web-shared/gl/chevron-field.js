@@ -31,14 +31,19 @@ void main(){
 // so a drifted value shows up as a seam between the canvas and the page rather
 // than as an error. The caller reads them from the cascade and passes them in.
 const DEFAULTS = {
-  /* Contrast-derived, not a taste value, and NOT the 1.0 that FIELD-NOTES.md
-     ships. That figure was solved against ground #0F1216 by sampling 14 frames;
-     this field is painted on #14111f, and the gate here bounds the field
-     ANALYTICALLY — the case where all three depth layers land on one pixel at
-     the sweep's peak, which sampling can miss. Under that bound the tightest
-     token, --t3 #8a83af, is at AA exactly at density 0.5109. 0.45 leaves
-     margin and measures 4.60:1. Raising this fails `.contrast-check.mjs`. */
-  density: 0.45,
+  /* Contrast-derived, not a taste value.
+
+     `.contrast-check.mjs` bounds the field ANALYTICALLY rather than sampling
+     it the way FIELD-NOTES.md does, so there is no worst case left to miss.
+     That bound is only affordable because the shader clamps accumulated luma
+     to one layer's worth — without the clamp, three overlapping layers force
+     the density to 0.44 and the brightest pixel the field can paint measures
+     5/255 above the ground, which is not a background, it is dither.
+
+     With the clamp, --t3 #82868F on ground #0F1216 reaches AA exactly at
+     density 1.0119. 0.85 leaves margin and measures 4.61:1. Raising this
+     fails the check. */
+  density: 0.85,
   maxDpr: 1.5,          // fill cost is quadratic in DPR; 3 -> 1.5 is a 4x saving
 };
 

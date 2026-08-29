@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { cleanSlug } from '$lib/content.js';
 import { posts, bySlug, neighbours } from '$lib/posts.js';
 
 // Declared rather than left to the crawler. The index links every post today,
@@ -7,7 +8,8 @@ import { posts, bySlug, neighbours } from '$lib/posts.js';
 export const entries = () => posts.map((p) => ({ slug: p.slug }));
 
 export function load({ params }) {
-  const post = bySlug(params.slug);
-  if (!post) error(404, `No post named "${params.slug}"`);
-  return { post, ...neighbours(params.slug) };
+  const slug = cleanSlug(params.slug);
+  const post = bySlug(slug);
+  if (!post) error(404, `No post named "${slug}"`);
+  return { post, ...neighbours(slug) };
 }

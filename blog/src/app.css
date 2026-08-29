@@ -28,10 +28,7 @@
   --bg-0: var(--bg);
   --bg-1: var(--bg2);
   --bg-2: var(--card);
-  /* Recessed, for the filename tab above a code block and table headers. The
-     marketing site has no recessed surface, so this is the blog's own value
-     rather than an alias — one step below --bg on the same violet hue. */
-  --bg-sunk: #0d0b17;
+  --bg-sunk: var(--sunk);
 
   --text-1: var(--t1);
   --text-2: var(--t2);
@@ -55,7 +52,10 @@
 
   --prose: 672px;             /* ~70ch at 17.5px */
   --shell: 1080px;            /* the marketing site's container width */
-  --header-h: 62px;           /* the marketing site's nav height */
+  /* 68px, not the marketing bar's 62: the horizontal lockup is sized by width
+     (>= 120px per the guidelines) and carries one chevron gap of clear space as
+     margin, which no shorter bar can hold without cropping into it. */
+  --header-h: 68px;
 
   --dur: 150ms;
   --ease: cubic-bezier(.4, 0, .2, 1);
@@ -114,10 +114,12 @@ a { color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 .hdr-in { height: 100%; display: flex; align-items: center; gap: 22px; max-width: var(--shell); margin: 0 auto; padding: 0 2rem; }
-.brand { display: flex; align-items: center; gap: .55rem; text-decoration: none; color: var(--text-1); flex: none; }
-.brand img { display: block; }
-.brand-word { font-weight: 800; font-size: 1.2rem; letter-spacing: -.02em; }
-.brand-div { width: 1px; height: 19px; background: var(--line-hard); margin: 0 4px 0 8px; }
+/* Gap is 0: the lockup carries its own clear space as margin and nothing may
+   enter it, so the divider sits just outside that margin rather than inside a
+   flex gap. The negative margin-left cancels the clear space against the
+   shell's own padding, so the mark optically aligns with the content below. */
+.brand { display: flex; align-items: center; gap: 0; text-decoration: none; color: var(--text-1); flex: none; margin-left: -15px; }
+.brand-div { width: 1px; height: 19px; background: var(--line-hard); margin-right: 14px; }
 .brand-sub {
   font-family: var(--mono); font-size: 12.5px; font-weight: 500;
   letter-spacing: .11em; text-transform: uppercase; color: var(--text-3);
@@ -125,17 +127,30 @@ a { color: var(--accent); }
 }
 .brand:hover .brand-sub { color: var(--text-2); }
 
-.nav { display: flex; gap: 2px; margin-left: 6px; }
+/* The links are full bar height, so the current-page underline can be pinned
+   to `bottom: 0` and land exactly on the header's hairline. Offsetting a
+   shrink-wrapped link by a hand-measured number instead leaves the underline
+   floating in the gap, and re-breaks every time the bar height or the font
+   size moves. The hover pill is an inset pseudo-element rather than a
+   background on the link, so full height does not mean a full-height slab. */
+.nav { display: flex; align-items: stretch; gap: 2px; margin-left: 6px; align-self: stretch; }
 .nav a {
-  position: relative; padding: 8px 13px; border-radius: 7px;
+  position: relative; isolation: isolate;
+  display: flex; align-items: center; padding: 0 13px;
   font-size: 14.5px; font-weight: 450; color: var(--text-3); text-decoration: none;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease);
 }
-.nav a:hover { color: var(--text-1); background: color-mix(in srgb, var(--t2) 6%, transparent); }
+.nav a::before {
+  content: ''; position: absolute; inset: 15px 0; z-index: -1;
+  border-radius: 7px; background: transparent;
+  transition: background var(--dur) var(--ease);
+}
+.nav a:hover { color: var(--text-1); }
+.nav a:hover::before { background: color-mix(in srgb, var(--t2) 6%, transparent); }
 .nav a[aria-current='page'] { color: var(--text-1); }
 .nav a[aria-current='page']::after {
-  content: ''; position: absolute; left: 13px; right: 13px; bottom: -18px; height: 1.5px;
-  background: var(--accent);
+  content: ''; position: absolute; left: 13px; right: 13px; bottom: 0; height: 2px;
+  background: var(--accent); border-radius: 2px 2px 0 0;
 }
 .hdr-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .btn-ghost {

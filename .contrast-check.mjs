@@ -17,7 +17,7 @@
  *   max added colour = (sum of the three layer dims) x amt_max x unit-luma hue
  *
  * The bound is strictly stronger than the sampled figure, and it is why the
- * shipped density is 0.6 rather than 1.0.
+ * shipped density is 0.38 rather than 1.0.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -29,8 +29,8 @@ const read = (p) => readFileSync(resolve(here, p), 'utf8');
 /* ---------- inputs, each from its single source of truth ---------- */
 
 const tokensCss = read('web-shared/atlas-tokens.css');
-const shader = read('blog/src/lib/gl/chevron-field.glsl');
-const runtime = read('blog/src/lib/gl/chevron-field.js');
+const shader = read('web-shared/gl/chevron-field.glsl');
+const runtime = read('web-shared/gl/chevron-field.js');
 
 const token = (name) => {
   const m = tokensCss.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
@@ -50,7 +50,7 @@ const density = (() => {
    longer describes. */
 const SHADER_ANCHORS = [
   ['amplitude',  'float amt = u_density * mask * (0.030 + sweep * 0.020);'],
-  ['layer dims', 'float dim   = 0.52 + fi * 0.24;'],
+  ['luma cap',   'col /= max(1.0, lum);'],
   ['layer count','for (int i = 0; i < 3; i++)'],
   ['unit luma',  'hue /= max(dot(hue, vec3(0.2126, 0.7152, 0.0722)), 1e-3);'],
 ];
@@ -63,8 +63,11 @@ for (const [what, anchor] of SHADER_ANCHORS) {
   }
 }
 
-const AMT_MAX = 0.030 + 0.020;          // mask = 1 and the sweep at its peak
-const DIM_SUM = 0.52 + 0.76 + 1.00;     // all three layers covering one pixel
+const AMT_MAX = 0.030 + 0.020;   // mask = 1 and the sweep at its peak
+// The shader clamps accumulated luma to one layer's worth, so this is the
+// ceiling on the colour vector's luma no matter how many layers overlap — see
+// the note above `col /= max(1.0, lum)` in the shader.
+const LUMA_CAP = 1.0;
 
 /* ---------- colour maths ---------- */
 
@@ -99,7 +102,7 @@ const texts = {
 /* Worst ground the field can produce, per hue. */
 const worstGround = {};
 for (const [name, h] of Object.entries(hues)) {
-  const add = unitLuma(h).map((c) => c * DIM_SUM * AMT_MAX * density);
+  const add = unitLuma(h).map((c) => c * LUMA_CAP * AMT_MAX * density);
   worstGround[name] = ground.map((c, i) => Math.min(1, c + add[i]));
 }
 
@@ -110,7 +113,7 @@ let worstOverall = Infinity;
 let failed = 0;
 
 console.log(`ground ${token('bg')}   density ${density}   ` +
-            `max added value = ${(DIM_SUM * AMT_MAX * density).toFixed(4)} x unit-luma hue`);
+            `max added value = ${(LUMA_CAP * AMT_MAX * density).toFixed(4)} x unit-luma hue`);
 console.log('');
 const head = ['text token', 'bare ground', ...Object.keys(hues)];
 const rows = [];
@@ -132,7 +135,7 @@ console.log('');
 
 if (failed) {
   console.error(`FAIL: ${failed} token(s) fall below AA ${AA}:1 under the worst ground the field can paint.`);
-  console.error('      Lower `density` in blog/src/lib/gl/chevron-field.js, or darken the token.');
+  console.error('      Lower `density` in web-shared/gl/chevron-field.js, or darken the token.');
   process.exit(1);
 }
 console.log(`PASS: every token clears AA ${AA}:1; tightest is ${worstOverall.toFixed(2)}:1.`);

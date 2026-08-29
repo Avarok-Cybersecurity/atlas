@@ -122,3 +122,33 @@ test('every shipped post satisfies the schema', async () => {
     expect(src, `${f} must export meta from a module script`).toMatch(/<script module>[\s\S]*export const meta\s*=/);
   }
 });
+
+/* --- the .html slug ------------------------------------------------------- */
+
+test('cleanSlug strips the extension adapter-static writes, and nothing else', async () => {
+  const { cleanSlug } = await import('./content.js');
+  // The failure this prevents: nginx serves BOTH /posts/foo and /posts/foo.html
+  // from the same file, and on the second the client router hands `load` a slug
+  // of "foo.html" — which matches no post, so a real, shareable URL 404s after
+  // rendering correctly on the server.
+  expect(cleanSlug('what-the-background-costs.html')).toBe('what-the-background-costs');
+  expect(cleanSlug('/posts/what-the-background-costs.html')).toBe('/posts/what-the-background-costs');
+  // Not a blanket strip: only a trailing .html, and only at the end.
+  expect(cleanSlug('what-the-background-costs')).toBe('what-the-background-costs');
+  expect(cleanSlug('html')).toBe('html');
+  expect(cleanSlug('a.html.b')).toBe('a.html.b');
+  expect(cleanSlug('/')).toBe('/');
+});
+
+test('every shipped post resolves from both the clean and the .html URL', async () => {
+  const { cleanSlug } = await import('./content.js');
+  const { Glob } = await import('bun');
+  const slugs = [...new Glob('src/lib/posts/*.svelte').scanSync('.')].map((f) =>
+    f.slice(f.lastIndexOf('/') + 1, -'.svelte'.length)
+  );
+  expect(slugs.length).toBeGreaterThan(0);
+  for (const s of slugs) {
+    expect(cleanSlug(s)).toBe(s);
+    expect(cleanSlug(`${s}.html`)).toBe(s);
+  }
+});
