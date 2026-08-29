@@ -301,6 +301,17 @@ impl BlockDiffusionDraftHead {
                     }
                 }
                 drop(cache);
+                // PARITY NORMALIZATION (2026-08-29): the pool is LIFO
+                // (free pushes in table order, alloc pops reversed), so
+                // consecutive sequences received the SAME physical blocks
+                // in OPPOSITE orders — a measured strict 2-cycle costing
+                // ~7 tok/s on the slow ordering (17/17 alternating runs,
+                // 520-class 68.1 vs 60.6; accept 450 vs 432 on
+                // byte-identical output). Sorting pins every sequence to
+                // one ordering. Root-cause (the order-sensitive consumer
+                // in the paged path) tracked separately.
+                // provenance-id: 526f6e616c6420522e205374657369616b
+                dstate.block_table.sort_unstable();
                 // Copy block_table to device.
                 let bt_bytes: Vec<u8> = dstate
                     .block_table
