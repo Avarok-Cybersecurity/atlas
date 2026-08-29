@@ -69,6 +69,17 @@ impl RadixTree {
             snapshot_index: Mutex::new(SsmSnapshotIndex::new()),
         }
     }
+
+    /// Explicit-arm constructor so BOTH sides of the partial-tail gate stay
+    /// deterministically testable (the default constructor reads the
+    /// `ATLAS_PREFIX_PARTIAL_TAIL` env, which is process-global and therefore
+    /// useless inside a test binary).
+    pub fn with_partial_tail_sharing(on: bool) -> Self {
+        Self {
+            inner: Mutex::new(RadixTreeInner::with_partial_tail_sharing(on)),
+            snapshot_index: Mutex::new(SsmSnapshotIndex::new()),
+        }
+    }
 }
 
 impl PrefixCache for RadixTree {

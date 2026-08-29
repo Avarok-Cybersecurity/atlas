@@ -110,18 +110,48 @@ fn test_intermediate_snapshot_survives_tree_eviction() {
 }
 
 // ── Partial suffix tests ──
+//
+// The sub-block arm is DEFAULT OFF: a matched partial block becomes the
+// requester's writable TAIL while another owner still maps it, and there is
+// no copy-on-write in the paged KV manager. Measured 2026-08-21: two live
+// sequences sharing a partial tail derailed mid-token the moment their
+// streams desynced (batched DFlash verify at C=4 went 0/4, three sequences
+// emitting identical wrong text — all reading the same torn block). The
+// legacy arm stays testable through `with_partial_tail_sharing(true)`.
 
+/// ★ The regression test for the torn-tail bug: with the default tree, a
+/// prompt whose tail does not fill a block must match ONLY its full blocks —
+/// the partial block stays exclusively the donor's, because the requester
+/// would otherwise write into it.
 #[test]
-fn test_partial_suffix_insert_and_lookup() {
+fn a_partial_tail_block_is_never_handed_to_a_second_writer() {
     let tree = RadixTree::new();
     // 20 tokens = 1 full block (16) + 4 partial
     let tokens: Vec<u32> = (0..20).collect();
-    let block_table = vec![10, 20]; // block for full + block for partial
+    tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
 
-    tree.insert(&tokens, &block_table, &[], 16, 0, 0);
     let m = tree.lookup(&tokens, 16, 0, 0);
+    assert_eq!(
+        m.matched_tokens, 16,
+        "the 4-token tail must NOT match: block 20 is the donor's live tail"
+    );
+    assert_eq!(
+        m.matched_blocks,
+        vec![10],
+        "block 20 handed out here becomes a second writer's tail — the torn-block bug"
+    );
+    tree.release(&tokens[..16], 16, 0);
+}
 
-    // Should match all 20 tokens (16 full + 4 partial)
+#[test]
+fn the_legacy_partial_arm_still_matches_when_opted_in() {
+    // The A/B arm (`ATLAS_PREFIX_PARTIAL_TAIL=1` in production): full match
+    // including the partial tail — the pre-fix behaviour, kept measurable.
+    let tree = RadixTree::with_partial_tail_sharing(true);
+    let tokens: Vec<u32> = (0..20).collect();
+    tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
+
+    let m = tree.lookup(&tokens, 16, 0, 0);
     assert_eq!(m.matched_tokens, 20);
     assert_eq!(m.matched_blocks, vec![10, 20]);
     tree.release(&tokens, 16, 0);
@@ -129,7 +159,9 @@ fn test_partial_suffix_insert_and_lookup() {
 
 #[test]
 fn test_partial_suffix_no_match_different_suffix() {
-    let tree = RadixTree::new();
+    // Opted IN, a different suffix must still refuse the partial block —
+    // this pins the content check inside the legacy arm itself.
+    let tree = RadixTree::with_partial_tail_sharing(true);
     // Insert 20 tokens
     let tokens_a: Vec<u32> = (0..20).collect();
     tree.insert(&tokens_a, &[10, 20], &[], 16, 0, 0);
@@ -207,7 +239,9 @@ fn test_partial_suffix_cleared_when_extended() {
 
 #[test]
 fn test_partial_suffix_multi_block_prefix() {
-    let tree = RadixTree::new();
+    // Legacy-arm pinning: the partial-tail match is default-OFF (torn-tail
+    // bug); these keep the opted-in arm's internals honest.
+    let tree = RadixTree::with_partial_tail_sharing(true);
     // 396 tokens = 24 full blocks + 12 partial
     let tokens: Vec<u32> = (0..396).collect();
     let block_table: Vec<u32> = (0..25).collect();
@@ -223,7 +257,9 @@ fn test_partial_suffix_multi_block_prefix() {
 
 #[test]
 fn test_partial_suffix_prefix_match_shorter_lookup() {
-    let tree = RadixTree::new();
+    // Legacy-arm pinning: the partial-tail match is default-OFF (torn-tail
+    // bug); these keep the opted-in arm's internals honest.
+    let tree = RadixTree::with_partial_tail_sharing(true);
     // Insert 31 tokens (1 full block + 15 partial) — simulates prompt+generation
     let tokens_31: Vec<u32> = (0..31).collect();
     tree.insert(&tokens_31, &[10, 20], &[], 16, 0, 0);
@@ -240,7 +276,9 @@ fn test_partial_suffix_prefix_match_shorter_lookup() {
 
 #[test]
 fn test_sub_block_match_via_child_key_prefix() {
-    let tree = RadixTree::new();
+    // Legacy-arm pinning: the partial-tail match is default-OFF (torn-tail
+    // bug); these keep the opted-in arm's internals honest.
+    let tree = RadixTree::with_partial_tail_sharing(true);
     // Insert 35 tokens (2 full blocks + 3 partial) — prompt + generation
     let tokens_35: Vec<u32> = (0..35).collect();
     tree.insert(&tokens_35, &[10, 20, 30], &[], 16, 0, 0);
