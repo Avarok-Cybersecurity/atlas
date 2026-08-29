@@ -181,6 +181,12 @@ pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
         name: "tests",
         declared_path: Some("lora_tests.rs"),
     },
+    TestOnlyRustModule {
+        path: "crates/atlas-plugin/src/benchmarks/concurrency_tests.rs",
+        parent: "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        name: "concurrency_tests",
+        declared_path: Some("concurrency_tests.rs"),
+    },
 ];
 
 fn is_test_only_rust_module(path: &str) -> bool {
@@ -227,6 +233,15 @@ const fn other_driver(prefix: &'static str, mine: &'static str) -> Exclusion {
     }
 }
 
+/// The concurrency benchmark's two production files are flat files rather
+/// than a driver directory. Name both exactly: a directory-shaped prefix such
+/// as `benchmarks/concurrency` matches neither file, while excluding the whole
+/// `benchmarks` directory would also hide shared HTTP and statistics code that
+/// can change several instruments.
+const fn concurrency_driver(prefix: &'static str, rationale: &'static str) -> Exclusion {
+    other_driver(prefix, rationale)
+}
+
 const TTFT_EXCLUDES: &[Exclusion] = &[
     GATE_MACHINERY,
     other_driver(
@@ -244,6 +259,14 @@ const TTFT_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/ssm_poison",
         "the SSM poison driver cannot change what a first-token latency probe measures",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change what a first-token latency probe measures",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change what a first-token latency probe measures",
     ),
 ];
 
@@ -265,6 +288,14 @@ const BFCL_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/ssm_poison",
         "the SSM poison driver cannot change a tool-calling accuracy score",
     ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change a tool-calling accuracy score",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change a tool-calling accuracy score",
+    ),
 ];
 
 const AGENTIC_EXCLUDES: &[Exclusion] = &[
@@ -284,6 +315,14 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/ssm_poison",
         "the SSM poison driver cannot change whether the agent's webserver task succeeds",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change whether the agent's webserver task succeeds",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change whether the agent's webserver task succeeds",
     ),
 ];
 
@@ -313,6 +352,14 @@ const SSM_POISON_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/contamination",
         "the contamination driver cannot change whether an identical replay returns identical bytes",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change whether an identical replay returns identical bytes",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change whether an identical replay returns identical bytes",
     ),
 ];
 
@@ -376,6 +423,14 @@ const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/ssm_poison",
         "the SSM poison driver cannot change the server's single-user decode rate",
     ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change the server's single-user decode rate",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change the server's single-user decode rate",
+    ),
 ];
 
 /// What the cross-contamination candidate ignores: gate bookkeeping and the
@@ -395,6 +450,14 @@ const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/agentic",
         "the agentic driver cannot change whether one request's state leaks into another's output",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change whether one request's state leaks into another",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change whether one request's state leaks into another",
     ),
 ];
 
@@ -420,6 +483,14 @@ const VISION_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/contamination",
         "the contamination driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change image preprocessing or encoder tokens",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change image preprocessing or encoder tokens",
     ),
 ];
 
