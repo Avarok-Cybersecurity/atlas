@@ -525,11 +525,21 @@ pub(crate) fn load_model(
         max_batch_tokens,
         spec_tokens: _spec_tokens,
     } = serve_phases::resolve_prefill_budget(&args, ssm_prefill_chunk);
-    if args.dflash && args.enable_prefix_caching {
-        tracing::warn!(
-            "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
-        );
-    }
+    // 2026-08-21: the community-reported "prefix caching × DFlash wrong
+    // outputs on multi-turn cache hits (SM12.x)" warning that used to print
+    // here is RESOLVED and was never a cache or hardware defect. The carrier
+    // was `k4_apply_verdict` rewinding by `drafts.len()` instead of the
+    // forward's row count (PR #699): a K=4 verify dispatched onto a γ-draft
+    // DFlash sequence emitted its accepted tokens and then erased them from
+    // the sequence's history. Cache hits merely shifted the mtp_gate's lane
+    // flips into that collision more often, which is why it presented as a
+    // cache regression. Verified on the fix: pre-fix failures were
+    // byte-identical cache on/off; post-fix, cache ON runs cold + two hits
+    // byte-identical at C=1, four concurrent shared-prefix requests complete
+    // coherently (accept 36% -> 79%), and video-fidelity passes 1/1, 2/2,
+    // 4/4. The warning is removed rather than kept: a standing accusation
+    // against a feature agentic serves depend on steers operators away from
+    // it for no remaining reason.
     // 2026-06-18: the previously-documented warm-Marconi-restore × MTP
     // corruption on hybrid SSM models is RESOLVED. Verified by a greedy
     // ground-truth A/B at batch=1 (the level MTP runs at — MTP is gated to
