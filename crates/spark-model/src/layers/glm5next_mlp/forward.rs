@@ -170,6 +170,10 @@ pub struct Glm5NextMlpWorkspace {
     expert_out: DevicePtr,
     /// `[rows, hidden]` BF16 shared-expert output.
     shared_out: DevicePtr,
+    /// `[rows * top_k]` I32 union expert ids, `-1` = entry unused. Row-batched MoE only.
+    u_eid: DevicePtr,
+    /// `[rows * top_k, rows]` I32 slot per union entry per row, `-1` = row absent.
+    u_slot: DevicePtr,
     max_inter: usize,
     /// Widest verify this scratch can serve. `1` on the serial decode path.
     max_rows: usize,
@@ -189,7 +193,11 @@ impl Glm5NextMlpWorkspace {
         // guard for it.
         // The dense/shared arm is now `[rows, inter]`; the grouped MoE arm is still one row's
         // `top_k` slots at a time. Both share these buffers, so take the wider.
-        let act_elems = (rows * max_inter).max(cfg.top_k * cfg.moe_intermediate).max(1);
+        // The row-batched MoE arm computes every (row, slot) pair in ONE launch, so its
+        // activations are `[rows, top_k, moe_intermediate]` — wider than either of the above.
+        let act_elems = (rows * max_inter)
+            .max(rows * cfg.top_k * cfg.moe_intermediate)
+            .max(1);
         Ok(Self {
             a_gate: gpu.alloc(act_elems * 2)?,
             a_up: gpu.alloc(act_elems * 2)?,
@@ -199,6 +207,8 @@ impl Glm5NextMlpWorkspace {
             wts: gpu.alloc(rows * cfg.top_k * 4)?,
             expert_out: gpu.alloc(rows * cfg.top_k * cfg.hidden * 2)?,
             shared_out: gpu.alloc(rows * cfg.hidden * 2)?,
+            u_eid: gpu.alloc(rows * cfg.top_k * 4)?,
+            u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
             max_inter,
             max_rows: rows,
         })
@@ -318,6 +328,82 @@ fn w4a16_gemv_moe(
         .launch(stream)
 }
 
+/// `C[rows, top_k, N]` — the UNION of the rows' selected experts, each expert swept ONCE.
+///
+/// Bit-identical per (row, slot) to [`w4a16_gemv_moe`]; see the kernel header. `u_eid` /
+/// `u_slot` come from `glm5next_moe_row_union` and stay on device, so this is capturable.
+///
+/// 🪤 grid.y is `rows * top_k` — the UNION extent, not `top_k`. Entries the routing did not
+/// fill retire immediately on `u_eid < 0`.
+#[allow(clippy::too_many_arguments)]
+fn w4a16_gemv_moe_batchm(
+    gpu: &dyn GpuBackend,
+    k: KernelHandle,
+    a: DevicePtr,
+    t: &super::weights::Glm5NextExpertPtrTable,
+    c: DevicePtr,
+    u_eid: DevicePtr,
+    u_slot: DevicePtr,
+    n: usize,
+    kk: usize,
+    rows: usize,
+    top_k: usize,
+    num_experts: usize,
+    a_row_stride: usize,
+    a_slot_stride: usize,
+    c_row_stride: usize,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, k)
+        // 🪤 COUPLED to the kernel's `N_PER_BLOCK_SW` = 8.
+        .grid([
+            crate::layers::ops::w4a16_gemv_sw_grid_x(n as u32),
+            (rows * top_k) as u32,
+            1,
+        ])
+        .block([256, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(t.packed_ptrs)
+        .arg_ptr(t.scale_ptrs)
+        .arg_ptr(t.scale2_vals)
+        .arg_ptr(c)
+        .arg_ptr(u_eid)
+        .arg_ptr(u_slot)
+        .arg_u32(n as u32)
+        .arg_u32(kk as u32)
+        .arg_u32(num_experts as u32)
+        .arg_u32(a_row_stride as u32)
+        .arg_u32(a_slot_stride as u32)
+        .arg_u32(c_row_stride as u32)
+        .launch(stream)
+}
+
+/// Kill switch for the row-batched routed path: `ATLAS_NO_GLM_MOE_ROW_BATCH=1` restores the
+/// one-launch-per-row grouped dispatch. Read once — this sits on the per-layer decode path.
+fn row_batch_disabled() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("ATLAS_NO_GLM_MOE_ROW_BATCH").as_deref() == Ok("1"))
+}
+
+/// Say once PER ROW COUNT whether a verify shares its expert sweeps across its rows.
+///
+/// 🪤 A plain `Once` here is a trap: the first MoE forward of a run is the prefill/K=1 step at
+/// `rows = 1`, which can never batch, so a single announcement reports "per-row" for the whole
+/// process and the batched path looks like it never engaged. Latch one bit per row count.
+fn announce_row_batch(batched: bool, rows: usize) {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static SEEN: AtomicU16 = AtomicU16::new(0);
+    let bit = 1u16 << rows.min(15);
+    if SEEN.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+        return;
+    }
+    if batched {
+        tracing::info!("GLM MoE: row-batched expert union ({rows} rows, one sweep each)");
+    } else {
+        tracing::info!("GLM MoE: per-row expert sweeps ({rows} rows)");
+    }
+}
+
 /// Kill switch for the grouped path: `ATLAS_GLM_MOE_HOST_DISPATCH=1` restores the
 /// read-ids-to-host expert loop. Read once — this sits on the per-layer decode path.
 fn host_dispatch_forced() -> bool {
@@ -352,15 +438,20 @@ fn announce_dispatch(grouped: bool) {
 #[allow(clippy::too_many_arguments)]
 /// Routed MoE over `rows` rows.
 ///
-/// 🔴 The routed experts are the one span that genuinely does NOT amortize over a verify's
-/// rows. Measured on the live routing trace (42 series x 406 steps), the union of selected
-/// experts over K consecutive tokens is 8.00 / 13.74 / 18.76 / 23.35 at K = 1..4 — so their
-/// weight traffic scales with K however the loop is written, and they stay one row at a time.
-/// (Deduplicating the union would recover the difference between 8K and that curve; it needs a
-/// device-side sort the dispatch kernel does not have yet.)
+/// 🔴 The routed experts amortize PARTIALLY over a verify's rows. Measured on the live routing
+/// trace (42 series x 406 steps), the union of selected experts over K consecutive tokens is
+/// 8.00 / 13.74 / 18.76 / 23.35 at K = 1..4, so their weight traffic grows with K however the
+/// loop is written — but it grows along that curve, not along 8K.
 ///
-/// The SHARED expert is a different animal: it is the same weights for every row, so it runs
-/// once over all of them.
+/// 🔴 RETRACTED (2026-08-29): this comment used to say the routed experts "stay one row at a
+/// time" and that deduplicating the union "needs a device-side sort the dispatch kernel does
+/// not have yet". Both are wrong. `top_k * rows <= 64` ids resolve in ONE block by pairwise
+/// scan — no sort — and `w4a16_gemv_sw_moe_batchm_mR` then sweeps each union expert once.
+/// Measured on t69, K=3, six probes byte-identical either way: open512 20.25 -> 22.12 tok/s
+/// (+9.2%), a 125.4 -> 114.8 ms step. At K=2 (the serving default) 18.91 -> 19.75.
+///
+/// The SHARED expert is a different animal again: it is the same weights for every row, so it
+/// runs once over all of them regardless.
 #[allow(clippy::too_many_arguments)]
 pub fn forward_moe(
     gpu: &dyn GpuBackend,
@@ -389,6 +480,21 @@ pub fn forward_moe(
     }
 
     use crate::layers::glm5next_layer::profile;
+
+    // 🔴 The routed experts DO amortize over a verify's rows — just not fully. The union of
+    // the selected experts over K consecutive tokens is 8.00 / 13.74 / 18.76 / 23.35 at
+    // K = 1..4 (live routing trace, 42 series x 406 steps), so K rows sweep that many experts
+    // instead of 8K. The per-row path pays 8K; this one pays the union.
+    // 🪤 The route trace reads `ids` back per row, which the batched path never does — leave
+    // it on the per-row arm rather than reconstructing the trace from the union table.
+    let batched = rows >= 2
+        && rows <= 4
+        && !host_dispatch_forced()
+        && !row_batch_disabled()
+        && !profile::trace_on()
+        && k.moe_row_union.0 != 0
+        && k.w4a16_gemv_sw_moe_batchm[rows - 2].0 != 0;
+    announce_row_batch(batched, rows);
 
     for r in 0..rows {
         let xr = x.offset(r * cfg.hidden * 2);
@@ -434,6 +540,10 @@ pub fn forward_moe(
         // all-reduced sum; leaving the previous token's expert output there is a wrong answer
         // that only appears at EP > 1 and only for tokens whose routing moved.
         gpu.memset_async(expert_out_r, 0, cfg.top_k * cfg.hidden * 2, stream)?;
+
+        if batched {
+            continue; // the experts run once for ALL rows, after this loop
+        }
 
         let grouped = !host_dispatch_forced() && k.w4a16_gemv_sw_moe.0 != 0;
         announce_dispatch(grouped);
@@ -609,6 +719,53 @@ pub fn forward_moe(
             profile::end(profile::MOE_EXPERTS, t, gpu, stream);
         }
 
+    }
+
+    if batched {
+        let t = profile::start();
+        let mi = cfg.moe_intermediate;
+        // The union table: one block, one thread per (row, slot) id. Stays on device.
+        KernelLaunch::new(gpu, k.moe_row_union)
+            .grid([1, 1, 1])
+            .block([(rows * cfg.top_k) as u32, 1, 1])
+            .arg_ptr(ws.ids)
+            .arg_ptr(ws.u_eid)
+            .arg_ptr(ws.u_slot)
+            .arg_u32(rows as u32)
+            .arg_u32(cfg.top_k as u32)
+            .launch(stream)?;
+
+        let kb = k.w4a16_gemv_sw_moe_batchm[rows - 2];
+        // gate and up: a row's slots all read the SAME x, so the slot stride is 0.
+        w4a16_gemv_moe_batchm(
+            gpu, kb, x, &w.ptrs.gate, ws.a_gate, ws.u_eid, ws.u_slot,
+            mi, cfg.hidden, rows, cfg.top_k, cfg.num_experts,
+            cfg.hidden, 0, cfg.top_k * mi, stream,
+        )?;
+        w4a16_gemv_moe_batchm(
+            gpu, kb, x, &w.ptrs.up, ws.a_up, ws.u_eid, ws.u_slot,
+            mi, cfg.hidden, rows, cfg.top_k, cfg.num_experts,
+            cfg.hidden, 0, cfg.top_k * mi, stream,
+        )?;
+        // Elementwise over every (row, slot) at once. Slots this rank does not own activate
+        // uninitialised rows; the down projection skips them, so those rows are never read.
+        swiglu(
+            gpu,
+            k.swiglu,
+            ws.a_gate,
+            ws.a_up,
+            ws.a_act,
+            rows * cfg.top_k * mi,
+            cfg.swiglu_limit,
+            stream,
+        )?;
+        // down: slot-major activations, so the slot stride is one expert's width.
+        w4a16_gemv_moe_batchm(
+            gpu, kb, ws.a_act, &w.ptrs.down, ws.expert_out, ws.u_eid, ws.u_slot,
+            cfg.hidden, mi, rows, cfg.top_k, cfg.num_experts,
+            cfg.top_k * mi, mi, cfg.top_k * cfg.hidden, stream,
+        )?;
+        profile::end(profile::MOE_EXPERTS, t, gpu, stream);
     }
 
     // ── shared expert: BF16, TP-sharded, NOT routed-scaled ──

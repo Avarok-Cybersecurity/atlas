@@ -128,6 +128,16 @@ pub struct Glm5NextMlpKernels {
     /// 🪤 Grid is `(ceil(N/8), top_k, 1)`. `try_kernel` — a target without it falls back to
     /// the host-dispatch loop.
     pub w4a16_gemv_sw_moe: KernelHandle,
+    /// Row-batched sibling of `w4a16_gemv_sw_moe`, indexed `[rows - 2]` for rows 2..=4: the
+    /// UNION of the selected experts over a verify's rows, each swept ONCE. An expert two
+    /// rows both picked costs one weight read here and two in the per-row path — 14% of the
+    /// routed traffic at K=2, 22% at K=3 (measured union 8.00/13.74/18.76/23.35 at K=1..4).
+    ///
+    /// 🪤 grid.y is the UNION entry, not the slot, and its extent is `rows * top_k`; the
+    /// entries the routing did not fill retire on `u_eid < 0`. Needs [`Self::moe_row_union`].
+    pub w4a16_gemv_sw_moe_batchm: [KernelHandle; 3],
+    /// Builds the union table the batched kernel indexes. One block, `rows * top_k` threads.
+    pub moe_row_union: KernelHandle,
     /// 🪤 **Clamped** SwiGLU, asymmetric. Not `moe_silu_mul`.
     pub swiglu: KernelHandle,
     pub router: KernelHandle,
@@ -153,6 +163,16 @@ impl Glm5NextMlpKernels {
                 gpu,
                 W4A16_GEMV_MODULE,
                 "w4a16_gemv_sw_moe",
+            ),
+            w4a16_gemv_sw_moe_batchm: [
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m2"),
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m3"),
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m4"),
+            ],
+            moe_row_union: crate::layers::try_kernel(
+                gpu,
+                W4A16_GEMV_MODULE,
+                "glm5next_moe_row_union",
             ),
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,
             router: gpu.kernel(FFN_MODULE, "glm5next_router_topk")?,
