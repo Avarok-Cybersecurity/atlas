@@ -12,7 +12,7 @@
 // SvelteKit's `$lib` alias, which vite supplies during a build and bun does not.
 
 import { test, expect } from 'bun:test';
-import { preferredAddress, linkWarns, isStale } from '$lib/agent/fleet.svelte.js';
+import { preferredAddress, linkWarns, isStale, FleetSession } from '$lib/agent/fleet.svelte.js';
 
 const addr = (cls, speedMbps = null, iface = cls) => ({ iface, addr: '10.0.0.1', class: cls, speedMbps });
 
@@ -65,4 +65,70 @@ test('isStale is measured against the sample, not the clock reading', () => {
   expect(isStale({ lastSeen: now - 1000 }, now)).toBe(false);
   // Far enough back that no plausible threshold calls it fresh.
   expect(isStale({ lastSeen: now - 60 * 60 * 1000 }, now)).toBe(true);
+});
+
+// --- the probe loop's state machine -------------------------------------
+//
+// This is the class of bug the harness exists for. A change to the unpaired
+// branch stopped it rescheduling, and because every OTHER re-arm site gates on
+// `mode === 'no_agent'`, the page latched in 'browser_unpaired' until a full
+// reload. It reached main and was found by reading the call graph.
+//
+// No fake timers are needed: capture `setTimeout`, then invoke the callback it
+// was handed. That drives one tick of the loop deterministically.
+
+// ASYNC and awaited. A first version was `try { return fn(...) } finally
+// { restore }` with an async `fn`, so the finally ran the instant the promise
+// was created -- setTimeout was restored before the body under test ever
+// called it, and the assertion saw zero scheduled timers. The failure looked
+// like the code under test, which is the worst kind of test bug.
+async function withCapturedTimers(fn) {
+  const real = globalThis.setTimeout;
+  const scheduled = [];
+  globalThis.setTimeout = (cb, ms) => {
+    scheduled.push({ cb, ms });
+    return scheduled.length; // a token clearTimeout can accept
+  };
+  const realClear = globalThis.clearTimeout;
+  globalThis.clearTimeout = () => {};
+  try {
+    return await fn(scheduled);
+  } finally {
+    globalThis.setTimeout = real;
+    globalThis.clearTimeout = realClear;
+  }
+}
+
+const fakeAgent = (phase) => ({
+  phase,
+  message: phase === 'unpaired' ? 'paste a token' : 'nothing answered',
+  async connect() {
+    return false;
+  },
+  async watchFleet() {},
+});
+
+test('an unpaired probe keeps probing, so a token pasted elsewhere is noticed', async () => {
+  await withCapturedTimers(async (scheduled) => {
+    const f = new FleetSession();
+    f.agent = fakeAgent('unavailable');
+
+    // `start`, not `retry`: the probe callback returns immediately unless the
+    // session has been started, so a test that only calls `retry` schedules a
+    // timer whose body never runs — and would pass or fail for the wrong
+    // reason. Going through the real entry point is the point.
+    await f.start({ watch: true });
+    expect(f.mode).toBe('no_agent');
+    expect(scheduled.length).toBe(1);
+
+    // The agent comes up, but this browser has never paired with it.
+    f.agent = fakeAgent('unpaired');
+    await scheduled[0].cb();
+
+    expect(f.mode).toBe('browser_unpaired');
+    // THE POINT: it must have re-armed. `connect()` re-reads the stored token
+    // every call, so this loop is exactly what notices one pasted on another
+    // page. Returning here latched the UI.
+    expect(scheduled.length).toBeGreaterThan(1);
+  });
 });
