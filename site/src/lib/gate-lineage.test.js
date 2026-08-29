@@ -64,6 +64,44 @@ test('does not connect ancestor commits measured with different instruments', ()
   expect(trendEdges([a, b, c])).toEqual([]);
 });
 
+test('uses stable machine identity across changing Spark hostnames', () => {
+  const a = {
+    ...rec('a', 1),
+    hardware: { gpu: 'GB10', driver: '580' },
+    machine_id: 'machine-1',
+    perf_class: 'gb10@spark-256a'
+  };
+  const b = {
+    ...rec('b', 2),
+    hardware: { gpu: 'GB10', driver: '580' },
+    machine_id: 'machine-1',
+    perf_class: 'gb10@spark-43fa'
+  };
+  const otherMachine = {
+    ...rec('c', 3),
+    hardware: { gpu: 'GB10', driver: '580' },
+    machine_id: 'machine-2',
+    perf_class: 'gb10@spark-43fa'
+  };
+
+  assignTrendPredecessors([a, b, otherMachine], () => true);
+
+  expect(trendEdges([a, b, otherMachine])).toEqual([[a, b]]);
+});
+
+test('fails closed between machine-id and legacy hostname identities', () => {
+  const legacy = { ...rec('a', 1), perf_class: 'gb10@spark-256a' };
+  const identified = {
+    ...rec('b', 2),
+    machine_id: 'machine-1',
+    perf_class: 'gb10@spark-256a'
+  };
+
+  assignTrendPredecessors([legacy, identified], () => true);
+
+  expect(trendEdges([legacy, identified])).toEqual([]);
+});
+
 test('parameter key order does not split an otherwise identical instrument', () => {
   const a = { ...rec('a', 1), params: { isls: '512', osl: '320' } };
   const b = { ...rec('b', 2), params: { osl: '320', isls: '512' } };

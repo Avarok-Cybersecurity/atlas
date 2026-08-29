@@ -140,6 +140,10 @@ function slim(raw, branch) {
     atlas_version: raw.atlas_version,
     hardware: raw.hardware,
     perf_class: raw.hardware_state?.perf_class ?? '',
+    machine_id:
+      raw.hardware_state?.before?.machine?.machine_id ??
+      raw.hardware_state?.after?.machine?.machine_id ??
+      '',
     params: raw.params,
     serve_overrides: raw.serve_overrides,
     metrics: raw.metrics,
