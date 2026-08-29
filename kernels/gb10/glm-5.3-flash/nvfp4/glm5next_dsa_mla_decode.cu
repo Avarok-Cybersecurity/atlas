@@ -129,9 +129,15 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
     const int* my_block_table = block_tables + (size_t)seq_idx * max_blocks_per_seq;
     const int* my_sel         = sel_indices  + (size_t)seq_idx * sel_width;
 
+    // Q and O are `[num_seqs, num_q_heads, kv_lora_dim]`. A K-row speculative verify runs
+    // all K rows in ONE launch (gridDim.y == K) so the 32 head-blocks of a single row do
+    // not leave most of the GPU idle for three serial launches. At num_seqs == 1 this term
+    // is 0 and the decode path is untouched.
+    const unsigned long long row_off = (unsigned long long)seq_idx * num_q_heads * kv_lora_dim;
+
     // Q for this head, this lane's 16 dims.
     const unsigned int* q32 =
-        (const unsigned int*)(Q + (unsigned long long)q_head * kv_lora_dim + lane_offset);
+        (const unsigned int*)(Q + row_off + (unsigned long long)q_head * kv_lora_dim + lane_offset);
     float q_reg[VEC_BF16];
     #pragma unroll
     for (int i = 0; i < VEC_U32; i++) {
@@ -236,7 +242,7 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
         // identity element of a cross-rank LSE merge. Never divide by zero.
         const float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
         unsigned int* o32 =
-            (unsigned int*)(O + (unsigned long long)q_head * kv_lora_dim + lane_offset);
+            (unsigned int*)(O + row_off + (unsigned long long)q_head * kv_lora_dim + lane_offset);
         #pragma unroll
         for (int i = 0; i < VEC_U32; i++) {
             const float v0 = smem_o[0][lane_offset + 2*i]     * inv_l;

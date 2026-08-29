@@ -189,15 +189,17 @@ pub struct Glm5NextDsaWorkspace {
 }
 
 impl Glm5NextDsaWorkspace {
-    /// `max_rows` is the widest speculative verify this workspace serves. Only the four
-    /// projection-scoped buffers and `attn_out` scale with it; the selector scratch, the
-    /// indexer staging rows and the block table stay per-row, because
-    /// [`Glm5NextDsaLayer::decode_k`] runs selection and attention one token at a time.
+    /// `max_rows` is the widest speculative verify this workspace serves. The projection
+    /// buffers, `attn_out` and the selector's OUTPUT row scale with it; the indexer staging
+    /// rows, the block table and the selector's within-pass temporaries stay per-row,
+    /// because [`Glm5NextDsaLayer::decode_k`] still SELECTS one token at a time.
     pub fn new(gpu: &dyn GpuBackend, cfg: &Glm5NextDsaConfig, max_rows: usize) -> Result<Self> {
         let rows = max_rows.max(1);
         // Sized at the DSA context cap so a growing sequence never reallocates.
+        // `q_rows = rows`: selection still runs one row at a time, but its OUTPUT is
+        // `[max_rows, out_width]` so a K-row verify can attend every row in one launch.
         let geom =
-            super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), 1)?;
+            super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), rows)?;
         let bt_cap = super::state::max_dsa_context(cfg).max(1);
         let persist = std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1");
         Ok(Self {
@@ -375,28 +377,25 @@ impl Glm5NextDsaLayer {
         state.advance(1)
     }
 
-    /// Everything after the indexer write: selector inputs, selection, gather-attend.
-    /// Leaves `[local_heads, kv_lora_rank]` BF16 in the workspace's `attn_out`.
-    /// Selection + gather-attend for ONE query row.
+    /// Everything after the indexer write: selector inputs and the selection for ONE query
+    /// row, into row `row` of the workspace's selection scratch.
     ///
-    /// 🔴 Stays per-row inside a K-token verify: the selector's geometry, its top-k over
-    /// `[0, len)` and the paged gather are all functions of THIS token's position in the
-    /// sequence, and the indexer cache grows by one row between them. Only the projections
-    /// around it batch.
+    /// 🔴 SELECTION stays per-row inside a K-token verify: the selector's geometry, its
+    /// top-k over `[0, len)` and its visibility test are all functions of THIS token's
+    /// position, and the indexer cache grows by one row between them. The gather-ATTEND
+    /// does not — every row reads the same cache with its own index row — so it is hoisted
+    /// out to one K-row launch in `attend_rows`. Three serial launches of 32 head-blocks
+    /// each left most of the GPU idle: 7.13 ms/step of the K=3 budget (nsys 2026-08-29).
     #[allow(clippy::too_many_arguments)]
-    fn select_and_attend(
+    fn select_row(
         &self,
         gpu: &dyn GpuBackend,
         row: usize,
         state: &Glm5NextDsaState,
-        kv_cache: &PagedKvCache,
-        block_table_dev: DevicePtr,
-        seq_lens_dev: DevicePtr,
         q_pos_dev: DevicePtr,
-        paging: &DsaDecodePaging,
         replay_safe: bool,
         stream: u64,
-    ) -> Result<DevicePtr> {
+    ) -> Result<()> {
         let w = &self.workspace;
         let geom = state.geometry(&self.cfg, 1)?;
 
@@ -455,19 +454,51 @@ impl Glm5NextDsaLayer {
             super::select::DsaSelectLaunch::Exact
         };
         let t = crate::layers::glm5next_layer::profile::start();
+        // Row `row` of the `[max_rows, out_width]` selection scratch. The kernels still run
+        // one query row (`q_rows == 1`), they just land in this row's slot, so `attend_rows`
+        // can read all K index rows in one launch.
         select_tokens(
             gpu,
             &self.select_kernels,
             &self.cfg,
             &geom,
             &inputs,
-            &w.select,
+            &w.select.row(row, &self.cfg),
             launch,
             stream,
         )?;
-
         use crate::layers::glm5next_layer::profile;
         profile::end(profile::DSA_SELECT, t, gpu, stream);
+        Ok(())
+    }
+
+    /// The gather-attend for ALL `rows` query rows in ONE launch.
+    ///
+    /// Every row reads the same paged latent cache with its own selection row, its own
+    /// `seq_len` and its own block-table row, so `gridDim.y` carries the row axis and the
+    /// per-row arithmetic is untouched — bit-identical to the serial launches it replaces.
+    /// `q_abs`, `attn_out`, the metadata's `seq_len`/`block_table` and the selection scratch
+    /// are all `[rows, ...]` at the SAME strides the kernel indexes.
+    #[allow(clippy::too_many_arguments)]
+    fn attend_rows(
+        &self,
+        gpu: &dyn GpuBackend,
+        rows: usize,
+        state: &Glm5NextDsaState,
+        kv_cache: &PagedKvCache,
+        block_table_dev: DevicePtr,
+        seq_lens_dev: DevicePtr,
+        paging: &DsaDecodePaging,
+        stream: u64,
+    ) -> Result<()> {
+        use crate::layers::glm5next_layer::profile;
+        let w = &self.workspace;
+        // Only `out_width` and the `q_rows == num_seqs` agreement are read here.
+        let geom = state.geometry(&self.cfg, rows)?;
+        let paging = DsaDecodePaging {
+            num_seqs: rows,
+            ..*paging
+        };
         let t = profile::start();
         let pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
         decode_attention(
@@ -475,12 +506,12 @@ impl Glm5NextDsaLayer {
             self.decode_kernel,
             &self.cfg,
             &geom,
-            paging,
+            &paging,
             &DsaDecodeInputs {
-                q: w.q_abs.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2),
+                q: w.q_abs,
                 k_cache: pool,
                 v_cache: pool, // absorbed NoPE MLA: K and V are the same latent
-                out: w.attn_out.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2),
+                out: w.attn_out,
                 block_tables: block_table_dev,
                 seq_lens: seq_lens_dev,
                 sel_indices: w.select.tokens(),
@@ -490,7 +521,7 @@ impl Glm5NextDsaLayer {
             stream,
         )?;
         profile::end(profile::DSA_ATTEND, t, gpu, stream);
-        Ok(w.attn_out.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2))
+        Ok(())
     }
     /// ONE drafter CONTEXT row: the KV latent and the indexer entry, with no query, no
     /// selection and no attend.
@@ -725,6 +756,9 @@ impl Glm5NextDsaLayer {
             self.cfg.hidden,
             stream,
         )?;
+        let mut attend_bt = DevicePtr::NULL;
+        let mut attend_sl = DevicePtr::NULL;
+        let mut attend_paging: Option<DsaDecodePaging> = None;
         for row in 0..k {
             let pos = seq_len + row;
             let block_size = kv_cache.config().block_size;
@@ -876,25 +910,25 @@ impl Glm5NextDsaLayer {
                     .arg_u32(self.cfg.index_topk as u32)
                     .launch(stream)?;
             }
-            // Writes row `row` of `attn_out`; the batched `o_absorb` below reads all K rows,
-            // so the returned pointer is not needed here.
-            self.select_and_attend(
-                gpu,
-                row,
-                st,
-                kv_cache,
-                d_bt,
-                d_sl,
-                q_pos_dev,
-                &paging,
-                replay_safe,
-                stream,
-            )?;
+            self.select_row(gpu, row, st, q_pos_dev, replay_safe, stream)?;
+            // The attend needs the BASE of the K-row metadata, not this row's slice: it
+            // carries the row axis on `gridDim.y`. On the no-metadata path k is 1 and these
+            // are the single-row `w.bt`/`w.sl`, so the base IS the row.
+            if row == 0 {
+                attend_bt = d_bt;
+                attend_sl = d_sl;
+                attend_paging = Some(paging);
+            }
             if owns_bt && !self.persist_bt {
                 gpu.free(d_bt)?;
                 gpu.free(d_sl)?;
             }
 
+        }
+
+        // ── ONE gather-attend for all K rows ──
+        if let Some(paging) = attend_paging {
+            self.attend_rows(gpu, k, st, kv_cache, attend_bt, attend_sl, &paging, stream)?;
         }
 
         // ── output projection, row-parallel: the caller all-reduces ──

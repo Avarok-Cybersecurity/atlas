@@ -219,7 +219,7 @@ pub enum DsaSelectLaunch {
 ///
 /// Sized from a worst-case geometry so a growing context never reallocates mid-serve;
 /// [`Self::fits`] refuses a pass that would outgrow it rather than overrunning.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct DsaSelectScratch {
     pool_keys: DevicePtr,
     pool_indices: DevicePtr,
@@ -259,6 +259,20 @@ impl DsaSelectScratch {
     /// `[q_rows, out_width]` i32 selection produced by the last pass.
     pub fn tokens(&self) -> DevicePtr {
         self.tokens
+    }
+
+    /// The same scratch with `tokens` pointing at row `row`.
+    ///
+    /// A K-row verify selects one row at a time (`q_rows == 1`) but attends all K rows in
+    /// one launch, so each pass has to land in its own slot of the `[max_rows, out_width]`
+    /// output instead of all of them overwriting row 0. Everything else in the scratch is a
+    /// within-pass temporary and is deliberately shared.
+    pub fn row(&self, row: usize, cfg: &Glm5NextDsaConfig) -> Self {
+        Self {
+            tokens: self.tokens.offset(row * cfg.out_width() * 4),
+            tokens_bytes: self.tokens_bytes - row * cfg.out_width() * 4,
+            ..*self
+        }
     }
 
     /// Whether `geom` fits what was allocated. Checked on every pass: a context that
