@@ -95,13 +95,21 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // FP32-element intermediate stride. Both halves read an FP16 h-state as
     // FP32: fluent garbage, not an error. Applies to plain `f16` as well as
     // `f16-pool`, hence `h_f16`.
-    if h_f16 && args.dflash {
+    // 2026-08-29 (#812): the wyN family now ships FP16 h-state twins for
+    // K=5..16 (gated_delta_rule_wy{5..16}_f16, same module), so DFlash under
+    // the f16 pool is supported for --dflash-gamma <= 16 — the whole reachable
+    // range on block-8-class drafters (Qwen3.8 DFlash2). Above 16 the verify
+    // dispatches gated_delta_rule_wy17, which still has no FP16 twin, and the
+    // runtime backstop would refuse at the first verify step; reject the pair
+    // here in milliseconds instead. Missing-twin builds are also refused at
+    // runtime (hard error, never a silent FP32-over-FP16 fallback).
+    if h_f16 && args.dflash && args.dflash_gamma > 16 {
         v.push(Violation::new(
-            "--dflash together with --ssm-h-dtype f16",
-            "the DFlash verify width (gamma + 1 = 17) dispatches gated_delta_rule_wy17, \
-             which has no FP16 h-state twin and strides the h intermediates in FP32 \
-             elements — an FP32 kernel over an FP16 h-state emits fluent garbage",
-            "drop --dflash, or use --ssm-h-dtype f32",
+            "--dflash with --dflash-gamma > 16 together with --ssm-h-dtype f16",
+            "DFlash verify widths above 16 dispatch gated_delta_rule_wy17, which has \
+             no FP16 h-state twin — an FP32 kernel over an FP16 h-state emits fluent \
+             garbage. Widths 5..16 are covered by the wyN _f16 twins",
+            "use --dflash-gamma <= 16, drop --dflash, or use --ssm-h-dtype f32",
         ));
     }
 

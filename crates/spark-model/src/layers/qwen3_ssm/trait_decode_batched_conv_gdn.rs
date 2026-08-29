@@ -587,7 +587,15 @@ impl Qwen3SsmLayer {
                 false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
-        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && ctx.levers.gdn_wy17 {
+        } else if num_tokens == 17
+            && self.gdn_wy17_k.0 != 0
+            && ctx.levers.gdn_wy17
+            && !super::ssm_h_fp16_enabled()
+        {
+            // (f16 guard 2026-08-29: wy17 has no FP16 twin — under the f16
+            // pool this arm must not fire; K=17 then reaches the sequential
+            // fallback below, which REFUSES under f16 rather than reading
+            // the FP16 pool with FP32 kernels.)
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
             //
             // Shared pool-layout arm (fused conv_kn epilogue + one wy17
@@ -613,8 +621,26 @@ impl Qwen3SsmLayer {
             // GDN fallback at these widths. Kill-switch: ATLAS_GDN_WYN=0. ──
             self.decode_batched_conv_gdn_wyn(ssm_state, ctx, args, wyn_k)?;
         } else {
-            // ── No fused arm (K>17, K∈{5..8} with wyN absent/killed, or
-            // non-pool intermediates): sequential per-token path ──
+            // ── No fused arm (K>17, wyN absent/killed, or non-pool
+            // intermediates): sequential per-token path ──
+            //
+            // f16 backstop (2026-08-29): every kernel below is an FP32
+            // h-state reader. Over an FP16 pool that does not fault — it
+            // emits fluent garbage — so refuse loudly instead, mirroring
+            // `require_wy_f16`. Reachable only when a width's f16 twin is
+            // missing/killed or intermediates are non-pool; supported
+            // configs never land here (wy2/3/4 + wyn f16 twins cover
+            // K<=16, and validate.rs bounds --dflash-gamma under f16).
+            if super::ssm_h_fp16_enabled() {
+                anyhow::bail!(
+                    "ATLAS_SSM_H_FP16: no FP16 fused arm for K={num_tokens} \
+                     GDN verify (twin missing/killed or non-pool \
+                     intermediates). The sequential fallback's FP32 kernels \
+                     would read the FP16 pool as floats and emit fluent \
+                     garbage, so this refuses instead. Run without \
+                     --speculative at this width, or unset ATLAS_SSM_H_FP16."
+                );
+            }
             //
             // gated_delta_rule_decode expects FP32 Q/K/V (see kernel signature),
             // but causal_conv1d_update_l2norm outputs BF16 by default. Reading

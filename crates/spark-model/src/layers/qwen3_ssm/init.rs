@@ -463,6 +463,21 @@ impl Qwen3SsmLayer {
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy15"),
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy16"),
             ],
+            // FP16 h-state twins (K=5..16), same module + index contract.
+            gdn_wyn_f16_k: [
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy9_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy10_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy11_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy12_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy13_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy14_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy15_f16"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy16_f16"),
+            ],
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,

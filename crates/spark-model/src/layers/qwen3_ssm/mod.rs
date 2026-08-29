@@ -324,6 +324,14 @@ pub struct Qwen3SsmLayer {
     /// NULL handles on targets lacking the module → sequential fallback.
     /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
     gdn_wyn_k: [KernelHandle; 12],
+    /// FP16 h-state twins of the wyN family (K=5..16), stage 2 of
+    /// `ATLAS_SSM_H_FP16` — added 2026-08-29 (#812: the FP16 pool is the
+    /// lever that lets MTP serve wide batch; DFlash was refused it for
+    /// want of these twins). Same index contract (K-5); zero handles on
+    /// targets lacking the module. Under the f16 pool a missing twin is a
+    /// HARD ERROR at dispatch (never a silent FP32 fallback over FP16
+    /// state). provenance-id: 526f6e616c6420522e205374657369616b
+    gdn_wyn_f16_k: [KernelHandle; 12],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
