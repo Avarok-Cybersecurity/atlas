@@ -218,6 +218,11 @@ a { color: var(--accent); }
 }
 .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-4); flex: none; }
 
+/* Entry titles are h2 and footer headings are h2, styled down rather than
+   marked down. On a tag page the entry list follows the band's h1 with nothing
+   between, and on the 404 page the footer is the only heading after the h1 —
+   an h3 or an h4 there skips levels, which is a real navigation defect for
+   anyone moving by heading and a Lighthouse `heading-order` failure. */
 .list { list-style: none; }
 .list li { border-bottom: 1px solid var(--line-soft); }
 .entry { display: grid; grid-template-columns: 118px 1fr auto; gap: 28px; align-items: baseline; padding: 26px 0; text-decoration: none; position: relative; }
@@ -232,8 +237,8 @@ a { color: var(--accent); }
   font-variant-numeric: tabular-nums; position: relative; padding-left: 16px;
 }
 .entry-date::before { content: ''; position: absolute; left: 0; top: .52em; width: 7px; height: 7px; border-radius: 50%; background: var(--tag-c, var(--text-4)); }
-.entry-body h3 { font-size: 19.5px; line-height: 1.35; font-weight: 520; letter-spacing: -.018em; transition: color var(--dur) var(--ease); }
-.entry:hover h3 { color: #fff; }
+.entry-body h2 { font-size: 19.5px; line-height: 1.35; font-weight: 520; letter-spacing: -.018em; transition: color var(--dur) var(--ease); }
+.entry:hover h2 { color: #fff; }
 .entry-body p { margin-top: 7px; font-size: 15px; line-height: 1.55; color: var(--text-3); max-width: 62ch; }
 .entry-tag { font-family: var(--mono); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
 .entry-read { font-family: var(--mono); font-size: 12px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -382,7 +387,7 @@ a { color: var(--accent); }
 .ftr-grid { display: grid; grid-template-columns: 1.6fr repeat(3, 1fr); gap: 40px; }
 .ftr-brand p { margin-top: 14px; font-size: 14.5px; line-height: 1.6; color: var(--text-3); max-width: 34ch; }
 .ftr-logo { display: flex; align-items: center; gap: .55rem; color: var(--text-1); font-weight: 800; font-size: 1.15rem; letter-spacing: -.02em; text-decoration: none; }
-.ftr-col h4 { font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--text-3); font-weight: 600; margin-bottom: 14px; }
+.ftr-col h2 { font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--text-3); font-weight: 600; margin-bottom: 14px; }
 .ftr-col ul { list-style: none; display: flex; flex-direction: column; gap: 9px; }
 .ftr-col a { font-size: 14.5px; color: var(--text-2); text-decoration: none; transition: color var(--dur) var(--ease); }
 .ftr-col a:hover { color: var(--text-1); }

@@ -10,7 +10,7 @@
       <a class="entry" href={p.href} style="--tag-c: {tags[p.tag].color}">
         <span class="entry-date">{formatDate(p.date)}</span>
         <span class="entry-body">
-          <h3>{p.title}</h3>
+          <h2>{p.title}</h2>
           <p>{p.dek}</p>
         </span>
         <span class="entry-side">

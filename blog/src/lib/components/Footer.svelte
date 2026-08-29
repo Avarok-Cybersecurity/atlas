@@ -14,7 +14,7 @@
     </div>
     {#each footerCols as col}
       <div class="ftr-col">
-        <h4>{col.heading}</h4>
+        <h2>{col.heading}</h2>
         <ul>
           {#each col.links as l}
             <li>

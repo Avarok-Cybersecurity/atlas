@@ -437,3 +437,53 @@ asymmetry that a visual check never surfaces.
 The marketing site needed nothing here: its hamburger drawer already carries
 every link, and the lockup's negative margin puts the mark on the same optical
 left edge as the hero text at 390px.
+
+## Wave 8 — the accessibility audit, and a false positive of my own
+
+**Lighthouse could not be run locally.** `headless_shell` under SwiftShader is
+the only browser on this box, and `lhci` dies in it with *"Waiting for DevTools
+protocol response has exceeded the allotted time (Method:
+Network.setUserAgentOverride)"*. **There is no local Lighthouse score for this
+change** — CI's real Chrome has to produce it. That matters because
+`site/lighthouse/lighthouserc.json` asserts `minScore: 1` on performance,
+accessibility, best-practices and SEO for `index.html`, which is the tightest
+gate in the repo and the one most likely to reject this work.
+
+So the categories most at risk were checked directly instead, with a DOM-walking
+auditor (`blog/e2e/audit-a11y.js`) run against every route of both properties.
+
+| page | contrast | names | heading order |
+|---|---|---|---|
+| marketing index | pass | pass | pass |
+| blog index | pass | pass | pass |
+| both posts | pass | pass | **h2 → h4** |
+| both tag pages | pass | pass | **h1 → h3** |
+| author page | pass | pass | **h1 → h3** |
+| blog 404 | pass | pass | **h1 → h4** |
+
+**Contrast passes everywhere**, which is the load-bearing result: the palette
+move did not cost a single text pair its AA margin.
+
+**The heading skips were real.** Entry titles were `h3` and footer column
+headings were `h4`. On a tag page the entry list follows the band's `h1` with
+nothing between it, and on the 404 page the footer is the only heading after the
+`h1` — so both skipped levels. That is a navigation defect for anyone moving by
+heading, and a Lighthouse `heading-order` failure. Both are `h2` now, styled
+down rather than marked down. All seven blog routes re-audit clean.
+
+**One finding was mine, not the site's.** The first run reported the NVIDIA
+Inception link in the marketing footer as having no accessible name. It does
+have one — from the `alt` on the image it wraps, which my auditor was not
+reading. Fixed the auditor; the link was always correct. Recording it because a
+tool that invents findings costs more than one that misses them, and the only
+reason it was caught is that the "defect" looked implausible enough to check.
+
+**The auditor was then proved able to fail**, which is the point of having it.
+With four defects planted in a real page — body copy at 1.77:1, metadata at
+3.78:1, an anchor wrapping only an `aria-hidden` svg, and an `h5` after an
+`h2` — it reports all four.
+
+**Open:** the blog is not covered by `lighthouse.yml`. Extending it there is the
+right end state, but the budget has to come from a first observed score rather
+than be declared in the same change that first measures one, so it is a
+follow-up rather than part of this PR.
