@@ -56,6 +56,25 @@ fn up_f32(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
     Ok(p)
 }
 
+/// `hc_*_fn` is BF16 on disk. Upload it at that width, for the arm that reads it there.
+fn up_bf16(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
+    let b: Vec<u8> = d
+        .iter()
+        .flat_map(|&x| half::bf16::from_f32(x).to_le_bytes())
+        .collect();
+    let p = g.alloc(b.len().max(1))?;
+    g.copy_h2d(&b, p)?;
+    Ok(p)
+}
+
+/// Round through BF16 and back. The BF16 arm can only be compared against an oracle fed the
+/// values BF16 can actually hold — otherwise the test measures rounding, not the kernel.
+fn to_bf16_exact(d: &[f32]) -> Vec<f32> {
+    d.iter()
+        .map(|&x| half::bf16::from_f32(x).to_f32())
+        .collect()
+}
+
 fn dn(g: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> Result<Vec<u8>> {
     let mut b = vec![0u8; bytes];
     g.copy_d2h(p, &mut b)?;
@@ -144,6 +163,7 @@ fn main() -> Result<()> {
         // ── arm B: the split pair, through the production launcher ──
         let w = Glm5NextMhcSiteWeights {
             hc_fn: d_fn,
+            hc_fn_bf16: false,
             hc_scale: d_scale,
             hc_base: d_base,
             mix: gpu.alloc(MHC_MIX_MAX_TOKENS * m * 4)?,
@@ -195,6 +215,95 @@ fn main() -> Result<()> {
             }
         }
         println!("  H={hid:>5} hc={hc} T={t}  mix_hc={m:>2}  y/post/comb BYTE-IDENTICAL");
+
+        // ── arm C: the BF16 `hc_fn` read, against the SAME oracle fed BF16-exact values ──
+        //
+        // 🔴 The claim being gated is that widening BF16 to F32 is lossless, so reading the
+        // checkpoint's own BF16 gives the same floats the F32 upload gave. That is only
+        // testable against an oracle fed values BF16 can hold — otherwise this measures
+        // rounding, not the kernel. Hence the round trip.
+        let hc_fn_r = to_bf16_exact(&hc_fn);
+        let d_fn_r = up_f32(&gpu, &hc_fn_r)?;
+        let d_fn_b = up_bf16(&gpu, &hc_fn_r)?;
+        let (yc, pc, cc) = (gpu.alloc(y_b)?, gpu.alloc(post_b)?, gpu.alloc(comb_b)?);
+        for (p, n) in [(yc, y_b), (pc, post_b), (cc, comb_b)] {
+            poison(&gpu, p, n)?;
+        }
+        KernelLaunch::new(&gpu, k.hc_pre)
+            .grid([t as u32, 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(d_streams)
+            .arg_ptr(d_fn_r)
+            .arg_ptr(d_scale)
+            .arg_ptr(d_base)
+            .arg_ptr(yc)
+            .arg_ptr(pc)
+            .arg_ptr(cc)
+            .arg_u32(hid as u32)
+            .arg_u32(hc as u32)
+            .arg_u32(SINKHORN_ITERS)
+            .arg_f32(NORM_EPS)
+            .arg_f32(HC_EPS)
+            .launch(0)?;
+        gpu.synchronize(0)?;
+        let (yc_h, pc_h, cc_h) = (
+            dn(&gpu, yc, y_b)?,
+            dn(&gpu, pc, post_b)?,
+            dn(&gpu, cc, comb_b)?,
+        );
+
+        let wb = Glm5NextMhcSiteWeights {
+            hc_fn: d_fn_b,
+            hc_fn_bf16: true,
+            hc_scale: d_scale,
+            hc_base: d_base,
+            mix: gpu.alloc(MHC_MIX_MAX_TOKENS * m * 4)?,
+        };
+        let (yd, pd, cd) = (gpu.alloc(y_b)?, gpu.alloc(post_b)?, gpu.alloc(comb_b)?);
+        for (p, n) in [(yd, y_b), (pd, post_b), (cd, comb_b)] {
+            poison(&gpu, p, n)?;
+        }
+        glm_hc_pre(
+            &gpu,
+            &k,
+            d_streams,
+            &wb,
+            yd,
+            pd,
+            cd,
+            t as u32,
+            hid as u32,
+            hc as u32,
+            SINKHORN_ITERS,
+            NORM_EPS,
+            HC_EPS,
+            0,
+        )?;
+        gpu.synchronize(0)?;
+        let (yd_h, pd_h, cd_h) = (
+            dn(&gpu, yd, y_b)?,
+            dn(&gpu, pd, post_b)?,
+            dn(&gpu, cd, comb_b)?,
+        );
+        for (name, a, b) in [
+            ("y", &yc_h, &yd_h),
+            ("post", &pc_h, &pd_h),
+            ("comb", &cc_h, &cd_h),
+        ] {
+            if a.iter().all(|&x| x == 0xAB) {
+                bail!("H={hid} hc={hc} T={t}: BF16 arm `{name}` — the ORACLE never wrote it");
+            }
+            if a != b {
+                let i = a.iter().zip(b).position(|(x, y)| x != y).unwrap();
+                bail!(
+                    "H={hid} hc={hc} T={t}: BF16 `hc_fn` `{name}` differs at byte {i}: \
+                     f32 oracle {:#04x} bf16 split {:#04x}",
+                    a[i],
+                    b[i]
+                );
+            }
+        }
+        println!("  H={hid:>5} hc={hc} T={t}  mix_hc={m:>2}  BF16 hc_fn  BYTE-IDENTICAL");
 
         // ── timing, GLM's own shape only: which half of the split actually costs ──
         if (hid, hc, t) == (4096, 4, 1) {

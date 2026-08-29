@@ -35,6 +35,10 @@ pub struct Glm5NextMhcKernels {
     pub hc_pre: KernelHandle,
     /// One block per mixing row: grid `(T, mix_hc)`.
     pub hc_mix: KernelHandle,
+    /// Same kernel reading `hc_fn` at the width the checkpoint stores it (BF16).
+    /// **Bit-identical** — widening BF16 to F32 is lossless, so it multiplies the same floats.
+    /// `try_kernel`; selected per site by `Glm5NextMhcSiteWeights::hc_fn_bf16`.
+    pub hc_mix_bf16: KernelHandle,
     /// Split + Sinkhorn + collapse, reading the mixes from global.
     pub hc_finish: KernelHandle,
     pub hc_post: KernelHandle,
@@ -52,6 +56,11 @@ impl Glm5NextMhcKernels {
             hc_expand: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_expand")?,
             hc_pre: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_pre")?,
             hc_mix: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_mix")?,
+            hc_mix_bf16: crate::layers::try_kernel(
+                gpu,
+                GLM5NEXT_MHC_MODULE,
+                "glm5next_hc_mix_bf16",
+            ),
             hc_finish: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_finish")?,
             hc_post: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_post")?,
             hc_head: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_head")?,
@@ -112,8 +121,12 @@ pub fn hc_head_mean(
 /// the on-disk width is the #341/#347 dtype-mismatch class, and the shapes do not say so.
 #[derive(Debug, Clone, Copy)]
 pub struct Glm5NextMhcSiteWeights {
-    /// `[mix_hc, hc_mult * hidden]` FP32, where `mix_hc = (2 + hc_mult) * hc_mult`.
+    /// `[mix_hc, hc_mult * hidden]`, where `mix_hc = (2 + hc_mult) * hc_mult`. FP32 unless
+    /// `hc_fn_bf16`, in which case BF16 — the width the checkpoint actually stores.
     pub hc_fn: DevicePtr,
+    /// Is `hc_fn` BF16? Production sets it; the microtests and the split gate build their own
+    /// F32 weights and leave it false, so the oracle they compare against is unchanged.
+    pub hc_fn_bf16: bool,
     /// `[3]` FP32 — the three logit scales (pre, post, comb), in that order.
     pub hc_scale: DevicePtr,
     /// `[mix_hc]` FP32.
@@ -164,7 +177,15 @@ pub fn glm_hc_pre(
              scratch. Raise MHC_MIX_MAX_TOKENS and rebind; do not launch past the allocation."
         );
     }
-    KernelLaunch::new(gpu, kernels.hc_mix)
+    // 🪤 The two kernels take the SAME arguments; only `hc_fn`'s element width differs, and it
+    // is the pointer's own dtype, not something the signature can catch. Pairing the wrong
+    // flag with the pointer reads BF16 as F32 (or the reverse) and produces plausible garbage.
+    let mix_kernel = if w.hc_fn_bf16 && kernels.hc_mix_bf16.0 != 0 {
+        kernels.hc_mix_bf16
+    } else {
+        kernels.hc_mix
+    };
+    KernelLaunch::new(gpu, mix_kernel)
         .grid([num_tokens, mix_hc, 1])
         .block([256, 1, 1])
         .arg_ptr(streams)

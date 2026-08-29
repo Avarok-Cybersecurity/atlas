@@ -233,7 +233,12 @@ fn bind_mhc_site(
         );
     }
     Ok(Glm5NextMhcSiteWeights {
-        hc_fn: upload_f32(gpu, &f)?,
+        // 🔴 BF16, because that is what the checkpoint stores (`[24, 16384]`, BF16 in the
+        // safetensors header). Uploading it as F32 doubled `hc_mix`'s traffic — 1.57 MB
+        // instead of 0.79 MB per site, 90 sites per token — for values that were already
+        // exactly BF16. `glm5next_hc_mix_bf16` reads it at that width and is bit-identical.
+        hc_fn: upload_f32_as_bf16(gpu, &f)?,
+        hc_fn_bf16: true,
         hc_scale: upload_f32(gpu, &scale)?,
         hc_base: upload_f32(gpu, &base)?,
         // `hc_mix` -> `hc_finish` handoff. Per site so the layer's two sites cannot alias.

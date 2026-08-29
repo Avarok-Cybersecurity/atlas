@@ -268,6 +268,88 @@ extern "C" __global__ void glm5next_hc_mix(
 // the collapse blocks free of a cross-block dependency on block 0. It is bit-identical by
 // construction (same expression, same inputs, no reduction), and `glm5next_hc_split_gate.rs`
 // asserts that against the fused `glm5next_hc_pre` oracle byte for byte.
+// ── glm5next_hc_mix_bf16 ──
+// `glm5next_hc_mix` with `hc_fn` read at the width the CHECKPOINT stores it.
+//
+// 🔴 `hc_*_fn` is **BF16 on disk** (`[24, 16384]`, verified in the safetensors headers) and the
+// loader was uploading it as F32. Nothing needed the extra width — every value is exactly a
+// BF16 — but the decode path paid for it: 1.57 MB instead of 0.79 MB per site, 90 sites per
+// token, **141 MB/token of which half was waste**. nsys 2026-08-28 put `hc_mix` at 1.18 ms of
+// a 63.7 ms step, ~120 GB/s, and its unique traffic IS `hc_fn`.
+//
+// BIT-IDENTICAL, and the reason is exact: widening BF16 to F32 is lossless, so the F32 value
+// this kernel used to read and `__bfloat162float` of the BF16 it reads now are the SAME float.
+// Same multiply, same strided accumulation order, same tree reduce.
+//
+// 🪤 This is the MIRROR of the #341/#347 dtype class. There, a wide checkpoint tensor was read
+// as narrow and the values were wrong. Here a narrow tensor was stored wide: the values stayed
+// right, so nothing failed — it just doubled the bandwidth of the hottest small kernel in the
+// model, silently, for the life of the port. Check the on-disk dtype of anything a decode
+// kernel streams, in BOTH directions.
+extern "C" __global__ void glm5next_hc_mix_bf16(
+    const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
+    const __nv_bfloat16* __restrict__ hc_fn, // [mix_hc, hc*H] BF16 — as on disk
+    float* __restrict__ mix_out,        // [T, mix_hc]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const float norm_eps
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int m = blockIdx.y;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int hc_dim = hc_mult * hidden_size;
+    const unsigned int mix_hc = (2 + hc_mult) * hc_mult;
+
+    const float* x = streams + (size_t)t * hc_dim;
+    __shared__ float red[GLM_HC_BLOCK];
+
+    // Pass 1: RMS over the flattened hc*H vector — identical order to the fused kernel.
+    float ss = 0.f;
+    for (unsigned int k = tid; k < hc_dim; k += GLM_HC_BLOCK) {
+        float v = (float)x[k];
+        ss += v * v;
+    }
+    red[tid] = ss;
+    __syncthreads();
+    const float ssum = glm_hc_block_reduce(red, tid);
+    const float rsqrt = rsqrtf(ssum / (float)hc_dim + norm_eps);
+    // Every thread read red[0] above; `red` is reused below, so nobody may write it yet.
+    __syncthreads();
+
+    // Pass 2: this block's ONE mixing row.
+    const __nv_bfloat16* fn_row = hc_fn + (size_t)m * hc_dim;
+    float acc = 0.f;
+    for (unsigned int k = tid; k < hc_dim; k += GLM_HC_BLOCK) {
+        acc += __bfloat162float(fn_row[k]) * (float)x[k];
+    }
+    red[tid] = acc;
+    __syncthreads();
+    const float r = glm_hc_block_reduce(red, tid);
+    if (tid == 0) mix_out[(size_t)t * mix_hc + m] = r * rsqrt;
+}
+
+// mix [T, mix_hc] -> y_out [T, H], post_out [T, hc], comb_out [T, hc, hc].
+// Grid: (T, NB, 1)  Block: (256,1,1). Body copied from `glm5next_hc_pre`'s passes 3+4; the
+// changes are that `s_mix` is read from global instead of computed in shared, and that the
+// final collapse is spread over the grid.
+//
+// 🔴 SECOND BLOCK AXIS — the Sinkhorn needs one block, the COLLAPSE does not.
+// The Sinkhorn is an hc x hc problem with cross-lane dependencies, so it cannot leave a single
+// block. The collapse that follows it is `y[d] = sum_i pre[i] * x[i,d]` over H = 4096 — hc*H
+// floats in, H bf16 out, every `d` independent — and it was pinned to that same ONE block, i.e.
+// 64 KB pulled through 1 of the GB10's 48 SMs, 90 times per token.
+//
+// So: grid (T, NB). `blockIdx.y == 0` runs the Sinkhorn and writes `post_out`/`comb_out`;
+// blocks 1..NB-1 split the collapse between them, and block 0 sits the collapse out so the
+// Sinkhorn is fully overlapped rather than serialised in front of block 0's share.
+// (NB == 1 degenerates to the old single-block behaviour, which is what `mhc_microtest` and
+// any direct caller still get.)
+//
+// 🪤 EVERY block recomputes `pre` — hc sigmoids off the same `mix` row. That is the same
+// deliberate redundancy as `hc_mix`'s repeated RMS: it is four `expf`s, and it is what keeps
+// the collapse blocks free of a cross-block dependency on block 0. It is bit-identical by
+// construction (same expression, same inputs, no reduction), and `glm5next_hc_split_gate.rs`
+// asserts that against the fused `glm5next_hc_pre` oracle byte for byte.
 extern "C" __global__ void glm5next_hc_finish(
     const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
     const float* __restrict__ mix,      // [T, mix_hc]
