@@ -233,6 +233,11 @@ jobs:
     environment:
       name: production-site
       url: https://atlasinference.io/
+    outputs:
+      # The verify job below needs to know whether anything was actually
+      # deployed; without this it would check a stale production against a
+      # build that never left the runner.
+      configured: ${{ steps.secret_check.outputs.configured }}
     steps:
       - name: Check deploy secret presence
         # Skip deploy entirely when DEPLOY_SSH_PRIVATE_KEY isn't
@@ -341,19 +346,37 @@ jobs:
             -e "ssh -p ${PORT}" \
             blog/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_BLOG_PATH}/"
 
+
+  verify:
+    name: Verify the deployed blog
+    needs: deploy
+    if: needs.deploy.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # A SEPARATE job, and not three lines inside `deploy`, for a reason worth
+      # writing down. `deploy` deliberately has no checkout: it downloads the
+      # two build artifacts straight into `site/` and `blog/` and rsyncs those
+      # directories wholesale. Checking the repo out there would put source
+      # files in the trees that get uploaded to production. But the check
+      # script lives in the repo, so it needs a checkout — hence its own job,
+      # where a checkout is free of consequences.
+      #
+      # This was wrong for four commits and no PR could have caught it: the
+      # deploy job is push-only, so on a pull request it skips, and a step that
+      # would have failed on the first merge to main reported nothing at all.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - name: Install bun
-        if: steps.secret_check.outputs.configured == 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
 
-      # Post-deploy, against the live origin. The defect this guards — nginx's
-      # add_header not accumulating across contexts, so one location-level
-      # Cache-Control silently drops every security header from exactly the
-      # HTML responses that need them — is invisible from inside the config and
-      # from `nginx -t`. Only a request observes it. It also catches a deploy
-      # that landed the wrong tree: the 404 assertion fails if 404.html is
-      # missing from the docroot.
-      - name: Verify the deployed blog
-        if: steps.secret_check.outputs.configured == 'true'
+      # Against the live origin, because the defect this guards is observable
+      # only from a request: nginx's add_header does not accumulate across
+      # contexts, so one location-level Cache-Control silently drops every
+      # security header from exactly the HTML responses that need them, and
+      # neither the config nor `nginx -t` says so. It also catches a deploy
+      # that landed the wrong tree — the 404 assertion fails if 404.html is
+      # not in the docroot.
+      - name: Headers and routing on blog.atlasinference.io
         run: bun blog/e2e/check-headers.mjs https://blog.atlasinference.io

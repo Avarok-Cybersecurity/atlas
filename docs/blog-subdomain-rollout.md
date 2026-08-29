@@ -744,3 +744,42 @@ both builds exist at once. Controls:
 | point it at an empty site build | **refuses to pass vacuously** — "no ids found" |
 | no cross-links present at all | **fails** — a guard that stops finding work must not report success |
 | restored | all 18 resolve |
+
+## Wave 14 — the step that could only fail after merging
+
+**30 checks pass, none fail.** The remaining pending jobs are the Rust/CUDA
+release matrix and CodeQL, neither touched by this branch.
+
+**Then, reading the deploy job as though it were about to run for real**, rather
+than as a green tick: `Verify the deployed blog` ran
+`bun blog/e2e/check-headers.mjs`, and **the deploy job has no checkout**. That
+script does not exist there. `blog/` in that job contains the downloaded build
+artifact and nothing else.
+
+Demonstrated by reconstructing the job's filesystem — the two artifacts, no
+repo:
+
+```
+$ bun blog/e2e/check-headers.mjs https://blog.atlasinference.io
+error: Module not found "blog/e2e/check-headers.mjs"
+```
+
+So on the first merge to main the deploy would have succeeded and the job would
+then have gone red on a missing file — a failure that says nothing about the
+deploy it was supposed to be checking.
+
+**No pull request could have caught this.** The deploy job is push-only, so on
+a PR it skips, and a step that would fail on first merge reports nothing at all.
+It survived four commits of otherwise-green CI. The only instrument was reading
+the job as a filesystem rather than as a status.
+
+**The obvious fix is the wrong one.** Adding `actions/checkout` to `deploy`
+would put the repository's `site/` and `blog/` source trees in the very
+directories that are then rsynced wholesale to production — the artifacts are
+downloaded straight into them. The deploy job's lack of a checkout is
+load-bearing.
+
+So the verification moved to its own job: `verify`, `needs: deploy`, with its
+own checkout where a checkout costs nothing. It is gated on a new
+`configured` output from the deploy job, so it does not check a live site
+against a build that never left the runner.
