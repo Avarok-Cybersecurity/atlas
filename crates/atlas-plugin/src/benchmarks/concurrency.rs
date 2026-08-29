@@ -110,6 +110,7 @@ const VACUITY_FLOOR: f64 = 0.8;
 #[derive(Clone, Debug, Default)]
 struct RequestEvidence {
     completion_tokens: usize,
+    cached_prompt_tokens: usize,
     finish_reason: Option<String>,
     server_ttft_ms: Option<f64>,
     server_tps: Option<f64>,
@@ -122,6 +123,13 @@ fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
     requests
         .iter()
         .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
+}
+
+fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
+    warmup > 0
+        && requests
+            .iter()
+            .any(|request| request.cached_prompt_tokens == 0)
 }
 
 /// The prompt identities one cell executes before and during measurement.
@@ -152,15 +160,19 @@ struct CellRow {
     errors: usize,
     requests: Vec<RequestEvidence>,
     vacuous: bool,
+    cache_uncontrolled: bool,
 }
 
 impl CellRow {
     fn min_completion(&self) -> Option<usize> {
         self.requests.iter().map(|r| r.completion_tokens).min()
     }
+    fn min_cached_prompt(&self) -> Option<usize> {
+        self.requests.iter().map(|r| r.cached_prompt_tokens).min()
+    }
     /// Clean and above the vacuity floor — the only rows metrics may quote.
     fn comparable(&self) -> bool {
-        self.errors == 0 && !self.vacuous
+        self.errors == 0 && !self.vacuous && !self.cache_uncontrolled
     }
 }
 
@@ -298,6 +310,7 @@ impl ConcurrencySweep {
                     tokens += o.completion_tokens;
                     requests.push(RequestEvidence {
                         completion_tokens: o.completion_tokens,
+                        cached_prompt_tokens: o.cached_prompt_tokens,
                         finish_reason: o.finish_reason.clone(),
                         server_ttft_ms: o.server_ttft_ms,
                         server_tps: o.server_tps,
@@ -310,6 +323,11 @@ impl ConcurrencySweep {
             }
         }
         let vacuous = cell_is_vacuous(&requests, self.osl);
+        // Matching prompt bytes reach the intended setup, but the endpoint's
+        // usage is the oracle for whether the measured request actually used
+        // cached prompt state. A requested warm path with a zero or omitted
+        // cached-token count is a different instrument.
+        let cache_uncontrolled = cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
         if vacuous {
             handle.warn(format!(
@@ -324,6 +342,12 @@ impl ConcurrencySweep {
                     .unwrap_or(0),
             ));
         }
+        if cache_uncontrolled {
+            handle.warn(format!(
+                "isl {isl} conc {conc}: warm-up was requested but at least one measured request \
+                 reported zero cached prompt tokens — this cell is NOT comparable"
+            ));
+        }
         Ok(CellRow {
             isl,
             conc,
@@ -334,6 +358,7 @@ impl ConcurrencySweep {
             errors,
             requests,
             vacuous,
+            cache_uncontrolled,
         })
     }
 
@@ -351,6 +376,7 @@ impl ConcurrencySweep {
                 Column::right("E2E p50", 9),
                 Column::right("tok/s", 8),
                 Column::right("min tok", 7),
+                Column::right("min cache", 9),
                 Column::right("err", 4),
             ],
         );
@@ -374,6 +400,11 @@ impl ConcurrencySweep {
                 },
                 Cell::new(
                     r.min_completion()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
+                Cell::new(
+                    r.min_cached_prompt()
                         .map(|v| v.to_string())
                         .unwrap_or_else(|| "—".into()),
                 ),
@@ -461,9 +492,21 @@ impl ConcurrencySweep {
         if let Some(min) = self.rows.iter().filter_map(CellRow::min_completion).min() {
             m.insert("min_completion_tokens".to_string(), min as f64);
         }
+        if let Some(min) = self
+            .rows
+            .iter()
+            .filter_map(CellRow::min_cached_prompt)
+            .min()
+        {
+            m.insert("min_cached_prompt_tokens".to_string(), min as f64);
+        }
         m.insert(
             "vacuous_cells".to_string(),
             self.rows.iter().filter(|r| r.vacuous).count() as f64,
+        );
+        m.insert(
+            "cache_uncontrolled_cells".to_string(),
+            self.rows.iter().filter(|r| r.cache_uncontrolled).count() as f64,
         );
         m
     }
@@ -477,6 +520,10 @@ fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> Strin
         .iter()
         .map(|r| r.completion_tokens.to_string())
         .collect();
+    let cached: Vec<String> = requests
+        .iter()
+        .map(|r| r.cached_prompt_tokens.to_string())
+        .collect();
     let mut finish: BTreeMap<&str, usize> = BTreeMap::new();
     for r in requests {
         *finish
@@ -487,8 +534,9 @@ fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> Strin
     let sttft: Vec<f64> = requests.iter().filter_map(|r| r.server_ttft_ms).collect();
     let stps: Vec<f64> = requests.iter().filter_map(|r| r.server_tps).collect();
     let mut line = format!(
-        "evidence isl {isl} conc {conc}: tok [{}] · finish [{}]",
+        "evidence isl {isl} conc {conc}: tok [{}] · cached [{}] · finish [{}]",
         toks.join(","),
+        cached.join(","),
         finish.join(",")
     );
     if let Some(v) = stats::percentile(&sttft, 50) {
@@ -646,6 +694,7 @@ impl Benchmark for ConcurrencySweep {
         if self.cursor >= self.cells.len() {
             let errors: usize = self.rows.iter().map(|r| r.errors).sum();
             let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
+            let cache_uncontrolled = self.rows.iter().filter(|r| r.cache_uncontrolled).count();
             // The verdict is computed over the SAME metrics map the gate
             // record carries (see `verdict::sweep_verdict`), so the two can
             // never disagree about a rung's value. Floors all-zero keeps the
@@ -656,6 +705,7 @@ impl Benchmark for ConcurrencySweep {
                 self.rows.len(),
                 errors,
                 vacuous,
+                cache_uncontrolled,
                 VACUITY_FLOOR * 100.0,
                 &self.floors,
             );

@@ -17,6 +17,8 @@
 //! * VACUOUS cells make a gating run INCONCLUSIVE (a failing verdict), never
 //!   PASS: an aggregate that divides undelivered tokens' wall time into real
 //!   tokens cannot clear a throughput floor, however large it prints.
+//! * a requested warm path with no observed cached prompt tokens is likewise
+//!   INCONCLUSIVE: matching request bytes do not prove the cache served them.
 
 use std::collections::BTreeMap;
 
@@ -52,6 +54,7 @@ pub(crate) fn sweep_verdict(
     cells: usize,
     errors: usize,
     vacuous: usize,
+    cache_uncontrolled: usize,
     vacuity_floor_pct: f64,
     floors: &Floors,
 ) -> Verdict {
@@ -64,10 +67,11 @@ pub(crate) fn sweep_verdict(
     if !floors.gating() {
         // The pre-gate behaviour, verbatim: a standalone sweep has no
         // committed ladder to be judged against.
-        return if vacuous > 0 {
+        return if vacuous > 0 || cache_uncontrolled > 0 {
             Verdict::info(format!(
                 "{cells} cells, {vacuous} below the vacuity floor ({vacuity_floor_pct:.0}% \
-                 of osl) — flagged rows' tok/s are not comparable"
+                 of osl), {cache_uncontrolled} without observed warm-cache use — flagged \
+                 rows' tok/s are not comparable"
             ))
         } else {
             Verdict::info(format!(
@@ -80,6 +84,12 @@ pub(crate) fn sweep_verdict(
             "INCONCLUSIVE: {vacuous} of {cells} cells below the vacuity floor \
              ({vacuity_floor_pct:.0}% of osl) — undelivered tokens cannot clear a \
              throughput floor, whatever the aggregate prints"
+        ));
+    }
+    if cache_uncontrolled > 0 {
+        return Verdict::fail(format!(
+            "INCONCLUSIVE: {cache_uncontrolled} of {cells} cells requested warm-up but a \
+             measured request reported zero cached prompt tokens"
         ));
     }
     let mut basis = Vec::new();
