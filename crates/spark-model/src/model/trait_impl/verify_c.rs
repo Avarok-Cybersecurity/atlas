@@ -184,7 +184,28 @@ impl TransformerModel {
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager;
+        // 🔴🔴 KNOWN INCORRECT — DO NOT ENABLE. `ATLAS_GLM_VERIFY_GRAPHS=1` captures the
+        // multi-row verify under EP. Capture SUCCEEDS and the capture pass is byte-exact
+        // (proved with ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1, which captures and runs every step:
+        // all six probes match eager). REPLAY DIVERGES: pyadd/open128/open512 return
+        // 0e331783 / 88f2ccc1 / d253d593 against the eager 090d209c / bc94ba6f / d2ec1a53,
+        // first differing ~22 tokens into the generation, and IDENTICALLY at K=2 and K=3.
+        // Root cause NOT found (2026-08-29) — see `.planning/ANOMALIES.md` A56.
+        //
+        // 🪤 This deliberately does NOT read `ATLAS_EP_GRAPHS`. That variable is set by the
+        // SEALED spec-off launch config, where it gates `decode_a`'s K=1 decode graph — which
+        // IS correct (spec-off graphed: all six hashes match, 15.32-15.66 tok/s). Wiring the
+        // verify to the same variable would silently turn a shipped, byte-identical config
+        // into a divergent one the moment MTP was switched on.
+        let ep_graphs =
+            std::env::var("ATLAS_GLM_VERIFY_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        if ep_graphs {
+            tracing::error!(
+                "ATLAS_GLM_VERIFY_GRAPHS=1: the multi-row verify graph REPLAYS INCORRECTLY \
+                 (ANOMALIES A56). Diagnostic use only — its output is not the model's output."
+            );
+        }
+        let use_graphs = (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -224,6 +245,16 @@ impl TransformerModel {
             && graph.0 != 0
         {
             self.gpu.launch_graph(graph, stream)?;
+            // 🔴 A replay runs kernels and NOTHING else. Any layer that keeps per-sequence
+            // bookkeeping on the HOST — GLM-5.3's DSA indexer cache length — must be advanced
+            // here, once PER VERIFY ROW, because its `decode_k` did not run. Miss this and the
+            // next eager step plans its selection over a stale length and `decode_k`'s own
+            // lockstep check fires. Default impl is a no-op for every other layer.
+            for (i, layer) in self.layers.iter().enumerate() {
+                for _ in 0..k {
+                    layer.advance_replayed_step(seq.layer_states[i].as_mut())?;
+                }
+            }
         }
         let need_run = cached_for_slot.is_none();
         if need_run {
@@ -334,7 +365,14 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=3 verify (slot={})", seq.slot_idx);
-                    if let Some(ref mut cache) = graph_cache {
+                    // BISECT HATCH (ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1): capture-and-run every
+                    // step, never replay. Separates "the capture pass computes something
+                    // different from eager" from "the capture is faithful but replay goes
+                    // stale" — they need different fixes and look identical from the outside.
+                    if let Some(ref mut cache) = graph_cache
+                        && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE")
+                            .is_ok_and(|v| v == "1")
+                    {
                         cache.insert(seq.slot_idx, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;

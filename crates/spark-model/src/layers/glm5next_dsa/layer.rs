@@ -584,10 +584,17 @@ impl Glm5NextDsaLayer {
     /// emitted. `ops::dense_mm_bf16` reproduces each row's K-iteration order and reduction tree,
     /// and `rms_norm_vanilla`'s grid is the token axis.
     ///
-    /// 🪤 REFUSES a step-scoped `attn_metadata` at k > 1. Those scalars — position, KV slot,
-    /// seq len — describe ONE token, so K rows sharing them would write K queries into the same
-    /// paged slot and select over the same position: a wrong answer with no shape error. The
-    /// verify path is eager (`ctx.decode_step == false`) and computes them per row.
+    /// 🪤 REFUSES a SCALAR (`num_seqs == 1`) `attn_metadata` at k > 1. Those scalars — position,
+    /// KV slot, seq len — describe ONE token, so K rows sharing them would write K queries into
+    /// the same paged slot and select over the same position: a wrong answer with no shape error.
+    ///
+    /// 🔴 It ACCEPTS a K-ROW `attn_metadata` (`num_seqs == k`), which is what the graphed verify
+    /// paths (`verify_b`/`verify_c`) already upload: positions `[k]` u32, slot `[k]` i64, seq_len
+    /// `[k]` i32, block_table `[k][max_blocks_per_seq]` i32, all at stable device addresses
+    /// written BEFORE capture or replay. Row `r` reads element `r` of each. Without this the
+    /// layer fell through to its own per-row `copy_h2d`, and an H2D on a capturing stream fails
+    /// with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED — which is why the K-token verify was eager.
+    /// At `k == 1` every row offset is 0, so that path is unchanged byte for byte.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_k(
         &self,
@@ -638,13 +645,27 @@ impl Glm5NextDsaLayer {
                 self.workspace.max_rows
             );
         }
-        if k > 1 && ctx.decode_step && ctx.attn_metadata.is_some() {
+        // A K-row pass may use `attn_metadata` ONLY when it carries one entry per row.
+        if k > 1
+            && let Some(m) = ctx.attn_metadata.as_ref()
+            && m.num_seqs as usize != k
+            && ctx.decode_step
+        {
             bail!(
-                "DSA layer {}: a {k}-row pass cannot share one step's attn_metadata — its \
-                 position and KV slot describe a single token",
-                self.layer_idx
+                "DSA layer {}: a {k}-row pass cannot share attn_metadata describing {} \
+                 token(s) — its position and KV slot describe a single token",
+                self.layer_idx,
+                m.num_seqs
             );
         }
+        // 🪤 Guarded on `num_seqs == k`, NOT on `decode_step`. A chunked prefill also passes
+        // metadata through this call at k == 1, and its `num_seqs` is the chunk width — so a
+        // one-token chunk is the only case where the two could be confused, and `decode_step`
+        // still separates them there.
+        let rowwise_meta = (k > 1)
+            .then(|| ctx.attn_metadata.as_ref())
+            .flatten()
+            .filter(|m| m.num_seqs as usize == k);
         let gpu = ctx.gpu;
         let w = &self.workspace;
         let t_proj = crate::layers::glm5next_layer::profile::start();
@@ -725,10 +746,12 @@ impl Glm5NextDsaLayer {
             let meta = if ctx.decode_step {
                 ctx.attn_metadata.as_ref()
             } else {
-                None
+                rowwise_meta
             };
+            // Row strides into the K-row arrays. At k == 1 every one of these is 0.
+            let bt_stride = meta.map_or(0, |m| m.max_blocks_per_seq as usize) * 4;
             let slot_dev = match meta {
-                Some(m) => m.slot,
+                Some(m) => m.slot.offset(row * 8),
                 None => {
                     let logical = pos / block_size;
                     let physical = *block_table.get(logical).ok_or_else(|| {
@@ -767,7 +790,7 @@ impl Glm5NextDsaLayer {
                 && self.select_kernels.indexer_store.0 != 0
                 && self.select_kernels.write_geom.0 != 0;
             let pos_dev = if replay_safe {
-                meta.map(|m| m.positions)
+                meta.map(|m| m.positions.offset(row * 4))
             } else {
                 None
             };
@@ -775,7 +798,11 @@ impl Glm5NextDsaLayer {
             profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
             let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
-                Some(m) => (m.positions, Some(m.block_table), Some(m.seq_len)),
+                Some(m) => (
+                    m.positions.offset(row * 4),
+                    Some(m.block_table.offset(row * bt_stride)),
+                    Some(m.seq_len.offset(row * 4)),
+                ),
                 None => {
                     let qp = pos as i32;
                     gpu.copy_h2d(&qp.to_le_bytes(), w.q_pos)?;
@@ -822,7 +849,18 @@ impl Glm5NextDsaLayer {
                 num_seqs: 1,
                 num_q_heads: self.cfg.local_heads,
                 num_kv_heads: 1,
-                max_blocks_per_seq: block_table.len(),
+                // 🔴 THIS IS A KERNEL ARGUMENT, so a CUDA graph BAKES IT IN at capture time.
+                // `block_table.len()` grows every time the sequence crosses a block boundary,
+                // so a captured graph replayed at a longer context keeps walking the capture's
+                // block count — right answer for the first few tokens, wrong one after. Take
+                // the metadata's ceiling, which verify_b/verify_c hold CONSTANT at
+                // `self.max_blocks_per_seq` and zero-pad every uploaded row out to.
+                // Without this the graphed K=3 verify diverged from eager on exactly the long
+                // probes (pyadd/open128/open512) and matched on the 32-token ones.
+                max_blocks_per_seq: match meta {
+                    Some(m) => m.max_blocks_per_seq as usize,
+                    None => block_table.len(),
+                },
                 block_size,
                 cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
             };
