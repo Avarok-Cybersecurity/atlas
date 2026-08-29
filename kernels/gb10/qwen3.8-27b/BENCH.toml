@@ -303,7 +303,12 @@ from the 2026-08-15 hand-built batched calibration serve, NOT from a \
 certified run on the pinned profile (fp8 KV, 8 Marconi slots, 4K context \
 change the memory geometry). They stand untouched as placeholders until the \
 first batched certified run on this profile; re-cut all five together from \
-that run's cells."""
+that run's cells. \
+★ WARM-UP SEMANTICS CHANGED: historical records sent one unrelated `warm` \
+prompt per cell, then measured `c0..cN`; later rungs also reused prompts from \
+earlier rungs. `warmup = 1` now runs every exact measured prompt once before \
+timing. Existing records and floors predate that controlled-cache instrument \
+and cannot calibrate it; the first certified rerun must replace them."""
 
 # ★ PLACEMENT: a [benchmarks.*] sub-table attaches to the MOST RECENT
 # [[benchmarks]] header above it. This serve pin was first committed ABOVE
