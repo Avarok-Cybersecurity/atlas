@@ -213,3 +213,41 @@ assertions**. That is the control, and it runs against a real server.
 **Deployed.** `blog.atlasinference.io` now serves the built site through
 Cloudflare — rsynced by hand this once, with the same flags the workflow will
 use, so the header check had something true to test.
+
+## Wave 4 — deploy on merge, inside the existing job
+
+**Changed.** `.github/workflows/site.yml` now builds and deploys both
+properties. Not a second workflow: the brief asked for the same job, and one
+job is also the correct shape — it means a single SSH agent, a single host-key
+pin, and no way for the two properties to deploy from different commits.
+
+| where | added |
+|---|---|
+| `on.push.paths` | `blog/**`, and **`web-shared/**`** |
+| `unit` job | blog unit tests, and the contrast budget |
+| `build` job | blog install → build → per-route title check → artifact |
+| `deploy` job | `rsync` to `DEPLOY_BLOG_PATH`, then the live header check |
+
+**"If a diff exists" is already how rsync behaves.** `rsync -az --delete-delay`
+transfers nothing and deletes nothing when the built tree matches the deployed
+one, so a push that only touched `site/` costs one no-op sync rather than a
+redeploy. No content hashing of our own was needed.
+
+**`web-shared/**` in the path filter is the non-obvious one.** The tokens file
+is imported by both apps. Without that line, editing a colour would restyle
+neither property until something unrelated happened to touch `site/`, and the
+two would sit at different versions of "the same colour scheme" in the
+meantime — which is precisely the failure the shared file exists to prevent.
+
+**`DEPLOY_BLOG_PATH`** was added to the `production-site` environment
+(`/var/www/blog.atlasinference.io/html`). The blog deploy step **fails hard** if
+it is absent, rather than taking the soft skip the job takes when
+`DEPLOY_SSH_PRIVATE_KEY` is missing. Those are different situations: the soft
+skip is for an environment with no deploy configured at all, this would be an
+environment that deploys with one target forgotten — and skipping quietly there
+means the blog stops updating while every run stays green.
+
+**Post-deploy verification runs against the live origin**, not against the
+artifact. `blog/e2e/check-headers.mjs` is the only instrument that observes the
+`add_header` defect, and it also catches a deploy that landed the wrong tree —
+the 404 assertion fails if `404.html` is not in the docroot.
