@@ -165,6 +165,13 @@ impl WeightTensor {
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    /// Pointers freed early by [`WeightStore::reclaim`], recorded so
+    /// `release` does not free them a second time.
+    ///
+    /// `Mutex` because the loaders hold `&WeightStore` (not `&mut`) all the way
+    /// down the weight-map call chain; making the map itself interior-mutable
+    /// would change every accessor, while a side set touches nothing else.
+    reclaimed: std::sync::Mutex<std::collections::HashSet<u64>>,
 }
 
 impl WeightStore {
@@ -172,6 +179,7 @@ impl WeightStore {
     pub fn empty() -> Self {
         Self {
             weights: HashMap::new(),
+            reclaimed: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -179,7 +187,10 @@ impl WeightStore {
     /// `fast_weights::FastSafetensorsLoader`, and the RDMA weight loader in
     /// `spark-storage`, which lives in a different crate and so needs this pub).
     pub fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
-        Self { weights }
+        Self {
+            weights,
+            reclaimed: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
@@ -187,6 +198,44 @@ impl WeightStore {
         self.weights
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Weight '{name}' not found in store"))
+    }
+
+    /// Free a source tensor whose contents have been fully consumed into a
+    /// derived buffer, before the rest of the model finishes loading.
+    ///
+    /// The motivating case is a **mixed-precision NVFP4 checkpoint on a
+    /// unified-memory part**. `unsloth/Qwen3.8-27B-NVFP4` keeps 11.56 GB of
+    /// tensors as FP8 E4M3 (attention q/k/v/o, the GDN in/out projections,
+    /// `lm_head`, and layers 56-63 MLP) inside an otherwise-NVFP4 net.
+    /// `quantized_from_fp8` turns each into a 2x smaller NVFP4 copy and frees
+    /// the BF16 intermediate — but the FP8 source stayed live until teardown,
+    /// so the layer loop peaked at FP8 sources + NVFP4 copies + everything
+    /// else = 29.2 GB where 17.6 GB was needed.
+    ///
+    /// On GB10 (128 GB) that is invisible. On a 64 GB Strix Halo, where the GPU
+    /// allocates out of the same pool as the OS and the practical ceiling is
+    /// ~55 GB, it is the difference between serving and `cuMemAlloc failed`.
+    ///
+    /// The pointer is recorded so `release` skips it — the map keeps its
+    /// entry (callers may still read `shape`/`dtype`), but the memory is gone,
+    /// so **the caller must be certain nothing will read the data again**.
+    pub fn reclaim(&self, gpu: &dyn GpuBackend, name: &str) -> Result<()> {
+        let Some(t) = self.weights.get(name) else {
+            return Ok(());
+        };
+        let mut seen = self
+            .reclaimed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("weight store reclaim set poisoned"))?;
+        if !seen.insert(t.ptr.0) {
+            return Ok(()); // already reclaimed — idempotent
+        }
+        gpu.free(t.ptr)
+    }
+
+    /// Bytes released so far by [`Self::reclaim`] — for the load-time memory trace.
+    pub fn reclaimed_count(&self) -> usize {
+        self.reclaimed.lock().map(|s| s.len()).unwrap_or(0)
     }
 
     /// Check if a weight exists.
@@ -407,7 +456,13 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
         let mut first_error = None;
         // `drain` rather than iterate: the map must not be left holding
         // pointers to memory that is gone, and it makes this idempotent.
+        let reclaimed: std::collections::HashSet<u64> =
+            self.reclaimed.lock().map(|s| s.clone()).unwrap_or_default();
         for (name, tensor) in self.weights.drain() {
+            // Already freed early by `reclaim` — freeing again is a double free.
+            if reclaimed.contains(&tensor.ptr.0) {
+                continue;
+            }
             if let Err(e) = gpu.free(tensor.ptr)
                 && first_error.is_none()
             {

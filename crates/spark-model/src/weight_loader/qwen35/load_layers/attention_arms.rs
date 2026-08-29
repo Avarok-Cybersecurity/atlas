@@ -103,53 +103,65 @@ pub(super) fn build_full_attention_nvfp4(
         }
         Nvfp4Variant::Standard | Nvfp4Variant::Fp8Dequanted | Nvfp4Variant::Bf16Raw => {
             tracing::info!("Layer {i}: loading attention projections ({variant:?})");
-            let load_bf16_then_nvfp4 =
-                |name: &str,
-                 full_n: usize,
-                 full_k: usize,
-                 kind: TpShardKind|
-                 -> Result<(DenseWeight, crate::weight_map::QuantizedWeight)> {
-                    let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
-                    let (sharded_ptr, local_n, local_k) =
-                        shard_dense_bf16(src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu)?;
-                    let sharded = DenseWeight {
-                        weight: sharded_ptr,
-                    };
-                    // TQ+ weight pre-rotation: apply canonical Rademacher rotation
-                    // S2·H·S1 to Q/K/V columns per-head BEFORE quantization. When
-                    // active (TQ_PLUS_WEIGHT_ROTATION=1) the runtime wht_bf16_inplace
-                    // launches on Q/K/V become redundant. O projection skipped (the
-                    // input-side rotation needs a transpose). hd=128 only — 256/512
-                    // sign arrays not yet vendored.
-                    if super::tq_plus_weight_rotation::weight_rotation_enabled()
-                        && (name == "q_proj" || name == "k_proj" || name == "v_proj")
-                        && config.head_dim == 128
-                    {
-                        let n_heads = local_n / config.head_dim;
-                        if n_heads * config.head_dim == local_n && n_heads > 0 {
-                            let _ =
-                                super::tq_plus_weight_rotation::apply_canonical_rotation_inplace(
-                                    gpu,
-                                    sharded_ptr,
-                                    local_k,
-                                    n_heads,
-                                    config.head_dim,
-                                    stream,
-                                );
-                            tracing::info!(
-                                "TQ+ weight rotation applied: {name} ({n_heads}h × {}hd)",
-                                config.head_dim
-                            );
-                        }
-                    }
-                    let q = quantize_to_nvfp4(
-                        &sharded, local_n, local_k, gpu, absmax_k, quantize_k, stream,
-                    )?;
-                    if sharded_ptr != src.weight {
-                        gpu.free(sharded_ptr)?;
-                    }
-                    Ok((src, q))
+            let load_bf16_then_nvfp4 = |name: &str,
+                                        full_n: usize,
+                                        full_k: usize,
+                                        kind: TpShardKind|
+             -> Result<(
+                DenseWeight,
+                crate::weight_map::QuantizedWeight,
+            )> {
+                let __t0 = std::time::Instant::now();
+                let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
+                let __t_dq_ms = __t0.elapsed().as_millis();
+                let (sharded_ptr, local_n, local_k) =
+                    shard_dense_bf16(src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu)?;
+                let sharded = DenseWeight {
+                    weight: sharded_ptr,
                 };
+                // TQ+ weight pre-rotation: apply canonical Rademacher rotation
+                // S2·H·S1 to Q/K/V columns per-head BEFORE quantization. When
+                // active (TQ_PLUS_WEIGHT_ROTATION=1) the runtime wht_bf16_inplace
+                // launches on Q/K/V become redundant. O projection skipped (the
+                // input-side rotation needs a transpose). hd=128 only — 256/512
+                // sign arrays not yet vendored.
+                if super::tq_plus_weight_rotation::weight_rotation_enabled()
+                    && (name == "q_proj" || name == "k_proj" || name == "v_proj")
+                    && config.head_dim == 128
+                {
+                    let n_heads = local_n / config.head_dim;
+                    if n_heads * config.head_dim == local_n && n_heads > 0 {
+                        let _ = super::tq_plus_weight_rotation::apply_canonical_rotation_inplace(
+                            gpu,
+                            sharded_ptr,
+                            local_k,
+                            n_heads,
+                            config.head_dim,
+                            stream,
+                        );
+                        tracing::info!(
+                            "TQ+ weight rotation applied: {name} ({n_heads}h × {}hd)",
+                            config.head_dim
+                        );
+                    }
+                }
+                let __t_q0 = std::time::Instant::now();
+                let q = quantize_to_nvfp4(
+                    &sharded, local_n, local_k, gpu, absmax_k, quantize_k, stream,
+                )?;
+                if std::env::var("ATLAS_LOAD_TIMING").is_ok() {
+                    tracing::info!(
+                        "  attn-load L{i} {name}: dense_auto(fp8->bf16)={}ms quantize_nvfp4={}ms total(incl shard/rot)={}ms",
+                        __t_dq_ms,
+                        __t_q0.elapsed().as_millis(),
+                        __t0.elapsed().as_millis(),
+                    );
+                }
+                if sharded_ptr != src.weight {
+                    gpu.free(sharded_ptr)?;
+                }
+                Ok((src, q))
+            };
             tracing::info!("Layer {i}: BF16 → NVFP4 (TP-aware)");
             let [
                 (q_dense, q_nvfp4),

@@ -167,6 +167,7 @@ impl WeightLoader for SafetensorsLoader {
 
         Ok(WeightStore {
             weights: weight_map,
+            reclaimed: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 }

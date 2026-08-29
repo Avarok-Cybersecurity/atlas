@@ -348,38 +348,51 @@ impl GpuBackend for AtlasCudaBackend {
         height: usize,
         stream: u64,
     ) -> Result<()> {
-        // One pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's stream,
-        // replacing a per-row copy_d2d_async loop. cudart is linked (cutlass/
-        // flashinfer use the runtime API); a CUstream handle is a valid
-        // cudaStream_t.
-        unsafe extern "C" {
-            fn cudaMemcpy2DAsync(
-                dst: *mut c_void,
-                dpitch: usize,
-                src: *const c_void,
-                spitch: usize,
-                width: usize,
-                height: usize,
-                kind: i32,
-                stream: u64,
-            ) -> i32;
+        // NVIDIA: one pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's
+        // stream via the cudart runtime, replacing a per-row copy_d2d_async loop.
+        #[cfg(not(atlas_scale))]
+        {
+            unsafe extern "C" {
+                fn cudaMemcpy2DAsync(
+                    dst: *mut c_void,
+                    dpitch: usize,
+                    src: *const c_void,
+                    spitch: usize,
+                    width: usize,
+                    height: usize,
+                    kind: i32,
+                    stream: u64,
+                ) -> i32;
+            }
+            let status = unsafe {
+                cudaMemcpy2DAsync(
+                    dst.0 as *mut c_void,
+                    dst_pitch,
+                    src.0 as *const c_void,
+                    src_pitch,
+                    width_bytes,
+                    height,
+                    3,
+                    stream,
+                )
+            };
+            if status != 0 {
+                bail!("cudaMemcpy2DAsync failed: status {status}");
+            }
+            Ok(())
         }
-        let status = unsafe {
-            cudaMemcpy2DAsync(
-                dst.0 as *mut c_void,
-                dst_pitch,
-                src.0 as *const c_void,
-                src_pitch,
-                width_bytes,
-                height,
-                3,
-                stream,
-            )
-        };
-        if status != 0 {
-            bail!("cudaMemcpy2DAsync failed: status {status}");
+        // strix/SCALE: no cudart runtime linked (SCALE's libcuda is driver-only).
+        // Fall back to the per-row driver-API loop this pitched copy replaced —
+        // `copy_d2d_async` uses `cuMemcpyDtoDAsync`, which SCALE provides.
+        #[cfg(atlas_scale)]
+        {
+            for row in 0..height {
+                let s = DevicePtr(src.0 + (row * src_pitch) as u64);
+                let d = DevicePtr(dst.0 + (row * dst_pitch) as u64);
+                self.copy_d2d_async(s, d, width_bytes, stream)?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     fn begin_capture(&self, stream: u64) -> Result<()> {

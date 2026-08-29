@@ -174,7 +174,8 @@ pub(super) fn load_layers(
         let total = per_layer * config.num_hidden_layers;
         let available = gpu.free_memory().unwrap_or(0);
         let headroom = 2 * 1024 * 1024 * 1024; // 2 GB for KV cache + buffers
-        let skip = total > available.saturating_sub(headroom);
+        let skip = std::env::var("ATLAS_SKIP_MOE_TRANSPOSE").ok().as_deref() == Some("1")
+            || total > available.saturating_sub(headroom);
         if skip {
             tracing::warn!(
                 "Skipping MoE weight transposition ({:.1} GB needed, {:.1} GB available). \

@@ -327,6 +327,34 @@ pub(crate) fn quantized_from_fp8(
     let result = quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)?;
     // Free the BF16 intermediate — only the NVFP4 result is needed.
     gpu.free(bf16.weight)?;
+    // …and the FP8 SOURCE too, when nothing downstream can still read it.
+    //
+    // Mirrors the `Bf16Raw` arm above, which frees its source for the same
+    // reason, and matters for the same class of checkpoint: a mixed-precision
+    // NVFP4 net whose FP8 half is 11.56 GB (unsloth/Qwen3.8-27B-NVFP4). Holding
+    // those sources alongside their 5.78 GB of NVFP4 copies put the dense load
+    // loop at 29.2 GB instead of 17.6 GB — measured with ATLAS_MEM_PROFILE=1 on
+    // gfx1151, where the GPU allocates from the same 64 GB the OS uses and the
+    // practical ceiling is ~55 GB. It is the difference between serving and
+    // `cuMemAlloc_v2 failed` at model build.
+    //
+    // TWO readers can still want the FP8 copy after this returns, so the
+    // reclaim is refused unless BOTH are known to be off:
+    //
+    //   * the GDN native-FP8 prefill precision policy (qwen35_dense.rs) reads
+    //     linear_attn in_proj_qkv / out_proj as FP8 — live unless
+    //     ATLAS_NO_GDN_FP8_PREFILL is set;
+    //   * the dense FP8 attention overlay (`dense_fp8_enabled`) reads
+    //     self_attn q/k/v/o as FP8 — live only when ATLAS_DENSE_FP8=1.
+    //
+    // Both off ⇒ the NVFP4 result is the only consumer of these bytes.
+    // Deliberately conservative: this frees ALL FP8 sources or NONE, rather
+    // than guessing per-tensor from `prefix`.
+    let gdn_fp8_prefill_on = std::env::var_os("ATLAS_NO_GDN_FP8_PREFILL").is_none();
+    let dense_fp8_on = std::env::var("ATLAS_DENSE_FP8").as_deref() == Ok("1");
+    if !gdn_fp8_prefill_on && !dense_fp8_on {
+        store.reclaim(gpu, &format!("{prefix}.weight"))?;
+    }
     Ok(result)
 }
 
