@@ -339,10 +339,20 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         let rms_norm_k = gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?;
 
         // 🪤 All 34 KDA blocks have identical geometry, so ONE workspace serves them all.
-        // Sized for a single token: prefill runs token-by-token through `Glm5NextLayer::prefill`
-        // (the mHC highway forces per-token anyway), so the chunked KDA prefill is unused.
+        //
+        // Sized for the widest speculative verify rather than one token. Prefill still runs
+        // token-by-token through `Glm5NextLayer::prefill` (the mHC highway forces per-token
+        // anyway), but `Glm5NextLayer::forward_k` sweeps the KDA weights ONCE for all K rows of
+        // a verify and needs `[K, ...]` scratch to do it. The cap is the batched GEMV kernel's
+        // own `MAX_M`: past it `ops::dense_mm_bf16` falls back to the tile GEMM, which is not
+        // bit-identical to the serial decode a verify must reproduce.
+        //
+        // Cost is a few MB for the whole model: the FP32 buffers are already sized to
+        // `t_pad = ceil(t / chunk) * chunk = 32` at t = 1, so only the BF16 `[t, *]` scratch
+        // grows.
+        let verify_k = crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize;
         let kda_ws = std::sync::Arc::new(crate::layers::glm5next_kda::Glm5NextKdaWorkspace::new(
-            gpu, &kda_cfg, 1,
+            gpu, &kda_cfg, verify_k,
         )?);
 
         let dsa_plan = crate::layers::glm5next_dsa::tp::DsaTpPlan::new(

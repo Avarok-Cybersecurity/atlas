@@ -140,16 +140,22 @@ pub struct Glm5NextLayer {
 }
 
 impl Glm5NextLayer {
+    /// RMSNorm over `rows` contiguous `[hidden]` rows.
+    ///
+    /// 🪤 `rms_norm_vanilla`'s grid IS the token axis (`token = blockIdx.x`), so `rows > 1` is
+    /// one launch doing exactly what `rows` launches would do, block for block — bit-identical,
+    /// which is what lets a K-token verify take it.
     fn norm(
         &self,
         gpu: &dyn GpuBackend,
         x: DevicePtr,
         w: DevicePtr,
         out: DevicePtr,
+        rows: usize,
         stream: u64,
     ) -> Result<()> {
         KernelLaunch::new(gpu, self.rms_norm_k)
-            .grid([1, 1, 1])
+            .grid([rows as u32, 1, 1])
             .block([(self.hidden.min(1024)) as u32, 1, 1])
             .arg_ptr(x)
             .arg_ptr(w)
@@ -229,10 +235,20 @@ impl Glm5NextLayer {
         );
     }
 
-    /// `all_reduce(SUM)` a `[1, hidden]` BF16 partial, when one is needed and a comm exists.
-    fn reduce_partial(&self, p: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+    /// `all_reduce(SUM)` a `[rows, hidden]` BF16 partial, when one is needed and a comm exists.
+    ///
+    /// 🪤 One collective over `rows` contiguous rows, not `rows` collectives: `all_reduce(SUM)`
+    /// is linear and the rows are adjacent, so the result is identical and a K-token verify
+    /// pays the latency once.
+    fn reduce_partial(
+        &self,
+        p: DevicePtr,
+        rows: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         if let Some(comm) = ctx.comm {
-            let bytes = self.hidden * 2;
+            let bytes = rows * self.hidden * 2;
             if ctx.graph_capture {
                 comm.all_reduce(p.0, bytes)?;
             } else {
@@ -242,17 +258,28 @@ impl Glm5NextLayer {
         Ok(())
     }
 
-    /// Run the MLP on `normed` into `out`, then reduce if this rank holds only part of it.
+    /// Run the MLP on `rows` rows of `normed` into `out`, then reduce once if this rank holds
+    /// only part of the result.
+    ///
+    /// ⚠️ The MLP itself is still ONE ROW AT A TIME. The routed experts genuinely do not
+    /// amortize — the measured expert union over K consecutive tokens is 8.00 / 13.74 / 18.76
+    /// at K=1..3, so their weight traffic scales with K whatever the loop looks like — but the
+    /// shared expert and the dense FFN (1,508 MB/rank/token between them) would batch, and do
+    /// not yet. That is the next byte to take, and it needs a K-row MLP workspace.
     fn mlp_forward(
         &self,
         normed: DevicePtr,
         out: DevicePtr,
+        rows: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
         let t_dense = matches!(self.mlp, Glm5NextMlpSite::Dense(_))
             .then(profile::start)
             .flatten();
+        for r in 0..rows {
+        let normed = normed.offset(r * self.hidden * 2);
+        let out = out.offset(r * self.hidden * 2);
         match &self.mlp {
             Glm5NextMlpSite::Dense(w) => forward_dense(
                 ctx.gpu,
@@ -276,6 +303,7 @@ impl Glm5NextLayer {
                 stream,
             )?,
         }
+        }
         profile::end(profile::MLP_DENSE, t_dense, ctx.gpu, stream);
         // 🔴 ONE collective for both partials: the routed experts are EP-sharded and the
         // dense/shared half is TP-sharded, and `all_reduce(SUM)` is linear. It must land here,
@@ -284,7 +312,7 @@ impl Glm5NextLayer {
         if self.mlp_cfg.needs_all_reduce() {
             self.reduce_probe(profile::REDUCE_MLP_BAR, "mlp", ctx, stream);
             let t = profile::start_hot();
-            self.reduce_partial(out, ctx, stream)?;
+            self.reduce_partial(out, rows, ctx, stream)?;
             profile::end_nosync(profile::REDUCE_MLP_ENQ, t);
             // Second span times ONLY the sync: device + network + rank skew.
             let t = profile::start_hot();
@@ -358,7 +386,7 @@ impl Glm5NextLayer {
         )?;
         profile::end(profile::MHC, t_mhc, gpu, stream);
         let t_norm = profile::start();
-        self.norm(gpu, hidden, self.input_norm, normed, stream)?;
+        self.norm(gpu, hidden, self.input_norm, normed, 1, stream)?;
         profile::end(profile::NORM, t_norm, gpu, stream);
         let attn_out = self.mixer_forward(
             normed,
@@ -377,7 +405,7 @@ impl Glm5NextLayer {
         if self.mixer_all_reduce {
             self.reduce_probe(profile::REDUCE_ATTN_BAR, "attn", ctx, stream);
             let t = profile::start_hot();
-            self.reduce_partial(attn_out, ctx, stream)?;
+            self.reduce_partial(attn_out, 1, ctx, stream)?;
             profile::end_nosync(profile::REDUCE_ATTN_ENQ, t);
             // Second span times ONLY the sync: device + network + rank skew.
             let t = profile::start_hot();
@@ -419,9 +447,9 @@ impl Glm5NextLayer {
         )?;
         profile::end(profile::MHC, t_mhc, gpu, stream);
         let t_norm = profile::start();
-        self.norm(gpu, hidden, self.post_attn_norm, normed, stream)?;
+        self.norm(gpu, hidden, self.post_attn_norm, normed, 1, stream)?;
         profile::end(profile::NORM, t_norm, gpu, stream);
-        self.mlp_forward(normed, ffn_out, ctx, stream)?;
+        self.mlp_forward(normed, ffn_out, 1, ctx, stream)?;
         let t_mhc_post = profile::start();
         glm_hc_post(
             gpu,
@@ -449,6 +477,172 @@ impl Glm5NextLayer {
                 hc as u32,
                 stream,
             )?;
+        }
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
+        if self.is_last {
+            profile::step();
+        }
+        Ok(())
+    }
+
+    /// K tokens of one sequence through a KDA layer, with ONE sweep over the weights.
+    ///
+    /// The site order is exactly [`Self::forward_one`]'s — `hc_pre -> norm -> mixer -> hc_post`
+    /// per site, the mHC highway collapsed at the last layer — but every stage runs over all K
+    /// rows at once instead of K times over one. The mHC kernels, `rms_norm_vanilla` and
+    /// `Glm5NextKdaLayer::decode_k` are each grid-parallel or batched over the token axis and
+    /// each is bit-identical to the K serial calls it replaces, so an accepted draft token is
+    /// the token the unspeculated engine would have emitted.
+    ///
+    /// 🪤 Highway slots are `0..K` and MUST stay per-token — the mHC streams are a per-token
+    /// activation that has to survive across layers, so a shared slot would leave every layer
+    /// past the first reading the last token's highway for all K rows.
+    ///
+    /// DSA layers do not come here: their per-step scalars (position, KV slot, seq len) are
+    /// uploaded one token at a time by `decode_a`, so they still walk `forward_one` per row.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_k(
+        &self,
+        hidden: DevicePtr,
+        k: usize,
+        state: &mut dyn LayerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let Glm5NextMixer::Kda { layer, ws, .. } = &self.mixer else {
+            bail!("GLM layer {}: forward_k is the KDA path", self.layer_idx);
+        };
+        let Some(mhc) = self.mhc.as_ref() else {
+            bail!("GLM layer {}: no hyper-connection bound", self.layer_idx);
+        };
+        if k > ws.max_tokens() {
+            bail!(
+                "GLM layer {}: a {k}-token verify exceeds the KDA workspace built for {}",
+                self.layer_idx,
+                ws.max_tokens()
+            );
+        }
+        let hc = mhc.hc_mult;
+        // Slot 0's base: the per-slot strides are exactly these, so K contiguous slots ARE the
+        // `[K, ...]` the kernels want.
+        let streams = ctx.buffers.hc_streams();
+        let post = ctx.buffers.hc_post();
+        let comb = ctx.buffers.hc_comb();
+        let normed = ctx.buffers.norm_output();
+        let ffn_out = ctx.buffers.moe_output();
+        let (kt, ht, hct) = (k as u32, h as u32, hc as u32);
+
+        // Per-token state snapshots a partial accept rewinds to; row `t` writes slot `t`, and
+        // the last row needs none because a full accept never rolls back.
+        let snaps: Vec<(DevicePtr, DevicePtr)> = {
+            let st = self.kda_state(state)?;
+            (0..k.saturating_sub(1))
+                .map(|t| (st.h_state_intermediates[t], st.conv_state_intermediates[t]))
+                .collect()
+        };
+        let kda = {
+            let st = self.kda_state(state)?;
+            KdaSeqState {
+                conv: st.conv_state,
+                recurrent: st.h_state,
+            }
+        };
+
+        let t_mhc = profile::start();
+        if self.is_first {
+            glm_hc_expand(gpu, mhc.kernels.hc_expand, hidden, streams, kt, ht, hct, stream)?;
+        }
+
+        // ── attention site ──
+        glm_hc_pre(
+            gpu,
+            &mhc.kernels,
+            streams,
+            &mhc.attn,
+            hidden,
+            post,
+            comb,
+            kt,
+            ht,
+            hct,
+            mhc.sinkhorn_iters as u32,
+            self.rms_eps,
+            mhc.hc_eps,
+            stream,
+        )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
+        self.norm(gpu, hidden, self.input_norm, normed, k, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
+        let t = profile::start();
+        layer.decode_k(gpu, normed, k, &kda, ws, &snaps, stream)?;
+        profile::end(profile::KDA, t, gpu, stream);
+        let attn_out = ws.final_out;
+        if self.mixer_all_reduce {
+            self.reduce_probe(profile::REDUCE_ATTN_BAR, "attn", ctx, stream);
+            let t = profile::start_hot();
+            self.reduce_partial(attn_out, k, ctx, stream)?;
+            profile::end_nosync(profile::REDUCE_ATTN_ENQ, t);
+            let t = profile::start_hot();
+            profile::end(profile::REDUCE_ATTN, t, ctx.gpu, stream);
+        }
+        let t_mhc_post = profile::start();
+        glm_hc_post(
+            gpu,
+            mhc.kernels.hc_post,
+            attn_out,
+            streams,
+            post,
+            comb,
+            streams,
+            kt,
+            ht,
+            hct,
+            stream,
+        )?;
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
+
+        // ── FFN site ──
+        let t_mhc = profile::start();
+        glm_hc_pre(
+            gpu,
+            &mhc.kernels,
+            streams,
+            &mhc.ffn,
+            hidden,
+            post,
+            comb,
+            kt,
+            ht,
+            hct,
+            mhc.sinkhorn_iters as u32,
+            self.rms_eps,
+            mhc.hc_eps,
+            stream,
+        )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
+        self.norm(gpu, hidden, self.post_attn_norm, normed, k, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
+        self.mlp_forward(normed, ffn_out, k, ctx, stream)?;
+        let t_mhc_post = profile::start();
+        glm_hc_post(
+            gpu,
+            mhc.kernels.hc_post,
+            ffn_out,
+            streams,
+            post,
+            comb,
+            streams,
+            kt,
+            ht,
+            hct,
+            stream,
+        )?;
+        if self.is_last {
+            hc_head_mean(gpu, mhc.kernels.hc_head, streams, hidden, kt, ht, hct, stream)?;
         }
         profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
         if self.is_last {
@@ -672,12 +866,7 @@ impl TransformerLayer for Glm5NextLayer {
         // partially-accepted draft has nothing to rewind to. `rollback_ssm_states_dispatch`
         // restores `h_state_intermediates[num_accepted - 1]`, so row `t` writes slot `t` and
         // the LAST row needs none (a full accept never rolls back).
-        let kda_bytes = match &self.mixer {
-            Glm5NextMixer::Kda { cfg, .. } => {
-                Some((cfg.recurrent_state_elems() * 4, cfg.conv_state_elems() * 4))
-            }
-            Glm5NextMixer::Dsa(_) => None,
-        };
+        let kda_bytes = matches!(self.mixer, Glm5NextMixer::Kda { .. }).then_some(());
         if kda_bytes.is_some() && num_tokens > 1 {
             let st = self.kda_state(state)?;
             // 🔴 Bail rather than skip. Skipping leaves `h_state` ADVANCED past the accepted
@@ -699,6 +888,14 @@ impl TransformerLayer for Glm5NextLayer {
             }
         }
 
+        // KDA: ONE sweep over the weights for all K rows. This is the whole reason speculation
+        // pays — KDA's projections are 4,682 of the 10,838 MB/rank/token and they are read once.
+        if kda_bytes.is_some() {
+            return self.forward_k(hidden, num_tokens, state, ctx, stream);
+        }
+
+        // DSA: still one row at a time. Its per-step scalars (position, KV slot, seq len) are
+        // uploaded a token at a time by `decode_a`, so a K-row sweep needs K-row metadata first.
         for t in 0..num_tokens {
             let off = t * self.hidden * 2;
             self.forward_one(
@@ -714,19 +911,6 @@ impl TransformerLayer for Glm5NextLayer {
                 ctx,
                 stream,
             )?;
-            if let Some((h_bytes, conv_bytes)) = kda_bytes {
-                if t + 1 < num_tokens {
-                    let st = self.kda_state(state)?;
-                    ctx.gpu
-                        .copy_d2d_async(st.h_state, st.h_state_intermediates[t], h_bytes, stream)?;
-                    ctx.gpu.copy_d2d_async(
-                        st.conv_state,
-                        st.conv_state_intermediates[t],
-                        conv_bytes,
-                        stream,
-                    )?;
-                }
-            }
         }
         Ok(())
     }

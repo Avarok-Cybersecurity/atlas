@@ -64,17 +64,45 @@ fn q_is_absorbed_to_the_latent_width() {
     assert!(src.contains("q_absorb"));
 }
 
-/// 🔴 The indexer stream and the KV cache must advance together. If the indexer cache
-/// lags, selection runs over a shorter context than the cache holds — a wrong answer with
-/// no crash — so decode refuses rather than proceeding.
+/// 🔴 The indexer stream and the KV cache must advance together, and the two drifts are NOT
+/// symmetric.
+///
+/// BEHIND (`len < seq_len`) means rows were never written: selection would run over a shorter
+/// context than the cache holds — a wrong answer with no crash — and nothing can repair it, so
+/// decode refuses.
+///
+/// AHEAD (`len > seq_len`) is the speculative-verify reject: the rows past the accepted prefix
+/// are unreachable, because the selector reads `[0, len)` and the next write starts at
+/// `seq_len`. Rewinding is the KV cache's own semantics for a rejected slot, and doing it here
+/// is why no rollback callback has to reach into eleven DSA layers. Refusing instead would make
+/// every partially-accepted draft a hard error.
 #[test]
-fn a_lockstep_drift_between_indexer_and_kv_is_refused() {
+fn a_lockstep_drift_is_refused_behind_and_rewound_ahead() {
     let src = include_str!("../layer.rs");
     assert!(
         src.contains("must advance in lockstep"),
         "the drift guard must state why it exists"
     );
-    assert!(src.contains("if st.len() != seq_len"));
+    assert!(
+        src.contains("st.len().cmp(&seq_len)"),
+        "the guard must branch on the DIRECTION of the drift, not merely on inequality"
+    );
+    assert!(
+        src.contains("Ordering::Greater => st.rewind_to(seq_len)?"),
+        "AHEAD must rewind — this is the verify-reject path"
+    );
+    assert!(
+        src.contains("rows are MISSING, not merely stale"),
+        "BEHIND must still refuse, and say why it is the unrecoverable direction"
+    );
+}
+
+/// `rewind_to` only ever shrinks. A forward "rewind" would mean the caller lost the sequence
+/// position, and silently accepting it would advance the selector over rows never written.
+#[test]
+fn the_indexer_rewind_only_shrinks() {
+    let src = include_str!("../state.rs");
+    assert!(src.contains("rewind only shrinks"));
 }
 
 /// K and V are the SAME buffer: absorbed NoPE MLA caches one latent per token, and the

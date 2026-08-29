@@ -542,32 +542,37 @@ impl Glm5NextKdaLayer {
         )
     }
 
-    /// Single-token decode, carrying both states.
+    /// The stateful half of one KDA token: conv window update (with SiLU + L2 fused) then the
+    /// recurrent scan, both reading row `row` of the workspace and updating `state` IN PLACE.
     ///
-    /// The conv fuses SiLU **and** L2, so `q`/`k` reach `kda_recurrent` already normalised —
-    /// exactly the pre-normalised contract that kernel takes. Re-normalising here would silently
+    /// 🔴 This is the part that CANNOT be batched. The recurrent state after token `t + 1` is a
+    /// function of the state after `t`, so K verify rows walk it K times in order — which is why
+    /// [`Self::decode_k`] batches only the projections around it. The chunked [`Self::prefill`]
+    /// scan computes the same mathematics by a different association and is NOT bit-identical to
+    /// this; using it for a verify would move the output of an ACCEPTED token.
+    ///
+    /// 🪤 The conv fuses SiLU **and** L2, so `q`/`k` reach `kda_recurrent` already normalised —
+    /// exactly the pre-normalised contract that kernel takes. Re-normalising would silently
     /// restore the bf16 rounding the fused write destroyed and look like a kernel bug.
-    ///
-    /// Result lands in `ws.final_out`; `state` is updated in place.
-    pub fn decode(
+    fn stateful_row(
         &self,
         gpu: &dyn GpuBackend,
-        hidden: DevicePtr,
+        row: usize,
         state: &KdaSeqState,
         ws: &Glm5NextKdaWorkspace,
         stream: u64,
     ) -> Result<()> {
         let c = &self.cfg;
         let qkv = c.qkv_dim();
-        self.front_end(gpu, hidden, 1, ws, stream)?;
+        let cd = c.conv_dim();
 
         ops::conv1d_update_l2norm(
             gpu,
             self.kernels.conv_decode,
             state.conv,
-            ws.qkv_proj,
+            ws.qkv_proj.offset(row * cd * 2),
             &self.weights.conv,
-            ws.conv_out,
+            ws.conv_out.offset(row * cd * 2),
             c.conv_dim() as u32,
             c.conv_kernel as u32,
             1,
@@ -594,13 +599,13 @@ impl Glm5NextKdaLayer {
                 .grid([c.heads as u32, (d / vpb) as u32, 1])
                 .block([vpb as u32, 1, 1])
                 .shared_mem(smem_smem as u32)
-                .arg_ptr(ws.conv_out)
-                .arg_ptr(ws.conv_out.offset(qkv * 2))
-                .arg_ptr(ws.conv_out.offset(qkv * 4))
-                .arg_ptr(ws.gate)
-                .arg_ptr(ws.beta)
+                .arg_ptr(ws.conv_out.offset(row * cd * 2))
+                .arg_ptr(ws.conv_out.offset(row * cd * 2 + qkv * 2))
+                .arg_ptr(ws.conv_out.offset(row * cd * 2 + qkv * 4))
+                .arg_ptr(ws.gate.offset(row * qkv * 4))
+                .arg_ptr(ws.beta.offset(row * c.heads * 4))
                 .arg_ptr(state.recurrent)
-                .arg_ptr(ws.core)
+                .arg_ptr(ws.core.offset(row * qkv * 4))
                 .arg_u32(c.heads as u32)
                 .arg_u32(d as u32)
                 .arg_f32(1.0 / (d as f32).sqrt())
@@ -611,20 +616,88 @@ impl Glm5NextKdaLayer {
                 .grid([c.heads as u32, 1, 1])
                 .block([BLOCK.min(d as u32), 1, 1])
                 .shared_mem((3 * d * 4) as u32)
-                .arg_ptr(ws.conv_out)
-                .arg_ptr(ws.conv_out.offset(qkv * 2))
-                .arg_ptr(ws.conv_out.offset(qkv * 4))
-                .arg_ptr(ws.gate)
-                .arg_ptr(ws.beta)
+                .arg_ptr(ws.conv_out.offset(row * cd * 2))
+                .arg_ptr(ws.conv_out.offset(row * cd * 2 + qkv * 2))
+                .arg_ptr(ws.conv_out.offset(row * cd * 2 + qkv * 4))
+                .arg_ptr(ws.gate.offset(row * qkv * 4))
+                .arg_ptr(ws.beta.offset(row * c.heads * 4))
                 .arg_ptr(state.recurrent)
-                .arg_ptr(ws.core)
+                .arg_ptr(ws.core.offset(row * qkv * 4))
                 .arg_u32(c.heads as u32)
                 .arg_u32(d as u32)
                 .arg_f32(1.0 / (d as f32).sqrt())
                 .launch(stream)?;
         }
 
+        Ok(())
+    }
+
+    /// Single-token decode, carrying both states.
+    ///
+    /// The conv fuses SiLU **and** L2, so `q`/`k` reach `kda_recurrent` already normalised —
+    /// exactly the pre-normalised contract that kernel takes. Re-normalising here would silently
+    /// restore the bf16 rounding the fused write destroyed and look like a kernel bug.
+    ///
+    /// Result lands in `ws.final_out`; `state` is updated in place.
+    pub fn decode(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        state: &KdaSeqState,
+        ws: &Glm5NextKdaWorkspace,
+        stream: u64,
+    ) -> Result<()> {
+        self.front_end(gpu, hidden, 1, ws, stream)?;
+        self.stateful_row(gpu, 0, state, ws, stream)?;
         self.back_end(gpu, 1, ws, stream)
+    }
+
+    /// K tokens of ONE sequence: the projections batched, the recurrence NOT.
+    ///
+    /// This is the speculative-verify body. The weight-heavy halves — [`Self::front_end`]'s
+    /// q/k/v, both low-rank gate pairs and `b_proj`, and [`Self::back_end`]'s `o_proj` — run
+    /// once over all K rows, so a K-token verify reads KDA's 4.7 GB/rank/token ONCE instead of
+    /// K times. That is the entire reason speculation can pay on this model.
+    ///
+    /// 🔴 **Bit-identical to K serial [`Self::decode`] calls**, which is not a nicety: an
+    /// accepted draft token must be the token the unspeculated engine would have emitted, or
+    /// speculation is silently lossy. It holds because `dense_gemv_bf16_batchm` reproduces each
+    /// row's exact K-iteration order and reduction tree (`ops::dense_mm_bf16`), the pack / gate
+    /// / sigmoid / `o_norm` kernels are grid-parallel over the token axis, and
+    /// [`Self::stateful_row`] walks the state one token at a time exactly as `decode` does.
+    ///
+    /// `snapshots[t]` — `(h_dst, conv_dst)` — receives the state AFTER row `t`, which is what a
+    /// partial accept rewinds to. Pass `k - 1` of them (a full accept never rewinds) or none.
+    pub fn decode_k(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        k: usize,
+        state: &KdaSeqState,
+        ws: &Glm5NextKdaWorkspace,
+        snapshots: &[(DevicePtr, DevicePtr)],
+        stream: u64,
+    ) -> Result<()> {
+        if k == 0 || k > ws.max_tokens {
+            bail!(
+                "KDA decode_k of {k} tokens does not fit a workspace built for {}",
+                ws.max_tokens
+            );
+        }
+        let c = &self.cfg;
+        let (h_bytes, conv_bytes) = (
+            c.recurrent_state_elems() * 4,
+            c.conv_state_elems() * 4,
+        );
+        self.front_end(gpu, hidden, k, ws, stream)?;
+        for row in 0..k {
+            self.stateful_row(gpu, row, state, ws, stream)?;
+            if let Some((h_dst, conv_dst)) = snapshots.get(row) {
+                gpu.copy_d2d_async(state.recurrent, *h_dst, h_bytes, stream)?;
+                gpu.copy_d2d_async(state.conv, *conv_dst, conv_bytes, stream)?;
+            }
+        }
+        self.back_end(gpu, k, ws, stream)
     }
 
     /// Chunked prefill over `t` tokens from the carried state.
