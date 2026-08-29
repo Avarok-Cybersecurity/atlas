@@ -55,8 +55,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              (C=1/4/8/16, isl 512, osl 320 via the variant's param_overrides) and \
              self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
              cell or request error never passes, whatever the floors say.",
-    duration_hint: "~15–45 min",
-    updated: "2026-08-15",
+    duration_hint: "~25–90 min",
+    updated: "2026-08-29",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.
@@ -122,6 +122,23 @@ fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
     requests
         .iter()
         .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
+}
+
+/// The prompt identities one cell executes before and during measurement.
+/// Keeping the policy in one value makes the cache-state claim testable
+/// without substituting a fake HTTP implementation for the benchmark.
+#[derive(Debug, PartialEq, Eq)]
+struct PromptPlan {
+    warmup_rounds: Vec<Vec<String>>,
+    measured: Vec<String>,
+}
+
+fn prompt_plan(conc: usize, warmup: usize) -> PromptPlan {
+    let measured: Vec<String> = (0..conc).map(|i| format!("c{i}")).collect();
+    PromptPlan {
+        warmup_rounds: vec![measured.clone(); warmup],
+        measured,
+    }
 }
 
 #[derive(Default)]
@@ -231,23 +248,34 @@ impl ConcurrencySweep {
 
     async fn run_cell(&mut self, isl: usize, conc: usize) -> Result<CellRow> {
         let handle = self.handle()?.clone();
-        for w in 0..self.warmup {
+        let plan = prompt_plan(conc, self.warmup);
+        for (w, tags) in plan.warmup_rounds.iter().enumerate() {
             handle.check_cancelled()?;
             handle.status(format!(
-                "isl {isl} · conc {conc} · warmup {}/{}",
+                "isl {isl} · conc {conc} · warmup round {}/{}",
                 w + 1,
                 self.warmup
             ));
-            // Warm-up uses the SAME prompt the measured batch will use, which is
-            // the point: it primes the prefix cache so the timed requests measure
-            // the warm path rather than a one-off cold prefill.
-            let _ = self.one(isl, "warm".to_string()).await;
+            // Prime every exact prompt the measured batch will use. A single
+            // unrelated `warm` tag leaves all measured prompts cold, while
+            // reusing c0/c1/... across later rungs produces a history-dependent
+            // mixture of cached and new prompts. A failed warm-up invalidates
+            // the declared setup instead of silently changing the instrument.
+            for tag in tags {
+                self.one(isl, tag.clone()).await.with_context(|| {
+                    format!("isl {isl} conc {conc}: warm-up prompt {tag} failed")
+                })?;
+            }
         }
         handle.check_cancelled()?;
         handle.status(format!("isl {isl} · conc {conc} · {conc} in flight"));
 
         let batch_start = Instant::now();
-        let futures: Vec<_> = (0..conc).map(|i| self.one(isl, format!("c{i}"))).collect();
+        let futures: Vec<_> = plan
+            .measured
+            .into_iter()
+            .map(|tag| self.one(isl, tag))
+            .collect();
         let outcomes = futures::future::join_all(futures).await;
         let wall = batch_start.elapsed().as_secs_f64().max(1e-6);
 
@@ -523,8 +551,9 @@ impl Benchmark for ConcurrencySweep {
             ),
             ParamSpec::new(
                 "warmup",
-                "Warm-up requests",
-                "Unmeasured requests per cell, priming the prefix cache.",
+                "Warm-up rounds",
+                "Unmeasured rounds per cell. Each round runs every exact prompt in the measured \
+                 batch so prefix-cache state is controlled before timing.",
                 ParamKind::Int { min: 0, max: 8 },
                 ParamValue::Int(1),
             ),

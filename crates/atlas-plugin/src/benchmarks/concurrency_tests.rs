@@ -88,6 +88,31 @@ fn reconfiguring_clears_prior_rows() {
     assert!(b.rows.is_empty() && b.cursor == 0);
 }
 
+#[test]
+fn warmup_and_measurement_share_the_complete_prompt_set() {
+    let b = configured(vec![4], vec![512]);
+    let plan = prompt_plan(4, 2);
+
+    assert!(prompt_plan(4, 0).warmup_rounds.is_empty());
+    assert_eq!(plan.measured, ["c0", "c1", "c2", "c3"]);
+    assert_eq!(
+        plan.warmup_rounds,
+        [plan.measured.clone(), plan.measured.clone()]
+    );
+    let warmup_prompts: Vec<_> = plan.warmup_rounds[0]
+        .iter()
+        .map(|tag| b.cell_prompt(512, tag))
+        .collect();
+    let measured_prompts: Vec<_> = plan
+        .measured
+        .iter()
+        .map(|tag| b.cell_prompt(512, tag))
+        .collect();
+
+    assert_eq!(warmup_prompts, measured_prompts);
+    assert_ne!(b.cell_prompt(512, "warm"), measured_prompts[0]);
+}
+
 // ---- fixture selection ------------------------------------------------------
 
 /// The default is the natural code-generation fixture — the 2026-08-15
