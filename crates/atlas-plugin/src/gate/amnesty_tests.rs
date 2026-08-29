@@ -145,14 +145,11 @@ fn invalidating_paths_drops_exactly_what_the_grant_excuses() {
     );
 }
 
-/// The PR #648 grant is exactly the one KV-budget file in that change.
-/// Placeholder OIDs keep this test red until the final-content pin commit.
-/// (The PR #701 grant — three boundary files — completed this same lifecycle:
-/// pinned, re-earned, emptied.)
+/// The PR #816 grant is exactly the final coverage-policy blob.
 #[test]
-fn the_table_is_exactly_the_pr_648_grant() {
+fn the_table_is_exactly_the_pr_816_grant() {
     let paths: Vec<&str> = ONE_TIME_AMNESTY.iter().map(|e| e.path).collect();
-    // The grant has exactly two legal shapes: PR #648's single accounting-fix
+    // The grant has exactly two legal shapes: PR #816's single policy
     // file, or EMPTY once `amnesty_expires_once_every_gate_has_a_fresh_record`
     // has demanded its removal. Anything else is the grant growing, which is
     // what this test exists to prevent. Removal is the designed end of a
@@ -160,8 +157,8 @@ fn the_table_is_exactly_the_pr_648_grant() {
     if !paths.is_empty() {
         assert_eq!(
             paths,
-            vec!["crates/spark-model/src/factory/build.rs"],
-            "the grant must not grow beyond PR #648's KV-budget fix"
+            vec!["crates/atlas-plugin/src/gate/coverage.rs"],
+            "the grant must not grow beyond PR #816's coverage-policy blob"
         );
     }
     for entry in &ONE_TIME_AMNESTY {
@@ -177,7 +174,7 @@ fn the_table_is_exactly_the_pr_648_grant() {
             entry.path
         );
         assert!(
-            entry.grant.contains("PR #648"),
+            entry.grant.contains("PR #816"),
             "{} lacks its grant",
             entry.path
         );

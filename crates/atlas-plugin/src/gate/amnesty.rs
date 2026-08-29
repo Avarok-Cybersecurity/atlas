@@ -4,18 +4,15 @@
 //!
 //! # The grant
 //!
-//! There is no current grant. Two have completed the full lifecycle here —
-//! pinned, re-earned, emptied: PR #701's three coverage-policy boundary files,
-//! and PR #648's KV-budget accounting fix
-//! (`crates/spark-model/src/factory/build.rs`, blob
-//! `01068a74c5068fb65b25b044d7580df3b36e39ed`).
+//! PR #816 corrects the coverage assigned to the flat concurrency benchmark
+//! driver. The policy file is itself a verdict boundary, so its final reviewed
+//! blob would otherwise invalidate all ten records before the corrected rule
+//! could classify later changes. The grant covers that one blob and no other
+//! path.
 //!
-//! #648's grant was emptied when every required gate had a record newer than
-//! `AMNESTY_EPOCH` — the ten taken at `0c402bac00` for #754 — which is exactly
-//! the condition `amnesty_expires_once_every_gate_has_a_fresh_record` exists to
-//! detect, and it detected it. The machinery below stays because the next
-//! bootstrap should not have to re-derive it, and an empty table is fail-closed
-//! by construction: every lookup falls through to "not excused".
+//! PR #701 and PR #648 completed this same lifecycle: pinned, re-earned, then
+//! emptied after every required gate had a fresh record. The expiry test below
+//! requires the same removal for this grant.
 //!
 //! A grant covers only the final reviewed blobs of the listed files. It is
 //! the same mechanism accepted for the 2026-08-16 governance bootstrap:
@@ -45,7 +42,7 @@
 //! own landing would then invalidate everything it exists to protect. It is
 //! covered only by `GATE_MACHINERY`'s cargo-test rationale, like the rest of
 //! the gate bookkeeping. Compensations: the table's exact contents are pinned
-//! by `the_table_is_exactly_the_pr_648_grant` (paths, OID format, grant
+//! by `the_table_is_exactly_the_pr_816_grant` (paths, OID format, grant
 //! text), every application is logged loudly by `check.rs`, CODEOWNERS
 //! review covers the gate directory, and the gate already executes
 //! PR-checkout code — so this adds no new attack class, only a reviewed
@@ -74,37 +71,21 @@ pub struct AmnestyEntry {
     pub grant: &'static str,
 }
 
-/// End of the PR #648 grant day: 2026-08-28T00:00:00Z. A record counts as
+/// End of the PR #816 grant day: 2026-08-30T00:00:00Z. A record counts as
 /// fresh only when it postdates the whole grant day.
-/// (The PR #701 grant used 1_787_356_800, end of 2026-08-21 UTC; its table
-/// was emptied once every gate re-recorded past that epoch.)
-pub const AMNESTY_EPOCH: u64 = 1_787_875_200;
+pub const AMNESTY_EPOCH: u64 = 1_788_048_000;
 
-/// The PR #648 grant: one file, the KV-budget accounting fix.
+/// The PR #816 grant: exactly the reviewed coverage-policy blob.
 ///
-/// `factory/build.rs`'s self-relative (auto) KV budget charged the weight
-/// loader's transient footprint (checkpoint mapping/staging, ~the size of the
-/// safetensors file) as if it were permanent — measured free-delta ~61 GB vs
-/// ~27 GB actual steady state on a 27B NVFP4 load (bug shipped in #281). At
-/// 0.85 util the phantom alone overruns the decode-floor budget on any box,
-/// making the gate unpassable while the fix — being a `crates/` change —
-/// would invalidate the nine records already earned on this branch. Exactly
-/// the bootstrap shape PR #701 established; same mechanism, one pinned file.
-///
-/// The prior PR #701 grant covered three boundary files whose landing
-/// invalidated all ten GPU records before the narrower test-only rule could
-/// help. Every required gate was re-recorded at 2026-08-22, past that grant's
-/// epoch, and its table was emptied —
-/// `amnesty_expires_once_every_gate_has_a_fresh_record`
-/// asserts exactly that and demands such removal, which is the designed end of
-/// a one-time grant rather than a change of policy.
-///
-/// The mechanism is deliberately kept rather than deleted: the module docs
-/// record why a content-pinned grant was preferred to a path waiver, and
-/// `excused_by` plus its tests stay exercised so the next bootstrap does not
-/// have to re-derive it. An empty table is fail-closed by construction — every
-/// lookup falls through to "not excused".
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [];
+/// This does not claim that a benchmark passed. It prevents the old mapping
+/// from demanding unrelated campaigns to validate a deterministic policy
+/// correction. Any later edit changes the blob OID and restores all-ten
+/// invalidation.
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 1] = [AmnestyEntry {
+    path: "crates/atlas-plugin/src/gate/coverage.rs",
+    head_blob_oid: "ff3f5109bc3159555bb518b7c4d132d5335ad3fd",
+    grant: "PR #816 scopes the flat concurrency driver to its own benchmark gate",
+}];
 
 /// Whether the one-time grant excuses `path` at `head`.
 pub fn excused(root: &Path, head: &str, path: &str) -> bool {
