@@ -382,20 +382,44 @@ impl TransformerModel {
             // LM head for 2 tokens (GEMM: weights loaded once)
             self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
-            // Argmax inside graph (fixed scratch addresses — graph-safe)
+            // Argmax inside graph (fixed scratch addresses — graph-safe).
+            // ONE launch, one block per row. The single-row `argmax_bf16` is a
+            // one-CTA scan (~100 µs at this vocab); two serial calls stack.
+            // Batched verify (`verify_e`) already ships this; K=2 was the miss.
+            // Kill: `ATLAS_NO_ARGMAX_BATCH=1` (`=0` does NOT disable).
             let vocab = self.config.vocab_size;
             let argmax_out = self.buffers.scratch();
-            for t in 0..k {
-                let logits_t = self.buffers.logits().offset(t * vocab * bf16);
-                let out_t = argmax_out.offset(t * 4);
-                ops::argmax_bf16(
+            if self.argmax_batch_kernel.0 != 0 && ops::argmax_batch_enabled() {
+                static LOGGED: std::sync::Once = std::sync::Once::new();
+                LOGGED.call_once(|| {
+                    tracing::info!(
+                        "K=2 verify argmax_bf16_batch ENGAGED: one launch for both rows \
+                         (was two serial one-CTA scans); kill switch ATLAS_NO_ARGMAX_BATCH=1"
+                    );
+                });
+                ops::argmax_bf16_batch(
                     self.gpu.as_ref(),
-                    self.argmax_kernel,
-                    logits_t,
-                    out_t,
+                    self.argmax_batch_kernel,
+                    self.buffers.logits(),
+                    argmax_out,
+                    vocab as u32,
+                    k as u32,
                     vocab as u32,
                     stream,
                 )?;
+            } else {
+                for t in 0..k {
+                    let logits_t = self.buffers.logits().offset(t * vocab * bf16);
+                    let out_t = argmax_out.offset(t * 4);
+                    ops::argmax_bf16(
+                        self.gpu.as_ref(),
+                        self.argmax_kernel,
+                        logits_t,
+                        out_t,
+                        vocab as u32,
+                        stream,
+                    )?;
+                }
             }
 
             if use_graphs {

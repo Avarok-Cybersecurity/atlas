@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "benchmark_id": "ssm-state-poisoning-gate",
+  "benchmark_name": "SSM State Poisoning Gate",
+  "git_sha": "d86e667f0f",
+  "recorded_at": 1786685174,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "params": {
+    "max_tokens": "256",
+    "request_timeout_s": "300",
+    "rounds": "12"
+  },
+  "command": [
+    "spark",
+    "benchmark",
+    "run",
+    "ssm-state-poisoning-gate",
+    "--param",
+    "max_tokens=256",
+    "--param",
+    "request_timeout_s=300",
+    "--param",
+    "rounds=12",
+    "--serve-override",
+    "ssm_cache_slots=256",
+    "--pull-request-gate"
+  ],
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+  "serve_overrides": {
+    "ssm_cache_slots": "256"
+  },
+  "atlas_version": "1.0.0-beta-preview",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.173.02",
+    "sm_clock_mhz": 2470.0,
+    "source": "nvidia-smi"
+  },
+  "metrics": {
+    "collapsed": 0.0,
+    "invariant": 1.0,
+    "jittered": 11.0,
+    "rounds": 12.0,
+    "sum_wall_s": 315.006541359,
+    "unmeasured": 0.0
+  },
+  "frame_status": "Completed",
+  "verdict": "PASS",
+  "verdict_reason": "1 of 12 replays byte-identical, 11 jittered within bounds (restore anchor selection varies between rounds on a healthy engine), 0 collapsed",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · collapsed=0.00, invariant=1.00, jittered=11.00, rounds=12.00, sum_wall_s=315.01, unmeasured=0.00 · Pass: 1 of 12 replays byte-identical, 11 jittered within bounds (restore anchor selection varies between rounds on a healthy engine), 0 collapsed",
+  "closure": {
+    "gb10/qwen3.6-35b-a3b/nvfp4": {
+      "hash": "93219922b91312e7a82701bbc29bfd390bf04223039b52a108dbb8d652be4135",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    }
+  }
+}

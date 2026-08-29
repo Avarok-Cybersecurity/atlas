@@ -147,4 +147,45 @@ pub fn batched_embed(
         .launch(stream)
 }
 
+/// Kill switch `ATLAS_NO_ARGMAX_BATCH`. ON unless the value is exactly `"1"`.
+/// `=0` / empty / unset do **not** disable.
+pub fn argmax_batch_from(no_batch: Option<&str>) -> bool {
+    no_batch != Some("1")
+}
+
+/// Process-static read of [`argmax_batch_from`].
+pub fn argmax_batch_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| argmax_batch_from(std::env::var("ATLAS_NO_ARGMAX_BATCH").ok().as_deref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argmax_batch_ships_on_and_only_the_one_value_kills() {
+        assert!(argmax_batch_from(None), "unset → ON");
+        assert!(argmax_batch_from(Some("0")), "`=0` is NOT off");
+        assert!(argmax_batch_from(Some("")), "empty is NOT off");
+        assert!(!argmax_batch_from(Some("1")), "`=1` is the kill");
+    }
+
+    /// NEGATIVE: production K=2 verify must not serialise two one-CTA argmax
+    /// scans. Batched verify already uses `argmax_bf16_batch` (one block per
+    /// row, ~100 µs vs 2×100 µs serial).
+    ///
+    /// PROVEN BY: restoring the `for t in 0..k` `argmax_bf16` loop in
+    /// `verify_b.rs` turns this red.
+    #[test]
+    fn k2_verify_dispatches_batched_argmax() {
+        let src = include_str!("../../model/trait_impl/verify_b.rs");
+        let prod = src.split("#[cfg(test)]").next().expect("prod before tests");
+        assert!(
+            prod.contains("argmax_bf16_batch("),
+            "K=2 verify must launch argmax_bf16_batch"
+        );
+    }
+}
+
 // ── MoE routing ──────────────────────────────────────────────────

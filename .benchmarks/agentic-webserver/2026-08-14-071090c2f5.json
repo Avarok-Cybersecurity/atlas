@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "benchmark_id": "agentic-webserver",
+  "benchmark_name": "Agentic Webserver Test",
+  "git_sha": "071090c2f5",
+  "recorded_at": 1786691196,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "params": {
+    "build_timeout_s": "600",
+    "command_timeout_s": "180",
+    "iterations": "10",
+    "max_tokens": "8192",
+    "max_turns": "40",
+    "request_timeout_s": "900",
+    "serve_timeout_s": "30",
+    "wall_budget_s": "1000"
+  },
+  "command": [
+    "spark",
+    "benchmark",
+    "run",
+    "agentic-webserver",
+    "--param",
+    "build_timeout_s=600",
+    "--param",
+    "command_timeout_s=180",
+    "--param",
+    "iterations=10",
+    "--param",
+    "max_tokens=8192",
+    "--param",
+    "max_turns=40",
+    "--param",
+    "request_timeout_s=900",
+    "--param",
+    "serve_timeout_s=30",
+    "--param",
+    "wall_budget_s=1000",
+    "--yes",
+    "--pull-request-gate"
+  ],
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+  "atlas_version": "1.0.0-beta-preview",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.173.02",
+    "sm_clock_mhz": 2392.0,
+    "source": "nvidia-smi"
+  },
+  "metrics": {
+    "followed_directions": 10.0,
+    "iterations": 10.0,
+    "step:curled": 10.0,
+    "step:ran_server": 10.0,
+    "step:ran_tests": 10.0,
+    "step:tore_down": 10.0,
+    "step:wrote_project": 10.0,
+    "step:wrote_tests": 10.0,
+    "sum_wall_s": 632.1074129579999,
+    "webserver_ok": 10.0
+  },
+  "frame_status": "Completed",
+  "verdict": "PASS",
+  "verdict_reason": "10/10 webserver_ok · 10/10 followed_directions · Σwall 632s ≤ 1000s",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · followed_directions=10.00, iterations=10.00, step:curled=10.00, step:ran_server=10.00, step:ran_tests=10.00, step:tore_down=10.00, step:wrote_project=10.00, step:wrote_tests=10.00, sum_wall_s=632.11, webserver_ok=10.00 · Pass: 10/10 webserver_ok · 10/10 followed_directions · Σwall 632s ≤ 1000s",
+  "closure": {
+    "gb10/qwen3.6-35b-a3b/nvfp4": {
+      "hash": "93219922b91312e7a82701bbc29bfd390bf04223039b52a108dbb8d652be4135",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    }
+  }
+}
