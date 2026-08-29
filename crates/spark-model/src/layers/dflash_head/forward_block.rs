@@ -567,7 +567,28 @@ impl BlockDiffusionDraftHead {
             // kernel (fixed: 2-round A-load covers all 32 K-cols).
             // BF16 path (default, or Fp8 mirror missing) unchanged.
             let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
-            if lm_head_fp8 {
+            // Target ships an NVFP4-PACKED lm_head (Lightning: U8 [vocab,
+            // h/2] + F8 scales): `lm_head_shared` then points at PACKED
+            // bytes and a BF16 GEMM on it reads 4x past the allocation —
+            // exactly the OOB this field's declaration warns about (it was
+            // stored but never consumed until the Lightning DFlash port,
+            // 2026-08-24; the fault fingerprint was grid=[vocab/128,1,1]).
+            // The w4a16 tile GEMM consumes the packed form directly, and a
+            // numpy-from-safetensors reference matched its logits to
+            // argmax-parity (cos 1.0000) during the Lightning parity audit.
+            if let Some(q) = self.lm_head_nvfp4.as_ref() {
+                ops::w4a16_gemm(
+                    gpu,
+                    self.kernels.w4a16_gemm,
+                    norm_noise_local,
+                    q,
+                    self.scratch.logits,
+                    self.gamma as u32,
+                    self.vocab_size as u32,
+                    h_local,
+                    stream,
+                )?;
+            } else if lm_head_fp8 {
                 if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
                     ops::fp8_gemm_n128_row_scaled_m16(
                         gpu,

@@ -13,6 +13,7 @@ mod expert;
 mod fp8_dequant;
 #[path = "weight_map/fp8_lut.rs"]
 mod fp8_lut;
+pub(crate) use fp8_lut::dequant_nvfp4_to_bf16;
 #[path = "weight_map/loaders_fp8.rs"]
 mod loaders_fp8;
 #[path = "weight_map/loaders_moe.rs"]
