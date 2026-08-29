@@ -1,11 +1,11 @@
 <script module>
   export const meta = {
     title: 'What the background costs',
-    dek: 'The animated field behind this page is 2.5 KB. The library that draws the identical pixels is 151 KB. Here is the measurement, and the contrast budget that decided how bright it is allowed to be.',
+    dek: 'The animated field behind this page is 2.52 KB over the wire. The library that draws the identical pixels is 151 KB. Here is the measurement, the 2 KB that were hiding in a string literal, and the contrast budget that decided how bright it is allowed to be.',
     date: '2026-08-28',
     tag: 'design',
     author: 'thomas-braun',
-    readingMinutes: 9
+    readingMinutes: 11
   };
 </script>
 
@@ -32,9 +32,10 @@
 <H2 id="the-three-js-question" index={0}>The three.js question, answered with numbers</H2>
 
 <p>
-  Both implementations were built. They run the <em>identical</em> shader and were verified
-  pixel-for-pixel: <strong>0 of 960,000 pixels differ</strong>. So everything below is cost, not
-  appearance.
+  Both implementations were built, before this page existed, as a straight comparison. They run the
+  <em>identical</em> shader and were verified pixel-for-pixel: <strong>0 of 960,000 pixels
+  differ</strong>. So everything below is cost, not appearance. The figures in this table are from
+  that comparison; the ones later in the post are measured on what this page actually ships.
 </p>
 
 <Table caption="Measured on the same scene, same shader, same output. The GPU does identical work in both columns.">
@@ -94,7 +95,52 @@
   <strong>+62.7 KB gzipped over vanilla</strong>, a 50% penalty, to render one mesh.
 </p>
 
-<H2 id="brightness-is-derived" index={1}>Brightness is derived, not chosen</H2>
+<H2 id="two-kb-in-a-string" index={1}>Two kilobytes hiding in a string literal</H2>
+
+<p>
+  When this field was wired into a real build, it measured <strong>4.25 KB brotli</strong> — not the
+  2.5 KB the comparison had reported. Nothing had been added to the renderer that could account for
+  1.75 KB.
+</p>
+
+<p>
+  The shader is imported with <code>?raw</code>, so it ships inside a JavaScript string literal. And
+  a minifier does not touch string contents — it cannot, since it has no idea what the string means.
+  So every byte of the commentary explaining the SDF geometry, the falloff mask and the luma clamp
+  was being sent to every visitor:
+</p>
+
+<Table caption="The same field, bundled alone and minified, with and without the shader's comments.">
+  <thead>
+    <tr><th></th><th>minified</th><th>gzip</th><th>brotli</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>as written</td><td class="num">11,192</td><td class="num">4.91 KB</td><td class="num">4.25 KB</td></tr>
+    <tr><td>comments stripped at build</td><td class="num">6,393</td><td class="num">2.79 KB</td><td class="num"><span class="win">2.52 KB</span></td></tr>
+  </tbody>
+</Table>
+
+<p>
+  The shader source is 7,254 bytes and 2,481 of those are code. Comments were <strong>66% of the
+  file and 43% of the shipped component</strong> — most of the gap between the number the
+  comparison reported and the number this repo was actually serving.
+</p>
+
+<p>
+  The fix is a fifteen-line Vite plugin that strips comments from
+  <code>.glsl?raw</code> imports at build time, so they stay in the file where they are useful and
+  never leave the repository. It refuses to emit a shader that lost its <code>#version</code>
+  directive or its <code>main()</code>, because a shader that fails to compile does not throw — the
+  field just quietly falls back to the CSS dot layer, which is precisely the kind of silent
+  degradation this component is built to avoid.
+</p>
+
+<Callout label="Worth checking on your own build" tone="technical">
+  Any asset imported as a string — GLSL, SQL, a worker source, an HTML template — is invisible to
+  your minifier. If you have ever documented a shader properly, you have shipped that documentation.
+</Callout>
+
+<H2 id="brightness-is-derived" index={2}>Brightness is derived, not chosen</H2>
 
 <p>
   A field behind live text is an accessibility decision wearing a visual-design costume.
@@ -133,7 +179,7 @@ col += hue * l.x * dim;`} />
   background nobody could see.
 </p>
 
-<H2 id="the-invisible-field" index={2}>The bound that deleted the background</H2>
+<H2 id="the-invisible-field" index={3}>The bound that deleted the background</H2>
 
 <p>
   Three layers, each contributing up to its depth weight, sum to 2.28 layers' worth of luma on a
@@ -189,7 +235,7 @@ col /= max(1.0, lum);`} />
   nobody has tested.
 </Callout>
 
-<H2 id="what-it-handles" index={3}>The parts that are not the shader</H2>
+<H2 id="what-it-handles" index={0}>The parts that are not the shader</H2>
 
 <p>
   A background canvas that outlives a hundred page views has to handle rather more than drawing.
@@ -222,7 +268,7 @@ col /= max(1.0, lum);`} />
   canvas elsewhere on the site, which then goes black with no error thrown in your code.
 </p>
 
-<H2 id="one-more-trap" index={4}>One layout trap</H2>
+<H2 id="one-more-trap" index={1}>One layout trap</H2>
 
 <p>
   The <code>&lt;canvas&gt;</code> must not sit under a transformed ancestor. A <code>transform</code>,

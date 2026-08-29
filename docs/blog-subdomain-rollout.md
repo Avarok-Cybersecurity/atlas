@@ -604,3 +604,48 @@ SwiftShader, which is now exactly the configuration where the field does not
 run. They remain valid evidence of what a GPU visitor sees, but they can no
 longer be reproduced without defeating the check — the procedure for doing that
 is documented beside it in the source.
+
+## Wave 11 — two kilobytes hiding in a string literal
+
+**Checking the post's own claim caught a real payload defect.** The dek said
+"the animated field behind this page is 2.5 KB" — a figure taken from
+`FIELD-NOTES.md`, i.e. a measurement of somebody else's build. Measured on what
+this repo actually ships:
+
+| | minified | gzip | brotli |
+|---|---|---|---|
+| as written | 11,192 | 4.91 KB | **4.25 KB** |
+| comments stripped at build | 6,393 | 2.79 KB | **2.52 KB** |
+
+The shader is imported with `?raw`, so it ships inside a JavaScript string
+literal — and a minifier cannot touch string contents. Every byte of the
+commentary explaining the SDF geometry, the falloff and the luma clamp was going
+to every visitor. The shader source is 7,254 bytes of which 2,481 are code:
+**comments were 66% of the file and 43% of the shipped component**, and almost
+exactly the gap between the claimed number and the real one.
+
+`web-shared/glsl-strip.js` is a Vite plugin, used by both apps, that strips
+comments from `.glsl?raw` at build time. It refuses to emit a shader that lost
+its `#version` directive or its `main()` — a shader that fails to compile does
+not throw, it silently drops to the CSS dot field, which is the exact failure
+mode this component exists to avoid.
+
+With it, the field measures **2.52 KB brotli** — which is the field notes'
+figure to two decimal places. Their number was right; it was measured on a build
+that stripped shader comments, and this one now does too.
+
+**Proved, not assumed:**
+
+| check | result |
+|---|---|
+| comments absent from the shipped bundle | grep: 0 occurrences |
+| stripped shader still compiles and links | canvas reaches `cf-on` with the renderer bail bypassed — a shader that failed to compile could not |
+| `stripGlsl` unit tests | 6 tests, 27 total across the blog |
+| control: also strip newlines (welds `#version` to the next line) | 2 pass / **4 fail** |
+| control: make the strip a no-op | 2 pass / **4 fail** |
+
+**The post was corrected**, not just the code: the three.js comparison table is
+now attributed to the pre-existing comparison rather than presented as this
+page's measurement, a new section documents the string-literal finding with the
+numbers above, and the dek quotes 2.52 KB. A post whose thesis is measured
+honesty cannot cite someone else's measurement as its own.
