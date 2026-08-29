@@ -208,6 +208,19 @@ pub trait GpuBackend: Send + Sync {
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
 
+    /// A55 diagnostic: read every allocation's trailing guard band back and report the ones
+    /// a kernel wrote past. Returns the violation count. `Ok(0)` when `ATLAS_REDZONE` is
+    /// unset or the backend has no red zones — every backend but CUDA.
+    fn scan_redzones(&self) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// A55 bisection: poison guard bands `[lo, hi)` with `0xEE` and the rest with `0x00`.
+    /// Layout-preserving by construction — nothing is allocated, moved or resized.
+    fn poison_redzones(&self, _lo: usize, _hi: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Get the default stream handle.
     fn default_stream(&self) -> u64;
 

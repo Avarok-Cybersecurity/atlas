@@ -27,6 +27,29 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// `ATLAS_REDZONE_EVERY=<n>` — scan the A55 guard bands every `n`-th decode step. 0 disables
+/// the scan while leaving the pads in place (which is the configuration the READ experiment
+/// wants: pads present and poisoned, never inspected).
+/// `ATLAS_REDZONE_RANGE_FILE=<path>` — see the use site. `None` disables the bisection.
+fn redzone_range_file() -> Option<&'static str> {
+    static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    P.get_or_init(|| std::env::var("ATLAS_REDZONE_RANGE_FILE").ok())
+        .as_deref()
+}
+
+fn redzone_every() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        if std::env::var("ATLAS_REDZONE").is_err() {
+            return 0;
+        }
+        std::env::var("ATLAS_REDZONE_EVERY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+    })
+}
+
 impl TransformerModel {
     /// Whether the online FP8-KV calibration has frozen its scale, model-wide.
     ///
@@ -85,6 +108,20 @@ impl TransformerModel {
                 stream,
                 "decode_step0_pre",
             );
+        }
+
+        // A55 BISECTION (`ATLAS_REDZONE_RANGE_FILE=<path>` holding "LO HI"). Re-read and
+        // re-applied every decode step so the range can be swept WITHOUT restarting the
+        // server — a relaunch is ~5 minutes of weight load, a re-poison is ~40 us, and the
+        // bisection needs ~11 steps. Nothing is allocated or moved, so every setting shares
+        // one device heap layout and the only variable is what the guard bands contain.
+        if let Some(path) = redzone_range_file() {
+            let txt = std::fs::read_to_string(path).unwrap_or_default();
+            let mut it = txt.split_whitespace();
+            let lo: usize = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let hi: usize = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            self.gpu.synchronize(stream)?;
+            self.gpu.poison_redzones(lo, hi)?;
         }
 
         // ── Phase 1: Operations OUTSIDE graph (vary per token) ──
@@ -447,6 +484,22 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+            }
+        }
+
+        // A55 RED-ZONE SCAN (`ATLAS_REDZONE=<bytes>`; no-op when unset). Runs AFTER the whole
+        // decode step, with the device drained, so a violation names the step that produced
+        // it. `ATLAS_REDZONE_EVERY` (default 1) trades resolution for wall time — the scan
+        // does one blocking D2H per live allocation.
+        if redzone_every() > 0 && seq.seq_len % redzone_every() == 0 {
+            self.gpu.synchronize(stream)?;
+            match self.gpu.scan_redzones() {
+                Ok(0) => {}
+                Ok(n) => tracing::error!(
+                    "🔴 {n} red-zone violation(s) after decode step at seq_len={}",
+                    seq.seq_len
+                ),
+                Err(e) => tracing::warn!("red-zone scan failed: {e:#}"),
             }
         }
 

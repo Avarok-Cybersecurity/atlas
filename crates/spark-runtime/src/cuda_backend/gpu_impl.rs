@@ -108,7 +108,21 @@ impl GpuBackend for AtlasCudaBackend {
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
         let site = std::panic::Location::caller();
         let mut dptr: u64 = 0;
-        let status = unsafe { cuMemAlloc_v2(&mut dptr, bytes) };
+        // A55 RED ZONE (`ATLAS_REDZONE=<bytes>`, default 0 = off). Over-allocate by `pad`
+        // and hand the caller the base, so the buffer it sees is unchanged and correctly
+        // aligned (cuMemAlloc is 256-byte aligned; padding the TAIL keeps that). The pad is
+        // poisoned at birth and read back by `scan_redzones`.
+        //
+        // This is the detector compute-sanitizer could not be: Atlas suballocates from pools,
+        // so an overrun that stays inside a pooled block is invisible to memcheck but lands
+        // squarely in a red zone here.
+        let seq = super::ALLOC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pad = if seq >= super::redzone_min_idx() {
+            super::redzone_bytes()
+        } else {
+            0
+        };
+        let status = unsafe { cuMemAlloc_v2(&mut dptr, bytes + pad) };
         if status != 0 {
             let mut free: usize = 0;
             let mut total: usize = 0;
@@ -119,6 +133,25 @@ impl GpuBackend for AtlasCudaBackend {
                 free as f64 / (1024.0 * 1024.0),
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
+        }
+        if pad > 0 {
+            let st = unsafe {
+                super::cuMemsetD8Async(dptr + bytes as u64, super::redzone_fill(), pad, 0)
+            };
+            if st != 0 {
+                bail!("ATLAS_REDZONE: poisoning the guard band failed: status {st}");
+            }
+            self.record_redzone(dptr, bytes, pad, seq);
+            // One line per guarded allocation, in creation order. The bisection reports an
+            // INDEX; this is what turns that index into a buffer you can name by its size,
+            // and `ATLAS_REDZONE_TRACE_IDX` adds the call site for the one that matters.
+            tracing::info!("redzone: alloc#{seq} bytes={bytes} ptr={dptr:#x}");
+            if super::redzone_trace_idx() == Some(seq) {
+                tracing::error!(
+                    "redzone: alloc#{seq} bytes={bytes} backtrace:\n{}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
         }
         self.record_alloc(DevicePtr(dptr), bytes, site);
         // Large-allocation tracing for memory attribution (GB10 unified
@@ -133,6 +166,20 @@ impl GpuBackend for AtlasCudaBackend {
             );
         }
         Ok(DevicePtr(dptr))
+    }
+
+    fn scan_redzones(&self) -> Result<usize> {
+        if super::redzone_bytes() == 0 {
+            return Ok(0);
+        }
+        AtlasCudaBackend::scan_redzones(self)
+    }
+
+    fn poison_redzones(&self, lo: usize, hi: usize) -> Result<()> {
+        if super::redzone_bytes() == 0 {
+            return Ok(());
+        }
+        AtlasCudaBackend::poison_redzones(self, lo, hi)
     }
 
     #[track_caller]
@@ -158,6 +205,9 @@ impl GpuBackend for AtlasCudaBackend {
         // Off the ledger BEFORE the free: an entry that survives a successful
         // free would be double-freed at teardown.
         self.forget_alloc(ptr);
+        if super::redzone_bytes() > 0 {
+            self.forget_redzone(ptr.0);
+        }
         let status = unsafe { cuMemFree_v2(ptr.0) };
         // A context that is already being destroyed reports every free as
         // failing, and at process exit that is the normal case, not an error:
