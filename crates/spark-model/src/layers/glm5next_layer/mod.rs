@@ -52,10 +52,12 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::layer::{ForwardContext, LayerState, TransformerLayer};
+use crate::layer::{ForwardContext, LayerState, SsmLayerState, TransformerLayer};
 use crate::layers::glm5next_dsa::layer::Glm5NextDsaLayer;
 use crate::layers::glm5next_dsa::state::Glm5NextDsaState;
-use crate::layers::glm5next_kda::{Glm5NextKdaConfig, Glm5NextKdaLayer, Glm5NextKdaWorkspace};
+use crate::layers::glm5next_kda::{
+    Glm5NextKdaConfig, Glm5NextKdaLayer, Glm5NextKdaWorkspace, KdaSeqState,
+};
 use crate::layers::glm5next_mlp::forward::{Glm5NextMlpWorkspace, forward_dense, forward_moe};
 use crate::layers::glm5next_mlp::weights::{Glm5NextDenseMlpWeights, Glm5NextMoeWeights};
 use crate::layers::glm5next_mlp::{Glm5NextMlpConfig, Glm5NextMlpKernels};
@@ -71,7 +73,7 @@ use crate::layers::ops::{
 pub mod state;
 
 pub mod profile;
-pub use state::{Glm5NextLayerState, OwnedKdaState};
+pub use state::alloc_kda_ssm_state;
 
 /// Which mixer this layer runs. Both halves already exist and are GPU-gated; this enum is the
 /// dispatch, not new math.
@@ -164,7 +166,7 @@ impl Glm5NextLayer {
         &self,
         normed: DevicePtr,
         residual: DevicePtr,
-        st: &mut Glm5NextLayerState,
+        st: &mut dyn LayerState,
         kv_cache: &mut PagedKvCache,
         seq_len: usize,
         block_table: &mut Vec<u32>,
@@ -175,16 +177,18 @@ impl Glm5NextLayer {
     ) -> Result<DevicePtr> {
         match &self.mixer {
             Glm5NextMixer::Kda { layer, ws, .. } => {
-                let kda = st.kda()?;
+                let ssm = self.kda_state(st)?;
+                let kda = KdaSeqState {
+                    conv: ssm.conv_state,
+                    recurrent: ssm.h_state,
+                };
                 let t = profile::start();
-                layer.decode(ctx.gpu, normed, &kda.inner, ws, stream)?;
+                layer.decode(ctx.gpu, normed, &kda, ws, stream)?;
                 profile::end(profile::KDA, t, ctx.gpu, stream);
                 Ok(ws.final_out)
             }
             Glm5NextMixer::Dsa(layer) => {
-                // The DSA layer's own state type IS a `LayerState`, so handing it straight
-                // through downcasts cleanly — no adapter, no second allocation.
-                let dsa: &mut Glm5NextDsaState = st.dsa()?;
+                let dsa: &mut Glm5NextDsaState = self.dsa_state(st)?;
                 layer.decode(
                     normed,
                     residual,
@@ -296,7 +300,7 @@ impl Glm5NextLayer {
         hidden: DevicePtr,
         residual: DevicePtr,
         slot: usize,
-        st: &mut Glm5NextLayerState,
+        st: &mut dyn LayerState,
         kv_cache: &mut PagedKvCache,
         seq_len: usize,
         block_table: &mut Vec<u32>,
@@ -453,13 +457,50 @@ impl Glm5NextLayer {
         Ok(())
     }
 
-    fn downcast<'a>(&self, state: &'a mut dyn LayerState) -> Result<&'a mut Glm5NextLayerState> {
-        state
+    /// This KDA layer's recurrent + conv state.
+    ///
+    /// 🔴 It is an [`SsmLayerState`] — the SAME type Qwen's GDN layers carry — and that is
+    /// deliberate, not incidental. `rollback_ssm_states_dispatch` walks every
+    /// `LayerType::LinearAttention` layer and downcasts to exactly this type to restore a
+    /// rejected speculative draft; GLM's KDA blocks ARE `linear_attention` in `layer_types`,
+    /// so carrying anything else means the first rejected draft is a hard error. The shapes
+    /// line up with the pool's own math: `h = nv·vd·kd·4` and
+    /// `conv = (nk·kd·2 + nv·vd)·d_conv·4` are byte-for-byte GLM's
+    /// `recurrent_state_elems()·4` and `conv_state_elems()·4`, because the parser fills the
+    /// `linear_*` fields from `linear_attn_config` and they are already TP-local.
+    ///
+    /// 🪤 A mixer/state mismatch means the scheduler handed this layer another layer's slot.
+    /// Refuse loudly: allocating a fresh state here would decode from a zero recurrent state.
+    fn kda_state<'a>(&self, state: &'a mut dyn LayerState) -> Result<&'a mut SsmLayerState> {
+        let st = state
             .as_any_mut()
-            .downcast_mut::<Glm5NextLayerState>()
+            .downcast_mut::<SsmLayerState>()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "GLM layer {}: state is not a Glm5NextLayerState",
+                    "GLM layer {}: a KDA mixer was handed state that is not an SsmLayerState",
+                    self.layer_idx
+                )
+            })?;
+        // 🔴 HF casts the KDA recurrent state to float32 and vLLM hardcodes `kda_state_dtype`.
+        // A narrowed h slot (`--ssm-h-dtype f16`/`f16-pool`) is a deviation from the
+        // reference, not a memory setting, and every KDA kernel reads FP32.
+        if st.h_is_f16 || st.h_prefill_stage.is_some() {
+            bail!(
+                "GLM layer {}: KDA recurrent state is FP32-only; --ssm-h-dtype f16 narrowed it",
+                self.layer_idx
+            );
+        }
+        Ok(st)
+    }
+
+    /// This DSA layer's indexer key cache.
+    fn dsa_state<'a>(&self, state: &'a mut dyn LayerState) -> Result<&'a mut Glm5NextDsaState> {
+        state
+            .as_any_mut()
+            .downcast_mut::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GLM layer {}: a DSA mixer was handed state that is not a Glm5NextDsaState",
                     self.layer_idx
                 )
             })
@@ -468,12 +509,16 @@ impl Glm5NextLayer {
 
 impl TransformerLayer for Glm5NextLayer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
-        Ok(Box::new(match &self.mixer {
-            Glm5NextMixer::Kda { cfg, .. } => {
-                Glm5NextLayerState::Kda(OwnedKdaState::alloc(gpu, cfg)?)
-            }
-            Glm5NextMixer::Dsa(l) => Glm5NextLayerState::Dsa(Glm5NextDsaState::alloc(gpu, &l.cfg)?),
-        }))
+        Ok(match &self.mixer {
+            // Pool-free fallback. `uses_ssm_pool()` is true for KDA, so the model hands these
+            // layers a pool slot and never calls this — but the paths that build states
+            // directly still need a correctly shaped, ZEROED one. A fresh sequence starts from
+            // a zero recurrent state and an empty conv window; inheriting the previous
+            // sequence's residue is a wrong answer that decays over a few tokens rather than
+            // crashing.
+            Glm5NextMixer::Kda { cfg, .. } => Box::new(alloc_kda_ssm_state(gpu, cfg)?),
+            Glm5NextMixer::Dsa(l) => Box::new(Glm5NextDsaState::alloc(gpu, &l.cfg)?),
+        })
     }
 
     /// Both mixers allocate their per-sequence state with `gpu.alloc` in `alloc_state`, so
@@ -482,10 +527,13 @@ impl TransformerLayer for Glm5NextLayer {
         true
     }
 
-    /// GLM's KDA blocks are `linear_attention` in `layer_types` but carry
-    /// `Glm5NextLayerState::Kda`, not the pool's `SsmLayerState`.
+    /// GLM's KDA blocks are `linear_attention` in `layer_types` AND carry the pool's
+    /// `SsmLayerState`, so they take pool slots like any other recurrent layer. That is what
+    /// buys the speculative-verify checkpoints and per-token intermediates for free —
+    /// `meta.rs` only wires `h_state_checkpoint` / `h_state_intermediates` for layers that
+    /// answer true here, and `rollback_ssm_states_dispatch` needs both.
     fn uses_ssm_pool(&self) -> bool {
-        false
+        matches!(self.mixer, Glm5NextMixer::Kda { .. })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -502,12 +550,11 @@ impl TransformerLayer for Glm5NextLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        let st = self.downcast(state)?;
         self.forward_one(
             hidden,
             residual,
             0,
-            st,
+            state,
             kv_cache,
             seq_len,
             block_table,
@@ -552,14 +599,13 @@ impl TransformerLayer for Glm5NextLayer {
                 self.layer_idx
             );
         }
-        let st = self.downcast(state)?;
         for t in 0..num_tokens {
             let off = t * self.hidden * 2;
             self.forward_one(
                 hidden.offset(off),
                 residual.offset(off),
                 t,
-                st,
+                state,
                 kv_cache,
                 seq_len_start + t,
                 block_table,
@@ -574,9 +620,9 @@ impl TransformerLayer for Glm5NextLayer {
 
     /// K tokens of ONE sequence in a single call — the speculative-verify body.
     ///
-    /// Semantically identical to [`Self::prefill`] over the same K rows: same per-token highway
-    /// slots, same `seq_len_start + t` positions, same KV writes. `prefill` ignores
-    /// `kv_write_start` (the paged slot comes from `attn_metadata`), so the delegation is exact.
+    /// The same per-token walk as [`Self::prefill`] — same highway slots, same
+    /// `seq_len + t` positions, same KV writes — plus the per-token KDA state snapshots that
+    /// only a verify needs. Prefill is never rolled back, so it does not pay for them.
     ///
     /// 🔴 The trait's default would be WRONG, not merely slow: it calls `decode` per token, and
     /// `decode` pins highway slot 0. K tokens would then overwrite each other's mHC streams and
@@ -602,20 +648,67 @@ impl TransformerLayer for Glm5NextLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.prefill(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            seq_len,
-            ctx,
-            stream,
-        )
+        // A KDA layer must leave behind the state it held after EACH verify token, or a
+        // partially-accepted draft has nothing to rewind to. `rollback_ssm_states_dispatch`
+        // restores `h_state_intermediates[num_accepted - 1]`, so row `t` writes slot `t` and
+        // the LAST row needs none (a full accept never rolls back).
+        let kda_bytes = match &self.mixer {
+            Glm5NextMixer::Kda { cfg, .. } => {
+                Some((cfg.recurrent_state_elems() * 4, cfg.conv_state_elems() * 4))
+            }
+            Glm5NextMixer::Dsa(_) => None,
+        };
+        if kda_bytes.is_some() && num_tokens > 1 {
+            let st = self.kda_state(state)?;
+            // 🔴 Bail rather than skip. Skipping leaves `h_state` ADVANCED past the accepted
+            // boundary with no error and no log line, which corrupts every subsequent decode
+            // and surfaces much later as gibberish. Same check the Qwen verify arms make.
+            if st.h_state_intermediates.len() + 1 < num_tokens
+                || st.conv_state_intermediates.len() + 1 < num_tokens
+            {
+                bail!(
+                    "GLM layer {}: a {num_tokens}-token verify needs {} per-token state \
+                     snapshots but the pool has h={} conv={}. With none, this is the \
+                     self-speculative / ngram path on a model whose MTP pool was never \
+                     sized; with too few, --num-drafts exceeds the pool's tier.",
+                    self.layer_idx,
+                    num_tokens - 1,
+                    st.h_state_intermediates.len(),
+                    st.conv_state_intermediates.len(),
+                );
+            }
+        }
+
+        for t in 0..num_tokens {
+            let off = t * self.hidden * 2;
+            self.forward_one(
+                hidden.offset(off),
+                residual.offset(off),
+                t,
+                state,
+                kv_cache,
+                seq_len + t,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+            )?;
+            if let Some((h_bytes, conv_bytes)) = kda_bytes {
+                if t + 1 < num_tokens {
+                    let st = self.kda_state(state)?;
+                    ctx.gpu
+                        .copy_d2d_async(st.h_state, st.h_state_intermediates[t], h_bytes, stream)?;
+                    ctx.gpu.copy_d2d_async(
+                        st.conv_state,
+                        st.conv_state_intermediates[t],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// KDA layers carry recurrent state; DSA layers do not.

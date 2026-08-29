@@ -2,100 +2,65 @@
 
 //! One GLM-5.3 decoder layer's per-sequence state.
 //!
-//! A GLM layer is one of two mixers, and the two need *different kinds* of state: KDA carries a
+//! A GLM layer is one of two mixers and the two need *different kinds* of state: KDA carries a
 //! recurrent hidden state plus a causal-conv window and touches no KV cache at all, while DSA
-//! carries an indexer key cache alongside paged KV blocks. `alloc_state` returns one boxed
-//! `LayerState` per layer, so this enum is how a single composite layer type answers for both.
+//! carries an indexer key cache alongside paged KV blocks. Each mixer therefore returns its own
+//! concrete `LayerState` and [`crate::layers::glm5next_layer::Glm5NextLayer`] downcasts to the
+//! one its mixer expects.
 //!
-//! 🪤 The two are NOT interchangeable and admission needs both kinds satisfied — a KDA slot is
-//! not a KV block. That is [`crate::layers::glm5next_skeleton::StateKind`], made real.
+//! 🔴 **KDA's state is the pool's [`SsmLayerState`], not a GLM-private type.**
+//! `rollback_ssm_states_dispatch` walks every `LayerType::LinearAttention` layer and downcasts
+//! to exactly that type to rewind a rejected speculative draft. GLM's KDA blocks *are*
+//! `linear_attention` in `layer_types`, so a GLM-private state means the first rejected draft
+//! is a hard error — and the shapes line up byte-for-byte anyway:
+//!
+//! | | pool (`config` fields, TP-local) | GLM (`Glm5NextKdaConfig`) |
+//! |---|---|---|
+//! | h    | `nv · vd · kd · 4`               | `heads · head_dim² · 4` |
+//! | conv | `(nk · kd · 2 + nv · vd) · d_conv · 4` | `3 · heads · head_dim · conv_kernel · 4` |
+//!
+//! The parser fills `linear_num_{key,value}_heads` / `linear_{key,value}_head_dim` /
+//! `linear_conv_kernel_dim` from `linear_attn_config`, already divided by TP, so
+//! `ModelConfig::ssm_h_state_bytes()` and `ssm_conv_state_bytes()` return GLM's own numbers.
+//!
+//! 🪤 The two state kinds are NOT interchangeable and admission needs both kinds satisfied — a
+//! KDA slot is not a KV block. That is [`crate::layers::glm5next_skeleton::StateKind`], made
+//! real.
 
-use anyhow::{Result, bail};
-use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use anyhow::Result;
+use spark_runtime::gpu::GpuBackend;
 
-use crate::layer::LayerState;
-use crate::layers::glm5next_dsa::state::Glm5NextDsaState;
-use crate::layers::glm5next_kda::{Glm5NextKdaConfig, KdaSeqState};
+use crate::layer::SsmLayerState;
+use crate::layers::glm5next_kda::Glm5NextKdaConfig;
 
-/// A KDA layer's recurrent state, owned rather than borrowed.
+/// Allocate and **zero** a KDA layer's recurrent + conv state, pool-free.
+///
+/// Used only where a state is built outside the SSM pool; the serving path takes pool slots
+/// (`Glm5NextLayer::uses_ssm_pool()`), which is what carries the checkpoints and per-token
+/// intermediates a speculative rollback needs.
 ///
 /// 🪤 **FP32 is not negotiable.** HF casts the recurrent state to float32 and vLLM hardcodes
-/// `kda_state_dtype`, so a bf16 state is a deviation from the reference, not a memory setting.
-/// Sizing it at 2 bytes halves the number and is wrong.
-pub struct OwnedKdaState {
-    pub inner: KdaSeqState,
-    recurrent_bytes: usize,
-    conv_bytes: usize,
-}
-
-impl OwnedKdaState {
-    /// Allocate and **zero** both buffers. A fresh sequence starts from a zero recurrent state
-    /// and an empty conv window; inheriting the previous sequence's residue is a wrong answer
-    /// that decays over a few tokens instead of crashing.
-    pub fn alloc(gpu: &dyn GpuBackend, cfg: &Glm5NextKdaConfig) -> Result<Self> {
-        let recurrent_bytes = cfg.recurrent_state_elems() * 4;
-        let conv_bytes = cfg.conv_state_elems() * 4;
-        let recurrent = gpu.alloc(recurrent_bytes)?;
-        let conv = gpu.alloc(conv_bytes)?;
-        gpu.memset_async(recurrent, 0, recurrent_bytes, 0)?;
-        gpu.memset_async(conv, 0, conv_bytes, 0)?;
-        gpu.synchronize(0)?;
-        Ok(Self {
-            inner: KdaSeqState { conv, recurrent },
-            recurrent_bytes,
-            conv_bytes,
-        })
-    }
-
-    pub fn bytes(&self) -> usize {
-        self.recurrent_bytes + self.conv_bytes
-    }
-}
-
-/// Per-sequence state for one composite GLM layer.
-pub enum Glm5NextLayerState {
-    Kda(OwnedKdaState),
-    Dsa(Glm5NextDsaState),
-}
-
-impl Glm5NextLayerState {
-    /// The DSA indexer cache, or an error naming the mismatch.
-    ///
-    /// 🪤 A mixer/state mismatch means the scheduler handed this layer another layer's slot.
-    /// Refuse loudly: silently allocating a fresh state here would decode with an empty
-    /// indexer cache and select over nothing.
-    pub fn dsa(&mut self) -> Result<&mut Glm5NextDsaState> {
-        match self {
-            Self::Dsa(s) => Ok(s),
-            Self::Kda(_) => bail!("GLM layer: a DSA mixer was handed KDA recurrent state"),
-        }
-    }
-
-    pub fn kda(&mut self) -> Result<&mut OwnedKdaState> {
-        match self {
-            Self::Kda(s) => Ok(s),
-            Self::Dsa(_) => bail!("GLM layer: a KDA mixer was handed a DSA indexer cache"),
-        }
-    }
-}
-
-impl LayerState for Glm5NextLayerState {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
-/// Free helper for a state's device allocations. Not a `Drop` impl: `DevicePtr` carries no
-/// backend handle, so freeing needs the GPU passed in.
-pub fn free_kda_state(gpu: &dyn GpuBackend, s: &OwnedKdaState) -> Result<()> {
-    gpu.free(s.inner.conv)?;
-    gpu.free(s.inner.recurrent)
-}
-
-/// The device pointers a KDA layer's decode takes.
-pub fn kda_ptrs(s: &OwnedKdaState) -> (DevicePtr, DevicePtr) {
-    (s.inner.conv, s.inner.recurrent)
+/// `kda_state_dtype`, so a BF16/FP16 state is a deviation from the reference, not a memory
+/// setting. `h_is_f16: false` here, and `Glm5NextLayer::kda_state` refuses a narrowed slot.
+pub fn alloc_kda_ssm_state(
+    gpu: &dyn GpuBackend,
+    cfg: &Glm5NextKdaConfig,
+) -> Result<SsmLayerState> {
+    let h_bytes = cfg.recurrent_state_elems() * 4;
+    let conv_bytes = cfg.conv_state_elems() * 4;
+    let h_state = gpu.alloc(h_bytes)?;
+    let conv_state = gpu.alloc(conv_bytes)?;
+    gpu.memset_async(h_state, 0, h_bytes, 0)?;
+    gpu.memset_async(conv_state, 0, conv_bytes, 0)?;
+    gpu.synchronize(0)?;
+    Ok(SsmLayerState {
+        h_state,
+        conv_state,
+        h_state_checkpoint: None,
+        conv_state_checkpoint: None,
+        h_state_intermediates: Vec::new(),
+        conv_state_intermediates: Vec::new(),
+        h_is_f16: false,
+        h_prefill_stage: None,
+    })
 }

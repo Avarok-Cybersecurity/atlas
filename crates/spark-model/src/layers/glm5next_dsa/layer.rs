@@ -518,15 +518,29 @@ impl TransformerLayer for Glm5NextDsaLayer {
             .ok_or_else(|| {
                 anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
             })?;
-        if st.len() != seq_len {
-            bail!(
-                "DSA layer {}: indexer cache holds {} tokens but the sequence is at {}. \
-                 The indexer stream must advance in lockstep with the KV cache — a drift \
-                 selects over the wrong context.",
+        // 🔴 The indexer stream must advance in lockstep with the KV cache — a drift selects
+        // over the wrong context. Two drifts are possible and they are NOT symmetric:
+        //
+        // * AHEAD (`len > seq_len`) is the speculative-verify reject. The K rows of a verify
+        //   were written, the sequence rolled back to the accepted prefix, and the rows past
+        //   it are now unreachable: the selector reads `[0, len)` and the next write starts
+        //   at `seq_len`, so they are overwritten before anything can select over them.
+        //   Rewind and continue — this is the KV cache's own semantics for rejected slots,
+        //   and making it self-healing here is why no rollback callback has to reach into
+        //   eleven DSA layers.
+        // * BEHIND (`len < seq_len`) means rows were never written. Nothing can repair that,
+        //   so it stays a hard error.
+        match st.len().cmp(&seq_len) {
+            std::cmp::Ordering::Greater => st.rewind_to(seq_len)?,
+            std::cmp::Ordering::Less => bail!(
+                "DSA layer {}: indexer cache holds {} tokens but the sequence is at {} — \
+                 rows are MISSING, not merely stale. The indexer stream must advance in \
+                 lockstep with the KV cache.",
                 self.layer_idx,
                 st.len(),
                 seq_len
-            );
+            ),
+            std::cmp::Ordering::Equal => {}
         }
         let gpu = ctx.gpu;
         let w = &self.workspace;

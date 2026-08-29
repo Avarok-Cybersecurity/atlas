@@ -261,10 +261,9 @@ impl TransformerModel {
         // append can only ever read rows THIS sequence's prefill wrote.
         *self.mtp_store_range.lock() = (0, 0);
 
-        // Build layer states: pool-backed SSM layers point into the pool (fixed
-        // addresses); everything else — attention layers, and linear-attention
-        // layers that own their state (`uses_ssm_pool() == false`, e.g. GLM-5.3
-        // KDA) — uses its own `alloc_state`.
+        // Build layer states: pool-backed recurrent layers point into the pool
+        // (fixed addresses) — Qwen GDN and GLM-5.3 KDA alike, both of which carry
+        // `SsmLayerState`; everything else uses its own `alloc_state`.
         // When MTP is available, pre-allocate checkpoint + K=2 intermediate
         // buffers so CUDA graph capture doesn't trigger lazy allocation.
         let mut ssm_layer_idx = 0usize;

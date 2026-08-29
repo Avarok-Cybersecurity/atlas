@@ -121,6 +121,24 @@ impl Glm5NextDsaState {
     }
 
     /// Plan a selection over everything cached so far.
+    /// Rewind to `n` rows after a rejected speculative draft.
+    ///
+    /// The rows in `[n, len)` are left in the cache but become unreachable: the selector reads
+    /// `[0, len)` and the next write starts at `n`, so they are overwritten before anything
+    /// can select over them. Only shrinks — growing is `advance`'s job, and a request to
+    /// "rewind" forward would mean the caller lost track of where the sequence is.
+    pub fn rewind_to(&mut self, n: usize) -> Result<()> {
+        if n > self.len {
+            bail!(
+                "DSA indexer rewind to {n} from {}: rewind only shrinks; a forward 'rewind' \
+                 means the caller lost the sequence position",
+                self.len
+            );
+        }
+        self.len = n;
+        Ok(())
+    }
+
     pub fn geometry(&self, cfg: &Glm5NextDsaConfig, q_rows: usize) -> Result<DsaSelectGeometry> {
         DsaSelectGeometry::plan(cfg, self.len, q_rows)
     }
