@@ -288,8 +288,9 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
 /// Payload after the code: `last_token`, `position`, `num_drafts` (3 x u32).
 pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
 
-/// `ATLAS_MTP_EP_PROPOSE=1`: run the drafter on EVERY rank with the
-/// communicator, instead of rank-0-only with `comm: None`.
+/// Run the drafter on EVERY rank with the communicator, instead of rank-0-only
+/// with `comm: None`. **DEFAULT ON since 2026-08-29**; kill switch
+/// `ATLAS_NO_MTP_EP_PROPOSE=1` restores the rank-0-only path.
 ///
 /// Both halves move together and neither is safe alone:
 /// * the head broadcasts [`EP_CMD_MTP_PROPOSE`] before every propose, so the
@@ -297,11 +298,18 @@ pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
 ///   the same stream order;
 /// * [`DraftProposer::needs_comm`] then hands the block a comm.
 ///
-/// Opt-in while it is being measured: a wrong answer here is a hang, not a
-/// bad number, and the rank-0-only path is the shipping one until this beats it.
+/// Only a proposer that returns true from [`DraftProposer::needs_comm`] is
+/// affected, and today that is GLM-5.3 alone — the Qwen and DeepSeek-V4 MTP
+/// modules load every expert on every rank and must keep `comm: None`.
+///
+/// Measured on 2 x GB10 (t67, six-probe gate byte-identical on every arm):
+/// open512 17.53 -> 19.11 tok/s, p1 0.747 -> 0.875.
+///
+/// 🪤 `ATLAS_MTP_EP_PROPOSE=1` (the opt-in name it shipped behind for one day)
+/// still reads as ON, so a launch script carrying it keeps working.
 pub fn mtp_ep_propose_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MTP_EP_PROPOSE").ok().as_deref() == Some("1"))
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_MTP_EP_PROPOSE").ok().as_deref() != Some("1"))
 }
 
 pub trait DraftProposer: Send + Sync {
