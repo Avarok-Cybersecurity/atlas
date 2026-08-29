@@ -161,7 +161,25 @@ a { color: var(--accent); }
   transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .btn-ghost:hover { color: var(--text-1); border-color: var(--line-hard); background: var(--bg-1); }
-@media (max-width: 900px) { .nav { display: none; } }
+/* Below the bar's comfortable width the categories wrap to their own row
+   rather than disappearing. Hiding them was the scaffold's behaviour and it
+   leaves a phone visitor on an article with no route to any category at all —
+   the chip row exists only on the index. A scrolling second row costs one
+   wrapped flex line and no JavaScript, and keeps every link the desktop has. */
+@media (max-width: 900px) {
+  .hdr { height: auto; }
+  .hdr-in { flex-wrap: wrap; height: auto; min-height: var(--header-h); row-gap: 0; }
+  .nav {
+    order: 3; width: 100%; margin: 0 -2rem; padding: 0 2rem;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav a { padding: 9px 12px; white-space: nowrap; }
+  .nav a::before { inset: 3px 0; }
+  .hdr-right { margin-left: auto; }
+  /* The bar is two rows tall here, so an anchor jump has to clear both. */
+  html { scroll-padding-top: calc(var(--header-h) * 2 + 16px); }
+}
 @media (max-width: 460px) { .btn-ghost .lbl { display: none; } .btn-ghost { padding: 0 10px; } }
 
 /* ---- index ---------------------------------------------------------------- */

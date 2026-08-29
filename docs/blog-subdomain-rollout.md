@@ -410,3 +410,30 @@ extended to assert all four headers on both, and it is green at 28/28.
 The lesson is narrow and worth keeping: `git add -A` in a worktree that also
 holds a build cache commits the cache, and nothing about the commit output says
 so — the file count only shows up if you go looking for it.
+
+## Wave 7 — phone widths, and a link with no name
+
+**Found by screenshotting at 390px**, which is the only way either of these
+shows up.
+
+**The categories disappeared below 900px.** The scaffold hides the nav there and
+offers nothing in its place. On the index that is survivable — the chip row
+carries the same links — but on an *article* a phone visitor had no route to any
+category at all. They now wrap to a second, horizontally scrolling row inside
+the same sticky bar: one wrapped flex line, no JavaScript, every link the
+desktop has. `scroll-padding-top` doubles under that breakpoint, because the bar
+is two rows tall there and an anchor jump has to clear both.
+
+**A link with no accessible name.** `@media (max-width: 460px)` sets
+`.btn-ghost .lbl { display: none }`, which removes the label from the
+accessibility tree as well as from the page — so under 460px the
+`atlasinference.io` button was an anchor containing one `aria-hidden` arrow and
+nothing else. Screen readers get "link"; Lighthouse's accessibility gate, which
+this repo pins at **minScore 1**, fails it outright. Fixed with an explicit
+`aria-label`, which survives the label being hidden. The GitHub button next to
+it already had one, which is why only one of the two was broken — the kind of
+asymmetry that a visual check never surfaces.
+
+The marketing site needed nothing here: its hamburger drawer already carries
+every link, and the lockup's negative margin puts the mark on the same optical
+left edge as the hero text at 390px.
