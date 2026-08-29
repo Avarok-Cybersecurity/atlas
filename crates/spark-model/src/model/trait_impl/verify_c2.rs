@@ -181,7 +181,19 @@ impl TransformerModel {
         // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
         // byte-for-byte unchanged when the env is unset.
         let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager && !k4_diag;
+        // Capture the multi-row verify under EP — ported verbatim from verify_c.rs (K=3),
+        // where it is ON by default since 2026-08-29 and the six probes are byte-identical
+        // to eager. Without this gate K=4 was eager-only under EP (`self.comm.is_some()`),
+        // so no K=4 arm was ever comparable to the graphed K=3 number.
+        //
+        // 🪤 Deliberately does NOT read `ATLAS_EP_GRAPHS`; see verify_c.rs for why the two
+        // are gated apart.
+        let ep_graphs = std::env::var("ATLAS_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
+        // A56 instrument (see verify_c.rs). Implies GRAPHS + NOCACHE.
+        let graph_trace = std::env::var("ATLAS_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
+        let ep_graphs = ep_graphs || graph_trace;
+        let use_graphs =
+            (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager && !k4_diag;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -221,12 +233,22 @@ impl TransformerModel {
             && graph.0 != 0
         {
             self.gpu.launch_graph(graph, stream)?;
+            // 🔴 ANOMALIES A56, K=4 half. A replay runs kernels and NOTHING else, so any
+            // layer keeping per-sequence bookkeeping on the HOST — GLM-5.3's DSA indexer
+            // cache length — must be reconciled here. RECONCILE to `seq_len + k`, not
+            // `+= k`: `decode_k` REWINDS to `seq_len` on entry. See verify_c.rs.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.sync_replayed_step(seq.layer_states[i].as_mut(), seq.seq_len, k)?;
+            }
         }
         let need_run = cached_for_slot.is_none();
         if need_run {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
 
+            if graph_trace {
+                spark_runtime::launch_trace::begin();
+            }
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
@@ -352,11 +374,21 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=4 verify (slot={})", seq.slot_idx);
-                    if let Some(ref mut cache) = graph_cache {
+                    // BISECT HATCH (ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1) — see verify_c.rs.
+                    if let Some(ref mut cache) = graph_cache
+                        && !graph_trace
+                        && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE")
+                            .is_ok_and(|v| v == "1")
+                    {
                         cache.insert(seq.slot_idx, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
+            }
+            if graph_trace
+                && let Some(report) = spark_runtime::launch_trace::end_and_diff(40)
+            {
+                tracing::info!("A56 trace K=4 (this step vs previous): {}", report);
             }
         }
 

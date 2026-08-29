@@ -219,13 +219,13 @@ impl TransformerModel {
                 .into_iter()
                 .collect();
             // 🔴 The K-row VERIFY graphs, for exactly the same reason — and this omission
-            // was ANOMALIES A56. `verify2_graph` / `verify3_graph` are slot-keyed too and
+            // was ANOMALIES A56. `verify2_graph` / `verify3_graph` / `verify4_graph` are slot-keyed too and
             // bake `Glm5NextDsaState::{k_normed, gate, valid}`, which `alloc_state`
             // allocates PER SEQUENCE. Request 1 captured them; requests 2..n replayed a
             // graph selecting over request 1's freed indexer cache. It reproduces as: the
             // FIRST request after a start is byte-exact and later ones are not — which is
             // why it looked data-dependent for a day.
-            for m in [&self.verify2_graph, &self.verify3_graph] {
+            for m in [&self.verify2_graph, &self.verify3_graph, &self.verify4_graph] {
                 stale.extend(m.lock().remove(&seq.slot_idx));
             }
             {
