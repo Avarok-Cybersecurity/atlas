@@ -184,27 +184,26 @@ impl TransformerModel {
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        // 🔴🔴 KNOWN INCORRECT — DO NOT ENABLE. `ATLAS_GLM_VERIFY_GRAPHS=1` captures the
-        // multi-row verify under EP. Capture SUCCEEDS and the capture pass is byte-exact
-        // (proved with ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1, which captures and runs every step:
-        // all six probes match eager). REPLAY DIVERGES: pyadd/open128/open512 return
-        // 0e331783 / 88f2ccc1 / d253d593 against the eager 090d209c / bc94ba6f / d2ec1a53,
-        // first differing ~22 tokens into the generation, and IDENTICALLY at K=2 and K=3.
-        // Root cause NOT found (2026-08-29) — see `.planning/ANOMALIES.md` A56.
+        // Capture the multi-row verify under EP. ON by default since 2026-08-29; set
+        // `ATLAS_GLM_VERIFY_GRAPHS=0` to fall back to eager. Worth ~5 % at K=3
+        // (open512 22.02 -> 23.11 tok/s, t78 A/B) and the six probes are byte-identical to
+        // eager: de4e9745 / 5f16d368 / 090d209c / 2a7c7286 / bc94ba6f / d2ec1a53.
         //
         // 🪤 This deliberately does NOT read `ATLAS_EP_GRAPHS`. That variable is set by the
-        // SEALED spec-off launch config, where it gates `decode_a`'s K=1 decode graph — which
-        // IS correct (spec-off graphed: all six hashes match, 15.32-15.66 tok/s). Wiring the
-        // verify to the same variable would silently turn a shipped, byte-identical config
-        // into a divergent one the moment MTP was switched on.
-        let ep_graphs =
-            std::env::var("ATLAS_GLM_VERIFY_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
-        if ep_graphs {
-            tracing::error!(
-                "ATLAS_GLM_VERIFY_GRAPHS=1: the multi-row verify graph REPLAYS INCORRECTLY \
-                 (ANOMALIES A56). Diagnostic use only — its output is not the model's output."
-            );
-        }
+        // SEALED spec-off launch config, where it gates `decode_a`'s K=1 decode graph. The
+        // two paths are gated apart so a change to one cannot move the other's output.
+        //
+        // 🔴 ANOMALIES A56 lived here: the replay diverged from eager on the 3rd request and
+        // later, never on the first. The graph was fine; `free_sequence` did not drop
+        // `verify2_graph`/`verify3_graph`, so request N replayed a graph baking request 1's
+        // per-sequence DSA indexer-cache pointers. Fixed in `trait_impl/sequence.rs` — do not
+        // add a slot-keyed graph cache without adding it there too.
+        let ep_graphs = std::env::var("ATLAS_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
+        // A56 instrument. Captures every step, never replays, and diffs the ops this step
+        // enqueued against the previous step's. A graph bakes grid/block/args, so every
+        // difference is a host value a replay would freeze. Implies GRAPHS + NOCACHE.
+        let graph_trace = std::env::var("ATLAS_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
+        let ep_graphs = ep_graphs || graph_trace;
         let use_graphs = (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager;
 
         let ctx = ForwardContext {
@@ -246,14 +245,17 @@ impl TransformerModel {
         {
             self.gpu.launch_graph(graph, stream)?;
             // 🔴 A replay runs kernels and NOTHING else. Any layer that keeps per-sequence
-            // bookkeeping on the HOST — GLM-5.3's DSA indexer cache length — must be advanced
-            // here, once PER VERIFY ROW, because its `decode_k` did not run. Miss this and the
-            // next eager step plans its selection over a stale length and `decode_k`'s own
-            // lockstep check fires. Default impl is a no-op for every other layer.
+            // bookkeeping on the HOST — GLM-5.3's DSA indexer cache length — must be
+            // reconciled here, because its `decode_k` did not run. Miss this and the next
+            // eager step plans its selection over a stale length and `decode_k`'s own lockstep
+            // check fires. Default impl is a no-op for every other layer.
+            //
+            // 🔴 RECONCILE to `seq_len + k`, not `+= k`: `decode_k` REWINDS to `seq_len` on
+            // entry, because the previous verify wrote K rows and the scheduler kept only the
+            // accepted prefix. A replay that only advances runs (k - accepted) ahead on every
+            // rejected draft and compounds it — ANOMALIES A56.
             for (i, layer) in self.layers.iter().enumerate() {
-                for _ in 0..k {
-                    layer.advance_replayed_step(seq.layer_states[i].as_mut())?;
-                }
+                layer.sync_replayed_step(seq.layer_states[i].as_mut(), seq.seq_len, k)?;
             }
         }
         let need_run = cached_for_slot.is_none();
@@ -261,6 +263,9 @@ impl TransformerModel {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
 
+            if graph_trace {
+                spark_runtime::launch_trace::begin();
+            }
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
@@ -370,6 +375,7 @@ impl TransformerModel {
                     // different from eager" from "the capture is faithful but replay goes
                     // stale" — they need different fixes and look identical from the outside.
                     if let Some(ref mut cache) = graph_cache
+                        && !graph_trace
                         && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE")
                             .is_ok_and(|v| v == "1")
                     {
@@ -377,6 +383,11 @@ impl TransformerModel {
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
+            }
+            if graph_trace
+                && let Some(report) = spark_runtime::launch_trace::end_and_diff(40)
+            {
+                tracing::info!("A56 trace K=3 (this step vs previous): {}", report);
             }
         }
 

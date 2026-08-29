@@ -349,6 +349,16 @@ pub fn select_tokens(
     };
     let gd = inputs.geom_dev;
 
+    // 🔴 Under a ceiling launch the kernels take their live extents from `geom_dev` and the
+    // scalar twins are dead — but a CUDA graph BAKES every scalar it is handed. A dead scalar
+    // that still moves per step makes two captures of the same region differ, which is both
+    // noise in a capture-vs-capture diff and a live trap the day a kernel stops overriding
+    // one. Hand the ceiling: constant for the life of the graph, and what the grid already is.
+    let (seq_a, npools_a, np2_a, selk_a) = match ceiling {
+        Some(m) => (m * kp, m, m.next_power_of_two().max(2), cfg.select_k(m)),
+        None => (geom.seq, geom.n_pools, geom.topk_np2, geom.select_k),
+    };
+
     // 🪤 Below `index_kpool` tokens there are no pools to score or sort, and a
     // zero-extent grid is an illegal launch, not a no-op. Stages 2 and 3 are
     // skipped; stage 1 still runs (`n_pools_full >= 1`) and stage 4 still runs,
@@ -372,7 +382,7 @@ pub fn select_tokens(
         .arg_ptr(scratch.pool_keys)
         .arg_ptr(scratch.pool_indices)
         .arg_ptr(scratch.pool_valid)
-        .arg_u32(geom.seq as u32)
+        .arg_u32(seq_a as u32)
         .arg_u32(d as u32)
         .arg_u32(kp as u32)
         .arg_i32(inputs.first_key)
@@ -403,11 +413,11 @@ pub fn select_tokens(
             .arg_ptr(scratch.scores)
             .arg_ptr(scratch.valid_cand)
             .arg_u32(geom.q_rows as u32)
-            .arg_u32(geom.n_pools as u32)
+            .arg_u32(npools_a as u32)
             .arg_u32(geom.index_heads as u32)
             .arg_u32(d as u32)
             .arg_u32(kp as u32)
-            .arg_u32(geom.seq as u32)
+            .arg_u32(seq_a as u32)
             .arg_f32((d as f32).powf(-0.5))
             .arg_ptr(gd)
             .launch(stream)?;
@@ -421,9 +431,9 @@ pub fn select_tokens(
             .arg_ptr(scratch.scores)
             .arg_ptr(scratch.selected)
             .arg_u32(geom.q_rows as u32)
-            .arg_u32(geom.n_pools as u32)
-            .arg_u32(geom.topk_np2 as u32)
-            .arg_u32(geom.select_k as u32)
+            .arg_u32(npools_a as u32)
+            .arg_u32(np2_a as u32)
+            .arg_u32(selk_a as u32)
             .arg_ptr(gd)
             .launch(stream)?;
     }
@@ -440,10 +450,10 @@ pub fn select_tokens(
         .arg_ptr(inputs.q_mask)
         .arg_ptr(scratch.tokens)
         .arg_u32(geom.q_rows as u32)
-        .arg_u32(geom.n_pools as u32)
+        .arg_u32(npools_a as u32)
         .arg_u32(kp as u32)
-        .arg_u32(geom.seq as u32)
-        .arg_u32(geom.select_k as u32)
+        .arg_u32(seq_a as u32)
+        .arg_u32(selk_a as u32)
         .arg_u32(geom.out_width as u32)
         .arg_i32(inputs.first_key)
         .arg_i32(cfg.always_select_tail as i32)

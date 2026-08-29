@@ -201,14 +201,28 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
-    /// Advance whatever HOST-side per-sequence bookkeeping a decode step would have
-    /// advanced, when that step was served by a replayed CUDA graph instead of being run.
+    /// Reconcile whatever HOST-side per-sequence bookkeeping a step would have done, when
+    /// that step was served by a replayed CUDA graph instead of being run. `seq_len` is the
+    /// sequence length BEFORE this step's `k` rows.
     ///
     /// 🔴 A graph replay executes kernels and nothing else: the layer's `decode` never runs,
     /// so a layer that tracks its own cache length on the host silently stops advancing and
-    /// every replayed step overwrites the same row. Default is a no-op — only a layer with
-    /// host-side state (GLM-5.3's DSA indexer cache) needs this.
-    fn advance_replayed_step(&self, _state: &mut dyn LayerState) -> Result<()> {
+    /// every replayed step overwrites the same row.
+    ///
+    /// 🔴 It is a RECONCILE, not an advance. A K-row verify writes K rows and the scheduler
+    /// then keeps only the accepted prefix, so the counter has to be rewound to `seq_len`
+    /// first — exactly what `decode_k`'s own lockstep check does on the eager path. Advancing
+    /// blindly leaves the counter (k - accepted) ahead of the sequence on every rejected
+    /// draft, and that drift is ANOMALIES A56: the DRAFTER writes its indexer rows at
+    /// `state.len()`, so a counter running ahead lands them on rows the target then selects
+    /// over. Default is a no-op — only a layer with host-side state (GLM-5.3's DSA indexer
+    /// cache) needs this.
+    fn sync_replayed_step(
+        &self,
+        _state: &mut dyn LayerState,
+        _seq_len: usize,
+        _k: usize,
+    ) -> Result<()> {
         Ok(())
     }
 

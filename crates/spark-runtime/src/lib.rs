@@ -30,6 +30,7 @@ pub mod gpu;
 mod gpu_args;
 pub mod kernel_args;
 pub mod kernel_audit;
+pub mod launch_trace;
 pub mod kv_cache;
 pub mod kv_dequant;
 pub mod kv_spill;

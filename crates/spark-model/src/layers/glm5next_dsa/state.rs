@@ -139,6 +139,28 @@ impl Glm5NextDsaState {
         Ok(())
     }
 
+    /// Put the counter where a RUN step would have left it, for a step served by a replayed
+    /// CUDA graph. `seq_len` is the sequence length before this step's `k` rows.
+    ///
+    /// 🔴 The same lockstep reconcile `decode_k` does on the eager path, and for the same
+    /// reason: a K-row verify writes K rows and the scheduler keeps only the accepted prefix,
+    /// so the counter is AHEAD by (k - accepted) whenever a draft was rejected. `decode_k`
+    /// rewinds on entry; a replay never calls it, so a plain `advance(k)` compounds that drift
+    /// every step. See ANOMALIES A56 — the drafter writes its indexer rows at `len()`, so the
+    /// drift moves those rows on top of ones the target selects over.
+    pub fn sync_to(&mut self, seq_len: usize, k: usize) -> Result<()> {
+        match self.len.cmp(&seq_len) {
+            std::cmp::Ordering::Greater => self.rewind_to(seq_len)?,
+            std::cmp::Ordering::Less => bail!(
+                "DSA indexer cache holds {} tokens but the replayed step starts at {seq_len} \
+                 — rows are MISSING, not merely stale.",
+                self.len
+            ),
+            std::cmp::Ordering::Equal => {}
+        }
+        self.advance(k)
+    }
+
     pub fn geometry(&self, cfg: &Glm5NextDsaConfig, q_rows: usize) -> Result<DsaSelectGeometry> {
         DsaSelectGeometry::plan(cfg, self.len, q_rows)
     }

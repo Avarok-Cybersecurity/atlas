@@ -928,14 +928,19 @@ impl TransformerLayer for Glm5NextDsaLayer {
     /// but never calls `decode`, so the counter has to be advanced here or the NEXT eager
     /// step plans its selection over a stale length — and `decode`'s own lockstep check
     /// would fire.
-    fn advance_replayed_step(&self, state: &mut dyn LayerState) -> Result<()> {
+    fn sync_replayed_step(
+        &self,
+        state: &mut dyn LayerState,
+        seq_len: usize,
+        k: usize,
+    ) -> Result<()> {
         state
             .as_any_mut()
             .downcast_mut::<Glm5NextDsaState>()
             .ok_or_else(|| {
                 anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
             })?
-            .advance(1)
+            .sync_to(seq_len, k)
     }
 
     #[allow(clippy::too_many_arguments)]

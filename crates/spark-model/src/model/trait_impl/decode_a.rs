@@ -355,7 +355,7 @@ impl TransformerModel {
             // bookkeeping on the HOST (GLM-5.3's DSA indexer cache length) must be advanced
             // here; its `decode` did not run. Default impl is a no-op for every other layer.
             for (i, layer) in self.layers.iter().enumerate() {
-                layer.advance_replayed_step(seq.layer_states[i].as_mut())?;
+                layer.sync_replayed_step(seq.layer_states[i].as_mut(), seq.seq_len, 1)?;
             }
             seq.tokens.push(token);
             seq.seq_len += 1;

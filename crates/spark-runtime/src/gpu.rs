@@ -185,6 +185,31 @@ pub trait GpuBackend: Send + Sync {
         stream: u64,
         args: &[KernelArg<'_>],
     ) -> Result<()> {
+        // ANOMALIES A56: record what this step enqueues so two steps can be
+        // diffed. A graph bakes these bytes; anything that moves between steps
+        // is a host value the replay froze. No-op unless `launch_trace::begin`.
+        if crate::launch_trace::on() {
+            let words = args
+                .iter()
+                .map(|a| match a {
+                    KernelArg::Buffer(p) => p.0,
+                    KernelArg::Bytes(b) => {
+                        let mut w = [0u8; 8];
+                        let n = b.len().min(8);
+                        w[..n].copy_from_slice(&b[..n]);
+                        u64::from_le_bytes(w)
+                    }
+                })
+                .collect();
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "kernel",
+                func: func.0,
+                grid,
+                block,
+                smem: shared_mem,
+                args: words,
+            });
+        }
         // CUDA-compatible default: each arg becomes one u64 slot. The
         // storage stays alive across the launch call so the *mut c_void
         // pointers we hand to `launch()` remain valid.

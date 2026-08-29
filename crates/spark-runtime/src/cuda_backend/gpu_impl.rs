@@ -267,6 +267,16 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        if crate::launch_trace::on() {
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "d2d",
+                func: 0,
+                grid: [0, 0, 0],
+                block: [0, 0, 0],
+                smem: 0,
+                args: vec![src.0, dst.0, bytes as u64],
+            });
+        }
         AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
 
@@ -353,6 +363,7 @@ impl GpuBackend for AtlasCudaBackend {
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true, site);
+                crate::launch_trace::name_kernel(raw.0 as u64, module, func_name);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
@@ -482,6 +493,16 @@ impl GpuBackend for AtlasCudaBackend {
         self.memset_cu(ptr, value, bytes)
     }
     fn memset_async(&self, ptr: DevicePtr, value: u8, bytes: usize, stream: u64) -> Result<()> {
+        if crate::launch_trace::on() {
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "memset",
+                func: 0,
+                grid: [0, 0, 0],
+                block: [0, 0, 0],
+                smem: 0,
+                args: vec![ptr.0, value as u64, bytes as u64],
+            });
+        }
         self.memset_async_cu(ptr, value, bytes, stream)
     }
     fn total_memory(&self) -> Result<usize> {

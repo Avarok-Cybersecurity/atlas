@@ -900,9 +900,14 @@ impl TransformerLayer for Glm5NextLayer {
     ///
     /// KDA keeps nothing on the host: its recurrent and conv state are device-resident and the
     /// replayed kernels update them in place.
-    fn advance_replayed_step(&self, state: &mut dyn LayerState) -> Result<()> {
+    fn sync_replayed_step(
+        &self,
+        state: &mut dyn LayerState,
+        seq_len: usize,
+        k: usize,
+    ) -> Result<()> {
         match &self.mixer {
-            Glm5NextMixer::Dsa(_) => self.dsa_state(state)?.advance(1),
+            Glm5NextMixer::Dsa(_) => self.dsa_state(state)?.sync_to(seq_len, k),
             Glm5NextMixer::Kda { .. } => Ok(()),
         }
     }
