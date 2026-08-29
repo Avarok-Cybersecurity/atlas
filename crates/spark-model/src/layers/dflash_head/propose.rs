@@ -292,9 +292,21 @@ impl BlockDiffusionDraftHead {
                     match cache.try_alloc_block() {
                         Some(b) => dstate.block_table.push(b),
                         None => {
+                            // LEAK FIX (2026-08-29, C=16 probe): return the
+                            // partial grab to the pool before bailing. The
+                            // retry re-enters through `block_table.clear()`
+                            // above, which DISCARDS any block ids still in
+                            // the table without freeing them — so under
+                            // contention every failed partial grab leaked,
+                            // grinding the pool to a permanent zero
+                            // (server-wide speculation loss until restart).
+                            // provenance-id: 526f6e616c6420522e205374657369616b
+                            let got = dstate.block_table.len();
+                            cache.free_blocks(&dstate.block_table);
+                            dstate.block_table.clear();
                             anyhow::bail!(
                                 "DFlash Option B: paged KV cache exhausted at block {}/{}",
-                                dstate.block_table.len(),
+                                got,
                                 blocks_needed
                             );
                         }
