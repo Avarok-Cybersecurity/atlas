@@ -877,3 +877,97 @@ pub fn transpose_block_scale(
 //
 // These wrappers select the correct kernel based on the QuantWeight
 // variant. Adding a new quant format requires only a new match arm here.
+
+/// The three BF16 dense kernels one projection site can land on, resolved once.
+///
+/// GLM-5.3 binds one of these per mixer/MLP site; `batchm` is `0` on a backend that
+/// does not carry `dense_gemv_bf16_batchm`, and [`dense_mm_bf16`] then falls back to
+/// the tile GEMM exactly as before.
+#[derive(Clone, Copy)]
+pub struct DenseMmKernels {
+    /// `dense_gemm_bf16` — 16×16 tile GEMM. The only arm that handles `M > 8`.
+    pub gemm: KernelHandle,
+    /// `dense_gemv_bf16` — `M == 1`.
+    pub gemv: KernelHandle,
+    /// `dense_gemv_bf16_batchm` — `2 ..= 8`, ONE weight sweep. `0` = unavailable.
+    pub batchm: KernelHandle,
+}
+
+/// `C[M, N] = A[M, K] @ B[N, K]^T`, BF16 in and out, output row stride `N`.
+///
+/// 🔴 **The M dispatch is the whole point.** At `M == 1` the tile GEMM's grid collapses
+/// (73 GB/s against a 254 GB/s part). At `2 ..= 8` it is ~94 % padding and measured 3.6×
+/// SLOWER than the batched GEMV on this exact workload (`multi_seq/qkv.rs::wide_verify_gemm`).
+/// `batchm` reads the weight matrix ONCE for all M rows — which is what makes a K-token
+/// speculative verify cost one weight sweep instead of K.
+///
+/// 🪤 `batchm` is **bit-identical to M separate `dense_gemv` calls** (same K-iteration order
+/// and reduction tree per row, `--fmad=false`), so batching K rows that were previously K
+/// serial single-row decodes does not move a single bit. The tile-GEMM arm is NOT
+/// bit-identical to either — it reassociates. Widening a site past 8 rows changes numerics.
+#[allow(clippy::too_many_arguments)]
+pub fn dense_mm_bf16(
+    gpu: &dyn GpuBackend,
+    k: &DenseMmKernels,
+    a: DevicePtr,
+    b: DevicePtr,
+    c: DevicePtr,
+    m: usize,
+    n: usize,
+    kk: usize,
+    stream: u64,
+) -> Result<()> {
+    // 🪤 Grid is COUPLED to each kernel's `N_PER_BLOCK` (4 outputs / 256-thread block for
+    // both GEMV arms, `GEMM_TILE` for the tile arm). Never hand-roll these div_ceils.
+    if m == 1 && k.gemv.0 != 0 {
+        return KernelLaunch::new(gpu, k.gemv)
+            .grid([div_ceil(n as u32, 4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a)
+            .arg_ptr(b)
+            .arg_ptr(c)
+            .arg_u32(n as u32)
+            .arg_u32(kk as u32)
+            .launch(stream);
+    }
+    // 🪤 A missing batchm handle falls back SILENTLY to the tile GEMM, which is 3.6x slower
+    // at these widths — exactly the failure `announce_dispatch` exists to prevent elsewhere.
+    if m > 1 && k.batchm.0 == 0 {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            tracing::warn!(
+                "dense_mm_bf16: no dense_gemv_bf16_batchm on this target -- M>1 sites fall \
+                 back to the tile GEMM (measured 3.6x slower at M<=8)"
+            );
+        });
+    }
+    if (2..=DENSE_GEMV_BATCHM_MAX_M as usize).contains(&m) && k.batchm.0 != 0 {
+        return KernelLaunch::new(gpu, k.batchm)
+            .grid([div_ceil(n as u32, 4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a)
+            .arg_ptr(b)
+            .arg_ptr(c)
+            .arg_u32(m as u32)
+            .arg_u32(n as u32)
+            .arg_u32(kk as u32)
+            // Contiguous `[M, N]` output — the layout `dense_gemm_bf16` writes.
+            .arg_u32(n as u32)
+            .launch(stream);
+    }
+    const GEMM_TILE: u32 = 16;
+    KernelLaunch::new(gpu, k.gemm)
+        .grid([
+            (n as u32).div_ceil(GEMM_TILE),
+            (m as u32).div_ceil(GEMM_TILE),
+            1,
+        ])
+        .block([GEMM_TILE, GEMM_TILE, 1])
+        .arg_ptr(a)
+        .arg_ptr(b)
+        .arg_ptr(c)
+        .arg_u32(m as u32)
+        .arg_u32(n as u32)
+        .arg_u32(kk as u32)
+        .launch(stream)
+}

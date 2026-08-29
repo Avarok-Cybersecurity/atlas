@@ -572,6 +572,52 @@ impl TransformerLayer for Glm5NextLayer {
         Ok(())
     }
 
+    /// K tokens of ONE sequence in a single call — the speculative-verify body.
+    ///
+    /// Semantically identical to [`Self::prefill`] over the same K rows: same per-token highway
+    /// slots, same `seq_len_start + t` positions, same KV writes. `prefill` ignores
+    /// `kv_write_start` (the paged slot comes from `attn_metadata`), so the delegation is exact.
+    ///
+    /// 🔴 The trait's default would be WRONG, not merely slow: it calls `decode` per token, and
+    /// `decode` pins highway slot 0. K tokens would then overwrite each other's mHC streams and
+    /// every layer past the first would read the last token's highway for all K rows.
+    ///
+    /// ⚠️ **Correct, not yet fast.** This is still one `forward_one` per row, so a K-token
+    /// verify currently costs K weight sweeps. Batching the sweep (KDA front-end, DSA
+    /// projections, shared/dense MLP, mHC) is what makes speculation pay; the projection
+    /// kernels already dispatch `2 ..= 8` rows to `dense_gemv_bf16_batchm`
+    /// (`ops::dense_mm_bf16`), so hoisting a site to K rows is a byte-identical change.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_batched(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill(
+            hidden,
+            residual,
+            num_tokens,
+            state,
+            kv_cache,
+            seq_len,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            seq_len,
+            ctx,
+            stream,
+        )
+    }
+
     /// KDA layers carry recurrent state; DSA layers do not.
     fn is_ssm_layer(&self) -> bool {
         matches!(self.mixer, Glm5NextMixer::Kda { .. })

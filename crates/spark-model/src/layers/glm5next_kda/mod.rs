@@ -175,6 +175,10 @@ pub struct Glm5NextKdaKernels {
     /// grid collapses and it measured 58 GB/s against a 254 GB/s part — 32 % of the whole
     /// GLM decode step (2026-08-28 profile). Every KDA projection is M=1 at decode.
     pub gemv: KernelHandle,
+    /// 🔴 The BATCHED weight kernel, `2 ..= 8` rows in ONE weight sweep. This is what makes a
+    /// K-token speculative verify cost one pass over q/k/v/f_a/f_b/g_a/g_b/o instead of K.
+    /// `0` on a backend without it — [`ops::dense_mm_bf16`] then falls back to the tile GEMM.
+    pub gemv_batchm: KernelHandle,
     pub conv_decode: KernelHandle,
     pub conv_prefill: KernelHandle,
     pub l2: KernelHandle,
@@ -201,6 +205,11 @@ impl Glm5NextKdaKernels {
             // Scalar strict-order BF16 GEMM: `C = A @ B^T`, no reassociation.
             gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
             gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            gemv_batchm: crate::layers::try_kernel(
+                gpu,
+                "dense_gemv_bf16_batchm",
+                "dense_gemv_bf16_batchm",
+            ),
             conv_decode: gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,
             conv_prefill: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
             l2: gpu.kernel("norm", "l2_norm_bf16")?,
@@ -360,28 +369,20 @@ impl Glm5NextKdaLayer {
         k: usize,
         stream: u64,
     ) -> Result<()> {
-        // Decode is M=1 on every one of these; prefill keeps the tile GEMM.
-        if m == 1 {
-            return ops::dense_gemv(
-                gpu,
-                self.kernels.gemv,
-                input,
-                weight,
-                out,
-                n as u32,
-                k as u32,
-                stream,
-            );
-        }
-        ops::dense_gemm(
+        // M=1 decode -> GEMV, M=2..8 verify/short-chunk -> ONE weight sweep, wider -> tile GEMM.
+        ops::dense_mm_bf16(
             gpu,
-            self.kernels.gemm,
+            &ops::DenseMmKernels {
+                gemm: self.kernels.gemm,
+                gemv: self.kernels.gemv,
+                batchm: self.kernels.gemv_batchm,
+            },
             input,
-            weight,
+            weight.weight,
             out,
-            m as u32,
-            n as u32,
-            k as u32,
+            m,
+            n,
+            k,
             stream,
         )
     }

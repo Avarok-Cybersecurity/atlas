@@ -40,7 +40,6 @@ use super::state::Glm5NextDsaState;
 use super::{Glm5NextDsaConfig, Glm5NextDsaKernels};
 use crate::layer::{ForwardContext, LayerState, TransformerLayer};
 
-const GEMM_TILE: u32 = 16;
 
 /// GEMM launch: `C[M, N] = A[M, K] @ B[N, K]^T`. Grid `(ceil(N/16), ceil(M/16))`,
 /// block `(16, 16)` — one thread per output element.
@@ -48,6 +47,7 @@ fn gemm(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
     gemv: KernelHandle,
+    batchm: KernelHandle,
     a: DevicePtr,
     b: DevicePtr,
     c: DevicePtr,
@@ -56,39 +56,23 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
-    // 🔴 M=1 IS A GEMV. `dense_gemm_bf16` tiles 16x16 over (N, M); at M=1 the M axis is a
-    // single row and the grid collapses — 73 GB/s measured against a 254 GB/s part. Every
-    // call in this file passes m = 1. The tile arm survives for a future batched caller.
-    //
-    // 🪤 Grid is COUPLED to the kernel's `N_PER_BLOCK` (4 outputs / 256-thread block).
-    // `ops::dense_gemv` is the SSOT; a hand-written div_ceil here would write wrong outputs
-    // the day the define moves.
-    if m == 1 && gemv.0 != 0 {
-        return KernelLaunch::new(gpu, gemv)
-            .grid([spark_runtime::kernel_args::div_ceil(n as u32, 4), 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(a)
-            .arg_ptr(b)
-            .arg_ptr(c)
-            .arg_u32(n as u32)
-            .arg_u32(kk as u32)
-            .launch(stream);
-    }
-    KernelLaunch::new(gpu, k)
-        .grid([
-            (n as u32).div_ceil(GEMM_TILE),
-            (m as u32).div_ceil(GEMM_TILE),
-            1,
-        ])
-        .block([GEMM_TILE, GEMM_TILE, 1])
-        .arg_ptr(a)
-        .arg_ptr(b)
-        .arg_ptr(c)
-        .arg_u32(m as u32)
-        .arg_u32(n as u32)
-        .arg_u32(kk as u32)
-        .launch(stream)?;
-    Ok(())
+    // M=1 decode -> GEMV; M=2..8 (a K-token verify sweep) -> ONE weight read for all rows;
+    // wider -> the tile GEMM. `ops::dense_mm_bf16` owns the policy and the grid coupling.
+    crate::layers::ops::dense_mm_bf16(
+        gpu,
+        &crate::layers::ops::DenseMmKernels {
+            gemm: k,
+            gemv,
+            batchm,
+        },
+        a,
+        b,
+        c,
+        m,
+        n,
+        kk,
+        stream,
+    )
 }
 
 /// Every kernel a DSA block launches, beyond the selection set.
@@ -102,6 +86,9 @@ pub struct Glm5NextDsaLayerKernels {
     /// `dense_gemv_bf16_fp32out`; `gemm` refuses nothing and falls back to the tile arm.
     pub gemv: KernelHandle,
     pub gemv_f32: KernelHandle,
+    /// 🔴 `dense_gemv_bf16_batchm` — `2 ..= 8` rows in ONE weight sweep, the arm that makes a
+    /// K-token verify pay for q_a/q_b/kv_a/kv_b/o once instead of K times. `0` = unavailable.
+    pub gemv_batchm: KernelHandle,
     /// 🪤 **vanilla** = `x * rms * w`. The other `rms_norm` adds 1 to the weight.
     pub rms_norm: KernelHandle,
     /// RMSNorm + FP8 + paged slot write, GLM-target.
@@ -121,6 +108,11 @@ impl Glm5NextDsaLayerKernels {
             // 🪤 try_kernel, not kernel: this entry point had ZERO Rust callers before
             // 2026-08-28, so a target that never compiled it must fall back, not refuse.
             gemv_f32: crate::layers::try_kernel(gpu, "gemv", "dense_gemv_bf16_fp32out"),
+            gemv_batchm: crate::layers::try_kernel(
+                gpu,
+                "dense_gemv_bf16_batchm",
+                "dense_gemv_bf16_batchm",
+            ),
             rms_norm: gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?,
             latent_write: gpu
                 .kernel("glm5next_mla_latent_write", "glm5next_mla_latent_write_fp8")?,
@@ -295,6 +287,7 @@ impl Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             self.kernels.gemv,
+            self.kernels.gemv_batchm,
             hidden,
             self.weights.wk,
             k_dst,
@@ -320,6 +313,7 @@ impl Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             self.kernels.gemv,
+            self.kernels.gemv_batchm,
             hidden,
             self.weights.compress_gate,
             gate_dst,
@@ -340,6 +334,8 @@ impl Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm_f32,
             self.kernels.gemv_f32,
+            // No FP32-out batchm twin exists; the selector's two sites stay on gemv/tile.
+            KernelHandle(0),
             hidden,
             self.weights.weights_proj,
             self.workspace.head_weights,
@@ -393,6 +389,8 @@ impl Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm_f32,
             self.kernels.gemv_f32,
+            // No FP32-out batchm twin exists; the selector's two sites stay on gemv/tile.
+            KernelHandle(0),
             w.q_resid,
             self.weights.wq_b,
             w.q_idx,
@@ -539,6 +537,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             self.kernels.gemv,
+            self.kernels.gemv_batchm,
             hidden,
             self.weights.q_a_proj,
             w.q_a,
@@ -562,6 +561,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             self.kernels.gemv,
+            self.kernels.gemv_batchm,
             w.q_resid,
             self.weights.q_absorb,
             w.q_abs,
@@ -576,6 +576,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             self.kernels.gemv,
+            self.kernels.gemv_batchm,
             hidden,
             self.weights.kv_a_proj,
             w.kv_a,
@@ -738,6 +739,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
             gpu,
             self.kernels.gemm,
             self.kernels.gemv,
+            self.kernels.gemv_batchm,
             attn,
             self.weights.o_absorb,
             hidden,

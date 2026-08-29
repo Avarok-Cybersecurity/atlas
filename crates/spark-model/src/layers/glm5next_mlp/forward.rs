@@ -14,7 +14,6 @@ use spark_runtime::kernel_args::KernelLaunch;
 use super::weights::{Glm5NextDenseMlpWeights, Glm5NextMoeWeights, Nvfp4Proj};
 use super::{Glm5NextMlpConfig, Glm5NextMlpKernels};
 
-const GEMM_TILE: u32 = 16;
 const W4_TILE: u32 = 64;
 const ACT_BLOCK: u32 = 256;
 
@@ -24,6 +23,7 @@ fn gemm(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
     gemv: KernelHandle,
+    batchm: KernelHandle,
     a: DevicePtr,
     b: DevicePtr,
     c: DevicePtr,
@@ -32,36 +32,26 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
-    // 🔴 M=1 IS A GEMV — see `glm5next_kda::Glm5NextKdaLayer::gemm`. The router is the worst
-    // case in the whole stack: N = 288 tiles to **18 blocks**, measured 6.8 GB/s.
+    // M=1 decode -> GEMV; M=2..8 (a K-token verify sweep) -> ONE weight read for all rows;
+    // wider -> the tile GEMM. `ops::dense_mm_bf16` owns the policy and the grid coupling.
     //
-    // 🪤 Grid COUPLED to the kernel's `N_PER_BLOCK` = 4; `ops::dense_gemv` is the SSOT.
-    if m == 1 && gemv.0 != 0 {
-        return KernelLaunch::new(gpu, gemv)
-            .grid([spark_runtime::kernel_args::div_ceil(n as u32, 4), 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(a)
-            .arg_ptr(b)
-            .arg_ptr(c)
-            .arg_u32(n as u32)
-            .arg_u32(kk as u32)
-            .launch(stream);
-    }
-    KernelLaunch::new(gpu, k)
-        .grid([
-            (n as u32).div_ceil(GEMM_TILE),
-            (m as u32).div_ceil(GEMM_TILE),
-            1,
-        ])
-        .block([GEMM_TILE, GEMM_TILE, 1])
-        .arg_ptr(a)
-        .arg_ptr(b)
-        .arg_ptr(c)
-        .arg_u32(m as u32)
-        .arg_u32(n as u32)
-        .arg_u32(kk as u32)
-        .launch(stream)?;
-    Ok(())
+    // 🔴 The router is the worst tile-GEMM case in the whole stack: N = 288 tiles to **18
+    // blocks**, measured 6.8 GB/s. It has no FP32-out batchm twin, so it stays on gemv/tile.
+    crate::layers::ops::dense_mm_bf16(
+        gpu,
+        &crate::layers::ops::DenseMmKernels {
+            gemm: k,
+            gemv,
+            batchm,
+        },
+        a,
+        b,
+        c,
+        m,
+        n,
+        kk,
+        stream,
+    )
 }
 
 /// `C[1, N] = A[1, K] @ dequant(B)[N, K]^T` — the M=1 decode kernel.
@@ -235,6 +225,7 @@ pub fn forward_dense(
         gpu,
         k.gemm,
         k.gemv,
+        k.gemv_batchm,
         x,
         w.gate_proj,
         ws.a_gate,
@@ -244,7 +235,7 @@ pub fn forward_dense(
         stream,
     )?;
     gemm(
-        gpu, k.gemm, k.gemv, x, w.up_proj, ws.a_up, 1, inter, cfg.hidden, stream,
+        gpu, k.gemm, k.gemv, k.gemv_batchm, x, w.up_proj, ws.a_up, 1, inter, cfg.hidden, stream,
     )?;
     swiglu(
         gpu,
@@ -260,6 +251,7 @@ pub fn forward_dense(
         gpu,
         k.gemm,
         k.gemv,
+        k.gemv_batchm,
         ws.a_act,
         w.down_proj,
         out,
@@ -370,6 +362,8 @@ pub fn forward_moe(
         gpu,
         k.gemm_f32,
         k.gemv_f32,
+        // No FP32-out batchm twin exists; the router stays on gemv/tile.
+        KernelHandle(0),
         x,
         w.router,
         ws.logits,
