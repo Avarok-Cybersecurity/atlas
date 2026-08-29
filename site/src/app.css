@@ -224,7 +224,19 @@ nav {
 .tcard { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem 1.35rem; box-shadow: var(--shadow-sm); }
 .tcard blockquote { font-size: 0.88rem; color: var(--t1); line-height: 1.6; }
 .tcard .attr { margin-top: 0.75rem; font-size: 0.76rem; color: var(--t3); }
-.tcard .attr a { color: var(--accent); text-decoration: none; }
+/* Underlined, not just tinted. --accent #BE9DF8 against the --t3 #82868F it
+   sits inside is 1.62:1 — nowhere near the 3:1 that lets colour alone carry
+   the distinction — so without this the attribution link is invisible to a
+   reader who cannot separate the two hues, and Lighthouse's link-in-text-block
+   audit fails the whole page. */
+.tcard .attr a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.tcard .attr a:hover { text-decoration-color: var(--accent); }
 
 /* ---- verified section ----------------------------------------------------- */
 .verified-grid { display: grid; grid-template-columns: 1fr 460px; gap: 3rem; align-items: start; margin-top: 2.5rem; }
@@ -400,8 +412,12 @@ nav {
 .ms-foot { font-size: 0.78rem; color: var(--t2); margin-top: 1.5rem; line-height: 1.7; }
 .ms-foot .link { font-weight: 600; }
 .qwen-block { margin-top: 1.5rem; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 1rem 1.25rem; font-size: 0.86rem; color: var(--t2); line-height: 1.6; }
-.qwen-block a { color: var(--accent); text-decoration: none; font-weight: 600; }
-.qwen-block a:hover { text-decoration: underline; }
+.qwen-block a {
+  color: var(--accent); font-weight: 600;
+  text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.qwen-block a:hover { text-decoration-color: var(--accent); }
 
 /* ---- get running ---------------------------------------------------------- */
 .run-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 2.5rem; }

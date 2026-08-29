@@ -370,10 +370,10 @@ a { color: var(--accent); }
 .postnav a:hover { background: var(--bg-1); }
 .postnav a.next { text-align: right; padding-left: 26px; }
 .postnav a.prev { padding-right: 26px; }
-.postnav .pn-l { display: block; margin-bottom: 7px; }
-.postnav .pn-t { font-size: 16px; font-weight: 510; color: var(--text-2); line-height: 1.4; display: block; max-width: 34ch; }
-.postnav a.next .pn-t { margin-left: auto; }
-.postnav a:hover .pn-t { color: var(--text-1); }
+.postnav .postnav-label { display: block; margin-bottom: 7px; }
+.postnav .postnav-title { font-size: 16px; font-weight: 510; color: var(--text-2); line-height: 1.4; display: block; max-width: 34ch; }
+.postnav a.next .postnav-title { margin-left: auto; }
+.postnav a:hover .postnav-title { color: var(--text-1); }
 @media (max-width: 720px) { .postnav { grid-template-columns: 1fr; } .postnav a.next { text-align: left; padding-left: 0; } .postnav a.prev { padding-right: 0; } }
 
 /* ---- tag / author bands ---------------------------------------------------- */

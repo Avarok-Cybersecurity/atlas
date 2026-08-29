@@ -94,6 +94,40 @@
   }
   pre.textContent += noname.length ? `\n\nNO ACCESSIBLE NAME (${noname.length}):\n` + noname.join('\n') : '\n\nNAMES: all pass';
 
+  // link-in-text-block: a link inside running text must differ from that text
+  // by more than colour — either >=3:1 against the surrounding text, or a
+  // non-colour affordance. This is the audit that took atlasinference.io's
+  // accessibility score to 0.96 after the palette moved: --accent #BE9DF8 sits
+  // at 1.62:1 against --t3 #82868F, and the links carried text-decoration:none.
+  const bare = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    const parent = a.parentElement;
+    if (!parent) continue;
+    const r = a.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    // Only links sitting inside other text.
+    const surrounding = [...parent.childNodes]
+      .filter(n => n.nodeType === 3 && n.textContent.trim().length).length;
+    if (!surrounding) continue;
+    const cs = getComputedStyle(a), ps = getComputedStyle(parent);
+    const decorated =
+      (cs.textDecorationLine && cs.textDecorationLine !== 'none') ||
+      parseFloat(cs.borderBottomWidth) > 0 ||
+      (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) ||
+      (cs.backgroundImage && cs.backgroundImage !== 'none');
+    if (decorated) continue;
+    const lc = parse(cs.color), pc = parse(ps.color);
+    if (!lc || !pc) continue;
+    const bg = effBg(a);
+    const c = contrast(lc[3] < 1 ? over(lc, bg) : lc.slice(0,3), pc[3] < 1 ? over(pc, bg) : pc.slice(0,3));
+    if (c < 3) {
+      bare.push(`${c.toFixed(2)} (need 3)  ${cs.color} on ${ps.color}  "${a.textContent.trim().slice(0,40)}"  ${a.getAttribute('href')?.slice(0,50)}`);
+    }
+  }
+  pre.textContent += bare.length
+    ? `\n\nLINK-IN-TEXT-BLOCK (${bare.length}):\n` + bare.join('\n')
+    : '\n\nLINK-IN-TEXT: all pass';
+
   // heading order
   const hs = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].map(h => +h.tagName[1]);
   const skips = [];

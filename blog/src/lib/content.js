@@ -20,7 +20,9 @@ export const SITE = 'https://blog.atlasinference.io';
 export const MAIN_SITE = 'https://atlasinference.io';
 export const DOCS_SITE = 'https://docs.atlasinference.io';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
-export const discordUrl = 'https://discord.gg/PGUMSSpU';
+// Must match site/src/lib/data.js. An invite code is not derivable from
+// anything, so a wrong one is a dead link that looks entirely plausible.
+export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const xUrl = 'https://x.com/AtlasInferenceX';
 
 export const blog = {

@@ -649,3 +649,56 @@ now attributed to the pre-existing comparison rather than presented as this
 page's measurement, a new section documents the string-literal finding with the
 numbers above, and the dek quotes 2.52 KB. A post whose thesis is measured
 honesty cannot cite someone else's measurement as its own.
+
+## Wave 12 — Lighthouse ran, and two more of my own mistakes
+
+**The hang is fixed.** All three Lighthouse runs completed; performance,
+best-practices and SEO pass. One category still failed: **accessibility 0.96**,
+needing 1.
+
+**`link-in-text-block`, weight 7.** A link inside running text must differ from
+that text by more than colour: either ≥3:1 against the surrounding text, or a
+non-colour affordance. After the palette move, `--accent #BE9DF8` against the
+`--t3 #82868F` it sits inside measures **1.62:1**, and those links carried
+`text-decoration: none`. The old accent `#9271f4` cleared it; the reference
+accent does not. Directly caused by wave 5.
+
+Fixed by underlining, in the two places a link sits inside body text:
+`.tcard .attr a` (testimonial attributions) and `.qwen-block a`. Hover-only
+underlines are no help — a reader who cannot separate the hues cannot find the
+link to hover it.
+
+**My auditor was wrong again, and this one is worse than the last.** I added the
+`link-in-text-block` rule, ran it against the page Lighthouse had just failed
+three times, and it reported **all pass**. The bug:
+
+```js
+parseFloat(cs.outlineWidth) > 0    // always true
+```
+
+`outline-width` computes to a length (`3px` here, from the `:focus-visible`
+rule) **even when `outline-style` is `none`**. So the "is this link decorated?"
+test was unconditionally true and the entire rule was a no-op. It is now
+`cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0`.
+
+That makes two auditor defects in three waves — first `<img alt>` not counting
+toward a link's accessible name (a false positive), now this (a false negative).
+The false negative is the dangerous one: it printed "all pass" on a page that
+was demonstrably failing, and only having an independent instrument disagree
+caught it. **A checker's own output is not evidence that the checker works.**
+
+**And the fixed rule immediately found three more that Lighthouse had not
+reported** — `--accent` on `--t2` body text at **1.40:1**, in `.qwen-block`.
+Same defect, worse ratio, not in axe's findings. All fixed; all three site
+routes (`index`, `control`, `diligence`) now audit clean.
+
+**A fabricated URL, caught by reading the failure output.** The axe snippet
+quoted `discord.gg/RQcGakU2jW` — and `blog/src/lib/content.js` had
+`discord.gg/PGUMSSpU`, which I had invented. An invite code is not derivable
+from anything, so a wrong one is a dead link that looks entirely plausible, in
+the footer of every page of a live site. Corrected to the value in
+`site/src/lib/data.js`, with a comment saying where it must come from.
+
+**`typos` also failed**: the scaffold's `pn-l` / `pn-t` post-nav classes
+tokenise as `pn` → `on`. Renamed to `postnav-label` / `postnav-title`, which
+reads better regardless.

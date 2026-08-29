@@ -123,14 +123,14 @@
     <nav class="postnav" aria-label="Adjacent posts">
       {#if data.older}
         <a class="prev" href={data.older.href}>
-          <span class="pn-l mono-label">Previous</span>
-          <span class="pn-t">{data.older.title}</span>
+          <span class="postnav-label mono-label">Previous</span>
+          <span class="postnav-title">{data.older.title}</span>
         </a>
       {:else}<span></span>{/if}
       {#if data.newer}
         <a class="next" href={data.newer.href}>
-          <span class="pn-l mono-label">Next</span>
-          <span class="pn-t">{data.newer.title}</span>
+          <span class="postnav-label mono-label">Next</span>
+          <span class="postnav-title">{data.newer.title}</span>
         </a>
       {:else}<span></span>{/if}
     </nav>
