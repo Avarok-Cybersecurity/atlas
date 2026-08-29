@@ -52,7 +52,9 @@ const BUCKETS: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 /// fit the OLD 64-row bound in one chunk, so chunking and pruning are
 /// unchanged — only explicit `ATLAS_MTP_K_LADDER` depth-at-width overrides
 /// (24:2 / 32:2) reach rows 65..=96.
-pub(super) const VERIFY_ROW_BUDGET: usize = 96;
+// Mirrors `VERIFY_ROW_CAP` (spark-model verify_e2.rs) — keep in
+// lock-step. 96 -> 160 with the DFlash n=20 × k=8 widening.
+pub(super) const VERIFY_ROW_BUDGET: usize = 160;
 
 /// Widest verify batch (SEQUENCES, not rows) D-Cut may prune —
 /// the D-Cut-at-depth policy. Value-parsed from `ATLAS_MTP_DCUT_MAX_SEQS`
@@ -286,7 +288,7 @@ pub(super) fn plan(
 
 /// Split a batch into verify chunks: `[lo, hi)` index ranges over `ks`.
 ///
-/// ONE cap: the row-buffer bound (`VERIFY_ROW_BUDGET` = 96) — the audited
+/// ONE cap: the row-buffer bound (`VERIFY_ROW_BUDGET` = 160) — the audited
 /// verify envelope (meta gaps / logits rows / bt staging, sizes.rs). The
 /// sequence-count cap is DERIVED from it per chunk (`budget / widest rows`:
 /// rows=4 → 24 seqs, rows=3 → 32 = the 32:2 shape in one chunk, rows=2 → 48;
