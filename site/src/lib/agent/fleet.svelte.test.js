@@ -132,3 +132,40 @@ test('an unpaired probe keeps probing, so a token pasted elsewhere is noticed', 
     expect(scheduled.length).toBeGreaterThan(1);
   });
 });
+
+test('a successful probe clears the detail a failure left behind', async () => {
+  // `#connect` has always cleared `detail` on success; the probe loop did not,
+  // so a message written while the agent was refusing survived into 'live'.
+  // Invisible today because the only consumer renders in a non-live branch —
+  // which is exactly the kind of latent wrong-text that surfaces the moment
+  // someone adds a second consumer.
+  await withCapturedTimers(async (scheduled) => {
+    const f = new FleetSession();
+    f.agent = fakeAgent('unavailable');
+    await f.start({ watch: true });
+    expect(f.detail).not.toBe('');
+
+    // The agent comes back.
+    // A success path agent needs the watch surface too: `#openWatch` subscribes
+    // and asks for the fleet, so a fake missing either throws inside the probe
+    // rather than exercising it.
+    f.agent = {
+      phase: 'ready',
+      message: '',
+      async connect() {
+        return true;
+      },
+      onEvent() {},
+      async listNodes() {
+        return { ok: true, nodes: [] };
+      },
+      async watchFleet() {
+        return { ok: true };
+      },
+    };
+    await scheduled[0].cb();
+
+    expect(f.mode).toBe('live');
+    expect(f.detail).toBe('');
+  });
+});
