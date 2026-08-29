@@ -905,3 +905,7 @@ mod verdict;
 #[cfg(test)]
 #[path = "concurrency_tests.rs"]
 mod concurrency_tests;
+
+#[cfg(test)]
+#[path = "concurrency_verdict_tests.rs"]
+mod concurrency_verdict_tests;

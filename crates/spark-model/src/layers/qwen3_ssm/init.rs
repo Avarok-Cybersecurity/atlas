@@ -4,23 +4,6 @@
 
 use super::*;
 
-/// Resolve one `hyper_connection` entry point, but ONLY for a model that
-/// carries the highway. Skipping the lookup rather than discarding its result
-/// is the point: an un-issued lookup leaves no failed row in the fail-closed
-/// startup audit, so what remains there is what someone has to act on.
-#[track_caller]
-fn hc_kernel(
-    config: &atlas_core::config::ModelConfig,
-    gpu: &dyn GpuBackend,
-    func: &str,
-) -> KernelHandle {
-    if config.hc_mult > 0 {
-        crate::layers::try_kernel(gpu, "hyper_connection", func)
-    } else {
-        KernelHandle(0)
-    }
-}
-
 impl Qwen3SsmLayer {
     pub fn new(
         input_norm: DenseWeight,
@@ -496,6 +479,10 @@ impl Qwen3SsmLayer {
 
     // `new_sequential` moved to `init_sequential.rs` (≤500 LoC split).
 }
+
+#[path = "init_kernels.rs"]
+mod init_kernels;
+use init_kernels::hc_kernel;
 
 #[path = "init_sequential.rs"]
 mod init_sequential;
