@@ -47,10 +47,74 @@ jobs:
           # inherit whatever a runner image happens to have on PATH.
           prefix="$RUNNER_TEMP/atlasctl-bin"
           mkdir -p "$prefix"
-          ATLASCTL_INSTALL_DIR="$prefix" \
-            curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
-              https://atlasinference.io/install.sh | sh
+          # EXPORTED, not prefixed onto the pipeline. `VAR=x curl ... | sh` sets
+          # VAR for CURL, which does not read it -- `sh` runs in a separate
+          # process that never sees it. The installer therefore ignored the
+          # private prefix entirely and installed to ~/.local/bin, which is on a
+          # runner's PATH, so the next step found *a* binary and the job passed.
+          # The isolation this prefix exists to provide was never in effect.
+          export ATLASCTL_INSTALL_DIR="$prefix"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
+            https://atlasinference.io/install.sh | sh
+          # Prove it landed where we asked, rather than inferring it from PATH.
+          [ -x "$prefix/atlasctl" ] || {
+            echo "::error::the installer did not honour ATLASCTL_INSTALL_DIR=$prefix"
+            ls -la "$prefix" || true
+            exit 1
+          }
           echo "$prefix" >> "$GITHUB_PATH"
+
+      # The install above is a FIRST install, and a first install is the one
+      # shape of this script that has never been broken: with nothing on disk
+      # the installer takes its plain "copy it in" path. Every upgrade bug lives
+      # in the other paths, and one shipped on 2026-08-29 -- the branch for "same
+      # version string, different build" printed "replacing it" and copied
+      # nothing, so an operator on a stale agent was told the upgrade succeeded
+      # and kept running the old protocol. This canary passed throughout.
+      #
+      # Reproduce that exact shape: keep the version string identical and change
+      # only the CONTENT. Appending bytes past the end of an ELF leaves it
+      # runnable and `--version` unchanged, while its sha256 differs -- which is
+      # precisely the case the installer must decide on content rather than on
+      # the version it prints.
+      - name: Re-running the installer over a differing build REPLACES it
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/atlasctl-bin"
+          before_version=$("$prefix/atlasctl" --version)
+          # Replace by RENAME, not by appending in place. The install above
+          # starts the agent, so the binary is being executed and a write to it
+          # fails with ETXTBSY ("Text file busy"). install.sh has the same
+          # constraint and solves it the same way -- `install` to a temp name
+          # then `mv -f` -- because a rename swaps the directory entry while the
+          # running process keeps the old inode.
+          cp "$prefix/atlasctl" "$prefix/.atlasctl.tampered"
+          printf '\n# canary marker\n' >> "$prefix/.atlasctl.tampered"
+          chmod 0755 "$prefix/.atlasctl.tampered"
+          mv -f "$prefix/.atlasctl.tampered" "$prefix/atlasctl"
+          tampered=$(sha256sum "$prefix/atlasctl" | cut -d" " -f1)
+          # Still runnable, and still claiming the same version: without that the
+          # test would be exercising the ordinary upgrade path instead.
+          after_tamper=$("$prefix/atlasctl" --version)
+          [ "$before_version" = "$after_tamper" ] || {
+            echo "::error::tampering changed the reported version ($before_version -> $after_tamper);"
+            echo "this test can no longer reach the same-version/different-content branch"
+            exit 1
+          }
+
+          export ATLASCTL_INSTALL_DIR="$prefix"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
+            https://atlasinference.io/install.sh | sh
+
+          restored=$(sha256sum "$prefix/atlasctl" | cut -d" " -f1)
+          if [ "$restored" = "$tampered" ]; then
+            echo "::error::the installer left the modified binary in place."
+            echo "It decided an upgrade was unnecessary, or announced one and did not perform it."
+            echo "Operators on a stale build are being told they are up to date."
+            exit 1
+          fi
+          echo "replaced: $tampered -> $restored"
+          "$prefix/atlasctl" --version
 
       - name: It runs, and it knows its recipes
         run: |
