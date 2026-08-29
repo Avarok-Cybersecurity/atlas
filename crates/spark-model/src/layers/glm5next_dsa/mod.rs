@@ -253,21 +253,20 @@ impl Glm5NextDsaConfig {
         }
         // 🔴 HARD ASSERTION, tied to a kernel constant.
         //
-        // `mla_paged_decode{,_fp8}.cu` hardcode `#define KV_LORA_DIM 512` for the
-        // latent width, while taking the cache stride (`kv_cache_dim`) as a runtime
-        // argument. GLM-5.3 is correct on that path only because its
-        // `kv_lora_rank` is ALSO 512 — a coincidence, not a design.
+        // `glm-5.3-flash/nvfp4/glm5next_dsa_mla_decode.cu` hardcodes
+        // `#define GLM_KV_LORA_DIM 512` for the latent width, while taking the cache
+        // stride (`kv_cache_dim`) as a runtime argument. GLM-5.3 is correct only
+        // because its `kv_lora_rank` is ALSO 512 — a coincidence, not a design.
         //
         // A GLM revision with a different latent would read the cache at the wrong
         // width and produce plausible garbage with no crash, which is the exact
         // failure class this campaign has already paid for twice (#341, #347). Fail
         // at config time instead. If this ever fires, the fix is to parameterise
-        // `KV_LORA_DIM` in the `common/` copies of those kernels — NOT to relax
-        // this check.
+        // `GLM_KV_LORA_DIM` in GLM's own decode kernel — NOT to relax this check.
         if self.kv_lora_rank != KERNEL_KV_LORA_DIM {
             bail!(
-                "GLM-5.3 DSA: kv_lora_rank is {}, but mla_paged_decode hardcodes                  KV_LORA_DIM={}. The MLA decode kernels would read the latent at the                  wrong width. Parameterise KV_LORA_DIM in kernels/gb10/common/\
-                 mla_paged_decode{{,_fp8}}.cu before serving this checkpoint.",
+                "GLM-5.3 DSA: kv_lora_rank is {}, but glm5next_dsa_mla_decode hardcodes                  GLM_KV_LORA_DIM={}. The decode kernel would read the latent at the                  wrong width. Parameterise GLM_KV_LORA_DIM in kernels/gb10/\
+                 glm-5.3-flash/nvfp4/glm5next_dsa_mla_decode.cu before serving this checkpoint.",
                 self.kv_lora_rank,
                 KERNEL_KV_LORA_DIM,
             );

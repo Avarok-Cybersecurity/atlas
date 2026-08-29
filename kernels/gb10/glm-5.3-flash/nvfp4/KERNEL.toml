@@ -5,16 +5,14 @@
 # every GLM kernel already living in `common/` (`glm5next_mhc`, `glm5next_ffn`,
 # `dsa_indexer`, `kda_*`) with no aliases required.
 #
-# 🔴 Why this target exists at all: `mla_paged_decode{,_fp8}` used to live ONLY
-# in `deepseek-v4-flash/nvfp4/`, so no other model could resolve it. Byte-
-# identical copies now sit in `common/`. DeepSeek-V4 keeps its own copies and
-# therefore SHADOWS the common ones — V4 compiles exactly the bytes it always
-# did, and the shadow is reported by the build's own drop warning. GLM, having
-# no shadow, picks up the `common/` copies.
+# 🔴 Why this target exists at all: GLM needs its own NoPE selected-index sparse MLA
+# decode (`glm5next_dsa_mla_decode`), which no other model has. It does NOT reuse
+# DeepSeek-V4's `mla_paged_decode{,_fp8}`: GLM's DSA layer resolves its own kernel and
+# never calls those, so no copy of them is made here. V4 keeps its originals, untouched.
 #
-# 🪤 Those kernels hardcode `KV_LORA_DIM 512` for the latent width while taking
-# the cache stride (`kv_cache_dim`) as a runtime argument. GLM is correct here
-# only because its `kv_lora_rank` is ALSO 512 — a coincidence, not a design.
+# 🪤 `glm5next_dsa_mla_decode.cu` hardcodes `GLM_KV_LORA_DIM 512` for the latent width
+# while taking the cache stride (`kv_cache_dim`) as a runtime argument. GLM is correct
+# here only because its `kv_lora_rank` is ALSO 512 — a coincidence, not a design.
 # `Glm5NextDsaConfig::validate` asserts it so a future GLM revision with a
 # different latent fails loudly at config time instead of reading garbage.
 
