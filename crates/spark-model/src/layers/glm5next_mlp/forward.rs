@@ -496,54 +496,58 @@ pub fn forward_moe(
         && k.w4a16_gemv_sw_moe_batchm[rows - 2].0 != 0;
     announce_row_batch(batched, rows);
 
+    // ── router: FULL expert set, FP32 logits, replicated on every rank ──
+    let t = profile::start();
     for r in 0..rows {
-        let xr = x.offset(r * cfg.hidden * 2);
-        let logits_r = ws.logits.offset(r * cfg.num_experts * 4);
-        let ids_r = ws.ids.offset(r * cfg.top_k * 4);
-        let wts_r = ws.wts.offset(r * cfg.top_k * 4);
-        let expert_out_r = ws.expert_out.offset(r * cfg.top_k * cfg.hidden * 2);
-        // ── router: FULL expert set, FP32 logits, replicated on every rank ──
-        let t = profile::start();
         gemm(
             gpu,
             k.gemm_f32,
             k.gemv_f32,
             // No FP32-out batchm twin exists; the router stays on gemv/tile.
             KernelHandle(0),
-            xr,
+            x.offset(r * cfg.hidden * 2),
             w.router,
-            logits_r,
+            ws.logits.offset(r * cfg.num_experts * 4),
             1,
             cfg.num_experts,
             cfg.hidden,
             stream,
         )?;
-        KernelLaunch::new(gpu, k.router)
-            .grid([1, 1, 1])
-            .block([ACT_BLOCK, 1, 1])
-            .arg_ptr(logits_r)
-            .arg_ptr(w.router_bias)
-            .arg_ptr(ids_r)
-            .arg_ptr(wts_r)
-            .arg_u32(cfg.num_experts as u32)
-            .arg_u32(cfg.top_k as u32)
-            // n_group: the parser already refuses anything but 1; the kernel refuses too.
-            .arg_u32(1)
-            .arg_f32(cfg.routed_scale)
-            .arg_u32(u32::from(cfg.renormalize))
-            .arg_u32(u32::from(cfg.router_bf16_ladder))
-            .launch(stream)?;
+    }
+    // ONE top-k for every row. `glm5next_router_topk` already takes the row on `blockIdx.x`
+    // and strides `logits`/`ids`/`wts` by it, so this is the identical per-row work in one
+    // launch instead of K — and it was a `grid [1,1,1]` launch, 120 of them per K=3 step for
+    // 1.75 ms (nsys 2026-08-29). Bit-identical: no row's arithmetic changes.
+    KernelLaunch::new(gpu, k.router)
+        .grid([rows as u32, 1, 1])
+        .block([ACT_BLOCK, 1, 1])
+        .arg_ptr(ws.logits)
+        .arg_ptr(w.router_bias)
+        .arg_ptr(ws.ids)
+        .arg_ptr(ws.wts)
+        .arg_u32(cfg.num_experts as u32)
+        .arg_u32(cfg.top_k as u32)
+        // n_group: the parser already refuses anything but 1; the kernel refuses too.
+        .arg_u32(1)
+        .arg_f32(cfg.routed_scale)
+        .arg_u32(u32::from(cfg.renormalize))
+        .arg_u32(u32::from(cfg.router_bf16_ladder))
+        .launch(stream)?;
+    profile::end(profile::MOE_ROUTER, t, gpu, stream);
 
-        profile::end(profile::MOE_ROUTER, t, gpu, stream);
+    // 🪤 Zero FIRST. A slot this rank does not own must contribute exactly zero to the
+    // all-reduced sum; leaving the previous token's expert output there is a wrong answer
+    // that only appears at EP > 1 and only for tokens whose routing moved. `expert_out` is
+    // `[rows, top_k, hidden]` and contiguous, so one memset covers every row.
+    gpu.memset_async(ws.expert_out, 0, rows * cfg.top_k * cfg.hidden * 2, stream)?;
 
-        // 🪤 Zero FIRST. A slot this rank does not own must contribute exactly zero to the
-        // all-reduced sum; leaving the previous token's expert output there is a wrong answer
-        // that only appears at EP > 1 and only for tokens whose routing moved.
-        gpu.memset_async(expert_out_r, 0, cfg.top_k * cfg.hidden * 2, stream)?;
-
+    for r in 0..rows {
         if batched {
-            continue; // the experts run once for ALL rows, after this loop
+            break; // the experts run once for ALL rows, after this loop
         }
+        let xr = x.offset(r * cfg.hidden * 2);
+        let ids_r = ws.ids.offset(r * cfg.top_k * 4);
+        let expert_out_r = ws.expert_out.offset(r * cfg.top_k * cfg.hidden * 2);
 
         let grouped = !host_dispatch_forced() && k.w4a16_gemv_sw_moe.0 != 0;
         announce_dispatch(grouped);
@@ -789,18 +793,18 @@ pub fn forward_moe(
     // keep only this rank's half of it.
     profile::end(profile::MOE_SHARED, t, gpu, stream);
     let t = profile::start();
-    for r in 0..rows {
-        KernelLaunch::new(gpu, k.combine)
-            .grid([1, 1, 1])
-            .block([ACT_BLOCK, 1, 1])
-            .arg_ptr(ws.expert_out.offset(r * cfg.top_k * cfg.hidden * 2))
-            .arg_ptr(ws.wts.offset(r * cfg.top_k * 4))
-            .arg_ptr(ws.shared_out.offset(r * cfg.hidden * 2))
-            .arg_ptr(out.offset(r * cfg.hidden * 2))
-            .arg_u32(cfg.hidden as u32)
-            .arg_u32(cfg.top_k as u32)
-            .launch(stream)?;
-    }
+    // ONE combine for every row: `glm5next_moe_combine` takes the row on `blockIdx.x` and
+    // strides all four buffers by it. Was K `grid [1,1,1]` launches — 1.50 ms of a K=3 step.
+    KernelLaunch::new(gpu, k.combine)
+        .grid([rows as u32, 1, 1])
+        .block([ACT_BLOCK, 1, 1])
+        .arg_ptr(ws.expert_out)
+        .arg_ptr(ws.wts)
+        .arg_ptr(ws.shared_out)
+        .arg_ptr(out)
+        .arg_u32(cfg.hidden as u32)
+        .arg_u32(cfg.top_k as u32)
+        .launch(stream)?;
     profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())
 }
