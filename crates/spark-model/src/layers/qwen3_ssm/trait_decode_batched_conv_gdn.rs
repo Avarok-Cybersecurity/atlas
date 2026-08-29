@@ -4,7 +4,7 @@
 //! GDN per-token (with intermediate checkpoints). Extracted from
 //! `trait_decode_batched.rs` to keep the parent file under 500 LoC.
 //! Dispatches one of the fused K=2/3/4 paths, the pool-layout WY arm
-//! (K∈{5..8} chain verify and K=17 DFlash — see
+//! (K∈{5..16} chain verify and K=17 DFlash — see
 //! `trait_decode_batched_conv_gdn_wyn.rs`), or the sequential per-token
 //! fallback. All buffers + state are owned by the caller; this
 //! function only mutates `ssm_state.h_state`, `ssm_state.conv_state`,
@@ -283,8 +283,8 @@ impl Qwen3SsmLayer {
 
     /// Run conv1d_update_l2norm + GDN over `num_tokens` (multi-token decode
     /// / MTP verify). Picks the K=2/3/4, K∈{5..8} (wyN) or K=17 fused WY
-    /// path if available, otherwise falls back to the sequential per-token
-    /// gdn_decode loop.
+    /// path if available (wyN covers K∈{5..16} since 2026-08-29), otherwise
+    /// falls back to the sequential per-token gdn_decode loop.
     pub(super) fn decode_batched_conv_gdn(
         &self,
         ssm_state: &mut SsmLayerState,

@@ -445,14 +445,23 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
-            // Chain-verify K=5..8 WY kernels (one templated gb10-common
-            // module). Index = K-5; NULL on targets lacking the module, in
-            // which case those widths keep the sequential per-token path.
+            // Chain-verify K=5..16 WY kernels (one templated gb10-common
+            // module; K=9..16 added 2026-08-29 — the γ>8 window class).
+            // Index = K-5; NULL on targets lacking the module, in which
+            // case those widths keep the sequential per-token path.
             gdn_wyn_k: [
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5"),
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6"),
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy9"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy10"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy11"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy12"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy13"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy14"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy15"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy16"),
             ],
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]

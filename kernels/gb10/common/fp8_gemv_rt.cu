@@ -15,6 +15,13 @@
 // activation load feeds both FMA chains (activation traffic, load
 // instructions, and chain ILP all improved 2x vs one-output-per-group).
 //
+// 2026-08-29: templatized on RT_MAXM and instantiated at 16 as
+// `fp8_gemv_rowscale_batch16_rt2` for the γ>8 propose window. STEP_TIMING
+// measured propose 18.2ms (γ flag 8, rt2) vs 38.0ms (flag 9, tile
+// fallback) — the entire γ>8 step tax was the drafter falling off this
+// family onto the padded tiles. batch8 instantiation is byte-identical to
+// the pre-template kernel (same body, RT_MAXM=8).
+//
 // DRAFTER-SIDE NUMERICS ARE CORRECTNESS-FREE: under strict-argmax accept,
 // draft quality only moves the accept RATE, never the output tokens. So
 // unlike the w4a16 verify family there is NO bit-order contract here; this
@@ -26,7 +33,8 @@
 // cvt.rn.satfinite dependency on SM121 — same rationale as w8a16_gemv).
 //
 // Grid: (ceil(N/8), 1, 1)  Block: (256, 1, 1). Requires K % 16 == 0
-// (holds for h=5120 and inter=17408). M clamped to 8 by the Rust launcher.
+// (holds for h=5120 and inter=17408). M clamped to RT_MAXM by the Rust
+// launcher.
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -34,9 +42,9 @@
 #define RT_BLOCK 256
 #define RT_GROUPS 4
 #define RT_T 2
-#define RT_MAXM 8
 
-extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
+template <int RT_MAXM>
+__device__ __forceinline__ void fp8_gemv_rowscale_rt2_impl(
     const __nv_bfloat16* __restrict__ A,   // [M, K] bf16
     const unsigned char* __restrict__ B,   // [N, K] fp8 e4m3
     const float* __restrict__ row_scale,   // [N] f32
@@ -143,4 +151,33 @@ extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
             }
         }
     }
+}
+
+extern "C" __global__ void fp8_gemv_rowscale_batch8_rt2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    fp8_gemv_rowscale_rt2_impl<8>(A, B, row_scale, C, M, N, K);
+}
+
+// γ>8 propose window (flags 9..17): acc grows to [2][16] (+16 registers)
+// and s_red to 16 rows (1 KB); no __launch_bounds__ pin here or on the
+// batch8 twin, so codegen stays free — rt4's register-spill corpse was a
+// T=4 OUTPUT doubling, not an M widening. Accept-rate A/B gates accuracy,
+// per the module contract above.
+extern "C" __global__ void fp8_gemv_rowscale_batch16_rt2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    fp8_gemv_rowscale_rt2_impl<16>(A, B, row_scale, C, M, N, K);
 }

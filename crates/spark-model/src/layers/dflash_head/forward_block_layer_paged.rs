@@ -257,6 +257,26 @@ impl BlockDiffusionDraftHead {
                         stream,
                     );
                 }
+                // γ>8 propose window (flags 9..17): MAX_M=16 rt2 sibling.
+                // 2026-08-29 STEP_TIMING: propose 18.2ms (rt2) vs 38.0ms
+                // (this tile fallback) at flag 9 — the whole γ>8 step tax.
+                if self.kernels.fp8_gemv_rt2_16.0 != 0
+                    && g <= 16
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch16_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2_16,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
                 return ops::fp8_gemm_n128_row_scaled(
                     gpu,
                     self.kernels.fp8_gemm_n128_row_scaled,
@@ -898,6 +918,26 @@ impl BlockDiffusionDraftHead {
                     return ops::fp8_gemv_rowscale_batch8_rt2(
                         gpu,
                         self.kernels.fp8_gemv_rt2,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
+                // γ>8 propose window (flags 9..17): MAX_M=16 rt2 sibling.
+                // 2026-08-29 STEP_TIMING: propose 18.2ms (rt2) vs 38.0ms
+                // (this tile fallback) at flag 9 — the whole γ>8 step tax.
+                if self.kernels.fp8_gemv_rt2_16.0 != 0
+                    && g <= 16
+                    && k_in.is_multiple_of(16)
+                    && super::fp8_rt_enabled()
+                {
+                    return ops::fp8_gemv_rowscale_batch16_rt2(
+                        gpu,
+                        self.kernels.fp8_gemv_rt2_16,
                         src,
                         fp8,
                         dst,

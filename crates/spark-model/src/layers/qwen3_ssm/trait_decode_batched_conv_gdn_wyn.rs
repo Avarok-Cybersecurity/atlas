@@ -21,12 +21,15 @@ use crate::layers::ops;
 // encodes.
 
 impl Qwen3SsmLayer {
-    /// The wyN kernel for chain-verify `num_tokens` ∈ {5..8}, or `None`
+    /// The wyN kernel for chain-verify `num_tokens` ∈ {5..16}, or `None`
     /// when out of range, the module is absent (non-gb10 target), or the
     /// `ATLAS_GDN_WYN=0` kill-switch is set — all of which keep the caller
-    /// on the sequential per-token fallback.
+    /// on the sequential per-token fallback. K=9..16 added 2026-08-29:
+    /// the γ>8 window class previously had NO fused arm and ran the
+    /// per-token loop (conv + gdn + 2 state D2Ds per token per GDN layer),
+    /// the measured γ10 tax that inverted a +18% accept gain.
     pub(super) fn wyn_kernel(&self, num_tokens: usize, wyn_enabled: bool) -> Option<KernelHandle> {
-        if !(5..=8).contains(&num_tokens) || !wyn_enabled {
+        if !(5..=16).contains(&num_tokens) || !wyn_enabled {
             return None;
         }
         let k = self.gdn_wyn_k[num_tokens - 5];

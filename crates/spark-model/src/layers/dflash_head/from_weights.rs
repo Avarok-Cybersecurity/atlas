@@ -206,6 +206,12 @@ impl BlockDiffusionDraftHead {
                 "fp8_gemv_rt",
                 "fp8_gemv_rowscale_batch8_rt2",
             ),
+            // MAX_M=16 sibling for the γ>8 propose window (2026-08-29).
+            fp8_gemv_rt2_16: crate::layers::try_kernel(
+                gpu,
+                "fp8_gemv_rt",
+                "fp8_gemv_rowscale_batch16_rt2",
+            ),
             // DFlash2 kernels (kernels/gb10/common/dflash2.cu). try_kernel:
             // absent on stale kernel builds — DFlash2 then refuses to arm
             // rather than failing DFlash1/DSpark drafters at load.

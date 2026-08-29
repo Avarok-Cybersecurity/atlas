@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — K∈{5,6,7,8} verification (wyN).
+// Atlas WY-Chunkwise Gated Delta Rule — K∈{5..16} verification (wyN).
 //
 // K-templated generalization of gated_delta_rule_wy17.cu (which itself
 // generalizes wy4). One __device__ impl, instantiated for the chain-verify
@@ -240,5 +240,21 @@ ATLAS_WYN_INSTANTIATE(5)
 ATLAS_WYN_INSTANTIATE(6)
 ATLAS_WYN_INSTANTIATE(7)
 ATLAS_WYN_INSTANTIATE(8)
+// K=9..16 (2026-08-29): the γ>8 window class. Before these, K=9..16 was the
+// ONLY un-served verify width band — it fell to the sequential per-token
+// fallback (per token: conv launch + gdn launch + 2 state D2Ds, across every
+// GDN layer; ~1200 serial launches/step at K=10). Measured motivation: γ10
+// probe on Qwen3.8-27B DFlash2 chained accept past the trained block
+// (tok_step 6.474 -> 7.661, +18%) but net tok/s LOST to that loop. SMEM
+// scales as K KB (K=16: 16 KB q+k) against the 100 KB cap — trivially fits.
+// provenance-id: 526f6e616c6420522e205374657369616b
+ATLAS_WYN_INSTANTIATE(9)
+ATLAS_WYN_INSTANTIATE(10)
+ATLAS_WYN_INSTANTIATE(11)
+ATLAS_WYN_INSTANTIATE(12)
+ATLAS_WYN_INSTANTIATE(13)
+ATLAS_WYN_INSTANTIATE(14)
+ATLAS_WYN_INSTANTIATE(15)
+ATLAS_WYN_INSTANTIATE(16)
 
 #undef ATLAS_WYN_INSTANTIATE
