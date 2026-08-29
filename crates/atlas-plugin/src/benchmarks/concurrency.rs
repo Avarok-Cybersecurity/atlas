@@ -123,8 +123,7 @@ pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     ctor: || Box::new(ConcurrencySweep::default()),
 };
 
-const DFLASH2_SUMMARY: &str =
-    "Latency/throughput curve across concurrency 1 → 128, DFlash2 armed";
+const DFLASH2_SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128, DFlash2 armed";
 
 /// The gated ladder, declared ONCE: `(C, floor param, metric key, label)`.
 ///
@@ -148,16 +147,17 @@ const RUNGS: [(usize, &str, &str, &str); 8] = [
     (16, "min_c16", "c16_aggregate_tok_s", "C=16 aggregate floor"),
     (32, "min_c32", "c32_aggregate_tok_s", "C=32 aggregate floor"),
     (64, "min_c64", "c64_aggregate_tok_s", "C=64 aggregate floor"),
-    (128, "min_c128", "c128_aggregate_tok_s", "C=128 aggregate floor"),
+    (
+        128,
+        "min_c128",
+        "c128_aggregate_tok_s",
+        "C=128 aggregate floor",
+    ),
 ];
 
 /// The peak floor, which is not a rung: it bounds `peak_aggregate_tok_s`,
 /// whichever C produced it.
-const PEAK_FLOOR: (&str, &str, &str) = (
-    "min_peak",
-    "peak_aggregate_tok_s",
-    "Peak aggregate floor",
-);
+const PEAK_FLOOR: (&str, &str, &str) = ("min_peak", "peak_aggregate_tok_s", "Peak aggregate floor");
 
 /// The baseline-coupled verdict params: each is paired to the metric the
 /// BENCH.toml floor is written on (`min` bounds; see `bench_resolve::
@@ -751,7 +751,11 @@ impl Benchmark for ConcurrencySweep {
         ];
         // One floor per gated rung, plus the peak — both from RUNGS/PEAK_FLOOR,
         // so a rung added there arrives here without a second edit.
-        specs.extend(RUNGS.iter().map(|(_, key, _, label)| Self::floor_spec(key, label)));
+        specs.extend(
+            RUNGS
+                .iter()
+                .map(|(_, key, _, label)| Self::floor_spec(key, label)),
+        );
         specs.push(Self::floor_spec(PEAK_FLOOR.0, PEAK_FLOOR.2));
         specs
     }

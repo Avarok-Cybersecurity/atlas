@@ -2,9 +2,9 @@
 
 //! Construction and replay contracts for committed gate records.
 
+use super::record::resolve_perf_env;
 use super::tests::{MODEL, SHA, frame, hw, run_record, tempdir};
 use super::*;
-use super::record::resolve_perf_env;
 use crate::history::RunRecord;
 use crate::result::{RunStatus, Verdict};
 use std::collections::BTreeMap;
@@ -226,13 +226,20 @@ fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
     // that showed one as blank and the other as a number would invite a reader
     // to infer a difference that did not exist.
     let resolved = resolve_perf_env(|_| None);
-    assert_eq!(resolved.get("ATLAS_PREFILL_CODISPATCH").map(String::as_str), Some("0"));
     assert_eq!(
-        resolved.get("ATLAS_PREFILL_CODISPATCH_WINDOW_MS").map(String::as_str),
+        resolved.get("ATLAS_PREFILL_CODISPATCH").map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        resolved
+            .get("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
+            .map(String::as_str),
         Some("100")
     );
     assert_eq!(
-        resolved.get("ATLAS_PREFILL_CODISPATCH_SETTLE_MS").map(String::as_str),
+        resolved
+            .get("ATLAS_PREFILL_CODISPATCH_SETTLE_MS")
+            .map(String::as_str),
         Some("10")
     );
 }
@@ -247,9 +254,14 @@ fn a_set_control_wins_and_an_empty_one_does_not() {
         "ATLAS_PREFILL_CODISPATCH_WINDOW_MS" => Some("   ".into()),
         _ => None,
     });
-    assert_eq!(resolved.get("ATLAS_PREFILL_CODISPATCH").map(String::as_str), Some("1"));
     assert_eq!(
-        resolved.get("ATLAS_PREFILL_CODISPATCH_WINDOW_MS").map(String::as_str),
+        resolved.get("ATLAS_PREFILL_CODISPATCH").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        resolved
+            .get("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
+            .map(String::as_str),
         Some("100"),
         "an empty value must resolve to the default, not to the empty string"
     );
@@ -263,8 +275,7 @@ fn a_set_control_wins_and_an_empty_one_does_not() {
 #[test]
 fn perf_env_defaults_match_the_scheduler() {
     let path = repo_root().join("crates/spark-server/src/scheduler/mod_helpers.rs");
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     // Match the RESOLUTION, not the first mention: each control is named in a
     // doc comment before it is read, so anchoring on the name alone would
     // assert against prose and pass whatever the code did.

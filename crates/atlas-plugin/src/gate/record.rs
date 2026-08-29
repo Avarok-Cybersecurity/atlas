@@ -150,14 +150,15 @@ const PERF_CONTROLS: [(&str, &str); 3] = [
 /// environment — `set_var` is unsafe and process-global, and a test that raced
 /// another test's read would be exactly the kind of intermittent this file
 /// exists to make impossible.
-pub fn resolve_perf_env(
-    lookup: impl Fn(&str) -> Option<String>,
-) -> BTreeMap<String, String> {
+pub fn resolve_perf_env(lookup: impl Fn(&str) -> Option<String>) -> BTreeMap<String, String> {
     PERF_CONTROLS
         .iter()
         .map(|(key, default)| {
             let value = lookup(key).filter(|v| !v.trim().is_empty());
-            ((*key).to_string(), value.unwrap_or_else(|| (*default).to_string()))
+            (
+                (*key).to_string(),
+                value.unwrap_or_else(|| (*default).to_string()),
+            )
         })
         .collect()
 }
