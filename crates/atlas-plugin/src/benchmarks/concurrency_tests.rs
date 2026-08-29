@@ -227,6 +227,14 @@ fn a_requested_warm_path_requires_observed_cached_tokens() {
     missing_usage.prompt_tokens = 0;
     missing_usage.cached_prompt_tokens = 0;
     assert!(cache_is_uncontrolled(&[missing_usage], 1));
+
+    let mut b = configured(vec![4], vec![512]);
+    b.rows.push(missed);
+    let table = b.table();
+    assert_eq!(table.columns[10].title, "min cache%");
+    assert_eq!(table.rows[0][8].style, CellStyle::Bad);
+    assert_eq!(table.rows[0][8].text, "100.0*");
+    assert_eq!(table.rows[0][10].text, "0");
 }
 
 // ---- metrics map ------------------------------------------------------------
@@ -257,8 +265,6 @@ fn metrics_map_reports_the_comparable_curve_and_the_evidence_floor() {
     assert_eq!(m.get("c1_ttft_p50_ms"), Some(&120.0));
     assert_eq!(m.get("c4_ttft_p50_ms"), Some(&150.0));
     assert_eq!(m.get("peak_aggregate_tok_s"), Some(&100.0));
-    // The floor sees THROUGH the exclusion: the 1-token requests are the
-    // record of what went wrong.
     assert_eq!(m.get("min_completion_tokens"), Some(&1.0));
     assert_eq!(m.get("min_cached_prompt_tokens"), Some(&512.0));
     assert_eq!(m.get("min_cached_prompt_pct"), Some(&100.0));
@@ -279,8 +285,6 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
     assert_eq!(m.get("min_completion_tokens"), Some(&0.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
 }
-
-// ---- self-verdict (C1 pattern, gate promotion 2026-08-15) -------------------
 
 use super::verdict::{Floors, sweep_verdict};
 use crate::result::VerdictKind;
@@ -330,9 +334,6 @@ fn committed_floors() -> Floors {
     }
 }
 
-/// The calibrated ladder against its committed floors — the PASS the gate
-/// machinery requires now that the sweep is REQUIRED. The reason names every
-/// gated rung so the record reads as evidence, not a bare verdict.
 #[test]
 fn a_clean_sweep_that_clears_every_floor_passes() {
     let m = ladder(&[
@@ -435,8 +436,6 @@ fn a_gated_rung_with_no_comparable_cell_fails_as_inconclusive() {
     assert!(v.reason.contains("peak"), "{}", v.reason);
 }
 
-/// Request errors fail the sweep gating or not — an errored cell's numbers
-/// are not comparable, and the floors cannot buy them back.
 #[test]
 fn request_errors_fail_the_sweep_in_both_modes() {
     let m = ladder(&[("c1_aggregate_tok_s", 999.0)]);

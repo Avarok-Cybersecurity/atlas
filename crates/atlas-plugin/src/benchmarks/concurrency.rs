@@ -398,7 +398,7 @@ impl ConcurrencySweep {
                 Column::right("E2E p50", 9),
                 Column::right("tok/s", 8),
                 Column::right("min tok", 7),
-                Column::right("min cache", 9),
+                Column::right("min cache%", 10),
                 Column::right("err", 4),
             ],
         );
@@ -415,7 +415,7 @@ impl ConcurrencySweep {
                 // A vacuous cell's tok/s is printed struck with a marker, not
                 // hidden: the number is evidence of the failure, it is just
                 // not comparable to anything.
-                if r.vacuous {
+                if r.vacuous || r.cache_uncontrolled {
                     Cell::styled(format!("{:.1}*", r.throughput), CellStyle::Bad)
                 } else {
                     Cell::styled(format!("{:.1}", r.throughput), CellStyle::Good)
@@ -426,8 +426,8 @@ impl ConcurrencySweep {
                         .unwrap_or_else(|| "—".into()),
                 ),
                 Cell::new(
-                    r.min_cached_prompt()
-                        .map(|v| v.to_string())
+                    r.min_cached_prompt_pct()
+                        .map(|v| format!("{v:.0}"))
                         .unwrap_or_else(|| "—".into()),
                 ),
                 Cell::styled(
