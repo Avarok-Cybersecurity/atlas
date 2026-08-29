@@ -78,7 +78,7 @@ pub fn qsa_qprep(
         .launch(stream)
 }
 
-/// scores[b] = sum_h relu(q_h . k_b) / sqrt(hd) over `n_blocks` blocks.
+/// `scores[b]` = sum_h relu(q_h . k_b) / sqrt(hd) over `n_blocks` blocks.
 #[allow(clippy::too_many_arguments)]
 pub fn qsa_score(
     gpu: &dyn GpuBackend,

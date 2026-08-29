@@ -68,7 +68,7 @@ impl HcVariant {
     }
 }
 
-/// Collapse the streams to one and emit whatever the matching [`hc_post`]
+/// Collapse the streams to one and emit whatever the matching `hc_post`
 /// needs — `post`+`comb` for Sinkhorn, the injection vector in `post_out` for
 /// low-rank.
 #[allow(clippy::too_many_arguments)]
