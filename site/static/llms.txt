@@ -114,6 +114,8 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - Discord: https://discord.gg/RQcGakU2jW
 - X: https://x.com/AtlasInferenceX
 - Site: https://atlasinference.io
+- Documentation: https://docs.atlasinference.io — full book, also at /llms.txt
+- Engineering blog: https://blog.atlasinference.io — also at /llms.txt
 
 ## License
 
