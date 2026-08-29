@@ -129,4 +129,29 @@ pub struct DflashSubConfig {
     /// Candidates kept per position for the selector walk (16 for DFlash2).
     #[serde(default)]
     pub selector_top_k: usize,
+    /// Block size γ as the drafter was TRAINED, when the checkpoint states it
+    /// here. DFlash2 ships `block_size: 8` inside `dflash_config`; DFlash1
+    /// ships it top-level only. `None` = not stated, fall back to the
+    /// top-level field. Read through [`DflashConfig::effective_block_size`].
+    #[serde(default)]
+    pub block_size: Option<usize>,
+}
+
+impl DflashConfig {
+    /// Resolved block size γ: the drafter's own trained value when the
+    /// checkpoint states it, else the top-level field.
+    ///
+    /// The top-level `block_size` defaults to 16, and serde fills that default
+    /// happily for a checkpoint that never mentioned it — so a DFlash2 drafter
+    /// trained at 8 comes up as 16 unless the sub-config is consulted first.
+    /// That is not a cosmetic mismatch: the serve then runs num_drafts=15
+    /// against an 8-block drafter, which measured 0% accept on EVERY verify
+    /// step, and sizes the drafter's per-sequence pools for twice the block it
+    /// will ever use. `--dflash-gamma` still overrides both.
+    pub fn effective_block_size(&self) -> usize {
+        self.dflash_config
+            .as_ref()
+            .and_then(|c| c.block_size)
+            .unwrap_or(self.block_size)
+    }
 }

@@ -62,7 +62,11 @@ impl BlockDiffusionDraftHead {
         let num_kv_heads = weights.config.num_key_value_heads;
         let head_dim = weights.config.head_dim;
         let vocab_size = weights.config.vocab_size;
-        let gamma_val = gamma.unwrap_or(weights.config.block_size);
+        // The HEAD's gamma is the SSOT the serve layer reads back, so the
+        // drafter's own trained block size must win here — `block_size` alone
+        // is the top-level field, whose serde default of 16 silently shadows
+        // a DFlash2 checkpoint that states 8 in `dflash_config`.
+        let gamma_val = gamma.unwrap_or(weights.config.effective_block_size());
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
         // sized for `max_seq_len + γ + 1` positions (prompt + γ drafts +

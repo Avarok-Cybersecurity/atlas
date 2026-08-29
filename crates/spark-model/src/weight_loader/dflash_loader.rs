@@ -490,5 +490,44 @@ mod tests {
         let error = parse_dflash_config(&malformed).unwrap_err();
         assert_eq!(error.to_string(), "Parsing DFlash drafter config.json");
         assert!(format!("{error:#}").contains("invalid type: string \"bad\""));
+
+    /// A DFlash2 checkpoint states its trained block size INSIDE
+    /// `dflash_config`; the top-level field is absent and serde fills its
+    /// default of 16. Resolving from the top level alone therefore runs an
+    /// 8-block drafter at gamma=16 -- 0% accept on every verify step, and
+    /// drafter pools sized for twice the block. Hermetic: parses a literal,
+    /// no checkpoint needed.
+    #[test]
+    fn effective_block_size_prefers_the_drafters_own_value() {
+        let json = r#"{
+            "hidden_size": 5120, "num_hidden_layers": 5,
+            "num_attention_heads": 32, "num_key_value_heads": 8,
+            "intermediate_size": 17408, "vocab_size": 248320, "head_dim": 128,
+            "dflash_config": {
+                "block_size": 8, "mask_token_id": 248070,
+                "target_layer_ids": [1, 10, 19, 28, 37]
+            }
+        }"#;
+        let cfg = parse_dflash_config(json).expect("parses");
+        assert_eq!(cfg.block_size, 16, "top-level default is still 16");
+        assert_eq!(
+            cfg.effective_block_size(),
+            8,
+            "the drafter's own block_size must win over the top-level default"
+        );
+    }
+
+    /// A DFlash1 checkpoint states it top-level only: nothing to prefer, so
+    /// the resolved value is unchanged from before this resolver existed.
+    #[test]
+    fn effective_block_size_falls_back_to_the_top_level() {
+        let json = r#"{
+            "hidden_size": 2048, "num_hidden_layers": 8,
+            "num_attention_heads": 32, "num_key_value_heads": 4,
+            "intermediate_size": 6144, "vocab_size": 248320, "head_dim": 128,
+            "block_size": 16
+        }"#;
+        let cfg = parse_dflash_config(json).expect("parses");
+        assert_eq!(cfg.effective_block_size(), 16);
     }
 }

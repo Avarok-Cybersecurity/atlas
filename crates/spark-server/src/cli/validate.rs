@@ -223,13 +223,28 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         && num_drafts > 1
         && !any_spec
     {
-        v.push(Violation::new(
-            format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
-            "the draft count only applies when speculative decoding proposes drafts; \
-             without it the flag is ignored.",
-            "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
-             drop --num-drafts.",
-        ));
+        // --dflash IS a speculative method, but it does not consume
+        // --num-drafts either: the drafter's trained block size (γ) decides
+        // the draft count (`serve_load` forces num_drafts = γ - 1). The flag
+        // is ignored in both arms — what differs is the correct remedy.
+        if args.dflash {
+            v.push(Violation::new(
+                format!("--num-drafts {num_drafts} is ignored under --dflash."),
+                "a DFlash serve drafts at the drafter checkpoint's trained block size \
+                 (γ); the scheduler overrides --num-drafts with γ - 1.",
+                "drop --num-drafts, or use --dflash-gamma to override the drafter's γ \
+                 (block-diffusion drafters are trained at ONE block size — expect \
+                 acceptance collapse away from it).",
+            ));
+        } else {
+            v.push(Violation::new(
+                format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
+                "the draft count only applies when speculative decoding proposes drafts; \
+                 without it the flag is ignored.",
+                "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
+                 drop --num-drafts.",
+            ));
+        }
     }
 
     // ── Thinking budget contradicts disabling thinking. ──

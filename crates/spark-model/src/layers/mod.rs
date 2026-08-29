@@ -59,7 +59,7 @@ pub(crate) fn w4a16_k64_min_k() -> u32 {
 pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
 pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
-    BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
+    BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};

@@ -624,7 +624,7 @@ pub(crate) fn load_model(
             .map(|(s, c)| spark_model::factory::DflashBuildArgs {
                 drafter_store: s,
                 drafter_config: c.clone(),
-                gamma: Some(args.dflash_gamma),
+                gamma: args.dflash_gamma, // None → head resolves effective_block_size()
                 window_size: if args.dflash_window_size > 0 {
                     Some(args.dflash_window_size)
                 } else {
@@ -837,7 +837,13 @@ pub(crate) fn load_model(
     // proposer for γ tokens (DraftProposer::propose semantics: "up to
     // num_drafts" → drafts.len() = γ → routes to step_verify_dflash).
     let num_drafts = if args.dflash {
-        args.dflash_gamma.saturating_sub(1).max(1)
+        // γ must match what the drafter head resolved (block-diffusion
+        // drafters are trained at ONE block size): the head's own gamma is
+        // the SSOT once built.
+        let g = scheduler_model
+            .dflash_gamma()
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None));
+        g.saturating_sub(1).max(1)
     } else {
         args.resolved_num_drafts()
     };
@@ -845,7 +851,7 @@ pub(crate) fn load_model(
     if args.dflash {
         tracing::info!(
             "DFlash speculative decoding: ENABLED (γ={}, window={}, drafter installed)",
-            args.dflash_gamma,
+            num_drafts + 1,
             if args.dflash_window_size == 0 {
                 "full".to_string()
             } else {

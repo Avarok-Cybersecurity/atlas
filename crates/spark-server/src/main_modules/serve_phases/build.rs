@@ -72,7 +72,12 @@ pub(crate) fn build_model(
         comm,
         args.self_speculative || args.ngram_speculative,
         if args.dflash {
-            args.dflash_gamma.saturating_sub(1).max(1)
+            // Pre-build sizing: the head isn't constructed yet, so resolve
+            // from the flag/legacy default. serve_load re-derives the REAL
+            // num_drafts from the built head's gamma (the SSOT) afterwards;
+            // this value only sizes buffers, and legacy 16 is the upper
+            // bound of every published drafter's block size.
+            args.resolved_dflash_gamma(None).saturating_sub(1).max(1)
         } else {
             args.resolved_num_drafts()
         },
@@ -167,8 +172,14 @@ pub(crate) fn maybe_run_ep_worker(
     let rank = args.rank;
     let model_owned = model.take().expect("EP worker requires owned model");
     let model_has_proposer = model_owned.has_proposer();
-    if !args.speculative && !args.self_speculative && !args.ngram_speculative && model_has_proposer
-    {
+    // `--dflash` counts as a speculative method here: a DFlash worker
+    // participates in the head's speculative dispatch, so it must not trip
+    // the "started WITHOUT any --speculative flag" bail. (DFlash+EP is not
+    // an exercised combination today; this keeps the guard from lying about
+    // it when it becomes one.)
+    let worker_spec =
+        args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
+    if !worker_spec && model_has_proposer {
         let override_set = matches!(
             std::env::var("ATLAS_ALLOW_SPEC_MISMATCH").as_deref(),
             Ok("1") | Ok("true")
@@ -186,11 +197,7 @@ pub(crate) fn maybe_run_ep_worker(
             "EP worker (rank {rank}) running WITHOUT speculative flags but \
              ATLAS_ALLOW_SPEC_MISMATCH=1 — head must NOT issue MTP commands."
         );
-    } else if !model_has_proposer
-        && !args.speculative
-        && !args.self_speculative
-        && !args.ngram_speculative
-    {
+    } else if !model_has_proposer && !worker_spec {
         tracing::info!(
             "EP worker (rank {rank}): checkpoint has no MTP weights; \
              spec-mismatch guard auto-skipped (head can't use MTP either)."
