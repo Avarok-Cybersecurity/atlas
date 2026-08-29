@@ -173,6 +173,8 @@ pub struct Glm5NextDsaWorkspace {
     sl: DevicePtr,
     /// Capacity of `bt` in ENTRIES, so the forward can refuse rather than overrun it.
     bt_cap: usize,
+    /// Widest verify this scratch can serve. `1` on the serial decode path.
+    max_rows: usize,
     /// `[index_head_dim]` BF16 staging for the indexer row, at a FIXED address.
     ///
     /// 🔴 The projections used to write straight into `k_normed`/`gate` at
@@ -187,17 +189,22 @@ pub struct Glm5NextDsaWorkspace {
 }
 
 impl Glm5NextDsaWorkspace {
-    pub fn new(gpu: &dyn GpuBackend, cfg: &Glm5NextDsaConfig) -> Result<Self> {
+    /// `max_rows` is the widest speculative verify this workspace serves. Only the four
+    /// projection-scoped buffers and `attn_out` scale with it; the selector scratch, the
+    /// indexer staging rows and the block table stay per-row, because
+    /// [`Glm5NextDsaLayer::decode_k`] runs selection and attention one token at a time.
+    pub fn new(gpu: &dyn GpuBackend, cfg: &Glm5NextDsaConfig, max_rows: usize) -> Result<Self> {
+        let rows = max_rows.max(1);
         // Sized at the DSA context cap so a growing sequence never reallocates.
         let geom =
             super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), 1)?;
         let bt_cap = super::state::max_dsa_context(cfg).max(1);
         let persist = std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1");
         Ok(Self {
-            q_a: gpu.alloc(cfg.q_lora_rank * 2)?,
-            q_resid: gpu.alloc(cfg.q_lora_rank * 2)?,
-            q_abs: gpu.alloc(cfg.local_heads * cfg.kv_lora_rank * 2)?,
-            kv_a: gpu.alloc(cfg.kv_lora_rank * 2)?,
+            q_a: gpu.alloc(rows * (cfg.q_lora_rank * 2))?,
+            q_resid: gpu.alloc(rows * (cfg.q_lora_rank * 2))?,
+            q_abs: gpu.alloc(rows * (cfg.local_heads * cfg.kv_lora_rank * 2))?,
+            kv_a: gpu.alloc(rows * (cfg.kv_lora_rank * 2))?,
             q_idx: gpu.alloc(cfg.index_heads * cfg.index_head_dim * 4)?,
             head_weights: gpu.alloc(cfg.index_heads * 4)?,
             q_pos: gpu.alloc(4)?,
@@ -210,7 +217,7 @@ impl Glm5NextDsaWorkspace {
                 p
             },
             slot: gpu.alloc(8)?,
-            attn_out: gpu.alloc(cfg.local_heads * cfg.kv_lora_rank * 2)?,
+            attn_out: gpu.alloc(rows * (cfg.local_heads * cfg.kv_lora_rank * 2))?,
             // One entry per cached token is the worst case (block_size == 1), so the
             // DSA context cap bounds it for every block size.
             //
@@ -225,6 +232,7 @@ impl Glm5NextDsaWorkspace {
             },
             sl: if persist { gpu.alloc(4)? } else { DevicePtr(0) },
             bt_cap,
+            max_rows: rows,
             stage_k: gpu.alloc(cfg.index_head_dim * 2)?,
             stage_gate: gpu.alloc(cfg.index_head_dim * 2)?,
             geom_dev: gpu.alloc(5 * 4)?,
@@ -369,9 +377,17 @@ impl Glm5NextDsaLayer {
 
     /// Everything after the indexer write: selector inputs, selection, gather-attend.
     /// Leaves `[local_heads, kv_lora_rank]` BF16 in the workspace's `attn_out`.
+    /// Selection + gather-attend for ONE query row.
+    ///
+    /// 🔴 Stays per-row inside a K-token verify: the selector's geometry, its top-k over
+    /// `[0, len)` and the paged gather are all functions of THIS token's position in the
+    /// sequence, and the indexer cache grows by one row between them. Only the projections
+    /// around it batch.
+    #[allow(clippy::too_many_arguments)]
     fn select_and_attend(
         &self,
         gpu: &dyn GpuBackend,
+        row: usize,
         state: &Glm5NextDsaState,
         kv_cache: &PagedKvCache,
         block_table_dev: DevicePtr,
@@ -391,7 +407,7 @@ impl Glm5NextDsaLayer {
             self.kernels.gemv_f32,
             // No FP32-out batchm twin exists; the selector's two sites stay on gemv/tile.
             KernelHandle(0),
-            w.q_resid,
+            w.q_resid.offset(row * self.cfg.q_lora_rank * 2),
             self.weights.wq_b,
             w.q_idx,
             1,
@@ -461,10 +477,10 @@ impl Glm5NextDsaLayer {
             &geom,
             paging,
             &DsaDecodeInputs {
-                q: w.q_abs,
+                q: w.q_abs.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2),
                 k_cache: pool,
                 v_cache: pool, // absorbed NoPE MLA: K and V are the same latent
-                out: w.attn_out,
+                out: w.attn_out.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2),
                 block_tables: block_table_dev,
                 seq_lens: seq_lens_dev,
                 sel_indices: w.select.tokens(),
@@ -474,8 +490,314 @@ impl Glm5NextDsaLayer {
             stream,
         )?;
         profile::end(profile::DSA_ATTEND, t, gpu, stream);
-        Ok(w.attn_out)
+        Ok(w.attn_out.offset(row * self.cfg.local_heads * self.cfg.kv_lora_rank * 2))
     }
+    /// K tokens of one sequence: the projections batched, selection and attention NOT.
+    ///
+    /// The weight-heavy halves — `q_a`, the absorbed `q_b`, `kv_a` and the `o_absorb` output
+    /// projection — sweep their weights ONCE for all K rows (1,290 MB/rank/token between them).
+    /// Everything between them is a function of the individual token's position: the paged KV
+    /// slot, the indexer row, the selector geometry over `[0, len)` and the gather-attend.
+    ///
+    /// 🔴 Bit-identical to K serial [`TransformerLayer::decode`] calls, which is the
+    /// requirement: an accepted draft must be the token the unspeculated engine would have
+    /// emitted. `ops::dense_mm_bf16` reproduces each row's K-iteration order and reduction tree,
+    /// and `rms_norm_vanilla`'s grid is the token axis.
+    ///
+    /// 🪤 REFUSES a step-scoped `attn_metadata` at k > 1. Those scalars — position, KV slot,
+    /// seq len — describe ONE token, so K rows sharing them would write K queries into the same
+    /// paged slot and select over the same position: a wrong answer with no shape error. The
+    /// verify path is eager (`ctx.decode_step == false`) and computes them per row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_k(
+        &self,
+        hidden: DevicePtr,
+        k: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        use crate::layers::glm5next_layer::profile;
+        let st = state
+            .as_any_mut()
+            .downcast_mut::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
+            })?;
+        // 🔴 The indexer stream must advance in lockstep with the KV cache — a drift selects
+        // over the wrong context. Two drifts are possible and they are NOT symmetric:
+        //
+        // * AHEAD (`len > seq_len`) is the speculative-verify reject. The K rows of a verify
+        //   were written, the sequence rolled back to the accepted prefix, and the rows past
+        //   it are now unreachable: the selector reads `[0, len)` and the next write starts
+        //   at `seq_len`, so they are overwritten before anything can select over them.
+        //   Rewind and continue — this is the KV cache's own semantics for rejected slots,
+        //   and making it self-healing here is why no rollback callback has to reach into
+        //   eleven DSA layers.
+        // * BEHIND (`len < seq_len`) means rows were never written. Nothing can repair that,
+        //   so it stays a hard error.
+        match st.len().cmp(&seq_len) {
+            std::cmp::Ordering::Greater => st.rewind_to(seq_len)?,
+            std::cmp::Ordering::Less => bail!(
+                "DSA layer {}: indexer cache holds {} tokens but the sequence is at {} — \
+                 rows are MISSING, not merely stale. The indexer stream must advance in \
+                 lockstep with the KV cache.",
+                self.layer_idx,
+                st.len(),
+                seq_len
+            ),
+            std::cmp::Ordering::Equal => {}
+        }
+        if k == 0 || k > self.workspace.max_rows {
+            bail!(
+                "DSA layer {}: a {k}-token verify does not fit a workspace built for {}",
+                self.layer_idx,
+                self.workspace.max_rows
+            );
+        }
+        if k > 1 && ctx.decode_step && ctx.attn_metadata.is_some() {
+            bail!(
+                "DSA layer {}: a {k}-row pass cannot share one step's attn_metadata — its \
+                 position and KV slot describe a single token",
+                self.layer_idx
+            );
+        }
+        let gpu = ctx.gpu;
+        let w = &self.workspace;
+        let t_proj = crate::layers::glm5next_layer::profile::start();
+
+        // ── q path ──
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.q_a_proj,
+            w.q_a,
+            k,
+            self.cfg.q_lora_rank,
+            self.cfg.hidden,
+            stream,
+        )?;
+        // 🪤 vanilla: x * rms * w, no `1 +`.
+        KernelLaunch::new(gpu, self.kernels.rms_norm)
+            // 🪤 `rms_norm_vanilla`'s grid IS the token axis, so k rows is one launch doing
+            // block-for-block what k launches did — bit-identical.
+            .grid([k as u32, 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(w.q_a)
+            .arg_ptr(self.weights.q_a_layernorm)
+            .arg_ptr(w.q_resid)
+            .arg_u32(self.cfg.q_lora_rank as u32)
+            .arg_f32(self.rms_eps)
+            .launch(stream)?;
+        // Q absorbed into latent space in one GEMM.
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            w.q_resid,
+            self.weights.q_absorb,
+            w.q_abs,
+            k,
+            self.cfg.local_heads * self.cfg.kv_lora_rank,
+            self.cfg.q_lora_rank,
+            stream,
+        )?;
+
+        // ── kv path: latent -> FP8 -> paged slot ──
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.kv_a_proj,
+            w.kv_a,
+            k,
+            self.cfg.kv_lora_rank,
+            self.cfg.hidden,
+            stream,
+        )?;
+        for row in 0..k {
+            let pos = seq_len + row;
+            let block_size = kv_cache.config().block_size;
+            // 🔴 Every per-step scalar this layer needs — position, KV slot, seq_len, block
+            // table — is ALREADY uploaded once per decode step by `decode_a` into
+            // `attn_metadata`, at stable addresses, BEFORE any graph capture or replay. Reading
+            // those pointers instead of doing our own `copy_h2d` removes FIVE blocking H2Ds
+            // (each one a `cuStreamSynchronize`) per DSA layer per token — 55 stream drains on
+            // this model — and is what makes the decode step capturable at all: an H2D inside a
+            // capturing stream fails with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED.
+            //
+            // 🪤 The two encodings must agree byte for byte, and they do: `positions` is the
+            // u32 `seq_len` (same bits as our i32), `slot` the same i64 `block*block_size +
+            // seq_len % block_size`, `seq_len` the same i32 `seq_len + 1`, and `block_table`
+            // the same ids as i32 rather than u32.
+            // 🪤 ONLY on a real decode step — `prefill_default` calls this same `decode` per
+            // token with the prefill context, where these are arrays or NULL. See
+            // `ForwardContext::decode_step`.
+            let meta = if ctx.decode_step {
+                ctx.attn_metadata.as_ref()
+            } else {
+                None
+            };
+            let slot_dev = match meta {
+                Some(m) => m.slot,
+                None => {
+                    let logical = pos / block_size;
+                    let physical = *block_table.get(logical).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "DSA layer {}: block table has {} entries, needs logical block \
+                             {logical} for position {pos}",
+                            self.layer_idx,
+                            block_table.len()
+                        )
+                    })? as usize;
+                    let slot = (physical * block_size + pos % block_size) as i64;
+                    gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
+                    w.slot
+                }
+            };
+            KernelLaunch::new(gpu, self.kernels.latent_write)
+                .grid([1, 1, 1])
+                .block([self.cfg.kv_lora_rank as u32, 1, 1])
+                .arg_ptr(w.kv_a.offset(row * self.cfg.kv_lora_rank * 2))
+                .arg_ptr(self.weights.kv_a_layernorm)
+                .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
+                .arg_ptr(slot_dev)
+                .arg_u32(self.cfg.kv_lora_rank as u32)
+                .arg_f32(self.rms_eps)
+                .arg_f32(1.0 / self.kv_scale)
+                .launch(stream)?;
+
+            // ── indexer stream, then select + gather-attend ──
+            use crate::layers::glm5next_layer::profile;
+            profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
+            let t = profile::start();
+            // Replay-safe placement only while a graph is RECORDING. An eager step keeps the
+            // host-offset path, so the shipping numbers and byte-identity are untouched.
+            let replay_safe = ctx.graph_capture
+                && meta.is_some()
+                && self.select_kernels.indexer_store.0 != 0
+                && self.select_kernels.write_geom.0 != 0;
+            let pos_dev = if replay_safe {
+                meta.map(|m| m.positions)
+            } else {
+                None
+            };
+            self.indexer_forward(gpu, hidden.offset(row * self.cfg.hidden * 2), st, pos_dev, stream)?;
+            profile::end(profile::DSA_INDEXER, t, gpu, stream);
+
+            let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
+                Some(m) => (m.positions, Some(m.block_table), Some(m.seq_len)),
+                None => {
+                    let qp = pos as i32;
+                    gpu.copy_h2d(&qp.to_le_bytes(), w.q_pos)?;
+                    (w.q_pos, None, None)
+                }
+            };
+            let (d_bt, d_sl) = match (bt_dev_meta, sl_dev_meta) {
+                // The step-scoped upload already holds both; nothing to copy.
+                (Some(b), Some(l)) => (b, l),
+                _ => {
+                    let bt: Vec<u8> = block_table.iter().flat_map(|b| b.to_le_bytes()).collect();
+                    if block_table.len() > w.bt_cap {
+                        anyhow::bail!(
+                            "DSA layer {}: block table {} entries exceeds the {}-entry persistent \
+                     buffer; raise max_dsa_context, do not write past the allocation.",
+                            self.layer_idx,
+                            block_table.len(),
+                            w.bt_cap
+                        );
+                    }
+                    // Persistent `w.bt`/`w.sl` instead of a `gpu.alloc` + `gpu.free` per DSA layer per
+                    // token: worth a measured 1.1 ms/token (nsys 2026-08-28 — 11 x ~98 us of GPU idle
+                    // for the alloc/copy/free cluster). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1`.
+                    //
+                    // 🪤 This was gated OFF for most of a day because turning it on changed the model's
+                    // output — which turned out to be ANOMALIES A55 and not this code at all: the DSA
+                    // indexer was reading 5120 bytes past `q_resid`, so the answer depended on what the
+                    // allocator had put next. With that fixed the two settings are byte-identical, and
+                    // the whole engine is layout-independent (verified by 4 KB poisoned guard bands on
+                    // 3431 allocations producing the same completions as no guard bands at all).
+                    let (d_bt, d_sl) = if self.persist_bt {
+                        (w.bt, w.sl)
+                    } else {
+                        (gpu.alloc(bt.len().max(4))?, gpu.alloc(4)?)
+                    };
+                    gpu.copy_h2d(&bt, d_bt)?;
+                    gpu.copy_h2d(&((pos + 1) as i32).to_le_bytes(), d_sl)?;
+                    (d_bt, d_sl)
+                }
+            };
+            let owns_bt = bt_dev_meta.is_none();
+
+            let paging = DsaDecodePaging {
+                num_seqs: 1,
+                num_q_heads: self.cfg.local_heads,
+                num_kv_heads: 1,
+                max_blocks_per_seq: block_table.len(),
+                block_size,
+                cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
+            };
+            if replay_safe {
+                // S is exactly the `seq_len + 1` the attention metadata already holds, which is
+                // `st.len()` after the indexer advance. Nothing about the pass is host-decided.
+                KernelLaunch::new(gpu, self.select_kernels.write_geom)
+                    .grid([1, 1, 1])
+                    .block([1, 1, 1])
+                    .arg_ptr(d_sl)
+                    .arg_ptr(w.geom_dev)
+                    .arg_u32(self.cfg.index_kpool as u32)
+                    .arg_u32(self.cfg.index_topk as u32)
+                    .launch(stream)?;
+            }
+            // Writes row `row` of `attn_out`; the batched `o_absorb` below reads all K rows,
+            // so the returned pointer is not needed here.
+            self.select_and_attend(
+                gpu,
+                row,
+                st,
+                kv_cache,
+                d_bt,
+                d_sl,
+                q_pos_dev,
+                &paging,
+                replay_safe,
+                stream,
+            )?;
+            if owns_bt && !self.persist_bt {
+                gpu.free(d_bt)?;
+                gpu.free(d_sl)?;
+            }
+
+        }
+
+        // ── output projection, row-parallel: the caller all-reduces ──
+        let t_proj = profile::start();
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            w.attn_out,
+            self.weights.o_absorb,
+            hidden,
+            k,
+            self.cfg.hidden,
+            self.cfg.local_heads * self.cfg.kv_lora_rank,
+            stream,
+        )?;
+        profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
+        Ok(())
+    }
+
 }
 
 impl TransformerLayer for Glm5NextDsaLayer {
@@ -512,258 +834,16 @@ impl TransformerLayer for Glm5NextDsaLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        let st = state
-            .as_any_mut()
-            .downcast_mut::<Glm5NextDsaState>()
-            .ok_or_else(|| {
-                anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
-            })?;
-        // 🔴 The indexer stream must advance in lockstep with the KV cache — a drift selects
-        // over the wrong context. Two drifts are possible and they are NOT symmetric:
-        //
-        // * AHEAD (`len > seq_len`) is the speculative-verify reject. The K rows of a verify
-        //   were written, the sequence rolled back to the accepted prefix, and the rows past
-        //   it are now unreachable: the selector reads `[0, len)` and the next write starts
-        //   at `seq_len`, so they are overwritten before anything can select over them.
-        //   Rewind and continue — this is the KV cache's own semantics for rejected slots,
-        //   and making it self-healing here is why no rollback callback has to reach into
-        //   eleven DSA layers.
-        // * BEHIND (`len < seq_len`) means rows were never written. Nothing can repair that,
-        //   so it stays a hard error.
-        match st.len().cmp(&seq_len) {
-            std::cmp::Ordering::Greater => st.rewind_to(seq_len)?,
-            std::cmp::Ordering::Less => bail!(
-                "DSA layer {}: indexer cache holds {} tokens but the sequence is at {} — \
-                 rows are MISSING, not merely stale. The indexer stream must advance in \
-                 lockstep with the KV cache.",
-                self.layer_idx,
-                st.len(),
-                seq_len
-            ),
-            std::cmp::Ordering::Equal => {}
-        }
-        let gpu = ctx.gpu;
-        let w = &self.workspace;
-        let t_proj = crate::layers::glm5next_layer::profile::start();
-
-        // ── q path ──
-        gemm(
-            gpu,
-            self.kernels.gemm,
-            self.kernels.gemv,
-            self.kernels.gemv_batchm,
+        self.decode_k(
             hidden,
-            self.weights.q_a_proj,
-            w.q_a,
             1,
-            self.cfg.q_lora_rank,
-            self.cfg.hidden,
-            stream,
-        )?;
-        // 🪤 vanilla: x * rms * w, no `1 +`.
-        KernelLaunch::new(gpu, self.kernels.rms_norm)
-            .grid([1, 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(w.q_a)
-            .arg_ptr(self.weights.q_a_layernorm)
-            .arg_ptr(w.q_resid)
-            .arg_u32(self.cfg.q_lora_rank as u32)
-            .arg_f32(self.rms_eps)
-            .launch(stream)?;
-        // Q absorbed into latent space in one GEMM.
-        gemm(
-            gpu,
-            self.kernels.gemm,
-            self.kernels.gemv,
-            self.kernels.gemv_batchm,
-            w.q_resid,
-            self.weights.q_absorb,
-            w.q_abs,
-            1,
-            self.cfg.local_heads * self.cfg.kv_lora_rank,
-            self.cfg.q_lora_rank,
-            stream,
-        )?;
-
-        // ── kv path: latent -> FP8 -> paged slot ──
-        gemm(
-            gpu,
-            self.kernels.gemm,
-            self.kernels.gemv,
-            self.kernels.gemv_batchm,
-            hidden,
-            self.weights.kv_a_proj,
-            w.kv_a,
-            1,
-            self.cfg.kv_lora_rank,
-            self.cfg.hidden,
-            stream,
-        )?;
-        let block_size = kv_cache.config().block_size;
-        // 🔴 Every per-step scalar this layer needs — position, KV slot, seq_len, block
-        // table — is ALREADY uploaded once per decode step by `decode_a` into
-        // `attn_metadata`, at stable addresses, BEFORE any graph capture or replay. Reading
-        // those pointers instead of doing our own `copy_h2d` removes FIVE blocking H2Ds
-        // (each one a `cuStreamSynchronize`) per DSA layer per token — 55 stream drains on
-        // this model — and is what makes the decode step capturable at all: an H2D inside a
-        // capturing stream fails with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED.
-        //
-        // 🪤 The two encodings must agree byte for byte, and they do: `positions` is the
-        // u32 `seq_len` (same bits as our i32), `slot` the same i64 `block*block_size +
-        // seq_len % block_size`, `seq_len` the same i32 `seq_len + 1`, and `block_table`
-        // the same ids as i32 rather than u32.
-        // 🪤 ONLY on a real decode step — `prefill_default` calls this same `decode` per
-        // token with the prefill context, where these are arrays or NULL. See
-        // `ForwardContext::decode_step`.
-        let meta = if ctx.decode_step {
-            ctx.attn_metadata.as_ref()
-        } else {
-            None
-        };
-        let slot_dev = match meta {
-            Some(m) => m.slot,
-            None => {
-                let logical = seq_len / block_size;
-                let physical = *block_table.get(logical).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "DSA layer {}: block table has {} entries, needs logical block \
-                         {logical} for position {seq_len}",
-                        self.layer_idx,
-                        block_table.len()
-                    )
-                })? as usize;
-                let slot = (physical * block_size + seq_len % block_size) as i64;
-                gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
-                w.slot
-            }
-        };
-        KernelLaunch::new(gpu, self.kernels.latent_write)
-            .grid([1, 1, 1])
-            .block([self.cfg.kv_lora_rank as u32, 1, 1])
-            .arg_ptr(w.kv_a)
-            .arg_ptr(self.weights.kv_a_layernorm)
-            .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
-            .arg_ptr(slot_dev)
-            .arg_u32(self.cfg.kv_lora_rank as u32)
-            .arg_f32(self.rms_eps)
-            .arg_f32(1.0 / self.kv_scale)
-            .launch(stream)?;
-
-        // ── indexer stream, then select + gather-attend ──
-        use crate::layers::glm5next_layer::profile;
-        profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
-        let t = profile::start();
-        // Replay-safe placement only while a graph is RECORDING. An eager step keeps the
-        // host-offset path, so the shipping numbers and byte-identity are untouched.
-        let replay_safe = ctx.graph_capture
-            && meta.is_some()
-            && self.select_kernels.indexer_store.0 != 0
-            && self.select_kernels.write_geom.0 != 0;
-        let pos_dev = if replay_safe {
-            meta.map(|m| m.positions)
-        } else {
-            None
-        };
-        self.indexer_forward(gpu, hidden, st, pos_dev, stream)?;
-        profile::end(profile::DSA_INDEXER, t, gpu, stream);
-
-        let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
-            Some(m) => (m.positions, Some(m.block_table), Some(m.seq_len)),
-            None => {
-                let pos = seq_len as i32;
-                gpu.copy_h2d(&pos.to_le_bytes(), w.q_pos)?;
-                (w.q_pos, None, None)
-            }
-        };
-        let (d_bt, d_sl) = match (bt_dev_meta, sl_dev_meta) {
-            // The step-scoped upload already holds both; nothing to copy.
-            (Some(b), Some(l)) => (b, l),
-            _ => {
-                let bt: Vec<u8> = block_table.iter().flat_map(|b| b.to_le_bytes()).collect();
-                if block_table.len() > w.bt_cap {
-                    anyhow::bail!(
-                        "DSA layer {}: block table {} entries exceeds the {}-entry persistent \
-                 buffer; raise max_dsa_context, do not write past the allocation.",
-                        self.layer_idx,
-                        block_table.len(),
-                        w.bt_cap
-                    );
-                }
-                // Persistent `w.bt`/`w.sl` instead of a `gpu.alloc` + `gpu.free` per DSA layer per
-                // token: worth a measured 1.1 ms/token (nsys 2026-08-28 — 11 x ~98 us of GPU idle
-                // for the alloc/copy/free cluster). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1`.
-                //
-                // 🪤 This was gated OFF for most of a day because turning it on changed the model's
-                // output — which turned out to be ANOMALIES A55 and not this code at all: the DSA
-                // indexer was reading 5120 bytes past `q_resid`, so the answer depended on what the
-                // allocator had put next. With that fixed the two settings are byte-identical, and
-                // the whole engine is layout-independent (verified by 4 KB poisoned guard bands on
-                // 3431 allocations producing the same completions as no guard bands at all).
-                let (d_bt, d_sl) = if self.persist_bt {
-                    (w.bt, w.sl)
-                } else {
-                    (gpu.alloc(bt.len().max(4))?, gpu.alloc(4)?)
-                };
-                gpu.copy_h2d(&bt, d_bt)?;
-                gpu.copy_h2d(&((seq_len + 1) as i32).to_le_bytes(), d_sl)?;
-                (d_bt, d_sl)
-            }
-        };
-        let owns_bt = bt_dev_meta.is_none();
-
-        let paging = DsaDecodePaging {
-            num_seqs: 1,
-            num_q_heads: self.cfg.local_heads,
-            num_kv_heads: 1,
-            max_blocks_per_seq: block_table.len(),
-            block_size,
-            cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
-        };
-        if replay_safe {
-            // S is exactly the `seq_len + 1` the attention metadata already holds, which is
-            // `st.len()` after the indexer advance. Nothing about the pass is host-decided.
-            KernelLaunch::new(gpu, self.select_kernels.write_geom)
-                .grid([1, 1, 1])
-                .block([1, 1, 1])
-                .arg_ptr(d_sl)
-                .arg_ptr(w.geom_dev)
-                .arg_u32(self.cfg.index_kpool as u32)
-                .arg_u32(self.cfg.index_topk as u32)
-                .launch(stream)?;
-        }
-        let attn = self.select_and_attend(
-            gpu,
-            st,
+            state,
             kv_cache,
-            d_bt,
-            d_sl,
-            q_pos_dev,
-            &paging,
-            replay_safe,
+            seq_len,
+            block_table,
+            ctx,
             stream,
-        )?;
-        if owns_bt && !self.persist_bt {
-            gpu.free(d_bt)?;
-            gpu.free(d_sl)?;
-        }
-
-        // ── output projection, row-parallel: the caller all-reduces ──
-        let t_proj = profile::start();
-        gemm(
-            gpu,
-            self.kernels.gemm,
-            self.kernels.gemv,
-            self.kernels.gemv_batchm,
-            attn,
-            self.weights.o_absorb,
-            hidden,
-            1,
-            self.cfg.hidden,
-            self.cfg.local_heads * self.cfg.kv_lora_rank,
-            stream,
-        )?;
-        profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
-        Ok(())
+        )
     }
 }
 

@@ -494,32 +494,25 @@ impl Glm5NextLayer {
     /// activation that has to survive across layers, so a shared slot would leave every layer
     /// past the first reading the last token's highway for all K rows.
     ///
-    /// DSA layers do not come here: their per-step scalars (position, KV slot, seq len) are
-    /// uploaded one token at a time by `decode_a`, so they still walk `forward_one` per row.
+    /// Both mixers come here: each has its own `decode_k` that batches its projections and
+    /// keeps its per-token part (KDA's recurrence, DSA's selection and gather-attend) serial.
     #[allow(clippy::too_many_arguments)]
     fn forward_k(
         &self,
         hidden: DevicePtr,
         k: usize,
         state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let h = self.hidden;
-        let Glm5NextMixer::Kda { layer, ws, .. } = &self.mixer else {
-            bail!("GLM layer {}: forward_k is the KDA path", self.layer_idx);
-        };
         let Some(mhc) = self.mhc.as_ref() else {
             bail!("GLM layer {}: no hyper-connection bound", self.layer_idx);
         };
-        if k > ws.max_tokens() {
-            bail!(
-                "GLM layer {}: a {k}-token verify exceeds the KDA workspace built for {}",
-                self.layer_idx,
-                ws.max_tokens()
-            );
-        }
         let hc = mhc.hc_mult;
         // Slot 0's base: the per-slot strides are exactly these, so K contiguous slots ARE the
         // `[K, ...]` the kernels want.
@@ -531,19 +524,30 @@ impl Glm5NextLayer {
         let (kt, ht, hct) = (k as u32, h as u32, hc as u32);
 
         // Per-token state snapshots a partial accept rewinds to; row `t` writes slot `t`, and
-        // the last row needs none because a full accept never rolls back.
-        let snaps: Vec<(DevicePtr, DevicePtr)> = {
-            let st = self.kda_state(state)?;
-            (0..k.saturating_sub(1))
-                .map(|t| (st.h_state_intermediates[t], st.conv_state_intermediates[t]))
-                .collect()
-        };
-        let kda = {
-            let st = self.kda_state(state)?;
-            KdaSeqState {
-                conv: st.conv_state,
-                recurrent: st.h_state,
+        // the last row needs none because a full accept never rolls back. KDA only — DSA's
+        // per-sequence state is the indexer cache, which rewinds by a host counter.
+        let kda_ctx = match &self.mixer {
+            Glm5NextMixer::Kda { ws, .. } => {
+                if k > ws.max_tokens() {
+                    bail!(
+                        "GLM layer {}: a {k}-token verify exceeds the KDA workspace built for {}",
+                        self.layer_idx,
+                        ws.max_tokens()
+                    );
+                }
+                let st = self.kda_state(state)?;
+                let snaps: Vec<(DevicePtr, DevicePtr)> = (0..k.saturating_sub(1))
+                    .map(|t| (st.h_state_intermediates[t], st.conv_state_intermediates[t]))
+                    .collect();
+                Some((
+                    KdaSeqState {
+                        conv: st.conv_state,
+                        recurrent: st.h_state,
+                    },
+                    snaps,
+                ))
             }
+            Glm5NextMixer::Dsa(_) => None,
         };
 
         let t_mhc = profile::start();
@@ -573,9 +577,21 @@ impl Glm5NextLayer {
         self.norm(gpu, hidden, self.input_norm, normed, k, stream)?;
         profile::end(profile::NORM, t_norm, gpu, stream);
         let t = profile::start();
-        layer.decode_k(gpu, normed, k, &kda, ws, &snaps, stream)?;
+        let attn_out = match (&self.mixer, &kda_ctx) {
+            (Glm5NextMixer::Kda { layer, ws, .. }, Some((kda, snaps))) => {
+                layer.decode_k(gpu, normed, k, kda, ws, snaps, stream)?;
+                ws.final_out
+            }
+            (Glm5NextMixer::Dsa(layer), _) => {
+                // 🪤 DSA writes its `o_proj` output back over the buffer it was handed.
+                layer.decode_k(normed, k, state, kv_cache, seq_len, block_table, ctx, stream)?;
+                normed
+            }
+            (Glm5NextMixer::Kda { .. }, None) => {
+                bail!("GLM layer {}: KDA mixer without KDA state", self.layer_idx)
+            }
+        };
         profile::end(profile::KDA, t, gpu, stream);
-        let attn_out = ws.final_out;
         if self.mixer_all_reduce {
             self.reduce_probe(profile::REDUCE_ATTN_BAR, "attn", ctx, stream);
             let t = profile::start_hot();
@@ -847,14 +863,14 @@ impl TransformerLayer for Glm5NextLayer {
     fn decode_batched(
         &self,
         hidden: DevicePtr,
-        residual: DevicePtr,
+        _residual: DevicePtr,
         num_tokens: usize,
         state: &mut dyn LayerState,
         kv_cache: &mut PagedKvCache,
         seq_len: usize,
         block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        _disk_block_ids: &mut Vec<u32>,
+        _disk_last_offloaded_per_layer: &mut Vec<u32>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -884,31 +900,17 @@ impl TransformerLayer for Glm5NextLayer {
             }
         }
 
-        // KDA: ONE sweep over the weights for all K rows. This is the whole reason speculation
-        // pays — KDA's projections are 4,682 of the 10,838 MB/rank/token and they are read once.
-        if kda_bytes.is_some() {
-            return self.forward_k(hidden, num_tokens, state, ctx, stream);
-        }
-
-        // DSA: still one row at a time. Its per-step scalars (position, KV slot, seq len) are
-        // uploaded a token at a time by `decode_a`, so a K-row sweep needs K-row metadata first.
-        for t in 0..num_tokens {
-            let off = t * self.hidden * 2;
-            self.forward_one(
-                hidden.offset(off),
-                residual.offset(off),
-                t,
-                state,
-                kv_cache,
-                seq_len + t,
-                block_table,
-                disk_block_ids,
-                disk_last_offloaded_per_layer,
-                ctx,
-                stream,
-            )?;
-        }
-        Ok(())
+        // ONE sweep over the weights for all K rows — the whole reason speculation pays.
+        self.forward_k(
+            hidden,
+            num_tokens,
+            state,
+            kv_cache,
+            seq_len,
+            block_table,
+            ctx,
+            stream,
+        )
     }
 
     /// KDA layers carry recurrent state; DSA layers do not.

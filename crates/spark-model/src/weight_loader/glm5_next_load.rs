@@ -404,7 +404,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                                 gpu,
                             )?,
                         workspace: crate::layers::glm5next_dsa::layer::Glm5NextDsaWorkspace::new(
-                            gpu, &dsa_cfg,
+                            gpu, &dsa_cfg, verify_k,
                         )?,
                         layer_idx: idx,
                         attn_layer_idx: {
