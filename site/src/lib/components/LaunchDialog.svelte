@@ -18,7 +18,7 @@
   import CommandRow from './CommandRow.svelte';
   import { modal } from '$lib/modal.js';
   import { describe } from '$lib/agent/placement.js';
-  import { joinCommand } from '$lib/agent/joincommand.js';
+  import { joinCommand, joinCommandPowerShell } from '$lib/agent/joincommand.js';
   import LaunchModal from './LaunchModal.svelte';
 
   let tokenInput = $state('');
@@ -28,6 +28,13 @@
   // disagree, and did: the guard tested `launch.join` (an object) while the
   // command it rendered could be the empty string.
   const joinCmd = $derived(joinCommand(launch.join));
+  // BOTH lines, exactly as JoinGuide shows them. The operator is standing at
+  // the machine being added and this one cannot see it, so guessing its
+  // platform is guessing about a computer that is not here -- and the wrong
+  // single line is a paste that fails on the far machine, where they have the
+  // least context. This surface offered only the sh line; a Windows GPU box
+  // invited from here got a command it cannot run.
+  const joinCmdPs = $derived(joinCommandPowerShell(launch.join));
   let dialogEl = $state(null);
 
   // `install`, not `run`: `run` holds the terminal and the agent dies with it.
@@ -142,6 +149,10 @@
           </p>
           {#if joinCmd}
             <CommandRow command={joinCmd} extra="ld-place-cmd" />
+            {#if joinCmdPs}
+              <p class="ld-place-sub">Or, if that machine runs Windows:</p>
+              <CommandRow command={joinCmdPs} extra="ld-place-cmd" />
+            {/if}
             <p class="ld-watching">
               <span class="ld-pulse" aria-hidden="true"></span>
               Watching for it — this dialog will continue on its own.

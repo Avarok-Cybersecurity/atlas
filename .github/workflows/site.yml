@@ -116,6 +116,26 @@ jobs:
           ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
           GH_TOKEN: ${{ github.token }}
 
+      # A page's <title> can vanish while the rest of its head survives: a layout
+      # title and a page title compete for one head slot, and /control shipped for
+      # a day with the homepage's title because the layout's won. The deployed
+      # canary caught it -- after the deploy. Catch it here, before.
+      - name: Every route kept its own title
+        # `working-directory: site` is this job's default, so no `cd`.
+        run: |
+          fail=0
+          check() { # file  expected-substring
+            got=$(grep -o '<title>[^<]*' "build/$1" | head -1)
+            case "$got" in
+              *"$2"*) echo "ok   $1 -> $got" ;;
+              *) echo "::error::build/$1 has title \"$got\", expected one containing \"$2\""; fail=1 ;;
+            esac
+          }
+          check index.html     'Atlas, pure Rust inference'
+          check control.html   'Control plane'
+          check diligence.html 'Verification steps'
+          exit "$fail"
+
       - name: Upload site artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

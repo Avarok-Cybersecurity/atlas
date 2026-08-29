@@ -20,6 +20,10 @@
   import LaunchDialog from '$lib/components/LaunchDialog.svelte';
 </script>
 
+<svelte:head>
+  <title>Atlas, pure Rust inference for DGX Spark</title>
+</svelte:head>
+
 <Nav />
 <AnnouncementBanner />
 <Hero />

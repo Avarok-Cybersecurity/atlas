@@ -13,7 +13,7 @@ import {
 
 test('an ordinary invitation renders one pasteable line', () => {
   const cmd = joinCommand({ code: '12345678', addresses: ['10.10.10.1'] });
-  expect(cmd).toContain('--join 12345678@10.10.10.1');
+  expect(cmd).toContain("--join '12345678@10.10.10.1'");
   expect(cmd).toContain('install.sh');
   expect(cmd.split('\n')).toHaveLength(1);
 });
@@ -70,7 +70,7 @@ test('every network the inviter offered reaches the pasted line', () => {
     code: '71673005',
     addresses: ['10.10.10.9', '10.10.10.13', '192.168.68.68']
   });
-  expect(cmd).toContain('--join 71673005@10.10.10.9,10.10.10.13,192.168.68.68');
+  expect(cmd).toContain("--join '71673005@10.10.10.9,10.10.10.13,192.168.68.68'");
 });
 
 test('order is preserved, because it is the inviter\'s link ranking', () => {
@@ -87,7 +87,7 @@ test('loopback never reaches the command, at any position', () => {
     code: '12345678',
     addresses: ['127.0.0.1', '10.0.0.9', '::1', '127.0.1.1']
   });
-  expect(cmd).toContain('--join 12345678@10.0.0.9');
+  expect(cmd).toContain("--join '12345678@10.0.0.9'");
   expect(cmd).not.toContain('127.');
   expect(cmd).not.toContain('::1');
 });
@@ -190,4 +190,13 @@ describe('joinCommandPowerShell', () => {
     const cmd = joinCommandPowerShell({ code: '-abc1234', addresses: ['10.0.0.1'] });
     if (cmd) expect(cmd).toContain("-Join '-abc1234@10.0.0.1'");
   });
+});
+
+// The quoting is not cosmetic: an unquoted bracketed host is a glob, and zsh
+// (macOS's default shell) refuses the line outright with `no matches found`
+// instead of running it. Brackets survive dialableAddresses by design.
+test('a bracketed IPv6 host stays inside quotes, so no shell globs it', () => {
+  const cmd = joinCommand({ code: '12345678', addresses: ['[fe80::1]'] });
+  expect(cmd).toContain("--join '12345678@[fe80::1]'");
+  expect(cmd).not.toMatch(/--join [^']*\[/);
 });

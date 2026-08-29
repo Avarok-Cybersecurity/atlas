@@ -33,7 +33,6 @@
 // mDNS is link-local — it does not cross a router and is off on plenty of
 // managed networks — so without it the page could only reach machines on one
 // broadcast domain. Additive, but the handshake is exact-match by design.
-import { installerUrl } from '../data.js';
 
 export const PROTOCOL_VERSION = 4;
 
@@ -182,19 +181,35 @@ export function describeError(error) {
  * - the PAGE is behind — the browser is holding a cached bundle, and no amount
  *   of updating the agent will fix it. That one is a hard reload.
  *
+ * The remedy is a command, and which command depends on the machine. This
+ * advice is always about the LOOPBACK agent -- `AGENT_URL` is 127.0.0.1 -- so
+ * the machine being advised about is the one the browser is running on, the one
+ * whose OS the page actually knows. It was still handing every visitor
+ * `curl … | sh`, so a Windows operator with a stale agent was told to paste a
+ * line PowerShell cannot parse: precisely the failure the install-command module
+ * was written to end.
+ *
+ * The command is passed IN rather than detected here, so this module stays pure
+ * and, more importantly, so there is one detection path. A second sniff is how
+ * the hero and the control page end up disagreeing about which machine the
+ * visitor is on -- worse than either answer alone.
+ *
  * @param {number} page this bundle's `PROTOCOL_VERSION`
  * @param {number} min the agent's lowest supported version
  * @param {number} max the agent's highest
+ * @param {string} installCommand the install one-liner for THIS visitor's OS,
+ *   from `currentInstall().command`. No default: the caller knows the host and
+ *   this module does not, and guessing is the bug being fixed.
  * @returns {{ok: true} | {ok: false, side: 'agent'|'page', message: string}}
  */
-export function versionAdvice(page, min, max) {
+export function versionAdvice(page, min, max, installCommand) {
   if (!Number.isInteger(page) || !Number.isInteger(min) || !Number.isInteger(max)) {
     // A malformed welcome is not a version mismatch, and guessing which side is
     // behind from a non-number would name a remedy at random.
     return {
       ok: false,
       side: 'agent',
-      message: `The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: curl -fsSL ${installerUrl} | sh`
+      message: `The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: ${installCommand}`
     };
   }
   if (page >= min && page <= max) return { ok: true };
@@ -203,7 +218,7 @@ export function versionAdvice(page, min, max) {
     return {
       ok: false,
       side: 'agent',
-      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: curl -fsSL ${installerUrl} | sh`
+      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: ${installCommand}`
     };
   }
   return {

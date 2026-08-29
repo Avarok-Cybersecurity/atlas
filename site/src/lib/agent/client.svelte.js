@@ -6,6 +6,7 @@
 // is an ordinary state, not an exception. The Run button treats "no agent" as
 // something to explain, not something to fail on.
 
+import { currentInstall } from '$lib/install/host.svelte.js';
 import {
   AGENT_URL,
   PROTOCOL_VERSION,
@@ -171,7 +172,9 @@ export class AgentClient {
       this.message = versionAdvice(
         PROTOCOL_VERSION,
         welcome.protocol_min,
-        welcome.protocol_max
+        welcome.protocol_max,
+        // This agent is on 127.0.0.1, so the visitor's own OS is its OS.
+        currentInstall().command
       ).message;
       return this.#abandon(socket, 'error');
     }
