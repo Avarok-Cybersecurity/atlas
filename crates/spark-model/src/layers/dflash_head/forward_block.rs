@@ -12,6 +12,23 @@ use spark_runtime::gpu::DevicePtr;
 use super::BlockDiffusionDraftHead;
 use crate::layer::ForwardContext;
 
+/// Whether the MAX_M=16 rt2 vocab kernel covers a whole cross-sequence batch.
+///
+/// `g` is the TOTAL row count (`gamma * n_seq`), not the per-sequence one.
+/// Getting that wrong does not fault: `fp8_gemv_rowscale_batch16_rt2` writes
+/// the rows it was told about and leaves the rest of `scratch.logits` holding
+/// the PREVIOUS propose's values — already destructively masked to -1e30 by
+/// `dflash2_topk16`. Bands 1..n then select from garbage, which reads as a
+/// drafter that has stopped guessing well rather than as a kernel used out of
+/// contract. The sibling branch below this one records the same failure
+/// measured on the projections: accept 73% -> 24% at C=8.
+///
+/// Single-sequence is unaffected either way (`g == gamma` at n_seq = 1), which
+/// is why this survived: every single-stream measurement of it was correct.
+pub(super) fn rt2_16_covers_the_batch(g: u32) -> bool {
+    (1..=16).contains(&g)
+}
+
 impl BlockDiffusionDraftHead {
     /// `option_b`: when `Some((block_table_dev, ctx_count))`, run the
     /// Phase 2 γ-only paged-attention path. ctx K/V is precomputed into
@@ -637,7 +654,7 @@ impl BlockDiffusionDraftHead {
                             stream,
                         )?;
                     } else if self.kernels.fp8_gemv_rt2_16.0 != 0
-                        && self.gamma as u32 <= 16
+                        && rt2_16_covers_the_batch(g)
                         && h_local.is_multiple_of(16)
                         && super::fp8_rt_enabled()
                     {
@@ -652,7 +669,7 @@ impl BlockDiffusionDraftHead {
                             norm_noise_local,
                             fp8,
                             self.scratch.logits,
-                            self.gamma as u32,
+                            g,
                             self.vocab_size as u32,
                             h_local,
                             stream,
@@ -1214,5 +1231,39 @@ impl BlockDiffusionDraftHead {
         }
         let _ = g; // suppress unused
         Ok(drafts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rt2_16_covers_the_batch;
+
+    /// The regression: the guard tested `self.gamma` while the kernel was
+    /// handed `self.gamma`, so the two agreed with each other and disagreed
+    /// with reality. At n_seq >= 2 the batch is `gamma * n_seq` rows and the
+    /// rt2 kernel covered only the first band; the rest kept the previous
+    /// propose's logits, already masked to -1e30 by `dflash2_topk16`.
+    ///
+    /// `fp8_gemv_rowscale_batch16_rt2` does `ensure!((1..=16).contains(&m))`,
+    /// which could never fire: it was being passed the same wrong value the
+    /// guard checked. The decision has to be made on the TOTAL.
+    #[test]
+    fn the_rt2_vocab_kernel_is_only_eligible_for_batches_it_covers() {
+        // Single sequence: unchanged at every gamma the validator allows.
+        for gamma in 1..=16u32 {
+            assert!(rt2_16_covers_the_batch(gamma), "n_seq=1, gamma={gamma}");
+        }
+        // Two sequences at the measured optimum gamma 10 is 20 rows — four
+        // past the tile. This is the case that silently produced garbage.
+        assert!(!rt2_16_covers_the_batch(10 * 2));
+        // The boundary itself, from both sides.
+        assert!(rt2_16_covers_the_batch(16));
+        assert!(!rt2_16_covers_the_batch(17));
+        // Zero rows is not a batch the kernel covers either — the `1..=`
+        // lower bound mirrors the callee's own `ensure!`.
+        assert!(!rt2_16_covers_the_batch(0));
+        // C=8 at gamma 8, the configuration whose accept collapse (73% -> 24%)
+        // the sibling branch records.
+        assert!(!rt2_16_covers_the_batch(8 * 8));
     }
 }
