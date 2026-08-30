@@ -278,7 +278,7 @@ ATLAS_WYN_INSTANTIATE(16)
 // With wyn covering K=5..16, these twins give the Qwen3.8 DFlash target
 // (gamma <= 16) full FP16 coverage and roughly halve the gamma-sized
 // verify blobs behind the ~49 GB pool intercept measured there.
-// `inter_stride_halfs` is the pool pitch in HALF elements (h pitch bytes/2).
+// `inter_stride_halves` is the pool pitch in HALF elements (h pitch bytes/2).
 // provenance-id: 526f6e616c6420522e205374657369616b
 
 template <int K_TOKENS>
@@ -291,7 +291,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
     const float* __restrict__ beta,
     __nv_bfloat16* __restrict__ output,
     __half* __restrict__ h_state_inter_base,
-    unsigned int inter_stride_halfs,
+    unsigned int inter_stride_halves,
     unsigned int batch_size,
     unsigned int num_k_heads,
     unsigned int num_v_heads,
@@ -413,7 +413,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
                 h2 = __half2float(gdn_f16_store(h2));
                 h3 = __half2float(gdn_f16_store(h3));
                 if (t < K_TOKENS - 1) {
-                    __half* Hi_t = Hi_base + (unsigned long long)t * inter_stride_halfs;
+                    __half* Hi_t = Hi_base + (unsigned long long)t * inter_stride_halves;
                     Hi_t[(j + 0) * v_dim + tid] = gdn_f16_store(h0);
                     Hi_t[(j + 1) * v_dim + tid] = gdn_f16_store(h1);
                     Hi_t[(j + 2) * v_dim + tid] = gdn_f16_store(h2);
@@ -448,7 +448,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
         const float* __restrict__ beta,                                       \
         __nv_bfloat16* __restrict__ output,                                   \
         __half* __restrict__ h_state_inter_base,                              \
-        unsigned int inter_stride_halfs,                                      \
+        unsigned int inter_stride_halves,                                      \
         unsigned int batch_size,                                              \
         unsigned int num_k_heads,                                             \
         unsigned int num_v_heads,                                             \
@@ -460,7 +460,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
     ) {                                                                       \
         gated_delta_rule_wyn_f16_impl<K>(                                     \
             h_state, query, key, value, gate, beta, output,                   \
-            h_state_inter_base, inter_stride_halfs, batch_size,               \
+            h_state_inter_base, inter_stride_halves, batch_size,               \
             num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
             gb_stride);                                                       \
     }
