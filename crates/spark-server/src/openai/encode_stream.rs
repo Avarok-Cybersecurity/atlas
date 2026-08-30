@@ -139,7 +139,7 @@ fn wire_usage(u: &crate::ir::Usage) -> Usage {
         expert_activation: u
             .expert_activation
             .as_deref()
-            .map(super::encode::encode_expert_activation),
+            .map(super::encode_expert_activation),
     }
 }
 

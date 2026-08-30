@@ -405,6 +405,7 @@ impl MoeLayer {
             ctx,
             indices_dev,
             weights_dev,
+            0,
             n as usize,
             top_k as usize,
             stream,

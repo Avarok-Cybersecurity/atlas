@@ -153,6 +153,18 @@ impl MoeLayer {
             if t == num_tokens - 1 {
                 super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, 1, top_k)?;
             }
+            // Per-request expert telemetry. This path routes ONE token per
+            // iteration, so `t` is that token's row in the pass — the prefill
+            // drain reads rows 0..n and needs each in its own slot.
+            self.stage_expert_telemetry(
+                ctx,
+                indices_dev,
+                weights_dev,
+                t,
+                1,
+                top_k as usize,
+                stream,
+            )?;
 
             let shared_out = ctx.buffers.attn_output();
             if let (Some(gp), Some(up), Some(dp), Some(shared)) = (

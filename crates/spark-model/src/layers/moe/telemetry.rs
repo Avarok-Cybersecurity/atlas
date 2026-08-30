@@ -120,12 +120,19 @@ impl ExpertTelemetryStaging {
     /// `indices_dev` / `weights_dev` are the router's `[n * top_k]` outputs,
     /// already written on `stream`. The copy is issued on the same stream so
     /// it is ordered after the top-k kernel, and is capture-legal.
+    #[allow(clippy::too_many_arguments)]
     pub fn stage(
         &self,
         gpu: &dyn GpuBackend,
         layer_idx: usize,
         indices_dev: DevicePtr,
         weights_dev: DevicePtr,
+        // First staging row these `n` rows belong to. The grouped prefill
+        // paths route a whole chunk at once and pass 0; the per-token path
+        // (`forward_batched`, taken for prefills of <= 64 tokens) routes one
+        // token per iteration and passes its loop index, which is that
+        // token's position in the pass.
+        row_offset: usize,
         n: usize,
         top_k: usize,
         stream: u64,
@@ -144,12 +151,16 @@ impl ExpertTelemetryStaging {
                 self.num_layers
             );
         }
-        let rows = self.rows_for(n);
+        if row_offset >= self.max_rows {
+            // Past the staging width: the drain reports the shortfall.
+            return Ok(());
+        }
+        let rows = n.min(self.max_rows - row_offset);
         if rows == 0 {
             return Ok(());
         }
         let bytes = rows * top_k * 4;
-        let off = self.layer_offset(layer_idx);
+        let off = self.layer_offset(layer_idx) + row_offset * top_k * 4;
         gpu.copy_d2d_async(indices_dev, self.indices.offset(off), bytes, stream)?;
         gpu.copy_d2d_async(weights_dev, self.weights.offset(off), bytes, stream)?;
         Ok(())
@@ -199,11 +210,13 @@ impl super::MoeLayer {
     /// A response reports the scope it actually measured (see
     /// `ExpertActivationAcc`), so this limit is visible to callers rather
     /// than being read as "the request used only these experts".
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn stage_expert_telemetry(
         &self,
         ctx: &crate::layer::ForwardContext<'_>,
         indices_dev: DevicePtr,
         weights_dev: DevicePtr,
+        row_offset: usize,
         n: usize,
         top_k: usize,
         stream: u64,
@@ -216,6 +229,7 @@ impl super::MoeLayer {
             layer_idx,
             indices_dev,
             weights_dev,
+            row_offset,
             n,
             top_k,
             stream,
