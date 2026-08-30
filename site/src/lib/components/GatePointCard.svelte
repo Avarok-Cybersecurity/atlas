@@ -1,14 +1,39 @@
 <script>
   import { modal } from '$lib/modal.js';
-  // The per-point metadata card ("mini modal"). Every row is a verbatim field
-  // of the gate record — nothing synthesized. Raised by clicking a chart point.
-  import { GH_COMMIT, shortModel, colorFor, fmtDateTime, sampleCount } from '$lib/gates.js';
+  // The per-point metadata card ("mini modal"). Raised by clicking a chart
+  // point.
+  //
+  // A chart point may stand for more than one run: once a series exceeds the
+  // per-chart point budget, adjacent runs are grouped and the chart plots one
+  // of them. Clicking such a point must still reach EVERY run inside it, so
+  // this card takes an array and gives a group one tab per commit. The plotted
+  // run is not privileged over the others — they are all real receipts.
+  import { shortModel, fmtDate } from '$lib/gates.js';
+  import { moveTab } from '$lib/tablist.js';
+  import GateRecordBody from './GateRecordBody.svelte';
 
-  let { record, onclose } = $props();
-  const r = $derived(record);
+  let { records, onclose } = $props();
+
+  // Newest first inside a group: the chart emphasises the latest value, so the
+  // tab that opens should be the one a reader is most likely to be after.
+  let active = $state(0);
+  $effect(() => {
+    records;
+    active = records.length - 1;
+  });
+
+  const r = $derived(records[Math.min(active, records.length - 1)]);
+  const many = $derived(records.length > 1);
 
   function onkeydown(e) {
     if (e.key === 'Escape') { e.stopPropagation(); onclose(); }
+  }
+  function ontabkey(e) {
+    const to = moveTab(e.key, active, records.length);
+    if (to === null) return;
+    e.preventDefault();
+    active = to;
+    e.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[to]?.focus();
   }
 </script>
 
@@ -19,66 +44,44 @@
     class="gpc receipt"
     role="dialog"
     aria-modal="true"
-    aria-label="Gate record {r.git_sha}"
+    aria-label={many
+      ? `Gate records, ${records.length} runs from ${fmtDate(records[0].recorded_at)} to ${fmtDate(records[records.length - 1].recorded_at)}`
+      : `Gate record ${r.git_sha}`}
     use:modal
     onclick={(e) => e.stopPropagation()}
   >
     <div class="receipt-body">
-      <div class="receipt-head">
-        <span class="receipt-title">{r.benchmark_name}</span>
-        <span class="gpc-verdict" data-verdict={r.verdict}>{r.verdict === 'PASS' ? '✓ PASS' : '✗ ' + r.verdict}</span>
+      {#if many}
+        <!-- Roving tabindex: only the active tab is reachable by Tab, so the
+             dialog's focus trap cycles through the tablist as one stop and the
+             arrow keys move within it. -->
+        <div class="gpc-tabs" role="tablist" aria-label="runs grouped into this point">
+          {#each records as rec, i}
+            <button
+              type="button"
+              role="tab"
+              id="gpc-tab-{i}"
+              aria-controls="gpc-panel"
+              aria-selected={i === active}
+              tabindex={i === active ? 0 : -1}
+              class:is-active={i === active}
+              onclick={() => (active = i)}
+              onkeydown={ontabkey}
+            >
+              <span class="gpc-tab-sha">{rec.git_sha.slice(0, 9)}</span>
+              <span class="gpc-tab-date">{fmtDate(rec.recorded_at)}</span>
+              {#if rec.verdict !== 'PASS'}<span class="gpc-tab-fail" aria-label="failed">●</span>{/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <div id="gpc-panel" role={many ? 'tabpanel' : undefined} aria-labelledby={many ? `gpc-tab-${active}` : undefined}>
+        <GateRecordBody record={r} />
       </div>
-
-      <div class="gpc-model-row">
-        <span class="gpc-swatch" style="background:{colorFor(r.target_model)}" aria-hidden="true"></span>
-        <span class="gpc-model">{r.target_model}</span>
-      </div>
-
-      <dl class="gpc-rows">
-        <dt>commit</dt>
-        <dd>
-          <a href="{GH_COMMIT}{r.git_sha}" target="_blank" rel="noopener">{r.git_sha}</a>
-          {#if r.branch}<span class="gpc-branch"> · source {r.branch}</span>{/if}
-          {#if r.generated_ancestry === 'no'}<span class="gpc-branch"> · not in dashboard commit history</span>{/if}
-          {#if r.generated_ancestry === 'unknown'}<span class="gpc-branch"> · commit history unavailable</span>{/if}
-        </dd>
-        <dt>recorded</dt>
-        <dd>{fmtDateTime(r.recorded_at)}</dd>
-        <dt>served by</dt>
-        <dd>{r.served_by}</dd>
-        <dt>box</dt>
-        <dd>{r.hardware?.gpu} · driver {r.hardware?.driver}</dd>
-        <dt>sm clock</dt>
-        <dd>{r.hardware?.sm_clock_mhz} MHz <span class="gpc-fine">({r.hardware?.source})</span></dd>
-        {#if sampleCount(r) !== null}
-          <dt>n</dt>
-          <dd>{sampleCount(r)}</dd>
-        {/if}
-        <dt>atlas</dt>
-        <dd>{r.atlas_version}</dd>
-      </dl>
-
-      <div class="gpc-section">metrics</div>
-      <dl class="gpc-rows">
-        {#each Object.entries(r.metrics ?? {}) as [k, v]}
-          <dt>{k}</dt>
-          <dd>{Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : +(+v).toFixed(2)}</dd>
-        {/each}
-      </dl>
-
-      <div class="gpc-section">verdict · thresholds</div>
-      <p class="gpc-reason">{r.verdict_reason}</p>
-
-      <div class="gpc-section">run parameters (the draw)</div>
-      <dl class="gpc-rows gpc-params">
-        {#each Object.entries(r.params ?? {}) as [k, v]}
-          <dt>{k}</dt>
-          <dd>{v}</dd>
-        {/each}
-      </dl>
 
       <div class="receipt-foot">
-        <span>{shortModel(r.target_model)}</span>
+        <span>{shortModel(r.target_model)}{#if many} · run {active + 1} of {records.length}{/if}</span>
         <button type="button" class="gpc-close" onclick={onclose}>close</button>
       </div>
     </div>
