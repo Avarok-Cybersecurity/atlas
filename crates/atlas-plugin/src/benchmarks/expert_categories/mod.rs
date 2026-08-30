@@ -43,10 +43,13 @@ use crate::http;
 use crate::metadata::PluginMetadata;
 use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
-use crate::result::{BenchmarkResult, Cell, Column, LogLine, ResultTable, RunStatus, Stat};
+use crate::result::{
+    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat,
+};
 
 pub mod aggregate;
 pub mod corpus;
+pub mod eas;
 pub mod report;
 pub mod usage;
 
@@ -94,6 +97,8 @@ pub struct ExpertCategories {
     rows: Vec<corpus::Row>,
     next_row: usize,
     acc: aggregate::Accumulator,
+    eas_permutations: usize,
+    eas_seed: u64,
     started: Option<Instant>,
     probed: bool,
 }
@@ -203,6 +208,27 @@ impl Benchmark for ExpertCategories {
                 ParamValue::Text("all".to_string()),
             ),
             ParamSpec::new(
+                "eas_permutations",
+                "EAS null permutations",
+                "Label permutations used to chance-correct the Expert Alignment Score. The \
+                 correction is what makes 0.00000 mean no alignment rather than \
+                 finite-sample noise; 200 is the conforming minimum, and more only \
+                 tightens the null estimate.",
+                ParamKind::Int { min: 50, max: 2000 },
+                ParamValue::Int(200),
+            ),
+            ParamSpec::new(
+                "eas_seed",
+                "EAS RNG seed",
+                "Seeds the permutation null so the score is reproducible. A number nobody \
+                 else can reproduce is not a standard.",
+                ParamKind::Int {
+                    min: 0,
+                    max: 999_999_999,
+                },
+                ParamValue::Int(20260830),
+            ),
+            ParamSpec::new(
                 "request_timeout_s",
                 "Request timeout",
                 "Seconds before a single request is abandoned. Transport-side only.",
@@ -220,6 +246,8 @@ impl Benchmark for ExpertCategories {
         self.max_tokens = values.usize("max_tokens")?;
         self.selection = corpus::parse_selection(values.text("categories")?);
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.eas_permutations = values.usize("eas_permutations")?;
+        self.eas_seed = values.usize("eas_seed")? as u64;
 
         let all = corpus::load()?;
         self.rows = corpus::draw(&all, self.per_category, &self.selection)?;
@@ -292,12 +320,28 @@ impl Benchmark for ExpertCategories {
             bail!("no category produced any routing — nothing to categorize");
         }
 
+        // EAS: how much of the category label the routing actually explains,
+        // chance-corrected. Computed from the unaggregated per-prompt vectors,
+        // because the null permutes prompt labels.
+        let eas = crate::benchmarks::expert_categories::eas::compute(
+            &self.acc,
+            self.eas_permutations,
+            self.eas_seed,
+        );
+
         let model = handle.target().model.clone();
         let sha = report::corpus_sha256(include_str!(
             "../../../assets/expert-categories/corpus.jsonl"
         ));
         let toml = report::toml_block(&model, &sha, self.max_tokens, &budgets);
-        let stats = report::stats_json(&model, &sha, self.coverage, &self.acc, &budgets);
+        let stats = report::stats_json(
+            &model,
+            &sha,
+            self.coverage,
+            &self.acc,
+            &budgets,
+            eas.as_ref(),
+        );
 
         let dir = handle.artifacts().runs_dir(DESCRIPTOR.id)?;
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -310,6 +354,10 @@ impl Benchmark for ExpertCategories {
 
         let mut metrics = BTreeMap::new();
         metrics.insert("categories".to_string(), budgets.len() as f64);
+        if let Some(e) = eas.as_ref() {
+            metrics.insert("eas".to_string(), e.eas);
+            metrics.insert("eas_count".to_string(), e.eas_count);
+        }
         let mean_experts: f64 =
             budgets.iter().map(report::mean_experts).sum::<f64>() / budgets.len() as f64;
         metrics.insert("mean_experts_per_layer".to_string(), mean_experts);
@@ -319,14 +367,33 @@ impl Benchmark for ExpertCategories {
         }
 
         let num_experts = self.acc.num_experts() as f64;
-        let mut stats_out = vec![
-            Stat::new("Categories", budgets.len().to_string(), ""),
-            Stat::new(
-                "Experts kept per layer (mean)",
-                format!("{mean_experts:.1} of {}", self.acc.num_experts()),
+        let mut stats_out = vec![Stat::new("Categories", budgets.len().to_string(), "")];
+        if let Some(e) = eas.as_ref() {
+            stats_out.push(
+                Stat::new("Expert Alignment Score", format!("{:.5}", e.eas), "EAS-1.0")
+                    .with_style(CellStyle::Good),
+            );
+            stats_out.push(Stat::new(
+                "EAS (selection counts)",
+                format!("{:.5}", e.eas_count),
                 "",
-            ),
-        ];
+            ));
+            if !e.layers_at_chance.is_empty() {
+                // Layers whose routing says nothing about the category are
+                // exactly the layers a category-restricted load should leave
+                // alone, so they belong in the headline, not a footnote.
+                stats_out.push(Stat::new(
+                    "Layers at chance",
+                    format!("{} of {}", e.layers_at_chance.len(), e.per_layer.len()),
+                    "no measurable alignment",
+                ));
+            }
+        }
+        stats_out.extend([Stat::new(
+            "Experts kept per layer (mean)",
+            format!("{mean_experts:.1} of {}", self.acc.num_experts()),
+            "",
+        )]);
         if num_experts > 0.0 {
             stats_out.push(Stat::new(
                 "Routed-expert memory",

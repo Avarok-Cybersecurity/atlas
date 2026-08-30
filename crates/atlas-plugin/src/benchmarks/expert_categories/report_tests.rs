@@ -116,7 +116,7 @@ fn stats_carry_the_full_distribution_not_just_the_budgeted_set() {
     )
     .unwrap();
     let b = a.budgets(0.9);
-    let stats = stats_json("m", "h", 0.9, &a, &b);
+    let stats = stats_json("m", "h", 0.9, &a, &b, None);
 
     let layer0 = &stats["categories"]["code-python"]["layers"]["0"];
     assert_eq!(
@@ -144,7 +144,7 @@ fn stats_report_cross_category_overlap() {
         .unwrap();
     a.feed("sql", &act(vec![(4, 1, 0.5), (6, 1, 0.5)])).unwrap();
     let b = a.budgets(1.0);
-    let stats = stats_json("m", "h", 1.0, &a, &b);
+    let stats = stats_json("m", "h", 1.0, &a, &b, None);
     let j = stats["jaccard_budgeted"]["code-python|sql"]
         .as_f64()
         .unwrap();

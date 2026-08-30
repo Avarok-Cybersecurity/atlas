@@ -68,6 +68,7 @@ pub fn stats_json(
     coverage: f64,
     acc: &Accumulator,
     budgets: &[CategoryBudget],
+    eas: Option<&super::eas::Eas>,
 ) -> serde_json::Value {
     let mut categories = serde_json::Map::new();
     for b in budgets {
@@ -119,10 +120,48 @@ pub fn stats_json(
         }
     }
 
+    // EAS travels with everything needed to reproduce and judge it. A score
+    // quoted without its corpus, its null and its category count is not
+    // comparable to anything — the same discipline a BFCL number needs its
+    // draw fingerprint for.
+    let eas_block = eas.map(|e| {
+        serde_json::json!({
+            "version": "EAS-1.0",
+            "eas": e.eas,
+            "eas_count": e.eas_count,
+            "per_category": e
+                .category_names
+                .iter()
+                .zip(e.per_category.iter())
+                .map(|(n, v)| serde_json::json!({"category": n, "eas": v}))
+                .collect::<Vec<_>>(),
+            "per_layer": e
+                .per_layer
+                .iter()
+                .map(|(l, v)| serde_json::json!({"layer": l, "eas": v}))
+                .collect::<Vec<_>>(),
+            "category_entropy_nats": e.category_entropy,
+            "null": {
+                "permutations": e.permutations,
+                "mean_mi_nats": e.null_mean_mi,
+                "sd_mi_nats": e.null_sd_mi,
+                "layers_at_chance": e.layers_at_chance,
+            },
+            "prompts": e.prompts,
+            "categories": e.category_names.len(),
+            "dead_experts": e.dead_experts,
+            // Stated, not implied: the score is defined against THIS corpus.
+            // Category overlap caps what any model can reach on it, so a
+            // number from another taxonomy is a different measurement.
+            "comparable_across": "models measured on this corpus_sha256; NOT across corpora",
+        })
+    });
+
     serde_json::json!({
         "model": model,
         "corpus_sha256": corpus_sha256,
         "coverage": coverage,
+        "eas": eas_block,
         "top_k": acc.top_k(),
         "num_experts": acc.num_experts(),
         "categories": categories,

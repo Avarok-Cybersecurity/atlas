@@ -27,13 +27,36 @@ type LayerTally = BTreeMap<u32, ExpertTally>;
 /// `(expert_id, count, mass)` — one layer's distribution, flattened.
 pub type ExpertMass = (u32, u32, f64);
 
+/// One prompt's routing, kept unaggregated.
+///
+/// EAS needs this: its null model permutes the prompt-to-category assignment,
+/// which is only possible while the prompts are still separable. Aggregating
+/// on the way in would leave nothing to shuffle, and a token-level null would
+/// destroy the within-prompt correlation that makes the correction honest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptRouting {
+    /// Index into [`Accumulator::category_names`].
+    pub category: usize,
+    /// `(layer, [(expert, count, mass)])` for this one prompt.
+    pub layers: Vec<(usize, Vec<ExpertMass>)>,
+}
+
 /// Per-category, per-layer summed mass and counts.
 #[derive(Debug, Default, Clone)]
 pub struct Accumulator {
     /// `category -> layer -> expert -> (count, mass)`.
+    ///
+    /// A derived view: it is the fold of `prompts`, kept incrementally because
+    /// the live run table asks for the budgets after every prompt and
+    /// re-folding two thousand of them each time would dominate the run. A
+    /// test asserts it equals what re-folding `prompts` produces.
     per_category: BTreeMap<String, BTreeMap<usize, LayerTally>>,
     /// `category -> (prompts folded, token positions routed, unattributed)`.
     totals: BTreeMap<String, CategoryTotals>,
+    /// Every prompt, unaggregated — the input EAS estimates from.
+    prompts: Vec<PromptRouting>,
+    /// Category names in first-seen order; `PromptRouting::category` indexes it.
+    category_names: Vec<String>,
     top_k: u32,
     num_experts: u32,
 }
@@ -90,6 +113,27 @@ impl Accumulator {
             );
         }
 
+        let cat_idx = match self.category_names.iter().position(|c| c == category) {
+            Some(i) => i,
+            None => {
+                self.category_names.push(category.to_string());
+                self.category_names.len() - 1
+            }
+        };
+        self.prompts.push(PromptRouting {
+            category: cat_idx,
+            layers: act
+                .layers
+                .iter()
+                .map(|l| {
+                    (
+                        l.layer,
+                        l.experts.iter().map(|&(e, c, m)| (e, c, m)).collect(),
+                    )
+                })
+                .collect(),
+        });
+
         let cat = self.per_category.entry(category.to_string()).or_default();
         for layer in &act.layers {
             let slot = cat.entry(layer.layer).or_default();
@@ -104,6 +148,16 @@ impl Accumulator {
         t.tokens_routed += act.tokens_routed;
         t.unattributed_rows += act.unattributed_rows;
         Ok(())
+    }
+
+    /// Every prompt's routing, unaggregated — the EAS estimator's input.
+    pub fn prompts(&self) -> &[PromptRouting] {
+        &self.prompts
+    }
+
+    /// Category names, indexed by [`PromptRouting::category`].
+    pub fn category_names(&self) -> &[String] {
+        &self.category_names
     }
 
     /// Categories folded so far, in a stable order.
