@@ -95,13 +95,40 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // FP32-element intermediate stride. Both halves read an FP16 h-state as
     // FP32: fluent garbage, not an error. Applies to plain `f16` as well as
     // `f16-pool`, hence `h_f16`.
-    if h_f16 && args.dflash {
+    // 2026-08-29 (#812): the wyN family now ships FP16 h-state twins for
+    // K=5..16 (gated_delta_rule_wy{5..16}_f16, same module), so DFlash under
+    // the f16 pool is supported for --dflash-gamma <= 16 — the whole reachable
+    // range on block-8-class drafters (Qwen3.8 DFlash2). Above 16 the verify
+    // dispatches gated_delta_rule_wy17, which still has no FP16 twin, and the
+    // runtime backstop would refuse at the first verify step; reject the pair
+    // here in milliseconds instead. Missing-twin builds are also refused at
+    // runtime (hard error, never a silent FP32-over-FP16 fallback).
+    // `dflash_gamma` is an Option here (#650 made the drafter's own
+    // `dflash_config.block_size` the default), so this rejects only an
+    // EXPLICIT over-16 request. An unset gamma resolves from the drafter
+    // checkpoint, which is not readable at validate time — that path is
+    // covered by the runtime backstop, which hard-errors on a missing twin
+    // rather than falling back to FP32-over-FP16.
+    // OFF-BY-ONE, corrected 2026-08-30: #817 wrote `> 16` while its message
+    // claimed "widths 5..16 are covered". The verify width is K = gamma + 1,
+    // so gamma 16 is K=17 — wy17, the one width with no twin — and `> 16`
+    // admitted exactly that case. The runtime backstop would have caught it,
+    // loudly, after a full model load; this catches it in milliseconds. Both
+    // sites now read the same constant instead of a literal.
+    if h_f16
+        && args.dflash
+        && args
+            .dflash_gamma
+            .is_some_and(|g| g > spark_model::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA)
+    {
         v.push(Violation::new(
-            "--dflash together with --ssm-h-dtype f16",
-            "the DFlash verify width (gamma + 1 = 17) dispatches gated_delta_rule_wy17, \
-             which has no FP16 h-state twin and strides the h intermediates in FP32 \
-             elements — an FP32 kernel over an FP16 h-state emits fluent garbage",
-            "drop --dflash, or use --ssm-h-dtype f32",
+            "--dflash with a verify width above the FP16 twin range, together with \
+             --ssm-h-dtype f16",
+            "DFlash verify widths above 16 dispatch gated_delta_rule_wy17, which has \
+             no FP16 h-state twin — an FP32 kernel over an FP16 h-state emits fluent \
+             garbage. Widths 5..16 are covered by the wyN _f16 twins",
+            "use --dflash-gamma <= 15 (verify width 16), drop --dflash, or use \
+             --ssm-h-dtype f32",
         ));
     }
 
@@ -223,13 +250,28 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         && num_drafts > 1
         && !any_spec
     {
-        v.push(Violation::new(
-            format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
-            "the draft count only applies when speculative decoding proposes drafts; \
-             without it the flag is ignored.",
-            "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
-             drop --num-drafts.",
-        ));
+        // --dflash IS a speculative method, but it does not consume
+        // --num-drafts either: the drafter's trained block size (γ) decides
+        // the draft count (`serve_load` forces num_drafts = γ - 1). The flag
+        // is ignored in both arms — what differs is the correct remedy.
+        if args.dflash {
+            v.push(Violation::new(
+                format!("--num-drafts {num_drafts} is ignored under --dflash."),
+                "a DFlash serve drafts at the drafter checkpoint's trained block size \
+                 (γ); the scheduler overrides --num-drafts with γ - 1.",
+                "drop --num-drafts, or use --dflash-gamma to override the drafter's γ \
+                 (block-diffusion drafters are trained at ONE block size — expect \
+                 acceptance collapse away from it).",
+            ));
+        } else {
+            v.push(Violation::new(
+                format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
+                "the draft count only applies when speculative decoding proposes drafts; \
+                 without it the flag is ignored.",
+                "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
+                 drop --num-drafts.",
+            ));
+        }
     }
 
     // ── Thinking budget contradicts disabling thinking. ──

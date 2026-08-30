@@ -52,11 +52,19 @@ pub use record::{
     variant_slug, write_record,
 };
 
-/// The ten benches whose records must pass for the branch to be gated.
+/// The eleven benches whose records must pass for the branch to be gated.
 ///
 /// Agentic webserver, vision and video fidelity, warm and cold TTFT, two BFCL
-/// draws, SSM state poisoning, decode floor, and concurrency sweep. Every id
-/// is a registered benchmark, and registration is tested against this list.
+/// draws, SSM state poisoning, decode floor, and the concurrency sweep in both
+/// its plain and DFlash2 forms. Every id is a registered benchmark, and
+/// registration is tested against this list.
+///
+/// ★ **There are two concurrency entries because one of them speculates.**
+/// `concurrency-sweep` serves a no-drafter recipe and
+/// `concurrency-sweep-dflash2` serves the same ladder with the DFlash2 drafter
+/// armed. Their aggregates are not comparable — speculation moves low-C
+/// throughput by more than any regression either bar is set to catch — so each
+/// carries its own BENCH.toml bounds, exactly like the two BFCL draws below.
 ///
 /// ★ **There are two BFCL entries because there are two draws, and a score from
 /// one is not comparable to a threshold from the other.** The dense 27B is
@@ -68,7 +76,7 @@ pub use record::{
 /// mix — which is exactly what makes crossing them so easy to miss. Each
 /// bench's `BASELINE.json` pins its own model, and a model mismatch is a hard
 /// fail in `check_record`.
-pub const REQUIRED_GATES: [&str; 10] = [
+pub const REQUIRED_GATES: [&str; 11] = [
     coverage::REQUIRED[0].id,
     coverage::REQUIRED[1].id,
     coverage::REQUIRED[2].id,
@@ -79,6 +87,7 @@ pub const REQUIRED_GATES: [&str; 10] = [
     coverage::REQUIRED[7].id,
     coverage::REQUIRED[8].id,
     coverage::REQUIRED[9].id,
+    coverage::REQUIRED[10].id,
 ];
 
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.

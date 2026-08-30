@@ -124,7 +124,18 @@ pub struct AtlasCudaBackend {
     /// (`cutlass.rs:246`) and FlashInfer (`flashinfer.rs:145`) call
     /// `cuMemAlloc_v2` directly rather than through this allocator, so freeing
     /// the ledger cannot invalidate a static that outlives the model.
-    live_allocs: parking_lot::Mutex<std::collections::HashSet<u64>>,
+    /// Keyed by pointer, valued by SIZE and ALLOCATING CALL SITE.
+    ///
+    /// It carried only the pointer until 2026-08-19, which made the ledger
+    /// unable to answer the one question the memory bugs keep asking: what is
+    /// using the GPU? A serve that reports 59.4 GB consumed before the KV
+    /// decision against 21.8 GB of weights has ~37 GB that no log line
+    /// attributes to anyone, and every instance of the size-a-buffer-from-a-
+    /// ceiling bug class found so far (four of them, ~64 GB) had to be located
+    /// by reading allocation code rather than by reading a number. The size is
+    /// free (the caller passes it to `cuMemAlloc_v2` already) and the site is
+    /// free (`#[track_caller]`), so anonymity here was never buying anything.
+    live_allocs: parking_lot::Mutex<std::collections::HashMap<u64, AllocRecord>>,
     /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
@@ -160,7 +171,7 @@ impl AtlasCudaBackend {
         );
 
         Ok(Self {
-            live_allocs: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            live_allocs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
@@ -169,32 +180,53 @@ impl AtlasCudaBackend {
         })
     }
 
-    /// This model's kernel modules, for the paths that need the registry
-    /// directly rather than through `GpuBackend`.
-    pub(crate) fn record_alloc(&self, ptr: crate::gpu::DevicePtr) {
-        self.live_allocs.lock().insert(ptr.0);
-    }
-
-    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
-        self.live_allocs.lock().remove(&ptr.0);
-    }
-
     /// Free every allocation this backend made and nobody released.
     ///
     /// The backstop for allocations no `ModelResource` covers — chiefly the
     /// loaders' fused weights, which are owned by layer structs rather than by
-    /// any pool. Returns how many were reclaimed and their total bytes is not
-    /// tracked (the driver does not report per-pointer size), so the count is
-    /// the diagnostic: a non-zero count after a clean teardown names how many
-    /// allocations have no owner.
+    /// any pool. Returns how many were reclaimed; since 2026-08-19 the ledger
+    /// also carries each one's size and call site, so the sweep can say how
+    /// many BYTES had no owner and name the sites they came from instead of
+    /// only counting them. A non-zero count after a clean teardown is a leak,
+    /// and the log line now points at the code that made it.
     ///
     /// Runs LAST in teardown, after every `ModelResource::release`, so it only
     /// ever sees what those missed — and each `free` here has already been
     /// removed from the ledger by `forget_alloc`, so it cannot double-free.
     pub fn sweep_unreleased(&self) -> usize {
-        let outstanding: Vec<u64> = self.live_allocs.lock().drain().collect();
+        let outstanding: Vec<(u64, AllocRecord)> = self.live_allocs.lock().drain().collect();
         let count = outstanding.len();
-        for raw in outstanding {
+        if count > 0 {
+            let bytes: usize = outstanding.iter().map(|(_, r)| r.bytes).sum();
+            // Aggregate before logging: an unreleased pool is hundreds of
+            // per-layer allocations from ONE site, and hundreds of lines
+            // would bury the site that actually needs fixing.
+            let mut by_site: std::collections::HashMap<String, (usize, usize)> =
+                std::collections::HashMap::new();
+            for (_, r) in &outstanding {
+                let e = by_site
+                    .entry(format!("{}:{}", r.site.file(), r.site.line()))
+                    .or_insert((0, 0));
+                e.0 += r.bytes;
+                e.1 += 1;
+            }
+            let mut rows: Vec<_> = by_site.into_iter().collect();
+            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            let top: Vec<String> = rows
+                .iter()
+                .take(5)
+                .map(|(site, (b, n))| {
+                    format!("{site} ({:.1} MB x{n})", *b as f64 / (1024.0 * 1024.0))
+                })
+                .collect();
+            tracing::warn!(
+                "sweep: {count} allocation(s) totalling {:.2} GB had no owner; \
+                 largest sites: {}",
+                bytes as f64 / 1e9,
+                top.join(", ")
+            );
+        }
+        for (raw, _) in outstanding {
             // Bypass `free`: the ledger is already drained, and a failure here
             // must not abort the rest of the sweep.
             let status = unsafe { cuMemFree_v2(raw) };
@@ -348,6 +380,10 @@ pub fn spawn_oom_watchdog(
         }
     }))
 }
+
+#[path = "cuda_backend/alloc_ledger.rs"]
+mod alloc_ledger;
+use alloc_ledger::AllocRecord;
 
 #[cfg(test)]
 mod tests;

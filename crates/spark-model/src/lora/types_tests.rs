@@ -21,6 +21,7 @@ fn adapter_names_and_slot_resolve() {
         r: 4,
         lora_alpha: 8.0,
         target_modules: vec!["k_proj".into()],
+        target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
         trainable_token_indices: Vec::new(),
@@ -85,6 +86,7 @@ fn slot_generation_bump_freshens_adapter_id() {
         r: 4,
         lora_alpha: 8.0,
         target_modules: vec!["k_proj".into()],
+        target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
         trainable_token_indices: Vec::new(),
@@ -132,6 +134,7 @@ fn ref_count_and_lru_bookkeeping_follow_resolved_slots() {
         r: 4,
         lora_alpha: 8.0,
         target_modules: vec!["k_proj".into()],
+        target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
         trainable_token_indices: Vec::new(),
@@ -204,4 +207,67 @@ fn ref_count_and_lru_bookkeeping_follow_resolved_slots() {
     assert_eq!(lw.acquire_slot(99), -1, "bad slot acquires nothing");
     lw.release_slot(-1); // no-op
     assert_eq!(lw.slot_ref_count(99), 0);
+}
+
+/// An adapter naming a module Atlas cannot apply must REFUSE by default,
+/// rather than apply a fraction of itself and let the user think they got the
+/// whole thing. `in_proj_qkv` is such a module: it feeds the GDN recurrence
+/// and has no delta path.
+///
+/// Pinned because the failure this guards is silent: drop the check and such
+/// an adapter loads, applies its attention and FFN tensors, silently discards
+/// the rest, and presents as "this LoRA is disappointing".
+#[test]
+fn unsupported_target_modules_are_refused_and_name_the_escape_hatch() {
+    let peft = PeftAdapterConfig {
+        r: 32,
+        lora_alpha: 32.0,
+        // `out_proj` was the example here until it became SUPPORTED; the
+        // input-side GDN projections are the ones still without a delta path.
+        target_modules: vec!["down_proj".into(), "o_proj".into(), "in_proj_qkv".into()],
+        target_modules_pattern: None,
+        use_rslora: false,
+        layers_to_transform: None,
+        trainable_token_indices: Vec::new(),
+        modules_to_save: Vec::new(),
+        lora_embedding: false,
+    };
+    // Default (ATLAS_LORA_ALLOW_PARTIAL unset in the test process).
+    let err = crate::lora::env::validate_peft_config(&peft, 64)
+        .expect_err("out_proj is not applicable — the load must refuse");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("REJECT[unsupported-target]"),
+        "wrong reject class: {msg}"
+    );
+    assert!(
+        msg.contains("in_proj_qkv"),
+        "the reject must NAME the offending module: {msg}"
+    );
+    assert!(
+        msg.contains("ATLAS_LORA_ALLOW_PARTIAL"),
+        "the reject must point at the deliberate-partial opt-in: {msg}"
+    );
+    // The supported entries alongside it are not what tripped it.
+    assert!(!msg.contains("'o_proj'"), "o_proj is supported: {msg}");
+}
+
+/// The rank gate is independent of the target gate and must keep firing:
+/// r=32 fits the default 64-wide pool, r=128 does not.
+#[test]
+fn rank_gate_is_independent_of_the_target_gate() {
+    let mk = |r: usize| PeftAdapterConfig {
+        r,
+        lora_alpha: 32.0,
+        target_modules: vec!["q_proj".into()],
+        target_modules_pattern: None,
+        use_rslora: false,
+        layers_to_transform: None,
+        trainable_token_indices: Vec::new(),
+        modules_to_save: Vec::new(),
+        lora_embedding: false,
+    };
+    assert!(crate::lora::env::validate_peft_config(&mk(32), 64).is_ok());
+    let err = crate::lora::env::validate_peft_config(&mk(128), 64).unwrap_err();
+    assert!(format!("{err:#}").contains("REJECT[rank-exceeds-pool]"));
 }

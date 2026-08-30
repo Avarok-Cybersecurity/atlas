@@ -45,7 +45,8 @@ const ITERS: usize = 50;
 /// Weight bytes to cycle through so back-to-back launches miss L2/SLC.
 const COLD_CYCLE_BYTES: usize = 256 << 20;
 const M_SWEEP: &[u32] = &[1, 3, 4, 5, 6, 8];
-const M_MAX: usize = 8;
+const M_WIDE: &[u32] = &[1, 8, 9, 12, 18, 24, 36]; // GEMM-only: batched verify = n seqs × 9 rows
+const M_MAX: usize = 36;
 /// N rows checked against the CPU reference (full N for GPU-GPU bit checks).
 const CPU_CHECK_ROWS: usize = 256;
 
@@ -413,7 +414,7 @@ fn main() -> Result<()> {
         correctness_gate(g, &kernels, a, b0, bs0, c, n, k, &a_host, &b_host, &bs_host)?;
 
         for &(kname, kh, kind) in &kernels {
-            for &m in M_SWEEP {
+            for &m in [M_SWEEP, M_WIDE][matches!(kind, Kind::Gemm | Kind::GemmT) as usize] {
                 if let Kind::Batchm { max_m } = kind
                     && m > max_m
                 {

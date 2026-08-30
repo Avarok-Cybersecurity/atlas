@@ -50,6 +50,10 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
+        // Allocate the ViT scratch on the first image. THE single entry point
+        // for image work — `forward` delegates here — so a text-only serve
+        // never reaches this line and never pays the ~2.2 GB.
+        self.scratch_init(gpu)?;
         let sms2 = self.spatial_merge_size * self.spatial_merge_size;
         let sms = self.spatial_merge_size.max(1);
         let n_img = images.len();
@@ -86,6 +90,7 @@ impl VisionEncoder {
         for (i, (_px, gh, gw)) in images.iter().enumerate() {
             let p = p_i[i];
             let pos_dst = self
+                .scratch()
                 .buf_pos_resampled
                 .offset(p_off[i] * self.hidden_size * 2);
             if pos_interp_on {
@@ -99,8 +104,14 @@ impl VisionEncoder {
                     stream,
                 )?;
             }
-            let cos_dst = self.buf_rope_cos.offset(p_off[i] * self.head_dim * 2);
-            let sin_dst = self.buf_rope_sin.offset(p_off[i] * self.head_dim * 2);
+            let cos_dst = self
+                .scratch()
+                .buf_rope_cos
+                .offset(p_off[i] * self.head_dim * 2);
+            let sin_dst = self
+                .scratch()
+                .buf_rope_sin
+                .offset(p_off[i] * self.head_dim * 2);
             self.build_rope_cossin_into(*gh, *gw, cos_dst, sin_dst, gpu, stream)?;
         }
 
@@ -117,7 +128,7 @@ impl VisionEncoder {
         self.patch_embed_batched(images, &p_off, p_total, gpu, stream)?;
         Self::maybe_dump_buf(
             gpu,
-            self.buf_h1,
+            self.scratch().buf_h1,
             p_total * self.hidden_size,
             "patch_embed",
             stream,
@@ -131,7 +142,7 @@ impl VisionEncoder {
             self.vit_block_batched(blk, p_total, &p_i, &p_off, gpu, stream)?;
             Self::maybe_dump_buf(
                 gpu,
-                self.buf_h1,
+                self.scratch().buf_h1,
                 p_total * self.hidden_size,
                 &format!("block{block_idx:02}"),
                 stream,
@@ -141,12 +152,24 @@ impl VisionEncoder {
             {
                 // snapshot buf_h1 → buf_h2 (out-of-place merger; residual stream
                 // into the next block stays intact), then merge each image's slice.
-                self.gpu_copy_bf16(gpu, self.buf_h1, self.buf_h2, n_h_bytes, stream)?;
+                self.gpu_copy_bf16(
+                    gpu,
+                    self.scratch().buf_h1,
+                    self.scratch().buf_h2,
+                    n_h_bytes,
+                    stream,
+                )?;
                 let ds_region_base = (ds_idx + 1) * mp_total;
                 for (i, (_px, gh, gw)) in images.iter().enumerate() {
-                    let src = self.buf_h2.offset(p_off[i] * self.hidden_size * 2);
+                    let src = self
+                        .scratch()
+                        .buf_h2
+                        .offset(p_off[i] * self.hidden_size * 2);
                     let out_rows = ds_region_base + mp_off[i];
-                    let out_slice = self.buf_out.offset(out_rows * self.out_hidden_size * 2);
+                    let out_slice = self
+                        .scratch()
+                        .buf_out
+                        .offset(out_rows * self.out_hidden_size * 2);
                     self.apply_merger(
                         &self.deepstack[ds_idx],
                         p_i[i],
@@ -172,8 +195,14 @@ impl VisionEncoder {
         let _sec2 = std::time::Instant::now();
         // 4. Final merger per image → packed [0 .. Σmerged_p).
         for (i, (_px, gh, gw)) in images.iter().enumerate() {
-            let src = self.buf_h1.offset(p_off[i] * self.hidden_size * 2);
-            let out_slice = self.buf_out.offset(mp_off[i] * self.out_hidden_size * 2);
+            let src = self
+                .scratch()
+                .buf_h1
+                .offset(p_off[i] * self.hidden_size * 2);
+            let out_slice = self
+                .scratch()
+                .buf_out
+                .offset(mp_off[i] * self.out_hidden_size * 2);
             self.apply_merger(&self.merger, p_i[i], *gh, *gw, src, out_slice, gpu, stream)?;
         }
         if timing {
@@ -189,7 +218,7 @@ impl VisionEncoder {
         let dump_rows = (1 + self.deepstack_indexes.len()) * mp_total;
         Self::maybe_dump_buf(
             gpu,
-            self.buf_out,
+            self.scratch().buf_out,
             dump_rows * self.out_hidden_size,
             "final",
             stream,
@@ -232,7 +261,7 @@ impl VisionEncoder {
                 self.gpu_copy_bf16(
                     gpu,
                     self.pos_embed,
-                    self.buf_pos_resampled,
+                    self.scratch().buf_pos_resampled,
                     p * self.hidden_size * 2,
                     stream,
                 )?;
@@ -242,13 +271,16 @@ impl VisionEncoder {
             for blk in self.blocks.iter() {
                 self.vit_block(blk, p, gpu, stream)?;
             }
-            let out_slice = self.buf_out.offset(mp_off[i] * self.out_hidden_size * 2);
+            let out_slice = self
+                .scratch()
+                .buf_out
+                .offset(mp_off[i] * self.out_hidden_size * 2);
             self.apply_merger(
                 &self.merger,
                 p,
                 *gh,
                 *gw,
-                self.buf_h1,
+                self.scratch().buf_h1,
                 out_slice,
                 gpu,
                 stream,

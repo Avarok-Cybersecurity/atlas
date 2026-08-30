@@ -53,13 +53,40 @@ pub(super) fn ssm_h_fp16_preconditions(args: &cli::ServeArgs, config: &ModelConf
     // the same fluent-garbage failure the `--num-drafts > 3` refusal below
     // exists for. It applies to stage 1/2 f16 as much as to the f16-SIZED
     // pool, which is why it sits above the stage-3 branch.
-    if args.dflash {
+    // NARROWED 2026-08-30. This was a blanket refusal of `--dflash`, written
+    // when the ONLY DFlash verify width was gamma+1 = 17 and wy17 had no FP16
+    // twin. #817 added `gated_delta_rule_wy{5..16}_f16`, so every width up to
+    // K=16 now has one — but #817 updated only the CLI validator and left this
+    // refusal standing, which made its own headline change unreachable: a
+    // `--dflash --ssm-h-dtype f16-pool` serve died here, on #817's branch as
+    // much as on this one. Measured 2026-08-30: three gamma values, three
+    // refusals, zero tokens.
+    //
+    // What is still refused is the width with no twin. K = gamma + 1, so the
+    // last covered gamma is MAX_F16_TWIN_DFLASH_GAMMA (15); gamma 16 reaches
+    // wy17 and must not run under an FP16 pool.
+    //
+    // An UNSET gamma is allowed through: it resolves from the drafter
+    // checkpoint, which is not readable at preflight, and the runtime is
+    // fail-closed for it — a width whose twin handle is zero returns None from
+    // `wyn_kernel`, lands on the sequential fallback, and that fallback bails
+    // under f16 (trait_decode_batched_conv_gdn.rs) rather than reading FP16
+    // bits as FP32. Guessing here would refuse working configurations; the
+    // backstop refuses broken ones.
+    if args.dflash
+        && args
+            .dflash_gamma
+            .is_some_and(|g| g > spark_model::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA)
+    {
         anyhow::bail!(
-            "--ssm-h-dtype f16 is incompatible with --dflash: the DFlash verify width \
-             (gamma + 1 = 17) dispatches gated_delta_rule_wy17, which has no FP16 h-state \
-             twin and strides the h intermediates in FP32 elements. An FP32 kernel over an \
-             FP16 h-state emits fluent garbage rather than an error. Drop --dflash, or use \
-             --ssm-h-dtype f32."
+            "--ssm-h-dtype f16 with --dflash-gamma {} : the verify width is gamma + 1 = {}, \
+             which dispatches gated_delta_rule_wy17 — the one WY family with no FP16 h-state \
+             twin, and the one that strides its h intermediates in FP32 elements. An FP32 \
+             kernel over an FP16 h-state emits fluent garbage rather than an error. Use \
+             --dflash-gamma <= {}, drop --dflash, or use --ssm-h-dtype f32.",
+            args.dflash_gamma.unwrap_or_default(),
+            args.dflash_gamma.unwrap_or_default() + 1,
+            spark_model::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA,
         );
     }
     // STAGE 2 lifted the blanket refusal on `--speculative`: the MTP verify

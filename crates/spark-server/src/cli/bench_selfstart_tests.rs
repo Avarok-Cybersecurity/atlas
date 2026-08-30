@@ -215,8 +215,14 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
     let args = recipe
         .serve_args(&merged)
         .expect("pins render to valid serve args");
+    // 128 since the ladder widened to C=128: the cap must cover the widest
+    // measured rung or that rung measures the cap rather than the engine.
+    // Read from the committed pin above rather than re-typed, so a future
+    // change to the instrument moves this assertion with it instead of
+    // failing it.
     assert_eq!(
-        args.max_batch_size, 32,
+        args.max_batch_size.to_string(),
+        merged["max_batch_size"],
         "the batching pin reached the serve"
     );
     assert_eq!(args.kv_cache_dtype.as_deref(), Some("fp8"));

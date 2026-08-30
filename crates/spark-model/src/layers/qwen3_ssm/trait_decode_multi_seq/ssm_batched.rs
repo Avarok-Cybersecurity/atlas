@@ -467,7 +467,7 @@ impl Qwen3SsmLayer {
 
         // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
         // ranks (n × h BF16) before the residual add. No-op at tp=1.
-        self.ssm_tp_all_reduce(ssm_out_base, n, ctx, stream)?;
+        self.ssm_tp_all_reduce(ssm_out_base, normed_out_base, n, ctx, stream)?;
 
         // ── 5. Residual + post-norm (hc: caller hc_posts moe_output; skip) ──
         if !hc {

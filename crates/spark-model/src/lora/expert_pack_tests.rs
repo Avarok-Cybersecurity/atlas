@@ -67,6 +67,7 @@ fn peft_r(r: usize) -> PeftAdapterConfig {
         r,
         lora_alpha: 2.0 * r as f64, // scale = 2.0 either way (rank-independent)
         target_modules: vec!["gate_proj".into()],
+        target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
         trainable_token_indices: Vec::new(),

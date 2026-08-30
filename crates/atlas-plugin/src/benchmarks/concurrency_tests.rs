@@ -2,6 +2,10 @@
 
 //! Tests for the concurrency sweep: cell layout, fixture selection, the
 //! vacuity floor, and the metrics map future gating reads.
+//!
+//! The run-verdict half lives in `concurrency_verdict_tests.rs` — split for
+//! the 500-LoC cap when the ladder widened to C=128, which roughly doubled
+//! the rung tables both halves assert on.
 
 use super::*;
 
@@ -111,6 +115,29 @@ fn warmup_and_measurement_share_the_complete_prompt_set() {
 
     assert_eq!(warmup_prompts, measured_prompts);
     assert_ne!(b.cell_prompt(512, "warm"), measured_prompts[0]);
+}
+
+/// The property that makes a CONCURRENT warm-up round safe: within one round
+/// every tag is distinct, so no two in-flight warm-up requests target the same
+/// prefix-cache key. If a future plan ever repeated a tag inside a round, the
+/// round would race two inserts on one key and the "warmed" claim would become
+/// timing-dependent — so this is asserted rather than assumed.
+#[test]
+fn a_warmup_round_never_repeats_a_prompt() {
+    for conc in [1usize, 2, 4, 16, 128] {
+        let plan = prompt_plan(conc, 1);
+        for round in &plan.warmup_rounds {
+            let mut seen = std::collections::BTreeSet::new();
+            for tag in round {
+                assert!(
+                    seen.insert(tag.clone()),
+                    "conc {conc}: warm-up round repeats {tag}, so its requests \
+                     would race on one cache key"
+                );
+            }
+            assert_eq!(seen.len(), conc, "conc {conc}: round is not the full set");
+        }
+    }
 }
 
 // ---- fixture selection ------------------------------------------------------
@@ -287,213 +314,4 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
     assert!(!m.contains_key("c1_aggregate_tok_s"));
     assert_eq!(m.get("min_completion_tokens"), Some(&0.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
-}
-
-use super::verdict::{Floors, sweep_verdict};
-use crate::result::VerdictKind;
-
-fn floors(c1: f64, c4: f64, c8: f64, c16: f64, peak: f64) -> Floors {
-    Floors {
-        per_c: vec![(1, c1), (4, c4), (8, c8), (16, c16)],
-        peak,
-    }
-}
-
-fn ladder(entries: &[(&str, f64)]) -> BTreeMap<String, f64> {
-    entries.iter().map(|(k, v)| (k.to_string(), *v)).collect()
-}
-
-fn committed_floors() -> Floors {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("workspace layout");
-    let (_, entry) = crate::gate::bench::load_all(root)
-        .expect("committed BENCH.toml files must load")
-        .into_iter()
-        .find(|(target, entry)| {
-            target.hardware == "gb10"
-                && target.model == "qwen3.8-27b"
-                && entry.checkpoint == "unsloth/Qwen3.8-27B-NVFP4"
-                && entry.gate == "concurrency-sweep"
-        })
-        .expect("the measured Qwen3.8 concurrency gate must be committed");
-    let metrics = entry
-        .metrics
-        .expect("the measured concurrency gate must have bounds");
-    let min = |metric: &str| {
-        metrics[metric]
-            .min
-            .unwrap_or_else(|| panic!("{metric} must have a minimum"))
-    };
-    Floors {
-        per_c: vec![
-            (1, min("c1_aggregate_tok_s")),
-            (4, min("c4_aggregate_tok_s")),
-            (8, min("c8_aggregate_tok_s")),
-            (16, min("c16_aggregate_tok_s")),
-        ],
-        peak: min("peak_aggregate_tok_s"),
-    }
-}
-
-#[test]
-fn a_clean_sweep_that_clears_every_floor_passes() {
-    let m = ladder(&[
-        ("c1_aggregate_tok_s", 25.5),
-        ("c4_aggregate_tok_s", 47.5),
-        ("c8_aggregate_tok_s", 67.6),
-        ("c16_aggregate_tok_s", 98.9),
-        ("peak_aggregate_tok_s", 98.9),
-    ]);
-    let floors = committed_floors();
-    assert_eq!(
-        floors.per_c,
-        vec![(1, 17.0), (4, 35.0), (8, 52.0), (16, 73.5)]
-    );
-    assert_eq!(floors.peak, 73.5);
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors);
-    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
-    for rung in ["C1", "C4", "C8", "C16", "peak"] {
-        assert!(v.reason.contains(rung), "{}", v.reason);
-    }
-}
-
-/// FAIL names the violating cell — and the comparison is the raw value
-/// against the floor, deliberately stricter than gate scoring's
-/// value + noise >= min.
-#[test]
-fn a_sweep_below_one_floor_fails_naming_the_cell() {
-    let committed = committed_floors();
-    let c8_floor = committed.per_c[2].1;
-    let m = ladder(&[
-        ("c1_aggregate_tok_s", 25.5),
-        ("c4_aggregate_tok_s", 47.5),
-        ("c8_aggregate_tok_s", 51.2),
-        ("c16_aggregate_tok_s", 98.9),
-        ("peak_aggregate_tok_s", 98.9),
-    ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &committed);
-    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-    assert!(v.reason.contains("C=8"), "{}", v.reason);
-    assert!(
-        v.reason.contains("51.2") && v.reason.contains("52.0"),
-        "{}",
-        v.reason
-    );
-    // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
-    let m = ladder(&[("c8_aggregate_tok_s", c8_floor)]);
-    let v = sweep_verdict(&m, 1, 0, 0, 0, 80.0, &floors(0.0, 0.0, c8_floor, 0.0, 0.0));
-    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
-}
-
-#[test]
-fn all_floors_zero_keeps_the_info_verdicts() {
-    let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
-    let clean = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &Floors::default());
-    assert_eq!(clean.kind, VerdictKind::Info, "{}", clean.reason);
-    assert!(
-        clean.reason.contains("no request errors"),
-        "{}",
-        clean.reason
-    );
-    let vac = sweep_verdict(&m, 4, 0, 2, 0, 80.0, &Floors::default());
-    assert_eq!(vac.kind, VerdictKind::Info, "{}", vac.reason);
-    assert!(vac.reason.contains("not comparable"), "{}", vac.reason);
-}
-
-/// ★ Vacuous cells can NEVER pass a gating sweep, whatever the numbers say:
-/// the aggregate divides undelivered tokens' wall time into real tokens. This
-/// is the rule the floors cannot override.
-#[test]
-fn vacuous_cells_fail_a_gating_sweep_regardless_of_the_floors() {
-    let m = ladder(&[
-        ("c1_aggregate_tok_s", 999.0),
-        ("c4_aggregate_tok_s", 999.0),
-        ("c8_aggregate_tok_s", 999.0),
-        ("c16_aggregate_tok_s", 999.0),
-        ("peak_aggregate_tok_s", 999.0),
-    ]);
-    let v = sweep_verdict(&m, 4, 0, 1, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
-    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-    assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
-    assert!(v.reason.contains("vacuity floor"), "{}", v.reason);
-}
-
-/// A gated rung the sweep never measured comparably must not pass by
-/// omission: the floor demands the measurement itself.
-#[test]
-fn a_gated_rung_with_no_comparable_cell_fails_as_inconclusive() {
-    // C=16 gated but absent from the metrics (its only cell was excluded).
-    let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 94.0, 0.0));
-    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-    assert!(v.reason.contains("C=16"), "{}", v.reason);
-    assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
-    // Same for the peak floor.
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 0.0, 94.0));
-    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-    assert!(v.reason.contains("peak"), "{}", v.reason);
-}
-
-#[test]
-fn request_errors_fail_the_sweep_in_both_modes() {
-    let m = ladder(&[("c1_aggregate_tok_s", 999.0)]);
-    for f in [Floors::default(), floors(24.0, 43.0, 63.0, 94.0, 94.0)] {
-        let v = sweep_verdict(&m, 4, 2, 0, 0, 80.0, &f);
-        assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-        assert!(v.reason.contains("2 request(s) failed"), "{}", v.reason);
-    }
-}
-
-#[test]
-fn an_unobserved_warm_cache_cannot_clear_the_gate() {
-    let m = ladder(&[
-        ("c1_aggregate_tok_s", 999.0),
-        ("c4_aggregate_tok_s", 999.0),
-        ("c8_aggregate_tok_s", 999.0),
-        ("c16_aggregate_tok_s", 999.0),
-        ("peak_aggregate_tok_s", 999.0),
-    ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 1, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
-
-    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
-    assert!(v.reason.contains("cached-prompt fraction"), "{}", v.reason);
-}
-
-/// The descriptor couples each floor param to the metric its BENCH.toml bound
-/// is written on, every param exists in the schema with the documented OFF
-/// default, and `configure` carries the values into the verdict floors.
-#[test]
-fn the_floor_params_are_wired_to_the_gate() {
-    assert_eq!(
-        DESCRIPTOR.threshold_params,
-        [
-            ("min_c1", "c1_aggregate_tok_s"),
-            ("min_c4", "c4_aggregate_tok_s"),
-            ("min_c8", "c8_aggregate_tok_s"),
-            ("min_c16", "c16_aggregate_tok_s"),
-            ("min_peak", "peak_aggregate_tok_s"),
-        ]
-    );
-    let mut b = ConcurrencySweep::default();
-    let specs = b.parameters();
-    for (param, _) in DESCRIPTOR.threshold_params {
-        assert!(
-            specs.iter().any(|s| s.key == *param),
-            "{param} declared but missing from the schema"
-        );
-    }
-    let mut v = ParamValues::defaults(&specs);
-    b.configure(&v).unwrap();
-    assert!(!b.floors.gating(), "defaults must not gate");
-    v.set("min_c8", ParamValue::Float(63.0));
-    v.set("min_peak", ParamValue::Float(94.0));
-    b.configure(&v).unwrap();
-    assert!(b.floors.gating());
-    assert_eq!(
-        b.floors.per_c,
-        vec![(1, 0.0), (4, 0.0), (8, 63.0), (16, 0.0)]
-    );
-    assert_eq!(b.floors.peak, 94.0);
 }

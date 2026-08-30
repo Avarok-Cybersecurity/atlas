@@ -166,6 +166,10 @@
   display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap;
   font-family: var(--font-mono); font-size: 0.7rem; color: var(--t2);
 }
+/* The legend's line swatch. `.gate-panel svg` above sets width:100% for the
+   chart itself, which would stretch an 18px swatch across the whole header —
+   so the size is pinned here rather than left to inherit. */
+.gate-legend-line { width: 18px; height: 8px; flex: none; }
 .gc-grid { stroke: var(--border); stroke-width: 1; }
 .gc-axis { fill: var(--t3); font-family: var(--font-mono); font-size: 11px; }
 .gc-ref { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 6 4; }

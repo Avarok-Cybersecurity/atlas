@@ -26,14 +26,29 @@
 
   const subject = ladder.series.find((s) => s.role === 'subject');
   const baselines = ladder.series.filter((s) => s.role === 'baseline');
-  const plotted = [subject, ...baselines];
+  // `variant`: another configuration of the SUBJECT engine, drawn but never
+  // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
+  // the published claim is Atlas against the best vLLM at each rung, and
+  // letting a second Atlas configuration into that comparison would change
+  // what the headline means rather than adding evidence for it.
+  const variants = ladder.series.filter((s) => s.role === 'variant');
+  const plotted = [subject, ...variants, ...baselines];
 
   const COLOR = {
     atlas: 'var(--accent)',
+    'atlas-dflash2': 'var(--accent)',
     'vllm-mtp': 'var(--t2)',
     'vllm-nospec': 'var(--t3, var(--t2))'
   };
-  const DASH = { atlas: null, 'vllm-mtp': null, 'vllm-nospec': '5 4' };
+  // The DFlash2 variant shares the Atlas hue and is told apart by its dash:
+  // it is the same engine on the same weights, so a second colour would say
+  // "different subject". Same reasoning as gate-variants.js on the dashboard.
+  const DASH = {
+    atlas: null,
+    'atlas-dflash2': '5 4',
+    'vllm-mtp': null,
+    'vllm-nospec': '5 4'
+  };
 
   const cs = ladder.concurrencies;
   const allV = plotted.flatMap((s) => s.rungs.map((r) => r.tok_s));

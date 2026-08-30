@@ -538,6 +538,16 @@ impl TransformerModel {
                         attn_us += dt;
                     }
                 }
+                // DFlash multi-row hidden capture: batched decode advances
+                // EVERY sequence one position per step, so every batch row's
+                // per-layer hidden must reach the capture scratch (row i =
+                // seq i) for the scheduler's per-seq `commit_ctx(.., i)`.
+                // Captured inside the graph region — src (shared hidden
+                // buffer) and dst (scratch) are fixed addresses, so replays
+                // stay correct; a borrowed wider graph writes garbage into
+                // rows n..padded_n, which the scheduler never commits.
+                // No-op unless DFlash is on and this is a capture layer.
+                self.try_dflash_capture_all(layer_idx, padded_n, stream)?;
                 if conc_hsd {
                     let _ = dump_hidden(&format!("after_L{:02}", layer_idx), stream);
                 }
