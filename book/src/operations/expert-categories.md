@@ -30,26 +30,38 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 The response carries `usage.expert_activation`:
 
 ```json
-{ "scope": "prefill", "top_k": 8, "num_experts": 256,
-  "tokens_routed": 800, "unattributed_rows": 0,
+{ "scope": "prefill+decode", "top_k": 8, "num_experts": 256,
+  "tokens_routed": 2760, "unattributed_rows": 0,
+  "decode_tokens_routed": 1880, "decode_unattributed_rows": 0,
   "layers": [ { "layer": 0, "experts": [4, 7, 11], "counts": [1, 1, 2],
                 "mass": [0.09, 0.04, 0.21] } ] }
 ```
 
 `counts` is how many routed token-slots chose each expert; `mass` is the
 summed post-renormalization routing weight, which is what an expert set is
-budgeted on. `scope` says which part of the request the numbers cover —
-`"prefill"` today, since decode rows cannot yet be attributed to a sequence.
-`Σcounts == tokens_routed × top_k` whenever every routed slot carried
-weight, which is the check that separates a quiet prompt from a broken tap.
+budgeted on. `Σcounts == tokens_routed × top_k` whenever every routed slot
+carried weight — the check that separates a quiet prompt from a broken tap.
+
+`scope` says which part of the request the numbers cover.
+`"prefill+decode"` is the whole request; `"prefill"` means the serve could
+only attribute the prompt. `decode_tokens_routed` is how much of
+`tokens_routed` came from generation, and `decode_unattributed_rows` counts
+decode positions that ran WITHOUT being attributed — MTP verify rows, which
+are staged but not folded, because a rejected draft's routing belongs to a
+token that was rolled back. On a speculating serve that number is non-zero
+and tells you coverage is partial; on a non-speculating serve it is 0. Across
+tool-loop turns a merge keeps the weaker scope, so a restarted serve cannot
+launder partial coverage into a full-coverage claim.
 
 The field defaults off and is absent unless asked for, so a consumer can
 tell "this serve is not instrumented" from "this prompt used no experts".
 Asking for it on a serve without `--expert-telemetry`, or on a dense
 checkpoint, is a 400 naming which of the two is missing.
 
-The `expert-categories` benchmark does this over a corpus of 320 short
-prompts in 10 categories and reduces the result to a table:
+The `expert-categories` benchmark does this over a committed corpus of 2000
+short prompts across 20 categories — 100 each, equal counts because EAS
+normalizes by the corpus's category entropy — and reduces the result to a
+table:
 
 ```bash
 spark benchmark run expert-categories --url http://localhost:8000 \
@@ -69,6 +81,38 @@ of the routing mass (default 0.90). Mass, not how often an expert was
 chosen: an expert picked in every token at weight 0.02 contributes less than
 one picked in a tenth of them at weight 0.5.
 
+## The Expert Alignment Score
+
+The same run reports **EAS-1.0**: how much of the uncertainty about which
+category a prompt came from is resolved by watching which experts its tokens
+routed to. 1.0 means expert identity determines the category; 0.0 means
+routing says nothing about it.
+
+Per layer it takes each category's KL divergence from the pooled expert
+marginal — which averages to exactly the mutual information `I(C;E)`, so
+"score each category then average" and "compute the mutual information" are
+the same operation. It is then chance-corrected by a permutation null
+subtracted from both numerator and denominator, because plug-in mutual
+information over 256 experts is biased upward and an uncorrected ratio could
+never reach the 0.0 floor it claims. The shuffle is at prompt level: tokens
+within a prompt reuse experts, and shuffling tokens would understate the null
+and flatter the score.
+
+Scores are comparable across models **on one frozen corpus** and not across
+corpora — the category taxonomy sets the ceiling, so the corpus hash is part
+of the number's identity. Read EAS next to a quality delta, never alone: a
+model whose experts perfectly encoded twenty arbitrary categories would score
+1.0 and would probably be a worse language model, so the target is the best
+EAS at no quality cost, not the highest EAS.
+
+Measured on Qwen3.6-35B-A3B-FP8 (10 categories, prefill only): **EAS
+0.17886**, every layer clearing the null. The per-layer curve is the useful
+part — 0.06 at layers 0-2, peaking at 0.277 around layer 20, back to 0.09 by
+layer 39. Routing is category-agnostic at both ends of the model. That is
+both an argument for per-layer coverage budgets instead of one global
+threshold, and a plain explanation of the quality cost below: at 0.18, most
+routing is not about the category at all.
+
 ## Step 2 — Boot-time expert loading
 
 Paste the emitted block into the model's `kernels/<hw>/<model>/MODEL.toml`
@@ -83,6 +127,18 @@ Then serve from one category:
 ```bash
 spark serve Qwen/Qwen3.6-35B-A3B-FP8 --expert-category code-python
 ```
+
+A comma-separated list loads the **union** of those categories' experts — a
+request does not announce its category, so serving several means holding what
+any of them needs:
+
+```bash
+spark serve Qwen/Qwen3.6-35B-A3B-FP8 --expert-category code-python,translation,math
+```
+
+Unions are strongly sub-additive: those three need 2645, 2998 and 3198
+experts alone (8841 if disjoint) but 5015 together, 49% of the routed set.
+The boot log reports the union and what each category costs on its own.
 
 Boot reports what it kept:
 
@@ -104,9 +160,27 @@ further: "Traduis en français: The weather is beautiful today." returned
 `Il天气是 beautiful today.` against `Il fait beau aujourd'hui.` from the
 full model.
 
-So this is a memory/quality trade, not a free win. Raise `coverage` and
-re-measure to find a usable operating point, and expect traffic outside the
-category's register to pay the most.
+So this is a memory/quality trade, not a free win. It is also not a cliff you
+have to guess at: at the three-category union above (49% of experts) the same
+French prompt returns `Il fait beau aujourd'hui.` — identical to the full
+model — the Python answer is clean, and even an out-of-union legal prompt
+answers coherently. The usable operating point on this checkpoint is
+somewhere between 26% and 49%, and a coverage or union sweep brackets it.
+
+Published work on the same model family reports the same shape: "Half the
+Experts, All the Code" (arXiv:2607.16721) finds 50% keep statistically tied
+with the base model on Qwen3.6-35B-A3B, and 25% keep needing LoRA plus router
+self-distillation to recover half the gap. A 26% single-category serve is on
+the far side of that knee, which is where our measured corruption sits.
+
+Worth knowing what the failure actually is, because it rules out the obvious
+fix. `norm_topk_prob` is on for this architecture, so masked experts
+contribute nothing to the softmax denominator and the surviving weights still
+sum to 1 — there is no magnitude deficit to rescale away. The damage is
+SUBSTITUTION: when some of a token's true top-8 are absent, top-k backfills
+those slots with experts the router ranked far lower, and hands them the
+absent experts' weight. A confident wrong expert at full strength, which is
+what a corrupted span in otherwise on-task text looks like.
 
 ### What is refused
 
