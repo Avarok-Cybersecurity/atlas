@@ -283,6 +283,34 @@ impl TransformerLayer for Qwen3AttentionLayer {
         Ok(Box::new(crate::layer::AttnLayerState::default()))
     }
 
+    /// Free the QSA indexer carry this sequence lazily attached.
+    ///
+    /// `alloc_state` hands back an EMPTY `AttnLayerState`; the buffers appear
+    /// later, on first use, via `qsa_seq_state`. So the thing to release is
+    /// not what `alloc_state` returned — it is whatever the sequence grew.
+    /// `take()` makes this idempotent and leaves the state in the same shape
+    /// `alloc_state` produced.
+    ///
+    /// A layer with no QSA indexer (plain attention) never populates the
+    /// field, so the `take()` yields `None` and this costs nothing.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        let Some(attn) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(mut st) = attn.qsa.take() else {
+            return Ok(());
+        };
+        let Some(qsa) = self.qsa.as_ref() else {
+            // Buffers exist but the indexer is gone: nothing can size or
+            // free them correctly, and guessing would be worse than saying so.
+            anyhow::bail!("release_state: QSA seq state present but layer has no QSA indexer");
+        };
+        qsa.release_seq_state(&mut st, gpu)
+    }
+
     fn transpose_moe_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,

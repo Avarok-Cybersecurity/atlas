@@ -124,7 +124,13 @@ pub struct AtlasCudaBackend {
     /// (`cutlass.rs:246`) and FlashInfer (`flashinfer.rs:145`) call
     /// `cuMemAlloc_v2` directly rather than through this allocator, so freeing
     /// the ledger cannot invalidate a static that outlives the model.
-    live_allocs: parking_lot::Mutex<std::collections::HashSet<u64>>,
+    /// Pointer -> size. The size is carried because the driver will not report
+    /// it back: without it `sweep_unreleased` can say how MANY allocations had
+    /// no owner but never how much memory they held, and on unified memory
+    /// (where every `cuMemAlloc` consumes host RAM) the bytes are the number
+    /// that matters. Tracking them also lets `free` name what it released, so
+    /// an alloc/free trail can be diffed by pointer to find what accumulates.
+    live_allocs: parking_lot::Mutex<std::collections::HashMap<u64, usize>>,
     /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
@@ -160,7 +166,7 @@ impl AtlasCudaBackend {
         );
 
         Ok(Self {
-            live_allocs: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            live_allocs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
@@ -171,30 +177,54 @@ impl AtlasCudaBackend {
 
     /// This model's kernel modules, for the paths that need the registry
     /// directly rather than through `GpuBackend`.
-    pub(crate) fn record_alloc(&self, ptr: crate::gpu::DevicePtr) {
-        self.live_allocs.lock().insert(ptr.0);
+    pub(crate) fn record_alloc(&self, ptr: crate::gpu::DevicePtr, bytes: usize) {
+        self.live_allocs.lock().insert(ptr.0, bytes);
     }
 
-    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
-        self.live_allocs.lock().remove(&ptr.0);
+    /// Drop `ptr` from the ledger, returning the size it was recorded with.
+    ///
+    /// `None` means the pointer was not on the ledger — a double free, or an
+    /// allocation that bypassed this allocator (CUTLASS and FlashInfer call
+    /// `cuMemAlloc_v2` directly). Callers use the size only for tracing, so
+    /// `None` is not an error.
+    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) -> Option<usize> {
+        self.live_allocs.lock().remove(&ptr.0)
+    }
+
+    /// Live allocation count and total bytes currently on the ledger.
+    ///
+    /// The running total is what makes a slow device-side leak visible: RSS
+    /// does not show CUDA allocations on unified memory and `nvidia-smi`
+    /// reports N/A there, so without this the only symptom is the host running
+    /// out of RAM with no process to blame.
+    pub fn live_bytes(&self) -> (usize, u64) {
+        let g = self.live_allocs.lock();
+        (g.len(), g.values().map(|b| *b as u64).sum())
     }
 
     /// Free every allocation this backend made and nobody released.
     ///
     /// The backstop for allocations no `ModelResource` covers — chiefly the
     /// loaders' fused weights, which are owned by layer structs rather than by
-    /// any pool. Returns how many were reclaimed and their total bytes is not
-    /// tracked (the driver does not report per-pointer size), so the count is
-    /// the diagnostic: a non-zero count after a clean teardown names how many
-    /// allocations have no owner.
+    /// any pool. Returns how many were reclaimed; their total bytes is logged
+    /// alongside, since the ledger now carries per-pointer sizes. A non-zero
+    /// count after a clean teardown names how many allocations have no owner,
+    /// and the bytes say whether that matters.
     ///
     /// Runs LAST in teardown, after every `ModelResource::release`, so it only
     /// ever sees what those missed — and each `free` here has already been
     /// removed from the ledger by `forget_alloc`, so it cannot double-free.
     pub fn sweep_unreleased(&self) -> usize {
-        let outstanding: Vec<u64> = self.live_allocs.lock().drain().collect();
+        let outstanding: Vec<(u64, usize)> = self.live_allocs.lock().drain().collect();
         let count = outstanding.len();
-        for raw in outstanding {
+        let bytes: u64 = outstanding.iter().map(|(_, b)| *b as u64).sum();
+        if count > 0 {
+            tracing::warn!(
+                "sweep: {count} unreleased allocations totalling {:.2} GB",
+                bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
+        for (raw, _) in outstanding {
             // Bypass `free`: the ledger is already drained, and a failure here
             // must not abort the rest of the sweep.
             let status = unsafe { cuMemFree_v2(raw) };
