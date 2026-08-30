@@ -257,6 +257,12 @@ pub struct TransformerModel {
     /// makes block ownership unambiguous (blocks are owned here XOR by a live
     /// sequence). `None` when the feature is off or nothing has been carried.
     pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
+    /// DFlash whole-state carry (see `model::dflash_carry`): the previous
+    /// turn's ENTIRE `DflashProposerState`, so a warm turn adopts real ctx
+    /// hiddens + precomputed ctx KV for the shared prefix instead of
+    /// conditioning on zeros and precomputing over them. Same single-slot
+    /// ownership rules as `mtp_carry`.
+    pub(super) dflash_carry: parking_lot::Mutex<Option<super::dflash_carry::CarriedDflashState>>,
     /// Absolute position interval `[lo, hi)` of `mtp_prefill_hidden` rows
     /// written by the CURRENT sequence's prefill chunks. Reset per
     /// `alloc_sequence`, so a warm-turn append can only ever read hiddens this

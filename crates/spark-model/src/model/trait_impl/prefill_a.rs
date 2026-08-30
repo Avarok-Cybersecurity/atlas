@@ -250,6 +250,11 @@ impl TransformerModel {
             (tokens, n, 0usize)
         };
 
+        // DFlash whole-state carry: adopt the previous turn's drafter state
+        // now that the processing window is fixed and before any capture
+        // write lands (`model::dflash_carry`). No-op unless DFlash + carry.
+        self.try_adopt_dflash_carry(seq, tokens, seq_len_start)?;
+
         // ── 2. Embed tokens → [proc_count, H] contiguous ──
         {
             // SAFETY: `proc_count` is not an independent count. Each of the

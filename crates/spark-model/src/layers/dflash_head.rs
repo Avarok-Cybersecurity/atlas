@@ -645,6 +645,12 @@ impl DraftProposer for BlockDiffusionDraftHead {
         Ok(())
     }
 
+    fn free_drafter_kv(&self, blocks: &[u32]) {
+        if !blocks.is_empty() {
+            self.kv_cache.lock().free_blocks(blocks);
+        }
+    }
+
     fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
         // Phase 2 (Option B) reclaim: return the drafter's lazily-allocated
         // paged KV blocks to the pool on request completion. Without this the

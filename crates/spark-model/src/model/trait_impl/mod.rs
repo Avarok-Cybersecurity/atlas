@@ -483,6 +483,14 @@ impl Model for TransformerModel {
             return Ok(());
         }
         let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
+        // Capacity clamp: the accumulator is NOT circular, and an append past
+        // `max_ctx_len` is an out-of-bounds device write. Reachable when a
+        // carried accumulator (`model::dflash_carry`) is smaller than this
+        // request's reach; dropping the append degrades drafter context (the
+        // target verifies every draft), never correctness.
+        if d.ctx_len >= d.max_ctx_len {
+            return Ok(());
+        }
         let save_1 = base.offset(ctx_slot_bytes);
         let dst = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
         self.gpu
@@ -510,6 +518,11 @@ impl Model for TransformerModel {
             return Ok(());
         }
         let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
+        // Capacity clamp — see dflash_decode_append.
+        if d.ctx_len + 2 > d.max_ctx_len {
+            d.skip_next_decode_append = true;
+            return Ok(());
+        }
         let stream = self.gpu.default_stream();
         let pos_row0 = (seq.seq_len as i32).saturating_sub(2);
         let pos_row1 = (seq.seq_len as i32).saturating_sub(1);
@@ -556,6 +569,10 @@ impl Model for TransformerModel {
         let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
         let stream = self.gpu.default_stream();
         for t in 0..=num_accepted {
+            // Capacity clamp — see dflash_decode_append.
+            if d.ctx_len >= d.max_ctx_len {
+                break;
+            }
             let row = base.offset(t * ctx_slot_bytes);
             let dst = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
             self.gpu.copy_d2d_async(row, dst, ctx_slot_bytes, stream)?;
@@ -631,6 +648,10 @@ impl Model for TransformerModel {
         // only until the first slide — and the sliding prompts ARE the reds.
         debug_assert_eq!(d.ctx_positions.len(), d.ctx_len);
         for t in 0..num_committed {
+            // Capacity clamp — see dflash_decode_append.
+            if d.ctx_len >= d.max_ctx_len {
+                break;
+            }
             let row = base.offset(t * ctx_slot_bytes);
             let dst = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
             self.gpu.copy_d2d_async(row, dst, ctx_slot_bytes, stream)?;

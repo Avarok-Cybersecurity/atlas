@@ -337,6 +337,255 @@ impl TransformerModel {
     /// After prefill completes, advance the seq's DFlash `ctx_len` to
     /// `chunk_start + proc_count` so the drafter sees all captured prompt
     /// positions on the first propose() call.
+    /// Warm-turn adopt of the previous turn's whole DFlash proposer state
+    /// (`model::dflash_carry`). Call at prefill chunk 0, AFTER the
+    /// prefix/Marconi decision fixed `proc_start` (the first position this
+    /// prefill will process — the first position the 5-layer capture will
+    /// cover) and BEFORE any capture write, so a successful adopt lets this
+    /// chunk's captures land in the CARRIED accumulator and extend real
+    /// context instead of a zeroed fresh one.
+    ///
+    /// Every bail path frees the carried state (never puts it back): a
+    /// mismatched request self-clears the slot, returning the drafter pool
+    /// blocks before this request's own drafter allocation needs them.
+    /// Failure is always a degrade to today's behavior, never an error.
+    pub(super) fn try_adopt_dflash_carry(
+        &self,
+        seq: &mut crate::traits::SequenceState,
+        tokens: &[u32],
+        proc_start: usize,
+    ) -> Result<()> {
+        use crate::layers::DflashProposerState;
+        if self.dflash_capture_layers.is_empty()
+            || !crate::model::dflash_carry::dflash_carry_enabled()
+            || !self.levers.drafter.carry
+        {
+            return Ok(());
+        }
+        if let Some(ref c) = self.comm
+            && c.rank() != 0
+        {
+            return Ok(());
+        }
+        let Some(ref proposer) = self.proposer else {
+            return Ok(());
+        };
+        let Some(mut entry) = self.dflash_carry.lock().take() else {
+            return Ok(());
+        };
+        let common = entry.common_prefix_len(tokens);
+        // The fresh state's capacity was sized for THIS request's reach; the
+        // carried accumulator was sized for the PREVIOUS one. Adopting a
+        // smaller accumulator would fail-fast on ctx append late in decode,
+        // so require at least the fresh capacity.
+        let fresh_cap = seq
+            .proposer_state
+            .as_mut()
+            .and_then(|ps| {
+                ps.as_any_mut()
+                    .downcast_mut::<DflashProposerState>()
+                    .map(|d| d.max_ctx_len)
+            })
+            .unwrap_or(usize::MAX);
+        let refuse: Option<&'static str> = (|| {
+            let Some(d) = entry
+                .state
+                .as_any_mut()
+                .downcast_mut::<DflashProposerState>()
+            else {
+                return Some("carried state is not a DFlash state");
+            };
+            // The trim equates ctx SLOT index with TOKEN position, which only
+            // holds over the accumulator's leading prompt-aligned run
+            // (positions == identity). A mid-turn window slide (serial-append
+            // watermark) or a reordered append breaks the equality from some
+            // slot on — trimming past that point would keep slots holding
+            // LATER positions under an earlier index. Use the identity run as
+            // the trim ceiling: a slid state's run is 0 and falls to the
+            // floor refusal below.
+            if d.ctx_positions.len() != d.ctx_len {
+                return Some("ctx positions out of sync with ctx_len");
+            }
+            let aligned = d
+                .ctx_positions
+                .iter()
+                .enumerate()
+                .take_while(|(i, p)| **p == *i as i32)
+                .count();
+            let trim = common.min(aligned);
+            if trim < crate::model::dflash_carry::dflash_carry_min_ctx() {
+                return Some("common prefix below the carry floor");
+            }
+            if trim < proc_start {
+                // Rows [trim..proc_start) were neither carried nor will they
+                // be captured — adopting would re-create the zero-row hole.
+                return Some("coverage gap between carried ctx and this prefill");
+            }
+            // The carried accumulator only has to fit the PROMPT (plus a
+            // small margin for the first verify block): decode-time ctx
+            // appends clamp at capacity (dflash_decode_append & friends) and
+            // the serial path slides its window, so a conversation that
+            // outgrows the carried allocation degrades drafter context late
+            // in the turn instead of overflowing. Requiring the fresh
+            // state's full reach here refused EVERY growing conversation —
+            // the exact traffic the carry exists for.
+            if d.max_ctx_len < tokens.len() + 32 {
+                return Some("carried accumulator smaller than this prompt");
+            }
+            let _ = fresh_cap;
+            // Trim to the verified common prefix. KV slots at or beyond
+            // `ctx_committed` are recomputed from the accumulator before any
+            // read (`precompute_ctx_kv` covers [ctx_committed..ctx_len)), and
+            // per-slot positions below the trim were stamped at insert and
+            // stay valid.
+            d.ctx_len = trim;
+            d.ctx_positions.truncate(trim);
+            d.ctx_committed = d.ctx_committed.min(trim);
+            d.ctx_count_drafter = d.ctx_count_drafter.min(trim);
+            d.seq_len = d.seq_len.min(trim);
+            d.last_num_accepted = 0;
+            d.last_num_drafted = 0;
+            d.skip_next_decode_append = false;
+            d.prefill_done = false;
+            None
+        })();
+        if let Some(why) = refuse {
+            let carried_ctx = entry
+                .state
+                .as_any_mut()
+                .downcast_mut::<DflashProposerState>()
+                .map(|d| (d.ctx_len, d.max_ctx_len))
+                .unwrap_or((0, 0));
+            tracing::debug!(
+                "DFLASH_CARRY adopt refused ({why}): common={common} proc_start={proc_start} \
+                 prompt={} carried_ctx={} carried_cap={}",
+                tokens.len(),
+                carried_ctx.0,
+                carried_ctx.1,
+            );
+            proposer.free_state(self.gpu.as_ref(), entry.state.as_mut())?;
+            return Ok(());
+        }
+        // ── Accumulator growth (the growing-conversation case) ──
+        // The carried accumulator was sized for the PREVIOUS request's
+        // reach. Adopting it undersized made the serial-append watermark
+        // SLIDE mid-turn once ctx hit its cap — losing the prompt-aligned
+        // prefix and refusing the NEXT turn's adopt (measured: adopt
+        // alternated turns). The fresh state this sequence just allocated
+        // holds a right-sized, zeroed accumulator: copy the trimmed rows
+        // into it and exchange accumulators, so the adopted state has this
+        // request's capacity and the fresh state (freed below) takes the
+        // small one down with it. The carried PAGED ctx KV is dropped on
+        // growth — its device block table is capacity-sized from the old
+        // max, so keeping it would overflow on growth; first propose
+        // re-allocates at the new size and re-precomputes over the trimmed
+        // REAL rows (chunked by ctx_window), which costs what today's warm
+        // turn already pays — the accept-quality win stays.
+        if let Some(mut fresh) = seq.proposer_state.take() {
+            let grew = {
+                let (Some(c), Some(f)) = (
+                    entry
+                        .state
+                        .as_any_mut()
+                        .downcast_mut::<DflashProposerState>(),
+                    fresh.as_any_mut().downcast_mut::<DflashProposerState>(),
+                ) else {
+                    // Non-DFlash fresh state cannot happen on a DFlash serve;
+                    // restore and bail rather than risk mismatched frees.
+                    seq.proposer_state = Some(fresh);
+                    proposer.free_state(self.gpu.as_ref(), entry.state.as_mut())?;
+                    return Ok(());
+                };
+                if c.max_ctx_len < f.max_ctx_len
+                    && f.ctx_hidden_acc.0 != 0
+                    && c.ctx_hidden_acc.0 != 0
+                {
+                    let stream = self.gpu.default_stream();
+                    self.gpu.copy_d2d_async(
+                        c.ctx_hidden_acc,
+                        f.ctx_hidden_acc,
+                        c.ctx_len * c.ctx_slot_bytes,
+                        stream,
+                    )?;
+                    // The copy READS the small accumulator, which the
+                    // `free_state(fresh)` below frees — drain the stream so
+                    // the free cannot race the read. Once per adopt.
+                    self.gpu.synchronize(stream)?;
+                    std::mem::swap(&mut c.ctx_hidden_acc, &mut f.ctx_hidden_acc);
+                    std::mem::swap(&mut c.max_ctx_len, &mut f.max_ctx_len);
+                    // KV-PRESERVING growth: the paged ctx KV itself lives in
+                    // pool blocks that never move — only the DEVICE block
+                    // table was capacity-sized from the old max_ctx_len
+                    // (propose derives `max_blocks` from the CURRENT max, so
+                    // a grown max would overflow the old table on the next
+                    // incremental grab). Re-allocate the table at the new
+                    // capacity and re-upload the host-side table (the source
+                    // of truth, a few hundred bytes); the committed
+                    // watermark and every precomputed K/V slot survive, so a
+                    // growth-turn adopt keeps the same ~0.17 s precompute
+                    // saving as a non-growth one. `+17` covers the widest
+                    // gamma the pools ever size for (`gamma + 1 <= 17`,
+                    // matching propose's `max_ctx_len + gamma + 1` bound;
+                    // the head's own gamma is not reachable from here).
+                    // An allocation failure falls back to dropping the KV —
+                    // the accumulator rows above are still the carry.
+                    if let Some(old_bt) = c.block_table_dev.take() {
+                        const BLOCK_SIZE: usize = 16;
+                        let new_max_blocks = (c.max_ctx_len + 17).div_ceil(BLOCK_SIZE);
+                        match self.gpu.alloc(new_max_blocks * std::mem::size_of::<u32>()) {
+                            Ok(new_bt) => {
+                                if !c.block_table.is_empty() {
+                                    let bytes: Vec<u8> = c
+                                        .block_table
+                                        .iter()
+                                        .flat_map(|b| b.to_le_bytes())
+                                        .collect();
+                                    self.gpu.copy_h2d(&bytes, new_bt)?;
+                                }
+                                c.block_table_dev = Some(new_bt);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "DFLASH_CARRY: block-table realloc failed ({e:#}); \
+                                     dropping carried paged KV (accumulator rows kept)"
+                                );
+                                let blocks = std::mem::take(&mut c.block_table);
+                                proposer.free_drafter_kv(&blocks);
+                                c.max_ctx_count_drafter = 0;
+                                c.ctx_count_drafter = 0;
+                                c.ctx_committed = 0;
+                                c.seq_len = 0;
+                            }
+                        }
+                        self.gpu.free(old_bt)?;
+                    }
+                    true
+                } else {
+                    false
+                }
+            };
+            proposer.free_state(self.gpu.as_ref(), fresh.as_mut())?;
+            if grew {
+                tracing::debug!("DFLASH_CARRY grew accumulator to this request's reach");
+            }
+        }
+        let adopted_ctx = entry
+            .state
+            .as_any_mut()
+            .downcast_mut::<DflashProposerState>()
+            .map(|d| (d.ctx_len, d.ctx_committed))
+            .unwrap_or((0, 0));
+        seq.proposer_state = Some(entry.state);
+        tracing::info!(
+            "DFLASH_CARRY adopted: ctx={} (committed {}) of prompt={} — capture resumes at {}",
+            adopted_ctx.0,
+            adopted_ctx.1,
+            tokens.len(),
+            proc_start,
+        );
+        Ok(())
+    }
+
     pub(super) fn update_dflash_ctx_len_after_prefill(
         &self,
         seq: &mut crate::traits::SequenceState,

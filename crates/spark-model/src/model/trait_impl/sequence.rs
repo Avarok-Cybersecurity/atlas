@@ -248,6 +248,50 @@ impl TransformerModel {
             }
         }
 
+        // DFlash whole-state carry (`model::dflash_carry`): hand the ENTIRE
+        // proposer state to the single carry slot BEFORE `free_state`. The
+        // next warm turn adopts real ctx hiddens + precomputed ctx KV for
+        // the shared prefix instead of conditioning on zeros (the measured
+        // 0/7-accept warm opening) and re-precomputing over them (~0.41 s of
+        // warm TTFT). `take()` empties `seq.proposer_state`, so the MTP
+        // branch and `free_state` below see None and do nothing — the state
+        // is owned by the slot XOR by a live sequence, never both.
+        if crate::model::dflash_carry::dflash_carry_enabled()
+            && self.levers.drafter.carry
+            && let Some(ref proposer) = self.proposer
+            && !seq.tokens.is_empty()
+            && seq
+                .proposer_state
+                .as_mut()
+                .and_then(|ps| {
+                    ps.as_any_mut()
+                        .downcast_mut::<crate::layers::DflashProposerState>()
+                        .map(|d| d.ctx_len)
+                })
+                .unwrap_or(0)
+                >= crate::model::dflash_carry::dflash_carry_min_ctx()
+            && let Some(mut state) = seq.proposer_state.take()
+        {
+            let stored_ctx = state
+                .as_any_mut()
+                .downcast_mut::<crate::layers::DflashProposerState>()
+                .map(|d| d.ctx_len)
+                .unwrap_or(0);
+            let entry = crate::model::dflash_carry::CarriedDflashState {
+                state,
+                tokens: seq.tokens.clone(),
+            };
+            let previous = self.dflash_carry.lock().replace(entry);
+            if let Some(mut old) = previous {
+                proposer.free_state(self.gpu.as_ref(), old.state.as_mut())?;
+            }
+            tracing::debug!(
+                "DFLASH_CARRY store: seq_tokens={} ctx_len={stored_ctx} slot={}",
+                seq.tokens.len(),
+                seq.slot_idx
+            );
+        }
+
         // ATLAS_MTP_CARRY_DRAFTER: hand this turn's drafter KV to the model's
         // single carry slot BEFORE `free_state`, so the next turn of the same
         // session can adopt it instead of starting blind. `take_drafter_kv`

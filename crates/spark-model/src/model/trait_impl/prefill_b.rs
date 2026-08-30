@@ -230,7 +230,15 @@ impl TransformerModel {
                 proc_start,
                 proc_count,
                 effective_seq_len_start,
-            } => (proc_start, proc_count, effective_seq_len_start),
+            } => {
+                // DFlash whole-state carry: adopt at chunk 0, now that the
+                // effective processing start is fixed and before any capture
+                // write lands (`model::dflash_carry`). No-op otherwise.
+                if chunk_start == 0 {
+                    self.try_adopt_dflash_carry(seq, tokens, effective_seq_len_start)?;
+                }
+                (proc_start, proc_count, effective_seq_len_start)
+            }
             proc_range::ProcRange::EarlyReturn(ptr) => {
                 // #155 ROOT CAUSE (warm-turn phantom snapshots): fully-cached
                 // chunks skipped compute but ALSO skipped the Phase-5 token
