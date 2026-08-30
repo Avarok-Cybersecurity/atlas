@@ -950,3 +950,45 @@ All three return 200 as `text/plain`, each links to the other two, and the blog
 and docs both still return all three security headers on `/llms.txt` — the file
 is served from a `location` block, which is exactly where the original defect
 came from.
+
+## Wave 18 — the docs purge, and the same defect on a third vhost
+
+**The Cloudflare purge ran.** With the token's permissions widened, 607 docs
+asset URLs were purged in 21 batches, zero failures — targeted by URL, never
+`purge_everything`, so the marketing site's and blog's caches were untouched.
+Every docs response class now carries all three security headers **at the
+edge**, not just at the origin:
+
+| | status | security | cf-cache |
+|---|---|---|---|
+| `/index.html`, `/`, `/404.html` | 200 | 3/3 | DYNAMIC |
+| `/book.js`, `/css/general.css`, `/searcher.js` | 200 | 3/3 | MISS |
+| `/favicon.png` | 200 | 3/3 | MISS |
+| `/architecture` (301), `/llms.txt` | 301 / 200 | 3/3 | DYNAMIC |
+
+**Cloudflare rewrites `max-age` on this zone.** The origin sends 3600; the edge
+serves 14400. That is the zone's *Browser Cache TTL* set to 4 hours rather than
+"Respect Existing Headers", so origin `max-age` values here are advisory. Worth
+knowing before anyone tunes one and concludes it did nothing.
+
+### The third vhost had it too
+
+Sweeping the other properties to confirm they were unaffected showed
+`atlasinference.io` at **2 of 3** — no `Referrer-Policy`. Investigating found
+the same `add_header` defect, and two consequences, both measured
+**origin-direct** because Cloudflare injects its own `alt-svc` and the edge view
+would have hidden one of them:
+
+- Its three security headers sat inside `location /`, which therefore discarded
+  the server-level `Alt-Svc` — so the HTTP/3 advertisement never reached a
+  visitor on any proxied response.
+- `location ~ /\.` declares no `add_header` and inherited none, so the dotfile
+  refusal went out with no security headers at all.
+
+Fixed the same way as the other two: one header set at server level, no
+location declaring any. Verified origin-direct and at the edge, on `/`,
+`/control.html` and `/.env`. `Alt-Svc` is back on proxied responses.
+
+All three vhosts are now in the repo as SSOT — `site/deploy/nginx/`,
+`blog/deploy/nginx/`, `book/deploy/nginx/` — which is how the third one was
+found: the pattern was worth comparing against.
