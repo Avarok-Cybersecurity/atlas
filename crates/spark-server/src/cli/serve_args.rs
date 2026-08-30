@@ -729,8 +729,13 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub expert_telemetry: bool,
 
-    /// Load ONLY the MoE experts this prompt category routes to, from the
+    /// Load ONLY the MoE experts these prompt categories route to, from the
     /// model's MODEL.toml `[expert_categories]` table.
+    ///
+    /// Accepts a comma-separated list, in which case the serve holds the UNION
+    /// of those categories' experts — a request does not announce its
+    /// category, so serving several means holding what any of them needs. The
+    /// boot log reports the union and what each category costs on its own.
     ///
     /// The table is produced by the `expert-categories` benchmark and read at
     /// BUILD time, so a newly measured category needs a rebuild before this

@@ -54,7 +54,7 @@ fn a_known_category_installs_a_plan() {
     let mut c = moe_config();
     resolve_expert_category(Some("code-python"), &ptx_set(CATS), &mut c).expect("resolves");
     let plan = c.bel.as_ref().expect("plan installed");
-    assert_eq!(plan.category, "code-python");
+    assert_eq!(plan.label(), "code-python");
     assert!(plan.is_loaded(0, 1));
     assert!(!plan.is_loaded(0, 7));
     // Layer 1 is not in the table — a dense layer, unrestricted.
@@ -70,6 +70,69 @@ fn no_flag_installs_no_plan() {
         c.bel.is_none(),
         "every expert loads when the flag is absent"
     );
+}
+
+#[test]
+fn a_comma_separated_list_loads_the_union() {
+    // The serve cannot know which category a request belongs to, so handling
+    // both means holding what EITHER needs. Intersection would starve one of
+    // them; the last-one-wins reading would starve the other.
+    static TWO: &[ExpertCategory] = &[
+        ExpertCategory {
+            name: "code-python",
+            coverage: 0.9,
+            layers: &[(0, &[1, 2])],
+        },
+        ExpertCategory {
+            name: "sql",
+            coverage: 0.9,
+            layers: &[(0, &[2, 5]), (2, &[7, 3])],
+        },
+    ];
+    let mut c = moe_config();
+    resolve_expert_category(Some("code-python,sql"), &ptx_set(TWO), &mut c).expect("resolves");
+    let plan = c.bel.as_ref().expect("plan installed");
+
+    assert_eq!(plan.label(), "code-python+sql");
+    assert_eq!(plan.sources.len(), 2);
+    // Layer 0 is the union {1,2} ∪ {2,5}; the shared expert 2 is counted once.
+    for e in [1, 2, 5] {
+        assert!(
+            plan.is_loaded(0, e),
+            "expert {e} is needed by one of the two"
+        );
+    }
+    assert!(!plan.is_loaded(0, 4));
+    assert_eq!(plan.layer_count(0), Some(3));
+    // Layer 2 is restricted by sql alone — a layer only one source mentions is
+    // still restricted, to what that source needs.
+    assert_eq!(plan.layer_count(2), Some(2));
+}
+
+#[test]
+fn a_list_tolerates_whitespace_and_preserves_order() {
+    static TWO: &[ExpertCategory] = &[
+        ExpertCategory {
+            name: "sql",
+            coverage: 0.9,
+            layers: &[(0, &[1, 2])],
+        },
+        ExpertCategory {
+            name: "code-python",
+            coverage: 0.8,
+            layers: &[(0, &[3, 4])],
+        },
+    ];
+    let mut c = moe_config();
+    resolve_expert_category(Some(" code-python , sql "), &ptx_set(TWO), &mut c).expect("resolves");
+    let plan = c.bel.as_ref().unwrap();
+    assert_eq!(
+        plan.label(),
+        "code-python+sql",
+        "command-line order is kept"
+    );
+    // Sources measured at different coverages have no single coverage to report.
+    assert_eq!(plan.uniform_coverage(), None);
 }
 
 // ---------------------------------------------------------------- Path B
@@ -136,6 +199,38 @@ fn a_model_with_no_table_says_how_to_produce_one() {
     assert!(err.contains("expert-categories` benchmark"), "got: {err}");
     assert!(err.contains("--expert-telemetry"), "got: {err}");
     assert!(err.contains("rebuild"), "got: {err}");
+}
+
+#[test]
+fn a_repeated_category_is_refused_rather_than_deduplicated() {
+    // In a long list a repeat is a typo, and quietly collapsing it hides which
+    // name was actually meant.
+    let mut c = moe_config();
+    let err = resolve_expert_category(Some("code-python,code-python"), &ptx_set(CATS), &mut c)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("more than once"), "got: {err}");
+}
+
+#[test]
+fn one_unknown_name_in_a_list_refuses_the_whole_list() {
+    // Serving the subset that happened to resolve would silently answer some
+    // traffic from the wrong expert set.
+    let mut c = moe_config();
+    let err = resolve_expert_category(Some("code-python,klingon"), &ptx_set(CATS), &mut c)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("klingon"), "got: {err}");
+    assert!(c.bel.is_none());
+}
+
+#[test]
+fn an_empty_list_is_refused() {
+    let mut c = moe_config();
+    let err = resolve_expert_category(Some(" , "), &ptx_set(CATS), &mut c)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("empty list"), "got: {err}");
 }
 
 #[test]

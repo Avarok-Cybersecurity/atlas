@@ -13,20 +13,28 @@
 //! One plan, two readers — if they could disagree, the router would select an
 //! expert backed by a null pointer and the serve would die mid-request.
 
+/// One category folded into a plan, with the coverage its table was measured
+/// at. A plan built from several categories keeps them all: a union has no
+/// single coverage, and reporting one of them would misdescribe the rest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategorySource {
+    pub name: String,
+    pub coverage: f32,
+    /// `(layer, expert ids)` for this category alone.
+    pub layers: Vec<(usize, Vec<u16>)>,
+}
+
 /// The resident-expert plan for one serve.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BelPlan {
-    /// The category name as given on the command line, for logs and for the
-    /// response payload — a request should be able to see which subset it
-    /// was served by.
-    pub category: String,
-    /// The routing-mass coverage the table was measured at, carried so a log
-    /// line can say how selective this plan is without re-deriving it.
-    pub coverage: f32,
-    /// `allowed[layer][expert]`. `None` for a layer the table does not
-    /// mention, which means "load this layer in full" — a MoE layer missing
-    /// from the table is rejected at boot, so the only `None`s here are
-    /// non-MoE layers.
+    /// The categories this plan was built from, in the order given on the
+    /// command line. More than one means the UNION of their expert sets: a
+    /// serve told to handle both Python and SQL must hold what either needs,
+    /// since a request does not announce its category.
+    pub sources: Vec<CategorySource>,
+    /// `allowed[layer][expert]`. `None` for a layer no source mentions, which
+    /// means "load this layer in full" — a MoE layer missing from the table is
+    /// rejected at boot, so the only `None`s here are non-MoE layers.
     allowed: Vec<Option<Box<[bool]>>>,
     num_experts: usize,
 }
@@ -44,35 +52,87 @@ impl BelPlan {
         num_experts: usize,
         layers: impl IntoIterator<Item = (usize, Vec<u16>)>,
     ) -> Result<Self, String> {
-        let category = category.into();
+        Self::from_sources(
+            vec![CategorySource {
+                name: category.into(),
+                coverage,
+                layers: layers.into_iter().collect(),
+            }],
+            num_layers,
+            num_experts,
+        )
+    }
+
+    /// Build the UNION of several categories' expert sets.
+    ///
+    /// Union, not intersection: the serve cannot know which category a request
+    /// belongs to, so it must hold everything any of the named categories
+    /// routes to. A layer is restricted only if at least one source restricts
+    /// it, and an expert is resident if any source keeps it.
+    ///
+    /// `num_layers` and `num_experts` come from the loaded model's config, not
+    /// from the tables, so a table measured on a different checkpoint is
+    /// rejected here rather than silently indexing a different expert space.
+    pub fn from_sources(
+        sources: Vec<CategorySource>,
+        num_layers: usize,
+        num_experts: usize,
+    ) -> Result<Self, String> {
+        if sources.is_empty() {
+            return Err("an expert-loading plan needs at least one category".to_string());
+        }
         let mut allowed: Vec<Option<Box<[bool]>>> = vec![None; num_layers];
-        for (layer, ids) in layers {
-            if layer >= num_layers {
-                return Err(format!(
-                    "expert category '{category}' names layer {layer}, but the model has \
-                     {num_layers} layers — the table was measured on a different checkpoint"
-                ));
-            }
-            let mut row = vec![false; num_experts].into_boxed_slice();
-            for id in ids {
-                let e = id as usize;
-                if e >= num_experts {
+        for src in &sources {
+            let category = &src.name;
+            for (layer, ids) in &src.layers {
+                let layer = *layer;
+                if layer >= num_layers {
                     return Err(format!(
-                        "expert category '{category}' layer {layer} names expert {e}, but the \
-                         model has {num_experts} experts — the table was measured on a \
-                         different checkpoint"
+                        "expert category '{category}' names layer {layer}, but the model has \
+                         {num_layers} layers — the table was measured on a different checkpoint"
                     ));
                 }
-                row[e] = true;
+                let row = allowed[layer]
+                    .get_or_insert_with(|| vec![false; num_experts].into_boxed_slice());
+                for id in ids {
+                    let e = *id as usize;
+                    if e >= num_experts {
+                        return Err(format!(
+                            "expert category '{category}' layer {layer} names expert {e}, but \
+                             the model has {num_experts} experts — the table was measured on a \
+                             different checkpoint"
+                        ));
+                    }
+                    row[e] = true;
+                }
             }
-            allowed[layer] = Some(row);
         }
         Ok(Self {
-            category,
-            coverage,
+            sources,
             allowed,
             num_experts,
         })
+    }
+
+    /// Human label for logs and for the response payload: the category, or
+    /// the categories joined by `+` when this is a union.
+    pub fn label(&self) -> String {
+        self.sources
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("+")
+    }
+
+    /// The coverage every source was measured at, or `None` when they differ —
+    /// a union of tables generated at different thresholds has no single
+    /// coverage, and reporting one of them would misdescribe the others.
+    pub fn uniform_coverage(&self) -> Option<f32> {
+        let first = self.sources.first()?.coverage;
+        self.sources
+            .iter()
+            .all(|s| s.coverage == first)
+            .then_some(first)
     }
 
     /// Whether this layer's experts are restricted at all.
