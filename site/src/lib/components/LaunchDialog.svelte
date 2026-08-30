@@ -154,6 +154,34 @@
 
           {:else if launch.phase === 'placement' && launch.placement?.kind === 'none'}
           <p class="ld-place-lead">{launch.placement.reason}</p>
+
+          {#if !launch.placement.canOnboard}
+            <!-- The agent named a cause the operator can fix on THIS machine,
+                 so the answer is the fix, not a second machine. The reported
+                 case was a DGX Spark owner outside the `docker` group being
+                 handed a pairing code — asked to add hardware to work around
+                 hardware that was fine. These are the same commands atlasctl
+                 prints; nothing here runs them. -->
+            {#if /docker/i.test(launch.placement.detail ?? '')}
+              <p class="ld-place-lead">Fix it once on this machine:</p>
+              <CommandRow command="sudo usermod -aG docker $USER" extra="ld-place-cmd" />
+              <CommandRow command="newgrp docker" extra="ld-place-cmd" />
+              <p class="ld-place-sub">
+                Then reopen this dialog. The agent re-checks on its own, so there is
+                nothing to restart. Do not use <code>sudo atlasctl</code> — it runs
+                the model as root and leaves root-owned files in <code>~/.atlas</code>
+                that your normal user cannot read.
+              </p>
+            {/if}
+            <p class="ld-place-sub">
+              <a
+                class="link"
+                href="https://docs.atlasinference.io/getting-started/troubleshooting.html"
+                target="_blank"
+                rel="noopener">Troubleshooting guide</a
+              >
+            </p>
+          {:else}
           <p class="ld-place-lead">
             Add a machine that can. Run this on it — the code is good for one
             machine, once, for {Math.round((launch.join?.expiresInS ?? 600) / 60)} minutes.
@@ -189,6 +217,7 @@
             Anyone who runs that command joins your fleet and can use its
             hardware. Send it to a machine you own, not a chat.
           </p>
+          {/if}
 
         {:else if launch.phase === 'placement'}
           <p class="ld-place-lead">
