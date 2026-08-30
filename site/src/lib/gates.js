@@ -21,7 +21,7 @@ export {
   variantLabel
 } from './gate-variants.js';
 
-export const shortModel = (model) => (model || '').split('/').pop() || model;
+export { shortModel } from './series-colors.js';
 
 // ---- tab taxonomy -----------------------------------------------------------
 // One tab per benchmark family; a family only earns a tab when it has records.

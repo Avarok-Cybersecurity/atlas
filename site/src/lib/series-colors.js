@@ -46,11 +46,63 @@
 // Exported so series-contrast.test.js can measure it against the token file
 // rather than re-typing the hexes into the test — the point of the test is that
 // the two cannot drift.
+//
+// Extended 2026-08-30, when the per-model split landed. Three checkpoints were
+// already being charted with no entry here, so all three fell through to the
+// single fallback grey and rendered identically — and because the chart used
+// to colour a whole series from its FIRST point's model, they were in practice
+// drawn in copper. That is what made Gemma's legitimate 23,484 ms cold start
+// look like an absurd Qwen outlier on ttft-cold-gate.
+//
+// Searched with the SAME method as the trio above (CIEDE2000 under Vienot
+// dichromat simulation), which reproduces this file's existing normal-vision
+// figures exactly (49.6 / 55.3 / 39.9), so the numbers below are continuous
+// with them. The simulated-deficiency figures differ by ~1-3 from the 2026-08
+// set, so treat those as re-measured rather than identical.
+//
+// The search fixed the shipped trio, required >=4:1 on both surfaces, kept
+// clear of the UI accent #BE9DF8 (a series must not read as a link) and
+// reserved the green band (a series must not read as a PASS verdict), then
+// maximised the worst pair under normal/protan/deutan vision:
+//   rose   #cd517a   4.52:1 / 4.02:1
+//   citron #d5e88a  14.07:1 / 12.53:1
+//   sky    #a1e0f7  12.98:1 / 11.56:1
+// Worst pair over all 15, normal/protan/deutan: 16.4 (teal-sky).
+// Worst against the fallback grey: 11.7 (rose).
+//
+// ASSIGNMENT IS NOT ARBITRARY. sky goes to nvidia's NVFP4 re-quant because
+// copper is the FP8 flagship of the same family, and FP8-vs-NVFP4 is the one
+// comparison a reader must never misread: copper vs sky scores 46.8 at worst,
+// where copper vs citron would have been 16.6.
+//
+// KNOWN WEAKNESS, recorded rather than hidden: the worst tritan pair is 8.5
+// (teal-sky), below the >=15 these hues reach for normal vision. Tritanopia is
+// ~3 orders of magnitude rarer than protan/deutan, and pushing it higher costs
+// the common-vision worst case, which would trade ~8% of male readers for
+// ~0.003%. Identity is double-encoded anyway: every series carries a coloured
+// end label and a legend entry, and every marker is shape-coded.
 export const MODEL_COLORS = {
   'Qwen/Qwen3.6-35B-A3B-FP8': '#ee6f2f',
   'unsloth/Qwen3.6-27B-NVFP4': '#2f88ee',
-  'unsloth/Qwen3.8-27B-NVFP4': '#51cdb0'
+  'unsloth/Qwen3.8-27B-NVFP4': '#51cdb0',
+  'bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16': '#cd517a',
+  'ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4': '#d5e88a',
+  'nvidia/Qwen3.6-35B-A3B-NVFP4': '#a1e0f7'
 };
 // The fallback is a series colour too: an unrecognised model still gets drawn.
 export const UNKNOWN_MODEL_COLOR = '#6f6a8d';
 export const colorFor = (model) => MODEL_COLORS[model] ?? UNKNOWN_MODEL_COLOR;
+
+/**
+ * The human-facing part of a checkpoint id: everything after the last `/`.
+ *
+ * Lives here rather than in `gates.js` because that module imports
+ * `$lib/gates.generated.json`, which nothing under `bun test` can resolve —
+ * anything importing it stops being unit-testable. `gates.js` re-exports this.
+ *
+ * The quant suffix is deliberately kept: `Qwen3.6-35B-A3B-FP8` and
+ * `Qwen3.6-35B-A3B-NVFP4` are different subjects, and a chart that shortened
+ * both to `Qwen3.6-35B-A3B` would make the one comparison that matters most
+ * impossible to read.
+ */
+export const shortModel = (model) => (model || '').split('/').pop() || model;

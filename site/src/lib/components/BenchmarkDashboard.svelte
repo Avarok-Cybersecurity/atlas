@@ -15,6 +15,8 @@
 
   let activeTab = $state(tabs[0]?.id);
   let modelFilter = $state('all');
+  // The record(s) behind the clicked chart point. An array because one plotted
+  // point can stand for several grouped runs — see GatePointCard.
   let selected = $state(null);
   let dialogEl = $state(null);
 
@@ -121,7 +123,7 @@
         <ConcurrencyLadder />
       {/if}
       {#each sections as s (s.benchId)}
-        <GateBenchSection {...s} onselect={(rec) => (selected = rec)} />
+        <GateBenchSection {...s} onselect={(recs) => (selected = recs)} />
       {/each}
       {#if sections.length === 0 && activeTab !== 'concurrency'}
         <p class="bd-empty">No records for this model in this benchmark family.</p>
@@ -155,5 +157,5 @@
 </div>
 
 {#if selected}
-  <GatePointCard record={selected} onclose={() => (selected = null)} />
+  <GatePointCard records={selected} onclose={() => (selected = null)} />
 {/if}
