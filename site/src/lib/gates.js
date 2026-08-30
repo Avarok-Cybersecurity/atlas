@@ -5,7 +5,7 @@
 // components render what these specs say and add nothing of their own.
 // =============================================================================
 import gates from '$lib/gates.generated.json';
-import { splitByVariant, variantLabel } from './gate-variants.js';
+import { splitByVariant } from './gate-variants.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
