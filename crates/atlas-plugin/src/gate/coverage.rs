@@ -632,12 +632,19 @@ pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
     excludes: CONTAMINATION_EXCLUDES,
 }];
 
-pub const NOT_REQUIRED: [(&str, &str); 6] = [
+pub const NOT_REQUIRED: [(&str, &str); 7] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
          deliberately never a gate: the required gates already cost hours per PR, and \
          its warm-path numbers (primed prefix cache + SSM snapshot) are not regression evidence",
+    ),
+    (
+        "expert-fidelity",
+        "an INSTRUMENT, not a verdict: it measures how far a --expert-category serve has \
+         moved from the same model unrestricted. Both numbers come from one checkpoint in \
+         two configurations, so there is no cross-model baseline a gate could compare \
+         against — the value is ranking configurations, which is a decision a human makes",
     ),
     (
         "expert-categories",
