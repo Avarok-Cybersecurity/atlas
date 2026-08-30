@@ -527,135 +527,168 @@ impl Qwen3AttentionLayer {
                 .arg_u32(hd)
                 .launch(stream)?;
         }
-        if let Some(bmeta) = batched_meta {
-            // Cross-request prefill via FlashInfer ragged/varlen attention
-            // (ATLAS_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
-            // Q/K/V already match FlashInfer's [rows, heads, 256] layout, so ONE
-            // varlen launch runs all N co-dispatched requests' causal
-            // self-attention — replacing the slow paged batched kernel (the
-            // reason co-dispatch flatlined). Chunk-0 only (seq_len_start==0):
-            // later chunks need the cached prefix, which isn't in the fresh
-            // buffers. BF16 / no-WHT only; head_dim 256.
-            // hd=256 (Holo) and hd=128 (Laguna) are both instantiated in
-            // cuda/flashinfer_ragged_prefill.cu. Only the hd=128 entry point
-            // takes a sliding window, so a windowed layer is safe there and
-            // NOT safe on hd=256 (whose variant is use_sliding_window=false).
-            let windowed_ok = hd == 128 || self.sliding_window.is_none();
-            let use_flashinfer = seq_len_start == 0
-                && (hd == 256 || hd == 128)
-                && windowed_ok
-                && !k_is_turbo
-                && !v_is_turbo
-                && spark_runtime::flashinfer::available()
-                && std::env::var("ATLAS_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
-            if use_flashinfer {
-                // VARLEN: real per-request cu_seqlens from the staged metadata
-                // (host + device copies) — works for both uniform and varied
-                // request lengths. For chunk-0 self-attention qo_indptr==kv_indptr.
-                let batch = bmeta.batch_size as usize;
-                let total = bmeta.total_tokens;
-                let indptr_h = &bmeta.cu_seqlens_host;
-                let indptr_d = bmeta.cu_seqlens.0;
-                {
-                    if ctx.stats.once("log:flashinfer_prefill_varlen") {
-                        tracing::warn!(
-                            "FLASHINFER_PREFILL(varlen) batch={batch} total={total} \
-                             num_tokens={num_tokens} cu_seqlens={indptr_h:?} \
-                             nq={nq} nkv={nkv} hd={hd} sm_scale={inv_sqrt_d} \
-                             sliding_window={sw:?}",
-                            sw = self.sliding_window
-                        );
+        // ── 8a. Dense-skip when stage 2 will overwrite EVERY row ──
+        // Section 8b recomputes rows past the inert bound sparsely and
+        // OVERWRITES attn_out. When the whole chunk is past the bound the
+        // dense pass below is computed and thrown away — and it is exactly
+        // the O(chunk x prefix) term that makes long prefill quadratic. At an
+        // 8K chunk size every chunk after the first is entirely selective, so
+        // this removes essentially all of that cost.
+        //
+        // Conditions are deliberately strict, because a wrong skip leaves
+        // attn_out UNINITIALISED rather than wrong-but-plausible:
+        //   * stage 2 must actually be enabled (kill switch unset), and
+        //   * seq_len_start >= inert_bound, so `first_sel_pos - seq_start`
+        //     is 0 and stage 2 writes every row of this chunk, and
+        //   * single-stream only — 8b refuses batched metadata.
+        // ATLAS_QSA_SKIP_DENSE=1 arms it; default off.
+        let skip_dense_attn = {
+            static ARM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ARM.get_or_init(|| {
+                std::env::var("ATLAS_QSA_SKIP_DENSE").as_deref() == Ok("1")
+            }) && batched_meta.is_none()
+                && self.qsa.as_ref().is_some_and(|q| {
+                    q.prefill_select_active() && seq_len_start >= q.inert_bound()
+                })
+        };
+        if skip_dense_attn {
+            tracing::debug!(
+                seq_len_start,
+                num_tokens,
+                "QSA: skipped dense paged attention — every row is selective"
+            );
+        }
+        if !skip_dense_attn {
+            if let Some(bmeta) = batched_meta {
+                // Cross-request prefill via FlashInfer ragged/varlen attention
+                // (ATLAS_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
+                // Q/K/V already match FlashInfer's [rows, heads, 256] layout, so ONE
+                // varlen launch runs all N co-dispatched requests' causal
+                // self-attention — replacing the slow paged batched kernel (the
+                // reason co-dispatch flatlined). Chunk-0 only (seq_len_start==0):
+                // later chunks need the cached prefix, which isn't in the fresh
+                // buffers. BF16 / no-WHT only; head_dim 256.
+                // hd=256 (Holo) and hd=128 (Laguna) are both instantiated in
+                // cuda/flashinfer_ragged_prefill.cu. Only the hd=128 entry point
+                // takes a sliding window, so a windowed layer is safe there and
+                // NOT safe on hd=256 (whose variant is use_sliding_window=false).
+                let windowed_ok = hd == 128 || self.sliding_window.is_none();
+                let use_flashinfer = seq_len_start == 0
+                    && (hd == 256 || hd == 128)
+                    && windowed_ok
+                    && !k_is_turbo
+                    && !v_is_turbo
+                    && spark_runtime::flashinfer::available()
+                    && std::env::var("ATLAS_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
+                if use_flashinfer {
+                    // VARLEN: real per-request cu_seqlens from the staged metadata
+                    // (host + device copies) — works for both uniform and varied
+                    // request lengths. For chunk-0 self-attention qo_indptr==kv_indptr.
+                    let batch = bmeta.batch_size as usize;
+                    let total = bmeta.total_tokens;
+                    let indptr_h = &bmeta.cu_seqlens_host;
+                    let indptr_d = bmeta.cu_seqlens.0;
+                    {
+                        if ctx.stats.once("log:flashinfer_prefill_varlen") {
+                            tracing::warn!(
+                                "FLASHINFER_PREFILL(varlen) batch={batch} total={total} \
+                                 num_tokens={num_tokens} cu_seqlens={indptr_h:?} \
+                                 nq={nq} nkv={nkv} hd={hd} sm_scale={inv_sqrt_d} \
+                                 sliding_window={sw:?}",
+                                sw = self.sliding_window
+                            );
+                        }
                     }
-                }
-                if hd == 128 {
-                    spark_runtime::flashinfer::ragged_prefill_bf16_hd128(
-                        q_contiguous.0,
-                        k_contiguous.0,
-                        v_contiguous.0,
-                        attn_out.0,
-                        indptr_h,
-                        indptr_h,
-                        indptr_d,
-                        indptr_d,
-                        batch as u32,
-                        total,
-                        total,
-                        nq,
-                        nkv,
-                        hd,
-                        inv_sqrt_d,
-                        true,
-                        self.sliding_window,
-                        stream,
-                    )?;
+                    if hd == 128 {
+                        spark_runtime::flashinfer::ragged_prefill_bf16_hd128(
+                            q_contiguous.0,
+                            k_contiguous.0,
+                            v_contiguous.0,
+                            attn_out.0,
+                            indptr_h,
+                            indptr_h,
+                            indptr_d,
+                            indptr_d,
+                            batch as u32,
+                            total,
+                            total,
+                            nq,
+                            nkv,
+                            hd,
+                            inv_sqrt_d,
+                            true,
+                            self.sliding_window,
+                            stream,
+                        )?;
+                    } else {
+                        spark_runtime::flashinfer::ragged_prefill_bf16_hd256(
+                            q_contiguous.0,
+                            k_contiguous.0,
+                            v_contiguous.0,
+                            attn_out.0,
+                            indptr_h,
+                            indptr_h,
+                            indptr_d,
+                            indptr_d,
+                            batch as u32,
+                            total,
+                            total,
+                            nq,
+                            nkv,
+                            hd,
+                            inv_sqrt_d,
+                            true,
+                            stream,
+                        )?;
+                    }
                 } else {
-                    spark_runtime::flashinfer::ragged_prefill_bf16_hd256(
-                        q_contiguous.0,
-                        k_contiguous.0,
-                        v_contiguous.0,
-                        attn_out.0,
-                        indptr_h,
-                        indptr_h,
-                        indptr_d,
-                        indptr_d,
-                        batch as u32,
-                        total,
-                        total,
+                    // Q12 Path B: batched paged-prefill attention. The kernel reads
+                    // Q/O at per-batch offsets internally via blockIdx.z and uses
+                    // block_table_ptrs[b] for each stream's paged KV pages.
+                    let args = super::paged_attn_batched::PagedAttnBatchedArgs {
+                        q_contiguous,
+                        attn_out,
+                        seq_len_start,
                         nq,
                         nkv,
                         hd,
+                        bs,
                         inv_sqrt_d,
-                        true,
+                        kv_len,
+                        batched_meta: bmeta,
                         stream,
-                    )?;
+                    };
+                    self.prefill_attention_paged_attn_batched(kv_cache, ctx, &args)?;
                 }
             } else {
-                // Q12 Path B: batched paged-prefill attention. The kernel reads
-                // Q/O at per-batch offsets internally via blockIdx.z and uses
-                // block_table_ptrs[b] for each stream's paged KV pages.
-                let args = super::paged_attn_batched::PagedAttnBatchedArgs {
+                // Single-stream path requires meta_for_single (validated above).
+                let meta = meta_for_single
+                    .expect("single-stream mode: meta_for_single guaranteed by validation above");
+                let mut args = super::paged_attn::PagedAttnArgs {
                     q_contiguous,
+                    k_contiguous,
+                    v_contiguous,
                     attn_out,
+                    n,
                     seq_len_start,
+                    num_tokens,
                     nq,
                     nkv,
                     hd,
                     bs,
+                    bf16,
                     inv_sqrt_d,
                     kv_len,
-                    batched_meta: bmeta,
+                    meta: &meta,
+                    block_table,
+                    disk_block_ids,
+                    disk_last_offloaded_per_layer,
                     stream,
                 };
-                self.prefill_attention_paged_attn_batched(kv_cache, ctx, &args)?;
-            }
-        } else {
-            // Single-stream path requires meta_for_single (validated above).
-            let meta = meta_for_single
-                .expect("single-stream mode: meta_for_single guaranteed by validation above");
-            let mut args = super::paged_attn::PagedAttnArgs {
-                q_contiguous,
-                k_contiguous,
-                v_contiguous,
-                attn_out,
-                n,
-                seq_len_start,
-                num_tokens,
-                nq,
-                nkv,
-                hd,
-                bs,
-                bf16,
-                inv_sqrt_d,
-                kv_len,
-                meta: &meta,
-                block_table,
-                disk_block_ids,
-                disk_last_offloaded_per_layer,
-                stream,
-            };
-            match self.prefill_attention_paged_attn(kv_cache, ctx, &mut args)? {
-                super::paged_attn::PagedAttnOutcome::EarlyReturn(out) => return Ok(out),
-                super::paged_attn::PagedAttnOutcome::Continue => {}
+                match self.prefill_attention_paged_attn(kv_cache, ctx, &mut args)? {
+                    super::paged_attn::PagedAttnOutcome::EarlyReturn(out) => return Ok(out),
+                    super::paged_attn::PagedAttnOutcome::Continue => {}
+                }
             }
         }
 

@@ -188,6 +188,19 @@ impl QsaIndexer {
         })
     }
 
+    /// Is stage-2 prefill selection actually going to run?
+    ///
+    /// Mirrors the `ATLAS_QSA_NO_PREFILL_SELECT` kill switch inside
+    /// `prefill_select`. A caller that skips the dense pass because stage 2
+    /// will overwrite it MUST consult this — with the switch set, stage 2
+    /// returns early and skipped rows would be left uninitialised.
+    pub fn prefill_select_active(&self) -> bool {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        !*OFF.get_or_init(|| {
+            std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1")
+        })
+    }
+
     pub fn inert_bound(&self) -> usize {
         (self.budget + self.ratio - 1) as usize
     }
