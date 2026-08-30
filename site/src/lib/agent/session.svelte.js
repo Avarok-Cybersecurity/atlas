@@ -177,13 +177,23 @@ export class LaunchSession {
    */
   #choosePlacement() {
     const recipe = this.agent.recipes.find((r) => r.id === this.openRecipe) ?? null;
-    // The fleet list is a second source for a fact this dialog's own agent has
-    // already stated. Prefer the fleet when it has reported; fall back to the
-    // agent's own answer rather than treating an unstarted fleet session as
-    // evidence that nothing can launch.
-    // `agent.canLaunch` is set from the `ready` frame during connect, and this
-    // runs after connect, so it is the agent's answer rather than a default.
-    const canLaunchHere = fleet.localCanLaunch ?? this.agent.canLaunch;
+    // Both sources describe the same machine, so the FRESHER one wins.
+    //
+    // This used to be `fleet.localCanLaunch ?? this.agent.canLaunch`, which
+    // reads as "prefer the fleet, fall back to the agent" — but `??` only falls
+    // back on null, so a stale `false` from a fleet snapshot beat the `true`
+    // this dialog's own handshake had just returned. The fleet session is
+    // opened much earlier by the nav's FleetPill and is never re-probed on
+    // demand, so its snapshot can predate a Docker permission the operator
+    // fixed a minute ago; the agent re-probes its own capability now
+    // (atlasctl `LocalFleet::launchability`), so its answer is the current one.
+    //
+    // Gated on `phase === 'ready'` rather than written as `agent.canLaunch ??
+    // fleet.localCanLaunch`, because `canLaunch` initialises to `false`, not
+    // null — a plain `??` would never reach the fleet, and a handshake still in
+    // flight would read as "cannot launch".
+    const canLaunchHere =
+      this.agent.phase === 'ready' ? this.agent.canLaunch : fleet.localCanLaunch;
     const d = Placement.decide(fleet.nodes, recipe, canLaunchHere);
     this.placement = d;
 

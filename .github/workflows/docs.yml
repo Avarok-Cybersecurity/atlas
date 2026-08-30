@@ -60,8 +60,29 @@ jobs:
       - name: Cache Cargo build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      # llms.txt (https://llmstxt.org) is generated from SUMMARY.md, which is
+      # already the book's table of contents. A second index maintained by hand
+      # goes stale the first time a chapter is added, and a stale index is worse
+      # than none for the agents that read it — they cannot tell.
+      - name: llms.txt is current with SUMMARY.md
+        run: node book/scripts-gen-llms.mjs --check
+
       - name: Build mdBook
         run: mdbook build book
+
+      # mdBook copies non-markdown files from src/ into the build output, which
+      # is how src/llms.txt reaches the site root. That is documented behaviour
+      # rather than something this repo controls, so it is asserted rather than
+      # assumed: if a future mdBook stops doing it, the file disappears from the
+      # deployed site silently, and only a request would ever show it.
+      - name: mdBook copied llms.txt into the output
+        run: |
+          test -s book/output/llms.txt || {
+            echo "::error::book/output/llms.txt is missing or empty after mdbook build."
+            echo "mdBook is expected to copy non-markdown files from book/src/ to the output."
+            exit 1
+          }
+          head -3 book/output/llms.txt
 
       - name: Build rustdoc
         run: cargo doc --workspace --no-deps

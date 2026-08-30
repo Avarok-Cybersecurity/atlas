@@ -124,6 +124,8 @@ fn test_looking_neighbours_remain_fail_closed() {
         "crates/atlas-core/src/config/gguf/not_really_tests.rs",
         "crates/atlas-core/src/config/gguf.rs",
         "crates/atlas-core/src/config.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency_tests.rs.bak",
+        "crates/atlas-plugin/src/benchmarks/concurrency_tests/helper.rs",
     ] {
         let invalidated = coverage::invalidated_by([path]);
         assert_eq!(
@@ -137,13 +139,17 @@ fn test_looking_neighbours_remain_fail_closed() {
 #[test]
 fn a_production_change_cannot_hide_beside_an_exempt_test_change() {
     for module in TEST_ONLY_RUST_MODULES {
-        let invalidated = coverage::invalidated_by([module.path, module.parent]);
-        assert_eq!(
-            invalidated.len(),
-            REQUIRED.len(),
-            "{} hid the production change to {}: {invalidated:?}",
-            module.path,
+        let parent_only = coverage::invalidated_by([module.parent]);
+        assert!(
+            !parent_only.is_empty(),
+            "{} is registered as a production parent but invalidates no gate",
             module.parent
+        );
+        let with_test = coverage::invalidated_by([module.path, module.parent]);
+        assert_eq!(
+            with_test, parent_only,
+            "{} changed the coverage owed by its production parent {}",
+            module.path, module.parent
         );
     }
 }

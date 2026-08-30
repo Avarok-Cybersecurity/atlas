@@ -141,3 +141,59 @@ test('a machine that has said it cannot launch is still told so plainly', () => 
   expect(d.kind).toBe('none');
   expect(d.reason).toMatch(/cannot run models/);
 });
+
+/* --- the reason the agent already gave us --------------------------------- */
+
+suite('a machine that cannot launch says why', () => {
+  // The DGX Spark report. The owner was not in the `docker` group; the agent
+  // said so; this branch threw the sentence away and replaced it with a verdict
+  // about the hardware, then offered to pair a second machine.
+  const denied = node('me', {
+    isLocal: true,
+    canLaunch: false,
+    cannotLaunchReason: 'Docker refused this user: you are not in the `docker` group'
+  });
+
+  test('the agent\'s reason reaches the operator instead of being discarded', () => {
+    const d = P.decide([denied], { nodes: 1 }, false);
+    expect(d.kind).toBe('none');
+    expect(d.reason).toContain('docker` group');
+    expect(d.detail).toContain('docker` group');
+  });
+
+  test('and onboarding another machine is not offered for a fixable cause', () => {
+    // Pairing a laptop does not fix a `usermod` away. Offering it sent the
+    // reporter off to onboard hardware to work around hardware that was fine.
+    expect(P.decide([denied], { nodes: 1 }, false).canOnboard).toBe(false);
+  });
+
+  test('a machine that is genuinely control-only still offers onboarding', () => {
+    // The case the generic wording was written for, and it must survive: no
+    // reason given, so nothing here is known to be fixable.
+    const laptop = node('lap', { isLocal: true, canLaunch: false });
+    const d = P.decide([laptop], { nodes: 1 }, false);
+    expect(d.canOnboard).toBe(true);
+    expect(d.reason).toMatch(/cannot run models/);
+    expect(d.detail).toBeNull();
+  });
+
+  test('an empty reason string is treated as no reason, not as an empty sentence', () => {
+    const blank = node('me', { isLocal: true, canLaunch: false, cannotLaunchReason: '   ' });
+    const d = P.decide([blank], { nodes: 1 }, false);
+    expect(d.reason).toBe('This machine cannot run models, and no machine that can is paired yet.');
+    expect(d.canOnboard).toBe(true);
+  });
+
+  test('a reason on a REMOTE node is not attributed to this machine', () => {
+    // localReason must read the local node, not merely the first one.
+    const other = node('other', { isLocal: false, canLaunch: false, cannotLaunchReason: 'their problem' });
+    const me = node('me', { isLocal: true, canLaunch: false });
+    expect(P.localReason([other, me])).toBeNull();
+  });
+
+  test('localReason finds the reason on the local node wherever it sits', () => {
+    const other = node('other', { isLocal: false, canLaunch: false, cannotLaunchReason: 'theirs' });
+    const me = node('me', { isLocal: true, canLaunch: false, cannotLaunchReason: 'mine' });
+    expect(P.localReason([other, me])).toBe('mine');
+  });
+});

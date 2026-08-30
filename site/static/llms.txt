@@ -52,7 +52,7 @@ cargo install atlasctl
 atlasctl run qwen3.6-35b-a3b-fp8-mtp
 ```
 
-## Models (30 recipes)
+## Models (32 recipes)
 
 Every model below maps to one recipe in atlas-recipes; the site cannot list a
 model that has no recipe. Run any of them with `atlasctl run <id>`.
@@ -76,10 +76,12 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - `qwen3.6-35b-a3b-fp8-mtp` — Qwen3.6 35B A3B FP8 MTP, 35B fp8, single, `Qwen/Qwen3.6-35B-A3B-FP8`
 - `qwen3.6-35b-a3b-fp8-nvfp4head` — Qwen3.6 35B A3B FP8 Nvfp4head, 35B fp8, single, `Qwen/Qwen3.6-35B-A3B-FP8`
 - `qwen3.6-35b-a3b-nvfp4` — Qwen3.6 35B A3B NVFP4, 35B nvfp4, single, `nvidia/Qwen3.6-35B-A3B-NVFP4`
+- `qwen3.8-27b-nvfp4-dflash2` — Qwen3.8 27B NVFP4 Dflash2,  NVFP4 (compressed-tensors, mixed precision), single, `unsloth/Qwen3.8-27B-NVFP4`
 - `qwen3.8-27b-nvfp4-latency` — Qwen3.8 27B NVFP4 Latency,  NVFP4 (compressed-tensors, mixed precision), single, `unsloth/Qwen3.8-27B-NVFP4`
 - `qwen3.8-27b-nvfp4-throughput` — Qwen3.8 27B NVFP4 Throughput,  NVFP4 (compressed-tensors, mixed precision), single, `unsloth/Qwen3.8-27B-NVFP4`
 - `qwen3.8-27b-nvfp4-unsloth` — Qwen3.8 27B NVFP4 Unsloth, 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers) NVFP4 (mixed precision above layer 55, FP8 linear_attn projections), single, `unsloth/Qwen3.8-27B-NVFP4`
 - `qwen3.8-27b-nvfp4-unsloth-bfcl` — Qwen3.8 27B NVFP4 Unsloth Bfcl, 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers) NVFP4 (mixed precision above layer 55), single, `unsloth/Qwen3.8-27B-NVFP4`
+- `qwen3.8-flash-next-nvfp4` — Qwen3.8 Flash Next NVFP4, 48 layers (36 GDN linear-attn + 12 full attention), MoE 512 experts top-10 NVFP4 (BF16 n-gram embedding table), single, `Inferact/Qwen3.8-Flash-Next-NVFP4`
 
 ### Gemma
 
@@ -114,6 +116,8 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - Discord: https://discord.gg/RQcGakU2jW
 - X: https://x.com/AtlasInferenceX
 - Site: https://atlasinference.io
+- Documentation: https://docs.atlasinference.io — full book, also at /llms.txt
+- Engineering blog: https://blog.atlasinference.io — also at /llms.txt
 
 ## License
 

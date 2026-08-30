@@ -219,6 +219,17 @@
         "name": "Qwen3.8",
         "recipes": [
           {
+            "displayName": "Qwen3.8 27B NVFP4 Dflash2",
+            "hfId": "unsloth/Qwen3.8-27B-NVFP4",
+            "params": "",
+            "quant": "NVFP4 (compressed-tensors, mixed precision)",
+            "topology": "single",
+            "recipeStem": "qwen3.8-27b-nvfp4-dflash2",
+            "recipeId": "qwen3.8-27b-nvfp4-dflash2",
+            "runnable": true,
+            "command": "atlasctl run qwen3.8-27b-nvfp4-dflash2"
+          },
+          {
             "displayName": "Qwen3.8 27B NVFP4 Latency",
             "hfId": "unsloth/Qwen3.8-27B-NVFP4",
             "params": "",
@@ -261,6 +272,17 @@
             "recipeId": "qwen3.8-27b-nvfp4-unsloth-bfcl",
             "runnable": true,
             "command": "atlasctl run qwen3.8-27b-nvfp4-unsloth-bfcl"
+          },
+          {
+            "displayName": "Qwen3.8 Flash Next NVFP4",
+            "hfId": "Inferact/Qwen3.8-Flash-Next-NVFP4",
+            "params": "48 layers (36 GDN linear-attn + 12 full attention), MoE 512 experts top-10",
+            "quant": "NVFP4 (BF16 n-gram embedding table)",
+            "topology": "single",
+            "recipeStem": "qwen3.8-flash-next-nvfp4",
+            "recipeId": "qwen3.8-flash-next-nvfp4",
+            "runnable": true,
+            "command": "atlasctl run qwen3.8-flash-next-nvfp4"
           }
         ]
       }

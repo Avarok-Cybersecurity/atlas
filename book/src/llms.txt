@@ -1,0 +1,79 @@
+# The Atlas Book
+
+> Documentation for Atlas — an open source, pure Rust and CUDA LLM inference
+> engine. One ~75 MB binary, no Python, no PyTorch.
+
+This is the reference documentation. It covers installing and running the
+engine, the architecture of the kernel dispatch pipeline, per-crate references,
+and operational guides. The rustdoc API reference is generated from the source
+and published alongside it.
+
+## Part I — Getting Started
+
+- [Philosophy](https://docs.atlasinference.io/getting-started/philosophy.html)
+- [Installation](https://docs.atlasinference.io/getting-started/installation.html)
+- [Quickstart](https://docs.atlasinference.io/getting-started/quickstart.html)
+- [Supported Models](https://docs.atlasinference.io/getting-started/models.html)
+- [Troubleshooting](https://docs.atlasinference.io/getting-started/troubleshooting.html)
+
+## Part II — Architecture
+
+- [Philosophy: AI Kernel HyperCompiling](https://docs.atlasinference.io/architecture/philosophy.html)
+- [Workspace Layout](https://docs.atlasinference.io/architecture/workspace.html)
+- [Kernel Dispatch Pipeline](https://docs.atlasinference.io/architecture/dispatch.html)
+- [SBIO: Business Logic vs I/O](https://docs.atlasinference.io/architecture/sbio.html)
+
+## Part III — The Crates
+
+- [atlas-core](https://docs.atlasinference.io/crates/atlas-core.html)
+- [atlas-kernels](https://docs.atlasinference.io/crates/atlas-kernels.html)
+- [spark-runtime](https://docs.atlasinference.io/crates/spark-runtime.html)
+- [spark-comm](https://docs.atlasinference.io/crates/spark-comm.html)
+- [spark-model](https://docs.atlasinference.io/crates/spark-model.html)
+- [spark-server](https://docs.atlasinference.io/crates/spark-server.html)
+- [atlas-spark-bench](https://docs.atlasinference.io/crates/atlas-spark-bench.html)
+
+## Part IV — Engineering Deep Dives
+
+- [CUDA Kernel Engineering](https://docs.atlasinference.io/deep-dives/kernels.html)
+- [NVFP4 Quantization](https://docs.atlasinference.io/deep-dives/nvfp4.html)
+- [FP8 Native Serving](https://docs.atlasinference.io/deep-dives/fp8.html)
+- [Attention & Paged KV Cache](https://docs.atlasinference.io/deep-dives/attention.html)
+- [MoE Routing & Experts](https://docs.atlasinference.io/deep-dives/moe.html)
+- [SSM / Mamba / GDN Layers](https://docs.atlasinference.io/deep-dives/ssm.html)
+- [Speculative Decoding (MTP)](https://docs.atlasinference.io/deep-dives/mtp.html)
+- [Constrained Decoding (XGrammar)](https://docs.atlasinference.io/deep-dives/xgrammar.html)
+
+## Part V — Operating Atlas
+
+- [OpenAI-Compatible Server](https://docs.atlasinference.io/operations/server.html)
+- [Tool Calling & Streaming](https://docs.atlasinference.io/operations/tools.html)
+- [Multi-GPU & EP=2](https://docs.atlasinference.io/operations/multi-gpu.html)
+- [Benchmarking](https://docs.atlasinference.io/operations/benchmarks.html)
+
+## Part VI — The Project
+
+- [Contributing](https://docs.atlasinference.io/project/contributing.html)
+- [The Merge Lattice](https://docs.atlasinference.io/project/merge-lattice.html)
+- [Security Policy](https://docs.atlasinference.io/project/security.html)
+- [Release Notes](https://docs.atlasinference.io/project/releases.html)
+
+## Appendix
+
+- [Paper Summary](https://docs.atlasinference.io/appendix/paper.html)
+- [A Category-Theoretic Perspective](https://docs.atlasinference.io/appendix/category-theory.html)
+- [Glossary](https://docs.atlasinference.io/appendix/glossary.html)
+- [Further Reading](https://docs.atlasinference.io/appendix/reading.html)
+
+## Machine-readable
+
+- [Full API reference](https://docs.atlasinference.io/api/): rustdoc for every public crate
+- [Print view](https://docs.atlasinference.io/print.html): the entire book as one HTML document
+
+## Optional
+
+- [Atlas Inference](https://atlasinference.io): the project site — also at https://atlasinference.io/llms.txt
+- [Engineering blog](https://blog.atlasinference.io): measured notes — also at https://blog.atlasinference.io/llms.txt
+- [Source](https://github.com/Avarok-Cybersecurity/atlas): pure Rust and CUDA, AGPL-3.0-only
+- [Recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes): the model SSOT
+- [Discord](https://discord.gg/RQcGakU2jW)

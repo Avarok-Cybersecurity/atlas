@@ -17,6 +17,8 @@ fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
 fn evidence(completion_tokens: usize) -> RequestEvidence {
     RequestEvidence {
         completion_tokens,
+        prompt_tokens: 512,
+        cached_prompt_tokens: 512,
         finish_reason: Some("length".into()),
         server_ttft_ms: None,
         server_tps: None,
@@ -45,6 +47,7 @@ fn row(
         errors: 0,
         requests,
         vacuous,
+        cache_uncontrolled: false,
     }
 }
 
@@ -58,9 +61,6 @@ fn cells_are_isl_major() {
 fn defaults_are_the_campaign_sweep() {
     let b = ConcurrencySweep::default();
     let v = ParamValues::defaults(&b.parameters());
-    // The PARAM DEFAULTS are what actually runs — `configure()` rebuilds
-    // from these, so a descriptor blurb saying "1 → 32" proves nothing on
-    // its own. This assertion is the only thing that pins the sweep.
     assert_eq!(v.int_list("concurrencies").unwrap(), &[1, 2, 4, 8, 16, 32]);
     assert_eq!(v.int_list("isls").unwrap(), &[128, 512, 1024, 2048]);
     assert_eq!(v.usize("osl").unwrap(), 128);
@@ -86,6 +86,31 @@ fn reconfiguring_clears_prior_rows() {
     v.set("isls", ParamValue::IntList(vec![256]));
     b.configure(&v).unwrap();
     assert!(b.rows.is_empty() && b.cursor == 0);
+}
+
+#[test]
+fn warmup_and_measurement_share_the_complete_prompt_set() {
+    let b = configured(vec![4], vec![512]);
+    let plan = prompt_plan(4, 2);
+
+    assert!(prompt_plan(4, 0).warmup_rounds.is_empty());
+    assert_eq!(plan.measured, ["c0", "c1", "c2", "c3"]);
+    assert_eq!(
+        plan.warmup_rounds,
+        [plan.measured.clone(), plan.measured.clone()]
+    );
+    let warmup_prompts: Vec<_> = plan.warmup_rounds[0]
+        .iter()
+        .map(|tag| b.cell_prompt(512, tag))
+        .collect();
+    let measured_prompts: Vec<_> = plan
+        .measured
+        .iter()
+        .map(|tag| b.cell_prompt(512, tag))
+        .collect();
+
+    assert_eq!(warmup_prompts, measured_prompts);
+    assert_ne!(b.cell_prompt(512, "warm"), measured_prompts[0]);
 }
 
 // ---- fixture selection ------------------------------------------------------
@@ -148,13 +173,9 @@ fn prompt_mode_help_does_not_claim_to_force_the_budget() {
     );
 }
 
-// ---- vacuity floor ----------------------------------------------------------
-
 #[test]
 fn vacuity_flags_any_request_below_80_pct_of_osl() {
     let osl = 100;
-    // Exactly at the floor is NOT vacuous (a natural stop a few tokens early
-    // is fine); one token below it is.
     assert!(!cell_is_vacuous(&[evidence(80), evidence(100)], osl));
     assert!(cell_is_vacuous(&[evidence(79), evidence(100)], osl));
     // ONE short request poisons the whole cell — its wall time is in the
@@ -178,6 +199,45 @@ fn a_vacuous_cell_is_not_comparable_and_an_errored_cell_is_not_either() {
     assert!(good.comparable());
     assert!(short.vacuous && !short.comparable());
     assert!(!errored.comparable());
+}
+
+#[test]
+fn a_requested_warm_path_requires_observed_cached_tokens() {
+    let osl = 128;
+    let mut missed = row(4, 100.0, Some(50.0), vec![evidence(128); 4], osl);
+    missed.requests[2].cached_prompt_tokens = 0;
+    missed.cache_uncontrolled = cache_is_uncontrolled(&missed.requests, 1);
+
+    assert!(missed.cache_uncontrolled);
+    assert!(!missed.comparable());
+    assert_eq!(missed.min_cached_prompt(), Some(0));
+    assert_eq!(missed.min_cached_prompt_pct(), Some(0.0));
+    assert!(
+        evidence_line(512, 4, &missed.requests).contains("cached [512/512,512/512,0/512,512/512]")
+    );
+
+    assert!(!cache_is_uncontrolled(&missed.requests, 0));
+    assert!(!cache_is_uncontrolled(&[evidence(128), evidence(128)], 1));
+
+    let mut boundary = evidence(128);
+    boundary.prompt_tokens = 100;
+    boundary.cached_prompt_tokens = 80;
+    assert!(!cache_is_uncontrolled(&[boundary.clone()], 1));
+    boundary.cached_prompt_tokens = 79;
+    assert!(cache_is_uncontrolled(&[boundary], 1));
+
+    let mut missing_usage = evidence(128);
+    missing_usage.prompt_tokens = 0;
+    missing_usage.cached_prompt_tokens = 0;
+    assert!(cache_is_uncontrolled(&[missing_usage], 1));
+
+    let mut b = configured(vec![4], vec![512]);
+    b.rows.push(missed);
+    let table = b.table();
+    assert_eq!(table.columns[10].title, "min cache%");
+    assert_eq!(table.rows[0][8].style, CellStyle::Bad);
+    assert_eq!(table.rows[0][8].text, "100.0*");
+    assert_eq!(table.rows[0][10].text, "0");
 }
 
 // ---- metrics map ------------------------------------------------------------
@@ -208,10 +268,11 @@ fn metrics_map_reports_the_comparable_curve_and_the_evidence_floor() {
     assert_eq!(m.get("c1_ttft_p50_ms"), Some(&120.0));
     assert_eq!(m.get("c4_ttft_p50_ms"), Some(&150.0));
     assert_eq!(m.get("peak_aggregate_tok_s"), Some(&100.0));
-    // The floor sees THROUGH the exclusion: the 1-token requests are the
-    // record of what went wrong.
     assert_eq!(m.get("min_completion_tokens"), Some(&1.0));
+    assert_eq!(m.get("min_cached_prompt_tokens"), Some(&512.0));
+    assert_eq!(m.get("min_cached_prompt_pct"), Some(&100.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
+    assert_eq!(m.get("cache_uncontrolled_cells"), Some(&0.0));
 }
 
 #[test]
@@ -227,8 +288,6 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
     assert_eq!(m.get("min_completion_tokens"), Some(&0.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
 }
-
-// ---- self-verdict (C1 pattern, gate promotion 2026-08-15) -------------------
 
 use super::verdict::{Floors, sweep_verdict};
 use crate::result::VerdictKind;
@@ -278,9 +337,6 @@ fn committed_floors() -> Floors {
     }
 }
 
-/// The calibrated ladder against its committed floors — the PASS the gate
-/// machinery requires now that the sweep is REQUIRED. The reason names every
-/// gated rung so the record reads as evidence, not a bare verdict.
 #[test]
 fn a_clean_sweep_that_clears_every_floor_passes() {
     let m = ladder(&[
@@ -296,7 +352,7 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
         vec![(1, 17.0), (4, 35.0), (8, 52.0), (16, 73.5)]
     );
     assert_eq!(floors.peak, 73.5);
-    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors);
+    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors);
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
     for rung in ["C1", "C4", "C8", "C16", "peak"] {
         assert!(v.reason.contains(rung), "{}", v.reason);
@@ -317,7 +373,7 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
         ("c16_aggregate_tok_s", 98.9),
         ("peak_aggregate_tok_s", 98.9),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &committed);
+    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &committed);
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=8"), "{}", v.reason);
     assert!(
@@ -327,24 +383,21 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
     );
     // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
     let m = ladder(&[("c8_aggregate_tok_s", c8_floor)]);
-    let v = sweep_verdict(&m, 1, 0, 0, 80.0, &floors(0.0, 0.0, c8_floor, 0.0, 0.0));
+    let v = sweep_verdict(&m, 1, 0, 0, 0, 80.0, &floors(0.0, 0.0, c8_floor, 0.0, 0.0));
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
 }
 
-/// Floors all zero (the schema default) keep the pre-gate info verdicts, both
-/// arms verbatim: a standalone sweep has no committed ladder to be judged
-/// against.
 #[test]
 fn all_floors_zero_keeps_the_info_verdicts() {
     let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
-    let clean = sweep_verdict(&m, 4, 0, 0, 80.0, &Floors::default());
+    let clean = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &Floors::default());
     assert_eq!(clean.kind, VerdictKind::Info, "{}", clean.reason);
     assert!(
         clean.reason.contains("no request errors"),
         "{}",
         clean.reason
     );
-    let vac = sweep_verdict(&m, 4, 0, 2, 80.0, &Floors::default());
+    let vac = sweep_verdict(&m, 4, 0, 2, 0, 80.0, &Floors::default());
     assert_eq!(vac.kind, VerdictKind::Info, "{}", vac.reason);
     assert!(vac.reason.contains("not comparable"), "{}", vac.reason);
 }
@@ -361,7 +414,7 @@ fn vacuous_cells_fail_a_gating_sweep_regardless_of_the_floors() {
         ("c16_aggregate_tok_s", 999.0),
         ("peak_aggregate_tok_s", 999.0),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 1, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    let v = sweep_verdict(&m, 4, 0, 1, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
     assert!(v.reason.contains("vacuity floor"), "{}", v.reason);
@@ -373,26 +426,39 @@ fn vacuous_cells_fail_a_gating_sweep_regardless_of_the_floors() {
 fn a_gated_rung_with_no_comparable_cell_fails_as_inconclusive() {
     // C=16 gated but absent from the metrics (its only cell was excluded).
     let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
-    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 94.0, 0.0));
+    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 94.0, 0.0));
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=16"), "{}", v.reason);
     assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
     // Same for the peak floor.
-    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 0.0, 94.0));
+    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 0.0, 94.0));
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("peak"), "{}", v.reason);
 }
 
-/// Request errors fail the sweep gating or not — an errored cell's numbers
-/// are not comparable, and the floors cannot buy them back.
 #[test]
 fn request_errors_fail_the_sweep_in_both_modes() {
     let m = ladder(&[("c1_aggregate_tok_s", 999.0)]);
     for f in [Floors::default(), floors(24.0, 43.0, 63.0, 94.0, 94.0)] {
-        let v = sweep_verdict(&m, 4, 2, 0, 80.0, &f);
+        let v = sweep_verdict(&m, 4, 2, 0, 0, 80.0, &f);
         assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
         assert!(v.reason.contains("2 request(s) failed"), "{}", v.reason);
     }
+}
+
+#[test]
+fn an_unobserved_warm_cache_cannot_clear_the_gate() {
+    let m = ladder(&[
+        ("c1_aggregate_tok_s", 999.0),
+        ("c4_aggregate_tok_s", 999.0),
+        ("c8_aggregate_tok_s", 999.0),
+        ("c16_aggregate_tok_s", 999.0),
+        ("peak_aggregate_tok_s", 999.0),
+    ]);
+    let v = sweep_verdict(&m, 4, 0, 0, 1, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(v.reason.contains("cached-prompt fraction"), "{}", v.reason);
 }
 
 /// The descriptor couples each floor param to the metric its BENCH.toml bound

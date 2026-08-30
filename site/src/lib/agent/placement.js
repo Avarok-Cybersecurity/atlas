@@ -38,6 +38,18 @@ export function required(recipe) {
  * @param {object[]} nodes
  * @returns {object[]}
  */
+/**
+ * What the local node said about why it cannot launch, if it said anything.
+ *
+ * @param {object[]} nodes
+ * @returns {string | null}
+ */
+export function localReason(nodes) {
+  const local = (Array.isArray(nodes) ? nodes : []).find((n) => n?.isLocal);
+  const why = local?.cannotLaunchReason;
+  return typeof why === 'string' && why.trim() ? why.trim() : null;
+}
+
 export function candidates(nodes) {
   const usable = (Array.isArray(nodes) ? nodes : []).filter(
     (n) => n?.canLaunch && (n.isLocal || n.pairing === 'paired')
@@ -82,13 +94,29 @@ export function decide(nodes, recipe, localCanLaunch = null) {
     // and guessing "it can" would flash a launchable UI at a control-only
     // laptop, which is the mistake in the other direction.
     if (localCanLaunch === true) return { kind: 'here' };
+
+    // The agent already told us WHY it cannot launch, and this branch used to
+    // throw that away. A DGX Spark owner who was simply not in the `docker`
+    // group was shown "This machine cannot run models" — a verdict about their
+    // hardware — and offered to pair a second machine to work around a machine
+    // that needed one `usermod`. The reason travels as `cannotLaunchReason`
+    // (ingest.js) and is already used on the control page (verbs.js); it is
+    // used here too now, and the generic wording is the fallback for when the
+    // agent said nothing.
+    const why = localReason(nodes);
     return {
       kind: 'none',
       reason:
         localCanLaunch === false
-          ? 'This machine cannot run models, and no machine that can is paired yet.'
+          ? why
+            ? `This machine cannot run models: ${why}`
+            : 'This machine cannot run models, and no machine that can is paired yet.'
           : 'No machine here can run this yet.',
-      canOnboard: true
+      // Onboarding another machine is the right offer only when this one is
+      // genuinely incapable. When the agent named a fixable cause, the fix is
+      // here, and sending the operator to pair a laptop is a detour.
+      canOnboard: !(localCanLaunch === false && Boolean(why)),
+      detail: localCanLaunch === false ? (why ?? null) : null
     };
   }
 
