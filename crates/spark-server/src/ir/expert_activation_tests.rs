@@ -25,6 +25,8 @@ fn report(layers: Vec<ExpertLayerActivation>, tokens: u64) -> ExpertActivationRe
         num_experts: 8,
         tokens_routed: tokens,
         unattributed_rows: 0,
+        decode_tokens_routed: 0,
+        decode_unattributed_rows: 0,
         layers,
     }
 }
@@ -76,6 +78,37 @@ fn merge_carries_unattributed_rows_forward() {
     b.unattributed_rows = 9;
     a.merge(&b);
     assert_eq!(a.unattributed_rows, 9);
+}
+
+#[test]
+fn merging_a_prefill_only_turn_weakens_the_scope() {
+    // A serve restarted mid-conversation, or a turn that ran before decode
+    // attribution existed, must not let the merged report claim coverage it
+    // does not have. The weaker scope wins.
+    let mut a = report(vec![layer(0, &[1], &[1], &[1.0])], 1);
+    a.scope = "prefill+decode";
+    a.decode_tokens_routed = 40;
+    let mut b = report(vec![layer(0, &[1], &[1], &[1.0])], 1);
+    b.scope = "prefill";
+    a.merge(&b);
+    assert_eq!(a.scope, "prefill", "a prefill-only turn weakens the merge");
+    assert_eq!(a.decode_tokens_routed, 40);
+}
+
+#[test]
+fn merging_two_decode_scoped_turns_keeps_the_scope_and_sums_decode() {
+    let mut a = report(vec![layer(0, &[1], &[1], &[1.0])], 1);
+    a.scope = "prefill+decode";
+    a.decode_tokens_routed = 40;
+    a.decode_unattributed_rows = 3;
+    let mut b = report(vec![layer(0, &[2], &[1], &[1.0])], 1);
+    b.scope = "prefill+decode";
+    b.decode_tokens_routed = 25;
+    b.decode_unattributed_rows = 1;
+    a.merge(&b);
+    assert_eq!(a.scope, "prefill+decode");
+    assert_eq!(a.decode_tokens_routed, 65);
+    assert_eq!(a.decode_unattributed_rows, 4);
 }
 
 #[test]

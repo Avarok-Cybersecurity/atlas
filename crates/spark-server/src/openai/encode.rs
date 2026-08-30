@@ -163,6 +163,8 @@ pub(crate) fn encode_expert_activation(
         num_experts: r.num_experts,
         tokens_routed: r.tokens_routed,
         unattributed_rows: r.unattributed_rows,
+        decode_tokens_routed: r.decode_tokens_routed,
+        decode_unattributed_rows: r.decode_unattributed_rows,
         layers: r
             .layers
             .iter()

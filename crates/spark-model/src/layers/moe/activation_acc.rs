@@ -36,6 +36,17 @@ pub struct ExpertActivationAcc {
     /// numbers describe a prefix of the prompt, and the response says so
     /// rather than presenting itself as complete.
     unattributed_rows: u64,
+    /// Decode positions folded, counted separately from prefill so a consumer
+    /// can see which half of the request the routing came from. The counts
+    /// and mass themselves are merged into one matrix: the category budgeter
+    /// wants what the REQUEST used, and splitting the matrix would double its
+    /// size for no current reader.
+    decode_tokens_routed: u64,
+    /// Decode positions that ran without being folded — MTP verify rows
+    /// (excluded in v1) and any batch wider than the staging buffer. This is
+    /// what separates "decode was captured and used few experts" from "decode
+    /// was not captured".
+    decode_unattributed_rows: u64,
 }
 
 impl ExpertActivationAcc {
@@ -48,6 +59,8 @@ impl ExpertActivationAcc {
             mass: vec![0.0; num_layers * num_experts],
             tokens_routed: 0,
             unattributed_rows: 0,
+            decode_tokens_routed: 0,
+            decode_unattributed_rows: 0,
         }
     }
 
@@ -70,6 +83,31 @@ impl ExpertActivationAcc {
     /// Record `rows` token positions the pass ran but could not stage.
     pub fn note_unattributed_rows(&mut self, rows: u64) {
         self.unattributed_rows += rows;
+    }
+
+    pub fn decode_tokens_routed(&self) -> u64 {
+        self.decode_tokens_routed
+    }
+
+    pub fn decode_unattributed_rows(&self) -> u64 {
+        self.decode_unattributed_rows
+    }
+
+    /// Record `rows` decode positions that ran without being folded.
+    pub fn note_decode_unattributed_rows(&mut self, rows: u64) {
+        self.decode_unattributed_rows += rows;
+    }
+
+    /// Fold one decode row. Same arithmetic as [`Self::fold_row`]; the only
+    /// difference is which counter the position lands in, because a consumer
+    /// needs to know whether a report covers the prompt alone or the whole
+    /// request.
+    pub fn fold_decode_row(&mut self, layer_idx: usize, ids: &[u32], weights: &[f32]) {
+        let before = self.tokens_routed;
+        self.fold_row(layer_idx, ids, weights);
+        if self.tokens_routed > before {
+            self.decode_tokens_routed += self.tokens_routed - before;
+        }
     }
 
     /// Fold one row (one token position) of one layer.

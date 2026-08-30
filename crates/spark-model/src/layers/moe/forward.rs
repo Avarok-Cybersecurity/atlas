@@ -60,6 +60,8 @@ impl MoeLayer {
     pub fn forward(
         &self,
         input: DevicePtr,
+        // First batch row this call owns; expert telemetry stages here.
+        row_base: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -289,6 +291,20 @@ impl MoeLayer {
                 }
             })?;
         }
+
+        // Per-request expert telemetry. One row, staged at this call's batch
+        // row so a per-sequence decode loop attributes each sequence's routing
+        // to the sequence that produced it. A device-to-device copy, so it
+        // records into the decode graph and re-executes on every replay.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            row_base,
+            1,
+            top_k as usize,
+            stream,
+        )?;
 
         if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;

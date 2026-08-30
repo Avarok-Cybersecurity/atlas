@@ -16,6 +16,8 @@ impl MoeLayer {
     pub fn forward_ep_dispatch(
         &self,
         input: DevicePtr,
+        // First batch row this call owns; forwarded to the base path.
+        row_base: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -144,6 +146,6 @@ impl MoeLayer {
         //   - comm.group_end()
         //   - Weighted sum into output
         let _ = routing; // suppress unused warning until dispatch is wired
-        self.forward(input, ctx, stream)
+        self.forward(input, row_base, ctx, stream)
     }
 }

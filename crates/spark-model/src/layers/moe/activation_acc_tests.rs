@@ -130,6 +130,46 @@ fn unattributed_rows_are_recorded_not_hidden() {
 }
 
 #[test]
+fn decode_rows_are_counted_separately_from_prefill() {
+    // A consumer has to be able to tell which half of the request the routing
+    // came from: a prefill-only report and a whole-request report describe
+    // different things, and the wire `scope` is derived from these counters.
+    let mut a = acc();
+    a.fold_row(0, &[1, 2], &[0.5, 0.5]);
+    a.fold_row(0, &[1, 3], &[0.5, 0.5]);
+    a.fold_decode_row(0, &[4, 5], &[0.5, 0.5]);
+
+    assert_eq!(a.tokens_routed(), 3, "every folded row counts once overall");
+    assert_eq!(a.decode_tokens_routed(), 1, "one of them was a decode row");
+}
+
+#[test]
+fn a_decode_row_that_folds_nothing_counts_nothing() {
+    // The zero-weight case again, on the decode path: a staged row the pass
+    // never wrote must not inflate the decode count and make a request look
+    // like it decoded more than it did. This is the counter the drain's
+    // per-step accounting is checked against end to end (prefill rows equal
+    // prompt tokens, decode rows equal completion tokens minus one), which is
+    // how a double-drain shows up as a number rather than as silence.
+    let mut a = acc();
+    a.fold_decode_row(0, &[0, 0], &[0.0, 0.0]);
+    assert_eq!(a.decode_tokens_routed(), 0);
+    assert_eq!(a.tokens_routed(), 0);
+}
+
+#[test]
+fn unattributed_decode_rows_are_tracked_apart_from_prefill_ones() {
+    // MTP verify rows are staged but not folded in v1. Counting them in the
+    // prefill bucket would say the PROMPT was partly unmeasured, which is a
+    // different defect with a different fix.
+    let mut a = acc();
+    a.note_unattributed_rows(3);
+    a.note_decode_unattributed_rows(7);
+    assert_eq!(a.unattributed_rows(), 3);
+    assert_eq!(a.decode_unattributed_rows(), 7);
+}
+
+#[test]
 fn empty_accumulator_reports_no_layers() {
     let a = acc();
     assert!(a.to_layers().is_empty());

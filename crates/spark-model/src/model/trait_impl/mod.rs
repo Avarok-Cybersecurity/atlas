@@ -137,7 +137,10 @@ impl Model for TransformerModel {
     fn decode(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         self.stamp_decode_moe_single(seq.adapter_slot);
-        self.decode_dispatch(token, seq, _stream)
+        let logits = self.decode_dispatch(token, seq, _stream)?;
+        // One sequence, one row.
+        self.drain_decode_expert_telemetry(&mut [seq], _stream);
+        Ok(logits)
     }
     fn decode_batch(
         &self,
@@ -148,6 +151,17 @@ impl Model for TransformerModel {
         self.stamp_overlay_route_batch(seqs);
         self.stamp_decode_moe_batch(seqs);
         let r = self.decode_batch_dispatch(tokens, seqs, stream);
+        if r.is_ok() && seqs.len() > 1 {
+            // Row i is seqs[i] by construction: the dispatcher places
+            // sequence i's token at row i, and the layer staged under the row
+            // its caller passed.
+            //
+            // `seqs.len() > 1` because the single-sequence case is delegated
+            // to `Self::decode`, which drains it. Draining here too would fold
+            // one forward pass twice and report a request that routed to
+            // twice as many positions as it ran — measured, not theorised.
+            self.drain_decode_expert_telemetry(seqs, stream);
+        }
         if r.is_err() {
             // A mid-capture refuse (MoE LoRA router/mixed/non-active) in the
             // batched-decode compute leaves the capture stream recording; release

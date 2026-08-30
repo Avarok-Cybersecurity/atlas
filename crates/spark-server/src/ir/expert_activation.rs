@@ -53,11 +53,11 @@ impl ExpertLayerActivation {
 /// The whole per-request report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpertActivationReport {
-    /// Which part of the request these numbers describe. `"prefill"` today:
-    /// decode routing is not attributable to a sequence yet (batched decode
-    /// reaches the FFN once per sequence with no row index), so it is
-    /// excluded rather than guessed at. Stated on the wire so a consumer
-    /// cannot read prompt routing as whole-request routing.
+    /// Which part of the request these numbers describe:
+    /// `"prefill+decode"` when the serve attributes both, `"prefill"` when it
+    /// can only attribute the prompt. Stated on the wire because the two are
+    /// not interchangeable — a consumer that assumed whole-request coverage
+    /// from a prefill-only report would under-count every generated token.
     pub scope: &'static str,
     pub top_k: u32,
     pub num_experts: u32,
@@ -70,6 +70,14 @@ pub struct ExpertActivationReport {
     /// than the staging buffer, or the non-final chunks of a two-phase
     /// prefill). Non-zero means the report covers a prefix.
     pub unattributed_rows: u64,
+    /// Of `tokens_routed`, how many came from DECODE rather than the prompt.
+    pub decode_tokens_routed: u64,
+    /// Decode positions that ran without being folded: MTP verify rows, which
+    /// v1 stages but does not attribute because a rejected draft's routing
+    /// belongs to a rolled-back token. Non-zero on a speculating serve, and
+    /// the number a consumer needs to tell partial decode coverage from a
+    /// request that genuinely routed little.
+    pub decode_unattributed_rows: u64,
     /// Only layers that routed appear; dense layers of a hybrid model are
     /// absent rather than present-and-empty.
     pub layers: Vec<ExpertLayerActivation>,
@@ -85,6 +93,13 @@ impl ExpertActivationReport {
     pub fn merge(&mut self, other: &Self) {
         self.tokens_routed += other.tokens_routed;
         self.unattributed_rows += other.unattributed_rows;
+        self.decode_tokens_routed += other.decode_tokens_routed;
+        self.decode_unattributed_rows += other.decode_unattributed_rows;
+        // A merge keeps the WEAKER scope: if either turn could not attribute
+        // decode, the merged report cannot claim it did.
+        if other.scope == "prefill" {
+            self.scope = "prefill";
+        }
         for layer in &other.layers {
             match self.layers.iter_mut().find(|l| l.layer == layer.layer) {
                 Some(existing) => existing.merge(layer),
@@ -119,11 +134,19 @@ impl ExpertActivationReport {
             })
             .collect();
         Self {
-            scope: "prefill",
+            // The accumulator only sees decode rows on a build that drains
+            // them, so the presence of decode attribution IS the scope.
+            scope: if acc.decode_tokens_routed() > 0 || acc.decode_unattributed_rows() > 0 {
+                "prefill+decode"
+            } else {
+                "prefill"
+            },
             top_k: acc.top_k(),
             num_experts: acc.num_experts() as u32,
             tokens_routed: acc.tokens_routed(),
             unattributed_rows: acc.unattributed_rows(),
+            decode_tokens_routed: acc.decode_tokens_routed(),
+            decode_unattributed_rows: acc.decode_unattributed_rows(),
             layers,
         }
     }

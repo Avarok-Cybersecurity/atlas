@@ -78,7 +78,19 @@ pub struct ExpertActivation {
     /// Token positions that ran but are not in the counts. Non-zero means
     /// this report covers a prefix of the request.
     pub unattributed_rows: u64,
+    /// Of `tokens_routed`, how many came from decode rather than the prompt.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub decode_tokens_routed: u64,
+    /// Decode positions that ran without being attributed (MTP verify rows).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub decode_unattributed_rows: u64,
     pub layers: Vec<ExpertLayerActivation>,
+}
+
+/// Omit a zero counter rather than emit it: a field that is always present
+/// and always 0 trains readers to ignore it.
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 /// One MoE layer's routing, as parallel ascending-by-expert-id arrays.

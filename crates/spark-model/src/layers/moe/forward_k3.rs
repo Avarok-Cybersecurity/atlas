@@ -11,7 +11,9 @@ impl MoeLayer {
     /// Expert buffers sized for 3*top_k slots. Output at moe_output() [3, H].
     pub fn forward_k3(
         &self,
-        input: DevicePtr, // [3, H] BF16 — normed MoE input for 3 tokens
+        input: DevicePtr,
+        // First batch row this call owns; expert telemetry stages here.
+        row_base: usize, // [3, H] BF16 — normed MoE input for 3 tokens
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -141,6 +143,16 @@ impl MoeLayer {
         }
 
         super::union_stats::maybe_sample_expert_union(ctx, indices_dev, 3, top_k as usize, stream);
+        // Staged, not folded — see forward_k2.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            row_base,
+            3,
+            top_k as usize,
+            stream,
+        )?;
 
         // 3-5. Fused expert dispatch for 3 tokens
         let expert_gate_out = ctx.buffers.expert_gate_out();

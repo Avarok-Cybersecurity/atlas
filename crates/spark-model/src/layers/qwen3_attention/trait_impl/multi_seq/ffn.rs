@@ -107,7 +107,7 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-            self.ffn.forward_k3(normed2, fwd, stream)?;
+            self.ffn.forward_k3(normed2, 0, fwd, stream)?;
             let moe_out = fwd.buffers.moe_output();
             ops::residual_add(
                 fwd.gpu,
@@ -132,7 +132,7 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-            self.ffn.forward_k2(normed2, fwd, stream)?;
+            self.ffn.forward_k2(normed2, 0, fwd, stream)?;
             let moe_out = fwd.buffers.moe_output();
             ops::residual_add(
                 fwd.gpu,
@@ -274,7 +274,7 @@ impl Qwen3AttentionLayer {
             for pair in 0..(n / 2) {
                 let off = pair * 2 * h;
                 self.ffn
-                    .forward_k2(normed2.offset(off * bf16), fwd, stream)?;
+                    .forward_k2(normed2.offset(off * bf16), pair * 2, fwd, stream)?;
                 ops::residual_add(
                     fwd.gpu,
                     self.residual_add_k,
@@ -351,7 +351,7 @@ impl Qwen3AttentionLayer {
                             n <= cap,
                             "shortcut carry capacity {cap} < decode batch {n}"
                         );
-                        let sc_out = moe_ffn.forward(normed2_i, fwd, stream)?;
+                        let sc_out = moe_ffn.forward(normed2_i, i, fwd, stream)?;
                         if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
                             m.apply_zero_expert(sc_out, normed2_i, 1, fwd, stream)?;
                         }
@@ -362,7 +362,7 @@ impl Qwen3AttentionLayer {
                             stream,
                         )?;
                     }
-                    let moe_out = self.ffn.forward(normed2_i, fwd, stream)?;
+                    let moe_out = self.ffn.forward(normed2_i, i, fwd, stream)?;
                     ops::residual_add(
                         fwd.gpu,
                         self.residual_add_k,
