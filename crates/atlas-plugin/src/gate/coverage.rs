@@ -632,12 +632,20 @@ pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
     excludes: CONTAMINATION_EXCLUDES,
 }];
 
-pub const NOT_REQUIRED: [(&str, &str); 5] = [
+pub const NOT_REQUIRED: [(&str, &str); 6] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
          deliberately never a gate: the required gates already cost hours per PR, and \
          its warm-path numbers (primed prefix cache + SSM snapshot) are not regression evidence",
+    ),
+    (
+        "expert-categories",
+        "a measurement tool that produces a CONFIG ARTIFACT, not a number: it maps prompt \
+         categories to the experts they route to so --expert-category can load a subset. \
+         There is nothing to gate on — the table describes the MODEL's routing, not the \
+         change under test, and every MoE has a different expert space, so no committed \
+         baseline could exist",
     ),
     (
         "bfcl-full",

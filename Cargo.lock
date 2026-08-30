@@ -164,6 +164,7 @@ version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-closure",
+ "atlas-core",
  "atlas-governance",
  "base64 0.22.1",
  "futures",

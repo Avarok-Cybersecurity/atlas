@@ -70,6 +70,12 @@ pub struct ChatOutcome {
     /// instrumentation" (None) can, which is exactly the distinction the
     /// decode-floor gate's vacuity pin makes.
     pub accepted_prediction_tokens: Option<usize>,
+    /// Server-reported MoE expert routing for this request's prompt
+    /// (`usage.expert_activation`), verbatim. `None` when the field was
+    /// absent — which means the serve is not instrumented, NOT that the
+    /// prompt used no experts. The expert-categories benchmark refuses
+    /// rather than reading the first as the second.
+    pub expert_activation: Option<Value>,
 }
 
 /// POST `/v1/chat/completions` with `"stream": true` and measure it.
@@ -178,6 +184,12 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
             .and_then(Value::as_u64)
         {
             out.accepted_prediction_tokens = Some(v as usize);
+        }
+        // Captured raw, not parsed: keeping the shape knowledge in the one
+        // benchmark that consumes it leaves this client generic, and lets
+        // that benchmark say precisely which field was malformed.
+        if let Some(v) = usage.get("expert_activation") {
+            out.expert_activation = Some(v.clone());
         }
     }
     let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {
