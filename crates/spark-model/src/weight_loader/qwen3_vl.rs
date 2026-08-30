@@ -9,7 +9,7 @@ use spark_runtime::weights::WeightStore;
 use super::{ModelWeightLoader, WeightFormat};
 use crate::layer::TransformerLayer;
 use crate::layers::vision_encoder::{MergerLayer, ViTBlock};
-use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, VisionEncoder};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer, VisionEncoder};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_quantized_nvfp4};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, dense, detect_nvfp4_variant, load_kv_scales,
@@ -77,6 +77,7 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
                 stream,
             )?;
             let mut moe_layer = MoeLayer::new(
+                MoeSite::Layer(i),
                 moe_weights,
                 config.num_experts,
                 Some(gate_nvfp4),

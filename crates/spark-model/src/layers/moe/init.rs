@@ -6,13 +6,14 @@ use super::*;
 
 impl MoeLayer {
     pub fn new(
+        site: MoeSite,
         weights: MoeWeights,
         num_experts: usize,
         gate_nvfp4: Option<QuantizedWeight>,
         gpu: &dyn GpuBackend,
         config: &atlas_core::config::ModelConfig,
     ) -> Result<Self> {
-        Self::new_with_hash(weights, num_experts, gate_nvfp4, None, gpu, config)
+        Self::new_with_hash(site, weights, num_experts, gate_nvfp4, None, gpu, config)
     }
 
     /// Like [`MoeLayer::new`] but with an optional DeepSeek-V4 hash-routing
@@ -20,6 +21,7 @@ impl MoeLayer {
     /// hash-routed layer.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_hash(
+        site: MoeSite,
         weights: MoeWeights,
         num_experts: usize,
         gate_nvfp4: Option<QuantizedWeight>,
@@ -66,6 +68,7 @@ impl MoeLayer {
         let _ = num_experts;
         let rms_norm_k = gpu.kernel("norm", "rms_norm")?;
         Ok(Self {
+            site,
             weights,
             // Default: standard NVFP4 (FP8-E4M3 per-16 + f32 global). The
             // DeepSeek-V4 native-MXFP4 loader overrides this to `Mxfp4E8m0`

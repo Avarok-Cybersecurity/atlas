@@ -13,12 +13,48 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
+/// Where an [`MoeLayer`] sits in the model.
+///
+/// Carried explicitly rather than as a bare index because not every MoE is a
+/// target-model layer, and the two consumers — per-request expert telemetry
+/// and boot-time expert loading — must treat those cases differently rather
+/// than fall back on a sentinel index that reads as layer 0:
+///
+///  - [`MoeSite::Layer`] routing is the model's own, so it is what an
+///    `[expert_categories]` table describes and what telemetry attributes.
+///  - [`MoeSite::MtpHead`] routing belongs to the speculative drafter, not
+///    the target model. Mixing it into a category's expert set would record
+///    experts the target never used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoeSite {
+    /// A target-model transformer layer, at this absolute layer index (the
+    /// same numbering `[expert_categories] layers."<L>"` uses).
+    Layer(usize),
+    /// The MTP speculative-decoding head's internal MoE.
+    MtpHead,
+}
+
+impl MoeSite {
+    /// The target-model layer index, or `None` for an MoE that is not one of
+    /// the model's own layers.
+    pub fn layer_idx(self) -> Option<usize> {
+        match self {
+            MoeSite::Layer(i) => Some(i),
+            MoeSite::MtpHead => None,
+        }
+    }
+}
+
 /// MoE feed-forward network component.
 ///
 /// Not a `TransformerLayer` — used as a component inside layers
 /// for the FFN/MoE block after post-attention norm.
 #[allow(dead_code)]
 pub struct MoeLayer {
+    /// Where this MoE sits in the model. Set at construction; read by expert
+    /// telemetry (to attribute routing to a layer) and by boot-time expert
+    /// loading (to pick this layer's row of the category table).
+    pub site: MoeSite,
     pub weights: MoeWeights,
     /// Quant format of the ROUTED experts as landed in GPU memory. `Nvfp4`
     /// (default) = packed E2M1 + FP8-E4M3 per-16 block scales + f32 per-tensor

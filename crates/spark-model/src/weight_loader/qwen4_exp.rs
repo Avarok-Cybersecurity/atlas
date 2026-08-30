@@ -258,7 +258,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         for i in 0..config.num_hidden_layers {
             let lp = config.layer_prefix(i);
             let f0 = free_now(gpu);
-            let ffn = ffn::build_moe(store, &lp, config, gpu, variant)?;
+            let ffn = ffn::build_moe(store, &lp, i, config, gpu, variant)?;
             let f1 = free_now(gpu);
             moe_bytes += f0.saturating_sub(f1);
 

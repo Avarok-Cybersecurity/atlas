@@ -22,12 +22,13 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
-use crate::layers::{FfnComponent, MoeLayer};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite};
 use crate::weight_map::{Nvfp4Variant, load_moe_qwen35, quantize_to_nvfp4};
 
 pub(super) fn build_moe(
     store: &WeightStore,
     lp: &str,
+    layer_idx: usize,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     variant: Nvfp4Variant,
@@ -61,7 +62,14 @@ pub(super) fn build_moe(
         stream,
     )?);
 
-    let mut moe = MoeLayer::new(weights, config.num_experts, gate_nvfp4, gpu, config)?;
+    let mut moe = MoeLayer::new(
+        MoeSite::Layer(layer_idx),
+        weights,
+        config.num_experts,
+        gate_nvfp4,
+        gpu,
+        config,
+    )?;
 
     // CUTLASS grouped NVFP4 gate_up/down (ATLAS_HOLO_MOE_GROUPED_CUTLASS).
     // qwen4_exp serves from the checkpoint-native ORIGINAL [N,K/16] scales — it

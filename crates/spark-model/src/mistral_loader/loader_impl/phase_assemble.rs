@@ -10,7 +10,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use super::ctx::MistralLayerCtx;
 use crate::layer::TransformerLayer;
 use crate::layers::qwen3_attention::MlaWeights;
-use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer};
 use crate::weight_map::{AttentionWeights, DenseWeight, QuantizedWeight, dense, load_moe_mistral};
 
 pub(super) fn assemble_layer(
@@ -153,7 +153,14 @@ fn build_moe_ffn(
     }
     match load_moe_mistral(store, i, config.num_experts, gpu, config) {
         Ok(moe_weights) => {
-            match MoeLayer::new(moe_weights, config.num_experts, None, gpu, config) {
+            match MoeLayer::new(
+                MoeSite::Layer(i),
+                moe_weights,
+                config.num_experts,
+                None,
+                gpu,
+                config,
+            ) {
                 Ok(mut moe) => {
                     // Skip MoE transpose for Mistral on single GPU: saves
                     // ~1.5 GB per layer (54 GB total). Prefill uses the

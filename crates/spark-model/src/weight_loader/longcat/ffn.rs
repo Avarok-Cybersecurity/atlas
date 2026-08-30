@@ -8,7 +8,7 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 
-use crate::layers::{FfnComponent, MoeLayer};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite};
 use crate::weight_map::{
     DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_f32_as_bf16,
     quantize_to_nvfp4, quantized_any,
@@ -70,6 +70,7 @@ pub(super) fn bf16_dense_ffn() -> bool {
 pub(super) fn build_shortcut_moe(
     store: &WeightStore,
     layer_prefix: &str,
+    layer_idx: usize,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
 ) -> Result<FfnComponent> {
@@ -212,7 +213,14 @@ pub(super) fn build_shortcut_moe(
         router_pre_norm: None,
         correction_bias: Some(correction_bias),
     };
-    let mut moe = MoeLayer::new(weights, config.num_experts, None, gpu, config)?;
+    let mut moe = MoeLayer::new(
+        MoeSite::Layer(layer_idx),
+        weights,
+        config.num_experts,
+        None,
+        gpu,
+        config,
+    )?;
     if fp8 {
         // Fails LOUD. A silent fall-through here would leave the NULL NVFP4
         // experts installed above as the only expert weights, and every token
