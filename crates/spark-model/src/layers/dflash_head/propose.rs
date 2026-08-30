@@ -285,7 +285,18 @@ impl BlockDiffusionDraftHead {
         // allocated paged blocks, do it now. We allocate enough blocks
         // to cover the full ctx_hidden_acc plus a safety margin for γ.
         // Block_size matches from_weights.rs:68 (=16).
-        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (#649, 2026-08-19): the
+        // paged drafter cache is the proven path and a bare `--dflash` launch
+        // IS the record path. `=0` is the kill switch.
+        //
+        // ★ This line was reverted to opt-in by a merge on 2026-08-30 — #817's
+        // allocator region was taken whole and #817 branched from a tree that
+        // predates the flip. Cost, measured the same night: propose 19.8 ->
+        // 618.7 ms and 49.9 -> 5.5 tok/s, because the legacy path launches one
+        // dense_gemv per accumulated ctx row over a 262 MB fc weight. Nothing
+        // announced it; the run just got nine times slower. `option_b_defaults_on`
+        // exists so the next merge cannot do it silently.
+        let option_b_enabled = super::option_b_enabled();
         let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
             // Lazy block table init. ctx slots come from precompute over the
             // accumulated target hiddens; γ slots come from the layer body.

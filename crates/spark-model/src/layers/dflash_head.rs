@@ -572,6 +572,53 @@ pub struct BlockDiffusionDraftHead {
 }
 
 mod dflash2;
+/// Whether the Option-B paged drafter cache is on. Default ON since the 54.5
+/// record config (#649); `ATLAS_DFLASH_OPTION_B=0` is the kill switch.
+///
+/// Split into a reader and a pure predicate because the POLARITY is the whole
+/// point and it has already been flipped by accident: a merge on 2026-08-30
+/// took #817's allocator region whole, #817 branched from a tree predating the
+/// flip, and `!= Some("0")` silently became `== Some("1")`. Measured cost of
+/// that one character-class: propose 19.8 -> 618.7 ms and 49.9 -> 5.5 tok/s,
+/// because the legacy path launches one `dense_gemv` per accumulated ctx row
+/// over a 262 MB `fc` weight. Nothing logged a change.
+pub(super) fn option_b_enabled() -> bool {
+    option_b_from(std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref())
+}
+
+/// The predicate itself, pure over the raw value so a test can exercise the
+/// PRODUCTION code rather than a copy of it. `set_var` is unsafe and
+/// process-global, so a test that mutated the environment would race every
+/// other test in this binary.
+pub(super) fn option_b_from(v: Option<&str>) -> bool {
+    v != Some("0")
+}
+
+#[cfg(test)]
+mod option_b_tests {
+    use super::option_b_from;
+
+    #[test]
+    fn option_b_defaults_on_and_only_zero_turns_it_off() {
+        // THE REGRESSION, and the reason this test exists: unset must mean ON.
+        // A bare `--dflash` launch is the record path with no env block (#649).
+        // When a merge turned this into opt-in, the only symptom was a run
+        // nine times slower.
+        assert!(
+            option_b_from(None),
+            "unset must be ON — this is the 9x line"
+        );
+        assert!(option_b_from(Some("1")));
+        // House convention: `=0` is the kill switch, and nothing else is.
+        assert!(!option_b_from(Some("0")));
+        assert!(
+            option_b_from(Some("true")),
+            "only the exact string 0 disables"
+        );
+        assert!(option_b_from(Some("")), "empty is not a kill switch");
+    }
+}
+
 mod forward_block;
 mod forward_block_layer;
 mod forward_block_layer_paged;
