@@ -61,8 +61,10 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "expert-categories",
     name: "Expert Categorization",
     summary: SUMMARY,
-    detail: "Sends a committed corpus of short prompts grouped by category (python, rust, \
-             sql, math, translation, creative writing, science, chat, tool calling, legal) \
+    detail: "Sends a committed corpus of 2000 short prompts across 20 categories (four \
+             programming languages, shell, SQL, regex, config, maths, physics, biology, \
+             medicine, finance, legal, history, philosophy, translation, creative writing, \
+             chat, tool calling) \
              and reads each response's per-layer MoE expert routing from \
              usage.expert_activation. Per category and layer it keeps the smallest set of \
              experts covering `coverage` of the routing MASS — not the most frequently \
@@ -72,8 +74,11 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              carrying the full per-expert distribution and the cross-category overlap. \
              REQUIRES a serve started with --expert-telemetry on an MoE checkpoint; a \
              response without the routing report stops the run rather than averaging a \
-             zero. Not a gate: it produces a config artifact, not a pass/fail number.",
-    duration_hint: "~10-20 min",
+             zero. Also reports EAS-1.0, the chance-corrected Expert Alignment Score: how \
+             much of the uncertainty about a prompt's category is resolved by watching \
+             which experts it routed to, 1.0 = determined, 0.0 = nothing. Not a gate: it \
+             produces a config artifact and a diagnostic, not a pass/fail number.",
+    duration_hint: "~45-75 min",
     updated: "2026-08-30",
     // No committed baseline anywhere: the table describes whatever model it
     // is pointed at, and every MoE has a different expert space.
@@ -184,12 +189,14 @@ impl Benchmark for ExpertCategories {
             ParamSpec::new(
                 "prompts_per_category",
                 "Prompts per category",
-                "How many of each category's corpus rows to send, taken in file order. 32 \
-                 gives roughly 20k weighted expert draws per layer per category, enough \
-                 for the budgeted set to be stable run to run. Small values are for \
-                 smoke-testing the wiring — the tail of the set churns below about 8.",
-                ParamKind::Int { min: 1, max: 64 },
-                ParamValue::Int(32),
+                "How many of each category's corpus rows to send, taken in file order. The \
+                 corpus holds 100 per category; 100 gives roughly 24k weighted expert \
+                 draws per layer per category, which is what makes both the budgeted set \
+                 and the EAS null stable run to run. Small values are for smoke-testing \
+                 the wiring — the tail of the set churns below about 8, and EAS is noisy \
+                 below about 25.",
+                ParamKind::Int { min: 1, max: 100 },
+                ParamValue::Int(100),
             ),
             ParamSpec::new(
                 "max_tokens",
@@ -330,9 +337,12 @@ impl Benchmark for ExpertCategories {
         );
 
         let model = handle.target().model.clone();
-        let sha = report::corpus_sha256(include_str!(
-            "../../../assets/expert-categories/corpus.jsonl"
-        ));
+        // Hash the WHOLE corpus, not the drawn subset: the identity of the
+        // corpus a score is defined against does not change with how many of
+        // its rows one run happened to send.
+        let sha = corpus::load()
+            .map(|r| corpus::content_hash(&r))
+            .unwrap_or_default();
         let toml = report::toml_block(&model, &sha, self.max_tokens, &budgets);
         let stats = report::stats_json(
             &model,

@@ -10,19 +10,29 @@
 
 use super::*;
 
-const CATEGORIES: [&str; 10] = [
+const CATEGORIES: [&str; 20] = [
     "code-python",
     "code-rust",
+    "code-javascript",
+    "code-c-systems",
+    "shell-devops",
     "sql",
+    "regex",
+    "json-config",
     "math",
+    "science-physics",
+    "science-biology",
+    "medicine-clinical",
+    "finance-business",
+    "legal-formal",
+    "history-humanities",
+    "philosophy-ethics",
     "translation",
     "creative-writing",
-    "science",
     "general-chat",
     "tool-calling",
-    "legal-formal",
 ];
-const PER_CATEGORY: usize = 32;
+const PER_CATEGORY: usize = 100;
 
 // ---------------------------------------------------------------- Path A
 
@@ -120,8 +130,8 @@ fn prompts_are_short_and_self_contained() {
     for r in &rows {
         let words = r.prompt.split_whitespace().count();
         assert!(
-            (10..=80).contains(&words),
-            "{} has {words} words, outside 10..=80: {:?}",
+            (8..=45).contains(&words),
+            "{} has {words} words, outside 8..=45: {:?}",
             r.id,
             r.prompt
         );
@@ -169,18 +179,23 @@ fn selection_parsing_treats_all_and_empty_as_everything() {
 }
 
 #[test]
+fn the_manifest_agrees_with_the_rows() {
+    // A report quotes the manifest. If it could drift from the rows, the
+    // report would describe a corpus that was not the one measured.
+    let (m, rows) = load_with_manifest().expect("corpus parses");
+    assert_eq!(m.categories, CATEGORIES.to_vec());
+    assert_eq!(m.prompts_per_category, PER_CATEGORY);
+    assert_eq!(rows.len(), m.categories.len() * m.prompts_per_category);
+    assert_eq!(m.name, "atlas-expert-categorization-corpus");
+}
+
+#[test]
 fn corpus_content_is_pinned() {
     // Changing the corpus changes the measurement. This hash makes that show
     // up as a failing test, at which point the descriptor's `updated` date
     // must move too — that date is what decides whether two runs are
     // comparable.
-    let rows = load().unwrap();
-    let joined: String = rows
-        .iter()
-        .map(|r| format!("{}\u{1}{}\u{1}{}", r.category, r.id, r.prompt))
-        .collect::<Vec<_>>()
-        .join("\u{2}");
-    let hash = super::super::report::corpus_sha256(&joined);
+    let hash = content_hash(&load().unwrap());
     assert_eq!(
         hash, CORPUS_SHA256,
         "the corpus changed — update CORPUS_SHA256 and bump DESCRIPTOR.updated"
@@ -190,4 +205,4 @@ fn corpus_content_is_pinned() {
 /// SHA-256 over `category\x01id\x01prompt` rows joined by `\x02`. Content,
 /// not bytes, so reformatting the JSONL does not trip it but editing a
 /// prompt does.
-const CORPUS_SHA256: &str = "62b8eb8ea44eca3ef86e50697f895a548eaf523a279ccfe8301f593ff1241288";
+const CORPUS_SHA256: &str = "c898b248ab284636f406ed2589f03d746cae88dcc15262e8ae521ecf276b9f63";

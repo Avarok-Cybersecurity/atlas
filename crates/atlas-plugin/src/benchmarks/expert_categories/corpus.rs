@@ -2,6 +2,10 @@
 
 //! The category prompt corpus, compiled into the binary.
 //!
+//! One JSON document with a manifest and a flat row list, rather than JSONL:
+//! the manifest lets a report name the corpus it measured, and a standardized
+//! score needs its corpus to be a citable object rather than a bag of lines.
+//!
 //! `include_str!` rather than a provisioned artifact: nothing is downloaded,
 //! so the provisioning machinery BFCL needs would buy nothing, and shipping
 //! the rows inside the binary means a run cannot silently measure a
@@ -18,7 +22,7 @@
 
 use anyhow::{Context, Result, bail};
 
-const CORPUS: &str = include_str!("../../../assets/expert-categories/corpus.jsonl");
+const CORPUS: &str = include_str!("../../../assets/expert-categories/corpus.json");
 
 /// One prompt row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,31 +32,99 @@ pub struct Row {
     pub prompt: String,
 }
 
+/// The corpus document's own declaration of what it contains.
+///
+/// Carried so a run can state the corpus it measured rather than inferring
+/// it: `categories` here is the authoritative order, and a mismatch against
+/// the rows is a corpus defect the loader refuses rather than papers over.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Manifest {
+    pub name: String,
+    pub categories: Vec<String>,
+    pub prompts_per_category: usize,
+}
+
 /// Parse the whole corpus in file order.
 pub fn load() -> Result<Vec<Row>> {
-    let mut rows = Vec::new();
-    for (i, line) in CORPUS.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| format!("corpus line {} is not valid JSON", i + 1))?;
-        let field = |name: &str| -> Result<String> {
-            v.get(name)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("corpus line {}: missing `{name}`", i + 1))
-        };
+    Ok(load_with_manifest()?.1)
+}
+
+/// Parse the corpus and its manifest.
+pub fn load_with_manifest() -> Result<(Manifest, Vec<Row>)> {
+    let doc: serde_json::Value =
+        serde_json::from_str(CORPUS).context("the compiled-in corpus is not valid JSON")?;
+    let str_field = |v: &serde_json::Value, name: &str| -> Result<String> {
+        v.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("corpus: missing `{name}`"))
+    };
+    let manifest = Manifest {
+        name: str_field(&doc, "name")?,
+        categories: doc
+            .get("categories")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("corpus: missing `categories`"))?
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| anyhow::anyhow!("corpus: a category name is not a string"))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        prompts_per_category: doc
+            .get("prompts_per_category")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("corpus: missing `prompts_per_category`"))?
+            as usize,
+    };
+
+    let rows_val = doc
+        .get("rows")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("corpus: missing `rows`"))?;
+    let mut rows = Vec::with_capacity(rows_val.len());
+    for (i, v) in rows_val.iter().enumerate() {
         rows.push(Row {
-            category: field("category")?,
-            id: field("id")?,
-            prompt: field("prompt")?,
+            category: str_field(v, "category").with_context(|| format!("corpus row {i}"))?,
+            id: str_field(v, "id").with_context(|| format!("corpus row {i}"))?,
+            prompt: str_field(v, "prompt").with_context(|| format!("corpus row {i}"))?,
         });
     }
     if rows.is_empty() {
         bail!("the compiled-in corpus is empty");
     }
-    Ok(rows)
+    // The manifest is what a report quotes; if it disagreed with the rows the
+    // report would describe a corpus that was not measured.
+    let found = categories(&rows);
+    if found != manifest.categories {
+        bail!(
+            "corpus manifest lists {:?} but the rows contain {:?}",
+            manifest.categories,
+            found
+        );
+    }
+    Ok((manifest, rows))
+}
+
+/// Content fingerprint of the corpus: SHA-256 over `category\x01id\x01prompt`
+/// rows joined by `\x02`, in file order.
+///
+/// Over CONTENT, not file bytes, so reformatting the JSON does not change the
+/// corpus's identity while editing a single prompt does. That identity is
+/// part of an EAS score's meaning — the category taxonomy sets the ceiling a
+/// model can reach, so a score from another corpus is a different
+/// measurement, not a better or worse one.
+pub fn content_hash(rows: &[Row]) -> String {
+    use sha2::{Digest, Sha256};
+    let joined = rows
+        .iter()
+        .map(|r| format!("{}\u{1}{}\u{1}{}", r.category, r.id, r.prompt))
+        .collect::<Vec<_>>()
+        .join("\u{2}");
+    let mut h = Sha256::new();
+    h.update(joined.as_bytes());
+    format!("{:x}", h.finalize())
 }
 
 /// Category names in file order (first appearance).
