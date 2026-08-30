@@ -105,13 +105,41 @@ model whose experts perfectly encoded twenty arbitrary categories would score
 1.0 and would probably be a worse language model, so the target is the best
 EAS at no quality cost, not the highest EAS.
 
-Measured on Qwen3.6-35B-A3B-FP8 (10 categories, prefill only): **EAS
-0.17886**, every layer clearing the null. The per-layer curve is the useful
-part — 0.06 at layers 0-2, peaking at 0.277 around layer 20, back to 0.09 by
-layer 39. Routing is category-agnostic at both ends of the model. That is
-both an argument for per-layer coverage budgets instead of one global
-threshold, and a plain explanation of the quality cost below: at 0.18, most
-routing is not about the category at all.
+Measured on Qwen3.6-35B-A3B-FP8, 20 categories, 500 whole requests
+(prefill+decode): **EAS 0.17840**, EAS on selection counts 0.16021, every
+layer clearing the permutation null.
+
+Three things in that run are worth more than the headline number.
+
+**The per-layer curve.** 0.047 at layer 0, peaking at 0.290 around layer 20,
+back to 0.099 by layer 39 — and the same shape appeared in an earlier
+10-category prefill-only run. Routing is close to category-agnostic at both
+ends of the model and carries what signal there is in the middle. That is a
+measured argument for per-layer coverage budgets instead of one global
+threshold: the layers where restriction is most dangerous are identifiable
+before any quality is lost.
+
+**Per category, the four code categories score LOWEST** (code-python 0.096,
+code-javascript 0.098, code-c-systems 0.106, code-rust 0.125) while distinct
+registers score highest (creative-writing 0.287, general-chat 0.262,
+translation 0.251). The overlap matrix explains it: the code categories share
+0.72-0.76 of their budgeted experts with each other, and
+medicine-clinical/science-biology share 0.71. Near-duplicate categories
+suppress each other's scores, because expert identity genuinely cannot tell
+you which of four code categories a prompt came from. That is a property of
+the TAXONOMY, not a defect in the model, and it caps what any model can score
+on this corpus.
+
+**At 0.178, most routing is not about the category at all.** Which is the
+plain explanation of the quality cost below: a coverage budget that keeps 90%
+of a category's routing mass is still cutting experts the model uses for
+reasons that have nothing to do with the category.
+
+Note that a global EAS is only comparable across models on the SAME corpus.
+The 10-category and 20-category runs above landed at nearly the same value,
+but two things changed at once (category count and decode coverage), so read
+that as a coincidence of composition rather than evidence of cross-corpus
+stability. The per-layer curve replicating is the robust part.
 
 ## Step 2 — Boot-time expert loading
 
