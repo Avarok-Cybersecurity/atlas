@@ -64,6 +64,35 @@ pub fn moe_topk_softmax(
         .launch(stream)
 }
 
+/// Mask unloaded experts out of the router (boot-time expert loading).
+///
+/// `mask` is `[num_experts]` f32 — 0.0 for a resident expert, -inf for one
+/// `--expert-category` did not load. Applied in place to `[n, num_experts]`
+/// logits immediately before top-k, so the selection cannot name an expert
+/// whose weights are absent.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_bel_mask(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_logits: DevicePtr,
+    mask: DevicePtr,
+    n: u32,
+    num_experts: u32,
+    total: u32,
+    stream: u64,
+) -> Result<()> {
+    let threads = 256u32;
+    let blocks = total.div_ceil(threads).max(1);
+    KernelLaunch::new(gpu, kernel)
+        .grid([blocks, 1, 1])
+        .block([threads, 1, 1])
+        .arg_ptr(gate_logits)
+        .arg_ptr(mask)
+        .arg_u32(n)
+        .arg_u32(num_experts)
+        .launch(stream)
+}
+
 /// GPU-side MoE top-K sigmoid routing (Nemotron-H).
 ///
 /// Uses sigmoid scoring (not softmax). Bias affects expert selection only,

@@ -69,6 +69,7 @@ fn setup_model(
     );
 
     let loader = spark_runtime::weights::SafetensorsLoader {
+        bel: None,
         ep_rank: 0,
         ep_world_size: 1,
         num_experts: 0,

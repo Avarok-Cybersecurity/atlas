@@ -340,6 +340,10 @@ impl MoeLayer {
         // logits BEFORE top-k (device-clean, no capture guard). No-op unless a
         // router delta is installed.
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
+        // BEL: make experts this category never loaded unselectable.
+        // LAST touch before top-k — a LoRA delta folded after the mask could
+        // lift a masked expert back over the selection threshold.
+        self.apply_bel_mask(ctx, gate_logits, n as usize, false, stream)?;
 
         // 2. Batched topK dispatch (sigmoid+bias for MiniMax/DeepSeek-V3,
         //    softmax for everyone else — selection by `correction_bias_dev`).

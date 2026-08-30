@@ -402,6 +402,11 @@ pub(crate) fn load_model(
 
     // 2b. Resolve TP / EP topology and set on model config.
     spark_runtime::progress::phase(4, "topology");
+    // `--expert-category`: resolve the compiled-in table into a plan BEFORE
+    // the weight load, which reads it to decide what to skip, and before the
+    // model build, whose MoE layers read it to build their router masks.
+    serve_phases::resolve_expert_category(args.expert_category.as_deref(), &ptx_set, &mut config)?;
+
     let serve_phases::Topology {
         world_size,
         tp_size: _tp_size,

@@ -226,6 +226,10 @@ impl MoeLayer {
         // logits BEFORE top-k (reproduces PEFT `mlp.gate`). No-op unless a router
         // delta is installed (ATLAS_LORA_EXPERTS=1).
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
+        // BEL: make experts this category never loaded unselectable.
+        // LAST touch before top-k — a LoRA delta folded after the mask could
+        // lift a masked expert back over the selection threshold.
+        self.apply_bel_mask(ctx, gate_logits, n as usize, false, stream)?;
 
         // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
         //    + correction bias (detected via `correction_bias_dev`);

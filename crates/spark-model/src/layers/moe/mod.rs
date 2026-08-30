@@ -397,6 +397,20 @@ pub struct MoeLayer {
     // path. Used to test whether the kernel choice is the dominant cause
     // of low DFlash drafter acceptance on FP4/FP8 targets.
     pub is_dflash_capture_layer: bool,
+    /// Boot-time expert loading (`--expert-category`): `[num_experts]` f32,
+    /// 0.0 for a resident expert and -inf for one whose weights were never
+    /// loaded. Added to the router logits before top-k so the selection
+    /// cannot name an absent expert. `None` when the serve loads this
+    /// layer's experts in full, which is every serve without the flag.
+    pub(crate) bel_mask_dev: Option<DevicePtr>,
+    /// Expert count the mask is indexed by — the id space top-k selects
+    /// from. Held beside the mask so the two cannot disagree.
+    pub(crate) bel_num_experts: usize,
+    /// `moe_bel_mask_bf16` / `_f32`. `KernelHandle(0)` on a build without
+    /// them, which `apply_bel_mask` turns into a refusal rather than an
+    /// unmasked route.
+    pub(crate) moe_bel_mask_bf16_k: KernelHandle,
+    pub(crate) moe_bel_mask_f32_k: KernelHandle,
     /// Feature-1 (MoE expert + router LoRA): this layer's installed router +
     /// routed-expert deltas + apply scratch. `None` = no adapter / feature off
     /// → the base MoE path is byte-identical. Set by
@@ -440,6 +454,7 @@ pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod activation_acc;
+mod bel;
 pub use activation_acc::ExpertActivationAcc;
 mod dump;
 mod forward;

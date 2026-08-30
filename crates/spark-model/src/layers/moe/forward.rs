@@ -185,6 +185,9 @@ impl MoeLayer {
             if single_seq_decode {
                 self.apply_router_lora_prefill(router_in, gate_logits, 1, ctx, stream)?;
             }
+            // BEL: unselectable experts, applied after the LoRA fold so a
+            // delta cannot lift a masked expert back over the threshold.
+            self.apply_bel_mask(ctx, gate_logits, 1, false, stream)?;
 
             prof!("topk", {
                 if let Some(tid2eid) = self.tid2eid_dev {

@@ -61,7 +61,7 @@ pub(super) fn load_moe_inner(
 
     let mut experts = Vec::with_capacity(num_experts);
     for e in 0..num_experts {
-        if skip_routed_experts || !config.is_local_expert(e) {
+        if skip_routed_experts || !crate::weight_map::expert_resident(config, &p, e) {
             experts.push(ExpertWeight::null());
         } else {
             experts.push(ExpertWeight {
