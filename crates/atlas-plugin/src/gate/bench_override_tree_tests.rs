@@ -104,7 +104,13 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "qwen3.8-27b".into(),
                 "concurrency-sweep-dflash2".into(),
                 "osl".into(),
-                "320".into(),
+                // 200, not the plain gate's 320: at 320 this gate's C=1 cell
+                // is deterministically vacuity-flagged (completion ~229 =
+                // 71.5% of budget against an 80% floor), so no threshold makes
+                // it certifiable. Lowering the budget below the natural stop
+                // makes every finish a "length" finish — the comparability
+                // property the vacuity rule protects.
+                "200".into(),
             ),
         ],
         "the committed override validation must not pass vacuously or skip a pin"

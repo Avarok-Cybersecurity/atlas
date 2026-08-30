@@ -61,22 +61,39 @@ fn committed_floors() -> Floors {
 
 #[test]
 fn a_clean_sweep_that_clears_every_floor_passes() {
+    // The 2026-08-30 re-cut, from 3 reps of the WIDENED C=1..128 instrument.
+    // The rung set is read from the committed file rather than re-typed, so
+    // adding a rung moves this assertion instead of failing it; the VALUES are
+    // pinned because a silent floor change is the thing worth catching.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 25.5),
-        ("c4_aggregate_tok_s", 47.5),
-        ("c8_aggregate_tok_s", 67.6),
-        ("c16_aggregate_tok_s", 98.9),
-        ("peak_aggregate_tok_s", 98.9),
+        ("c1_aggregate_tok_s", 18.6),
+        ("c2_aggregate_tok_s", 27.7),
+        ("c4_aggregate_tok_s", 44.8),
+        ("c8_aggregate_tok_s", 60.7),
+        ("c16_aggregate_tok_s", 88.3),
+        ("c32_aggregate_tok_s", 103.8),
+        ("c64_aggregate_tok_s", 115.4),
+        ("c128_aggregate_tok_s", 115.2),
+        ("peak_aggregate_tok_s", 115.4),
     ]);
     let floors = committed_floors();
     assert_eq!(
         floors.per_c,
-        vec![(1, 17.0), (4, 35.0), (8, 52.0), (16, 73.5)]
+        vec![
+            (1, 17.5),
+            (2, 25.0),
+            (4, 37.5),
+            (8, 48.0),
+            (16, 84.0),
+            (32, 98.5),
+            (64, 109.5),
+            (128, 109.5)
+        ]
     );
-    assert_eq!(floors.peak, 73.5);
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors);
+    assert_eq!(floors.peak, 109.5);
+    let v = sweep_verdict(&m, 8, 0, 0, 0, 80.0, &floors);
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
-    for rung in ["C1", "C4", "C8", "C16", "peak"] {
+    for rung in ["C1", "C2", "C4", "C8", "C16", "C32", "C64", "C128", "peak"] {
         assert!(v.reason.contains(rung), "{}", v.reason);
     }
 }
@@ -87,19 +104,32 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
 #[test]
 fn a_sweep_below_one_floor_fails_naming_the_cell() {
     let committed = committed_floors();
-    let c8_floor = committed.per_c[2].1;
+    // Index 3 is C=8 on the widened rung list (1, 2, 4, 8, ...). Found by
+    // value rather than by position so a rung inserted ahead of it cannot
+    // silently retarget this test at a different cell.
+    let c8_floor = committed
+        .per_c
+        .iter()
+        .find(|(c, _)| *c == 8)
+        .expect("C=8 is a committed rung")
+        .1;
+    // A hair under the C=8 floor, everything else comfortably clear.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 25.5),
-        ("c4_aggregate_tok_s", 47.5),
-        ("c8_aggregate_tok_s", 51.2),
-        ("c16_aggregate_tok_s", 98.9),
-        ("peak_aggregate_tok_s", 98.9),
+        ("c1_aggregate_tok_s", 18.6),
+        ("c2_aggregate_tok_s", 27.7),
+        ("c4_aggregate_tok_s", 44.8),
+        ("c8_aggregate_tok_s", 47.2),
+        ("c16_aggregate_tok_s", 88.3),
+        ("c32_aggregate_tok_s", 103.8),
+        ("c64_aggregate_tok_s", 115.4),
+        ("c128_aggregate_tok_s", 115.2),
+        ("peak_aggregate_tok_s", 115.4),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &committed);
+    let v = sweep_verdict(&m, 8, 0, 0, 0, 80.0, &committed);
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=8"), "{}", v.reason);
     assert!(
-        v.reason.contains("51.2") && v.reason.contains("52.0"),
+        v.reason.contains("47.2") && v.reason.contains(&format!("{c8_floor:.1}")),
         "{}",
         v.reason
     );
