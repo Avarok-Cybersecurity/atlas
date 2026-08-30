@@ -374,6 +374,19 @@ pub trait ModelWeightLoader {
             .map(Some)
     }
 
+    /// Will this loader ever bind a vision encoder for a multimodal checkpoint?
+    ///
+    /// Default `true` — "load everything" is the safe answer, so a loader that
+    /// forgets to override this can never lose weights it needs. A loader whose
+    /// port is deliberately text-only overrides it to `false`, and the weight
+    /// loader then skips the tower's tensors instead of reading a gigabyte of
+    /// unified memory that nothing will bind. `build_model` still frees an
+    /// unbound tower afterwards (keyed off the bind result, not off this), so
+    /// this is a peak-memory optimisation, not the correctness gate.
+    fn binds_vision_encoder(&self) -> bool {
+        true
+    }
+
     /// Load vision encoder weights (returns None for text-only models).
     fn load_vision_encoder(
         &self,

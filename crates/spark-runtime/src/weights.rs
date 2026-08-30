@@ -251,6 +251,12 @@ impl WeightStore {
         self.weights.is_empty()
     }
 
+    /// Device bytes the store still holds. Not the on-disk load estimate:
+    /// this shrinks as `free_matching` drops tensors the binders replaced.
+    pub fn resident_bytes(&self) -> usize {
+        self.weights.values().map(|t| t.byte_size()).sum()
+    }
+
     /// Iterator over all weight names.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.weights.keys().map(|s| s.as_str())

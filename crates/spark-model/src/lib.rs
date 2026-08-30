@@ -24,6 +24,7 @@ pub mod layer;
 pub mod layers;
 pub mod lora;
 pub mod mistral_loader;
+pub mod mtp_layout;
 pub mod model;
 pub mod precision_schedule;
 pub mod preflight;

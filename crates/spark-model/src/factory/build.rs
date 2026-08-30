@@ -191,6 +191,12 @@ pub fn build_model(
     // pre-KV, of which the arena (872 MB) and the GDN prefill scratch (88 MB)
     // explain under a gigabyte. Without these three lines the only way to
     // find the rest is to guess.
+    //
+    // `MemTrace` (campaign) marks EVERY build step; upstream's free_before/after
+    // pair below is kept because it is the one step with a per-layer average.
+    // Reconciling the two into a single reporter belongs to the M0 telemetry
+    // commit, not to this rebase.
+    let mut mem = MemTrace::new(gpu.as_ref());
     let free_before_layers = gpu.free_memory().unwrap_or(0);
     let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
     let free_after_layers = gpu.free_memory().unwrap_or(0);
@@ -205,15 +211,20 @@ pub fn build_model(
             / 1e6
             / config.num_hidden_layers.max(1) as f64,
     );
+    mem.mark("load_layers");
     let embed = loader.load_embedding(&store, &config, gpu.as_ref())?;
+    mem.mark("load_embedding");
     // n-gram fused embedding (LongCat family; None everywhere else). Built
     // before `config` is moved into the model. Staged for `max_batch_tokens`
     // because that is exactly the widest embed the arena can be handed.
     let ngram_embed =
         loader.load_ngram_embedding(&store, &config, gpu.as_ref(), max_batch_tokens)?;
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
+    mem.mark("load_final_norm");
     let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
+    mem.mark("load_lm_head");
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
+    mem.mark("load_mtp_weights_multi");
 
     // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
     // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path and keep it
@@ -281,17 +292,70 @@ pub fn build_model(
             None
         };
 
-    // Capability warning: user asked for `--speculative` but the model has no
-    // MTP head bundled, so speculative decoding will silently no-op. Surface
-    // this loudly so the user knows the flag was inert.
-    if use_speculative && mtp_weights.is_empty() {
-        tracing::warn!(
-            "`--speculative` was requested but no MTP weights were loaded for this \
-             model — speculative decoding will be disabled. Either drop `--speculative` \
-             or use a checkpoint that ships an MTP head (e.g. `mtp.safetensors`)."
-        );
+    // Capability warning: user asked for `--speculative` but nothing bound an
+    // MTP head, so speculative decoding will silently no-op.
+    //
+    // 🪤 `mtp_weights` is only the GENERIC (`load_mtp_weights_multi`) path.
+    // GLM-5.3 and DeepSeek-V4 bind architecturally distinct modules above and
+    // leave that vec empty, so testing it alone printed "no MTP weights were
+    // loaded" two lines under "GLM-5.3 MTP draft module loaded (layers.45)".
+    // Every binding path has to be consulted, and when none of them bound
+    // anything the checkpoint still has to be asked whether it SHIPS an MTP
+    // head — "Atlas can't read this layout" and "there is no head here" are
+    // different faults and want different messages.
+    if use_speculative
+        && mtp_weights.is_empty()
+        && glm_mtp_module.is_none()
+        && v4_mtp_module.is_none()
+    {
+        match crate::mtp_layout::detect_in_store(&store, &config) {
+            None => tracing::warn!(
+                "`--speculative` was requested but this checkpoint ships no MTP head — \
+                 speculative decoding will be disabled. Either drop `--speculative` or \
+                 use a checkpoint that ships one (e.g. `mtp.safetensors`)."
+            ),
+            Some(layout) => tracing::error!(
+                "`--speculative` was requested and this checkpoint DOES ship MTP weights \
+                 ({layout:?}), but no loader bound them for model_type '{}' — speculative \
+                 decoding will be disabled. This is an Atlas capability gap, not a \
+                 checkpoint problem.",
+                config.model_type,
+            ),
+        }
     }
+    mem.mark("mtp modules (glm/v4)");
     let vision_encoder = loader.load_vision_encoder(&store, &config, gpu.as_ref())?;
+    mem.mark("load_vision_encoder");
+
+    // A multimodal checkpoint's vision tower is read by the weight loader like
+    // everything else, but only a loader that implements `load_vision_encoder`
+    // ever binds it. GLM-5.3's port is text-only by design
+    // (`weight_loader/glm5_next.rs`: "Vision tower — present in the checkpoint,
+    // out of scope for the text port"), so its 1.05 GiB of `model.visual.*`
+    // sat resident on BOTH ranks for the life of the process, bound to nothing,
+    // subtracted from the KV budget computed below.
+    //
+    // Freeing is keyed off the bind result, not off a model list: if the encoder
+    // was built, `vision_encoder` is `Some` and nothing is touched — including
+    // the loaders that bind zero-copy from these very pointers. The day a GLM
+    // vision encoder lands, this stops firing on its own.
+    if vision_encoder.is_none() {
+        let (n, bytes) = store.free_matching(gpu.as_ref(), |name| {
+            name.starts_with("model.visual.")
+                || name.starts_with("model.vision")
+                || name.starts_with("visual.")
+        })?;
+        if n > 0 {
+            tracing::info!(
+                "Vision tower: {n} tensors ({:.2} GiB) released — this build binds no vision \
+                 encoder for model_type '{}', so the tower was resident and unreachable. \
+                 Text capability is unchanged; image input was already unsupported here.",
+                bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                config.model_type,
+            );
+        }
+    }
+    mem.mark("vision reclaim");
 
     // If the checkpoint's `quantization_config.ignore_modules` lists MTP
     // (e.g. Sehyo/Qwen3.5-35B-A3B-NVFP4 ignores `mtp.*`), the MTP weights
@@ -360,6 +424,12 @@ pub fn build_model(
     // computed a few lines below, so it has to happen HERE — after every
     // `load_*` reader above, before `BufferArena::new` and `gpu.free_memory()`.
     loader.prune_after_load(&mut store, &config, gpu.as_ref())?;
+    mem.mark("prune_after_load");
+    tracing::info!(
+        "WeightStore after prune: {} tensors, {:.3} GiB still resident",
+        store.len(),
+        store.resident_bytes() as f64 / (1024.0 * 1024.0 * 1024.0),
+    );
 
     // ── Step 4: Create buffer arena ──
     let buffers = BufferArena::new(
@@ -984,4 +1054,51 @@ pub fn build_model(
         }
     }
     Ok(Box::new(model))
+}
+
+
+/// Per-step GPU residency ledger for model construction.
+///
+/// Every `load_*` step below allocates into the same GB10 unified pool the KV
+/// cache is later sized from, but until now the only numbers in the log were
+/// the loader's on-disk estimate ("Weights: 99.64 GB" — which is
+/// `estimate_load_bytes`, an ON-DISK byte sum of the tensors this rank reads,
+/// NOT residency) and one aggregate free-memory reading. Anything between them
+/// — binder re-uploads, dtype conversions, the store originals a loader forgot
+/// to drop — was unattributable, and a 4-5 GB residual is the difference
+/// between K=3 fitting and not.
+///
+/// This walks `gpu.free_memory()` across the build and prints a signed delta
+/// per step. Log-only: it allocates nothing and changes no semantics.
+struct MemTrace<'a> {
+    gpu: &'a dyn GpuBackend,
+    last: usize,
+    start: usize,
+}
+
+impl<'a> MemTrace<'a> {
+    fn new(gpu: &'a dyn GpuBackend) -> Self {
+        let f = gpu.free_memory().unwrap_or(0);
+        Self {
+            gpu,
+            last: f,
+            start: f,
+        }
+    }
+
+    /// Log the free-memory delta since the previous mark. Negative = allocated.
+    fn mark(&mut self, step: &str) {
+        let Ok(now) = self.gpu.free_memory() else {
+            return;
+        };
+        let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+        let delta = now as i128 - self.last as i128;
+        tracing::info!(
+            "build residency: {step:<26} {:+9.3} GiB   (cumulative {:8.3} GiB, free {:7.3} GiB)",
+            delta as f64 / (1024.0 * 1024.0 * 1024.0),
+            gib(self.start) - gib(now),
+            gib(now),
+        );
+        self.last = now;
+    }
 }

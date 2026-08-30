@@ -288,6 +288,16 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
+    /// Text-only port. `weight_loader/glm5_next.rs` classifies `model.visual.*`
+    /// as `TensorRole::Vision` and excludes it from `is_required()`; nothing in
+    /// this loader binds it. Saying so here keeps the tower off the GPU in the
+    /// first place — on the LibertAIDAI NVFP4 checkpoint that is 1.05 GiB per
+    /// rank, sitting between `--speculative --num-drafts 2` and a serve that
+    /// fits (measured 2026-08-29: K=3 at 32 K needs 13.58 GiB against 12.07 free).
+    fn binds_vision_encoder(&self) -> bool {
+        false
+    }
+
     /// All three halves shard: DSA by head, KDA by head/channel, the MLP by width (TP) and by
     /// expert set (EP).
     fn supports_tp(&self) -> bool {
@@ -616,4 +626,28 @@ pub(super) fn bind_expert_at(
 /// [`upload_f32_as_bf16`], named for the MTP loader's call site.
 pub(super) fn upload_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
     upload_f32_as_bf16(gpu, v)
+}
+
+#[cfg(test)]
+mod vision_capability_tests {
+    use super::Glm5NextWeightLoader;
+    use crate::weight_loader::ModelWeightLoader;
+
+    #[test]
+    fn glm5_next_declares_itself_text_only() {
+        // Mutation gate: flipping this to `true` re-loads 1.05 GiB/rank of
+        // vision tower that nothing binds, and K=3 stops fitting at 32 K.
+        assert!(
+            !Glm5NextWeightLoader.binds_vision_encoder(),
+            "GLM-5.3's port binds no vision encoder; saying otherwise makes the \
+             weight loader read the tower into unified memory for nothing"
+        );
+    }
+
+    #[test]
+    fn a_multimodal_loader_still_declares_true_by_default() {
+        // The trait default must stay "load everything" — a loader that never
+        // overrides this must never lose weights.
+        assert!(crate::weight_loader::qwen35::Qwen35WeightLoader.binds_vision_encoder());
+    }
 }

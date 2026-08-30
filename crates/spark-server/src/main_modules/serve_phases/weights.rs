@@ -84,6 +84,19 @@ pub(crate) fn load_weight_store(
             loader.peak_memory_multiplier = mult;
             loader.skip_activation_scales = skip_activation_scales(config);
             loader.skip_mtp = skip_mtp(config);
+            // A text-only port never binds the vision tower, so don't read it.
+            // The reclaim in `build_model` still catches every other path, but
+            // it runs AFTER the inference-buffer preflight has already sized
+            // (and possibly refused) the serve against the free memory the
+            // tower was occupying.
+            loader.skip_vision = !binds_vision(config);
+            if loader.skip_vision {
+                tracing::info!(
+                    "Vision tower: not loaded — the weight loader for model_type '{}' is a \
+                     text-only port and binds no vision encoder.",
+                    config.model_type,
+                );
+            }
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -405,4 +418,13 @@ fn skip_activation_scales(config: &ModelConfig) -> bool {
 /// that are then discarded is memory the KV cache needs.
 fn skip_mtp(config: &ModelConfig) -> bool {
     matches!(config.model_type.as_str(), "qwen4_exp")
+}
+
+/// Will the model's weight loader bind a vision encoder?
+///
+/// Unresolvable model types answer `true`: never skip weights on a guess.
+fn binds_vision(config: &atlas_core::config::ModelConfig) -> bool {
+    spark_model::factory::loader_for_config(config)
+        .map(|l| l.binds_vision_encoder())
+        .unwrap_or(true)
 }
