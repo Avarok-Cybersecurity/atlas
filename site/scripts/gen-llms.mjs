@@ -124,6 +124,8 @@ push(
   `- Discord: ${discordUrl}`,
   `- X: ${xUrl}`,
   '- Site: https://atlasinference.io',
+  '- Documentation: https://docs.atlasinference.io — full book, also at /llms.txt',
+  '- Engineering blog: https://blog.atlasinference.io — also at /llms.txt',
   '',
   '## License',
   '',

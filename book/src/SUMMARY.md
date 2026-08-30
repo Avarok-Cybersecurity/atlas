@@ -10,6 +10,7 @@
 - [Installation](./getting-started/installation.md)
 - [Quickstart](./getting-started/quickstart.md)
 - [Supported Models](./getting-started/models.md)
+- [Troubleshooting](./getting-started/troubleshooting.md)
 
 # Part II — Architecture
 

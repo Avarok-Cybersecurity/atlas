@@ -868,3 +868,127 @@ the token file and asserts both `app.html` files match it. Control: putting
 Post-merge state: 496 site tests, 27 blog tests, contrast PASS, built
 `--bg:#0f1216`, canvas present, `theme-color` correct, and `index` and `control`
 both audit clean including main's new control-page work.
+
+## Wave 17 — the docs vhost, and llms.txt on all three properties
+
+Authorised by the user after the defect was reported in wave 2.
+
+### The docs vhost was worse than reported
+
+Reported: HTML documents served with no security headers. Measured before
+touching anything, across every response class:
+
+| URL | before | after |
+|---|---|---|
+| `/index.html` | cc=300, **no security headers** | cc=300, all three |
+| `/` | cc=300, **no security headers** | cc=300, all three |
+| `/book.js` | cc=1y immutable, **none** | cc=1h must-revalidate, all three |
+| `/css/general.css` | cc=1y immutable, **none** | cc=1h must-revalidate, all three |
+| `/favicon.png` | cc=30d, **none** | cc=30d, all three |
+| `/404.html` | cc=300, **none** | cc=300, all three |
+| `/architecture` (301) | no cc, all three | unchanged |
+
+Not just HTML — **every** response matching any of the three `location` blocks,
+i.e. all content. Only the 301, which matches no location, was ever protected.
+The fix is the `map` used on the blog; cache values were preserved byte for
+byte, with an empty `default` because nginx omits a header whose value is empty.
+
+### The second defect, which is why the first was invisible
+
+After the reload, the origin was correct but the public site was not. Cloudflare
+was serving cached copies: `cf-cache-status=HIT`, `book.js` **age 15.6 days**,
+`css/general.css` **age 29.4 days**.
+
+Cause: those files were served `immutable, max-age=31536000`. `immutable` is a
+promise that a URL's bytes never change, and it is only keepable for a
+content-hashed name. **10 of 604** CSS/JS files under the docs root are hashed
+(rustdoc's); mdBook regenerates the other ~594 — `book.js`, `css/general.css`,
+`searcher.js` — under fixed names on every build. So every docs deploy has been
+invisible to returning visitors and to the CDN for up to a year, and so was this
+header fix.
+
+The map now marks only genuinely hashed filenames immutable
+(`~*[.-][0-9a-f]{8,}\.(?:css|js)$`) and gives everything else
+`max-age=3600, must-revalidate`.
+
+**Not fixed, and it needs the user:** the objects already in Cloudflare's edge
+cache still carry the old headers and a year-long TTL. The token on the origin
+(`/var/www/cloudflare_dns.pat.txt`) reads zones but returns *Authentication
+error* on `purge_cache` — it is DNS-scoped, as its name says. A purge of
+`docs.atlasinference.io` is required, from the dashboard or a token with the
+Cache Purge permission.
+
+### llms.txt on all three
+
+| property | source | how it stays current |
+|---|---|---|
+| atlasinference.io | `site/scripts/gen-llms.mjs` (existed) | already generated; now also cross-links docs and blog |
+| blog.atlasinference.io | `blog/src/routes/llms.txt/+server.js` (new) | prerendered from the post index, like the feed and the sitemap |
+| docs.atlasinference.io | `book/scripts-gen-llms.mjs` → `book/src/llms.txt` (new) | generated from `SUMMARY.md`, the book's own table of contents |
+
+None is hand-maintained. A hand-written index of the same posts or chapters goes
+stale the first time one is added, and a stale index is worse than none for the
+agents that read it — they cannot tell.
+
+Each file links to the other two, which is the point: an agent that finds one
+has no other way to reach the rest, since none of the three hostnames is
+derivable from the others.
+
+Two CI guards in `docs.yml`: `--check` fails the build if `llms.txt` has drifted
+from `SUMMARY.md`, and after `mdbook build` a step asserts
+`book/output/llms.txt` exists — mdBook copying non-markdown files out of `src/`
+is documented behaviour this repo does not control, so it is checked rather than
+assumed.
+
+`blog/src/lib/llms-txt.test.js` — 7 tests. Controls: removing the docs
+cross-link from the marketing site's file, and stripping the blockquote summary
+from the book's, each take it to **6 pass / 1 fail**.
+
+### Verified live
+
+All three return 200 as `text/plain`, each links to the other two, and the blog
+and docs both still return all three security headers on `/llms.txt` — the file
+is served from a `location` block, which is exactly where the original defect
+came from.
+
+## Wave 18 — the docs purge, and the same defect on a third vhost
+
+**The Cloudflare purge ran.** With the token's permissions widened, 607 docs
+asset URLs were purged in 21 batches, zero failures — targeted by URL, never
+`purge_everything`, so the marketing site's and blog's caches were untouched.
+Every docs response class now carries all three security headers **at the
+edge**, not just at the origin:
+
+| | status | security | cf-cache |
+|---|---|---|---|
+| `/index.html`, `/`, `/404.html` | 200 | 3/3 | DYNAMIC |
+| `/book.js`, `/css/general.css`, `/searcher.js` | 200 | 3/3 | MISS |
+| `/favicon.png` | 200 | 3/3 | MISS |
+| `/architecture` (301), `/llms.txt` | 301 / 200 | 3/3 | DYNAMIC |
+
+**Cloudflare rewrites `max-age` on this zone.** The origin sends 3600; the edge
+serves 14400. That is the zone's *Browser Cache TTL* set to 4 hours rather than
+"Respect Existing Headers", so origin `max-age` values here are advisory. Worth
+knowing before anyone tunes one and concludes it did nothing.
+
+### The third vhost had it too
+
+Sweeping the other properties to confirm they were unaffected showed
+`atlasinference.io` at **2 of 3** — no `Referrer-Policy`. Investigating found
+the same `add_header` defect, and two consequences, both measured
+**origin-direct** because Cloudflare injects its own `alt-svc` and the edge view
+would have hidden one of them:
+
+- Its three security headers sat inside `location /`, which therefore discarded
+  the server-level `Alt-Svc` — so the HTTP/3 advertisement never reached a
+  visitor on any proxied response.
+- `location ~ /\.` declares no `add_header` and inherited none, so the dotfile
+  refusal went out with no security headers at all.
+
+Fixed the same way as the other two: one header set at server level, no
+location declaring any. Verified origin-direct and at the edge, on `/`,
+`/control.html` and `/.env`. `Alt-Svc` is back on proxied responses.
+
+All three vhosts are now in the repo as SSOT — `site/deploy/nginx/`,
+`blog/deploy/nginx/`, `book/deploy/nginx/` — which is how the third one was
+found: the pattern was worth comparing against.
