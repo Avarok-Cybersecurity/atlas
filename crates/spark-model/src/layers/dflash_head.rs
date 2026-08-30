@@ -101,6 +101,12 @@ pub struct DflashKernels {
     /// Kill-switch: ATLAS_NO_DFLASH_FP8_RT=1. provenance-id:
     /// 526f6e616c6420522e205374657369616b
     pub fp8_gemv_rt2: KernelHandle,
+    /// MAX_M=16 sibling of `fp8_gemv_rt2` for the γ>8 propose window
+    /// (2026-08-29: STEP_TIMING measured propose 18.2ms rt2 vs 38.0ms tile
+    /// fallback at flag 9 — the entire γ>8 step tax). `.0 == 0` on stale
+    /// kernel builds → tile path, exactly as before.
+    /// provenance-id: 526f6e616c6420522e205374657369616b
+    pub fp8_gemv_rt2_16: KernelHandle,
     /// DFlash2 two-tap grouped dynamic conv (`kernels/gb10/common/dflash2.cu`).
     /// `.0 == 0` on targets without the module (DFlash2 then refuses to arm).
     pub dflash2_conv2: KernelHandle,

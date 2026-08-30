@@ -636,6 +636,27 @@ impl BlockDiffusionDraftHead {
                             h_local,
                             stream,
                         )?;
+                    } else if self.kernels.fp8_gemv_rt2_16.0 != 0
+                        && self.gamma as u32 <= 16
+                        && h_local.is_multiple_of(16)
+                        && super::fp8_rt_enabled()
+                    {
+                        // γ>8 propose window: MAX_M=16 rt2 sibling over the
+                        // vocab. 2026-08-29 STEP_TIMING measured the whole
+                        // γ>8 step tax in this propose tail (18.2 -> 38.0ms
+                        // at flag 9); the m16 tile below pads 50%+ of its
+                        // rows and traced 12.2ms/step at ~104 GB/s.
+                        ops::fp8_gemv_rowscale_batch16_rt2(
+                            gpu,
+                            self.kernels.fp8_gemv_rt2_16,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            self.gamma as u32,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
                     } else {
                         // `fp8_gemm_t_row_scaled_m16` is a single-warp
                         // M_TILE=16 kernel: valid only to M=16. One sequence

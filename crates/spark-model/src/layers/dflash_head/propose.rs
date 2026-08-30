@@ -281,89 +281,71 @@ impl BlockDiffusionDraftHead {
         }
 
         // ── Phase 2 Option B: lazy block_table allocation ─────────────
-        // DEFAULT-ON (ATLAS_DFLASH_OPTION_B=0 opts out to the legacy
-        // full-rebuild path): every working DFlash recipe sets it, the
-        // KV budget reserves for its drafter blocks (factory/build.rs
-        // dflash_reserve), and the O(ctx²) rebuild it replaces is the
-        // slow path. When enabled and the proposer hasn't yet allocated
-        // paged blocks, do it now — enough to cover the full
-        // ctx_hidden_acc plus a safety margin for γ. Block_size matches
-        // from_weights.rs:68 (=16).
-        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() != Some("0");
+        // When ATLAS_DFLASH_OPTION_B=1 and the proposer hasn't yet
+        // allocated paged blocks, do it now. We allocate enough blocks
+        // to cover the full ctx_hidden_acc plus a safety margin for γ.
+        // Block_size matches from_weights.rs:68 (=16).
+        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() == Some("1");
         let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
-            // Incremental block allocation. ctx slots come from precompute
-            // over the accumulated target hiddens; γ slots come from the
-            // layer body. The pool holds ONE max-seq-len sequence's worth of
-            // blocks, so the old up-front `max_ctx_len + γ` grab was a
-            // winner-takes-the-pool bug at C>=2: the first sequence took all
-            // ~2049 blocks and every other stream's propose failed at block
-            // 0/2049 — drafting blind for its whole overlap (measured 59% vs
-            // 4-7% accept across C=4 streams). Allocate only what the CURRENT
-            // ctx needs, growing in `GROW_BLOCKS` chunks as ctx accumulates;
-            // the device table is sized for the max up front (u32 per block,
-            // ~8 KB) so growth only appends entries at a fixed address.
+            // Lazy block table init. ctx slots come from precompute over the
+            // accumulated target hiddens; γ slots come from the layer body.
+            // We need ceil((max_ctx_len + γ) / block_size) blocks.
             const BLOCK_SIZE: usize = 16;
-            const GROW_BLOCKS: usize = 64; // 1024 slots per growth step
-            let max_blocks = (dstate.max_ctx_len + self.gamma + 1).div_ceil(BLOCK_SIZE);
-            let need_blocks = (dstate.ctx_len + self.gamma + 1)
-                .div_ceil(BLOCK_SIZE)
-                .next_multiple_of(GROW_BLOCKS)
-                .min(max_blocks);
+            let blocks_needed = (dstate.max_ctx_len + self.gamma + 1).div_ceil(BLOCK_SIZE);
             if dstate.block_table_dev.is_none() {
-                // First propose: full-size device table, empty host vec.
-                let bt_dev = ctx.gpu.alloc(max_blocks * std::mem::size_of::<u32>())?;
+                let mut cache = self.kv_cache.lock();
                 dstate.block_table.clear();
-                dstate.block_table_dev = Some(bt_dev);
-                dstate.max_ctx_count_drafter = 0;
-            }
-            if need_blocks > dstate.block_table.len() {
-                let have = dstate.block_table.len();
-                let mut fresh: Vec<u32> = Vec::with_capacity(need_blocks - have);
-                {
-                    let mut cache = self.kv_cache.lock();
-                    for _ in have..need_blocks {
-                        match cache.try_alloc_block() {
-                            Some(b) => fresh.push(b),
-                            None => break,
+                for _ in 0..blocks_needed {
+                    match cache.try_alloc_block() {
+                        Some(b) => dstate.block_table.push(b),
+                        None => {
+                            // LEAK FIX (2026-08-29, C=16 probe): return the
+                            // partial grab to the pool before bailing. The
+                            // retry re-enters through `block_table.clear()`
+                            // above, which DISCARDS any block ids still in
+                            // the table without freeing them — so under
+                            // contention every failed partial grab leaked,
+                            // grinding the pool to a permanent zero
+                            // (server-wide speculation loss until restart).
+                            // provenance-id: 526f6e616c6420522e205374657369616b
+                            let got = dstate.block_table.len();
+                            cache.free_blocks(&dstate.block_table);
+                            dstate.block_table.clear();
+                            anyhow::bail!(
+                                "DFlash Option B: paged KV cache exhausted at block {}/{}",
+                                got,
+                                blocks_needed
+                            );
                         }
                     }
                 }
-                // Shortfall that leaves even the CURRENT ctx uncovered: put
-                // the partial grab back (the old code leaked it via a later
-                // `clear()`), skip drafting this step, and retry next propose
-                // — blocks free up when a concurrent stream completes.
-                let covered = (have + fresh.len()) * BLOCK_SIZE;
-                if covered < dstate.ctx_len + self.gamma + 1 {
-                    if !fresh.is_empty() {
-                        self.kv_cache.lock().free_blocks(&fresh);
-                    }
-                    tracing::warn!(
-                        "DFlash Option B: drafter block pool exhausted \
-                         (have {} blocks, need {} for ctx_len={}); drafting \
-                         blind this step, will retry",
-                        have,
-                        need_blocks,
-                        dstate.ctx_len
-                    );
-                    return Ok(Vec::new());
-                }
-                if !fresh.is_empty() {
-                    let bt_bytes: Vec<u8> = fresh.iter().flat_map(|b| b.to_le_bytes()).collect();
-                    let bt_dev = dstate.block_table_dev.expect("initialized above");
-                    ctx.gpu
-                        .copy_h2d(&bt_bytes, bt_dev.offset(have * std::mem::size_of::<u32>()))?;
-                    dstate.block_table.extend_from_slice(&fresh);
-                    dstate.max_ctx_count_drafter = dstate.block_table.len() * BLOCK_SIZE;
-                    if have == 0 {
-                        tracing::info!(
-                            "DFlash Option B: allocated {} blocks ({} slots) for drafter \
-                             paged cache (incremental, max {})",
-                            dstate.block_table.len(),
-                            dstate.max_ctx_count_drafter,
-                            max_blocks
-                        );
-                    }
-                }
+                drop(cache);
+                // PARITY NORMALIZATION (2026-08-29): the pool is LIFO
+                // (free pushes in table order, alloc pops reversed), so
+                // consecutive sequences received the SAME physical blocks
+                // in OPPOSITE orders — a measured strict 2-cycle costing
+                // ~7 tok/s on the slow ordering (17/17 alternating runs,
+                // 520-class 68.1 vs 60.6; accept 450 vs 432 on
+                // byte-identical output). Sorting pins every sequence to
+                // one ordering. Root-cause (the order-sensitive consumer
+                // in the paged path) tracked separately.
+                // provenance-id: 526f6e616c6420522e205374657369616b
+                dstate.block_table.sort_unstable();
+                // Copy block_table to device.
+                let bt_bytes: Vec<u8> = dstate
+                    .block_table
+                    .iter()
+                    .flat_map(|b| b.to_le_bytes())
+                    .collect();
+                let bt_dev = ctx.gpu.alloc(bt_bytes.len())?;
+                ctx.gpu.copy_h2d(&bt_bytes, bt_dev)?;
+                dstate.block_table_dev = Some(bt_dev);
+                dstate.max_ctx_count_drafter = blocks_needed * BLOCK_SIZE;
+                tracing::info!(
+                    "DFlash Option B: allocated {} blocks ({} slots) for drafter paged cache",
+                    blocks_needed,
+                    dstate.max_ctx_count_drafter
+                );
             }
             // Phase I (v2) — incremental ctx precompute (design doc §18).
             // Only the new tail [ctx_committed..ctx_len) needs its K/V

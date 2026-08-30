@@ -58,6 +58,44 @@ pub fn fp8_gemv_rowscale_batch8_rt2(
         .launch(stream)
 }
 
+/// MAX_M=16 sibling of [`fp8_gemv_rowscale_batch8_rt2`] for the γ>8 DFlash
+/// propose window (flags 9..17). Same template, same launch geometry; added
+/// 2026-08-29 after STEP_TIMING measured propose 18.2ms (flag 8, rt2) vs
+/// 38.0ms (flag 9, tile fallback) — the whole γ>8 step tax.
+/// Kernel: `fp8_gemv_rowscale_batch16_rt2` (module `fp8_gemv_rt`).
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemv_rowscale_batch16_rt2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &Fp8DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=16).contains(&m),
+        "fp8_gemv_rowscale_batch16_rt2: m={m} outside 1..=16 (kernel MAX_M)"
+    );
+    ensure!(
+        k.is_multiple_of(16),
+        "fp8_gemv_rowscale_batch16_rt2: K={k} not a multiple of 16"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 8), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.row_scale)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// FP8-weight dual-GEMV. `input` is `[2, K]` BF16, `output` is `[2, N]` BF16.
 /// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
 pub fn dense_gemv_fp8w_batch2(

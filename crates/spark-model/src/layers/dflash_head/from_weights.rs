@@ -31,10 +31,12 @@ impl BlockDiffusionDraftHead {
         // Widest cross-sequence batch the drafter must serve in ONE forward.
         // The gamma-sized scratch below is allocated in per-sequence BANDS of
         // gamma rows so a batched propose can stack n sequences; nb == 1 keeps
-        // the original single-band sizes byte for byte.
-        max_batch: usize,
+        // the original single-band sizes byte for byte. #817 also sizes the
+        // drafter KV pool from it, so one sequence can no longer take every
+        // block and strand the rest on serial decode.
+        max_batch_size: usize,
     ) -> Result<Self> {
-        let nb = max_batch.max(1);
+        let nb = max_batch_size.max(1);
         // Drafter's `fc` is `[draft_hidden, len(target_layer_ids) * target_hidden]`.
         // We rely on the drafter config's `hidden_size` and the parsed
         // `target_layer_ids` to derive the expected target_hidden, then
@@ -95,7 +97,22 @@ impl BlockDiffusionDraftHead {
             layer_dims: vec![],
             cache_blocks_per_seq: None,
         };
-        let num_blocks = (max_seq_len + gamma_val + 1) / block_size + 1;
+        // Concurrency sizing (2026-08-29, C=16 probe): this pool was sized
+        // for exactly ONE sequence — pool == per-seq demand, so the first
+        // stream to propose took every block and streams 2..N fell back to
+        // serial decode ("paged KV cache exhausted at block 0/257" flood,
+        // measured live at C=16). Per-seq demand mirrors propose.rs's lazy
+        // alloc: ceil((max_ctx + γ + 1)/block_size). Multiply by
+        // max_batch_size so every admitted sequence can speculate; +1 spare.
+        // provenance-id: 526f6e616c6420522e205374657369616b
+        let per_seq_blocks = (max_seq_len + gamma_val + 1).div_ceil(block_size);
+        let num_blocks = per_seq_blocks * max_batch_size.max(1) + 1;
+        tracing::info!(
+            "DFlash drafter paged KV pool: {} blocks ({} per-seq x max_batch_size {})",
+            num_blocks,
+            per_seq_blocks,
+            max_batch_size.max(1)
+        );
         let kv_cache = PagedKvCache::new(kv_config, num_blocks, gpu)?;
 
         // Resolve kernel handles. All BF16 paths since drafter weights are
@@ -216,6 +233,12 @@ impl BlockDiffusionDraftHead {
                 gpu,
                 "fp8_gemv_rt",
                 "fp8_gemv_rowscale_batch8_rt2",
+            ),
+            // MAX_M=16 sibling for the γ>8 propose window (2026-08-29).
+            fp8_gemv_rt2_16: crate::layers::try_kernel(
+                gpu,
+                "fp8_gemv_rt",
+                "fp8_gemv_rowscale_batch16_rt2",
             ),
             // DFlash2 kernels (kernels/gb10/common/dflash2.cu). try_kernel:
             // absent on stale kernel builds — DFlash2 then refuses to arm

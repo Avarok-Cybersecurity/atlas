@@ -321,13 +321,23 @@ pub struct Qwen3SsmLayer {
     /// in which case decode_batched(K=17) falls through to the sequential
     /// per-token path.
     gdn_wy17_k: KernelHandle,
-    /// WY-Chunkwise K∈{5..8} GDN verify (chain-verify widths between the
-    /// dedicated wy4 and the DFlash wy17). One K-templated source
-    /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy8 with
+    /// WY-Chunkwise K∈{5..16} GDN verify (every chain-verify width between
+    /// the dedicated wy4 and the DFlash wy17; K=9..16 added 2026-08-29 for
+    /// the γ>8 window class, which previously fell to the sequential
+    /// per-token loop — the measured γ10 tax). One K-templated source
+    /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy16 with
     /// the same pool-layout intermediates contract as wy17. Index = K-5;
     /// NULL handles on targets lacking the module → sequential fallback.
     /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
-    gdn_wyn_k: [KernelHandle; 4],
+    gdn_wyn_k: [KernelHandle; 12],
+    /// FP16 h-state twins of the wyN family (K=5..16), stage 2 of
+    /// `ATLAS_SSM_H_FP16` — added 2026-08-29 (#812: the FP16 pool is the
+    /// lever that lets MTP serve wide batch; DFlash was refused it for
+    /// want of these twins). Same index contract (K-5); zero handles on
+    /// targets lacking the module. Under the f16 pool a missing twin is a
+    /// HARD ERROR at dispatch (never a silent FP32 fallback over FP16
+    /// state). provenance-id: 526f6e616c6420522e205374657369616b
+    gdn_wyn_f16_k: [KernelHandle; 12],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
