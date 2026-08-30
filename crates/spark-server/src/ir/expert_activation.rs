@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Which MoE experts a request's tokens routed to.
+//!
+//! Produced when a request sets `report_expert_metadata` on a serve started
+//! with `--expert-telemetry`, and carried on `usage.expert_activation`. The
+//! `expert-categories` benchmark aggregates it over a category's prompts to
+//! decide which experts that category needs; `--expert-category` later loads
+//! only those.
+
+/// One MoE layer's activations, as parallel arrays.
+///
+/// Parallel rather than a list of triples because the arrays are the bulk of
+/// the payload: a 61-layer model with ~200 distinct experts per layer is
+/// ~12k entries, and `[[17,240,12.6],…]` spends a bracket pair per expert.
+/// All three arrays have the same length and are ordered by ascending
+/// expert id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpertLayerActivation {
+    /// Absolute model layer index — the numbering a MODEL.toml
+    /// `[expert_categories] layers."<L>"` key uses.
+    pub layer: usize,
+    pub experts: Vec<u32>,
+    /// Routed token-slots that chose each expert.
+    pub counts: Vec<u32>,
+    /// Summed post-renormalization routing weight per expert. This is what
+    /// an expert set is budgeted on (`atlas_core::moe_policy::budget_experts`)
+    /// — an expert chosen often but weakly contributes less than one chosen
+    /// rarely at high weight.
+    pub mass: Vec<f32>,
+}
+
+impl ExpertLayerActivation {
+    /// Sum another turn's counts and mass into this layer, keeping expert
+    /// ids ascending so the arrays stay in the order consumers expect.
+    fn merge(&mut self, other: &Self) {
+        for (i, &e) in other.experts.iter().enumerate() {
+            match self.experts.binary_search(&e) {
+                Ok(at) => {
+                    self.counts[at] += other.counts[i];
+                    self.mass[at] += other.mass[i];
+                }
+                Err(at) => {
+                    self.experts.insert(at, e);
+                    self.counts.insert(at, other.counts[i]);
+                    self.mass.insert(at, other.mass[i]);
+                }
+            }
+        }
+    }
+}
+
+/// The whole per-request report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpertActivationReport {
+    /// Which part of the request these numbers describe. `"prefill"` today:
+    /// decode routing is not attributable to a sequence yet (batched decode
+    /// reaches the FFN once per sequence with no row index), so it is
+    /// excluded rather than guessed at. Stated on the wire so a consumer
+    /// cannot read prompt routing as whole-request routing.
+    pub scope: &'static str,
+    pub top_k: u32,
+    pub num_experts: u32,
+    /// Token positions folded into the counts. `Σcounts == tokens_routed *
+    /// top_k` when every routed slot carried weight — the check that
+    /// separates "this prompt used few experts" from "the tap recorded
+    /// nothing".
+    pub tokens_routed: u64,
+    /// Token positions that ran but are NOT in the counts (a prompt wider
+    /// than the staging buffer, or the non-final chunks of a two-phase
+    /// prefill). Non-zero means the report covers a prefix.
+    pub unattributed_rows: u64,
+    /// Only layers that routed appear; dense layers of a hybrid model are
+    /// absent rather than present-and-empty.
+    pub layers: Vec<ExpertLayerActivation>,
+}
+
+impl ExpertActivationReport {
+    /// Fold another turn's report into this one.
+    ///
+    /// A tool-calling request prefills several times — once per turn — and
+    /// each prefill produces its own report. Summing them gives the experts
+    /// the REQUEST needed, which is what a category mapping is about; taking
+    /// the last turn's alone would silently describe only the final prompt.
+    pub fn merge(&mut self, other: &Self) {
+        self.tokens_routed += other.tokens_routed;
+        self.unattributed_rows += other.unattributed_rows;
+        for layer in &other.layers {
+            match self.layers.iter_mut().find(|l| l.layer == layer.layer) {
+                Some(existing) => existing.merge(layer),
+                None => {
+                    let at = self.layers.partition_point(|l| l.layer < layer.layer);
+                    self.layers.insert(at, layer.clone());
+                }
+            }
+        }
+    }
+
+    /// Build from the model-side accumulator.
+    pub fn from_acc(acc: &spark_model::layers::ExpertActivationAcc) -> Self {
+        let layers = acc
+            .to_layers()
+            .into_iter()
+            .map(|(layer, experts)| {
+                let mut ids = Vec::with_capacity(experts.len());
+                let mut counts = Vec::with_capacity(experts.len());
+                let mut mass = Vec::with_capacity(experts.len());
+                for (e, c, m) in experts {
+                    ids.push(e);
+                    counts.push(c);
+                    mass.push(m);
+                }
+                ExpertLayerActivation {
+                    layer,
+                    experts: ids,
+                    counts,
+                    mass,
+                }
+            })
+            .collect();
+        Self {
+            scope: "prefill",
+            top_k: acc.top_k(),
+            num_experts: acc.num_experts() as u32,
+            tokens_routed: acc.tokens_routed(),
+            unattributed_rows: acc.unattributed_rows(),
+            layers,
+        }
+    }
+}

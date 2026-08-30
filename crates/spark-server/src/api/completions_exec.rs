@@ -118,6 +118,7 @@ pub(super) async fn run_blocking(
                     .map(|s| s.wrapping_add((prompt_i * n + n_i) as u64)),
                 top_logprobs: p.logprobs_k,
                 prompt_logprobs: if req.echo { p.logprobs_k } else { None },
+                report_expert_metadata: false,
                 echo: req.echo,
                 timeout_at: state.request_deadline(None),
                 response_tx: tx,
@@ -215,6 +216,7 @@ pub(super) async fn run_blocking(
         }),
         time_to_first_token_ms: last_ttft,
         response_tokens_per_second: last_tps,
+        expert_activation: None,
     };
 
     Json(CompletionResponse::from_choices(

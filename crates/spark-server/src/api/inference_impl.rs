@@ -391,6 +391,20 @@ impl InferenceRequest {
         }
     }
 
+    /// Whether this request asked for its MoE expert routing back.
+    pub fn report_expert_metadata(&self) -> bool {
+        match self {
+            InferenceRequest::Blocking {
+                report_expert_metadata,
+                ..
+            } => *report_expert_metadata,
+            InferenceRequest::Streaming {
+                report_expert_metadata,
+                ..
+            } => *report_expert_metadata,
+        }
+    }
+
     /// Legacy /v1/completions prompt-token logprobs (echo scoring).
     pub fn prompt_logprobs(&self) -> Option<u8> {
         match self {

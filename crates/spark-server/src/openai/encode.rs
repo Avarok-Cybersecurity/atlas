@@ -12,7 +12,8 @@ use crate::AppState;
 
 use super::{
     ChatChoice, ChatCompletionResponse, ChatMessage, ChoiceLogprobs, CompletionTokensDetails,
-    PromptTokensDetails, TokenLogprobInfo, TopLogprob, Usage, merged_annotations,
+    ExpertActivation, ExpertLayerActivation, PromptTokensDetails, TokenLogprobInfo, TopLogprob,
+    Usage, merged_annotations,
 };
 
 /// Serialize the response IR for the `/v1/chat/completions` surface.
@@ -38,6 +39,11 @@ pub(crate) fn encode_chat_response(
         }),
         time_to_first_token_ms: ir.usage.time_to_first_token_ms,
         response_tokens_per_second: ir.usage.response_tokens_per_second,
+        expert_activation: ir
+            .usage
+            .expert_activation
+            .as_deref()
+            .map(encode_expert_activation),
     };
 
     let choices: Vec<ChatChoice> = ir
@@ -140,6 +146,31 @@ fn encode_logprobs(lp: crate::ir::ChoiceLogprobs) -> ChoiceLogprobs {
                         bytes: None,
                     })
                     .collect(),
+            })
+            .collect(),
+    }
+}
+
+/// IR expert report → wire shape. Field-for-field: the two types are kept
+/// separate so the wire can be versioned without moving the IR, which the
+/// benchmark and the Anthropic surface also read.
+pub(crate) fn encode_expert_activation(
+    r: &crate::ir::expert_activation::ExpertActivationReport,
+) -> ExpertActivation {
+    ExpertActivation {
+        scope: r.scope.to_string(),
+        top_k: r.top_k,
+        num_experts: r.num_experts,
+        tokens_routed: r.tokens_routed,
+        unattributed_rows: r.unattributed_rows,
+        layers: r
+            .layers
+            .iter()
+            .map(|l| ExpertLayerActivation {
+                layer: l.layer,
+                experts: l.experts.clone(),
+                counts: l.counts.clone(),
+                mass: l.mass.clone(),
             })
             .collect(),
     }

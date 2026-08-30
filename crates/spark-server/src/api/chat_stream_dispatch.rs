@@ -121,6 +121,7 @@ pub(super) async fn dispatch_streaming(
         timeout_at,
         stop_strings,
         req_return_token_ids,
+        req.report_expert_metadata,
         ctx_for_stream,
         dump_seq,
         active_guard,

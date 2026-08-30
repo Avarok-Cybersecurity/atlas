@@ -61,6 +61,17 @@ pub struct ChatCompletionRequest {
     pub logit_bias: Option<std::collections::HashMap<String, f32>>,
     #[serde(default)]
     pub stream: bool,
+    /// Return the MoE experts this request's prompt routed to, on
+    /// `usage.expert_activation` (Atlas extension; SDKs send it via
+    /// `extra_body`).
+    ///
+    /// Defaults to false: the report is tens of kilobytes on a large MoE and
+    /// nobody who did not ask for it should pay for it. Requires the serve to
+    /// have been started with `--expert-telemetry` and the model to be an
+    /// MoE; asking otherwise is a 400 naming which of the two is missing,
+    /// never a silently absent field.
+    #[serde(default)]
+    pub report_expert_metadata: bool,
     /// Emit exact sampled token IDs on each streamed chunk's
     /// `choices[0].token_ids` (vLLM-compatible extension) for precise
     /// `usage.completion_tokens` counting. Defaults false (opt-in).

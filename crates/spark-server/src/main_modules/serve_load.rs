@@ -1243,6 +1243,15 @@ pub(crate) fn load_model(
             }
             b
         },
+        // Both halves are boot facts: the flag, and whether this checkpoint
+        // has a router at all.
+        expert_telemetry: if !args.expert_telemetry {
+            crate::main_modules::app_state::ExpertTelemetryCapability::NotEnabled
+        } else if config.num_experts == 0 {
+            crate::main_modules::app_state::ExpertTelemetryCapability::DenseModel
+        } else {
+            crate::main_modules::app_state::ExpertTelemetryCapability::Available
+        },
         disable_thinking: args.disable_thinking,
         default_thinking: default_kwargs.thinking,
         default_reasoning_effort: default_kwargs.reasoning_effort,

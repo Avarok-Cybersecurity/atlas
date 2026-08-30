@@ -223,6 +223,17 @@ impl Model for TransformerModel {
     fn set_active_lora(&mut self, name: &str) -> Result<()> {
         self.rotate_lora_to(name)
     }
+    fn new_expert_activation(&self) -> Option<Box<crate::layers::ExpertActivationAcc>> {
+        // Sized from the SAME staging the layers write into, so a fold can
+        // never land outside what was captured.
+        let staging = self.expert_telemetry.as_ref()?;
+        Some(Box::new(crate::layers::ExpertActivationAcc::new(
+            self.layers.len(),
+            self.config.num_experts,
+            staging.top_k() as u32,
+        )))
+    }
+
     fn adapter_id_for(&self, slot: i32) -> u64 {
         self.adapter_id_for_slot(slot)
     }
