@@ -639,6 +639,9 @@ impl Glm5NextDsaLayer {
         stream: u64,
     ) -> Result<()> {
         use crate::layers::glm5next_layer::profile;
+        // Captured before the KV borrows below, for the block-table trim at the
+        // upload site. See the comment there (ANOMALIES A58).
+        let bt_block_size = kv_cache.block_size().max(1);
         let st = state
             .as_any_mut()
             .downcast_mut::<Glm5NextDsaState>()
@@ -847,13 +850,35 @@ impl Glm5NextDsaLayer {
                 // The step-scoped upload already holds both; nothing to copy.
                 (Some(b), Some(l)) => (b, l),
                 _ => {
-                    let bt: Vec<u8> = block_table.iter().flat_map(|b| b.to_le_bytes()).collect();
-                    if block_table.len() > w.bt_cap {
+                    // Upload only the prefix the gather can index. The paged gather reads
+                    // `block_table[pos / block_size]` for `pos` in `[0, seq_len + k)` (the
+                    // `block_table.get(logical)` site above), so every entry past
+                    // `(seq_len + k) / block_size + 1` is dead weight on the wire.
+                    //
+                    // 🔴 ANOMALIES A58: it was also a silent kill switch for the GLM drafter.
+                    // `Glm5NextMtpHead::alloc_state` pre-claims its whole private pool up front
+                    // (`max_seq_len / 16 + 2` entries — a mid-decode allocation inside a captured
+                    // region is not an option), so at `--max-seq-len 262144` it presented 16,386
+                    // entries for a 20-token sequence against a `bt_cap` of 16,384. `bt_cap` is
+                    // `max_dsa_context`, a count of TOKENS used as a count of BLOCKS — the two
+                    // collide at 16,384. Every propose then bailed, the drafter produced nothing,
+                    // and acceptance read exactly `p1 = 0.000` while the target kept verifying
+                    // correctly and emitting byte-identical output. Measured 2026-08-30: healthy
+                    // at 196,608, dead at 262,144, output identical on both.
+                    let bt_used = {
+                        let needed = bt_entries_needed(seq_len, k, bt_block_size);
+                        &block_table[..needed.min(block_table.len())]
+                    };
+                    let bt: Vec<u8> = bt_used.iter().flat_map(|b| b.to_le_bytes()).collect();
+                    if bt_used.len() > w.bt_cap {
                         anyhow::bail!(
-                            "DSA layer {}: block table {} entries exceeds the {}-entry persistent \
-                     buffer; raise max_dsa_context, do not write past the allocation.",
+                            "DSA layer {}: block table needs {} entries for seq_len {} + {} rows \
+                     but the persistent buffer holds {}. This is a BLOCK count against a buffer \
+                     sized by max_dsa_context (a TOKEN count); do not write past the allocation.",
                             self.layer_idx,
-                            block_table.len(),
+                            bt_used.len(),
+                            seq_len,
+                            k,
                             w.bt_cap
                         );
                     }
@@ -1006,3 +1031,67 @@ impl TransformerLayer for Glm5NextDsaLayer {
 
 #[cfg(test)]
 mod tests;
+
+/// Block-table entries the paged gather can index for `k` query rows starting at
+/// `seq_len`, plus one entry of slack.
+///
+/// The gather reads `block_table[pos / block_size]` for `pos` in `[0, seq_len + k)`,
+/// so the highest index touched is `(seq_len + k - 1) / block_size`. Everything above
+/// that is never read — see the A58 note at the upload site for why uploading it
+/// anyway was a silent kill switch for the GLM drafter.
+pub(super) fn bt_entries_needed(seq_len: usize, k: usize, block_size: usize) -> usize {
+    (seq_len + k) / block_size.max(1) + 2
+}
+
+#[cfg(test)]
+mod bt_trim_tests {
+    use super::bt_entries_needed;
+
+    /// The A58 reproducer, in arithmetic: the GLM drafter pre-claims
+    /// `max_seq_len / 16 + 2` entries, so at `--max-seq-len 262144` it hands 16,386
+    /// against a `bt_cap` of 16,384 — for a 20-token sequence. Trimmed, it needs 3.
+    #[test]
+    fn a58_short_sequence_at_262k_declared_context() {
+        let pool = 262_144 / 16 + 2;
+        assert_eq!(pool, 16_386, "the pre-claimed pool that overran bt_cap");
+        assert!(pool > 16_384, "and it is over the persistent buffer");
+        assert_eq!(bt_entries_needed(20, 3, 16), 3);
+        assert!(bt_entries_needed(20, 3, 16) <= 16_384);
+    }
+
+    /// Every position the gather can touch must be inside the trim.
+    #[test]
+    fn trim_covers_every_indexable_position() {
+        for &(seq_len, k, bs) in &[
+            (0usize, 1usize, 16usize),
+            (1, 1, 16),
+            (15, 1, 16),
+            (16, 1, 16),
+            (17, 4, 16),
+            (4095, 4, 16),
+            (131_072, 3, 16),
+            (262_143, 4, 16),
+            (1000, 1, 64),
+        ] {
+            let n = bt_entries_needed(seq_len, k, bs);
+            let highest = (seq_len + k).saturating_sub(1) / bs;
+            assert!(
+                highest < n,
+                "seq_len={seq_len} k={k} bs={bs}: highest index {highest} not < {n}"
+            );
+        }
+    }
+
+    /// The trim must stay far under the persistent buffer for any sequence DSA can
+    /// actually select over (`max_dsa_context` = 16,384 tokens).
+    #[test]
+    fn trim_fits_the_persistent_buffer_across_the_dsa_window() {
+        assert!(bt_entries_needed(16_384, 4, 16) <= 16_384);
+    }
+
+    /// block_size 0 must not divide by zero.
+    #[test]
+    fn zero_block_size_does_not_panic() {
+        assert_eq!(bt_entries_needed(8, 1, 0), 11);
+    }
+}
