@@ -439,6 +439,8 @@ mod tables;
 pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
+mod activation_acc;
+pub use activation_acc::ExpertActivationAcc;
 mod dump;
 mod forward;
 mod lora;
@@ -466,5 +468,7 @@ mod init;
 #[cfg(test)]
 mod mod_tests;
 mod ptr_table_build;
+mod telemetry;
+pub use telemetry::ExpertTelemetryStaging;
 mod union_stats;
 pub(crate) use ptr_table_build::*;
