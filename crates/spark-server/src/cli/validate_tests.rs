@@ -334,20 +334,37 @@ fn f16_pool_is_a_published_dtype_and_inherits_every_f16_rule() {
 }
 
 #[test]
-fn dflash_refuses_the_f16_h_state() {
-    // gamma+1 = 17 verify rows dispatch `gated_delta_rule_wy17`: FP32-only,
-    // and the one WY family with an explicit FP32-element intermediate
-    // stride. Over an FP16 h-state that is fluent garbage, not a fault —
-    // the same class the `--num-drafts > 3` preflight refusal exists for.
+fn dflash_refuses_the_f16_h_state_only_at_the_untwinned_width() {
+    // WAS a blanket refusal of `--dflash` under f16, correct while the only
+    // DFlash verify width was gamma+1 = 17 and `gated_delta_rule_wy17` had no
+    // FP16 twin. #817 added twins for K=5..16, so the refusal narrowed to the
+    // width that still lacks one. What did NOT change is why it exists: an
+    // FP32 kernel over an FP16 h-state emits fluent garbage, not a fault.
     for dtype in ["f16", "f16-pool"] {
         let err = validate_serve_args(&parse(&[
             "--dflash",
+            "--dflash-gamma",
+            "16",
             "--ssm-h-dtype",
             dtype,
             "--gdn-fused-norm",
         ]))
         .unwrap_err();
-        assert!(err.contains("--dflash"), "{dtype}: {err}");
+        assert!(err.contains("dflash-gamma"), "{dtype}: {err}");
+        // ...and the twinned widths are now allowed under the same dtype,
+        // which is the half of this contract that #817 could not reach.
+        assert!(
+            validate_serve_args(&parse(&[
+                "--dflash",
+                "--dflash-gamma",
+                "10",
+                "--ssm-h-dtype",
+                dtype,
+                "--gdn-fused-norm",
+            ]))
+            .is_ok(),
+            "{dtype}: gamma 10 (width 11) has a twin and must be allowed"
+        );
     }
     // POSITIVE controls: each side alone stays valid.
     assert!(validate_serve_args(&parse(&["--dflash"])).is_ok());
@@ -357,4 +374,68 @@ fn dflash_refuses_the_f16_h_state() {
         validate_serve_args(&parse(&["--dflash", "--ssm-h-dtype", "f32"])).is_ok(),
         "the FP32 h-state has always been DFlash's supported pairing"
     );
+}
+
+// ── DFlash under the f16 h-state pool ────────────────────────────────────
+//
+// The width band matters to the byte, and it is easy to get wrong in the
+// direction that does not fault: the DFlash verify width is K = gamma + 1,
+// FP16 h-state twins exist for K = 5..16, so the last SAFE gamma is 15.
+// Gamma 16 is K=17 — `gated_delta_rule_wy17`, the one family with no twin and
+// an FP32-element intermediate stride. An FP32 kernel over an FP16 h-state
+// emits fluent garbage rather than an error, which is the whole reason this
+// pair is validated at all.
+
+fn f16_dflash(gamma: Option<&str>) -> ServeArgs {
+    let mut argv = vec![
+        "--ssm-h-dtype",
+        "f16-pool",
+        "--gdn-fused-norm",
+        "--dflash",
+        "--draft-model",
+        "some/drafter",
+    ];
+    if let Some(g) = gamma {
+        argv.push("--dflash-gamma");
+        argv.push(g);
+    }
+    parse(&argv)
+}
+
+#[test]
+fn dflash_under_the_f16_pool_is_allowed_up_to_the_last_twinned_width() {
+    // The regression this pins: a blanket refusal of `--dflash` under f16
+    // made the FP16 twins unreachable through the CLI — three gamma values
+    // measured on 2026-08-30 produced three refusals and zero tokens, on the
+    // branch that ADDED the twins.
+    for g in ["4", "8", "10", "15"] {
+        assert!(
+            validate_serve_args(&f16_dflash(Some(g))).is_ok(),
+            "gamma {g} (verify width {}) has an FP16 twin and must be allowed",
+            g.parse::<usize>().unwrap() + 1
+        );
+    }
+}
+
+#[test]
+fn dflash_gamma_16_is_refused_because_width_17_has_no_twin() {
+    // The off-by-one: a `> 16` test admits gamma 16, whose width is 17.
+    let v = validate_serve_args(&f16_dflash(Some("16")));
+    let msg = format!(
+        "{:#}",
+        v.expect_err("gamma 16 is verify width 17 — no FP16 twin")
+    );
+    assert!(
+        msg.contains("f16") && msg.contains("dflash-gamma"),
+        "the refusal must name both halves of the incompatible pair: {msg}"
+    );
+}
+
+#[test]
+fn an_unset_gamma_is_left_to_the_runtime_backstop() {
+    // Gamma resolves from the drafter checkpoint, which is not readable at
+    // validate time. Refusing here would reject working configurations;
+    // a width with no twin is caught at the first verify step instead, where
+    // the sequential fallback bails rather than reading FP16 bits as FP32.
+    assert!(validate_serve_args(&f16_dflash(None)).is_ok());
 }

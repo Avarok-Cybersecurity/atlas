@@ -109,13 +109,26 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // checkpoint, which is not readable at validate time — that path is
     // covered by the runtime backstop, which hard-errors on a missing twin
     // rather than falling back to FP32-over-FP16.
-    if h_f16 && args.dflash && args.dflash_gamma.is_some_and(|g| g > 16) {
+    // OFF-BY-ONE, corrected 2026-08-30: #817 wrote `> 16` while its message
+    // claimed "widths 5..16 are covered". The verify width is K = gamma + 1,
+    // so gamma 16 is K=17 — wy17, the one width with no twin — and `> 16`
+    // admitted exactly that case. The runtime backstop would have caught it,
+    // loudly, after a full model load; this catches it in milliseconds. Both
+    // sites now read the same constant instead of a literal.
+    if h_f16
+        && args.dflash
+        && args
+            .dflash_gamma
+            .is_some_and(|g| g > spark_model::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA)
+    {
         v.push(Violation::new(
-            "--dflash with --dflash-gamma > 16 together with --ssm-h-dtype f16",
+            "--dflash with a verify width above the FP16 twin range, together with \
+             --ssm-h-dtype f16",
             "DFlash verify widths above 16 dispatch gated_delta_rule_wy17, which has \
              no FP16 h-state twin — an FP32 kernel over an FP16 h-state emits fluent \
              garbage. Widths 5..16 are covered by the wyN _f16 twins",
-            "use --dflash-gamma <= 16, drop --dflash, or use --ssm-h-dtype f32",
+            "use --dflash-gamma <= 15 (verify width 16), drop --dflash, or use \
+             --ssm-h-dtype f32",
         ));
     }
 
