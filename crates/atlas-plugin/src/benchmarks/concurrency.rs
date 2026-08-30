@@ -55,8 +55,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              (C=1/4/8/16, isl 512, osl 320 via the variant's param_overrides) and \
              self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
              cell or request error never passes, whatever the floors say.",
-    duration_hint: "~15–45 min",
-    updated: "2026-08-15",
+    duration_hint: "~25–90 min",
+    updated: "2026-08-29",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.
@@ -102,6 +102,11 @@ const CODE_TASK: &str = "Ignore the reference text above. Task: write a complete
 /// its whole cell vacuous. 80%: a natural stop a few tokens early is fine; a
 /// 49-token burst against a 512-token budget is not a throughput measurement.
 const VACUITY_FLOOR: f64 = 0.8;
+// `make_prompt` puts the distinguishing tag at byte zero of message content;
+// a wrong tag can share only the chat-template prefix, about 12 tokens against
+// the minimum 128-token ISL. An exact warmed prompt is block-aligned near the
+// full length, so 80% separates substantial reuse from incidental template KV.
+const WARM_CACHE_FLOOR: f64 = 0.8;
 
 /// What one completed request actually delivered — the evidence a cell's
 /// tok/s stands on. `http::ChatOutcome` already parses all of this from the
@@ -110,6 +115,8 @@ const VACUITY_FLOOR: f64 = 0.8;
 #[derive(Clone, Debug, Default)]
 struct RequestEvidence {
     completion_tokens: usize,
+    prompt_tokens: usize,
+    cached_prompt_tokens: usize,
     finish_reason: Option<String>,
     server_ttft_ms: Option<f64>,
     server_tps: Option<f64>,
@@ -124,6 +131,32 @@ fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
         .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
 }
 
+fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
+    warmup > 0
+        && requests.iter().any(|request| {
+            request.prompt_tokens == 0
+                || (request.cached_prompt_tokens as f64)
+                    < WARM_CACHE_FLOOR * request.prompt_tokens as f64
+        })
+}
+
+/// The prompt identities one cell executes before and during measurement.
+/// Keeping the policy in one value makes the cache-state claim testable
+/// without substituting a fake HTTP implementation for the benchmark.
+#[derive(Debug, PartialEq, Eq)]
+struct PromptPlan {
+    warmup_rounds: Vec<Vec<String>>,
+    measured: Vec<String>,
+}
+
+fn prompt_plan(conc: usize, warmup: usize) -> PromptPlan {
+    let measured: Vec<String> = (0..conc).map(|i| format!("c{i}")).collect();
+    PromptPlan {
+        warmup_rounds: vec![measured.clone(); warmup],
+        measured,
+    }
+}
+
 #[derive(Default)]
 struct CellRow {
     isl: usize,
@@ -135,15 +168,31 @@ struct CellRow {
     errors: usize,
     requests: Vec<RequestEvidence>,
     vacuous: bool,
+    cache_uncontrolled: bool,
 }
 
 impl CellRow {
     fn min_completion(&self) -> Option<usize> {
         self.requests.iter().map(|r| r.completion_tokens).min()
     }
+    fn min_cached_prompt(&self) -> Option<usize> {
+        self.requests.iter().map(|r| r.cached_prompt_tokens).min()
+    }
+    fn min_cached_prompt_pct(&self) -> Option<f64> {
+        self.requests
+            .iter()
+            .map(|request| {
+                if request.prompt_tokens == 0 {
+                    0.0
+                } else {
+                    request.cached_prompt_tokens as f64 / request.prompt_tokens as f64 * 100.0
+                }
+            })
+            .reduce(f64::min)
+    }
     /// Clean and above the vacuity floor — the only rows metrics may quote.
     fn comparable(&self) -> bool {
-        self.errors == 0 && !self.vacuous
+        self.errors == 0 && !self.vacuous && !self.cache_uncontrolled
     }
 }
 
@@ -231,23 +280,34 @@ impl ConcurrencySweep {
 
     async fn run_cell(&mut self, isl: usize, conc: usize) -> Result<CellRow> {
         let handle = self.handle()?.clone();
-        for w in 0..self.warmup {
+        let plan = prompt_plan(conc, self.warmup);
+        for (w, tags) in plan.warmup_rounds.iter().enumerate() {
             handle.check_cancelled()?;
             handle.status(format!(
-                "isl {isl} · conc {conc} · warmup {}/{}",
+                "isl {isl} · conc {conc} · warmup round {}/{}",
                 w + 1,
                 self.warmup
             ));
-            // Warm-up uses the SAME prompt the measured batch will use, which is
-            // the point: it primes the prefix cache so the timed requests measure
-            // the warm path rather than a one-off cold prefill.
-            let _ = self.one(isl, "warm".to_string()).await;
+            // Prime every exact prompt the measured batch will use. A single
+            // unrelated `warm` tag leaves all measured prompts cold, while
+            // reusing c0/c1/... across later rungs produces a history-dependent
+            // mixture of cached and new prompts. A failed warm-up invalidates
+            // the declared setup instead of silently changing the instrument.
+            for tag in tags {
+                self.one(isl, tag.clone()).await.with_context(|| {
+                    format!("isl {isl} conc {conc}: warm-up prompt {tag} failed")
+                })?;
+            }
         }
         handle.check_cancelled()?;
         handle.status(format!("isl {isl} · conc {conc} · {conc} in flight"));
 
         let batch_start = Instant::now();
-        let futures: Vec<_> = (0..conc).map(|i| self.one(isl, format!("c{i}"))).collect();
+        let futures: Vec<_> = plan
+            .measured
+            .into_iter()
+            .map(|tag| self.one(isl, tag))
+            .collect();
         let outcomes = futures::future::join_all(futures).await;
         let wall = batch_start.elapsed().as_secs_f64().max(1e-6);
 
@@ -270,6 +330,8 @@ impl ConcurrencySweep {
                     tokens += o.completion_tokens;
                     requests.push(RequestEvidence {
                         completion_tokens: o.completion_tokens,
+                        prompt_tokens: o.prompt_tokens,
+                        cached_prompt_tokens: o.cached_prompt_tokens,
                         finish_reason: o.finish_reason.clone(),
                         server_ttft_ms: o.server_ttft_ms,
                         server_tps: o.server_tps,
@@ -282,6 +344,11 @@ impl ConcurrencySweep {
             }
         }
         let vacuous = cell_is_vacuous(&requests, self.osl);
+        // Matching prompt bytes reach the intended setup, but the endpoint's
+        // usage is the oracle for whether the measured request actually used
+        // the warmed prompt. A small shared chat-template prefix is not enough:
+        // require a material cached fraction of each measured prompt.
+        let cache_uncontrolled = cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
         if vacuous {
             handle.warn(format!(
@@ -296,6 +363,13 @@ impl ConcurrencySweep {
                     .unwrap_or(0),
             ));
         }
+        if cache_uncontrolled {
+            handle.warn(format!(
+                "isl {isl} conc {conc}: warm-up was requested but at least one measured request \
+                 reported less than {:.0}% of its prompt as cached — this cell is NOT comparable",
+                WARM_CACHE_FLOOR * 100.0,
+            ));
+        }
         Ok(CellRow {
             isl,
             conc,
@@ -306,6 +380,7 @@ impl ConcurrencySweep {
             errors,
             requests,
             vacuous,
+            cache_uncontrolled,
         })
     }
 
@@ -323,6 +398,7 @@ impl ConcurrencySweep {
                 Column::right("E2E p50", 9),
                 Column::right("tok/s", 8),
                 Column::right("min tok", 7),
+                Column::right("min cache%", 10),
                 Column::right("err", 4),
             ],
         );
@@ -339,7 +415,7 @@ impl ConcurrencySweep {
                 // A vacuous cell's tok/s is printed struck with a marker, not
                 // hidden: the number is evidence of the failure, it is just
                 // not comparable to anything.
-                if r.vacuous {
+                if r.vacuous || r.cache_uncontrolled {
                     Cell::styled(format!("{:.1}*", r.throughput), CellStyle::Bad)
                 } else {
                     Cell::styled(format!("{:.1}", r.throughput), CellStyle::Good)
@@ -347,6 +423,11 @@ impl ConcurrencySweep {
                 Cell::new(
                     r.min_completion()
                         .map(|v| v.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
+                Cell::new(
+                    r.min_cached_prompt_pct()
+                        .map(|v| format!("{v:.0}"))
                         .unwrap_or_else(|| "—".into()),
                 ),
                 Cell::styled(
@@ -433,9 +514,29 @@ impl ConcurrencySweep {
         if let Some(min) = self.rows.iter().filter_map(CellRow::min_completion).min() {
             m.insert("min_completion_tokens".to_string(), min as f64);
         }
+        if let Some(min) = self
+            .rows
+            .iter()
+            .filter_map(CellRow::min_cached_prompt)
+            .min()
+        {
+            m.insert("min_cached_prompt_tokens".to_string(), min as f64);
+        }
+        if let Some(min) = self
+            .rows
+            .iter()
+            .filter_map(CellRow::min_cached_prompt_pct)
+            .reduce(f64::min)
+        {
+            m.insert("min_cached_prompt_pct".to_string(), min);
+        }
         m.insert(
             "vacuous_cells".to_string(),
             self.rows.iter().filter(|r| r.vacuous).count() as f64,
+        );
+        m.insert(
+            "cache_uncontrolled_cells".to_string(),
+            self.rows.iter().filter(|r| r.cache_uncontrolled).count() as f64,
         );
         m
     }
@@ -449,6 +550,10 @@ fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> Strin
         .iter()
         .map(|r| r.completion_tokens.to_string())
         .collect();
+    let cached: Vec<String> = requests
+        .iter()
+        .map(|r| format!("{}/{}", r.cached_prompt_tokens, r.prompt_tokens))
+        .collect();
     let mut finish: BTreeMap<&str, usize> = BTreeMap::new();
     for r in requests {
         *finish
@@ -459,8 +564,9 @@ fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> Strin
     let sttft: Vec<f64> = requests.iter().filter_map(|r| r.server_ttft_ms).collect();
     let stps: Vec<f64> = requests.iter().filter_map(|r| r.server_tps).collect();
     let mut line = format!(
-        "evidence isl {isl} conc {conc}: tok [{}] · finish [{}]",
+        "evidence isl {isl} conc {conc}: tok [{}] · cached [{}] · finish [{}]",
         toks.join(","),
+        cached.join(","),
         finish.join(",")
     );
     if let Some(v) = stats::percentile(&sttft, 50) {
@@ -523,8 +629,9 @@ impl Benchmark for ConcurrencySweep {
             ),
             ParamSpec::new(
                 "warmup",
-                "Warm-up requests",
-                "Unmeasured requests per cell, priming the prefix cache.",
+                "Warm-up rounds",
+                "Unmeasured rounds per cell. Each round runs every exact prompt in the measured \
+                 batch so prefix-cache state is controlled before timing.",
                 ParamKind::Int { min: 0, max: 8 },
                 ParamValue::Int(1),
             ),
@@ -617,6 +724,7 @@ impl Benchmark for ConcurrencySweep {
         if self.cursor >= self.cells.len() {
             let errors: usize = self.rows.iter().map(|r| r.errors).sum();
             let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
+            let cache_uncontrolled = self.rows.iter().filter(|r| r.cache_uncontrolled).count();
             // The verdict is computed over the SAME metrics map the gate
             // record carries (see `verdict::sweep_verdict`), so the two can
             // never disagree about a rung's value. Floors all-zero keeps the
@@ -627,6 +735,7 @@ impl Benchmark for ConcurrencySweep {
                 self.rows.len(),
                 errors,
                 vacuous,
+                cache_uncontrolled,
                 VACUITY_FLOOR * 100.0,
                 &self.floors,
             );
