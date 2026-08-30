@@ -131,6 +131,10 @@ struct Target {
     /// block-diffusion speculative decoding. `None` when the model has no
     /// associated DFlash drafter checkpoint.
     dflash: Option<DflashRaw>,
+    /// `[expert_categories]` from MODEL.toml — measured category → per-layer
+    /// expert sets. Empty until the `expert-categories` benchmark has been
+    /// run for this model and its output pasted in.
+    expert_categories: Vec<ExpertCategoryRaw>,
 }
 
 #[derive(Default, Clone)]
@@ -1152,6 +1156,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let model_type_matches = parse_model_types(&model_dir);
             let match_names = parse_match_names(&model_dir);
             let dflash = parse_dflash(&model_dir);
+            let expert_categories = parse_expert_categories(&model_dir);
             let expected_absent = parse_expected_absent(&model_dir);
 
             targets.push(Target {
@@ -1208,6 +1213,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 model_type_matches,
                 match_names,
                 dflash,
+                expert_categories,
             });
         }
     }
@@ -1330,10 +1336,18 @@ mod build_parse;
 // with no test that could have noticed.
 #[path = "build_shadow.rs"]
 mod build_shadow;
+
+// `[expert_categories]` parsing. Own file, no `super::` deps, for the same
+// reason as build_shadow: `tests/expert_categories_parse.rs` compiles it, so
+// the rejection rules that keep a typo'd expert id off the GPU are actually
+// exercised by `cargo test`.
+#[path = "build_parse_experts.rs"]
+mod build_parse_experts;
 use build_parse::{
     parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_source, parse_kernel_toml,
     parse_match_names, parse_model_types, parse_sampling_presets, parse_shadow_exempt,
 };
+use build_parse_experts::{ExpertCategoryRaw, parse_expert_categories};
 use build_shadow::shadowed_missing_symbols;
 
 /// Collect kernel-source files with shadowing: common dir provides the

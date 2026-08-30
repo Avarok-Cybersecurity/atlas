@@ -443,6 +443,25 @@ pub struct DflashConfig {
     pub target_layer_ids: &'static [usize],
 }
 
+/// One `[expert_categories.<name>]` table from MODEL.toml: the experts a
+/// prompt category actually routes to, per MoE layer.
+///
+/// Produced by the `expert-categories` benchmark (which measures routing
+/// mass over a category's prompts and keeps the smallest per-layer set
+/// covering `coverage` of it), consumed by `spark serve --expert-category`
+/// to load only those experts and mask the router to them.
+#[derive(Debug, Clone)]
+pub struct ExpertCategory {
+    /// Category name, matched verbatim against `--expert-category`.
+    pub name: &'static str,
+    /// Routing-mass fraction the mapping was generated at (e.g. 0.90).
+    /// Recorded so a table's selectivity is legible without re-measuring.
+    pub coverage: f32,
+    /// `(layer_index, expert_ids)` — layers ascending, ids ascending within
+    /// a layer. Only MoE layers appear.
+    pub layers: &'static [(usize, &'static [u16])],
+}
+
 /// Kernel modules hyperoptimized for a specific (H, M_q) target.
 ///
 /// Each blob is the compiled kernel for one module, emitted uniformly as
@@ -468,6 +487,11 @@ pub struct TargetPtxSet {
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
     /// set without an explicit `--draft-model` flag.
     pub dflash: Option<DflashConfig>,
+    /// `[expert_categories]` from MODEL.toml — per-category, per-layer expert
+    /// sets measured by the `expert-categories` benchmark. Empty when the
+    /// model has never been categorized. Consumed by spark-server to resolve
+    /// `--expert-category` into a boot-time expert-loading plan.
+    pub expert_categories: &'static [ExpertCategory],
     /// `(module, kernel)` pairs this model's kernel files DROPPED by shadowing
     /// their `common/` namesakes — the kernel exists in `common/` but this
     /// model's fork of the file does not define it, so it is not compiled here.
