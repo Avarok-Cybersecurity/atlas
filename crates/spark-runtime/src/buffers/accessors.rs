@@ -169,6 +169,9 @@ impl BufferArena {
     pub fn hc_comb(&self) -> DevicePtr {
         self.hc_comb
     }
+    /// Token rows this arena was sized for — the widest pass the model can
+    /// run. SSOT for anything sized to match a pass, e.g. the MoE
+    /// expert-telemetry staging buffer.
     pub fn max_batch_tokens(&self) -> usize {
         self.max_batch_tokens
     }

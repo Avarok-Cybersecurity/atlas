@@ -28,6 +28,7 @@ mod decode_checkpoint;
 mod decode_graph_key;
 mod drafter_prefill;
 mod ep_misc;
+mod expert_drain;
 mod graph_borrow;
 mod lm_head_batched;
 mod meta;
@@ -89,6 +90,7 @@ impl Model for TransformerModel {
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;
+        self.drain_expert_telemetry(seq, tokens.len(), stream);
         self.try_eager_drafter_prefill(seq, true, stream);
         Ok(logits)
     }
@@ -110,6 +112,7 @@ impl Model for TransformerModel {
             is_last_chunk,
             stream,
         )?;
+        self.drain_expert_telemetry(seq, chunk_len, stream);
         self.try_eager_drafter_prefill(seq, is_last_chunk, stream);
         Ok(logits)
     }
@@ -122,6 +125,12 @@ impl Model for TransformerModel {
     ) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)?;
+        // Two-phase runs its chunks internally, so only the LAST chunk's
+        // rows are still staged; the rest are unattributed by construction.
+        self.drain_expert_telemetry(seq, chunk_size.min(tokens.len()), stream);
+        if let Some(acc) = seq.expert_activation.as_mut() {
+            acc.note_unattributed_rows(tokens.len().saturating_sub(chunk_size) as u64);
+        }
         self.try_eager_drafter_prefill(seq, true, stream);
         Ok(logits)
     }

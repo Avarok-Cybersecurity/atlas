@@ -31,10 +31,11 @@ pub struct ExpertActivationAcc {
     /// check `Σcounts == tokens_routed × top_k` and catch a tap that
     /// silently recorded nothing.
     tokens_routed: u64,
-    /// Rows a pass dropped because they exceeded the staging width. Non-zero
-    /// means the numbers describe a prefix of the request, and the summary
-    /// says so rather than presenting itself as complete.
-    dropped_rows: u64,
+    /// Token positions this request ran that are NOT reflected in the counts
+    /// above — a prompt wider than the staging buffer. Non-zero means the
+    /// numbers describe a prefix of the prompt, and the response says so
+    /// rather than presenting itself as complete.
+    unattributed_rows: u64,
 }
 
 impl ExpertActivationAcc {
@@ -46,7 +47,7 @@ impl ExpertActivationAcc {
             counts: vec![0; num_layers * num_experts],
             mass: vec![0.0; num_layers * num_experts],
             tokens_routed: 0,
-            dropped_rows: 0,
+            unattributed_rows: 0,
         }
     }
 
@@ -62,13 +63,13 @@ impl ExpertActivationAcc {
         self.tokens_routed
     }
 
-    pub fn dropped_rows(&self) -> u64 {
-        self.dropped_rows
+    pub fn unattributed_rows(&self) -> u64 {
+        self.unattributed_rows
     }
 
-    /// Record that `rows` rows of a pass could not be staged.
-    pub fn note_dropped_rows(&mut self, rows: u64) {
-        self.dropped_rows += rows;
+    /// Record `rows` token positions the pass ran but could not stage.
+    pub fn note_unattributed_rows(&mut self, rows: u64) {
+        self.unattributed_rows += rows;
     }
 
     /// Fold one row (one token position) of one layer.

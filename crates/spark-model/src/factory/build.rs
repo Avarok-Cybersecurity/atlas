@@ -63,6 +63,8 @@ pub fn build_model(
     // NLLB / M2M-100 PEFT LoRA adapter directory (`--lora-adapter` for an
     // encoder-decoder checkpoint). `None` = base model.
     nllb_lora_dir: Option<std::path::PathBuf>,
+    // `--expert-telemetry`: record which experts each request routed to.
+    expert_telemetry: bool,
 ) -> Result<Box<dyn Model>> {
     // NLLB / M2M-100 is an encoder-decoder model that cannot be represented by
     // the decoder-only TransformerModel stack. Serve it with the dedicated
@@ -762,6 +764,7 @@ pub fn build_model(
         vision_encoder,
         ssm_cache_slots,
         ssm_checkpoint_interval,
+        expert_telemetry,
     )?;
 
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──

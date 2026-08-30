@@ -57,6 +57,16 @@ pub struct ModelLevers {
     pub holo_moe_gateup_fp4: bool,
     /// Collect per-layer MoE expert-union statistics. Diagnostic.
     pub moe_union_stats: bool,
+    /// Per-request MoE expert-activation telemetry (`--expert-telemetry`).
+    /// Not from the environment: `TransformerModel::new` writes it from the
+    /// serve arg, like `max_decode_seqs`.
+    ///
+    /// A boot decision rather than a per-request one because the staging
+    /// buffer and the device-to-device copies that fill it must exist before
+    /// decode-graph capture; a request cannot add a memcpy node to a graph
+    /// that was already recorded. Which requests REPORT experts is then a
+    /// per-request choice (`report_expert_metadata`).
+    pub expert_telemetry: bool,
 
     // ── Attention ──
     /// Contiguous-attention path for the DFlash head.
@@ -123,6 +133,9 @@ fn from_values(
 
     ModelLevers {
         max_decode_seqs: 1,
+        // Written by `TransformerModel::new` from the serve arg, not read
+        // from the environment (see the field docs).
+        expert_telemetry: false,
         shadow_topk,
         kv_poison: opt_in(value("ATLAS_KV_POISON").as_deref()),
         drafter,

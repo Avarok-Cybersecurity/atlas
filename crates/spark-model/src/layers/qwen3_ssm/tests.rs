@@ -150,6 +150,7 @@ fn run_batched_verify(
         derived: &derived,
         levers: &levers,
         stats: &stats,
+        expert_telemetry: None,
         buffers: &buffers,
         hc_row_offset: 0,
         gpu,

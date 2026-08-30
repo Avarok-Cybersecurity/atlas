@@ -399,6 +399,16 @@ impl MoeLayer {
         }
 
         super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
+        // Per-request expert telemetry: one D2D copy into this layer's
+        // staging slot. No-op unless --expert-telemetry is on.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            n as usize,
+            top_k as usize,
+            stream,
+        )?;
 
         // 3. Sort tokens by expert
         let te = total_expanded as usize;

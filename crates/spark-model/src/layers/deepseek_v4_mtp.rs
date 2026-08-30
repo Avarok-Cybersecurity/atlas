@@ -327,6 +327,10 @@ impl DeepseekV4MtpHead {
             derived: ctx.derived,
             levers: ctx.levers,
             stats: ctx.stats,
+            // None: the MTP head routes on the DRAFTER's experts. Folding
+            // them into the request's set would report experts the target
+            // model never ran (see `MoeSite::MtpHead`).
+            expert_telemetry: None,
             attn_metadata: Some(mtp_meta),
             profile: ctx.profile,
             // comm = None: the MTP draft runs ONLY on rank 0, so its MoE must NOT

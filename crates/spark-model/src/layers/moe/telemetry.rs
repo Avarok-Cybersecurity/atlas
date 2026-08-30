@@ -183,6 +183,46 @@ impl ExpertTelemetryStaging {
     }
 }
 
+impl super::MoeLayer {
+    /// Stage this layer's routing for the pass, if telemetry is on and this
+    /// MoE is one of the model's own layers.
+    ///
+    /// Called from the PREFILL paths only. Decode is not staged in v1: its
+    /// row→sequence mapping is not knowable inside the layer, because
+    /// batched decode calls `FfnComponent::forward` once per sequence with
+    /// the offset applied to the input pointer and no row index passed
+    /// down. Staging at row 0 from there would have every sequence in a
+    /// batch overwrite the previous one's routing, and the result would
+    /// look like a plausible answer for whichever sequence happened to run
+    /// last. Prefill has one sequence and rows `0..n`, so it is exact.
+    ///
+    /// A response reports the scope it actually measured (see
+    /// `ExpertActivationAcc`), so this limit is visible to callers rather
+    /// than being read as "the request used only these experts".
+    pub(super) fn stage_expert_telemetry(
+        &self,
+        ctx: &crate::layer::ForwardContext<'_>,
+        indices_dev: DevicePtr,
+        weights_dev: DevicePtr,
+        n: usize,
+        top_k: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let (Some(staging), Some(layer_idx)) = (ctx.expert_telemetry, self.site.layer_idx()) else {
+            return Ok(());
+        };
+        staging.stage(
+            ctx.gpu,
+            layer_idx,
+            indices_dev,
+            weights_dev,
+            n,
+            top_k,
+            stream,
+        )
+    }
+}
+
 /// Reinterpret a `u32` slice as bytes for a D2H copy. Both are plain data
 /// with no padding and the device wrote little-endian u32s, which is the
 /// host layout on every target Atlas builds for.

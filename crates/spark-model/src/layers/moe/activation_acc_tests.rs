@@ -118,14 +118,14 @@ fn out_of_range_layer_is_dropped_not_wrapped() {
 // ---------------------------------------------------------------- Path C
 
 #[test]
-fn dropped_rows_are_recorded_not_hidden() {
+fn unattributed_rows_are_recorded_not_hidden() {
     // A pass wider than the staging buffer stages a prefix. The shortfall
     // has to reach the response: silently reporting the prefix would read
     // as "these are all the experts the request used".
     let mut a = acc();
     a.fold_row(0, &[1, 2], &[0.5, 0.5]);
-    a.note_dropped_rows(7);
-    assert_eq!(a.dropped_rows(), 7);
+    a.note_unattributed_rows(7);
+    assert_eq!(a.unattributed_rows(), 7);
     assert_eq!(a.tokens_routed(), 1);
 }
 
@@ -134,5 +134,5 @@ fn empty_accumulator_reports_no_layers() {
     let a = acc();
     assert!(a.to_layers().is_empty());
     assert_eq!(a.tokens_routed(), 0);
-    assert_eq!(a.dropped_rows(), 0);
+    assert_eq!(a.unattributed_rows(), 0);
 }

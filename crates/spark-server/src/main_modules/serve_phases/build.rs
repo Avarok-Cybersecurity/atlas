@@ -92,6 +92,7 @@ pub(crate) fn build_model(
         lora_args,
         nllb_lang,
         nllb_lora_dir,
+        args.expert_telemetry,
     )
     .context("Failed to build model")
 }
