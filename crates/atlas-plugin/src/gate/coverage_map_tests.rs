@@ -279,6 +279,39 @@ fn a_driver_change_invalidates_only_its_own_gate() {
     assert_eq!(hit, ["bfcl-subset", "bfcl-subset-echolp"]);
 }
 
+/// The concurrency driver is made of flat files, unlike the directory-shaped
+/// drivers above. Exact-file exclusions must keep it attached to its own gate
+/// without forgiving shared benchmark plumbing or a lookalike neighbor.
+#[test]
+fn the_flat_concurrency_driver_invalidates_only_its_own_gate() {
+    for path in [
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+    ] {
+        assert_eq!(
+            coverage::invalidated_by([path]),
+            ["concurrency-sweep"],
+            "{path} must re-open exactly the instrument it implements"
+        );
+    }
+
+    for path in [
+        "crates/atlas-plugin/src/http.rs",
+        "crates/atlas-plugin/src/benchmarks/stats.rs",
+        "crates/atlas-plugin/src/benchmarks/transcript.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs.bak",
+        "crates/spark-server/src/scheduler/mod.rs",
+        "kernels/gb10/common/paged_decode_attn_fp8.cu",
+        "crates/atlas-plugin/src/gate/coverage.rs",
+    ] {
+        assert_eq!(
+            coverage::invalidated_by([path]),
+            REQUIRED_GATES,
+            "nearby or shared path {path} escaped the fail-closed boundary"
+        );
+    }
+}
+
 /// Gate BOOKKEEPING does not re-open GPU measurements — the change that
 /// motivated this whole module.
 ///

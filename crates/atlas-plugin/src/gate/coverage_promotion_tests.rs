@@ -117,7 +117,8 @@ fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
 /// weakened anything: what used to accrue DEBT now INVALIDATES — engine and
 /// kernel paths, each gate's own driver (the pins are the benchmark, and the
 /// decode-floor driver is a directory since the C1 split), and the usage
-/// plumbing the accept pin reads. Another driver's file still owes neither.
+/// plumbing the accept pin reads. This audit narrows only the flat concurrency
+/// driver; the decode-floor driver's existing coverage is unchanged here.
 #[test]
 fn the_promoted_gates_invalidate_where_they_used_to_accrue_debt() {
     for id in ["decode-floor", "concurrency-sweep"] {
@@ -139,13 +140,21 @@ fn the_promoted_gates_invalidate_where_they_used_to_accrue_debt() {
         "kernels/gb10/common/paged_decode_attn_fp8.cu",
         "crates/spark-server/src/openai/encode_stream.rs",
         "crates/atlas-plugin/src/benchmarks/decode_floor/mod.rs",
-        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
-        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
     ] {
         let hit = coverage::invalidated_by([path]);
         assert!(
             hit.contains(&"decode-floor") && hit.contains(&"concurrency-sweep"),
             "{path} must invalidate both promoted gates: {hit:?}"
+        );
+    }
+    for path in [
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+    ] {
+        assert_eq!(
+            coverage::invalidated_by([path]),
+            ["concurrency-sweep"],
+            "the flat concurrency driver belongs to the concurrency instrument only: {path}"
         );
     }
     let hit = coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"]);
