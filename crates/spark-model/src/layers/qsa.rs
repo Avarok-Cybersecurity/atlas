@@ -196,9 +196,7 @@ impl QsaIndexer {
     /// returns early and skipped rows would be left uninitialised.
     pub fn prefill_select_active(&self) -> bool {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        !*OFF.get_or_init(|| {
-            std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1")
-        })
+        !*OFF.get_or_init(|| std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
     }
 
     pub fn inert_bound(&self) -> usize {

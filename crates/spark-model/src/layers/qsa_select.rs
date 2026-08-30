@@ -235,9 +235,7 @@ impl QsaIndexer {
             // ATLAS_QSA_HOST_TOPK=1 forces the CPU path for A/B.
             let host_topk = {
                 static H: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                *H.get_or_init(|| {
-                    std::env::var("ATLAS_QSA_HOST_TOPK").as_deref() == Ok("1")
-                })
+                *H.get_or_init(|| std::env::var("ATLAS_QSA_HOST_TOPK").as_deref() == Ok("1"))
             };
             if !host_topk && self.k_topk_rows_k.0 != 0 {
                 ops::qsa_topk_rows(
@@ -254,32 +252,31 @@ impl QsaIndexer {
                 )
                 .context("QSA prefill top-k (device)")?;
             } else {
-
-            // Host top-k per row (sync D2H drains the stream first). Torch
-            // tie-break: larger score first, lower index on ties.
-            let mut raw = vec![0u8; rows * stride * 4];
-            gpu.copy_d2h_on_stream(scores, &mut raw, stream)?;
-            let sc: Vec<f32> = raw
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            let mut host_lists = vec![0u8; rows * topk * 4];
-            for r in 0..rows {
-                let complete = (first_pos + r + 1) / ratio;
-                let row_sc = &sc[r * stride..r * stride + complete];
-                let mut order: Vec<u32> = (0..complete as u32).collect();
-                order.sort_by(|&a, &b| {
-                    row_sc[b as usize]
-                        .partial_cmp(&row_sc[a as usize])
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(a.cmp(&b))
-                });
-                for (i, b) in order[..topk].iter().enumerate() {
-                    host_lists[(r * topk + i) * 4..(r * topk + i) * 4 + 4]
-                        .copy_from_slice(&(*b as i32).to_le_bytes());
+                // Host top-k per row (sync D2H drains the stream first). Torch
+                // tie-break: larger score first, lower index on ties.
+                let mut raw = vec![0u8; rows * stride * 4];
+                gpu.copy_d2h_on_stream(scores, &mut raw, stream)?;
+                let sc: Vec<f32> = raw
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let mut host_lists = vec![0u8; rows * topk * 4];
+                for r in 0..rows {
+                    let complete = (first_pos + r + 1) / ratio;
+                    let row_sc = &sc[r * stride..r * stride + complete];
+                    let mut order: Vec<u32> = (0..complete as u32).collect();
+                    order.sort_by(|&a, &b| {
+                        row_sc[b as usize]
+                            .partial_cmp(&row_sc[a as usize])
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then(a.cmp(&b))
+                    });
+                    for (i, b) in order[..topk].iter().enumerate() {
+                        host_lists[(r * topk + i) * 4..(r * topk + i) * 4 + 4]
+                            .copy_from_slice(&(*b as i32).to_le_bytes());
+                    }
                 }
-            }
-            gpu.copy_h2d_async(&host_lists, lists, stream)?;
+                gpu.copy_h2d_async(&host_lists, lists, stream)?;
             }
 
             ops::qsa_prefill_attn(

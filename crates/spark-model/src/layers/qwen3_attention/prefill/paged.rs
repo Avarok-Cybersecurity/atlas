@@ -544,12 +544,12 @@ impl Qwen3AttentionLayer {
         // ATLAS_QSA_SKIP_DENSE=1 arms it; default off.
         let skip_dense_attn = {
             static ARM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ARM.get_or_init(|| {
-                std::env::var("ATLAS_QSA_SKIP_DENSE").as_deref() == Ok("1")
-            }) && batched_meta.is_none()
-                && self.qsa.as_ref().is_some_and(|q| {
-                    q.prefill_select_active() && seq_len_start >= q.inert_bound()
-                })
+            *ARM.get_or_init(|| std::env::var("ATLAS_QSA_SKIP_DENSE").as_deref() == Ok("1"))
+                && batched_meta.is_none()
+                && self
+                    .qsa
+                    .as_ref()
+                    .is_some_and(|q| q.prefill_select_active() && seq_len_start >= q.inert_bound())
         };
         if skip_dense_attn {
             tracing::debug!(
