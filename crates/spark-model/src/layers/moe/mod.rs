@@ -13,6 +13,14 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
+/// Rows the resident-mass rescale scratch is sized for.
+///
+/// A fixed cap rather than the arena's width because `MoeLayer::new` never
+/// sees the arena. 8192 rows is 32 KB per restricted layer and comfortably
+/// above the widest prefill chunk any serve issues; a pass beyond it skips
+/// the rescale and says so, rather than writing past the buffer.
+pub(crate) const BEL_RHO_MAX_ROWS: usize = 8192;
+
 /// Where an [`MoeLayer`] sits in the model.
 ///
 /// Carried explicitly rather than as a bare index because not every MoE is a
@@ -411,6 +419,16 @@ pub struct MoeLayer {
     /// unmasked route.
     pub(crate) moe_bel_mask_bf16_k: KernelHandle,
     pub(crate) moe_bel_mask_f32_k: KernelHandle,
+    /// Resident-mass rescale: recovers each selected expert's TRUE softmax
+    /// weight instead of the renormalized-over-survivors one, so the mass
+    /// that belonged to absent experts is not handed to substitutes.
+    /// `KernelHandle(0)` on a build without the kernels — dispatch then
+    /// leaves the weights alone and says so once.
+    pub(crate) moe_bel_resident_mass_k: KernelHandle,
+    pub(crate) moe_bel_scale_weights_k: KernelHandle,
+    /// `[max_batch_tokens]` f32 scratch for the per-row resident-mass share.
+    /// Allocated once, fixed address, so the computation is capture-legal.
+    pub(crate) bel_rho_dev: Option<DevicePtr>,
     /// Feature-1 (MoE expert + router LoRA): this layer's installed router +
     /// routed-expert deltas + apply scratch. `None` = no adapter / feature off
     /// → the base MoE path is byte-identical. Set by

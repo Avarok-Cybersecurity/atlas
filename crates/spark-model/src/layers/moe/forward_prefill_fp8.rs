@@ -414,6 +414,10 @@ impl MoeLayer {
             top_k as usize,
             stream,
         )?;
+        // Undo the renormalization that handed absent experts' mass to
+        // whichever residents were selected (see moe::bel). No-op unless
+        // --expert-category restricts this layer.
+        self.apply_bel_rescale(ctx, weights_dev, 0, n as usize, top_k as usize, stream)?;
 
         // 3. Sort tokens by expert
         let te = total_expanded as usize;

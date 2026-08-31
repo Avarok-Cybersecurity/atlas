@@ -64,6 +64,56 @@ pub fn moe_topk_softmax(
         .launch(stream)
 }
 
+/// Per-row share of the FULL softmax mass held by resident experts.
+///
+/// Read from the logits BEFORE masking, because the whole point is the ratio
+/// between what the router wanted and what this serve can supply.
+pub fn moe_bel_resident_mass(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_logits: DevicePtr,
+    mask: DevicePtr,
+    rho: DevicePtr,
+    n: u32,
+    num_experts: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n.max(1), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate_logits)
+        .arg_ptr(mask)
+        .arg_ptr(rho)
+        .arg_u32(num_experts)
+        .launch(stream)
+}
+
+/// Scale each row's selected weights by that row's resident-mass share,
+/// turning renormalized-over-survivors weights back into true weights.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_bel_scale_weights(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    expert_weights: DevicePtr,
+    rho: DevicePtr,
+    row_base: u32,
+    n: u32,
+    top_k: u32,
+    stream: u64,
+) -> Result<()> {
+    let total = n * top_k;
+    let threads = 256u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([total.div_ceil(threads).max(1), 1, 1])
+        .block([threads, 1, 1])
+        .arg_ptr(expert_weights)
+        .arg_ptr(rho)
+        .arg_u32(row_base)
+        .arg_u32(n)
+        .arg_u32(top_k)
+        .launch(stream)
+}
+
 /// Mask unloaded experts out of the router (boot-time expert loading).
 ///
 /// `mask` is `[num_experts]` f32 — 0.0 for a resident expert, -inf for one

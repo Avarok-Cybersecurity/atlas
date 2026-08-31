@@ -305,6 +305,10 @@ impl MoeLayer {
             top_k as usize,
             stream,
         )?;
+        // Undo the renormalization that handed absent experts' mass to
+        // whichever residents were selected (see moe::bel). No-op unless
+        // --expert-category restricts this layer.
+        self.apply_bel_rescale(ctx, weights_dev, row_base, 1, top_k as usize, stream)?;
 
         if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;

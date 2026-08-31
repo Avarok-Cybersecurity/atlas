@@ -101,6 +101,33 @@ impl MoeLayer {
                 if fp32_logits { "f32" } else { "bf16" }
             );
         }
+        // BEFORE the mask: the ratio between what the router wanted and what
+        // this serve holds only exists while the absent experts' logits are
+        // still there.
+        if !fp32_logits
+            && let Some(rho) = self.bel_rho_dev
+            && self.moe_bel_resident_mass_k.0 != 0
+        {
+            if n <= super::BEL_RHO_MAX_ROWS {
+                crate::layers::ops::moe_bel_resident_mass(
+                    ctx.gpu,
+                    self.moe_bel_resident_mass_k,
+                    gate_logits,
+                    mask,
+                    rho,
+                    n as u32,
+                    self.num_experts_for_mask() as u32,
+                    stream,
+                )?;
+            } else if ctx.stats.once("bel_rho_overflow") {
+                tracing::warn!(
+                    "expert-category rescale skipped for a {n}-row pass (scratch holds {}); \
+                     those rows keep the renormalized weights",
+                    super::BEL_RHO_MAX_ROWS
+                );
+            }
+        }
+
         let total = n * self.num_experts_for_mask();
         crate::layers::ops::moe_bel_mask(
             ctx.gpu,
@@ -110,6 +137,82 @@ impl MoeLayer {
             n as u32,
             self.num_experts_for_mask() as u32,
             total as u32,
+            stream,
+        )
+    }
+
+    /// Turn renormalized-over-survivors weights back into true weights.
+    ///
+    /// Called immediately AFTER top-k, on the weights it produced. Masking
+    /// before selection and renormalizing over what survives gives each
+    /// selected expert `w / rho`, so the mass that belonged to absent experts
+    /// is silently handed to whichever residents were picked — including ones
+    /// the router ranked far below the true top-k. Multiplying by `rho` is
+    /// exactly the inverse: every selected expert ends up carrying the weight
+    /// it has in the FULL softmax, and the routed branch contributes `rho` of
+    /// its usual total rather than all of it.
+    ///
+    /// Softmax routing only. Sigmoid routing has no shared denominator, so
+    /// there is no ratio to take and this must not run.
+    pub(super) fn apply_bel_rescale(
+        &self,
+        ctx: &crate::layer::ForwardContext<'_>,
+        expert_weights: DevicePtr,
+        row_base: usize,
+        n: usize,
+        top_k: usize,
+        stream: u64,
+    ) -> Result<()> {
+        if !ctx.levers.bel_rescale {
+            // Off by default: measured worse than leaving the renormalization
+            // alone (see `ModelLevers::bel_rescale`).
+            return Ok(());
+        }
+        let Some(rho) = self.bel_rho_dev else {
+            // Not a restricted layer: nothing was masked, so there is no
+            // renormalization to undo.
+            return Ok(());
+        };
+        if !self.routing_is_softmax(ctx) {
+            // Sigmoid and hash routing do not normalize across experts, so
+            // there is no shared denominator and no ratio to take. Masking
+            // still works for them; only this correction does not apply.
+            // Said once rather than skipped in silence — a silent skip is how
+            // this went unnoticed for a whole measurement round.
+            if ctx.stats.once("bel_rescale_not_softmax") {
+                tracing::warn!(
+                    "--expert-category: routing on this model is not softmax, so the \
+                     resident-mass rescale does not apply; masked routing keeps the \
+                     renormalized weights and absent experts' mass goes to substitutes"
+                );
+            }
+            return Ok(());
+        }
+        if self.moe_bel_scale_weights_k.0 == 0 {
+            anyhow::bail!(
+                "--expert-category is active but this build has no moe_bel_scale_weights \
+                 kernel, so the resident-mass rescale cannot run and absent experts' mass \
+                 would be handed to substitutes without any indication"
+            );
+        }
+        if row_base + n > super::BEL_RHO_MAX_ROWS {
+            if ctx.stats.once("bel_rho_overflow_scale") {
+                tracing::warn!(
+                    "--expert-category rescale skipped for rows beyond {} — those rows keep \
+                     the renormalized weights",
+                    super::BEL_RHO_MAX_ROWS
+                );
+            }
+            return Ok(());
+        }
+        crate::layers::ops::moe_bel_scale_weights(
+            ctx.gpu,
+            self.moe_bel_scale_weights_k,
+            expert_weights,
+            rho,
+            row_base as u32,
+            n as u32,
+            top_k as u32,
             stream,
         )
     }
@@ -129,6 +232,27 @@ impl MoeLayer {
              loaded. Serve without --expert-category, or use a configuration that routes \
              through the masked prefill/decode paths."
         )
+    }
+
+    /// Whether this layer routes by a softmax over all experts.
+    ///
+    /// Determined the same way the dispatch does it, NOT by reading
+    /// `scoring_func` — that field is absent from most checkpoints' config
+    /// (Qwen3.6-35B-A3B included) and defaults to the empty string, so
+    /// comparing it against "softmax" answers false for the plain softmax
+    /// models that are the majority. That mistake silently disabled this
+    /// correction for a full measurement round.
+    fn routing_is_softmax(&self, ctx: &crate::layer::ForwardContext<'_>) -> bool {
+        // Hash-routed layers select from a static table, not a distribution.
+        if self.tid2eid_dev.is_some() {
+            return false;
+        }
+        // A correction bias means sigmoid scoring, unless the model declares
+        // softmax-with-bias (LongCat) — which BEL refuses at boot anyway.
+        if self.correction_bias_dev.is_some() && ctx.config.scoring_func != "softmax" {
+            return false;
+        }
+        ctx.config.scoring_func != "sqrtsoftplus"
     }
 
     /// Expert count the mask is indexed by. The mask is built over the

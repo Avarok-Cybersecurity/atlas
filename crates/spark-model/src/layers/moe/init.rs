@@ -68,12 +68,29 @@ impl MoeLayer {
         let _ = num_experts;
         let rms_norm_k = gpu.kernel("norm", "rms_norm")?;
         let bel_mask_dev = Self::build_bel_mask(site, config, gpu)?;
+        // One f32 per row of the widest pass. Only when this layer is
+        // actually restricted — an unrestricted serve allocates nothing.
+        let bel_rho_dev = match bel_mask_dev {
+            Some(_) => Some(gpu.alloc(super::BEL_RHO_MAX_ROWS * 4)?),
+            None => None,
+        };
         Ok(Self {
             site,
             bel_mask_dev,
             bel_num_experts: num_experts,
             moe_bel_mask_bf16_k: super::super::try_kernel(gpu, "moe_bel_mask", "moe_bel_mask_bf16"),
             moe_bel_mask_f32_k: super::super::try_kernel(gpu, "moe_bel_mask", "moe_bel_mask_f32"),
+            moe_bel_resident_mass_k: super::super::try_kernel(
+                gpu,
+                "moe_bel_mask",
+                "moe_bel_resident_mass_bf16",
+            ),
+            moe_bel_scale_weights_k: super::super::try_kernel(
+                gpu,
+                "moe_bel_mask",
+                "moe_bel_scale_weights",
+            ),
+            bel_rho_dev,
             weights,
             // Default: standard NVFP4 (FP8-E4M3 per-16 + f32 global). The
             // DeepSeek-V4 native-MXFP4 loader overrides this to `Mxfp4E8m0`

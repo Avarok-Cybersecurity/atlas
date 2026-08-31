@@ -165,6 +165,11 @@ impl MoeLayer {
                 top_k as usize,
                 stream,
             )?;
+            // This path routes ONE token per iteration into a single-row
+            // weights buffer, so it rescales by row `t`'s resident share —
+            // rho for the whole batch was computed when batched_gate_logits
+            // masked the logits.
+            self.apply_bel_rescale(ctx, weights_dev, t, 1, top_k as usize, stream)?;
 
             let shared_out = ctx.buffers.attn_output();
             if let (Some(gp), Some(up), Some(dp), Some(shared)) = (
