@@ -134,6 +134,17 @@ pub(super) fn derive_finish_reason(
 /// 0 = unlimited) — needed so the `"length"` decision reuses the exact
 /// stop predicate from `emit_step`/`decode_logits_step`.
 pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize) {
+    // 🔴 A FAILED sequence is not a finished one. Retirement is the single funnel
+    // for both, so the split belongs here: an inference error goes to the client
+    // AS an error, exactly as the decode path already does via `send_error`
+    // (`preempt.rs`). Falling through would synthesize an ordinary finish_reason
+    // over a truncated answer — and would also `cache_sequence` a sequence whose
+    // last step aborted, seeding the prefix cache from a failed generation.
+    // ANOMALIES A62.
+    if let Some(msg) = a.error.take() {
+        send_error(model, a, &msg);
+        return;
+    }
     let reason = derive_finish_reason(
         a.guard_stop,
         a.output_tokens.last().copied(),
@@ -412,6 +423,7 @@ pub fn resume_swapped_seq(
         min_tokens: s.min_tokens,
         eos_tokens: s.eos_tokens,
         finished: false,
+            error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink: s.sink,
@@ -500,3 +512,15 @@ pub fn resume_swapped_seq(
 
 // Tests live in `lifecycle_tests.rs` (sibling module registered in
 // `scheduler/mod.rs`) to keep this file under the 500-line cap.
+
+/// Mark a sequence for retirement as a FAILURE. The caller keeps it in `active`;
+/// the retirement funnel (`finish_sequence`) turns `error` into the client-visible
+/// error and frees exactly once.
+///
+/// Use this, not a bare `finished = true`, wherever an inference step returned
+/// `Err` — that is the difference between a 500 the caller can act on and a 200
+/// that looks like the model chose to stop. ANOMALIES A62.
+pub fn fail_sequence(a: &mut ActiveSeq, msg: String) {
+    a.error = Some(msg);
+    a.finished = true;
+}

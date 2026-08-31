@@ -264,6 +264,19 @@ pub(crate) fn maybe_run_ep_worker(
             match model_owned.ep_worker_step(&mut slots) {
                 Ok(true) => {}
                 Ok(false) => break,
+                // 🔴 A command that EXECUTED and failed is request-scoped, not worker-scoped:
+                // the head raises the same error and answers the client with an HTTP 500,
+                // then keeps serving. Breaking here exited this process with status 0 while
+                // the head stayed up, and the head's next collective spun forever against a
+                // peer that no longer existed — a serve that answers 200 on every health
+                // endpoint and never completes another request. ANOMALIES A60/A62.
+                Err(e) if e.downcast_ref::<spark_model::traits::EpCommandFailed>().is_some() => {
+                    tracing::error!(
+                        "EP worker command failed (rank {rank}); worker STAYS UP: {e:#}"
+                    );
+                }
+                // Anything else came from receiving the command: the link to the head is
+                // gone, so exiting is correct — the next receive would fail identically.
                 Err(e) => {
                     tracing::error!("EP worker error: {e:#}");
                     break;
@@ -316,5 +329,35 @@ mod prefix_cache_tests {
 
         let cache = build_prefix_cache(&enabled_args(), &config);
         assert!(!cache.is_active());
+    }
+}
+
+#[cfg(test)]
+mod ep_worker_loop_tests {
+    /// 🔴 A60/A62. The worker loop must survive a command failure and still exit on a
+    /// receive failure. Getting this backwards in either direction is an availability bug:
+    /// break-on-both kills rank 1 and hangs rank 0 forever; continue-on-both spins on a
+    /// dead link. The ORDER of the two arms is the whole fix, so assert it.
+    #[test]
+    fn a_command_failure_keeps_the_worker_up_and_a_link_failure_does_not() {
+        let src = include_str!("build.rs");
+        let loop_body = src
+            .split_once("match model_owned.ep_worker_step(&mut slots)")
+            .expect("the EP worker loop must exist")
+            .1;
+        let recoverable = loop_body
+            .find("EpCommandFailed")
+            .expect("the loop must classify command failures");
+        let stays_up = loop_body
+            .find("worker STAYS UP")
+            .expect("the recoverable arm must say so in the log");
+        let fatal = loop_body
+            .find("break;\n                }\n            }\n        }")
+            .expect("the fatal arm must still break");
+        assert!(
+            recoverable < stays_up && stays_up < fatal,
+            "the EpCommandFailed arm must come BEFORE the catch-all break, or every command \
+             failure is fatal again"
+        );
     }
 }

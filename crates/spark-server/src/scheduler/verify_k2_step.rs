@@ -92,7 +92,7 @@ pub fn step_verify_k2(
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
         return;
     }
     sched.timing.record(Phase::SyncSecondary, t_sync);
@@ -103,13 +103,13 @@ pub fn step_verify_k2(
     let tokens_k2 = [a.last_token, drafts[0]];
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF2) {
         tracing::error!("EP broadcast verify_k2 cmd: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k2 cmd: {e:#}"));
         return;
     }
     for &t in &tokens_k2 {
         if let Err(e) = model.ep_broadcast_cmd(t) {
             tracing::error!("EP broadcast verify_k2 token: {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k2 token: {e:#}"));
             return;
         }
     }
@@ -129,7 +129,7 @@ pub fn step_verify_k2(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("decode_and_verify_fused (k2): {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_and_verify_fused (k2): {e:#}"));
                 return;
             }
         }
@@ -138,7 +138,7 @@ pub fn step_verify_k2(
             Ok(r) => r.to_vec(),
             Err(e) => {
                 tracing::error!("decode_verify_graphed: {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_verify_graphed: {e:#}"));
                 return;
             }
         }
@@ -206,7 +206,7 @@ pub fn step_verify_k2(
     // EP: always broadcast accept/reject to worker (prevents deadlock on EOS).
     if let Err(e) = model.ep_broadcast_cmd(accepted as u32) {
         tracing::error!("EP broadcast verify_k2 result: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k2 result: {e:#}"));
         return;
     }
 
@@ -239,7 +239,7 @@ pub fn step_verify_k2(
             // trustworthy for this sequence. Continuing would emit
             // coherent-looking tokens from poisoned state; terminate instead.
             tracing::error!("commit_accepted_prefix (accept): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(a, format!("commit_accepted_prefix (accept): {e:#}"));
             return;
         }
         sched.timing.record(Phase::Commit, t_commit);
@@ -319,7 +319,7 @@ pub fn step_verify_k2(
         let t_commit = Instant::now();
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 2) {
             tracing::error!("commit_accepted_prefix (reject): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(a, format!("commit_accepted_prefix (reject): {e:#}"));
             return;
         }
         sched.timing.record(Phase::Commit, t_commit);

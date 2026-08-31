@@ -10,7 +10,7 @@
 //!    bug (wrong field passed for the budget/count) fails a test even
 //!    though the pure function is correct.
 
-use super::lifecycle::{derive_finish_reason, finish_sequence};
+use super::lifecycle::{derive_finish_reason, fail_sequence, finish_sequence};
 use super::types::{ActiveSeq, GUARD_STOP_REQUEST_TIMEOUT, ResponseSink};
 use super::{DEFAULT_LZ_PENALTY, SsmDecodeRing};
 use crate::api::InferenceResponse;
@@ -195,6 +195,7 @@ fn test_seq(
         min_tokens: 7,
         eos_tokens: EOS.to_vec(),
         finished: true,
+        error: None,
         guard_stop,
         param_close_pending: 0,
         sink: ResponseSink::Blocking(Some(tx)),
@@ -368,5 +369,59 @@ fn every_configured_eos_token_stops_generation_independently() {
             "length",
             "collapsing to the primary would let {id} through"
         );
+    }
+}
+
+/// 🔴 A62. A sequence retired because an inference step FAILED must reach the client
+/// as an error, not as a normal completion. The measured failure: a K=3 verify
+/// refused at the 16,384-token DSA ceiling, and because the arm set only
+/// `finished = true` the caller got HTTP 200 and `finish_reason` of an ordinary
+/// stop over a truncated answer — indistinguishable from the model choosing to end.
+#[test]
+fn a_failed_sequence_is_sent_as_an_error_not_a_normal_finish() {
+    let (mut a, mut rx) = test_seq(vec![5, 6, 42], 500, None, 10);
+    fail_sequence(&mut a, "decode_verify_graphed_k3: DSA indexer cache: 16385".into());
+    assert!(a.finished, "fail_sequence must still retire the sequence");
+    finish_sequence(&StubModel, &mut a, MAX_SEQ_LEN);
+    let got = rx
+        .try_recv()
+        .expect("a failed sequence must still answer the caller");
+    // `InferenceResponse` is not Debug, so match rather than expect_err.
+    let err = match got {
+        Ok(_) => panic!("it must answer with an ERROR, not a completion"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:#}").contains("16385"),
+        "the client must be told WHY: {err:#}"
+    );
+}
+
+/// The error branch must not swallow ordinary completions — same funnel, no error set.
+#[test]
+fn a_normal_finish_is_unaffected_by_the_error_branch() {
+    let (a, rx) = test_seq(vec![5, 6, 42], 0, None, 10);
+    assert_eq!(finish_and_recv(a, rx).finish_reason, "length");
+}
+
+/// Every error arm in the reachable GLM verify steps must route through
+/// `fail_sequence`. A bare `finished = true` after a `tracing::error!` is the exact
+/// shape that produced the silent truncation, so assert the shape is gone.
+#[test]
+fn no_reachable_verify_error_arm_silently_finishes() {
+    for (name, src) in [
+        ("verify_k2_step", include_str!("verify_k2_step.rs")),
+        ("verify_k3_step", include_str!("verify_k3_step.rs")),
+        ("verify_k4_step", include_str!("verify_k4_step.rs")),
+    ] {
+        for (i, w) in src.lines().collect::<Vec<_>>().windows(2).enumerate() {
+            let silent = w[0].contains("tracing::error!") && w[1].trim() == "a.finished = true;";
+            assert!(
+                !silent,
+                "{name}:{}: an error arm still sets `finished = true` without \
+                 fail_sequence — that returns HTTP 200 over a failed generation",
+                i + 1
+            );
+        }
     }
 }
