@@ -42,6 +42,72 @@ permissions:
   contents: read
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The whole commit graph but no blob contents: `git diff --name-only`
+          # compares tree entries, so the file bodies are never needed.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
+  blog-frontmatter:
+    # Its own job rather than a step inside `unit`, so it owns a stable check
+    # name that can later be promoted to a required context without tangling
+    # its verdict with the unit tests'.
+    #
+    # The job always RUNS and only its steps stand down, so it always reports a
+    # conclusion — promotable with no hang risk, and no job-level skip whose
+    # fail-open direction has to be audited. `!= 'false'` on the steps: if the
+    # classifier errored, blog_touched is empty and the posts get validated
+    # anyway.
+    name: Blog frontmatter
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bun
+        if: ${{ needs.changes.outputs.blog_touched != 'false' }}
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install blog dependencies
+        if: ${{ needs.changes.outputs.blog_touched != 'false' }}
+        working-directory: blog
+        run: bun install --frozen-lockfile
+      # Validates every post, not just the changed ones: a category or author
+      # removed from content.js invalidates posts nobody touched, and that is
+      # the failure a diff-scoped check would miss.
+      - name: Validate post frontmatter
+        if: ${{ needs.changes.outputs.blog_touched != 'false' }}
+        working-directory: blog
+        run: bun scripts/check-frontmatter.mjs
+      - name: Nothing under blog/ changed
+        if: ${{ needs.changes.outputs.blog_touched == 'false' }}
+        run: echo "no blog files in this diff — nothing to validate"
+
   unit:
     name: Site unit tests
     runs-on: ubuntu-latest

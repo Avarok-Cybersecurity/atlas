@@ -47,6 +47,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The whole commit graph but no blob contents: `git diff --name-only`
+          # compares tree entries, so the file bodies are never needed.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
   fmt:
     name: cargo fmt --check
     runs-on: ubuntu-latest
@@ -59,6 +90,18 @@ jobs:
 
   clippy:
     name: cargo clippy --tests
+    needs: [changes]
+    # Heavy and Rust-only. On a web-only diff this job is SKIPPED — the check
+    # run is still created with conclusion `skipped`, which branch protection
+    # and the merge queue count as satisfied. That is the crucial difference
+    # from a trigger-level `paths:` filter, which never creates the check at
+    # all and blocks the PR forever.
+    #
+    # `!cancelled() && ... != 'true'` fails OPEN: if `changes` errored its
+    # output is the empty string, empty != 'true', and naming a status function
+    # suppresses the implicit success() on `needs` — so this job RUNS. Written
+    # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -124,6 +167,18 @@ jobs:
 
   test:
     name: cargo test --workspace
+    needs: [changes]
+    # Heavy and Rust-only. On a web-only diff this job is SKIPPED — the check
+    # run is still created with conclusion `skipped`, which branch protection
+    # and the merge queue count as satisfied. That is the crucial difference
+    # from a trigger-level `paths:` filter, which never creates the check at
+    # all and blocks the PR forever.
+    #
+    # `!cancelled() && ... != 'true'` fails OPEN: if `changes` errored its
+    # output is the empty string, empty != 'true', and naming a status function
+    # suppresses the implicit success() on `needs` — so this job RUNS. Written
+    # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -143,6 +198,18 @@ jobs:
 
   test-macos-metal:
     name: cargo test --features metal (macOS aarch64)
+    needs: [changes]
+    # Heavy and Rust-only. On a web-only diff this job is SKIPPED — the check
+    # run is still created with conclusion `skipped`, which branch protection
+    # and the merge queue count as satisfied. That is the crucial difference
+    # from a trigger-level `paths:` filter, which never creates the check at
+    # all and blocks the PR forever.
+    #
+    # `!cancelled() && ... != 'true'` fails OPEN: if `changes` errored its
+    # output is the empty string, empty != 'true', and naming a status function
+    # suppresses the implicit success() on `needs` — so this job RUNS. Written
+    # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -203,13 +270,38 @@ jobs:
     # Runs for pull_request AND merge_group (queue entry validation on the
     # temporary gh-readonly-queue/** commit). github.event.number is empty
     # under merge_group, so the version string falls back to "queue".
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    needs: [fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+    # ★ This caller must RUN on every PR and queue entry, web-only ones
+    # included. The required context is `release matrix / dry-run summary`, a
+    # job INSIDE the called workflow — and if the caller is skipped, that
+    # nested check may never be created at all. That is the permanent
+    # "Expected" trap, not the benign skipped-counts-as-satisfied case. So the
+    # skip happens INSIDE release-build.yml via the `web_only` input: the nine
+    # build legs skip, and the summary job runs and reports a real success.
+    #
+    # Explicit result checks rather than bare `needs`, because clippy/test/
+    # metal may now be legitimately `skipped` and default semantics would drag
+    # this caller down with them. A genuine FAILURE of any dependency still
+    # skips the matrix exactly as before — that PR is already red on the failed
+    # check itself, so nothing hangs. `changes` is deliberately not in the
+    # conditions: if it failed, the gates all ran and `web_only` resolves to
+    # false, which is the fail-open direction in both places.
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
+          needs.fmt.result == 'success' &&
+          needs.license-headers.result == 'success' &&
+          needs.typos.result == 'success' &&
+          needs.kernel-structure.result == 'success' &&
+          (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+          (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+          (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') }}
+    needs: [changes, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}
       pr_mode: true
       retention_days: 1
+      web_only: ${{ needs.changes.outputs.web_only == 'true' }}
 
   # OBSERVE-ONLY, and structurally incapable of being anything else.
   #
@@ -778,6 +870,16 @@ jobs:
   pr-benchmark-gate:
     name: PR Benchmark Certifications
     runs-on: ubuntu-latest
+    needs: [changes]
+    # The web trees are not measured inputs of any record — `record_covers`
+    # invalidates on crates/, kernels/, Cargo.*, vendor/, jinja-templates and
+    # the toolchain, none of which a web-only diff can reach. So on such a diff
+    # the verdict is a foregone "records still cover", bought with a full
+    # workspace build. Skip it, and let the alias below turn the DELIBERATE
+    # skip into the required context's pass. Fails open, like every other gate
+    # here: a broken classifier runs the certification rather than waving it
+    # through.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     # Runs under `merge_group` too, deliberately. There the checkout is the
     # queue's temporary merge commit (latest main + this PR), and the gate
     # answers "do the committed records still cover the MERGED tree" — which
@@ -874,7 +976,7 @@ jobs:
   #   doing 2 without 1 blocks every merge, so 1 comes first.
   pr-benchmark-gate-alias:
     name: PR benchmark gate
-    needs: [pr-benchmark-gate]
+    needs: [changes, pr-benchmark-gate]
     # `always()`, or a red certification would SKIP this shim rather than fail
     # it — and a skipped required check is treated as unsatisfied-but-pending,
     # which reads as "still running" instead of "the gate said no".
@@ -884,9 +986,21 @@ jobs:
       - name: Mirror the certification verdict
         env:
           RESULT: ${{ needs.pr-benchmark-gate.result }}
+          WEB_ONLY: ${{ needs.changes.outputs.web_only }}
         run: |
-          echo "PR Benchmark Certifications => ${RESULT}"
-          # Anything other than success — failure, cancelled, skipped — is not a
+          echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
+          if [ "${RESULT}" = "success" ]; then exit 0; fi
+          # THE ONE SKIP THAT IS A PASS: the certification was deliberately not
+          # run because every changed file is under site/ blog/ book/
+          # web-shared/, none of which is a measured input of any record. The
+          # condition is positive on purpose — a skip caused by a BROKEN
+          # classifier leaves WEB_ONLY empty and stays red below, so this
+          # branch cannot become a hole in branch protection.
+          if [ "${RESULT}" = "skipped" ] && [ "${WEB_ONLY}" = "true" ]; then
+            echo "web-only diff: no record's measured inputs were touched — pass."
+            exit 0
+          fi
+          # Anything else — failure, cancelled, skipped — is not a
           # pass. Defaulting the unknown case to green would make the shim a hole
           # in branch protection for as long as it exists.
           if [ "${RESULT}" != "success" ]; then

@@ -1,0 +1,44 @@
+{{!-- Atlas brand head, applied to every generated page.
+
+      Colours live in web-shared/atlas-tokens.css. The one literal here is
+      theme-color, because a meta tag cannot read a custom property — the same
+      documented exception the marketing site and the blog both carry, and CI
+      compares the two.
+
+      What handlebars CANNOT do is here; what it cannot do is done afterwards by
+      scripts-inject-meta.mjs. mdBook's template has no string helpers, so
+      `{{ path }}` ("getting-started/quickstart.md") cannot become a canonical
+      URL, and there is no per-page description in the template context at all.
+      The split is strict — no tag is emitted by both — so nothing is
+      duplicated, and a bare local `mdbook serve` still produces a working
+      card. --}}
+<meta name="theme-color" content="#0F1216">
+{{#unless is_print}}
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+{{/unless}}
+
+{{!-- The same icon set as atlasinference.io and the blog: one brand, one tab
+      treatment. The files are copied in from site/static by the Docs workflow,
+      so there is no third committed copy. --}}
+<link rel="icon" type="image/svg+xml" href="{{ path_to_root }}favicon.svg">
+<link rel="icon" href="{{ path_to_root }}favicon.ico" sizes="32x32">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ path_to_root }}favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ path_to_root }}favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="{{ path_to_root }}apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Atlas Docs">
+
+<meta property="og:title" content="{{ title }}">
+<meta property="og:site_name" content="Atlas Inference">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://docs.atlasinference.io/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Atlas, pure Rust inference from the device in your hand to the datacenter rack">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@AtlasInferenceX">
+<meta name="twitter:title" content="{{ title }}">
+<meta name="twitter:image" content="https://docs.atlasinference.io/og-image.png">
+<meta name="twitter:image:alt" content="Atlas, pure Rust inference from the device in your hand to the datacenter rack">
+
+<link rel="alternate" type="text/plain" href="{{ path_to_root }}llms.txt" title="llms.txt">

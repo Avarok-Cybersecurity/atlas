@@ -141,13 +141,23 @@
     <nav class="postnav" aria-label="Adjacent posts">
       {#if data.older}
         <a class="prev" href={data.older.href}>
-          <span class="postnav-label mono-label">Previous</span>
+          <span class="postnav-label mono-label">
+            <svg class="pn-chev back" viewBox="0 0 396 636" fill="none" stroke-width="76"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M38 38L358 318L38 598" stroke="var(--ch-violet)" />
+            </svg>Previous
+          </span>
           <span class="postnav-title">{data.older.title}</span>
         </a>
       {:else}<span></span>{/if}
       {#if data.newer}
         <a class="next" href={data.newer.href}>
-          <span class="postnav-label mono-label">Next</span>
+          <span class="postnav-label mono-label">
+            Next<svg class="pn-chev" viewBox="0 0 396 636" fill="none" stroke-width="76"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M38 38L358 318L38 598" stroke="var(--ch-violet)" />
+            </svg>
+          </span>
           <span class="postnav-title">{data.newer.title}</span>
         </a>
       {:else}<span></span>{/if}
@@ -159,4 +169,11 @@
   /* The byline's date and read time are metadata, not labels: they keep the
      mono face but drop the uppercase tracking that would shout them. */
   .byline-meta { letter-spacing: .04em; text-transform: none; font-size: 12.5px; }
+
+  /* The same chevron the section headings draw, pointing the way the link
+     goes. Decorative — the label already says Previous or Next, so the mark is
+     aria-hidden and adds nothing for a screen reader to read twice. */
+  .postnav-label { display: inline-flex; align-items: center; gap: 6px; }
+  .pn-chev { width: 7px; height: auto; overflow: visible; flex: none; }
+  .pn-chev.back { transform: rotate(180deg); }
 </style>

@@ -18,7 +18,14 @@ git-repository-url = "https://github.com/Avarok-Cybersecurity/atlas"
 git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/Avarok-Cybersecurity/atlas/edit/main/book/{path}"
 no-section-label = false
-additional-css = ["theme/css/atlas.css"]
+# Tokens first, then the skin that consumes them. atlas-tokens.css is a symlink
+# to web-shared/atlas-tokens.css — the same file the site and blog import, so
+# the three properties cannot drift. mdBook reads through the link and copies
+# the CONTENT into the output.
+additional-css = ["theme/css/atlas-tokens.css", "theme/css/atlas.css"]
+# Atlas uses system font stacks (--font-sans / --font-mono), so mdBook's
+# bundled Open Sans and Source Code Pro are ~100 KB of unused payload.
+copy-fonts = false
 
 [output.html.print]
 enable = true
