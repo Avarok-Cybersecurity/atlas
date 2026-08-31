@@ -184,7 +184,34 @@ pub(crate) fn preflight_reserve(
         )
         .slots
     };
-    let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
+    // Marconi snapshot region. SSOT:
+    // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME
+    // decision (same env var, same predicate) the runtime allocation in
+    // `TransformerModel::new` makes. The region's only reader is a
+    // prefix-cache lookup, so with the cache inactive every reserved slot is
+    // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
+    // h+conv) that nothing can ever restore from. Kill switch:
+    // ATLAS_SSM_MARCONI_FULL.
+    let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
+        args.ssm_cache_slots,
+        spark_model::ssm_reserve::prefix_caching_active(
+            args.enable_prefix_caching,
+            config.kv_only_prefix_cache_is_safe(),
+        ),
+    );
+    if let Some(reason) = marconi.skip_reason {
+        tracing::info!(
+            "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
+             = {} MB not reserved (restore with --enable-prefix-caching, or \
+             ATLAS_SSM_MARCONI_FULL to over-reserve)",
+            reason,
+            args.ssm_cache_slots,
+            config.num_ssm_layers(),
+            (args.ssm_cache_slots * config.num_ssm_layers() * (h_state_bytes + conv_state_bytes))
+                / (1024 * 1024),
+        );
+    }
+    let ssm_snapshot_bytes = (marconi.slots + decode_ring_slots * args.max_batch_size)
         * config.num_ssm_layers()
         * (h_state_bytes + conv_state_bytes);
     // Same predicate as the pool term: DFlash IS a speculative serve and
@@ -282,7 +309,7 @@ pub(crate) fn preflight_reserve(
         },
         config.num_ssm_layers(),
         ssm_snapshot_bytes / (1024 * 1024),
-        args.ssm_cache_slots,
+        marconi.slots,
         gdn_two_phase_bytes / (1024 * 1024),
         max_batch_tokens_pre,
         cuda_headroom / (1024 * 1024),
