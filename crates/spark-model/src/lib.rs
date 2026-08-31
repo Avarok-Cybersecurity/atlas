@@ -29,6 +29,7 @@ pub mod mtp_layout;
 pub mod precision_schedule;
 pub mod preflight;
 pub mod quant_format;
+mod rank_agree;
 pub mod speculative;
 pub mod ssm_reserve;
 pub mod tp_shard;
