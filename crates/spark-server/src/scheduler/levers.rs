@@ -169,7 +169,7 @@ impl SchedLevers {
 
             // DEFAULT-ON since 2026-08-31: masked_verify, seam_serial and
             // spec_think are three of the levers behind the 63.0 tok/s
-            // record serve (Qwen3.8-27B + DFlash2, γ=10, GB10, 2026-08-29 —
+            // record serve (Qwen3.8-27B + DFlash2, γ=10, GB10, 2026-08-29 , 
             // 56.2 -> 63.0 with the record env; RECORDS_LEDGER holds the
             // reproduction key). A default `spark serve --dflash` previously
             // shipped none of them, so out-of-the-box DFlash ran the slow
@@ -190,7 +190,7 @@ impl SchedLevers {
             // count +31% (PR #604). `ATLAS_DFLASH_UNIFIED_CTX=0` restores the
             // legacy append for A/B.
             dflash_unified_ctx: on_unless_zero("ATLAS_DFLASH_UNIFIED_CTX"),
-            // Third of the graduated record levers — see the 2026-08-31
+            // Third of the graduated record levers, see the 2026-08-31
             // comment above dflash_masked_verify.
             dflash_spec_think: on_unless_zero("ATLAS_DFLASH_SPEC_THINK"),
             dflash_gate_pin_c2: on_unless_zero("ATLAS_DFLASH_GATE_PIN_C2"),
