@@ -71,22 +71,17 @@ impl BlockDiffusionDraftHead {
         let head_dim = weights.config.head_dim;
         let vocab_size = weights.config.vocab_size;
         // The HEAD's gamma is the SSOT the serve layer reads back, so the
-        // drafter's checkpoint must drive the default here — `block_size`
+        // drafter's checkpoint must drive the default here, `block_size`
         // alone is the top-level field, whose serde default of 16 silently
         // shadows a DFlash2 checkpoint that states 8 in `dflash_config`.
         //
-        // Default = trained block size + 2, not the block size itself: these
-        // drafters chain past their trained block (measured on Qwen3.8-27B
-        // DFlash2, block 8 — gamma 8 is 7 drafts, one short; gamma 10 holds
-        // full-block 9/9 accepts and is the fastest measured serve, 63.0 vs
-        // 56.2 tok/s on GB10). Clamped to MAX_F16_TWIN_DFLASH_GAMMA so a
-        // block-16-class drafter resolves to 15, the widest verify width
-        // (K = 16) with kernel coverage across both h-state dtypes — never
-        // into wy17+, which the f16 path refuses and no wyN twin serves.
-        // An explicit --dflash-gamma still wins unconditionally.
+        // Default = `default_dflash_gamma` (trained block + 2, clamped), the
+        // SSOT the serve preflights size their pools and reserves from too.
+        // Resolve it HERE ONLY through that helper: an independent spelling
+        // here is how the head came to run gamma 10 against intermediates
+        // reserved for K=9. An explicit --dflash-gamma still wins.
         let gamma_val = gamma.unwrap_or_else(|| {
-            (weights.config.effective_block_size() + 2)
-                .min(crate::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA)
+            crate::layers::qwen3_ssm::default_dflash_gamma(weights.config.effective_block_size())
         });
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
