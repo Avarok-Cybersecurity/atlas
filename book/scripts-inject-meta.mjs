@@ -19,7 +19,7 @@
 // it, and it is its own assertion: any page that comes out without a complete
 // card set exits non-zero.
 
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 const ORIGIN = 'https://docs.atlasinference.io';
@@ -99,6 +99,13 @@ for (const file of pages) {
     // chapter's prose would end the block early and spill markup into the page.
   }).replace(/</g, '\\u003c');
 
+  // Idempotent: a previous run's block is removed before a new one is written.
+  // Without this a second invocation — a re-run of the CI step, or someone
+  // checking output locally — silently appends a SECOND og:url and canonical,
+  // and duplicate metadata is worse than none because scrapers pick
+  // arbitrarily. The self-check below caught exactly that.
+  html = html.replace(/\n?<!-- atlas:meta -->[\s\S]*?<!-- \/atlas:meta -->/g, '');
+
   const injected = [
     `<link rel="canonical" href="${canonical}">`,
     `<meta property="og:url" content="${canonical}">`,
@@ -106,9 +113,10 @@ for (const file of pages) {
     `<meta property="og:description" content="${esc(description)}">`,
     `<meta name="twitter:description" content="${esc(description)}">`,
     `<script type="application/ld+json">${ld}</script>`
-  ].join('\n');
+  ];
+  const block = `<!-- atlas:meta -->\n${injected.join('\n')}\n<!-- /atlas:meta -->`;
 
-  html = html.replace('</head>', `${injected}\n</head>`);
+  html = html.replace('</head>', `${block}\n</head>`);
   writeFileSync(file, html);
   done += 1;
 

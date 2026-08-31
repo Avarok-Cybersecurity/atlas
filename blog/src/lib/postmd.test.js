@@ -97,6 +97,34 @@ describe('frontmatter', () => {
   });
 });
 
+describe('the frontmatter dialect itself', () => {
+  // Covered indirectly by every validator test above, but those only prove a
+  // document was accepted. These pin what the parser actually PRODUCES —
+  // lists as arrays, booleans as booleans, quotes stripped — which is what
+  // the rest of the pipeline consumes.
+  test('parses lists, booleans and quoted scalars into real types', () => {
+    const { meta, errors } = parseFrontmatter(
+      post({ draft: 'true', title: '"Quoted title"', keywords: '[a, "b c"]' })
+    );
+    expect(errors).toEqual([]);
+    expect(meta.title).toBe('Quoted title');
+    expect(meta.draft).toBe(true);
+    expect(meta.keywords).toEqual(['a', 'b c']);
+    expect(Array.isArray(meta.categories)).toBe(true);
+  });
+
+  test('reports a malformed line instead of silently dropping it', () => {
+    const src = `---\ntitle: A\nthis line has no colon\n---\nbody\n`;
+    const { errors } = parseFrontmatter(src);
+    expect(errors.join(' ')).toContain('expected `key: value`');
+  });
+
+  test('an indented continuation is refused rather than half-parsed', () => {
+    const src = `---\ntitle: A\n  indented: nope\n---\nbody\n`;
+    expect(parseFrontmatter(src).errors.join(' ')).toContain('indented');
+  });
+});
+
 describe('images', () => {
   test('only svg, gif and webp are accepted', () => {
     for (const ext of ['svg', 'gif', 'webp']) {
