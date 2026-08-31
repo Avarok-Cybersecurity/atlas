@@ -71,10 +71,23 @@ impl BlockDiffusionDraftHead {
         let head_dim = weights.config.head_dim;
         let vocab_size = weights.config.vocab_size;
         // The HEAD's gamma is the SSOT the serve layer reads back, so the
-        // drafter's own trained block size must win here — `block_size` alone
-        // is the top-level field, whose serde default of 16 silently shadows
-        // a DFlash2 checkpoint that states 8 in `dflash_config`.
-        let gamma_val = gamma.unwrap_or(weights.config.effective_block_size());
+        // drafter's checkpoint must drive the default here — `block_size`
+        // alone is the top-level field, whose serde default of 16 silently
+        // shadows a DFlash2 checkpoint that states 8 in `dflash_config`.
+        //
+        // Default = trained block size + 2, not the block size itself: these
+        // drafters chain past their trained block (measured on Qwen3.8-27B
+        // DFlash2, block 8 — gamma 8 is 7 drafts, one short; gamma 10 holds
+        // full-block 9/9 accepts and is the fastest measured serve, 63.0 vs
+        // 56.2 tok/s on GB10). Clamped to MAX_F16_TWIN_DFLASH_GAMMA so a
+        // block-16-class drafter resolves to 15, the widest verify width
+        // (K = 16) with kernel coverage across both h-state dtypes — never
+        // into wy17+, which the f16 path refuses and no wyN twin serves.
+        // An explicit --dflash-gamma still wins unconditionally.
+        let gamma_val = gamma.unwrap_or_else(|| {
+            (weights.config.effective_block_size() + 2)
+                .min(crate::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA)
+        });
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
         // sized for `max_seq_len + γ + 1` positions (prompt + γ drafts +
