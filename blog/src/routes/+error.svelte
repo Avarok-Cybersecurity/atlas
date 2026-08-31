@@ -15,6 +15,11 @@
 <svelte:head>
   <title>{page.status === 404 ? 'Not found' : 'Something went wrong'} — {blog.name}</title>
   <meta name="robots" content="noindex" />
+  <!-- `noindex` keeps this page out of search results; it does not excuse it
+       from having a description. Lighthouse audits the tag's presence, not the
+       page's indexability, so without this the 404 scores below 100 on SEO
+       while every other page passes. -->
+  <meta name="description" content="That page is not here. The Atlas blog's writing on kernels, quantisation and measured benchmarks is one link away." />
 </svelte:head>
 
 <NotFound status={page.status} message={page.error?.message ?? ''} />
