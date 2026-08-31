@@ -17,10 +17,17 @@
 import { tags, authors } from './content.js';
 import { indexPosts, neighboursOf } from './postindex.js';
 
-export const posts = indexPosts(import.meta.glob('./posts/*.svelte', { eager: true }), { tags, authors });
+export const posts = indexPosts(
+  import.meta.glob('./posts/*.{svelte,md}', { eager: true }),
+  { tags, authors },
+  // Drafts stay out of production entirely; a CI build sets the flag so the
+  // example post is still exercised by the bundle and Lighthouse gates.
+  { includeDrafts: import.meta.env?.VITE_DRAFTS === '1' }
+);
 
 export const bySlug = (slug) => posts.find((p) => p.slug === slug);
-export const byTag = (tag) => posts.filter((p) => p.tag === tag);
+// Membership, not equality: a markdown post may sit in more than one category.
+export const byTag = (tag) => posts.filter((p) => p.categories.includes(tag));
 export const byAuthor = (author) => posts.filter((p) => p.author === author);
 export const neighbours = (slug) => neighboursOf(posts, slug);
 

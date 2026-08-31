@@ -23,6 +23,12 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@AtlasInferenceX" />
 
+    <!-- Only the regular weight. Preloading all four would have the browser
+         fetch three faces the first screen never uses, delaying the one it
+         does. `crossorigin` is required even same-origin — without it the
+         font is fetched a second time and the preload is worse than nothing. -->
+    <link rel="preload" href="%sveltekit.assets%/fonts/charter-regular.woff2" as="font" type="font/woff2" crossorigin />
+
     <link rel="alternate" type="application/rss+xml" title="Atlas blog" href="%sveltekit.assets%/rss.xml" />
 
     %sveltekit.head%

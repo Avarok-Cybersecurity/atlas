@@ -47,8 +47,51 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The whole commit graph but no blob contents: `git diff --name-only`
+          # compares tree entries, so the file bodies are never needed.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
   compile:
     name: nvcc -> PTX (all gb10 targets)
+    needs: [changes]
+    # Heavy and Rust-only. On a web-only diff this job is SKIPPED — the check
+    # run is still created with conclusion `skipped`, which branch protection
+    # and the merge queue count as satisfied. That is the crucial difference
+    # from a trigger-level `paths:` filter, which never creates the check at
+    # all and blocks the PR forever.
+    #
+    # `!cancelled() && ... != 'true'` fails OPEN: if `changes` errored its
+    # output is the empty string, empty != 'true', and naming a status function
+    # suppresses the implicit success() on `needs` — so this job RUNS. Written
+    # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

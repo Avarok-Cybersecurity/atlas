@@ -1,0 +1,7 @@
+/* Intentionally empty.
+
+   Atlas uses system font stacks (--font-sans / --font-mono from
+   web-shared/atlas-tokens.css), so mdBook's bundled Open Sans and Source Code
+   Pro are about 100 KB nobody downloads a page to read. `copy-fonts = false`
+   in book.toml drops them; mdBook 0.4.40 warns unless this file exists, so it
+   exists. */

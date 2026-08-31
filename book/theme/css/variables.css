@@ -1,0 +1,76 @@
+/* =============================================================================
+   Atlas override of mdBook's theme variables.
+
+   mdBook ships five themes (light, rust, coal, navy, ayu) and restores the
+   reader's last choice from localStorage. Restyling only `.navy` would leave
+   that trap live: anyone whose stored value is `light` gets the stock light
+   palette on a site that has no light mode. So all five classes map to the
+   SAME Atlas values, and any stored choice renders the brand by construction.
+   The picker is then a control with no effect, and atlas.css removes it.
+
+   Every value here is a `var()` into web-shared/atlas-tokens.css — the single
+   authoritative copy, linked just before this file. Nothing is restated.
+
+   ★ `--bg` is deliberately absent. mdBook's `--bg` and the Atlas token `--bg`
+   share a name and a meaning; because this file REPLACES the stock one, the
+   per-theme declaration simply no longer exists and the token's own `:root`
+   value applies. Writing `--bg: var(--bg)` here would be a self-reference and
+   invalid CSS.
+   ========================================================================== */
+
+:root {
+    --sidebar-width: 300px;
+    --sidebar-resize-indicator-width: 8px;
+    --sidebar-resize-indicator-space: 2px;
+    --page-padding: 15px;
+    --content-max-width: 750px;
+    /* Matches the height of the marketing site's nav bar. */
+    --menu-bar-height: 62px;
+    --mono-font: var(--font-mono);
+    --code-font-size: 0.875em;
+}
+
+.light, .rust, .coal, .navy, .ayu {
+    --fg: var(--t2);
+
+    --sidebar-bg: var(--bg2);
+    --sidebar-fg: var(--t2);
+    --sidebar-non-existant: var(--t3);
+    --sidebar-active: var(--accent);
+    --sidebar-spacer: var(--border);
+
+    --scrollbar: var(--border-strong);
+
+    --icons: var(--t3);
+    --icons-hover: var(--t1);
+
+    --links: var(--accent);
+
+    /* The blog's inline-code ink, derived from the cyan token rather than
+       copied as a hex. */
+    --inline-code-color: color-mix(in srgb, var(--ch-cyan) 78%, white);
+
+    --theme-popup-bg: var(--card);
+    --theme-popup-border: var(--border-strong);
+    --theme-hover: var(--card-2);
+
+    --quote-bg: var(--bg2);
+    --quote-border: var(--border);
+
+    --warning-border: var(--amber);
+
+    --table-border-color: var(--border);
+    --table-header-bg: var(--sunk);
+    --table-alternate-bg: var(--bg2);
+
+    --searchbar-border-color: var(--border-strong);
+    --searchbar-bg: var(--bg2);
+    --searchbar-fg: var(--t1);
+    --searchbar-shadow-color: var(--border);
+    --searchresults-header-fg: var(--t3);
+    --searchresults-border-color: var(--border);
+    --searchresults-li-bg: var(--card);
+    --search-mark-bg: var(--accent-soft);
+
+    --color-scheme: dark;
+}

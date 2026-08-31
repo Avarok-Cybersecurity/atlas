@@ -16,6 +16,41 @@
    ========================================================================== */
 @import '../../web-shared/atlas-tokens.css';
 
+/* ---- the reading face -------------------------------------------------- */
+/* Self-hosted rather than fetched from a font CDN: a third-party origin costs
+   a DNS lookup, a TLS handshake and a render-blocking stylesheet before the
+   first word can be painted, which is exactly the class of deduction the
+   100-across-the-board Lighthouse bar refuses. Four files, ~61 KB total.
+   Bitstream Charter's notice is redistributed alongside them in
+   static/fonts/LICENSE.txt, as its terms require. */
+@font-face {
+  font-family: Charter; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/fonts/charter-regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: Charter; font-style: italic; font-weight: 400; font-display: swap;
+  src: url('/fonts/charter-italic.woff2') format('woff2');
+}
+@font-face {
+  font-family: Charter; font-style: normal; font-weight: 700; font-display: swap;
+  src: url('/fonts/charter-bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: Charter; font-style: italic; font-weight: 700; font-display: swap;
+  src: url('/fonts/charter-bold-italic.woff2') format('woff2');
+}
+/* `font-display: swap` trades a flash of invisible text for a flash of
+   UNSTYLED text — and an unstyled fallback with different metrics reflows the
+   article when the real face arrives, which is a layout shift Lighthouse
+   scores. Georgia is metric-adjusted here so the swap is close to invisible
+   and CLS stays at zero. */
+@font-face {
+  font-family: 'Charter-fallback';
+  src: local('Georgia'), local('Times New Roman');
+  size-adjust: 96.9%; ascent-override: 98%; descent-override: 25%; line-gap-override: 0%;
+}
+
+
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -49,6 +84,12 @@
 
   --sans: var(--font-sans);
   --mono: var(--font-mono);
+  /* The reading face. Charter is what Medium sets its articles in, and its
+     fallback chain is Medium's own — a reader without the webfont still gets
+     the same shape of page. Not in web-shared/atlas-tokens.css because the
+     marketing site does not ship Charter: this is an addition, not a second
+     copy of a shared value. */
+  --serif: Charter, 'Charter-fallback', Georgia, Cambria, 'Times New Roman', Times, serif;
 
   --prose: 672px;             /* ~70ch at 17.5px */
   --shell: 1080px;            /* the marketing site's container width */
@@ -255,7 +296,7 @@ a { color: var(--accent); }
 .breadcrumb a { color: var(--text-3); text-decoration: none; transition: color var(--dur) var(--ease); }
 .breadcrumb a:hover { color: var(--text-2); }
 .post-title { font-size: clamp(32px, 4.2vw, 44px); line-height: 1.12; letter-spacing: -.032em; max-width: 20ch; }
-.post-dek { margin-top: 18px; max-width: 60ch; font-size: 19px; line-height: 1.58; color: var(--text-3); }
+.post-dek { margin-top: 18px; max-width: 60ch; font-family: var(--serif); font-size: 19px; line-height: 1.58; color: var(--text-3); }
 .byline {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-top: 28px; padding: 20px 0 26px;
@@ -272,7 +313,12 @@ a { color: var(--accent); }
 .post-grid { display: grid; grid-template-columns: minmax(0, var(--prose)) minmax(0, 1fr); gap: 72px; padding-bottom: 40px; }
 @media (max-width: 1100px) { .post-grid { grid-template-columns: minmax(0, 1fr); gap: 0; } }
 
-.prose { max-width: var(--prose); padding-top: 44px; position: relative; color: var(--text-2); }
+/* The article itself reads in Charter; everything around it — nav, index
+   cards, metadata, code — stays in the interface faces, so the serif marks
+   "this is the writing" rather than becoming the whole site. */
+.prose { max-width: var(--prose); padding-top: 44px; position: relative; color: var(--text-2);
+  font-family: var(--serif); font-size: 19px; line-height: 1.68; }
+.prose code, .prose pre, .prose :global(.codeblock) { font-family: var(--mono); }
 .prose h2 { position: relative; font-size: 25px; line-height: 1.28; font-weight: 560; letter-spacing: -.024em; margin: 52px 0 16px; padding-top: 4px; }
 .prose h2 .chev { position: absolute; left: -38px; top: .30em; width: 11px; height: auto; overflow: visible; }
 @media (max-width: 820px) { .prose h2 .chev { display: none; } }

@@ -43,8 +43,43 @@ permissions:
   contents: read
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The whole commit graph but no blob contents: `git diff --name-only`
+          # compares tree entries, so the file bodies are never needed.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
   build:
     name: Build mdBook + rustdoc
+    needs: [changes]
+    # This job must RUN on a web-only diff: its mdBook half IS the gate for
+    # `book/`, and it is a required context. Only the rustdoc half is skipped,
+    # at STEP level — see the steps below.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -55,9 +90,11 @@ jobs:
           mdbook-version: '0.4.40'
 
       - name: Install Rust toolchain
+        if: needs.changes.outputs.web_only != 'true'
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Cache Cargo build
+        if: needs.changes.outputs.web_only != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # llms.txt (https://llmstxt.org) is generated from SUMMARY.md, which is
@@ -84,10 +121,50 @@ jobs:
           }
           head -3 book/output/llms.txt
 
+      # The brand assets come from site/static rather than a third committed
+      # copy: the favicons and the social card are byte-identical across the
+      # three properties today, and a copy is how they stop being.
+      - name: Brand assets from site/static
+        run: |
+          cp site/static/favicon.svg site/static/favicon.ico \
+             site/static/favicon-16.png site/static/favicon-32.png site/static/favicon-48.png \
+             site/static/apple-touch-icon.png \
+             site/static/og-image.png book/output/
+          cmp site/static/og-image.png book/output/og-image.png
+
+      # theme/head.hbs emits everything handlebars can. This adds what it
+      # cannot: a canonical URL derived from the file path, and a description
+      # taken from each chapter's own first paragraph. The script is its own
+      # assertion and exits non-zero if any page ends up without a full card.
+      - name: Inject per-page social meta
+        run: node book/scripts-inject-meta.mjs book/output
+
+      # The docs served no OpenGraph tags at all and 404'd on /og-image.png
+      # until 2026-08-30, so sharing a docs link produced no card. These greps
+      # are what stop that returning quietly.
+      - name: Every page carries a card, and the tokens are the shared file
+        run: |
+          test -L book/theme/css/atlas-tokens.css
+          cmp web-shared/atlas-tokens.css book/output/theme/css/atlas-tokens.css
+          grep -q 'content="#0F1216"' book/theme/head.hbs
+          grep -q -- '--bg: #0F1216' book/output/theme/css/atlas-tokens.css
+          grep -q 'property="og:image" content="https://docs.atlasinference.io/og-image.png"' \
+            book/output/index.html
+          grep -q 'rel="canonical"' book/output/getting-started/quickstart.html
+          test -s book/output/og-image.png
+          # The retired orange skin must not come back with a theme bump.
+          ! grep -rq 'ff6600' book/output/
+
       - name: Build rustdoc
+        if: needs.changes.outputs.web_only != 'true'
         run: cargo doc --workspace --no-deps
 
+      # Skipped with the rustdoc build above: `cp -a target/doc/.` would fail on
+      # a tree that was never built. The artifact then lacks /api/, which is
+      # harmless — `deploy` is push-only and a push never classifies as
+      # web-only, so production always receives the full assembly.
       - name: Assemble site (mdBook + rustdoc at /api/)
+        if: needs.changes.outputs.web_only != 'true'
         run: |
           mkdir -p book/output/api
           cp -a target/doc/. book/output/api/

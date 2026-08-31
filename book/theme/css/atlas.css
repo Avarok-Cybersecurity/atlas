@@ -1,47 +1,158 @@
-/* Atlas book — small accent overlay on mdBook's navy theme. */
+/* =============================================================================
+   Atlas docs skin.
 
-:root {
-    --atlas-orange: #ff6600;
-    --atlas-orange-dim: #cc5200;
-}
+   Colour values come from web-shared/atlas-tokens.css (linked immediately
+   before this file); mdBook's own chrome variables are mapped onto those
+   tokens in variables.css. This file is the finish layer — the parts of the
+   generated markup that have no variable to point at.
 
-.navy .menu-title,
-.navy .chapter li.chapter-item strong {
-    color: var(--atlas-orange);
-}
+   Everything perceptual is wrapped in `@media screen`. mdBook links its own
+   print.css with `media="print"`, and a dark skin fighting a stylesheet built
+   for white paper produces unreadable printouts.
+   ========================================================================== */
 
-.navy a,
-.navy a:visited {
-    color: var(--atlas-orange);
-}
-
-.navy a:hover {
-    color: var(--atlas-orange-dim);
-    text-decoration: underline;
-}
-
-.navy code {
-    color: #f0f0f0;
-    background: #1a1e24;
-}
-
-/* Tighter table rows for the many model / kernel matrices. */
+/* Kept from the previous skin: the model and kernel matrices are wide, and the
+   stock row padding wraps them. Applies on paper too, hence outside @media. */
 .content table td,
 .content table th {
     padding: 4px 10px;
 }
 
-/* Callout styling for > blockquotes we use as "note" banners. */
-.content blockquote {
-    border-left: 3px solid var(--atlas-orange);
-    background: rgba(255, 102, 0, 0.06);
-    padding: 0.5em 1em;
-    margin: 1em 0;
+@media screen {
+    html {
+        font-family: var(--font-sans);
+    }
+    .content {
+        -webkit-font-smoothing: antialiased;
+        font-feature-settings: 'kern' 1;
+    }
+
+    /* ---- type: the blog's editorial scale ------------------------------- */
+    .content h1, .content h2, .content h3, .content h4 {
+        color: var(--t1);
+        font-weight: 600;
+    }
+    .content h1 { letter-spacing: -0.03em; }
+    .content h2 { letter-spacing: -0.024em; }
+    .content strong { color: var(--t1); }
+    .content li::marker { color: color-mix(in srgb, var(--t2) 40%, transparent); }
+    .content hr {
+        border: 0;
+        height: 1px;
+        background: color-mix(in srgb, var(--border) 55%, transparent);
+    }
+
+    /* ---- links: the prose treatment used on the blog --------------------- */
+    .content a {
+        text-decoration: underline;
+        text-decoration-thickness: 1.5px;
+        text-underline-offset: 2.5px;
+        text-decoration-color: color-mix(in srgb, var(--accent) 38%, transparent);
+    }
+    .content a:hover { text-decoration-color: var(--accent); }
+    :focus-visible { outline: 2.5px solid var(--accent); outline-offset: 3px; }
+
+    /* ---- the top bar: the marketing nav's blur and hairline -------------- */
+    #menu-bar {
+        background: color-mix(in srgb, var(--bg) 82%, transparent);
+        backdrop-filter: blur(12px) saturate(140%);
+        -webkit-backdrop-filter: blur(12px) saturate(140%);
+        border-bottom: 1px solid var(--border);
+    }
+    .menu-title {
+        color: var(--t1);
+        font-weight: 600;
+        letter-spacing: -0.02em;
+    }
+
+    /* Every theme class now maps to the same palette, so the picker changes
+       nothing. A control that does nothing is a defect, not a feature. */
+    #theme-toggle { display: none; }
+
+    /* ---- sidebar --------------------------------------------------------- */
+    .chapter li.part-title {
+        color: var(--t3);
+        font-family: var(--font-mono);
+        font-weight: 600;
+        font-size: 0.78em;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+    }
+    .chapter li.chapter-item a.active { color: var(--accent); }
+
+    /* ---- code: the recessed terminal surface ----------------------------- */
+    .content pre {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+    }
+    .hljs {
+        background: var(--sunk);
+        color: var(--t2);
+    }
+    .content pre > code { line-height: 1.62; }
+    .content :not(pre) > code {
+        background: color-mix(in srgb, var(--ch-cyan) 12%, transparent);
+        border-radius: 5px;
+        padding: 2px 5px;
+    }
+
+    /* ---- syntax ----------------------------------------------------------
+       mdBook links all three of its highlight themes and lets book.js enable
+       one. This file is linked after all of them, so equal-specificity rules
+       here win on order regardless of which is active. Every colour sits on
+       --sunk, which is darker than --bg, so anything that clears contrast on
+       the page ground clears it here too. */
+    .hljs-comment, .hljs-quote { color: var(--t3); font-style: italic; }
+    .hljs-keyword, .hljs-selector-tag, .hljs-meta { color: var(--ch-violet); }
+    .hljs-string, .hljs-addition { color: var(--ch-green); }
+    .hljs-number, .hljs-literal, .hljs-built_in, .hljs-type { color: var(--ch-cyan); }
+    .hljs-title, .hljs-section, .hljs-name { color: var(--accent-deep); }
+    .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--t1); }
+    .hljs-symbol, .hljs-bullet, .hljs-link { color: var(--accent); }
+    .hljs-deletion { color: var(--red); }
+    .hljs-emphasis { font-style: italic; }
+    .hljs-strong { font-weight: bold; }
+
+    /* ---- blockquotes, used as note banners ------------------------------- */
+    .content blockquote {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-left: 2px solid var(--accent);
+        border-radius: 9px;
+        padding: 12px 18px;
+        margin: 1.4em 0;
+        color: var(--t2);
+    }
+
+    /* ---- tables ---------------------------------------------------------- */
+    .content table thead th {
+        background: var(--table-header-bg);
+        font-family: var(--font-mono);
+        font-size: 0.72em;
+        font-weight: 500;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--t3);
+    }
+
+    /* mdBook gives <mark> a background variable but no colour, so the UA's
+       black MarkText would land on a dark violet wash. */
+    mark {
+        background-color: var(--accent-soft);
+        color: var(--t1);
+        border-radius: 2px;
+    }
+
+    /* Kept from the previous skin, re-inked: the introduction's headline. */
+    .atlas-headline {
+        font-size: 1.6em;
+        font-weight: 600;
+        color: var(--accent);
+    }
 }
 
-/* Make the headline number in the intro pop. */
-.atlas-headline {
-    font-size: 1.6em;
-    font-weight: 600;
-    color: var(--atlas-orange);
+/* The table header's recessed fill is a screen affordance; on paper it prints
+   as a grey slab behind grey text. */
+@media print {
+    .content table thead th { background: none; color: inherit; }
 }

@@ -10,6 +10,8 @@ on:
     branches: [main, master]
     paths:
       - 'site/**'
+      - 'blog/**'
+      - 'web-shared/**'
       - '.github/workflows/lighthouse.yml'
   merge_group:
 
@@ -21,8 +23,45 @@ permissions:
   contents: read
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The whole commit graph but no blob contents: `git diff --name-only`
+          # compares tree entries, so the file bodies are never needed.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
   audit:
     name: Lighthouse audit
+    needs: [changes]
+    # Inverse gating to the Rust jobs: this one is only interesting when a web
+    # tree changed, so a Rust-only PR skips it. It is not a required context
+    # today; running it as a job-level skip (rather than a trigger filter)
+    # keeps it promotable to one later with no hang risk.
+    if: ${{ !cancelled() && needs.changes.outputs.web_touched != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -62,5 +101,38 @@ jobs:
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:
           configPath: ./site/lighthouse/lighthouserc.json
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+  audit-blog:
+    name: Lighthouse audit (blog)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_touched != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        working-directory: blog
+        run: bun install --frozen-lockfile
+      # Drafts included on purpose: the example post is the worst case on the
+      # whole site — serif webfont, KaTeX stylesheet, three image formats and a
+      # video facade on one page. If anything is going to cost a point, it
+      # costs it there, and auditing only the easy pages would be theatre.
+      - name: Build
+        working-directory: blog
+        env:
+          VITE_DRAFTS: '1'
+        run: bun run build
+      - name: The build tools did not reach the browser
+        working-directory: blog
+        run: bun e2e/check-bundle.mjs
+      - name: Audit
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
+        with:
+          configPath: ./blog/lighthouse/lighthouserc.cjs
           uploadArtifacts: true
           temporaryPublicStorage: true

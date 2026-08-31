@@ -132,6 +132,14 @@ numer = "numer"
 # spelling it "exclude" here would re-break the thing it repairs — the same
 # rationale as the `paramete`/`parame` close-tag ladder above.
 exclud = "exclud"
+# `existant` — mdBook's OWN custom-property name, `--sidebar-non-existant`,
+# for a chapter listed in SUMMARY.md with no file behind it. book/theme/css/
+# variables.css overrides mdBook's per-theme values, so the property has to be
+# spelled the way mdBook's chrome.css reads it (verified against the 0.4.40
+# theme: five declarations, all `non-existant`). Correcting the spelling here
+# would simply stop the rule matching and leave draft chapters unstyled. Same
+# rationale as `numer` above — a third-party identifier, not prose we wrote.
+existant = "existant"
 # `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
 # (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.
