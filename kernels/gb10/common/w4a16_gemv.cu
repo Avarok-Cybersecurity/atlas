@@ -2404,3 +2404,12 @@ extern "C" __global__ void w4a16_gemv_sw_moe_batchm_m##R(                       
 ATLAS_MOE_BATCHM_ENTRY(2)
 ATLAS_MOE_BATCHM_ENTRY(3)
 ATLAS_MOE_BATCHM_ENTRY(4)
+// 🔴 5..8 exist because the batched PREFILL sub-chunk is 8 rows wide (ANOMALIES A65), and the
+// stop at 4 was the compiled tier family, NOT a limit of the union: `glm5next_moe_row_union`
+// resolves `rows * top_k` ids in ONE 64-thread block, and GLM-5.3 is `8 * 8 == 64` exactly.
+// 🪤 The caller MUST refuse `rows * top_k > 64` — the union kernel would silently drop the
+// entries past the block.
+ATLAS_MOE_BATCHM_ENTRY(5)
+ATLAS_MOE_BATCHM_ENTRY(6)
+ATLAS_MOE_BATCHM_ENTRY(7)
+ATLAS_MOE_BATCHM_ENTRY(8)

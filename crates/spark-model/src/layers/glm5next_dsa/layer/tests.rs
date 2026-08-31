@@ -19,6 +19,7 @@ fn cfg() -> Glm5NextDsaConfig {
         qk_nope_head_dim: 256,
         qk_rope_head_dim: 0,
         v_head_dim: 256,
+        max_context: 16_384,
     }
 }
 
@@ -127,4 +128,101 @@ fn the_workspace_is_sized_at_the_context_cap() {
         geom.n_pools, 4_096,
         "the cap is the largest plannable pool axis"
     );
+}
+
+/// 🔴 A62: the indexer's capacity check must run BEFORE the first device write, not after.
+/// `advance(1)` at the tail of `indexer_forward` refuses the 16,385th token only once the
+/// GEMM has already written row `capacity` — 256 B past the buffer — and the resulting
+/// `CUDA_ERROR_ILLEGAL_ADDRESS (700)` is sticky, so an over-length prompt downs the serve
+/// for every later request instead of failing one of them.
+#[test]
+fn the_indexer_checks_capacity_before_it_writes() {
+    let src = include_str!("../layer.rs");
+    let body = src
+        .split_once("pub fn indexer_forward")
+        .expect("indexer_forward must exist")
+        .1
+        .split_once("fn select_row")
+        .expect("select_row follows indexer_forward")
+        .0;
+    let guard = body
+        .find("state.ensure_room(1)?")
+        .expect("indexer_forward must precheck capacity");
+    let first_write = body.find("gemm(").expect("indexer_forward writes via gemm");
+    assert!(
+        guard < first_write,
+        "the capacity check must come before the first device write, not after"
+    );
+}
+
+/// 🔴 A62, replay half. `sync_replayed_step` is a RECONCILE and runs after `launch_graph`
+/// on purpose — so it cannot be what stops an out-of-bounds write. Every one of the four
+/// replay branches must ask `check_replay_room` BEFORE it launches the graph; a replay
+/// writes the indexer row from a device position with no host code in the loop, and the
+/// resulting sticky CUDA 700 kills the context for every later request.
+///
+/// 🪤 Only the REPLAY launch needs it. The second `launch_graph` in each of these files
+/// runs a graph just captured, and capture happens inside the eager path, whose
+/// `indexer_forward` already prechecked — that is the prefill half of the same fix.
+#[test]
+fn every_graph_replay_checks_room_before_it_launches() {
+    let paths: [(&str, &str); 4] = [
+        ("decode_a", include_str!("../../../model/trait_impl/decode_a.rs")),
+        ("verify_b", include_str!("../../../model/trait_impl/verify_b.rs")),
+        ("verify_c", include_str!("../../../model/trait_impl/verify_c.rs")),
+        ("verify_c2", include_str!("../../../model/trait_impl/verify_c2.rs")),
+    ];
+    for (name, src) in paths {
+        let guard = src
+            .find("layer.check_replay_room(")
+            .unwrap_or_else(|| panic!("{name}: the replay branch must precheck capacity"));
+        let launch = src
+            .find("self.gpu.launch_graph(")
+            .unwrap_or_else(|| panic!("{name}: expected a graph replay"));
+        assert!(
+            guard < launch,
+            "{name}: the room check must precede the FIRST launch_graph — after it, the \
+             write has already happened"
+        );
+        let sync = src
+            .find("layer.sync_replayed_step(")
+            .unwrap_or_else(|| panic!("{name}: the reconcile must still be there"));
+        assert!(
+            launch < sync,
+            "{name}: the reconcile stays AFTER the launch — moving it would change the \
+             A56 rewind semantics this fix must not touch"
+        );
+    }
+}
+
+/// The composite is what the model's layer vec holds, so a `check_replay_room` implemented
+/// only on the inner `Glm5NextDsaLayer` would never run — the exact trap that left the
+/// counter frozen for `sync_replayed_step`. Both impls must exist.
+#[test]
+fn the_composite_layer_implements_the_room_check_too() {
+    let composite = include_str!("../../glm5next_layer/mod.rs");
+    assert!(
+        composite.contains("fn check_replay_room"),
+        "the COMPOSITE layer must implement it — the inner impl is never reached"
+    );
+    assert!(
+        include_str!("../layer.rs").contains("fn check_replay_room"),
+        "the inner DSA layer implements it as well"
+    );
+}
+
+/// Both A62 routes raise the same refusal text, so the replay guard tags its error. Without
+/// the tag, "the replay route was proven at runtime" would rest on inference about which
+/// guard fired, which is exactly the substitution this validation must not make.
+#[test]
+fn the_replay_refusal_is_distinguishable_from_the_prefill_one() {
+    for src in [
+        include_str!("../layer.rs"),
+        include_str!("../../glm5next_layer/mod.rs"),
+    ] {
+        assert!(
+            src.contains("DSA replay pre-check"),
+            "the replay guard must tag its refusal so a log can name the route"
+        );
+    }
 }

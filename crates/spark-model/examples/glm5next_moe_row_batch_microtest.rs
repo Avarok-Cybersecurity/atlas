@@ -11,7 +11,15 @@
 //!   * rows that share experts (the whole point) and rows that share none,
 //!   * remote experts (`packed_ptrs == 0`) — those rows must be left untouched,
 //!   * an expert selected by row 1 but not row 0, and vice versa,
-//!   * the `input_stride = 0` (gate/up) and slot-major (down) input layouts.
+//!   * the `input_stride = 0` (gate/up) and slot-major (down) input layouts,
+//!   * **every tier 2..=8** (widened 2026-08-31 from 2..=4), at **both `top_k = 4` and
+//!     `top_k = 8`** — the latter is GLM-5.3's real routing, where `rows = 8` puts
+//!     `rows * top_k` at exactly 64, the single block `glm5next_moe_row_union` gets. That
+//!     edge is the reason the sweep runs to 8 x 8 and not just to "wide enough".
+//!
+//! 🪤 The union table is checked SEPARATELY from the arithmetic (every (row, slot) claimed
+//! exactly once, union size == distinct id count). A tier that silently dropped ids past the
+//! block would still produce a self-consistent-looking output otherwise.
 //!
 //!   cargo run -p spark-model --release --example glm5next_moe_row_batch_microtest \
 //!       --features cuda,gpu-examples
@@ -23,8 +31,15 @@ use spark_runtime::kernel_args::KernelLaunch;
 
 const N: usize = 2048; // one expert's width
 const K: usize = 1024; // input width (K/16 = 64 chunks, exercises the k16 tail path)
-const NUM_EXPERTS: usize = 16;
-const TOP_K: usize = 4;
+/// 72, not 16: at `rows = 8`, `top_k = 8` the disjoint-routing case needs 64 distinct ids
+/// before it can also reserve the two "remote" ones.
+const NUM_EXPERTS: usize = 72;
+/// Both routings are exercised. 8 is GLM-5.3's `num_experts_per_tok`.
+const TOP_KS: [usize; 2] = [4, 8];
+/// Widest compiled tier — mirror of `ATLAS_MOE_BATCHM_ENTRY` in `w4a16_gemv.cu`.
+const MAX_ROWS: usize = 8;
+/// `glm5next_moe_row_union` is ONE block; `rows * top_k` past this would drop entries.
+const MAX_UNION_IDS: usize = 64;
 
 /// Deterministic byte soup — a real NVFP4 packing is irrelevant to a bit-equality gate, but
 /// the values must be varied enough that a dropped term cannot cancel.
@@ -61,10 +76,11 @@ fn per_row(
     ids: DevicePtr,
     n: usize,
     kk: usize,
+    top_k: usize,
     input_stride: usize,
 ) -> Result<()> {
     KernelLaunch::new(g, k)
-        .grid([n.div_ceil(8) as u32, TOP_K as u32, 1])
+        .grid([n.div_ceil(8) as u32, top_k as u32, 1])
         .block([256, 1, 1])
         .arg_ptr(a)
         .arg_ptr(t.packed)
@@ -91,12 +107,13 @@ fn batched(
     n: usize,
     kk: usize,
     rows: usize,
+    top_k: usize,
     a_row_stride: usize,
     a_slot_stride: usize,
     c_row_stride: usize,
 ) -> Result<()> {
     KernelLaunch::new(g, k)
-        .grid([n.div_ceil(8) as u32, (rows * TOP_K) as u32, 1])
+        .grid([n.div_ceil(8) as u32, (rows * top_k) as u32, 1])
         .block([256, 1, 1])
         .arg_ptr(a)
         .arg_ptr(t.packed)
@@ -118,11 +135,9 @@ fn main() -> Result<()> {
     let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let k_row = gpu.kernel("w4a16_gemv", "w4a16_gemv_sw_moe")?;
     let k_union = gpu.kernel("w4a16_gemv", "glm5next_moe_row_union")?;
-    let k_b = [
-        gpu.kernel("w4a16_gemv", "w4a16_gemv_sw_moe_batchm_m2")?,
-        gpu.kernel("w4a16_gemv", "w4a16_gemv_sw_moe_batchm_m3")?,
-        gpu.kernel("w4a16_gemv", "w4a16_gemv_sw_moe_batchm_m4")?,
-    ];
+    let k_b: Vec<KernelHandle> = (2..=MAX_ROWS)
+        .map(|r| gpu.kernel("w4a16_gemv", &format!("w4a16_gemv_sw_moe_batchm_m{r}")))
+        .collect::<Result<_, _>>()?;
 
     // ── expert weights + the pointer table (experts 3 and 11 are "remote") ──
     let mut seed = 0x51ed_5eedu64;
@@ -150,42 +165,92 @@ fn main() -> Result<()> {
         scale2: up(&gpu, &scale2.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())?,
     };
 
-    // Routing cases. Row 0 vs row 1 vs row 2 overlap differently on purpose.
-    let cases: Vec<(&str, Vec<Vec<i32>>)> = vec![
-        ("2 rows, full overlap", vec![vec![0, 1, 2, 4], vec![0, 1, 2, 4]]),
-        ("2 rows, no overlap", vec![vec![0, 1, 2, 4], vec![5, 6, 7, 8]]),
-        ("2 rows, partial + remote", vec![vec![0, 3, 5, 9], vec![3, 5, 11, 12]]),
-        ("3 rows, mixed", vec![vec![1, 2, 3, 4], vec![2, 4, 6, 8], vec![1, 8, 11, 15]]),
-        ("4 rows, heavy overlap", vec![
-            vec![0, 1, 2, 3], vec![0, 1, 2, 5], vec![0, 1, 6, 7], vec![0, 9, 10, 11],
-        ]),
-    ];
+    // Routing cases, generated per (rows, top_k) rather than hand-listed: the sweep now runs
+    // 2..=8 rows at two `top_k`, and a hand-listed table cannot express both widths.
+    // Experts 3 and 11 are the REMOTE pair (null pointers) — `partial+remote` puts them in
+    // deliberately, so a tier that touched a remote row would show up as a diff.
+    fn cases(rows: usize, top_k: usize) -> Vec<(String, Vec<Vec<i32>>)> {
+        let m = NUM_EXPERTS as i32;
+        let disjoint: Vec<Vec<i32>> = (0..rows)
+            .map(|r| (0..top_k).map(|i| ((r * top_k + i) as i32) % m).collect())
+            .collect();
+        let full: Vec<Vec<i32>> = (0..rows)
+            .map(|_| (0..top_k).map(|i| (i as i32 * 2) % m).collect())
+            .collect();
+        // Two shared ids at the front, the rest fanning out; both remote experts present.
+        let partial: Vec<Vec<i32>> = (0..rows)
+            .map(|r| {
+                let mut v = vec![3i32, 11];
+                let mut n = 0i32;
+                while v.len() < top_k {
+                    let c = ((r as i32 * 5) + n * 3 + 20) % m;
+                    if !v.contains(&c) {
+                        v.push(c);
+                    }
+                    n += 1;
+                }
+                v.truncate(top_k);
+                v
+            })
+            .collect();
+        // Half shared, half private — the case the union is actually meant to win on.
+        let heavy: Vec<Vec<i32>> = (0..rows)
+            .map(|r| {
+                let mut v: Vec<i32> = (0..top_k / 2).map(|i| i as i32).collect();
+                let mut n = 0i32;
+                while v.len() < top_k {
+                    let c = (30 + r as i32 * 7 + n) % m;
+                    if !v.contains(&c) {
+                        v.push(c);
+                    }
+                    n += 1;
+                }
+                v.truncate(top_k);
+                v
+            })
+            .collect();
+        vec![
+            (format!("{rows}r k{top_k} disjoint"), disjoint),
+            (format!("{rows}r k{top_k} full overlap"), full),
+            (format!("{rows}r k{top_k} partial+remote"), partial),
+            (format!("{rows}r k{top_k} heavy overlap"), heavy),
+        ]
+    }
+
+    let all: Vec<(String, Vec<Vec<i32>>, usize)> = TOP_KS
+        .iter()
+        .flat_map(|&tk| {
+            (2..=MAX_ROWS)
+                .filter(move |r| r * tk <= MAX_UNION_IDS)
+                .flat_map(move |r| cases(r, tk).into_iter().map(move |(t, c)| (t, c, tk)))
+        })
+        .collect();
 
     let mut failures = 0usize;
-    for (tag, ids) in &cases {
-        let rows = ids.len();
+    for (tag, ids, top_k) in &all {
+        let (rows, top_k) = (ids.len(), *top_k);
         let flat: Vec<i32> = ids.iter().flatten().copied().collect();
         let d_ids = up(&gpu, &flat.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())?;
-        let d_ueid = gpu.alloc(rows * TOP_K * 4)?;
-        let d_uslot = gpu.alloc(rows * TOP_K * rows * 4)?;
+        let d_ueid = gpu.alloc(rows * top_k * 4)?;
+        let d_uslot = gpu.alloc(rows * top_k * rows * 4)?;
 
         KernelLaunch::new(&gpu, k_union)
             .grid([1, 1, 1])
-            .block([(rows * TOP_K) as u32, 1, 1])
+            .block([(rows * top_k) as u32, 1, 1])
             .arg_ptr(d_ids)
             .arg_ptr(d_ueid)
             .arg_ptr(d_uslot)
             .arg_u32(rows as u32)
-            .arg_u32(TOP_K as u32)
+            .arg_u32(top_k as u32)
             .launch(0)?;
         gpu.synchronize(0)?;
 
         // ── the union table itself: every (row, slot) must be reachable exactly once ──
-        let ueid: Vec<i32> = dn(&gpu, d_ueid, rows * TOP_K * 4)?
+        let ueid: Vec<i32> = dn(&gpu, d_ueid, rows * top_k * 4)?
             .chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
-        let uslot: Vec<i32> = dn(&gpu, d_uslot, rows * TOP_K * rows * 4)?
+        let uslot: Vec<i32> = dn(&gpu, d_uslot, rows * top_k * rows * 4)?
             .chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
-        let mut seen = vec![vec![false; TOP_K]; rows];
+        let mut seen = vec![vec![false; top_k]; rows];
         for (u, &e) in ueid.iter().enumerate() {
             if e < 0 { continue; }
             for r in 0..rows {
@@ -197,7 +262,7 @@ fn main() -> Result<()> {
             }
         }
         for r in 0..rows {
-            for s in 0..TOP_K {
+            for s in 0..top_k {
                 assert!(seen[r][s], "{tag}: row {r} slot {s} never claimed");
             }
         }
@@ -213,11 +278,11 @@ fn main() -> Result<()> {
         for (layout, kk, nn, a_slot_stride) in
             [("gate/up", K, N, 0usize), ("down", N, K, N)]
         {
-            let a_row_stride = if a_slot_stride == 0 { kk } else { TOP_K * kk };
+            let a_row_stride = if a_slot_stride == 0 { kk } else { top_k * kk };
             let a: Vec<u8> = (0..rows * a_row_stride * 2).map(|_| lcg(&mut seed)).collect();
             let d_a = up(&gpu, &a)?;
 
-            let bytes = rows * TOP_K * nn * 2;
+            let bytes = rows * top_k * nn * 2;
             let d_ref = gpu.alloc(bytes)?;
             let d_new = gpu.alloc(bytes)?;
             gpu.memset_async(d_ref, 0, bytes, 0)?;
@@ -228,21 +293,21 @@ fn main() -> Result<()> {
                     &gpu, k_row,
                     d_a.offset(r * a_row_stride * 2),
                     &t,
-                    d_ref.offset(r * TOP_K * nn * 2),
-                    d_ids.offset(r * TOP_K * 4),
-                    nn, kk, a_slot_stride,
+                    d_ref.offset(r * top_k * nn * 2),
+                    d_ids.offset(r * top_k * 4),
+                    nn, kk, top_k, a_slot_stride,
                 )?;
             }
             batched(
                 &gpu, k_b[rows - 2], d_a, &t, d_new, d_ueid, d_uslot,
-                nn, kk, rows, a_row_stride, a_slot_stride, TOP_K * nn,
+                nn, kk, rows, top_k, a_row_stride, a_slot_stride, top_k * nn,
             )?;
             gpu.synchronize(0)?;
 
             let r_ref = dn(&gpu, d_ref, bytes)?;
             let r_new = dn(&gpu, d_new, bytes)?;
             if r_ref == r_new {
-                println!("  PASS  {tag:28} [{layout:7}] rows={rows} union={n_union}/{}", rows * TOP_K);
+                println!("  PASS  {tag:28} [{layout:7}] rows={rows} union={n_union}/{}", rows * top_k);
             } else {
                 let diff = r_ref.iter().zip(&r_new).filter(|(a, b)| a != b).count();
                 println!("  FAIL  {tag:28} [{layout:7}] {diff}/{bytes} bytes differ");
@@ -254,6 +319,6 @@ fn main() -> Result<()> {
     if failures > 0 {
         bail!("{failures} arm(s) are not bit-identical to the per-row path");
     }
-    println!("\nrow-batched MoE is bit-identical to the per-row path on every arm.");
+    println!("\nrow-batched MoE is bit-identical to the per-row path on every arm, tiers 2..=8.");
     Ok(())
 }

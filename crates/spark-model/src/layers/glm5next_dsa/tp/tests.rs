@@ -21,6 +21,7 @@ fn cfg(local_heads: usize) -> Glm5NextDsaConfig {
         qk_nope_head_dim: 256,
         qk_rope_head_dim: 0,
         v_head_dim: 256,
+        max_context: 16_384,
     }
 }
 

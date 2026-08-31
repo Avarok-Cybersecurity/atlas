@@ -67,7 +67,7 @@ __device__ __forceinline__ float dsa_block_sum(float v, float* smem, unsigned ti
 #define DSA_GEOM_NPOOLS_F 1   // pools including the trailing partial one
 #define DSA_GEOM_NPOOLS   2   // complete pools — the prefix everything downstream reads
 #define DSA_GEOM_SELECT_K 3   // pools selected per query
-#define DSA_GEOM_NP2      4   // padded pool axis the bitonic sort runs over
+#define DSA_GEOM_NP2      4   // TILE width the top-k select walks the pool axis in
 
 // One thread. Derives the selector geometry on device from `seq_len` (the same `[seq_len+1]`
 // i32 the attention metadata holds), so nothing about the pass is decided on the host.
@@ -75,13 +75,16 @@ extern "C" __global__ void dsa_write_geom(
     const int* __restrict__ seq_len,   // [1] tokens in the cache
     int* __restrict__ geom,            // [5] out
     unsigned int KP,
-    unsigned int topk                  // index_topk
+    unsigned int topk,                 // index_topk
+    unsigned int tile                  // dsa_topk_pools tile width (power of two, >= select_k)
 ) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int S = seq_len[0];
     const int np = S / (int)KP;
+    // 🔴 The sort axis no longer grows with the context: `dsa_topk_pools` walks the pools in
+    // fixed `tile`-wide passes, so this is the tile, clamped down for a short context.
     int np2 = 2;
-    while (np2 < np) np2 <<= 1;
+    while (np2 < np && np2 < (int)tile) np2 <<= 1;
     const int cap = (int)(topk / KP);
     geom[DSA_GEOM_S] = S;
     geom[DSA_GEOM_NPOOLS_F] = (S + (int)KP - 1) / (int)KP;
@@ -235,23 +238,32 @@ extern "C" __global__ void dsa_index_scores(
 }
 
 // ── 3. deterministic top-k over pools ───────────────────────────────────────────────────
-// One block per query. Bitonic sort of the padded pool axis in shared memory.
+// One block per query. TILED bitonic select: the pool axis is walked in fixed-size tiles and
+// a running best-`T` list is kept in shared memory, so shared memory no longer scales with
+// the context.
 //
 // ★ TIEBREAK IS PART OF THE CONTRACT: score DESCENDING, then pool index ASCENDING.
 //   `torch.topk`'s tie order is implementation-defined, so the reference's own pool identities
 //   are not a legal target on a tied row -- Atlas pins a total order instead so it is at least
 //   reproducible, and the oracle compares the selected SET.
 //
-// Capacity: NP2 (= next power of two >= P) floats + ints in shared memory. At the 49,152 B
-// runtime ceiling that is NP2 <= 4096, i.e. P <= 4096 pools = 16,384 tokens of context.
-// Beyond that this kernel must be replaced by a segmented/radix select -- it does not silently
-// truncate, the launcher refuses.
+// ★ The tiled result is BIT-IDENTICAL to the old whole-axis sort. The comparator is a total
+//   order (score, then index -- and indices are unique), so the top-`select_k` prefix is
+//   unique; merge-and-truncate over tiles cannot reach a different set or a different order.
+//
+// Capacity: `NP2` is now the TILE width, not the padded pool count. The block holds two
+// tiles (running best + candidate) of [f32, i32], i.e. `16 * NP2` bytes; against the 49,152 B
+// runtime ceiling that is `NP2 <= 2048`. `select_k` must be <= `NP2`; the launcher checks it.
+// Context is bounded by the indexer cache allocation now, not by this kernel.
+//
+// Each tile costs one bitonic sort of the tile (log^2 T stages) plus one merge (log T), so
+// the walk is O(P/T * log^2 T) -- linear in context, with no shared-memory growth.
 extern "C" __global__ void dsa_topk_pools(
     const float* __restrict__ scores,   // [Q, P]
     int* __restrict__ selected,         // [Q, select_k]
     unsigned int Q,
     unsigned int P,
-    unsigned int NP2,                   // next power of two >= P
+    unsigned int NP2,                   // TILE width: min(next_pow2(P), DSA_TOPK_TILE)
     unsigned int select_k,
     const int* __restrict__ geom        // [5] or null
 ) {
@@ -261,36 +273,73 @@ extern "C" __global__ void dsa_topk_pools(
         select_k = (unsigned int)geom[DSA_GEOM_SELECT_K];
     }
     // Dynamic shared memory is requested at the CEILING under capture; the layout and the
-    // sort still run over this step's `NP2`, so the result is the eager result.
+    // walk still run over this step's `NP2` and `P`, so the result is the eager result.
     extern __shared__ char raw_sh[];
-    float* sv = (float*)raw_sh;
-    int* si = (int*)(raw_sh + (size_t)NP2 * sizeof(float));
+    const unsigned int T = NP2;
+    float* sv = (float*)raw_sh;                                  // [2T] best | candidate
+    int*   si = (int*)(raw_sh + (size_t)(2 * T) * sizeof(float)); // [2T]
     const unsigned int r = blockIdx.x;
     const unsigned int tid = threadIdx.x;
 
-    for (unsigned int i = tid; i < NP2; i += blockDim.x) {
-        sv[i] = (i < P) ? scores[(size_t)r * P + i] : -FLT_MAX;
-        si[i] = (i < P) ? (int)i : INT_MAX;   // pad sorts last on BOTH keys
+    // Running best-T, sorted DESCENDING. Starts empty: pad sorts last on BOTH keys.
+    for (unsigned int i = tid; i < T; i += blockDim.x) {
+        sv[i] = -FLT_MAX;
+        si[i] = INT_MAX;
     }
     __syncthreads();
 
-    for (unsigned int k = 2; k <= NP2; k <<= 1) {
-        for (unsigned int j = k >> 1; j > 0; j >>= 1) {
-            for (unsigned int i = tid; i < NP2; i += blockDim.x) {
-                unsigned int l = i ^ j;
-                if (l > i) {
-                    // Descending by score, ascending by index on a tie.
-                    bool gt = (sv[i] > sv[l]) || (sv[i] == sv[l] && si[i] < si[l]);
-                    bool want_desc = ((i & k) == 0);
-                    if (want_desc != gt) {
-                        float tv = sv[i]; sv[i] = sv[l]; sv[l] = tv;
-                        int ti = si[i]; si[i] = si[l]; si[l] = ti;
+#define DSA_TOPK_GT(a, b) ((sv[(a)] > sv[(b)]) || (sv[(a)] == sv[(b)] && si[(a)] < si[(b)]))
+#define DSA_TOPK_SWAP(a, b)                                                                  \
+    do {                                                                                     \
+        float tv_ = sv[(a)]; sv[(a)] = sv[(b)]; sv[(b)] = tv_;                               \
+        int   ti_ = si[(a)]; si[(a)] = si[(b)]; si[(b)] = ti_;                               \
+    } while (0)
+
+    for (unsigned int base = 0; base < P; base += T) {
+        // Candidate tile into [T, 2T). Short tiles pad with the same sorts-last sentinel.
+        for (unsigned int i = tid; i < T; i += blockDim.x) {
+            unsigned int idx = base + i;
+            sv[T + i] = (idx < P) ? scores[(size_t)r * P + idx] : -FLT_MAX;
+            si[T + i] = (idx < P) ? (int)idx : INT_MAX;
+        }
+        __syncthreads();
+
+        // Sort the candidate tile DESCENDING -- the same network as before, offset by T.
+        for (unsigned int k = 2; k <= T; k <<= 1) {
+            for (unsigned int j = k >> 1; j > 0; j >>= 1) {
+                for (unsigned int i = tid; i < T; i += blockDim.x) {
+                    unsigned int l = i ^ j;
+                    if (l > i) {
+                        bool gt = DSA_TOPK_GT(T + i, T + l);
+                        bool want_desc = ((i & k) == 0);
+                        if (want_desc != gt) DSA_TOPK_SWAP(T + i, T + l);
                     }
                 }
+                __syncthreads();
+            }
+        }
+
+        // Batcher half-cleaner across the two DESCENDING runs: pairing best[i] with
+        // cand[T-1-i] leaves the global top-T in [0, T) -- bitonic, not yet sorted.
+        for (unsigned int i = tid; i < T; i += blockDim.x) {
+            unsigned int a = i, b = T + (T - 1 - i);
+            if (!DSA_TOPK_GT(a, b)) DSA_TOPK_SWAP(a, b);
+        }
+        __syncthreads();
+
+        // Bitonic merge restores DESCENDING order over [0, T) for the next tile's half-cleaner.
+        for (unsigned int j = T >> 1; j > 0; j >>= 1) {
+            for (unsigned int i = tid; i < T; i += blockDim.x) {
+                unsigned int l = i ^ j;
+                if (l > i && !DSA_TOPK_GT(i, l)) DSA_TOPK_SWAP(i, l);
             }
             __syncthreads();
         }
     }
+
+#undef DSA_TOPK_GT
+#undef DSA_TOPK_SWAP
+
     for (unsigned int i = tid; i < select_k; i += blockDim.x)
         selected[(size_t)r * select_k + i] = (si[i] == INT_MAX) ? DSA_INVALID : si[i];
 }

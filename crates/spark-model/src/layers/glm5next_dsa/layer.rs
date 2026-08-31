@@ -29,7 +29,7 @@
 //!   pre-multiplied by `kv_b_proj`'s K half. A raw `q_b_proj` is the right shape per head
 //!   (256 vs 512 is not) but the wrong space.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::kv_cache::PagedKvCache;
@@ -232,7 +232,10 @@ impl Glm5NextDsaWorkspace {
             } else {
                 DevicePtr(0)
             },
-            sl: if persist { gpu.alloc(4)? } else { DevicePtr(0) },
+            // 🔴 ANOMALIES A65: `[rows]`, NOT one. `attend_rows` runs ONE launch for all
+            // k rows and `glm5next_dsa_mla_decode` reads `seq_lens[blockIdx.y]`, so a
+            // single i32 here left every row past the first reading past the allocation.
+            sl: if persist { gpu.alloc(rows * 4)? } else { DevicePtr(0) },
             bt_cap,
             max_rows: rows,
             stage_k: gpu.alloc(cfg.index_head_dim * 2)?,
@@ -283,6 +286,10 @@ impl Glm5NextDsaLayer {
         pos_dev: Option<DevicePtr>,
         stream: u64,
     ) -> Result<()> {
+        // 🔴 BEFORE any write. Everything below writes into row `state.len()`; past the cap
+        // that row is off the end of the buffer, and the resulting sticky CUDA 700 kills the
+        // whole context, not just this request. A62.
+        state.ensure_room(1)?;
         let d = self.cfg.index_head_dim;
         let pos = state.len();
         let off = state.row_offset(pos);
@@ -761,6 +768,9 @@ impl Glm5NextDsaLayer {
         )?;
         let mut attend_bt = DevicePtr::NULL;
         let mut attend_sl = DevicePtr::NULL;
+        // Row 0 allocates the shared bt/sl scratch on the per-step-alloc path; it is freed
+        // after the attend, which reads it. ANOMALIES A65.
+        let mut owns_scratch = false;
         let mut attend_paging: Option<DsaDecodePaging> = None;
         for row in 0..k {
             let pos = seq_len + row;
@@ -892,13 +902,25 @@ impl Glm5NextDsaLayer {
                     // allocator had put next. With that fixed the two settings are byte-identical, and
                     // the whole engine is layout-independent (verified by 4 KB poisoned guard bands on
                     // 3431 allocations producing the same completions as no guard bands at all).
+                    // 🔴 ANOMALIES A65. The deferred `attend_rows` reads `seq_lens[row]` and
+                    // `block_tables + row * max_blocks_per_seq`, so these two buffers outlive
+                    // the row that wrote them. `sl` is `[k]` and each row writes its OWN slot;
+                    // the block table is uploaded once and shared with a row stride of ZERO
+                    // (see `max_blocks_per_seq` below) — the k rows ARE one sequence, so they
+                    // genuinely share one table. Writing a single-row `sl`/`bt` per row left
+                    // every row past the first attending over another row's (or no) memory.
+                    // `bt_entries_needed(seq_len, k, ..)` does not depend on `row`, so the
+                    // table's length is the same on every pass and re-uploading it is a no-op.
                     let (d_bt, d_sl) = if self.persist_bt {
                         (w.bt, w.sl)
+                    } else if row == 0 {
+                        (gpu.alloc(bt.len().max(4))?, gpu.alloc(k * 4)?)
                     } else {
-                        (gpu.alloc(bt.len().max(4))?, gpu.alloc(4)?)
+                        // Row 0 owns the scratch; later rows write their own `sl` slot into it.
+                        (attend_bt, attend_sl)
                     };
                     gpu.copy_h2d(&bt, d_bt)?;
-                    gpu.copy_h2d(&((pos + 1) as i32).to_le_bytes(), d_sl)?;
+                    gpu.copy_h2d(&((pos + 1) as i32).to_le_bytes(), d_sl.offset(row * 4))?;
                     (d_bt, d_sl)
                 }
             };
@@ -916,9 +938,14 @@ impl Glm5NextDsaLayer {
                 // `self.max_blocks_per_seq` and zero-pad every uploaded row out to.
                 // Without this the graphed K=3 verify diverged from eager on exactly the long
                 // probes (pyadd/open128/open512) and matched on the 32-token ones.
+                // 🔴 ANOMALIES A65: ZERO on the no-metadata path, which is the ROW STRIDE
+                // the kernel applies to `block_tables`. All k rows of this call are the same
+                // sequence and share the one table uploaded above, so a stride of 0 is the
+                // correct sharing — `block_table.len()` walked row 1 off the end of a
+                // single-row buffer. (The metadata path really does carry k padded rows.)
                 max_blocks_per_seq: match meta {
                     Some(m) => m.max_blocks_per_seq as usize,
-                    None => block_table.len(),
+                    None => 0,
                 },
                 block_size,
                 cache_stride_bytes: (block_size * self.cfg.kv_lora_rank) as u64,
@@ -933,6 +960,7 @@ impl Glm5NextDsaLayer {
                     .arg_ptr(w.geom_dev)
                     .arg_u32(self.cfg.index_kpool as u32)
                     .arg_u32(self.cfg.index_topk as u32)
+                    .arg_u32(super::select::topk_tile() as u32)
                     .launch(stream)?;
             }
             self.select_row(gpu, row, st, q_pos_dev, replay_safe, stream)?;
@@ -943,10 +971,7 @@ impl Glm5NextDsaLayer {
                 attend_bt = d_bt;
                 attend_sl = d_sl;
                 attend_paging = Some(paging);
-            }
-            if owns_bt && !self.persist_bt {
-                gpu.free(d_bt)?;
-                gpu.free(d_sl)?;
+                owns_scratch = owns_bt && !self.persist_bt;
             }
 
         }
@@ -954,6 +979,12 @@ impl Glm5NextDsaLayer {
         // ── ONE gather-attend for all K rows ──
         if let Some(paging) = attend_paging {
             self.attend_rows(gpu, k, st, kv_cache, attend_bt, attend_sl, &paging, stream)?;
+        }
+        // 🔴 ANOMALIES A65: freed HERE, not in the row loop. The attend above reads both
+        // buffers, so freeing them per row handed it memory that had already been released.
+        if owns_scratch {
+            gpu.free(attend_bt)?;
+            gpu.free(attend_sl)?;
         }
 
         // ── output projection, row-parallel: the caller all-reduces ──
@@ -980,6 +1011,20 @@ impl Glm5NextDsaLayer {
 impl TransformerLayer for Glm5NextDsaLayer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(Box::new(Glm5NextDsaState::alloc(gpu, &self.cfg)?))
+    }
+
+    /// The replay's writes end at `seq_len + k`; the buffer ends at `capacity`. A62.
+    fn check_replay_room(&self, state: &dyn LayerState, seq_len: usize, k: usize) -> Result<()> {
+        state
+            .as_any()
+            .downcast_ref::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Glm5NextDsaLayer got a state that is not Glm5NextDsaState")
+            })?
+            .ensure_room_through(seq_len + k)
+            .with_context(|| {
+                format!("DSA replay pre-check (before launch_graph, seq_len {seq_len} + k {k})")
+            })
     }
 
     /// The indexer cache length is the one thing this layer keeps on the host. A replayed

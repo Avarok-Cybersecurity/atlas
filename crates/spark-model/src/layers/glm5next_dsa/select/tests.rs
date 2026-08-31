@@ -25,6 +25,7 @@ fn cfg() -> Glm5NextDsaConfig {
         qk_nope_head_dim: 256,
         qk_rope_head_dim: 0,
         v_head_dim: 256,
+        max_context: 16_384,
     }
 }
 
@@ -96,36 +97,174 @@ fn full_and_kept_pool_counts_differ_exactly_on_a_partial_tail() {
     }
 }
 
-/// 🔴 The context ceiling is REFUSED, not truncated. `dsa_topk_pools` bitonic-sorts
-/// in shared memory; past 4,096 pools the launch would not fit and the kernel does
-/// not degrade gracefully.
+/// 🟢 The 16,384-token ceiling is GONE. `dsa_topk_pools` walks the pool axis in
+/// [`topk_tile`]-wide tiles, so shared memory is constant and `plan` succeeds at any
+/// context. This test is the tripwire on that constancy — a launch that grew with the
+/// context would be the old bug back. ANOMALIES A62.
 #[test]
-fn plan_refuses_a_context_past_the_topk_shared_memory_ceiling() {
+fn plan_holds_shared_memory_constant_at_any_context() {
     let c = cfg();
-    // 4,096 pools = 16,384 tokens at kpool=4 — the last size that fits.
-    let ok = DsaSelectGeometry::plan(&c, 16_384, 1).unwrap();
-    assert_eq!(ok.n_pools, 4_096);
-    assert_eq!(ok.topk_np2, 4_096);
-    assert_eq!(ok.topk_smem, 32_768);
-    assert!(ok.topk_smem <= TOPK_SMEM_CEILING);
+    let tile = topk_tile();
+    assert_eq!(tile, 2_048, "two tiles of [f32,i32] against a 49,152 B ceiling");
+    assert_eq!(topk_smem_for_tile(tile), 32_768);
 
-    // One more pool doubles the padded axis to 8,192 → 65,536 B > 49,152 B.
-    let err = DsaSelectGeometry::plan(&c, 16_388, 1)
+    // The size that used to be the last one that fit, the first that did not, and
+    // GLM's advertised 262,144 — all plan, all at the same shared memory.
+    for (seq, pools) in [
+        (16_384usize, 4_096usize),
+        (16_388, 4_097),
+        (65_536, 16_384),
+        (262_144, 65_536),
+    ] {
+        let g = DsaSelectGeometry::plan(&c, seq, 1)
+            .unwrap_or_else(|e| panic!("plan refused {seq} tokens: {e}"));
+        assert_eq!(g.n_pools, pools);
+        assert_eq!(g.topk_np2, tile, "the sort axis is the tile, not the context");
+        assert_eq!(g.topk_smem, 32_768);
+        assert!(g.topk_smem <= TOPK_SMEM_CEILING);
+    }
+
+    // Below one tile the sort axis still shrinks with the context — a short prompt
+    // must not pay for a 2,048-wide sort.
+    let small = DsaSelectGeometry::plan(&c, 1_200, 1).unwrap();
+    assert_eq!(small.n_pools, 300);
+    assert_eq!(small.topk_np2, 512);
+    assert_eq!(small.topk_smem, 8_192);
+}
+
+/// The one capacity the tiled select still imposes: the running best list IS one tile,
+/// so it cannot hold more winners than a tile has slots. Unreachable on GLM-5.3
+/// (`select_k` 512 vs a 2,048 tile) — a loud refusal, never a silent truncation.
+#[test]
+fn plan_refuses_a_select_k_wider_than_one_tile() {
+    let mut c = cfg();
+    c.index_topk = topk_tile() * c.index_kpool * 2;
+    let err = DsaSelectGeometry::plan(&c, 262_144, 1)
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("segmented/radix select"),
-        "the refusal must name the real fix, got: {err}"
+        err.contains("exceeds the") && err.contains("top-k tile"),
+        "the refusal must name the tile: {err}"
     );
-    assert!(
-        err.contains("16384"),
-        "the refusal must name the token limit: {err}"
-    );
+}
 
-    // GLM's advertised 262,144-token context is far past this. Serving DSA at full
-    // context is a KNOWN, UNSOLVED limit — this test is the tripwire that keeps it
-    // from being discovered as a wrong answer instead of an error.
-    assert!(DsaSelectGeometry::plan(&c, 262_144, 1).is_err());
+/// 🔬 The tiled select must be BIT-IDENTICAL to the whole-axis sort it replaced.
+///
+/// This is a host model of `dsa_topk_pools`' shared-memory walk — the same tile sort, the
+/// same Batcher half-cleaner across the two descending runs, the same merge — checked
+/// against a plain total-order sort over the whole axis. It proves the ALGORITHM; the CUDA
+/// transcription is proven separately on device by `examples/dsa_indexer_microtest.rs`.
+mod tiled_select_model {
+    /// The kernel's comparator: score DESCENDING, then pool index ASCENDING. A total order,
+    /// because indices are unique — which is why the top-k prefix is unique and a
+    /// merge-and-truncate walk cannot reach a different answer than a full sort.
+    fn gt(a: (f32, i32), b: (f32, i32)) -> bool {
+        a.0 > b.0 || (a.0 == b.0 && a.1 < b.1)
+    }
+
+    fn bitonic_sort_desc(v: &mut [(f32, i32)]) {
+        let n = v.len();
+        let mut k = 2;
+        while k <= n {
+            let mut j = k >> 1;
+            while j > 0 {
+                for i in 0..n {
+                    let l = i ^ j;
+                    if l > i {
+                        let want_desc = (i & k) == 0;
+                        if want_desc != gt(v[i], v[l]) {
+                            v.swap(i, l);
+                        }
+                    }
+                }
+                j >>= 1;
+            }
+            k <<= 1;
+        }
+    }
+
+    fn bitonic_merge_desc(v: &mut [(f32, i32)]) {
+        let n = v.len();
+        let mut j = n >> 1;
+        while j > 0 {
+            for i in 0..n {
+                let l = i ^ j;
+                if l > i && !gt(v[i], v[l]) {
+                    v.swap(i, l);
+                }
+            }
+            j >>= 1;
+        }
+    }
+
+    /// `dsa_topk_pools` for one query row.
+    pub fn tiled_topk(scores: &[f32], tile: usize, select_k: usize) -> Vec<i32> {
+        let pad = (f32::NEG_INFINITY, i32::MAX);
+        let mut best = vec![pad; tile];
+        let mut base = 0;
+        while base < scores.len() {
+            let mut cand: Vec<(f32, i32)> = (0..tile)
+                .map(|i| {
+                    let idx = base + i;
+                    if idx < scores.len() {
+                        (scores[idx], idx as i32)
+                    } else {
+                        pad
+                    }
+                })
+                .collect();
+            bitonic_sort_desc(&mut cand);
+            // Half-cleaner across [best desc][cand asc]: best[i] against cand[tile-1-i].
+            for i in 0..tile {
+                let b = tile - 1 - i;
+                if !gt(best[i], cand[b]) {
+                    std::mem::swap(&mut best[i], &mut cand[b]);
+                }
+            }
+            bitonic_merge_desc(&mut best);
+            base += tile;
+        }
+        best.into_iter().take(select_k).map(|e| e.1).collect()
+    }
+
+    /// The reference: sort the whole axis under the same total order, take the prefix.
+    pub fn whole_axis_topk(scores: &[f32], select_k: usize) -> Vec<i32> {
+        let mut all: Vec<(f32, i32)> = scores
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| (s, i as i32))
+            .collect();
+        all.sort_by(|a, b| if gt(*a, *b) { std::cmp::Ordering::Less } else if a == b { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater });
+        all.into_iter().take(select_k).map(|e| e.1).collect()
+    }
+}
+
+#[test]
+fn the_tiled_walk_returns_exactly_what_a_whole_axis_sort_would() {
+    // Deterministic LCG — a fixed corpus beats a flaky random one, and TIES are the whole
+    // point of the tiebreak contract, so the score alphabet is deliberately small.
+    let mut state: u64 = 0x5EED_5EED;
+    let mut next = || {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as u32
+    };
+    for &tile in &[4usize, 8, 64] {
+        for &n_pools in &[1usize, 3, 7, 8, 9, 33, 64, 65, 200, 511, 512] {
+            for &alphabet in &[3u32, 1_000_000] {
+                let scores: Vec<f32> =
+                    (0..n_pools).map(|_| (next() % alphabet) as f32).collect();
+                for &select_k in &[1usize, 2, 5, tile.min(n_pools)] {
+                    let select_k = select_k.min(n_pools).min(tile).max(1);
+                    let got = tiled_select_model::tiled_topk(&scores, tile, select_k);
+                    let want = tiled_select_model::whole_axis_topk(&scores, select_k);
+                    assert_eq!(
+                        got, want,
+                        "tile={tile} n_pools={n_pools} alphabet={alphabet} select_k={select_k}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// `select_k` is the pool budget, and it clamps to the pools that exist. A short

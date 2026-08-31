@@ -101,6 +101,19 @@ pub struct Glm5NextMtpHead {
     gemv_fp8w_k: KernelHandle,
 }
 
+/// Rows the GLM drafter can ever be asked for: the served context, clamped to what its own
+/// DSA indexer cache can hold. ANOMALIES A59 — see the note in [`Glm5NextMtpHead::new`].
+///
+/// Derived from `max_dsa_context`, never a literal: the ceiling is a function of the top-k
+/// kernel's shared-memory budget and `index_kpool`, so a kernel or config change must move
+/// this sizing with it.
+fn drafter_context_rows(
+    max_seq_len: usize,
+    cfg: &crate::layers::glm5next_dsa::Glm5NextDsaConfig,
+) -> usize {
+    max_seq_len.min(crate::layers::glm5next_dsa::state::max_dsa_context(cfg))
+}
+
 impl Glm5NextMtpHead {
     pub fn new(
         module: Glm5NextMtpModule,
@@ -114,6 +127,26 @@ impl Glm5NextMtpHead {
             crate::layers::glm5next_layer::Glm5NextMixer::Dsa(l) => l,
             _ => bail!("GLM MTP block is not a DSA layer"),
         };
+        // 🔴 ANOMALIES A59. The drafter block is a DSA layer, so it can never reach a position
+        // past `max_dsa_context` — the indexer cache `Glm5NextDsaState::alloc` reserves and
+        // `advance` refuses to grow beyond (`glm5next_dsa/state.rs`). The TARGET's DSA layers
+        // cap the servable context at the same number, so a sequence that would need row
+        // `max_dsa_context` fails in the target before this block ever sees it. Everything
+        // sized off `max_seq_len` here — the private KV pool below, the pre-claimed block
+        // table in `alloc_state`, both bounds checks, and (through `prefill_hidden_rows`) the
+        // model's `mtp_prefill_hidden` capture — is therefore dead weight above the ceiling.
+        //
+        // At `--max-seq-len 524288` that dead weight was 4.0 GiB of capture buffer plus
+        // 0.5 GiB of drafter pool against the flat 4 GiB `cuda_headroom` that is the ONLY
+        // reserve covering them (`serve_phases/preflight.rs`, `inference_reserve`) — both are
+        // allocated AFTER the KV pool is sized, so nothing else accounts for them. The serve
+        // ran ~0.8 GiB past its own `--gpu-memory-utilization` ceiling: measured 2026-08-30,
+        // open128 -18.6 %, counting -10.6 %, TTFT 1.0 s -> 4.9 s, with acceptance, output and
+        // error count unchanged. Handing 1.5 GB back (GMU 0.89) restored every number.
+        //
+        // Deriving the cap from the same function that sets the ceiling keeps it honest: the
+        // day a segmented/radix select lifts `max_dsa_context`, this lifts with it.
+        let max_seq_len = drafter_context_rows(max_seq_len, &dsa.cfg);
         // Matches the target's absorbed-MLA cache shape so the block's own `latent_write` and
         // paged gather land at the strides they already assume.
         let kv_config = KvCacheConfig {
@@ -490,6 +523,14 @@ impl Glm5NextMtpHead {
 }
 
 impl DraftProposer for Glm5NextMtpHead {
+    /// `self.max_seq_len` is ALREADY capped at `max_dsa_context` by `new`, so this both
+    /// rightsizes the model's capture buffer and keeps it in lockstep with the drafter's own
+    /// bounds checks — a capture longer than the drafter's row space could never be read.
+    /// ANOMALIES A59.
+    fn prefill_hidden_rows(&self, max_seq_len: usize) -> usize {
+        max_seq_len.min(self.max_seq_len)
+    }
+
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
         let dsa = match &self.module.layer.mixer {
             crate::layers::glm5next_layer::Glm5NextMixer::Dsa(l) => {
@@ -671,4 +712,61 @@ fn skip_head() -> bool {
 fn skip_block() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("ATLAS_GLM_MTP_SKIP").ok().as_deref() == Some("block"))
+}
+
+#[cfg(test)]
+mod a59_sizing_tests {
+    use super::drafter_context_rows;
+    use crate::layers::glm5next_dsa::Glm5NextDsaConfig;
+
+    /// GLM-5.3's shape. Mirrors `glm5next_dsa::state::tests::cfg`.
+    fn cfg() -> Glm5NextDsaConfig {
+        Glm5NextDsaConfig {
+            hidden: 4096,
+            index_heads: 32,
+            index_head_dim: 128,
+            index_kpool: 4,
+            index_topk: 2048,
+            always_select_tail: true,
+            local_heads: 64,
+            q_lora_rank: 1536,
+            kv_lora_rank: 512,
+            qk_nope_head_dim: 256,
+            qk_rope_head_dim: 0,
+            v_head_dim: 256,
+            max_context: 16_384,
+        }
+    }
+
+    /// 🔴 ANOMALIES A59. A declared context the drafter can never reach must not size its
+    /// buffers. At 524,288 the uncapped sizing cost 4.0 GiB of `mtp_prefill_hidden` plus a
+    /// 0.5 GiB private KV pool, neither of them in `inference_reserve`.
+    #[test]
+    fn a_declared_context_past_the_dsa_reservation_does_not_size_the_drafter() {
+        let c = cfg();
+        assert_eq!(drafter_context_rows(524_288, &c), 16_384);
+        assert_eq!(drafter_context_rows(262_144, &c), 16_384);
+    }
+
+    /// Below the ceiling nothing changes — the pre-A59 sizing is preserved exactly, which is
+    /// what keeps every served context up to the cap byte-identical.
+    #[test]
+    fn a_context_under_the_ceiling_is_untouched() {
+        let c = cfg();
+        assert_eq!(drafter_context_rows(8_192, &c), 8_192);
+        assert_eq!(drafter_context_rows(16_384, &c), 16_384);
+    }
+
+    /// The cap is DERIVED, not a literal: it is the DSA indexer cache's own reservation,
+    /// so raising `--max-seq-len` raises the drafter's sizing in lockstep — and rounding to
+    /// whole pools follows too. A hardcoded 16,384 passes the two tests above, fails this.
+    #[test]
+    fn the_cap_tracks_the_indexer_reservation_not_a_constant() {
+        let mut c = cfg();
+        c.max_context = 65_536;
+        assert_eq!(drafter_context_rows(524_288, &c), 65_536);
+        assert_eq!(drafter_context_rows(32_768, &c), 32_768);
+        c.max_context = 65_538;
+        assert_eq!(drafter_context_rows(524_288, &c), 65_536, "whole pools only");
+    }
 }

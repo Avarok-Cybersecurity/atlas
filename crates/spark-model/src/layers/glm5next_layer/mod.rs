@@ -47,7 +47,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::kv_cache::PagedKvCache;
@@ -141,6 +141,51 @@ pub struct Glm5NextLayer {
     pub is_first: bool,
     /// Collapse the highway here. True for the last TEXT layer only.
     pub is_last: bool,
+}
+
+/// Tokens per batched prefill sub-chunk — the width `Glm5NextLayer::prefill` hands
+/// [`Glm5NextLayer::forward_k`].
+///
+/// 🔴 **8, and the ceiling is a KERNEL boundary, not a bandwidth knee.** Every dense projection
+/// on this path goes through [`ops::dense_mm_bf16`], whose batched-GEMV arm
+/// (`dense_gemv_bf16_batchm`) is **bit-identical to M serial GEMVs** and stops at
+/// `DENSE_GEMV_BATCHM_MAX_M = 8`. At `R > 8` the same call falls to the tile GEMM, which both
+/// reassociates (so prefill stops being bit-identical to the per-token walk) and is the slower
+/// kernel at these widths — Atlas measured it 3.6x slower than the batched GEMV at M <= 8.
+///
+/// 🔴 MEASURED 2026-08-31, one image, one control, ~1,950-token prompt: control TTFT 125.3 s;
+/// R = 8 **43.4 s (2.89x) and byte-identical on all four probes**; R = 32 44.3 / 51.8 s — no
+/// faster, and it moves two of the four completions. The per-token-bytes model that first
+/// picked 32 (predicting 4.5x at R = 32 against 3.0x at R = 8) is REFUTED as a width law: it
+/// modelled weight traffic only, and above R = 8 the traffic saved is handed to a slower kernel.
+/// The routed experts do not amortize past R = 4 either way (`forward_moe`'s union arm caps
+/// there), so R = 8 takes the whole available win. ANOMALIES A65.
+pub(crate) const PREFILL_ROWS: usize = 8;
+
+/// `PREFILL_ROWS`, overridable at launch with `ATLAS_GLM_PREFILL_ROWS`.
+///
+/// 🔬 Kept as the A/B lever it was built as. It found A65's real defect (the DSA attend read
+/// `seq_lens[row]` / `block_tables[row]` out of a single-row buffer) by sweeping width against a
+/// fixed control in ONE serve instead of one image per width. `1` restores the per-token walk
+/// exactly — the `rows > 1` gate in `prefill` falls through to `forward_one`.
+///
+/// 🪤 Above 8 the dense projections leave the bit-identical batched-GEMV arm for the tile GEMM,
+/// so a width > 8 is a NUMERICS change as well as a speed one. Measured: it is not faster.
+///
+/// 🪤 Read once and cached: an env read per layer per sub-chunk would sit in the hot loop.
+pub(crate) fn prefill_rows() -> usize {
+    static ROWS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *ROWS.get_or_init(|| {
+        let r = std::env::var("ATLAS_GLM_PREFILL_ROWS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|r| *r >= 1)
+            .unwrap_or(PREFILL_ROWS);
+        if r != PREFILL_ROWS {
+            tracing::warn!("GLM prefill sub-chunk overridden to {r} rows (default {PREFILL_ROWS})");
+        }
+        r
+    })
 }
 
 impl Glm5NextLayer {
@@ -661,6 +706,8 @@ impl Glm5NextLayer {
         block_table: &mut Vec<u32>,
         ctx: &ForwardContext,
         stream: u64,
+        take_snapshots: bool,
+        slot_base: usize,
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let h = self.hidden;
@@ -668,11 +715,17 @@ impl Glm5NextLayer {
             bail!("GLM layer {}: no hyper-connection bound", self.layer_idx);
         };
         let hc = mhc.hc_mult;
-        // Slot 0's base: the per-slot strides are exactly these, so K contiguous slots ARE the
-        // `[K, ...]` the kernels want.
-        let streams = ctx.buffers.hc_streams();
-        let post = ctx.buffers.hc_post();
-        let comb = ctx.buffers.hc_comb();
+        // `slot_base`'s base: the per-slot strides are exactly these, so K contiguous slots
+        // from there ARE the `[K, ...]` the kernels want.
+        //
+        // 🔴 The highway is a PER-TOKEN activation that must survive across layers, so the slot
+        // is the token's index within the whole forward, NOT its row within this call. A verify
+        // is one call at `slot_base = 0`; a batched prefill is `ceil(N / PREFILL_ROWS)` calls
+        // that must land on disjoint slots, or sub-chunk 1 overwrites sub-chunk 0's streams and
+        // every later layer reads the wrong token's highway. ANOMALIES A65.
+        let streams = ctx.buffers.hc_streams().offset(slot_base * hc * h * 4);
+        let post = ctx.buffers.hc_post().offset(slot_base * hc * 4);
+        let comb = ctx.buffers.hc_comb().offset(slot_base * hc * hc * 4);
         let normed = ctx.buffers.norm_output();
         let ffn_out = ctx.buffers.moe_output();
         let (kt, ht, hct) = (k as u32, h as u32, hc as u32);
@@ -690,9 +743,18 @@ impl Glm5NextLayer {
                     );
                 }
                 let st = self.kda_state(state)?;
-                let snaps: Vec<(DevicePtr, DevicePtr)> = (0..k.saturating_sub(1))
-                    .map(|t| (st.h_state_intermediates[t], st.conv_state_intermediates[t]))
-                    .collect();
+                // 🔴 PREFILL TAKES NONE. A verify needs a per-row rewind point, so it snapshots
+                // rows `0..k-1`; prefill is never rolled back, and the intermediates pool holds
+                // only `num_spec` slots — indexing it for a 32-row prefill chunk would run off
+                // the end. `decode_k` reads these with `snapshots.get(row)`, so an empty slice
+                // is a clean "take none", not a special case.
+                let snaps: Vec<(DevicePtr, DevicePtr)> = if take_snapshots {
+                    (0..k.saturating_sub(1))
+                        .map(|t| (st.h_state_intermediates[t], st.conv_state_intermediates[t]))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 Some((
                     KdaSeqState {
                         conv: st.conv_state,
@@ -912,6 +974,35 @@ impl TransformerLayer for Glm5NextLayer {
         }
     }
 
+    /// The model's layer vec holds the COMPOSITE, so — exactly as with `sync_replayed_step`
+    /// — the inner `Glm5NextDsaLayer` impl is never reached and this one is what runs. A62.
+    fn check_replay_room(&self, state: &dyn LayerState, seq_len: usize, k: usize) -> Result<()> {
+        match &self.mixer {
+            Glm5NextMixer::Dsa(_) => state
+                .as_any()
+                .downcast_ref::<Glm5NextDsaState>()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "GLM layer {}: a DSA mixer was handed state that is not a \
+                         Glm5NextDsaState",
+                        self.layer_idx
+                    )
+                })?
+                .ensure_room_through(seq_len + k)
+                // 🔴 Both A62 routes raise the SAME refusal, so without a tag a log cannot
+                // tell a pre-launch replay refusal from `indexer_forward`'s prefill one —
+                // and "we proved the replay route" would rest on inference. Name it.
+                .with_context(|| {
+                    format!(
+                        "DSA replay pre-check (layer {}, before launch_graph, seq_len \
+                         {seq_len} + k {k})",
+                        self.layer_idx
+                    )
+                }),
+            Glm5NextMixer::Kda { .. } => Ok(()),
+        }
+    }
+
     /// GLM's KDA blocks are `linear_attention` in `layer_types` AND carry the pool's
     /// `SsmLayerState`, so they take pool slots like any other recurrent layer. That is what
     /// buys the speculative-verify checkpoints and per-token intermediates for free —
@@ -984,6 +1075,50 @@ impl TransformerLayer for Glm5NextLayer {
                 self.layer_idx
             );
         }
+        // ── Batched sub-chunks: ONE weight sweep per PREFILL_ROWS tokens ──
+        //
+        // 🔴 ANOMALIES A65. The per-token walk below pays a full sweep of this layer's weights
+        // for EVERY token, which is why prefill ran at decode speed (15.2 tok/s measured, and
+        // 97 % linear in the token count: TTFT 579.1 s at 9,000 tokens and 1,187.6 s at 18,000,
+        // a ratio of 2.051 against 2.000 for pure-linear).
+        //
+        // `forward_k` is the SAME body the speculative verify uses and already sweeps once for
+        // all its rows, so this is reuse, not a new path. What it does NOT yet amortize is the
+        // routed MoE: `forward_moe`'s expert-union arm is capped at 4 rows (the union kernel
+        // resolves `rows * top_k <= 64` ids in one block), so above that each row still pays its
+        // own 8 experts. That caps the win here at ~5x — Atlas's own sizing note puts KDA at
+        // 9,366 MB/token against ~2.1 GB/token of routed-expert traffic, so amortizing the
+        // former is most of the prize and the latter needs a grouped MoE GEMM (separate lane).
+        //
+        // 🪤 `mhc: None` is the MTP drafter block, whose plain residual path `forward_k` does
+        // not implement — it bails on a missing highway. That block keeps the per-token walk.
+        let rows = if self.mhc.is_some() {
+            prefill_rows().min(cap)
+        } else {
+            1
+        };
+        if rows > 1 {
+            let mut t = 0usize;
+            while t < num_tokens {
+                let k = rows.min(num_tokens - t);
+                self.forward_k(
+                    hidden.offset(t * self.hidden * 2),
+                    k,
+                    state,
+                    kv_cache,
+                    seq_len_start + t,
+                    block_table,
+                    ctx,
+                    stream,
+                    // Prefill is never rolled back, so it takes no per-row KDA snapshots.
+                    false,
+                    // Absolute slot within this prefill, so sub-chunks never share a slot.
+                    t,
+                )?;
+                t += k;
+            }
+            return Ok(());
+        }
         for t in 0..num_tokens {
             let off = t * self.hidden * 2;
             self.forward_one(
@@ -1013,11 +1148,10 @@ impl TransformerLayer for Glm5NextLayer {
     /// `decode` pins highway slot 0. K tokens would then overwrite each other's mHC streams and
     /// every layer past the first would read the last token's highway for all K rows.
     ///
-    /// ⚠️ **Correct, not yet fast.** This is still one `forward_one` per row, so a K-token
-    /// verify currently costs K weight sweeps. Batching the sweep (KDA front-end, DSA
-    /// projections, shared/dense MLP, mHC) is what makes speculation pay; the projection
-    /// kernels already dispatch `2 ..= 8` rows to `dense_gemv_bf16_batchm`
-    /// (`ops::dense_mm_bf16`), so hoisting a site to K rows is a byte-identical change.
+    /// ✅ **Batched.** This delegates to [`Self::forward_k`], which sweeps the weights ONCE for
+    /// all K rows. (An earlier revision of this comment said "still one `forward_one` per row";
+    /// that was stale — `forward_k` has been the body since the batched-verify work, and the
+    /// measured K=3 step of ~101 ms against a ~63 ms single-row step is only explicable by it.)
     #[allow(clippy::too_many_arguments)]
     fn decode_batched(
         &self,
@@ -1069,6 +1203,8 @@ impl TransformerLayer for Glm5NextLayer {
             block_table,
             ctx,
             stream,
+            true,
+            0,
         )
     }
 

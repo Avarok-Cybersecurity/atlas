@@ -175,6 +175,10 @@ pub struct Glm5NextDsaConfig {
     /// **Zero** on GLM-5.3. Kept explicit so a nonzero value is a loud change.
     pub qk_rope_head_dim: usize,
     pub v_head_dim: usize,
+    /// Longest context a sequence's indexer cache is reserved for, in tokens — the serve's
+    /// `--max-seq-len`. Not a kernel limit (the top-k select is tiled); an ALLOCATION, and
+    /// the biggest per-sequence one GLM-5.3 makes. See [`state::max_dsa_context`].
+    pub max_context: usize,
 }
 
 impl Glm5NextDsaConfig {
@@ -194,6 +198,14 @@ impl Glm5NextDsaConfig {
             qk_nope_head_dim: config.qk_nope_head_dim,
             qk_rope_head_dim: config.qk_rope_head_dim,
             v_head_dim: config.v_head_dim,
+            // 🔴 `serve_max_seq_len` is set from `--max-seq-len` in serve_phases::topology.
+            // Zero means nobody set it (a unit test, a tool) — fall back to the old fixed
+            // 16,384-token reservation rather than allocating for 1 M positions.
+            max_context: if config.serve_max_seq_len > 0 {
+                config.serve_max_seq_len
+            } else {
+                16_384
+            },
         };
         c.validate()?;
         Ok(c)

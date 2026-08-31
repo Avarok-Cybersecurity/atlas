@@ -349,6 +349,28 @@ pub trait DraftProposer: Send + Sync {
         None
     }
 
+    /// Rows this proposer can actually consume from `mtp_prefill_hidden`, given
+    /// the served `--max-seq-len`.
+    ///
+    /// The model allocates that buffer as `[rows, hidden]` BF16 before it knows
+    /// anything about the proposer, so `max_seq_len` is the only bound it has —
+    /// 4.0 GiB at 524,288 and h=4096. A proposer whose own architecture caps the
+    /// position it can ever be asked for returns that cap instead, and the
+    /// difference stops being allocated. See ANOMALIES A59 and the note in
+    /// `Glm5NextMtpHead::new`.
+    ///
+    /// 🔴 Return a SMALLER number ONLY when the proposer can never be handed a
+    /// position past it. A cap below the reachable context does not corrupt
+    /// anything — the capture-coverage check at the propose site disables
+    /// drafter-prefill for a sequence whose rows are short — but it silently
+    /// costs acceptance on exactly the long prompts the feature exists for.
+    ///
+    /// Default: `max_seq_len`, i.e. the pre-A59 sizing, which is correct for any
+    /// proposer that can follow the target to the end of the served context.
+    fn prefill_hidden_rows(&self, max_seq_len: usize) -> usize {
+        max_seq_len
+    }
+
     /// True when this proposer's block is SHARDED across ranks and its
     /// forward therefore needs the communicator (a routed-MoE all-reduce and
     /// a row-parallel `o_proj` reduce), like any target layer.

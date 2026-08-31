@@ -226,6 +226,24 @@ pub trait TransformerLayer: Send + Sync {
         Ok(())
     }
 
+    /// Refuse a step whose writes would land past a host-tracked cache — BEFORE the graph
+    /// that performs them is replayed.
+    ///
+    /// 🔴 `sync_replayed_step` above is the RECONCILE and it deliberately runs AFTER
+    /// `launch_graph`, which is too late to prevent a write. A replayed `dsa_indexer_store`
+    /// places its row from a DEVICE position with no host code in the loop, so at the DSA
+    /// ceiling it writes one row past the buffer and the refusal arrives afterwards. The
+    /// resulting `CUDA_ERROR_ILLEGAL_ADDRESS (700)` is STICKY: it fails every later CUDA
+    /// call in the context, so one over-long sequence takes the serve down for every
+    /// subsequent request while the health endpoints keep answering 200. ANOMALIES A62.
+    ///
+    /// `seq_len` is the length BEFORE this step's `k` rows, so the step ends at
+    /// `seq_len + k` — the same post-condition `sync_replayed_step` reconciles to. Default
+    /// is a no-op: only a layer with host-side cache bookkeeping needs it.
+    fn check_replay_room(&self, _state: &dyn LayerState, _seq_len: usize, _k: usize) -> Result<()> {
+        Ok(())
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,

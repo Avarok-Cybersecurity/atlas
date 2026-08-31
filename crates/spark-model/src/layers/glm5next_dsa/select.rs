@@ -17,15 +17,19 @@
 //!                             -> dsa_expand_selection -> [Q, out_width] token ids
 //! ```
 //!
-//! # 🔴 Hard context ceiling — this launcher REFUSES rather than truncates
+//! # 🟢 The context ceiling this module used to impose is GONE
 //!
-//! `dsa_topk_pools` bitonic-sorts the padded pool axis in shared memory: `NP2` floats
-//! plus `NP2` ints, `NP2` the next power of two at or above the pool count. Against
-//! the 49,152 B runtime shared-memory ceiling that caps `NP2` at 4,096 — i.e.
-//! **4,096 pools, 16,384 tokens of context at `index_kpool = 4`**. The kernel does not
-//! silently truncate and neither does this launcher: past the ceiling
-//! [`DsaSelectGeometry::plan`] fails, naming the limit. Lifting it means replacing the
-//! bitonic select with a segmented/radix select — deliberately out of scope.
+//! `dsa_topk_pools` no longer sorts the whole pool axis in shared memory. It walks the
+//! pools in fixed [`TOPK_TILE`]-wide tiles, keeping a running best-`TOPK_TILE` list, so
+//! shared memory is a constant `16 × TOPK_TILE` bytes whatever the context. The result is
+//! bit-identical to the old whole-axis sort — the comparator (score DESC, pool index ASC)
+//! is a total order over unique indices, so the top-`select_k` prefix is unique and
+//! merge-and-truncate cannot reach a different set or order.
+//!
+//! What survives is one requirement, checked in [`DsaSelectGeometry::plan`]:
+//! `select_k <= TOPK_TILE`. At `index_topk = 2048` and `index_kpool = 4` that is 512
+//! against 2,048. **DSA context is now bounded by the indexer cache allocation
+//! (`state::max_dsa_context`), not by this kernel.** ANOMALIES A62.
 //!
 //! # 🪤 Compaction is the identity here, and that is a derived fact, not an assumption
 //!
@@ -56,12 +60,26 @@ const SCORES_BLOCK: u32 = 128;
 /// Threads per block for `dsa_topk_pools` and `dsa_expand_selection`.
 const ROW_BLOCK: u32 = 256;
 
-/// Most pools `dsa_topk_pools` can sort: the largest **power of two** whose padded
-/// `[f32, i32]` pair fits the shared-memory ceiling. 49,152 B / 8 B is 6,144, but the
-/// bitonic sort pads up to a power of two, so the usable cap is 4,096.
-fn max_pools_for_smem() -> usize {
-    let slots = TOPK_SMEM_CEILING / 8;
-    (slots + 1).next_power_of_two() / 2
+/// Tile width `dsa_topk_pools` walks the pool axis in.
+///
+/// The block holds two tiles — the running best list and the candidate tile — each a
+/// `[f32, i32]` pair, so a tile costs `16 × T` bytes. The largest power of two under the
+/// 49,152 B ceiling is 3,072 → **2,048**. Bigger is better (the walk is
+/// `O(P/T · log²T)`), so this is the ceiling, not a taste.
+///
+/// 🪤 Mirrored by `dsa_write_geom`'s `tile` argument, which this module passes explicitly
+/// rather than duplicating as a `#define`, so the two cannot drift.
+pub fn topk_tile() -> usize {
+    let mut t = 2usize;
+    while t * 2 * 16 <= TOPK_SMEM_CEILING {
+        t *= 2;
+    }
+    t
+}
+
+/// Shared memory one `dsa_topk_pools` block needs for a tile of `t` pools.
+pub fn topk_smem_for_tile(t: usize) -> usize {
+    t * 2 * 8
 }
 
 /// Pools kept over a contiguous, unpadded cache of `seq` tokens.
@@ -88,7 +106,7 @@ pub struct DsaSelectGeometry {
     pub select_k: usize,
     /// Emitted index-row width.
     pub out_width: usize,
-    /// Padded pool axis the bitonic sort runs over.
+    /// Tile width the top-k select walks the pool axis in (clamped down below one tile).
     pub topk_np2: usize,
     /// Shared memory `dsa_topk_pools` needs, in bytes.
     pub topk_smem: usize,
@@ -123,21 +141,23 @@ impl DsaSelectGeometry {
         // from `seq >= index_kpool` on. `glm5next_dsa_ref::{kept_pools,
         // expand_selection}` already model this; only this launcher refused it,
         // which stopped the first forward at layer 3 (2026-08-28).
-        let topk_np2 = n_pools.next_power_of_two().max(2);
-        let topk_smem = topk_np2 * 8;
-        if topk_smem > TOPK_SMEM_CEILING {
-            // The sort runs over the PADDED axis, so the real cap is the largest
-            // power of two that fits — 4,096, not the 6,144 the raw byte budget
-            // suggests. Quoting the unrounded number in the error would send the
-            // reader looking for 24,576 tokens of context that never work.
-            let max_pools = max_pools_for_smem();
+        // 🟢 The pool axis no longer has to fit shared memory — `dsa_topk_pools` walks it
+        // in tiles. `topk_np2` is the TILE, clamped down when the context is shorter than
+        // one tile so a small context still costs a small sort.
+        let tile = topk_tile();
+        let topk_np2 = n_pools.next_power_of_two().max(2).min(tile);
+        let topk_smem = topk_smem_for_tile(topk_np2);
+        let select_k = cfg.select_k(n_pools);
+        if select_k > topk_np2 {
+            // The running best list IS one tile, so it cannot hold more than a tile's
+            // worth of winners. Unreachable at GLM-5.3's index_topk=2048 / kpool=4
+            // (select_k 512 vs a 2,048 tile) — a loud refusal, not a silent truncation,
+            // the day a config changes that.
             bail!(
-                "DSA select: {seq} tokens make {n_pools} pools, needing {topk_smem} B of \
-                 shared memory for the bitonic top-k against a {TOPK_SMEM_CEILING} B \
-                 ceiling. dsa_topk_pools caps at {max_pools} pools = {} tokens at \
-                 index_kpool={kp}. Lifting this needs a segmented/radix select, not a \
-                 bigger launch.",
-                max_pools * kp,
+                "DSA select: select_k {select_k} exceeds the {topk_np2}-pool top-k tile \
+                 ({TOPK_SMEM_CEILING} B shared-memory ceiling, index_topk={} \
+                 index_kpool={kp}). Raise the ceiling or lower index_topk.",
+                cfg.index_topk,
             );
         }
         Ok(Self {
@@ -145,7 +165,7 @@ impl DsaSelectGeometry {
             q_rows,
             n_pools_full: seq.div_ceil(kp),
             n_pools,
-            select_k: cfg.select_k(n_pools),
+            select_k,
             out_width: cfg.out_width(),
             topk_np2,
             topk_smem,
@@ -369,7 +389,15 @@ pub fn select_tokens(
     // noise in a capture-vs-capture diff and a live trap the day a kernel stops overriding
     // one. Hand the ceiling: constant for the life of the graph, and what the grid already is.
     let (seq_a, npools_a, np2_a, selk_a) = match ceiling {
-        Some(m) => (m * kp, m, m.next_power_of_two().max(2), cfg.select_k(m)),
+        // 🟢 The sort axis is the TILE now, so the ceiling launch's shared memory is the
+        // SAME constant the eager path uses at any context past one tile — a graph captured
+        // at the ceiling replays a step of any length without over-requesting.
+        Some(m) => (
+            m * kp,
+            m,
+            m.next_power_of_two().max(2).min(topk_tile()),
+            cfg.select_k(m),
+        ),
         None => (geom.seq, geom.n_pools, geom.topk_np2, geom.select_k),
     };
 
@@ -441,7 +469,7 @@ pub fn select_tokens(
         KernelLaunch::new(gpu, kernels.topk_pools)
             .grid([geom.q_rows as u32, 1, 1])
             .block([ROW_BLOCK, 1, 1])
-            .shared_mem(ceiling.map_or(geom.topk_smem, |m| m.next_power_of_two() * 8) as u32)
+            .shared_mem(topk_smem_for_tile(np2_a) as u32)
             .arg_ptr(scratch.scores)
             .arg_ptr(scratch.selected)
             .arg_u32(geom.q_rows as u32)

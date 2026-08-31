@@ -385,7 +385,11 @@ impl Glm5NextTextSkeleton {
             kda_recurrent: kda_layers * heads * hd * hd * 4,
             kda_conv: kda_layers * conv_dim * (cfg.linear_conv_kernel_dim - 1 + num_spec) * 2,
             dsa_kv_per_token: kv_layers * cfg.kv_lora_rank * 2,
-            dsa_indexer_per_token: kv_layers * cfg.index_head_dim * 2,
+            // 🔴 TWO buffers of `index_head_dim` BF16 (`k_normed` AND the compress `gate`)
+            // plus the 1 B validity flag — `Glm5NextDsaState::alloc`. Counting only
+            // `k_normed` halved this, which did not bite while the cache was pinned at a
+            // fixed 16,384 rows and does bite the moment it scales with --max-seq-len.
+            dsa_indexer_per_token: kv_layers * (cfg.index_head_dim * 2 * 2 + 1),
             mhc_highway_per_token: self.hc_mult * self.hidden_size * 4,
             moe_routing_per_token: cfg.num_experts * 4 + cfg.num_experts_per_tok * 8,
         }
@@ -443,7 +447,9 @@ pub struct StateBudget {
     /// DSA MLA KV per TOKEN across the 11 text layers — `kv_lora_rank` bf16, NoPE so there is
     /// no rope section. GROWS with sequence length.
     pub dsa_kv_per_token: usize,
-    /// Indexer key state per TOKEN across the 11 text layers. GROWS.
+    /// Indexer key + gate state per TOKEN across the 11 text layers. GROWS.
+    /// 🪤 REPLICATED, not sharded: the indexer is `DsaShard::Replicated` (`dsa/tp.rs`), so
+    /// [`Self::per_rank`] must not divide it.
     pub dsa_indexer_per_token: usize,
     /// mHC highway per TOKEN — `hc_mult x hidden` fp32 in Atlas (bf16 in HF; see the OPEN
     /// highway-dtype item). Activation-lifetime, not persistent across steps.
@@ -465,14 +471,17 @@ impl StateBudget {
     pub fn for_sequence(&self, tokens: usize) -> usize {
         self.fixed() + tokens * self.per_token()
     }
-    /// EP shards the KDA head dimension and the KV heads; the mHC highway and routing scratch
-    /// are replicated. Conservative: only the two attention families are divided.
+    /// EP shards the KDA head dimension and the KV heads; the DSA INDEXER cache, the mHC
+    /// highway and the routing scratch are replicated. Only what EP actually shards is
+    /// divided.
     pub fn per_rank(&self, ep: usize) -> StateBudget {
         StateBudget {
             kda_recurrent: self.kda_recurrent / ep,
             kda_conv: self.kda_conv / ep,
             dsa_kv_per_token: self.dsa_kv_per_token / ep,
-            dsa_indexer_per_token: self.dsa_indexer_per_token / ep,
+            // 🔴 NOT divided: the indexer's `wk`/gate projections are replicated on every
+            // rank (`DsaShard::Replicated`), so every rank holds the whole cache.
+            dsa_indexer_per_token: self.dsa_indexer_per_token,
             mhc_highway_per_token: self.mhc_highway_per_token,
             moe_routing_per_token: self.moe_routing_per_token,
         }

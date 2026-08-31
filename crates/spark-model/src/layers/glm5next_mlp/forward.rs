@@ -385,6 +385,37 @@ fn row_batch_disabled() -> bool {
     *F.get_or_init(|| std::env::var("ATLAS_NO_GLM_MOE_ROW_BATCH").as_deref() == Ok("1"))
 }
 
+/// Widest tier `w4a16_gemv_sw_moe_batchm` may be dispatched at, `ATLAS_GLM_MOE_ROW_BATCH_MAX`.
+///
+/// 🔬 An A/B lever, not a tuning knob: `=4` restores the pre-2026-08-31 cap exactly, so the
+/// width extension can be measured against itself in ONE image instead of one image per arm —
+/// the same lever that found A65's real defect. Clamped to the compiled tier family.
+pub(crate) fn row_batch_max() -> usize {
+    static M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *M.get_or_init(|| {
+        let m = std::env::var("ATLAS_GLM_MOE_ROW_BATCH_MAX")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(MOE_ROW_BATCH_MAX_ROWS)
+            .clamp(1, MOE_ROW_BATCH_MAX_ROWS);
+        if m != MOE_ROW_BATCH_MAX_ROWS {
+            tracing::warn!("GLM MoE row-batch width capped at {m} (default {MOE_ROW_BATCH_MAX_ROWS})");
+        }
+        m
+    })
+}
+
+/// Widest compiled `w4a16_gemv_sw_moe_batchm_mR` tier. Mirror of the
+/// `ATLAS_MOE_BATCHM_ENTRY` list in `kernels/gb10/common/w4a16_gemv.cu` and of the
+/// `[KernelHandle; 7]` in `Glm5NextMlpKernels`.
+pub const MOE_ROW_BATCH_MAX_ROWS: usize = 8;
+
+/// 🪤 `glm5next_moe_row_union` is ONE block of `rows * top_k` threads. A CUDA block is capped
+/// at 1024 threads, but this kernel's own scans are `O(T^2)`/`O(T^3)` over that extent and the
+/// tier family was sized around 64, so 64 is the contract. Threads past a block never run:
+/// exceeding it would SILENTLY drop union entries, so the dispatch refuses instead.
+pub const MOE_ROW_UNION_MAX_IDS: usize = 64;
+
 /// Say once PER ROW COUNT whether a verify shares its expert sweeps across its rows.
 ///
 /// 🪤 A plain `Once` here is a trap: the first MoE forward of a run is the prefill/K=1 step at
@@ -450,6 +481,11 @@ fn announce_dispatch(grouped: bool) {
 /// Measured on t69, K=3, six probes byte-identical either way: open512 20.25 -> 22.12 tok/s
 /// (+9.2%), a 125.4 -> 114.8 ms step. At K=2 (the serving default) 18.91 -> 19.75.
 ///
+/// 🔴 WIDENED (2026-08-31) from `rows <= 4` to `rows <= 8`. The 4 was the compiled tier family,
+/// not the union's limit — `8 * 8 == 64` fits its single block exactly. This is what makes the
+/// 8-row batched PREFILL sub-chunk (ANOMALIES A65) amortize its routed experts too; before it,
+/// prefill batched every stage EXCEPT the experts, which by then were most of the traffic left.
+///
 /// The SHARED expert is a different animal again: it is the same weights for every row, so it
 /// runs once over all of them regardless.
 #[allow(clippy::too_many_arguments)]
@@ -488,7 +524,10 @@ pub fn forward_moe(
     // 🪤 The route trace reads `ids` back per row, which the batched path never does — leave
     // it on the per-row arm rather than reconstructing the trace from the union table.
     let batched = rows >= 2
-        && rows <= 4
+        && rows <= row_batch_max()
+        // 🪤 The union table is one block of `rows * top_k` threads; past 64 ids it would
+        // silently drop entries. GLM-5.3 is 8 x 8 = 64 exactly, so this is a live edge.
+        && rows * cfg.top_k <= MOE_ROW_UNION_MAX_IDS
         && !host_dispatch_forced()
         && !row_batch_disabled()
         && !profile::trace_on()

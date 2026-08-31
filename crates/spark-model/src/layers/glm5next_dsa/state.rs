@@ -28,31 +28,32 @@ use anyhow::{Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::Glm5NextDsaConfig;
-use super::select::{DsaSelectGeometry, TOPK_SMEM_CEILING};
+use super::select::DsaSelectGeometry;
 use crate::layer::LayerState;
 
 /// Longest context DSA can select over, in tokens.
 ///
-/// 🔴 Set by `dsa_topk_pools`, which bitonic-sorts the padded pool axis in shared memory:
-/// 49,152 B / 8 B rounds **down to the power of two** 4,096 pools, times `index_kpool`.
-/// With the paged gather decode this is now the ONLY DSA context ceiling left — the
-/// 12,288-key masked-attention limit belonged to the oracle path, which is not the serve
-/// path. Still far below GLM's advertised 262,144; lifting it needs a segmented/radix
-/// select, deliberately out of scope.
+/// 🟢 This used to be a KERNEL limit — `dsa_topk_pools` bitonic-sorted the whole padded pool
+/// axis in shared memory, capping the serve at 4,096 pools = **16,384 tokens** whatever
+/// `--max-seq-len` claimed (ANOMALIES A62). The select is tiled now, so the kernel imposes
+/// nothing and this is purely an ALLOCATION decision: how many rows of indexer cache each
+/// sequence reserves, which is `--max-seq-len` rounded down to a whole pool.
+///
+/// 🪤 It is charged per sequence per DSA layer at `2 · index_head_dim` BF16 + 1 B a token —
+/// 5,643 B/token across GLM-5.3's 11 text DSA layers, and the indexer is REPLICATED, so EP
+/// does not halve it. `Glm5NextSkeleton::state_budget` must carry the same number or the
+/// serve allocates past its own `--gpu-memory-utilization` (the A59 class of cliff).
 pub fn max_dsa_context(cfg: &Glm5NextDsaConfig) -> usize {
-    let max_pools = {
-        let slots = TOPK_SMEM_CEILING / 8;
-        (slots + 1).next_power_of_two() / 2
-    };
-    max_pools * cfg.index_kpool
+    // Whole pools only: a trailing partial pool is not a pool (`contiguous_pool_count`).
+    (cfg.max_context / cfg.index_kpool) * cfg.index_kpool
 }
 
 /// One sequence's indexer cache for one DSA layer.
 ///
-/// Allocated once at sequence creation and never grown: the ceiling above is a hard cap,
-/// so a fixed reservation is both correct and small — at `index_head_dim = 128` and
-/// `index_kpool = 4` that is 8 MiB per layer per sequence, ~92 MiB across the 11 text DSA
-/// layers.
+/// Allocated once at sequence creation and never grown: [`max_dsa_context`] is a hard cap,
+/// so a fixed reservation is correct. At `index_head_dim = 128` that is `513 B` a token a
+/// layer — 8 MiB per layer (~92 MiB over the 11 text DSA layers) at a 16,384-token context,
+/// and 64 MiB per layer (~736 MiB) at 131,072.
 pub struct Glm5NextDsaState {
     /// `[capacity, index_head_dim]` BF16 — LayerNorm'd indexer keys.
     /// 🪤 `indexer.k_norm` is an `nn.LayerNorm` **with a bias**, not an RMSNorm. The bias
@@ -101,22 +102,48 @@ impl Glm5NextDsaState {
         pos * self.index_head_dim * 2
     }
 
-    /// Advance after writing `n` rows at `[len, len + n)`.
+    /// Would `n` more rows fit? Ask BEFORE writing them, not after.
     ///
-    /// Refuses rather than wrapping or truncating: past the cap the selector cannot sort
-    /// the pool axis at all, so a silently clamped length would select over a prefix while
-    /// the MLA cache held the full context — a wrong answer, not a crash.
-    pub fn advance(&mut self, n: usize) -> Result<()> {
-        let want = self.len + n;
-        if want > self.capacity {
+    /// 🔴 `advance` is too late on its own. `indexer_forward` GEMMs `k_normed` and `gate`
+    /// straight into row `len()` and only then advances, so at `len == capacity` the write
+    /// lands on row `capacity` — 256 B past `k_normed`/`gate` and 1 B past `valid`. CUDA
+    /// reports that asynchronously as `CUDA_ERROR_ILLEGAL_ADDRESS (700)` at the next
+    /// synchronize, and a 700 is **sticky**: every later CUDA call in the context fails, so
+    /// one over-length prompt takes the serve down for every subsequent request while
+    /// `/v1/models`, `/health` and `/health/live` all keep answering 200. Checking first
+    /// turns that into a plain per-request error. ANOMALIES **A62** (the overrun) and
+    /// **A60** (the non-recovering serve it explains).
+    pub fn ensure_room(&self, n: usize) -> Result<()> {
+        self.ensure_room_through(self.len + n)
+    }
+
+    /// The same refusal for an ABSOLUTE end position.
+    ///
+    /// 🔴 The graph-replay path knows where the sequence will END (`seq_len + k`) but not
+    /// where this counter currently sits: a rejected draft leaves it AHEAD, and `sync_to`
+    /// rewinds it only after the replay has already written. Asking in absolute terms is
+    /// what makes the check answerable before `launch_graph`. A62.
+    pub fn ensure_room_through(&self, end: usize) -> Result<()> {
+        if end > self.capacity {
             bail!(
-                "DSA indexer cache: {want} tokens exceeds the {} the top-k select can \
-                 sort. DSA cannot serve past this context; a segmented/radix select is \
-                 the fix, not a bigger buffer.",
+                "DSA indexer cache: {end} tokens exceeds the {} rows reserved for this \
+                 sequence. The indexer cache is sized from --max-seq-len at sequence \
+                 creation and never grows; raise --max-seq-len (and re-check the memory \
+                 budget) to serve a longer context.",
                 self.capacity
             );
         }
-        self.len = want;
+        Ok(())
+    }
+
+    /// Advance after writing `n` rows at `[len, len + n)`.
+    ///
+    /// Refuses rather than wrapping or truncating: past the reservation there is no row to
+    /// write, and a silently clamped length would select over a prefix while the MLA cache
+    /// held the full context — a wrong answer, not a crash.
+    pub fn advance(&mut self, n: usize) -> Result<()> {
+        self.ensure_room(n)?;
+        self.len += n;
         Ok(())
     }
 

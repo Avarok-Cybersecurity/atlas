@@ -363,7 +363,16 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         // Cost is a few MB for the whole model: the FP32 buffers are already sized to
         // `t_pad = ceil(t / chunk) * chunk = 32` at t = 1, so only the BF16 `[t, *]` scratch
         // grows.
-        let verify_k = crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize;
+        // 🔴 The workspaces must also hold a batched PREFILL sub-chunk, which is wider than any
+        // verify (ANOMALIES A65 — `Glm5NextLayer::prefill` hands `forward_k` `PREFILL_ROWS`
+        // rows). Sizing to the verify width alone made `forward_k` bail the moment prefill
+        // used it. Cost is per-layer scratch that scales with rows, not with context.
+        // 🪤 `prefill_rows()` too, not just the constant: `ATLAS_GLM_PREFILL_ROWS` can widen the
+        // sub-chunk at launch, and a workspace built for the default would make `forward_k` bail
+        // the first time the A/B lever was actually used.
+        let verify_k = (crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize)
+            .max(crate::layers::glm5next_layer::PREFILL_ROWS)
+            .max(crate::layers::glm5next_layer::prefill_rows());
         let kda_ws = std::sync::Arc::new(crate::layers::glm5next_kda::Glm5NextKdaWorkspace::new(
             gpu, &kda_cfg, verify_k,
         )?);

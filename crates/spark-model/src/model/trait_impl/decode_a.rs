@@ -350,6 +350,14 @@ impl TransformerModel {
             && let Some(graph) = cache.get(&seq.slot_idx)
             && graph.0 != 0
         {
+            // 🔴 BEFORE the replay, not after. The graph writes GLM-5.3's DSA indexer row
+            // from a device position with no host code in the loop, so past the DSA ceiling
+            // it writes one row off the end of the buffer and the `sync_replayed_step`
+            // reconcile below refuses one write too late — by then a sticky CUDA 700 has
+            // taken the whole serve down, not just this request. ANOMALIES A62.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.check_replay_room(&*seq.layer_states[i], seq.seq_len, 1)?;
+            }
             self.gpu.launch_graph(*graph, stream)?;
             // 🔴 A replay runs kernels and nothing else. Any layer that keeps per-sequence
             // bookkeeping on the HOST (GLM-5.3's DSA indexer cache length) must be advanced

@@ -128,15 +128,29 @@ pub struct Glm5NextMlpKernels {
     /// 🪤 Grid is `(ceil(N/8), top_k, 1)`. `try_kernel` — a target without it falls back to
     /// the host-dispatch loop.
     pub w4a16_gemv_sw_moe: KernelHandle,
-    /// Row-batched sibling of `w4a16_gemv_sw_moe`, indexed `[rows - 2]` for rows 2..=4: the
-    /// UNION of the selected experts over a verify's rows, each swept ONCE. An expert two
+    /// Row-batched sibling of `w4a16_gemv_sw_moe`, indexed `[rows - 2]` for rows **2..=8**: the
+    /// UNION of the selected experts over a call's rows, each swept ONCE. An expert two
     /// rows both picked costs one weight read here and two in the per-row path — 14% of the
     /// routed traffic at K=2, 22% at K=3 (measured union 8.00/13.74/18.76/23.35 at K=1..4).
     ///
+    /// 🔴 Widened from 2..=4 to 2..=8 on 2026-08-31. The old stop at 4 was **the compiled tier
+    /// family, not a limit of the union**: [`Self::moe_row_union`] resolves `rows * top_k` ids
+    /// in ONE 64-thread block, and GLM-5.3 is `8 * 8 == 64` exactly. It matters because the
+    /// batched prefill sub-chunk is 8 rows wide (ANOMALIES A65) and the routed experts were
+    /// the only stage of it still paying per row.
+    ///
     /// 🪤 grid.y is the UNION entry, not the slot, and its extent is `rows * top_k`; the
     /// entries the routing did not fill retire on `u_eid < 0`. Needs [`Self::moe_row_union`].
-    pub w4a16_gemv_sw_moe_batchm: [KernelHandle; 3],
+    ///
+    /// 🪤 Register cost rises with the tier — measured `ptxas -v`, sm_121a, no spills at any
+    /// width: 43/40/48/70/72/80/80 registers at R = 2..8. R = 8 at 80 regs / 256 threads is
+    /// 3 CTAs/SM against R = 4's 5, so a WIDER tier is not free; it wins only when the union
+    /// actually shrinks the expert sweeps.
+    pub w4a16_gemv_sw_moe_batchm: [KernelHandle; 7],
     /// Builds the union table the batched kernel indexes. One block, `rows * top_k` threads.
+    ///
+    /// 🪤 `rows * top_k` MUST be <= 64: it is a single block and threads past it never run, so
+    /// an over-wide call silently drops union entries. The caller gates on it.
     pub moe_row_union: KernelHandle,
     /// 🪤 **Clamped** SwiGLU, asymmetric. Not `moe_silu_mul`.
     pub swiglu: KernelHandle,
@@ -168,6 +182,10 @@ impl Glm5NextMlpKernels {
                 crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m2"),
                 crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m3"),
                 crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m4"),
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m5"),
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m6"),
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m7"),
+                crate::layers::try_kernel(gpu, W4A16_GEMV_MODULE, "w4a16_gemv_sw_moe_batchm_m8"),
             ],
             moe_row_union: crate::layers::try_kernel(
                 gpu,
