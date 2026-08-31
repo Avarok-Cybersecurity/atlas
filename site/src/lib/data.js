@@ -130,7 +130,7 @@ export const nav = {
     { text: 'News', href: '/#news' },
     { text: 'Hardware', href: '/#hardware' },
     { text: 'Models', href: '/#models' },
-    { text: 'Start', href: '/#run' },
+    { text: 'Start', href: '/#run', label: 'Start running Atlas' },
     // `.html`, not `/control`. adapter-static writes this route to
     // control.html, and the deploy target serves files literally: no extension
     // guessing, and no directory index outside the document root. /control is
@@ -157,6 +157,8 @@ export const hero = {
   },
   primaryCta: 'Star on GitHub',
   secondaryCta: 'Start',
+  // See nav.links: bare "Start" is non-descriptive link text to Lighthouse.
+  secondaryCtaLabel: 'Start running Atlas',
   discordCta: 'Join the Discord'
 };
 

@@ -63,7 +63,7 @@
     </a>
     <div class="nav-links">
       {#each nav.links as l}
-        <a href={l.href}>{l.text}</a>
+        <a href={l.href} aria-label={l.label}>{l.text}</a>
       {/each}
       <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener"><DiscordIcon size={18} /></a>
       <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener"><XIcon size={16} /></a>
@@ -103,7 +103,7 @@
 
   <div id="nav-drawer" class="nav-drawer" class:is-open={open}>
     {#each nav.links as l}
-      <a class="nav-drawer-link" href={l.href} tabindex={open ? 0 : -1} onclick={() => (open = false)}>{l.text}</a>
+      <a class="nav-drawer-link" href={l.href} aria-label={l.label} tabindex={open ? 0 : -1} onclick={() => (open = false)}>{l.text}</a>
     {/each}
     <div class="nav-drawer-foot">
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener" tabindex={open ? 0 : -1}>

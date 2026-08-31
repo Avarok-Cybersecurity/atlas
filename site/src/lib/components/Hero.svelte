@@ -72,7 +72,7 @@
       <div class="hero-buttons">
         <a class="btn btn-primary" href={githubUrl} target="_blank" rel="noopener">{hero.primaryCta}</a>
         <a class="btn btn-discord" href={discordUrl} target="_blank" rel="noopener"><DiscordIcon size={17} /> {hero.discordCta}</a>
-        <a class="btn btn-ghost" href="#run">{hero.secondaryCta}</a>
+        <a class="btn btn-ghost" href="#run" aria-label={hero.secondaryCtaLabel}>{hero.secondaryCta}</a>
       </div>
 
       <p class="hero-challenge">
