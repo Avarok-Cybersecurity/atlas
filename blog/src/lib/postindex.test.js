@@ -115,11 +115,20 @@ test('every shipped post satisfies the schema', async () => {
   // Not a duplicate of the unit tests above: those use fixtures, this asserts
   // the actual posts directory is well-formed, which is what breaks the build.
   const { Glob } = await import('bun');
-  const files = [...new Glob('src/lib/posts/*.svelte').scanSync('.')];
+  // Both formats land in the same index, so both are "shipped posts". The
+  // module-script rule is Svelte-only — a markdown post carries frontmatter
+  // instead, which postmd.js validates — so it is applied per file rather
+  // than to the whole directory. Asserting only on *.svelte would make this
+  // test vacuous the moment the last Svelte post goes.
+  const files = [...new Glob('src/lib/posts/*.{svelte,md}').scanSync('.')];
   expect(files.length).toBeGreaterThan(0);
   for (const f of files) {
     const src = await Bun.file(f).text();
-    expect(src, `${f} must export meta from a module script`).toMatch(/<script module>[\s\S]*export const meta\s*=/);
+    if (f.endsWith('.svelte')) {
+      expect(src, `${f} must export meta from a module script`).toMatch(/<script module>[\s\S]*export const meta\s*=/);
+    } else {
+      expect(src, `${f} must open with a frontmatter block`).toMatch(/^---\r?\n/);
+    }
   }
 });
 
@@ -143,7 +152,7 @@ test('cleanSlug strips the extension adapter-static writes, and nothing else', a
 test('every shipped post resolves from both the clean and the .html URL', async () => {
   const { cleanSlug } = await import('./content.js');
   const { Glob } = await import('bun');
-  const slugs = [...new Glob('src/lib/posts/*.svelte').scanSync('.')].map((f) =>
+  const slugs = [...new Glob('src/lib/posts/*.{svelte,md}').scanSync('.')].map((f) =>
     f.slice(f.lastIndexOf('/') + 1, -'.svelte'.length)
   );
   expect(slugs.length).toBeGreaterThan(0);
