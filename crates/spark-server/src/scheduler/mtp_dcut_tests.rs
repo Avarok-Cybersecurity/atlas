@@ -76,19 +76,21 @@ fn chunk_ranges_reproduce_the_uniform_caps() {
 #[test]
 fn chunk_ranges_seq_cap_derives_from_the_row_budget() {
     // Depth above n=8 (env-ladder / ragged-D-Cut shapes) is no longer
-    // serialized into 8-wide chunks: the row budget is the only bound.
-    // rows=3: 96/3 = 32 seqs — 16:2, 24:2 AND 32:2 are each ONE chunk.
+    // serialized into 8-wide chunks: the row budget is the only bound. The
+    // split points are derived from VERIFY_ROW_BUDGET (160) so this test
+    // states the boundary arithmetic, not a frozen budget value.
+    // rows=3: 160/3 = 53 seqs — everything up to 53 is ONE chunk.
     assert_eq!(chunk_ranges(&[3; 21]), vec![(0, 21)]);
-    assert_eq!(chunk_ranges(&[3; 24]), vec![(0, 24)]);
-    assert_eq!(chunk_ranges(&[3; 32]), vec![(0, 32)]);
-    assert_eq!(chunk_ranges(&[3; 33]), vec![(0, 32), (32, 33)]);
-    // rows=4: 96/4 = 24 seqs.
+    assert_eq!(chunk_ranges(&[3; 33]), vec![(0, 33)]);
+    assert_eq!(chunk_ranges(&[3; 53]), vec![(0, 53)]);
+    assert_eq!(chunk_ranges(&[3; 54]), vec![(0, 53), (53, 54)]);
+    // rows=4: 160/4 = 40 seqs.
     assert_eq!(chunk_ranges(&[4; 9]), vec![(0, 9)]);
-    assert_eq!(chunk_ranges(&[4; 24]), vec![(0, 24)]);
-    assert_eq!(chunk_ranges(&[4; 25]), vec![(0, 24), (24, 25)]);
-    // rows=2: 96/2 = 48 seqs.
-    assert_eq!(chunk_ranges(&[2; 48]), vec![(0, 48)]);
-    assert_eq!(chunk_ranges(&[2; 49]), vec![(0, 48), (48, 49)]);
+    assert_eq!(chunk_ranges(&[4; 40]), vec![(0, 40)]);
+    assert_eq!(chunk_ranges(&[4; 41]), vec![(0, 40), (40, 41)]);
+    // rows=2: 160/2 = 80 seqs.
+    assert_eq!(chunk_ranges(&[2; 80]), vec![(0, 80)]);
+    assert_eq!(chunk_ranges(&[2; 81]), vec![(0, 80), (80, 81)]);
     // rows=3 with 10 seqs (the old (0,8),(8,10) split): one chunk now.
     assert_eq!(chunk_ranges(&[3; 10]), vec![(0, 10)]);
 }

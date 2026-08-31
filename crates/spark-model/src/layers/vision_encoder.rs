@@ -18,6 +18,30 @@ pub const IMAGE_PAD_TOKEN_ID: u32 = IMAGE_PAD_TOKEN;
 /// declares its own always wins, exactly as for the image token.
 pub const VIDEO_PAD_TOKEN_ID: u32 = IMAGE_PAD_TOKEN + 1;
 
+/// The ViT's per-image scratch buffers, allocated as one group.
+///
+/// Sizes derive only from the encoder's geometry (`p_max` and the head/hidden
+/// dims), so nothing here depends on the image itself — which is why it can be
+/// built once, lazily, and reused for every image after.
+pub struct VisionScratch {
+    pub buf_f32: DevicePtr,
+    pub buf_h1: DevicePtr,
+    pub buf_h2: DevicePtr,
+    pub buf_wide: DevicePtr,
+    pub buf_merge_in: DevicePtr,
+    pub buf_merge_fc1: DevicePtr,
+    pub buf_out: DevicePtr,
+    pub buf_pos_resampled: DevicePtr,
+    pub buf_rope_cos: DevicePtr,
+    pub buf_rope_sin: DevicePtr,
+    pub buf_qr: DevicePtr,
+    pub buf_kr: DevicePtr,
+    pub buf_vt: DevicePtr,
+    pub buf_scores: DevicePtr,
+    pub buf_probs: DevicePtr,
+    pub buf_o_stage: DevicePtr,
+}
+
 /// Flattened per-patch pixel dimension `C × temporal_patch_size × patch_size²`
 /// = 3 × 2 × 16 × 16 for this ViT. It is baked into the encoder, not read from
 /// config: `buf_f32` is allocated at `p_max × PATCH_DIM × 4` and the
@@ -87,24 +111,16 @@ pub struct VisionEncoder {
     pub p_max: usize,              // 6400 (80×80 patches for 1280×1280 image)
     // num_grid_per_side = sqrt(num_position_embeddings) = 48 for Qwen3-VL/3.6.
     pub num_grid_per_side: usize,
-    // pre-allocated scratch buffers
-    pub buf_f32: DevicePtr,           // [p_max × 1536] f32  — pixel upload
-    pub buf_h1: DevicePtr,            // [p_max × 1152] bf16 — active hidden
-    pub buf_h2: DevicePtr,            // [p_max × 1152] bf16 — residual
-    pub buf_wide: DevicePtr,          // [p_max × 4304] bf16 — QKV/MLP scratch
-    pub buf_merge_in: DevicePtr,      // [p_max/4 × 4608] bf16
-    pub buf_merge_fc1: DevicePtr,     // [p_max/4 × 4608] bf16
-    pub buf_out: DevicePtr,           // [p_max × 2048] bf16 — final output
-    pub buf_pos_resampled: DevicePtr, // [p_max × 1152] bf16 — per-image interp pos_embed
-    pub buf_rope_cos: DevicePtr,      // [p_max × head_dim] bf16 — per-image rotary cos
-    pub buf_rope_sin: DevicePtr,      // [p_max × head_dim] bf16 — per-image rotary sin
-    // GEMM-based ViT SDPA scratch (reused across the per-head loop within one image).
-    pub buf_qr: DevicePtr, // [H × p_max × head_dim] bf16 — rotated Q, head-contiguous
-    pub buf_kr: DevicePtr, // [H × p_max × head_dim] bf16 — rotated K, head-contiguous
-    pub buf_vt: DevicePtr, // [H × head_dim × p_max] bf16 — transposed V, head-contiguous
-    pub buf_scores: DevicePtr, // [attn_max × attn_max] f32  — per-head raw QKᵀ
-    pub buf_probs: DevicePtr, // [attn_max × attn_max] bf16 — per-head softmax probs
-    pub buf_o_stage: DevicePtr, // [p_max × head_dim] bf16 — per-head GEMM2 output staging
+    /// ViT scratch, allocated on the FIRST IMAGE rather than at load.
+    ///
+    /// ~2.2 GB at the 16384-patch rung on Qwen3.8-27B — the fourth-largest
+    /// consumer in the process — and a text-only serve never touches a byte of
+    /// it. Deferring hands that back to the KV budget on every text workload
+    /// while costing an image request one allocation it used to pay at boot.
+    ///
+    /// `OnceLock` rather than a flag: the encoder's forward path takes `&self`,
+    /// and the buffers must be filled exactly once even if two images race.
+    scratch: std::sync::OnceLock<VisionScratch>,
     // host-side prep state
     pos_embed_host_f32: Vec<f32>, // [num_position_embeddings × hidden_size] row-major
     rope_inv_freq: Vec<f32>,      // [head_dim / 4] frequencies

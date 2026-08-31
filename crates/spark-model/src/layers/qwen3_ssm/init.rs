@@ -4,23 +4,6 @@
 
 use super::*;
 
-/// Resolve one `hyper_connection` entry point, but ONLY for a model that
-/// carries the highway. Skipping the lookup rather than discarding its result
-/// is the point: an un-issued lookup leaves no failed row in the fail-closed
-/// startup audit, so what remains there is what someone has to act on.
-#[track_caller]
-fn hc_kernel(
-    config: &atlas_core::config::ModelConfig,
-    gpu: &dyn GpuBackend,
-    func: &str,
-) -> KernelHandle {
-    if config.hc_mult > 0 {
-        crate::layers::try_kernel(gpu, "hyper_connection", func)
-    } else {
-        KernelHandle(0)
-    }
-}
-
 impl Qwen3SsmLayer {
     pub fn new(
         input_norm: DenseWeight,
@@ -54,6 +37,7 @@ impl Qwen3SsmLayer {
             ssm,
             post_attn_norm,
             ffn,
+            lora_out_proj: None,
             qkvz_nvfp4,
             qkvz_nvfp4_t: None,
             out_proj_nvfp4_t: None,
@@ -445,15 +429,8 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
-            // Chain-verify K=5..8 WY kernels (one templated gb10-common
-            // module). Index = K-5; NULL on targets lacking the module, in
-            // which case those widths keep the sequential per-token path.
-            gdn_wyn_k: [
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5"),
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6"),
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
-            ],
+            gdn_wyn_k: init_kernels::wyn_kernels(gpu),
+            gdn_wyn_f16_k: init_kernels::wyn_f16_kernels(gpu),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,
@@ -495,6 +472,10 @@ impl Qwen3SsmLayer {
 
     // `new_sequential` moved to `init_sequential.rs` (≤500 LoC split).
 }
+
+#[path = "init_kernels.rs"]
+mod init_kernels;
+use init_kernels::hc_kernel;
 
 #[path = "init_sequential.rs"]
 mod init_sequential;

@@ -12,6 +12,23 @@ use spark_runtime::gpu::DevicePtr;
 use super::BlockDiffusionDraftHead;
 use crate::layer::ForwardContext;
 
+/// Whether the MAX_M=16 rt2 vocab kernel covers a whole cross-sequence batch.
+///
+/// `g` is the TOTAL row count (`gamma * n_seq`), not the per-sequence one.
+/// Getting that wrong does not fault: `fp8_gemv_rowscale_batch16_rt2` writes
+/// the rows it was told about and leaves the rest of `scratch.logits` holding
+/// the PREVIOUS propose's values — already destructively masked to -1e30 by
+/// `dflash2_topk16`. Bands 1..n then select from garbage, which reads as a
+/// drafter that has stopped guessing well rather than as a kernel used out of
+/// contract. The sibling branch below this one records the same failure
+/// measured on the projections: accept 73% -> 24% at C=8.
+///
+/// Single-sequence is unaffected either way (`g == gamma` at n_seq = 1), which
+/// is why this survived: every single-stream measurement of it was correct.
+pub(super) fn rt2_16_covers_the_batch(g: u32) -> bool {
+    (1..=16).contains(&g)
+}
+
 impl BlockDiffusionDraftHead {
     /// `option_b`: when `Some((block_table_dev, ctx_count))`, run the
     /// Phase 2 γ-only paged-attention path. ctx K/V is precomputed into
@@ -27,10 +44,20 @@ impl BlockDiffusionDraftHead {
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
         option_b: Option<(DevicePtr, u32)>,
+        // `Some` => cross-sequence batch. `last_token` / `position` /
+        // `option_b` then describe sequence 0 only and the batch supplies the
+        // rest; `None` is the single-sequence path, unchanged.
+        batch: Option<&super::DflashBatch<'_>>,
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
-        let g = self.gamma as u32;
+        let n_seq = batch.map_or(1usize, |b| b.last_tokens.len().max(1));
+        // Rows per SEQUENCE vs TOTAL rows in this forward. Weight-bearing ops
+        // take the total; per-sequence things (attention, KV slot writes, the
+        // selector's chain seed) index by band.
+        let block_g = self.gamma as u32;
+        let g = block_g * n_seq as u32;
+        let rows_total = self.gamma * n_seq;
         let h = self.hidden_size as u32;
         let q_dim = (self.num_q_heads * self.head_dim) as u32;
         let kv_dim = (self.num_kv_heads * self.head_dim) as u32;
@@ -74,7 +101,12 @@ impl BlockDiffusionDraftHead {
         let option_b_on = option_b_block_table.is_some();
         let eff_ctx = if option_b_on { 0 } else { eff_ctx };
         let _ = ctx_base_ptr; // Option B doesn't read ctx from this path
-        let n_attn = (eff_ctx + self.gamma) as u32;
+        // Rows this forward actually touches: the ctx window (legacy path)
+        // plus gamma rows PER SEQUENCE. This is the row count the embed and
+        // every row-bounded op take, so leaving it at one band's worth means
+        // only band 0 gets embedded and every other sequence drafts from
+        // whatever the previous propose left in stream_buf.
+        let n_attn = (eff_ctx + self.gamma * n_seq) as u32;
         let target_hidden_dim = self.target_layer_ids.len() * self.target_hidden_size;
         let ctx_slot_bytes = target_hidden_dim * bf16;
 
@@ -286,7 +318,11 @@ impl BlockDiffusionDraftHead {
         let ctx_start = position.saturating_sub(eff_ctx);
         let pos_host: Vec<i32> = (0..eff_ctx)
             .map(|i| (ctx_start + i) as i32)
-            .chain((0..self.gamma).map(|i| (position + i) as i32))
+            .chain((0..n_seq).flat_map(|b| {
+                // Each sequence ropes from ITS OWN absolute position.
+                let base = batch.map_or(position, |x| x.positions[b]);
+                (0..self.gamma).map(move |i| (base + i) as i32)
+            }))
             .collect();
         let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&pos_bytes, self.scratch.position_ids)?;
@@ -317,11 +353,14 @@ impl BlockDiffusionDraftHead {
             )?;
         }
         let token_ids_host: Vec<i32> = std::iter::repeat_n(0i32, eff_ctx)
-            .chain(std::iter::once(last_token as i32))
-            .chain(std::iter::repeat_n(
-                self.mask_token_id as i32,
-                self.gamma - 1,
-            ))
+            .chain((0..n_seq).flat_map(|b| {
+                // Band b: that sequence's own anchor, then gamma-1 masks.
+                let anchor = batch.map_or(last_token, |x| x.last_tokens[b]);
+                std::iter::once(anchor as i32).chain(std::iter::repeat_n(
+                    self.mask_token_id as i32,
+                    self.gamma - 1,
+                ))
+            }))
             .collect();
         if debug_dump {
             tracing::info!(
@@ -395,33 +434,45 @@ impl BlockDiffusionDraftHead {
         // once and reused across all drafter layers.
         let slot_mapping_gamma_opt = if option_b_on {
             let bt = option_b_block_table.unwrap();
-            // Build γ slot indices starting at logical position ctx_count.
-            ops::fill_slots_from_block_table(
-                gpu,
-                self.kernels.fill_slots,
-                self.scratch.slot_mapping_dev,
-                bt,
-                option_b_ctx_count,
-                self.gamma as u32,
-                16,
-                stream,
-            )?;
+            // Build γ slot indices per sequence, each starting at ITS OWN
+            // ctx_count and addressed through ITS OWN block table, packed
+            // seq-major so the layer body's single reshape_and_cache over
+            // `n*γ` rows writes every sequence's K/V to the right pages.
+            for b in 0..n_seq {
+                let (bt_b, cc_b) = match batch {
+                    Some(x) => (x.block_tables[b], x.ctx_counts[b]),
+                    None => (bt, option_b_ctx_count),
+                };
+                ops::fill_slots_from_block_table(
+                    gpu,
+                    self.kernels.fill_slots,
+                    self.scratch.slot_mapping_dev.offset(b * self.gamma * 8),
+                    bt_b,
+                    cc_b,
+                    self.gamma as u32,
+                    16,
+                    stream,
+                )?;
+            }
             // Phase 5 (CUDA graph) pre-graph write: stash the per-propose
             // dynamic `[kv_len, q_offset, q_rope_pos]` triple into the
             // indirect-args buffer (12 bytes). The graph-captured paged-
             // attention launch reads from this pointer at kernel entry.
             // q_offset = ctx_count (cache-block addressing).
             // q_rope_pos = position (true decode position for query RoPE).
-            let kv_len = option_b_ctx_count + self.gamma as u32;
-            let q_offset = option_b_ctx_count;
-            let q_rope_pos = position as u32;
-            let indirect_bytes: [u8; 12] = {
-                let mut b = [0u8; 12];
-                b[0..4].copy_from_slice(&kv_len.to_ne_bytes());
-                b[4..8].copy_from_slice(&q_offset.to_ne_bytes());
-                b[8..12].copy_from_slice(&q_rope_pos.to_ne_bytes());
-                b
-            };
+            // One triple per sequence — attention launches per band and reads
+            // the triple at its own slot (`+ b*12`).
+            let mut indirect_bytes: Vec<u8> = Vec::with_capacity(n_seq * 12);
+            for b in 0..n_seq {
+                let cc_b = match batch {
+                    Some(x) => x.ctx_counts[b],
+                    None => option_b_ctx_count,
+                };
+                let pos_b = batch.map_or(position, |x| x.positions[b]) as u32;
+                indirect_bytes.extend_from_slice(&(cc_b + block_g).to_ne_bytes());
+                indirect_bytes.extend_from_slice(&cc_b.to_ne_bytes());
+                indirect_bytes.extend_from_slice(&pos_b.to_ne_bytes());
+            }
             gpu.copy_h2d(&indirect_bytes, self.scratch.option_b_indirect_args_dev)?;
             Some(self.scratch.slot_mapping_dev)
         } else {
@@ -443,6 +494,12 @@ impl BlockDiffusionDraftHead {
         // ramp, and L2 warming all happen eagerly before capture freezes
         // a steady-state SASS pick.
         let graph_eligible = option_b_on
+            // A captured graph bakes in the row count, the per-band pointers
+            // and the attention launch count. Replaying an n=1 capture for a
+            // batch runs one sequence's shapes over n sequences' rows, which
+            // shows up as a silent accept collapse rather than an error. The
+            // batched path is a different shape per width, so it stays eager.
+            && n_seq == 1
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -521,6 +578,10 @@ impl BlockDiffusionDraftHead {
                     block_table_dev: bt,
                     stream,
                     block_dump: block_dump_armed,
+                    // Single-sequence propose. The batched entry builds its
+                    // own args with n_seq > 1 and per-sequence tables.
+                    n_seq: n_seq as u32,
+                    seq_block_tables: batch.map(|x| x.block_tables.clone()).unwrap_or_default(),
                 })
             };
 
@@ -554,7 +615,7 @@ impl BlockDiffusionDraftHead {
                 stream_noise_local,
                 &self.norm,
                 norm_noise_local,
-                self.gamma as u32,
+                g,
                 h_local,
                 self.rms_norm_eps,
                 stream,
@@ -577,7 +638,7 @@ impl BlockDiffusionDraftHead {
                     // numerics are correctness-free under strict-argmax
                     // accept. ATLAS_NO_DFLASH_FP8_RT=1 restores the tile.
                     if self.kernels.fp8_gemv_rt2.0 != 0
-                        && self.gamma as u32 <= 8
+                        && g <= 8
                         && h_local.is_multiple_of(16)
                         && super::fp8_rt_enabled()
                     {
@@ -587,19 +648,64 @@ impl BlockDiffusionDraftHead {
                             norm_noise_local,
                             fp8,
                             self.scratch.logits,
-                            self.gamma as u32,
+                            g,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    } else if self.kernels.fp8_gemv_rt2_16.0 != 0
+                        && rt2_16_covers_the_batch(g)
+                        && h_local.is_multiple_of(16)
+                        && super::fp8_rt_enabled()
+                    {
+                        // γ>8 propose window: MAX_M=16 rt2 sibling over the
+                        // vocab. 2026-08-29 STEP_TIMING measured the whole
+                        // γ>8 step tax in this propose tail (18.2 -> 38.0ms
+                        // at flag 9); the m16 tile below pads 50%+ of its
+                        // rows and traced 12.2ms/step at ~104 GB/s.
+                        ops::fp8_gemv_rowscale_batch16_rt2(
+                            gpu,
+                            self.kernels.fp8_gemv_rt2_16,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            g,
                             self.vocab_size as u32,
                             h_local,
                             stream,
                         )?;
                     } else {
-                        ops::fp8_gemm_n128_row_scaled_m16(
+                        // `fp8_gemm_t_row_scaled_m16` is a single-warp
+                        // M_TILE=16 kernel: valid only to M=16. One sequence
+                        // (gamma rows) always fits, which is why the
+                        // single-sequence path can call it unconditionally —
+                        // but a cross-sequence batch does NOT: at n=4 this is
+                        // 32 rows and at n=8 it is 64, and past the tile the
+                        // kernel silently returns garbage for the rows it
+                        // never covered. That reads as a drafter that has
+                        // stopped guessing well (accept 73% -> 24% at C=8),
+                        // not as a kernel used out of contract. Above the
+                        // tile, take the general row-scaled GEMM.
+                        let (k_lm, h_lm) = if g <= 16 {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled_m16,
+                                ops::fp8_gemm_n128_row_scaled_m16
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        } else {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled,
+                                ops::fp8_gemm_n128_row_scaled
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        };
+                        h_lm(
                             gpu,
-                            self.kernels.fp8_gemm_n128_row_scaled_m16,
+                            k_lm,
                             norm_noise_local,
                             fp8,
                             self.scratch.logits,
-                            self.gamma as u32,
+                            g,
                             self.vocab_size as u32,
                             h_local,
                             stream,
@@ -614,7 +720,7 @@ impl BlockDiffusionDraftHead {
                             weight: self.lm_head_shared,
                         },
                         self.scratch.logits,
-                        self.gamma as u32,
+                        g,
                         self.vocab_size as u32,
                         h_local,
                         stream,
@@ -629,7 +735,7 @@ impl BlockDiffusionDraftHead {
                         weight: self.lm_head_shared,
                     },
                     self.scratch.logits,
-                    self.gamma as u32,
+                    g,
                     self.vocab_size as u32,
                     h_local,
                     stream,
@@ -640,7 +746,7 @@ impl BlockDiffusionDraftHead {
             // subgraph. Row 0 keeps holding last_token (the walk's anchor
             // predecessor), which the propose echo-drop discards anyway.
             if self.dflash2_active() {
-                self.dflash2_select_block(ctx, norm_noise_local, stream)?;
+                self.dflash2_select_block(ctx, norm_noise_local, n_seq as u32, stream)?;
             } else
             // DSpark: when the drafter ships a Markov head, sample the block
             // left-to-right with the low-rank bigram bias (markov.rs). The
@@ -1008,7 +1114,7 @@ impl BlockDiffusionDraftHead {
         // would mean the field was never initialised.
         anyhow::ensure!(
             !pinned_ptr.is_null(),
-            "DFlash draft-token pinned staging buffer is null (γ={})",
+            "DFlash draft-token pinned staging buffer is null (γ={}, rows={rows_total})",
             self.gamma
         );
         // SAFETY: `pinned_ptr` is the page-locked allocation made by
@@ -1028,8 +1134,12 @@ impl BlockDiffusionDraftHead {
         // code path, and `host_buf` is the sole live reference to it (dropped
         // before the next propose). `copy_d2h_on_stream` drains `stream` before
         // returning, so no DMA is in flight against it when we read below.
+        // `rows_total * 4` bytes: one u32 per drafted row across every band.
+        // The allocation is `nb * gamma * 4` (from_weights) and n_seq <= nb,
+        // so this span is within it; at n_seq == 1 it is exactly `gamma * 4`
+        // as before.
         let host_buf: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, self.gamma * 4) };
+            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, rows_total * 4) };
         gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;
         gpu.record_event(self.scratch.draft_tokens_event, stream)?;
         gpu.event_synchronize(self.scratch.draft_tokens_event)?;
@@ -1121,5 +1231,39 @@ impl BlockDiffusionDraftHead {
         }
         let _ = g; // suppress unused
         Ok(drafts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rt2_16_covers_the_batch;
+
+    /// The regression: the guard tested `self.gamma` while the kernel was
+    /// handed `self.gamma`, so the two agreed with each other and disagreed
+    /// with reality. At n_seq >= 2 the batch is `gamma * n_seq` rows and the
+    /// rt2 kernel covered only the first band; the rest kept the previous
+    /// propose's logits, already masked to -1e30 by `dflash2_topk16`.
+    ///
+    /// `fp8_gemv_rowscale_batch16_rt2` does `ensure!((1..=16).contains(&m))`,
+    /// which could never fire: it was being passed the same wrong value the
+    /// guard checked. The decision has to be made on the TOTAL.
+    #[test]
+    fn the_rt2_vocab_kernel_is_only_eligible_for_batches_it_covers() {
+        // Single sequence: unchanged at every gamma the validator allows.
+        for gamma in 1..=16u32 {
+            assert!(rt2_16_covers_the_batch(gamma), "n_seq=1, gamma={gamma}");
+        }
+        // Two sequences at the measured optimum gamma 10 is 20 rows — four
+        // past the tile. This is the case that silently produced garbage.
+        assert!(!rt2_16_covers_the_batch(10 * 2));
+        // The boundary itself, from both sides.
+        assert!(rt2_16_covers_the_batch(16));
+        assert!(!rt2_16_covers_the_batch(17));
+        // Zero rows is not a batch the kernel covers either — the `1..=`
+        // lower bound mirrors the callee's own `ensure!`.
+        assert!(!rt2_16_covers_the_batch(0));
+        // C=8 at gamma 8, the configuration whose accept collapse (73% -> 24%)
+        // the sibling branch records.
+        assert!(!rt2_16_covers_the_batch(8 * 8));
     }
 }

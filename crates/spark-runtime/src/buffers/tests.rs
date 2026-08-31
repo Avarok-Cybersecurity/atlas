@@ -225,20 +225,22 @@ fn test_buffer_sizes_scale_with_batch() {
     let s1 = BufferSizes::from_config(&cfg, 1, 4096, 16, 32);
     let s128 = BufferSizes::from_config(&cfg, 128, 4096, 16, 32);
     assert_eq!(s128.hidden_states, s1.hidden_states * 128);
-    // logits does NOT scale with batch: BF16 rows (2 bytes/elem) capped at
-    // 96 tokens — the batched-verify row cap (n=32 × k=3 rows, the wave-11
-    // depth-at-width envelope, VERIFY_ROW_CAP; sizes.rs `logits_tokens`).
-    // This assert was stale twice (16-row FP32 era, then unnoticed through
-    // the 33-row bump) — it is the byte twin of the sizes.rs formula, so
-    // update BOTH together.
-    assert_eq!(s128.logits, 96 * cfg.vocab_size * 2);
+    // logits does NOT scale freely with batch: BF16 rows (2 bytes/elem)
+    // bounded by `m.min(160.max(rows+1))` — the batched-verify row cap
+    // (VERIFY_ROW_CAP = 160; sizes.rs `logits_tokens`). At m=128 the
+    // m-bound wins: 128 rows, still under the 160 cap. This assert was
+    // stale three times (16-row FP32 era, the 33-row bump, then the 96
+    // cap) — it is the byte twin of the sizes.rs formula, so update BOTH
+    // together.
+    assert_eq!(s128.logits, 128 * cfg.vocab_size * 2);
 }
 
-/// bs=64 native boots (wave-14a): sizing must be BYTE-IDENTICAL to bs=32 —
-/// the widened decode-meta layout (rows=64) still sits strictly inside the
-/// 96-row verify scratch overlay (bt at 24*64=1536 < 2048, 64 < 96 rows)
-/// and the 65-row logits need is under the 96-row cap. Only above those
-/// bounds may sizes grow — asserted for the 128-row ceiling.
+/// Native wide boots: sizing must be BYTE-IDENTICAL to bs=32 for every
+/// batch whose decode-meta layout sits inside the 160-row verify scratch
+/// overlay (VERIFY_ROW_CAP = 160; bt at 24*160 and the 160-row logits cap
+/// both dominate until rows exceed 160). Only above that bound may sizes
+/// grow — asserted at bs=160 (logits leave the cap) and bs=192 (the
+/// decode layout term overtakes the bt overlay in scratch).
 #[test]
 fn test_buffer_sizes_decode_meta_widening() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
@@ -250,15 +252,19 @@ fn test_buffer_sizes_decode_meta_widening() {
         assert_eq!(s.scratch, s32.scratch, "bs={bs}");
         assert_eq!(s.logits, s32.logits, "bs={bs}");
     }
-    // bs 33..=64: layout widens but stays inside the verify envelope.
-    for bs in [33usize, 64] {
+    // bs 33..=159: layout widens but stays inside the 160-row envelope —
+    // logits stay at the 160-row cap and scratch stays bt-dominated.
+    for bs in [33usize, 64, 128, 159] {
         let s = BufferSizes::from_config(&cfg, 8192, 4096, 16, bs);
         assert_eq!(s.total_bytes(), s32.total_bytes(), "bs={bs}");
     }
-    // bs=128 (the derived ceiling): logits go to 129 rows and the scratch
-    // envelope must cover the decode layout term (24R + R*max_blocks*4).
-    let s128 = BufferSizes::from_config(&cfg, 8192, 4096, 16, 128);
-    assert_eq!(s128.logits, 129 * cfg.vocab_size * 2);
+    // bs=160: the derived floor (rows+1 = 161) finally exceeds the cap.
+    let s160 = BufferSizes::from_config(&cfg, 8192, 4096, 16, 160);
+    assert_eq!(s160.logits, 161 * cfg.vocab_size * 2);
+    // bs=192: the decode layout term (24R + R*max_blocks*4) overtakes the
+    // bt overlay and scratch must cover it.
+    let s192 = BufferSizes::from_config(&cfg, 8192, 4096, 16, 192);
+    assert_eq!(s192.logits, 193 * cfg.vocab_size * 2);
     let max_blocks = 4096 / 16 + 1;
-    assert!(s128.scratch >= 32768 + 24 * 128 + 128 * max_blocks * 4);
+    assert!(s192.scratch >= 32768 + 24 * 192 + 192 * max_blocks * 4);
 }

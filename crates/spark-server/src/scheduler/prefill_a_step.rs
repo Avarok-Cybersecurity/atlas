@@ -133,7 +133,13 @@ pub fn start_chunked_prefill(
     // error MUST be reported via send_error_to_sink before returning,
     // otherwise the API layer will turn the dropped channel into a
     // misleading "Inference cancelled" error.
-    let mut seq = match model.alloc_sequence() {
+    // Tell the model what this request can actually reach. Proposer state
+    // that scales with context (the DFlash ctx accumulator) is then sized to
+    // prompt + max_tokens instead of the global --max-seq-len ceiling — the
+    // ceiling is paid PER SEQUENCE, so at high concurrency it is the
+    // difference between fitting and OOMing.
+    let seq_budget = total.saturating_add(max_tokens);
+    let mut seq = match model.alloc_sequence_for(seq_budget) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("alloc_sequence failed: {e:#}");

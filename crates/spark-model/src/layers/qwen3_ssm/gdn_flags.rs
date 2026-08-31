@@ -116,6 +116,22 @@ pub fn flags() -> GdnFlags {
     *FLAGS.get_or_init(GdnFlags::from_env)
 }
 
+/// Widest chain-verify K with an FP16 h-state twin
+/// (`gated_delta_rule_wy{5..16}_f16`).
+///
+/// The SSOT for "can this verify width run under the f16 pool". K=17 — the
+/// DFlash arm at gamma 16 — has no twin, and the FP32 wy17 kernel over an
+/// FP16 h-state emits fluent garbage rather than faulting, so the CLI
+/// validator and the serve preflight both gate on this instead of a literal.
+///
+/// Expressed as K, not gamma: the DFlash verify width is gamma + 1, and
+/// conflating the two is how the width check came to admit gamma 16 (K=17,
+/// no twin) while its message claimed to cover "widths 5..16".
+pub const MAX_F16_TWIN_K: usize = 16;
+
+/// The largest `--dflash-gamma` whose verify width still has an FP16 twin.
+pub const MAX_F16_TWIN_DFLASH_GAMMA: usize = MAX_F16_TWIN_K - 1;
+
 /// `--ssm-h-dtype f16` (legacy `ATLAS_SSM_H_FP16`).
 pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16

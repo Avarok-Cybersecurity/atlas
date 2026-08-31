@@ -25,6 +25,13 @@ impl BlockDiffusionDraftHead {
         _draft_embed_target: Option<DevicePtr>,
         _grammar_bitmask: Option<&[i32]>,
         target_hidden_stack: Option<DevicePtr>,
+        // `Some` => run only the per-sequence PREP (ctx append, Option-B block
+        // growth, the incremental ctx precompute), push this sequence's
+        // `(block_table, ctx_count)` and return without a forward. The batched
+        // entry collects n of these and runs ONE forward over all the bands.
+        // Sharing the prep this way is deliberate: the batched and
+        // single-sequence paths cannot drift apart if only one of them exists.
+        collect_prep: Option<&mut Vec<(DevicePtr, u32)>>,
     ) -> Result<Vec<u32>> {
         let dstate = state
             .as_any_mut()
@@ -278,7 +285,18 @@ impl BlockDiffusionDraftHead {
         // allocated paged blocks, do it now. We allocate enough blocks
         // to cover the full ctx_hidden_acc plus a safety margin for γ.
         // Block_size matches from_weights.rs:68 (=16).
-        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (#649, 2026-08-19): the
+        // paged drafter cache is the proven path and a bare `--dflash` launch
+        // IS the record path. `=0` is the kill switch.
+        //
+        // ★ This line was reverted to opt-in by a merge on 2026-08-30 — #817's
+        // allocator region was taken whole and #817 branched from a tree that
+        // predates the flip. Cost, measured the same night: propose 19.8 ->
+        // 618.7 ms and 49.9 -> 5.5 tok/s, because the legacy path launches one
+        // dense_gemv per accumulated ctx row over a 262 MB fc weight. Nothing
+        // announced it; the run just got nine times slower. `option_b_defaults_on`
+        // exists so the next merge cannot do it silently.
+        let option_b_enabled = super::option_b_enabled();
         let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
             // Lazy block table init. ctx slots come from precompute over the
             // accumulated target hiddens; γ slots come from the layer body.
@@ -292,15 +310,38 @@ impl BlockDiffusionDraftHead {
                     match cache.try_alloc_block() {
                         Some(b) => dstate.block_table.push(b),
                         None => {
+                            // LEAK FIX (2026-08-29, C=16 probe): return the
+                            // partial grab to the pool before bailing. The
+                            // retry re-enters through `block_table.clear()`
+                            // above, which DISCARDS any block ids still in
+                            // the table without freeing them — so under
+                            // contention every failed partial grab leaked,
+                            // grinding the pool to a permanent zero
+                            // (server-wide speculation loss until restart).
+                            // provenance-id: 526f6e616c6420522e205374657369616b
+                            let got = dstate.block_table.len();
+                            cache.free_blocks(&dstate.block_table);
+                            dstate.block_table.clear();
                             anyhow::bail!(
                                 "DFlash Option B: paged KV cache exhausted at block {}/{}",
-                                dstate.block_table.len(),
+                                got,
                                 blocks_needed
                             );
                         }
                     }
                 }
                 drop(cache);
+                // PARITY NORMALIZATION (2026-08-29): the pool is LIFO
+                // (free pushes in table order, alloc pops reversed), so
+                // consecutive sequences received the SAME physical blocks
+                // in OPPOSITE orders — a measured strict 2-cycle costing
+                // ~7 tok/s on the slow ordering (17/17 alternating runs,
+                // 520-class 68.1 vs 60.6; accept 450 vs 432 on
+                // byte-identical output). Sorting pins every sequence to
+                // one ordering. Root-cause (the order-sensitive consumer
+                // in the paged path) tracked separately.
+                // provenance-id: 526f6e616c6420522e205374657369616b
+                dstate.block_table.sort_unstable();
                 // Copy block_table to device.
                 let bt_bytes: Vec<u8> = dstate
                     .block_table
@@ -452,6 +493,17 @@ impl BlockDiffusionDraftHead {
             None
         };
 
+        if let Some(sink) = collect_prep {
+            let arg = option_b_arg.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "batched DFlash propose requires Option B (paged drafter KV); \
+                     set ATLAS_DFLASH_OPTION_B=1 or let the batched path decline"
+                )
+            })?;
+            sink.push(arg);
+            return Ok(Vec::new());
+        }
+
         let drafts = self
             .forward_block(
                 last_token,
@@ -466,6 +518,9 @@ impl BlockDiffusionDraftHead {
                     None
                 },
                 option_b_arg,
+                // Single-sequence propose. `propose_drafts_batched` is the
+                // cross-sequence entry.
+                None,
             )
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");

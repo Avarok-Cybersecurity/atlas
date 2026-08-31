@@ -160,6 +160,7 @@ impl TransformerModel {
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == image_pad || tok == video_pad {
                         let src = ve
+                            .scratch()
                             .buf_out
                             .offset((row_base + img_idx) * ve.out_hidden_size * 2);
                         let dst = hidden_dst.offset(i * h * elem_bytes);

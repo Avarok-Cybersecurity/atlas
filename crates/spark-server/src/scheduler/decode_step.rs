@@ -94,23 +94,29 @@ pub fn step_decode_only(
     // never the mtp bootstrap), so their captured target hiddens were
     // overwritten and permanently lost — the dominant ctx hole: a 270-token
     // think stretch leaves the drafter conditioned on the prompt alone
-    // (observed GAP≈290 at first propose, accept ≤6%). Append each decoded
-    // token's capture. n==1 only: `try_dflash_capture` stores row 0, which
-    // is ambiguous in a multi-seq batch (fine here — DFlash runs
-    // --max-batch-size 1).
-    if n == 1 {
-        if sched.levers.dflash_unified_ctx {
+    // (observed GAP≈290 at first propose, accept ≤6%).
+    //
+    // Batched decode (n>1) captures ALL batch rows (`decode_multi_seq` layer
+    // loop → `try_dflash_capture_all`), so seq i's per-layer hidden lives in
+    // scratch row i — commit each seq from its own row. The old `n == 1`
+    // gate silently dropped every batched-decode token's ctx row: the C>=2
+    // accept-collapse root cause (84%→31%/22%; CTXLEN_PROBE GAP grew while
+    // position advanced, and adaptive-spec suspension routed the starved seq
+    // right back here — a self-reinforcing spiral).
+    if sched.levers.dflash_unified_ctx {
+        for (i, a) in active.iter_mut().enumerate() {
             // Unified ctx commit: serial token at RoPE position seq_len-1
-            // (decode() advanced seq_len past the token just processed).
-            let base_pos = active[0].seq.seq_len.saturating_sub(1);
-            if let Err(e) = model.commit_ctx(&mut active[0].seq, 1, base_pos) {
-                tracing::error!("commit_ctx (decode_only serial): {e:#}");
+            // (decode advanced seq_len past the token just processed).
+            let base_pos = a.seq.seq_len.saturating_sub(1);
+            if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos, i) {
+                tracing::error!("commit_ctx (decode_only, row {i}): {e:#}");
             }
-        } else if sched.levers.dflash_serial_append
-            && let Err(e) = model.dflash_serial_ctx_append(&mut active[0].seq)
-        {
-            tracing::error!("dflash_serial_ctx_append (decode_only): {e:#}");
         }
+    } else if n == 1
+        && sched.levers.dflash_serial_append
+        && let Err(e) = model.dflash_serial_ctx_append(&mut active[0].seq)
+    {
+        tracing::error!("dflash_serial_ctx_append (decode_only): {e:#}");
     }
 
     process_decode_logits(

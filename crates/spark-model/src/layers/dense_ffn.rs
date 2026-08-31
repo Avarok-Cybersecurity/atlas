@@ -248,11 +248,23 @@ pub struct DenseFfnLayer {
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
     w8a16_gemm_t_m128_k: KernelHandle,
     /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
-    /// where `fp8_weights` or `bf16_weights` are installed (v0 supports the
-    /// NVFP4 dispatch path only — the FP8/BF16 decode branches early-return
-    /// before the NVFP4 tail where the deltas will land; holo is NVFP4 so
-    /// it is unaffected). M0: stored only — compute reads land in M1.
-    #[allow(dead_code)]
+    /// where `fp8_weights`, `bf16_weights` or `q2_weights` are installed (v0
+    /// supports the NVFP4 dispatch path only — those branches early-return
+    /// before the NVFP4 tail where the deltas land; holo is NVFP4 so it is
+    /// unaffected).
+    ///
+    /// M1 (2026-08-19): the deltas are APPLIED. `apply_lora_gate_up` runs
+    /// after the gate/up projection and before `silu_mul`; `apply_lora_down`
+    /// runs after the down projection. Every NVFP4 dispatch this layer can
+    /// take — decode `forward`, `forward_k2`/`k3`/`km`, `forward_prefill`,
+    /// `forward_batched` — calls both, because an adapter that applies on one
+    /// path and not another produces a model that contradicts itself between
+    /// prefill and decode.
+    ///
+    /// Until M1 this field was written by `set_lora_weights` and never read,
+    /// so an adapter targeting gate/up/down loaded successfully and changed
+    /// nothing. On a hybrid like Qwen3.8-27B that is most of the adapter:
+    /// community LoRAs for it put 67-78% of their parameter mass in the FFN.
     lora: Option<ops::lora_delta::LoraFfnWeights>,
 
     /// Native keep-packed ternary Q2_0 dense MLP weights (`ATLAS_GGUF_NATIVE_Q2`).
@@ -680,8 +692,113 @@ impl DenseFfnLayer {
             "LoRA v0 supports only the NVFP4 dense-FFN path (FP8/BF16 weight \
              overlays installed on this layer)"
         );
+        // Packed-Q2 has its own gemv/batchm branches that early-return before
+        // the NVFP4 tail where the deltas land, exactly like FP8/BF16. Refusing
+        // here keeps the invariant the M1 apply relies on: if `self.lora` is
+        // Some, EVERY dispatch this layer can take applies it. A silently
+        // skipping path is worse than a refused load — it makes the adapter
+        // active in prefill and absent in decode, which reads as model
+        // weirdness rather than as a missing feature.
+        anyhow::ensure!(
+            self.q2_weights.is_none(),
+            "LoRA v0 supports only the NVFP4 dense-FFN path (packed-Q2 weights \
+             installed on this layer)"
+        );
+        // The decode down delta contracts over silu(gate)*up, which only the
+        // split-SiLU path materialises; `forward` pins that path whenever an
+        // adapter is installed. Refuse here if the layer cannot take it, so
+        // the pin is a guarantee rather than a hope.
+        anyhow::ensure!(
+            self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 && self.w4a16_gemv.0 != 0,
+            "LoRA v0 needs the split-SiLU decode path (SiLU activation + \
+             act_mul + w4a16_gemv kernels); this layer resolved activation \
+             {:?}, act_mul={}, w4a16_gemv={}",
+            self.activation,
+            self.act_mul.0,
+            self.w4a16_gemv.0,
+        );
         self.lora = Some(w);
         Ok(())
+    }
+
+    /// M1 gate/up delta: `gate_out += ΔW_gate · x`, `up_out += ΔW_up · x`.
+    ///
+    /// Call AFTER the gate/up projection and BEFORE `silu_mul` — the deltas
+    /// belong to the projections, so they must land while gate/up are still
+    /// separate. Both buffers are the arena's dedicated `expert_gate_out` /
+    /// `expert_up_out` regions, contiguous with row stride `inter*2`, which is
+    /// what `apply_lora_delta`'s contiguity contract requires.
+    ///
+    /// No-op (and no launches) when the layer carries no adapter, so the
+    /// non-LoRA path stays byte-identical.
+    fn apply_lora_gate_up(
+        &self,
+        ctx: &ForwardContext,
+        input: DevicePtr,
+        gate_out: DevicePtr,
+        up_out: DevicePtr,
+        m: u32,
+        stream: u64,
+    ) -> Result<()> {
+        if ops::lora_delta::lora_no_ffn() {
+            return Ok(());
+        }
+        let Some(ref lw) = self.lora else {
+            return Ok(());
+        };
+        for (pair, base) in [(&lw.gate, gate_out), (&lw.up, up_out)] {
+            if let Some(pair) = pair.as_ref() {
+                ops::lora_delta::apply_lora_delta(
+                    ctx.gpu,
+                    &lw.kernels,
+                    pair,
+                    input,
+                    base,
+                    m,
+                    ctx.buffers.lora_xa(),
+                    ctx.buffers.lora_delta(),
+                    stream,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// M1 down delta: `output += ΔW_down · act`.
+    ///
+    /// Call AFTER the down projection. `act` is the SiLU(gate)*up activation —
+    /// the same tensor the base down projection contracted over, NOT the
+    /// layer input. Every dense path leaves it in the `expert_gate_out`
+    /// region (silu_mul writes in place over gate), contiguous at row stride
+    /// `inter*2`.
+    fn apply_lora_down(
+        &self,
+        ctx: &ForwardContext,
+        act: DevicePtr,
+        output: DevicePtr,
+        m: u32,
+        stream: u64,
+    ) -> Result<()> {
+        if ops::lora_delta::lora_no_ffn() {
+            return Ok(());
+        }
+        let Some(ref lw) = self.lora else {
+            return Ok(());
+        };
+        let Some(ref pair) = lw.down else {
+            return Ok(());
+        };
+        ops::lora_delta::apply_lora_delta(
+            ctx.gpu,
+            &lw.kernels,
+            pair,
+            act,
+            output,
+            m,
+            ctx.buffers.lora_xa(),
+            ctx.buffers.lora_delta(),
+            stream,
+        )
     }
 
     /// Install native keep-packed ternary Q2_0 dense MLP weights. After this
@@ -1145,11 +1262,22 @@ impl DenseFfnLayer {
         // (one elementwise launch, CUDA graphs amortize it) lets the down GEMV run
         // memory-bound like the dual. Also aligns decode with the prefill SiLU
         // numerics (swiglu clamp), which the fused kernel lacked.
+        //
+        // An installed LoRA adapter PINS this path. The fused `silu_input`
+        // alternative never materialises silu(gate)*up — it consumes gate and
+        // up straight into the down GEMV — and the down delta has to contract
+        // over exactly that activation. Reproducing it into `lora_hact` just
+        // to feed the delta would compute the SiLU twice for a path that is
+        // already the default and already the numerically preferred one, so
+        // the adapter pins it instead. `set_lora_weights` refuses an adapter
+        // when this path is unavailable on the layer, which makes
+        // `lora.is_some()` imply the three conditions above.
         let split_silu = self.activation == FfnActivation::SiLU
             && self.act_mul.0 != 0
             && self.w4a16_gemv.0 != 0
-            && std::env::var_os("ATLAS_NO_DECODE_SPLIT_SILU").is_none();
+            && (std::env::var_os("ATLAS_NO_DECODE_SPLIT_SILU").is_none() || self.lora.is_some());
         if split_silu {
+            self.apply_lora_gate_up(ctx, input, gate_out, up_out, 1, stream)?;
             ops::silu_mul(
                 ctx.gpu,
                 self.act_mul,
@@ -1171,8 +1299,15 @@ impl DenseFfnLayer {
                 inter,
                 stream,
             )?;
+            self.apply_lora_down(ctx, gate_out, output, 1, stream)?;
             return Ok(output);
         }
+        debug_assert!(
+            self.lora.is_none(),
+            "LoRA installed but decode took the fused silu_input path, which \
+             never materialises the activation the down delta contracts over; \
+             set_lora_weights is supposed to make this unreachable"
+        );
         match self.activation {
             FfnActivation::SiLU => {
                 // Fused SiLU(gate)*up + down_proj: [1, inter] → [1, H]
@@ -1314,6 +1449,7 @@ impl DenseFfnLayer {
             h,
             stream,
         )?;
+        self.apply_lora_gate_up(ctx, input, gate_out, up_out, 2, stream)?;
         ops::silu_mul(
             ctx.gpu,
             self.act_mul,
@@ -1334,6 +1470,7 @@ impl DenseFfnLayer {
             inter,
             stream,
         )?;
+        self.apply_lora_down(ctx, gate_out, output, 2, stream)?;
 
         Ok(())
     }
@@ -1369,6 +1506,7 @@ impl DenseFfnLayer {
             h,
             stream,
         )?;
+        self.apply_lora_gate_up(ctx, input, gate_out, up_out, 3, stream)?;
         ops::silu_mul(
             ctx.gpu,
             self.act_mul,
@@ -1389,6 +1527,7 @@ impl DenseFfnLayer {
             inter,
             stream,
         )?;
+        self.apply_lora_down(ctx, gate_out, output, 3, stream)?;
 
         Ok(())
     }
@@ -1454,6 +1593,7 @@ impl DenseFfnLayer {
             h,
             stream,
         )?;
+        self.apply_lora_gate_up(ctx, input, gate_out, up_out, m, stream)?;
         ops::silu_mul(
             ctx.gpu,
             self.act_mul,
@@ -1475,6 +1615,7 @@ impl DenseFfnLayer {
             inter,
             stream,
         )?;
+        self.apply_lora_down(ctx, gate_out, output, m, stream)?;
 
         Ok(())
     }
@@ -1953,10 +2094,22 @@ impl DenseFfnLayer {
         // path — SiLU(gate)*up is heavy-tailed and accuracy-critical). SiLU models only
         // (the scale2 fold lives in the scaled SiLU-mul). Mutually exclusive with
         // ATLAS_FFN_MMQ (both use the shared ffn_act_q8 scratch); this arm wins.
+        //
+        // An installed LoRA adapter turns this arm OFF. The MMQ path leaves
+        // gate_out/up_out holding UNSCALED products and folds each
+        // projection's `weight_scale_2` later, inside the SiLU-mul kernel. A
+        // LoRA delta is a true-valued quantity, so adding it to those buffers
+        // would put it through a scale2 multiply that does not belong to it —
+        // silently wrong output rather than a failure. Folding scale2 into the
+        // delta instead would mean reproducing the quant layout's arithmetic
+        // in the adapter path, which is a much larger commitment than the
+        // ~8% prefill this arm is worth (measured 831 vs 767 tok/s at 8K).
+        // Correctness first; making LoRA and MMQ coexist is its own change.
         let fp4mmq_prefill = self.nvfp4_mmq_nc_k.0 != 0
             && self.nvfp4_quant_act_k.0 != 0
             && self.nvfp4_silu_scaled_k.0 != 0
             && matches!(self.activation, FfnActivation::SiLU)
+            && self.lora.is_none()
             && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
         if fp4mmq_prefill {
             // Log-once latch (see `atlas_core::scope`). It holds no model-derived
@@ -2366,6 +2519,10 @@ impl DenseFfnLayer {
         );
         ffn_step!("up_proj", t_ffn);
 
+        // LoRA gate/up deltas land here: the projections are complete and, with
+        // the MMQ arm disabled above, gate_out/up_out hold true-valued BF16 —
+        // so the delta adds in the same units it was trained in.
+        self.apply_lora_gate_up(ctx, input, gate_out, up_out, m, stream)?;
         // activation(gate) * up for all M tokens (SiLU or GELU)
         let fused_down_quant = fp4mmq_down && self.nvfp4_silu_quant_k.0 != 0;
         if fused_down_quant {
@@ -2480,6 +2637,12 @@ impl DenseFfnLayer {
                 stream,
             )?;
         }
+        // AFTER the scale2 fold, not before: that fold scales the base
+        // projection's output, and the delta is not part of that product.
+        // `gate_out` holds silu(gate)*up — the activation the base down GEMM
+        // just contracted over — because the fused silu+quant arm is off
+        // whenever an adapter is installed.
+        self.apply_lora_down(ctx, gate_out, output, m, stream)?;
 
         Ok(())
     }

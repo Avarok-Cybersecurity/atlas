@@ -5,13 +5,23 @@
 // components render what these specs say and add nothing of their own.
 // =============================================================================
 import gates from '$lib/gates.generated.json';
+import { splitByVariant } from './gate-variants.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
 
 export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
+export {
+  dashFor,
+  groupFor,
+  groupRecords,
+  groupedBenches,
+  isLatestOfVariant,
+  splitByVariant,
+  variantLabel
+} from './gate-variants.js';
 
-export const shortModel = (model) => (model || '').split('/').pop() || model;
+export { shortModel } from './series-colors.js';
 
 // ---- tab taxonomy -----------------------------------------------------------
 // One tab per benchmark family; a family only earns a tab when it has records.
@@ -28,7 +38,15 @@ const TAB_DEFS = [
   // records-filter below keeps the tabs hidden and the ids show in the
   // footer's "gated, not yet published" line — nothing renders empty.
   { id: 'decode', label: 'Decode', benches: ['decode-floor'] },
-  { id: 'concurrency', label: 'Concurrency', benches: ['concurrency-sweep'] }
+  // Both concurrency gates share this tab AND one set of charts — see
+  // gate-variants.js. They run the same fixture at the same rungs on the
+  // same checkpoint and differ only in whether the engine speculates, so
+  // two lines on one axis is the comparison; two panels is not.
+  {
+    id: 'concurrency',
+    label: 'Concurrency',
+    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
+  }
 ];
 export const tabs = TAB_DEFS.filter((t) =>
   t.benches.some((b) => (gates.benchmarks[b]?.records ?? []).length > 0)
@@ -106,7 +124,7 @@ export function panelsFor(benchId, records) {
     const key = keys.find((k) => /tok_s/.test(k)) ?? keys.find((k) => k !== 'samples');
     return key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
   }
-  if (benchId === 'concurrency-sweep') {
+  if (benchId === 'concurrency-sweep' || benchId === 'concurrency-sweep-dflash2') {
     // Two panels: the ladder curve (throughput vs C, latest runs overlaid —
     // rendered by GateLadderChart via kind: 'ladder') and the peak's trend
     // over time. Keys come from the sweep's metrics map
@@ -116,12 +134,22 @@ export function panelsFor(benchId, records) {
     if (records.some((r) => Object.keys(r.metrics ?? {}).some((k) => LADDER_KEY.test(k)))) {
       panels.push({ kind: 'ladder', title: 'throughput vs concurrency', unit: 'tok/s' });
     }
-    if (records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s))) {
-      panels.push({
-        title: 'peak aggregate throughput',
-        unit: 'tok/s',
-        metrics: [{ key: 'peak_aggregate_tok_s', label: 'peak' }]
-      });
+    // One series per variant present, never one series across both: a line
+    // that joined a DFlash2 peak to a no-drafter peak would read as a
+    // regression and a recovery at every alternation. `variant` filters the
+    // records inside GateChart; the dash is the only other difference,
+    // because colour follows the model and both variants serve one
+    // checkpoint.
+    const peak = splitByVariant(records)
+      .filter((v) => v.records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s)))
+      .map((v) => ({
+        key: 'peak_aggregate_tok_s',
+        label: v.label ? `peak (${v.label})` : 'peak',
+        variant: v.bench,
+        dashed: v.dash !== null
+      }));
+    if (peak.length > 0) {
+      panels.push({ title: 'peak aggregate throughput', unit: 'tok/s', metrics: peak });
     }
     return panels;
   }

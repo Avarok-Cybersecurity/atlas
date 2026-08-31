@@ -75,17 +75,28 @@ pub struct AmnestyEntry {
 /// fresh only when it postdates the whole grant day.
 pub const AMNESTY_EPOCH: u64 = 1_788_048_000;
 
-/// The PR #816 grant: exactly the reviewed coverage-policy blob.
+/// RETIRED 2026-08-30, on the condition written into this file's own
+/// "Removal condition" section and enforced by
+/// `amnesty_expires_once_every_gate_has_a_fresh_record`.
 ///
-/// This does not claim that a benchmark passed. It prevents the old mapping
-/// from demanding unrelated campaigns to validate a deterministic policy
-/// correction. Any later edit changes the blob OID and restores all-ten
-/// invalidation.
-pub const ONE_TIME_AMNESTY: [AmnestyEntry; 1] = [AmnestyEntry {
-    path: "crates/atlas-plugin/src/gate/coverage.rs",
-    head_blob_oid: "ff3f5109bc3159555bb518b7c4d132d5335ad3fd",
-    grant: "PR #816 scopes the flat concurrency driver to its own benchmark gate",
-}];
+/// The PR #816 grant excused exactly one reviewed coverage-policy blob,
+/// `crates/atlas-plugin/src/gate/coverage.rs` at OID
+/// `ff3f5109bc3159555bb518b7c4d132d5335ad3fd`, so that a deterministic policy
+/// correction did not demand unrelated campaigns to validate it.
+///
+/// It is empty now because it protects nothing: the eleven-gate campaign at
+/// `f0f6e48845` gave every required gate a record dated 2026-08-30, i.e.
+/// newer than `AMNESTY_EPOCH`. Every one of those records was earned against
+/// the amnestied content, so the grant no longer excuses any invalidation
+/// that has not already been re-paid in GPU time.
+///
+/// The expiry test flips its assertion on this array being empty: with the
+/// table populated it fails once every gate is fresh (as it did here), and
+/// with the table empty it fails if any required gate ever falls back to a
+/// pre-epoch record. So this must not be re-populated to buy a future PR out
+/// of a campaign -- a new grant is a new reviewed decision, not a revival of
+/// this one.
+pub const ONE_TIME_AMNESTY: [AmnestyEntry; 0] = [];
 
 /// Whether the one-time grant excuses `path` at `head`.
 pub fn excused(root: &Path, head: &str, path: &str) -> bool {

@@ -288,6 +288,10 @@ pub fn baseline_for(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
 #[path = "bench_tests.rs"]
 mod bench_tests;
 
+#[cfg(test)]
+#[path = "bench_serve_pin_tests.rs"]
+mod bench_serve_pin_tests;
+
 /// The largest slack a `noise` allowance may claim, as a fraction of the bound
 /// it is applied to.
 ///

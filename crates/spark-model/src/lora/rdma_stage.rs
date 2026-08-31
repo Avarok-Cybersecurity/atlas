@@ -149,12 +149,19 @@ pub fn rebuild_slot_layers(
     // pair. Re-derive from classify (targets carry only geometry, not keys' layer).
     // Simpler: walk the pool layout and, for each (layer, module), find whether a
     // target lands there (by matching dst).
-    for rec_layer in super::full_attention_layers(cfg) {
+    // Same walk as `pool_slot_bytes` / `pack_slot` / `module_slot_offsets`:
+    // every layer, applicable modules only. Walking full-attention layers x
+    // ALL would ask for the offset of a module that layer cannot carry (e.g.
+    // the GDN `out_proj` on an attention layer), which now correctly has none.
+    for rec_layer in 0..cfg.num_hidden_layers {
         let mut lw = LoraLayerWeights::empty(rec_layer);
         let mut any = false;
         for module in LoraModule::ALL {
-            let (a_off, b_off) =
-                module_slot_offsets(cfg, max_rank, rec_layer, module).expect("full-attn layer");
+            if !module.applies_to_layer(cfg, rec_layer) {
+                continue;
+            }
+            let (a_off, b_off) = module_slot_offsets(cfg, max_rank, rec_layer, module)
+                .expect("applicable module has a slot offset");
             let a_dst = base + a_off as u64;
             let b_dst = base + b_off as u64;
             let a_t = targets
@@ -205,6 +212,7 @@ pub fn rebuild_slot_layers(
                     LoraModule::GateProj => lw.gate_proj = Some(pair),
                     LoraModule::UpProj => lw.up_proj = Some(pair),
                     LoraModule::DownProj => lw.down_proj = Some(pair),
+                    LoraModule::OutProj => lw.out_proj = Some(pair),
                 }
                 any = true;
             }

@@ -153,8 +153,9 @@ fn the_promoted_gates_invalidate_where_they_used_to_accrue_debt() {
     ] {
         assert_eq!(
             coverage::invalidated_by([path]),
-            ["concurrency-sweep"],
-            "the flat concurrency driver belongs to the concurrency instrument only: {path}"
+            ["concurrency-sweep", "concurrency-sweep-dflash2"],
+            "the flat concurrency driver belongs to the concurrency instruments only — both \
+             of them, since the DFlash2 gate runs the same driver: {path}"
         );
     }
     let hit = coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"]);

@@ -36,7 +36,7 @@ use crate::result::{
     BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat,
 };
 
-const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 32";
+const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128";
 pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
 
 pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
@@ -46,13 +46,14 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     detail: "Fires N concurrent streaming requests per (input-length × concurrency) cell and \
              reports client TTFT, TPOT and end-to-end latency as p50/p90/p99, plus the batch's \
              aggregate output throughput. This is the curve the GB10 concurrency campaign is \
-             measured on — C=1 is where Atlas leads, C=16 is the bar, and C=32 is where \
-             time-to-answer starts inverting in Atlas's favour. Requests pin temperature 0.0 / \
+             measured on — C=1 is where Atlas leads, C=32 is where time-to-answer starts \
+             inverting in Atlas's favour, and C=128 is the widest rung the published ladder \
+             quotes. Requests pin temperature 0.0 / \
              seed 0 and send reasoning_effort \"none\" so the ladder measures decode, not \
              thinking. A cell where any request delivers under 80% of the output budget is \
              flagged vacuous and its tok/s marked non-comparable. REQUIRED gate since \
              2026-08-15: under --pull-request-gate the run serves the calibrated instrument \
-             (C=1/4/8/16, isl 512, osl 320 via the variant's param_overrides) and \
+             (C=1..128, isl 512, osl 320 via the variant's param_overrides) and \
              self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
              cell or request error never passes, whatever the floors say.",
     duration_hint: "~25–90 min",
@@ -65,7 +66,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // variant's BENCH.toml `min` bound, so a run that clears its committed
     // ladder self-verdicts PASS — which gate machinery requires now that this
     // gate is REQUIRED (`gate::coverage::REQUIRED`). The gated ladder's SHAPE
-    // (C=1/4/8/16, isl 512, osl 320) arrives via the same entry's
+    // (C=1..128, isl 512, osl 320) arrives via the same entry's
     // `[benchmarks.param_overrides]`, not from these schema defaults.
     threshold_params: GATE_THRESHOLD_PARAMS,
     // Latency and throughput at every rung; a thermal event mid-sweep moves
@@ -74,17 +75,109 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     ctor: || Box::new(ConcurrencySweep::default()),
 };
 
+/// The same ladder, served with the DFlash2 drafter armed.
+///
+/// A SECOND gate id rather than a second BENCH.toml variant, deliberately, and
+/// for the same reason `bfcl-subset-echolp` exists: `check_record`'s
+/// `record_is_required_subject` refuses a non-default checkpoint for the
+/// required verdict, so a variant can never satisfy a mandatory gate. The two
+/// entries share this driver, this instrument and these floor params; what
+/// differs is the recipe each one's `[[benchmarks]]` block names, and
+/// therefore whether the served engine speculates.
+///
+/// It exists because nothing else gates the speculative path. Every other
+/// required gate serves a no-drafter recipe, which is how a DFlash2 change can
+/// only be judged by hand — the 2026-08 C4 hunt spent days establishing "not
+/// DFlash2" from source reading, because no committed record could answer it.
+///
+/// Its numbers are NOT comparable to `concurrency-sweep`'s and must never be
+/// crossed: speculation moves the aggregate at low C by more than any
+/// regression this gate is meant to catch, so each carries its own bars.
+pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+    id: "concurrency-sweep-dflash2",
+    name: "Concurrency Sweep (DFlash2)",
+    summary: DFLASH2_SUMMARY,
+    detail: "The concurrency ladder with the DFlash2 block-diffusion drafter armed \
+             (`--dflash --draft-model incoai/Qwen3.8-27B-DFlash2 --dflash-gamma 8`), pinned by \
+             the variant's serve_overrides. Same fixture, same rungs and same vacuity rule as \
+             `concurrency-sweep`; the only difference is that the served engine speculates, \
+             which is exactly the path no other required gate exercises. Expect the two curves \
+             to converge at the wide rungs: DFlash2's verify batches are bounded, so above the \
+             point where speculation self-limits this measures the base engine and says so \
+             rather than pretending otherwise.",
+    duration_hint: "~25–90 min",
+    updated: "2026-08-29",
+    needs_confirmation: false,
+    // The drafter is checkpoint-specific — a drafter trained on other weights
+    // degrades to near-zero acceptance rather than failing loudly, so this
+    // names the target it was trained against.
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.8-27b"],
+        note: "DFlash2 drafters are trained against one target's hidden states \
+               (incoai/Qwen3.8-27B-DFlash2 consumes target layers [5,19,33,47,61] of \
+               Qwen3.8-27B). Pointing this gate at another checkpoint measures a mismatched \
+               drafter, which is slow rather than wrong and therefore easy to misread.",
+    }),
+    threshold_params: GATE_THRESHOLD_PARAMS,
+    sensitivity: Sensitivity::Speed,
+    ctor: || Box::new(ConcurrencySweep::default()),
+};
+
+const DFLASH2_SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128, DFlash2 armed";
+
+/// The gated ladder, declared ONCE: `(C, floor param, metric key, label)`.
+///
+/// Three things are derived from this and nothing else — the descriptor's
+/// `threshold_params` pairs, the floor `ParamSpec`s, and `configure`'s
+/// `Floors::per_c`. Before this table those were three hand-maintained lists
+/// of the same rungs; a rung present in one and missing from another is
+/// silent, because `apply_threshold_params` skips a metric with no bound and
+/// `sweep_verdict` only judges the rungs `per_c` names.
+///
+/// C=2 through C=128 joined on 2026-08-29 so the certification covers the same
+/// span as the published ladder. The rungs are declarable, not measured: a
+/// rung with no `[benchmarks.metrics.c<N>_aggregate_tok_s]` block in the
+/// variant's BENCH.toml keeps the 0.0 default and gates nothing, which is how
+/// a new rung is recorded before it is bounded.
+const RUNGS: [(usize, &str, &str, &str); 8] = [
+    (1, "min_c1", "c1_aggregate_tok_s", "C=1 aggregate floor"),
+    (2, "min_c2", "c2_aggregate_tok_s", "C=2 aggregate floor"),
+    (4, "min_c4", "c4_aggregate_tok_s", "C=4 aggregate floor"),
+    (8, "min_c8", "c8_aggregate_tok_s", "C=8 aggregate floor"),
+    (16, "min_c16", "c16_aggregate_tok_s", "C=16 aggregate floor"),
+    (32, "min_c32", "c32_aggregate_tok_s", "C=32 aggregate floor"),
+    (64, "min_c64", "c64_aggregate_tok_s", "C=64 aggregate floor"),
+    (
+        128,
+        "min_c128",
+        "c128_aggregate_tok_s",
+        "C=128 aggregate floor",
+    ),
+];
+
+/// The peak floor, which is not a rung: it bounds `peak_aggregate_tok_s`,
+/// whichever C produced it.
+const PEAK_FLOOR: (&str, &str, &str) = ("min_peak", "peak_aggregate_tok_s", "Peak aggregate floor");
+
 /// The baseline-coupled verdict params: each is paired to the metric the
 /// BENCH.toml floor is written on (`min` bounds; see `bench_resolve::
 /// apply_threshold_params`). Float, default 0.0 = non-gating, so a standalone
-/// run keeps its info verdict.
-const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &[
-    ("min_c1", "c1_aggregate_tok_s"),
-    ("min_c4", "c4_aggregate_tok_s"),
-    ("min_c8", "c8_aggregate_tok_s"),
-    ("min_c16", "c16_aggregate_tok_s"),
-    ("min_peak", "peak_aggregate_tok_s"),
-];
+/// run keeps its info verdict. Derived from [`RUNGS`] in a const fn so the
+/// pairing cannot drift from the ParamSpecs that must back it — a
+/// `threshold_params` entry with no matching spec is a hard error in
+/// `bench_resolve::apply_threshold_params`.
+const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &gate_threshold_params();
+
+const fn gate_threshold_params() -> [(&'static str, &'static str); RUNGS.len() + 1] {
+    let mut out = [("", ""); RUNGS.len() + 1];
+    let mut i = 0;
+    while i < RUNGS.len() {
+        out[i] = (RUNGS[i].1, RUNGS[i].2);
+        i += 1;
+    }
+    out[RUNGS.len()] = (PEAK_FLOOR.0, PEAK_FLOOR.1);
+    out
+}
 
 /// Natural code-generation fixture (own constant — no cross-driver imports).
 /// Appended after the ISL padding so the filler reads as context and this
@@ -293,8 +386,25 @@ impl ConcurrencySweep {
             // reusing c0/c1/... across later rungs produces a history-dependent
             // mixture of cached and new prompts. A failed warm-up invalidates
             // the declared setup instead of silently changing the instrument.
-            for tag in tags {
-                self.one(isl, tag.clone()).await.with_context(|| {
+            //
+            // CONCURRENTLY, and that is safe here for a specific reason: a
+            // round's tags are `c0..c{conc-1}`, pairwise DISTINCT, so there is
+            // no duplicate-insert race for concurrency to lose — the usual
+            // reason a cache prime is serialised does not apply.
+            //
+            // It is also the stronger guarantee at wide C. Serially, priming
+            // 128 prompts at ~15 s each means prompt c0 has been sitting in
+            // the cache for half an hour by the time c127 is warmed, and is
+            // the likeliest eviction candidate before the measured batch even
+            // starts; a concurrent round keeps the whole set live inside one
+            // window. And it is what makes a wide ladder affordable: serially
+            // the warm-up costs `ΣC × per-request wall`, which at C=1..128 was
+            // measured at ~64 min per rep against ~12 min of measurement — the
+            // instrument spending 84% of its time priming.
+            let warmed =
+                futures::future::join_all(tags.iter().map(|tag| self.one(isl, tag.clone()))).await;
+            for (tag, outcome) in tags.iter().zip(warmed) {
+                outcome.with_context(|| {
                     format!("isl {isl} conc {conc}: warm-up prompt {tag} failed")
                 })?;
             }
@@ -596,7 +706,7 @@ impl Benchmark for ConcurrencySweep {
     }
 
     fn parameters(&self) -> Vec<ParamSpec> {
-        vec![
+        let mut specs = vec![
             ParamSpec::new(
                 "concurrencies",
                 "Concurrency levels",
@@ -655,12 +765,16 @@ impl Benchmark for ConcurrencySweep {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
-            Self::floor_spec("min_c1", "C=1 aggregate floor"),
-            Self::floor_spec("min_c4", "C=4 aggregate floor"),
-            Self::floor_spec("min_c8", "C=8 aggregate floor"),
-            Self::floor_spec("min_c16", "C=16 aggregate floor"),
-            Self::floor_spec("min_peak", "Peak aggregate floor"),
-        ]
+        ];
+        // One floor per gated rung, plus the peak — both from RUNGS/PEAK_FLOOR,
+        // so a rung added there arrives here without a second edit.
+        specs.extend(
+            RUNGS
+                .iter()
+                .map(|(_, key, _, label)| Self::floor_spec(key, label)),
+        );
+        specs.push(Self::floor_spec(PEAK_FLOOR.0, PEAK_FLOOR.2));
+        specs
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
@@ -683,14 +797,13 @@ impl Benchmark for ConcurrencySweep {
         self.mode = PromptMode::parse(values.text("prompt_mode")?)
             .context("prompt_mode must be natural or count")?;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        let mut per_c = Vec::with_capacity(RUNGS.len());
+        for (c, key, _, _) in RUNGS {
+            per_c.push((c, values.float(key)?));
+        }
         self.floors = verdict::Floors {
-            per_c: vec![
-                (1, values.float("min_c1")?),
-                (4, values.float("min_c4")?),
-                (8, values.float("min_c8")?),
-                (16, values.float("min_c16")?),
-            ],
-            peak: values.float("min_peak")?,
+            per_c,
+            peak: values.float(PEAK_FLOOR.0)?,
         };
         self.cursor = 0;
         self.rows.clear();
@@ -792,3 +905,7 @@ mod verdict;
 #[cfg(test)]
 #[path = "concurrency_tests.rs"]
 mod concurrency_tests;
+
+#[cfg(test)]
+#[path = "concurrency_verdict_tests.rs"]
+mod concurrency_verdict_tests;

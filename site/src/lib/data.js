@@ -35,6 +35,7 @@ export const verifiedAnchor =
 export const gateSrcUrl =
   'https://github.com/Avarok-Cybersecurity/atlas/blob/main/tests/gate_results.py';
 export const discussionsUrl = 'https://github.com/Avarok-Cybersecurity/atlas/discussions';
+export const issuesUrl = `${githubUrl}/issues`;
 export const goodFirstIssuesUrl =
   'https://github.com/Avarok-Cybersecurity/atlas/labels/good%20first%20issue';
 // Single source of truth for contact addresses (footer + reach-out section).
@@ -97,16 +98,28 @@ export const runCommandRaw = `atlasctl run ${flagshipRecipe}`;
 // --- hardware acknowledgment (modest banner) ---------------------------------
 // --- announcement band (the strip above the hero) ----------------------------
 export const announcement = {
-  line: 'Atlas is partnering with Avarok Cybersecurity.',
-  sub: 'Post quantum security and high performance inference across edge, workstation, and datacenter deployments. The model and your data stay on hardware you own.',
-  ctaText: 'avarok.net',
-  ctaUrl: 'https://avarok.net',
+  // The partnership row is HIDDEN, not deleted: `line` empty means the banner
+  // skips that row entirely. Restoring it is a one-line content change rather
+  // than rebuilding the markup, which is why the component renders the row
+  // conditionally instead of this file dropping the keys.
+  line: '',
+  sub: '',
+  ctaText: '',
+  ctaUrl: '',
   // A second line, kept to one sentence. The band sits above the hero on every
   // page: it earns its height by saying what changed, not by explaining it.
   // "In active development" is stated rather than implied — an operator who
   // reads this and then finds an unfinished fleet manager was misled by us, not
   // by their own optimism.
-  note: 'Sparkrun has been retired: Atlas now ships atlasctl, our own control plane for enterprise fleet management and telemetry. In active development.'
+  note: 'Sparkrun has been retired: Atlas now ships atlasctl, our own control plane for enterprise fleet management and telemetry. In active development.',
+  // A third row rather than a longer second one, for the same reason the note
+  // is its own row: the launcher change and the browser client are separate
+  // pieces of news, and running them together reads as one long sentence about
+  // neither. The ask for feedback is only honest if it is easy to act on, so it
+  // carries the link rather than the words "let us know".
+  pwa: 'Atlas Fleet Manager, the PWA that runs models straight from your browser, is still under development. Feedback is welcome.',
+  pwaCtaText: 'Open an issue',
+  pwaCtaUrl: issuesUrl
 };
 
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
@@ -430,7 +443,7 @@ export const roadmap = {
       status: 'Tracking',
       body: 'Large MoE NVFP4 ports across EP topologies, DeepSeek and Kimi class, tracked in the open.',
       cta: 'Open issues',
-      url: 'https://github.com/Avarok-Cybersecurity/atlas/issues'
+      url: issuesUrl
     }
   ]
 };

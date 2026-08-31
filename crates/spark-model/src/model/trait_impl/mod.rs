@@ -283,7 +283,11 @@ impl Model for TransformerModel {
         self.bind_gpu_to_thread_dispatch()
     }
     fn alloc_sequence(&self) -> Result<SequenceState> {
-        self.alloc_sequence_dispatch()
+        self.alloc_sequence_dispatch(usize::MAX)
+    }
+
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        self.alloc_sequence_dispatch(budget_tokens)
     }
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
         self.copy_logits_to_host_dispatch(logits_ptr, dst)
@@ -354,6 +358,9 @@ impl Model for TransformerModel {
     }
     fn has_proposer(&self) -> bool {
         self.has_proposer_dispatch()
+    }
+    fn dflash_gamma(&self) -> Option<usize> {
+        self.proposer.as_ref().and_then(|p| p.block_gamma())
     }
     fn has_self_speculative(&self) -> bool {
         self.has_self_speculative_dispatch()
@@ -567,11 +574,16 @@ impl Model for TransformerModel {
         Ok(())
     }
 
+    fn dflash_capture_band(&self) -> usize {
+        self.dflash_kgamma
+    }
+
     fn commit_ctx(
         &self,
         seq: &mut SequenceState,
         num_committed: usize,
         base_pos: usize,
+        scratch_row: usize,
     ) -> Result<()> {
         if num_committed == 0 {
             return Ok(());
@@ -598,6 +610,21 @@ impl Model for TransformerModel {
         }
         let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
         let stream = self.gpu.default_stream();
+
+        // Scratch-capacity guard: `try_dflash_capture_all` caps its writes at
+        // `dflash_hidden_save_rows` (γ+1), so a batch row beyond that was
+        // never captured — committing it would append a STALE row (poisoned
+        // ctx is worse than a hole). Skip with a warning; only reachable if
+        // --max-num-seqs exceeds γ+1 on a DFlash serve.
+        if scratch_row + num_committed > self.dflash_hidden_save_rows {
+            tracing::warn!(
+                "commit_ctx: scratch rows {}..{} exceed capture capacity {} — skipping (ctx hole)",
+                scratch_row,
+                scratch_row + num_committed,
+                self.dflash_hidden_save_rows,
+            );
+            return Ok(());
+        }
 
         // Watermark slide FIRST, on the ctx_len (row-index) axis. If the
         // incoming rows would exceed capacity, keep the NEWEST rows and drop
@@ -631,7 +658,7 @@ impl Model for TransformerModel {
         // only until the first slide — and the sliding prompts ARE the reds.
         debug_assert_eq!(d.ctx_positions.len(), d.ctx_len);
         for t in 0..num_committed {
-            let row = base.offset(t * ctx_slot_bytes);
+            let row = base.offset((scratch_row + t) * ctx_slot_bytes);
             let dst = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
             self.gpu.copy_d2d_async(row, dst, ctx_slot_bytes, stream)?;
             d.ctx_positions.push((base_pos + t) as i32);
@@ -642,6 +669,15 @@ impl Model for TransformerModel {
         // internal decode-append so this capture is never double-appended.
         d.skip_next_decode_append = true;
 
+        // Per-commit ledger (debug): the C>=2 GAP diagnosis reads this to
+        // find steps whose commits under-append vs the positions committed.
+        tracing::debug!(
+            "CTX_COMMIT slot={} rows={} base_pos={} ctx_len_after={}",
+            seq.slot_idx,
+            num_committed,
+            base_pos,
+            d.ctx_len,
+        );
         // One-shot activation log so A/B runs can confirm the path is live.
         if self.stats.once("log:dflash_unified_ctx") {
             tracing::info!(

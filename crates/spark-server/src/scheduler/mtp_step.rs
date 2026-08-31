@@ -267,7 +267,7 @@ pub fn step_mtp(
             // so commit and propose decode-append never both cover a token.
             if !will_propose || reprobe_resume {
                 let base_pos = a.seq.seq_len.saturating_sub(1);
-                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos) {
+                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos, 0) {
                     tracing::error!("commit_ctx (mtp serial): {e:#}");
                 }
             }
@@ -343,6 +343,130 @@ pub fn step_mtp(
     // (PRESENCE check) forces the serialized loop for A/B.
     let mut serial_idxs: Vec<usize> = Vec::new();
     let mut batchable_idxs: Vec<usize> = Vec::new();
+    // ── DFlash: cross-sequence batched K=γ verify ──
+    // The block drafter has no ragged ladder, so the batch is the set of
+    // grammarless sequences carrying the SAME γ drafts; anything else falls
+    // to the per-sequence step. One R=n*(γ+1)-row forward replaces n full
+    // weight sweeps (the per-step verify wall was flat ~115ms per SEQUENCE
+    // from C=1..4 before this). Kill switch: ATLAS_DFLASH_BATCH_VERIFY=0.
+    // One-shot attribution for "why is the batched path not running": each
+    // of these four is individually capable of silently keeping every
+    // sequence on the per-sequence verify, which reads as "no concurrency
+    // amortisation" rather than as a disabled feature.
+    {
+        static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WHY.get_or_init(|| {
+            tracing::debug!(
+                raw_argmax = dflash_verify_raw_argmax,
+                n_verify = verify_idxs.len(),
+                lever = sched.levers.dflash_batch_verify,
+                killed = batch_verify_disabled(),
+                "DFlash batched verify gate (first tick with drafts)"
+            );
+        });
+    }
+    if dflash_verify_raw_argmax
+        && verify_idxs.len() >= 2
+        && sched.levers.dflash_batch_verify
+        && !batch_verify_disabled()
+    {
+        let mut gamma = 0usize;
+        for &idx in &verify_idxs {
+            let a = &active[idx];
+            let g = a.pending_drafts.len();
+            if a.grammar_state.is_some() || g < 1 {
+                serial_idxs.push(idx);
+            } else if gamma == 0 || g == gamma {
+                gamma = g;
+                batchable_idxs.push(idx);
+            } else {
+                serial_idxs.push(idx);
+            }
+        }
+        // Widest group the model accepts. `can_batch_verify` bounds R = n*k
+        // by the verify row budget (96 rows), so at γ=7 the cap is 12
+        // sequences — and this gate used to be ALL-OR-NOTHING: a C=16 tick
+        // asked for 16×8 = 128 rows, was refused, and every sequence fell to
+        // the per-sequence serial loop, which is exactly the flat
+        // no-amortization wall the batched path exists to remove (measured
+        // 2026-08-21: the C=16 sweep cell ROLLED OVER below C=8, 63.5 vs
+        // 65.9 aggregate). Chunking to the widest accepted group batches
+        // 12 + 4 instead of serializing 16 — the same shape the batched
+        // PROPOSE already uses (`pending.chunks(group_cap)`).
+        let k_rows = gamma + 1;
+        let mut m_max = batchable_idxs.len();
+        while m_max >= 2 && !model.can_batch_verify(&vec![k_rows; m_max]) {
+            m_max -= 1;
+        }
+        if batchable_idxs.len() >= 2 && m_max >= 2 {
+            let mut asc = batchable_idxs.clone();
+            asc.sort_unstable();
+            for chunk in asc.chunks(m_max) {
+                if chunk.len() >= 2 {
+                    let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(chunk.len());
+                    let mut it = active.iter_mut();
+                    let mut consumed = 0usize;
+                    for &i in chunk {
+                        let a = it.nth(i - consumed).expect("verify index within active");
+                        consumed = i + 1;
+                        refs.push(a);
+                    }
+                    step_verify_dflash_batched(
+                        model, &mut refs, sched, gamma, num_drafts, verify_ctx,
+                    );
+                } else {
+                    // A trailing single cannot batch — it takes the serial
+                    // loop below, same as before this gate existed.
+                    serial_idxs.extend_from_slice(chunk);
+                }
+            }
+        } else {
+            // Loud on the FIRST decline only: a silently-refused gate looks
+            // exactly like "the batched path is off", which cost a whole
+            // validation cycle when k=γ-1+1 failed an over-strict width check.
+            if !batchable_idxs.is_empty() && sched.stats.once("log:dflash_batch_decline") {
+                tracing::info!(
+                    "DFlash batched verify DECLINED: n={} k={} (model.can_batch_verify said no) \
+                     — running the per-sequence loop",
+                    batchable_idxs.len(),
+                    gamma + 1,
+                );
+            }
+            serial_idxs.extend_from_slice(&batchable_idxs);
+        }
+        batchable_idxs.clear();
+        for &idx in &serial_idxs {
+            let a = &mut active[idx];
+            let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+            a.pending_draft_conf.clear();
+            if drafts.is_empty() {
+                continue;
+            }
+            if let Some(ref mut gs) = a.grammar_state {
+                let kept = truncate_drafts_at_grammar_boundary(gs, &drafts);
+                drafts.truncate(kept);
+                if drafts.is_empty() {
+                    continue;
+                }
+            }
+            step_verify_dflash(
+                model,
+                a,
+                sched,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
+        }
+        // Same StepOuter record the shared tail makes — this arm returns
+        // early, and dropping it would blind the phase telemetry exactly
+        // where the batched path is meant to show its win.
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
+        return;
+    }
     if verify_idxs.len() >= 2
         && spark_model::speculative::mtp_multi_seq_mode()
         && !dflash_verify_raw_argmax

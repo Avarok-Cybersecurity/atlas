@@ -46,6 +46,44 @@ pub fn dense_gemm_tc(
         .launch(stream)
 }
 
+/// `output[m, n] += scale * bf16(input[m, k] @ weight[n, k]^T)` in ONE pass.
+///
+/// The fused epilogue of [`dense_gemm_tc`], for LoRA's expand+fold. The
+/// unfused pair (GEMM into scratch, then `scaled_add`) writes an [m, n]
+/// tensor, reads it back, and read-modify-writes the destination; this does
+/// the last of those only. On a 27B prefill with n = intermediate = 17408
+/// that scratch round-trip dominated — it measured as a 5.6x prefill
+/// slowdown with a LoRA adapter resident.
+///
+/// BIT-IDENTICAL to the unfused pair: the kernel rounds the delta to BF16
+/// before applying `scale`, exactly as storing to a BF16 scratch and running
+/// `bf16_scaled_add` over it did.
+#[allow(clippy::too_many_arguments)]
+pub fn dense_gemm_tc_scaled_acc(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    scale: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 64), div_ceil(m, 16), 1])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_f32(scale)
+        .launch(stream)
+}
+
 /// Split-K GEMM: partial products over K_splits chunks, then reduce.
 /// Uses FP32 workspace of size K_splits * M * N * 4 bytes.
 #[allow(clippy::too_many_arguments)]

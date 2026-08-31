@@ -25,6 +25,7 @@ const ALL: &[&BenchmarkDescriptor] = &[
     // the 12-run sigma calibration of the floor.
     &decode_floor::DESCRIPTOR,
     &concurrency::DESCRIPTOR,
+    &concurrency::DFLASH2_DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
     &contamination::DESCRIPTOR,

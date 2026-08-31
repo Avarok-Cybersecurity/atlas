@@ -199,7 +199,12 @@ descriptor; the agentic figures are from the committed gate record
 
 | id | Gate status | Rough cost | What it measures |
 |---|---|---|---|
-| `concurrency-sweep` | not required (no thresholds) | ~10–30 min | exploratory throughput table across concurrency rungs |
+| `concurrency-sweep` | **required** (promoted 2026-08-15) | ~25–90 min | aggregate throughput at C=1..128 on the pinned instrument, vs per-rung floors |
+| `concurrency-sweep-dflash2` | **required** (added 2026-08-29) | ~25–90 min | the same ladder with the DFlash2 drafter armed — the only gate that exercises speculation |
+| `decode-floor` | **required** (promoted 2026-08-15) | ~5–10 min | single-user server decode rate vs a committed floor |
+| `ssm-state-poisoning-gate` | **required** | ~5–10 min | an identical replay must return identical bytes after accumulated SSM/prefix state |
+| `vision-fidelity` | **required** (vision targets) | ~5 min | the served model sees the image it was sent, at its checkpoint's permitted resolution |
+| `video-fidelity` | **required** (video targets) | ~5–15 min | the pad/sample contract on mixed-media input |
 | `ttft-warm-gate` | **required** | ~3–6 min | cached-prefix TTFT vs a stored same-box baseline (median ≤3%, p90 ≤5%) |
 | `ttft-cold-gate` | **required** | ~3–6 min | uncached prefill TTFT — the leg that sees a cold-load regression |
 | `cross-contamination` | promotion candidate (PR #433) | ~2–5 min | concurrent requests must not change each other's output; zero tolerance |
@@ -209,9 +214,12 @@ descriptor; the agentic figures are from the committed gate record
 | `bfcl-full` | not required | ~12 h | the unsampled ~3,625-sample BFCL run |
 | `serve-matrix` | not required | ~5–10 min / checkpoint | multi-checkpoint breadth survey for release notes |
 
-The five **required** gates are `REQUIRED_GATES`
-(`crates/atlas-plugin/src/gate/mod.rs:66`), derived element-by-element from
-the coverage table so the two lists cannot diverge. Non-required entries
+The eleven **required** gates are `REQUIRED_GATES`
+(`crates/atlas-plugin/src/gate/mod.rs`), derived element-by-element from
+`coverage::REQUIRED` so the two lists cannot diverge. (This paragraph said
+"five" and listed `concurrency-sweep` as not required until 2026-08-29; the
+code had said otherwise since the 2026-08-15 promotion. If you are counting
+gates, count the array, not this sentence.) Non-required entries
 each carry a written reason in `coverage.rs::NOT_REQUIRED`
 (`gate/coverage.rs:307`) — stated rather than implied, so "why doesn't
 `bfcl-full` gate?" has a findable answer.
@@ -849,7 +857,7 @@ flowchart LR
     A["registered benchmark\n(registry.rs)"] --> B["NOT_REQUIRED\nwith a written reason\n(coverage.rs:307)"]
     B -->|"owner intends to require it\nonce proven"| C["PROMOTION_CANDIDATE\ncarries a FULL GateCoverage;\npromotion_debt() joins it against\nevery PR's changed paths;\ntelemetry renders the debt rows,\nMerged? column included"]
     C -->|"proven on release cuts:\nstable, no false fails,\nbaselines recorded in BENCH.toml"| D["REQUIRED\n(coverage::REQUIRED +\nREQUIRED_GATES)\nrecords must pass on every PR"]
-    B -->|"permanently excused\n(bfcl-full, concurrency-sweep,\nserve-matrix)"| B
+    B -->|"permanently excused\n(bfcl-full, serve-matrix,\nquick-speed-bench)"| B
 ```
 
 A candidate carries a full `GateCoverage` — the same exclusion machinery as

@@ -26,7 +26,15 @@ pub(crate) fn preflight_reserve(
 ) -> Result<ReservePreflight> {
     let h_state_bytes = config.ssm_h_state_bytes();
     let conv_state_bytes = config.ssm_conv_state_bytes();
-    let spec_on_pool = args.speculative || args.self_speculative || args.ngram_speculative;
+    // `args.dflash` belongs here: `TransformerModel::new` forces the verify
+    // pools ON whenever DFlash capture layers exist (`has_mtp |= dflash`),
+    // so a DFlash serve allocates the full K=γ+1 intermediate/checkpoint
+    // pools. Omitting it reserved only the base per-seq blobs and left the
+    // entire verify-pool family OUTSIDE the util pledge — 13.7 GB tracked vs
+    // a 1.3 GB reserve on the 27B at bs=8/γ=8 (2026-08-22 boot ledger, the
+    // measured bulk of the ~12 GB pledge overshoot).
+    let spec_on_pool =
+        args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
     ssm_h_fp16_preconditions(args, config)?;
     // SSM state pool = per-seq live state (max_batch blobs) + MTP verify
     // state (intermediates + checkpoint) for the slots spec dispatch can
@@ -54,12 +62,25 @@ pub(crate) fn preflight_reserve(
         h_state_bytes,
         spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
     );
+    // DFlash pool width: the verify pools are γ-sized (uniform K = γ+1 on
+    // EVERY slot — `SsmStatePool::new`'s `uniform_h`), and γ comes from the
+    // DRAFTER's checkpoint, which loads long after this preflight. Peek the
+    // drafter's config.json for `dflash_config.block_size`; a missing or
+    // remote checkpoint falls back to `resolved_dflash_gamma`'s 16 ceiling —
+    // the same unknown-γ fallback the pool allocation uses (`γ+1 = 17`), so
+    // the miss direction is over-reserve, never under.
+    let pool_num_drafts = if args.dflash {
+        peek_dflash_block_size(args.draft_model.as_deref())
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None))
+    } else {
+        args.resolved_num_drafts()
+    };
     let ssm_pool_bytes = spark_model::ssm_reserve::ssm_pool_reserve_bytes(
         args.max_batch_size,
         config.num_ssm_layers() * h_state_bytes,
         config.num_ssm_layers() * conv_state_bytes,
         spec_on_pool,
-        args.resolved_num_drafts(),
+        pool_num_drafts,
         mtp_state_slots,
         args.dflash,
         // Stage-3 f16-SIZED pool: mirrors `SsmStatePool::new`'s narrowing.
@@ -87,17 +108,13 @@ pub(crate) fn preflight_reserve(
                 config.ssm_qkvz_size(),
                 config.linear_num_value_heads,
             ),
-            args.resolved_num_drafts() + 1,
+            pool_num_drafts + 1,
             mtp_state_slots,
         )
     } else {
         0
     };
-    let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.resolved_num_drafts() + 2
-    } else {
-        1
-    };
+    let spec_tokens_pre = spec_reserve_tokens(args);
     // B4 (chunked-prefill BF16 KV cliff): the prior `.min(8192)` cap forced
     // every prompt > 8 k to chunk, which compounds K-side BF16 rounding noise
     // at chunk boundaries (per the 4-agent audit 2026-05-27). When the user
@@ -169,12 +186,13 @@ pub(crate) fn preflight_reserve(
     let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
         * config.num_ssm_layers()
         * (h_state_bytes + conv_state_bytes);
-    let cuda_headroom: usize =
-        if args.speculative || args.self_speculative || args.ngram_speculative {
-            4 * 1024 * 1024 * 1024
-        } else {
-            512 * 1024 * 1024
-        };
+    // Same predicate as the pool term: DFlash IS a speculative serve and
+    // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
+    let cuda_headroom: usize = if spec_on_pool {
+        4 * 1024 * 1024 * 1024
+    } else {
+        512 * 1024 * 1024
+    };
     let gdn_two_phase_bytes: usize = {
         let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
         let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
@@ -404,4 +422,45 @@ pub(crate) fn post_load_memory_audit(
         inference_reserve / (1024 * 1024),
     );
     Ok(())
+}
+
+/// Peek the DFlash drafter's trained block size (γ) from its config.json
+/// without loading the checkpoint — the preflight reserve needs the verify
+/// pools' K = γ+1 long before the drafter loads. `None` (missing path, remote
+/// HF id, absent field) falls back to the caller's 16 ceiling: the same
+/// unknown-γ width `SsmStatePool` allocates, so a failed peek over-reserves
+/// rather than re-opening the pledge hole.
+fn peek_dflash_block_size(draft_model: Option<&str>) -> Option<usize> {
+    let dir = std::path::Path::new(draft_model?);
+    let raw = std::fs::read_to_string(dir.join("config.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let g = v.get("dflash_config")?.get("block_size")?.as_u64()? as usize;
+    (g > 0).then_some(g)
+}
+
+/// SSOT for "how many rows can one sequence's speculative step occupy" —
+/// the term the batch-token floors (`max_batch_tokens_pre` here,
+/// `resolve_prefill_budget` in `kv_cache.rs`) take a max against.
+///
+/// It was the same three-flag expression copy-pasted in both files, and
+/// both copies omitted `--dflash` (returning 1 for a serve whose verify
+/// step is γ+1 rows wide). Inert today only because the prefill budget's
+/// 8192 floor dominates the max — this exists so the two sites cannot
+/// drift and so the DFlash width is stated, not defaulted.
+///
+/// MTP ladder: `num_drafts + 2` (the K = drafts+1 verify rows plus the
+/// bonus row — the historical constant, unchanged). DFlash: γ + 1 verify
+/// rows (`[last_token, draft_0..γ-1]`), which is the same arithmetic at
+/// the effective `num_drafts = γ - 1` the scheduler runs with; γ comes
+/// from the drafter's checkpoint via the same peek the pool reserve uses.
+pub(crate) fn spec_reserve_tokens(args: &cli::ServeArgs) -> usize {
+    if args.dflash {
+        let gamma = peek_dflash_block_size(args.draft_model.as_deref())
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None));
+        gamma + 1
+    } else if args.speculative || args.self_speculative || args.ngram_speculative {
+        args.resolved_num_drafts() + 2
+    } else {
+        1
+    }
 }

@@ -303,9 +303,22 @@ impl TransformerModel {
                 // the WRONG token's hidden and rows 1.. are stale garbage
                 // (2026-07-09 accept-collapse root cause: EAGLE_FIX=0 under
                 // UNIFIED=1 starved this capture and poisoned drafter ctx).
-                let capture_all = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref()
-                    == Some("1")
-                    || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1");
+                // Capture-all is DEFAULT-ON. Two names reached this same
+                // behaviour from different directions -- the base layer's
+                // ATLAS_DFLASH_EAGLE_FIX and this lane's
+                // ATLAS_DFLASH_UNIFIED_CTX -- so EITHER set to "0" turns it
+                // off and neither name silently loses its kill switch.
+                // Mirrors the scheduler lever (levers.rs
+                // `dflash_unified_ctx: on_unless_zero`): commit_ctx copies
+                // scratch rows 0..=num_accepted and only capture_all fills
+                // them. Read ONCE -- this site runs under CUDA-graph capture,
+                // where a per-call env read is both a cost and a way to bake
+                // a stale value into a captured graph.
+                static CAPTURE_ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let capture_all = *CAPTURE_ALL.get_or_init(|| {
+                    std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() != Some("0")
+                        && std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() != Some("0")
+                });
                 if capture_all {
                     self.try_dflash_capture_all(layer_idx, k, stream)?;
                 } else {

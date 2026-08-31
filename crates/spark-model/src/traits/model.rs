@@ -427,6 +427,15 @@ pub trait Model: Send + Sync {
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
+    /// [`Self::alloc_sequence`] told what this request can actually reach
+    /// (`prompt_len + max_tokens`). Proposer state that scales with context is
+    /// sized to THAT instead of `--max-seq-len`; see
+    /// `DraftProposer::alloc_state_for`. Defaults to the unsized form.
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        let _ = budget_tokens;
+        self.alloc_sequence()
+    }
+
     /// Copy logits from device to host buffer (for CPU-side sampling).
     ///
     /// `logits_ptr` points to `[vocab_size]` BF16 values on device.
@@ -545,6 +554,13 @@ pub trait Model: Send + Sync {
 
     /// Check if speculative decoding is available (MTP or self-speculative).
     fn has_proposer(&self) -> bool;
+    /// The installed DFlash drafter's block size γ, when one is installed.
+    /// The serve layer derives `num_drafts = γ - 1` from THIS (the head is
+    /// the SSOT — it resolved the drafter config's trained block size),
+    /// never from a CLI default that may not match the checkpoint.
+    fn dflash_gamma(&self) -> Option<usize> {
+        None
+    }
 
     /// Check if self-speculative decoding is enabled.
     fn has_self_speculative(&self) -> bool;
@@ -829,19 +845,32 @@ pub trait Model: Send + Sync {
 
     /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
     /// `num_committed` scratch rows (`dflash_hidden_save` rows
-    /// `0..num_committed`) into `ctx_hidden_acc` at the CURRENT TAIL
-    /// (`ctx_len`), stamping RoPE positions `base_pos..base_pos+num_committed`,
-    /// folding the watermark slide in first. `base_pos` is the RoPE position,
-    /// NOT the acc row index (they diverge after a watermark slide — DDD §4.1
-    /// landmine). The single structural replacement for the ~5 fragmented
-    /// appends. Default no-op for models without a DFlash drafter.
+    /// `scratch_row..scratch_row+num_committed`) into `ctx_hidden_acc` at the
+    /// CURRENT TAIL (`ctx_len`), stamping RoPE positions
+    /// `base_pos..base_pos+num_committed`, folding the watermark slide in
+    /// first. `base_pos` is the RoPE position, NOT the acc row index (they
+    /// diverge after a watermark slide — DDD §4.1 landmine). `scratch_row` is
+    /// 0 on every single-sequence path; batched decode (n>1) captures ALL
+    /// batch rows, so seq i commits from scratch row i. The single structural
+    /// replacement for the ~5 fragmented appends. Default no-op for models
+    /// without a DFlash drafter.
     fn commit_ctx(
         &self,
         _seq: &mut SequenceState,
         _num_committed: usize,
         _base_pos: usize,
+        _scratch_row: usize,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Rows per per-sequence capture BAND in the DFlash hidden scratch (γ+1).
+    /// Sequence `i` of a batched K=γ verify captures into band `i`, so its
+    /// `commit_ctx` `scratch_row` is `i * dflash_capture_band()`. Returning
+    /// the model's own stride keeps the capture and the commit from ever
+    /// disagreeing. `0` when there is no DFlash drafter.
+    fn dflash_capture_band(&self) -> usize {
+        0
     }
 
     /// Run the MTP proposer for one draft token off the saved hidden state.

@@ -63,7 +63,7 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "qwen3.8-27b".into(),
                 "concurrency-sweep".into(),
                 "concurrencies".into(),
-                "1,4,8,16".into(),
+                "1,2,4,8,16,32,64,128".into(),
             ),
             (
                 "gb10".into(),
@@ -78,6 +78,39 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "concurrency-sweep".into(),
                 "osl".into(),
                 "320".into(),
+            ),
+            // The DFlash2 gate's instrument is the plain one's TRUNCATED at
+            // the widest rung its serve can admit — same isl, same osl, so
+            // the rungs they share stay directly comparable. It stops at 16
+            // because a DFlash2 serve refuses to start above a narrow batch
+            // (measured; see the BENCH.toml note), and a rung above the batch
+            // cap would measure the cap rather than the engine.
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep-dflash2".into(),
+                "concurrencies".into(),
+                "1,2,4,8,16".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep-dflash2".into(),
+                "isls".into(),
+                "512".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep-dflash2".into(),
+                "osl".into(),
+                // 200, not the plain gate's 320: at 320 this gate's C=1 cell
+                // is deterministically vacuity-flagged (completion ~229 =
+                // 71.5% of budget against an 80% floor), so no threshold makes
+                // it certifiable. Lowering the budget below the natural stop
+                // makes every finish a "length" finish — the comparability
+                // property the vacuity rule protects.
+                "200".into(),
             ),
         ],
         "the committed override validation must not pass vacuously or skip a pin"

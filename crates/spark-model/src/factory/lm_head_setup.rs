@@ -78,19 +78,41 @@ pub(super) fn setup_lm_heads(
         // Runtime FP8 head. `quantize_bf16_to_fp8` (module `gemv_fp8w`) writes
         // FP8 E4M3 bytes + per-row f32 scales, consumed by `w8a16_gemv` at
         // decode. The NVFP4 head stays `None` on this path.
-        let quantize_fp8_k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
-        let q = quantize_to_fp8(
-            lm_head,
-            config.vocab_size,
-            config.hidden_size,
-            gpu,
-            quantize_fp8_k,
-            stream,
-        )?;
-        tracing::info!(
-            "LM head quantized to FP8 (w8a16, vocab={})",
-            config.vocab_size
-        );
+        // Prefer the checkpoint's OWN FP8 bytes when it ships them. This
+        // family (unsloth/Qwen3.8-27B-NVFP4) stores `lm_head.weight` as FP8
+        // E4M3 with a per-row BF16 scale, so re-quantizing means
+        // FP8 -> dequant BF16 -> FP8: a lossy round trip that lands back at
+        // the precision we started from, plus a duplicate ~1.27 GB copy of a
+        // tensor already resident. Same share the DFlash drafter tail uses.
+        //
+        // Padded rows are fine: the tensor is row-major [rows, hidden] and
+        // unsloth pads 248077 -> 248320 at the END, so reading the first
+        // `vocab_size` rows is a prefix and the padding is never touched.
+        let native = native_fp8_lm_head_share(store, config, gpu)?;
+        let q = if let Some((shared, rows)) = native {
+            tracing::info!(
+                "LM head served from the checkpoint's NATIVE FP8 (w8a16, vocab={}, \
+                 tensor rows={rows}) — no requantize, no second copy",
+                config.vocab_size
+            );
+            shared
+        } else {
+            let quantize_fp8_k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
+            let q = quantize_to_fp8(
+                lm_head,
+                config.vocab_size,
+                config.hidden_size,
+                gpu,
+                quantize_fp8_k,
+                stream,
+            )?;
+            tracing::info!(
+                "LM head quantized to FP8 (w8a16, vocab={}) — checkpoint is not \
+                 natively FP8, so this is a runtime mirror",
+                config.vocab_size
+            );
+            q
+        };
         lm_head_fp8 = Some(q);
         None
     } else {
@@ -141,4 +163,94 @@ pub(super) fn setup_lm_heads(
         None
     };
     Ok((lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4))
+}
+
+/// Native FP8 lm_head share for the DFlash drafter tail.
+///
+/// Checkpoints like unsloth/Qwen3.8-27B-NVFP4 ship `lm_head.weight` natively
+/// as FP8 E4M3 `[vocab, hidden]` with a per-row BF16 `weight_scale [vocab, 1]`.
+/// The store keeps those bytes resident for the whole model lifetime
+/// (`adopt_weight_store`), while `ATLAS_DFLASH_DRAFTER_FP8=1` used to build a
+/// SECOND 1.27 GB FP8 copy by re-quantizing the dequantized BF16 head — a
+/// lossy FP8→BF16→FP8 round trip AND a duplicate allocation. This returns an
+/// `Fp8DenseWeight` viewing the checkpoint's own bytes (per-row scale
+/// converted BF16→f32 once, ~1 MB), so the drafter tail GEMM reads the native
+/// weights directly.
+///
+/// Returns `None` (caller falls back to the runtime mirror) when the
+/// checkpoint's lm_head is not FP8 E4M3, the scale is missing or not
+/// per-row, or shapes disagree — sharing is a strict opt-in on evidence.
+pub(super) fn native_fp8_lm_head_share(
+    store: &WeightStore,
+    config: &ModelConfig,
+    gpu: &dyn GpuBackend,
+) -> Result<Option<(Fp8DenseWeight, usize)>> {
+    use spark_runtime::weights::WeightDtype;
+    let Some(key) = [
+        "lm_head.weight",
+        "language_model.lm_head.weight",
+        "model.lm_head.weight",
+    ]
+    .into_iter()
+    .find(|k| store.contains(k)) else {
+        return Ok(None);
+    };
+    let w = store.get(key)?;
+    if w.dtype != WeightDtype::FP8E4M3 {
+        return Ok(None);
+    }
+    // Rows may be PADDED past the logical vocab (unsloth pads 248077 →
+    // 248320); the drafter validates the row count against ITS vocab at
+    // adoption, so here only the contraction dim and a sane row count are
+    // pinned. The share hands back the tensor's own row count.
+    if w.shape.len() != 2 || w.shape[1] != config.hidden_size || w.shape[0] < config.vocab_size {
+        tracing::warn!(
+            "native FP8 lm_head share declined: shape {:?} vs hidden {} / vocab >= {}",
+            w.shape,
+            config.hidden_size,
+            config.vocab_size
+        );
+        return Ok(None);
+    }
+    let rows = w.shape[0];
+    let scale_key = format!("{key}_scale");
+    let Ok(s) = store.get(&scale_key) else {
+        return Ok(None);
+    };
+    // Per-row scale: [vocab] or [vocab, 1]; BF16 on this checkpoint family.
+    if s.dtype != WeightDtype::BF16 || s.num_elements() != rows {
+        tracing::warn!(
+            "native FP8 lm_head share declined: {scale_key} dtype {:?} shape {:?} \
+             is not a per-row BF16 scale",
+            s.dtype,
+            s.shape
+        );
+        return Ok(None);
+    }
+    // BF16 [vocab] → f32 [vocab], once at load. Host round-trip: ~0.5 MB
+    // down, 1 MB up — not worth a kernel.
+    let n = rows;
+    let mut host_bf16 = vec![0u8; n * 2];
+    gpu.copy_d2h(s.ptr, &mut host_bf16)?;
+    let host_f32: Vec<u8> = host_bf16
+        .chunks_exact(2)
+        .flat_map(|c| {
+            let bits = (u16::from_le_bytes([c[0], c[1]]) as u32) << 16;
+            f32::from_bits(bits).to_le_bytes()
+        })
+        .collect();
+    let row_scale = gpu.alloc(n * 4)?;
+    gpu.copy_h2d(&host_f32, row_scale)?;
+    tracing::info!(
+        "Native FP8 lm_head share ready for the DFlash drafter tail \
+         ([{rows} x {}] E4M3 + per-row scale; skips the 1.27 GB runtime mirror)",
+        config.hidden_size
+    );
+    Ok(Some((
+        Fp8DenseWeight {
+            weight: w.ptr,
+            row_scale,
+        },
+        rows,
+    )))
 }
