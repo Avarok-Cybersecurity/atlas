@@ -167,8 +167,18 @@ impl SchedLevers {
             mtp_minp: on_unless("ATLAS_NO_MTP_MINP"),
             mtp_verify_sample: on_unless("ATLAS_NO_MTP_VERIFY_SAMPLE"),
 
-            dflash_masked_verify: opt_in("ATLAS_DFLASH_MASKED_VERIFY"),
-            dflash_seam_serial: opt_in("ATLAS_DFLASH_SEAM_SERIAL"),
+            // DEFAULT-ON since 2026-08-31: masked_verify, seam_serial and
+            // spec_think are three of the levers behind the 63.0 tok/s
+            // record serve (Qwen3.8-27B + DFlash2, γ=10, GB10, 2026-08-29 —
+            // 56.2 -> 63.0 with the record env; RECORDS_LEDGER holds the
+            // reproduction key). A default `spark serve --dflash` previously
+            // shipped none of them, so out-of-the-box DFlash ran the slow
+            // shape of its own engine. `=0` restores each legacy path for
+            // A/B; `=1` remains a harmless no-op in every existing recipe.
+            dflash_masked_verify: on_unless_zero("ATLAS_DFLASH_MASKED_VERIFY"),
+            dflash_seam_serial: on_unless_zero("ATLAS_DFLASH_SEAM_SERIAL"),
+            // NOT graduated: the record env runs adaptive OFF (γ scheduling
+            // is static at the measured optimum); opt-in remains correct.
             dflash_adaptive: opt_in("ATLAS_DFLASH_ADAPTIVE"),
             dflash_serial_append: opt_in("ATLAS_DFLASH_SERIAL_APPEND"),
             // DEFAULT-ON since 2026-08-19: without the unified ctx commit the
@@ -180,7 +190,9 @@ impl SchedLevers {
             // count +31% (PR #604). `ATLAS_DFLASH_UNIFIED_CTX=0` restores the
             // legacy append for A/B.
             dflash_unified_ctx: on_unless_zero("ATLAS_DFLASH_UNIFIED_CTX"),
-            dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
+            // Third of the graduated record levers — see the 2026-08-31
+            // comment above dflash_masked_verify.
+            dflash_spec_think: on_unless_zero("ATLAS_DFLASH_SPEC_THINK"),
             dflash_gate_pin_c2: on_unless_zero("ATLAS_DFLASH_GATE_PIN_C2"),
             dflash_batch_verify: on_unless_zero("ATLAS_DFLASH_BATCH_VERIFY"),
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
