@@ -70,6 +70,39 @@ pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
     matches!(model_type, "deepseek_v4" | "laguna" | "glm5_next")
 }
 
+/// Must chunked prefill run as a SINGLE chunk for this model?
+///
+/// True only for models that reach the chunk-LOCAL MLA prefill in
+/// `qwen3_attention/prefill.rs`, which attends over the current chunk's K/V alone —
+/// multi-chunk there silently corrupts attention output (Mistral-Small-4, 2026-05-01: 8 K
+/// collapses to "The\nThe…").
+///
+/// 🔴 `kv_lora_rank > 0` is a PROXY for that kernel and `glm5_next` breaks it: GLM-5.3 is
+/// MLA (rank 512) but prefills through `Glm5NextLayer::prefill`, a per-token walk that
+/// attends the whole paged prefix at each absolute position — chunk boundaries are
+/// invisible to it. Answering true capped every GLM prompt at `2 × --max-prefill-tokens`,
+/// because `prefill_a_step` splits the FIRST chunk at the cap regardless and this gate then
+/// made the remainder one unsplit chunk the buffer arena refused. ANOMALIES A61.
+pub fn requires_single_chunk_prefill(model_type: &str, kv_lora_rank: usize) -> bool {
+    kv_lora_rank > 0 && model_type != "glm5_next"
+}
+
+#[cfg(test)]
+mod single_chunk_prefill_tests {
+    use super::requires_single_chunk_prefill as single;
+
+    /// GLM-5.3 is MLA and must still be chunked — that is the whole of A61.
+    #[test]
+    fn glm5_next_is_mla_but_chunks_fine() {
+        assert!(!single("glm5_next", 512));
+        // Every other MLA family keeps the single-chunk guard.
+        assert!(single("deepseek_v4", 512));
+        assert!(single("mistral", 512));
+        // Non-MLA models were never gated.
+        assert!(!single("qwen3_5_moe", 0));
+    }
+}
+
 #[cfg(test)]
 mod norm_convention_tests {
     use super::model_type_ships_vanilla_norm_weights as vanilla;

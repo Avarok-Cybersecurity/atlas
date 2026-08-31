@@ -641,6 +641,14 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub tp_world_size: usize,
 
+    // ── Served context (set at runtime from `--max-seq-len`) ──
+    /// The serve's `--max-seq-len`. 0 when nobody set it (a unit test, an offline tool),
+    /// which every reader must treat as "unknown" and fall back from — never as zero
+    /// context. Distinct from `max_position_embeddings`, which is the checkpoint's claim
+    /// (1,048,576 on GLM-5.3) rather than what this process reserved memory for.
+    #[serde(skip)]
+    pub serve_max_seq_len: usize,
+
     // ── FP8 KV cache calibration (set at runtime from CLI) ──
     /// Number of warmup tokens for online FP8 KV scale calibration.
     /// 0 = disabled (use static scales from checkpoint or uncalibrated 1.0).

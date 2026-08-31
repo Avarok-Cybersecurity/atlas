@@ -66,6 +66,7 @@ impl ModelConfig {
             ep_world_size: 1,
             tp_rank: 0,
             tp_world_size: 1,
+            serve_max_seq_len: 0,
             hybrid_override_pattern: String::new(),
             mamba_num_heads: 0,
             mamba_head_dim: 0,
