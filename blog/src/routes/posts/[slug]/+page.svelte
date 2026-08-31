@@ -38,7 +38,11 @@
     return () => io.disconnect();
   });
 
-  const url = $derived(`${SITE}/posts/${post.slug}`);
+  const url = $derived(post.canonical ?? `${SITE}/posts/${post.slug}`);
+  /* A post may ship its own social card; an empty `og-image` means "use the
+     site's". Resolved here rather than in each meta tag so the two cannot
+     disagree about which image this page advertises. */
+  const cardUrl = $derived(`${SITE}${post.ogImage || '/og-image.png'}`);
   const ldjson = $derived(
     JSON.stringify({
       '@context': 'https://schema.org',
@@ -50,7 +54,11 @@
       publisher: { '@type': 'Organization', name: 'Atlas Inference', url: 'https://atlasinference.io/' },
       mainEntityOfPage: url,
       url,
+      dateModified: post.updated ?? post.date,
       articleSection: tag.name,
+      keywords: post.keywords,
+      image: `${SITE}${post.ogImage || '/og-image.png'}`,
+      timeRequired: `PT${post.readingMinutes}M`,
       isAccessibleForFree: true
       // JSON.stringify does not escape "<", so a closing script tag anywhere in
       // a dek would end the emitted block early and spill markup into the page.
@@ -64,13 +72,23 @@
   <meta property="og:type" content="article" />
   <meta property="og:title" content={post.title} />
   <meta property="og:description" content={post.dek} />
-  <meta property="og:image" content="{SITE}/og-image.png" />
+  <meta property="og:image" content={cardUrl} />
+  <meta property="og:image:alt" content={post.title} />
   <meta property="article:published_time" content={post.date} />
+  {#if post.updated}<meta property="article:modified_time" content={post.updated} />{/if}
   <meta property="article:author" content={author.name} />
   <meta property="article:section" content={tag.name} />
+  {#each post.categories as c}<meta property="article:tag" content={tags[c].name} />{/each}
+  {#if post.keywords.length}<meta name="keywords" content={post.keywords.join(', ')} />{/if}
   <meta name="twitter:title" content={post.title} />
   <meta name="twitter:description" content={post.dek} />
-  <meta name="twitter:image" content="{SITE}/og-image.png" />
+  <meta name="twitter:image" content={cardUrl} />
+  <!-- KaTeX's stylesheet is ~23 KB and render-blocking. Loading it globally
+       would charge every post — including every Svelte post, which has no
+       math at all — for a feature it does not use. `hasMath` is computed from
+       the source at build time, so this link appears on exactly the pages
+       that need it. -->
+  {#if post.hasMath}<link rel="stylesheet" href="/katex/katex.min.css" />{/if}
   {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
 

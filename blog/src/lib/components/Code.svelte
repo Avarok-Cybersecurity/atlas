@@ -6,7 +6,12 @@
      also what the clipboard needs — copying the DOM's textContent picks up the
      line numbers and the gutter along with the code. -->
 <script>
-  let { name = '', lang = '', code } = $props();
+  // `html` is the build-time highlighted form. It exists only for markdown
+  // posts, whose fences go through shiki during the build; a Svelte post
+  // passes `code` alone and renders exactly as it always has. The copy button
+  // uses `code` in both cases — copying the highlighted DOM would drag spans
+  // and entities into the clipboard.
+  let { name = '', lang = '', code, html = '' } = $props();
   let copied = $state(false);
   let timer = 0;
 
@@ -28,7 +33,13 @@
     {#if lang}<span class="cb-lang">{lang}</span>{/if}
     <button class="cb-copy" type="button" onclick={copy} aria-label="Copy code">{copied ? 'Copied' : 'Copy'}</button>
   </div>
-  <pre><code>{code}</code></pre>
+  {#if html}
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -- built by shiki at
+         build time from this same `code` string; never user input at runtime -->
+    {@html html}
+  {:else}
+    <pre><code>{code}</code></pre>
+  {/if}
 </div>
 
 <style>

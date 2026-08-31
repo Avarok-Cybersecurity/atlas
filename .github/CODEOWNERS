@@ -35,6 +35,19 @@ crates/atlas-rdma/                           @tbraun96 @rsafier @SeedSource
 crates/spark-storage/                        @tbraun96 @rsafier @SeedSource
 crates/atlas-tier/                           @tbraun96 @rsafier @SeedSource
 
+# Web properties. The blog is the one tree an editorial contributor owns:
+# @DrRainbows reviews and approves posts under `blog/` without gaining any
+# say over the compute path, CI, or the other two properties.
+#
+# ★ A code owner MUST have WRITE permission on the repository. As of
+# 2026-08-30 @DrRainbows has `pull` (read) only, so GitHub will not request
+# review from them and their approval will NOT satisfy the CODEOWNER rule —
+# this line is INERT until an admin grants write access. The three default
+# owners are repeated here deliberately so that, until then, `blog/`
+# ownership is exactly what the `*` fallback already gave it: this line can
+# only ever add a reviewer, never remove one.
+blog/                                        @tbraun96 @rsafier @SeedSource @DrRainbows
+
 # Build, CI, governance. Belt-and-suspenders: the broad `.github/`
 # pattern catches everything in the tree, and the more specific entries
 # below are restated explicitly so a future contributor adding a more

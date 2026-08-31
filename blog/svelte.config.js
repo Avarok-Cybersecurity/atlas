@@ -1,7 +1,18 @@
 import adapter from '@sveltejs/adapter-static';
+import { atlasMarkdown } from './src/lib/md/preprocess.js';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
+  // Posts may be written as Svelte components OR as markdown. Both compile to
+  // the same kind of component and land in the same index, feed and prev/next
+  // chain — markdown is the easy path for an ordinary article, Svelte stays
+  // for the pieces that carry measured tables and inline figures.
+  //
+  // The markdown toolchain (marked, shiki, katex) runs HERE, in the build. The
+  // browser receives HTML; `e2e/check-bundle.mjs` fails the build if any of it
+  // ever reaches the client bundle, which is what keeps the trade honest.
+  extensions: ['.svelte', '.md'],
+  preprocess: [atlasMarkdown()],
   kit: {
     // Both web properties render the same chevron field and the same design
     // tokens. They live in web-shared/ at the repo root — one copy, imported

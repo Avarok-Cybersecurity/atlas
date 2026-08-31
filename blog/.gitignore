@@ -1,3 +1,6 @@
 node_modules
 /build
 /.svelte-kit
+
+# Copied from node_modules by scripts/copy-katex.mjs at build time.
+static/katex/
