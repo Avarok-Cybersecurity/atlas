@@ -389,6 +389,15 @@ a { color: var(--accent); }
 .tbl-wrap td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 .tbl-wrap td .win { color: var(--accent-ok); }
 
+/* Post images. The compiler stamps the intrinsic `width`/`height` on every
+   `<img>` so the box is reserved before the file arrives and nothing shifts —
+   but with no max-width those attributes are also the RENDERED size, so a
+   1280px still rendered 1280px wide: past the 672px column on a desktop and
+   past the viewport on a phone. Capping at the column and letting height
+   follow keeps the anti-CLS attributes doing their job and nothing else. */
+.prose img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.prose figure img { border-radius: 8px; }
+
 .prose figure { margin: 34px 0; }
 .prose figcaption { margin-top: 12px; font-size: 13.5px; line-height: 1.5; color: var(--text-3); padding-left: 14px; border-left: 1px solid var(--line); }
 
