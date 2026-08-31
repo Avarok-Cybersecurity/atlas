@@ -1,7 +1,8 @@
 /**
  * The post index.
  *
- * Posts are Svelte components, not markdown. A deliberate trade: these posts
+ * A post is EITHER a Svelte component or a markdown file; the glob below
+ * takes both. The Svelte shape exists because these posts
  * carry measured tables, annotated code blocks, callouts and inline figures,
  * none of which markdown expresses without a plugin stack — and that stack
  * (mdsvex, a markdown parser, a highlighter) would outweigh the entire WebGL

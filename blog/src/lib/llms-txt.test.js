@@ -64,8 +64,8 @@ test('the built blog llms.txt lists every shipped post', async () => {
   const t = readFileSync(built, 'utf8');
   const { readdirSync } = await import('node:fs');
   const slugs = readdirSync(new URL('blog/src/lib/posts/', root))
-    .filter((f) => f.endsWith('.svelte'))
-    .map((f) => f.slice(0, -'.svelte'.length));
+    .filter((f) => /\.(svelte|md)$/.test(f))
+    .map((f) => f.replace(/\.(svelte|md)$/, ''));
   expect(slugs.length).toBeGreaterThan(0);
   for (const s of slugs) {
     expect(t, `built llms.txt omits post "${s}"`).toContain(`/posts/${s})`);

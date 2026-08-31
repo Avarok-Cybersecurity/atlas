@@ -81,6 +81,11 @@ img, svg, video { max-width: 100%; }
   .hero { padding: 4.5rem 1.75rem 4rem; }
   .nav-inner, .ann-inner, .footer-inner { padding-left: 1.75rem; padding-right: 1.75rem; }
   footer { padding-left: 1.75rem; padding-right: 1.75rem; }
+  /* The fleet chip keeps its count but drops the state word: the bar is at its
+     tightest just above the drawer breakpoint, and the dot already carries the
+     state. Below 860 the whole bar collapses into the drawer, so the chip can
+     never overflow a phone-width header. */
+  .fp-detail { display: none; }
 }
 
 /* ---- 900, the two-column collapse ----------------------------------------- */

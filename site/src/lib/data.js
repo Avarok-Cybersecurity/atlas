@@ -22,6 +22,7 @@
 // --- canonical links ---------------------------------------------------------
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
+export const blogUrl = 'https://blog.atlasinference.io';
 export const xUrl = 'https://x.com/AtlasInferenceX';
 export const xHandle = '@AtlasInferenceX';
 export const redditUrl = 'https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/';
@@ -129,13 +130,14 @@ export const nav = {
     { text: 'News', href: '/#news' },
     { text: 'Hardware', href: '/#hardware' },
     { text: 'Models', href: '/#models' },
-    { text: 'Get running', href: '/#run' },
+    { text: 'Start', href: '/#run' },
     // `.html`, not `/control`. adapter-static writes this route to
     // control.html, and the deploy target serves files literally: no extension
     // guessing, and no directory index outside the document root. /control is
     // the SPA fallback at best and a 500 at worst. If the server ever gains
     // `try_files $uri $uri.html`, this becomes '/control'.
-    { text: 'Control', href: '/control.html' }
+    { text: 'Control', href: '/control.html' },
+    { text: 'Blog', href: blogUrl }
   ],
   menuLabel: 'Menu',
   closeLabel: 'Close menu'
@@ -154,7 +156,7 @@ export const hero = {
       'Median of our GB10 runs, model cached, atlas 59616dc, Jul 2026. Same command below, run it and time it yourself.'
   },
   primaryCta: 'Star on GitHub',
-  secondaryCta: 'Get running',
+  secondaryCta: 'Start',
   discordCta: 'Join the Discord'
 };
 
@@ -341,7 +343,7 @@ export const models = {
 
 // --- get running -------------------------------------------------------------
 export const getRunning = {
-  label: '// 06 · get running',
+  label: '// 06 · start',
   title: 'Up and running in one command.',
   sub:
     'This is the first 60 seconds. Everything after, per model recipes, EP=2, tuning, lives in the docs.',
@@ -672,6 +674,7 @@ export const footer = {
       heading: 'Project',
       links: [
         { text: 'GitHub', url: githubUrl },
+        { text: 'Blog', url: blogUrl },
         { text: 'Deployment guide', url: guideUrl },
         { text: 'Recipes (SSOT)', url: recipesUrl },
         { text: 'License AGPLv3', url: githubUrl + '/blob/main/LICENSE' }

@@ -1113,7 +1113,11 @@ from a fork — no write access to atlas-recipes). Review comment on atlas#379:
 (`conc_baseline_4regimes.txt`, `conc_prefill_long.txt`). NOT in git.
 
 **Environment gotchas that cost time here:**
-* `CUTLASS_HOME=/home/ms/cutlass` at build or the binary refuses to serve.
+* `CUTLASS_HOME=/home/ms/cutlass` at build ONLY to make the CUTLASS
+  reference path available for benchmarking. It is NOT required to serve:
+  the default build sets neither `CUTLASS_HOME` nor `FLASHINFER_HOME`, and
+  the binary serves on Atlas's own kernels. (Corrected 2026-08-31 — the
+  earlier "or the binary refuses to serve" was never true of `spark-server`.)
 * `RUSTFLAGS="-L <dir with libnccl.so>"`; symlink `libnccl.so -> libnccl.so.2`.
 * The binary is `target/release/spark`, not `spark-server`.
 * Piping a long-running harness through `tail` buffers ALL output until it
