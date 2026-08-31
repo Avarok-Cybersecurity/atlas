@@ -14,6 +14,8 @@ _Special note to readers: this is our first post. As a long-time writer, before 
 
 ![A polished silicon wafer leaning against a block of rusted iron.](/images/posts/seven-tenets-powering-atlas-inference/00-rust-silicon.webp)
 
+_Image generated with AI._
+
 Earlier this year, we began developing an inference engine in order to take an ecosystem — often widely fragmented — from a proof of concept to a professional software product. Given that many data scientists and researchers worked on vLLM, naturally, they used the language they were most _comfortable_ with: Python. We applaud their contribution to the world, proving we can run AI almost anywhere (given sufficient hardware resources). Given the ecosystem is external-dependency heavy, as well as lacking the rigor of professional software architecture practices, we decided to start from scratch, embracing several philosophical tenets.
 
 **Seven Tenets Powering Atlas Inference Accelerated Workloads**
