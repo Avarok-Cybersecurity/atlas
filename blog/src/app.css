@@ -395,7 +395,44 @@ a { color: var(--accent); }
    1280px still rendered 1280px wide: past the 672px column on a desktop and
    past the viewport on a phone. Capping at the column and letting height
    follow keeps the anti-CLS attributes doing their job and nothing else. */
-.prose img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.prose img { display: block; max-width: 100%; height: auto; border-radius: 10px; }
+
+/* A paragraph whose only child is an image is a figure in all but name. marked
+   emits `<p><img></p>`, and a real <figure> is invalid inside a <p>, so the
+   paragraph itself carries the framing and the overlay. */
+.prose p:has(> img:only-child) {
+  position: relative; margin: 34px 0; border-radius: 10px; overflow: hidden;
+  /* Seats a dark still into a dark page: a hairline catches the edge so the
+     photo doesn't simply stop, and the shadow gives it somewhere to stop to. */
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .055), 0 20px 44px -30px rgb(0 0 0 / .85);
+}
+
+/* A sheen that tracks scroll position rather than a timer, so it reads as light
+   moving over the surface as the reader arrives. Native scroll-driven
+   animation: no JavaScript, nothing in the bundle, and where it is unsupported
+   the image is simply an image. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .prose p:has(> img:only-child)::after {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      border-radius: inherit;
+      background: linear-gradient(105deg,
+        transparent 40%,
+        rgb(255 255 255 / .085) 47%,
+        rgb(255 255 255 / .025) 53%,
+        transparent 60%);
+      background-size: 280% 100%;
+      background-repeat: no-repeat;
+      animation: shot-sheen linear both;
+      animation-timeline: view();
+      animation-range: entry 10% cover 45%;
+    }
+    @keyframes shot-sheen {
+      from { background-position: 165% 0; }
+      to { background-position: -65% 0; }
+    }
+  }
+}
 .prose figure img { border-radius: 8px; }
 
 .prose figure { margin: 34px 0; }
