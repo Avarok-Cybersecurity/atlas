@@ -142,7 +142,7 @@
       {#if data.older}
         <a class="prev" href={data.older.href}>
           <span class="postnav-label mono-label">
-            <svg class="pn-chev back" viewBox="0 0 396 636" fill="none" stroke-width="76"
+            <svg class="postnav-chev back" viewBox="0 0 396 636" fill="none" stroke-width="76"
               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M38 38L358 318L38 598" stroke="var(--ch-violet)" />
             </svg>Previous
@@ -153,7 +153,7 @@
       {#if data.newer}
         <a class="next" href={data.newer.href}>
           <span class="postnav-label mono-label">
-            Next<svg class="pn-chev" viewBox="0 0 396 636" fill="none" stroke-width="76"
+            Next<svg class="postnav-chev" viewBox="0 0 396 636" fill="none" stroke-width="76"
               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M38 38L358 318L38 598" stroke="var(--ch-violet)" />
             </svg>
@@ -174,6 +174,6 @@
      goes. Decorative — the label already says Previous or Next, so the mark is
      aria-hidden and adds nothing for a screen reader to read twice. */
   .postnav-label { display: inline-flex; align-items: center; gap: 6px; }
-  .pn-chev { width: 7px; height: auto; overflow: visible; flex: none; }
-  .pn-chev.back { transform: rotate(180deg); }
+  .postnav-chev { width: 7px; height: auto; overflow: visible; flex: none; }
+  .postnav-chev.back { transform: rotate(180deg); }
 </style>

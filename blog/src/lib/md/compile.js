@@ -38,7 +38,10 @@ export const svelteEscape = (s) =>
 export const slugify = (text) =>
   String(text)
     .toLowerCase()
-    .replace(/<[^>]*>/g, '')
+    // No tag-stripping pass: `<...>` removal by regex is incomplete
+    // sanitisation (`<scr<script>ipt>` survives it), and it is unnecessary
+    // here — the next rule already drops every character that is not a word
+    // character, whitespace or a hyphen, angle brackets included.
     .replace(/[^\w\s-]/g, '')
     .trim()
     .replace(/\s+/g, '-')
@@ -56,8 +59,6 @@ export const MARK = '@@ATLASMD';
 
 /** Raw HTML the body may contain: exactly the two components, nothing else. */
 const ALLOWED_TAGS = /^<\/?(Callout|Video)\b/;
-
-const PROSE_TAGS = 'p|h[1-6]|ul|ol|li|blockquote|em|strong|a|code|pre|hr|br|del|img|table|thead|tbody|tr|th|td';
 
 /**
  * Compile one markdown post.
@@ -157,19 +158,20 @@ export function compileMarkdown(src, { filename, tags, authors, highlight, measu
         }
         return hold(text);
       },
-      codespan: (token) => `<code>${svelteEscape(token.text)}</code>`
+      codespan: (token) => `<code>${svelteEscape(token.text)}</code>`,
+      // Escaping happens HERE, on the text leaves, rather than over the
+      // finished markup. Escaping the whole document and then un-escaping the
+      // tags by name meant turning `&amp;` back into `&` — a double-unescape
+      // that is both a real hazard and impossible to reason about. Overriding
+      // `text` hands us the raw leaf before marked escapes anything, so the
+      // structure marked emits is never touched and prose is escaped exactly
+      // once.
+      text: (token) => svelteEscape(token.text)
     }
   });
 
   const html = marked.parse(body);
-  // Only prose reaches the escape pass; component markup sits behind markers.
-  // Ordinary tags are then un-escaped again by name, so the pass cannot invent
-  // an element a post did not write.
-  const tagRe = new RegExp(`&lt;(/?(?:${PROSE_TAGS})\\b[^&]*?)&gt;`, 'g');
-  const escaped = svelteEscape(html).replace(tagRe, (_, inner) =>
-    `<${inner.replace(/&amp;/g, '&').replace(/&#123;/g, '{').replace(/&#125;/g, '}').replace(/&#96;/g, '`')}>`
-  );
-  const restored = escaped.replace(new RegExp(`${MARK}(\\d+)@@`, 'g'), (_, i) => parts[Number(i)]);
+  const restored = html.replace(new RegExp(`${MARK}(\\d+)@@`, 'g'), (_, i) => parts[Number(i)]);
 
   const meta = {
     format: 'md',
