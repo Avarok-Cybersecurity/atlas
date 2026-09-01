@@ -215,33 +215,16 @@ pub(crate) struct QuantizeCtx {
     pub stream: u64,
 }
 
-/// Load a quantized weight, dispatching by variant. Handles all three on-disk formats
-/// including FP8 block-scaled (requires dimensions for FP8→BF16→NVFP4 conversion).
-pub(crate) fn quantized_any(
+/// Per-key variant resolution for [`quantized_any`]: the checkpoint-wide
+/// `variant` may not describe THIS key (mixed-precision exports, EXL3
+/// materialization). Pure — reads only tensor names/dtypes from the store —
+/// so the fallbacks are unit-testable without a GPU.
+pub(crate) fn resolve_key_variant(
     store: &WeightStore,
     prefix: &str,
-    n: usize,
-    k: usize,
-    gpu: &dyn GpuBackend,
     variant: Nvfp4Variant,
-    qctx: QuantizeCtx,
-) -> Result<QuantizedWeight> {
-    let _t_detect = std::time::Instant::now();
-    // Native-EXL3 probe FIRST (mirrors `dense_auto`): a kept-packed trellis
-    // prefix has no `.weight`/`.weight_packed`, so every arm below would die
-    // on a bare "not found". Name the real cause: the prefix is in the
-    // native-serving set but its consumer still expects an NVFP4 weight.
-    if super::exl3_native_enabled()
-        && spark_runtime::weights::exl3::is_exl3_linear(store, prefix)
-    {
-        anyhow::bail!(
-            "quantized_any: {prefix} is held as packed EXL3 trellis \
-             (ATLAS_EXL3_NATIVE=1) but this consumer expects an NVFP4 weight — \
-             the prefix is in the native-serving set without a routed dispatch \
-             path. Remove it from `exl3_native_serves` or route the consumer \
-             through ops::exl3_gemv/exl3_gemm."
-        );
-    }
+    exl3_native_moe: bool,
+) -> Nvfp4Variant {
     // Per-key fallback (B8 #bugs RedHatAI/Qwen3-Coder-Next-NVFP4): some
     // models that are CompressedTensors overall keep certain projections
     // (e.g. `linear_attn.out_proj`) as raw BF16 with no quantization
@@ -276,7 +259,34 @@ pub(crate) fn quantized_any(
             .map(|w| w.dtype == WeightDtype::FP8E4M3)
             .unwrap_or(false);
 
-    let effective_variant = if has_only_dense && !matches!(variant, Nvfp4Variant::Bf16Raw) {
+    // Per-key fallback #3 (EXL3 native MoE, found by compute-sanitizer on the
+    // qwen4_exp 2.05bpw single-node boot): the EXL3 materialize pass rewrites
+    // the SHARED experts as ModelOpt-layout NVFP4 triplets (`.weight` UInt8
+    // [n,k/2] + `.weight_scale` FP8 + `.weight_scale_2` FP32), but with the
+    // routed experts kept packed the global detector sees no NVFP4 metadata on
+    // MLP projections and declares the model Bf16Raw. The Bf16Raw arm then
+    // reads the UInt8 packed buffer as BF16 [n,k] — 4x past the allocation
+    // (CUDA 700 at a layout-dependent layer, or silent OOB garbage). Detect
+    // the materialized triplet per key and load it as Standard. Scoped to the
+    // native-MoE gate: it is the ONLY configuration that leaves triplet keys
+    // inside a Bf16Raw-declared store, and gating keeps every other
+    // checkpoint's detection byte-identical.
+    let has_nvfp4_triplet = exl3_native_moe
+        && !has_packed
+        && has_scale
+        && store.contains(&format!("{prefix}.weight_scale_2"))
+        && store
+            .get(&format!("{prefix}.weight"))
+            .map(|w| w.dtype == WeightDtype::UInt8)
+            .unwrap_or(false);
+
+    if has_nvfp4_triplet && !matches!(variant, Nvfp4Variant::Standard) {
+        tracing::debug!(
+            "{prefix}: NVFP4 triplet key in a {variant:?} checkpoint (EXL3 \
+             materialized shared expert); loading as Standard"
+        );
+        Nvfp4Variant::Standard
+    } else if has_only_dense && !matches!(variant, Nvfp4Variant::Bf16Raw) {
         tracing::debug!("{prefix}: no quantization metadata; falling back to runtime BF16→NVFP4");
         Nvfp4Variant::Bf16Raw
     } else if has_fp8_dense
@@ -286,7 +296,36 @@ pub(crate) fn quantized_any(
         Nvfp4Variant::Fp8Dequanted
     } else {
         variant
-    };
+    }
+}
+
+/// Load a quantized weight, dispatching by variant. Handles all three on-disk formats
+/// including FP8 block-scaled (requires dimensions for FP8→BF16→NVFP4 conversion).
+pub(crate) fn quantized_any(
+    store: &WeightStore,
+    prefix: &str,
+    n: usize,
+    k: usize,
+    gpu: &dyn GpuBackend,
+    variant: Nvfp4Variant,
+    qctx: QuantizeCtx,
+) -> Result<QuantizedWeight> {
+    let _t_detect = std::time::Instant::now();
+    // Native-EXL3 probe FIRST (mirrors `dense_auto`): a kept-packed trellis
+    // prefix has no `.weight`/`.weight_packed`, so every arm below would die
+    // on a bare "not found". Name the real cause: the prefix is in the
+    // native-serving set but its consumer still expects an NVFP4 weight.
+    if super::exl3_native_enabled() && spark_runtime::weights::exl3::is_exl3_linear(store, prefix) {
+        anyhow::bail!(
+            "quantized_any: {prefix} is held as packed EXL3 trellis \
+             (ATLAS_EXL3_NATIVE=1) but this consumer expects an NVFP4 weight — \
+             the prefix is in the native-serving set without a routed dispatch \
+             path. Remove it from `exl3_native_serves` or route the consumer \
+             through ops::exl3_gemv/exl3_gemm."
+        );
+    }
+    let effective_variant =
+        resolve_key_variant(store, prefix, variant, super::exl3_native_moe_enabled());
 
     let _t_detect_ns = _t_detect.elapsed().as_nanos() as u64;
     match effective_variant {
@@ -475,6 +514,87 @@ mod ep_detection_tests {
             store_with(&["third_party.transformer.blocks.17.attn.q.weight_scale_inv".to_string()]);
         assert_eq!(
             detect_nvfp4_variant(&store, &cfg),
+            Nvfp4Variant::Fp8Dequanted
+        );
+    }
+}
+
+#[cfg(test)]
+mod key_variant_tests {
+    use super::*;
+    use spark_runtime::gpu::DevicePtr;
+    use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
+
+    fn store_of(entries: &[(&str, WeightDtype)]) -> WeightStore {
+        let map = entries
+            .iter()
+            .map(|(n, d)| {
+                (
+                    n.to_string(),
+                    WeightTensor {
+                        ptr: DevicePtr::NULL,
+                        shape: vec![1],
+                        dtype: *d,
+                    },
+                )
+            })
+            .collect();
+        WeightStore::from_map(map)
+    }
+
+    /// The EXL3-materialized shared-expert triplet inside a Bf16Raw-declared
+    /// store (the compute-sanitizer CUDA-700 case) must load as Standard —
+    /// but ONLY under the native-MoE gate; with the gate off detection is
+    /// byte-identical to before (the key stays on the declared variant).
+    #[test]
+    fn materialized_triplet_under_bf16raw_routes_to_standard_when_gated() {
+        let p = "model.layers.3.mlp.shared_expert.gate_proj";
+        let store = store_of(&[
+            (&format!("{p}.weight"), WeightDtype::UInt8),
+            (&format!("{p}.weight_scale"), WeightDtype::FP8E4M3),
+            (&format!("{p}.weight_scale_2"), WeightDtype::FP32),
+        ]);
+        assert_eq!(
+            resolve_key_variant(&store, p, Nvfp4Variant::Bf16Raw, true),
+            Nvfp4Variant::Standard
+        );
+        assert_eq!(
+            resolve_key_variant(&store, p, Nvfp4Variant::Bf16Raw, false),
+            Nvfp4Variant::Bf16Raw
+        );
+        // Already Standard: nothing to override.
+        assert_eq!(
+            resolve_key_variant(&store, p, Nvfp4Variant::Standard, true),
+            Nvfp4Variant::Standard
+        );
+    }
+
+    /// Negative controls: a real BF16 dense key and a CompressedTensors key
+    /// are never mistaken for the triplet, gate on or off.
+    #[test]
+    fn triplet_fallback_does_not_steal_other_layouts() {
+        let p = "model.layers.3.linear_attn.out_proj";
+        let dense = store_of(&[(&format!("{p}.weight"), WeightDtype::BF16)]);
+        assert_eq!(
+            resolve_key_variant(&dense, p, Nvfp4Variant::Standard, true),
+            Nvfp4Variant::Bf16Raw
+        );
+        let ct = store_of(&[
+            (&format!("{p}.weight_packed"), WeightDtype::UInt8),
+            (&format!("{p}.weight_scale"), WeightDtype::FP8E4M3),
+            (&format!("{p}.weight_global_scale"), WeightDtype::FP32),
+        ]);
+        assert_eq!(
+            resolve_key_variant(&ct, p, Nvfp4Variant::CompressedTensors, true),
+            Nvfp4Variant::CompressedTensors
+        );
+        // Per-row FP8 tail key in an NVFP4 checkpoint keeps its own fallback.
+        let fp8 = store_of(&[
+            (&format!("{p}.weight"), WeightDtype::FP8E4M3),
+            (&format!("{p}.weight_scale"), WeightDtype::BF16),
+        ]);
+        assert_eq!(
+            resolve_key_variant(&fp8, p, Nvfp4Variant::Standard, true),
             Nvfp4Variant::Fp8Dequanted
         );
     }

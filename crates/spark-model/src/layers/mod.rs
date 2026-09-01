@@ -351,6 +351,18 @@ impl FfnComponent {
         }
     }
 
+    /// True when this FFN's routed experts are served natively from EXL3
+    /// trellis (`ATLAS_EXL3_NATIVE_MOE=1`). Every mgemm in that arm is a
+    /// COOPERATIVE launch — not CUDA-graph-capturable — so each layer kind's
+    /// `decode_graph_unsupported` (and the verify-path `use_graphs` terms)
+    /// must include this, exactly like the `lm_head_exl3` veto.
+    pub fn exl3_native_moe(&self) -> bool {
+        match self {
+            Self::Moe(m) => m.exl3_native_active(),
+            _ => false,
+        }
+    }
+
     pub fn forward(
         &self,
         input: DevicePtr,

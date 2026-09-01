@@ -368,6 +368,19 @@ pub struct MoeLayer {
     /// forward. Decode/verify paths are a phase-1 followup (they REFUSE rather
     /// than silently drop the delta — see `reject_decode_lora`).
     pub(crate) lora: Option<MoeLoraWeights>,
+    /// Native EXL3 routed experts (`ATLAS_EXL3_NATIVE_MOE=1`): dense LOCAL
+    /// per-projection pointer tables `[gate, up, down]` over the kept-packed
+    /// trellis tensors. `Some` = this layer's routed experts are served
+    /// through `exl3_mgemm` (the NVFP4 `experts`/`gate_ptrs` above hold
+    /// nulls); `None` = the standard NVFP4 tables serve them. Installed by
+    /// the loader via [`MoeLayer::set_exl3_experts`]
+    /// (`moe/ptr_table_build.rs`); consumed by the native dispatch arm.
+    pub(crate) exl3_expert_tables: Option<[Exl3ExpertPtrTable; 3]>,
+    /// Model-SHARED mgemm launch state (locks + slot-batched fp16/fp32
+    /// slabs + routing staging) for the native EXL3 expert path — one
+    /// allocation for all 48 layers (launches are primary-stream
+    /// serialized). Always `Some` iff `exl3_expert_tables` is.
+    pub(crate) exl3_moe_state: Option<std::sync::Arc<Exl3MoeState>>,
 }
 
 impl MoeLayer {
@@ -400,7 +413,10 @@ impl MoeLayer {
 mod tables;
 // Re-exported so every `moe::ExpertPtrTable`-style path in the sub-files keeps
 // resolving; the split is invisible to them.
-pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
+#[allow(unused_imports)] // Exl3 items are consumed by the loader + dispatch arms
+pub(crate) use tables::{
+    Bf16SharedExpert, Exl3ExpertPtrTable, Exl3MoeState, ExpertPtrTable, Fp8ExpertPtrTable,
+};
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
@@ -409,19 +425,24 @@ mod lora;
 mod lora_gateup;
 mod lora_router;
 pub(crate) use lora::MoeLoraWeights;
+#[cfg(test)]
+mod exl3_tables_tests;
 mod forward_atomic_c4;
 mod forward_batched;
 mod forward_batched_gate;
 mod forward_ep;
+mod forward_exl3;
 mod forward_k2;
 mod forward_k3;
 mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_bf16;
+mod forward_prefill_exl3;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
 mod forward_prefill_router;
+mod forward_prefill_topk;
 mod forward_token_major;
 mod helpers_a;
 mod helpers_b;

@@ -97,6 +97,16 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer launches COOPERATIVE kernels on the verify path
+    /// (routed experts served natively from EXL3 trellis) — never
+    /// graph-capturable. Every graph-capturing verify site ORs this across
+    /// layers next to the `lm_head_exl3` veto. Kept separate from
+    /// `decode_graph_unsupported` so the EXL3 gate leaves the verify-graph
+    /// behavior of QSA/PLE models exactly as it was.
+    fn exl3_graph_veto(&self) -> bool {
+        false
+    }
+
     /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
     /// travel with an SSM snapshot for a prefix-cache hit to be complete —
     /// PLE's n-gram history + conv state, QSA's ingested indexer keys.

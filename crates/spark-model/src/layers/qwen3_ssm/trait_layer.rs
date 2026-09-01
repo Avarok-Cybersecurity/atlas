@@ -40,9 +40,15 @@ impl TransformerLayer for Qwen3SsmLayer {
 
     /// PLE's per-seq host hash on the hc multi-seq decode path is
     /// capture-illegal (pageable reads); the single-decode path prestages
-    /// around it, the batched path does not — veto batched graphs.
+    /// around it, the batched path does not — veto batched graphs. Native
+    /// EXL3 MoE experts launch cooperatively (never capturable) — same veto,
+    /// keyed on the layer itself rather than the lm_head coincidence.
     fn decode_graph_unsupported(&self) -> bool {
-        self.ple.is_some()
+        self.ple.is_some() || self.exl3_graph_veto()
+    }
+
+    fn exl3_graph_veto(&self) -> bool {
+        self.ffn.exl3_native_moe()
     }
 
     fn snapshot_aux(

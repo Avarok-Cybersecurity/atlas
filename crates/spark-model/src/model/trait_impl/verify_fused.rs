@@ -207,7 +207,10 @@ impl TransformerModel {
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
-            && !lora_eager;
+            && !lora_eager
+            // EXL3-native head / MoE experts launch cooperatively — never
+            // capturable (see decode_a).
+            && !self.exl3_graph_veto();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

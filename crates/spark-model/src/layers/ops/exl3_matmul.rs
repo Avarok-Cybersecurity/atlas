@@ -42,6 +42,18 @@ use spark_runtime::kernel_args::KernelLaunch;
 #[path = "exl3_matmul/mgemm.rs"]
 mod mgemm;
 pub use mgemm::{exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f32_to_bf16, exl3_mgemm};
+#[path = "exl3_matmul/moe_decode.rs"]
+mod moe_decode;
+pub use moe_decode::{
+    Exl3MoeProj, Exl3MoeScratch, exl3_moe_decode_routed, exl3_moe_replicate_a_bf16,
+    exl3_moe_stage_routing, exl3_silu_mul_f16,
+};
+#[path = "exl3_matmul/moe_prefill.rs"]
+mod moe_prefill;
+pub use moe_prefill::{
+    EXL3_MOE_MAX_TOKENS_PER_EXPERT, Exl3MoeOverflowCtx, Exl3MoePrefillScratch, Exl3MoePrefillStats,
+    exl3_moe_fused, exl3_moe_prefill_routed, exl3_moe_stage_sorted,
+};
 
 /// Dynamic shared memory every gemm/mgemm instance is launched with (the
 /// upstream `SMEM_MAX`); also the value of the one-time attribute raise.
@@ -345,7 +357,6 @@ pub fn exl3_gemv(
         .launch(stream)?;
     Ok(true)
 }
-
 
 #[cfg(test)]
 mod tests {

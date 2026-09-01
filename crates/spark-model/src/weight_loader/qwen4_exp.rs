@@ -255,10 +255,15 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         let (mut moe_bytes, mut arm_bytes, mut hc_bytes) = (0u64, 0u64, 0u64);
         let free_now = |g: &dyn GpuBackend| g.free_memory().unwrap_or(0) as u64;
 
+        // Native EXL3 MoE (ATLAS_EXL3_NATIVE_MOE=1): the mgemm launch state
+        // (locks + slot-batched slabs, ~140 MB) is MODEL-shared — built by
+        // the first natively-served MoE layer, reused by the rest.
+        let mut exl3_moe_state: Option<std::sync::Arc<crate::layers::moe::Exl3MoeState>> = None;
+
         for i in 0..config.num_hidden_layers {
             let lp = config.layer_prefix(i);
             let f0 = free_now(gpu);
-            let ffn = ffn::build_moe(store, &lp, config, gpu, variant)?;
+            let ffn = ffn::build_moe(store, &lp, config, gpu, variant, &mut exl3_moe_state)?;
             let f1 = free_now(gpu);
             moe_bytes += f0.saturating_sub(f1);
 

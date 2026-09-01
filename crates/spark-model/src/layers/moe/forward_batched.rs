@@ -29,6 +29,13 @@ impl MoeLayer {
             "zero-expert MoE routing is not wired on this dispatch variant yet (forward_batched)"
         );
 
+        // Native EXL3 routed experts: the per-token fused kernels below read
+        // NVFP4 pointer tables that hold NULLS when the experts were kept
+        // packed — delegate to the generic n-token mgemm arm.
+        if self.exl3_native_active() {
+            return self.forward_exl3_decode(input, num_tokens, ctx, stream);
+        }
+
         // SOLID Incr-4: batched decode folds the routed-expert gate/up + down
         // LoRA delta per token (below) AND the router (mlp.gate) delta on the
         // whole-batch gate_logits before top-k (`apply_router_lora_batched`,

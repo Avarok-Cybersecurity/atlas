@@ -158,14 +158,44 @@ pub fn run_pipeline(
 
     if let Some(cfg) = gemv_cfg {
         let launched = exl3_gemv(
-            g, a_d, w.trellis, c_d, m, k, n, k_bits, cb, c_fp32, ctx.locks, w.suh, a_had_d,
-            w.svh, Some(cfg), ctx.sms, stream,
+            g,
+            a_d,
+            w.trellis,
+            c_d,
+            m,
+            k,
+            n,
+            k_bits,
+            cb,
+            c_fp32,
+            ctx.locks,
+            w.suh,
+            a_had_d,
+            w.svh,
+            Some(cfg),
+            ctx.sms,
+            stream,
         )?;
         anyhow::ensure!(launched, "gemv refused (m={m} k={k} n={n} K={k_bits})");
     } else {
         exl3_gemm(
-            g, a_d, w.trellis, c_d, m, k, n, k_bits, cb, c_fp32, ctx.locks, w.suh, a_had_d,
-            w.svh, force_shape, ctx.sms, stream,
+            g,
+            a_d,
+            w.trellis,
+            c_d,
+            m,
+            k,
+            n,
+            k_bits,
+            cb,
+            c_fp32,
+            ctx.locks,
+            w.suh,
+            a_had_d,
+            w.svh,
+            force_shape,
+            ctx.sms,
+            stream,
         )?;
     }
     g.synchronize(stream)?;

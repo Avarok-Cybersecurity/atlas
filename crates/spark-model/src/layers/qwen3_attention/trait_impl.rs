@@ -106,9 +106,14 @@ impl TransformerLayer for Qwen3AttentionLayer {
 
     /// QSA selection does a host top-k per step — never capturable, and a
     /// graph captured on the dense path would replay wrong attention once
-    /// selection activates.
+    /// selection activates. Native EXL3 MoE experts (main FFN or the LongCat
+    /// shortcut MoE) launch cooperatively — same veto.
     fn decode_graph_unsupported(&self) -> bool {
-        self.qsa.is_some()
+        self.qsa.is_some() || self.exl3_graph_veto()
+    }
+
+    fn exl3_graph_veto(&self) -> bool {
+        self.ffn.exl3_native_moe() || self.moe_ffn.as_ref().is_some_and(|f| f.exl3_native_moe())
     }
 
     fn has_aux_state(&self) -> bool {

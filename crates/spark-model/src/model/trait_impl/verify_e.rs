@@ -255,7 +255,11 @@ impl TransformerModel {
         // currently free (pad writes land on unowned pool state, zeroed
         // again at the next claim) and its tiered intermediate pool covers
         // the baked depth.
-        let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
+        // EXL3-native head / MoE experts launch cooperatively — never
+        // capturable; without this term every batched-verify capture step
+        // would trip the arms' graph_capture ensures mid-serve.
+        let graphs_on =
+            super::verify_e2::verify_graphs_enabled() && !k4_diag && !self.exl3_graph_veto();
         let graph_key = if graphs_on {
             self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
         } else {

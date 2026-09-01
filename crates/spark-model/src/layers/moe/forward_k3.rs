@@ -23,6 +23,11 @@ impl MoeLayer {
             "zero-expert MoE routing is not wired on this dispatch variant yet (forward_k3)"
         );
 
+        // Native EXL3 routed experts: see forward_k2 — one generic arm.
+        if self.exl3_native_active() {
+            return self.forward_exl3_decode(input, 3, ctx, stream);
+        }
+
         // Feature-1: a resident MoE adapter forces the per-row batched fallback
         // (folds gate/up/down route-agnostically; base rows no-op; same
         // moe_output[3,H]), skipping any no-fold fast path. Install-time gate →

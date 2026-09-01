@@ -153,7 +153,9 @@ pub(super) fn load(
     } else {
         for i in 0.. {
             let name = format!("{lp}.ple_embedding.ngram_embedding.shard_{i}.trellis");
-            let Some(d) = store.deferred(&name) else { break };
+            let Some(d) = store.deferred(&name) else {
+                break;
+            };
             if let Some(s) = &exl3_shape {
                 anyhow::ensure!(
                     d.shape == *s,

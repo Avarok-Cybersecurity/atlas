@@ -26,6 +26,12 @@ impl MoeLayer {
             "zero-expert MoE routing is not wired on this dispatch variant yet (forward_atomic_c4)"
         );
 
+        // Native EXL3 routed experts: see forward_k2 — one generic arm (the
+        // atomic-C4 NVFP4 kernels below would read null pointer tables).
+        if self.exl3_native_active() {
+            return self.forward_exl3_decode(input, num_tokens, ctx, stream);
+        }
+
         // Feature-1 phase-1: decode does not yet fold the expert delta.
         self.reject_decode_lora(ctx, "forward_atomic_c4_decode")?;
         let has_shared = self.weights.shared_expert.gate_proj.weight.0 != 0

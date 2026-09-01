@@ -184,10 +184,11 @@ impl TransformerModel {
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        // lm_head_exl3 veto: the EXL3-native head launches cooperatively,
-        // which is illegal under CUDA graph capture (see decode_a).
+        // EXL3 veto: the native head / native MoE experts launch
+        // cooperatively, which is illegal under CUDA graph capture (see
+        // decode_a).
         let use_graphs =
-            self.comm.is_none() && !hss_engaged && !lora_eager && self.lm_head_exl3.is_none();
+            self.comm.is_none() && !hss_engaged && !lora_eager && !self.exl3_graph_veto();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

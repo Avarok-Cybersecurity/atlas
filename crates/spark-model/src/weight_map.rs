@@ -7,6 +7,10 @@
 //!
 //! Refactor wave 4a (2026-05-03): split into `weight_map/` sub-modules.
 
+#[path = "weight_map/exl3_materialize.rs"]
+mod exl3_materialize;
+#[path = "weight_map/exl3_materialize_moe.rs"]
+mod exl3_materialize_moe;
 #[path = "weight_map/expert.rs"]
 mod expert;
 #[path = "weight_map/fp8_dequant.rs"]
@@ -25,6 +29,8 @@ mod model_a;
 mod model_b;
 #[path = "weight_map/moe.rs"]
 mod moe;
+#[path = "weight_map/moe_exl3.rs"]
+mod moe_exl3;
 #[path = "weight_map/nemotron.rs"]
 mod nemotron;
 #[path = "weight_map/nvfp4_detect.rs"]
@@ -41,19 +47,19 @@ mod quantized;
 mod ssm_qwen35;
 #[path = "weight_map/ssm_qwen35_more.rs"]
 mod ssm_qwen35_more;
-#[path = "weight_map/exl3_materialize.rs"]
-mod exl3_materialize;
 
+pub use exl3_materialize::*;
+pub use exl3_materialize_moe::*;
 pub use expert::*;
 pub(crate) use fp8_dequant::*;
 pub use loaders_fp8::*;
 pub use loaders_mtp::*;
 pub use model_a::*;
 pub use moe::*;
+pub use moe_exl3::*;
 pub use nemotron::*;
 pub use nvfp4_detect::*;
 pub use quantize_fns::*;
-pub use exl3_materialize::*;
 pub use quantize_fp8_bs::*;
 pub use quantized::*;
 pub use ssm_qwen35::*;

@@ -90,6 +90,31 @@ impl Exl3Weight {
     /// shapes and dtypes. The `.mul1` scalar is read back from the GPU (4
     /// bytes) to pick the codebook.
     pub fn from_store(gpu: &dyn GpuBackend, store: &WeightStore, prefix: &str) -> Result<Self> {
+        Self::from_store_inner(gpu, store, prefix, None)
+    }
+
+    /// Like [`Self::from_store`] but with a caller-known codebook — skips the
+    /// 4-byte `.mul1` D2H readback (which is synchronous and, over the 73,728
+    /// expert tensors of a 512-expert model, measurably slows load). Use ONLY
+    /// for tensors whose codebook was already validated: the EXL3 materialize
+    /// pass reads every expert's flag for its per-(layer, projection)
+    /// uniformity check, so the expert loader reads ONE flag per (layer,
+    /// projection) and passes it here for the siblings.
+    pub fn from_store_with_cb(
+        gpu: &dyn GpuBackend,
+        store: &WeightStore,
+        prefix: &str,
+        cb: Exl3Codebook,
+    ) -> Result<Self> {
+        Self::from_store_inner(gpu, store, prefix, Some(cb))
+    }
+
+    fn from_store_inner(
+        gpu: &dyn GpuBackend,
+        store: &WeightStore,
+        prefix: &str,
+        known_cb: Option<Exl3Codebook>,
+    ) -> Result<Self> {
         let trellis = store
             .get(&format!("{prefix}.trellis"))
             .with_context(|| format!("EXL3 linear {prefix}: missing .trellis"))?;
@@ -123,14 +148,17 @@ impl Exl3Weight {
         );
 
         // Codebook flag: a 4-byte scalar holding the codebook's multiplier.
-        let cb = match store.get(&format!("{prefix}.mul1")) {
-            Ok(flag) => {
-                let mut bytes = [0u8; 4];
-                gpu.copy_d2h(flag.ptr, &mut bytes)?;
-                Exl3Codebook::from_flag_scalar(u32::from_le_bytes(bytes))?
-            }
-            // Absent flag = upstream's unflagged default.
-            Err(_) => Exl3Codebook::Inst3,
+        let cb = match known_cb {
+            Some(cb) => cb,
+            None => match store.get(&format!("{prefix}.mul1")) {
+                Ok(flag) => {
+                    let mut bytes = [0u8; 4];
+                    gpu.copy_d2h(flag.ptr, &mut bytes)?;
+                    Exl3Codebook::from_flag_scalar(u32::from_le_bytes(bytes))?
+                }
+                // Absent flag = upstream's unflagged default.
+                Err(_) => Exl3Codebook::Inst3,
+            },
         };
 
         Ok(Self {
@@ -142,6 +170,20 @@ impl Exl3Weight {
             k_bits,
             cb,
         })
+    }
+
+    /// Resident bytes of the packed representation:
+    /// trellis (`in*out*K/8`) + suh/svh f16 vectors + the 4-byte flag scalar.
+    pub fn packed_bytes(&self) -> usize {
+        self.in_dim * self.out_dim * self.k_bits as usize / 8 + (self.in_dim + self.out_dim) * 2 + 4
+    }
+
+    /// What the same linear would cost as a runtime ModelOpt-style NVFP4
+    /// triplet (packed E2M1 `[n, k/2]` + FP8 per-16 scales `[n, k/16]` +
+    /// f32 scalar) — the materialize pass's expert fallback format. Used for
+    /// the keep-native memory-savings log.
+    pub fn nvfp4_equiv_bytes(&self) -> usize {
+        self.in_dim * self.out_dim / 2 + self.in_dim * self.out_dim / 16 + 4
     }
 
     /// Materialize as Atlas-layout dense BF16 `[out, in]` (fresh buffer,
@@ -219,7 +261,10 @@ pub fn reconstruct_had_f16_device(
         in_dim.is_multiple_of(128) && out_dim.is_multiple_of(128),
         "EXL3 reconstruct needs both dims divisible by 128, got [{in_dim}, {out_dim}]"
     );
-    ensure!((1..=8).contains(&k_bits), "EXL3 K must be 1..=8, got {k_bits}");
+    ensure!(
+        (1..=8).contains(&k_bits),
+        "EXL3 K must be 1..=8, got {k_bits}"
+    );
 
     let name = format!("exl3_reconstruct_had_k{}_cb{}", k_bits, cb as u32);
     let kernel = match gpu.kernel(MODULE, &name) {
@@ -261,8 +306,7 @@ pub fn reconstruct_had_bf16(
     k_bits: u32,
     cb: Exl3Codebook,
 ) -> Result<DevicePtr> {
-    let f16_tmp =
-        reconstruct_had_f16_device(gpu, trellis, suh, svh, in_dim, out_dim, k_bits, cb)?;
+    let f16_tmp = reconstruct_had_f16_device(gpu, trellis, suh, svh, in_dim, out_dim, k_bits, cb)?;
     let transpose = match gpu.kernel(MODULE, "exl3_f16_to_bf16_t") {
         Ok(k) => k,
         Err(e) => {
@@ -279,7 +323,11 @@ pub fn reconstruct_had_bf16(
         }
     };
     let launch = KernelLaunch::new(gpu, transpose)
-        .grid([(out_dim.div_ceil(32)) as u32, (in_dim.div_ceil(32)) as u32, 1])
+        .grid([
+            (out_dim.div_ceil(32)) as u32,
+            (in_dim.div_ceil(32)) as u32,
+            1,
+        ])
         .block([32, 8, 1])
         .arg_ptr(f16_tmp)
         .arg_ptr(out)
@@ -340,7 +388,9 @@ mod store_tests {
 
     #[test]
     fn f16_aux_names() {
-        assert!(is_exl3_f16_aux("model.layers.0.mlp.experts.0.gate_proj.suh"));
+        assert!(is_exl3_f16_aux(
+            "model.layers.0.mlp.experts.0.gate_proj.suh"
+        ));
         assert!(is_exl3_f16_aux("a.svh"));
         assert!(!is_exl3_f16_aux("a.weight"));
         assert!(!is_exl3_f16_aux("a.suh.weight"));
@@ -359,7 +409,10 @@ mod store_tests {
                 ".{sfx} name must parse the expert index"
             );
         }
-        assert_eq!(parse_expert_index("model.layers.3.mlp.shared_expert.up_proj.trellis"), None);
+        assert_eq!(
+            parse_expert_index("model.layers.3.mlp.shared_expert.up_proj.trellis"),
+            None
+        );
     }
 
     #[test]
@@ -394,7 +447,10 @@ mod store_tests {
             Exl3Codebook::from_flag_scalar(0xCBAC_1FED).unwrap(),
             Exl3Codebook::Mcg
         );
-        assert_eq!(Exl3Codebook::from_flag_scalar(0).unwrap(), Exl3Codebook::Inst3);
+        assert_eq!(
+            Exl3Codebook::from_flag_scalar(0).unwrap(),
+            Exl3Codebook::Inst3
+        );
         assert!(Exl3Codebook::from_flag_scalar(1234).is_err());
     }
 }
@@ -435,9 +491,7 @@ pub mod cpu_ref {
         let w = w as u32;
         match cb {
             Exl3Codebook::Inst3 => {
-                let x = w
-                    .wrapping_mul(89226354)
-                    .wrapping_add(64248484);
+                let x = w.wrapping_mul(89226354).wrapping_add(64248484);
                 let x = (x & 0x8fff8fff) ^ 0x3b603b60;
                 hadd(f16b(x as u16), f16b((x >> 16) as u16))
             }
@@ -546,8 +600,8 @@ pub mod cpu_ref {
     #[allow(clippy::needless_range_loop)]
     pub fn reconstruct_had_block(
         trellis_block: impl Fn(usize, usize) -> Vec<u16>, // (tile_r, tile_c) -> 16*k words
-        suh: &[u16],  // 128 f16 bits for this block's rows
-        svh: &[u16],  // 128 f16 bits for this block's cols
+        suh: &[u16],                                      // 128 f16 bits for this block's rows
+        svh: &[u16],                                      // 128 f16 bits for this block's cols
         k: u32,
         cb: Exl3Codebook,
     ) -> Vec<u16> {
@@ -839,7 +893,11 @@ pub mod cpu_ref {
                 let idx = idx % total;
                 let w32 = idx / 32;
                 let bit = 31 - (idx % 32);
-                let word = if bit >= 16 { words[w32 * 2 + 1] } else { words[w32 * 2] };
+                let word = if bit >= 16 {
+                    words[w32 * 2 + 1]
+                } else {
+                    words[w32 * 2]
+                };
                 (word >> (bit % 16)) & 1
             };
             let get = |t: usize| {

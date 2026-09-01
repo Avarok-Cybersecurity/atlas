@@ -5,9 +5,7 @@ use anyhow::Result;
 use half::f16;
 use spark_model::layers::ops::exl3_mgemm;
 
-use crate::truth::{
-    cb_enum, decode_what_f64, materialized_bf16_f64, truth_dense, truth_matmul,
-};
+use crate::truth::{cb_enum, decode_what_f64, materialized_bf16_f64, truth_dense, truth_matmul};
 use crate::util::{
     Ctx, DevWeight, GEMM_MAX_Z, GEMM_REL_RMS, GEMV_MAX_Z, GEMV_REL_RMS, Lcg, as_bytes, down_f32,
     gate_leg, metrics, run_pipeline, up,
@@ -56,7 +54,13 @@ pub fn leg_gemm(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
         let y64 = truth_matmul(&a, &suh, &svh, &what, m, k, n, 1.0);
         let w = DevWeight::upload(ctx.g, &trellis, &suh, &svh)?;
         let out = run_pipeline(ctx, &a, &w, m, k, n, 4, 2, true, None, None)?;
-        ok &= gate_leg("gemm [256x128x128] K=4 cb2 f32 (shape1)", &out.y, &y64, GEMM_REL_RMS, GEMM_MAX_Z);
+        ok &= gate_leg(
+            "gemm [256x128x128] K=4 cb2 f32 (shape1)",
+            &out.y,
+            &y64,
+            GEMM_REL_RMS,
+            GEMM_MAX_Z,
+        );
 
         // Determinism: same launch twice must be bit-identical.
         let out2 = run_pipeline(ctx, &a, &w, m, k, n, 4, 2, true, None, None)?;
@@ -99,7 +103,13 @@ pub fn leg_gemm(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
         let y64 = truth_matmul(&a, &suh, &svh, &what, m, k, n, 1.0);
         let w = DevWeight::upload(ctx.g, &trellis, &suh, &svh)?;
         let out = run_pipeline(ctx, &a, &w, m, k, n, 4, 2, true, None, None)?;
-        ok &= gate_leg("gemm [512x2560x640] K=4 cb2 f32 (shape2)", &out.y, &y64, GEMM_REL_RMS, GEMM_MAX_Z);
+        ok &= gate_leg(
+            "gemm [512x2560x640] K=4 cb2 f32 (shape2)",
+            &out.y,
+            &y64,
+            GEMM_REL_RMS,
+            GEMM_MAX_Z,
+        );
 
         let out16 = run_pipeline(ctx, &a, &w, m, k, n, 4, 2, false, None, None)?;
         ok &= gate_leg(
@@ -185,7 +195,19 @@ pub fn leg_real(ctx: &Ctx, rng: &mut Lcg) -> Result<Option<bool>> {
     let a1: Vec<u16> = (0..k_dim).map(|_| rng.act_f16()).collect();
     let y64_1 = truth_matmul(&a1, &suh, &svh, &what, 1, k_dim, n_dim, 1.0);
     for cfg in [0u32, 1] {
-        let out = run_pipeline(ctx, &a1, &w, 1, k_dim, n_dim, k_bits, cb, true, Some(cfg), None)?;
+        let out = run_pipeline(
+            ctx,
+            &a1,
+            &w,
+            1,
+            k_dim,
+            n_dim,
+            k_bits,
+            cb,
+            true,
+            Some(cfg),
+            None,
+        )?;
         ok &= gate_leg(
             &format!("REAL gemv m=1 cfg{cfg} f32"),
             &out.y,
@@ -250,7 +272,10 @@ pub fn leg_mgemm(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
         let m = 1usize;
         let indices: Vec<i64> = vec![0, 2, 1, 3];
         let weights_f: Vec<f32> = vec![0.6, 0.4, 0.3, 0.7];
-        let weights_h: Vec<u16> = weights_f.iter().map(|&x| f16::from_f32(x).to_bits()).collect();
+        let weights_h: Vec<u16> = weights_f
+            .iter()
+            .map(|&x| f16::from_f32(x).to_bits())
+            .collect();
 
         // bszm_in = num_tokens slabs? The kernel broadcasts only when
         // bszm_in == 1; otherwise slot j reads A + j*m*k. Duplicate each
@@ -291,7 +316,13 @@ pub fn leg_mgemm(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
         let a_had_elems = bszm * m * k; // HARD requirement: bszm*m*k halves
         let a_had_d = g.alloc(a_had_elems * 2)?;
         let c_d = g.alloc(bszm * m * n * 4)?;
-        let idx_d = up(g, &indices.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+        let idx_d = up(
+            g,
+            &indices
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        )?;
         let wts_d = up(g, &as_bytes(&weights_h))?;
 
         exl3_mgemm(

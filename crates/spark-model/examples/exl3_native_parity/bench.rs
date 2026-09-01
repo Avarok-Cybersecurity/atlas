@@ -72,8 +72,23 @@ pub fn run(ctx: &Ctx, rng: &mut Lcg) -> Result<()> {
         let label = format!("gemv cfg{cfg} {}", if c_fp32 { "f32" } else { "f16" });
         time_arm(ctx, &label, 1, k, n, k_bits, &|| {
             let launched = exl3_gemv(
-                g, a_d, w.trellis, c_d, 1, k, n, k_bits, cb, c_fp32, ctx.locks, w.suh,
-                a_had_d, w.svh, Some(cfg), ctx.sms, stream,
+                g,
+                a_d,
+                w.trellis,
+                c_d,
+                1,
+                k,
+                n,
+                k_bits,
+                cb,
+                c_fp32,
+                ctx.locks,
+                w.suh,
+                a_had_d,
+                w.svh,
+                Some(cfg),
+                ctx.sms,
+                stream,
             )?;
             anyhow::ensure!(launched, "gemv refused");
             Ok(())

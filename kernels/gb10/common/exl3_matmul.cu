@@ -81,6 +81,44 @@
 //   block = 256, grid = min(ceil(n/256), 4096). Scalar loads: milestone-1
 //   cost is one extra read+write of A (and of C) per matmul, ~2 elementwise
 //   passes; fold into the Hadamard prologue later if it shows in profiles.
+//
+// exl3_silu_mul_f16(gate, up, out, act_limit, n2)  — MoE decode-tier
+//   activation between the gate/up and down mgemm calls, mirroring upstream
+//   ext.silu_mul (act_mul_kernel_h<ACT_SILU>) EXACTLY: out = silu_h2(gate) *
+//   up over half2 lanes; act_limit != 0 clamps up to [-limit, limit] and
+//   silu(gate) to (-inf, limit] first (qwen4_exp declares none — pass 0.0f).
+//   All three buffers are fp16 SLOT buffers (bszm, 1, inter) — the mgemm
+//   gate/up tier writes f16 C like upstream, so no f32-input variant is
+//   needed (add one only if a caller switches gate/up to c_fp32). n2 =
+//   numel/2 half2 elements; numel must be even (inter=640 per slot — always).
+//   In-place allowed (out == gate or out == up), hence no __restrict__.
+//   block = 256, grid = min(ceil(n2/256), 4096), grid-stride, plain launch.
+//
+// MoE decode-tier staging (plain launches, grid-stride; the two device-side
+// preludes of the 3x-mgemm routed-expert pipeline — no D2H on the hot path):
+//   exl3_moe_stage_routing(indices, probs, b_indices, b_weights,
+//                          local_start, num_local, s)
+//     Maps Atlas's device routing state (u32 GLOBAL expert ids + f32 probs,
+//     [s = T*top_k]) to the mgemm arguments: b_indices[i] = LOCAL table
+//     index (gid - local_start) for an EP-local expert, -1 for a remote one
+//     (the canonical `exl3_expert_slot_index` mapping — the -1 is what makes
+//     the mgemm weighted reduction skip the slot; NEVER encode remote
+//     experts as null table entries), and b_weights[i] = f16(probs[i])
+//     (kernel B_weights is half, matching upstream's fp16 routing weights).
+//   exl3_moe_replicate_a_bf16(in, out, top_k, hidden, total)
+//     BF16 [T, hidden] token activations -> fp16 A [T*top_k, hidden] with
+//     slot s = t*top_k + j holding a COPY of token t's row (the mgemm
+//     bszm_in > 1 layout; bszm_in == 1 broadcast only covers T == 1, and one
+//     uniform path is simpler at <= 8 tokens). total = T*top_k*hidden.
+//     Same fp16 saturation note as exl3_bf16_to_f16.
+//
+// MoE prefill-tier staging (plain launches, grid-stride; contracts at the
+// definitions): exl3_moe_stage_sorted maps Atlas's moe_sort_by_expert outputs
+// onto the fused exl3_moe kernel's token_sorted/weight_sorted/expert_count
+// forms (local-expert order + EP sentinel tail bucket);
+// exl3_moe_gather_rows_h16 / exl3_moe_scatter_add_f32 are the
+// overflow-expert (count > 128) f16 row gather and weighted fp32 scatter-add
+// around the chunked exl3_gemm tier.
 
 #include <cstdint>
 #include <cuda_fp16.h>
@@ -208,4 +246,178 @@ extern "C" __global__ void __launch_bounds__(256) exl3_f32_to_bf16(
     long long stride = (long long) gridDim.x * blockDim.x;
     for (; i < n; i += stride)
         out[i] = __float2bfloat16_rn(in[i]);
+}
+
+// ── MoE decode-tier activation (contract in the header) ────────────────────
+// Numerics verbatim from upstream activation_kernels.cuh
+// act_mul_kernel_h<ACT_SILU> (fetched from master 2026-09-01): silu computed
+// in half precision (h2exp/h2rcp), clamp in half, product in half. NO
+// __restrict__: upstream documents in-place use (z == x or z == y).
+
+extern "C" __global__ void __launch_bounds__(256) exl3_silu_mul_f16(
+    const half* gate, const half* up, half* out, float act_limit, long long n2)
+{
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < n2; i += stride)
+    {
+        half2 x2 = ((const half2*) gate)[i];
+        half2 y2 = ((const half2*) up)[i];
+
+        // _silu(half2) upstream
+        half2 one = __float2half2_rn(1.0f);
+        half2 neg_x = __hneg2(x2);
+        half2 e = h2exp(neg_x);
+        half2 sum = __hadd2(one, e);
+        half2 r = h2rcp(sum);
+        x2 = __hmul2(x2, r);
+
+        if (act_limit != 0.0f)
+        {
+            y2 = __hmax2(y2, __float2half2_rn(-act_limit));
+            y2 = __hmin2(y2, __float2half2_rn(act_limit));
+            x2 = __hmin2(x2, __float2half2_rn(act_limit));
+        }
+
+        ((half2*) out)[i] = __hmul2(x2, y2);
+    }
+}
+
+// ── MoE decode-tier staging (contracts in the header) ──────────────────────
+
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_stage_routing(
+    const unsigned int* __restrict__ indices,  // [s] GLOBAL expert ids (u32)
+    const float* __restrict__ probs,           // [s] routing probabilities
+    int64_t* __restrict__ b_indices,           // [s] LOCAL ids, -1 = remote
+    half* __restrict__ b_weights,              // [s] f16 per-slot weights
+    int local_start,
+    int num_local,
+    long long s)
+{
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < s; i += stride)
+    {
+        long long gid = (long long) indices[i];
+        long long local = gid - (long long) local_start;
+        b_indices[i] = (local >= 0 && local < (long long) num_local) ? local : (int64_t) -1;
+        b_weights[i] = __float2half_rn(probs[i]);
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_replicate_a_bf16(
+    const __nv_bfloat16* __restrict__ in,  // [T, hidden] BF16
+    half* __restrict__ out,                // [T*top_k, hidden] fp16
+    int top_k,
+    long long hidden,
+    long long total)                       // = T*top_k*hidden
+{
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long slot = i / hidden;
+        long long col = i - slot * hidden;
+        long long token = slot / top_k;
+        out[i] = __float2half_rn(__bfloat162float(in[token * hidden + col]));
+    }
+}
+
+// ── MoE prefill-tier staging (contracts in the header) ─────────────────────
+//
+// exl3_moe_stage_sorted: map Atlas's sort outputs (moe_sort_by_expert:
+// contiguous spans per GLOBAL expert ascending, expert_offsets [ne+1] i32
+// prefix sums, token_to_perm [T*top_k] i32 flat-slot -> sorted position) onto
+// the fused exl3_moe kernel's contract (token_sorted/weight_sorted i64/f16
+// ordered by LOCAL expert with EP-remote slots parked in a sentinel tail
+// bucket, expert_count i64 [num_local+1] bincount, count[num_local] = the
+// sentinel). The EP-local range is one CONTIGUOUS run of global ids, so
+// sorted positions [lo, hi) (lo = offsets[local_start], hi =
+// offsets[local_start + num_local]) are exactly the local slots, already
+// grouped by local expert ascending — a rotation of [0, hi) by lo puts them
+// first and every remote slot lands in the tail:
+//     p in [lo, hi)  ->  dst = p - lo          (local, bucket order kept)
+//     p <  lo        ->  dst = p + (hi - lo)   (remote-before -> tail)
+//     p >= hi        ->  dst = p               (remote-after already tail)
+// Non-EP degenerates to the identity (lo = 0, hi = s, empty sentinel).
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_stage_sorted(
+    const int* __restrict__ token_to_perm,   // [s] flat slot -> sorted pos
+    const float* __restrict__ probs,         // [s] routing probs (flat order)
+    const int* __restrict__ expert_offsets,  // [num_experts_global + 1]
+    int64_t* __restrict__ token_sorted,      // [s] out: token idx per slot
+    half* __restrict__ weight_sorted,        // [s] out: f16 weight per slot
+    int64_t* __restrict__ expert_count,      // [num_local + 1] out
+    int local_start,
+    int num_local,
+    int top_k,
+    long long s)                             // = T * top_k
+{
+    const long long lo = (long long) expert_offsets[local_start];
+    const long long hi = (long long) expert_offsets[local_start + num_local];
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (long long j = i; j < s; j += stride)
+    {
+        long long p = (long long) token_to_perm[j];
+        long long dst = (p >= lo && p < hi) ? (p - lo)
+                      : (p < lo)            ? (p + (hi - lo))
+                                            : p;
+        token_sorted[dst] = j / top_k;
+        weight_sorted[dst] = __float2half_rn(probs[j]);
+    }
+    for (long long j = i; j <= (long long) num_local; j += stride)
+    {
+        expert_count[j] = (j < (long long) num_local)
+            ? (int64_t) (expert_offsets[local_start + j + 1]
+                         - expert_offsets[local_start + j])
+            : (int64_t) (s - (hi - lo));  // sentinel = every remote slot
+    }
+}
+
+// Overflow-expert gather: one expert's sorted-span rows of the token-major
+// BF16 activations into a contiguous [m, hidden] BF16 A for the reconstruct
+// + dense-GEMM overflow path (token_count > max_tokens_per_expert experts the
+// fused kernel skips). Caller offsets token_sorted to the span base.
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_gather_rows_h16(
+    const uint16_t* __restrict__ in,           // [T, hidden], any 16-bit dtype
+    const int64_t* __restrict__ token_sorted,  // span base, [m]
+    uint16_t* __restrict__ out,                // [m, hidden]
+    long long hidden,
+    long long total)                           // = m * hidden
+{
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long r = i / hidden;
+        long long col = i - r * hidden;
+        out[i] = in[token_sorted[r] * hidden + col];
+    }
+}
+
+// Overflow-expert epilogue: weighted scatter-add of the expert's fp32 down
+// GEMM output into the fp32 routed accumulator (the fused kernel's
+// output_state), mirroring its atomicAdd epilogue numerically (f16 routing
+// weight widened to f32, product in f32) AND atomically: real top-k routing
+// gives a token at most one slot per expert, but nothing in this kernel's
+// contract should hinge on that — atomicAdd also keeps degenerate
+// duplicate-expert routings additive, exactly like the fused kernel's
+// epilogue on the same buffer.
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_scatter_add_f32(
+    const float* __restrict__ down,             // [m, hidden] fp32 GEMM C
+    const int64_t* __restrict__ token_sorted,   // span base, [m]
+    const half* __restrict__ weight_sorted,     // span base, [m]
+    float* __restrict__ out,                    // [T, hidden] fp32 accumulator
+    long long hidden,
+    long long total)                            // = m * hidden
+{
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long r = i / hidden;
+        long long col = i - r * hidden;
+        atomicAdd(out + token_sorted[r] * hidden + col,
+                  __half2float(weight_sorted[r]) * down[i]);
+    }
 }

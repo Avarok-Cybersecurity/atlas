@@ -181,13 +181,14 @@ impl TransformerModel {
         // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
         // byte-for-byte unchanged when the env is unset.
         let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
-        // lm_head_exl3 veto: the EXL3-native head launches cooperatively,
-        // which is illegal under CUDA graph capture (see decode_a).
+        // EXL3 veto: the native head / native MoE experts launch
+        // cooperatively, which is illegal under CUDA graph capture (see
+        // decode_a).
         let use_graphs = self.comm.is_none()
             && !hss_engaged
             && !lora_eager
             && !k4_diag
-            && self.lm_head_exl3.is_none();
+            && !self.exl3_graph_veto();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

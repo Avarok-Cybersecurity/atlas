@@ -3,11 +3,15 @@
 // Vendored from turboderp's ExLlamaV3 (https://github.com/turboderp-org/exllamav3)
 // Copyright (c) 2025 turboderp — MIT license.
 // Snapshot original: .research/exllamav3_ref/hadamard_inner.cuh.
-// Adaptations: dropped `#include "../compat.cuh"` and the two fused-MLP inners
-// (had_hf_r_128_guad_inner needs tanh_opt, had_hf_r_128_d_inner needs dynamic
-// smem; neither is called by the GEMM/GEMV kernels — re-vendor them if the
-// fused MLP seam is ever ported). The rotation inners the matmul kernels call
-// (had_hf/ff/fh_r_128_inner + shuffle helpers) are verbatim.
+// Adaptations: dropped `#include "../compat.cuh"` (tanh_opt now lives in
+// exl3_compat.cuh). The rotation inners the matmul kernels call
+// (had_hf/ff/fh_r_128_inner + shuffle helpers) are verbatim. The two
+// fused-MLP inners (had_hf_r_128_guad_inner, had_hf_r_128_d_inner) were
+// initially dropped and are now RE-VENDORED VERBATIM from the snapshot
+// (verified byte-identical to upstream master 2026-09-01) for the exl3_moe
+// fused prefill kernel. had_hf_r_128_d_inner uses `extern __shared__` — its
+// callers must launch with dynamic smem (the exl3_moe kernel launches with
+// SMEM_MAX and needs >= 128 floats per warp of it).
 //
 // CAUTION (see port map): the inners index `scale` with blockIdx.y*32 + lane.
 // Valid only with a 1-D grid AND a pre-offset scale pointer, exactly how the
@@ -293,4 +297,198 @@ void had_fh_r_128_inner
 
     // Store
     ((half4*) output_ptr)[t] = o;
+}
+
+// Fused op: o <- in_had(silu(out_had(g)) * out_had(u))
+
+inline __device__
+void had_hf_r_128_guad_inner
+(
+    const half* __restrict__ input_ptr_g,
+    const half* __restrict__ input_ptr_u,
+    half* __restrict__ output_ptr,
+    const half* __restrict__ post_scale_g,
+    const half* __restrict__ post_scale_u,
+    const half* __restrict__ pre_scale_d,
+    const float r_scale,
+    const float act_limit,
+    const int act_function
+)
+{
+    int t = threadIdx.x & 31;
+
+    auto had = [&](half4& v)
+    {
+        // 4 element had
+        float v0 = __half2float(__low2half(v.x));
+        float v1 = __half2float(__high2half(v.x));
+        float v2 = __half2float(__low2half(v.y));
+        float v3 = __half2float(__high2half(v.y));
+        float s0 = v0 + v1;
+        float d0 = v0 - v1;
+        float s1 = v2 + v3;
+        float d1 = v2 - v3;
+        float h0 = s0 + s1;
+        float h1 = d0 + d1;
+        float h2 = s0 - s1;
+        float h3 = d0 - d1;
+
+        // 32 element had, warp shuffle
+        shuffle_had_f4x32(h0, h1, h2, h3, t);
+        v.x = __floats2half2_rn(h0 * r_scale, h1 * r_scale);
+        v.y = __floats2half2_rn(h2 * r_scale, h3 * r_scale);
+
+        return v;
+    };
+
+    auto _silu = [&](const half2& x)
+    {
+        half2 one = __float2half2_rn(1.0f);
+        half2 neg_x = __hneg2(x);
+        half2 e = h2exp(neg_x);
+        half2 sum = __hadd2(one, e);
+        half2 r = h2rcp(sum);
+        half2 result = __hmul2(x, r);
+        return result;
+    };
+
+    auto _gelu = [&](const half2& x)
+    {
+        float2 xf = __half22float2(x);
+        const float c = 0.797884560803f;  // sqrt(2/Pi)
+        xf.x = 0.5f * xf.x * (1.0f + tanh_opt(c * (xf.x + 0.044715f * xf.x * xf.x * xf.x)));
+        xf.y = 0.5f * xf.y * (1.0f + tanh_opt(c * (xf.y + 0.044715f * xf.y * xf.y * xf.y)));
+        return __float22half2_rn(xf);
+    };
+
+    // Load. In non-gated mode the g buffer holds no data (its GEMM is skipped); the gate lane
+    // is synthesized from u in the activation switch below
+    half4 vg = {};
+    half4 vu = ((half4*) input_ptr_u)[t];
+
+    // Hadamard
+    vu = had(vu);
+
+    // Post scale
+    int i = blockIdx.y * 32 + t;
+    half4 scales_u = ((half4*) post_scale_u)[i];
+    vu.x = __hmul2(vu.x, scales_u.x);
+    vu.y = __hmul2(vu.y, scales_u.y);
+
+    if (act_function != ACT_RELU2_NOGATE)
+    {
+        vg = ((half4*) input_ptr_g)[t];
+        vg = had(vg);
+        half4 scales_g = ((half4*) post_scale_g)[i];
+        vg.x = __hmul2(vg.x, scales_g.x);
+        vg.y = __hmul2(vg.y, scales_g.y);
+    }
+
+    // Activation
+    switch (act_function)
+    {
+        case ACT_SILU:
+            vg.x = _silu(vg.x);
+            vg.y = _silu(vg.y);
+            break;
+
+        case ACT_GELU:
+            vg.x = _gelu(vg.x);
+            vg.y = _gelu(vg.y);
+            break;
+
+        case ACT_RELU2_NOGATE:
+            vg.x = __hmax2(vu.x, __float2half2_rn(0.0f));
+            vg.y = __hmax2(vu.y, __float2half2_rn(0.0f));
+            break;
+
+        default:
+            break;
+    }
+
+    // Optional activation limits
+    if (act_limit != 0.0f)
+    {
+        vu.x = __hmax2(vu.x, __float2half2_rn(-act_limit));
+        vu.y = __hmax2(vu.y, __float2half2_rn(-act_limit));
+        vu.x = __hmin2(vu.x, __float2half2_rn(act_limit));
+        vu.y = __hmin2(vu.y, __float2half2_rn(act_limit));
+        vg.x = __hmin2(vg.x, __float2half2_rn(act_limit));
+        vg.y = __hmin2(vg.y, __float2half2_rn(act_limit));
+    }
+
+    // Gate
+    vg.x = __hmul2(vg.x, vu.x);
+    vg.y = __hmul2(vg.y, vu.y);
+
+    // Pre scale (d)
+    half4 scales_d = ((half4*) pre_scale_d)[i];
+    vg.x = __hmul2(vg.x, scales_d.x);
+    vg.y = __hmul2(vg.y, scales_d.y);
+
+    // Hadamard
+    vg = had(vg);
+
+    // Store
+    ((half4*) output_ptr)[t] = vg;
+}
+
+// Fused op: o += float(out_had(i)), atomic
+
+inline __device__
+void had_hf_r_128_d_inner
+(
+    const half* __restrict__ input_ptr,
+    float* __restrict__ output_ptr,
+    const half* __restrict__ post_scale,
+    const float r_scale
+)
+{
+    int t = threadIdx.x & 31;
+
+    // Load
+    half4 v = ((half4*) input_ptr)[t];
+
+    // 4 element had
+    float v0 = __half2float(__low2half(v.x));
+    float v1 = __half2float(__high2half(v.x));
+    float v2 = __half2float(__low2half(v.y));
+    float v3 = __half2float(__high2half(v.y));
+    float s0 = v0 + v1;
+    float d0 = v0 - v1;
+    float s1 = v2 + v3;
+    float d1 = v2 - v3;
+    float h0 = s0 + s1;
+    float h1 = d0 + d1;
+    float h2 = s0 - s1;
+    float h3 = d0 - d1;
+
+    // 32 element had, warp shuffle
+    shuffle_had_f4x32(h0, h1, h2, h3, t);
+    h0 *= r_scale;
+    h1 *= r_scale;
+    h2 *= r_scale;
+    h3 *= r_scale;
+
+    // Post scale
+    int i = blockIdx.y * 32 + t;
+    half4 scales = ((half4*) post_scale)[i];
+    h0 *= __low2float(scales.x);
+    h1 *= __high2float(scales.x);
+    h2 *= __low2float(scales.y);
+    h3 *= __high2float(scales.y);
+
+    // Reshuffle in shmem for coalesced store with atomicAdd
+    extern __shared__ float temp_shared[];
+    int warp_id = threadIdx.x / 32;
+    float* sh = temp_shared + warp_id * 128;
+    sh[t * 4 + 0] = h0;
+    sh[t * 4 + 1] = h1;
+    sh[t * 4 + 2] = h2;
+    sh[t * 4 + 3] = h3;
+    __syncwarp();
+    atomicAdd(output_ptr +  0 + t, sh[ 0 + t]);
+    atomicAdd(output_ptr + 32 + t, sh[32 + t]);
+    atomicAdd(output_ptr + 64 + t, sh[64 + t]);
+    atomicAdd(output_ptr + 96 + t, sh[96 + t]);
 }

@@ -17,6 +17,18 @@
 //!     backstop (err_native <= 2*err_materialized + 1e-3).
 //!  D. REAL tensor ([2560x640] K=4 MUL1 qwen4_exp expert) through gemv and
 //!     gemm. E. mgemm smoke: 4 experts, weighted token routing.
+//!  F. decode-MoE: the PRODUCTION 3x-mgemm routed-expert pipeline
+//!     (stage/replicate/gate/up/silu/down with folded probs) — 8 experts
+//!     K=4 MUL1 at real geometry, T in {1,4,8}, top_k=3, vs a
+//!     reconstruct->f64->silu->weighted-sum reference; EP sub-leg with
+//!     remote experts masked -1 + exact-zero all-remote token + negative
+//!     control (legs_moe.rs).
+//!  G. prefill-MoE: the PRODUCTION sort-by-expert tier (Atlas counting sort
+//!     + exl3_moe_stage_sorted + the fused persistent exl3_moe kernel + the
+//!     reconstruct overflow path) — 16 experts K=4 MUL1, top_k=4, T in
+//!     {3 (no-sync shortcut), 64 (host-sync fused), 64-EP (sentinel tail +
+//!     exact-zero + control), 192 skewed (overflow >128 rows, asserted via
+//!     stats)} (legs_moe_prefill.rs).
 //!
 //! With EXL3_BENCH=1 also times gemv/gemm at qwen4_exp decode/prefill
 //! shapes (20 warmup + 200 timed launches, us/launch).
@@ -31,6 +43,9 @@
 
 mod bench;
 mod legs;
+mod legs_moe;
+mod legs_moe_prefill;
+mod legs_moe_prefill_debug;
 mod truth;
 mod util;
 
@@ -40,9 +55,7 @@ use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 
 use crate::truth::{cb_enum, decode_what_f64, exact_a_had, truth_matmul};
-use crate::util::{
-    Ctx, DevWeight, GEMV_MAX_Z, GEMV_REL_RMS, Lcg, gate_leg, run_pipeline,
-};
+use crate::util::{Ctx, DevWeight, GEMV_MAX_Z, GEMV_REL_RMS, Lcg, gate_leg, run_pipeline};
 
 /// Leg A: bit-exact input rotation, via the A_had scratch each fused kernel
 /// writes before its matmul stages (A_had never aliases A here).
@@ -55,7 +68,9 @@ fn leg_rotation_exact(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
         ("gemm m=17 [128->128] (shape1)", 17, 128, 128, None),
     ];
     for (label, m, k, n, cfg) in cases {
-        let trellis: Vec<u16> = (0..(k / 16) * (n / 16) * 16 * 4).map(|_| rng.u16()).collect();
+        let trellis: Vec<u16> = (0..(k / 16) * (n / 16) * 16 * 4)
+            .map(|_| rng.u16())
+            .collect();
         let suh: Vec<u16> = (0..k).map(|_| rng.scale_f16()).collect();
         let svh: Vec<u16> = (0..n).map(|_| rng.scale_f16()).collect();
         let a: Vec<u16> = (0..m * k).map(|_| rng.act_f16()).collect();
@@ -70,7 +85,10 @@ fn leg_rotation_exact(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
             .filter(|(x, y)| x != y)
             .count();
         let identical = diffs == 0;
-        println!("A_had exact {label}: bit-identical={identical} (diff {diffs}/{})", m * k);
+        println!(
+            "A_had exact {label}: bit-identical={identical} (diff {diffs}/{})",
+            m * k
+        );
         ok &= identical;
     }
     Ok(ok)
@@ -152,6 +170,11 @@ fn main() -> Result<()> {
     let ctx = Ctx { g, locks, sms };
     let mut rng = Lcg(0x5EED_D06E);
 
+    if std::env::var("EXL3_PF_DEBUG").as_deref() == Ok("1") {
+        legs_moe_prefill_debug::debug_pf(&ctx, &mut rng)?;
+        std::process::exit(3);
+    }
+
     let mut clean = true;
     clean &= leg_rotation_exact(&ctx, &mut rng)?;
     clean &= leg_gemv(&ctx, &mut rng)?;
@@ -165,6 +188,8 @@ fn main() -> Result<()> {
         }
     }
     clean &= legs::leg_mgemm(&ctx, &mut rng)?;
+    clean &= legs_moe::leg_moe_decode(&ctx, &mut rng)?;
+    clean &= legs_moe_prefill::leg_moe_prefill(&ctx, &mut rng)?;
 
     if std::env::var("EXL3_BENCH").as_deref() == Ok("1") {
         bench::run(&ctx, &mut rng)?;

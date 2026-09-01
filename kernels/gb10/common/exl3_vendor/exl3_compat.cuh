@@ -5,6 +5,9 @@
 // Freestanding subset of upstream util.h + util.cuh: only the pieces the EXL3
 // matmul device code needs (no torch, no cublas, no host error macros).
 // Snapshot originals: .research/exllamav3_ref/util.h, util.cuh.
+// Also carries `tanh_opt` from upstream compat.cuh (the sm_75+/CUDA-11+
+// branch; Atlas targets sm_121a only) — needed by the fused-MLP gelu inner
+// re-vendored into hadamard_inner.cuh for the exl3_moe kernel.
 
 #pragma once
 
@@ -16,6 +19,14 @@
 #define CEIL_DIVIDE(x, size) (((x) + (size) - 1) / (size))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+
+// compat.cuh (upstream): fast tanh for the gelu activation path
+__inline__ __device__ float tanh_opt(float x)
+{
+    float r;
+    asm("tanh.approx.f32 %0,%1; \n\t" : "=f"(r) : "f"(x));
+    return r;
+}
 
 // util.cuh
 typedef struct __align__(8) half4

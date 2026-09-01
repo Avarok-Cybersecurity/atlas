@@ -71,7 +71,14 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
         let first_local = (0..config.num_experts)
             .find(|e| config.is_local_expert(*e))
             .unwrap_or(0);
-        if store.contains(&format!("{lp}.mlp.experts.{first_local}.gate_proj.weight")) {
+        // Like the lm_head above, kept-packed EXL3 experts
+        // (ATLAS_EXL3_NATIVE_MOE=1) count: the native MoE path serves them
+        // without a dense `.weight` ever existing.
+        let first_local_gate = format!("{lp}.mlp.experts.{first_local}.gate_proj");
+        if store.contains(&format!("{first_local_gate}.weight"))
+            || (crate::weight_map::exl3_native_moe_enabled()
+                && spark_runtime::weights::exl3::is_exl3_linear(store, &first_local_gate))
+        {
             r.expert_tensors += 1;
         }
         if store.contains(&format!("{lp}.input_layernorm.weight"))
