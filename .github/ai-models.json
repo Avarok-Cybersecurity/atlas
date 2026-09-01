@@ -15,12 +15,19 @@
     "~100x smaller than the categorizer. Chunk rerank inputs; do not assume one",
     "uniform budget.",
     "",
+    "`synthesize` NAMES axes that a spectral decomposition already found; it",
+    "never chooses them. It is listed separately from `categorize` despite",
+    "currently pointing at the same id, because the two have different failure",
+    "consequences -- a bad category misroutes a benchmark, a bad axis label is",
+    "cosmetic -- and should be repointable independently.",
+    "",
     "Reference implementation: Avarok-Cybersecurity/lattice-db,",
     "examples/rag-example/src/openrouter.ts."
   ],
   "endpoint_base": "https://openrouter.ai/api/v1",
   "models": {
     "categorize": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "synthesize": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "embed": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
     "rerank": "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
   }
