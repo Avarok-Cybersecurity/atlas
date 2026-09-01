@@ -82,3 +82,66 @@ prior 1-3 week range), since the single biggest risk — an exotic,
 hard-to-verify decode algorithm — turned out not to exist. Remaining
 effort is mechanical porting + the Hadamard tile math + weight-map wiring,
 not algorithm research.
+
+---
+
+# IMPLEMENTED (2026-09-01, branch wip/exl3-research)
+
+## Landed and verified
+
+- **`kernels/gb10/common/exl3_reconstruct.cu`** — self-contained port of
+  upstream's fused reconstruct+Hadamard (`reconstruct_had_slice`): all 24
+  (K=1..8 x cb=0/1/2) `extern "C"` instances + `exl3_f16_to_bf16_t`
+  layout conversion to Atlas's `[out, in]` BF16. MIT attribution carried.
+- **`crates/spark-runtime/src/weights/exl3.rs`** — launch wrappers
+  (`reconstruct_had_f16_device`, `reconstruct_had_bf16`), an INDEPENDENT
+  CPU reference (`cpu_ref`, written from the format spec, not transcribed
+  from the kernel), `Exl3Weight::from_store`/`to_bf16`, detection helpers
+  (`is_exl3_linear`, `store_has_exl3`, `is_exl3_f16_aux`), and
+  `Exl3Codebook::from_flag_scalar`.
+- **Loader plumbing** — new store dtypes `F16`/`UInt16`/`Int32` with
+  safetensors mappings in all three ingest paths (mmap loader,
+  fast-weights O_DIRECT header, RDMA wire strings); the blanket
+  F16->BF16-at-load conversion now EXEMPTS `.suh`/`.svh` (their exact f16
+  bits are decode inputs — BF16 rounding would silently change every
+  reconstructed weight).
+- **Parity gate** (`spark-model/examples/exl3_reconstruct_parity.rs`):
+  GPU vs CPU BYTE-IDENTICAL at every leg — 3 shapes x {K=2,3,4,5,6 mul1;
+  K=4,6 mcg; K=4 3inst} x both stages (raw f16 + transposed bf16), with
+  1-bit negative controls, PLUS a REAL tensor from
+  turboderp/Qwen3.8-Flash-Next-exl3 4.05bpw (layer-0 expert-0 gate_proj,
+  fetched via HTTP range): bit-identical, healthy weight stats
+  (mean -3e-6, std 0.0135 ~ 1/sqrt(2560), all finite).
+
+## Format facts pinned down while implementing
+
+- Bitstream is MSB-FIRST WITHIN EACH u32 (u16 pairs little-endian into
+  u32s), ascending u32 order; code `t`'s window = stream bits
+  `[(t+1)K-16, (t+1)K)` mod 256K, window value read MSB-first (bit 15 =
+  oldest). My first LSB-first model produced ~100% mismatch; this one is
+  parity-proven.
+- Tile position map (m16n8k16 B-fragment order): `l=t/8, j=t%8`,
+  `row = (l%4)*2 + (j&1) + ((j>>1)&1)*8`,
+  `col = ((l&~4)/8)*2 + ((l>>2)&1) + ((j>>2)&1)*8`.
+- The `.mul1` scalar stores the CODEBOOK'S MULTIPLIER CONSTANT
+  (0x83DCD12D = mul1, 0xCBAC1FED = mcg) — the checkpoint self-describes.
+- The 4.05bpw branch mixes K per tensor family: attention/GDN projections
+  K=6, MoE experts K=4. K is derivable per-tensor from the trellis shape.
+- `ngram_embedding.safetensors` is its OWN row-wise format
+  (`exl3_ngram_trellis` v1: [320M rows, 61 u16], K=6 mul1, per-row
+  decodable for sparse PLE gather) — needs a separate row decoder, NOT
+  covered by the tile kernel.
+- Tensors with dims not divisible by 128 (e.g. GDN in_proj_a/b [48,2560])
+  ship UNQUANTIZED (f16) — the 128-multiple constraint never bites.
+
+## Still ahead (the rest of the ~1-1.5 week native path)
+
+1. qwen4_exp loader wiring: route `.trellis`-present prefixes through
+   `Exl3Weight` (reconstruct->BF16->existing runtime NVFP4/FP8 requant,
+   tensor-at-a-time to bound transients), F16 dense tensors already
+   convert via the existing loader path.
+2. The ngram row-format decoder (PLE gather path).
+3. Vision shard (`vision_k6.safetensors`) mapping.
+4. The NATIVE fused trellis-GEMM/GEMV port (exl3_gemm/exl3_gemv) — the
+   actual memory-win path; the reconstruct route above serves at
+   requantized quality/footprint, native keeps 2-6 bpw resident.

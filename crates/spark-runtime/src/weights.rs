@@ -35,9 +35,20 @@ pub(crate) fn evict_page_cache(_file: &std::fs::File) {
 pub enum WeightDtype {
     BF16,
     FP32,
+    /// IEEE fp16. Shipped by EXL3 checkpoints (Hadamard sign vectors `suh`/
+    /// `svh` and the unquantized dense tensors); consumers convert to BF16
+    /// at load where a path expects it.
+    F16,
     FP8E4M3,
     FP8E8M0,
     UInt8,
+    /// Opaque 2-byte container: EXL3 `.trellis` packed code words arrive as
+    /// safetensors I16 but are raw bits, not integers — nothing may do
+    /// arithmetic on them except the EXL3 decode kernels.
+    UInt16,
+    /// Raw i32 scalars — the EXL3 per-tensor codebook flag (`.mul1`, which
+    /// stores the codebook's multiplier constant).
+    Int32,
     Int64,
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
@@ -59,9 +70,12 @@ impl WeightDtype {
         match self {
             Self::BF16 => 2,
             Self::FP32 => 4,
+            Self::F16 => 2,
             Self::FP8E4M3 => 1,
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
+            Self::UInt16 => 2,
+            Self::Int32 => 4,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
         }
@@ -71,10 +85,16 @@ impl WeightDtype {
         match dtype {
             safetensors::Dtype::BF16 => Ok(Self::BF16),
             safetensors::Dtype::F32 => Ok(Self::FP32),
+            safetensors::Dtype::F16 => Ok(Self::F16),
             safetensors::Dtype::U8 => Ok(Self::UInt8),
             // I8: raw 1-byte container for 4-bit-packed NVFP4 (DeepSeek-V4 MTP
             // experts). Treat as UInt8 — signedness is irrelevant for packed FP4.
             safetensors::Dtype::I8 => Ok(Self::UInt8),
+            // I16: raw 2-byte container for EXL3 packed trellis codes —
+            // opaque bits, decoded only by the exl3_reconstruct kernels.
+            safetensors::Dtype::I16 => Ok(Self::UInt16),
+            // I32: raw scalar container (EXL3 codebook flag).
+            safetensors::Dtype::I32 => Ok(Self::Int32),
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
             safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
@@ -91,10 +111,16 @@ impl WeightDtype {
         Ok(match s {
             "F32" => Self::FP32,
             "BF16" => Self::BF16,
+            "F16" => Self::F16,
             "U8" => Self::UInt8,
             // I8 is a 1-byte raw container (packed NVFP4); signedness is
             // irrelevant, treat as raw bytes exactly like the disk path.
             "I8" => Self::UInt8,
+            // I16 is a 2-byte raw container (EXL3 packed trellis codes),
+            // mirroring the disk path's mapping.
+            "I16" => Self::UInt16,
+            // I32 raw scalar (EXL3 codebook flag), mirroring the disk path.
+            "I32" => Self::Int32,
             "F8_E4M3" => Self::FP8E4M3,
             "F8_E8M0" => Self::FP8E8M0,
             "I64" => Self::Int64,
@@ -396,6 +422,7 @@ impl SafetensorsLoader {
 /// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
+pub mod exl3;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
