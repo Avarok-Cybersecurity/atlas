@@ -133,6 +133,17 @@ pub struct AtlasCudaBackend {
     /// This model's kernel handles and op scratch. Dropped with the backend,
     /// so neither can outlive the registry or context it came from.
     op_cache: crate::op_cache::OpCache,
+    /// Resolved `module::func` -> handle for this backend's registry. Layers
+    /// resolve their kernels at init and keep the handle, but the native EXL3
+    /// wrappers select instances BY NAME per launch (K / codebook / tile
+    /// shape / C dtype encode the symbol), which without this cache meant a
+    /// `cuModuleGetFunction` + CString + an audit row pushed into the
+    /// never-drained `run_metrics.kernel_audit` Vec on every launch — ~1,000
+    /// rows/token on the native qwen4_exp path, unbounded host growth on a
+    /// unified-memory box. A hit returns the handle and records nothing (the
+    /// audit already holds the pair's first lookup); the cache dies with the
+    /// backend, so a hot-swapped model's registry never sees stale handles.
+    kernel_cache: parking_lot::Mutex<std::collections::HashMap<String, u64>>,
     /// Every device allocation this backend made and has not freed.
     ///
     /// The backend is created per model (`preflight.rs`) and moved into it, so
@@ -202,6 +213,7 @@ impl AtlasCudaBackend {
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
+            kernel_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
             default_stream,
             cuda_ctx,
         })

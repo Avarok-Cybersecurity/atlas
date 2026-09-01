@@ -65,6 +65,15 @@ pub struct Qwen3SsmLayer {
     out_proj_nvfp4_t: Option<QuantizedWeight>,
     // BF16 out_proj for models where SSM weights are not pre-quantized
     pub out_proj_dense: Option<DenseWeight>,
+    /// Natively-served EXL3 GDN family (`ATLAS_EXL3_NATIVE_DENSE=1`): the
+    /// packed `in_proj_qkv` / `in_proj_z` / `out_proj` trellis weights.
+    /// When `Some`, `ssm.in_proj_qkvz`, `ssm.out_proj` and `out_proj_dense`
+    /// are NULL/None (the FP8-native precedent) and the projections dispatch
+    /// through the cooperative `exl3_gemv`/`exl3_gemm` arms — which also
+    /// vetoes decode-graph capture (`exl3_graph_veto`). Installed by the
+    /// loader via [`Self::set_exl3_gdn_weights`]; `None` on every other
+    /// serve keeps the existing arms byte-identical.
+    exl3_gdn: Option<crate::layers::exl3_dense::Exl3GdnWeights>,
     // FP8 E4M3 checkpoint weights for native FP8 serving (w8a16_gemv LUT kernel)
     qkvz_fp8w: Option<Fp8Weight>,
     out_proj_fp8w: Option<Fp8Weight>,
@@ -379,6 +388,7 @@ pub struct Qwen3SsmLayer {
 mod debug;
 pub mod gdn_flags;
 mod init;
+mod init_exl3;
 mod init_fp8;
 mod init_q2;
 mod kernel_select;

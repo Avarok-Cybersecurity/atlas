@@ -72,6 +72,10 @@ pub fn exl3_native_enabled() -> bool {
 /// The natively-served set: the LM head, plus — when `ATLAS_EXL3_NATIVE_MOE=1`
 /// — the routed experts (`.mlp.experts.N.{gate,up,down}_proj`; see
 /// `exl3_materialize_moe.rs` for the exclusions: `mtp.*` and the shared
+/// expert keep materializing), plus — when `ATLAS_EXL3_NATIVE_DENSE=1` — the
+/// GDN (`linear_attn.{in_proj_qkv,in_proj_z,out_proj}`) and attention
+/// (`self_attn.{q,k,v,o}_proj`) dense families (see
+/// `exl3_materialize_dense.rs`; `mtp.*`, the QSA indexer and the shared
 /// expert keep materializing).
 ///
 /// `lm_head` is the single largest dense tensor (`[vocab, hidden]`, ~1.27 GB
@@ -79,19 +83,29 @@ pub fn exl3_native_enabled() -> bool {
 /// concentrated in three model-level functions, so it is the narrow path
 /// that exercises the full native stack (bf16->f16 ingress, fused
 /// suh/H128 rotation, trellis GEMV/GEMM, svh epilogue, f16->bf16 egress)
-/// end to end. GDN/attention/ViT expansion is tracked follow-up work: each
-/// needs its layer-site dispatch routed before its prefix can join this set
-/// (a prefix listed here without a serving path would fail at load with the
+/// end to end. ViT expansion is tracked follow-up work: it needs its
+/// layer-site dispatch routed before its prefix can join this set (a prefix
+/// listed here without a serving path would fail at load with the
 /// `dense_auto`/`quantized_any` native-mode probe error).
 pub fn exl3_native_serves(prefix: &str) -> bool {
-    exl3_native_serves_with(prefix, super::exl3_native_moe_enabled())
+    exl3_native_serves_with(
+        prefix,
+        super::exl3_native_moe_enabled(),
+        super::exl3_native_dense_families(),
+    )
 }
 
 /// Env-independent body of [`exl3_native_serves`] (tests and the
-/// materialize-impl thread the gate explicitly — `set_var` in parallel unit
+/// materialize-impl thread the gates explicitly — `set_var` in parallel unit
 /// tests races).
-pub fn exl3_native_serves_with(prefix: &str, native_moe: bool) -> bool {
-    prefix == "lm_head" || (native_moe && super::exl3_native_serves_moe(prefix))
+pub fn exl3_native_serves_with(
+    prefix: &str,
+    native_moe: bool,
+    dense: super::Exl3DenseFamilies,
+) -> bool {
+    prefix == "lm_head"
+        || (native_moe && super::exl3_native_serves_moe(prefix))
+        || super::exl3_native_serves_dense(prefix, dense)
 }
 
 /// Whether the vendored kernel set can serve this tensor: a compiled
@@ -279,6 +293,9 @@ pub struct Exl3MaterializeStats {
     /// What those same experts WOULD have cost as runtime NVFP4 triplets —
     /// the memory the keep saved, for the load log.
     pub nvfp4_equiv_bytes: usize,
+    /// The GDN/attention dense subset of `kept_native`
+    /// (`ATLAS_EXL3_NATIVE_DENSE=1`), with its per-family layer counts.
+    pub dense: super::Exl3DenseKeepStats,
 }
 
 /// Expert-family prefixes get the NVFP4 triplet; everything else BF16.
@@ -300,16 +317,28 @@ pub fn materialize_exl3(
     let native = exl3_native_enabled();
     let native_moe = super::exl3_native_moe_enabled();
     super::check_exl3_native_gates(native, native_moe)?;
-    materialize_exl3_impl(gpu, store, native, native_moe)
+    let dense_env = super::exl3_native_dense_enabled();
+    let gdn_env = std::env::var("ATLAS_EXL3_NATIVE_GDN").ok();
+    let attn_env = std::env::var("ATLAS_EXL3_NATIVE_ATTN").ok();
+    super::check_exl3_native_dense_gates(
+        native,
+        dense_env,
+        gdn_env.as_deref(),
+        attn_env.as_deref(),
+    )?;
+    let dense =
+        super::exl3_native_dense_families_with(dense_env, gdn_env.as_deref(), attn_env.as_deref());
+    materialize_exl3_impl(gpu, store, native, native_moe, dense)
 }
 
-/// Env-independent body (tests exercise `native`/`native_moe` directly —
-/// `set_var` in parallel unit tests races).
-fn materialize_exl3_impl(
+/// Env-independent body (tests exercise `native`/`native_moe`/`dense`
+/// directly — `set_var` in parallel unit tests races).
+pub(crate) fn materialize_exl3_impl(
     gpu: &dyn GpuBackend,
     store: &mut WeightStore,
     native: bool,
     native_moe: bool,
+    dense: super::Exl3DenseFamilies,
 ) -> Result<Exl3MaterializeStats> {
     let mut stats = Exl3MaterializeStats::default();
     if !store_has_exl3(store) {
@@ -366,9 +395,33 @@ fn materialize_exl3_impl(
     }
     let keep_experts = super::expert_keep_set(&expert_weights);
 
+    // ── Native dense keep-set (ATLAS_EXL3_NATIVE_DENSE=1) ──
+    // Same shape as the expert set: resolve every gate-admitted GDN /
+    // attention projection up front, then decide ATOMICALLY per (layer,
+    // family) — all of a layer's `linear_attn.{qkv,z,out}` (or
+    // `self_attn.{q,k,v,o}`) inside the K in {2,4} GEMV envelope, or the
+    // whole family materializes to BF16 exactly as today (see
+    // exl3_materialize_dense.rs). The loader arms re-derive "kept" from the
+    // family's `.trellis` tensors still being in the store.
+    let mut dense_weights: std::collections::BTreeMap<String, Exl3Weight> =
+        std::collections::BTreeMap::new();
+    if native && dense.any() {
+        for p in prefixes
+            .iter()
+            .filter(|p| super::exl3_native_serves_dense(p, dense))
+        {
+            let w = Exl3Weight::from_store(gpu, store, p)
+                .with_context(|| format!("EXL3 native dense: resolving {p}"))?;
+            dense_weights.insert(p.clone(), w);
+        }
+    }
+    let (keep_dense, dense_stats) = super::dense_keep_set(&dense_weights);
+    stats.dense = dense_stats;
+
     for p in &prefixes {
         let is_expert = super::exl3_native_serves_moe(p);
-        let w = match expert_weights.get(p) {
+        let is_dense = dense_weights.contains_key(p);
+        let w = match expert_weights.get(p).or_else(|| dense_weights.get(p)) {
             Some(w) => *w,
             None => Exl3Weight::from_store(gpu, store, p)
                 .with_context(|| format!("EXL3 materialization: resolving {p}"))?,
@@ -379,13 +432,16 @@ fn materialize_exl3_impl(
         // `Exl3Weight::from_store` — skip the rewrite AND the frees. Only
         // prefixes with a routed serving path (`exl3_native_serves`) AND a
         // compiled kernel envelope qualify (`exl3_native_supported` for the
-        // dense set; the atomic per-layer `keep_experts` set — which folds
-        // in `exl3_native_supported_moe` + uniformity — for experts); an
-        // unsupported tensor falls through to materialization with a log,
-        // so the same K/cb decision the builder re-derives holds here.
-        if native && exl3_native_serves_with(p, native_moe) {
+        // lm_head; the atomic per-layer `keep_experts` / `keep_dense` sets —
+        // which fold in the envelope + uniformity — for experts and the
+        // dense families); an unsupported tensor falls through to
+        // materialization with a log, so the same K/cb decision the builder
+        // re-derives holds here.
+        if native && exl3_native_serves_with(p, native_moe, dense) {
             let keep = if is_expert {
                 keep_experts.contains(p)
+            } else if is_dense {
+                keep_dense.contains(p)
             } else {
                 exl3_native_supported(&w)
             };
@@ -396,6 +452,10 @@ fn materialize_exl3_impl(
                     stats.kept_native_experts += 1;
                     stats.kept_packed_bytes += w.packed_bytes();
                     stats.nvfp4_equiv_bytes += w.nvfp4_equiv_bytes();
+                } else if is_dense {
+                    // Aggregate-logged per family after the loop (the
+                    // keep-set already accounted the bytes); the loader
+                    // logs one line per installed layer family.
                 } else {
                     tracing::info!(
                         "EXL3 native: keeping {p} packed ([{}x{}] K={} cb={:?}) for the \
@@ -409,9 +469,10 @@ fn materialize_exl3_impl(
                 stats.kept_native += 1;
                 continue;
             }
-            // Expert layers outside the keep-set were already warned about
-            // (once per layer, with the reason) by `expert_keep_set`.
-            if !is_expert {
+            // Expert / dense layers outside their keep-set were already
+            // warned about (once per layer family, with the reason) by
+            // `expert_keep_set` / `dense_keep_set`.
+            if !is_expert && !is_dense {
                 tracing::warn!(
                     "EXL3 native: {p} requested native serving but K={} cb={:?} \
                      [{}x{}] is outside the compiled kernel envelope — materializing \
@@ -500,6 +561,24 @@ fn materialize_exl3_impl(
                 / 1e9,
         );
     }
+    if dense.any() {
+        super::log_unrouted_dense_families(dense);
+        let d = &stats.dense;
+        tracing::info!(
+            "EXL3 native dense: GDN routed set ({:?}) kept packed on {} layers ({} \
+             materialized), attention routed set ({:?}) kept packed on {} layers ({} \
+             materialized) — {:.2} GB resident vs {:.2} GB as BF16 dense ({:.2} GB saved)",
+            super::Exl3DenseFamily::Gdn.leaves(),
+            d.gdn_layers_kept,
+            d.gdn_layers_materialized,
+            super::Exl3DenseFamily::Attn.leaves(),
+            d.attn_layers_kept,
+            d.attn_layers_materialized,
+            d.kept_packed_bytes as f64 / 1e9,
+            d.bf16_equiv_bytes as f64 / 1e9,
+            d.bf16_equiv_bytes.saturating_sub(d.kept_packed_bytes) as f64 / 1e9,
+        );
+    }
     Ok(stats)
 }
 
@@ -510,6 +589,9 @@ mod tests {
     use spark_runtime::gpu::mock::MockGpuBackend;
 
     use super::*;
+
+    /// Dense gate OFF: every pre-existing test keeps its exact behavior.
+    const OFF: crate::weight_map::Exl3DenseFamilies = crate::weight_map::Exl3DenseFamilies::OFF;
 
     fn t(gpu: &MockGpuBackend, shape: Vec<usize>, dtype: WeightDtype) -> WeightTensor {
         let bytes: usize = shape.iter().product::<usize>() * dtype.byte_size().max(1);
@@ -606,7 +688,7 @@ mod tests {
         let flag = store.get("lm_head.mul1").unwrap().ptr;
         gpu.copy_h2d(&0x83DC_D12Du32.to_le_bytes(), flag).unwrap();
 
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, false).unwrap();
+        let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
         assert_eq!(stats.kept_native, 1);
         assert_eq!(stats.quantized, 1); // the expert still lands as NVFP4
         assert_eq!(stats.bf16, 1); // the GDN linear still lands as BF16
@@ -621,7 +703,7 @@ mod tests {
         assert!(!store.contains("model.layers.0.linear_attn.in_proj_qkv.trellis"));
 
         // Second call: still idempotent — keeps keeping, rewrites nothing.
-        let again = materialize_exl3_impl(&gpu, &mut store, true, false).unwrap();
+        let again = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
         assert_eq!(again.kept_native, 1);
         assert_eq!(again.quantized + again.bf16, 0);
     }
@@ -634,7 +716,7 @@ mod tests {
         let mut m = HashMap::new();
         exl3_linear(&gpu, &mut m, "lm_head", 4);
         let mut store = WeightStore::from_map(m);
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, false).unwrap();
+        let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
         assert_eq!(stats.kept_native, 0);
         assert_eq!(stats.bf16, 1);
         assert!(store.contains("lm_head.weight"));
@@ -649,33 +731,40 @@ mod tests {
         // the MoE gate (threaded explicitly here — env set_var races tests).
         assert!(!exl3_native_serves_with(
             "model.layers.0.linear_attn.in_proj_qkv",
-            true
+            true,
+            OFF
         ));
         assert!(!exl3_native_serves_with(
             "model.layers.3.self_attn.q_proj",
-            true
+            true,
+            OFF
         ));
         assert!(!exl3_native_serves_with(
             "model.visual.blocks.0.attn.q_proj",
-            true
+            true,
+            OFF
         ));
         assert!(!exl3_native_serves_with(
             "model.layers.0.mlp.experts.7.down_proj",
-            false
+            false,
+            OFF
         ));
         assert!(exl3_native_serves_with(
             "model.layers.0.mlp.experts.7.down_proj",
-            true
+            true,
+            OFF
         ));
-        assert!(exl3_native_serves_with("lm_head", false));
+        assert!(exl3_native_serves_with("lm_head", false, OFF));
         // Shared expert and MTP experts stay materialized under the MoE gate.
         assert!(!exl3_native_serves_with(
             "model.layers.0.mlp.shared_expert.up_proj",
-            true
+            true,
+            OFF
         ));
         assert!(!exl3_native_serves_with(
             "mtp.layers.0.mlp.experts.7.down_proj",
-            true
+            true,
+            OFF
         ));
 
         let w = |k_bits, cb| Exl3Weight {
@@ -771,7 +860,7 @@ mod tests {
         stamp_mul1(&gpu, &store, "mtp.layers.0.mlp.experts.0.gate_proj");
         stamp_mul1(&gpu, &store, "model.layers.0.mlp.shared_expert.up_proj");
 
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, true).unwrap();
+        let stats = materialize_exl3_impl(&gpu, &mut store, true, true, OFF).unwrap();
         assert_eq!(stats.kept_native, 6, "layer 0's six projections kept");
         assert_eq!(stats.kept_native_experts, 6);
         // Layer 1 (6) + MTP expert (1) + shared expert (1) -> NVFP4 triplets.
@@ -811,7 +900,7 @@ mod tests {
         }
 
         // Idempotent: the second pass keeps keeping and rewrites nothing.
-        let again = materialize_exl3_impl(&gpu, &mut store, true, true).unwrap();
+        let again = materialize_exl3_impl(&gpu, &mut store, true, true, OFF).unwrap();
         assert_eq!(again.kept_native, 6);
         assert_eq!(again.kept_native_experts, 6);
         assert_eq!(again.quantized + again.bf16, 0);
@@ -833,7 +922,7 @@ mod tests {
         );
         let mut store = WeightStore::from_map(m);
         stamp_mul1(&gpu, &store, "model.layers.0.mlp.experts.0.gate_proj");
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, false).unwrap();
+        let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
         assert_eq!(stats.kept_native, 0);
         assert_eq!(stats.quantized, 1);
         assert!(store.contains("model.layers.0.mlp.experts.0.gate_proj.weight"));

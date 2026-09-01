@@ -81,6 +81,15 @@
 //   block = 256, grid = min(ceil(n/256), 4096). Scalar loads: milestone-1
 //   cost is one extra read+write of A (and of C) per matmul, ~2 elementwise
 //   passes; fold into the Hadamard prologue later if it shows in profiles.
+//   exl3_f16_to_bf16_2d / exl3_f32_to_bf16_2d(in, out, rows, cols, ld_in,
+//     ld_out) — STRIDED C egress for the dense-linear arm: row r, col c of a
+//     contiguous-or-pitched fp16/fp32 C (leading dim ld_in elems) lands at
+//     out[r*ld_out + c], so a native projection can write one column block
+//     of a wider BF16 arena row (GDN's [Q|K|V|Z] row). Elements past `cols`
+//     in each destination row are NOT touched. NEVER in place: source and
+//     destination strides differ, so the parallel read/write footprints
+//     overlap across rows (a contiguous source row r+1 begins inside
+//     destination row r). block = 256, grid = min(ceil(rows*cols/256), 4096).
 //
 // exl3_silu_mul_f16(gate, up, out, act_limit, n2)  — MoE decode-tier
 //   activation between the gate/up and down mgemm calls, mirroring upstream
@@ -246,6 +255,38 @@ extern "C" __global__ void __launch_bounds__(256) exl3_f32_to_bf16(
     long long stride = (long long) gridDim.x * blockDim.x;
     for (; i < n; i += stride)
         out[i] = __float2bfloat16_rn(in[i]);
+}
+
+// Strided (2-D) egress: contract in the header. __restrict__ is correct
+// here because in-place use is forbidden (overlapping footprints).
+extern "C" __global__ void __launch_bounds__(256) exl3_f16_to_bf16_2d(
+    const half* __restrict__ in, __nv_bfloat16* __restrict__ out,
+    long long rows, long long cols, long long ld_in, long long ld_out)
+{
+    long long total = rows * cols;
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long r = i / cols;
+        long long c = i - r * cols;
+        out[r * ld_out + c] = __float2bfloat16_rn(__half2float(in[r * ld_in + c]));
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(256) exl3_f32_to_bf16_2d(
+    const float* __restrict__ in, __nv_bfloat16* __restrict__ out,
+    long long rows, long long cols, long long ld_in, long long ld_out)
+{
+    long long total = rows * cols;
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long r = i / cols;
+        long long c = i - r * cols;
+        out[r * ld_out + c] = __float2bfloat16_rn(in[r * ld_in + c]);
+    }
 }
 
 // ── MoE decode-tier activation (contract in the header) ────────────────────

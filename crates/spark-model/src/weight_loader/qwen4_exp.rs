@@ -57,6 +57,7 @@ use crate::weight_map::{DenseWeight, MtpWeights, dense};
 // path" on every Windows runner, which killed the release-matrix builds.
 #[path = "qwen4_exp/aux_sites.rs"]
 mod aux;
+mod exl3_dense;
 mod ffn;
 mod hc;
 mod ple;
@@ -255,15 +256,16 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         let (mut moe_bytes, mut arm_bytes, mut hc_bytes) = (0u64, 0u64, 0u64);
         let free_now = |g: &dyn GpuBackend| g.free_memory().unwrap_or(0) as u64;
 
-        // Native EXL3 MoE (ATLAS_EXL3_NATIVE_MOE=1): the mgemm launch state
-        // (locks + slot-batched slabs, ~140 MB) is MODEL-shared — built by
-        // the first natively-served MoE layer, reused by the rest.
-        let mut exl3_moe_state: Option<std::sync::Arc<crate::layers::moe::Exl3MoeState>> = None;
+        // Native EXL3 (ATLAS_EXL3_NATIVE_MOE / _DENSE): ONE model-shared launch
+        // state (locks + fence) under the MoE mgemm slabs and the dense staging,
+        // built by the first native layer (`exl3_dense.rs`, arms decide per layer).
+        let mut exl3 = exl3_dense::NativeExl3::new();
 
         for i in 0..config.num_hidden_layers {
             let lp = config.layer_prefix(i);
+            exl3.observe(store, &lp);
             let f0 = free_now(gpu);
-            let ffn = ffn::build_moe(store, &lp, config, gpu, variant, &mut exl3_moe_state)?;
+            let ffn = ffn::build_moe(store, &lp, config, gpu, variant, &mut exl3)?;
             let f1 = free_now(gpu);
             moe_bytes += f0.saturating_sub(f1);
 
@@ -293,7 +295,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
                     // projections of 36 of 48 layers.
                     crate::weight_loader::qwen35::load_layers::linear_attn_arms::build_linear_attention_dense_bf16(
                         i, store, &lp, gpu, variant, config, h,
-                        input_norm, post_attn_norm, ffn,
+                        input_norm, post_attn_norm, ffn, exl3.stage(gpu, config)?,
                     )
                     .with_context(|| format!("qwen4_exp: GDN layer {i} (BF16)"))?
                 }
@@ -311,7 +313,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
                         .unwrap_or(KvCacheDtype::Bf16);
                     let l = crate::weight_loader::qwen35::load_layers::attention_arms::build_full_attention_nvfp4(
                         i, store, &lp, gpu, variant, config, h, absmax_k, quantize_k, stream,
-                        kv_dtype, attn_idx, input_norm, post_attn_norm, ffn,
+                        kv_dtype, attn_idx, input_norm, post_attn_norm, ffn, exl3.stage(gpu, config)?,
                     )
                     .with_context(|| format!("qwen4_exp: full-attention layer {i}"))?;
                     attn_idx += 1;
@@ -356,6 +358,8 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
             arm_bytes as f64 / 1e6 / config.num_hidden_layers as f64,
             hc_bytes as f64 / 1e9,
         );
+
+        exl3.log();
 
         // PLE is wired (PLAN.md phase D) and validated against the reference
         // in `ops/ple_tests.rs`. The escape hatch stays, inverted: it now

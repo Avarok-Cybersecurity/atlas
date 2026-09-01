@@ -26,6 +26,8 @@ mod dispatch_proj;
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/exl3_dense.rs"]
+mod exl3_dense;
 #[path = "ops/exl3_matmul.rs"]
 mod exl3_matmul;
 #[path = "ops/fp8_gemv_batch.rs"]
@@ -164,6 +166,7 @@ pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
+pub use exl3_dense::*;
 pub use exl3_matmul::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;

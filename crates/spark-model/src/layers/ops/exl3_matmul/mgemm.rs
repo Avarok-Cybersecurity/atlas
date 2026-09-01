@@ -186,3 +186,91 @@ pub fn exl3_f32_to_bf16(
 ) -> Result<()> {
     convert_launch(gpu, "exl3_f32_to_bf16", input, out, n_elems, stream)
 }
+
+#[allow(clippy::too_many_arguments)]
+fn convert_2d_launch(
+    gpu: &dyn GpuBackend,
+    name: &str,
+    input: DevicePtr,
+    out: DevicePtr,
+    rows: usize,
+    cols: usize,
+    ld_in: usize,
+    ld_out: usize,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        rows >= 1 && cols >= 1 && ld_in >= cols && ld_out >= cols,
+        "{name}: rows={rows} cols={cols} ld_in={ld_in} ld_out={ld_out} (leading \
+         dims must cover cols)"
+    );
+    ensure!(
+        input.0 != out.0,
+        "{name}: in-place strided conversion is forbidden (row footprints overlap)"
+    );
+    let h = gpu.kernel("exl3_matmul", name)?;
+    let grid = div_ceil((rows * cols) as u32, 256).clamp(1, 4096);
+    KernelLaunch::new(gpu, h)
+        .grid([grid, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(out)
+        .arg_u64(rows as u64)
+        .arg_u64(cols as u64)
+        .arg_u64(ld_in as u64)
+        .arg_u64(ld_out as u64)
+        .launch(stream)
+}
+
+/// STRIDED fp16 C egress -> BF16: element `(r, c)` of `input` (leading dim
+/// `ld_in` elements) lands at `out[r*ld_out + c]`; destination columns past
+/// `cols` are untouched, so a projection can fill one column block of a
+/// wider arena row. Never in place (unlike [`exl3_f16_to_bf16`]).
+#[allow(clippy::too_many_arguments)]
+pub fn exl3_f16_to_bf16_2d(
+    gpu: &dyn GpuBackend,
+    input: DevicePtr,
+    out: DevicePtr,
+    rows: usize,
+    cols: usize,
+    ld_in: usize,
+    ld_out: usize,
+    stream: u64,
+) -> Result<()> {
+    convert_2d_launch(
+        gpu,
+        "exl3_f16_to_bf16_2d",
+        input,
+        out,
+        rows,
+        cols,
+        ld_in,
+        ld_out,
+        stream,
+    )
+}
+
+/// STRIDED fp32 C egress -> BF16 — see [`exl3_f16_to_bf16_2d`].
+#[allow(clippy::too_many_arguments)]
+pub fn exl3_f32_to_bf16_2d(
+    gpu: &dyn GpuBackend,
+    input: DevicePtr,
+    out: DevicePtr,
+    rows: usize,
+    cols: usize,
+    ld_in: usize,
+    ld_out: usize,
+    stream: u64,
+) -> Result<()> {
+    convert_2d_launch(
+        gpu,
+        "exl3_f32_to_bf16_2d",
+        input,
+        out,
+        rows,
+        cols,
+        ld_in,
+        ld_out,
+        stream,
+    )
+}

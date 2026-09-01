@@ -174,7 +174,16 @@ impl Qwen3SsmLayer {
         // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
-        if let Some(ref q2) = self.qkvz_q2 {
+        if let Some(ref g) = self.exl3_gdn {
+            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the in_proj pair
+            // writes all K rows of the sequential [Q|K|V|Z] arena (row stride
+            // qkvz_size, Z block at +conv_dim) through the strided egress —
+            // the layout the conv/GDN sites below already consume. The packed
+            // pair is the ONLY live QKVZ weight on this layer (install-time
+            // check), so no arm below is shadowed. Never under graph capture
+            // (exl3_graph_veto; the funnel refuses loudly).
+            self.exl3_in_proj(g, ctx, normed, proj_dst, num_tokens, stream)?;
+        } else if let Some(ref q2) = self.qkvz_q2 {
             // Tier-1c keep-packed Q2_0: per-token 2-bit fused-qkvz GEMV. Bonsai
             // (dense qwen35) has no MTP, so this batched path is only reached
             // under multi-token verify — a per-token loop is bit-identical to
@@ -911,7 +920,13 @@ impl Qwen3SsmLayer {
 
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
-        if let Some(ref dense_out) = self.out_proj_dense {
+        if let Some(ref g) = self.exl3_gdn {
+            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed trellis is
+            // the ONLY live out_proj weight (all other slots null, enforced
+            // at install). C is the contiguous [K, h] block; the GEMV tier
+            // covers K <= 8, the GEMM tier the wider chain verifies.
+            self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+        } else if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,
                 self.dense_gemm_k,

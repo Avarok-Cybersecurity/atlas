@@ -26,7 +26,11 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
-        if let Some(ref mla) = self.mla {
+        if let Some(x) = self.exl3_attn_arm(ctx, "decode o_proj")? {
+            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): packed o_proj, C
+            // contiguous [1, h]. The LoRA delta below still applies.
+            x.o_proj_linear(ctx.gpu, attn_out, o_out, 1, stream)?;
+        } else if let Some(ref mla) = self.mla {
             if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
                 self.nvfp4_decode_gemv(
                     ctx.gpu,

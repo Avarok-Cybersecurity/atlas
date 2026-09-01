@@ -41,17 +41,17 @@
 //! argument aliases `A` (upstream-sanctioned: the kernel's rotation stage
 //! fully writes A_had behind a grid sync before any reuse), so one slab
 //! serves both. On Qwen3.8-Flash-Next at the default arena (160 rows):
-//! A 0.8 MB + C 79.5 MB + f32 row 1.0 MB + locks 4.2 MB ≈ 85 MB, against
-//! the ~950 MB the BF16 materialized head would have cost.
+//! A 0.8 MB + C 79.5 MB + f32 row 1.0 MB ≈ 81 MB, against the ~950 MB the
+//! BF16 materialized head would have cost.
 //!
-//! The `locks` buffer (split-K spinlocks + barrier region, zeroed once,
-//! kernels self-reset) is shared by every launch. The GEMV never touches it;
-//! the GEMM does, so two CONCURRENT `rows > 8` projections would race it.
-//! Today's `rows > 8` callers cannot overlap: batched decode / verify heads
-//! run one step at a time on the primary stream, and prompt-logprob
-//! collection already requires exclusivity (it clobbers the shared
-//! `buffers.logits()` / `norm_output()` and synchronizes inline). If a new
-//! concurrent wide caller appears, give it its own locks buffer.
+//! Every projection runs inside a dispatch SECTION of the model-shared
+//! [`ops::Exl3LaunchState`] (the same locks buffer, host mutex and device
+//! fence the MoE and dense GDN/attention arms use), so a head GEMV on the
+//! decode stream can never be partially co-resident with a prefill chunk's
+//! cooperative GEMM on the prefill stream — the deadlock class a private
+//! locks buffer does NOT protect against (locks only cover the split-K
+//! counters). The head is the last section of a step, never nested inside a
+//! layer's section.
 //!
 //! **CUDA graphs.** Cooperative launches cannot be captured
 //! (`CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED`), so installing this head vetoes
@@ -75,9 +75,11 @@ pub(crate) struct Exl3LmHead {
     /// Kernel codebook index: 1 = MCG, 2 = MUL1 (cb0/"3inst" has no
     /// compiled instances and is rejected at construction).
     cb: u32,
-    /// Per-device cooperative-launch locks ([`ops::EXL3_LOCKS_BYTES`],
-    /// zeroed once; kernels self-reset). GEMM-only — see module docs.
-    locks: DevicePtr,
+    /// The model-shared launch state: locks buffer, SM count, and the
+    /// dispatch-section mutex + device fence every cooperative EXL3 launch
+    /// in the model (MoE, dense GDN/attention, this head) goes through, so
+    /// no two cooperative kernels can be partially co-resident.
+    launch: std::sync::Arc<ops::Exl3LaunchState>,
     /// fp16 activation slab `[max_rows, in_dim]` — raw-A AND A_had rotation
     /// scratch (aliased), indexed by destination logits row.
     a_f16: DevicePtr,
@@ -92,7 +94,6 @@ pub(crate) struct Exl3LmHead {
     vocab: usize,
     /// Row capacity of the slabs, equal to the logits arena's row capacity.
     max_rows: usize,
-    sm_count: u32,
 }
 
 impl Exl3LmHead {
@@ -150,9 +151,8 @@ impl Exl3LmHead {
             "EXL3 native lm_head needs the exl3_matmul kernel module \
              (gb10 targets only) — unset ATLAS_EXL3_NATIVE on this target",
         )?;
-        let sm_count = gpu.sm_count()?;
-        let locks = ops::exl3_locks_alloc(gpu)?;
-        let mut owned = vec![locks];
+        let launch = ops::Exl3LaunchState::shared(gpu)?;
+        let mut owned: Vec<DevicePtr> = Vec::new();
         let mut alloc = |bytes: usize| -> Result<DevicePtr> {
             match gpu.alloc(bytes) {
                 Ok(p) => {
@@ -173,25 +173,23 @@ impl Exl3LmHead {
         tracing::info!(
             "EXL3 native lm_head installed: [{hidden} -> {vocab}] K={} cb={:?} \
              (trellis rows {}), scratch {max_rows} rows ({:.1} MB A + {:.1} MB C) \
-             + locks {} KB; decode-graph capture disabled (cooperative launches \
-             are not capturable)",
+             over the shared launch state; decode-graph capture disabled \
+             (cooperative launches are not capturable)",
             w.k_bits,
             w.cb,
             w.out_dim,
             max_rows as f64 * hidden as f64 * 2.0 / 1e6,
             max_rows as f64 * w.out_dim as f64 * 2.0 / 1e6,
-            ops::EXL3_LOCKS_BYTES / 1024,
         );
         Ok(Self {
             w,
             cb,
-            locks,
+            launch,
             a_f16,
             c_f16,
             c_f32_single,
             vocab,
             max_rows,
-            sm_count,
         })
     }
 
@@ -215,6 +213,7 @@ impl Exl3LmHead {
              {}-row scratch (logits arena capacity)",
             self.max_rows,
         );
+        let _section = self.launch.section(gpu, stream)?;
         let a = self.a_f16.offset(scratch_row * k * 2);
         let c = self.c_f16.offset(scratch_row * n_pad * 2);
         ops::exl3_bf16_to_f16(gpu, src, a, rows * k, stream)?;
@@ -234,12 +233,12 @@ impl Exl3LmHead {
                 self.w.k_bits,
                 self.cb,
                 false,
-                self.locks,
+                self.launch.locks,
                 self.w.suh,
                 a, // A_had aliases A
                 self.w.svh,
                 None,
-                self.sm_count,
+                self.launch.sm_count,
                 stream,
             )?;
         }
@@ -255,12 +254,12 @@ impl Exl3LmHead {
                 self.w.k_bits,
                 self.cb,
                 false,
-                self.locks,
+                self.launch.locks,
                 self.w.suh,
                 a, // A_had aliases A
                 self.w.svh,
                 None,
-                self.sm_count,
+                self.launch.sm_count,
                 stream,
             )?;
         }
@@ -291,6 +290,7 @@ impl Exl3LmHead {
         stream: u64,
     ) -> Result<()> {
         let (k, n_pad) = (self.w.in_dim, self.w.out_dim);
+        let _section = self.launch.section(gpu, stream)?;
         let a = self.a_f16; // row 0: the single-token head is primary-stream only
         ops::exl3_bf16_to_f16(gpu, src, a, k, stream)?;
         let launched = ops::exl3_gemv(
@@ -304,12 +304,12 @@ impl Exl3LmHead {
             self.w.k_bits,
             self.cb,
             true,
-            self.locks,
+            self.launch.locks,
             self.w.suh,
             a,
             self.w.svh,
             None,
-            self.sm_count,
+            self.launch.sm_count,
             stream,
         )?;
         if !launched {
@@ -324,12 +324,12 @@ impl Exl3LmHead {
                 self.w.k_bits,
                 self.cb,
                 true,
-                self.locks,
+                self.launch.locks,
                 self.w.suh,
                 a,
                 self.w.svh,
                 None,
-                self.sm_count,
+                self.launch.sm_count,
                 stream,
             )?;
         }

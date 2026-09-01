@@ -5,7 +5,7 @@
 // — anything but the native-FP8 (block-scaled-on-disk) path which stays
 // inline because it owns enough closures to fight extraction.
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
@@ -15,8 +15,8 @@ use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, Qwen3AttentionLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Nvfp4Variant, dense_auto, load_kv_scales, quantize_to_nvfp4,
-    quantized_auto,
+    AttentionWeights, DenseWeight, Exl3DenseFamily, Nvfp4Variant, dense_auto,
+    exl3_dense_family_kept, load_kv_scales, quantize_to_nvfp4, quantized_auto,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -36,13 +36,60 @@ pub(crate) fn build_full_attention_nvfp4(
     input_norm: DenseWeight,
     post_attn_norm: DenseWeight,
     ffn: FfnComponent,
+    exl3_stage: Option<&std::sync::Arc<crate::layers::ops::Exl3DenseStage>>,
 ) -> Result<Box<dyn TransformerLayer>> {
     let p = format!("{lp}.self_attn");
     let tp_rank = config.tp_rank;
     let tp_size = config.tp_world_size.max(1);
     let i = layer_idx;
 
+    // Native EXL3 attention family (ATLAS_EXL3_NATIVE_DENSE=1): re-derived
+    // PER LAYER from the store — the materialize pass keeps a layer's
+    // q/k/v/o packed only as an atomic family, so "the family's .trellis
+    // tensors are still here" is exactly "this layer was kept". A fallen-back
+    // layer takes the variant arms below with zero special-casing.
+    let native_attn = exl3_dense_family_kept(store, lp, Exl3DenseFamily::Attn);
+    if native_attn {
+        ensure!(
+            tp_size == 1,
+            "Layer {i}: EXL3 native attention serves the unsharded packed trellis; \
+             TP={tp_size} is not supported (qwen4_exp does not load under TP)"
+        );
+        ensure!(
+            !super::tq_plus_weight_rotation::weight_rotation_enabled(),
+            "ATLAS_EXL3_NATIVE_DENSE=1 is incompatible with TQ_PLUS_WEIGHT_ROTATION=1 \
+             (the rotation is applied to BF16 q/k/v at load; packed trellis cannot be \
+             re-rotated); unset one"
+        );
+        tracing::info!(
+            "Layer {i}: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; \
+             no BF16 dense, no runtime NVFP4 requant, no transposed twins)"
+        );
+    }
+
     let (attn, q_nvfp4, k_nvfp4, v_nvfp4) = match variant {
+        // Every projection slot stays NULL (the CompressedTensors arm's
+        // dummy-dense precedent); the packed family is installed after
+        // construction. Norms + KV scales load exactly as on the other arms.
+        _ if native_attn => {
+            let dummy = DenseWeight {
+                weight: spark_runtime::gpu::DevicePtr::NULL,
+            };
+            let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
+            let attn = AttentionWeights {
+                q_proj: dummy,
+                k_proj: dummy,
+                v_proj: dummy,
+                o_proj: crate::weight_map::QuantizedWeight::null(),
+                q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
+                k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
+                q_norm_full: None,
+                k_norm_full: None,
+                k_scale,
+                v_scale,
+            };
+            (attn, None, None, None)
+        }
         Nvfp4Variant::CompressedTensors => {
             let group_size = 16usize;
             let load_nvfp4 = |name: &str,
@@ -221,6 +268,12 @@ pub(crate) fn build_full_attention_nvfp4(
         layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
     }
     layer.predequant_for_prefill(gpu, config, stream)?;
+    if native_attn {
+        let dims = crate::tp_shard::TpAttentionDims::from_config(config);
+        super::exl3_dense_arms::install_native_attn(
+            &mut layer, gpu, store, lp, i, &dims, exl3_stage,
+        )?;
+    }
 
     Ok(Box::new(layer))
 }

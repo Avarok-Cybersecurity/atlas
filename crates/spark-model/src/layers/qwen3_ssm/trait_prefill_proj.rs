@@ -35,6 +35,17 @@ impl Qwen3SsmLayer {
         } else {
             ctx.buffers.ssm_qkvz()
         };
+        // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): in_proj_qkv + in_proj_z as
+        // a shared-A pair, row-batched GEMM with STRIDED egress into the k
+        // sequential [Q|K|V|Z] rows of `deinterleaved` (always sequential on
+        // this arm — enforced at install — so no deinterleave follows). Ahead
+        // of every lever below on purpose: the packed pair is the ONLY live
+        // QKVZ weight on this layer, so nothing is shadowed — every
+        // FP8/NVFP4/BF16 slot the levers read is None/NULL under the gate.
+        if let Some(ref g) = self.exl3_gdn {
+            self.exl3_in_proj(g, ctx, normed, proj_dst, k as usize, stream)?;
+            return Ok(());
+        }
         // Tier-1c keep-packed Q2_0: transient-dequant the fused qkvz then dense
         // GEMM. Bonsai is `sequential_qkvz`, so `proj_dst == deinterleaved` and
         // no post-deinterleave is needed. Highest priority (all other weight

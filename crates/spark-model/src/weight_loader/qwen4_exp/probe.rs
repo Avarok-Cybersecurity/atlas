@@ -45,12 +45,22 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
     r.has_lm_head = store.contains("lm_head.weight")
         || spark_runtime::weights::exl3::is_exl3_linear(store, "lm_head");
 
+    // Like the lm_head and the experts, a kept-packed EXL3 dense family
+    // (ATLAS_EXL3_NATIVE_DENSE=1) counts: the native GDN / attention arms
+    // serve it without a dense `.weight` ever existing. The predicate is the
+    // loader's own (`exl3_dense_family_kept`), so the audit and the arms
+    // cannot disagree about which layers are native.
+    use crate::weight_map::{Exl3DenseFamily, exl3_dense_family_kept};
     for i in 0..config.num_hidden_layers {
         let lp = config.layer_prefix(i);
-        if store.contains(&format!("{lp}.linear_attn.in_proj_qkv.weight")) {
+        if store.contains(&format!("{lp}.linear_attn.in_proj_qkv.weight"))
+            || exl3_dense_family_kept(store, &lp, Exl3DenseFamily::Gdn)
+        {
             r.gdn_layers += 1;
         }
-        if store.contains(&format!("{lp}.self_attn.q_proj.weight")) {
+        if store.contains(&format!("{lp}.self_attn.q_proj.weight"))
+            || exl3_dense_family_kept(store, &lp, Exl3DenseFamily::Attn)
+        {
             r.attn_layers += 1;
         }
         if store.contains(&format!("{lp}.self_attn.indexer.index_qk_proj.weight")) {

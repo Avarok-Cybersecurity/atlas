@@ -41,9 +41,26 @@ pub(crate) fn load_ssm_qwen35(
     store: &WeightStore,
     layer_prefix: &str,
     gpu: &dyn GpuBackend,
+    variant: Nvfp4Variant,
+) -> Result<SsmWeightsQwen35> {
+    load_ssm_qwen35_parts(store, layer_prefix, gpu, variant, true, true)
+}
+
+/// [`load_ssm_qwen35`] with the linear projections optional: `load_in_proj`
+/// covers `in_proj_qkv` / `in_proj_z`, `load_out_proj` covers `out_proj`.
+/// `false` leaves the projection as a NULL [`DenseWeight`] — the native-EXL3
+/// GDN arm (`ATLAS_EXL3_NATIVE_DENSE=1`) serves it from the packed trellis
+/// and must not read a `.weight` that was never materialized; the BA/conv/
+/// gate tensors still load exactly as before.
+pub(crate) fn load_ssm_qwen35_parts(
+    store: &WeightStore,
+    layer_prefix: &str,
+    gpu: &dyn GpuBackend,
     // Kept for loader-dispatch signature parity; `dense_auto` routes by the
     // projection's actual on-disk dtype rather than the model-wide variant.
     _variant: Nvfp4Variant,
+    load_in_proj: bool,
+    load_out_proj: bool,
 ) -> Result<SsmWeightsQwen35> {
     let p = format!("{layer_prefix}.linear_attn");
 
@@ -63,10 +80,20 @@ pub(crate) fn load_ssm_qwen35(
             dense_auto(store, &format!("{prefix}.weight"), gpu)
         }
     };
+    // The natively-served linears (skipped): NULL, the FP8-native precedent.
+    let linear = |prefix: &str, load: bool| -> Result<DenseWeight> {
+        if load {
+            load_proj(prefix)
+        } else {
+            Ok(DenseWeight {
+                weight: DevicePtr::NULL,
+            })
+        }
+    };
 
     Ok(SsmWeightsQwen35 {
-        in_proj_qkv: load_proj(&format!("{p}.in_proj_qkv"))?,
-        in_proj_z: load_proj(&format!("{p}.in_proj_z"))?,
+        in_proj_qkv: linear(&format!("{p}.in_proj_qkv"), load_in_proj)?,
+        in_proj_z: linear(&format!("{p}.in_proj_z"), load_in_proj)?,
         in_proj_a: load_proj(&format!("{p}.in_proj_a"))?,
         in_proj_b: load_proj(&format!("{p}.in_proj_b"))?,
         conv1d: dense_auto(store, &format!("{p}.conv1d.weight"), gpu)?,
@@ -76,7 +103,7 @@ pub(crate) fn load_ssm_qwen35(
         dt_bias: dense_keep_f32(store, &format!("{p}.dt_bias"), gpu)?,
         // norm.weight is safe as BF16 (no recurrent amplification)
         norm: dense_f32_safe(store, &format!("{p}.norm.weight"), gpu)?,
-        out_proj: load_proj(&format!("{p}.out_proj"))?,
+        out_proj: linear(&format!("{p}.out_proj"), load_out_proj)?,
     })
 }
 

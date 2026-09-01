@@ -4,6 +4,7 @@ pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
+pub mod exl3_dense;
 pub mod fp8_calibration;
 mod gemv_tier;
 pub mod moe;
@@ -61,6 +62,7 @@ pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
+pub use exl3_dense::{AttnProj, Exl3AttnWeights, Exl3GdnWeights};
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;

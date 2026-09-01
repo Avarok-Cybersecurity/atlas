@@ -106,6 +106,16 @@ pub struct Qwen3AttentionLayer {
     /// NVFP4 path (`attn.o_proj`). Used by Gemma-4 dense which honors
     /// Nvidia ModelOpt's official ignore list.
     pub(super) o_dense_bf16: Option<DenseWeight>,
+    /// Natively-served EXL3 attention family (`ATLAS_EXL3_NATIVE_DENSE=1`):
+    /// the packed `q/k/v/o_proj` trellis weights. When `Some`, `attn.q_proj`
+    /// / `k_proj` / `v_proj` / `o_proj`, the `*_weight` decode slots, the
+    /// `*_nvfp4_t` prefill twins and the `*_fp8` predequants are ALL null
+    /// (the CompressedTensors arm's dummy-dense precedent) and the four
+    /// projections dispatch through the cooperative `exl3_gemv`/`exl3_gemm`
+    /// arms — which also vetoes decode-graph capture (`exl3_graph_veto`).
+    /// Installed by the loader via `set_exl3_attn_weights`; `None` on every
+    /// other serve keeps the existing arms byte-identical.
+    pub(super) exl3_attn: Option<crate::layers::exl3_dense::Exl3AttnWeights>,
     // ── MLA (Multi-head Latent Attention) — 2-step decode ──
     pub(crate) mla: Option<MlaWeights>,
     // ── Manifold-Constrained Hyper-Connections (mHC) — DeepSeek-V4 ──

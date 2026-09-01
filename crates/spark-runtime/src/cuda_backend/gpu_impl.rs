@@ -390,13 +390,20 @@ impl GpuBackend for AtlasCudaBackend {
         // `file:line` through, which is the only part of an unresolved-lookup
         // report an operator can act on.
         let site = std::panic::Location::caller();
-        // Ephemeral OnceLock — no cross-call caching, but kernel() is only
-        // called at model init time. Layers store the returned KernelHandle.
+        // Per-backend name cache (see the field doc): repeat lookups — the
+        // native EXL3 wrappers resolve by name per launch — return the handle
+        // without a driver call or an audit row. Misses are the init-time
+        // path: resolve, audit, insert.
+        let key = format!("{module}::{func_name}");
+        if let Some(&h) = self.kernel_cache.lock().get(&key) {
+            return Ok(KernelHandle(h));
+        }
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true, site);
+                self.kernel_cache.lock().insert(key, raw.0 as u64);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {

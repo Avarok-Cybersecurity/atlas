@@ -16,6 +16,7 @@ use super::tables::{
     EXL3_MOE_SLOT_BATCH_TOKENS, Exl3ExpertPtrTable, Exl3MoeState,
 };
 use super::{ExpertPtrTable, Fp8ExpertPtrTable, MoeLayer};
+use crate::layers::ops::Exl3LaunchState;
 use crate::weight_map::{DenseWeight, ExpertWeight, Fp8ExpertWeight, Fp8Weight, QuantizedWeight};
 
 /// Build a device-side pointer table from pre-transposed QuantizedWeight vec.
@@ -222,11 +223,13 @@ pub(crate) fn build_exl3_ptr_table(
 }
 
 impl Exl3MoeState {
-    /// Allocate the per-model mgemm launch state (locks + slot-batched
-    /// slabs), all-or-nothing with rollback (the `Exl3LmHead::new` pattern).
-    /// One named call site so the alloc ledger shows one legible row.
+    /// Allocate the per-model mgemm slot-batched slabs over the shared
+    /// `launch` state (locks + fence), all-or-nothing with rollback (the
+    /// `Exl3LmHead::new` pattern). One named call site so the alloc ledger
+    /// shows one legible row.
     pub(crate) fn new(
         gpu: &dyn GpuBackend,
+        launch: std::sync::Arc<Exl3LaunchState>,
         hidden: usize,
         inter: usize,
         top_k: usize,
@@ -238,7 +241,7 @@ impl Exl3MoeState {
              num_experts={num_experts} (the shared A_had slab assumes inter <= hidden)"
         );
         let s_cap = EXL3_MOE_SLOT_BATCH_TOKENS * top_k;
-        let sm_count = gpu.sm_count()?;
+        let sm_count = launch.sm_count;
         ensure!(
             sm_count >= 8,
             "EXL3 MoE state: the fused prefill kernel needs >= 8 SMs \
@@ -254,8 +257,8 @@ impl Exl3MoeState {
             .unwrap_or(EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT);
         let pf_concurrency = (sm_count as usize / 8).clamp(1, 64);
         let pf_e_cap = num_experts; // >= any EP-local width
-        let locks = crate::layers::ops::exl3_locks_alloc(gpu)?;
-        let mut owned = vec![locks];
+        let locks = launch.locks;
+        let mut owned: Vec<DevicePtr> = Vec::new();
         let mut alloc = |bytes: usize| -> Result<DevicePtr> {
             match gpu.alloc(bytes) {
                 Ok(p) => {
@@ -295,30 +298,21 @@ impl Exl3MoeState {
         let pf_ov_gate = alloc(ov * inter * 2)?;
         let pf_ov_up = alloc(ov * inter * 2)?;
         let pf_ov_down = alloc(ov * hidden * 4)?;
-        let fence = match gpu.create_event() {
-            Ok(e) => e,
-            Err(e) => {
-                for p in owned.drain(..) {
-                    gpu.free(p).ok();
-                }
-                return Err(e);
-            }
-        };
         let total: usize = s_cap * (hidden * 2 * 2 + inter * 4 * 2 + hidden * 4 + inter * 2 + 12)
             + pf_t_cap * (hidden * 6 + top_k * 10)
             + pf_concurrency * 128 * (hidden + inter) * 4
             + (pf_e_cap + 1) * 8
-            + ov * (hidden * 8 + inter * 4)
-            + crate::layers::ops::EXL3_LOCKS_BYTES;
+            + ov * (hidden * 8 + inter * 4);
         tracing::info!(
             "EXL3 native MoE state allocated: {s_cap} decode slots \
              ({EXL3_MOE_SLOT_BATCH_TOKENS} tokens x top_k {top_k}) + prefill \
              batch {pf_t_cap} tokens (fused C={pf_concurrency}, overflow \
-             chunk {ov}), {:.1} MB slabs + locks (shared across all MoE \
-             layers)",
+             chunk {ov}), {:.1} MB slabs over the shared launch state (locks + \
+             fence; shared across all MoE layers and the dense arms)",
             total as f64 / 1e6,
         );
         Ok(Self {
+            launch,
             locks,
             a_f16,
             a_had_f16,
@@ -350,16 +344,18 @@ impl Exl3MoeState {
             pf_t_cap,
             pf_e_cap,
             pf_concurrency,
-            in_flight: std::sync::atomic::AtomicBool::new(false),
-            dispatch_stream: std::sync::atomic::AtomicU64::new(0),
-            fence,
         })
     }
 
-    /// Get the model-shared state, creating it on first use (the loader
-    /// threads one `Option` cache through its per-layer loop).
-    pub(crate) fn get_or_create(
+    /// Get the model-shared state, creating it on first use over the
+    /// model-shared [`Exl3LaunchState`] cache (also created here on first
+    /// use). The loader threads BOTH `Option` caches through its per-layer
+    /// loop so the MoE arm and the native dense arms serialize on ONE
+    /// section (`weight_loader/qwen4_exp/exl3_dense.rs`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn get_or_create_with_launch(
         cache: &mut Option<std::sync::Arc<Exl3MoeState>>,
+        launch_cache: &mut Option<std::sync::Arc<Exl3LaunchState>>,
         gpu: &dyn GpuBackend,
         hidden: usize,
         inter: usize,
@@ -367,6 +363,12 @@ impl Exl3MoeState {
         num_experts: usize,
     ) -> Result<std::sync::Arc<Exl3MoeState>> {
         if let Some(s) = cache {
+            ensure!(
+                launch_cache
+                    .as_ref()
+                    .is_none_or(|l| std::sync::Arc::ptr_eq(l, &s.launch)),
+                "EXL3 MoE state: a second launch state was passed for one model"
+            );
             ensure!(
                 s.hidden == hidden
                     && s.inter == inter
@@ -382,7 +384,8 @@ impl Exl3MoeState {
             );
             return Ok(s.clone());
         }
-        let s = std::sync::Arc::new(Self::new(gpu, hidden, inter, top_k, num_experts)?);
+        let launch = Exl3LaunchState::get_or_create(launch_cache, gpu)?;
+        let s = std::sync::Arc::new(Self::new(gpu, launch, hidden, inter, top_k, num_experts)?);
         *cache = Some(s.clone());
         Ok(s)
     }

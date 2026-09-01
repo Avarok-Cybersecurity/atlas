@@ -113,7 +113,11 @@ impl TransformerLayer for Qwen3AttentionLayer {
     }
 
     fn exl3_graph_veto(&self) -> bool {
-        self.ffn.exl3_native_moe() || self.moe_ffn.as_ref().is_some_and(|f| f.exl3_native_moe())
+        // Native EXL3 q/k/v/o (ATLAS_EXL3_NATIVE_DENSE=1) are the same
+        // cooperative-launch class as the MoE experts.
+        self.ffn.exl3_native_moe()
+            || self.moe_ffn.as_ref().is_some_and(|f| f.exl3_native_moe())
+            || self.exl3_attn.is_some()
     }
 
     fn has_aux_state(&self) -> bool {

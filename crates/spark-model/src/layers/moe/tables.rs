@@ -12,6 +12,7 @@
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
+use crate::layers::ops::{Exl3LaunchState, Exl3Section};
 use crate::weight_map::DenseWeight;
 
 /// Device-side pointer table for one projection across all experts.
@@ -173,21 +174,24 @@ pub(crate) const EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT: usize = 4096;
 pub(crate) const EXL3_MOE_OVERFLOW_CHUNK_ROWS: usize = 1024;
 
 /// Construction-time launch state for native EXL3 expert mgemm calls —
-/// ONE per model, shared by every MoE layer (all MoE mgemm launches are
-/// serialized on the primary stream / the stacked prefill phase, so one
-/// locks buffer and one slab set suffice; see the scope design's
-/// concurrency section). Nothing on the hot path may alloc or sync (901
-/// playbook); everything here is allocated once at load, before the KV
-/// budget is computed, so it is inside the util pledge.
+/// ONE per model, shared by every MoE layer. Nothing on the hot path may
+/// alloc or sync (901 playbook); everything here is allocated once at load,
+/// before the KV budget is computed, so it is inside the util pledge.
 ///
-/// The `Exl3LmHead` owns its own locks buffer, so a co-dispatched head
-/// projection can never race these MoE launches on the locks.
+/// The locks buffer, fence event and dispatch-section mutex live in the
+/// model-shared [`Exl3LaunchState`] (`ops::exl3_dense`), which the dense
+/// GDN/attention arms share with this state so the ONE-section-at-a-time
+/// invariant is global across every cooperative EXL3 launch that is not the
+/// LM head (the `Exl3LmHead` owns its own locks buffer, so a co-dispatched
+/// head projection can never race these launches on the locks).
 #[allow(dead_code)] // consumed by the native MoE dispatch (forward arm)
 #[derive(Debug)]
 pub(crate) struct Exl3MoeState {
-    /// Per-model cooperative-launch locks (`ops::EXL3_LOCKS_BYTES`, zeroed
-    /// once; kernels self-reset). Launch on the primary stream only; a new
-    /// CONCURRENT caller needs its own locks buffer.
+    /// Shared launch state (locks + fence + section mutex).
+    pub(crate) launch: std::sync::Arc<Exl3LaunchState>,
+    /// `launch.locks` — the per-model cooperative-launch locks
+    /// (`ops::EXL3_LOCKS_BYTES`, zeroed once; kernels self-reset). Copied
+    /// here so the forward arms keep their `st.locks` reads.
     pub(crate) locks: DevicePtr,
     /// fp16 activation ingress `[s_cap, hidden]` — one row per
     /// (token,expert) slot (activations replicated top_k-wide; `bszm_in=1`
@@ -226,8 +230,8 @@ pub(crate) struct Exl3MoeState {
     pub(crate) hidden: usize,
     pub(crate) inter: usize,
     pub(crate) top_k: usize,
-    /// Resolved once at construction (the GpuBackend trait forbids
-    /// per-launch queries).
+    /// `launch.sm_count` — resolved once at construction (the GpuBackend
+    /// trait forbids per-launch queries).
     pub(crate) sm_count: u32,
 
     // ── PREFILL tier (fused `exl3_moe` kernel + overflow path) ──
@@ -260,83 +264,22 @@ pub(crate) struct Exl3MoeState {
     pub(crate) pf_e_cap: usize,
     /// Fused-kernel temp-slab count C (`sm_count / 8`, clamped to 1..=64).
     pub(crate) pf_concurrency: usize,
-
-    // ── Runtime enforcement of the sharing contract ──
-    /// Set for the duration of one layer's dispatch section (host side). The
-    /// slabs, `b_indices` and the locks buffer are shared by every layer and
-    /// both tiers, and the fused/cooperative kernels need full SM
-    /// co-residency — a second dispatcher overlapping this one (another
-    /// thread, a side-forward) would corrupt state or deadlock, so it is
-    /// refused loudly instead.
-    pub(crate) in_flight: std::sync::atomic::AtomicBool,
-    /// The stream the most recent dispatch section launched on (0 = none
-    /// yet). Atlas runs prefill and decode on DIFFERENT streams that may
-    /// overlap on the device, so a section on a new stream first waits on
-    /// [`Self::fence`] — the device-side end marker of the previous section —
-    /// before touching the shared state. Same-stream sections are already
-    /// stream-ordered and skip the wait.
-    pub(crate) dispatch_stream: std::sync::atomic::AtomicU64,
-    /// CUDA event recorded on the dispatching stream at the end of every
-    /// section (RAII, in the guard's drop). GPU-side only — the host never
-    /// blocks on it.
-    pub(crate) fence: u64,
-}
-
-/// RAII token for one dispatch section — see [`Exl3MoeState::dispatch_guard`].
-/// Dropping it records the fence on the section's stream and releases the
-/// host-side claim.
-pub(crate) struct Exl3MoeDispatchGuard<'a> {
-    st: &'a Exl3MoeState,
-    gpu: &'a dyn GpuBackend,
-    stream: u64,
-}
-
-impl Drop for Exl3MoeDispatchGuard<'_> {
-    fn drop(&mut self) {
-        if let Err(e) = self.gpu.record_event(self.st.fence, self.stream) {
-            // Cannot propagate from Drop; the next cross-stream section would
-            // then wait on a stale fence, so make the failure visible.
-            tracing::error!(
-                "EXL3 native MoE: fence record failed on stream {:#x}: {e}",
-                self.stream
-            );
-        }
-        self.st
-            .in_flight
-            .store(false, std::sync::atomic::Ordering::Release);
-    }
 }
 
 impl Exl3MoeState {
-    /// Claim the shared state for one layer's dispatch section on `stream`.
-    /// Refuses (does not wait) if another section is in flight on the host —
-    /// a contract breach, never a normal condition. A stream change is
-    /// normal (prefill vs decode streams) and is made safe by ordering this
-    /// stream behind the previous section's fence on the device.
+    /// Claim the shared launch state for one layer's dispatch section on
+    /// `stream` — [`Exl3LaunchState::section`]: a second host thread BLOCKS
+    /// until the section ends (co-dispatched prefill at C >= 2 is normal,
+    /// not a breach), a stream change (prefill vs decode streams) orders
+    /// this stream behind the previous section's device-side fence, and the
+    /// slabs/locks are touched by exactly one section at a time. The guard
+    /// records the fence and releases the claim on drop.
     pub(crate) fn dispatch_guard<'a>(
         &'a self,
         gpu: &'a dyn GpuBackend,
         stream: u64,
-    ) -> Result<Exl3MoeDispatchGuard<'a>> {
-        use std::sync::atomic::Ordering;
-        anyhow::ensure!(
-            self.in_flight
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok(),
-            "EXL3 native MoE: a second dispatch overlapped one in flight — the \
-             shared slabs/locks admit ONE dispatcher at a time (a concurrent \
-             caller needs its own Exl3MoeState)"
-        );
-        let guard = Exl3MoeDispatchGuard {
-            st: self,
-            gpu,
-            stream,
-        };
-        let prev = self.dispatch_stream.swap(stream, Ordering::AcqRel);
-        if prev != 0 && prev != stream {
-            gpu.stream_wait_event(stream, self.fence)?;
-        }
-        Ok(guard)
+    ) -> Result<Exl3Section<'a>> {
+        self.launch.section(gpu, stream)
     }
 }
 
@@ -367,12 +310,12 @@ impl Exl3MoeState {
 }
 
 impl Exl3MoeState {
-    /// Free the locks + slabs. Without an explicit caller this is reclaimed
-    /// by `sweep_unreleased` at teardown (documented backstop).
+    /// Free the slabs (NOT the shared launch state — release that once every
+    /// holder is gone). Without an explicit caller this is reclaimed by
+    /// `sweep_unreleased` at teardown (documented backstop).
     #[allow(dead_code)]
     pub(crate) fn release(&self, gpu: &dyn GpuBackend) -> Result<()> {
         for p in [
-            self.locks,
             self.a_f16,
             self.a_had_f16,
             self.c_gate_f32,
@@ -398,7 +341,6 @@ impl Exl3MoeState {
         ] {
             gpu.free(p)?;
         }
-        gpu.destroy_event(self.fence)?;
         Ok(())
     }
 }

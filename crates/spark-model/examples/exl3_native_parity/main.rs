@@ -29,6 +29,14 @@
 //!     {3 (no-sync shortcut), 64 (host-sync fused), 64-EP (sentinel tail +
 //!     exact-zero + control), 192 skewed (overflow >128 rows, asserted via
 //!     stats)} (legs_moe_prefill.rs).
+//!  H. dense-linear: the PRODUCTION `exl3_dense_linear` dispatch (bf16
+//!     ingress, gemv/gemm over the shared dense stage under a launch-state
+//!     section, bf16 egress incl. STRIDED arena rows + the shared-A pair
+//!     helper) at every qwen4_exp GDN/attention shape, m in {1,4,8,64,700}
+//!     (700 row-batches at the 256-row test stage), K=4 MUL1, negative
+//!     control + launch timing (legs_dense.rs). I/J. GDN / attention
+//!     layer-arm legs (legs_dense_gdn.rs / legs_dense_attn.rs — placeholders
+//!     until the layer arms land).
 //!
 //! With EXL3_BENCH=1 also times gemv/gemm at qwen4_exp decode/prefill
 //! shapes (20 warmup + 200 timed launches, us/launch).
@@ -43,6 +51,9 @@
 
 mod bench;
 mod legs;
+mod legs_dense;
+mod legs_dense_attn;
+mod legs_dense_gdn;
 mod legs_moe;
 mod legs_moe_prefill;
 mod legs_moe_prefill_debug;
@@ -190,6 +201,9 @@ fn main() -> Result<()> {
     clean &= legs::leg_mgemm(&ctx, &mut rng)?;
     clean &= legs_moe::leg_moe_decode(&ctx, &mut rng)?;
     clean &= legs_moe_prefill::leg_moe_prefill(&ctx, &mut rng)?;
+    clean &= legs_dense::run(&ctx, &mut rng)?;
+    clean &= legs_dense_gdn::run(&ctx, &mut rng)?;
+    clean &= legs_dense_attn::run(&ctx, &mut rng)?;
 
     if std::env::var("EXL3_BENCH").as_deref() == Ok("1") {
         bench::run(&ctx, &mut rng)?;

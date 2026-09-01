@@ -48,7 +48,9 @@ impl TransformerLayer for Qwen3SsmLayer {
     }
 
     fn exl3_graph_veto(&self) -> bool {
-        self.ffn.exl3_native_moe()
+        // Native EXL3 GDN projections (ATLAS_EXL3_NATIVE_DENSE=1) are the
+        // same cooperative-launch class as the MoE experts.
+        self.ffn.exl3_native_moe() || self.exl3_gdn.is_some()
     }
 
     fn snapshot_aux(

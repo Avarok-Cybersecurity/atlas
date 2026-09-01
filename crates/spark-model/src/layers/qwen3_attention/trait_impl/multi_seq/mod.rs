@@ -26,6 +26,7 @@ mod ffn;
 mod mla;
 mod mla_gemv;
 mod qkv;
+mod qkv_exl3;
 
 impl Qwen3AttentionLayer {
     #[allow(clippy::too_many_arguments)]

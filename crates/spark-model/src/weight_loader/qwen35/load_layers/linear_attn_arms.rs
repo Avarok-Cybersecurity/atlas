@@ -16,9 +16,10 @@ use crate::tp_shard::{
     shard_gdn_qkvz_rows, shard_gdn_value_vector,
 };
 use crate::weight_map::{
-    DenseWeight, Fp8Weight, Nvfp4Variant, QuantizedWeight, SsmWeights, WeightQuantFormat,
-    dense_auto, dense_f32_safe, dense_keep_f32, gpu_concat_rows, interleave_ba,
-    load_fp8_block_scaled_as_fp8weight, load_ssm_qwen35, quantize_to_nvfp4,
+    DenseWeight, Exl3DenseFamily, Fp8Weight, Nvfp4Variant, QuantizedWeight, SsmWeights,
+    WeightQuantFormat, dense_auto, dense_f32_safe, dense_keep_f32, exl3_dense_family_kept,
+    gpu_concat_rows, interleave_ba, load_fp8_block_scaled_as_fp8weight, load_ssm_qwen35,
+    load_ssm_qwen35_parts, quantize_to_nvfp4,
 };
 
 /// Native FP8 SSM build: keeps decode in block-scaled FP8 via `w8a16_gemv`,
@@ -218,6 +219,7 @@ pub(crate) fn build_linear_attention_dense_bf16(
     input_norm: DenseWeight,
     post_attn_norm: DenseWeight,
     ffn: FfnComponent,
+    exl3_stage: Option<&std::sync::Arc<crate::layers::ops::Exl3DenseStage>>,
 ) -> Result<Box<dyn TransformerLayer>> {
     // GDN HeadParallel: `config` already holds per-rank-LOCAL linear head
     // counts (topology.rs divided them by tp_size). `TpGdnDims::from_config`
@@ -226,38 +228,74 @@ pub(crate) fn build_linear_attention_dense_bf16(
     // slicer returns the source pointer untouched → byte-identical fast path.
     let tp_size = config.tp_world_size.max(1);
     let dims = TpGdnDims::from_config(config);
-    tracing::info!(
-        "Layer {layer_idx}: loading SSM FP8 projections as BF16 dense \
-         (tp={tp_size}, local_nk={}, local_nv={})",
-        dims.local_nk,
-        dims.local_nv,
-    );
 
-    let ssm35 = load_ssm_qwen35(store, lp, gpu, variant)?;
-
-    // Concat FULL [Q|K|V] || [Z] (on-disk sizes) then SEGMENT-slice to this
-    // rank's heads (Q/K/V/Z sliced independently, re-packed local — a naive
-    // "first half of QKVZ" split is WRONG).
-    let qkvz_full = gpu_concat_rows(
-        &ssm35.in_proj_qkv,
-        dims.full_conv_dim(),
-        &ssm35.in_proj_z,
-        dims.full_value_dim(),
-        h,
-        gpu,
-    )?;
-    // `gpu_concat_rows` allocates an independent combined buffer (alloc +
-    // copy_d2d), so the per-projection BF16 expansions of in_proj_qkv /
-    // in_proj_z are dead after this point. They are freshly-allocated
-    // FP8→BF16 dequant outputs (not WeightStore aliases), ~50 MB/layer ×
-    // ~30 GDN layers ≈ 1.5 GB. Free them here — identical numerics.
-    let _ = gpu.free(ssm35.in_proj_qkv.weight);
-    let _ = gpu.free(ssm35.in_proj_z.weight);
-    let (qkvz_ptr, _, _) = shard_gdn_qkvz_rows(qkvz_full.weight, &dims, gpu)?;
-    if tp_size > 1 {
-        let _ = gpu.free(qkvz_full.weight);
+    // Native EXL3 GDN (ATLAS_EXL3_NATIVE_DENSE=1): re-derived PER LAYER from
+    // the store, not just the env gates — the materialize pass keeps the
+    // routed GDN leaves (`Exl3DenseFamily::Gdn.leaves()`: in_proj_qkv,
+    // in_proj_z, out_proj) packed only as an atomic set, so "the .trellis
+    // tensors are still here" is exactly "this layer was kept". A fallen-back
+    // layer takes the BF16 arm below with zero special-casing. On the native
+    // arm the in_proj pair is NOT loaded or concatenated (packed trellis
+    // weights cannot be fused; the layer serves them as a shared-A pair into
+    // the same fused [Q|K|V|Z] arena row) and out_proj is left NULL.
+    let native_gdn = exl3_dense_family_kept(store, lp, Exl3DenseFamily::Gdn);
+    if native_gdn {
+        ensure!(
+            tp_size == 1,
+            "Layer {layer_idx}: EXL3 native GDN serves the unsharded packed trellis; \
+             TP={tp_size} is not supported (qwen4_exp does not load under TP)"
+        );
+        ensure!(
+            std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").as_deref() != Ok("1"),
+            "ATLAS_EXL3_NATIVE_DENSE=1 is incompatible with ATLAS_HOLO_FP8_SSM_DECODE=1 \
+             (no block-scaled FP8 qkvz/out_proj exists in an EXL3 checkpoint); unset one"
+        );
+        tracing::info!(
+            "Layer {layer_idx}: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 \
+             trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before"
+        );
+    } else {
+        tracing::info!(
+            "Layer {layer_idx}: loading SSM FP8 projections as BF16 dense \
+             (tp={tp_size}, local_nk={}, local_nv={})",
+            dims.local_nk,
+            dims.local_nv,
+        );
     }
-    let qkvz_dense = DenseWeight { weight: qkvz_ptr };
+
+    let ssm35 = load_ssm_qwen35_parts(store, lp, gpu, variant, !native_gdn, !native_gdn)?;
+
+    let qkvz_dense = if native_gdn {
+        // Packed pair served by the layer (`Exl3GdnWeights::in_proj_linear`);
+        // the fused BF16 slot stays NULL — the FP8-native precedent.
+        DenseWeight {
+            weight: spark_runtime::gpu::DevicePtr::NULL,
+        }
+    } else {
+        // Concat FULL [Q|K|V] || [Z] (on-disk sizes) then SEGMENT-slice to this
+        // rank's heads (Q/K/V/Z sliced independently, re-packed local — a naive
+        // "first half of QKVZ" split is WRONG).
+        let qkvz_full = gpu_concat_rows(
+            &ssm35.in_proj_qkv,
+            dims.full_conv_dim(),
+            &ssm35.in_proj_z,
+            dims.full_value_dim(),
+            h,
+            gpu,
+        )?;
+        // `gpu_concat_rows` allocates an independent combined buffer (alloc +
+        // copy_d2d), so the per-projection BF16 expansions of in_proj_qkv /
+        // in_proj_z are dead after this point. They are freshly-allocated
+        // FP8→BF16 dequant outputs (not WeightStore aliases), ~50 MB/layer ×
+        // ~30 GDN layers ≈ 1.5 GB. Free them here — identical numerics.
+        let _ = gpu.free(ssm35.in_proj_qkv.weight);
+        let _ = gpu.free(ssm35.in_proj_z.weight);
+        let (qkvz_ptr, _, _) = shard_gdn_qkvz_rows(qkvz_full.weight, &dims, gpu)?;
+        if tp_size > 1 {
+            let _ = gpu.free(qkvz_full.weight);
+        }
+        DenseWeight { weight: qkvz_ptr }
+    };
 
     // BA: interleave FULL heads (per-group β/α) then slice to local heads —
     // the rank boundary always lands on a key-head group boundary.
@@ -290,7 +328,11 @@ pub(crate) fn build_linear_attention_dense_bf16(
     // above ARE per-head [nv] scalars, so they slice; slicing norm on the head
     // axis read past the [vd] buffer → cuMemcpyDtoDAsync INVALID_VALUE at load.)
     let norm_ptr = ssm35.norm.weight;
-    let (out_proj_ptr, _, _) = shard_gdn_out_proj_row_parallel(ssm35.out_proj.weight, &dims, gpu)?;
+    let out_proj_ptr = if native_gdn {
+        spark_runtime::gpu::DevicePtr::NULL
+    } else {
+        shard_gdn_out_proj_row_parallel(ssm35.out_proj.weight, &dims, gpu)?.0
+    };
 
     let ssm = SsmWeights {
         in_proj_qkvz: qkvz_dense,
@@ -315,6 +357,12 @@ pub(crate) fn build_linear_attention_dense_bf16(
         config,
         gpu,
     )?;
+    if native_gdn {
+        super::exl3_dense_arms::install_native_gdn(
+            &mut layer, gpu, store, lp, layer_idx, h, &dims, exl3_stage,
+        )?;
+        return Ok(Box::new(layer));
+    }
     layer.out_proj_dense = Some(DenseWeight {
         weight: out_proj_ptr,
     });
@@ -359,6 +407,14 @@ pub(crate) fn build_linear_attention_nvfp4(
     let tp_size = config.tp_world_size.max(1);
     let dims = TpGdnDims::from_config(config);
 
+    // The native-EXL3 GDN route lives on the BF16 arm only: a layer whose
+    // family was kept packed has no `.weight` for this arm to requantize.
+    ensure!(
+        !exl3_dense_family_kept(store, lp, Exl3DenseFamily::Gdn),
+        "{lp}: ATLAS_EXL3_NATIVE_DENSE=1 kept this layer's GDN family as packed EXL3 \
+         trellis, but the NVFP4-requant GDN arm was selected (ATLAS_QWEN4EXP_BF16_GDN=0), \
+         which has no native route — unset ATLAS_QWEN4EXP_BF16_GDN or ATLAS_EXL3_NATIVE_GDN=0"
+    );
     let ssm35 = load_ssm_qwen35(store, lp, gpu, variant)?;
 
     // Concat FULL [Q|K|V] || [Z] then SEGMENT-slice to local heads.

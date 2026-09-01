@@ -41,7 +41,10 @@ use spark_runtime::kernel_args::KernelLaunch;
 // resolves against `ops/exl3_matmul/` (moe_grouped_a.rs precedent).
 #[path = "exl3_matmul/mgemm.rs"]
 mod mgemm;
-pub use mgemm::{exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f32_to_bf16, exl3_mgemm};
+pub use mgemm::{
+    exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d, exl3_f32_to_bf16, exl3_f32_to_bf16_2d,
+    exl3_mgemm,
+};
 #[path = "exl3_matmul/moe_decode.rs"]
 mod moe_decode;
 pub use moe_decode::{

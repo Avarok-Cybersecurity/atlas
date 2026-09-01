@@ -9,6 +9,8 @@
 
 #[path = "weight_map/exl3_materialize.rs"]
 mod exl3_materialize;
+#[path = "weight_map/exl3_materialize_dense.rs"]
+mod exl3_materialize_dense;
 #[path = "weight_map/exl3_materialize_moe.rs"]
 mod exl3_materialize_moe;
 #[path = "weight_map/expert.rs"]
@@ -49,6 +51,7 @@ mod ssm_qwen35;
 mod ssm_qwen35_more;
 
 pub use exl3_materialize::*;
+pub use exl3_materialize_dense::*;
 pub use exl3_materialize_moe::*;
 pub use expert::*;
 pub(crate) use fp8_dequant::*;

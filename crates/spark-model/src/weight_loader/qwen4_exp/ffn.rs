@@ -32,7 +32,7 @@ pub(super) fn build_moe(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     variant: Nvfp4Variant,
-    exl3_state: &mut Option<std::sync::Arc<Exl3MoeState>>,
+    exl3: &mut super::exl3_dense::NativeExl3,
 ) -> Result<FfnComponent> {
     let h = config.hidden_size;
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
@@ -138,8 +138,11 @@ pub(super) fn build_moe(
                      module — unset ATLAS_EXL3_NATIVE_MOE on this target",
             )?;
         }
-        let state = Exl3MoeState::get_or_create(
-            exl3_state,
+        // Over the MODEL-shared launch state (locks/fence/section) so the
+        // MoE arm and the native dense arms serialize on ONE section.
+        let state = Exl3MoeState::get_or_create_with_launch(
+            &mut exl3.moe,
+            &mut exl3.launch,
             gpu,
             h,
             config.moe_intermediate_size,
