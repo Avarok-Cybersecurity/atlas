@@ -199,14 +199,32 @@ Implementation — decode ON GATHER, arena stays raw:
   (K derived from words/row), with the same highest-id-vs-rows refusal as
   the sharded path.
 
+## FULL BOOT PASSED (2026-09-01, fourth commit)
+
+turboderp/Qwen3.8-Flash-Next-exl3 @ 2.05bpw_h4_ng4 (63 GB: 36 GB linears +
+26 GB sharded ngram; this branch ships NO vision shard, which sidesteps
+that gap) served end-to-end on EP=2 (gx10-9959 + dgx-00), CTX=8192,
+util 0.6 — pledge honored at 72.9/73.0 GB on both ranks:
+
+- 37,341 trellis linears materialized in ~30 s/rank
+- PLE exl3_ngram_trellis engaged: 320M rows K=4, 26.2 GB packed,
+  decode-on-gather; cold gather 256 misses = 14 ms, warm 512/512 hits =
+  96 us
+- temp=0 answers coherent + factually correct, finish_reason stop,
+  TTFT 718 ms warm, ~20 tok/s decode, prefix cache working
+- One layout surprise found+fixed: the 2.05 branch SHARDS the ngram
+  trellis (128 x shard_{i}.trellis [2500012, 41]); the loader now walks
+  either layout. One ops surprise: a boot-time watchdog floor of 25 GB is
+  wrong for this profile — Atlas's own honored budget leaves ~22 GB free
+  by design.
+- run script: /home/ms/run_exl3_ep2.sh (both nodes), binary
+  /home/ms/spark-exl3, port 8890.
+
 ## Still ahead
 
-1. An end-to-end boot test against the real EXL3 checkpoint (needs the
-   ~68 GB 4.05bpw download; all decode paths are now in place — remaining
-   risk is integration-level, e.g. vision).
-2. Vision shard (`vision_k6.safetensors`) mapping (ships outside the
-   weight index; not loaded today — boot likely needs language-model-only
-   handling or the vision tensors mapped).
-3. The NATIVE fused trellis-GEMM/GEMV port (exl3_gemm/exl3_gemv) — the
-   actual memory-win path; the reconstruct route above serves at
-   requantized quality/footprint, native keeps 2-6 bpw resident.
+1. Vision shard (`vision_k6.safetensors`) mapping for the branches that
+   ship one (4.05bpw+) — text-only fallback works today.
+2. The NATIVE fused trellis-GEMM/GEMV port (exl3_gemm/exl3_gemv) — the
+   actual memory-win path; the reconstruct route serves at requantized
+   NVFP4 footprint (~same as an NVFP4 checkpoint), native keeps the
+   2-6 bpw resident and skips the double quantization.
