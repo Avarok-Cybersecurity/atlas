@@ -55,6 +55,12 @@ export const authors = {
     initials: 'TB',
     role: 'Founder, Avarok Cybersecurity',
     bio: 'Works on the Atlas inference engine — kernels, scheduling, and the benchmarks that decide whether any of it was worth it.'
+  },
+  'ronald-stesiak': {
+    name: 'Ronald R. Stesiak',
+    initials: 'RS',
+    role: 'Founding Engineer, Atlas',
+    bio: 'Tunes Atlas for speed on real hardware, from CUDA kernels to the speculative-decode layer. Holds the single-Spark records this blog reports.'
   }
 };
 
