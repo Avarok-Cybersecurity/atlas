@@ -58,6 +58,10 @@ pub struct Glm5NextMtpProposerState {
     arg: DevicePtr,
     /// `[max_r0, max_r1, idx_r0, idx_r1]` f32, for the vocab-sharded head's cross-rank pick.
     head_xchg: DevicePtr,
+    /// Once-only guard for `free_state`. `DevicePtr` has no `Drop`, so the
+    /// release is explicit; this makes a second call a no-op, preserving the
+    /// property the consuming `Glm5NextDsaState::free(self)` used to give.
+    released: bool,
 }
 
 impl ProposerState for Glm5NextMtpProposerState {
@@ -565,7 +569,52 @@ impl DraftProposer for Glm5NextMtpHead {
             logits: gpu.alloc(self.vocab * 2)?,
             arg: gpu.alloc(4)?,
             head_xchg: gpu.alloc(16)?,
+            released: false,
         }))
+    }
+
+    /// Release everything `alloc_state` allocated.
+    ///
+    /// Without this the head inherits `DraftProposer::free_state`'s no-op
+    /// default, whose own doc says: *"`DevicePtr` has no `Drop`, so anything
+    /// `alloc_state` allocated leaks unless it is explicitly freed here."* That
+    /// is exactly what happened — every finished sequence leaked its indexer
+    /// cache. The cache is sized from `serve_max_seq_len`, so the leak scales
+    /// with `--max-seq-len`: ~806 MB per sequence at `--max-seq-len 131072`,
+    /// which walks a unified-memory host into the ground in a handful of
+    /// requests (ANOMALIES A75). `DeepseekV4MtpHead` and `MultiModuleMtp`
+    /// already override this; the GLM port did not.
+    ///
+    /// 🔴 Ordering is load-bearing and already correct: `free_sequence`
+    /// destroys this slot's `decode_graph` and `verify2/3/4_graph` — which bake
+    /// these exact pointers — roughly 110 lines BEFORE it calls `free_state`.
+    /// That teardown is the ANOMALIES A56 fix. Do not reorder either half.
+    ///
+    /// Kill switch: `ATLAS_GLM_MTP_STATE_LEAK` (presence — `=0` is NOT "off")
+    /// restores the leaking no-op, for A/B measurement only.
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
+        if std::env::var("ATLAS_GLM_MTP_STATE_LEAK").is_ok() {
+            return Ok(());
+        }
+        let st = state
+            .as_any_mut()
+            .downcast_mut::<Glm5NextMtpProposerState>()
+            .ok_or_else(|| anyhow::anyhow!("Invalid GLM MTP proposer state"))?;
+        if st.released {
+            return Ok(());
+        }
+        st.released = true;
+        st.dsa.free(gpu)?;
+        for p in [st.concat, st.x, st.logits, st.arg, st.head_xchg] {
+            gpu.free(p)?;
+        }
+        // The drafter's private pool is claimed whole by `alloc_state`
+        // (`(0..blocks).collect()`), not drawn from an allocator, so there is
+        // nothing to hand back — clearing it just stops a freed state from
+        // looking live.
+        st.block_table.clear();
+        st.seq_len = 0;
+        Ok(())
     }
 
     /// 🔴 EP-sharded MoE (144 of 288 experts) + row-parallel DSA `o_proj`. Without the

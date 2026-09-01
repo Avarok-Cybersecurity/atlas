@@ -192,7 +192,19 @@ impl Glm5NextDsaState {
         DsaSelectGeometry::plan(cfg, self.len, q_rows)
     }
 
-    pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
+    /// Release the per-sequence device buffers.
+    ///
+    /// Takes `&mut self` rather than `self` because the only caller reaches the
+    /// state through `&mut dyn ProposerState` and cannot move out of it. The
+    /// by-value signature this replaces was inherently call-once; the caller
+    /// (`Glm5NextMtpHead::free_state`) now owns that guard via
+    /// `Glm5NextMtpProposerState::released`.
+    ///
+    /// 🔴 Every buffer freed here is baked into captured CUDA graphs, so this
+    /// MUST run after `free_sequence` has destroyed the slot's `decode_graph`
+    /// and `verify2/3/4_graph` — which it does (ANOMALIES A56 put that teardown
+    /// in place, and it sits ~110 lines above the `free_state` call site).
+    pub fn free(&mut self, gpu: &dyn GpuBackend) -> Result<()> {
         for p in [self.k_normed, self.gate, self.valid] {
             gpu.free(p)?;
         }
