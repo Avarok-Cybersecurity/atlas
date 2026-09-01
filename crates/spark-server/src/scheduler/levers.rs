@@ -190,9 +190,25 @@ impl SchedLevers {
             // count +31% (PR #604). `ATLAS_DFLASH_UNIFIED_CTX=0` restores the
             // legacy append for A/B.
             dflash_unified_ctx: on_unless_zero("ATLAS_DFLASH_UNIFIED_CTX"),
-            // Third of the graduated record levers, see the 2026-08-31
-            // comment above dflash_masked_verify.
-            dflash_spec_think: on_unless_zero("ATLAS_DFLASH_SPEC_THINK"),
+            // ★ NOT GRADUATED, and it must not be. Unlike masked_verify and
+            // seam_serial — which are additionally gated on
+            // `dflash_verify_raw_argmax` (= `args.dflash`, serve_load.rs) and
+            // so cannot touch a no-drafter serve — this lever is read by
+            // `mtp_gate::spec_dispatch_eligible` on BOTH lanes:
+            //
+            //     if inside_thinking && !spec_think { return false; }
+            //
+            // Defaulting it ON removes the guard that keeps speculation out of
+            // `<think>` for plain MTP too. Batch-K verify is not byte-lossless
+            // at T=0, so a low-margin token can flip mid-reasoning and the
+            // trajectory diverges. Measured, twice, with the same signature:
+            // the 2026-08-16 bisect (main+this-hunk fails, main without it
+            // passes 10/10), and again on 2026-09-01 when this PR first
+            // graduated it — agentic-webserver went 10/10 -> 9/10 webserver_ok
+            // and 10/10 -> 7/10 followed_directions DETERMINISTICALLY (three
+            // identical runs), and bfcl-subset-echolp, which serves the same
+            // recipe, fell 0.44 below both of its floors.
+            dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
             dflash_gate_pin_c2: on_unless_zero("ATLAS_DFLASH_GATE_PIN_C2"),
             dflash_batch_verify: on_unless_zero("ATLAS_DFLASH_BATCH_VERIFY"),
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
@@ -312,6 +328,53 @@ mod tests {
         assert!(!d.dflash_masked_verify && !d.dflash_adaptive && !d.dflash_spec_think);
         assert!(!d.disable_watchdogs);
         assert!(!d.decode_timing && !d.mtp_timing && !d.adadec_diagnostic);
+    }
+
+    /// ★ `defaults()` CANNOT catch a change to what the SERVER resolves.
+    ///
+    /// It is a hand-written struct literal; `from_env()` is the constructor
+    /// `spark serve` actually calls. When PR #831 graduated
+    /// `dflash_spec_think` from `opt_in` to `on_unless_zero`, ONLY `from_env()`
+    /// changed — `defaults()` still said `false`, so
+    /// `every_opt_in_lever_ships_off` above stayed green and
+    /// `cargo test --workspace` passed. The regression reached the GPU gates
+    /// instead, where it cost a full 11-gate campaign to find.
+    ///
+    /// This asserts the resolver itself, with no env set. It is deliberately
+    /// narrow: `dflash_spec_think` is the one lever in this struct whose value
+    /// escapes the DFlash lane. `mtp_gate::spec_dispatch_eligible` reads it as
+    ///
+    ///     if inside_thinking && !spec_think { return false; }
+    ///
+    /// for BOTH lanes, so defaulting it on lets speculation enter `<think>` on
+    /// plain MTP, where batch-K verify is not byte-lossless at T=0. Measured
+    /// twice with the same signature — the 2026-08-16 bisect, and 2026-09-01
+    /// on this PR: agentic-webserver 10/10 -> 9/10 webserver_ok and 10/10 ->
+    /// 7/10 followed_directions, deterministically, plus bfcl-subset-echolp
+    /// 0.44 below both floors on the same recipe.
+    #[test]
+    fn spec_think_is_off_in_the_resolver_the_server_actually_uses() {
+        // SAFETY: single-threaded test process; no other thread reads the env.
+        unsafe { std::env::remove_var("ATLAS_DFLASH_SPEC_THINK") };
+        let live = SchedLevers::from_env();
+        assert!(
+            !live.dflash_spec_think,
+            "ATLAS_DFLASH_SPEC_THINK must stay OPT-IN: from_env() resolved it ON. \
+             It is the one lever here that is not gated behind dflash_verify_raw_argmax, \
+             so defaulting it on changes plain-MTP serving and deterministically \
+             damages agentic trajectories. See mtp_gate::spec_dispatch_eligible."
+        );
+        // The two levers this PR DID graduate stay graduated: both are
+        // additionally gated on `dflash_verify_raw_argmax` (= args.dflash), so
+        // they cannot reach a no-drafter serve.
+        assert!(
+            live.dflash_masked_verify,
+            "masked_verify is intentionally default-ON"
+        );
+        assert!(
+            live.dflash_seam_serial,
+            "seam_serial is intentionally default-ON"
+        );
     }
 
     #[test]
