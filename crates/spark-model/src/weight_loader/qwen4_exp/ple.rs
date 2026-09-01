@@ -137,19 +137,44 @@ pub(super) fn load(
     let heads = dims.ngram_heads();
 
     // ── EXL3 sidecar table (exl3_ngram_trellis) ──
-    // Registered by `register_exl3_ngram_sidecar`: one deferred
-    // `[rows, 1 + 160*K/16]` I16 trellis tensor + an uploaded per-head bias.
-    // Rows are faulted RAW into the pinned arena (the cache is
-    // byte-agnostic) and `batched_embed_exl3` decodes them on gather.
-    let exl3_name = format!("{lp}.ple_embedding.ngram_embedding.trellis");
-    if let Some(d) = store.deferred(&exl3_name) {
+    // Registered by `register_exl3_ngram_sidecar`: deferred
+    // `[rows, 1 + 160*K/16]` I16 trellis tensors + an uploaded per-head
+    // bias. Two published layouts exist: one monolithic
+    // `ngram_embedding.trellis` (the 4.05bpw branch) or 128
+    // `ngram_embedding.shard_{i}.trellis` shards (2.05bpw). Rows are
+    // faulted RAW into the pinned arena (the cache is byte-agnostic) and
+    // `batched_embed_exl3` decodes them on gather.
+    let exl3_mono = format!("{lp}.ple_embedding.ngram_embedding.trellis");
+    let mut exl3_segments: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    let mut exl3_shape: Option<Vec<usize>> = None;
+    if let Some(d) = store.deferred(&exl3_mono) {
+        exl3_segments.push((d.path.clone(), d.offset));
+        exl3_shape = Some(d.shape.clone());
+    } else {
+        for i in 0.. {
+            let name = format!("{lp}.ple_embedding.ngram_embedding.shard_{i}.trellis");
+            let Some(d) = store.deferred(&name) else { break };
+            if let Some(s) = &exl3_shape {
+                anyhow::ensure!(
+                    d.shape == *s,
+                    "PLE exl3: shard {i} is {:?} but shard 0 is {s:?}; the \
+                     segmented row cache needs equal shards",
+                    d.shape
+                );
+            } else {
+                exl3_shape = Some(d.shape.clone());
+            }
+            exl3_segments.push((d.path.clone(), d.offset));
+        }
+    }
+    if let Some(shape) = exl3_shape {
         anyhow::ensure!(
-            d.shape.len() == 2,
-            "PLE exl3: trellis shape {:?}, expected [rows, words]",
-            d.shape
+            shape.len() == 2,
+            "PLE exl3: trellis shape {shape:?}, expected [rows, words]"
         );
-        let rows = d.shape[0];
-        let words = d.shape[1];
+        let rows_per = shape[0];
+        let rows = rows_per * exl3_segments.len();
+        let words = shape[1];
         anyhow::ensure!(
             words >= 2 && (words - 1) * 16 % 160 == 0,
             "PLE exl3: {words} words/row does not decode as 1 + 160*K/16"
@@ -193,8 +218,8 @@ pub(super) fn load(
         let slots = slots_from_env();
         let row_stride = words * 2; // i16 words
         let cache = spark_storage::NgramRowCache::open_segmented(
-            &[(d.path.clone(), d.offset)],
-            rows as u64,
+            &exl3_segments,
+            rows_per as u64,
             None,
             row_stride,
             slots,

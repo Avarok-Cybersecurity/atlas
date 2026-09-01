@@ -231,11 +231,11 @@ pub fn materialize_exl3(
         .names()
         .any(|n| n.contains("ple_embedding.ngram_embedding.shard_"))
     {
-        tracing::warn!(
-            "EXL3 checkpoint has no in-store PLE n-gram shards (the exl3 export keeps \
-             them in ngram_embedding.safetensors, an exl3_ngram_trellis row-format file \
-             Atlas does not decode yet). Models that REQUIRE PLE (qwen4_exp) will fail \
-             at the PLE loader; models without PLE are unaffected."
+        tracing::info!(
+            "EXL3 checkpoint has no in-store PLE n-gram shards — the exl3 export keeps \
+             them in ngram_embedding.safetensors; `register_exl3_ngram_sidecar` (called \
+             right after this pass on the serve path) registers that file's trellis \
+             tensors for the NVMe row cache. Models without PLE are unaffected either way."
         );
     }
 
