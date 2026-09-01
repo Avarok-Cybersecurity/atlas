@@ -134,14 +134,45 @@ not algorithm research.
 - Tensors with dims not divisible by 128 (e.g. GDN in_proj_a/b [48,2560])
   ship UNQUANTIZED (f16) — the 128-multiple constraint never bites.
 
+## Loader wiring (LANDED 2026-09-01, second commit)
+
+`weight_map/exl3_materialize.rs` + hooks: the store is rewritten in place
+right after weight load (serve path: `serve_load.rs` before preflight +
+quant detection; library path: `factory::build_model` Step 0 — idempotent,
+so both may run). Per trellis linear:
+
+- **experts + shared experts** -> reconstruct->BF16 (one-tensor transient)
+  -> `quantize_to_nvfp4` -> ModelOpt-style triplet in the store
+  (`.weight` U8 [n,k/2] + `.weight_scale` FP8 [n,k/16] +
+  `.weight_scale_2` F32). `quantized_any` then takes its Standard arm
+  verbatim. Quantizing INSIDE the pass is load-bearing: routed experts are
+  ~90% of parameters and cannot all sit as BF16 at once.
+- **everything else** (attention/GDN/lm_head/MTP, ~6 GB total) -> plain
+  BF16 `.weight`, which the Standard-variant arms read via `dense_auto` +
+  their own runtime NVFP4 quantization.
+
+`detect_quant_format` maps `quant_method: "exl3"` -> ModeloptFormat (with
+a loud warning if raw trellis tensors are still present = call-order bug).
+EP expert filtering verified suffix-agnostic (`parse_expert_index` splits
+on segments, so `.trellis` filters like `.weight` — locked by test).
+The pass logs an explicit up-front warning that the PLE n-gram tables
+(separate `exl3_ngram_trellis` file) are not decoded yet, so a qwen4_exp
+load fails at the PLE loader's existing missing-shard error WITH context;
+non-PLE model families are unaffected.
+
+Double-quantization caveat stands: EXL3(K) -> BF16 -> NVFP4 costs quality
+vs both a native NVFP4 calibration and native EXL3 serving; this is the
+COMPATIBILITY path, not the fidelity path.
+
 ## Still ahead (the rest of the ~1-1.5 week native path)
 
-1. qwen4_exp loader wiring: route `.trellis`-present prefixes through
-   `Exl3Weight` (reconstruct->BF16->existing runtime NVFP4/FP8 requant,
-   tensor-at-a-time to bound transients), F16 dense tensors already
-   convert via the existing loader path.
-2. The ngram row-format decoder (PLE gather path).
-3. Vision shard (`vision_k6.safetensors`) mapping.
+1. The ngram row-format decoder (PLE gather path) — the REMAINING blocker
+   for a full qwen4_exp EXL3 boot.
+2. Vision shard (`vision_k6.safetensors`) mapping (ships outside the
+   weight index; not loaded today).
+3. An end-to-end boot test against a real EXL3 checkpoint (blocked on 1;
+   a non-PLE model family with an EXL3 export would exercise the linear
+   path sooner).
 4. The NATIVE fused trellis-GEMM/GEMV port (exl3_gemm/exl3_gemv) — the
    actual memory-win path; the reconstruct route above serves at
    requantized quality/footprint, native keeps 2-6 bpw resident.

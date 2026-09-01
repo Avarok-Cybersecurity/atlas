@@ -341,6 +341,22 @@ mod store_tests {
         assert!(!is_exl3_f16_aux("a.suh.weight"));
     }
 
+    // EP expert filtering parses the expert index from the name's `experts`
+    // SEGMENT, so EXL3 suffixes (.trellis/.suh/.svh/.mul1) must filter
+    // exactly like .weight — a rank must never load remote experts' trellis.
+    #[test]
+    fn ep_expert_index_parses_exl3_names() {
+        use crate::weights::parse_expert_index;
+        for sfx in ["trellis", "suh", "svh", "mul1", "weight"] {
+            assert_eq!(
+                parse_expert_index(&format!("model.layers.3.mlp.experts.42.gate_proj.{sfx}")),
+                Some(42),
+                ".{sfx} name must parse the expert index"
+            );
+        }
+        assert_eq!(parse_expert_index("model.layers.3.mlp.shared_expert.up_proj.trellis"), None);
+    }
+
     #[test]
     fn detection() {
         let gpu = MockGpuBackend::new();

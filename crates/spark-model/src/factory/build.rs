@@ -3,7 +3,7 @@
 //! `build_model` — entry point that wires up the configured loader,
 //! buffers, KV cache, and (optional) DFlash drafter into a `TransformerModel`.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use atlas_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::GpuBackend;
@@ -28,7 +28,9 @@ pub fn build_model(
     // weight pointer, and it used to be a local in `startup()` that was dropped
     // once the layers had copied pointers out of it: the memory stayed live
     // with nothing able to free it. The model owns it now, so `teardown` can.
-    store: WeightStore,
+    // (`mut` only for the EXL3 materialization pass below, which rewrites
+    // trellis tensors in place before any loader reads the store.)
+    mut store: WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
     kv_block_size: usize,
@@ -96,6 +98,15 @@ pub fn build_model(
     }
     #[cfg(not(feature = "cuda"))]
     let _ = (nllb_lang, nllb_lora_dir);
+
+    // ── Step 0: EXL3 materialization ──
+    // If the checkpoint is EXL3 (QTIP trellis) quantized, rewrite every
+    // trellis linear into loader-consumable tensors (experts -> NVFP4
+    // triplets, the rest -> BF16 dense) BEFORE any loader or quant-format
+    // detection reads the store. No-op on non-EXL3 checkpoints; idempotent
+    // if a caller already materialized. See weight_map/exl3_materialize.rs.
+    crate::weight_map::materialize_exl3(gpu.as_ref(), &mut store)
+        .context("EXL3 checkpoint materialization failed")?;
 
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;

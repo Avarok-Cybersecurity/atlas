@@ -255,6 +255,21 @@ impl WeightStore {
         }
     }
 
+    /// Insert (or replace) a tensor. Used by load-time materialization
+    /// passes that rewrite a checkpoint's tensors into a layout the model
+    /// loaders consume (the EXL3 pass: trellis triplets -> `.weight` [+
+    /// NVFP4 scales]). Returns the displaced tensor, if any — the CALLER
+    /// owns freeing its device memory (the store never frees).
+    pub fn insert(&mut self, name: String, t: WeightTensor) -> Option<WeightTensor> {
+        self.weights.insert(name, t)
+    }
+
+    /// Remove a tensor by name, returning it. As with [`Self::insert`], the
+    /// caller owns freeing the returned tensor's device memory.
+    pub fn remove(&mut self, name: &str) -> Option<WeightTensor> {
+        self.weights.remove(name)
+    }
+
     /// Get a weight tensor by name. Fails fast if not found.
     pub fn get(&self, name: &str) -> Result<&WeightTensor> {
         self.weights

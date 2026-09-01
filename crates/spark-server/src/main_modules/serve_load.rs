@@ -425,7 +425,7 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(5, "weight load");
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
     tracing::info!("OOM guard reserve: {} MB", args.oom_guard_mb);
-    let store = serve_phases::load_weight_store(
+    let mut store = serve_phases::load_weight_store(
         &args,
         &config,
         &model_dir,
@@ -434,6 +434,15 @@ pub(crate) fn load_model(
         ep_size,
         oom_reserve_bytes,
     )?;
+
+    // 3a-bis. EXL3 (QTIP trellis) checkpoints: rewrite trellis linears into
+    // loader-consumable tensors NOW, before the preflight and quant-format
+    // detection below read the store (both key off `.weight`-style names
+    // that an EXL3 store does not have yet). No-op for every other format;
+    // `build_model` carries an idempotent second call for non-serve entry
+    // points. See spark-model weight_map/exl3_materialize.rs.
+    spark_model::weight_map::materialize_exl3(gpu.as_ref(), &mut store)
+        .context("EXL3 checkpoint materialization failed")?;
 
     // 3b. Auto-detect weight key prefix for nested models.
     spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);

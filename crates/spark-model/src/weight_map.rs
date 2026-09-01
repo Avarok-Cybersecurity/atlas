@@ -41,6 +41,8 @@ mod quantized;
 mod ssm_qwen35;
 #[path = "weight_map/ssm_qwen35_more.rs"]
 mod ssm_qwen35_more;
+#[path = "weight_map/exl3_materialize.rs"]
+mod exl3_materialize;
 
 pub use expert::*;
 pub(crate) use fp8_dequant::*;
@@ -51,6 +53,7 @@ pub use moe::*;
 pub use nemotron::*;
 pub use nvfp4_detect::*;
 pub use quantize_fns::*;
+pub use exl3_materialize::*;
 pub use quantize_fp8_bs::*;
 pub use quantized::*;
 pub use ssm_qwen35::*;
