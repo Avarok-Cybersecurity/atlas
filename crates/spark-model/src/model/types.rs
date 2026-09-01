@@ -83,6 +83,14 @@ pub struct TransformerModel {
     /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
+    /// Native EXL3 (QTIP trellis) LM head (`ATLAS_EXL3_NATIVE=1`): serves the
+    /// vocab projection from the packed checkpoint tensors via the fused
+    /// cooperative `exl3_matmul` kernels. When `Some`, it is the LEADING arm
+    /// of every LM-head dispatch (the other head fields stay `None` and
+    /// `lm_head_weight` is NULL — see `factory/build.rs`), and decode-graph
+    /// capture is vetoed (cooperative launches cannot be captured). Installed
+    /// post-construction via `set_lm_head_exl3`.
+    pub(super) lm_head_exl3: Option<super::lm_head_exl3::Exl3LmHead>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer

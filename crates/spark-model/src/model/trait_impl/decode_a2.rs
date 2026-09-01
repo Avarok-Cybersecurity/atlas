@@ -276,7 +276,16 @@ impl TransformerModel {
         // capture hits 'PLE: un-prestaged forward inside CUDA graph capture'
         // on the first joint hc step.
         let layer_veto = self.layers.iter().any(|l| l.decode_graph_unsupported());
-        let graph_key = if !ms_profile && !lora_eager && !layer_veto && multiseq_graphs_enabled() {
+        // Native EXL3 lm_head: the batched head runs inside the captured
+        // region and its kernels are cooperative launches — not capturable
+        // (CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). Eager decode only.
+        let exl3_head_veto = self.lm_head_exl3.is_some();
+        let graph_key = if !ms_profile
+            && !lora_eager
+            && !layer_veto
+            && !exl3_head_veto
+            && multiseq_graphs_enabled()
+        {
             self.batch_decode_graph_key(&*seqs, padded_n)
         } else {
             None

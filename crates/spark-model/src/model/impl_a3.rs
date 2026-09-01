@@ -169,7 +169,12 @@ impl TransformerModel {
         // aliasing: all streams' first token collapsed to one). Verify/decode
         // callers pass `self.buffers.logits()` (base) — unchanged behaviour.
         let logits = logits_dst;
-        if let Some(ref fp8) = self.lm_head_fp8 {
+        if let Some(ref exl3) = self.lm_head_exl3 {
+            // Native EXL3 head (LEADING arm): fused GEMV (K<=8 rows) / GEMM,
+            // rotation scratch keyed by the destination's logits-arena row so
+            // co-dispatched streams never share it. See model/lm_head_exl3.rs.
+            self.lm_head_exl3_project(exl3, hidden, num_tokens as usize, logits, stream)?;
+        } else if let Some(ref fp8) = self.lm_head_fp8 {
             // FP8 E4M3 LM head. The dual-GEMV (batch=2) reads the FP8 weight
             // once for both K=2 verify tokens — bit-identical to two M=1 GEMVs
             // but halves the full-vocab weight bandwidth. Falls back to the
@@ -319,7 +324,17 @@ impl TransformerModel {
         } else {
             (self.buffers.logits(), false)
         };
-        if let Some(ref fp8) = self.lm_head_fp8 {
+        if let Some(ref exl3) = self.lm_head_exl3 {
+            // Native EXL3 head (LEADING arm). The FP32-logits path writes the
+            // f32-C kernel variant straight into the FP32 buffer (no extra
+            // rounding); the BF16 path lands at the arena base (row 0 —
+            // single-token decode is primary-stream only).
+            if fp32 {
+                exl3.project_single_fp32(self.gpu.as_ref(), hidden, logits, stream)?;
+            } else {
+                self.lm_head_exl3_project(exl3, hidden, 1, logits, stream)?;
+            }
+        } else if let Some(ref fp8) = self.lm_head_fp8 {
             // FP8 E4M3 LM head (`--lm-head-dtype fp8`). `w8a16_gemv` has no
             // FP32-output variant — it writes to whichever buffer is passed.
             // `use_fp32_logits` is false in production, so `logits` is the

@@ -70,6 +70,11 @@ pub fn store_has_exl3(store: &WeightStore) -> bool {
 /// `in_dim`/`out_dim` come from the trellis shape `[in/16, out/16, 16*K]`;
 /// the codebook comes from the `.mul1` flag scalar (which stores the
 /// codebook's multiplier constant — see [`Exl3Codebook::from_flag_scalar`]).
+///
+/// `Copy` on purpose: native serving carries this struct inside the `Copy`
+/// `QuantWeight` enum (spark-model), exactly like `QuantizedWeight` /
+/// `Fp8Weight`. All fields are plain device pointers + geometry.
+#[derive(Debug, Clone, Copy)]
 pub struct Exl3Weight {
     pub trellis: DevicePtr,
     pub suh: DevicePtr,

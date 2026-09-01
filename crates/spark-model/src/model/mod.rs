@@ -38,6 +38,7 @@ pub(crate) mod impl_b3;
 pub(crate) mod impl_b3_accessors;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
+pub(crate) mod lm_head_exl3;
 mod impl_ngram;
 pub(crate) mod mtp_carry;
 pub(crate) mod pinned_pack;

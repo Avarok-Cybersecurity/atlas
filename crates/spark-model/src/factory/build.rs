@@ -213,7 +213,63 @@ pub fn build_model(
     let ngram_embed =
         loader.load_ngram_embedding(&store, &config, gpu.as_ref(), max_batch_tokens)?;
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
-    let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
+
+    // ── Step 2b: native EXL3 lm_head (ATLAS_EXL3_NATIVE=1) ──
+    // When the materialization pass kept `lm_head` packed (see
+    // `exl3_native_serves` / `exl3_native_supported` — the SAME predicates
+    // re-derived here), resolve the trellis weight now and skip
+    // `load_lm_head` entirely: there is no `lm_head.weight` to load, and the
+    // tied-embedding fallback would silently serve the wrong head. The dense
+    // `lm_head_weight` field is left NULL; the native head is the LEADING
+    // dispatch arm everywhere that field would otherwise be read, and the
+    // guards below refuse the combinations that read it outside those arms.
+    let lm_head_exl3_weight = if crate::weight_map::exl3_native_enabled()
+        && spark_runtime::weights::exl3::is_exl3_linear(&store, "lm_head")
+        && crate::weight_map::exl3_native_serves("lm_head")
+    {
+        let w =
+            spark_runtime::weights::exl3::Exl3Weight::from_store(gpu.as_ref(), &store, "lm_head")
+                .context("EXL3 native: resolving the kept-packed lm_head")?;
+        anyhow::ensure!(
+            crate::weight_map::exl3_native_supported(&w),
+            "EXL3 native: lm_head kept packed but outside the kernel envelope \
+             (K={} cb={:?}) — materialize/build predicate divergence (bug)",
+            w.k_bits,
+            w.cb,
+        );
+        // DFlash shares the BF16/NVFP4/FP8 lm_head pointers with the drafter
+        // tail — all None/NULL on the native path.
+        anyhow::ensure!(
+            dflash_args.is_none(),
+            "ATLAS_EXL3_NATIVE=1 is incompatible with --dflash (the drafter \
+             tail needs a materialized lm_head); unset one of the two"
+        );
+        // The LoRA tied-lm_head logic (impl_lora.rs) reads `lm_head_weight`
+        // directly; adapters cannot fold into a packed trellis head.
+        anyhow::ensure!(
+            lora_weights.is_none(),
+            "ATLAS_EXL3_NATIVE=1 is incompatible with --lora-adapter (LoRA \
+             reads the dense lm_head); unset one of the two"
+        );
+        Some(w)
+    } else {
+        None
+    };
+    let lm_head = if let Some(ref w) = lm_head_exl3_weight {
+        tracing::info!(
+            "lm_head served natively from EXL3 trellis ([{}x{}] K={} cb={:?}); \
+             skipping the dense load",
+            w.in_dim,
+            w.out_dim,
+            w.k_bits,
+            w.cb,
+        );
+        crate::weight_map::DenseWeight {
+            weight: spark_runtime::gpu::DevicePtr::NULL,
+        }
+    } else {
+        loader.load_lm_head(&store, &config, gpu.as_ref())?
+    };
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
 
     // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
@@ -293,14 +349,22 @@ pub fn build_model(
     // ── Step 3: LM-head quantization (NVFP4 / FP8 / BF16-skip) + the
     // draft-only NVFP4 head for MTP — extracted to lm_head_setup.rs
     // (file-size cap; pure code move).
-    let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = super::lm_head_setup::setup_lm_heads(
-        &store,
-        &lm_head,
-        &config,
-        gpu.as_ref(),
-        use_speculative,
-        !mtp_weights.is_empty(),
-    )?;
+    let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = if lm_head_exl3_weight.is_some() {
+        // Native EXL3 head: nothing to quantize (the dense head is NULL) and
+        // no draft head can be built from it. `--speculative` with MTP
+        // weights would find no NVFP4 draft head and disable itself with the
+        // existing "speculative decoding disabled" warning.
+        (None, None, None)
+    } else {
+        super::lm_head_setup::setup_lm_heads(
+            &store,
+            &lm_head,
+            &config,
+            gpu.as_ref(),
+            use_speculative,
+            !mtp_weights.is_empty(),
+        )?
+    };
 
     // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
     // MTP proposer BEFORE `embed` / `lm_head_nvfp4` / `mtp_lm_head_nvfp4` are
@@ -748,6 +812,26 @@ pub fn build_model(
         None
     };
 
+    // ── Step 6a-bis: native EXL3 lm_head launch state ──
+    // Built while `config`/`buffers`/`gpu` are still in scope (they move into
+    // `new`), installed right after construction. Sized by the logits arena's
+    // ROW CAPACITY: every projection destination is a row range of that
+    // arena, and the fp16 rotation scratch is keyed by destination row (see
+    // model/lm_head_exl3.rs). Allocations here are load-time only.
+    let lm_head_exl3_state = match lm_head_exl3_weight {
+        Some(w) => {
+            let max_rows = buffers.sizes().logits / (config.vocab_size * 2);
+            Some(crate::model::lm_head_exl3::Exl3LmHead::new(
+                gpu.as_ref(),
+                w,
+                config.vocab_size,
+                config.hidden_size,
+                max_rows,
+            )?)
+        }
+        None => None,
+    };
+
     let mut model = TransformerModel::new(
         config,
         embed,
@@ -774,6 +858,13 @@ pub fn build_model(
         ssm_cache_slots,
         ssm_checkpoint_interval,
     )?;
+
+    // Install the native EXL3 lm_head (post-construction setter — the
+    // `set_dflash_proposer` precedent). Also vetoes decode-graph capture:
+    // cooperative launches cannot be captured.
+    if let Some(head) = lm_head_exl3_state {
+        model.set_lm_head_exl3(head);
+    }
 
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──
     //

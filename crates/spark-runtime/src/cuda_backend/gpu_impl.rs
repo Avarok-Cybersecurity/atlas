@@ -246,6 +246,78 @@ impl GpuBackend for AtlasCudaBackend {
         })
     }
 
+    fn launch_cooperative(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        params: &mut [*mut c_void],
+    ) -> Result<()> {
+        // SCALE's libcuda does not export cuLaunchCooperativeKernel (see the
+        // extern block in cuda_backend.rs); refusing is correct — a fallback
+        // to cuLaunchKernel would let the kernel's grid.sync() deadlock.
+        #[cfg(atlas_scale)]
+        {
+            let _ = (func, grid, block, shared_mem, stream, params);
+            bail!("launch_cooperative: not available under SCALE (gfx1151)");
+        }
+        #[cfg(not(atlas_scale))]
+        {
+            let status = unsafe {
+                super::cuLaunchCooperativeKernel(
+                    func.0 as *mut c_void,
+                    grid[0],
+                    grid[1],
+                    grid[2],
+                    block[0],
+                    block[1],
+                    block[2],
+                    shared_mem,
+                    stream,
+                    params.as_mut_ptr(),
+                )
+            };
+            if status != 0 {
+                let msg = format!(
+                    "cuLaunchCooperativeKernel failed: {} (grid={:?}, block={:?}, \
+                     shared_mem={shared_mem}) — a too-large grid (blocks exceed what \
+                     co-residency allows) or an un-raised dynamic-smem cap (see \
+                     set_kernel_max_dynamic_smem) both land here",
+                    cuda_error_text(status),
+                    grid,
+                    block,
+                );
+                // Same probe-and-latch as `launch`: a failed launch may have
+                // destroyed the context, and the caller's error string alone
+                // cannot say so.
+                super::fault_probe::note_failure("cooperative kernel launch", &msg);
+                bail!(msg);
+            }
+            Ok(())
+        }
+    }
+
+    fn set_kernel_max_dynamic_smem(&self, kernel: KernelHandle, bytes: usize) -> Result<()> {
+        const CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES: i32 = 8;
+        let status = unsafe {
+            super::cuFuncSetAttribute(
+                kernel.0 as *mut c_void,
+                CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                i32::try_from(bytes)
+                    .map_err(|_| anyhow::anyhow!("dynamic smem request {bytes} overflows i32"))?,
+            )
+        };
+        if status != 0 {
+            bail!(
+                "cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES={bytes}) failed: {}",
+                cuda_error_text(status)
+            );
+        }
+        Ok(())
+    }
+
     fn stream_is_capturing(&self, stream: u64) -> bool {
         // SCALE's libcuda does not export cuStreamIsCapturing; report
         // not-capturing there (gfx1151 telemetry taps then sample eagerly —

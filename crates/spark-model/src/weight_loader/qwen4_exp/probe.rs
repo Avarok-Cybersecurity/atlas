@@ -40,7 +40,10 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
         config.weight_prefix.clone()
     };
     r.has_embed = store.contains(&format!("{pfx}.embed_tokens.weight"));
-    r.has_lm_head = store.contains("lm_head.weight");
+    // A kept-packed EXL3 lm_head (ATLAS_EXL3_NATIVE=1) counts: the native
+    // head serves it without a dense `.weight` ever existing.
+    r.has_lm_head = store.contains("lm_head.weight")
+        || spark_runtime::weights::exl3::is_exl3_linear(store, "lm_head");
 
     for i in 0..config.num_hidden_layers {
         let lp = config.layer_prefix(i);

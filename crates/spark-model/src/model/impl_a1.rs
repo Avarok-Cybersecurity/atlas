@@ -746,6 +746,9 @@ impl TransformerModel {
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // Installed post-construction by the factory (`set_lm_head_exl3`)
+            // when ATLAS_EXL3_NATIVE=1 kept the lm_head trellis packed.
+            lm_head_exl3: None,
             layers,
             buffers,
             lora: None,

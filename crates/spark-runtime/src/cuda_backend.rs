@@ -50,6 +50,33 @@ unsafe extern "C" {
     pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
     pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
+    /// Cooperative launch: every block is co-resident for the kernel's whole
+    /// lifetime, which is what makes an in-kernel `grid.sync()` legal (the
+    /// EXL3 trellis GEMM/GEMV kernels depend on it). Same shape as
+    /// `cuLaunchKernel` MINUS the trailing `extra` parameter — the driver API
+    /// has no such argument on the cooperative entry point. Not declared under
+    /// SCALE: its libcuda export set is minimal and an unresolved extern would
+    /// break the gfx1151 link (same treatment as `cuStreamIsCapturing`).
+    #[cfg(not(atlas_scale))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn cuLaunchCooperativeKernel(
+        f: *mut c_void,
+        gridDimX: u32,
+        gridDimY: u32,
+        gridDimZ: u32,
+        blockDimX: u32,
+        blockDimY: u32,
+        blockDimZ: u32,
+        sharedMemBytes: u32,
+        hStream: u64,
+        kernelParams: *mut *mut c_void,
+    ) -> i32;
+    /// Per-function attribute write; used for
+    /// `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES` (= 8) so a kernel may
+    /// be handed more than the 48 KB default dynamic shared memory. Declared
+    /// unconditionally — SCALE exports it too (atlas-core's registry already
+    /// calls it on every large-smem launch).
+    pub(super) fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
     // Capture-status query (telemetry taps must not sync/copy inside an

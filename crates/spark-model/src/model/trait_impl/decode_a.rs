@@ -256,7 +256,11 @@ impl TransformerModel {
             && !hss_engaged
             && !dump_step0
             && !lora_eager
-            && !layer_veto;
+            && !layer_veto
+            // The native EXL3 lm_head runs INSIDE decode_forward_body, and its
+            // kernels are cooperative launches — not capturable
+            // (CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). Eager decode only.
+            && self.lm_head_exl3.is_none();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

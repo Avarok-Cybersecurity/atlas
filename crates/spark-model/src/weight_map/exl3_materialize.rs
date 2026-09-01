@@ -45,10 +45,66 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use spark_runtime::gpu::GpuBackend;
-use spark_runtime::weights::exl3::{Exl3Weight, store_has_exl3};
+use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight, store_has_exl3};
 use spark_runtime::weights::{DeferredTensor, WeightDtype, WeightStore, WeightTensor};
 
 use super::{DenseWeight, quantize_to_nvfp4};
+
+// ── Native EXL3 serving (ATLAS_EXL3_NATIVE=1) ────────────────────────
+//
+// Milestone 1 keeps a SELECTED set of non-expert trellis linears packed in
+// the store (skip the BF16 rewrite AND the frees) and serves them through
+// the fused `exl3_matmul` kernels. Everything outside that set — experts,
+// GDN projections, attention, the ViT tower — still materializes exactly as
+// before, because their consumers (concat/shard/quantize pipelines, the ViT
+// loader) read BF16 `.weight` tensors and have not been routed yet.
+//
+// The three functions below are the SINGLE source of truth for the decision;
+// `factory/build.rs` re-derives "was this kept?" through the same predicates,
+// so the materialize pass and the model builder can never disagree.
+
+/// `ATLAS_EXL3_NATIVE=1`: serve supported trellis linears natively instead
+/// of materializing them. Read per call — this only runs on load paths.
+pub fn exl3_native_enabled() -> bool {
+    std::env::var("ATLAS_EXL3_NATIVE").as_deref() == Ok("1")
+}
+
+/// The milestone-1 natively-served set: the LM head only.
+///
+/// `lm_head` is the single largest dense tensor (`[vocab, hidden]`, ~1.27 GB
+/// BF16 on Qwen3.8-Flash-Next vs ~325 MB packed at K=4) and its dispatch is
+/// concentrated in three model-level functions, so it is the narrow path
+/// that exercises the full native stack (bf16->f16 ingress, fused
+/// suh/H128 rotation, trellis GEMV/GEMM, svh epilogue, f16->bf16 egress)
+/// end to end. GDN/attention/ViT expansion is tracked follow-up work: each
+/// needs its layer-site dispatch routed before its prefix can join this set
+/// (a prefix listed here without a serving path would fail at load with the
+/// `dense_auto`/`quantized_any` native-mode probe error).
+pub fn exl3_native_serves(prefix: &str) -> bool {
+    prefix == "lm_head"
+}
+
+/// Whether the vendored kernel set can serve this tensor: a compiled
+/// codebook (cb0/"3inst" is not instantiated — no shipped checkpoint uses
+/// it) and the 128-divisible geometry the fused rotation assumes
+/// (guaranteed by the format for quantized tensors, but checked rather
+/// than trusted).
+///
+/// K is restricted to {2, 4} — the set the GEMV path serves at ANY
+/// `rows <= 8` call. This is a CONCURRENCY invariant, not a kernel gap:
+/// K in {3, 5, 6, 8} would route small-row projections to the split-K GEMM,
+/// whose shared locks buffer is only safe because today's `rows > 8`
+/// callers never overlap across streams — but small-row projections DO run
+/// concurrently under co-dispatched prefill finalize. Kernels for the other
+/// K are compiled and parity-proven; widening this set requires either
+/// per-stream locks buffers or a GEMV envelope that covers those K at
+/// small rows (review finding, 2026-09-01).
+pub fn exl3_native_supported(w: &Exl3Weight) -> bool {
+    matches!(w.k_bits, 2 | 4)
+        && matches!(w.cb, Exl3Codebook::Mcg | Exl3Codebook::Mul1)
+        && w.in_dim.is_multiple_of(128)
+        && w.out_dim.is_multiple_of(128)
+}
 
 /// Probe `model_dir/ngram_embedding.safetensors` — the EXL3 export's
 /// standalone PLE n-gram file (`exl3_ngram_trellis` v1) — and register its
@@ -196,6 +252,8 @@ pub struct Exl3MaterializeStats {
     pub quantized: usize,
     /// Linears rewritten as dense BF16 `.weight`.
     pub bf16: usize,
+    /// Linears kept packed for native serving (`ATLAS_EXL3_NATIVE=1`).
+    pub kept_native: usize,
 }
 
 /// Expert-family prefixes get the NVFP4 triplet; everything else BF16.
@@ -208,6 +266,16 @@ fn wants_nvfp4_triplet(prefix: &str) -> bool {
 pub fn materialize_exl3(
     gpu: &dyn GpuBackend,
     store: &mut WeightStore,
+) -> Result<Exl3MaterializeStats> {
+    materialize_exl3_impl(gpu, store, exl3_native_enabled())
+}
+
+/// Env-independent body (tests exercise `native` directly — `set_var` in
+/// parallel unit tests races).
+fn materialize_exl3_impl(
+    gpu: &dyn GpuBackend,
+    store: &mut WeightStore,
+    native: bool,
 ) -> Result<Exl3MaterializeStats> {
     let mut stats = Exl3MaterializeStats::default();
     if !store_has_exl3(store) {
@@ -248,6 +316,37 @@ pub fn materialize_exl3(
     for p in &prefixes {
         let w = Exl3Weight::from_store(gpu, store, p)
             .with_context(|| format!("EXL3 materialization: resolving {p}"))?;
+
+        // Native serving (ATLAS_EXL3_NATIVE=1): leave the packed tensors in
+        // the store for the model builder to resolve via
+        // `Exl3Weight::from_store` — skip the rewrite AND the frees. Only
+        // prefixes with a routed serving path (`exl3_native_serves`) AND a
+        // compiled kernel envelope (`exl3_native_supported`) qualify; an
+        // unsupported tensor falls through to materialization with a log,
+        // so the same K/cb decision the builder re-derives holds here.
+        if native && exl3_native_serves(p) {
+            if exl3_native_supported(&w) {
+                tracing::info!(
+                    "EXL3 native: keeping {p} packed ([{}x{}] K={} cb={:?}) for the \
+                     fused trellis matmul path",
+                    w.in_dim,
+                    w.out_dim,
+                    w.k_bits,
+                    w.cb,
+                );
+                stats.kept_native += 1;
+                continue;
+            }
+            tracing::warn!(
+                "EXL3 native: {p} requested native serving but K={} cb={:?} \
+                 [{}x{}] is outside the compiled kernel envelope — materializing \
+                 to BF16 instead",
+                w.k_bits,
+                w.cb,
+                w.in_dim,
+                w.out_dim,
+            );
+        }
         let (n, k) = (w.out_dim, w.in_dim);
         let bf16 = w
             .to_bf16(gpu)
@@ -305,9 +404,11 @@ pub fn materialize_exl3(
     }
 
     tracing::info!(
-        "EXL3 materialization done: {} experts -> NVFP4 triplets, {} linears -> BF16 dense",
+        "EXL3 materialization done: {} experts -> NVFP4 triplets, {} linears -> \
+         BF16 dense, {} kept packed for native serving",
         stats.quantized,
-        stats.bf16
+        stats.bf16,
+        stats.kept_native,
     );
     Ok(stats)
 }
@@ -407,5 +508,81 @@ mod tests {
         // Idempotent: second call is a no-op.
         let again = materialize_exl3(&gpu, &mut store).unwrap();
         assert_eq!(again, Exl3MaterializeStats::default());
+    }
+
+    #[test]
+    fn native_mode_keeps_supported_lm_head_packed() {
+        let gpu = MockGpuBackend::new();
+        let mut m = HashMap::new();
+        exl3_linear(&gpu, &mut m, "lm_head", 4);
+        exl3_linear(&gpu, &mut m, "model.layers.0.linear_attn.in_proj_qkv", 4);
+        exl3_linear(&gpu, &mut m, "model.layers.0.mlp.experts.0.gate_proj", 4);
+        let mut store = WeightStore::from_map(m);
+        // Stamp the mul1 codebook flag — a fresh mock alloc reads back zero,
+        // which is cb0/"3inst" and NOT natively supported.
+        let flag = store.get("lm_head.mul1").unwrap().ptr;
+        gpu.copy_h2d(&0x83DC_D12Du32.to_le_bytes(), flag).unwrap();
+
+        let stats = materialize_exl3_impl(&gpu, &mut store, true).unwrap();
+        assert_eq!(stats.kept_native, 1);
+        assert_eq!(stats.quantized, 1); // the expert still lands as NVFP4
+        assert_eq!(stats.bf16, 1); // the GDN linear still lands as BF16
+
+        // lm_head stays packed — no BF16 rewrite, nothing freed.
+        for sfx in ["trellis", "suh", "svh", "mul1"] {
+            assert!(store.contains(&format!("lm_head.{sfx}")));
+        }
+        assert!(!store.contains("lm_head.weight"));
+        // The non-served GDN linear materialized exactly as before.
+        assert!(store.contains("model.layers.0.linear_attn.in_proj_qkv.weight"));
+        assert!(!store.contains("model.layers.0.linear_attn.in_proj_qkv.trellis"));
+
+        // Second call: still idempotent — keeps keeping, rewrites nothing.
+        let again = materialize_exl3_impl(&gpu, &mut store, true).unwrap();
+        assert_eq!(again.kept_native, 1);
+        assert_eq!(again.quantized + again.bf16, 0);
+    }
+
+    #[test]
+    fn native_mode_unsupported_codebook_falls_back_to_bf16() {
+        // cb0 (unset flag scalar) has no compiled kernels — lm_head must
+        // materialize even when native mode asks for it.
+        let gpu = MockGpuBackend::new();
+        let mut m = HashMap::new();
+        exl3_linear(&gpu, &mut m, "lm_head", 4);
+        let mut store = WeightStore::from_map(m);
+        let stats = materialize_exl3_impl(&gpu, &mut store, true).unwrap();
+        assert_eq!(stats.kept_native, 0);
+        assert_eq!(stats.bf16, 1);
+        assert!(store.contains("lm_head.weight"));
+        assert!(!store.contains("lm_head.trellis"));
+    }
+
+    #[test]
+    fn native_serve_set_and_support_envelope() {
+        assert!(exl3_native_serves("lm_head"));
+        // GDN / attention / ViT / experts stay on the materialize path in
+        // milestone 1 — their dispatch is not routed yet.
+        assert!(!exl3_native_serves("model.layers.0.linear_attn.in_proj_qkv"));
+        assert!(!exl3_native_serves("model.layers.3.self_attn.q_proj"));
+        assert!(!exl3_native_serves("model.visual.blocks.0.attn.q_proj"));
+        assert!(!exl3_native_serves("model.layers.0.mlp.experts.7.down_proj"));
+
+        let w = |k_bits, cb| Exl3Weight {
+            trellis: spark_runtime::gpu::DevicePtr(16),
+            suh: spark_runtime::gpu::DevicePtr(32),
+            svh: spark_runtime::gpu::DevicePtr(48),
+            in_dim: 2560,
+            out_dim: 248320,
+            k_bits,
+            cb,
+        };
+        assert!(exl3_native_supported(&w(4, Exl3Codebook::Mul1)));
+        assert!(exl3_native_supported(&w(2, Exl3Codebook::Mcg)));
+        assert!(!exl3_native_supported(&w(4, Exl3Codebook::Inst3))); // cb0 not compiled
+        assert!(!exl3_native_supported(&w(7, Exl3Codebook::Mul1))); // K=7 not compiled
+        let mut odd = w(4, Exl3Codebook::Mul1);
+        odd.in_dim = 2504; // not %128
+        assert!(!exl3_native_supported(&odd));
     }
 }

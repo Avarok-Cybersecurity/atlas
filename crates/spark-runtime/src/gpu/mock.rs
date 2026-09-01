@@ -45,6 +45,11 @@ pub struct MockGpuBackend {
     d2d_async_streams: Mutex<Vec<u64>>,
     d2d_2d_async_streams: Mutex<Vec<u64>>,
     host_pinned_allocs: AtomicUsize,
+    /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call, in
+    /// order. The attribute raise is a ONE-TIME per-kernel opt-in the real
+    /// driver makes sticky; recording it lets a test prove a layer raised the
+    /// cap at kernel resolution rather than per launch (or not at all).
+    max_dynamic_smem: Mutex<Vec<(u64, usize)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +59,11 @@ pub struct MockLaunch {
     pub block: [u32; 3],
     pub shared_mem: u32,
     pub stream: u64,
+    /// Whether this launch went through the cooperative path
+    /// (`launch_cooperative[_typed]`). A grid.sync() kernel dispatched down
+    /// the eager path is a deadlock on real hardware, so tests assert the
+    /// ROUTE, not just the geometry.
+    pub cooperative: bool,
     pub args: Vec<MockArg>,
 }
 
@@ -89,6 +99,7 @@ impl MockGpuBackend {
             d2d_async_streams: Mutex::new(Vec::new()),
             d2d_2d_async_streams: Mutex::new(Vec::new()),
             host_pinned_allocs: AtomicUsize::new(0),
+            max_dynamic_smem: Mutex::new(Vec::new()),
         }
     }
 
@@ -204,6 +215,17 @@ impl MockGpuBackend {
     /// Module/function pairs requested through `kernel`, in lookup order.
     pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
         self.kernel_lookups.lock().clone()
+    }
+
+    /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call, in
+    /// call order.
+    pub fn max_dynamic_smem_calls(&self) -> Vec<(u64, usize)> {
+        self.max_dynamic_smem.lock().clone()
+    }
+
+    /// Launches that went through the cooperative path.
+    pub fn cooperative_launch_count(&self) -> usize {
+        self.launches.lock().iter().filter(|l| l.cooperative).count()
     }
 }
 
@@ -368,8 +390,66 @@ impl GpuBackend for MockGpuBackend {
             block,
             shared_mem,
             stream,
+            cooperative: false,
             args: Vec::new(),
         });
+        Ok(())
+    }
+
+    fn launch_cooperative(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        _params: &mut [*mut std::ffi::c_void],
+    ) -> Result<()> {
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            cooperative: true,
+            args: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn launch_cooperative_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        // NOT delegating to the trait default (which would flatten the args
+        // into raw pointers): recorded typed, exactly like `launch_typed`, so
+        // a test can assert the args AND the route in one snapshot.
+        let args = args
+            .iter()
+            .map(|arg| match arg {
+                KernelArg::Buffer(ptr) => MockArg::Buffer(*ptr),
+                KernelArg::Bytes(bytes) => MockArg::Bytes(bytes.to_vec()),
+            })
+            .collect();
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            cooperative: true,
+            args,
+        });
+        Ok(())
+    }
+
+    fn set_kernel_max_dynamic_smem(&self, kernel: KernelHandle, bytes: usize) -> Result<()> {
+        self.max_dynamic_smem.lock().push((kernel.0, bytes));
         Ok(())
     }
 
@@ -395,6 +475,7 @@ impl GpuBackend for MockGpuBackend {
             block,
             shared_mem,
             stream,
+            cooperative: false,
             args,
         });
         Ok(())

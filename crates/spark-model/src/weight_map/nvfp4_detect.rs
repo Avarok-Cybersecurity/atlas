@@ -227,6 +227,21 @@ pub(crate) fn quantized_any(
     qctx: QuantizeCtx,
 ) -> Result<QuantizedWeight> {
     let _t_detect = std::time::Instant::now();
+    // Native-EXL3 probe FIRST (mirrors `dense_auto`): a kept-packed trellis
+    // prefix has no `.weight`/`.weight_packed`, so every arm below would die
+    // on a bare "not found". Name the real cause: the prefix is in the
+    // native-serving set but its consumer still expects an NVFP4 weight.
+    if super::exl3_native_enabled()
+        && spark_runtime::weights::exl3::is_exl3_linear(store, prefix)
+    {
+        anyhow::bail!(
+            "quantized_any: {prefix} is held as packed EXL3 trellis \
+             (ATLAS_EXL3_NATIVE=1) but this consumer expects an NVFP4 weight — \
+             the prefix is in the native-serving set without a routed dispatch \
+             path. Remove it from `exl3_native_serves` or route the consumer \
+             through ops::exl3_gemv/exl3_gemm."
+        );
+    }
     // Per-key fallback (B8 #bugs RedHatAI/Qwen3-Coder-Next-NVFP4): some
     // models that are CompressedTensors overall keep certain projections
     // (e.g. `linear_attn.out_proj`) as raw BF16 with no quantization
