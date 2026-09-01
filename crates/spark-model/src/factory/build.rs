@@ -781,7 +781,65 @@ pub fn build_model(
                     (used_so_far + inference_reserve) as f64 / (1024.0 * 1024.0 * 1024.0),
                 );
             }
-            let n = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
+            let budget_blocks = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
+            // ── Clamp the pool to blocks the engine can actually reach ──
+            //
+            // `compute_num_blocks` spends the ENTIRE residual budget, and
+            // nothing downstream caps it: the `max_concurrent` check below is a
+            // warn/bail only, never a cap. So the pool is sized by "what is
+            // left over", not by "what can be addressed".
+            //
+            // Measured on GLM-5.3, 2xGB10, `--max-seq-len 2048
+            // --max-batch-size 1`, prefix caching off: 45,386 blocks = 7.6 GiB
+            // = 726,176 KV tokens, against a reachable ceiling of
+            // `1 x ceil(2048/16) = 128` blocks. ~99.7 % of the pool could never
+            // be addressed by any request.
+            //
+            // On a discrete GPU that waste is merely idle VRAM. On unified
+            // memory it is host RAM taken from the kernel, the page cache and
+            // every co-tenant — and it is the reason correcting an
+            // over-reservation elsewhere frees nothing: `kv_budget` is a
+            // residual, so every byte released by a smaller `inference_reserve`
+            // is immediately re-absorbed here. This clamp is what turns a
+            // reserve correction into recovered headroom.
+            //
+            // Only applied when the prefix cache is INACTIVE. An active cache
+            // makes surplus blocks genuinely reachable (they hold shared
+            // prefixes), which is exactly the case the unbounded sizing was
+            // written for. `+ max_batch_size + 1` mirrors the HBM-shrink arm
+            // above: one spare block per sequence plus the dummy slot the
+            // OOB-safe paged kernels read.
+            //
+            // Kill switch: `ATLAS_KV_POOL_UNCLAMPED` (presence — `=0` is NOT
+            // "off") restores the budget-driven pool.
+            let n = if prefix_cache.is_active() || std::env::var("ATLAS_KV_POOL_UNCLAMPED").is_ok()
+            {
+                budget_blocks
+            } else {
+                let per_seq = max_seq_len.div_ceil(kv_block_size);
+                let reachable = max_batch_size
+                    .saturating_mul(per_seq)
+                    .saturating_add(max_batch_size)
+                    .saturating_add(1);
+                let clamped = budget_blocks.min(reachable);
+                if clamped < budget_blocks {
+                    let freed = (budget_blocks - clamped) * kv_config.block_bytes_kv_all_layers();
+                    tracing::info!(
+                        "KV pool clamped to reachable demand: {} -> {} blocks \
+                         ({} seq x {} blocks/seq + {} spare + 1 dummy); \
+                         {:.2} GB not allocated (prefix caching inactive, so surplus \
+                         blocks are unreachable). Restore with --enable-prefix-caching \
+                         or ATLAS_KV_POOL_UNCLAMPED.",
+                        budget_blocks,
+                        clamped,
+                        max_batch_size,
+                        per_seq,
+                        max_batch_size,
+                        freed as f64 / (1024.0 * 1024.0 * 1024.0),
+                    );
+                }
+                clamped
+            };
             let max_kv_tokens = n * kv_block_size;
             tracing::info!(
                 "KV cache: {:.1} GB total × {:.0}% util = {:.1} GB budget; \
