@@ -415,6 +415,28 @@ impl TransformerLayer for Qwen3SsmLayer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         self.alloc_state_inner(gpu)
     }
+
+    /// Free the PLE carry this sequence lazily attached.
+    ///
+    /// Only the `ple` field — the h/conv state in `SsmLayerState` is pooled
+    /// and released by slot in `free_sequence_dispatch`, so freeing it here
+    /// would be a double free. The PLE conv buffer is the one piece that is
+    /// allocated per sequence and owned by nothing.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(mut st) = ssm.ple.take() else {
+            return Ok(());
+        };
+        let Some(ple) = self.ple.as_ref() else {
+            anyhow::bail!("release_state: PLE seq state present but layer has no PLE");
+        };
+        ple.release_seq_state(&mut st, gpu)
+    }
 }
 
 /// The PLE per-seq carry from a sequence's [`SsmLayerState`], lazily created

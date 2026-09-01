@@ -126,10 +126,17 @@ impl GpuBackend for AtlasCudaBackend {
         // outside the util pledge is how the box ends up in swap). Debug
         // level so production INFO stays quiet; RUST_LOG=spark_runtime=debug
         // turns the trail on.
+        //
+        // The running live total rides along because the per-alloc size alone
+        // cannot distinguish churn from a leak: a 96 MB buffer allocated and
+        // freed every step looks identical in the trail to one that is never
+        // released. `live` climbing across steps is the leak signal.
         if bytes >= 32 * 1024 * 1024 {
+            let (n, live) = self.live_count_bytes();
             tracing::debug!(
-                "alloc {:.1} MB (device ptr {dptr:#x})",
-                bytes as f64 / (1024.0 * 1024.0)
+                "alloc {:.1} MB (device ptr {dptr:#x}) live={:.2} GB in {n} allocs",
+                bytes as f64 / (1024.0 * 1024.0),
+                live as f64 / (1024.0 * 1024.0 * 1024.0)
             );
         }
         Ok(DevicePtr(dptr))
@@ -157,7 +164,22 @@ impl GpuBackend for AtlasCudaBackend {
         }
         // Off the ledger BEFORE the free: an entry that survives a successful
         // free would be double-freed at teardown.
-        self.forget_alloc(ptr);
+        //
+        // The size comes back from the ledger so the free trail can be diffed
+        // against the alloc trail by pointer — the query that names what is
+        // accumulating. `None` is a pointer this allocator never handed out
+        // (CUTLASS and FlashInfer allocate directly), which is not an error.
+        if let Some(bytes) = self.forget_alloc(ptr)
+            && bytes >= 32 * 1024 * 1024
+        {
+            let (n, live) = self.live_count_bytes();
+            tracing::debug!(
+                "free {:.1} MB (device ptr {:#x}) live={:.2} GB in {n} allocs",
+                bytes as f64 / (1024.0 * 1024.0),
+                ptr.0,
+                live as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
         let status = unsafe { cuMemFree_v2(ptr.0) };
         // A context that is already being destroyed reports every free as
         // failing, and at process exit that is the normal case, not an error:

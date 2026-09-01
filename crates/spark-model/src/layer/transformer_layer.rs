@@ -653,4 +653,28 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// Release the per-sequence state `alloc_state` produced, plus anything
+    /// the layer attached to it lazily afterwards.
+    ///
+    /// Called once per sequence from the teardown chokepoint
+    /// (`free_sequence_dispatch`). The default no-op is correct for layers
+    /// whose state owns no device memory (`EmptyLayerState`) and for state
+    /// that comes from a pool reclaimed by slot (`SsmLayerState`'s h/conv,
+    /// released via `ssm_pool.release_slot`).
+    ///
+    /// It exists because `LayerState` implementors hold BARE `DevicePtr`s:
+    /// dropping the box reclaims the host struct and leaks the device buffer.
+    /// The QSA indexer carry (~739 MB per request at 200K context across the
+    /// 12 full-attention layers) and the PLE conv carry both leaked this way.
+    /// On unified memory such a leak is invisible to RSS and reported as N/A
+    /// by `nvidia-smi`, so it surfaces only as the host exhausting RAM with no
+    /// process to blame.
+    ///
+    /// MUST be idempotent — teardown can run after a partial failure. Callers
+    /// log errors and continue rather than aborting: a sequence that cannot
+    /// free its state is still finished, and bailing would strand the rest.
+    fn release_state(&self, _state: &mut dyn LayerState, _gpu: &dyn GpuBackend) -> Result<()> {
+        Ok(())
+    }
 }
