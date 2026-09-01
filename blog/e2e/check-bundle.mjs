@@ -108,7 +108,7 @@ if (html) {
 }
 
 // ── 3. a post without maths must not pay for the stylesheet ────────────────
-const plain = join(BUILD, 'posts', 'what-the-background-costs.html');
+const plain = join(BUILD, 'posts', 'seven-tenets-powering-atlas-inference.html');
 try {
   if (readFileSync(plain, 'utf8').includes('katex.min.css')) {
     bad('a post with no maths links the KaTeX stylesheet — it should be conditional');

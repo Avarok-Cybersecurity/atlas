@@ -64,8 +64,11 @@ test('the built blog llms.txt lists every shipped post', async () => {
   const t = readFileSync(built, 'utf8');
   const { readdirSync } = await import('node:fs');
   const slugs = readdirSync(new URL('blog/src/lib/posts/', root))
-    .filter((f) => f.endsWith('.svelte'))
-    .map((f) => f.slice(0, -'.svelte'.length));
+    .filter((f) => f.endsWith('.svelte') || f.endsWith('.md'))
+    // A draft is deliberately absent from llms.txt, the index, the feed and
+    // the sitemap, so requiring it here would assert the opposite of the rule.
+    .filter((f) => !readFileSync(new URL(`blog/src/lib/posts/${f}`, root), 'utf8').match(/^draft:\s*true\s*$/m))
+    .map((f) => f.replace(/\.(svelte|md)$/, ''));
   expect(slugs.length).toBeGreaterThan(0);
   for (const s of slugs) {
     expect(t, `built llms.txt omits post "${s}"`).toContain(`/posts/${s})`);
