@@ -400,11 +400,11 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
                     let targets =
                         super::closure::changed_targets(root, &why, &newest_record.closure);
                     match targets.len() {
-                        0 => format!("invalidated by {}", summarize_paths(&why)),
+                        0 => format!("invalidated by {}", super::check_fmt::summarize_paths(&why)),
                         n => format!(
                             "invalidated by {} — device code changed for {n} target(s): {}",
-                            summarize_paths(&why),
-                            summarize_paths(&targets)
+                            super::check_fmt::summarize_paths(&why),
+                            super::check_fmt::summarize_paths(&targets)
                         ),
                     }
                 };
@@ -451,15 +451,8 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     if let Some(breaches) = check_record(&record, &baseline) {
         problems.extend(breaches);
     }
-    // ★ The record must still be the bytes that were measured, at the commit it
-    // names. FAIL, not skip — the `dirty_paths` reasoning one block up applies
-    // verbatim. Skipping a record with a broken signature would report the gate
-    // as merely "not measured", which is the one verdict a forged record would
-    // most like to receive: it reads as an honest gap rather than as tampering.
-    //
-    // Records written before the cutover carry no sidecar and are exempt; see
-    // `signing::SIGNATURE_REQUIRED_AFTER` for why that window exists and how it
-    // closes itself.
+    // ★ FAIL, not skip — see `signing::verify_record`, which states why, and
+    // why records before the cutover are exempt.
     if let Err(why) =
         super::signing::verify_record(root, &record_path, &record.git_sha, record.recorded_at)
     {
@@ -470,22 +463,6 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     } else {
         GateStatus::Fail(problems)
     }
-}
-
-/// Render invalidating paths for a one-line message: a few names, then a count.
-///
-/// A refactor can touch hundreds of files, and pasting all of them buries the
-/// verdict it is attached to.
-fn summarize_paths(paths: &[String]) -> String {
-    const SHOWN: usize = 3;
-    if paths.len() <= SHOWN {
-        return paths.join(", ");
-    }
-    format!(
-        "{} and {} more",
-        paths[..SHOWN].join(", "),
-        paths.len() - SHOWN
-    )
 }
 
 /// The exit code, as a function of the VERDICTS ALONE.

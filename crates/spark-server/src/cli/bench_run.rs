@@ -12,7 +12,6 @@ use atlas_plugin::{
     ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, gate,
     history, registry,
 };
-use std::collections::BTreeMap;
 
 use super::bench_args::{BenchmarkArgs, BenchmarkCommand, HistoryArgs, OutputFormat, RunArgs};
 use super::bench_print;
@@ -46,7 +45,7 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             None => bench_print::print_suite(a.format),
         },
         BenchmarkCommand::History(a) => history_cmd(a),
-        BenchmarkCommand::Card(a) => card_cmd(a),
+        BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
         BenchmarkCommand::Run(a) => {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
@@ -122,150 +121,6 @@ fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)
 #[cfg(test)]
 #[path = "bench_provenance_tests.rs"]
 mod provenance_tests;
-
-/// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
-///
-/// The hardware fingerprint is fetched from the endpoint that did the work —
-/// not probed locally — so the record describes the box that actually served
-/// the model. A write failure aborts the command with a clear error: the
-/// point of the flag is the record, so a run that did not produce one must
-/// not report success.
-async fn write_gate_record(
-    record: &atlas_plugin::RunRecord,
-    url: &str,
-    model: &str,
-    recipe: Option<String>,
-    serve_overrides: BTreeMap<String, String>,
-    sha_at_start: String,
-    dirty_at_start: Vec<String>,
-    // `--output-image` target plus its parsed `--output-image-args`.
-    //
-    // Threaded in rather than read from `RunArgs` here: this function is also
-    // the gate path, and giving it the whole args struct would let a future edit
-    // reach for a flag that has nothing to do with writing a record.
-    card: Option<(String, BTreeMap<String, String>)>,
-) -> Result<()> {
-    // ★ An INCOMPLETE run must not become a gate record.
-    //
-    // A cancelled or failed run still produces a RunRecord -- it just has no
-    // measurements in it. Committing that gives the branch a file that looks
-    // like evidence and contains none; `check_record` then reports every
-    // threshold as "missing from the record", blaming the baseline rather than
-    // the run that never finished. Observed for real: a BFCL run killed at
-    // 972/1004 left a committed record whose metrics were `{}`.
-    if record.frame.status != atlas_plugin::RunStatus::Completed {
-        bail!(
-            "the run ended as {:?}, not Completed -- no gate record was written. \
-             A record is evidence that a benchmark RAN; an interrupted one is not.",
-            record.frame.status
-        );
-    }
-    if record.frame.metrics.is_empty() {
-        bail!(
-            "the run produced no metrics -- no gate record was written. Every \
-             threshold would read as \"missing from the record\", which blames the \
-             baseline for a run that measured nothing."
-        );
-    }
-    let root = repo_root()?;
-    // ★ The sha is the one captured BEFORE the run, not the one HEAD happens to
-    // point at now. A record exists to say "these numbers came from this
-    // commit", and `bfcl-subset` takes ~3.5 hours: reading HEAD at write time
-    // stamps whatever was committed while the benchmark was running. Observed
-    // in practice -- a 4-hour run recorded a sha that was 14 commits newer than
-    // the binary that produced it.
-    let sha = sha_at_start;
-    if let Ok(now) = gate::git_sha(&root)
-        && now != sha
-    {
-        // Not fatal: the measurement is real and belongs to `sha`. But the
-        // tree moved underneath it, so whoever reads this record needs to know
-        // the working copy is no longer what was measured.
-        eprintln!(
-            "gate: HEAD moved during the run ({sha} -> {now}); the record is \
-             stamped {sha}, the commit that was actually measured"
-        );
-    }
-    let target = TargetEndpoint::new(url, model);
-    let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
-    let dirty = dirty_at_start;
-    let gate_record =
-        gate::GateRecord::from_run(record, hardware, sha, dirty, recipe, serve_overrides)?
-            // What THIS binary's kernels were compiled from. Baked at build
-            // time, so it describes the code that actually ran rather than the
-            // tree as it stands now.
-            .with_closure(atlas_kernels::TARGET_CLOSURES);
-    let path = gate::write_record(&root, &gate_record)?;
-
-    // Sign it, and say BOTH filenames. The operator commits what the terminal
-    // names; if this printed only the .json they would leave the .sig untracked
-    // and the gate would hard-fail on a record that is perfectly good.
-    //
-    // Signing lives here rather than inside `write_record` so the writer stays a
-    // pure function of (root, record) for the ~7 unit tests that call it — none
-    // of which should be minting keys in a real ~/.atlas.
-    let store = atlas_plugin::artifacts::ArtifactStore::discover()?;
-    let identity = gate::signing::load_or_create(store.root())?;
-    let sig = gate::signing::sign_record(&identity, &path, &gate_record.git_sha)?;
-    let fresh_signer = gate::signing::register(&root, &identity)?;
-    eprintln!(
-        "gate record written as {}\n                  and {}",
-        path.display(),
-        sig.display()
-    );
-    if let Some((target, card_args)) = &card {
-        // After the record, deliberately: the card is rendered FROM the record,
-        // so a card can never show a number the record does not.
-        match write_card(&root, &gate_record, target, card_args) {
-            Ok(card) => eprintln!("result card written as {}", card.display()),
-            // A card is a nice-to-have. Failing the whole run because a template
-            // was missing would throw away a benchmark that already succeeded,
-            // and the record — the thing that matters — is already on disk.
-            Err(e) => {
-                eprintln!("gate: the run succeeded but the result card did not render: {e:#}")
-            }
-        }
-    }
-    if fresh_signer {
-        // Once per machine, ever. The first record from a new box carries its
-        // public key into the diff, which is where a human decides whether this
-        // signer is one of ours. Every run after this is silent.
-        eprintln!(
-            "gate: this machine signed a record for the first time. Commit \
-             {}/{}.pub alongside the record — it is how the gate learns to trust \
-             records from this box.",
-            gate::signing::REGISTRY_DIR,
-            identity.fingerprint()
-        );
-    }
-    // Loud, and at the point the operator is about to commit the file. The
-    // record itself carries the verdict (`hardware_state.postcheck`), but a
-    // number is quoted from a terminal long before anyone opens the JSON, and
-    // the 2026-08-15 retraction happened because nothing said this out loud.
-    if let Some(hw) = &gate_record.hardware_state
-        && hw.invalidated()
-    {
-        eprintln!(
-            "gate: ★ that record is marked INVALID — the box throttled while it was \
-             measuring, so its SPEED numbers are not comparable and must not be quoted. \
-             Concerns: {}",
-            hw.concerns().join("; ")
-        );
-    }
-    // Repeated at the end as well as the start: the start-of-run warning has
-    // scrolled hours off the top of the terminal by now, and this one names the
-    // file the reader is about to commit.
-    if !gate_record.dirty_paths.is_empty() {
-        eprintln!(
-            "gate: that record is stamped {} but was measured from a tree with \
-             {} uncommitted invalidation-set file(s); it records them, and \
-             --pull-request-gate-check will reject it. Re-run from a clean tree.",
-            gate_record.git_sha,
-            gate_record.dirty_paths.len()
-        );
-    }
-    Ok(())
-}
 
 fn store() -> Result<ArtifactStore> {
     ArtifactStore::discover()
@@ -468,7 +323,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             .map(|s| s.overrides.clone())
             .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
-        let written = write_gate_record(
+        let written = super::bench_record::write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
@@ -514,147 +369,4 @@ async fn run(args: RunArgs) -> Result<i32> {
         return Ok(0);
     }
     Ok(code)
-}
-
-/// Where `--output-image` writes.
-///
-/// A bare NAME becomes `./<name>.svg`. Anything carrying a path separator or an
-/// extension is taken literally. The rule is stated in the flag's help so a user
-/// never has to discover it by experiment, and `.svg` is appended rather than
-/// substituted — a card named `qwen3.8-27b` must not become `qwen3.svg`, the
-/// same trap the record sidecars have.
-fn card_output_path(target: &str) -> std::path::PathBuf {
-    let looks_like_a_path = target.contains(std::path::MAIN_SEPARATOR)
-        || target.contains('/')
-        || std::path::Path::new(target)
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
-    if looks_like_a_path {
-        std::path::PathBuf::from(target)
-    } else {
-        std::path::PathBuf::from(format!("{target}.svg"))
-    }
-}
-
-/// Render the shareable card for a finished run.
-fn write_card(
-    root: &std::path::Path,
-    record: &atlas_plugin::gate::GateRecord,
-    target: &str,
-    card_args: &std::collections::BTreeMap<String, String>,
-) -> Result<std::path::PathBuf> {
-    let template_path = root.join("assets/cards/result-card.svg");
-    let template = std::fs::read_to_string(&template_path)
-        .with_context(|| format!("reading the card template at {}", template_path.display()))?;
-    let svg = atlas_plugin::gate::card::render(&template, record, card_args);
-    let out = card_output_path(target);
-    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(&out, svg).with_context(|| format!("writing {}", out.display()))?;
-    Ok(out)
-}
-
-/// `spark benchmark card <record>` — a card from an already-measured result.
-fn card_cmd(args: crate::cli::bench_args::CardArgs) -> Result<()> {
-    let record_path = resolve_record(&args.record)?;
-    let record = atlas_plugin::gate::read_record(&record_path)
-        .with_context(|| format!("reading the record at {}", record_path.display()))?;
-    let card_args = args
-        .output_image_args
-        .as_deref()
-        .map(atlas_plugin::gate::card::parse_args)
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("--output-image-args: {e}"))?
-        .unwrap_or_default();
-    // Default the name off the record so `benchmark card <path>` alone does
-    // something useful: `<gate>-<sha>.svg`, which sorts and is unambiguous.
-    let target = args
-        .output_image
-        .unwrap_or_else(|| format!("{}-{}", record.benchmark_id, record.git_sha));
-    // Find the template by walking UP FROM THE RECORD, not from the cwd. A card
-    // is regenerated from a path, often from outside the checkout, and the
-    // template that belongs to a record is the one in the repo that holds it.
-    // Falling back to `repo_root()` keeps `benchmark card x.json` working from
-    // inside the tree when the record was handed in by a relative path.
-    let root = template_root_for(&record_path).or_else(|_| repo_root())?;
-    let out = write_card(&root, &record, &target, &card_args)?;
-    println!("{}", out.display());
-    Ok(())
-}
-
-/// The repo root that owns `record`, found by walking up to the card template.
-fn template_root_for(record: &std::path::Path) -> Result<std::path::PathBuf> {
-    let start = record
-        .canonicalize()
-        .unwrap_or_else(|_| record.to_path_buf());
-    for dir in start.ancestors().skip(1) {
-        if dir.join("assets/cards/result-card.svg").is_file() {
-            return Ok(dir.to_path_buf());
-        }
-    }
-    bail!(
-        "no assets/cards/result-card.svg above {} — pass a record inside a checkout",
-        record.display()
-    )
-}
-
-/// A benchmark id or a record path -> a record path.
-///
-/// An existing file wins, so a benchmark that ever shares a name with a real
-/// path still resolves the way the user pointed. Otherwise the argument is a
-/// benchmark id and this takes the NEWEST committed record for it — which is
-/// what "make a card of the run I just did" means in practice.
-fn resolve_record(arg: &str) -> Result<std::path::PathBuf> {
-    let direct = std::path::Path::new(arg);
-    if direct.is_file() {
-        return Ok(direct.to_path_buf());
-    }
-    let root = repo_root().context(
-        "not inside a checkout, so a benchmark id cannot be resolved — pass a record path",
-    )?;
-    let dir = root.join(".benchmarks").join(arg);
-    if !dir.is_dir() {
-        bail!(
-            "no benchmark or record called `{arg}` ({} does not exist). \
-             `spark benchmark list` prints the ids.",
-            dir.display()
-        );
-    }
-    // Newest by filename: records are `<date>-<sha>[-<variant>].json`, so a
-    // lexical sort is chronological. Ties inside a day are broken by sha, which
-    // is arbitrary but stable — and a card names its commit, so a reader can
-    // always tell which one they got.
-    let mut records: Vec<_> = std::fs::read_dir(&dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().is_some_and(|e| e == "json")
-                && p.file_name().is_some_and(|n| n != "BASELINE.json")
-        })
-        .collect();
-    records.sort();
-    records.pop().with_context(|| {
-        format!("`{arg}` has no committed records yet — run it first, or pass a record path")
-    })
-}
-
-/// Render a card for a benchmark id (or record path), for callers outside this
-/// module — the TUI's History pane.
-///
-/// Shares `resolve_record` and `write_card` with `benchmark card` rather than
-/// re-deriving either: two code paths that pick "the newest record" by different
-/// rules would eventually disagree, and the disagreement would be a card
-/// showing a different run than the row the operator selected.
-pub fn render_card_for_benchmark(id: &str, output: Option<&str>) -> Result<std::path::PathBuf> {
-    let record_path = resolve_record(id)?;
-    let record = atlas_plugin::gate::read_record(&record_path)
-        .with_context(|| format!("reading {}", record_path.display()))?;
-    let target = output
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}-{}", record.benchmark_id, record.git_sha));
-    let root = template_root_for(&record_path).or_else(|_| repo_root())?;
-    write_card(&root, &record, &target, &Default::default())
 }

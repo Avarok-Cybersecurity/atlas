@@ -25,6 +25,7 @@ pub mod amnesty;
 pub mod bench;
 pub mod card;
 pub mod check;
+mod check_fmt;
 pub mod closure;
 pub mod codeowners;
 pub mod coverage;

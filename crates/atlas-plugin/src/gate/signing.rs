@@ -201,6 +201,12 @@ pub enum Verified {
 
 /// Verify a record's sidecar.
 ///
+/// ★ A BROKEN SIGNATURE IS A FAILURE, NOT A SKIP. `check_one` pushes the error
+/// into its `problems` list beside the `dirty_paths` check, for the same reason
+/// that one fails rather than skips: reporting the gate as merely "not measured"
+/// is the single verdict a forged record would most like to receive, because it
+/// reads as an honest gap rather than as tampering.
+///
 /// `recorded_at` is the record's own timestamp, used only for the migration
 /// exemption. Everything else is a hard error: a record after the cutover with
 /// no sidecar, a bad signature, or a key nobody has registered all fail, and the
