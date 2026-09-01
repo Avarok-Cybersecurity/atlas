@@ -132,6 +132,32 @@ pub const MAX_F16_TWIN_K: usize = 16;
 /// The largest `--dflash-gamma` whose verify width still has an FP16 twin.
 pub const MAX_F16_TWIN_DFLASH_GAMMA: usize = MAX_F16_TWIN_K - 1;
 
+/// The served DFlash gamma for a drafter of this trained block size, when
+/// no `--dflash-gamma` was given.
+///
+/// THE SSOT, and it must stay that way: the drafter head resolves its gamma
+/// through this, and so does every preflight that sizes a pool or a reserve
+/// from a peeked `dflash_config.block_size`. Two spellings of this rule is
+/// how the SSM MTP intermediates came to be reserved for K=9 while verify
+/// asked for K=10, a hard error at the first verify step, mid-graph-capture.
+///
+/// `block + 2`, because these drafters chain PAST their trained block:
+/// measured on Qwen3.8-27B DFlash2 (block 8), gamma 8 runs 7 drafts, one
+/// short, while gamma 10 holds full-block 9/9 accepts and is the fastest
+/// measured serve (63.0 vs 56.2 tok/s on GB10, 2026-08-29).
+///
+/// Clamped to `MAX_F16_TWIN_DFLASH_GAMMA` so a block-16-class drafter lands
+/// on 15, the widest verify width with kernel coverage under both h-state
+/// dtypes, instead of gamma 18 / K=19, which no wyN kernel serves.
+pub const fn default_dflash_gamma(trained_block_size: usize) -> usize {
+    let bumped = trained_block_size + 2;
+    if bumped > MAX_F16_TWIN_DFLASH_GAMMA {
+        MAX_F16_TWIN_DFLASH_GAMMA
+    } else {
+        bumped
+    }
+}
+
 /// `--ssm-h-dtype f16` (legacy `ATLAS_SSM_H_FP16`).
 pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16

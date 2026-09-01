@@ -318,7 +318,9 @@ pub struct DflashProposerState {
     /// EAGLE-fix one-shot: when set, the next `propose()` skips its internal
     /// decode-append because the verify step (K=2 accept) already appended
     /// row 0 + row 1 in EAGLE order before calling propose. Consumed (reset to
-    /// false) by propose. Only set under ATLAS_DFLASH_EAGLE_FIX=1.
+    /// false) by propose. Set on the EAGLE-fix path, which is DEFAULT-ON
+    /// (`ATLAS_DFLASH_EAGLE_FIX=0` is the kill switch, not `=1` the opt-in ,
+    /// see verify_k2_step.rs and verify_dflash_step.rs, both `!= Some("0")`).
     pub skip_next_decode_append: bool,
     /// Allocation cap for `ctx_hidden_acc` (in slot count). Mirrors the
     /// `max_seq_len` build arg so we can clamp without re-fetching it.

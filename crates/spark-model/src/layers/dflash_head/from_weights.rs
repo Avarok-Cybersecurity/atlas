@@ -71,10 +71,18 @@ impl BlockDiffusionDraftHead {
         let head_dim = weights.config.head_dim;
         let vocab_size = weights.config.vocab_size;
         // The HEAD's gamma is the SSOT the serve layer reads back, so the
-        // drafter's own trained block size must win here — `block_size` alone
-        // is the top-level field, whose serde default of 16 silently shadows
-        // a DFlash2 checkpoint that states 8 in `dflash_config`.
-        let gamma_val = gamma.unwrap_or(weights.config.effective_block_size());
+        // drafter's checkpoint must drive the default here, `block_size`
+        // alone is the top-level field, whose serde default of 16 silently
+        // shadows a DFlash2 checkpoint that states 8 in `dflash_config`.
+        //
+        // Default = `default_dflash_gamma` (trained block + 2, clamped), the
+        // SSOT the serve preflights size their pools and reserves from too.
+        // Resolve it HERE ONLY through that helper: an independent spelling
+        // here is how the head came to run gamma 10 against intermediates
+        // reserved for K=9. An explicit --dflash-gamma still wins.
+        let gamma_val = gamma.unwrap_or_else(|| {
+            crate::layers::qwen3_ssm::default_dflash_gamma(weights.config.effective_block_size())
+        });
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
         // sized for `max_seq_len + γ + 1` positions (prompt + γ drafts +

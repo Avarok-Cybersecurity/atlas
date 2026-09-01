@@ -159,10 +159,18 @@ pub fn build_model(
         // a DFlash2 checkpoint states its trained block size inside
         // `dflash_config`, and the top-level field's default of 16 must not
         // shadow it. --dflash-gamma still wins over both.
-        config.dflash_gamma = Some(
-            args.gamma
-                .unwrap_or(args.drafter_config.effective_block_size()),
-        );
+        //
+        // MUST go through `default_dflash_gamma`, this value sizes the SSM
+        // pools (uniform K = γ+1), and the HEAD resolves its own γ through
+        // the same helper. When this said `block_size` while the head said
+        // block+2, the pools came up one verify row short and the first
+        // DFlash step died with "SSM MTP intermediate buffers not allocated
+        // (h=8, conv=9, num_tokens=10)" mid-graph-capture.
+        config.dflash_gamma = Some(args.gamma.unwrap_or_else(|| {
+            crate::layers::qwen3_ssm::default_dflash_gamma(
+                args.drafter_config.effective_block_size(),
+            )
+        }));
         tracing::info!(
             "DFlash: target layer capture indices = {:?} (drafter target_layer_ids, \
              used directly), γ = {:?}",

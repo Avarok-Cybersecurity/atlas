@@ -679,7 +679,7 @@ pub(crate) fn load_model(
             .map(|(s, c)| spark_model::factory::DflashBuildArgs {
                 drafter_store: s,
                 drafter_config: c.clone(),
-                gamma: args.dflash_gamma, // None → head resolves effective_block_size()
+                gamma: args.dflash_gamma, // None → head resolves via default_dflash_gamma()
                 window_size: if args.dflash_window_size > 0 {
                     Some(args.dflash_window_size)
                 } else {

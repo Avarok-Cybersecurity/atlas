@@ -185,8 +185,13 @@ pub fn cublas_bf16_proj_dense(
 }
 
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through CUTLASS BF16.
-/// This is the M0 de-risk path for replacing Atlas/cuBLAS GEMMs with
-/// CUTLASS-backed kernels on GB10; keep it behind `ATLAS_CUTLASS_GEMM=1`.
+///
+/// ★ A REFERENCE PATH FOR BENCHMARKING, NOT A SHIPPING ONE. Opt-in behind
+/// `ATLAS_CUTLASS_GEMM=1` and OFF by default; a build without `CUTLASS_HOME`
+/// cannot reach it at all. It exists so a shape can be A/B'd against the
+/// industry reference on the same box — if CUTLASS wins a shape, the fix is
+/// a faster Atlas kernel, not a promotion. See the module docs on
+/// `spark_runtime::cutlass` for the full rationale (SSOT).
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_bf16_proj(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
