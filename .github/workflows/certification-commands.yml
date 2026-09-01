@@ -123,15 +123,22 @@ jobs:
           fi
           perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo none)
           head_sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
-          { echo "verb=$verb"; echo "args=$args"; echo "perm=$perm";
-            echo "head_sha=$head_sha"; echo "short_sha=${head_sha:0:10}"; } >>"$GITHUB_OUTPUT"
+          # ★ PR AND ACTOR ARE PUBLISHED HERE, and every later step reads them
+          # from these outputs. They used to be re-derived in each step's own
+          # `env:` from `github.event.*`, which is empty on a workflow_dispatch —
+          # so the first dispatched /stamp created a check run titled
+          # "Released by @." and then 404'd on `issues//comments`. One resolution
+          # point, once, is the fix.
+          { echo "verb=$verb"; echo "args=$args"; echo "perm=$perm"; echo "pr=$PR";
+            echo "actor=$ACTOR"; echo "head_sha=$head_sha";
+            echo "short_sha=${head_sha:0:10}"; } >>"$GITHUB_OUTPUT"
 
       - name: /help
         if: steps.cmd.outputs.verb == '/help'
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR: ${{ steps.cmd.outputs.pr }}
         run: |
           set -euo pipefail
           gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@- >/dev/null <<'EOF'
@@ -165,8 +172,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
-          ACTOR: ${{ github.event.comment.user.login }}
+          PR: ${{ steps.cmd.outputs.pr }}
+          ACTOR: ${{ steps.cmd.outputs.actor }}
           VERB: ${{ steps.cmd.outputs.verb }}
           PERM: ${{ steps.cmd.outputs.perm }}
           HEAD_SHA: ${{ steps.cmd.outputs.head_sha }}
@@ -239,8 +246,8 @@ jobs:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY_FREE }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
-          ACTOR: ${{ github.event.comment.user.login }}
+          PR: ${{ steps.cmd.outputs.pr }}
+          ACTOR: ${{ steps.cmd.outputs.actor }}
           ARGS: ${{ steps.cmd.outputs.args }}
           SHORT: ${{ steps.cmd.outputs.short_sha }}
         run: ./.github/scripts/pr-review.sh
