@@ -23,6 +23,7 @@
 /// The one-time, content-pinned 2026-08-16 invalidation amnesty.
 pub mod amnesty;
 pub mod bench;
+pub mod card;
 pub mod check;
 pub mod closure;
 pub mod codeowners;
@@ -262,6 +263,11 @@ mod coverage_squash_tests;
 #[cfg(test)]
 #[path = "hardening_tests.rs"]
 mod hardening_tests;
+
+/// Result cards: the specs must name metrics that exist.
+#[cfg(test)]
+#[path = "card_tests.rs"]
+mod card_tests;
 
 /// Ed25519 record signatures: round trips and, mostly, negative controls.
 #[cfg(test)]
