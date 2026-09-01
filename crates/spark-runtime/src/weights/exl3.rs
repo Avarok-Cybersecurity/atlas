@@ -663,6 +663,53 @@ pub mod cpu_ref {
         out
     }
 
+    /// Dimensionality of one PLE n-gram embedding row (fixed by the format).
+    pub const NGRAM_ROW_DIM: usize = 160;
+
+    /// Words per packed `exl3_ngram_trellis` row: 1 scale word + the
+    /// `160*K`-bit ring.
+    pub fn ngram_words_per_row(k: u32) -> usize {
+        1 + NGRAM_ROW_DIM * k as usize / 16
+    }
+
+    /// Decode one packed `exl3_ngram_trellis` row (see upstream
+    /// exllamav3 `ngram_codec.py`, snapshotted in
+    /// `.research/exllamav3_ref/`): word 0 is the fp16 row scale's bits,
+    /// words 1.. hold the tail-biting ring where stream bits
+    /// `[i*K, (i+1)*K)` are the LOW K bits of position i's 16-bit state,
+    /// LSB-first within each u16 (NOT the tile format's MSB-first order).
+    /// `state_i` bit `m` lives at stream bit
+    /// `((i - m/K) mod 160)*K + (m%K)`.
+    ///
+    ///     row[i] = decode_mul1(state_i) as f32 * scale as f32
+    ///              [+ head_bias[i] as f32]
+    ///
+    /// f32 math mirrors both the upstream reference and the
+    /// `batched_embed_exl3` kernel; output is the f32 value (callers round
+    /// to their target dtype).
+    pub fn decode_ngram_row(row_words: &[u16], k: u32, head_bias: Option<&[u16]>) -> Vec<f32> {
+        let kk = k as usize;
+        assert_eq!(row_words.len(), ngram_words_per_row(k));
+        let scale = f16::from_bits(row_words[0]).to_f32();
+        let stream = &row_words[1..];
+        let mut out = Vec::with_capacity(NGRAM_ROW_DIM);
+        for i in 0..NGRAM_ROW_DIM {
+            let mut state: u32 = 0;
+            for m in 0..16usize {
+                let pos = (i + NGRAM_ROW_DIM - m / kk) % NGRAM_ROW_DIM;
+                let bit = pos * kk + m % kk;
+                let b = (stream[bit / 16] >> (bit % 16)) & 1;
+                state |= u32::from(b) << m;
+            }
+            let mut v = decode_code(state as u16, Exl3Codebook::Mul1).to_f32() * scale;
+            if let Some(bias) = head_bias {
+                v += f16::from_bits(bias[i]).to_f32();
+            }
+            out.push(v);
+        }
+        out
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -714,6 +761,59 @@ pub mod cpu_ref {
                         assert!(v.is_finite(), "K={k} cb={cb:?} produced {v}");
                     }
                 }
+            }
+        }
+
+        // Ngram ring decode: an all-zero ring at scale 1.0 decodes every
+        // position to decode_mul1(0); a bias shifts it.
+        #[test]
+        fn ngram_zero_ring() {
+            let k = 6u32;
+            let mut row = vec![0u16; ngram_words_per_row(k)];
+            row[0] = f16::from_f32(1.0).to_bits();
+            let base = decode_code(0, Exl3Codebook::Mul1).to_f32();
+            let out = decode_ngram_row(&row, k, None);
+            assert_eq!(out.len(), NGRAM_ROW_DIM);
+            for &v in &out {
+                assert_eq!(v, base);
+            }
+            let bias = vec![f16::from_f32(0.5).to_bits(); NGRAM_ROW_DIM];
+            let out_b = decode_ngram_row(&row, k, Some(&bias));
+            for &v in &out_b {
+                assert_eq!(v, base + 0.5);
+            }
+        }
+
+        // Ring state reconstruction: pack per the upstream formula (stream
+        // bits [j*K, (j+1)*K) = low K bits of state_j, LSB-first u16s) and
+        // assert the decoder rebuilds the CLOSED-FORM full state
+        //   state_i = (s_i & 63) | ((s_{i-1} & 63) << 6) | ((s_{i-2} & 15) << 12)
+        // (K=6) — two independent derivations of the tail-biting ring.
+        #[test]
+        fn ngram_ring_state_reconstruction_k6() {
+            let k = 6u32;
+            let kk = 6usize;
+            // Deterministic pseudo-random low-6-bit chunks.
+            let s: Vec<u16> = (0..NGRAM_ROW_DIM)
+                .map(|i| (((i as u32).wrapping_mul(2654435761) >> 13) & 63) as u16)
+                .collect();
+            let mut row = vec![0u16; ngram_words_per_row(k)];
+            row[0] = f16::from_f32(1.0).to_bits();
+            for (j, &sj) in s.iter().enumerate() {
+                for b in 0..kk {
+                    let bit = j * kk + b;
+                    row[1 + bit / 16] |= ((sj >> b) & 1) << (bit % 16);
+                }
+            }
+            let out = decode_ngram_row(&row, k, None);
+            for i in 0..NGRAM_ROW_DIM {
+                let prev1 = s[(i + NGRAM_ROW_DIM - 1) % NGRAM_ROW_DIM];
+                let prev2 = s[(i + NGRAM_ROW_DIM - 2) % NGRAM_ROW_DIM];
+                let expect_state = u32::from(s[i] & 63)
+                    | (u32::from(prev1 & 63) << 6)
+                    | (u32::from(prev2 & 15) << 12);
+                let expect = decode_code(expect_state as u16, Exl3Codebook::Mul1).to_f32();
+                assert_eq!(out[i], expect, "position {i}");
             }
         }
 

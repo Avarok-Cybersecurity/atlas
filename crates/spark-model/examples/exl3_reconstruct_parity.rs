@@ -30,6 +30,7 @@ use anyhow::Result;
 use half::{bf16, f16};
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::weights::exl3::{
     Exl3Codebook, cpu_ref, reconstruct_had_bf16, reconstruct_had_f16_device,
 };
@@ -211,6 +212,79 @@ fn real_tensor_leg(g: &dyn GpuBackend) -> Result<Option<bool>> {
     Ok(Some(ok && finite))
 }
 
+/// GPU-vs-CPU parity for the `batched_embed_exl3` ngram-row gather kernel:
+/// synthetic packed rows in a fake arena (slot = row index), random head
+/// bias, K in {4, 6}. The kernel decodes+scales+biases and writes BF16;
+/// the CPU reference does the same in f32 and rounds to BF16 last — the
+/// kernel's f32 chain matches, so outputs must be bit-identical.
+fn ngram_leg(g: &dyn GpuBackend, rng: &mut Lcg) -> Result<bool> {
+    let kernel = match g.kernel("embed_from_argmax", "batched_embed_exl3") {
+        Ok(k) => k,
+        Err(_) => {
+            println!("batched_embed_exl3 absent — ngram leg SKIP");
+            return Ok(true);
+        }
+    };
+    let mut all_ok = true;
+    for k_bits in [4u32, 6u32] {
+        let heads = 16usize;
+        let rows = 64usize; // 4 tokens x 16 heads
+        let words = cpu_ref::ngram_words_per_row(k_bits);
+        let dim = cpu_ref::NGRAM_ROW_DIM;
+
+        let mut arena = vec![0u16; rows * words];
+        for w in arena.iter_mut() {
+            *w = rng.u16();
+        }
+        // Sane fp16 row scales (word 0): 0.001..0.06-ish magnitudes.
+        for r in 0..rows {
+            arena[r * words] = f16::from_f32(0.001 + rng.f() * 0.06).to_bits();
+        }
+        let bias: Vec<u16> = (0..heads * dim)
+            .map(|_| f16::from_f32((rng.f() - 0.5) * 0.2).to_bits())
+            .collect();
+        let slots: Vec<u8> = (0..rows as u32).flat_map(|s| s.to_le_bytes()).collect();
+
+        let arena_d = up(g, &as_bytes(&arena))?;
+        let bias_d = up(g, &as_bytes(&bias))?;
+        let slots_d = up(g, &slots)?;
+        let out_d = g.alloc(rows * dim * 2)?;
+        KernelLaunch::new(g, kernel)
+            .grid([rows as u32, 1, 1])
+            .block([192, 1, 1])
+            .arg_ptr(slots_d)
+            .arg_ptr(arena_d)
+            .arg_ptr(bias_d)
+            .arg_ptr(out_d)
+            .arg_u32(heads as u32)
+            .arg_u32(k_bits)
+            .launch(g.default_stream())?;
+        g.synchronize(g.default_stream())?;
+        let gpu_out = down_u16(g, out_d, rows * dim)?;
+        for p in [arena_d, bias_d, slots_d, out_d] {
+            g.free(p).ok();
+        }
+
+        let mut cpu_out = Vec::with_capacity(rows * dim);
+        for r in 0..rows {
+            let head = r % heads;
+            let vals = cpu_ref::decode_ngram_row(
+                &arena[r * words..(r + 1) * words],
+                k_bits,
+                Some(&bias[head * dim..(head + 1) * dim]),
+            );
+            cpu_out.extend(vals.iter().map(|&v| bf16::from_f32(v).to_bits()));
+        }
+        let ok = gpu_out == cpu_out;
+        println!(
+            "ngram rows K={k_bits}  bf16-identical={ok:<5} (diff {})",
+            diff_count(&gpu_out, &cpu_out)
+        );
+        all_ok &= ok;
+    }
+    Ok(all_ok)
+}
+
 fn main() -> Result<()> {
     let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
@@ -254,6 +328,8 @@ fn main() -> Result<()> {
         control_ok &= differs;
         println!("{label}  CONTROL 1-bit trellis flip detected={differs}");
     }
+
+    clean &= ngram_leg(g, &mut rng)?;
 
     match real_tensor_leg(g) {
         Ok(Some(ok)) => clean &= ok,

@@ -443,6 +443,13 @@ pub(crate) fn load_model(
     // points. See spark-model weight_map/exl3_materialize.rs.
     spark_model::weight_map::materialize_exl3(gpu.as_ref(), &mut store)
         .context("EXL3 checkpoint materialization failed")?;
+    // The EXL3 export keeps the PLE n-gram tables in a standalone
+    // `ngram_embedding.safetensors` (exl3_ngram_trellis row format) outside
+    // the weight index — register its tensors (trellis deferred for the
+    // NVMe row cache, id tables + head_bias uploaded) so the PLE loader
+    // finds them. No-op when the file is absent.
+    spark_model::weight_map::register_exl3_ngram_sidecar(gpu.as_ref(), &mut store, &model_dir)
+        .context("EXL3 ngram sidecar registration failed")?;
 
     // 3b. Auto-detect weight key prefix for nested models.
     spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);

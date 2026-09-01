@@ -17,6 +17,22 @@ use crate::layers::ngram_embed::NgramTable;
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
+/// How the n-gram table's arena rows decode into BF16 embedding rows.
+#[derive(Debug, Clone, Copy)]
+pub enum NgramRowFormat {
+    /// Rows are plain BF16 `[head_dim]` — the historical layout; the plain
+    /// `batched_embed` gather copies them.
+    Bf16,
+    /// Rows are packed `exl3_ngram_trellis` (`1 + 160*K/16` u16 words:
+    /// fp16 row scale + mul1-codebook trellis ring); `batched_embed_exl3`
+    /// decodes on gather and adds the per-head bias.
+    Exl3 {
+        k_bits: u32,
+        /// Device `[num_heads, 160]` f16 bias, added after the row scale.
+        head_bias: DevicePtr,
+    },
+}
+
 /// Per-SEQUENCE carry: the dilated conv's 9 steps and the token history the
 /// id hash needs. Owned by the sequence's [`crate::layer::SsmLayerState`]
 /// (Avarok #753 item B: concurrency needs one of these per in-flight
@@ -59,10 +75,14 @@ pub struct PleLayer {
     table: std::sync::Mutex<NgramTable>,
 
     embed_k: KernelHandle,
+    embed_exl3_k: KernelHandle,
     gemm_k: KernelHandle,
     gate_k: KernelHandle,
     conv_k: KernelHandle,
     add_k: KernelHandle,
+
+    /// How the arena's row bytes decode into BF16 embedding rows.
+    ngram_format: NgramRowFormat,
 
     /// Scratch, sized once for `max_tokens`.
     emb: DevicePtr,
@@ -87,6 +107,7 @@ impl PleLayer {
         eps: f32,
         weights: PleWeights,
         table: NgramTable,
+        ngram_format: NgramRowFormat,
         max_tokens: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
@@ -100,6 +121,18 @@ impl PleLayer {
              geometry is not what we think.",
             heads * head_dim
         );
+        if let NgramRowFormat::Exl3 { k_bits, head_bias } = ngram_format {
+            anyhow::ensure!(
+                (1..=8).contains(&k_bits) && head_bias != DevicePtr::NULL,
+                "PLE: exl3 ngram format needs K in 1..=8 (got {k_bits}) and a \
+                 head_bias tensor"
+            );
+            anyhow::ensure!(
+                head_dim == 160,
+                "PLE: exl3_ngram_trellis rows are fixed at 160 dims, checkpoint \
+                 says head_dim={head_dim}"
+            );
+        }
         let c = hc_mult * hidden;
         let state_len = (k_size - 1) * dilation;
         Ok(Self {
@@ -118,7 +151,9 @@ impl PleLayer {
             norm_conv: weights.norm_conv,
             conv1d: weights.conv1d,
             table: std::sync::Mutex::new(table),
+            ngram_format,
             embed_k: gpu.kernel("embed_from_argmax", "batched_embed")?,
+            embed_exl3_k: gpu.kernel("embed_from_argmax", "batched_embed_exl3")?,
             gemm_k: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
             gate_k: gpu.kernel("ple", "ple_gate")?,
             conv_k: gpu.kernel("ple", "ple_conv")?,
@@ -467,17 +502,36 @@ impl PleLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        ops::batched_embed(
-            gpu,
-            self.embed_k,
-            self.slots_dev,
-            DevicePtr(table_va),
-            self.emb,
-            (num_tokens * heads) as u32,
-            self.head_dim as u32,
-            stream,
-        )
-        .context("PLE row gather")
+        match self.ngram_format {
+            NgramRowFormat::Bf16 => ops::batched_embed(
+                gpu,
+                self.embed_k,
+                self.slots_dev,
+                DevicePtr(table_va),
+                self.emb,
+                (num_tokens * heads) as u32,
+                self.head_dim as u32,
+                stream,
+            )
+            .context("PLE row gather"),
+            // The arena holds RAW exl3_ngram_trellis rows; the kernel decodes
+            // (mul1 + row scale + per-head bias) and writes BF16. Row order is
+            // [tokens, heads] contiguous, so the kernel derives the head from
+            // row_index % heads.
+            NgramRowFormat::Exl3 { k_bits, head_bias } => ops::batched_embed_exl3(
+                gpu,
+                self.embed_exl3_k,
+                self.slots_dev,
+                DevicePtr(table_va),
+                head_bias,
+                self.emb,
+                (num_tokens * heads) as u32,
+                heads as u32,
+                k_bits,
+                stream,
+            )
+            .context("PLE exl3 row gather"),
+        }
     }
 }
 

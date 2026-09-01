@@ -164,15 +164,49 @@ Double-quantization caveat stands: EXL3(K) -> BF16 -> NVFP4 costs quality
 vs both a native NVFP4 calibration and native EXL3 serving; this is the
 COMPATIBILITY path, not the fidelity path.
 
-## Still ahead (the rest of the ~1-1.5 week native path)
+## PLE ngram row decoder (LANDED 2026-09-01, third commit)
 
-1. The ngram row-format decoder (PLE gather path) — the REMAINING blocker
-   for a full qwen4_exp EXL3 boot.
+The `exl3_ngram_trellis` v1 row format (from upstream `ngram_codec.py`,
+snapshotted): a packed row is `1 + 160*K/16` LE uint16 words — word 0 is
+the fp16 ROW SCALE's bits, the rest a 160*K-bit TAIL-BITING RING where
+stream bits `[i*K, (i+1)*K)` are the low K bits of position i's 16-bit
+mul1 state, **LSB-first within each u16** (NOT the tile format's
+MSB-first-in-u32 order — the two formats differ). `state_i` bit `m` lives
+at stream bit `((i - m/K) mod 160)*K + (m%K)`;
+`row[i] = decode_mul1(state_i)*scale + head_bias[head][i]` (f32 math).
+
+Implementation — decode ON GATHER, arena stays raw:
+- `batched_embed_exl3` kernel (embed_from_argmax.cu): arena rows are the
+  RAW faulted 2+10K-word rows (`NgramRowCache` is byte-agnostic, opened at
+  `row_stride = words*2`); the kernel does ring-state extraction + mul1 +
+  scale + per-head bias (head = row_index % num_heads, the [tokens, heads]
+  gather order) and writes BF16. GPU-vs-CPU BIT-IDENTICAL at K=4 and K=6
+  (parity example ngram legs).
+- CPU reference `cpu_ref::decode_ngram_row` + a closed-form ring-state
+  reconstruction cross-test (two independent derivations of the ring).
+- REAL-checkpoint framing validated: rows fetched from the actual 39 GB
+  `ngram_embedding.safetensors` (trellis data offset 5400 in the data
+  section — small tensors first!) decode through an independent third
+  (Python) implementation to healthy embedding rows (scales .007-.011,
+  zero-mean, finite).
+- `register_exl3_ngram_sidecar` (exl3_materialize.rs, hooked in
+  serve_load): probes `model_dir/ngram_embedding.safetensors`, DEFERS the
+  [320M, 61] trellis for the NVMe row cache, uploads `head_bias` (F16
+  bits preserved — gather-kernel input) and the id tables RENAMED to the
+  standard checkpoint names (head_offsets -> ngram_heads_offsets, etc.).
+- `PleLayer` gains `NgramRowFormat::{Bf16, Exl3}` and branches the gather;
+  qwen4_exp/ple.rs takes the EXL3 route when the deferred trellis exists
+  (K derived from words/row), with the same highest-id-vs-rows refusal as
+  the sharded path.
+
+## Still ahead
+
+1. An end-to-end boot test against the real EXL3 checkpoint (needs the
+   ~68 GB 4.05bpw download; all decode paths are now in place — remaining
+   risk is integration-level, e.g. vision).
 2. Vision shard (`vision_k6.safetensors`) mapping (ships outside the
-   weight index; not loaded today).
-3. An end-to-end boot test against a real EXL3 checkpoint (blocked on 1;
-   a non-PLE model family with an EXL3 export would exercise the linear
-   path sooner).
-4. The NATIVE fused trellis-GEMM/GEMV port (exl3_gemm/exl3_gemv) — the
+   weight index; not loaded today — boot likely needs language-model-only
+   handling or the vision tensors mapped).
+3. The NATIVE fused trellis-GEMM/GEMV port (exl3_gemm/exl3_gemv) — the
    actual memory-win path; the reconstruct route above serves at
    requantized quality/footprint, native keeps 2-6 bpw resident.

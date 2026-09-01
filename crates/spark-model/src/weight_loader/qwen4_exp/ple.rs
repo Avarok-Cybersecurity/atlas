@@ -136,6 +136,109 @@ pub(super) fn load(
     dims.validate().context("PLE: checkpoint id geometry")?;
     let heads = dims.ngram_heads();
 
+    // ── EXL3 sidecar table (exl3_ngram_trellis) ──
+    // Registered by `register_exl3_ngram_sidecar`: one deferred
+    // `[rows, 1 + 160*K/16]` I16 trellis tensor + an uploaded per-head bias.
+    // Rows are faulted RAW into the pinned arena (the cache is
+    // byte-agnostic) and `batched_embed_exl3` decodes them on gather.
+    let exl3_name = format!("{lp}.ple_embedding.ngram_embedding.trellis");
+    if let Some(d) = store.deferred(&exl3_name) {
+        anyhow::ensure!(
+            d.shape.len() == 2,
+            "PLE exl3: trellis shape {:?}, expected [rows, words]",
+            d.shape
+        );
+        let rows = d.shape[0];
+        let words = d.shape[1];
+        anyhow::ensure!(
+            words >= 2 && (words - 1) * 16 % 160 == 0,
+            "PLE exl3: {words} words/row does not decode as 1 + 160*K/16"
+        );
+        let k_bits = ((words - 1) * 16 / 160) as u32;
+        anyhow::ensure!(
+            (1..=8).contains(&k_bits),
+            "PLE exl3: derived K={k_bits} from {words} words/row; expected 1..=8"
+        );
+        let head_dim = 160usize;
+
+        // Same missing-rows refusal as the sharded path: the id tables say
+        // how many rows the hash can produce.
+        let highest_id = dims
+            .head_offsets
+            .iter()
+            .zip(dims.head_vocab_sizes.iter())
+            .map(|(off, vocab)| off + vocab)
+            .max()
+            .unwrap_or(0);
+        anyhow::ensure!(
+            highest_id <= rows as u64,
+            "PLE exl3: the id tables reach row {highest_id}, but the trellis \
+             holds {rows} rows — the sidecar belongs to a different conversion"
+        );
+
+        let bias_name = format!("{lp}.ple_embedding.ngram_embedding.head_bias");
+        let bias = store
+            .get(&bias_name)
+            .with_context(|| format!("PLE exl3: sidecar registered no {bias_name}"))?;
+        anyhow::ensure!(
+            bias.dtype == spark_runtime::weights::WeightDtype::F16
+                && bias.num_elements() == heads * head_dim,
+            "PLE exl3: head_bias is {:?} x {}, expected F16 [{heads}, {head_dim}] — \
+             and it must SKIP the loader's F16->BF16 conversion (exact bits are \
+             gather-kernel inputs)",
+            bias.dtype,
+            bias.num_elements()
+        );
+
+        let slots = slots_from_env();
+        let row_stride = words * 2; // i16 words
+        let cache = spark_storage::NgramRowCache::open_segmented(
+            &[(d.path.clone(), d.offset)],
+            rows as u64,
+            None,
+            row_stride,
+            slots,
+        )
+        .context("PLE exl3: n-gram row cache")?;
+
+        let weights = PleWeights {
+            key_proj: dense(store, &format!("{lp}.key_proj.weight"))?,
+            value_proj: dense(store, &format!("{lp}.value_proj.weight"))?,
+            norm_key: dense(store, &format!("{lp}.norm_key.weight"))?,
+            norm_query: dense(store, &format!("{lp}.norm_query.weight"))?,
+            norm_conv: dense(store, &format!("{lp}.norm_conv.weight"))?,
+            conv1d: dense(store, &format!("{lp}.conv1d.weight"))?,
+        };
+        let dilation = config.emb_neighbor_num;
+        tracing::info!(
+            "PLE at MODEL LAYER {layer_idx} (exl3_ngram_trellis): {rows} rows x \
+             {head_dim} dims at K={k_bits} ({:.1} GB packed) served off NVMe with \
+             {slots} cached slots ({:.1} MB); {heads} heads, conv k={} dilation={dilation}",
+            (rows * row_stride) as f64 / 1e9,
+            (slots * row_stride) as f64 / 1e6,
+            config.ple_conv_kernel_size,
+        );
+        return PleLayer::new(
+            dims,
+            head_dim,
+            h,
+            hc,
+            config.ple_conv_kernel_size,
+            dilation,
+            config.rms_norm_eps as f32,
+            weights,
+            NgramTable::Cached(Box::new(cache)),
+            crate::layers::ple::NgramRowFormat::Exl3 {
+                k_bits,
+                head_bias: bias.ptr,
+            },
+            max_tokens,
+            gpu,
+        )
+        .map(Some)
+        .context("PLE: layer construction (exl3)");
+    }
+
     // ── the segmented table ──
     // (path, byte offset) per shard. The path is carried PER SHARD because the
     // released NVFP4 checkpoint spreads these 128 shards across ten
@@ -306,6 +409,7 @@ pub(super) fn load(
         config.rms_norm_eps as f32,
         weights,
         NgramTable::Cached(Box::new(cache)),
+        crate::layers::ple::NgramRowFormat::Bf16,
         max_tokens,
         gpu,
     )
