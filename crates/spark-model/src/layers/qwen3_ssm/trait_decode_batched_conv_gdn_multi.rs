@@ -148,6 +148,15 @@ impl Qwen3SsmLayer {
             2 => self.wy2_kernel(args.kd, args.vd, n),
             3 => self.wy3_kernel(args.kd, args.vd, n),
             4 => self.wy4_kernel(),
+            // 2026-09-01: gamma-width verifies join the two-launch path via
+            // the wyN pointer-table twins (state_is_table compiled in).
+            // None (out of range / module absent / ATLAS_GDN_WYN=0 / f16
+            // pool without twin) falls back per-sequence, byte-identical —
+            // the pre-twin behavior for these widths.
+            5..=16 => match self.wyn_table_kernel(kk, ctx.levers.gdn_wyn) {
+                Some(h) => h,
+                None => return Ok(false),
+            },
             _ => return Ok(false),
         };
         // ATLAS_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
@@ -313,7 +322,7 @@ impl Qwen3SsmLayer {
                 true,
                 stream,
             )?,
-            _ => ops::gdn_decode_wy4(
+            4 => ops::gdn_decode_wy4(
                 ctx.gpu,
                 wy_k,
                 wy_tables,
@@ -335,6 +344,32 @@ impl Qwen3SsmLayer {
                 conv_dim as u32,
                 (nv * 2) as u32,
                 true,
+                stream,
+            )?,
+            // K=5..16: the wyN table twin reads the Hi slabs itself — slab 0
+            // (h) as the state table, slab 1 (Hi0) as the intermediates
+            // table, and VERIFY_WY_TABLE_SEQS pointer entries between
+            // consecutive Hi slabs (the kernel's reinterpreted stride).
+            _ => ops::gdn_decode_wyn_table(
+                ctx.gpu,
+                wy_k,
+                wy_tables,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                hi(1),
+                crate::layer::VERIFY_WY_TABLE_SEQS as u32,
+                n as u32,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                (nv * 2) as u32,
                 stream,
             )?,
         }
