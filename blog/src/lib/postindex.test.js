@@ -115,20 +115,24 @@ test('every shipped post satisfies the schema', async () => {
   // Not a duplicate of the unit tests above: those use fixtures, this asserts
   // the actual posts directory is well-formed, which is what breaks the build.
   const { Glob } = await import('bun');
+  // Both formats land in the same index, so both are "shipped posts". The
+  // module-script rule is Svelte-only — a markdown post carries frontmatter
+  // instead, which postmd.js validates — so it is applied per file rather
+  // than to the whole directory. Asserting only on *.svelte would make this
+  // test vacuous the moment the last Svelte post goes.
   const files = [...new Glob('src/lib/posts/*.{svelte,md}').scanSync('.')];
   expect(files.length).toBeGreaterThan(0);
   for (const f of files) {
     const src = await Bun.file(f).text();
-    // Two shapes are legal, and the loader globs both (posts.js:21). Assert the
-    // one matching the extension rather than the Svelte shape only — doing the
-    // latter reds every markdown post for a rule it cannot satisfy.
     if (f.endsWith('.svelte')) {
       expect(src, `${f} must export meta from a module script`).toMatch(/<script module>[\s\S]*export const meta\s*=/);
     } else {
       expect(src, `${f} must open with a YAML front-matter block`).toMatch(/^---\r?\n[\s\S]*?\r?\n---/);
-      for (const key of ['title', 'date', 'author', 'draft']) {
-        expect(src, `${f} front matter must set ${key}`).toMatch(new RegExp(`^${key}:`, 'm'));
-      }
+        // Opening `---` alone does not prove the block is well-formed or
+        // usable; postmd.js needs these four keys to build the index entry.
+        for (const key of ['title', 'date', 'author', 'draft']) {
+          expect(src, `${f} front matter must set ${key}`).toMatch(new RegExp(`^${key}:`, 'm'));
+        }
     }
   }
 });
@@ -141,10 +145,10 @@ test('cleanSlug strips the extension adapter-static writes, and nothing else', a
   // from the same file, and on the second the client router hands `load` a slug
   // of "foo.html" — which matches no post, so a real, shareable URL 404s after
   // rendering correctly on the server.
-  expect(cleanSlug('seven-tenets-powering-atlas-inference.html')).toBe('seven-tenets-powering-atlas-inference');
-  expect(cleanSlug('/posts/seven-tenets-powering-atlas-inference.html')).toBe('/posts/seven-tenets-powering-atlas-inference');
+  expect(cleanSlug('what-the-background-costs.html')).toBe('what-the-background-costs');
+  expect(cleanSlug('/posts/what-the-background-costs.html')).toBe('/posts/what-the-background-costs');
   // Not a blanket strip: only a trailing .html, and only at the end.
-  expect(cleanSlug('seven-tenets-powering-atlas-inference')).toBe('seven-tenets-powering-atlas-inference');
+  expect(cleanSlug('what-the-background-costs')).toBe('what-the-background-costs');
   expect(cleanSlug('html')).toBe('html');
   expect(cleanSlug('a.html.b')).toBe('a.html.b');
   expect(cleanSlug('/')).toBe('/');
@@ -154,6 +158,10 @@ test('every shipped post resolves from both the clean and the .html URL', async 
   const { cleanSlug } = await import('./content.js');
   const { Glob } = await import('bun');
   const slugs = [...new Glob('src/lib/posts/*.{svelte,md}').scanSync('.')].map((f) =>
+    // Strip whichever extension the file actually has. Slicing a fixed
+    // `.svelte`.length off a `.md` name silently mangles the slug
+    // (seven-tenets-…-inference -> seven-tenets-…-infer) and the assertion
+    // below still passes, because cleanSlug only ever strips `.html`.
     f.slice(f.lastIndexOf('/') + 1).replace(/\.(svelte|md)$/, '')
   );
   expect(slugs.length).toBeGreaterThan(0);
