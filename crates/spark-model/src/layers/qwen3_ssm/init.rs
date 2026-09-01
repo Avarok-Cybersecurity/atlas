@@ -431,6 +431,9 @@ impl Qwen3SsmLayer {
             ),
             gdn_wyn_k: init_kernels::wyn_kernels(gpu),
             gdn_wyn_f16_k: init_kernels::wyn_f16_kernels(gpu),
+            // provenance-id: 526f6e616c6420522e205374657369616b
+            gdn_wyn_table_k: init_kernels::wyn_table_kernels(gpu),
+            gdn_wyn_f16_table_k: init_kernels::wyn_f16_table_kernels(gpu),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,
