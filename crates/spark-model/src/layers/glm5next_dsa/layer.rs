@@ -1276,6 +1276,16 @@ impl TransformerLayer for Glm5NextDsaLayer {
         Ok(Box::new(Glm5NextDsaState::alloc(gpu, &self.cfg)?))
     }
 
+    /// Release what `alloc_state` allocated — ANOMALIES A76. Reached by the non-composite
+    /// paths that hold a bare `Glm5NextDsaLayer`; the composite `Glm5NextLayer` has its
+    /// own, identical, override. Type-driven so a non-DSA state can never be freed here.
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn LayerState) -> Result<()> {
+        if let Some(dsa) = state.as_any_mut().downcast_mut::<Glm5NextDsaState>() {
+            dsa.free(gpu)?;
+        }
+        Ok(())
+    }
+
     /// The replay's writes end at `seq_len + k`; the buffer ends at `capacity`. A62.
     fn check_replay_room(&self, state: &dyn LayerState, seq_len: usize, k: usize) -> Result<()> {
         state

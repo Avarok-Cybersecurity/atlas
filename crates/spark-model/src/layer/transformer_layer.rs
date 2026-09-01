@@ -700,6 +700,34 @@ pub trait TransformerLayer: Send + Sync {
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
 
+    /// Release the per-sequence state this layer built in [`alloc_state`].
+    ///
+    /// Called once from `free_sequence` when a sequence retires. `gpu` is
+    /// threaded in (symmetric with `alloc_state`) so implementations can
+    /// release raw device allocations stored on the state — `DevicePtr` has no
+    /// `Drop`, so anything `alloc_state` allocated leaks unless it is
+    /// explicitly freed here. This is the exact hazard, and the exact remedy,
+    /// that `DraftProposer::free_state` already carries on the sibling trait.
+    ///
+    /// **Symmetry rule: a layer that allocates in `alloc_state` must release in
+    /// `free_state`.** The default is a no-op because the two states the core
+    /// builds itself — `EmptyLayerState` (KV lives in `PagedKvCache`) and the
+    /// pool-backed `SsmLayerState` — own no device memory of their own.
+    ///
+    /// 🔴 Never `gpu.free` a pool-owned buffer. `free_sequence` skips layers the
+    /// SSM pool backs (`layer_type == LinearAttention && uses_ssm_pool()`), so
+    /// this is never called for them; an implementation must ALSO refuse by
+    /// type, because freeing an `SsmStatePool` address that other sequences
+    /// still point at is worse than the leak it would fix.
+    ///
+    /// 🔴 Ordering is load-bearing: everything freed here can be baked into a
+    /// captured CUDA graph, so the call site sits AFTER `free_sequence` has
+    /// destroyed this slot's graphs (ANOMALIES A56).
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn LayerState) -> Result<()> {
+        let _ = (gpu, state);
+        Ok(())
+    }
+
     /// Does this layer's recurrent state live in the shared SSM pool?
     ///
     /// `true` (the default) is the long-standing arrangement: sequence setup

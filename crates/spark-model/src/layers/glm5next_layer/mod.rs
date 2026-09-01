@@ -977,6 +977,22 @@ impl TransformerLayer for Glm5NextLayer {
         })
     }
 
+    /// Release what `alloc_state` allocated — ANOMALIES A76. The DSA indexer cache is
+    /// sized by `--max-seq-len`, not by the prompt (513 B/token/layer), so leaking one
+    /// per request walks a unified-memory host into the ground.
+    ///
+    /// 🔴 Type-driven on purpose. A KDA layer's state on the model path is POOL-owned
+    /// (`uses_ssm_pool()` is true for `Kda`, so `alloc_sequence` hands it pool addresses
+    /// and `free_sequence` skips it entirely) — but refusing by TYPE as well means a
+    /// pool address can never reach `gpu.free` even if a future call site forgets the
+    /// skip. `SsmLayerState` is therefore left alone here, always.
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn LayerState) -> Result<()> {
+        if let Some(dsa) = state.as_any_mut().downcast_mut::<Glm5NextDsaState>() {
+            dsa.free(gpu)?;
+        }
+        Ok(())
+    }
+
     /// Both mixers allocate their per-sequence state with `gpu.alloc` in `alloc_state`, so
     /// the addresses a capture bakes belong to THAT sequence, not to the slot.
     fn graph_stale_on_new_sequence(&self) -> bool {

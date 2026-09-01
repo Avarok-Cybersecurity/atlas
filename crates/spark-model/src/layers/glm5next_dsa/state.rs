@@ -68,6 +68,10 @@ pub struct Glm5NextDsaState {
     len: usize,
     capacity: usize,
     index_head_dim: usize,
+    /// Set by [`Self::free`]. Both the drafter's `free_state` and the target
+    /// layer's now release DSA state, and the same state must never be freed
+    /// twice — mirrors `Glm5NextMtpProposerState::released`.
+    released: bool,
 }
 
 impl Glm5NextDsaState {
@@ -84,6 +88,7 @@ impl Glm5NextDsaState {
             len: 0,
             capacity,
             index_head_dim: d,
+            released: false,
         })
     }
 
@@ -204,10 +209,23 @@ impl Glm5NextDsaState {
     /// MUST run after `free_sequence` has destroyed the slot's `decode_graph`
     /// and `verify2/3/4_graph` — which it does (ANOMALIES A56 put that teardown
     /// in place, and it sits ~110 lines above the `free_state` call site).
+    ///
+    /// Idempotent: two owners can now reach a DSA state — the drafter's
+    /// `free_state` and, since ANOMALIES A76, the target layer's — so a second
+    /// call is a no-op rather than a double `gpu.free`. The pointers are nulled
+    /// so a released state cannot be mistaken for a live one.
     pub fn free(&mut self, gpu: &dyn GpuBackend) -> Result<()> {
+        if self.released {
+            return Ok(());
+        }
+        self.released = true;
         for p in [self.k_normed, self.gate, self.valid] {
             gpu.free(p)?;
         }
+        self.k_normed = DevicePtr(0);
+        self.gate = DevicePtr(0);
+        self.valid = DevicePtr(0);
+        self.len = 0;
         Ok(())
     }
 }

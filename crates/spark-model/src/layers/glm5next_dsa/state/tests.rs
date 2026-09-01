@@ -72,6 +72,7 @@ fn advancing_past_the_cap_is_refused_not_clamped() {
         len: 0,
         capacity: cap,
         index_head_dim: c.index_head_dim,
+        released: false,
     };
     assert!(s.is_empty());
     s.advance(cap - 1).unwrap();
@@ -98,6 +99,7 @@ fn row_offsets_are_flat_bf16_rows() {
         len: 0,
         capacity: max_dsa_context(&c),
         index_head_dim: c.index_head_dim,
+        released: false,
     };
     assert_eq!(s.row_offset(0), 0);
     assert_eq!(s.row_offset(1), 128 * 2);
@@ -132,6 +134,7 @@ fn ensure_room_refuses_before_the_write_and_moves_nothing() {
         len: 0,
         capacity: cap,
         index_head_dim: c.index_head_dim,
+        released: false,
     };
     s.advance(cap).unwrap();
     assert!(
@@ -148,4 +151,51 @@ fn ensure_room_refuses_before_the_write_and_moves_nothing() {
         cap,
         "a refused ensure_room must not move the cursor"
     );
+}
+
+/// ANOMALIES A76: `LayerState` has no `Drop` and `DevicePtr` has none either, so the
+/// three indexer buffers survive the sequence unless `free` releases them. A round trip
+/// must return the backend to its exact baseline — "allocated fewer" is still a leak.
+#[test]
+fn free_returns_every_indexer_buffer_and_is_idempotent() {
+    use spark_runtime::gpu::mock::MockGpuBackend;
+    let gpu = MockGpuBackend::new();
+    let c = cfg();
+    let base = gpu.alloc_count();
+    let mut s = Glm5NextDsaState::alloc(&gpu, &c).unwrap();
+    assert_eq!(
+        gpu.alloc_count(),
+        base + 3,
+        "k_normed + gate + valid are three live device allocations"
+    );
+    s.free(&gpu).unwrap();
+    assert_eq!(gpu.alloc_count(), base, "free returns to the baseline exactly");
+    assert_eq!(s.k_normed.0, 0, "a released state must not look live");
+
+    // Two owners can reach a DSA state (the drafter's `free_state` and, since A76, the
+    // target layer's). A second call must be a no-op, not a double `gpu.free`.
+    let other = gpu.alloc(4096).unwrap();
+    s.free(&gpu).unwrap();
+    assert_eq!(
+        gpu.alloc_count(),
+        base + 1,
+        "the second free must not touch an unrelated allocation"
+    );
+    gpu.free(other).unwrap();
+}
+
+/// 100 sequence lifetimes, one backend: the per-request growth this fix exists to remove
+/// has to be exactly zero, not merely small. Fails on the pre-A76 tree.
+#[test]
+fn a_hundred_alloc_free_cycles_leak_nothing() {
+    use spark_runtime::gpu::mock::MockGpuBackend;
+    let gpu = MockGpuBackend::new();
+    let c = cfg();
+    let base = gpu.alloc_count();
+    for _ in 0..100 {
+        let mut s = Glm5NextDsaState::alloc(&gpu, &c).unwrap();
+        s.advance(16).unwrap();
+        s.free(&gpu).unwrap();
+    }
+    assert_eq!(gpu.alloc_count(), base, "no per-sequence growth");
 }
