@@ -55,19 +55,30 @@ jobs:
 
       - name: Which PR is this about
         id: which
+        # ★ EVERY `${{ }}` VALUE ARRIVES THROUGH THE ENVIRONMENT, never spliced
+        # into the script text. An earlier revision interpolated
+        # `${{ toJSON(github.event) }}` straight into a here-string and CodeQL
+        # flagged it critical — correctly. Under `pull_request_target` and
+        # `issue_comment` that blob carries attacker-authored text (a PR title, a
+        # comment body), and one well-placed quote escapes the literal and runs as
+        # shell WITH this workflow's secrets. An env var is never re-parsed by the
+        # shell, which is the whole difference.
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_JSON: ${{ toJSON(github.event) }}
         run: |
           set -euo pipefail
-          case "${{ github.event_name }}" in
-            pull_request_target) pr='${{ github.event.pull_request.number }}' ;;
-            issue_comment)       pr='${{ github.event.issue.number }}' ;;
+          case "$EVENT_NAME" in
+            pull_request_target) pr="${PR_NUMBER:-}" ;;
+            issue_comment)       pr="${ISSUE_NUMBER:-}" ;;
             check_run)
               # A check run knows its PRs only when the head branch is in this
               # repo; for a fork it is empty and there is nothing to update.
-              pr=$(jq -r '.check_run.pull_requests[0].number // empty' \
-                    <<<'${{ toJSON(github.event) }}')
+              pr=$(jq -r '.check_run.pull_requests[0].number // empty' <<<"$EVENT_JSON")
               ;;
           esac
           if [ -z "${pr:-}" ]; then
@@ -111,7 +122,11 @@ jobs:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           PREV_STATE: ${{ steps.prev.outputs.prev }}
-        run: ./.github/scripts/certification-state.sh "${{ steps.which.outputs.pr }}"
+          # Our own step's output and therefore a number, but it goes through the
+          # environment like everything else: the rule is only useful if it has no
+          # exceptions for a reader to weigh.
+          PR: ${{ steps.which.outputs.pr }}
+        run: ./.github/scripts/certification-state.sh "$PR"
 
       - name: Post or edit the one comment
         if: steps.which.outputs.pr != ''

@@ -76,6 +76,7 @@ jobs:
           # Through the environment, never interpolated into the script: a body
           # containing backticks or $( ) would otherwise execute here.
           BODY: ${{ github.event.comment.body }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           verb=$(printf '%s' "$BODY" | head -1 | tr -d '\r' | awk '{print $1}')
@@ -86,7 +87,7 @@ jobs:
           esac
           # /review on a line comment is legal; the other three are not, because
           # they act on the whole PR and a diff line is the wrong place to say so.
-          if [ "${{ github.event_name }}" = "pull_request_review_comment" ] && [ "$verb" != "/review" ]; then
+          if [ "$EVENT_NAME" = "pull_request_review_comment" ] && [ "$verb" != "/review" ]; then
             echo "skip=true" >>"$GITHUB_OUTPUT"; exit 0
           fi
           perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo none)
