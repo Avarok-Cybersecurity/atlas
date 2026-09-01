@@ -28,7 +28,9 @@ Philosophy is a "lowest level" first principle of abstractive reasoning: it unde
 
 ![A cleaved quartz crystal with the lattice inside it visible.](/images/posts/seven-tenets-powering-atlas-inference/02-crystal.webp)
 
-The second tenet is to be **Community First**. A project without a community is just a pet project. This is not to say pet projects are negative, but rather, that these so-called "pet projects" are, by themselves, providing little to no external value to the world other than the maturation of the author. As developers, many of you have numerous pet projects that can be considered the product of your craft and hobby, and indeed, the skills you gain from creating such projects strengthen you, and in turn provide value by proxy to the external world. However, if the goal is to make excellent software supported and driven by a community, then, efforts must be made to make the software accessible to the community where free exchange increases the inherent limits of each party. Without community, we limit the potential of software to ourselves.
+The second tenet is to be **Community First**. A project without a community is just a pet project. This is not to say pet projects are negative, but rather, that these so-called "pet projects" are, by themselves, providing little to no external value to the world other than the maturation of the author. As developers, many of you have numerous pet projects that can be considered the product of your craft and hobby, and indeed, the skills you gain from creating such projects strengthen you, and in turn provide value by proxy to the external world.
+
+However, if the goal is to make excellent software supported and driven by a community, then, efforts must be made to make the software accessible to the community where free exchange increases the inherent limits of each party. Without community, we limit the potential of software to ourselves.
 
 ![A long table of notebooks and cups around one core sample, nobody in the frame.](/images/posts/seven-tenets-powering-atlas-inference/03-table.webp)
 
