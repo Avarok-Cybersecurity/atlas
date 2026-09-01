@@ -14,7 +14,11 @@
 # installed" line per attention layer.
 set -uo pipefail
 SNAP=/tank/exl3-ckpt/qwen38-flash-next-2.05bpw
-CTX=8192
+# Caps: QSA is per SEQUENCE and must cover the full context; PLE is per
+# FORWARD CALL (tokens*10240*14 B of scratch) and only needs to cover the
+# largest prefill chunk (--max-prefill-tokens, default 8192). Derive both.
+CTX=${CTX:-8192}
+PREFILL=${PREFILL:-8192}
 SEQS=${SEQS:-1}
 LOG=${LOG:-/home/ms/.claude/jobs/5a7bd33d/tmp/boot-native-dense.log}
 
@@ -22,9 +26,9 @@ export LD_LIBRARY_PATH="/home/ms/atlas-gdn-libs:/home/ms/nccl/build/lib:${LD_LIB
 export ATLAS_EXL3_NATIVE=1
 export ATLAS_EXL3_NATIVE_MOE=1
 export ATLAS_EXL3_NATIVE_DENSE=1
-export ATLAS_PLE_MAX_TOKENS=9000
-export ATLAS_PLE_CACHE_SLOTS=4194304
-export ATLAS_QSA_MAX_TOKENS=8192
+export ATLAS_PLE_MAX_TOKENS=$((PREFILL + 1024))
+export ATLAS_PLE_CACHE_SLOTS=$(( CTX * 16 * ${SEQS:-1} > 4194304 ? CTX * 16 * ${SEQS:-1} : 4194304 ))
+export ATLAS_QSA_MAX_TOKENS=$CTX
 export ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
 export RUST_LOG=info
 
