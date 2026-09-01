@@ -58,7 +58,18 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
     unsigned int v_dim,
     unsigned int qk_stride,
     unsigned int v_stride,
-    unsigned int gb_stride
+    unsigned int gb_stride,
+    // Same contract as wy2/wy3/wy4:
+    // 0 = h_state / h_state_inter_base are CONTIGUOUS bases indexed by
+    //     (b*num_v_heads+vh), Hi_t at t*inter_stride_floats — the C=1
+    //     chain-verify form, byte-identical to the original;
+    // 1 = both args are device POINTER TABLES: h_state is a slab of
+    //     `batch_size` per-sequence H base pointers, h_state_inter_base
+    //     points at the Hi0 slab, and `inter_stride_floats` is
+    //     REINTERPRETED as the number of POINTER ENTRIES between
+    //     consecutive Hi slabs (= VERIFY_WY_TABLE_SEQS). This reaches
+    //     Hi_t for any t without adding K-1 arguments.
+    unsigned int state_is_table
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -69,10 +80,23 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
     const unsigned int kh = vh / hr;
     const unsigned int hv = k_dim * v_dim;
 
-    float* H = h_state + ((b * num_v_heads + vh) * hv);
-    // Per-(b, vh) offset into the intermediate pool. Each Hi_t base ptr =
-    // h_state_inter_base + t * inter_stride_floats + ((b*nv+vh)*hv).
-    float* Hi_base = h_state_inter_base + ((b * num_v_heads + vh) * hv);
+    const unsigned long long head_off = (unsigned long long)vh * hv;
+    const unsigned long long flat_off =
+        (unsigned long long)(b * num_v_heads + vh) * hv;
+    float* H = state_is_table ? ((float* const*)h_state)[b] + head_off
+                              : h_state + flat_off;
+    // Per-t Hi pointers, hoisted once per block. Contiguous form: base +
+    // t*stride at the (b, vh) offset (identical math to the original
+    // Hi_base). Table form: slab t's per-sequence entry, plus head_off.
+    float* Hi_ptrs[K_TOKENS - 1];
+    #pragma unroll
+    for (int t = 0; t < K_TOKENS - 1; t++) {
+        Hi_ptrs[t] = state_is_table
+            ? ((float* const*)h_state_inter_base)[b + (unsigned long long)t * inter_stride_floats]
+                  + head_off
+            : h_state_inter_base + flat_off
+                  + (unsigned long long)t * inter_stride_floats;
+    }
 
     // ── Load q, k, gate, beta into SMEM ──
     __shared__ float sk[K_TOKENS][128];
@@ -182,7 +206,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
                 h2 = sg[t] * h2 + sk[t][j + 2] * vn[t];
                 h3 = sg[t] * h3 + sk[t][j + 3] * vn[t];
                 if (t < K_TOKENS - 1) {
-                    float* Hi_t = Hi_base + t * inter_stride_floats;
+                    float* Hi_t = Hi_ptrs[t];
                     Hi_t[(j + 0) * v_dim + tid] = h0;
                     Hi_t[(j + 1) * v_dim + tid] = h1;
                     Hi_t[(j + 2) * v_dim + tid] = h2;
@@ -234,7 +258,36 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
             h_state, query, key, value, gate, beta, output,                   \
             h_state_inter_base, inter_stride_floats, batch_size,              \
             num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
-            gb_stride);                                                       \
+            gb_stride, 0u);                                                   \
+    }                                                                         \
+    /* Cross-sequence batched-verify twin: same impl, state args are     */   \
+    /* device POINTER TABLES (see the impl's state_is_table contract).   */   \
+    /* ADDITIVE symbol so the contiguous form's signature (shared with   */   \
+    /* the per-target wy17 launches via gdn_decode_wyn) never changes.   */   \
+    extern "C" __global__ void gated_delta_rule_wy##K##_table(                \
+        float* __restrict__ h_state,                                          \
+        const __nv_bfloat16* __restrict__ query,                              \
+        const __nv_bfloat16* __restrict__ key,                                \
+        const __nv_bfloat16* __restrict__ value,                              \
+        const float* __restrict__ gate,                                       \
+        const float* __restrict__ beta,                                       \
+        __nv_bfloat16* __restrict__ output,                                   \
+        float* __restrict__ h_state_inter_base,                               \
+        unsigned int inter_stride_floats,                                     \
+        unsigned int batch_size,                                              \
+        unsigned int num_k_heads,                                             \
+        unsigned int num_v_heads,                                             \
+        unsigned int k_dim,                                                   \
+        unsigned int v_dim,                                                   \
+        unsigned int qk_stride,                                               \
+        unsigned int v_stride,                                                \
+        unsigned int gb_stride                                                \
+    ) {                                                                       \
+        gated_delta_rule_wyn_impl<K>(                                         \
+            h_state, query, key, value, gate, beta, output,                   \
+            h_state_inter_base, inter_stride_floats, batch_size,              \
+            num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
+            gb_stride, 1u);                                                   \
     }
 
 ATLAS_WYN_INSTANTIATE(5)
@@ -299,7 +352,13 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
     unsigned int v_dim,
     unsigned int qk_stride,
     unsigned int v_stride,
-    unsigned int gb_stride
+    unsigned int gb_stride,
+    // Same contract as the FP32 impl above: 0 = contiguous bases (C=1
+    // form, byte-identical); 1 = h_state / h_state_inter_base are device
+    // POINTER TABLES (per-sequence __half* entries), and
+    // `inter_stride_halves` is REINTERPRETED as the number of POINTER
+    // ENTRIES between consecutive Hi slabs (= VERIFY_WY_TABLE_SEQS).
+    unsigned int state_is_table
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -310,8 +369,20 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
     const unsigned int kh = vh / hr;
     const unsigned int hv = k_dim * v_dim;
 
-    __half* H = h_state + ((b * num_v_heads + vh) * hv);
-    __half* Hi_base = h_state_inter_base + ((b * num_v_heads + vh) * hv);
+    const unsigned long long head_off = (unsigned long long)vh * hv;
+    const unsigned long long flat_off =
+        (unsigned long long)(b * num_v_heads + vh) * hv;
+    __half* H = state_is_table ? ((__half* const*)h_state)[b] + head_off
+                               : h_state + flat_off;
+    __half* Hi_ptrs[K_TOKENS - 1];
+    #pragma unroll
+    for (int t = 0; t < K_TOKENS - 1; t++) {
+        Hi_ptrs[t] = state_is_table
+            ? ((__half* const*)h_state_inter_base)[b + (unsigned long long)t * inter_stride_halves]
+                  + head_off
+            : h_state_inter_base + flat_off
+                  + (unsigned long long)t * inter_stride_halves;
+    }
 
     __shared__ float sk[K_TOKENS][128];
     __shared__ float sq[K_TOKENS][128];
@@ -413,7 +484,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
                 h2 = __half2float(gdn_f16_store(h2));
                 h3 = __half2float(gdn_f16_store(h3));
                 if (t < K_TOKENS - 1) {
-                    __half* Hi_t = Hi_base + (unsigned long long)t * inter_stride_halves;
+                    __half* Hi_t = Hi_ptrs[t];
                     Hi_t[(j + 0) * v_dim + tid] = gdn_f16_store(h0);
                     Hi_t[(j + 1) * v_dim + tid] = gdn_f16_store(h1);
                     Hi_t[(j + 2) * v_dim + tid] = gdn_f16_store(h2);
@@ -462,7 +533,33 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
             h_state, query, key, value, gate, beta, output,                   \
             h_state_inter_base, inter_stride_halves, batch_size,               \
             num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
-            gb_stride);                                                       \
+            gb_stride, 0u);                                                   \
+    }                                                                         \
+    /* Batched-verify pointer-table twin — see the FP32 macro's note. */      \
+    extern "C" __global__ void gated_delta_rule_wy##K##_f16_table(            \
+        __half* __restrict__ h_state,                                         \
+        const __nv_bfloat16* __restrict__ query,                              \
+        const __nv_bfloat16* __restrict__ key,                                \
+        const __nv_bfloat16* __restrict__ value,                              \
+        const float* __restrict__ gate,                                       \
+        const float* __restrict__ beta,                                       \
+        __nv_bfloat16* __restrict__ output,                                   \
+        __half* __restrict__ h_state_inter_base,                              \
+        unsigned int inter_stride_halves,                                      \
+        unsigned int batch_size,                                              \
+        unsigned int num_k_heads,                                             \
+        unsigned int num_v_heads,                                             \
+        unsigned int k_dim,                                                   \
+        unsigned int v_dim,                                                   \
+        unsigned int qk_stride,                                               \
+        unsigned int v_stride,                                                \
+        unsigned int gb_stride                                                \
+    ) {                                                                       \
+        gated_delta_rule_wyn_f16_impl<K>(                                     \
+            h_state, query, key, value, gate, beta, output,                   \
+            h_state_inter_base, inter_stride_halves, batch_size,               \
+            num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, v_stride,      \
+            gb_stride, 1u);                                                   \
     }
 
 ATLAS_WYN_F16_INSTANTIATE(5)
