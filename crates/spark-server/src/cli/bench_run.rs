@@ -189,7 +189,35 @@ async fn write_gate_record(
             // tree as it stands now.
             .with_closure(atlas_kernels::TARGET_CLOSURES);
     let path = gate::write_record(&root, &gate_record)?;
-    eprintln!("gate record written as {}", path.display());
+
+    // Sign it, and say BOTH filenames. The operator commits what the terminal
+    // names; if this printed only the .json they would leave the .sig untracked
+    // and the gate would hard-fail on a record that is perfectly good.
+    //
+    // Signing lives here rather than inside `write_record` so the writer stays a
+    // pure function of (root, record) for the ~7 unit tests that call it — none
+    // of which should be minting keys in a real ~/.atlas.
+    let store = atlas_plugin::artifacts::ArtifactStore::discover()?;
+    let identity = gate::signing::load_or_create(store.root())?;
+    let sig = gate::signing::sign_record(&identity, &path, &gate_record.git_sha)?;
+    let fresh_signer = gate::signing::register(&root, &identity)?;
+    eprintln!(
+        "gate record written as {}\n                  and {}",
+        path.display(),
+        sig.display()
+    );
+    if fresh_signer {
+        // Once per machine, ever. The first record from a new box carries its
+        // public key into the diff, which is where a human decides whether this
+        // signer is one of ours. Every run after this is silent.
+        eprintln!(
+            "gate: this machine signed a record for the first time. Commit \
+             {}/{}.pub alongside the record — it is how the gate learns to trust \
+             records from this box.",
+            gate::signing::REGISTRY_DIR,
+            identity.fingerprint()
+        );
+    }
     // Loud, and at the point the operator is about to commit the file. The
     // record itself carries the verdict (`hardware_state.postcheck`), but a
     // number is quoted from a terminal long before anyone opens the JSON, and

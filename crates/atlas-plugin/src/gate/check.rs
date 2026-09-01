@@ -328,18 +328,21 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     // record whose commit is unrelated, or was invalidated since, is skipped
     // rather than failed — the branch's current word is the newest one still
     // valid, and an old clean record is better than none.
-    let mut covered: Option<GateRecord> = None;
+    // The PATH travels with the record: the signature lives in a sidecar beside
+    // it, and re-deriving that path from the record would be wrong — the variant
+    // filename depends on the baseline, not on the record alone.
+    let mut covered: Option<(GateRecord, std::path::PathBuf)> = None;
     for path in &paths {
         if let Ok(record) = read_record(path)
             && record_is_for(&record, benchmark_id, path)
             && record_is_required_subject(&baseline, &record, benchmark_id, path)
             && record_still_stands(root, sha, &record, gate)
         {
-            covered = Some(record);
+            covered = Some((record, path.clone()));
             break;
         }
     }
-    let Some(record) = covered else {
+    let Some((record, record_path)) = covered else {
         let newest = read_record(&paths[0]).ok();
         return GateStatus::Missing(match newest {
             // ★ Name the files that invalidated it. "does not cover this
@@ -447,6 +450,20 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     }
     if let Some(breaches) = check_record(&record, &baseline) {
         problems.extend(breaches);
+    }
+    // ★ The record must still be the bytes that were measured, at the commit it
+    // names. FAIL, not skip — the `dirty_paths` reasoning one block up applies
+    // verbatim. Skipping a record with a broken signature would report the gate
+    // as merely "not measured", which is the one verdict a forged record would
+    // most like to receive: it reads as an honest gap rather than as tampering.
+    //
+    // Records written before the cutover carry no sidecar and are exempt; see
+    // `signing::SIGNATURE_REQUIRED_AFTER` for why that window exists and how it
+    // closes itself.
+    if let Err(why) =
+        super::signing::verify_record(root, &record_path, &record.git_sha, record.recorded_at)
+    {
+        problems.push(format!("{why}"));
     }
     if problems.is_empty() {
         GateStatus::Pass

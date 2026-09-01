@@ -22,6 +22,15 @@ anyhow = { workspace = true }
 # Full-file dataset hashing + draw fingerprints for the MLPerf agentic leg —
 # the same workspace pin atlas-closure already uses, so nothing new is vendored.
 sha2 = { workspace = true }
+# Ed25519 for gate-record signatures. ALREADY in Cargo.lock via `ureq` -> `rustls`,
+# so this declares an EDGE and vendors zero new packages — the whole reason it was
+# chosen over ed25519-dalek. Ed25519 is compiled unconditionally (no feature), and
+# `Apache-2.0 AND ISC` is already on deny.toml's allow-list.
+#
+# Note it carries a `build.rs` with `cc`: this crate's no-CUDA constraint above is
+# untouched, but a C toolchain is now needed to build it, which was not true before.
+ring = "0.17"
+
 serde = { workspace = true }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
