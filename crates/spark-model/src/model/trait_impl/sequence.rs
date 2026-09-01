@@ -387,6 +387,11 @@ impl TransformerModel {
 
         self.free_chunked_prefill_meta(seq)?;
 
+        // ATLAS_SEQ_MEMTRACE: the closing half of this sequence's memory bracket.
+        // Last statement on purpose — everything this sequence owns has now been
+        // handed back, so `live` here is the number a leak moves.
+        crate::model::seq_memtrace::trace(self.gpu.as_ref(), "free");
+
         Ok(())
     }
 

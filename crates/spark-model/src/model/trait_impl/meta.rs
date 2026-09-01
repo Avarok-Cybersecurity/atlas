@@ -227,6 +227,8 @@ impl TransformerModel {
     }
 
     pub(super) fn alloc_sequence_dispatch(&self, budget_tokens: usize) -> Result<SequenceState> {
+        // ATLAS_SEQ_MEMTRACE: the opening half of this sequence's memory bracket.
+        crate::model::seq_memtrace::trace(self.gpu.as_ref(), "alloc");
         // Claim via the RAII guard so the slot is returned to the pool on EVERY
         // sequence-exit path (normal finish, abort/cancel, decode error,
         // swap-out failure, panic). The explicit `free_sequence`/

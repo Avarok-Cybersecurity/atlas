@@ -415,6 +415,25 @@ pub trait GpuBackend: Send + Sync {
     /// Free device memory in bytes.
     fn free_memory(&self) -> Result<usize>;
 
+    /// Free device memory as the DRIVER reports it, with no host leg.
+    ///
+    /// `free_memory` is `max(cuMemGetInfo, MemAvailable)` (ANOMALIES A73), so it
+    /// cannot separate driver-committed device memory from reclaimable host page
+    /// cache — which is exactly the separation a per-request leak measurement
+    /// needs. Default falls back to `free_memory` for backends that have no
+    /// distinct driver leg.
+    fn device_free_memory(&self) -> Result<usize> {
+        self.free_memory()
+    }
+
+    /// Live (allocated, not yet freed) device allocations on this backend.
+    ///
+    /// A COUNT, not bytes: it answers "did this request hand back every buffer it
+    /// took?" without an allocator-size ledger. Default 0 = not tracked.
+    fn live_alloc_count(&self) -> usize {
+        0
+    }
+
     /// Number of streaming multiprocessors (CUDA SMs / HIP CUs) on the device.
     ///
     /// Queried from the driver, never assumed: dispatch rules that ask "does

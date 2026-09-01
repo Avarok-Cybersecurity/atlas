@@ -511,6 +511,12 @@ impl GpuBackend for AtlasCudaBackend {
     fn free_memory(&self) -> Result<usize> {
         self.free_memory_cu()
     }
+    fn device_free_memory(&self) -> Result<usize> {
+        self.device_free_memory_cu()
+    }
+    fn live_alloc_count(&self) -> usize {
+        self.live_alloc_len()
+    }
     fn sm_count(&self) -> Result<u32> {
         self.sm_count_cu()
     }

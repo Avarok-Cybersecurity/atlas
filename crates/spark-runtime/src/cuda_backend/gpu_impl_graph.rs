@@ -162,6 +162,18 @@ impl AtlasCudaBackend {
         Ok(count as u32)
     }
 
+    /// The driver leg alone — `cuMemGetInfo` with no `max(.., MemAvailable)`.
+    /// A73: `free_memory_cu` is not a driver query; this one is.
+    pub(super) fn device_free_memory_cu(&self) -> Result<usize> {
+        let mut free: usize = 0;
+        let mut total: usize = 0;
+        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+        if status != 0 {
+            bail!("cuMemGetInfo_v2 failed: status {status}");
+        }
+        Ok(free)
+    }
+
     pub(super) fn free_memory_cu(&self) -> Result<usize> {
         let mut free: usize = 0;
         let mut total: usize = 0;

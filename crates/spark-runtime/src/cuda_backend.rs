@@ -267,6 +267,12 @@ impl AtlasCudaBackend {
         })
     }
 
+    /// Live allocations not yet freed. The ledger already exists for teardown;
+    /// this only reads it, so a per-request leak check costs one lock.
+    pub(crate) fn live_alloc_len(&self) -> usize {
+        self.live_allocs.lock().len()
+    }
+
     /// Register one allocation's guard band. Returns its creation index.
     pub(crate) fn record_redzone(
         &self,

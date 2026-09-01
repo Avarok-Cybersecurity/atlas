@@ -460,4 +460,8 @@ impl GpuBackend for MockGpuBackend {
     fn free_memory(&self) -> Result<usize> {
         Ok(120 * 1024 * 1024 * 1024) // 120 GB
     }
+
+    fn live_alloc_count(&self) -> usize {
+        self.allocs.lock().len()
+    }
 }
