@@ -1,131 +1,322 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Atlas Inference Engine" width="640" />
+  <img src="assets/logo.svg" alt="Atlas Inference — pure Rust LLM inference engine" width="640" />
 </p>
+
+<h1 align="center">Atlas Inference Engine</h1>
+
 <p align="center">
-  <h1 align="center">Atlas Inference Engine</h1>
-  <p align="center">
-    <strong>Pure Rust LLM Inference</strong><br>
-    <em>Universal Inference At Unimaginable Speeds</em>
-  </p>
-  <p align="center">
-    <img alt="NVIDIA" src="https://img.shields.io/badge/NVIDIA-76B900?style=flat-square&logo=nvidia&logoColor=white">
-    <img alt="AMD" src="https://img.shields.io/badge/AMD-ED1C24?style=flat-square&logo=amd&logoColor=white">
-    <img alt="Intel" src="https://img.shields.io/badge/Intel-0071C5?style=flat-square&logo=intel&logoColor=white">
-  </p>
-  <p align="center">
-    <a href="LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
-    <a href="#quick-start"><img alt="Pure Rust" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square"></a>
-    <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Fatlas--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
-    <a href="https://discord.gg/RQcGakU2jW"><img alt="Discord" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FRQcGakU2jW%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
-  </p>
+  <strong>Pure Rust LLM inference, from the device in your hand to the datacenter rack.</strong>
 </p>
 
 <p align="center">
-  <a href="assets/atlas-demo.mp4"><img alt="Atlas demo — click for full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
+  <a href="https://atlasinference.io"><strong>Website</strong></a> ·
+  <a href="https://docs.atlasinference.io"><strong>Docs</strong></a> ·
+  <a href="https://blog.atlasinference.io"><strong>Blog</strong></a> ·
+  <a href="https://discord.gg/RQcGakU2jW"><strong>Discord</strong></a> ·
+  <a href="docs/GB10_DEPLOYMENT_GUIDE.md"><strong>Deployment Guide</strong></a>
 </p>
 
 <p align="center">
-  <a href="#quick-start"><img alt="Quick Start — under 2 minutes" src="https://img.shields.io/badge/%E2%9A%A1%20Quick%20Start%20%E2%80%94%20%3C%202%20min-2EA44F?style=for-the-badge&logo=docker&logoColor=white"></a>
-  <a href="https://atlasinference.io"><img alt="atlasinference.io" src="https://img.shields.io/badge/%F0%9F%8C%90%20atlasinference.io-F48C06?style=for-the-badge"></a>
+  <img alt="NVIDIA supported" src="https://img.shields.io/badge/NVIDIA-76B900?style=flat-square&logo=nvidia&logoColor=white">
+  <img alt="AMD supported" src="https://img.shields.io/badge/AMD-ED1C24?style=flat-square&logo=amd&logoColor=white">
+  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
+  <img alt="Pure Rust runtime" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square">
+  <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub: avarok/atlas-gb10" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Fatlas--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
+  <a href="https://discord.gg/RQcGakU2jW"><img alt="Discord member count" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FRQcGakU2jW%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
 </p>
+
+<p align="center">
+  <a href="assets/atlas-demo.mp4"><img alt="Terminal demo of Atlas serving a model on a DGX Spark — click for the full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
+</p>
+
+**Atlas** is an open-source **LLM inference engine** written in pure **Rust and CUDA**. It serves an **OpenAI-compatible server** (plus Anthropic and Responses APIs) from a single ~75 MB binary — no Python, no PyTorch, no runtime compilation — with hand-tuned **CUDA kernels** per (hardware × model × quantization) target, **NVFP4 and FP8 quantization**, **speculative decoding** (MTP draft heads and DFlash block diffusion), radix-tree prefix caching, and expert parallelism across nodes. It is verified today on the NVIDIA **DGX Spark** (**GB10**, **Blackwell** SM121), compiles the same CUDA source for AMD Strix Halo (gfx1151) through [SCALE](https://docs.scale-lang.com/stable/), and on the published GB10 concurrency ladder it out-serves vLLM at every rung from C=1 to C=128 — [conditions below](#performance).
+
+Receipts, not adjectives:
+
+- Our fused Qwen Gated DeltaNet kernel is [merged into Hugging Face Transformers](https://github.com/huggingface/transformers/pull/46423).
+- We sit on the MLCommons Edge-LLM taskforce and [helped shape the MLPerf Inference v6.1 edge agentic benchmark](https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/); our v6.1 submission is in (closed edge division, GB10 and gfx1151 from the same CUDA source), with results under embargo until MLCommons publishes.
+- Every release image passes a serve gate: boot, coherence, tool calls, and throughput within tolerance of a committed baseline. A release that ships slower than its baseline fails the gate.
+- The engineering story is written up in the open on the [Atlas blog](https://blog.atlasinference.io), starting with [the seven tenets behind the engine](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference).
 
 ---
 
 ## 📑 Table of Contents
 
-- [🧭 Philosophy](#philosophy)
-- [🏛️ Architecture](#architecture)
-- [📦 What We Ship Today](#models)
+- [🚀 Quick Start](#quick-start)
+- [🖥️ Supported Hardware](#hardware)
+- [📦 Supported Models](#models)
 - [⚡ Performance](#performance)
 - [🗜️ KV Cache Quantization](#kv-cache)
-- [🚀 Quick Start](#quick-start)
-- [🔬 Kernel Debugging](#debugging)
+- [🏛️ Architecture](#architecture)
+- [🧭 Why Atlas Exists](#philosophy)
 - [🔌 Adding a New Hardware Target](#new-hardware)
 - [🧬 Adding a New Model](#new-model)
+- [🔬 Kernel Debugging](#debugging)
+- [🤝 Community and Contributing](#community)
 - [📚 Citations](#citations)
 - [⚖️ License and Enterprise Edition](#license)
 
 ---
 
-<a id="philosophy"></a>
+<a id="quick-start"></a>
 
-## 🧭 Philosophy
+## 🚀 Quick Start
 
-The foundation of any given field of science is philosophy. It is that which inspires direction, structure, and mission.
+### One command
 
-Atlas began as a solution to widely known problem in using other (python) inference engines built by data scientists: the code was steeped in a poly codebase with an ever shifting ecosystem of dependencies, patches, and cross-dependencies. One day your workaround for running a model works, the next day you have to update to a nightly branch of several dependencies and inject a new workaround. This is not how you build a software ecosystem; that's how you build a proof of concept. We thank the great and hard work data scientists made in proving LLMs can revolutionize our world, its economy, and how it challenges us to higher epochs. Now, the software engineers take the torch to turn a proof of concept into something that is designed to withstand the test of time.
-
-### Main Objective
-
-Similar to how llama.cpp was built with the intent to prove you don't need $10000-$100000 GPUs to run LLMs, Atlas is built with the intent to consistently force the narrative that as hardware continues to advance, we should not have to pay premium Cloud API prices for inference. Atlas, by virtue of its philosophy, maximizes speed for each hardware/model combination, thus paving the way for meaningfully powerful and intelligent LLMs to be run locally in such a way the model is truly useful.
-
-### Design Choices
-
-#### Free and Open Source, Always
-
-We promised this since the beginning. We believe great software comes from opening the source, not from just keeping it closed. The more eyes, the better. And therein brings us to the next point.
-
-#### Community-First
-
-For those who've followed us this far since the inception of our Discord, you know the extent to which our commitment to the community is, according to one user humourously put, "cracked". We want to build something incredible, and that means we not only build for you, but you, now having access to the source code, can now build for others in ways that triumph over existing solutions. This is the only way we all win. We are the Pirates of the inference space.
-
-#### Monorepo
-
-We chose a monorepo design to ensure that, as we head further into the agentic age of coding, the average data scientist or engineer can contribute meaningful PRs to any part of the system. Eventually, since this is a monorepo, there will be a day where the repo is autonomously self-improving and self-patching. This is most efficient and most effective when all the code is in one place, not many.
-
-#### Hardware+Model Specific Kernels
-
-We make no compromises or generalizations. Each hardware and model combination has its own unique properties that require fine-tuning custom kernels that leverage the model for that specific hardware configuration. The end result? 2-3x faster kernels all around.
-
-#### AI-Friendly Codebase
-
-It took a significant amount of time to build this codebase. We also know people will want to submit AI-generated PRs. We can't stop you, and in fact, given SOTA, you might just have to! The good news is that this codebase was built with enough railguards, structure, and abstraction to guide your AI to absorb the entire monorepo and contribute meaningfully. There's enough context to keep this going off the rails like a crazy train.This means ultimately that instead of waiting for days to weeks before getting model support, you can just fork this repo, and ask your AI to integrate it, then within hours you'll more likely than not have a working model running. We will not be condescending, [unlike some other inference engines out there when good-faith PRs that simply work are posted](https://github.com/ggml-org/llama.cpp/pull/18680#issuecomment-3723954542). We are not stymied by bureacracy, and want to enable the community to rapidly expand this monorepo ecosystem safely and effectively.
-
-**AI-authored PRs are the default, and the target.** If you write code by hand,
-we ask you to say which parts and why the human beat the AI — not to discourage
-you, but because every such case marks a gap in the tooling that we would rather
-close than live with. The intent is that the share of hand-written code trends
-toward zero. Human-written sections are reviewed by AI to check that claim, and
-if the review finds the human was right, that is a result worth keeping.
-
-The contribution loop has exactly two exits — merge, or back to editing:
-
-```mermaid
-flowchart TD
-    classDef human fill:#5a189a,stroke:#3c096c,color:#e0aaff
-    classDef auto fill:#1e6091,stroke:#184e77,color:#d9ed92
-    classDef gate fill:#7f4f24,stroke:#582f0e,color:#ffe6a7
-    classDef done fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
-
-    MAIN([main]):::done
-    BRANCH[branch off main]:::auto
-    OPEN[open the PR<br/>What · Why · Benchmarks · <b>Authorship</b>]:::auto
-    EDIT[make edits]:::auto
-    CHECKS[run the PR gate checks]:::gate
-    GREEN{all gates green?}:::gate
-    REVIEW[wait for human review]:::human
-    VERDICT{approved?}:::human
-    MERGE([squash and merge]):::done
-
-    MAIN --> BRANCH --> OPEN --> EDIT --> CHECKS --> GREEN
-    GREEN -- no --> EDIT
-    GREEN -- yes --> REVIEW --> VERDICT
-    VERDICT -- changes requested --> EDIT
-    VERDICT -- yes --> MERGE
-    MERGE --> MAIN
+```bash
+curl -fsSL https://atlasinference.io/install.sh | sh
+atlasctl run qwen3.6-35b-a3b-fp8-mtp
 ```
 
-The per-state commands, exit conditions and the invariants an agent must not
-violate are in [`CONTRIBUTING.md`](CONTRIBUTING.md#pull-request-process) — in a
-table, because an agent should not have to infer the contract from prose.
+The script downloads a prebuilt `atlasctl`, verifies its checksum, and installs it to `~/.local/bin` — no Python, no Rust toolchain. Prefer not to pipe curl into a shell? `cargo install atlasctl` does the same from source. Every runnable model maps to a recipe in [atlas-recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes), so the catalogue cannot list a model we do not ship.
 
-#### Theory-Friendly Codebase
+### Docker
 
-Arxiv is getting countless papers published every day on AI. Nobody can keep up. Yet, some papers may be relevant to this project, others may not. Research endeavors to improve quality, alignment, and speed ought to be considered by our community as something we can integrate cleanly. Feel free to open a PoC PR here and just explain what you did and why, and how it works.
+The whole supported model matrix lives in one image. Pull it, mount your HuggingFace cache, and point `serve` at any model ID from the [model table](#models).
 
-#### Plug and Play Design
+> [!TIP]
+> The recipes below are tuned for **maximum accuracy under agentic-coding workloads** — 64K context, BF16 MTP draft head (highest acceptance rate ⇒ highest end-to-end throughput), prefix caching for multi-turn tool loops, and FP8 KV cache with `auto`-promoted boundary layers. These are the exact configurations we use to drive opencode / Claude Code / Cline through Atlas on a single Spark.
 
-Our system is modular, with tight abstraction boundaries and trait requirements that force the architecture to take on a certain form. This form is designed to prevent pigeon-holing the project into the wrong direction. The business logic is the same across all hardware/model combinations, just the concrete implementations differ.
+#### Recipe 0 — no flags, pick a model in the TUI
+
+Omit the model ID and `serve` boots into the Library — pick a model and recipe interactively (TTY only):
+
+```bash
+docker run -it --rm --network host --gpus all --ipc=host \
+  -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
+  -v "${HOME}/.atlas:/root/.atlas" \
+  avarok/atlas-gb10:latest serve
+```
+
+- `-it` — the TUI needs a real terminal to render (and Esc to quit).
+- `--rm` — throwaway container; nothing to clean up after the session.
+- `--network host` — the served port is reachable on localhost directly, no `-p` mapping.
+- `--gpus all` — hands the GB10 to the container.
+- `--ipc=host` — host-sized shared memory; the Docker default 64 MB `/dev/shm` is too small for CUDA.
+- `-v ~/.cache/huggingface` — reuse the host's model cache instead of re-downloading weights.
+- `-v ~/.atlas` — persist Atlas state (recipes, benchmark records, artifacts) across runs.
+
+<a id="run-atlas"></a>
+
+#### Recipe A — Qwen3.6-35B-A3B (FP8 hybrid MoE, the daily driver)
+
+35 B params, 3 B active, GDN + attention + 256-expert MoE, MRoPE-positioned vision tower (text-only here).
+
+```bash
+docker pull avarok/atlas-gb10:latest
+
+sudo docker run -d --name atlas \
+  --network host --gpus all --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  avarok/atlas-gb10:latest \
+  serve Qwen/Qwen3.6-35B-A3B-FP8 \
+    --port 8888 \
+    --max-seq-len 65536 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.90 \
+    --scheduling-policy slai \
+    --enable-prefix-caching \
+    --speculative \
+    --num-drafts 2 \
+    --tool-call-parser qwen3_coder
+```
+
+Why these flags:
+
+- `--max-seq-len 65536` — 64K window for long agent traces, file reads, multi-step tool use.
+- `--kv-cache-dtype fp8 --kv-high-precision-layers auto` — half the memory of BF16, no measurable quality loss; the boundary attention blocks stay BF16, where the routing distribution is most sensitive. `auto` is **not** a heuristic — it is a fixed alias for `2` (`serve_phases/kv_cache.rs`), alongside `max`/`all` meaning "every attention layer". Because it is non-zero it also *suppresses* the per-dtype automatic promotion that `0` would trigger under a `turbo*` KV dtype.
+- `--scheduling-policy slai` — SLAi scheduler. **Not the default** — `serve` defaults to `fifo`, so this flag has to be passed to get SLO-aware ordering. It reorders concurrent sequences to keep MTP verify batches dense and prefills shortest-prompt-first.
+- `--enable-prefix-caching` — radix-tree prefix cache; tool-use sessions reuse the system prompt + tool-defs + earlier turns.
+- `--speculative --num-drafts 2` — MTP draft head proposes 2 tokens per step. **No `--mtp-quantization` flag** ⇒ defaults to **BF16**, which gives the highest acceptance rate (lossier MTP projections lower acceptance and usually *worsen* end-to-end tok/s, despite the faster draft forward).
+- `--tool-call-parser qwen3_coder` — explicit Qwen XML tool format. Atlas auto-resolves the right parser from `tool_defaults.toml` per model; pass it anyway in production scripts.
+
+#### Recipe B — Qwen3.5-35B-A3B (NVFP4, ~131 tok/s with MTP K=2)
+
+The fastest model in the matrix on a single Spark.
+
+```bash
+sudo docker run -d --name atlas \
+  --network host --gpus all --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  avarok/atlas-gb10:latest \
+  serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
+    --port 8888 \
+    --max-seq-len 65536 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.90 \
+    --scheduling-policy slai \
+    --enable-prefix-caching \
+    --speculative \
+    --tool-call-parser qwen3_coder
+```
+
+`--num-drafts` is omitted so it defaults to `1`, i.e. MTP **K=2** (the CLI defines `--num-drafts 1` as K=2, `2` as K=3). K=2 is the measured-fastest verify width for this model; K=3 is slower.
+
+#### Recipe C — Qwen3.5-122B-A10B (NVFP4, single Spark)
+
+The 122B NVFP4 weights + Atlas runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so this recipe sacrifices `--speculative` (the MTP draft head + draft KV costs ~1.5 GB) to keep a real 16 K context window. Verified end-to-end: model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly.
+
+```bash
+sudo docker run -d --name atlas \
+  --network host --gpus all --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  avarok/atlas-gb10:latest \
+  serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
+    --port 8888 \
+    --max-seq-len 16384 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.92 \
+    --scheduling-policy slai \
+    --max-batch-size 1 \
+    --max-num-seqs 4 \
+    --oom-guard-mb 1024 \
+    --ssm-cache-slots 0 \
+    --tool-call-parser qwen3_coder
+```
+
+For 122B with **both** `--speculative` *and* a 64 K window, move to EP=2 across two Sparks ([`QUICKSTART.md` §7](QUICKSTART.md#7-qwen35-122b-moe--ep2-two-dgx-sparks-51-toks)). For long contexts on a single Spark, add `--high-speed-swap --high-speed-swap-dir /path/on/nvme --high-speed-swap-cache-blocks-per-seq 64` — HSS keeps a rolling 1024-token KV window in HBM and streams older blocks to NVMe through an io_uring orchestrator. The container needs `--security-opt seccomp=unconfined --ulimit memlock=-1` for io_uring access.
+
+### Hitting the endpoint
+
+Atlas speaks the OpenAI, Anthropic, and Responses APIs on the same port. `curl`, the OpenAI SDK, Open WebUI, opencode, Cline, Claude Code — point them at port 8888:
+
+```bash
+curl http://localhost:8888/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"atlas",
+    "messages":[{"role":"user","content":"Hello!"}],
+    "max_tokens":256
+  }'
+```
+
+Per-model recipes (vision input, video input, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md), and the long-form manual is at [docs.atlasinference.io](https://docs.atlasinference.io).
+
+> [!NOTE]
+> **Video input requires `ffmpeg` on the host.** Images need nothing extra, and animated GIF decodes in-process — but MP4/MOV, WebM and AVI (H.264, H.265, VP9, AV1) are decoded by running `ffmpeg`, which must be installed and enabled with `--video-allow-ffmpeg`. Atlas deliberately does not link a video decoder; see [`QUICKSTART.md`](QUICKSTART.md) for the recipe and the reasoning. Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
+
+<a id="hardware"></a>
+
+## 🖥️ Supported Hardware
+
+One engine, one kernel tree per target, no generic fallbacks. Each directory under [`kernels/`](kernels/) is a hardware target with its own `HARDWARE.toml`:
+
+| Target | Silicon | Status |
+|---|---|---|
+| **NVIDIA DGX Spark** (`kernels/gb10`) | GB10 Grace-Blackwell, SM121, ~120 GB unified LPDDR5X | **Verified.** The reference platform — every release passes the serve gate here |
+| **AMD Strix Halo** (`kernels/strix`, `kernels/strix-hip`) | Ryzen AI Max+ 395, RDNA 3.5 iGPU, gfx1151 | The **same unmodified CUDA sources**, recompiled for AMD via [SCALE](https://docs.scale-lang.com/stable/) — no hand-ported kernels (`strix-hip` is the HIP-toolchain build variant of the same sources). AMD provided the Strix Halo desktop we brought Atlas up on and included in our MLPerf Inference v6.1 submission |
+| **Apple Silicon** (`kernels/metal`) | Metal 3.1, M2+ | Early bring-up — small-model targets only |
+| **Multi-node** | 2× GB10 over RoCEv2 | EP=2 expert parallelism shipped as recipes; a 4-node EP=4 topology exists for the 397B target |
+
+Porting to new silicon is a scoped piece of work, not an architectural change — see [Adding a New Hardware Target](#new-hardware).
+
+<a id="models"></a>
+
+## 📦 Supported Models
+
+Every supported model runs off one multi-model binary; the right kernel set is selected at startup from the model's `config.json`. No swapping images, no rebuilding, no per-model magic — just point Atlas at a HuggingFace ID.
+
+| Family | Model | HuggingFace ID | Params / active | Architecture |
+|---|---|---|---:|---|
+| Qwen3.5 | Qwen3.5-27B | `Kbenkhaled/Qwen3.5-27B-NVFP4` | 27B dense | Hybrid SSM + attention, dense FFN, MRoPE |
+| Qwen3.5 | Qwen3.5-35B-A3B | `Sehyo/Qwen3.5-35B-A3B-NVFP4` | 35B / 3B | GDN + attention + MoE, MTP |
+| Qwen3.5 | Qwen3.5-122B-A10B | `Sehyo/Qwen3.5-122B-A10B-NVFP4` | 122B / 10B | GDN + attention + MoE, MTP |
+| Qwen3.6 | Qwen3.6-35B-A3B | `Qwen/Qwen3.6-35B-A3B-FP8` | 35B / 3B | GDN + attention + MoE, MRoPE, vision tower |
+| Holo-3.1 | Holo-3.1-35B-A3B | `Hcompany/Holo-3.1-35B-A3B-NVFP4` | 35B / 3B | GDN + attention + 256-expert MoE, Qwen3-VL vision |
+| Holo-3.1 | Holo-3.1-0.8B | `Hcompany/Holo-3.1-0.8B` | 0.8B dense | GDN + attention + dense FFN, Qwen3-VL vision |
+| Ornith | Ornith-1.0-9B | `deepreinforce-ai/Ornith-1.0-9B` | 9B dense | GDN + attention + dense FFN, Qwen3-VL vision, MRoPE |
+| Qwen3-Next | Qwen3-Next-80B-A3B | `nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4` | 80B / 3B | SSM + attention + MoE |
+| Qwen3-VL | Qwen3-VL-30B-A3B | `ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4` | 30B / 3B | Vision + attention + MoE |
+| Gemma-4 | Gemma-4-26B-A4B | `bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16` | 26B / 4B | Attention + MoE, GeGLU |
+| Gemma-4 | Gemma-4-31B | `nvidia/Gemma-4-31B-IT-NVFP4` | 31B dense | Attention (sliding + full), GeGLU |
+| Mistral | Mistral-Small-4-119B | `mistralai/Mistral-Small-4-119B-2603-NVFP4` | 119B / 6.5B | Attention + MoE |
+| MiniMax | MiniMax-M2.7 | `lukealonso/MiniMax-M2.7-NVFP4` | 229B / ~10B | Attention + 256-expert MoE + MTP |
+| Nemotron-H | Nemotron-3-Nano-30B-A3B | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` | 30B / 3B | Mamba-2 + attention + MoE |
+| Nemotron-H | Nemotron-3-Super-120B-A12B | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B / 12B | Mamba-2 + attention + MoE |
+
+The [`kernels/gb10/`](kernels/gb10/) tree carries additional targets in various stages of bring-up (Qwen3.8, DeepSeek-V4-Flash, LongCat-Flash-Lite, and more); the **[GB10 Deployment & Compatibility Guide](docs/GB10_DEPLOYMENT_GUIDE.md)** is the authoritative model × quant matrix, kept current as targets graduate.
+
+This is a starting point, not a destination. The plug-and-play design below exists precisely so that AMD, Apple Silicon, Intel, and the next round of Blackwell parts can land here as community contributions, and so that next quarter's model families slot in the same way this quarter's Qwens did. We did the hard part — bolting in the abstractions while bringing up the first wave of targets — so that adding the next one is a weekend, not a quarter.
+
+> [!TIP]
+> **New to Atlas on a Spark?** The [**GB10 Deployment & Compatibility Guide**](docs/GB10_DEPLOYMENT_GUIDE.md) is the one page to read first: which model and quant fit your box and your goal, what to do when it OOMs, the known gotchas, and what "verified" means — then it hands you the exact recipe.
+
+<a id="performance"></a>
+
+## ⚡ Performance
+
+We are not going to spend much real estate on benchmark theatre. Every number below carries its conditions, and every harness that produced one is in this repository. If you reproduce a faster competing number, file an issue — we would rather be measured than congratulated.
+
+### Atlas vs vLLM under concurrency (the number that matters)
+
+Agentic work does not arrive one conversation at a time. It arrives as fleets of tool-calling agents, and the engine underneath is judged where requests pile up. On the published concurrency ladder Atlas out-serves vLLM at **every rung from C=1 to C=128**, against whichever vLLM configuration is faster at that rung:
+
+| Concurrency | Atlas (tok/s) | vLLM + MTP | vLLM, no spec | Atlas vs best vLLM |
+|---:|---:|---:|---:|---:|
+| 1 | 23.6 | 19.7 | 11.0 | 1.20× |
+| 2 | 41.0 | 37.1 | 21.3 | 1.11× |
+| 4 | 74.2 | 71.6 | 41.2 | 1.04× |
+| 8 | 126.0 | 124.5 | 78.2 | 1.01× |
+| 16 | 203.4 | 197.0 | 137.1 | 1.03× |
+| 32 | 291.0 | 283.5 | 219.5 | 1.03× |
+| 64 | 386.6 | 361.4 | 312.3 | 1.07× |
+| 128 | **478.1** | 358.6 | 390.4 | **1.22×** |
+
+**Conditions**: `unsloth/Qwen3.8-27B-NVFP4` (dense 27B hybrid, 48 GDN + 16 attention layers), Atlas 1.0.0-beta-preview vs vLLM 0.27.1, same GB10 box, same checkpoint, same client, back-to-back legs. ISL 128 / OSL 1024, temperature 0, seed 42, thinking disabled on both engines, presence/frequency penalties pinned to 0.0 on both, mean aggregate tok/s over 3 timed reps with 1 warmup discarded. The margin is widest at the top because between C=64 and C=128 Atlas keeps scaling while vLLM's faster mid-ladder configuration (MTP) falls below its own C=64. The full campaign log — including the rungs we lost along the way — is in [`bench/ladder38/RESULTS.md`](bench/ladder38/RESULTS.md).
+
+### Single-stream throughput on one GB10
+
+The numbers below are what the binary in this repository does on a single NVIDIA GB10, on a short prompt (`"What is the capital of France?"`, `max_tokens ≤ 30`, `temperature = 0.1`), measured end-to-end through the HTTP API. `scripts/sweep_all_models.sh` is the harness.
+
+| Model | Mode | tok/s |
+|---|---|---:|
+| Qwen3.5-35B-A3B | MTP speculative (K=2) | **131** |
+| Qwen3.5-35B-A3B | turbo4 KV | 77 |
+| Qwen3.5-35B-A3B | No speculative | 70 |
+| Qwen3-Next-80B-A3B | FP8 KV | 74 |
+| Qwen3.5-122B-A10B | EP=2, MTP K=2 (600-tok sustained) | 46 |
+| Qwen3.5-122B-A10B | FP8 KV, single-GPU tuned | 32 |
+| Qwen3-VL-30B-A3B | NVFP4 KV | 97 |
+| Nemotron-3-Nano-30B-A3B | FP8 KV | 88 |
+| Nemotron-3-Super-120B | FP8 KV | 24 |
+| Gemma-4-26B-A4B | default | 67 |
+| Gemma-4-31B | `--max-batch-size 2` | 9 |
+| Mistral-Small-4-119B | NVFP4 | 33 |
+| Qwen3.5-27B (dense hybrid) | FP8 KV | 13 |
+
+### Speculative decoding: MTP and DFlash
+
+Atlas ships two speculative paths, mutually exclusive per serve:
+
+- **MTP draft heads** (`--speculative`) — the checkpoint's own multi-token-prediction head proposes K tokens per step, verified with WY-chunkwise GDN kernels. K=2 is the measured-fastest width on Qwen3.5-35B-A3B (the 131 tok/s row above).
+- **DFlash block diffusion** (`--dflash`) — pairs the target with a small drafter (e.g. `z-lab/Qwen3.6-35B-A3B-DFlash`) that emits γ tokens per step via bidirectional in-block attention conditioned on captured target hidden states ([Z Lab, arXiv:2602.06036](https://arxiv.org/abs/2602.06036)). Atlas serves the measured record shape by default: γ resolves to the drafter's trained block size + 2.
+
+Honest status of DFlash on GB10: with the DFlash2 drafter for Qwen3.8-27B at default flags, Atlas reaches **66.6 tok/s at C=1** — a **single-stream** number, and only that. At higher concurrency DFlash2 is currently a net loss on this hardware (measured −7.1% at C=8 and −29.1% at C=16 versus the same engine without the drafter). That gap is a known, tracked open item, and the `concurrency-sweep-dflash2` gate runs the full ladder with the drafter armed on every relevant PR so it cannot regress silently. If you serve concurrent agent traffic today, MTP or the plain engine is the right choice.
+
+### Kernel-level receipts
+
+The kernel-by-kernel comparison against PyTorch eager lives in the [benchmarks chapter](book/src/operations/benchmarks.md) along with the methodology footnotes — read them; they matter. That table is **32 benchmark rows over ~11 kernel families** (attention, GEMM, W4A16, MoE, conv1d, GDR, RMSNorm, SiLU×Mul, RoPE), all wins; it is not a sweep of the whole registry. The registry itself is much larger — `kernels/gb10/common/` alone holds ~170 `.cu` files, before the per-model shadow directories.
+
+<a id="kv-cache"></a>
+
+## 🗜️ KV Cache Quantization
+
+Atlas stores attention key/value state in a quantized format selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
+
+| CLI flag | Bits/element | Scale overhead | Technique | When to use |
+|---|---:|---|---|---|
+| `bf16` | 16 | — | Raw BF16 storage | Maximum precision; short-context or quality-critical workloads |
+| `fp8` | 8 | Per-tensor FP32 scale (from checkpoint or online calibration via `--fp8-kv-calibration-tokens`) | FP8 E4M3 with static or calibrated per-tensor scale | **Default.** Safe baseline — half the memory of BF16, minimal quality loss for most models |
+| `turbo8` | 8 | Per-group BF16 scale (2 bytes / 16 elements) | Walsh-Hadamard rotation → FP8 E4M3 + BF16 per-group scales | FP8-level memory with outlier suppression; recommended for many-layer models (e.g. MiniMax M2.7, 58 layers) where per-group FP8 scales compound |
+| `nvfp4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | E2M1 packed nibbles (NVIDIA NVFP4 format) | 4× compression vs BF16; good for long-context with `--kv-high-precision-layers auto` |
+| `turbo4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max optimal 4-bit codebook | ~2× lower MSE than NVFP4 at the same bit rate; same memory footprint |
+| `turbo3` | 3 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max 3-bit codebook (8 levels, packed 8 values → 3 bytes) | Maximum compression (22% smaller than turbo4); experimental |
+
+The table above is the **symmetric** set — the same format for K and V. `KvCacheDtype` ([`crates/spark-runtime/src/kv_cache.rs`](crates/spark-runtime/src/kv_cache.rs)) accepts **16 values in total**: the six above plus `turbo2` (2-bit) and nine TurboQuant+ **asymmetric** K/V pairings (`turbo4k_turbo3v`, `turbo4k_turbo8v`, `turbo3k_turbo8v`, `bf16k_turbo4v`, `bf16k_turbo3v`, `bf16k_turbo2v`, `fp8k_turbo4v`, `fp8k_turbo3v`, `fp8k_turbo2v`) that store K at higher precision than V, since K dominates attention-score fidelity. Those are documented in [`docs/turboquant-plus.md`](docs/turboquant-plus.md); the parser is the authority on the accepted spelling.
 
 <a id="architecture"></a>
 
@@ -203,7 +394,7 @@ flowchart TB
     %% ── Kernel registry (plug-in #5) ──────────────────────────────────
     subgraph KERNELS ["🔌 kernels/<hw>/<model>/<quant>/ — auto-discovered"]
       direction LR
-      K_GB10["gb10/qwen3.5-35b-a3b/nvfp4<br/>+ 11 other targets"]:::kernel
+      K_GB10["gb10/qwen3.5-35b-a3b/nvfp4<br/>+ the rest of the matrix"]:::kernel
     end
     class KERNELS trait
 
@@ -231,7 +422,7 @@ flowchart TB
     KERNELS -. "kernels selected by<br/>(hardware × model × quant)<br/>at build time" .-> CUDA
 ```
 
-### Reading the Diagram
+### Reading the diagram
 
 **Solid boxes** are concrete implementations. **Dashed borders with 🔌** are the trait-based abstraction boundaries — each is a Rust trait (or a filesystem convention for kernels) where a new integration plugs in:
 
@@ -245,7 +436,7 @@ flowchart TB
 | `trait CommBackend` | Multi-GPU collective communication | Implement for MPI, GDR, or custom interconnects |
 | `trait StorageBackend` | NVMe KV-cache offload I/O | Implement for CXL, RDMA, or other storage tiers |
 
-### Data Flow Summary
+### Data flow summary
 
 1. **HTTP** → `spark-server` receives OpenAI/Anthropic requests, tokenizes, and enqueues
 2. **Scheduler** → batches sequences, orchestrates prefill/decode/speculative-verify steps
@@ -255,201 +446,68 @@ flowchart TB
 6. **EP** → `CommBackend` handles cross-GPU all-reduce after MoE expert computation
 7. **Storage** → `StorageBackend` spills/restores KV blocks to NVMe for long-context sequences
 
-<a id="models"></a>
+<a id="philosophy"></a>
 
-## 📦 What We Ship Today
+## 🧭 Why Atlas Exists
 
-We have to walk before we can run. Today's Atlas is targeted at a single hardware platform — NVIDIA's GB10 (DGX Spark, SM121) — and fifteen hand-tuned (Hardware × Model × Quantization) targets. Every supported model below runs off one multi-model binary; the right kernel set is selected at startup from the model's `config.json`. No swapping images, no rebuilding, no per-model magic — just point Atlas at a HuggingFace ID.
+Atlas began as a response to a widely felt problem with Python inference stacks: a shifting ecosystem of dependencies, patches, and cross-dependencies where the workaround that ran your model yesterday needs a nightly branch and a new workaround today. That is how you build a proof of concept, not a software ecosystem. We are grateful to the data scientists who proved what LLMs can do; Atlas is the software engineers taking the torch and building the version designed to withstand the test of time. The full argument is in [Seven Tenets Powering Atlas Inference](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference) on the blog; the short version:
 
-| Family | Model | HuggingFace ID | Params / active | Architecture |
-|---|---|---|---:|---|
-| Qwen3.5 | Qwen3.5-27B | `Kbenkhaled/Qwen3.5-27B-NVFP4` | 27B dense | Hybrid SSM + attention, dense FFN, MRoPE |
-| Qwen3.5 | Qwen3.5-35B-A3B | `Sehyo/Qwen3.5-35B-A3B-NVFP4` | 35B / 3B | GDN + attention + MoE, MTP |
-| Qwen3.5 | Qwen3.5-122B-A10B | `Sehyo/Qwen3.5-122B-A10B-NVFP4` | 122B / 10B | GDN + attention + MoE, MTP |
-| Qwen3.6 | Qwen3.6-35B-A3B | `Qwen/Qwen3.6-35B-A3B-FP8` | 35B / 3B | GDN + attention + MoE, MRoPE, vision tower |
-| Holo-3.1 | Holo-3.1-35B-A3B | `Hcompany/Holo-3.1-35B-A3B-NVFP4` | 35B / 3B | GDN + attention + 256-expert MoE, Qwen3-VL vision |
-| Holo-3.1 | Holo-3.1-0.8B | `Hcompany/Holo-3.1-0.8B` | 0.8B dense | GDN + attention + dense FFN, Qwen3-VL vision |
-| Ornith | Ornith-1.0-9B | `deepreinforce-ai/Ornith-1.0-9B` | 9B dense | GDN + attention + dense FFN, Qwen3-VL vision, MRoPE |
-| Qwen3-Next | Qwen3-Next-80B-A3B | `nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4` | 80B / 3B | SSM + attention + MoE |
-| Qwen3-VL | Qwen3-VL-30B-A3B | `ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4` | 30B / 3B | Vision + attention + MoE |
-| Gemma-4 | Gemma-4-26B-A4B | `bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16` | 26B / 4B | Attention + MoE, GeGLU |
-| Gemma-4 | Gemma-4-31B | `nvidia/Gemma-4-31B-IT-NVFP4` | 31B dense | Attention (sliding + full), GeGLU |
-| Mistral | Mistral-Small-4-119B | `mistralai/Mistral-Small-4-119B-2603-NVFP4` | 119B / 6.5B | Attention + MoE |
-| MiniMax | MiniMax-M2.7 | `lukealonso/MiniMax-M2.7-NVFP4` | 229B / ~10B | Attention + 256-expert MoE + MTP |
-| Nemotron-H | Nemotron-3-Nano-30B-A3B | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` | 30B / 3B | Mamba-2 + attention + MoE |
-| Nemotron-H | Nemotron-3-Super-120B-A12B | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B / 12B | Mamba-2 + attention + MoE |
+| Choice | Why |
+|---|---|
+| **Free and open source, always** | Great software comes from opening the source. AGPLv3 Community Edition, with a [commercial Enterprise Edition](#license) funding full-time development |
+| **Pure Rust + CUDA** | The whole stack is inspectable by one person, HTTP to kernel dispatch. No Python, no interpreter in the hot path, no runtime compilation — kernels are compiled to native binaries at build time and embedded in the binary |
+| **Hardware × model specific kernels** | Each (hardware, model, quantization) tuple gets its own tuned kernel set, with per-model kernels shadowing common ones. No compromises, no generalizations |
+| **Monorepo** | One place for all the code means agents and humans alike can absorb, index, and improve the whole system — and compile-and-image cycles run in minutes, not most of an hour |
+| **Community-first** | The test fleet is the community running Atlas on its own hardware. Model requests, regressions, and wins all route through [Discord](https://discord.gg/RQcGakU2jW) |
+| **Theory-friendly** | Research on quality, alignment, or speed should be integrable cleanly. PoC PRs explaining what, why, and how are welcome |
+| **Plug-and-play abstractions** | Tight trait boundaries keep business logic identical across all hardware/model combinations; only the concrete implementations differ |
 
-This is a starting point, not a destination. The plug-and-play design above exists precisely so that AMD, Apple Silicon, Intel, and the next round of Blackwell parts can land here as community contributions, and so that the Llama 4s and DeepSeek V4s of next quarter slot in the same way the Qwens did this quarter. We did the hard part — bolting in the abstractions while bringing up the first fifteen targets — so that adding the sixteenth is a weekend, not a quarter.
+Similar to how llama.cpp was built to prove you don't need five- or six-figure GPUs to run LLMs, Atlas exists to keep forcing the narrative that as hardware advances, inference should not cost premium cloud-API prices. Maximizing speed for each hardware/model combination is what makes meaningfully powerful LLMs truly useful on hardware you own.
 
-> **New to Atlas on a Spark?** The [**GB10 Deployment & Compatibility Guide**](docs/GB10_DEPLOYMENT_GUIDE.md) is the one page to read first: which model and quant fit your box and your goal, what to do when it OOMs, the known gotchas, and what "verified" means — then it hands you the exact recipe. If you're deciding *what to run*, start there.
+### AI-authored PRs are the default, and the target
 
-<a id="performance"></a>
+This codebase was built with enough guardrails, structure, and abstraction to let an AI absorb the monorepo and contribute meaningfully — which means that instead of waiting weeks for model support, you can fork this repo, point your agent at it, and more likely than not have a working model within hours. If you write code by hand, we ask you to say which parts and why the human beat the AI — not to discourage you, but because every such case marks a gap in the tooling we would rather close than live with.
 
-## ⚡ Performance
+The contribution loop has exactly two exits — merge, or back to editing:
 
-We're not going to spend much real estate on benchmark theatre. The numbers below are what the binary in this repository does on a single NVIDIA GB10, on a short prompt (`"What is the capital of France?"`, `max_tokens ≤ 30`, `temperature = 0.1`), measured end-to-end through the HTTP API. They are reproducible: `scripts/sweep_all_models.sh` is the harness, and the source for every kernel that produced them is in this repository.
+```mermaid
+flowchart TD
+    classDef human fill:#5a189a,stroke:#3c096c,color:#e0aaff
+    classDef auto fill:#1e6091,stroke:#184e77,color:#d9ed92
+    classDef gate fill:#7f4f24,stroke:#582f0e,color:#ffe6a7
+    classDef done fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
 
-| Model | Mode | tok/s |
-|---|---|---:|
-| Qwen3.5-35B-A3B | MTP speculative (K=2) | **131** |
-| Qwen3.5-35B-A3B | turbo4 KV | 77 |
-| Qwen3.5-35B-A3B | No speculative | 70 |
-| Qwen3-Next-80B-A3B | FP8 KV | 74 |
-| Qwen3.5-122B-A10B | EP=2, MTP K=2 (600-tok sustained) | 46 |
-| Qwen3.5-122B-A10B | FP8 KV, single-GPU tuned | 32 |
-| Qwen3-VL-30B-A3B | NVFP4 KV | 97 |
-| Nemotron-3-Nano-30B-A3B | FP8 KV | 88 |
-| Nemotron-3-Super-120B | FP8 KV | 24 |
-| Gemma-4-26B-A4B | default | 67 |
-| Gemma-4-31B | `--max-batch-size 2` | 9 |
-| Mistral-Small-4-119B | NVFP4 | 33 |
-| Qwen3.5-27B (dense hybrid) | FP8 KV | 13 |
+    MAIN([main]):::done
+    BRANCH[branch off main]:::auto
+    OPEN[open the PR<br/>What · Why · Benchmarks · <b>Authorship</b>]:::auto
+    EDIT[make edits]:::auto
+    CHECKS[run the PR gate checks]:::gate
+    GREEN{all gates green?}:::gate
+    REVIEW[wait for human review]:::human
+    VERDICT{approved?}:::human
+    MERGE([squash and merge]):::done
 
-We compete with vLLM and TensorRT-LLM on the same GB10. On Qwen3.5-35B-A3B with MTP speculative decoding, Atlas decodes faster than the same model under NVIDIA's own vLLM build on the same hardware — meaningfully faster, on numbers we can hand you the script for. We will not put a bigger figure in this paragraph than the one that comes off our own benchmark scripts, and we publish the vLLM baseline command alongside ours so you can verify both. If you reproduce a faster vLLM number, file an issue. We would rather be measured than congratulated.
-
-The kernel-by-kernel comparison against PyTorch eager lives in the [benchmarks chapter](book/src/operations/benchmarks.md) along with the methodology footnotes — read them; they matter. That table is **32 benchmark rows over ~11 kernel families** (attention, GEMM, W4A16, MoE, conv1d, GDR, RMSNorm, SiLU×Mul, RoPE), all wins; it is not a sweep of the whole registry. The registry itself is much larger — `kernels/gb10/common/` alone holds 160 `.cu` files defining 318 `extern "C" __global__` entry points, before the per-model shadow directories.
-
-<a id="kv-cache"></a>
-
-## 🗜️ KV Cache Quantization
-
-Atlas stores attention key/value state in a quantized format selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
-
-The table below is the **symmetric** set — the same format for K and V. `KvCacheDtype` (`crates/spark-runtime/src/kv_cache.rs`) accepts **16 values in total**: the six below plus `turbo2` (2-bit) and nine TurboQuant+ **asymmetric** K/V pairings (`turbo4k_turbo3v`, `turbo4k_turbo8v`, `turbo3k_turbo8v`, `bf16k_turbo4v`, `bf16k_turbo3v`, `bf16k_turbo2v`, `fp8k_turbo4v`, `fp8k_turbo3v`, `fp8k_turbo2v`) that store K at higher precision than V, since K dominates attention-score fidelity. Those are documented in [`docs/turboquant-plus.md`](docs/turboquant-plus.md); the parser is the authority on the accepted spelling.
-
-| CLI flag | Bits/element | Scale overhead | Technique | When to use |
-|---|---:|---|---|---|
-| `bf16` | 16 | — | Raw BF16 storage | Maximum precision; short-context or quality-critical workloads |
-| `fp8` | 8 | Per-tensor FP32 scale (from checkpoint or online calibration via `--fp8-kv-calibration-tokens`) | FP8 E4M3 with static or calibrated per-tensor scale | **Default.** Safe baseline — half the memory of BF16, minimal quality loss for most models |
-| `turbo8` | 8 | Per-group BF16 scale (2 bytes / 16 elements) | Walsh-Hadamard rotation → FP8 E4M3 + BF16 per-group scales | FP8-level memory with outlier suppression; recommended for many-layer models (e.g. MiniMax M2.7, 58 layers) where per-group FP8 scales compound |
-| `nvfp4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | E2M1 packed nibbles (NVIDIA NVFP4 format) | 4× compression vs BF16; good for long-context with `--kv-high-precision-layers auto` |
-| `turbo4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max optimal 4-bit codebook | ~2× lower MSE than NVFP4 at the same bit rate; same memory footprint |
-| `turbo3` | 3 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max 3-bit codebook (8 levels, packed 8 values → 3 bytes) | Maximum compression (22% smaller than turbo4); experimental |
-
-<a id="quick-start"></a>
-
-## 🚀 Quick Start
-
-The whole supported model matrix lives in one Docker image. Pull it, mount your HuggingFace cache, point Atlas at any model ID from the [model table](#models).
-
-> **Defaults below are tuned for maximum accuracy under agentic-coding workloads** — 64K context window, BF16 MTP draft head (highest acceptance rate ⇒ highest end-to-end throughput), prefix caching for multi-turn tool loops, and FP8 KV cache with `auto`-promoted boundary layers. These are the recipes we use to drive opencode / Claude Code / Cline through Atlas on a single Spark.
-
-### Recipe 0 — no flags, pick a model in the TUI
-
-Omit the model ID and `serve` boots into the Library — pick a model and recipe interactively (TTY only):
-
-```bash
-docker run -it --rm --network host --gpus all --ipc=host -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" -v "${HOME}/.atlas:/root/.atlas" avarok/atlas-gb10:latest serve
+    MAIN --> BRANCH --> OPEN --> EDIT --> CHECKS --> GREEN
+    GREEN -- no --> EDIT
+    GREEN -- yes --> REVIEW --> VERDICT
+    VERDICT -- changes requested --> EDIT
+    VERDICT -- yes --> MERGE
+    MERGE --> MAIN
 ```
 
-- `-it` — the TUI needs a real terminal to render (and Esc to quit).
-- `--rm` — throwaway container; nothing to clean up after the session.
-- `--network host` — the served port is reachable on localhost directly, no `-p` mapping.
-- `--gpus all` — hands the GB10 to the container.
-- `--ipc=host` — host-sized shared memory; the Docker default 64 MB `/dev/shm` is too small for CUDA.
-- `-v ~/.cache/huggingface` — reuse the host's model cache instead of re-downloading weights.
-- `-v ~/.atlas` — persist Atlas state (recipes, benchmark records, artifacts) across runs.
+The per-state commands, exit conditions and the invariants an agent must not violate are in [`CONTRIBUTING.md`](CONTRIBUTING.md#pull-request-process) — in a table, because an agent should not have to infer the contract from prose.
 
-<a id="run-atlas"></a>
+<a id="new-hardware"></a>
 
-### Recipe A — Qwen3.6-35B-A3B (FP8 hybrid MoE, ~130 tok/s)
+## 🔌 Adding a New Hardware Target
 
-The default daily driver — 35 B params, 3 B active, GDN + attention + 256-expert MoE, MRoPE-positioned vision tower (text-only here).
+The full recipe is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-hardware-target). The short version: implement two traits (`ComputeTarget` for the build-time compiler, `GpuBackend` for the runtime), drop kernel sources into `kernels/<your-hw>/`, add one match arm in the registry. There is a `MockGpuBackend` in `spark-runtime` that lets you write and test the entire scaffold without owning the hardware — every layer above the GPU trait is hardware-agnostic, so unit tests can run on a laptop. We bolted the project from "single CUDA target" to "trait-pluggable across vendors" specifically so that the next ports stop being our problem and start being yours — and the Strix Halo port under [`kernels/strix/`](kernels/strix/) is the worked example.
 
-```bash
-docker pull avarok/atlas-gb10:latest
+<a id="new-model"></a>
 
-sudo docker run -d --name atlas \
-  --network host --gpus all --ipc=host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
-  serve Qwen/Qwen3.6-35B-A3B-FP8 \
-    --port 8888 \
-    --max-seq-len 65536 \
-    --kv-cache-dtype fp8 \
-    --kv-high-precision-layers auto \
-    --gpu-memory-utilization 0.90 \
-    --scheduling-policy slai \
-    --enable-prefix-caching \
-    --speculative \
-    --num-drafts 2 \
-    --tool-call-parser qwen3_coder
-```
+## 🧬 Adding a New Model
 
-Why these flags:
-
-- `--max-seq-len 65536` — 64K window for long agent traces, file reads, multi-step tool use.
-- `--kv-cache-dtype fp8 --kv-high-precision-layers auto` — half the memory of BF16, no measurable quality loss; the boundary attention blocks stay BF16, where the routing distribution is most sensitive. `auto` is **not** a heuristic — it is a fixed alias for `2` (`serve_phases/kv_cache.rs`), alongside `max`/`all` meaning "every attention layer". Because it is non-zero it also *suppresses* the per-dtype automatic promotion that `0` would trigger under a `turbo*` KV dtype.
-- `--scheduling-policy slai` — SLAi scheduler. **Not the default** — `serve` defaults to `fifo`, so this flag has to be passed to get SLO-aware ordering. It reorders concurrent sequences to keep MTP verify batches dense and prefills shortest-prompt-first.
-- `--enable-prefix-caching` — radix-tree prefix cache; tool-use sessions reuse the system prompt + tool-defs + earlier turns.
-- `--speculative --num-drafts 2` — MTP draft head proposes 2 tokens per step. **No `--mtp-quantization` flag** ⇒ defaults to **BF16**, which gives the highest acceptance rate (lossier MTP projections lower acceptance and usually *worsen* end-to-end tok/s, despite the faster draft forward).
-- `--tool-call-parser qwen3_coder` — explicit Qwen XML tool format. Atlas auto-resolves the right parser from `tool_defaults.toml` per model; pass it anyway in production scripts.
-
-### Recipe B — Qwen3.5-35B-A3B (NVFP4, ~131 tok/s with MTP K=2)
-
-The fastest model in the matrix on a single Spark.
-
-```bash
-sudo docker run -d --name atlas \
-  --network host --gpus all --ipc=host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
-  serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
-    --port 8888 \
-    --max-seq-len 65536 \
-    --kv-cache-dtype fp8 \
-    --kv-high-precision-layers auto \
-    --gpu-memory-utilization 0.90 \
-    --scheduling-policy slai \
-    --enable-prefix-caching \
-    --speculative \
-    --tool-call-parser qwen3_coder
-```
-
-`--num-drafts` is omitted so it defaults to `1`, i.e. MTP **K=2** (the CLI defines `--num-drafts 1` as K=2, `2` as K=3). K=2 is the measured-fastest verify width for this model; K=3 is slower.
-
-### Recipe C — Qwen3.5-122B-A10B (NVFP4, single Spark)
-
-The 122B NVFP4 weights + Atlas runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so this recipe sacrifices `--speculative` (the MTP draft head + draft KV costs ~1.5 GB) to keep a real 16 K context window.  Verified end-to-end: model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly.
-
-```bash
-sudo docker run -d --name atlas \
-  --network host --gpus all --ipc=host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
-  serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
-    --port 8888 \
-    --max-seq-len 16384 \
-    --kv-cache-dtype fp8 \
-    --kv-high-precision-layers auto \
-    --gpu-memory-utilization 0.92 \
-    --scheduling-policy slai \
-    --max-batch-size 1 \
-    --max-num-seqs 4 \
-    --oom-guard-mb 1024 \
-    --ssm-cache-slots 0 \
-    --tool-call-parser qwen3_coder
-```
-
-For 122B with **both** `--speculative` *and* a 64 K window, move to EP=2 across two Sparks ([`QUICKSTART.md`](QUICKSTART.md) §5). For long contexts on a single Spark, add `--high-speed-swap --high-speed-swap-dir /path/on/nvme --high-speed-swap-cache-blocks-per-seq 64` — HSS keeps a rolling 1024-token KV window in HBM and streams older blocks to NVMe through an io_uring orchestrator. The container needs `--security-opt seccomp=unconfined --ulimit memlock=-1` for io_uring access.
-
-### Hitting the Endpoint
-
-Atlas speaks OpenAI, Anthropic, and Responses APIs on the same port. `curl`, the OpenAI SDK, Open WebUI, opencode, Cline, Claude Code — point them at port 8888:
-
-```bash
-curl http://localhost:8888/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"atlas",
-    "messages":[{"role":"user","content":"Hello!"}],
-    "max_tokens":256
-  }'
-```
-
-Per-model recipes (vision input, video input, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md).
-
-> **Video input requires `ffmpeg` on the host.** Images need nothing extra, and animated GIF decodes in-process — but MP4/MOV, WebM and AVI (H.264, H.265, VP9, AV1) are decoded by running `ffmpeg`, which must be installed and enabled with `--video-allow-ffmpeg`. Atlas deliberately does not link a video decoder; see [`QUICKSTART.md`](QUICKSTART.md#2-qwen3-vl-30b-a3b-vision) for the recipe and the reasoning. Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
+Same story, smaller surface. Implement `ModelWeightLoader` (one struct; the existing `Qwen3AttentionLayer`/`MoeLayer`/`Qwen3SsmLayer`/`NemotronMamba2Layer` primitives cover most architectures), add one line to the factory dispatch, optionally drop a `MODEL.toml` for sampling defaults and behavior knobs. Kernels are reused; the scheduler is untouched; the server is oblivious. The step-by-step cookbook is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-model-family). Once your loader produces coherent output on the integration coherence prompt, you are done — file the PR.
 
 <a id="debugging"></a>
 
@@ -494,9 +552,7 @@ For bisecting *which* code path is at fault, one override toggle lets you swap t
 |---|---|
 | `ATLAS_FORCE_NVFP4_MOE=1` | Routes an FP8 model's MoE through the NVFP4 path — useful for cross-validating that the bug is in one specific quant path. Read at `weight_loader/qwen35/load_layers.rs`, so it applies to the Qwen3.5/3.6 loader family, not to every FP8 checkpoint |
 
-There is no longer an FP8 grouped-GEMM v1/v2 selector: `moe_fp8_grouped_gemm` is a single
-grid-compaction kernel (`kernels/gb10/common/moe_fp8_grouped_gemm.cu`), and the
-`ATLAS_FP8_MOE_COALESCED` gate that once chose between them has no read site in the tree.
+There is no longer an FP8 grouped-GEMM v1/v2 selector: `moe_fp8_grouped_gemm` is a single grid-compaction kernel ([`kernels/gb10/common/moe_fp8_grouped_gemm.cu`](kernels/gb10/common/moe_fp8_grouped_gemm.cu)), and the `ATLAS_FP8_MOE_COALESCED` gate that once chose between them has no read site in the tree.
 
 ### How we use these in practice — 3-step workflow
 
@@ -508,17 +564,19 @@ The order matters; this is the same workflow that found and fixed three compound
 
 For the 2026-05-20 MoE bug hunt this localized the issue from "16K context produces gibberish" to "L0 MoE output magnitude 3.4× too large because of three compounding bugs: v1 grouped-GEMM, missing zero-init, broken `max_m_tiles` heuristic" within a few iterations. After all three fixes, all 40 layers landed in `[0.977, 1.021]` of HF baseline — at the FP8 quantization noise floor.
 
-<a id="new-hardware"></a>
+<a id="community"></a>
 
-## 🔌 Adding a New Hardware Target
+## 🤝 Community and Contributing
 
-The full recipe is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-hardware-target). The short version: implement two traits (`ComputeTarget` for the build-time compiler, `GpuBackend` for the runtime), drop kernel sources into `kernels/<your-hw>/`, add one match arm in the registry. There is a `MockGpuBackend` in `spark-runtime` that lets you write and test the entire scaffold without owning the hardware — every layer above the GPU trait is hardware-agnostic, so unit tests can run on a laptop. We bolted the project from "single CUDA target" to "trait-pluggable across vendors" specifically so that the AMD, Apple, and Intel ports stop being our problem and start being yours.
+The action is in [**Discord**](https://discord.gg/RQcGakU2jW) — we are in there every day, shipping fixes, taking model requests, and tuning kernels in the open. Your machine is the test fleet and your voice sets the roadmap.
 
-<a id="new-model"></a>
+- **Run the serve matrix** on your own hardware and report what you see — regressions and wins both get featured. Start with the [GB10 Deployment Guide](docs/GB10_DEPLOYMENT_GUIDE.md).
+- **Add or tune a recipe** in [atlas-recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes) — recipes are the model SSOT.
+- **Write kernels** in Rust and CUDA — hand-tuned attention, MoE, GDN, Mamba-2 for Blackwell. Register-level work, no generic fallbacks.
+- **Docs, triage, ideas** — improve the guides, triage issues, or open a thread in [Discussions](https://github.com/Avarok-Cybersecurity/atlas/discussions).
+- **Follow along** on the [blog](https://blog.atlasinference.io) and on [X @AtlasInferenceX](https://x.com/AtlasInferenceX).
 
-## 🧬 Adding a New Model
-
-Same story, smaller surface. Implement `ModelWeightLoader` (one struct, the existing `Qwen3AttentionLayer`/`MoeLayer`/`Qwen3SsmLayer`/`NemotronMamba2Layer` primitives cover most architectures), add one line to the factory dispatch, optionally drop a `MODEL.toml` for sampling defaults and behavior knobs. Kernels are reused; the scheduler is untouched; the server is oblivious. The step-by-step cookbook is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-model-family). Once your loader produces coherent output on the integration coherence prompt, you are done — file the PR.
+Contributor workflow, code standards, and the PR gate contract are in [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions ship in the Community Edition under AGPLv3, and the [CLA](CLA.md) permits re-licensing for the Enterprise Edition. Please also see the [Code of Conduct](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md).
 
 <a id="citations"></a>
 
@@ -531,9 +589,10 @@ We did not invent the kernels we ship. We picked the right ideas from the right 
 - **FlashInfer** — Ye, Chen, Lai, Zhao, Zheng, Shao, Hou, Jin, Zuo, Yin, Chen, Ceze. *FlashInfer: Efficient and Customizable Attention Engine for LLM Inference Serving.* MLSys 2025 (Best Paper). [arXiv:2501.01005](https://arxiv.org/abs/2501.01005) — block-sparse paged KV cache, page index prefetch to SMEM, the gather-SMEM-MMA pattern for scattered pages. Informed our paged attention design.
 - **SageAttention 3** — Zhang, Huang, Zhang, Wei, Zhu, Chen. *SageAttention3: Microscaling FP4 Attention on Blackwell GPUs.* NeurIPS 2025 Spotlight. [arXiv:2505.11594](https://arxiv.org/abs/2505.11594) — FP4 attention with FP8 per-block microscales. On the SM121 roadmap once silicon-level FP4 MMA arrives upstream.
 - **LeanAttention** — Roy, Vassilieva, Willke, Mendis. *LeanAttention: Hardware-Aware Scalable Attention for LLM Inference.* 2024. [arXiv:2405.10480](https://arxiv.org/abs/2405.10480) — stream-K tile scheduling for near-100% SM occupancy in split-K decode attention. Planned next.
+- **DFlash** — Z Lab. *Block-diffusion speculative decoding.* [arXiv:2602.06036](https://arxiv.org/abs/2602.06036) — a small drafter emits γ tokens per step via bidirectional in-block attention conditioned on captured target hidden states. The basis of Atlas's `--dflash` speculative path.
 - **TurboQuant** — Zandieh, Daliri, Hadian, Mirrokni. *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate.* arXiv preprint, April 2025. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874) — Randomized Hadamard Transform + Lloyd-Max codebook for KV cache compression. The implementation in our `kernels/gb10/common/wht_bf16.cu` + `reshape_and_cache_turbo.cu` follows the **TurboQuant+** extensions (matched-norm L2 correction, sparse V dequant, asymmetric K/V, InnerQ per-channel equalisation) collected at [`TheTom/turboquant_plus`](https://github.com/TheTom/turboquant_plus) (research umbrella) with the llama.cpp engine reference at [`TheTom/llama-cpp-turboquant`](https://github.com/TheTom/llama-cpp-turboquant); per-feature reproduction and prior-art chain in [`docs/turboquant-plus.md`](docs/turboquant-plus.md).
 
-If you wrote one of these papers and you spot a misattribution or a wrong technique credit on our side, open an issue. We would rather be corrected than wrong.
+The full acknowledgment list is in [`CITATIONS.md`](CITATIONS.md). If you wrote one of these papers and you spot a misattribution or a wrong technique credit on our side, open an issue. We would rather be corrected than wrong.
 
 <a id="license"></a>
 
@@ -542,6 +601,16 @@ If you wrote one of these papers and you spot a misattribution or a wrong techni
 Atlas operates under a **dual-license** model. Both are real, both are intentional, and neither is a teaser for the other.
 
 1. **[Community Edition](LICENSE) — AGPLv3.** Free, open, copyleft. Use it for yourself to run inference on your own hardware, research, hobby projects, side-projects, and/or hosted demos, as examples. If you want to make money from Atlas, purchase a commercial license.
-2. **Enterprise Edition — commercial license.** If you need to ship Atlas inside a closed-source product, run it as a SaaS backend without inheriting the AGPLv3 source-disclosure obligation, or simply want a support relationship with the people who wrote the kernels, contact sales. Enterprise customers also receive prioritized model and hardware ports.
+2. **Enterprise Edition — commercial license.** If you need to ship Atlas inside a closed-source product, run it as a SaaS backend without inheriting the AGPLv3 source-disclosure obligation, or simply want a support relationship with the people who wrote the kernels, [contact us](https://atlasinference.io). Enterprise customers also receive prioritized model and hardware ports.
 
-This split exists for a single reason: a permissive license keeps us building Atlas full-time, and the AGPL community license keeps the project honest. What is in this repository is what we run.
+This split exists for a single reason: the commercial license keeps us building Atlas full-time, and the AGPL community license keeps the project honest. Contributions are covered by the [CLA](CLA.md), which permits Enterprise re-licensing while you retain ownership of your contribution. What is in this repository is what we run.
+
+---
+
+<p align="center">
+  <a href="https://atlasinference.io">atlasinference.io</a> ·
+  <a href="https://docs.atlasinference.io">docs.atlasinference.io</a> ·
+  <a href="https://blog.atlasinference.io">blog.atlasinference.io</a>
+</p>
+
+<sub>The MLPerf name and logo are registered and unregistered trademarks of MLCommons Association in the United States and other countries. All rights reserved. Unauthorized use strictly prohibited. See mlcommons.org for more information.</sub>

@@ -65,7 +65,6 @@
       {#each nav.links as l}
         <a href={l.href}>{l.text}</a>
       {/each}
-      <FleetPill />
       <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener"><DiscordIcon size={18} /></a>
       <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener"><XIcon size={16} /></a>
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener">
@@ -83,6 +82,11 @@
         <ChatLatticeIcon size={18} />
         {#if chatReady}<span class="nav-chat-dot" aria-hidden="true"></span>{/if}
       </button>
+      <!-- Fleet status chip. Last on purpose: status reads as chrome, not as a
+           destination, so it anchors the far right of the bar instead of
+           sitting between the links and the icons. Renders nothing for
+           visitors without a paired local agent (see FleetPill.svelte). -->
+      <FleetPill />
     </div>
 
     <button

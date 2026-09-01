@@ -127,7 +127,12 @@ test('every shipped post satisfies the schema', async () => {
     if (f.endsWith('.svelte')) {
       expect(src, `${f} must export meta from a module script`).toMatch(/<script module>[\s\S]*export const meta\s*=/);
     } else {
-      expect(src, `${f} must open with a frontmatter block`).toMatch(/^---\r?\n/);
+      expect(src, `${f} must open with a YAML front-matter block`).toMatch(/^---\r?\n[\s\S]*?\r?\n---/);
+        // Opening `---` alone does not prove the block is well-formed or
+        // usable; postmd.js needs these four keys to build the index entry.
+        for (const key of ['title', 'date', 'author', 'draft']) {
+          expect(src, `${f} front matter must set ${key}`).toMatch(new RegExp(`^${key}:`, 'm'));
+        }
     }
   }
 });
@@ -153,7 +158,11 @@ test('every shipped post resolves from both the clean and the .html URL', async 
   const { cleanSlug } = await import('./content.js');
   const { Glob } = await import('bun');
   const slugs = [...new Glob('src/lib/posts/*.{svelte,md}').scanSync('.')].map((f) =>
-    f.slice(f.lastIndexOf('/') + 1, -'.svelte'.length)
+    // Strip whichever extension the file actually has. Slicing a fixed
+    // `.svelte`.length off a `.md` name silently mangles the slug
+    // (seven-tenets-…-inference -> seven-tenets-…-infer) and the assertion
+    // below still passes, because cleanSlug only ever strips `.html`.
+    f.slice(f.lastIndexOf('/') + 1).replace(/\.(svelte|md)$/, '')
   );
   expect(slugs.length).toBeGreaterThan(0);
   for (const s of slugs) {

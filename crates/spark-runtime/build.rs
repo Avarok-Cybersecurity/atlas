@@ -81,6 +81,14 @@ fn main() {
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64/stubs");
     println!("cargo:rustc-link-search=native=/usr/lib/aarch64-linux-gnu");
 
+    // ★ Both objects below are REFERENCE IMPLEMENTATIONS we benchmark against
+    // and intend to beat — never dependencies. Leaving `CUTLASS_HOME` /
+    // `FLASHINFER_HOME` unset is the NORMAL build: it emits no third-party
+    // kernel object, and the binary serves entirely on Atlas's own kernels.
+    // Setting them only makes the opponent available behind its runtime
+    // opt-in (`ATLAS_CUTLASS_GEMM=1` / `ATLAS_FLASHINFER_PREFILL=1`), which
+    // stays OFF by default. Canonical rationale: the module docs on
+    // `spark_runtime::cutlass` and `spark_runtime::flashinfer`.
     if let Some(cutlass_home) = std::env::var_os("CUTLASS_HOME") {
         build_cutlass_object(std::path::PathBuf::from(cutlass_home));
     }

@@ -1,6 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Host-callable FlashInfer ragged/varlen prefill attention FFI (GB10/sm_121).
 //!
+//! ★ REFERENCE IMPLEMENTATION — A BENCHMARK TARGET, NOT A DEPENDENCY.
+//!
+//! Atlas ships its OWN kernels. FlashInfer is wrapped here for exactly one
+//! purpose: to be the opponent we measure against and beat. **Nothing in a
+//! default build or a default serve calls a single line of it.**
+//!
+//! Two independent gates keep that true, and BOTH must survive any edit:
+//!
+//!   1. COMPILE TIME — every item in this module is `#[cfg(atlas_flashinfer)]`, and
+//!      `build.rs` sets that cfg only when `FLASHINFER_HOME` is exported. A build
+//!      without it links no FlashInfer object at all.
+//!   2. RUNTIME — the dispatch arms are opt-in behind `ATLAS_FLASHINFER_PREFILL=1`.
+//!      The default is OFF.
+//!
+//! So the honest reading of an Atlas performance number is that Atlas kernels
+//! produced it, because a default binary cannot reach this code. Export the
+//! env var and you are measuring FlashInfer — label the number that way.
+//!
+//! ★ WHY KEEP IT COMPILED-BUT-DARK. Agentic benchmarking. An optimisation
+//! claim needs a credible opponent: "faster than our own previous commit" is
+//! a far weaker statement than "faster than FlashInfer on this shape". Keeping the
+//! wrapper one env var away lets any agent A/B a shape against the industry
+//! reference on the same box, same checkpoint, same stream — which is the
+//! only comparison worth quoting.
+//!
+//! Do NOT promote any of this to a default path. If a FlashInfer shape beats ours,
+//! the correct response is to make OUR kernel faster and re-measure.
+//!
 //! FlashInfer's `BatchPrefillWithRaggedKVCacheDispatched` is a FlashAttention-2
 //! SM80-class kernel (mma.sync/ldmatrix/cp.async) that codegens for sm_121f. We
 //! wrap it host-side exactly like the CUTLASS object: nvcc compiles

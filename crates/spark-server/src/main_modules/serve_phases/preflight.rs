@@ -71,6 +71,7 @@ pub(crate) fn preflight_reserve(
     // the miss direction is over-reserve, never under.
     let pool_num_drafts = if args.dflash {
         peek_dflash_block_size(args.draft_model.as_deref())
+            .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
             .unwrap_or_else(|| args.resolved_dflash_gamma(None))
     } else {
         args.resolved_num_drafts()
@@ -455,8 +456,11 @@ fn peek_dflash_block_size(draft_model: Option<&str>) -> Option<usize> {
 /// from the drafter's checkpoint via the same peek the pool reserve uses.
 pub(crate) fn spec_reserve_tokens(args: &cli::ServeArgs) -> usize {
     if args.dflash {
-        let gamma = peek_dflash_block_size(args.draft_model.as_deref())
-            .unwrap_or_else(|| args.resolved_dflash_gamma(None));
+        let gamma = args.dflash_gamma.unwrap_or_else(|| {
+            peek_dflash_block_size(args.draft_model.as_deref())
+                .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
+                .unwrap_or_else(|| args.resolved_dflash_gamma(None))
+        });
         gamma + 1
     } else if args.speculative || args.self_speculative || args.ngram_speculative {
         args.resolved_num_drafts() + 2
