@@ -171,6 +171,27 @@ jobs:
             -f "output[title]=$detail" \
             -f "output[summary]=$detail Recorded against $SHORT. A stamp survives new commits; a seal does not." >/dev/null
 
+          # ★ A stamp that does not RE-RUN anything is a stamp that does nothing.
+          # The held jobs already reported "skipped" on this head sha; recording
+          # the check run does not re-evaluate them. Re-running the CI workflow
+          # does, and the second pass sees the Stamp and releases the lane.
+          #
+          # This needs the App token: a re-run triggered by GITHUB_TOKEN does not
+          # produce workflow runs, which is the same limitation
+          # `governance-harvest.yml` mints an App token to work around.
+          if [ "$VERB" = "/stamp" ]; then
+            run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
+              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
+              2>/dev/null || true)
+            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
+              gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
+                && echo "re-ran CI run $run_id to release the held lane" \
+                || echo "could not re-run CI run $run_id; push an empty commit or re-run by hand"
+            else
+              echo "no CI run found for $HEAD_SHA — nothing to re-run"
+            fi
+          fi
+
           gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="**$name recorded.** $detail
 
           | | |

@@ -78,6 +78,56 @@ jobs:
           MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash .github/scripts/classify-diff.sh
 
+
+  # ── Is the expensive lane released? ───────────────────────────────────────
+  #
+  # Stage 1 is cheap and runs on every push. Certification and the nine
+  # release-matrix legs cost about an hour of runners between them, so they wait
+  # for a human to say this PR is worth it: anyone with write access comments
+  # `/stamp`, and the certification bot records a `Stamp` check run on the head
+  # sha.
+  #
+  # ★ READ LIVE FROM THE CHECK RUNS, never from a file. A stamp stored in the
+  # repo would be settable by the branch it gates — the property
+  # `atlas-governance` protects for the ledger, for the same reason.
+  #
+  # FAIL OPEN, like `changes`: any error here emits `true` and the lane runs.
+  # A broken stamp lookup must cost runner minutes, never wave a PR through.
+  stamp:
+    name: stamp status
+    runs-on: ubuntu-latest
+    outputs:
+      stamped: ${{ steps.q.outputs.stamped }}
+    steps:
+      - id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -uo pipefail
+          # Only a pull_request can be un-stamped. A merge_group entry reached
+          # the queue by being ready, and a push to main has no PR to stamp.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "$EVENT is not a pull request — the lane runs."
+            exit 0
+          fi
+          n=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.name == "Stamp" and .conclusion == "success")] | length' \
+                2>/dev/null || echo FAILOPEN)
+          if [ "$n" = "FAILOPEN" ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "could not read check runs — failing OPEN, the lane runs."
+          elif [ "${n:-0}" -gt 0 ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "stamped at $SHA — the lane runs."
+          else
+            echo "stamped=false" >>"$GITHUB_OUTPUT"
+            echo "not stamped at $SHA — certification and the release matrix are held."
+          fi
+
   fmt:
     name: cargo fmt --check
     runs-on: ubuntu-latest
@@ -294,8 +344,9 @@ jobs:
           needs.kernel-structure.result == 'success' &&
           (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
-          (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') }}
-    needs: [changes, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+          (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') &&
+          needs.stamp.outputs.stamped != 'false' }}
+    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}
@@ -870,7 +921,7 @@ jobs:
   pr-benchmark-gate:
     name: PR Benchmark Certifications
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, stamp]
     # The web trees are not measured inputs of any record — `record_covers`
     # invalidates on crates/, kernels/, Cargo.*, vendor/, jinja-templates and
     # the toolchain, none of which a web-only diff can reach. So on such a diff
@@ -879,7 +930,15 @@ jobs:
     # skip into the required context's pass. Fails open, like every other gate
     # here: a broken classifier runs the certification rather than waving it
     # through.
-    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
+          && needs.stamp.outputs.stamped != 'false' }}
+    # `!= 'false'`, not `== 'true'`: the stamp job fails OPEN, so an empty output
+    # must run the lane rather than hold it. Same shape and same reason as the
+    # `web_only` test beside it — five workflows here carry the lesson that a
+    # positive test on a fail-open signal turns a broken classifier into a
+    # silently skipped gate.
+    #
     # Runs under `merge_group` too, deliberately. There the checkout is the
     # queue's temporary merge commit (latest main + this PR), and the gate
     # answers "do the committed records still cover the MERGED tree" — which
@@ -976,7 +1035,7 @@ jobs:
   #   doing 2 without 1 blocks every merge, so 1 comes first.
   pr-benchmark-gate-alias:
     name: PR benchmark gate
-    needs: [changes, pr-benchmark-gate]
+    needs: [changes, stamp, pr-benchmark-gate]
     # `always()`, or a red certification would SKIP this shim rather than fail
     # it — and a skipped required check is treated as unsatisfied-but-pending,
     # which reads as "still running" instead of "the gate said no".
@@ -987,6 +1046,7 @@ jobs:
         env:
           RESULT: ${{ needs.pr-benchmark-gate.result }}
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
+          STAMPED: ${{ needs.stamp.outputs.stamped }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
           if [ "${RESULT}" = "success" ]; then exit 0; fi
@@ -999,6 +1059,20 @@ jobs:
           if [ "${RESULT}" = "skipped" ] && [ "${WEB_ONLY}" = "true" ]; then
             echo "web-only diff: no record's measured inputs were touched — pass."
             exit 0
+          fi
+          # HELD, not failed. Certification never ran because nobody has released
+          # the expensive lane, and the generic message below — "read its log,
+          # not this one" — would send a reader to a job that has no log.
+          #
+          # Still RED. An unstamped PR is genuinely not ready to merge, and a
+          # green check here would say it was.
+          if [ "${RESULT}" = "skipped" ] && [ "${STAMPED}" = "false" ]; then
+            echo "::error title=Certification is held::\
+          Comment /stamp to release certification and the nine release-matrix \
+          builds. They are held so a draft does not spend an hour of runners on \
+          every push. Anyone with write access can stamp, and a stamp survives \
+          new commits."
+            exit 1
           fi
           # Anything else — failure, cancelled, skipped — is not a
           # pass. Defaulting the unknown case to green would make the shim a hole
