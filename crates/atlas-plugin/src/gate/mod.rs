@@ -23,13 +23,16 @@
 /// The one-time, content-pinned 2026-08-16 invalidation amnesty.
 pub mod amnesty;
 pub mod bench;
+pub mod card;
 pub mod check;
+mod check_fmt;
 pub mod closure;
 pub mod codeowners;
 pub mod coverage;
 pub mod record;
 mod record_path;
 pub mod scoring;
+pub mod signing;
 pub mod taxon;
 
 /// The PR INTENT taxonomy — what a change is FOR, and the benchmarks that
@@ -261,6 +264,16 @@ mod coverage_squash_tests;
 #[cfg(test)]
 #[path = "hardening_tests.rs"]
 mod hardening_tests;
+
+/// Result cards: the specs must name metrics that exist.
+#[cfg(test)]
+#[path = "card_tests.rs"]
+mod card_tests;
+
+/// Ed25519 record signatures: round trips and, mostly, negative controls.
+#[cfg(test)]
+#[path = "signing_tests.rs"]
+mod signing_tests;
 
 /// The one-time 2026-08-16 amnesty: pinned grant, fail-closed, expiry.
 #[cfg(test)]

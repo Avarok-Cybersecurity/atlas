@@ -5,8 +5,10 @@
 use clap::Parser;
 
 mod bench_args;
+pub mod bench_card;
 mod bench_gate_check;
 mod bench_print;
+pub mod bench_record;
 mod bench_resolve;
 pub mod bench_run;
 mod bench_selfstart;
