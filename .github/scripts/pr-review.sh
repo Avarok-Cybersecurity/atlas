@@ -51,12 +51,17 @@ fi
 # `classify-path` adopted after the title-only bypass.
 pr=$(gh api "repos/$REPO/pulls/$PR")
 title=$(printf '%s' "$pr" | jq -r '.title')
-body=$(printf '%s' "$pr" | jq -r '.body // ""' | head -c 4000)
+# Truncate INSIDE jq, and cap the line-based lists with awk. `head` closes the
+# pipe as soon as it has enough, which sends SIGPIPE upstream; under the
+# `set -euo pipefail` above that killed the whole script with exit 2 on any PR
+# whose body ran past 4000 chars -- which is most of them. awk reads its input
+# to the end, so nothing upstream is ever signalled.
+body=$(printf '%s' "$pr" | jq -r '(.body // "")[0:4000]')
 base=$(printf '%s' "$pr" | jq -r '.base.ref')
 stats=$(printf '%s' "$pr" | jq -r '"\(.changed_files) files, +\(.additions)/-\(.deletions)"')
-paths=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' | head -200)
+paths=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' | awk 'NR<=200')
 commits=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" \
-  --jq '.[] | "\(.sha[0:10])  \(.commit.message | split("\n")[0])"' | head -50)
+  --jq '.[] | "\(.sha[0:10])  \(.commit.message | split("\n")[0])"' | awk 'NR<=50')
 checks=$(gh api "repos/$REPO/commits/$(printf '%s' "$pr" | jq -r '.head.sha')/check-runs?per_page=100" \
   --jq '[.check_runs[] | select(.conclusion != "success" and .conclusion != "skipped")]
         | if length == 0 then "every reported check is green"

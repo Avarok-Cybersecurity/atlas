@@ -221,7 +221,7 @@ img, svg, video { max-width: 100%; }
 /* ---- touch targets, any coarse pointer ------------------------------------ */
 @media (pointer: coarse) {
   .copy-btn, .cmd-copy, .email-btn-copy { min-height: 42px; }
-  .nav-icon-link, .proof-item { min-height: 40px; align-items: center; }
+  .proof-item { min-height: 40px; align-items: center; }
   .fcol a { padding-block: 0.3rem; }
   .news-link, .hw-links a, .road-card a, .contrib-card a { padding-block: 0.35rem; }
   .subcard:hover, .news-card:hover, .reach-card:hover, .contrib-card:hover { transform: none; }

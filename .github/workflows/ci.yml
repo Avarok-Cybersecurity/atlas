@@ -148,6 +148,71 @@ jobs:
             echo "not stamped on any commit of PR #$PR — certification and the release matrix are held."
           fi
 
+  # The binding half of `/seal`. The Seal CHECK RUN is minted by the App in
+  # certification-commands.yml, which triggers on comments only — it never runs
+  # on `merge_group`, so on a `gh-readonly-queue/**` commit no Seal exists and
+  # requiring the raw `Seal` context would wedge the queue forever. This job is
+  # the requireable context: it reports on BOTH event types and re-derives the
+  # verdict on the queue side from the PR the entry came from, the same shape
+  # cla.yml uses for the same reason.
+  seal:
+    name: seal status
+    runs-on: ubuntu-latest
+    steps:
+      - id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MQ_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -uo pipefail
+          # A push to main has already landed and a dispatch has no diff to
+          # vouch for; neither carries a PR, so there is nothing to seal.
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
+            echo "$EVENT carries no pull request — nothing to seal."
+            exit 0
+          fi
+          sha="$PR_SHA"; num="$PR_NUM"
+          if [ "$EVENT" = "merge_group" ]; then
+            # Queue branches are GitHub-generated:
+            # gh-readonly-queue/<base>/pr-<N>-<sha>
+            branch="${MQ_HEAD_REF#refs/heads/}"
+            num="$(printf '%s' "$branch" | sed -n 's|.*/pr-\([0-9][0-9]*\)-.*|\1|p')"
+            if [ -z "$num" ]; then
+              echo "::error title=Cannot identify the queued PR::queue branch '$branch' does not name a PR, so the seal cannot be re-proved. Refusing rather than guessing."
+              exit 1
+            fi
+            sha="$(gh api "repos/$REPO/pulls/$num" --jq '.head.sha' 2>/dev/null)" || sha=""
+          fi
+          if [ -z "$sha" ]; then
+            echo "::error title=Cannot resolve the sealed commit::no head sha for PR #$num."
+            exit 1
+          fi
+          # A seal vouches for a DIFF, so only a Seal on the CURRENT head counts
+          # — unlike a stamp, which deliberately carries across new commits.
+          n=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.name == "Seal" and .conclusion == "success")] | length' \
+                2>/dev/null) || n=REFUSE
+          case "$n" in ''|*[!0-9]*) n=REFUSE ;; esac
+          # Deliberately fails CLOSED, inverting the fail-open shape of `stamp`
+          # beside it. A stamp only spends runners, so guessing "yes" is cheap;
+          # a seal is a person vouching for the diff, and an unreadable API must
+          # never be read as a vouch nobody gave. Same direction as
+          # seal-coverage.py, and the same reason.
+          if [ "$n" = "REFUSE" ]; then
+            echo "::error title=Could not read the seal::the check-runs API did not answer for $sha, and a seal is never assumed. Re-run this job."
+            exit 1
+          fi
+          if [ "$n" -gt 0 ]; then
+            echo "sealed at $sha — a codeowner has vouched for this diff."
+            exit 0
+          fi
+          echo "::error title=Not sealed::PR #$num has no Seal on $sha. A codeowner of every path in the diff must comment /seal. The next commit voids it, so seal once the diff has settled."
+          exit 1
+
   fmt:
     name: cargo fmt --check
     runs-on: ubuntu-latest

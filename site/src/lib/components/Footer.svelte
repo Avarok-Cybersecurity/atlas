@@ -1,6 +1,8 @@
 <script>
-  import { footer, contactEmails, discordUrl, mlperfTrademark, nvidiaInceptionUrl } from '$lib/data.js';
+  import { footer, contactEmails, discordUrl, xUrl, mlperfTrademark, nvidiaInceptionUrl } from '$lib/data.js';
   import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import DiscordIcon from './DiscordIcon.svelte';
+  import XIcon from './XIcon.svelte';
 </script>
 
 <footer>
@@ -9,6 +11,10 @@
       <div class="flogo"><AtlasLockup kind="full" label="Atlas Inference Engine" /></div>
       <p>{footer.tagline}</p>
       <p class="lic">{footer.license}</p>
+      <div class="footer-social">
+        <a href={discordUrl} aria-label="Atlas on Discord" target="_blank" rel="noopener"><DiscordIcon size={20} /></a>
+        <a href={xUrl} aria-label="Atlas on X" target="_blank" rel="noopener"><XIcon size={17} /></a>
+      </div>
     </div>
 
     {#each footer.cols as col}
