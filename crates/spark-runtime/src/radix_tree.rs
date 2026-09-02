@@ -10,7 +10,7 @@
 
 use parking_lot::Mutex;
 
-use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
+use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch, SsmAnchor};
 
 mod inner;
 mod snapshot;
@@ -97,27 +97,11 @@ impl PrefixCache for RadixTree {
         // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
         // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
         // byte-identical to the old resident-only lookup.
-        let mut ssm_snapshot = None;
-        let mut ssm_snapshot_tokens = 0;
-        let mut ssm_snapshot_tier_key = None;
-        let mut ssm_snapshot_tier_tokens = 0;
-        let mut ssm_snapshot_is_tail = false;
-        if matched_tokens > 0 {
-            let mut idx = self.snapshot_index.lock();
-            if let Some(m) = idx.lookup_tiered(tokens, matched_tokens, session_hash, adapter_id) {
-                ssm_snapshot_is_tail = m.is_tail;
-                match m.loc {
-                    snapshot::SnapLoc::Hbm(slot) => {
-                        ssm_snapshot = Some(slot);
-                        ssm_snapshot_tokens = m.token_count;
-                    }
-                    snapshot::SnapLoc::Tier(key) => {
-                        ssm_snapshot_tier_key = Some(key);
-                        ssm_snapshot_tier_tokens = m.token_count;
-                    }
-                }
-            }
-        }
+        let anchor = if matched_tokens > 0 {
+            self.lookup_ssm_anchor(tokens, matched_tokens, session_hash, adapter_id)
+        } else {
+            SsmAnchor::NONE
+        };
         // Filter disk_block_ids to MAX-free entries when HSS isn't in use, so
         // the caller can check `!matched_disk_block_ids.is_empty()` as the
         // HSS-engaged signal. When HSS *is* in use every entry should be a
@@ -127,15 +111,43 @@ impl PrefixCache for RadixTree {
         } else {
             matched_disk_block_ids
         };
-        PrefixMatch {
+        let mut m = PrefixMatch {
             matched_blocks,
             matched_disk_block_ids,
             matched_tokens,
-            ssm_snapshot,
-            ssm_snapshot_tokens,
-            ssm_snapshot_tier_key,
-            ssm_snapshot_tier_tokens,
-            ssm_snapshot_is_tail,
+            ..PrefixMatch::empty()
+        };
+        m.set_ssm_anchor(anchor);
+        m
+    }
+
+    fn lookup_ssm_anchor(
+        &self,
+        tokens: &[u32],
+        max_tokens: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> SsmAnchor {
+        let mut idx = self.snapshot_index.lock();
+        match idx.lookup_tiered(tokens, max_tokens, session_hash, adapter_id) {
+            Some(m) => {
+                let mut anchor = SsmAnchor {
+                    is_tail: m.is_tail,
+                    ..SsmAnchor::NONE
+                };
+                match m.loc {
+                    snapshot::SnapLoc::Hbm(slot) => {
+                        anchor.snapshot = Some(slot);
+                        anchor.snapshot_tokens = m.token_count;
+                    }
+                    snapshot::SnapLoc::Tier(key) => {
+                        anchor.tier_key = Some(key);
+                        anchor.tier_tokens = m.token_count;
+                    }
+                }
+                anchor
+            }
+            None => SsmAnchor::NONE,
         }
     }
 

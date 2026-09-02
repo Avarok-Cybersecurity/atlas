@@ -345,3 +345,85 @@ fn test_ssm_snapshot_adapter_isolation_via_tree() {
     assert_eq!(m_a.ssm_snapshot, Some(42));
     tree.release(&tokens, 16, A);
 }
+
+// ── Marconi re-anchor below the exact leaf (`lookup_ssm_anchor`) ──
+
+/// The full-prompt-hit shape measured on qwen4exp (2026-08-30): a 3286-token
+/// prompt whose finish leaf (3286) AND block-aligned intermediate checkpoint
+/// (3264 = 204 blocks) are both registered. `lookup` must keep returning the
+/// deepest anchor (the leaf); the re-anchor capped at `total - 1` must hand
+/// back the intermediate instead of nothing.
+#[test]
+fn test_lookup_ssm_anchor_below_exact_leaf_selects_intermediate() {
+    let tree = RadixTree::new();
+    let total = 3286usize;
+    let tokens: Vec<u32> = (0..total as u32).collect();
+    let block_table: Vec<u32> = (0..206).collect(); // 205 full + 1 partial
+    tree.insert_with_snapshot(&tokens, &block_table, &[], 16, 99, 0, 0, 0);
+    let tokens_at_204: Vec<u32> = (0..3264).collect();
+    tree.insert_intermediate_snapshot(&tokens_at_204, &block_table[..204], &[], 16, 50, 0, 0, 0);
+
+    // `lookup` is unchanged: the exact leaf is the deepest anchor.
+    let m = tree.lookup(&tokens, 16, 0, 0);
+    assert_eq!(m.matched_tokens, total);
+    assert_eq!(m.ssm_anchor().depth(), total);
+    assert_eq!(m.ssm_snapshot, Some(99));
+
+    // Re-anchor strictly below the prompt → the 3264 checkpoint.
+    let a = tree.lookup_ssm_anchor(&tokens, total - 1, 0, 0);
+    assert_eq!(a.snapshot, Some(50));
+    assert_eq!(a.snapshot_tokens, 3264);
+    assert_eq!(a.depth(), 3264);
+    assert!(!a.is_tail);
+    assert_eq!(a.tier_key, None);
+
+    // The cap is inclusive: at exactly 3264 the checkpoint still qualifies,
+    // one below it nothing does.
+    assert_eq!(
+        tree.lookup_ssm_anchor(&tokens, 3264, 0, 0).snapshot,
+        Some(50)
+    );
+    assert!(!tree.lookup_ssm_anchor(&tokens, 3263, 0, 0).is_some());
+
+    // Re-anchoring takes no KV refs: the single release balances the lookup.
+    tree.release(&tokens, 16, 0);
+}
+
+/// The re-anchor applies the same candidate filter as `lookup`: a TAIL
+/// snapshot below the leaf is session-gated, an exact intermediate is not.
+#[test]
+fn test_lookup_ssm_anchor_below_exact_leaf_session_gates_tails() {
+    let tree = RadixTree::new();
+    let tokens: Vec<u32> = (0..64).collect();
+    tree.insert_with_snapshot(&tokens, &[10, 20, 30, 40], &[], 16, 99, 0, 0, 0);
+    // Tail at 48 for session 7; content-addressed intermediate at 32.
+    let tokens_at_48: Vec<u32> = (0..48).collect();
+    tree.insert_tail_snapshot(&tokens_at_48, 77, 7, 0);
+    let tokens_at_32: Vec<u32> = (0..32).collect();
+    tree.insert_intermediate_snapshot(&tokens_at_32, &[10, 20], &[], 16, 50, 0, 0, 0);
+
+    // Same session: the deeper tail wins below the leaf.
+    let a = tree.lookup_ssm_anchor(&tokens, 63, 7, 0);
+    assert_eq!(
+        (a.snapshot, a.snapshot_tokens, a.is_tail),
+        (Some(77), 48, true)
+    );
+    // Other / no session: the tail is skipped, the intermediate is next.
+    let a = tree.lookup_ssm_anchor(&tokens, 63, 8, 0);
+    assert_eq!(
+        (a.snapshot, a.snapshot_tokens, a.is_tail),
+        (Some(50), 32, false)
+    );
+    let a = tree.lookup_ssm_anchor(&tokens, 63, 0, 0);
+    assert_eq!(a.snapshot, Some(50));
+    // Different adapter: nothing matches.
+    assert!(!tree.lookup_ssm_anchor(&tokens, 63, 7, 1).is_some());
+    // Divergent prefix: the hash check rejects every entry.
+    let mut other: Vec<u32> = (0..48).collect();
+    other.extend(500..516);
+    assert_eq!(tree.lookup_ssm_anchor(&other, 63, 7, 0).snapshot, Some(77));
+    let mut other: Vec<u32> = (0..16).collect();
+    other.extend(500..548);
+    assert!(!tree.lookup_ssm_anchor(&other, 63, 7, 0).is_some());
+    tree.release(&tokens, 16, 0);
+}
