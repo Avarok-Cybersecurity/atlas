@@ -553,11 +553,21 @@ extern "C" __global__ void qsa_prefill_attn(
 // ties. Ties are common because relu floors at 0.0, so the tie pass walks in
 // index order rather than racing on an atomic.
 //
-// Output order within the list is irrelevant to the consumer
-// (`qsa_prefill_attn` softmaxes over the selected set, which is
-// order-independent), but the SET must match or the attention differs.
+// Output order within the list is MATHEMATICALLY irrelevant to the consumer
+// (`qsa_prefill_attn` softmaxes over the selected set), but it is NOT
+// bit-irrelevant: that kernel's online softmax accumulates in list order, so
+// a different order is a different fp32 rounding sequence. The greater-than
+// emit below hands out slots in atomicAdd race order — same SET, different
+// ORDER every run — which made temp-0 prefill non-reproducible past the
+// inert bound (the second nondeterminism source; the first was the MoE
+// prefill epilogue). The list is therefore canonicalised — ascending block
+// id, bitonic in shared memory — before the kernel returns: the same trick
+// `qsa_expand_sel` uses to reproduce the host's `sort_unstable()` for
+// decode. topk <= QSA_TOPK_SORT_MAX is enforced host-side in
+// `QsaIndexer::new` (decode's `qsa_expand_sel` shares the same 512 cap).
 
 #define QSA_TOPK_THREADS 256
+#define QSA_TOPK_SORT_MAX 512
 
 extern "C" __global__ void qsa_topk_rows(
     const float* __restrict__ scores,  // [rows, stride] f32
@@ -681,6 +691,41 @@ extern "C" __global__ void qsa_topk_rows(
     // stale ids), pad with block 0.
     for (unsigned int i = s_emitted + tid; i < topk; i += QSA_TOPK_THREADS) {
         out[i] = 0;
+    }
+    __syncthreads();
+
+    // ── canonicalise: ascending block id ──
+    // The emit pass assigned slots in atomicAdd race order; sorting makes the
+    // order a pure function of the SET (which is already deterministic: radix
+    // threshold + index-ordered tie fill), so the downstream fp32 accumulation
+    // order — and with it temp-0 prefill — is bit-reproducible. Ascending is
+    // also decode's canonical order. Bitonic over the next power of two,
+    // INT_MAX-padded; the pad sorts to the tail and is never written back.
+    __shared__ int s_sort[QSA_TOPK_SORT_MAX];
+    unsigned int n = 1u;
+    while (n < topk) n <<= 1u;
+    if (n <= QSA_TOPK_SORT_MAX) {
+        for (unsigned int i = tid; i < n; i += QSA_TOPK_THREADS) {
+            s_sort[i] = (i < topk) ? out[i] : 0x7FFFFFFF;
+        }
+        __syncthreads();
+        for (unsigned int k = 2u; k <= n; k <<= 1u) {
+            for (unsigned int j = k >> 1u; j > 0u; j >>= 1u) {
+                for (unsigned int i = tid; i < n; i += QSA_TOPK_THREADS) {
+                    const unsigned int ixj = i ^ j;
+                    if (ixj > i) {
+                        const bool up = ((i & k) == 0u);
+                        const int a = s_sort[i];
+                        const int b = s_sort[ixj];
+                        if ((a > b) == up) { s_sort[i] = b; s_sort[ixj] = a; }
+                    }
+                }
+                __syncthreads();
+            }
+        }
+        for (unsigned int i = tid; i < topk; i += QSA_TOPK_THREADS) {
+            out[i] = s_sort[i];
+        }
     }
 }
 

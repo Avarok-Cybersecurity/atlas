@@ -270,3 +270,8 @@ mod prefill;
 // scores are synthesised). ≤500 LoC split, same #[path] child shape.
 #[path = "qsa_tests_decode.rs"]
 mod decode;
+
+// Bit-determinism of the device PREFILL top-k (no fixtures — synthesised
+// scores). ≤500 LoC split, same #[path] child shape.
+#[path = "qsa_tests_topk.rs"]
+mod topk;

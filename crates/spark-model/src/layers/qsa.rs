@@ -141,6 +141,12 @@ impl QsaIndexer {
             ratio > 0 && budget.is_multiple_of(ratio),
             "QSA: budget % ratio != 0"
         );
+        anyhow::ensure!(
+            budget / ratio <= 512,
+            "QSA: block_topk {} exceeds the 512-entry device sort caps \
+             (QSA_TOPK_SORT_MAX / QSA_EXPAND_MAX_K in qsa_indexer.cu)",
+            budget / ratio
+        );
         let max_tokens: usize = std::env::var("ATLAS_QSA_MAX_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
