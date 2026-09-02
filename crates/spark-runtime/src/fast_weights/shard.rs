@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 
 use super::header::{TensorMeta, parse_header};
 use super::pool::{PoolPlan, ShardArenas};
-use super::{ShardOpts, ShardSink, direct_io};
+use super::{ShardOpts, ShardSink, direct_io, fs_probe};
 use crate::gpu::{DevicePtr, GpuBackend};
 use crate::weights::{DeferredTensor, WeightTensor, evict_page_cache, f16_to_bf16_bytes};
 
@@ -87,17 +87,34 @@ pub(super) fn load_shard_fast(
     let plan = PoolPlan::build(&tensors, opts.pooled_prefixes);
     let arenas = ShardArenas::alloc(gpu, &plan, tensors.len(), sink.pool_fallback_logged)?;
 
+    // Where do the bytes live? On a NETWORK mount O_DIRECT is the worst
+    // option available — it bypasses the page cache and makes every tensor a
+    // synchronous round trip — so the answer overrides the tensor-count
+    // heuristic below and turns the shard prefetch on whether or not the
+    // operator passed the flag. `None` = could not tell (non-Linux, statfs
+    // failed): change nothing, keep the flag-driven behaviour.
+    let net_fs = fs_probe::network_fs(shard_path).flatten();
+
     // Per-shard heuristic: above `direct_io_tensor_cap` tensors, O_DIRECT's
     // per-tensor syscall + 4 KiB alignment overhead costs more than kernel
     // readahead on the buffered path saves. Skip the direct-open attempt
     // entirely in that case — keeps the log clean and avoids a wasted fd.
-    let wants_direct = opts.try_direct_io && tensors.len() <= opts.direct_io_tensor_cap;
+    let under_cap = tensors.len() <= opts.direct_io_tensor_cap;
+    let wants_direct = opts.try_direct_io && under_cap && net_fs.is_none();
     if opts.try_direct_io && !wants_direct {
-        tracing::info!(
-            "  Shard has {} tensors (> {} cap) — using buffered+pipelined path",
-            tensors.len(),
-            opts.direct_io_tensor_cap
-        );
+        match net_fs {
+            Some(fs) if under_cap => tracing::info!(
+                "  Shard is on a {fs} mount — using buffered+pipelined path with \
+                 prefetch (O_DIRECT would bypass the page cache and make every \
+                 one of the {} tensors a network round trip)",
+                tensors.len(),
+            ),
+            _ => tracing::info!(
+                "  Shard has {} tensors (> {} cap) — using buffered+pipelined path",
+                tensors.len(),
+                opts.direct_io_tensor_cap
+            ),
+        }
     }
 
     // File for data reads. Try O_DIRECT; if it fails, fall through to buffered.
@@ -117,7 +134,10 @@ pub(super) fn load_shard_fast(
     };
     let buffered_file = File::open(shard_path)?;
     let data_fd = direct_file.as_ref().unwrap_or(&buffered_file);
-    if opts.prefetch_shards && !using_direct {
+    // Prefetch: requested, or implied by a network mount (that is what the
+    // flag was added for — this just stops it depending on the operator
+    // knowing where the checkpoint is mounted).
+    if (opts.prefetch_shards || net_fs.is_some()) && !using_direct {
         advise_prefetch_shard(&buffered_file, shard_path, file_size);
     }
 

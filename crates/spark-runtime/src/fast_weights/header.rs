@@ -128,9 +128,7 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             // Hadamard sign vectors, whose exact f16 bits are decode inputs:
             // rounding them to BF16 silently changes every reconstructed
             // weight. Those stay F16 in the store.
-            "F16" if crate::weights::exl3::is_exl3_f16_aux(name) => {
-                (WeightDtype::F16, false)
-            }
+            "F16" if crate::weights::exl3::is_exl3_f16_aux(name) => (WeightDtype::F16, false),
             "F16" => (WeightDtype::BF16, true),
             "U8" => (WeightDtype::UInt8, false),
             // I8 is a 1-byte raw container; DeepSeek-V4-Flash-NVFP4 ships its MTP

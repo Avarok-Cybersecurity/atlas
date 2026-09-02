@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod direct_io;
+mod fs_probe;
 mod header;
 mod pool;
 mod shard;
