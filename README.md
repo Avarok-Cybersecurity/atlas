@@ -588,8 +588,18 @@ of runners.
 needs two things. An **engineer's seal** — a codeowner comments `/seal`, and the
 sealers' owned paths must cover the whole diff. And **benchmark records** — the
 campaign runs on a real GPU box and the records are committed; CI only checks
-that they cover what changed. Records are Ed25519-signed against the commit that
-produced them, so one cannot be edited or re-pointed at another commit.
+that they cover what changed. Records are Ed25519-signed over their own bytes and
+the commit they name, and CI requires every record a PR adds to share one commit
+and one signer — so an altered record, one re-pointed at a different commit, or
+results spliced from two campaigns are all detectable, and every record is
+attributable to a key in `.github/record-signers/`.
+
+That is an integrity check, not proof the numbers were measured. The key is
+generated on the operator's own box and signing happens there, after the record
+is written, so a determined insider can sign whatever they like; CI has no GPU
+and verifies signatures and internal consistency rather than witnessing
+execution. What this makes nearly impossible is the *accident* — shipping the
+wrong records — and what it makes attributable is everything else.
 
 **Stage 3 — Ready to merge**, then the queue, which re-runs the whole pipeline
 against its own merge commit.

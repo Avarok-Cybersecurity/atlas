@@ -1099,6 +1099,24 @@ jobs:
             printf '  %-58s sha=%s signer=%s\n' "$f" "$s" "$k"
             shas+=("$s"); keys+=("$k")
           done
+          # A record this PR ADDS must carry a signature, full stop. The Rust
+          # gate exempts anything whose `recorded_at` predates the signing
+          # cutover -- but `recorded_at` is a field INSIDE the file being
+          # authenticated, so backdating it below the cutover skips the
+          # signature entirely. Verified by experiment: an unsigned record
+          # dated 1700000000 claiming 999 tok/s passes `--pull-request-gate-check`
+          # when it is the newest covering record. Grandfathering is for records
+          # already on the base branch; nothing a PR introduces is grandfathered,
+          # and git -- not the file's own contents -- decides which is which.
+          missing=()
+          for f in "${added[@]}"; do
+            [ -f "$f.sig" ] || missing+=("$f")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '  unsigned: %s\n' "${missing[@]}"
+            echo "::error title=Unsigned record added::${#missing[@]} record(s) added by this PR have no .json.sig. A record introduced by a PR is never exempt from signing, whatever its recorded_at says. Commit the sidecar the CLI wrote beside each record."
+            exit 1
+          fi
           us=$(printf '%s\n' "${shas[@]}" | sort -u | wc -l)
           uk=$(printf '%s\n' "${keys[@]}" | sort -u | wc -l)
           if [ "$us" -ne 1 ]; then
