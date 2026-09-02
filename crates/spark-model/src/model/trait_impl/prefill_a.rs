@@ -384,9 +384,10 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
-            // Marconi warm hit: GDN layers replay from a restored SSM state
-            // and must use the bit-faithful WY4 recurrence (see layer.rs).
-            gdn_exact_replay: marconi_skip,
+            // Cold and warm passes must take the SAME GDN recurrence kernel
+            // across a Marconi restore boundary, so this is NOT `marconi_skip`
+            // alone — see `crate::model::gdn_replay`.
+            gdn_exact_replay: self.gdn_exact_replay_for_prefill(marconi_skip),
             // Hash-MoE: token IDs for the `proc_count` tokens processed this
             // pass, in MoE-loop order (uploaded above to the stable buffer).
             token_ids: Some(self.buffers.token_ids()),

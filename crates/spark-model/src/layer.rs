@@ -323,14 +323,29 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
-    /// True when this prefill pass continues from a restored Marconi SSM
-    /// snapshot (warm prefix-cache hit). GDN layers must then take the
-    /// bit-faithful WY4 recurrence instead of the FLA chunked kernel: FLA's
-    /// chunk grid is anchored at the (arbitrary) snapshot offset and its
-    /// bf16 intermediates drift vs the pass that originally produced the
-    /// cached K/V, and the replay range [snap_tok, matched) is rewritten
-    /// into SHARED prefix-cache blocks — non-exact recompute poisons them
+    /// True when this prefill pass must take the TOKEN-SEQUENTIAL GDN
+    /// recurrence ladder (register-resident -> WY4 -> persistent -> split4)
+    /// instead of the FLA chunked kernel.
+    ///
+    /// The property at stake is decomposition invariance, not absolute
+    /// fidelity: FLA groups tokens into a 64-wide chunk grid anchored at the
+    /// START OF THE PASS, so its answer depends on where the prompt was cut,
+    /// while the token-sequential ladder carries H forward one token at a time
+    /// and does not. A warm Marconi replay cuts at the snapshot offset and a
+    /// cold prefill cuts at `prefill_chunk_dispatch`'s boundaries, so the two
+    /// only agree if both take the invariant kernel. Measured cold-vs-warm on
+    /// qwen3.8-flash-next: with the kernels SPLIT the recurrence output
+    /// diverges by 3.045e-03 relative at layer 0 from bit-identical inputs;
+    /// with both on the token-sequential ladder all 420 tapped activation
+    /// points are bit-identical.
+    ///
+    /// It also matters that the replay range [snap_tok, matched) is rewritten
+    /// into SHARED prefix-cache blocks, so a non-exact recompute poisons them
     /// and the drift ratchets across turns (2026-06-10 warm-hit stutter).
+    ///
+    /// Prefill callers must set this from
+    /// `TransformerModel::gdn_exact_replay_for_prefill`, never from
+    /// `marconi_skip` alone. See `crate::model::gdn_replay`.
     pub gdn_exact_replay: bool,
     /// Device `[num_tokens]` u32 token IDs for the tokens being processed this
     /// pass, in the SAME order the per-token MoE loop visits them. Required by
