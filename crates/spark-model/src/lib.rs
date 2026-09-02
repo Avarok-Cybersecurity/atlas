@@ -31,6 +31,7 @@ pub mod preflight;
 pub mod quant_format;
 mod rank_agree;
 pub mod speculative;
+pub mod seq_state_reserve;
 pub mod ssm_reserve;
 pub mod tp_shard;
 pub mod traits;

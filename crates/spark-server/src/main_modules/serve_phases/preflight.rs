@@ -8,8 +8,9 @@ use atlas_core::config::ModelConfig;
 
 use crate::cli;
 
+mod per_sequence_state;
 mod ssm_h_fp16;
-use ssm_h_fp16::ssm_h_fp16_preconditions;
+use {per_sequence_state::per_sequence_reserve, ssm_h_fp16::ssm_h_fp16_preconditions};
 
 pub(crate) struct ReservePreflight {
     pub(crate) inference_reserve: usize,
@@ -238,7 +239,8 @@ pub(crate) fn preflight_reserve(
         + ssm_replay_ring
         + ssm_snapshot_bytes
         + gdn_two_phase_bytes
-        + cuda_headroom;
+        + cuda_headroom
+        + per_sequence_reserve(args, config);
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
