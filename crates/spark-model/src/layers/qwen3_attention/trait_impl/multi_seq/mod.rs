@@ -18,6 +18,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::{ForwardContext, LayerState};
+use crate::layers::hc_ffn_plan::{HcFfnPlan, hc_ffn_plan};
 use crate::layers::ops;
 
 mod attn;
@@ -388,27 +389,58 @@ impl Qwen3AttentionLayer {
                 .copy_d2d_async(c.hidden, c.normed, n * h * 2, stream)?;
         }
 
-        // Per-token sequential FFN (MLA models always take this path).
-        for i in 0..n {
-            let normed2_i = c.normed.offset(i * c.h * c.bf16);
-            let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
-            // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
-            let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
-            let post_i = post.offset(i * hc.hc_mult * 4);
-            let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
+        // FFN + hc_post. ONE n-row dispatch when the batched plan applies
+        // (#753 item B follow-up: the per-row loop below ran the dominant part
+        // of the step n times, so decode scaled linearly with C); otherwise the
+        // per-token sequential loop — MLA models, C=1 and the
+        // `hc_batched_moe_decode` kill switch always take that one.
+        //
+        // MLA is excluded for the same reason `ms_phase_ffn`'s `force_seq_ffn`
+        // excludes it: the batched-MoE kernels have a pre-existing illegal
+        // address on Mistral-Small-4's MoE config, and DeepSeek-V4 (MLA + mHC)
+        // reaches this body. Only the qwen4_exp/GDN family changes shape here.
+        let batched_ok = ctx.config.hc_batched_moe_decode && self.mla.is_none();
+        let plan = hc_ffn_plan(n, !self.ffn.is_none(), batched_ok, false);
+        if plan == HcFfnPlan::Batched {
+            // Writes moe_output()[0..n); one EP all-reduce for the batch.
+            self.ffn
+                .forward_token_major_decode(c.normed, n, ctx, stream)?;
             ops::hc_post_site(
                 ctx.gpu,
                 self.hc_post_k,
                 hc,
-                moe_out,
-                hc_streams_i,
-                post_i,
-                comb_i,
-                hc_streams_i,
-                1,
+                ctx.buffers.moe_output(),
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                n as u32,
                 h as u32,
                 stream,
             )?;
+        } else {
+            // Per-token sequential FFN (MLA models always take this path).
+            for i in 0..n {
+                let normed2_i = c.normed.offset(i * c.h * c.bf16);
+                let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
+                // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
+                let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
+                let post_i = post.offset(i * hc.hc_mult * 4);
+                let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
+                ops::hc_post_site(
+                    ctx.gpu,
+                    self.hc_post_k,
+                    hc,
+                    moe_out,
+                    hc_streams_i,
+                    post_i,
+                    comb_i,
+                    hc_streams_i,
+                    1,
+                    h as u32,
+                    stream,
+                )?;
+            }
         }
         if diag_this {
             super::diag_norm_f32(

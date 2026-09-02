@@ -1,0 +1,108 @@
+### ARM=A0_control EXTRA_ARGS='--hc-per-row-moe-decode' ATLAS_QSA_HOST_TOPK=1
+               total        used        free      shared  buff/cache   available
+Mem:             121          13          85           0          24         107
+Swap:             31           1          30
+READY after 53s
+--- arm evidence ---
+1
+=== C=1 SMOKE ===
+=== smoke 1: 2+2 ===
+4
+=== smoke 2: textile sentence ===
+The textile industry was the first to use modern production methods.
+=== smoke 3: planets ===
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+=== SMOKE_DONE ===
+=== SWEEP isl=1024 osl=256 (log line mark 648) ===
+distinct-prompt bench isl=1024 osl=256 concs=[1, 2, 4, 8]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  1   11.2t     50.9m     50.9m     8303m     2414m     12.7   216
+  2   13.6t     75.2m     75.2m    18121m     2380m      8.1   492
+  4   15.1t    145.3m    145.3m    24862m     2366m      4.6   896
+  8   16.2t    296.2m    297.9m    47028m     2344m      2.3  1986
+=== SERVER STEP MEDIANS (since sweep start) ===
+   n   steps    p50_ms    p90_ms
+   2     235     126.7     128.5
+   4     210     218.9     221.7
+   6      23     406.6     410.8
+   7      11     411.0     412.7
+   8     217     406.6     410.6
+TOTAL_BATCH_LINES 703
+=== COHERENCE C=4 ===
+[slot 0] PASS expect='4' bleed=none
+  Q: Session AAA. What is 2+2? Answer with just the number.
+  A: 4
+----------------------------------------------------------------------
+[slot 1] PASS expect='paris' bleed=none
+  Q: Session BBB. Name the capital of France. Answer with just the city name.
+  A: Paris
+----------------------------------------------------------------------
+[slot 2] PASS expect='2, 3, 5, 7, 11' bleed=none
+  Q: Session CCC. Write the first 5 prime numbers separated by commas.
+  A: 2, 3, 5, 7, 11
+----------------------------------------------------------------------
+[slot 3] PASS expect='dog' bleed=none
+  Q: Session DDD. Complete with one word: 'The quick brown fox jumps over the lazy ___'
+  A: dog
+----------------------------------------------------------------------
+PROBE_RESULT 4/4 correct
+=== COHERENCE C=8 ===
+[slot 0] PASS expect='4' bleed=none
+  Q: Session AAA. What is 2+2? Answer with just the number.
+  A: 4
+----------------------------------------------------------------------
+[slot 1] PASS expect='paris' bleed=none
+  Q: Session BBB. Name the capital of France. Answer with just the city name.
+  A: Paris
+----------------------------------------------------------------------
+[slot 2] PASS expect='2, 3, 5, 7, 11' bleed=none
+  Q: Session CCC. Write the first 5 prime numbers separated by commas.
+  A: 2, 3, 5, 7, 11
+----------------------------------------------------------------------
+[slot 3] PASS expect='dog' bleed=none
+  Q: Session DDD. Complete with one word: 'The quick brown fox jumps over the lazy ___'
+  A: dog
+----------------------------------------------------------------------
+[slot 4] PASS expect='42' bleed=['4']
+  Q: Session EEE. What is 7 times 6? Answer with just the number.
+  A: 42
+----------------------------------------------------------------------
+[slot 5] PASS expect='jupiter' bleed=none
+  Q: Session FFF. Name the largest planet in our solar system. One word.
+  A: Jupiter
+----------------------------------------------------------------------
+[slot 6] PASS expect='green' bleed=none
+  Q: Session GGG. What colour do you get mixing blue and yellow? One word.
+  A: Green
+----------------------------------------------------------------------
+[slot 7] PASS expect='366' bleed=none
+  Q: Session HHH. How many days are in a leap year? Just the number.
+  A: 366
+----------------------------------------------------------------------
+PROBE_RESULT 8/8 correct
+=== LONGCTX C=1 ===
+[slot 0] tag=ALPHA expect=48213 FAIL prompt_tokens=3839 bleed=none digest=e3b0c44298fc1c14
+  A: 
+LONGCTX_RESULT 0/1 correct
+=== LONGCTX C=4 ===
+[slot 0] tag=ALPHA expect=48213 FAIL prompt_tokens=3839 bleed=none digest=e3b0c44298fc1c14
+  A: 
+[slot 1] tag=BRAVO expect=75946 PASS prompt_tokens=3844 bleed=none digest=60fc4feb106c0dc5
+  A: 75946
+[slot 2] tag=CHARLIE expect=31807 PASS prompt_tokens=3847 bleed=none digest=89055a456e34e0e1
+  A: 31807
+[slot 3] tag=DELTA expect=62590 PASS prompt_tokens=3841 bleed=none digest=1fabeafc4e230fee
+  A: 62590
+LONGCTX_RESULT 3/4 correct
+=== LONGCTX PERF isl=4096 osl=64 C=4 (log mark 1966) ===
+distinct-prompt bench isl=4096 osl=64 concs=[4]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  4    4.0t     40.8m     40.8m    60844m    10911m      2.0   256
+--- step medians during longctx perf ---
+no ATLAS_DECODE_BATCH lines
+=== ARM A0_control DONE ===

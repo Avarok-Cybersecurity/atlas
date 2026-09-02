@@ -18,9 +18,10 @@
 //!                            reuses moe_output[0] every call)
 //!   hc_post [N]  <- norm_output rows
 //!   hc_pre  [N]  -> mixed rows in norm_output (the MoE input rows)
-//!   MoE: forward_k2/k3 at N=2/3 (rows in moe_output), else a per-row
-//!        loop staged into `hidden` rows (the mixed GDN inputs are dead
-//!        by then)
+//!   MoE: forward_k2 at N=2, one n-row forward_token_major_decode above
+//!        that (rows in moe_output); N=1 and the `hc_batched_moe_decode`
+//!        kill switch keep the per-row loop staged into `hidden` rows
+//!        (the mixed GDN inputs are dead by then)
 //!   hc_post [N]
 //!
 //! The batched-GEMM projection lever (`try_decode_multi_seq_ssm_batched`)
@@ -33,6 +34,7 @@ use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3SsmLayer;
 use crate::layer::{ForwardContext, LayerState, SsmLayerState};
+use crate::layers::hc_ffn_plan::{HcFfnPlan, hc_ffn_plan};
 use crate::layers::ops;
 
 impl Qwen3SsmLayer {
@@ -192,16 +194,34 @@ impl Qwen3SsmLayer {
             eps,
             stream,
         )?;
-        let moe_rows = match n {
-            2 => {
+        let plan = hc_ffn_plan(
+            n,
+            !self.ffn.is_none(),
+            ctx.config.hc_batched_moe_decode,
+            true,
+        );
+        let moe_rows = match plan {
+            // No FFN on this layer: the mixed rows ARE the output, exactly as
+            // the per-row `FfnComponent::forward` (returns its input) left them.
+            HcFfnPlan::Passthrough => normed,
+            // n == 2 keeps the shipping fused pair kernel — byte-identical.
+            HcFfnPlan::FusedK2 => {
                 self.ffn.forward_k2(normed, ctx, stream)?;
                 moe_out
             }
-            3 => {
-                self.ffn.forward_k3(normed, ctx, stream)?;
+            // ONE n-row dispatch for the whole batch (#753 item B follow-up).
+            // `forward_token_major_decode` delegates per arm — EXL3 native,
+            // NVFP4 token-major, LoRA/FP8/BF16/T-layout via forward_batched,
+            // dense FFN via forward_batched — and issues exactly one EP
+            // all-reduce over all n rows. The n == 3 `forward_k3` arm is gone:
+            // `padded_batch_n` (traits/model.rs) maps 3 to 4, so it was dead,
+            // and this arm is correct for every n regardless.
+            HcFfnPlan::Batched => {
+                self.ffn
+                    .forward_token_major_decode(normed, n, ctx, stream)?;
                 moe_out
             }
-            _ => {
+            HcFfnPlan::PerRow => {
                 // Per-row loop; stage into `hidden` rows (the mixed GDN
                 // inputs there are dead once the recurrence loop above ran).
                 for i in 0..n {
