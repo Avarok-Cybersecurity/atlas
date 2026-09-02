@@ -100,7 +100,7 @@ pub(super) fn bench_hints(app: &App) -> &'static str {
     if app.bench_sub == BenchSub::History {
         // PgUp/PgDn named or it does not exist: it is the one binding here a
         // user cannot guess from the run list.
-        return "j/k run · PgUp/PgDn table · ⇥ Suite↔History · ? help";
+        return "j/k run · PgUp/PgDn table · c card · ⇥ Suite↔History · ? help";
     }
     match (app.bench.view, app.bench.editing) {
         // PgUp/PgDn named for the same reason the History footer names it:

@@ -328,18 +328,21 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     // record whose commit is unrelated, or was invalidated since, is skipped
     // rather than failed — the branch's current word is the newest one still
     // valid, and an old clean record is better than none.
-    let mut covered: Option<GateRecord> = None;
+    // The PATH travels with the record: the signature lives in a sidecar beside
+    // it, and re-deriving that path from the record would be wrong — the variant
+    // filename depends on the baseline, not on the record alone.
+    let mut covered: Option<(GateRecord, std::path::PathBuf)> = None;
     for path in &paths {
         if let Ok(record) = read_record(path)
             && record_is_for(&record, benchmark_id, path)
             && record_is_required_subject(&baseline, &record, benchmark_id, path)
             && record_still_stands(root, sha, &record, gate)
         {
-            covered = Some(record);
+            covered = Some((record, path.clone()));
             break;
         }
     }
-    let Some(record) = covered else {
+    let Some((record, record_path)) = covered else {
         let newest = read_record(&paths[0]).ok();
         return GateStatus::Missing(match newest {
             // ★ Name the files that invalidated it. "does not cover this
@@ -397,11 +400,11 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
                     let targets =
                         super::closure::changed_targets(root, &why, &newest_record.closure);
                     match targets.len() {
-                        0 => format!("invalidated by {}", summarize_paths(&why)),
+                        0 => format!("invalidated by {}", super::check_fmt::summarize_paths(&why)),
                         n => format!(
                             "invalidated by {} — device code changed for {n} target(s): {}",
-                            summarize_paths(&why),
-                            summarize_paths(&targets)
+                            super::check_fmt::summarize_paths(&why),
+                            super::check_fmt::summarize_paths(&targets)
                         ),
                     }
                 };
@@ -448,27 +451,18 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     if let Some(breaches) = check_record(&record, &baseline) {
         problems.extend(breaches);
     }
+    // ★ FAIL, not skip — see `signing::verify_record`, which states why, and
+    // why records before the cutover are exempt.
+    if let Err(why) =
+        super::signing::verify_record(root, &record_path, &record.git_sha, record.recorded_at)
+    {
+        problems.push(format!("{why}"));
+    }
     if problems.is_empty() {
         GateStatus::Pass
     } else {
         GateStatus::Fail(problems)
     }
-}
-
-/// Render invalidating paths for a one-line message: a few names, then a count.
-///
-/// A refactor can touch hundreds of files, and pasting all of them buries the
-/// verdict it is attached to.
-fn summarize_paths(paths: &[String]) -> String {
-    const SHOWN: usize = 3;
-    if paths.len() <= SHOWN {
-        return paths.join(", ");
-    }
-    format!(
-        "{} and {} more",
-        paths[..SHOWN].join(", "),
-        paths.len() - SHOWN
-    )
 }
 
 /// The exit code, as a function of the VERDICTS ALONE.

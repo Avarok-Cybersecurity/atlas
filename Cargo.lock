@@ -168,6 +168,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "parking_lot",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

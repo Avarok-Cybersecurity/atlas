@@ -35,3 +35,23 @@ impl BenchState {
         )
     }
 }
+
+impl BenchState {
+    /// `c` in History — write a result card for the selected run.
+    ///
+    /// Reports through `status` rather than a modal: it is a one-line outcome,
+    /// and the path is the only thing the operator needs next.
+    pub fn export_card(&mut self) -> crate::tui::bench_keys::Outcome {
+        let Some(run) = self.history.get(self.history_row) else {
+            return crate::tui::bench_keys::Outcome::None;
+        };
+        self.status =
+            match crate::cli::bench_card::render_card_for_benchmark(&run.benchmark_id, None) {
+                Ok(path) => format!("card written to {}", path.display()),
+                // The common cause is a benchmark that has never been committed as a
+                // gate record — say that, rather than "failed".
+                Err(e) => format!("no card: {e}"),
+            };
+        crate::tui::bench_keys::Outcome::None
+    }
+}
