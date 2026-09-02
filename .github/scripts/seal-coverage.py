@@ -73,7 +73,8 @@ def owners_of(rules, path):
 def main():
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
-    rules = parse(open(sys.argv[1], encoding="utf-8").read())
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        rules = parse(fh.read())
     sealers = {s.strip().lstrip("@").lower() for s in sys.argv[2].split(",") if s.strip()}
     paths = [l.strip() for l in sys.stdin if l.strip()]
 
