@@ -32,6 +32,26 @@
 // padding, and was measured 3.6x SLOWER than the batched GEMV on this exact
 // workload (see the note in multi_seq/qkv.rs::wide_verify_gemm).
 //
+// THE A TILE LIVES IN SHARED MEMORY. The four output groups in a block walk the
+// SAME `kv` sequence, so each of them was re-reading identical `A[t][kv]` — 4x
+// redundant, and at M=8 that is EIGHT activation loads issued per ONE weight load.
+// While `m * K * 2` fits L1 those hit cache and cost only issue slots; once it
+// overflows L1 they all fall to L2 and the kernel becomes L2-bound rather than
+// DRAM-bound, which is where the measured bandwidth collapses (145 GB/s at
+// N=4096 K=16384 against 213 GB/s at K=3072 on the same part). Staging the tile
+// once per block per 64-`kv` chunk removes both effects.
+//
+// 🪤 This does NOT touch the arithmetic. Same `kv` order per row, same lo-then-hi
+// add order, same 64-thread stride, same warp-shuffle tree, same 2-warp fold —
+// the values reaching the FMUL/FADD chain are the same bits, just fetched
+// differently. Measured bit-identical to the previous revision on 64 (N, K)
+// shapes and on M = 1..8 (`scripts/glm53-dense-bf16/bench_dense_bf16.cu`,
+// spark-bench). Measured 1.02-1.50x depending on shape; 1.12x weighted by the
+// 9000-token GLM prefill's own launch histogram.
+//
+// 🪤 The old `if (n >= N) return;` is now a mask, not a return: threads in a
+// partial last block have to reach the staging barriers with everyone else.
+//
 // Grid: (ceil(N / 4), 1, 1)   Block: (256, 1, 1)
 
 #include <cuda_bf16.h>
@@ -56,7 +76,9 @@ extern "C" __global__ void dense_gemv_bf16_batchm(
     const unsigned int lane = threadIdx.x % threads_per_out;
 
     const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
-    if (n >= N) return;
+    // 🪤 NOT a return: the staging loop below has __syncthreads(), so every thread
+    // in a partial last block must stay to reach them.
+    const bool active = (n < N);
 
     const unsigned int m = (M > MAX_M) ? MAX_M : M;
 
@@ -65,43 +87,66 @@ extern "C" __global__ void dense_gemv_bf16_batchm(
     for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
 
     const unsigned int K_VEC = K / VEC_SIZE;
-    const uint4* B_vec = (const uint4*)(B + (unsigned long long)n * K);
+    const uint4* B_vec = (const uint4*)(B + (unsigned long long)(active ? n : 0) * K);
 
-    for (unsigned int kv = lane; kv < K_VEC; kv += threads_per_out) {
-        // ONE weight load feeds every row — this is the whole point.
-        uint4 b_data = B_vec[kv];
-        const unsigned int b_raw[4] = {b_data.x, b_data.y, b_data.z, b_data.w};
+    // One 64-kv slab of every A row, shared by all four output groups. 8 KB at
+    // MAX_M = 8, so it never limits occupancy (100 KB/SM on GB10).
+    __shared__ uint4 As[MAX_M][BLOCK_SIZE / N_PER_BLOCK];
 
-        float bf[8];
-        #pragma unroll
-        for (int i = 0; i < 4; i++) {
-            __nv_bfloat16 b_lo, b_hi;
-            *(unsigned short*)&b_lo = (unsigned short)(b_raw[i] & 0xFFFF);
-            *(unsigned short*)&b_hi = (unsigned short)(b_raw[i] >> 16);
-            bf[2 * i] = __bfloat162float(b_lo);
-            bf[2 * i + 1] = __bfloat162float(b_hi);
+    for (unsigned int base = 0; base < K_VEC; base += threads_per_out) {
+        // Cooperative stage: 256 threads fetch m x 64 uint4 once for the block.
+        for (unsigned int idx = threadIdx.x; idx < m * threads_per_out; idx += BLOCK_SIZE) {
+            const unsigned int t = idx / threads_per_out;
+            const unsigned int l = idx % threads_per_out;
+            const unsigned int kv = base + l;
+            if (kv < K_VEC) {
+                As[t][l] = ((const uint4*)(A + (unsigned long long)t * K))[kv];
+            }
         }
+        __syncthreads();
 
-        for (unsigned int t = 0; t < m; t++) {
-            const uint4* At_vec = (const uint4*)(A + (unsigned long long)t * K);
-            uint4 a_data = At_vec[kv];
-            const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
-            float a = acc[t];
+        const unsigned int kv = base + lane;
+        if (kv < K_VEC && active) {
+            // ONE weight load feeds every row — this is the whole point.
+            uint4 b_data = B_vec[kv];
+            const unsigned int b_raw[4] = {b_data.x, b_data.y, b_data.z, b_data.w};
+
+            float bf[8];
             #pragma unroll
             for (int i = 0; i < 4; i++) {
-                __nv_bfloat16 a_lo, a_hi;
-                *(unsigned short*)&a_lo = (unsigned short)(a_raw[i] & 0xFFFF);
-                *(unsigned short*)&a_hi = (unsigned short)(a_raw[i] >> 16);
-                // Same add order as dense_gemv_bf16: lo then hi, per vector slot.
-                a += __bfloat162float(a_lo) * bf[2 * i];
-                a += __bfloat162float(a_hi) * bf[2 * i + 1];
+                __nv_bfloat16 b_lo, b_hi;
+                *(unsigned short*)&b_lo = (unsigned short)(b_raw[i] & 0xFFFF);
+                *(unsigned short*)&b_hi = (unsigned short)(b_raw[i] >> 16);
+                bf[2 * i] = __bfloat162float(b_lo);
+                bf[2 * i + 1] = __bfloat162float(b_hi);
             }
-            acc[t] = a;
+
+            for (unsigned int t = 0; t < m; t++) {
+                uint4 a_data = As[t][lane];
+                const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
+                float a = acc[t];
+                #pragma unroll
+                for (int i = 0; i < 4; i++) {
+                    __nv_bfloat16 a_lo, a_hi;
+                    *(unsigned short*)&a_lo = (unsigned short)(a_raw[i] & 0xFFFF);
+                    *(unsigned short*)&a_hi = (unsigned short)(a_raw[i] >> 16);
+                    // Same add order as dense_gemv_bf16: lo then hi, per vector slot.
+                    a += __bfloat162float(a_lo) * bf[2 * i];
+                    a += __bfloat162float(a_hi) * bf[2 * i + 1];
+                }
+                acc[t] = a;
+            }
         }
+        // Before the next slab overwrites what the compute above is still reading.
+        __syncthreads();
     }
 
     // Scalar tail for K not divisible by VEC_SIZE (never hits for model dims).
-    {
+    // 🪤 Unreachable in practice for a different reason than the comment implies:
+    // the `(const uint4*)` casts above already fault on a K that is not a multiple
+    // of VEC_SIZE. Reproduced on the UNMODIFIED kernel at N=4096 K=3073
+    // ("misaligned address"), so this is pre-existing, not a property of staging.
+    if (active) {
         const unsigned int tail_start = K_VEC * VEC_SIZE;
         const __nv_bfloat16* B_row = B + (unsigned long long)n * K;
         for (unsigned int k = tail_start + lane; k < K; k += threads_per_out) {
@@ -111,6 +156,8 @@ extern "C" __global__ void dense_gemv_bf16_batchm(
             }
         }
     }
+
+    if (!active) return;
 
     const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
 
