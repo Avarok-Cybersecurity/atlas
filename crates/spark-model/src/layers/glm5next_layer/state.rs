@@ -62,5 +62,9 @@ pub fn alloc_kda_ssm_state(
         conv_state_intermediates: Vec::new(),
         h_is_f16: false,
         h_prefill_stage: None,
+        // GLM-5.3 hosts no `PleLayer` (its linear-attention block is KDA), so
+        // there is no PLE per-sequence carry to hold. Upstream #753 item B
+        // added this field; `None` is the correct answer, not a placeholder.
+        ple: None,
     })
 }

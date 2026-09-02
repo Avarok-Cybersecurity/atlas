@@ -143,31 +143,6 @@ impl FastSafetensorsLoader {
         }
     }
 
-    fn should_skip_tensor(&self, name: &str) -> bool {
-        // Checked before the EP short-circuit: a text-only port skips the
-        // vision tower at tp/ep 1 too.
-        if self.skip_vision && is_vision_tensor(name) {
-            return true;
-        }
-        if self.ep_world_size <= 1 {
-            return false;
-        }
-        if name.starts_with("mtp.") {
-            return false;
-        }
-        if let Some(idx) = parse_expert_index(name) {
-            let per_rank = self.num_experts / self.ep_world_size;
-            let local_start = self.ep_rank * per_rank;
-            let local_end = if self.ep_rank == self.ep_world_size - 1 {
-                self.num_experts
-            } else {
-                local_start + per_rank
-            };
-            idx < local_start || idx >= local_end
-        } else {
-            false
-        }
-    }
 }
 
 impl WeightLoader for FastSafetensorsLoader {
