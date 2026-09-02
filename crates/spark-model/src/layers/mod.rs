@@ -7,6 +7,7 @@ pub mod ep_dispatch;
 pub mod exl3_dense;
 pub mod fp8_calibration;
 mod gemv_tier;
+pub mod hc_ffn_plan;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;

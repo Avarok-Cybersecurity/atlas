@@ -604,6 +604,21 @@ pub(crate) fn load_model(
     // listener, the TUI thread, the OOM watchdog), and a concurrent getenv
     // during setenv is UB.
     config.profile = args.profile;
+    // Operator kill switch for the batched mHC decode MoE FFN. Only ever
+    // turns the batching OFF, so a model config that already disabled it stays
+    // disabled when the flag is absent.
+    if args.hc_per_row_moe_decode {
+        config.hc_batched_moe_decode = false;
+    }
+    tracing::info!(
+        "mHC decode MoE FFN: {} (hc_batched_moe_decode={})",
+        if config.hc_batched_moe_decode {
+            "BATCHED — one n-row dispatch per layer per step"
+        } else {
+            "per-sequence loop (kill switch engaged)"
+        },
+        config.hc_batched_moe_decode,
+    );
     serve_phases::cap_vocab_size_to_tokenizer(&model_dir, &mut config);
     let serve_phases::KvCacheConfig {
         effective_kv_dtype_str: _,

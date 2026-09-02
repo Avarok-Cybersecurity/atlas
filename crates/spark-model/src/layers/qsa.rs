@@ -19,16 +19,24 @@
 //! inert bound still run dense (a one-time WARN documents the divergence;
 //! per-query prefill selection is stage 2). Single sequence, BF16 KV only.
 //!
-//! CUDA graphs: selection does a host top-k on the scores (D2H), which can
-//! never sit inside a captured graph — a layer carrying an indexer vetoes
-//! decode-graph capture entirely (graphs measured speed-NEUTRAL on GB10, so
-//! this costs nothing).
+//! DEVICE SELECTION: both the prefill and the decode selection run entirely
+//! on the stream — score, radix top-k (`qsa_topk_rows`), ascending sort +
+//! expansion (`qsa_expand_sel`) — with no host transfer on the path. The
+//! decode tail lives in `qsa_decode.rs`; `ATLAS_QSA_HOST_TOPK=1` forces the
+//! original host implementation for A/B.
+//!
+//! CUDA graphs: a layer carrying an indexer still vetoes decode-graph capture
+//! (`qwen3_attention/trait_impl.rs`). That veto now costs nothing to keep and
+//! nothing to lift — graphs measured speed-NEUTRAL on GB10 — so it stays
+//! until something actually wants capture back.
 
 use anyhow::{Context, Result};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use crate::layers::ops;
 
+#[path = "qsa_decode.rs"]
+mod qsa_decode;
 #[path = "qsa_select.rs"]
 mod qsa_select;
 #[path = "qsa_snapshot.rs"]
@@ -87,12 +95,17 @@ pub struct QsaIndexer {
     /// Tensor-core split-q scorer. `try_kernel` — absent on any target
     /// whose shadow predates it, which falls back to the scalar path.
     k_score_rows_tc_k: KernelHandle,
+    k_topk_rows_k: KernelHandle,
+    /// Decode sort+expand. `try_kernel` — a target whose shadow predates it
+    /// falls back to the host selection tail.
+    k_expand_sel_k: KernelHandle,
     k_prefill_attn_k: KernelHandle,
 
     qk_scratch: DevicePtr, // [INGEST_SLAB, (n_heads+1)*hd] BF16
     q_post: DevicePtr,     // [n_heads, hd] F32
     scores_dev: DevicePtr, // [max_tokens/ratio] F32
     sel_dev: DevicePtr,    // [budget + ratio] i32
+    lists_dev: DevicePtr,  // [block_topk] i32 — device top-k output
     k_scratch: DevicePtr,  // [budget+ratio, nkv_attn, hd_attn] BF16
     v_scratch: DevicePtr,
     table_dev: DevicePtr,   // [ceil((budget+ratio)/8)] i32 (any block_size >= 8)
@@ -158,11 +171,14 @@ impl QsaIndexer {
             k_qprep_rows_k: gpu.kernel("qsa_indexer", "qsa_qprep_rows")?,
             k_score_rows_k: gpu.kernel("qsa_indexer", "qsa_score_rows")?,
             k_score_rows_tc_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_score_rows_tc"),
+            k_topk_rows_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_topk_rows"),
+            k_expand_sel_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_expand_sel"),
             k_prefill_attn_k: gpu.kernel("qsa_indexer", "qsa_prefill_attn")?,
             qk_scratch: gpu.alloc(INGEST_SLAB * qk_width * 2)?,
             q_post: gpu.alloc(n_heads * hd * 4)?,
             scores_dev: gpu.alloc(max_tokens / ratio * 4)?,
             sel_dev: gpu.alloc(sel_cap * 4)?,
+            lists_dev: gpu.alloc(block_topk * 4)?,
             k_scratch: gpu.alloc(sel_cap * nkv_attn * hd_attn * 2)?,
             v_scratch: gpu.alloc(sel_cap * nkv_attn * hd_attn * 2)?,
             table_dev: gpu.alloc(sel_cap.div_ceil(8) * 4)?,
@@ -215,6 +231,17 @@ impl QsaIndexer {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Is stage-2 prefill selection actually going to run?
+    ///
+    /// Mirrors the `ATLAS_QSA_NO_PREFILL_SELECT` kill switch inside
+    /// `prefill_select`. A caller that skips the dense pass because stage 2
+    /// will overwrite it MUST consult this — with the switch set, stage 2
+    /// returns early and skipped rows would be left uninitialised.
+    pub fn prefill_select_active(&self) -> bool {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        !*OFF.get_or_init(|| std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
     }
 
     pub fn inert_bound(&self) -> usize {
@@ -398,41 +425,17 @@ impl QsaIndexer {
             stream,
         )?;
 
-        // Host top-k over the block scores (D2H — decode graphs are vetoed
-        // whenever an indexer is present, so this is never inside a capture).
-        let mut raw = vec![0u8; complete * 4];
-        gpu.copy_d2h_on_stream(self.scores_dev, &mut raw, stream)?;
-        let scores: Vec<f32> = raw
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let mut order: Vec<u32> = (0..complete as u32).collect();
-        // torch.topk returns the k largest, ties broken by LOWER index —
-        // sort by (-score, index) and take the first k for identical sets.
-        order.sort_by(|&a, &b| {
-            scores[b as usize]
-                .partial_cmp(&scores[a as usize])
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
-        let mut blocks: Vec<u32> = order[..self.block_topk as usize].to_vec();
-        blocks.sort_unstable();
-
-        let ratio = self.ratio as usize;
-        let mut sel: Vec<i32> = Vec::with_capacity(self.budget as usize + ratio);
-        for b in &blocks {
-            let base = *b as i32 * self.ratio as i32;
-            for r in 0..self.ratio as i32 {
-                sel.push(base + r);
-            }
-        }
-        for t in complete * ratio..visible {
-            sel.push(t as i32);
-        }
-        let n_sel = sel.len() as u32;
-
-        let sel_bytes: Vec<u8> = sel.iter().flat_map(|v| v.to_le_bytes()).collect();
-        gpu.copy_h2d_async(&sel_bytes, self.sel_dev, stream)?;
+        // Top-k -> ascending block ids -> the expanded token-index array,
+        // plus `seq_len_dev` and the identity table. On device by default and
+        // transfer-free; see `qsa_decode.rs`.
+        let n_sel = self.decode_build_sel(
+            &mut st.table_len,
+            complete,
+            visible,
+            block_size,
+            gpu,
+            stream,
+        )?;
         ops::qsa_gather(
             gpu,
             self.k_gather_k,
@@ -449,14 +452,9 @@ impl QsaIndexer {
             stream,
         )?;
 
-        // Identity table + seq_len for the scratch-as-paged-cache view.
+        // `table_dev` / `seq_len_dev` — the scratch-as-paged-cache view — are
+        // written by the selection tail above.
         let pages = (n_sel as usize).div_ceil(block_size as usize);
-        if st.table_len < pages {
-            let ident: Vec<u8> = (0..pages as i32).flat_map(|v| v.to_le_bytes()).collect();
-            gpu.copy_h2d_async(&ident, self.table_dev, stream)?;
-            st.table_len = pages;
-        }
-        gpu.copy_h2d_async(&(n_sel as i32).to_le_bytes(), self.seq_len_dev, stream)?;
 
         Ok(Some(QsaSelection {
             k_scratch: self.k_scratch,

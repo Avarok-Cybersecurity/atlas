@@ -1,0 +1,89 @@
+### ARM=A1_hc EXTRA_ARGS='' ATLAS_QSA_HOST_TOPK=1
+               total        used        free      shared  buff/cache   available
+Mem:             121          92           6           0          25          28
+Swap:             31           1          30
+READY after 56s
+--- arm evidence ---
+1
+=== C=1 SMOKE ===
+=== smoke 1: 2+2 ===
+4
+=== smoke 2: textile sentence ===
+The textile industry was the first to use modern production methods.
+=== smoke 3: planets ===
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+=== SMOKE_DONE ===
+=== SWEEP isl=1024 osl=256 (log line mark 648) ===
+distinct-prompt bench isl=1024 osl=256 concs=[1, 2, 4, 8]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  1   11.1t     52.5m     52.5m     7898m     2444m     12.7   211
+  2   13.3t     62.4m     62.4m    12142m     2422m      9.9   374
+  4   20.2t     82.5m     85.0m    18221m     2398m      6.9   795
+  8   33.1t    115.8m    118.4m    29914m     2330m      5.3  1968
+=== SERVER STEP MEDIANS (since sweep start) ===
+   n   steps    p50_ms    p90_ms
+   2     126     104.6     106.2
+   3     106     123.6     124.8
+   4     103     121.9     124.5
+   6      35     157.8     163.8
+   7       6     160.5     165.3
+   8     210     158.9     162.9
+TOTAL_BATCH_LINES 594
+=== COHERENCE C=4 ===
+[slot 0] PASS expect='4' bleed=none
+  Q: Session AAA. What is 2+2? Answer with just the number.
+  A: 4
+----------------------------------------------------------------------
+[slot 1] PASS expect='paris' bleed=none
+  Q: Session BBB. Name the capital of France. Answer with just the city name.
+  A: Paris
+----------------------------------------------------------------------
+[slot 2] PASS expect='2, 3, 5, 7, 11' bleed=none
+  Q: Session CCC. Write the first 5 prime numbers separated by commas.
+  A: 2, 3, 5, 7, 11
+----------------------------------------------------------------------
+[slot 3] PASS expect='dog' bleed=none
+  Q: Session DDD. Complete with one word: 'The quick brown fox jumps over the lazy ___'
+  A: dog
+----------------------------------------------------------------------
+PROBE_RESULT 4/4 correct
+=== COHERENCE C=8 ===
+[slot 0] PASS expect='4' bleed=none
+  Q: Session AAA. What is 2+2? Answer with just the number.
+  A: 4
+----------------------------------------------------------------------
+[slot 1] PASS expect='paris' bleed=none
+  Q: Session BBB. Name the capital of France. Answer with just the city name.
+  A: Paris
+----------------------------------------------------------------------
+[slot 2] PASS expect='2, 3, 5, 7, 11' bleed=none
+  Q: Session CCC. Write the first 5 prime numbers separated by commas.
+  A: 2, 3, 5, 7, 11
+----------------------------------------------------------------------
+[slot 3] PASS expect='dog' bleed=none
+  Q: Session DDD. Complete with one word: 'The quick brown fox jumps over the lazy ___'
+  A: dog
+----------------------------------------------------------------------
+[slot 4] PASS expect='42' bleed=['4']
+  Q: Session EEE. What is 7 times 6? Answer with just the number.
+  A: 42
+----------------------------------------------------------------------
+[slot 5] PASS expect='jupiter' bleed=none
+  Q: Session FFF. Name the largest planet in our solar system. One word.
+  A: Jupiter
+----------------------------------------------------------------------
+[slot 6] PASS expect='green' bleed=none
+  Q: Session GGG. What colour do you get mixing blue and yellow? One word.
+  A: Green
+----------------------------------------------------------------------
+[slot 7] PASS expect='366' bleed=none
+  Q: Session HHH. How many days are in a leap year? Just the number.
+  A: 366
+----------------------------------------------------------------------
+PROBE_RESULT 8/8 correct
+=== ARM A1_hc DONE ===

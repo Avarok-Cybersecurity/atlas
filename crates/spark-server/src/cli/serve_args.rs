@@ -819,6 +819,21 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub profile: bool,
 
+    /// Kill switch: run the mHC (hyper-connection) decode MoE FFN as a
+    /// per-sequence loop instead of one batched n-row dispatch.
+    ///
+    /// The batched dispatch is the default and is what makes concurrent decode
+    /// scale on mHC models (qwen4_exp/GDN family): both mHC layer kinds used to
+    /// call the FFN once per sequence, so the dominant part of a decode step
+    /// grew linearly with concurrency. Pass this only to reproduce the old
+    /// behaviour when bisecting a numerics or throughput regression.
+    ///
+    /// Precedence (highest wins): this flag -> model-config
+    /// `hc_batched_moe_decode` -> batched. Inert on every non-mHC model, and
+    /// inert at concurrency 1 (which always takes the single-token arm).
+    #[arg(long, default_value_t = false)]
+    pub hc_per_row_moe_decode: bool,
+
     /// Number of warmup tokens for online FP8 KV cache scale calibration.
     /// During the first N tokens, tracks max |K| and max |V| values across
     /// all attention layers. After N tokens, computes per-tensor scales as

@@ -532,3 +532,257 @@ extern "C" __global__ void qsa_prefill_attn(
         }
     }
 }
+// ── QSA prefill top-k: radix select on device ──────────────────────────────
+//
+// Replaces the host top-k in `prefill_select`, which D2H'd every block score
+// and sorted per query row on the CPU. At 36K context that is ~18 MB copied
+// and 8192 sorts of 562 elements PER attention layer PER chunk — measured as
+// the dominant prefill cost once the dense attention was skipped.
+//
+// Shape here is top-512 of up to ~25000 blocks (100K ctx / ratio 4), so the
+// moe_topk iterative-argmax approach (K passes over N) is hopeless: 512
+// passes. Radix select finds the exact K-th value in 4 fixed passes over the
+// row, then emits in one more.
+//
+// Scores are relu(q.k) sums, hence NON-NEGATIVE, so the IEEE-754 bit pattern
+// reinterpreted as uint32 is monotonically ordered — no sign-flip mapping
+// needed. NaN cannot appear (relu of a finite dot product); an inf would sort
+// to the top, which is the correct behaviour anyway.
+//
+// Tie-break matches the host it replaces: larger score first, LOWER INDEX on
+// ties. Ties are common because relu floors at 0.0, so the tie pass walks in
+// index order rather than racing on an atomic.
+//
+// Output order within the list is irrelevant to the consumer
+// (`qsa_prefill_attn` softmaxes over the selected set, which is
+// order-independent), but the SET must match or the attention differs.
+
+#define QSA_TOPK_THREADS 256
+
+extern "C" __global__ void qsa_topk_rows(
+    const float* __restrict__ scores,  // [rows, stride] f32
+    int* __restrict__ lists,           // [rows, topk]   i32 block ids
+    unsigned int rows,
+    unsigned int stride,
+    unsigned int topk,
+    unsigned int first_pos,            // GLOBAL position of row 0
+    unsigned int ratio)                // tokens per block
+{
+    const unsigned int r = blockIdx.x;
+    if (r >= rows) return;
+
+    const unsigned int tid = threadIdx.x;
+    const float* __restrict__ row = scores + (size_t)r * stride;
+    int* __restrict__ out = lists + (size_t)r * topk;
+
+    // Blocks fully covered by this query's visible prefix. Each row sees a
+    // different prefix, which is why this is computed per row rather than
+    // passed in.
+    const unsigned int complete = (first_pos + r + 1u) / ratio;
+
+    // Degenerate guard. Callers only invoke past the inert bound, where
+    // complete > topk, but emitting a valid id beats writing uninitialised
+    // memory that the attention would then gather from.
+    if (complete <= topk) {
+        for (unsigned int i = tid; i < topk; i += QSA_TOPK_THREADS) {
+            out[i] = (int)(i < complete ? i : (complete ? complete - 1u : 0u));
+        }
+        return;
+    }
+
+    __shared__ unsigned int s_hist[256];
+    __shared__ unsigned int s_prefix;   // bit pattern fixed so far
+    __shared__ unsigned int s_need;     // still to take from the current bucket
+    __shared__ unsigned int s_above;    // count strictly greater than threshold
+    __shared__ unsigned int s_emitted;
+
+    if (tid == 0) {
+        s_prefix = 0u;
+        s_need = topk;
+        s_above = 0u;
+    }
+    __syncthreads();
+
+    // ── 4 radix passes, 8 bits at a time, most-significant first ──
+    for (int pass = 0; pass < 4; ++pass) {
+        const unsigned int shift = 24u - 8u * (unsigned int)pass;
+        // Bits already pinned by previous passes. Pass 0 pins nothing; the
+        // shift would be 32 (UB), hence the explicit zero.
+        const unsigned int mask_hi =
+            (pass == 0) ? 0u : (0xFFFFFFFFu << (shift + 8u));
+
+        for (unsigned int i = tid; i < 256u; i += QSA_TOPK_THREADS) s_hist[i] = 0u;
+        __syncthreads();
+
+        for (unsigned int i = tid; i < complete; i += QSA_TOPK_THREADS) {
+            const unsigned int b = __float_as_uint(row[i]);
+            if ((b & mask_hi) == s_prefix) {
+                atomicAdd(&s_hist[(b >> shift) & 0xFFu], 1u);
+            }
+        }
+        __syncthreads();
+
+        // Walk buckets high->low until the K-th element's bucket is reached.
+        if (tid == 0) {
+            unsigned int acc = 0u;
+            unsigned int chosen = 0u;
+            for (int d = 255; d >= 0; --d) {
+                const unsigned int c = s_hist[d];
+                if (acc + c >= s_need) { chosen = (unsigned int)d; break; }
+                acc += c;
+            }
+            s_above += acc;                 // strictly above the chosen bucket
+            s_need -= acc;                  // remaining, all inside it
+            s_prefix |= chosen << shift;
+        }
+        __syncthreads();
+    }
+
+    // s_prefix is now the exact bit pattern of the K-th largest score.
+    const unsigned int thresh = s_prefix;
+
+    // ── emit everything strictly greater ──
+    if (tid == 0) s_emitted = 0u;
+    __syncthreads();
+    for (unsigned int i = tid; i < complete; i += QSA_TOPK_THREADS) {
+        if (__float_as_uint(row[i]) > thresh) {
+            const unsigned int slot = atomicAdd(&s_emitted, 1u);
+            if (slot < topk) out[slot] = (int)i;
+        }
+    }
+    __syncthreads();
+
+    // ── fill the remainder from ties, LOWEST INDEX FIRST ──
+    // One warp walks in index order so the choice is deterministic and matches
+    // the host tie-break. Ties are the common case at the 0.0 floor, so this
+    // must not be an atomic race.
+    if (tid < 32u) {
+        unsigned int emitted = s_emitted;
+        for (unsigned int base = 0u; base < complete && emitted < topk; base += 32u) {
+            const unsigned int i = base + tid;
+            const bool tie = (i < complete) && (__float_as_uint(row[i]) == thresh);
+            const unsigned int ballot = __ballot_sync(0xFFFFFFFFu, tie);
+            if (ballot) {
+                // Rank within this 32-wide window, so lower index wins.
+                const unsigned int rank =
+                    __popc(ballot & ((1u << tid) - 1u));
+                if (tie && emitted + rank < topk) {
+                    out[emitted + rank] = (int)i;
+                }
+                emitted += __popc(ballot);
+            }
+        }
+        if (tid == 0) s_emitted = emitted < topk ? emitted : topk;
+    }
+    __syncthreads();
+
+    // Defensive: if the row somehow produced fewer than topk (impossible when
+    // complete > topk, but a silent short list would make the attention read
+    // stale ids), pad with block 0.
+    for (unsigned int i = s_emitted + tid; i < topk; i += QSA_TOPK_THREADS) {
+        out[i] = 0;
+    }
+}
+
+// ── QSA decode selection: sort + expand, on device ─────────────────────────
+//
+// The DECODE consumer differs from prefill's. `qsa_prefill_attn` reads the
+// block-id list directly and softmaxes over the set, so `qsa_topk_rows`
+// leaves the order within the list unspecified. Decode instead EXPANDS the
+// chosen blocks into a token-index array which `qsa_gather` packs into
+// contiguous scratch, and that scratch — viewed through an identity block
+// table — is handed to the stock paged decode attention. The host code this
+// replaces did `blocks.sort_unstable()` before expanding, so the scratch slot
+// order was ascending by position. Softmax is order-invariant and the decode
+// call passes sliding_window = 0 (no position-dependent masking), so only the
+// SET changes the math — but the accumulation order is not bit-invariant, and
+// "identical to the host path" is the correctness bar here. The ascending
+// sort is therefore reproduced exactly rather than dropped.
+//
+// One block per query row. topk <= QSA_EXPAND_MAX_K; the ids go through a
+// bitonic sort in shared memory, padded to a power of two with INT_MAX which
+// sorts to the tail and is never read back.
+//
+// This kernel also writes `seq_lens` and the identity block table, both pure
+// functions of host-known quantities. Emitting them here makes the whole
+// decode selection transfer-free: at 12 full-attention layers and C
+// sequences that removes 12*C small pageable H2Ds per decode step, on top of
+// the D2H stream drain the device top-k removed.
+//
+// Rows are addressed like `qsa_topk_rows`: row r's visible prefix is
+// `first_pos + r + 1` unless `visible_rows` is non-null, in which case it is
+// `visible_rows[r]` — the shape a batched multi-sequence decode needs, where
+// rows are independent sequences at unrelated lengths.
+
+#define QSA_EXPAND_THREADS 256
+#define QSA_EXPAND_MAX_K 512
+
+extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
+    const int* __restrict__ lists,        // [rows, topk] block ids, any order
+    const int* __restrict__ visible_rows, // [rows] visible prefix, or null
+    int* __restrict__ sel,                // [rows, sel_stride] token indices
+    int* __restrict__ seq_lens,           // [rows] n_sel, or null
+    int* __restrict__ tables,             // [rows, table_stride], or null
+    unsigned int topk,
+    unsigned int ratio,
+    unsigned int first_pos,               // GLOBAL position of row 0
+    unsigned int sel_stride,
+    unsigned int table_stride,
+    unsigned int block_size)
+{
+    const unsigned int r = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const int* __restrict__ in = lists + (size_t)r * topk;
+    int* __restrict__ out = sel + (size_t)r * sel_stride;
+
+    const unsigned int visible =
+        visible_rows ? (unsigned int)visible_rows[r] : (first_pos + r + 1u);
+    const unsigned int complete = visible / ratio;
+    const unsigned int n_sel = topk * ratio + (visible - complete * ratio);
+
+    __shared__ int s[QSA_EXPAND_MAX_K];
+
+    unsigned int n = 1u;
+    while (n < topk) n <<= 1;
+    for (unsigned int i = tid; i < n; i += QSA_EXPAND_THREADS) {
+        s[i] = (i < topk) ? in[i] : 0x7FFFFFFF;
+    }
+    __syncthreads();
+
+    // Bitonic sort, ascending. A stage's compare-exchange pairs are disjoint,
+    // so one barrier per stage suffices and none is needed inside it.
+    for (unsigned int k = 2u; k <= n; k <<= 1) {
+        for (unsigned int j = k >> 1; j > 0u; j >>= 1) {
+            for (unsigned int i = tid; i < n; i += QSA_EXPAND_THREADS) {
+                const unsigned int ixj = i ^ j;
+                if (ixj > i) {
+                    const bool up = ((i & k) == 0u);
+                    const int a = s[i];
+                    const int b = s[ixj];
+                    if ((a > b) == up) { s[i] = b; s[ixj] = a; }
+                }
+            }
+            __syncthreads();
+        }
+    }
+
+    // sel[i] = block[i / ratio] * ratio + (i % ratio), then the tail tokens
+    // complete*ratio .. visible — byte-for-byte the host expansion.
+    for (unsigned int i = tid; i < topk * ratio; i += QSA_EXPAND_THREADS) {
+        out[i] = s[i / ratio] * (int)ratio + (int)(i % ratio);
+    }
+    for (unsigned int i = topk * ratio + tid; i < n_sel; i += QSA_EXPAND_THREADS) {
+        out[i] = (int)(complete * ratio + (i - topk * ratio));
+    }
+
+    if (seq_lens && tid == 0) seq_lens[r] = (int)n_sel;
+    if (tables) {
+        // Identity for a single row; for a shared multi-row scratch pool the
+        // row's pages start at r * table_stride, which is what this writes.
+        const unsigned int pages = (n_sel + block_size - 1u) / block_size;
+        for (unsigned int i = tid; i < pages && i < table_stride;
+             i += QSA_EXPAND_THREADS) {
+            tables[(size_t)r * table_stride + i] = (int)(r * table_stride + i);
+        }
+    }
+}
