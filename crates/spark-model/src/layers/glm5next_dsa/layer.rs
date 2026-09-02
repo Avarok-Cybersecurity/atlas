@@ -1279,7 +1279,7 @@ impl TransformerLayer for Glm5NextDsaLayer {
     /// Release what `alloc_state` allocated — ANOMALIES A76. Reached by the non-composite
     /// paths that hold a bare `Glm5NextDsaLayer`; the composite `Glm5NextLayer` has its
     /// own, identical, override. Type-driven so a non-DSA state can never be freed here.
-    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn LayerState) -> Result<()> {
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
         if let Some(dsa) = state.as_any_mut().downcast_mut::<Glm5NextDsaState>() {
             dsa.free(gpu)?;
         }

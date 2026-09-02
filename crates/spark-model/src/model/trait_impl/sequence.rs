@@ -363,47 +363,6 @@ impl TransformerModel {
             proposer.free_state(self.gpu.as_ref(), pstate.as_mut())?;
         }
 
-        // Free per-sequence TARGET-layer state — ANOMALIES A76. `LayerState` has
-        // no `Drop` and `DevicePtr` has none either, so dropping
-        // `seq.layer_states` with the sequence frees the host boxes and leaks
-        // every device buffer inside them. GLM-5.3's 11 DSA layers each hold a
-        // `Glm5NextDsaState` sized by `--max-seq-len`, not by the prompt:
-        // 5,643 B/token across the layer set, so 369.8 MB per sequence at 65,536
-        // and 739.6 MB at 131,072 — leaked on EVERY retirement route.
-        //
-        // 🔴 The skip is the exact inverse of the alloc branch in
-        // `alloc_sequence` (`meta.rs`): a `LinearAttention` layer that
-        // `uses_ssm_pool()` was handed POOL-owned addresses and never called
-        // `alloc_state`, so freeing it would hand back memory other sequences
-        // are still using. Everything else came from `alloc_state` and must be
-        // offered back to the layer that made it.
-        //
-        // 🔴 Placed after every graph-destroy block above (A56): these pointers
-        // are baked into the slot's `decode_graph` / `verify*_graph` captures.
-        //
-        // 🔴 EP: the indexer is replicated, so each rank owns its own copy and
-        // each rank's `free_sequence` frees it. No rank-0 gate here.
-        //
-        // A per-layer error is logged and skipped rather than returned, so one
-        // failure cannot strand the remaining layers (same discipline as
-        // `zero_slot` above).
-        //
-        // Kill switch: `ATLAS_GLM_DSA_STATE_LEAK` (presence — `=0` is NOT
-        // "off") restores the leak, for paired A/B measurement on one binary.
-        if std::env::var("ATLAS_GLM_DSA_STATE_LEAK").is_err() {
-            for (i, layer) in self.layers.iter().enumerate() {
-                if self.config.layer_type(i) == LayerType::LinearAttention && layer.uses_ssm_pool()
-                {
-                    continue;
-                }
-                let Some(state) = seq.layer_states.get_mut(i) else {
-                    continue;
-                };
-                if let Err(e) = layer.free_state(self.gpu.as_ref(), state.as_mut()) {
-                    tracing::error!("free_sequence: layer[{i}].free_state: {e:#}");
-                }
-            }
-        }
 
         self.free_chunked_prefill_meta(seq)?;
 

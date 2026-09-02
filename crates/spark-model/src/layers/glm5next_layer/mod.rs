@@ -1027,15 +1027,20 @@ impl TransformerLayer for Glm5NextLayer {
     /// and `free_sequence` skips it entirely) — but refusing by TYPE as well means a
     /// pool address can never reach `gpu.free` even if a future call site forgets the
     /// skip. `SsmLayerState` is therefore left alone here, always.
-    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn LayerState) -> Result<()> {
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
         if let Some(dsa) = state.as_any_mut().downcast_mut::<Glm5NextDsaState>() {
             dsa.free(gpu)?;
         }
         Ok(())
     }
 
-    /// Both mixers allocate their per-sequence state with `gpu.alloc` in `alloc_state`, so
+    /// The DSA mixer allocates its per-sequence state with `gpu.alloc` in `alloc_state`, so
     /// the addresses a capture bakes belong to THAT sequence, not to the slot.
+    ///
+    /// 🪤 Only DSA. The KDA mixer is POOL-backed on the model path — `uses_ssm_pool()` is true
+    /// for `Kda`, so `meta.rs` hands it pool addresses and never calls its `alloc_state`. The
+    /// `true` below is still correct (one owned mixer is enough); the previous wording claimed
+    /// both mixers own their state, and that was wrong.
     fn graph_stale_on_new_sequence(&self) -> bool {
         true
     }

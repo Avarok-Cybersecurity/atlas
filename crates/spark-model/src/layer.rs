@@ -454,3 +454,7 @@ pub enum MoeLoraRoute {
 /// each is attention, SSM, MoE, or dense FFN.
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "layer/release_contract_tests.rs"]
+mod release_contract_tests;

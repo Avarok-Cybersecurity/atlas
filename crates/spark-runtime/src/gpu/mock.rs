@@ -461,6 +461,14 @@ impl GpuBackend for MockGpuBackend {
         Ok(120 * 1024 * 1024 * 1024) // 120 GB
     }
 
+    /// The mock DOES keep a ledger (`allocs` carries per-allocation `bytes`), so it answers
+    /// this rather than falling back to `None`. That is what lets a lifecycle test assert the
+    /// L1 invariant in BYTES as well as in count — a same-count, different-size leak is
+    /// invisible to `live_alloc_count` alone.
+    fn live_bytes(&self) -> Option<usize> {
+        Some(self.allocs.lock().values().map(|a| a.bytes).sum())
+    }
+
     fn live_alloc_count(&self) -> usize {
         self.allocs.lock().len()
     }

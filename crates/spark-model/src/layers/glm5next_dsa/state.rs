@@ -44,8 +44,37 @@ use crate::layer::LayerState;
 /// does not halve it. `Glm5NextSkeleton::state_budget` must carry the same number or the
 /// serve allocates past its own `--gpu-memory-utilization` (the A59 class of cliff).
 pub fn max_dsa_context(cfg: &Glm5NextDsaConfig) -> usize {
-    // Whole pools only: a trailing partial pool is not a pool (`contiguous_pool_count`).
-    (cfg.max_context / cfg.index_kpool) * cfg.index_kpool
+    dsa_capacity(cfg.max_context, cfg.index_kpool)
+}
+
+/// THE authoritative indexer-capacity computation. Everything that needs to know how many
+/// rows a sequence's indexer cache holds calls this — [`max_dsa_context`] for the allocation
+/// side, and the serve's pre-model reserve for the budget side.
+///
+/// 🔴 It exists because there were two spellings. The allocation rounds down to whole pools;
+/// the budget (`Glm5NextTextSkeleton::state_budget`) is expressed per TOKEN, so multiplying it
+/// by a raw `--max-seq-len` charges a capacity the allocation never reserves. They agree for
+/// every `index_kpool`-multiple context — GLM-5.3 ships `index_kpool = 4`, so every power-of-two
+/// `--max-seq-len` masks it — and disagree by up to `index_kpool - 1` rows a layer otherwise.
+/// One function, so a config that does not divide evenly cannot make them drift.
+///
+/// Whole pools only: a trailing partial pool is not a pool (`contiguous_pool_count`).
+/// `index_kpool == 0` is refused by `Glm5NextDsaConfig::validate`; clamped here so this stays
+/// total for callers that have not validated yet (the reserve runs before the model exists).
+pub fn dsa_capacity(max_context: usize, index_kpool: usize) -> usize {
+    let kpool = index_kpool.max(1);
+    (max_context / kpool) * kpool
+}
+
+/// Bytes ONE sequence's indexer cache occupies for ONE DSA layer at `capacity` rows.
+///
+/// SSOT for the three allocations in [`Glm5NextDsaState::alloc`] and for the serve's
+/// per-sequence reserve. `= capacity * (4 * index_head_dim + 1)`, i.e. 513 B/token/layer at
+/// GLM-5.3's `index_head_dim = 128`. Replicated — EP does NOT halve it.
+pub fn indexer_state_bytes(capacity: usize, index_head_dim: usize) -> usize {
+    capacity * index_head_dim * 2   // k_normed, BF16
+        + capacity * index_head_dim * 2 // gate, BF16
+        + capacity // valid, u8
 }
 
 /// One sequence's indexer cache for one DSA layer.
@@ -205,10 +234,10 @@ impl Glm5NextDsaState {
     /// (`Glm5NextMtpHead::free_state`) now owns that guard via
     /// `Glm5NextMtpProposerState::released`.
     ///
-    /// 🔴 Every buffer freed here is baked into captured CUDA graphs, so this
-    /// MUST run after `free_sequence` has destroyed the slot's `decode_graph`
-    /// and `verify2/3/4_graph` — which it does (ANOMALIES A56 put that teardown
-    /// in place, and it sits ~110 lines above the `free_state` call site).
+    /// 🔴 Invariant L2 (slot reuse): every buffer freed here can be baked into a captured
+    /// CUDA graph, so before a slot is re-occupied its graphs must be destroyed AND these
+    /// pointers freed and nulled. `free_sequence` does both. ANOMALIES A56 put that teardown
+    /// in place; the invariant is slot reuse, not the order of the two blocks.
     ///
     /// Idempotent: two owners can now reach a DSA state — the drafter's
     /// `free_state` and, since ANOMALIES A76, the target layer's — so a second

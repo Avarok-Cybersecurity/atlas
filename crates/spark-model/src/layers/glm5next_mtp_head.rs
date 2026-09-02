@@ -585,17 +585,12 @@ impl DraftProposer for Glm5NextMtpHead {
     /// requests (ANOMALIES A75). `DeepseekV4MtpHead` and `MultiModuleMtp`
     /// already override this; the GLM port did not.
     ///
-    /// 🔴 Ordering is load-bearing and already correct: `free_sequence`
-    /// destroys this slot's `decode_graph` and `verify2/3/4_graph` — which bake
-    /// these exact pointers — roughly 110 lines BEFORE it calls `free_state`.
-    /// That teardown is the ANOMALIES A56 fix. Do not reorder either half.
-    ///
-    /// Kill switch: `ATLAS_GLM_MTP_STATE_LEAK` (presence — `=0` is NOT "off")
-    /// restores the leaking no-op, for A/B measurement only.
+    /// 🔴 Invariant L2 (slot reuse), not a line order: when this slot is re-occupied its
+    /// `decode_graph` and `verify2/3/4_graph` — which bake these exact pointers — must already
+    /// be destroyed AND these pointers freed and nulled. `free_sequence` satisfies both.
+    /// ANOMALIES A56 is the history; the invariant is slot reuse, not the order of the two
+    /// blocks. (The `released` flag below is what makes a second call safe.)
     fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
-        if std::env::var("ATLAS_GLM_MTP_STATE_LEAK").is_ok() {
-            return Ok(());
-        }
         let st = state
             .as_any_mut()
             .downcast_mut::<Glm5NextMtpProposerState>()

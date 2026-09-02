@@ -750,35 +750,21 @@ pub trait TransformerLayer: Send + Sync {
     /// MUST be idempotent — teardown can run after a partial failure. Callers
     /// log errors and continue rather than aborting: a sequence that cannot
     /// free its state is still finished, and bailing would strand the rest.
+    /// Owns every device allocation reachable from this `LayerState` that the layer obtained
+    /// from `gpu.alloc`, whether in `alloc_state` or attached later. Idempotent; nulls what it
+    /// frees; never touches pool addresses.
+    ///
+    /// 🔴 Refuse by TYPE inside the impl, not by a filter at the call site. A call-site filter
+    /// is a second spelling of "is this pooled?" that can drift out of agreement with the
+    /// first; the type check lives where the knowledge is.
+    ///
+    /// 🔴 Invariant L2 (slot reuse), NOT a line order. It is tempting to write "the graph drop
+    /// must come before this call" — that over-states a call order as an invariant. The real
+    /// requirement is that when a slot is re-occupied, its graphs are destroyed AND its owned
+    /// pointers are freed and nulled. Nothing between the two blocks replays a graph, and
+    /// `destroy_graph` does not dereference baked pointers, so either order satisfies it.
+    /// ANOMALIES A56 is the history; slot reuse is the invariant.
     fn release_state(&self, _state: &mut dyn LayerState, _gpu: &dyn GpuBackend) -> Result<()> {
-        Ok(())
-    }
-
-    /// Release the per-sequence state this layer built in [`alloc_state`].
-    ///
-    /// Called once from `free_sequence` when a sequence retires. `gpu` is
-    /// threaded in (symmetric with `alloc_state`) so implementations can
-    /// release raw device allocations stored on the state — `DevicePtr` has no
-    /// `Drop`, so anything `alloc_state` allocated leaks unless it is
-    /// explicitly freed here. This is the exact hazard, and the exact remedy,
-    /// that `DraftProposer::free_state` already carries on the sibling trait.
-    ///
-    /// **Symmetry rule: a layer that allocates in `alloc_state` must release in
-    /// `free_state`.** The default is a no-op because the two states the core
-    /// builds itself — `EmptyLayerState` (KV lives in `PagedKvCache`) and the
-    /// pool-backed `SsmLayerState` — own no device memory of their own.
-    ///
-    /// 🔴 Never `gpu.free` a pool-owned buffer. `free_sequence` skips layers the
-    /// SSM pool backs (`layer_type == LinearAttention && uses_ssm_pool()`), so
-    /// this is never called for them; an implementation must ALSO refuse by
-    /// type, because freeing an `SsmStatePool` address that other sequences
-    /// still point at is worse than the leak it would fix.
-    ///
-    /// 🔴 Ordering is load-bearing: everything freed here can be baked into a
-    /// captured CUDA graph, so the call site sits AFTER `free_sequence` has
-    /// destroyed this slot's graphs (ANOMALIES A56).
-    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn LayerState) -> Result<()> {
-        let _ = (gpu, state);
         Ok(())
     }
 

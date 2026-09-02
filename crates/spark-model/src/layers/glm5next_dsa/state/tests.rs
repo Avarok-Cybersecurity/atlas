@@ -199,3 +199,48 @@ fn a_hundred_alloc_free_cycles_leak_nothing() {
     }
     assert_eq!(gpu.alloc_count(), base, "no per-sequence growth");
 }
+
+/// L1 (lifecycle invariant): alloc → release returns the backend ledger to baseline in
+/// **count AND bytes**.
+///
+/// 🔴 Bytes are the point. `live_alloc_count` alone cannot see a same-count, different-size
+/// leak — a state that frees three buffers and allocates three smaller ones balances the count
+/// and loses memory every cycle. The on-device G5 gate reported count only; this is the
+/// unit-level half of closing that.
+#[test]
+fn alloc_then_release_returns_the_ledger_to_baseline_in_count_and_bytes() {
+    use spark_runtime::gpu::mock::MockGpuBackend;
+    let gpu = MockGpuBackend::new();
+    let cfg = Glm5NextDsaConfig {
+        max_context: 131_072,
+        ..cfg()
+    };
+
+    let base_count = gpu.live_alloc_count();
+    let base_bytes = gpu.live_bytes().expect("the mock keeps a ledger");
+
+    for _ in 0..11 {
+        let mut st = Glm5NextDsaState::alloc(&gpu, &cfg).expect("alloc");
+
+        // In flight: exactly the three buffers, and exactly the bytes the reserve charges.
+        assert_eq!(gpu.live_alloc_count(), base_count + 3);
+        let in_flight = gpu.live_bytes().expect("ledger") - base_bytes;
+        assert_eq!(
+            in_flight,
+            indexer_state_bytes(max_dsa_context(&cfg), cfg.index_head_dim),
+            "what alloc actually takes must equal what the reserve charges"
+        );
+
+        st.free(&gpu).expect("free");
+        assert_eq!(gpu.live_alloc_count(), base_count, "count back to baseline");
+        assert_eq!(
+            gpu.live_bytes().expect("ledger"),
+            base_bytes,
+            "BYTES back to baseline"
+        );
+
+        // Idempotent: a second release is a no-op, not a double free.
+        st.free(&gpu).expect("second free is a no-op");
+        assert_eq!(gpu.live_bytes().expect("ledger"), base_bytes);
+    }
+}
