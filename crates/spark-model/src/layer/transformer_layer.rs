@@ -97,6 +97,36 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer cannot serve a BATCHED multi-sequence decode step
+    /// — i.e. `decode_multi_seq`'s shared-`ForwardContext` loop would alias
+    /// per-sequence state across rows rather than merely run slowly.
+    ///
+    /// Mirrors [`Self::decode_graph_unsupported`] exactly: layer-level
+    /// statement, default `false`, ORed across layers by the caller and
+    /// consumed at the DISPATCH site. A `true` layer is NOT refused
+    /// concurrency — it is routed onto the per-sequence highway loop that
+    /// #753 item B already built for mHC models, so C>1 keeps serving.
+    ///
+    /// Wired at BOTH multi-seq callers (`decode_a2`'s `hc_perseq` and
+    /// `decode_b`'s `hc_qsa_perseq`), because `decode_b` is the single-GPU
+    /// fused decode+prefill path and a decision made only in `decode_a2`
+    /// leaves it exposed.
+    fn decode_multi_seq_unsupported(&self) -> bool {
+        false
+    }
+
+    /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
+    /// sweep (`decode_verify_multi`). Consumed by
+    /// `can_batch_verify_dispatch`; a `true` layer falls back to the
+    /// per-sequence verify loop, which is the sealed single-sequence path.
+    ///
+    /// Separate from [`Self::decode_multi_seq_unsupported`] because the two
+    /// answers can differ: verify carries its rows on the `k` axis with its
+    /// own R-row metadata block, decode carries them on the sequence axis.
+    fn decode_verify_multi_unsupported(&self) -> bool {
+        false
+    }
+
     /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
     /// travel with an SSM snapshot for a prefix-cache hit to be complete —
     /// PLE's n-gram history + conv state, QSA's ingested indexer keys.

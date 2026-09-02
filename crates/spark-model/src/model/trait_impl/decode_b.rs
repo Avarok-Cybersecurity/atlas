@@ -70,10 +70,21 @@ impl TransformerModel {
         // hc + QSA-active decode rows must not fuse: the batched ms decode
         // inlined below has no per-seq QSA selection arm (decode_a2 routes
         // those per-seq). Same inert-bound formula as decode_a2's gate.
-        let hc_qsa_perseq = self.config.hc_mult > 0 && self.config.index_topk > 0 && {
-            let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
-            decode_seqs.iter().any(|s| s.seq_len >= bound)
-        };
+        // Same layer veto as `decode_a2`'s `hc_perseq`, and REQUIRED here too:
+        // this is the single-GPU fused decode+prefill caller, so a decision
+        // made only in `decode_a2` would leave C>1 exposed at `world_size == 1`.
+        // It also keeps a declining layer away from the fused `prefill_ctx`
+        // below, which is the one `ForwardContext` built with a NON-ZERO
+        // `hc_row_offset` (`padded_n`).
+        let ms_layer_veto = self
+            .layers
+            .iter()
+            .any(|l| l.decode_multi_seq_unsupported());
+        let hc_qsa_perseq = ms_layer_veto
+            || (self.config.hc_mult > 0 && self.config.index_topk > 0 && {
+                let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
+                decode_seqs.iter().any(|s| s.seq_len >= bound)
+            });
         if self.comm.is_some()
             || self.is_mla_dispatch()
             || hc_qsa_perseq
