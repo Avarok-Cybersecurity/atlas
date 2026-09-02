@@ -63,9 +63,18 @@ pub fn trace(gpu: &dyn GpuBackend, phase: &str) {
     let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
     let dev = gpu.device_free_memory().unwrap_or(0);
     let host = mem_available_bytes().unwrap_or(0);
+    // 🔴 COUNT AND BYTES. A count-only instrument cannot see a same-count,
+    // different-size leak — a teardown that frees three buffers and allocates
+    // three smaller ones balances `live` and loses memory every sequence. #818's
+    // ledger already carries the bytes; `live_bytes` is `None` only on a backend
+    // with no ledger, where `-1` says "not reported" rather than "zero".
+    let live_mb = gpu
+        .live_bytes()
+        .map_or(-1.0, |b| b as f64 / (1024.0 * 1024.0));
     tracing::info!(
-        "seqmem: seq={n} phase={phase} live={} cumemgetinfo_mb={:.1} memavailable_mb={:.1}",
+        "seqmem: seq={n} phase={phase} live={} live_mb={:.1} cumemgetinfo_mb={:.1} memavailable_mb={:.1}",
         gpu.live_alloc_count(),
+        live_mb,
         mb(dev),
         mb(host),
     );
