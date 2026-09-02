@@ -122,7 +122,9 @@ jobs:
             echo "skip=true" >>"$GITHUB_OUTPUT"; exit 0
           fi
           perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo none)
-          head_sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          pr_json=$(gh api "repos/$REPO/pulls/$PR")
+          head_sha=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+          author=$(printf '%s' "$pr_json" | jq -r '.user.login')
           # ★ PR AND ACTOR ARE PUBLISHED HERE, and every later step reads them
           # from these outputs. They used to be re-derived in each step's own
           # `env:` from `github.event.*`, which is empty on a workflow_dispatch —
@@ -130,7 +132,7 @@ jobs:
           # "Released by @." and then 404'd on `issues//comments`. One resolution
           # point, once, is the fix.
           { echo "verb=$verb"; echo "args=$args"; echo "perm=$perm"; echo "pr=$PR";
-            echo "actor=$ACTOR"; echo "head_sha=$head_sha";
+            echo "actor=$ACTOR"; echo "head_sha=$head_sha"; echo "author=$author";
             echo "short_sha=${head_sha:0:10}"; } >>"$GITHUB_OUTPUT"
 
       - name: /help
@@ -176,15 +178,30 @@ jobs:
           ACTOR: ${{ steps.cmd.outputs.actor }}
           VERB: ${{ steps.cmd.outputs.verb }}
           PERM: ${{ steps.cmd.outputs.perm }}
+          AUTHOR: ${{ steps.cmd.outputs.author }}
           HEAD_SHA: ${{ steps.cmd.outputs.head_sha }}
           SHORT: ${{ steps.cmd.outputs.short_sha }}
         run: |
           set -euo pipefail
           refuse() { gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$1" >/dev/null; exit 0; }
 
-          case "$PERM" in admin|maintain|write) ;; *)
-            refuse "@$ACTOR — \`$VERB\` needs write access to this repository; yours is \`$PERM\`." ;;
-          esac
+          # A stamp says "this is ready to cost an hour of runners". Write access
+          # means that, and so does being the AUTHOR: nobody is better placed to
+          # say their own PR has stopped churning, and the author is precisely who
+          # the hold was protecting from burnt runners in the first place.
+          #
+          # A seal is a different claim -- a codeowner vouching for the diff -- so
+          # it stays write-only, with the coverage check below supplying the rest.
+          if [ "$VERB" = "/stamp" ] && [ -n "$AUTHOR" ] && [ "$ACTOR" = "$AUTHOR" ]; then
+            :
+          else
+            case "$PERM" in admin|maintain|write) ;; *)
+              if [ "$VERB" = "/stamp" ]; then
+                refuse "@$ACTOR — \`/stamp\` is for anyone with write access, or the author of the PR. Yours is \`$PERM\`, and #$PR was opened by @$AUTHOR."
+              fi
+              refuse "@$ACTOR — \`$VERB\` needs write access to this repository; yours is \`$PERM\`." ;;
+            esac
+          fi
 
           name="Stamp"
           detail="Released by @$ACTOR."
