@@ -964,6 +964,47 @@ impl Glm5NextLayer {
 }
 
 impl TransformerLayer for Glm5NextLayer {
+    /// 🔴 GLM-5.3 CANNOT serve a batched multi-sequence decode step. Two
+    /// independent row-0 aliases, both structural, either one sufficient:
+    ///
+    ///   * **D1 — mHC highway slot.** `Glm5NextLayer::forward_one` pins highway
+    ///     slot 0. `decode_multi_seq`'s default loop shares one
+    ///     `ForwardContext` across the batch, so every sequence would write and
+    ///     then read the SAME highway stream, and each layer past the first
+    ///     reads the last sequence's mHC state for all rows. This is the
+    ///     sequence-axis twin of the token-axis argument already written on
+    ///     [`Self::decode_batched`] above — the trait default is WRONG there
+    ///     for exactly the same reason.
+    ///   * **D2 — DSA `attn_metadata` row.** The DSA mixer reads metadata row 0
+    ///     (`glm5next_dsa/layer.rs`: slot, positions, block_table, seq_len), so
+    ///     every sequence in the batch would attend with sequence 0's page
+    ///     table and length.
+    ///
+    /// Answering `true` does NOT cost concurrency: the caller routes GLM onto
+    /// #753 item B's per-sequence highway loop, which serves C>1 correctly at
+    /// C=1-equivalent per-request throughput.
+    ///
+    /// 🔒 This must stay `true` until the Stage 1 commit that adds a real
+    /// `Glm5NextLayer::decode_multi_seq` (per-row `forward_one` with
+    /// `meta_row_base` threading and `ctx.hc_row_offset` honoured as the
+    /// highway base) flips it to `false` IN THE SAME COMMIT.
+    fn decode_multi_seq_unsupported(&self) -> bool {
+        true
+    }
+
+    /// 🔴 GLM-5.3 implements no `decode_verify_multi`, so the batched verify
+    /// sweep must not be selected for it. The trait default already `bail!`s,
+    /// but that is a mid-request abort; declaring it here makes
+    /// `can_batch_verify_dispatch` route around it instead, leaving spec-on
+    /// C>1 on the per-sequence verify loop — the sealed K=3 path.
+    ///
+    /// 🔒 Flipped to `false` by the PR-3 commit that adds
+    /// `Glm5NextLayer::decode_verify_multi` (per-sequence `forward_k` sweep
+    /// with `slot_base = meta_row_base = row_base`).
+    fn decode_verify_multi_unsupported(&self) -> bool {
+        true
+    }
+
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(match &self.mixer {
             // Pool-free fallback. `uses_ssm_pool()` is true for KDA, so the model hands these
