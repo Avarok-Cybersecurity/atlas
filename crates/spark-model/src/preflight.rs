@@ -91,8 +91,27 @@ fn check_qsa_kv_dtype<'a>(
 ) -> Result<()> {
     // Names, not the store: this needs nothing else, and taking the store would
     // have meant a test-only way to put a name into one.
-    let has_qsa = names.into_iter().any(|n| n.contains(".self_attn.indexer."));
-    if !has_qsa {
+    // 🪤 `.self_attn.indexer.` is a FAMILY name, not a QSA name. GLM-5.3's DSA
+    // indexer lands in the same namespace (`indexer.index_kpool_compress_ape`,
+    // `.wk`, `.wq_b`, `.weights_proj`, `.k_norm.*`) while being a different
+    // mechanism: a k-pooled top-k feeding a NoPE selected-index sparse MLA
+    // decode kernel that reads an FP8 KV cache by construction, not a
+    // selection gather copying raw NHD rows. Refusing fp8 for it would refuse
+    // its only served configuration.
+    //
+    // So the kpool shape is identified positively and exempted; every other
+    // indexer checkpoint stays under the rule exactly as before.
+    let mut has_indexer = false;
+    let mut has_kpool_indexer = false;
+    for n in names {
+        if n.contains(".self_attn.indexer.") {
+            has_indexer = true;
+            if n.contains(".indexer.index_kpool_") {
+                has_kpool_indexer = true;
+            }
+        }
+    }
+    if !has_indexer || has_kpool_indexer {
         return Ok(());
     }
     // `None` means the caller genuinely has no KV cache to speak of, NOT "the
@@ -414,6 +433,33 @@ mod qsa_kv_tests {
         "model.layers.0.self_attn.q_proj.weight",
         "model.layers.0.self_attn.indexer.index_qk_proj.weight",
     ];
+    /// GLM-5.3's DSA k-pool indexer shares the `self_attn.indexer.` namespace
+    /// but is a different mechanism with an FP8-KV decode kernel. Names taken
+    /// verbatim from the NVFP4 checkpoint index.
+    const KPOOL_DSA: [&str; 3] = [
+        "model.language_model.layers.3.self_attn.indexer.index_kpool_compress_ape",
+        "model.language_model.layers.3.self_attn.indexer.wq_b.weight",
+        "model.language_model.layers.3.self_attn.indexer.k_norm.weight",
+    ];
+
+    /// A k-pool DSA checkpoint must keep its fp8 KV cache. This is the sealed
+    /// GLM-5.3 serving configuration; refusing it here refuses the only
+    /// configuration that model has ever served.
+    #[test]
+    fn a_kpool_dsa_checkpoint_is_not_qsa_and_keeps_fp8() {
+        for dt in [None, Some("fp8"), Some("bf16")] {
+            assert!(
+                check_qsa_kv_dtype(KPOOL_DSA.into_iter(), dt).is_ok(),
+                "kpool DSA must not be caught by the QSA rule: {dt:?}"
+            );
+        }
+    }
+
+    /// ...and narrowing it must NOT have made the original rule inert.
+    #[test]
+    fn narrowing_for_kpool_did_not_disarm_the_qsa_rule() {
+        check_qsa_kv_dtype(QSA.into_iter(), Some("fp8")).expect_err("QSA at fp8 must still refuse");
+    }
 
     #[test]
     fn a_non_qsa_checkpoint_accepts_any_kv_dtype() {
