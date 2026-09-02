@@ -1,0 +1,13 @@
+### ARM A1
+A1-trajectories/run-00.trajectory.txt:73: STRICT/VS ['assert_eq!' == 'assert_eq!']: I'm noticing I've been making typos with the Rust syntax — using `format!` instead of `format!("...")`, writing `to_string()` when it should be `.to_string()`, and mixing up macro syntax like `assert_eq!` versus `assert_eq!`. Let me review the file to catch these mistakes.
+A1-trajectories/run-00.trajectory.txt:167: STRICT/SHOULDBE ['unwrap_or_else' == 'unwrap_or_else']: The file contains many errors (hallucinated API): `unwrap_or_else` should be `unwrap_or_else` — actually in Rust it's `unwrap_or_else`, and that's correct. Wait: the standard method is `unwrap_or_else` — yes, correct. However `to_string()` on &str is fine. Problems:
+A1-trajectories/run-00.trajectory.txt:174: STRICT/SHOULDBE ['#[cfg(test)]' == '#[cfg(test)]']: - `#[cfg(test)]` should be `#[cfg(test)]`. Yes, that's what it says. Good.
+
+--- per transcript (assistant prose bytes, markers) ---
+     7180     3  A1-trajectories/run-00.trajectory.txt
+     6069     0  A1-trajectories/run-01.trajectory.txt
+     3656     0  A1-trajectories/run-02.trajectory.txt
+
+assistant prose      : 16905 bytes = 16.51 KB
+markers total        : 3   by tier {'STRICT': 3}
+markers per KB prose : 0.1817
