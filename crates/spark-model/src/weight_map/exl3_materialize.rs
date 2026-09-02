@@ -61,6 +61,14 @@ pub use native::{
     exl3_native_supported,
 };
 
+// The fast loader's pool predicate (which quartets are arena-pooled at load:
+// exactly the prefixes this pass will keep packed) — child module, re-exported.
+#[path = "exl3_pool_predicate.rs"]
+mod pool_predicate;
+pub use pool_predicate::{
+    exl3_fast_load_pool_predicate, exl3_pool_keep_predicted, exl3_weight_pool_enabled,
+};
+
 // `register_exl3_ngram_sidecar` lives in the child module (≤500 LoC split);
 // the re-export keeps `weight_map::register_exl3_ngram_sidecar` unchanged.
 #[path = "exl3_materialize_ngram.rs"]
@@ -95,6 +103,11 @@ pub struct Exl3MaterializeStats {
     /// The GDN/attention dense subset of `kept_native`
     /// (`ATLAS_EXL3_NATIVE_DENSE=1`), with its per-family layer counts.
     pub dense: super::Exl3DenseKeepStats,
+    /// Bytes of materialized (removed) tensors that live inside a loader
+    /// arena and so could NOT be freed — the pool predicted "keep" for a
+    /// prefix this pass then materialized (codebook / uniformity are not
+    /// header-visible). Resident until the store is released; expected 0.
+    pub stranded_pooled_bytes: usize,
 }
 
 /// Expert-family prefixes get the NVFP4 triplet; everything else BF16.
@@ -333,9 +346,16 @@ pub(crate) fn materialize_exl3_impl(
             stats.bf16 += 1;
         }
 
+        // Free the packed source through the store: a per-tensor allocation
+        // is released here; a view into a loader arena (the fast loader
+        // pooled a prefix it predicted would be kept) is a no-op — its bytes
+        // stay in the arena until the store is released, counted below.
         for suffix in ["trellis", "suh", "svh", "mul1"] {
             if let Some(t) = store.remove(&format!("{p}.{suffix}")) {
-                gpu.free(t.ptr)?;
+                let bytes = t.byte_size();
+                if !store.release_tensor(gpu, t)? {
+                    stats.stranded_pooled_bytes += bytes;
+                }
             }
         }
     }
@@ -347,6 +367,16 @@ pub(crate) fn materialize_exl3_impl(
         stats.bf16,
         stats.kept_native,
     );
+    if stats.stranded_pooled_bytes > 0 {
+        tracing::warn!(
+            "EXL3 materialization: {:.2} GB of materialized trellis tensors live inside \
+             fast-loader arenas and stay resident until teardown — the pool predicate \
+             (exl3_pool_keep_predicted) admitted prefixes this pass then materialized \
+             (mixed K/codebook layer, or a cb0 checkpoint). Set ATLAS_EXL3_WEIGHT_POOL=0 \
+             to reclaim them on this checkpoint.",
+            stats.stranded_pooled_bytes as f64 / 1e9,
+        );
+    }
     if stats.kept_native_experts > 0 {
         tracing::info!(
             "EXL3 native MoE: {} routed-expert projections kept packed — \

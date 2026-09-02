@@ -372,7 +372,9 @@ pub(crate) fn quantized_any(
             // `quantized_any`) holds BOTH the ~60GB BF16 experts AND the ~22GB
             // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
             // `quantized_from_fp8` which frees its BF16 intermediate the same way.
-            gpu.free(w.ptr)?;
+            // Through the store so a pooled (arena-resident) source is skipped
+            // rather than passed to cuMemFree as an interior pointer.
+            store.release_ptr(gpu, w.ptr)?;
             T_FREE.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let c = N.fetch_add(1, Ordering::Relaxed) + 1;
             if c.is_multiple_of(512) {

@@ -513,6 +513,24 @@ pub fn build_model(
                 gib(ledger_live),
                 gib(used_so_far - ledger_live),
             );
+            // The residual is co-tenants + page cache (cuMemGetInfo free ==
+            // MemFree on GB10) + whatever the driver charges beyond the
+            // requested bytes. Before the EXL3 weight pool the last term
+            // was ~17.9 GB on 4.05bpw (2 MiB chunk tails behind 296K
+            // per-tensor cuMemAllocs); with the pool it should be ~0, so a
+            // residual well above the known co-tenants is the signal that
+            // per-tensor granularity crept back in. Debug so INFO stays quiet.
+            tracing::debug!(
+                "KV budget ledger detail: cuMemGetInfo used {:.2} GB − ledger {:.2} GB = \
+                 {:.2} GB outside the ledger; weight store holds {} pooled arena(s) = \
+                 {:.2} GB of its {:.2} GB",
+                gib(used_so_far),
+                gib(ledger_live),
+                gib(used_so_far - ledger_live),
+                store.arena_count(),
+                gib(store.pooled_bytes()),
+                gib(store.total_bytes()),
+            );
             used_so_far = ledger_live;
         } else {
             tracing::warn!(

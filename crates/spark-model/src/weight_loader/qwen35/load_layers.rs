@@ -422,7 +422,7 @@ pub(super) fn load_layers(
                 for suffix in ["weight", "weight_scale_inv"] {
                     let k = format!("{prefix}.{suffix}");
                     if let Ok(w) = store.get(&k) {
-                        let _ = gpu.free(w.ptr);
+                        let _ = store.release_ptr(gpu, w.ptr);
                     }
                 }
             };

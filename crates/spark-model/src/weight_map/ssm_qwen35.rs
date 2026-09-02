@@ -310,10 +310,10 @@ pub(crate) fn load_moe_qwen35(
     // copies remain resident.
     if is_fused {
         if let Ok(w) = store.get(&fused_gate_up_key) {
-            let _ = gpu.free(w.ptr);
+            let _ = store.release_ptr(gpu, w.ptr);
         }
         if let Ok(w) = store.get(&fused_down_key) {
-            let _ = gpu.free(w.ptr);
+            let _ = store.release_ptr(gpu, w.ptr);
         }
     }
 

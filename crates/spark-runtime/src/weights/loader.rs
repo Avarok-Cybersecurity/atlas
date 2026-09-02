@@ -79,6 +79,17 @@ impl WeightLoader for SafetensorsLoader {
         //   FP8 native:    ~1.5x  (store stays FP8, only attention prefill gets NVFP4 copies)
         // The n-gram tables are deferred, never uploaded, so they must not
         // count toward the peak — see the note in `fast_weights`.
+        //
+        // Allocator granularity is NOT modelled here, and the multiplier is
+        // about model building, not upload. Per-tensor `cuMemAlloc` on GB10
+        // charges sub-2 MiB requests a 2 MiB chunk-tail tax (an 800 KiB K=4
+        // EXL3 expert trellis costs 1.32x; ~17.9 GiB on the 4.05bpw
+        // Qwen3.8-Flash-Next export), which this 1.3x happened to absorb.
+        // The fast loader now pools the kept-packed EXL3 quartets into one
+        // arena per (shard, class) — `fast_weights/pool.rs`, ~1.006x — so on
+        // a native EXL3 boot the true upload footprint is ≈ on-disk bytes
+        // and the multiplier is headroom for the materialize transients +
+        // model building only. This mmap path stays per tensor.
         let preflight_skip = |name: &str| skip_fn(name) || super::is_ngram_table(name);
         {
             let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;

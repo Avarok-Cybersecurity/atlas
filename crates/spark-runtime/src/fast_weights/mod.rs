@@ -15,22 +15,36 @@
 //! Behavioural parity with [`crate::weights::SafetensorsLoader`] is
 //! preserved — same EP filtering, same OOM pre-flight, same UVM fallback
 //! on GPU allocation failure, same extra-weights handling.
+//!
+//! One deliberate divergence: with a [`FastSafetensorsLoader::pool_predicate`]
+//! installed, the packed-EXL3 quartets it selects are uploaded into ONE
+//! allocation per (shard, class) — `pool.rs` — instead of one per tensor,
+//! because `cuMemAlloc_v2` on GB10 charges sub-2 MiB requests a 2 MiB
+//! chunk-tail tax (~17.9 GiB on the 4.05bpw Qwen3.8-Flash-Next export).
+//! Every other tensor still takes the per-tensor path, byte for byte.
 
 use crate::gpu::GpuBackend;
 use crate::weights::{
-    WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
-    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes,
+    WeightArena, WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
+    estimate_load_bytes,
 };
-use anyhow::{Context, Result, bail};
-use std::collections::HashMap;
-use std::fs::File;
+use anyhow::{Result, bail};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::sync_channel;
+use std::sync::Arc;
 
 mod direct_io;
 mod header;
+mod pool;
+mod shard;
 
-use header::{parse_header, resolve_shards};
+use header::resolve_shards;
+use shard::{load_shard_fast, select_pooled_prefixes};
+
+/// `(prefix, trellis_shape) -> pool?` — decides which EXL3 linears' four
+/// tensors are pooled. Lives in spark-model (it needs the native-serving
+/// gates and kernel envelopes), injected here.
+pub type PoolPredicate = Arc<dyn Fn(&str, &[usize]) -> bool + Send + Sync>;
 
 /// Pure-Rust InstantTensor-style loader. Same public shape as
 /// [`crate::weights::SafetensorsLoader`].
@@ -77,6 +91,33 @@ pub struct FastSafetensorsLoader {
     /// sequentially before the per-tensor copy loop starts. This helps NFS
     /// mounts where many small tensor reads defeat normal readahead.
     pub prefetch_shards: bool,
+    /// Pool the `.trellis/.suh/.svh/.mul1` quartets of every EXL3 prefix
+    /// this predicate admits into one arena per (shard, class) — see
+    /// `pool.rs`. `None` (the default, and every non-EXL3 checkpoint):
+    /// per-tensor allocation for everything. The serve path installs
+    /// `spark_model::weight_map::exl3_fast_load_pool_predicate()`, which
+    /// admits exactly the prefixes the materialize pass will keep packed
+    /// and honours the `ATLAS_EXL3_WEIGHT_POOL=0` kill switch.
+    pub pool_predicate: Option<PoolPredicate>,
+}
+
+/// Per-shard loader knobs, read-only across the shard loop.
+pub(crate) struct ShardOpts<'a> {
+    pub(crate) try_direct_io: bool,
+    pub(crate) direct_io_tensor_cap: usize,
+    pub(crate) prefetch_shards: bool,
+    /// EXL3 prefixes whose quartets are pooled (empty: nothing pooled).
+    pub(crate) pooled_prefixes: &'a HashSet<String>,
+}
+
+/// Where a shard load writes: the tensor map, deferred locators, the
+/// arenas it allocated, and the two once-only log latches.
+pub(crate) struct ShardSink<'a> {
+    pub(crate) out: &'a mut HashMap<String, WeightTensor>,
+    pub(crate) deferred: &'a mut HashMap<String, crate::weights::DeferredTensor>,
+    pub(crate) arenas: &'a mut Vec<WeightArena>,
+    pub(crate) offload_logged: &'a mut bool,
+    pub(crate) pool_fallback_logged: &'a mut bool,
 }
 
 /// Default tensor-count cap for per-shard `O_DIRECT`. Above this, the fast
@@ -105,6 +146,7 @@ impl FastSafetensorsLoader {
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
+            pool_predicate: None,
         }
     }
 
@@ -119,6 +161,7 @@ impl FastSafetensorsLoader {
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
+            pool_predicate: None,
         }
     }
 }
@@ -174,13 +217,45 @@ impl WeightLoader for FastSafetensorsLoader {
             }
         }
 
+        // Pooling pre-pass: the EXL3 prefixes whose quartets go into arenas,
+        // decided model-wide from the headers (already parsed for the
+        // pre-flight; a few ms) so a layer straddling two shards resolves
+        // its aux tensors' class in either shard.
+        let pooled_prefixes: HashSet<String> = match &self.pool_predicate {
+            Some(pred) => {
+                let set = select_pooled_prefixes(
+                    &shard_files,
+                    tensor_to_shard.as_ref(),
+                    &skip_fn,
+                    pred.as_ref(),
+                )?;
+                tracing::info!(
+                    "EXL3 weight pool: {} kept-packed prefixes ({} tensors) will be pooled \
+                     into one arena per (shard, class); everything else per tensor",
+                    set.len(),
+                    set.len() * 4,
+                );
+                set
+            }
+            None => HashSet::new(),
+        };
+        let shard_opts = ShardOpts {
+            try_direct_io: self.try_direct_io,
+            direct_io_tensor_cap: self.direct_io_tensor_cap,
+            prefetch_shards: self.prefetch_shards,
+            pooled_prefixes: &pooled_prefixes,
+        };
+
         // Load each shard. Loaded tensors filtered by EP rules upstream.
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
         // Locations of tensors deliberately NOT uploaded (the n-gram tables).
         let mut deferred: HashMap<String, crate::weights::DeferredTensor> = HashMap::new();
+        // Arenas the shards allocated; adopted by the store below.
+        let mut arenas: Vec<WeightArena> = Vec::new();
         let total_shards = shard_files.len();
         let initial_free = gpu.free_memory()?;
         let mut offload_logged = false;
+        let mut pool_fallback_logged = false;
 
         for (i, shard_path) in shard_files.iter().enumerate() {
             // When an index is present, only load the tensors it routes here;
@@ -213,12 +288,14 @@ impl WeightLoader for FastSafetensorsLoader {
                 tensor_filter.as_deref(),
                 gpu,
                 &skip_fn,
-                self.try_direct_io,
-                self.direct_io_tensor_cap,
-                self.prefetch_shards,
-                &mut weights,
-                &mut deferred,
-                &mut offload_logged,
+                &shard_opts,
+                &mut ShardSink {
+                    out: &mut weights,
+                    deferred: &mut deferred,
+                    arenas: &mut arenas,
+                    offload_logged: &mut offload_logged,
+                    pool_fallback_logged: &mut pool_fallback_logged,
+                },
             )?;
 
             let free_now = gpu.free_memory().unwrap_or(0);
@@ -256,12 +333,14 @@ impl WeightLoader for FastSafetensorsLoader {
                 None,
                 gpu,
                 &no_skip,
-                self.try_direct_io,
-                self.direct_io_tensor_cap,
-                self.prefetch_shards,
-                &mut weights,
-                &mut deferred,
-                &mut extra_offload,
+                &shard_opts,
+                &mut ShardSink {
+                    out: &mut weights,
+                    deferred: &mut deferred,
+                    arenas: &mut arenas,
+                    offload_logged: &mut extra_offload,
+                    pool_fallback_logged: &mut pool_fallback_logged,
+                },
             )?;
         }
 
@@ -270,213 +349,17 @@ impl WeightLoader for FastSafetensorsLoader {
         for (name, d) in deferred {
             store.defer(name, d);
         }
+        if !arenas.is_empty() {
+            let bytes: usize = arenas.iter().map(|a| a.bytes).sum();
+            tracing::info!(
+                "EXL3 weight pool: {} arena(s), {:.2} GB owned by the weight store",
+                arenas.len(),
+                bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+        }
+        for a in arenas {
+            store.adopt_arena(a);
+        }
         Ok(store)
     }
 }
-
-/// Load a single shard with O_DIRECT + pipelined read/copy.
-///
-/// Pipeline:
-///   reader thread: pread tensor N into aligned buffer → sync_channel ──▶
-///   main thread:   recv → copy_h2d → store tensor
-///
-/// The channel has capacity 1, so at any time the reader is ≤1 tensor
-/// ahead of the copier. Memory overhead per shard: 2 × max_tensor_bytes
-/// (rounded up to O_DIRECT alignment).
-#[allow(clippy::too_many_arguments)]
-fn load_shard_fast(
-    shard_path: &Path,
-    tensor_filter: Option<&[String]>,
-    gpu: &dyn GpuBackend,
-    skip_fn: &dyn Fn(&str) -> bool,
-    try_direct_io: bool,
-    direct_io_tensor_cap: usize,
-    prefetch_shards: bool,
-    out: &mut HashMap<String, WeightTensor>,
-    deferred_out: &mut HashMap<String, crate::weights::DeferredTensor>,
-    offload_logged: &mut bool,
-) -> Result<()> {
-    // Header parsing uses a buffered fd — header is a few KB, cache pollution
-    // is negligible and buffered I/O handles short reads cleanly.
-    let mut meta_file = File::open(shard_path)
-        .with_context(|| format!("Failed to open {}", shard_path.display()))?;
-    let mut tensors = parse_header(&mut meta_file)?;
-    let file_size = meta_file.metadata()?.len();
-
-    // Filter down to tensors we actually want (index filter + EP filter).
-    if let Some(allow) = tensor_filter {
-        let allow_set: std::collections::HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
-        tensors.retain(|t| allow_set.contains(t.name.as_str()));
-    }
-    // The n-gram embedding TABLES are never uploaded with the checkpoint —
-    // 63 GB (LongCat-Lite) to ~102 GB (Flash-Next) of BF16 would exhaust a
-    // 121 GB unified box before any quantization could run, and the fallback
-    // on GB10 is managed memory, i.e. Linux swap, i.e. a kernel freeze. They
-    // are recorded with their on-disk location and served either by streaming
-    // per-table quantize-on-load or straight off NVMe by the row cache.
-    let mut deferred_here: Vec<(String, crate::weights::DeferredTensor)> = Vec::new();
-    #[allow(clippy::items_after_statements)]
-    tensors.retain(|t| {
-        if crate::weights::is_ngram_table(&t.name) {
-            deferred_here.push((
-                t.name.clone(),
-                crate::weights::DeferredTensor {
-                    path: shard_path.to_path_buf(),
-                    offset: t.abs_offset,
-                    shape: t.shape.clone(),
-                    dtype: t.dtype,
-                },
-            ));
-            return false;
-        }
-        !skip_fn(&t.name)
-    });
-    if !deferred_here.is_empty() {
-        tracing::info!(
-            "Deferred {} n-gram table(s) in {} — served from disk, not uploaded",
-            deferred_here.len(),
-            shard_path.display()
-        );
-        deferred_out.extend(deferred_here);
-    }
-
-    // Per-shard heuristic: above `direct_io_tensor_cap` tensors, O_DIRECT's
-    // per-tensor syscall + 4 KiB alignment overhead costs more than kernel
-    // readahead on the buffered path saves. Skip the direct-open attempt
-    // entirely in that case — keeps the log clean and avoids a wasted fd.
-    let wants_direct = try_direct_io && tensors.len() <= direct_io_tensor_cap;
-    if try_direct_io && !wants_direct {
-        tracing::info!(
-            "  Shard has {} tensors (> {} cap) — using buffered+pipelined path",
-            tensors.len(),
-            direct_io_tensor_cap
-        );
-    }
-
-    // File for data reads. Try O_DIRECT; if it fails, fall through to buffered.
-    let (direct_file, using_direct) = match wants_direct
-        .then(|| direct_io::open_direct(shard_path))
-        .transpose()
-    {
-        Ok(Some(f)) => (Some(f), true),
-        Ok(None) => (None, false),
-        Err(e) => {
-            tracing::warn!(
-                "O_DIRECT open failed for {} ({e}); falling back to buffered reads",
-                shard_path.display()
-            );
-            (None, false)
-        }
-    };
-    let buffered_file = File::open(shard_path)?;
-    let data_fd = direct_file.as_ref().unwrap_or(&buffered_file);
-    if prefetch_shards && !using_direct {
-        advise_prefetch_shard(&buffered_file, shard_path, file_size);
-    }
-
-    // Pipelined reader: sends (tensor_index, aligned_buffer, slice_start) to main.
-    type ReadMsg = (usize, direct_io::AlignedBuffer, usize);
-    let (tx, rx) = sync_channel::<Result<ReadMsg>>(1);
-    let tensors_for_reader: Vec<(u64, usize)> =
-        tensors.iter().map(|t| (t.abs_offset, t.len)).collect();
-    let raw_fd = {
-        use std::os::unix::io::AsRawFd;
-        data_fd.as_raw_fd()
-    };
-
-    let _ = file_size; // retained for future use (tail-fragment buffered read)
-    let reader_handle = std::thread::spawn(move || {
-        for (idx, (abs_offset, len)) in tensors_for_reader.iter().enumerate() {
-            let msg = direct_io::read_tensor_aligned(raw_fd, *abs_offset, *len, using_direct)
-                .map(|(buf, slice_start)| (idx, buf, slice_start));
-            if tx.send(msg).is_err() {
-                break; // receiver dropped
-            }
-        }
-    });
-
-    // Copier: drains the channel, does gpu alloc + copy_h2d, inserts into the map.
-    for result in rx {
-        let (idx, buf, slice_start) = result?;
-        let meta = &tensors[idx];
-        let raw = &buf.as_slice()[slice_start..slice_start + meta.len];
-        // F16 shards: convert bytes to BF16 before upload (same length,
-        // different bit layout — meta.dtype is already staged as BF16).
-        let converted: Vec<u8>;
-        let src: &[u8] = if meta.from_f16 {
-            converted = f16_to_bf16_bytes(raw);
-            &converted
-        } else {
-            raw
-        };
-
-        let ptr = match gpu.alloc(meta.len) {
-            Ok(p) => {
-                gpu.copy_h2d(src, p)?;
-                p
-            }
-            Err(_) => {
-                if !*offload_logged {
-                    tracing::warn!(
-                        "GPU alloc failed for {} ({} bytes) — switching to managed (UVM) memory",
-                        meta.name,
-                        meta.len
-                    );
-                    *offload_logged = true;
-                }
-                let p = gpu.alloc_managed(meta.len)?;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(src.as_ptr(), p.0 as *mut u8, meta.len);
-                }
-                p
-            }
-        };
-
-        out.insert(
-            meta.name.clone(),
-            WeightTensor {
-                ptr,
-                shape: meta.shape.clone(),
-                dtype: meta.dtype,
-            },
-        );
-    }
-
-    reader_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("reader thread panicked"))?;
-
-    // Release file handles, then advise the kernel to drop any pages we did
-    // end up caching on the buffered fallback path. O_DIRECT reads never hit
-    // the page cache, so the posix_fadvise is a no-op there but cheap.
-    drop(direct_file);
-    evict_page_cache(&buffered_file);
-    drop(buffered_file);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn advise_prefetch_shard(file: &File, shard_path: &Path, file_size: u64) {
-    use std::os::unix::io::AsRawFd;
-
-    let fd = file.as_raw_fd();
-    let seq_rc = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL) };
-    let willneed_rc = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_WILLNEED) };
-    if seq_rc == 0 && willneed_rc == 0 {
-        tracing::info!(
-            "  NFS/shard prefetch requested for {} ({:.2} GB)",
-            shard_path.display(),
-            file_size as f64 / (1024.0 * 1024.0 * 1024.0)
-        );
-    } else {
-        tracing::warn!(
-            "  NFS/shard prefetch hint failed for {}: sequential_rc={}, willneed_rc={}",
-            shard_path.display(),
-            seq_rc,
-            willneed_rc
-        );
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn advise_prefetch_shard(_file: &File, _shard_path: &Path, _file_size: u64) {}

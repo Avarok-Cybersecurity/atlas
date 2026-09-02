@@ -382,3 +382,7 @@ fn moe_gate_off_experts_materialize_exactly_as_before() {
     assert!(store.contains("model.layers.0.mlp.experts.0.gate_proj.weight"));
     assert!(!store.contains("model.layers.0.mlp.experts.0.gate_proj.trellis"));
 }
+
+// Pooled-store (fast-loader arena) cases — child module for the 500-LoC cap.
+#[path = "exl3_materialize_pool_tests.rs"]
+mod pool_tests;

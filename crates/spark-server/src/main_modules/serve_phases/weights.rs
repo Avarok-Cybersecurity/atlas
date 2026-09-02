@@ -78,6 +78,19 @@ pub(crate) fn load_weight_store(
             if loader.prefetch_shards {
                 tracing::info!("Fast weight loader shard prefetch/readahead enabled");
             }
+            // EXL3 native serving: pool the kept-packed quartets into one
+            // arena per (shard, class) instead of ~300K per-tensor
+            // cuMemAllocs (GB10 charges sub-2 MiB requests a 2 MiB chunk
+            // tail: ~17.9 GiB on 4.05bpw). `None` unless ATLAS_EXL3_NATIVE=1;
+            // ATLAS_EXL3_WEIGHT_POOL=0 is the kill switch.
+            loader.pool_predicate = spark_model::weight_map::exl3_fast_load_pool_predicate();
+            if loader.pool_predicate.is_some() {
+                tracing::info!(
+                    "EXL3 weight pool enabled for the fast loader (kept-packed trellis \
+                     quartets share one arena per shard and class; \
+                     ATLAS_EXL3_WEIGHT_POOL=0 disables)"
+                );
+            }
             loader
                 .load(model_dir, gpu, oom_reserve_bytes)
                 .context("Failed to load model weights (fast loader)")?

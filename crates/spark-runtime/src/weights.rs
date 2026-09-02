@@ -202,6 +202,10 @@ pub struct WeightStore {
     /// quantize-on-load or straight off NVMe by `NgramRowCache`, both of
     /// which need only this (path, offset) locator.
     deferred: HashMap<String, DeferredTensor>,
+    /// Pooled allocations this store owns, keyed by base address. Member
+    /// tensors are `.offset()` views inserted as ordinary entries; the
+    /// ownership rules live in `weights/arena.rs`.
+    arenas: std::collections::BTreeMap<u64, WeightArena>,
 }
 
 /// Where a skipped tensor lives, so a consumer can read it in place.
@@ -219,10 +223,7 @@ pub struct DeferredTensor {
 impl WeightStore {
     /// Create an empty weight store (for testing).
     pub fn empty() -> Self {
-        Self {
-            weights: HashMap::new(),
-            deferred: HashMap::new(),
-        }
+        Self::from_map(HashMap::new())
     }
 
     /// Record a tensor that was skipped at load, with its on-disk location.
@@ -252,6 +253,7 @@ impl WeightStore {
         Self {
             weights,
             deferred: HashMap::new(),
+            arenas: std::collections::BTreeMap::new(),
         }
     }
 
@@ -259,13 +261,16 @@ impl WeightStore {
     /// passes that rewrite a checkpoint's tensors into a layout the model
     /// loaders consume (the EXL3 pass: trellis triplets -> `.weight` [+
     /// NVFP4 scales]). Returns the displaced tensor, if any — the CALLER
-    /// owns freeing its device memory (the store never frees).
+    /// owns freeing its device memory, through [`Self::release_tensor`]
+    /// (a no-op for arena members; the store itself never frees here).
     pub fn insert(&mut self, name: String, t: WeightTensor) -> Option<WeightTensor> {
         self.weights.insert(name, t)
     }
 
     /// Remove a tensor by name, returning it. As with [`Self::insert`], the
-    /// caller owns freeing the returned tensor's device memory.
+    /// caller owns freeing the returned tensor's device memory — via
+    /// [`Self::release_tensor`] / [`Self::remove_and_free`], never a raw
+    /// `gpu.free`, because the tensor may be a view into a pooled arena.
     pub fn remove(&mut self, name: &str) -> Option<WeightTensor> {
         self.weights.remove(name)
     }
@@ -464,36 +469,12 @@ mod packed_q2_tests;
 mod prefix_detect;
 pub use prefix_detect::auto_detect_weight_prefix;
 
-/// Release every weight tensor.
-///
-/// Safe to free per-entry because the loaders allocate per-tensor: the fast
-/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
-/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
-/// a shared block into this map. (Fused per-expert views DO exist — see
-/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
-/// the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
-    fn label(&self) -> &'static str {
-        "weight store"
-    }
-
-    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        let mut first_error = None;
-        // `drain` rather than iterate: the map must not be left holding
-        // pointers to memory that is gone, and it makes this idempotent.
-        for (name, tensor) in self.weights.drain() {
-            if let Err(e) = gpu.free(tensor.ptr)
-                && first_error.is_none()
-            {
-                first_error = Some(e.context(format!("freeing weight {name}")));
-            }
-        }
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-}
+// Pooled-arena ownership + the `ModelResource` teardown impl. Ownership
+// invariant: a store pointer is either a per-tensor allocation base (freed
+// per entry) or an interior view of a `WeightArena` the store owns (freed
+// once, with the arena) — see the module docs.
+mod arena;
+pub use arena::WeightArena;
 
 #[cfg(test)]
 mod teardown_tests;
