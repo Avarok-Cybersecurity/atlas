@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Merged-state certificate (landscape 1200x675 + square 1200x1200).
 Imports the badge/QR components from gen_badges (which also rebuilds the
 state-diagram previews as a side effect of import — idempotent)."""

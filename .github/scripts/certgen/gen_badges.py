@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Generate Atlas PR-certification masthead components (header band, QR plaque,
 silver stamp, gold seal) and inject them into copies of the state diagrams.
 
