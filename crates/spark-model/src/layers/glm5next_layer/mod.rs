@@ -146,12 +146,26 @@ pub struct Glm5NextLayer {
 /// Tokens per batched prefill sub-chunk — the width `Glm5NextLayer::prefill` hands
 /// [`Glm5NextLayer::forward_k`].
 ///
-/// 🔴 **8, and the ceiling is a KERNEL boundary, not a bandwidth knee.** Every dense projection
-/// on this path goes through [`ops::dense_mm_bf16`], whose batched-GEMV arm
+/// 🔴 **16, and the ceiling is still a KERNEL boundary, not a bandwidth knee.** Every dense
+/// projection on this path goes through [`ops::dense_mm_bf16`], whose batched-GEMV arm
 /// (`dense_gemv_bf16_batchm`) is **bit-identical to M serial GEMVs** and stops at
-/// `DENSE_GEMV_BATCHM_MAX_M = 8`. At `R > 8` the same call falls to the tile GEMM, which both
+/// `DENSE_GEMV_BATCHM_MAX_M`. Past it the same call falls to the tile GEMM, which both
 /// reassociates (so prefill stops being bit-identical to the per-token walk) and is the slower
 /// kernel at these widths — Atlas measured it 3.6x slower than the batched GEMV at M <= 8.
+///
+/// 🔴 WIDENED 8 -> 16 (2026-09-02). The A65 measurement below — "R = 32 is no faster" — was
+/// TRUE AND MISATTRIBUTED. R = 32 lost because it left the batched GEMV for the tile GEMM, not
+/// because row batching stops paying. With the tier itself widened to 16, the same 12 GLM
+/// prefill shapes cost **1.36-1.98x less per token at M = 16 than at M = 8** with cold weights
+/// (11 of 12; shallow-K N4096 K128 is the one loser at 0.77x), worth a modelled **-17.6 s of a
+/// 173.9 s 9K TTFT**, bit-identical (`scripts/glm53-dense-bf16/bench_m16.cu`, spark-bench).
+///
+/// 🪤 The routed MoE does NOT follow the width up. `glm5next_mlp::forward::forward_moe` splits a
+/// wider row group into even sub-groups of at most `MOE_ROW_BATCH_MAX_ROWS` — exact, because a
+/// row's expert sum depends only on its own top-k, never on which rows share the sweep — so the
+/// routed experts still amortize over 8 rows, not 16. Widening THAT is a separate and unmeasured
+/// question: the union kernel is a single block with an O(T^3) scan, and the tier's register
+/// cost was already 80 at R = 8.
 ///
 /// 🔴 MEASURED 2026-08-31, one image, one control, ~1,950-token prompt: control TTFT 125.3 s;
 /// R = 8 **43.4 s (2.89x) and byte-identical on all four probes**; R = 32 44.3 / 51.8 s — no
@@ -160,7 +174,7 @@ pub struct Glm5NextLayer {
 /// modelled weight traffic only, and above R = 8 the traffic saved is handed to a slower kernel.
 /// The routed experts do not amortize past R = 4 either way (`forward_moe`'s union arm caps
 /// there), so R = 8 takes the whole available win. ANOMALIES A65.
-pub(crate) const PREFILL_ROWS: usize = 8;
+pub(crate) const PREFILL_ROWS: usize = 16;
 
 /// `PREFILL_ROWS`, overridable at launch with `ATLAS_GLM_PREFILL_ROWS`.
 ///
@@ -169,8 +183,9 @@ pub(crate) const PREFILL_ROWS: usize = 8;
 /// fixed control in ONE serve instead of one image per width. `1` restores the per-token walk
 /// exactly — the `rows > 1` gate in `prefill` falls through to `forward_one`.
 ///
-/// 🪤 Above 8 the dense projections leave the bit-identical batched-GEMV arm for the tile GEMM,
-/// so a width > 8 is a NUMERICS change as well as a speed one. Measured: it is not faster.
+/// 🪤 Above `DENSE_GEMV_BATCHM_MAX_M` the dense projections leave the bit-identical batched-GEMV
+/// arm for the tile GEMM, so a width past it is a NUMERICS change as well as a speed one. Keep
+/// this lever at or below that constant.
 ///
 /// 🪤 Read once and cached: an env read per layer per sub-chunk would sit in the hot loop.
 pub(crate) fn prefill_rows() -> usize {

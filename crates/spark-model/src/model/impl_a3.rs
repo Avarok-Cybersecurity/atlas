@@ -201,7 +201,7 @@ impl TransformerModel {
                 }
             }
         } else if self.lm_head_nvfp4.is_none()
-            && (2..=ops::DENSE_GEMV_BATCHM_MAX_M).contains(&num_tokens)
+            && (2..=ops::DENSE_GEMV_BATCHM_DECODE_MAX_M).contains(&num_tokens)
             && self.dense_gemv_batchm_kernel.0 != 0
         {
             // BF16 head, 2..8 verify rows: ONE sweep over `[vocab, hidden]` for every row.

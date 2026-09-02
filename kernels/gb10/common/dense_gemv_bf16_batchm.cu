@@ -60,7 +60,26 @@
 #define N_PER_BLOCK 4
 #define WARP_SIZE 32
 #define VEC_SIZE 8   // BF16 values per vectorized load (uint4 = 16 bytes)
-#define MAX_M 8      // compile-time cap on batched rows; callers must pass M <= MAX_M
+// Compile-time cap on batched rows; callers must pass M <= MAX_M.
+//
+// 🔴 16, NOT 8. The cap was never arithmetic: `acc[t]` is one independent FP32 chain per
+// row over the same `kv` order, `m` appears in no row's operand sequence, and the reduce
+// is per-`t`. So a wider tier is bit-identical to the narrow one AND to M serial
+// `dense_gemv_bf16` calls — widening it only changes how much weight traffic each token
+// pays for. MEASURED on the 12 real GLM-5.3 prefill shapes with cold weights
+// (`scripts/glm53-dense-bf16/bench_m16.cu`, spark-bench): every row byte-identical to the
+// M=1 kernel at M=16, every m <= 8 byte-identical to the MAX_M=8 kernel this replaces
+// (the gate that matters — decode, the MTP verify and the lm_head arm all run m <= 8 on
+// this same kernel), and per-token cost 1.36-1.98x lower on 11 of the 12 shapes.
+//
+// 🪤 The one shape that LOSES is shallow-K: N4096 K128 goes 0.77x, because at K_VEC = 16
+// the staging barriers dominate a kernel that barely reads anything. It costs ~0.27 s of a
+// ~17.6 s win, so it is not worth a special case — but do not generalise "wider is faster"
+// past K >= 1024.
+//
+// 🪤 smem is `MAX_M * 64 * 16 B` = 16 KB at 16 (was 8 KB), plus 512 B for the fold. Still
+// 6 blocks/SM against the 100 KB/SM on GB10, so occupancy is not the limiter.
+#define MAX_M 16
 
 extern "C" __global__ void dense_gemv_bf16_batchm(
     const __nv_bfloat16* __restrict__ A,  // [M, K]
@@ -89,8 +108,8 @@ extern "C" __global__ void dense_gemv_bf16_batchm(
     const unsigned int K_VEC = K / VEC_SIZE;
     const uint4* B_vec = (const uint4*)(B + (unsigned long long)(active ? n : 0) * K);
 
-    // One 64-kv slab of every A row, shared by all four output groups. 8 KB at
-    // MAX_M = 8, so it never limits occupancy (100 KB/SM on GB10).
+    // One 64-kv slab of every A row, shared by all four output groups. 16 KB at
+    // MAX_M = 16, so it never limits occupancy (100 KB/SM on GB10).
     __shared__ uint4 As[MAX_M][BLOCK_SIZE / N_PER_BLOCK];
 
     for (unsigned int base = 0; base < K_VEC; base += threads_per_out) {

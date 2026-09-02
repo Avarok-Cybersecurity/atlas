@@ -420,7 +420,44 @@ pub(crate) fn row_batch_max() -> usize {
 /// Widest compiled `w4a16_gemv_sw_moe_batchm_mR` tier. Mirror of the
 /// `ATLAS_MOE_BATCHM_ENTRY` list in `kernels/gb10/common/w4a16_gemv.cu` and of the
 /// `[KernelHandle; 7]` in `Glm5NextMlpKernels`.
+///
+/// 🔴 Since 2026-09-02 this is a **sub-group width, not a caller contract**. The prefill sub-chunk
+/// is 16 rows wide (`glm5next_layer::PREFILL_ROWS`) because the DENSE tier widened to 16; the
+/// routed experts did not follow, so [`forward_moe`] splits any wider row group into even
+/// sub-groups of at most this and sweeps each one. Callers may pass any `rows` their workspace
+/// holds.
 pub const MOE_ROW_BATCH_MAX_ROWS: usize = 8;
+
+/// Split `rows` into consecutive `(start, width)` sub-groups of at most `cap`, as evenly as the
+/// count allows.
+///
+/// 🪤 Even, not greedy. A greedy split of 9 rows at cap 8 leaves a trailing group of ONE, and
+/// there is no `w4a16_gemv_sw_moe_batchm_m1` tier — the array starts at m2. Balancing gives 5 + 4,
+/// and at the shipping cap of `MOE_ROW_BATCH_MAX_ROWS` every group is >= 2 for every `rows >= 2`.
+///
+/// 🪤 A width-1 group is still REACHABLE at a small cap, where it is arithmetically forced (3 rows
+/// at cap 2 has no all->=2 split). That is not a correctness hole — the caller's gate requires
+/// every group to have a tier, so such a call simply runs the per-row arm — but it does mean
+/// `ATLAS_GLM_MOE_ROW_BATCH_MAX=2` silently disables row batching at odd widths. Only the A/B
+/// lever can reach it.
+///
+/// 🔴 Splitting is EXACT. A row's routed output is the sum over ITS OWN top-k slots, each slot a
+/// single expert's GEMV whose accumulation order (`w4a16_gemv_partial_rows`) does not depend on
+/// `R` or on which rows share the sweep; the union table only decides which experts get swept and
+/// in what order the sweeps are issued, never what any row adds. So `forward_moe(rows)` returns
+/// the same bits however it is grouped. What splitting costs is amortization, not accuracy: two
+/// 8-row sweeps visit the union of 8 rows twice instead of the (smaller) union of 16 once.
+fn moe_row_groups(rows: usize, cap: usize) -> Vec<(usize, usize)> {
+    let n = rows.div_ceil(cap.max(1)).max(1);
+    let mut out = Vec::with_capacity(n);
+    let mut start = 0usize;
+    for i in 0..n {
+        let w = (rows - start).div_ceil(n - i);
+        out.push((start, w));
+        start += w;
+    }
+    out
+}
 
 /// 🪤 `glm5next_moe_row_union` is ONE block of `rows * top_k` threads. A CUDA block is capped
 /// at 1024 threads, but this kernel's own scans are `O(T^2)`/`O(T^3)` over that extent and the
@@ -534,16 +571,21 @@ pub fn forward_moe(
     // instead of 8K. The per-row path pays 8K; this one pays the union.
     // 🪤 The route trace reads `ids` back per row, which the batched path never does — leave
     // it on the per-row arm rather than reconstructing the trace from the union table.
+    // Sub-groups the routed sweep runs at. `rows` may exceed the widest tier — the prefill
+    // sub-chunk is 16 wide since the dense tier widened — so every gate below is PER GROUP.
+    let groups = moe_row_groups(rows, row_batch_max());
     let batched = rows >= 2
-        && rows <= row_batch_max()
-        // 🪤 The union table is one block of `rows * top_k` threads; past 64 ids it would
-        // silently drop entries. GLM-5.3 is 8 x 8 = 64 exactly, so this is a live edge.
-        && rows * cfg.top_k <= MOE_ROW_UNION_MAX_IDS
         && !host_dispatch_forced()
         && !row_batch_disabled()
         && !profile::trace_on()
         && k.moe_row_union.0 != 0
-        && k.w4a16_gemv_sw_moe_batchm[rows - 2].0 != 0;
+        && groups.iter().all(|&(_, w)| {
+            // 🪤 The union table is one block of `w * top_k` threads; past 64 ids it would
+            // silently drop entries. GLM-5.3 is 8 x 8 = 64 exactly, so this is a live edge.
+            w >= 2
+                && w * cfg.top_k <= MOE_ROW_UNION_MAX_IDS
+                && k.w4a16_gemv_sw_moe_batchm[w - 2].0 != 0
+        });
     announce_row_batch(batched, rows);
 
     // ── router: FULL expert set, FP32 logits, replicated on every rank ──
@@ -787,86 +829,95 @@ pub fn forward_moe(
     if batched {
         let t = profile::start();
         let mi = cfg.moe_intermediate;
-        // The union table: one block, one thread per (row, slot) id. Stays on device.
-        KernelLaunch::new(gpu, k.moe_row_union)
-            .grid([1, 1, 1])
-            .block([(rows * cfg.top_k) as u32, 1, 1])
-            .arg_ptr(ws.ids)
-            .arg_ptr(ws.u_eid)
-            .arg_ptr(ws.u_slot)
-            .arg_u32(rows as u32)
-            .arg_u32(cfg.top_k as u32)
-            .launch(stream)?;
+        // ONE sweep per sub-group. At `rows <= MOE_ROW_BATCH_MAX_ROWS` this is the single pass it
+        // always was; a wider prefill sub-chunk runs it twice over disjoint row ranges, which is
+        // byte-identical (see `moe_row_groups`) and keeps the routed experts at the tier width
+        // that was actually measured.
+        for &(r0, w_rows) in &groups {
+            // The union table: one block, one thread per (row, slot) id. Stays on device.
+            // 🪤 Rebuilt per sub-group over that group's slice of `ids` — the scratch is sized for
+            // the widest group, and a later group overwrites the earlier one's table after its
+            // sweeps have been issued on the same stream.
+            KernelLaunch::new(gpu, k.moe_row_union)
+                .grid([1, 1, 1])
+                .block([(w_rows * cfg.top_k) as u32, 1, 1])
+                .arg_ptr(ws.ids.offset(r0 * cfg.top_k * 4))
+                .arg_ptr(ws.u_eid)
+                .arg_ptr(ws.u_slot)
+                .arg_u32(w_rows as u32)
+                .arg_u32(cfg.top_k as u32)
+                .launch(stream)?;
 
-        let kb = k.w4a16_gemv_sw_moe_batchm[rows - 2];
-        // gate and up: a row's slots all read the SAME x, so the slot stride is 0.
-        w4a16_gemv_moe_batchm(
-            gpu,
-            kb,
-            x,
-            &w.ptrs.gate,
-            ws.a_gate,
-            ws.u_eid,
-            ws.u_slot,
-            mi,
-            cfg.hidden,
-            rows,
-            cfg.top_k,
-            cfg.num_experts,
-            cfg.hidden,
-            0,
-            cfg.top_k * mi,
-            stream,
-        )?;
-        w4a16_gemv_moe_batchm(
-            gpu,
-            kb,
-            x,
-            &w.ptrs.up,
-            ws.a_up,
-            ws.u_eid,
-            ws.u_slot,
-            mi,
-            cfg.hidden,
-            rows,
-            cfg.top_k,
-            cfg.num_experts,
-            cfg.hidden,
-            0,
-            cfg.top_k * mi,
-            stream,
-        )?;
-        // Elementwise over every (row, slot) at once. Slots this rank does not own activate
-        // uninitialised rows; the down projection skips them, so those rows are never read.
-        swiglu(
-            gpu,
-            k.swiglu,
-            ws.a_gate,
-            ws.a_up,
-            ws.a_act,
-            rows * cfg.top_k * mi,
-            cfg.swiglu_limit,
-            stream,
-        )?;
-        // down: slot-major activations, so the slot stride is one expert's width.
-        w4a16_gemv_moe_batchm(
-            gpu,
-            kb,
-            ws.a_act,
-            &w.ptrs.down,
-            ws.expert_out,
-            ws.u_eid,
-            ws.u_slot,
-            cfg.hidden,
-            mi,
-            rows,
-            cfg.top_k,
-            cfg.num_experts,
-            cfg.top_k * mi,
-            mi,
-            cfg.top_k * cfg.hidden,
-            stream,
-        )?;
+            let kb = k.w4a16_gemv_sw_moe_batchm[w_rows - 2];
+            // gate and up: a row's slots all read the SAME x, so the slot stride is 0.
+            w4a16_gemv_moe_batchm(
+                gpu,
+                kb,
+                x.offset(r0 * cfg.hidden * 2),
+                &w.ptrs.gate,
+                ws.a_gate.offset(r0 * cfg.top_k * mi * 2),
+                ws.u_eid,
+                ws.u_slot,
+                mi,
+                cfg.hidden,
+                w_rows,
+                cfg.top_k,
+                cfg.num_experts,
+                cfg.hidden,
+                0,
+                cfg.top_k * mi,
+                stream,
+            )?;
+            w4a16_gemv_moe_batchm(
+                gpu,
+                kb,
+                x.offset(r0 * cfg.hidden * 2),
+                &w.ptrs.up,
+                ws.a_up.offset(r0 * cfg.top_k * mi * 2),
+                ws.u_eid,
+                ws.u_slot,
+                mi,
+                cfg.hidden,
+                w_rows,
+                cfg.top_k,
+                cfg.num_experts,
+                cfg.hidden,
+                0,
+                cfg.top_k * mi,
+                stream,
+            )?;
+            // Elementwise over every (row, slot) at once. Slots this rank does not own activate
+            // uninitialised rows; the down projection skips them, so those rows are never read.
+            swiglu(
+                gpu,
+                k.swiglu,
+                ws.a_gate.offset(r0 * cfg.top_k * mi * 2),
+                ws.a_up.offset(r0 * cfg.top_k * mi * 2),
+                ws.a_act.offset(r0 * cfg.top_k * mi * 2),
+                w_rows * cfg.top_k * mi,
+                cfg.swiglu_limit,
+                stream,
+            )?;
+            // down: slot-major activations, so the slot stride is one expert's width.
+            w4a16_gemv_moe_batchm(
+                gpu,
+                kb,
+                ws.a_act.offset(r0 * cfg.top_k * mi * 2),
+                &w.ptrs.down,
+                ws.expert_out.offset(r0 * cfg.top_k * cfg.hidden * 2),
+                ws.u_eid,
+                ws.u_slot,
+                cfg.hidden,
+                mi,
+                w_rows,
+                cfg.top_k,
+                cfg.num_experts,
+                cfg.top_k * mi,
+                mi,
+                cfg.top_k * cfg.hidden,
+                stream,
+            )?;
+        }
         profile::end(profile::MOE_EXPERTS, t, gpu, stream);
     }
 
@@ -905,4 +956,43 @@ pub fn forward_moe(
         .launch(stream)?;
     profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MOE_ROW_BATCH_MAX_ROWS, moe_row_groups};
+
+    /// The split must cover every row exactly once, in order, never exceed the tier width,
+    /// and never emit a group of ONE — there is no `w4a16_gemv_sw_moe_batchm_m1`, so a
+    /// trailing single row would silently drop the whole batched arm for that sub-chunk.
+    #[test]
+    fn row_groups_cover_and_never_orphan_a_row() {
+        for cap in 1..=MOE_ROW_BATCH_MAX_ROWS {
+            for rows in 1..=64 {
+                let g = moe_row_groups(rows, cap);
+                assert_eq!(g[0].0, 0, "rows={rows} cap={cap}: does not start at 0");
+                let mut next = 0;
+                for &(start, w) in &g {
+                    assert_eq!(start, next, "rows={rows} cap={cap}: gap or overlap");
+                    assert!(w >= 1 && w <= cap, "rows={rows} cap={cap}: width {w}");
+                    // No orphan at the width that ships. At a small cap an all->=2 split can be
+                    // arithmetically impossible (3 rows at cap 2), and the caller's per-group
+                    // tier gate handles that by falling back — see the fn doc.
+                    if rows >= 2 && cap == MOE_ROW_BATCH_MAX_ROWS {
+                        assert!(w >= 2, "rows={rows} cap={cap}: orphaned a single row");
+                    }
+                    next += w;
+                }
+                assert_eq!(next, rows, "rows={rows} cap={cap}: {next} rows covered");
+            }
+        }
+    }
+
+    /// The two widths this actually ships at.
+    #[test]
+    fn row_groups_at_the_shipping_widths() {
+        assert_eq!(moe_row_groups(16, 8), vec![(0, 8), (8, 8)]);
+        assert_eq!(moe_row_groups(8, 8), vec![(0, 8)]);
+        assert_eq!(moe_row_groups(9, 8), vec![(0, 5), (5, 4)]);
+    }
 }

@@ -185,7 +185,36 @@ pub fn dense_gemv_batch2(
 #[allow(clippy::too_many_arguments)]
 /// Mirror of `MAX_M` in `kernels/gb10/common/dense_gemv_bf16_batchm.cu`.
 /// The kernel clamps silently above this, so the Rust side must refuse.
-pub const DENSE_GEMV_BATCHM_MAX_M: u32 = 8;
+///
+/// 🔴 16 since 2026-09-02. The old 8 was the kernel's compiled row array, never an
+/// arithmetic boundary: each row is an independent FP32 accumulator over the same `kv`
+/// order, `m` appears in no row's operand sequence, and the fold is per-row. So every
+/// width up to `MAX_M` is bit-identical both to the narrower tier and to M serial
+/// `dense_gemv_bf16` calls. Verified on the 12 real GLM-5.3 prefill shapes with cold
+/// weights, including the regression direction that matters — m <= 8 byte-unchanged,
+/// because decode, the MTP verify arm and the BF16 lm_head arm all run m <= 8 on this
+/// same kernel (`scripts/glm53-dense-bf16/bench_m16.cu`, spark-bench).
+///
+/// 🪤 This constant is load-bearing OUTSIDE the GEMV: it gates the lm_head batched arm
+/// (`model/impl_a3.rs`), the MTP row dispatch (`layers/mtp_head/row_dispatch.rs`) and it
+/// sizes `verify_k` for the KDA/DSA/MLP workspaces (`weight_loader/glm5_next_load.rs`).
+/// Raising it widens those arms and grows per-layer scratch — a memory-budget change, not
+/// only a kernel one.
+pub const DENSE_GEMV_BATCHM_MAX_M: u32 = 16;
+
+/// The band the batched GEMV is allowed to CLAIM on the decode paths: the MTP row dispatch
+/// and the BF16 lm_head arm.
+///
+/// 🔴 Deliberately still 8, and NOT the same thing as the kernel's `MAX_M`. Those two sites
+/// pick between `dense_gemv_bf16_batchm` and a **reassociating** kernel (the pipelined /
+/// tile GEMM), so the band's upper edge decides which bits a decode of that width produces.
+/// Widening the GEMV tier to 16 for prefill would silently move widths 9..=16 off the tile
+/// GEMM they have always used — a numerics change on the MTP / DFlash γ>8 window, on a path
+/// the prefill measurement says nothing about. Moving this edge needs its own A/B and its
+/// own byte gate against the sealed decode reference; until then the decode band is frozen
+/// where it was measured (+6 % at C=2, +24 % at C=4; NEGATIVE above 8 against the tile GEMM,
+/// -14.4 % at C=16 — commits 84d5b763c / 78d276832).
+pub const DENSE_GEMV_BATCHM_DECODE_MAX_M: u32 = 8;
 
 pub fn dense_gemv_batchm(
     gpu: &dyn GpuBackend,
