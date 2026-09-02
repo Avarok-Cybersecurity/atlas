@@ -245,6 +245,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          # Actions does NOT put org/repo variables in the environment; without
+          # this line the script reads an empty model id and hard-stops on every
+          # invocation. The org variable is the SSOT for the free model id.
+          OPENROUTER_DEFAULT_FREE_MODEL: ${{ vars.OPENROUTER_DEFAULT_FREE_MODEL }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.cmd.outputs.pr }}
           ACTOR: ${{ steps.cmd.outputs.actor }}

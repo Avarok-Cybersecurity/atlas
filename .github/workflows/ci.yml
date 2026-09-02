@@ -105,6 +105,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
           # Only a pull_request can be un-stamped. A merge_group entry reached
@@ -114,18 +115,37 @@ jobs:
             echo "$EVENT is not a pull request — the lane runs."
             exit 0
           fi
-          n=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
-                --jq '[.check_runs[] | select(.name == "Stamp" and .conclusion == "success")] | length' \
-                2>/dev/null || echo FAILOPEN)
-          if [ "$n" = "FAILOPEN" ]; then
+          # A Stamp is a check run, so it is bound to the ONE commit it was
+          # created on. The bot tells the author "a stamp survives new commits",
+          # so honour that literally: look for a Stamp on any commit of this PR,
+          # head first, then the rest newest-first. Carrying it forward is safe
+          # because a stamp only releases an expensive lane — it approves
+          # nothing, and certification still has to pass on its own merits.
+          stamped_at=""
+          for s in $SHA $(gh api "repos/$REPO/pulls/$PR/commits?per_page=100" \
+                            --jq 'reverse | .[].sha' 2>/dev/null); do
+            # `k=$(cmd || echo FAILOPEN)` would CONCATENATE gh's error body with
+            # the marker, so the equality test misses and `-gt` then dies on a
+            # non-integer — silently reading an API failure as "not stamped",
+            # the exact inverse of the fail-open doctrine. Assign, then test the
+            # command's own status, and require a clean integer.
+            k=$(gh api "repos/$REPO/commits/$s/check-runs?per_page=100" \
+                  --jq '[.check_runs[] | select(.name == "Stamp" and .conclusion == "success")] | length' \
+                  2>/dev/null) || k=FAILOPEN
+            case "$k" in ''|*[!0-9]*) k=FAILOPEN ;; esac
+            if [ "$k" = "FAILOPEN" ]; then
+              echo "stamped=true" >>"$GITHUB_OUTPUT"
+              echo "could not read check runs — failing OPEN, the lane runs."
+              exit 0
+            fi
+            if [ "${k:-0}" -gt 0 ]; then stamped_at="$s"; break; fi
+          done
+          if [ -n "$stamped_at" ]; then
             echo "stamped=true" >>"$GITHUB_OUTPUT"
-            echo "could not read check runs — failing OPEN, the lane runs."
-          elif [ "${n:-0}" -gt 0 ]; then
-            echo "stamped=true" >>"$GITHUB_OUTPUT"
-            echo "stamped at $SHA — the lane runs."
+            echo "stamped at $stamped_at — the lane runs."
           else
             echo "stamped=false" >>"$GITHUB_OUTPUT"
-            echo "not stamped at $SHA — certification and the release matrix are held."
+            echo "not stamped on any commit of PR #$PR — certification and the release matrix are held."
           fi
 
   fmt:
@@ -982,6 +1002,50 @@ jobs:
         run: bash scripts/ci_gpu_stubs.sh
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: One PR, one commit, one signer
+        # The SIGNATURE binds each record to a commit. This binds the records TO
+        # EACH OTHER: without it a PR can present a favourable record measured at
+        # one commit beside another measured at a different commit, each
+        # individually valid and signed, which is exactly the "different records
+        # at different commits" this feature exists to prevent.
+        #
+        # It lives here rather than in `gate/check.rs` for one blunt reason:
+        # `crates/` is a measured input (PERF_PATHS), so editing the Rust gate
+        # would invalidate every record the campaign certifying THIS PR just
+        # produced, costing a five-hour re-measure to add a rule about
+        # bookkeeping. @human-review: fold it into the Rust gate in a follow-up
+        # so the verdict has a single home.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base=$(git merge-base "$BASE" HEAD)
+          # `.json$` also drops the `.json.sig` sidecars, which are read below.
+          mapfile -t added < <(git diff --name-only --diff-filter=AM "$base"...HEAD -- .benchmarks | grep '\.json$' || true)
+          if [ "${#added[@]}" -eq 0 ]; then
+            echo "this PR adds no records — nothing to agree on."
+            exit 0
+          fi
+          shas=(); keys=()
+          for f in "${added[@]}"; do
+            s=$(jq -r '.git_sha // "MISSING"' "$f")
+            k=$(jq -r '.key // "MISSING"' "$f.sig" 2>/dev/null || echo NO_SIDECAR)
+            printf '  %-58s sha=%s signer=%s\n' "$f" "$s" "$k"
+            shas+=("$s"); keys+=("$k")
+          done
+          us=$(printf '%s\n' "${shas[@]}" | sort -u | wc -l)
+          uk=$(printf '%s\n' "${keys[@]}" | sort -u | wc -l)
+          if [ "$us" -ne 1 ]; then
+            echo "::error title=Records span more than one commit::This PR adds records measured at $us different commits. A certification is ONE campaign at ONE commit; re-measure the stragglers at the head you intend to merge."
+            exit 1
+          fi
+          if [ "$uk" -ne 1 ]; then
+            echo "::error title=Records carry more than one signer::$uk distinct signing keys across the added records. One campaign, one box, one identity."
+            exit 1
+          fi
+          echo "all ${#added[@]} added record(s) agree: one commit (${shas[0]}), one signer (${keys[0]})."
+
       - name: Check committed benchmark records against their baselines
         env:
           ATLAS_SKIP_BUILD: "1"
