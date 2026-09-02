@@ -113,7 +113,9 @@ fn test_intermediate_snapshot_survives_tree_eviction() {
 
 #[test]
 fn test_partial_suffix_insert_and_lookup() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // 20 tokens = 1 full block (16) + 4 partial
     let tokens: Vec<u32> = (0..20).collect();
     let block_table = vec![10, 20]; // block for full + block for partial
@@ -183,7 +185,9 @@ fn test_partial_suffix_eviction_frees_both_blocks() {
             with partial-block-matching during the radix-tree refactor; \
             assertions need rewriting against the new lookup semantics"]
 fn test_partial_suffix_cleared_when_extended() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // Insert 20 tokens (1 full + 4 partial)
     let tokens_20: Vec<u32> = (0..20).collect();
     tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
@@ -207,7 +211,9 @@ fn test_partial_suffix_cleared_when_extended() {
 
 #[test]
 fn test_partial_suffix_multi_block_prefix() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // 396 tokens = 24 full blocks + 12 partial
     let tokens: Vec<u32> = (0..396).collect();
     let block_table: Vec<u32> = (0..25).collect();
@@ -223,7 +229,9 @@ fn test_partial_suffix_multi_block_prefix() {
 
 #[test]
 fn test_partial_suffix_prefix_match_shorter_lookup() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // Insert 31 tokens (1 full block + 15 partial) — simulates prompt+generation
     let tokens_31: Vec<u32> = (0..31).collect();
     tree.insert(&tokens_31, &[10, 20], &[], 16, 0, 0);
@@ -240,7 +248,9 @@ fn test_partial_suffix_prefix_match_shorter_lookup() {
 
 #[test]
 fn test_sub_block_match_via_child_key_prefix() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // Insert 35 tokens (2 full blocks + 3 partial) — prompt + generation
     let tokens_35: Vec<u32> = (0..35).collect();
     tree.insert(&tokens_35, &[10, 20, 30], &[], 16, 0, 0);
@@ -355,7 +365,10 @@ fn test_ssm_snapshot_adapter_isolation_via_tree() {
 /// back the intermediate instead of nothing.
 #[test]
 fn test_lookup_ssm_anchor_below_exact_leaf_selects_intermediate() {
-    let tree = RadixTree::new();
+    // A 3286-token EXACT-leaf hit only exists when sub-block matching is on
+    // (3286 is not a multiple of 16). That arm is opt-in now, so ask for it
+    // explicitly — this test is about the re-anchor, not about the arm.
+    let tree = RadixTree::with_subblock_matching(true);
     let total = 3286usize;
     let tokens: Vec<u32> = (0..total as u32).collect();
     let block_table: Vec<u32> = (0..206).collect(); // 205 full + 1 partial

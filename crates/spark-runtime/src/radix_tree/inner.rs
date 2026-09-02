@@ -148,6 +148,7 @@ impl RadixTreeInner {
         tokens: &[u32],
         block_size: usize,
         adapter_id: u64,
+        subblock_ok: bool,
     ) -> (Vec<u32>, Vec<u32>, usize) {
         let mut current = match self.root_for_read(adapter_id) {
             Some(r) => r,
@@ -186,15 +187,18 @@ impl RadixTreeInner {
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
         let remainder = tokens.len() - matched_tokens;
-        // ATLAS_PREFIX_SUBBLOCK=0 restricts matching to WHOLE blocks.
+        // `subblock_ok` is OFF by default (`ATLAS_PREFIX_SUBBLOCK=1` opts in);
+        // resolved once per cache in `RadixTree::new`.
         //
         // The sub-block arms below return a `matched_tokens` that is NOT
         // block-aligned, and they do it by reusing a block whose KV was
         // computed for a LONGER key — i.e. for a different continuation past
-        // our suffix. If any consumer treats `matched_tokens` as a block
-        // boundary, the tail of that block is foreign context the model then
-        // attends to. This lever exists to A/B exactly that.
-        let subblock_ok = std::env::var("ATLAS_PREFIX_SUBBLOCK").as_deref() != Ok("0");
+        // our suffix. The tail of that block is foreign context, and the
+        // sequence writes its OWN new tokens over it inside a block the tree
+        // still shares with the original key. Measured consequence: three
+        // identical temp-0 requests returned three different completions;
+        // with the arms off, six returned one. See
+        // `super::subblock_matching_from_env`.
         if subblock_ok
             && remainder > 0
             && remainder < block_size
