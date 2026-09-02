@@ -281,6 +281,14 @@ impl BenchState {
             KeyCode::PageUp => {
                 self.history_table_scroll = self.history_table_scroll.saturating_sub(5);
             }
+            // Make a shareable card of the selected run.
+            //
+            // The card is rendered from the COMMITTED gate record for this
+            // benchmark, not from the history entry beside it. A `RunRecord`
+            // carries no hardware and no commit sha, and a card exists to print
+            // exactly those beside the number — inventing them would produce the
+            // artefact the card was designed to prevent.
+            KeyCode::Char('c') if n > 0 => return self.export_card(),
             _ => {}
         }
         Outcome::None

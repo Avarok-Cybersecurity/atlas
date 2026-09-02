@@ -4,11 +4,9 @@
   // Desktop bar + mobile drawer render from the SAME `nav.links` in data.js.
   // Below the drawer breakpoint (styles/mobile.css) the bar hides and the
   // toggle appears, so phones keep every link the desktop has.
-  import { nav, githubUrl, discordUrl, xUrl, codeChat } from '$lib/data.js';
+  import { nav, githubUrl, codeChat } from '$lib/data.js';
   import stars from '$lib/stars.generated.json';
   import GithubIcon from './GithubIcon.svelte';
-  import DiscordIcon from './DiscordIcon.svelte';
-  import XIcon from './XIcon.svelte';
   import ChatLatticeIcon from './ChatLatticeIcon.svelte';
   import FleetPill from './FleetPill.svelte';
   import { preloadChat, prefetchWasmOnIdle } from '../chat/warmup.js';
@@ -65,8 +63,6 @@
       {#each nav.links as l}
         <a href={l.href}>{l.text}</a>
       {/each}
-      <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener"><DiscordIcon size={18} /></a>
-      <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener"><XIcon size={16} /></a>
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener">
         <GithubIcon size={15} /> Star <span class="nav-star-count">{stars.count}</span>
       </a>
@@ -109,8 +105,6 @@
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener" tabindex={open ? 0 : -1}>
         <GithubIcon size={15} /> Star <span class="nav-star-count">{stars.count}</span>
       </a>
-      <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener" tabindex={open ? 0 : -1}><DiscordIcon size={22} /></a>
-      <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener" tabindex={open ? 0 : -1}><XIcon size={19} /></a>
       <button
         type="button"
         class="nav-chat-btn"

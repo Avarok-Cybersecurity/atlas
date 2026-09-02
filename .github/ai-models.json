@@ -15,6 +15,11 @@
     "~100x smaller than the categorizer. Chunk rerank inputs; do not assume one",
     "uniform budget.",
     "",
+    "/review does NOT read this file. Its model is the ORG variable",
+    "`OPENROUTER_DEFAULT_FREE_MODEL`, so every repo in the org rotates together",
+    "when a free id is retired. Two places naming one model is the failure this",
+    "file exists to prevent, so it is named once, there, and pointed at here.",
+    "",
     "Reference implementation: Avarok-Cybersecurity/lattice-db,",
     "examples/rag-example/src/openrouter.ts."
   ],

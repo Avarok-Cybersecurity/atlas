@@ -42,6 +42,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The self-hosted command runner executes on our own hardware. It is
+      # only safe while no workflow that reaches its label checks out untrusted
+      # code -- a property of the files today, which this turns into a rule.
+      # Cheap, pure-Python, and it lives in the security job because that is
+      # what it is.
+      # The whole certification self-test, which includes the command-runner
+      # assertion. Every check in it has a negative control -- the guard is
+      # shown FAILING on input it must reject, not merely passing on input it
+      # should accept. Offline: no network, no API, no GPU.
+      # segno generates the certificate's QR matrix; PyYAML parses workflows for
+      # the runner-safety assertion. Both are pure Python and install in seconds.
+      # The suite REFUSES to run without them rather than skipping those checks.
+      - name: Self-test prerequisites
+        run: python3 -m pip install --quiet segno PyYAML
+      - name: Certification pipeline self-test
+        run: bash .github/scripts/certification-selftest.sh
       # `rust-version` pins the action's in-container toolchain to our
       # rust-toolchain.toml channel. Without it, the action's bundled Rust
       # can't honor the repo pin and rustup errors ("override toolchain

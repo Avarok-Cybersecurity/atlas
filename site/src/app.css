@@ -80,8 +80,6 @@ nav {
 .nav-links { display: flex; gap: 1.5rem; align-items: center; }
 .nav-links a { color: var(--t2); text-decoration: none; font-size: 0.85rem; font-weight: 550; transition: color 0.2s; }
 .nav-links a:hover { color: var(--t1); }
-.nav-icon-link { display: inline-flex; color: var(--t2); transition: color 0.2s; }
-.nav-icon-link:hover { color: var(--accent); }
 .nav-star-btn {
   display: inline-flex; align-items: center; gap: 0.45rem; background: var(--accent-fill);
   color: #fff !important; padding: 0.4rem 0.85rem; border-radius: 8px;
@@ -467,6 +465,15 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem 2.5rem; backgro
 .footer-brand .flogo { margin: 0 0 0.6rem -25px; }
 .footer-brand p { font-size: 0.82rem; color: var(--t2); line-height: 1.6; }
 .footer-brand .lic { font-size: 0.76rem; color: var(--t3); margin-top: 0.6rem; }
+/* Social lives in the footer, not the nav: these are exits, and the nav's job
+   is to keep people in the page. 40px hit area meets the mobile touch-target
+   rule the retired .nav-icon-link carried. */
+.footer-social { display: flex; gap: 0.85rem; margin-top: 0.9rem; }
+.footer-social a { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 40px; min-height: 40px; margin-left: -10px; color: var(--t2);
+  transition: color 0.2s, transform 0.2s; }
+.footer-social a:hover { color: var(--accent); transform: translateY(-1px); }
+.footer-social a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .fcol h4 { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--t3); margin-bottom: 0.75rem; }
 .fcol a { display: block; font-size: 0.83rem; color: var(--t2); text-decoration: none; margin-bottom: 0.45rem; transition: color 0.2s; }
 .fcol a:hover { color: var(--accent); }

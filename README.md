@@ -1,8 +1,10 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="Atlas Inference — pure Rust LLM inference engine" width="640" />
-</p>
-
-<h1 align="center">Atlas Inference Engine</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-ondark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full.svg">
+    <img src="assets/brand/logo-full-ondark.svg" alt="Atlas Inference Engine" width="660">
+  </picture>
+</h1>
 
 <p align="center">
   <strong>Pure Rust LLM inference, from the device in your hand to the datacenter rack.</strong>
@@ -52,6 +54,7 @@ Receipts, not adjectives:
 - [🔌 Adding a New Hardware Target](#new-hardware)
 - [🧬 Adding a New Model](#new-model)
 - [🔬 Kernel Debugging](#debugging)
+- [🔐 How a Change Lands](#certification)
 - [🤝 Community and Contributing](#community)
 - [📚 Citations](#citations)
 - [⚖️ License and Enterprise Edition](#license)
@@ -563,6 +566,50 @@ The order matters; this is the same workflow that found and fixed three compound
 3. **Per-layer comparator.** A short script (the comparator pattern is captured in [`DEBUGGING_METHODOLOGY.md` §4](DEBUGGING_METHODOLOGY.md#4-per-layer-divergence-comparator)) prints `ratio = |Atlas| / |HF|` and `overlap = |top-K_Atlas ∩ top-K_HF|` per layer. The first layer where the ratio falls outside `[0.95, 1.05]` or overlap drops below 6/8 is your first-divergent layer — start drilling there.
 
 For the 2026-05-20 MoE bug hunt this localized the issue from "16K context produces gibberish" to "L0 MoE output magnitude 3.4× too large because of three compounding bugs: v1 grouped-GEMM, missing zero-init, broken `max_m_tiles` heuristic" within a few iterations. After all three fixes, all 40 layers landed in `[0.977, 1.021]` of HF baseline — at the FP8 quantization noise floor.
+
+<a id="certification"></a>
+
+## 🔐 How a Change Lands
+
+Every claim in this README is a measurement, and measurements are only worth the
+process that produced them. A change reaches `main` through three stages, and
+nothing about that is manual goodwill — it is enforced.
+
+<p align="center">
+  <img src="docs/diagrams/pr-certification.svg" alt="PR certification flow: Stage 1 Verification, Stage 2 Certification requiring an engineer's seal and benchmark records, Stage 3 Ready to merge, then the merge queue. A table shows what survives a new commit, main advancing, and conflicts." width="960">
+</p>
+
+**Stage 1 — Verification** runs on every push: formatting, clippy, typos, licence
+headers, kernel structure, tests, merge ancestry. Certification and the nine
+release-matrix build legs are held back, so an early draft does not burn an hour
+of runners.
+
+**Stage 2 — Certification** opens on `/stamp` from anyone with write access, and
+needs two things. An **engineer's seal** — a codeowner comments `/seal`, and the
+sealers' owned paths must cover the whole diff. And **benchmark records** — the
+campaign runs on a real GPU box and the records are committed; CI only checks
+that they cover what changed. Records are Ed25519-signed over their own bytes and
+the commit they name, and CI requires every record a PR adds to share one commit
+and one signer — so an altered record, one re-pointed at a different commit, or
+results spliced from two campaigns are all detectable, and every record is
+attributable to a key in `.github/record-signers/`.
+
+That is an integrity check, not proof the numbers were measured. The key is
+generated on the operator's own box and signing happens there, after the record
+is written, so a determined insider can sign whatever they like; CI has no GPU
+and verifies signatures and internal consistency rather than witnessing
+execution. What this makes nearly impossible is the *accident* — shipping the
+wrong records — and what it makes attributable is everything else.
+
+**Stage 3 — Ready to merge**, then the queue, which re-runs the whole pipeline
+against its own merge commit.
+
+The asymmetry in the table is the part worth reading twice. **A seal survives
+`main` moving** — the sealer vouched for this diff, and the queue re-runs
+everything against the composed tree. **Records never do.** Two campaigns
+measured apart do not compose: the interaction between them was never measured,
+and calling it measured is the exact class of silent regression the gate exists
+to prevent. Freeze the branch, run the campaign, queue alone.
 
 <a id="community"></a>
 

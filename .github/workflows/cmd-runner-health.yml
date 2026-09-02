@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Automatic fallback for the self-hosted command runner.
+#
+# `certification-commands.yml` and `certification-bot.yml` resolve their
+# `runs-on` from the CMD_RUNNER_LABEL variable. That makes the switch instant
+# when the runner is healthy and reversible by hand when it is not -- but a
+# by-hand switch needs a hand, and a runner that dies at 2am leaves every
+# /stamp and every status update queued behind a runner that will never answer.
+#
+# This flips the variable on our behalf. It deliberately runs on a GITHUB-HOSTED
+# runner: it is the thing that notices the self-hosted one is gone, so it cannot
+# depend on it. Latency does not matter here -- nobody is waiting on a health
+# check -- which is exactly why the hosted queue is acceptable for this job and
+# not for the commands themselves.
+name: Command runner health
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    name: command runner health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint the certification App token
+        id: apptoken
+        if: vars.CERTIFICATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.CERTIFICATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CERTIFICATION_APP_PRIVATE_KEY }}
+
+      - name: Point the commands at a runner that answers
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          WANT: atlas-cmd
+          FALLBACK: ubuntu-latest
+        run: |
+          set -uo pipefail
+          # `online` is GitHub's own view of the runner's heartbeat, which is
+          # what actually decides whether a job gets picked up.
+          online=$(gh api "repos/$REPO/actions/runners" \
+                     --jq "[.runners[] | select(any(.labels[]; .name == \"$WANT\")) | select(.status == \"online\")] | length" \
+                     2>/dev/null) || online=UNKNOWN
+          case "$online" in ''|*[!0-9]*) online=UNKNOWN ;; esac
+
+          cur=$(gh api "repos/$REPO/actions/variables/CMD_RUNNER_LABEL" --jq '.value' 2>/dev/null) || cur=""
+          echo "runners online with '$WANT': $online   CMD_RUNNER_LABEL=${cur:-<unset>}"
+
+          # UNKNOWN means the API did not answer. Changing the routing on a
+          # guess is worse than leaving it: a false "offline" would move every
+          # command onto the hosted queue we built this to escape.
+          if [ "$online" = "UNKNOWN" ]; then
+            echo "::warning title=Runner health unknown::could not read the runner list; leaving CMD_RUNNER_LABEL as ${cur:-<unset>}."
+            exit 0
+          fi
+
+          want="$WANT"
+          [ "$online" -eq 0 ] && want="$FALLBACK"
+          if [ "$cur" = "$want" ]; then
+            echo "already correct — nothing to do."
+            exit 0
+          fi
+
+          if gh api -X PATCH "repos/$REPO/actions/variables/CMD_RUNNER_LABEL" \
+               -f name=CMD_RUNNER_LABEL -f value="$want" >/dev/null 2>&1; then
+            if [ "$want" = "$FALLBACK" ]; then
+              echo "::warning title=Command runner is offline::commands and the status bot moved to $FALLBACK. They will be slow until the self-hosted runner returns."
+            else
+              echo "::notice title=Command runner is back::commands and the status bot moved back to $WANT."
+            fi
+            echo "CMD_RUNNER_LABEL: ${cur:-<unset>} -> $want"
+          else
+            # Writing a variable needs `administration: write`, which the App may
+            # not have been granted. Say so plainly rather than failing the run:
+            # a red health check every 15 minutes trains people to ignore it.
+            echo "::warning title=Cannot switch runners automatically::the token cannot write CMD_RUNNER_LABEL (needs 'administration: write' on the certification App). Set it by hand to '$want'."
+          fi

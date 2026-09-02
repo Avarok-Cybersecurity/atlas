@@ -1,0 +1,305 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Certification bot
+
+# ── One comment, edited in place ────────────────────────────────────────────
+#
+# The bot posts exactly one comment per PR and rewrites it as the PR moves. A
+# thread of a dozen "now you are at stage 2" notes is worse than no bot: the
+# newest one is at the bottom, the rest are wrong, and the reader has to work out
+# which is which. Editing means the comment is always the current answer.
+#
+# The previous state rides in an HTML marker inside that comment. It is DISPLAY
+# state only — it decides whether to show "a push knocked you back" rather than a
+# bare stage card. Nothing about whether a PR may merge is read from it, which is
+# the same line `atlas-governance` draws for the ledger: a verdict must never
+# depend on something the PR's own automation can write.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  check_run:
+    types: [completed]
+  issue_comment:
+    types: [created]
+
+# `pull_request_target` runs with repository secrets against a fork's PR, so it
+# must never check out or execute the head ref. It does not: every step below
+# talks to the API and reads scripts from the DEFAULT branch checkout. Adding a
+# checkout of `github.event.pull_request.head.sha` here would turn this into a
+# pwn-request, the same warning `cla.yml` carries.
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize per PR. Two events landing together would otherwise race to edit
+  # the same comment, and the loser's body wins.
+  group: certification-bot-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  state:
+    name: Certification state
+    # Same self-hosted runner as the command handler, for the same reason: this
+    # posts the pipeline STATUS, and a status that lands an hour after the event
+    # is not a status. Safe on our own hardware because the checkout below pins
+    # the default branch and never the fork's head -- and
+    # assert-cmd-runner-safe.py enforces that for every workflow on this label.
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
+    # A comment on a plain issue has no PR to describe. `check_run` events carry
+    # their PRs in an array that is empty for pushes to main.
+    if: >-
+      ${{ github.event_name != 'issue_comment'
+          || github.event.issue.pull_request != null }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The DEFAULT branch, explicitly. Under pull_request_target the default
+          # checkout is already the base, but naming it means a future edit
+          # cannot quietly turn this into "run the fork's script".
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Which PR is this about
+        id: which
+        # ★ EVERY `${{ }}` VALUE ARRIVES THROUGH THE ENVIRONMENT, never spliced
+        # into the script text. An earlier revision interpolated
+        # `${{ toJSON(github.event) }}` straight into a here-string and CodeQL
+        # flagged it critical — correctly. Under `pull_request_target` and
+        # `issue_comment` that blob carries attacker-authored text (a PR title, a
+        # comment body), and one well-placed quote escapes the literal and runs as
+        # shell WITH this workflow's secrets. An env var is never re-parsed by the
+        # shell, which is the whole difference.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_JSON: ${{ toJSON(github.event) }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request_target) pr="${PR_NUMBER:-}" ;;
+            issue_comment)       pr="${ISSUE_NUMBER:-}" ;;
+            check_run)
+              # A check run knows its PRs only when the head branch is in this
+              # repo; for a fork it is empty and there is nothing to update.
+              pr=$(jq -r '.check_run.pull_requests[0].number // empty' <<<"$EVENT_JSON")
+              ;;
+          esac
+          if [ -z "${pr:-}" ]; then
+            echo "no PR in this event; nothing to say" >&2
+            echo "pr=" >>"$GITHUB_OUTPUT"
+          else
+            echo "pr=$pr" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint the certification App token
+        id: apptoken
+        if: steps.which.outputs.pr != '' && vars.CERTIFICATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.CERTIFICATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CERTIFICATION_APP_PRIVATE_KEY }}
+
+      - name: Read the previous state out of the bot's own comment
+        id: prev
+        if: steps.which.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.which.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # The marker is the lookup key AND the memory. One request, and no
+          # second source of truth to drift.
+          body=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" \
+                  --jq '.[] | select(.body | contains("<!-- atlas-certification-state:")) | "\(.id)\t\(.body)"' \
+                | head -1 || true)
+          id=$(printf '%s' "$body" | cut -f1)
+          prev=$(printf '%s' "$body" | grep -o '<!-- atlas-certification-state:[a-z0-9-]*' | sed 's/.*://' || true)
+          echo "comment_id=${id}" >>"$GITHUB_OUTPUT"
+          echo "prev=${prev}" >>"$GITHUB_OUTPUT"
+
+      - name: Resolve the state
+        id: state
+        if: steps.which.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PREV_STATE: ${{ steps.prev.outputs.prev }}
+          # Our own step's output and therefore a number, but it goes through the
+          # environment like everything else: the rule is only useful if it has no
+          # exceptions for a reader to weigh.
+          PR: ${{ steps.which.outputs.pr }}
+        run: ./.github/scripts/certification-state.sh "$PR"
+
+      - name: Post or edit the one comment
+        if: steps.which.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.which.outputs.pr }}
+          STATE: ${{ steps.state.outputs.state }}
+          # Read by the certificate step to resolve who stamped and who sealed
+          # from the check runs on this commit. Used-but-not-passed is exactly
+          # how /review shipped broken, so it is bound here explicitly.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEADLINE: ${{ steps.state.outputs.headline }}
+          COMMENT_ID: ${{ steps.prev.outputs.comment_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Absolute raw URL, and a PNG: GitHub serves raw .svg as text/plain, so
+          # an <img> at the .svg renders as nothing. The SVG is committed too, for
+          # the README, where a relative path is resolved by GitHub itself.
+          img="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/$STATE.png"
+          body=$(cat <<EOF
+          <!-- atlas-certification-state:$STATE -->
+          ### $HEADLINE
+
+          <img src="$img" alt="$STATE" width="900">
+
+          <details><summary>How this works</summary>
+
+          Three stages. **Stage 1** runs on every push and is cheap. **Stage 2**
+          opens when someone with write access comments \`/stamp\`, which releases
+          the certification job and the nine release-matrix builds — they are held
+          back so a draft does not burn an hour of runners. Stage 2 needs two
+          things: a codeowner of every path in the diff comments \`/seal\`, and
+          benchmark records for this tree are committed. **Stage 3** is green, and
+          the merge queue re-runs everything against its own merge commit.
+
+          A new commit voids the seal. \`main\` advancing voids the records only if
+          it moved a perf path. The stamp always holds. The full rules, including
+          why a seal composes and records never do, are in
+          [How a Change Lands](https://github.com/$REPO/blob/$DEFAULT_BRANCH/README.md#-how-a-change-lands).
+
+          This comment is edited in place — it is always the current state, never a
+          thread of stale ones.
+          </details>
+          EOF
+          )
+          if [ -n "$COMMENT_ID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$COMMENT_ID" -f body="$body" >/dev/null
+            echo "edited comment $COMMENT_ID -> $STATE"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
+            echo "posted a new comment -> $STATE"
+          fi
+
+          # ── The certificate ────────────────────────────────────────────────
+          # Everything above edits ONE comment in place, which is right for a
+          # state machine: the reader wants the current state, not a thread of
+          # stale ones. Merge is the exception, for a blunt reason -- GitHub
+          # does NOT notify on an @mention added by EDITING a comment, only on
+          # creation. Tagging the authors in the edited state comment would
+          # alert nobody. So the certificate is a second, new comment, posted
+          # once.
+          if [ "$STATE" = "pr-certification-merged" ]; then
+            already=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                        --jq '[.[] | select(.body | contains("<!-- atlas-certificate -->"))] | length' \
+                        2>/dev/null) || already=1
+            case "$already" in ''|*[!0-9]*) already=1 ;; esac
+            if [ "$already" -eq 0 ]; then
+              # Recipients: whoever opened it, plus every distinct commit author.
+              # A PR is often more than one person, and a certificate that names
+              # only the opener quietly erases the others.
+              who=$( { gh api "repos/$REPO/pulls/$PR" --jq '.user.login' 2>/dev/null
+                       gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+                         --jq '.[].author.login // empty' 2>/dev/null; } \
+                     | grep -v '\[bot\]$' | awk 'NF' | sort -u | awk '{printf "@%s ", $0}')
+              merge_sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.merge_commit_sha // ""' 2>/dev/null)
+
+              # Render THIS PR's certificate. Embedding the committed template
+              # directly would publish a certificate carrying the placeholder
+              # names it was designed with, which is worse than no image.
+              sudo apt-get -qq update >/dev/null 2>&1 || true
+              sudo apt-get -qq install -y librsvg2-bin >/dev/null 2>&1 || true
+              python3 -m pip install --quiet segno >/dev/null 2>&1 || true
+
+              # Those installs are deliberately non-fatal, so ASK whether they worked.
+              # Without this the step runs `rsvg-convert` under `set -e`, dies before the
+              # comment POST below, and a merged PR gets no certificate AND no comment --
+              # strictly worse than the generic image the fallback already exists to
+              # serve. Same reasoning as the contents:write fallback further down: a
+              # missing capability must degrade the picture, never swallow the certificate.
+              render_ok=1
+              command -v rsvg-convert >/dev/null 2>&1 || {
+                echo "::warning title=rsvg-convert is missing::librsvg2-bin did not install; posting the generic certificate."
+                render_ok=0
+              }
+              python3 -c 'import segno' >/dev/null 2>&1 || {
+                echo "::warning title=segno is missing::the QR code cannot be generated; posting the generic certificate."
+                render_ok=0
+              }
+
+              # Who stamped and who sealed, read back from the check runs that
+              # recorded them -- they are already the source of truth for who
+              # and at which commit, so nothing extra has to be stored.
+              runs=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null || echo '{}')
+              st_user=$(printf '%s' "$runs" | jq -r '[.check_runs[]?|select(.name=="Stamp")]|last|.output.title // ""' | sed -n 's/.*by @\([A-Za-z0-9-]*\).*/\1/p')
+              sl_user=$(printf '%s' "$runs" | jq -r '[.check_runs[]?|select(.name=="Seal")]|last|.output.title // ""' | sed -n 's/.*by @\([A-Za-z0-9-]*\).*/\1/p')
+
+              opener=$(gh api "repos/$REPO/pulls/$PR" --jq '.user.login' 2>/dev/null)
+              # Search is rate-limited and 422s on a login that no longer
+              # exists. An absent count hides its row; it never blocks.
+              count=$(gh api -X GET search/issues \
+                        -f q="repo:$REPO type:pr is:merged author:$opener" \
+                        --jq '.total_count' 2>/dev/null) || count=""
+              case "$count" in ''|*[!0-9]*) count="" ;; esac
+
+              title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null)
+              authors=$(printf '%s' "${who:-}" | tr -d '@' | tr -s ' ' ',' | sed 's/,$//')
+
+              cert="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/certificate-merged.png"
+              if [ "$render_ok" = 1 ]; then
+                python3 .github/scripts/render-certificate.py \
+                  --template docs/diagrams/states/certificate-merged.svg \
+                  --out /tmp/cert.svg \
+                  --url "https://github.com/$REPO/pull/$PR" \
+                  --pr "$PR" --title "$title" --repo "$REPO" \
+                  --commit "${merge_sha:0:10}" --date "$(date -u +%Y-%m-%d)" \
+                  --gates "11 / 11 CERTIFIED" --authors "$authors" \
+                  --merge-count "$count" \
+                  --stamp-user "$st_user" --stamp-sha "${HEAD_SHA:0:10}" \
+                  --seal-user "$sl_user" --seal-sha "${HEAD_SHA:0:10}" \
+                  --qr-x 980 --qr-y 455
+                rsvg-convert -w 1200 /tmp/cert.svg -o /tmp/cert.png
+
+                # GitHub proxies images through camo and caches them BY URL, so a
+                # stable filename would keep serving the first render forever.
+                # The content hash makes each certificate its own permanent URL.
+                hash=$(sha256sum /tmp/cert.png | cut -c1-8)
+                path="pr-$PR-$hash.png"
+                b64=$(base64 -w0 /tmp/cert.png)
+                gh api -X PUT "repos/$REPO/contents/$path" \
+                  -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
+                  >/dev/null 2>&1 \
+                  || gh api -X PUT "repos/$REPO/contents/$path" \
+                       -f message="certificate for #$PR" -f content="$b64" \
+                       -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
+                       >/dev/null 2>&1 || true
+                # Only point at the generated image if it is ACTUALLY THERE. The
+                # upload needs `contents: write` on bot-cards, and the PUT above is
+                # deliberately non-fatal so a missing grant cannot swallow the
+                # certificate itself -- but referencing an object that was never
+                # written posts a broken image, which is worse than posting the
+                # generic one. Verified on #843: the comment shipped a 404.
+                if gh api "repos/$REPO/contents/$path?ref=bot-cards" >/dev/null 2>&1; then
+                  cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
+                else
+                  echo "::warning title=Certificate image was not uploaded::falling back to the generic certificate. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this."
+                fi
+              fi
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
+          ${who:-@}— merged. Every required benchmark gate was certified against a
+          frozen commit before this landed, and the record is public.
+
+          <img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">
+
+          Merge commit \`${merge_sha:0:10}\`. Yours to share." >/dev/null
+              echo "posted the certificate -> ${who:-nobody}"
+            else
+              echo "certificate already posted; not posting a second"
+            fi
+          fi

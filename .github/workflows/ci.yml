@@ -78,6 +78,158 @@ jobs:
           MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash .github/scripts/classify-diff.sh
 
+
+  # ── Is the expensive lane released? ───────────────────────────────────────
+  #
+  # Stage 1 is cheap and runs on every push. Certification and the nine
+  # release-matrix legs cost about an hour of runners between them, so they wait
+  # for a human to say this PR is worth it: anyone with write access comments
+  # `/stamp`, and the certification bot records a `Stamp` check run on the head
+  # sha.
+  #
+  # ★ READ LIVE FROM THE CHECK RUNS, never from a file. A stamp stored in the
+  # repo would be settable by the branch it gates — the property
+  # `atlas-governance` protects for the ledger, for the same reason.
+  #
+  # FAIL OPEN, like `changes`: any error here emits `true` and the lane runs.
+  # A broken stamp lookup must cost runner minutes, never wave a PR through.
+  stamp:
+    name: stamp status
+    runs-on: ubuntu-latest
+    outputs:
+      stamped: ${{ steps.q.outputs.stamped }}
+      expedited: ${{ steps.q.outputs.expedited }}
+    steps:
+      - id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # Only a pull_request can be un-stamped. A merge_group entry reached
+          # the queue by being ready, and a push to main has no PR to stamp.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "$EVENT is not a pull request — the lane runs."
+            exit 0
+          fi
+          # A Stamp is a check run, so it is bound to the ONE commit it was
+          # created on. The bot tells the author "a stamp survives new commits",
+          # so honour that literally: look for a Stamp on any commit of this PR,
+          # head first, then the rest newest-first. Carrying it forward is safe
+          # because a stamp only releases an expensive lane — it approves
+          # nothing, and certification still has to pass on its own merits.
+          stamped_at=""
+          for s in $SHA $(gh api "repos/$REPO/pulls/$PR/commits?per_page=100" \
+                            --jq 'reverse | .[].sha' 2>/dev/null); do
+            # `k=$(cmd || echo FAILOPEN)` would CONCATENATE gh's error body with
+            # the marker, so the equality test misses and `-gt` then dies on a
+            # non-integer — silently reading an API failure as "not stamped",
+            # the exact inverse of the fail-open doctrine. Assign, then test the
+            # command's own status, and require a clean integer.
+            k=$(gh api "repos/$REPO/commits/$s/check-runs?per_page=100" \
+                  --jq '[.check_runs[] | select((.name == "Stamp" or .name == "Expedite") and .conclusion == "success")] | length' \
+                  2>/dev/null) || k=FAILOPEN
+            case "$k" in ''|*[!0-9]*) k=FAILOPEN ;; esac
+            if [ "$k" = "FAILOPEN" ]; then
+              echo "stamped=true" >>"$GITHUB_OUTPUT"
+              echo "could not read check runs — failing OPEN, the lane runs."
+              exit 0
+            fi
+            if [ "${k:-0}" -gt 0 ]; then stamped_at="$s"; break; fi
+          done
+          if [ -n "$stamped_at" ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "stamped at $stamped_at — the lane runs."
+          else
+            echo "stamped=false" >>"$GITHUB_OUTPUT"
+            echo "not stamped on any commit of PR #$PR — certification and the release matrix are held."
+          fi
+
+          # Separately: did an admin WAIVE the evidence with /expedite? The loop
+          # above already treats an Expedite as a stamp, because an expedited PR
+          # must still run the lane -- the point is to merge without RECORDS, not
+          # to skip the build. This publishes the waiver on its own so the alias
+          # can turn a red certification green and say why.
+          exp=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                  --jq '[.check_runs[] | select(.name == "Expedite" and .conclusion == "success")] | length' \
+                  2>/dev/null) || exp=0
+          case "$exp" in ''|*[!0-9]*) exp=0 ;; esac
+          if [ "$exp" -gt 0 ]; then
+            echo "expedited=true" >>"$GITHUB_OUTPUT"
+            echo "EXPEDITED at $SHA — an admin waived the certification requirement."
+          else
+            echo "expedited=false" >>"$GITHUB_OUTPUT"
+          fi
+
+  # The binding half of `/seal`. The Seal CHECK RUN is minted by the App in
+  # certification-commands.yml, which triggers on comments only — it never runs
+  # on `merge_group`, so on a `gh-readonly-queue/**` commit no Seal exists and
+  # requiring the raw `Seal` context would wedge the queue forever. This job is
+  # the requireable context: it reports on BOTH event types and re-derives the
+  # verdict on the queue side from the PR the entry came from, the same shape
+  # cla.yml uses for the same reason.
+  seal:
+    name: seal status
+    runs-on: ubuntu-latest
+    steps:
+      - id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MQ_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -uo pipefail
+          # A push to main has already landed and a dispatch has no diff to
+          # vouch for; neither carries a PR, so there is nothing to seal.
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
+            echo "$EVENT carries no pull request — nothing to seal."
+            exit 0
+          fi
+          sha="$PR_SHA"; num="$PR_NUM"
+          if [ "$EVENT" = "merge_group" ]; then
+            # Queue branches are GitHub-generated:
+            # gh-readonly-queue/<base>/pr-<N>-<sha>
+            branch="${MQ_HEAD_REF#refs/heads/}"
+            num="$(printf '%s' "$branch" | sed -n 's|.*/pr-\([0-9][0-9]*\)-.*|\1|p')"
+            if [ -z "$num" ]; then
+              echo "::error title=Cannot identify the queued PR::queue branch '$branch' does not name a PR, so the seal cannot be re-proved. Refusing rather than guessing."
+              exit 1
+            fi
+            sha="$(gh api "repos/$REPO/pulls/$num" --jq '.head.sha' 2>/dev/null)" || sha=""
+          fi
+          if [ -z "$sha" ]; then
+            echo "::error title=Cannot resolve the sealed commit::no head sha for PR #$num."
+            exit 1
+          fi
+          # A seal vouches for a DIFF, so only a Seal on the CURRENT head counts
+          # — unlike a stamp, which deliberately carries across new commits.
+          n=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select((.name == "Seal" or .name == "Expedite") and .conclusion == "success")] | length' \
+                2>/dev/null) || n=REFUSE
+          case "$n" in ''|*[!0-9]*) n=REFUSE ;; esac
+          # Deliberately fails CLOSED, inverting the fail-open shape of `stamp`
+          # beside it. A stamp only spends runners, so guessing "yes" is cheap;
+          # a seal is a person vouching for the diff, and an unreadable API must
+          # never be read as a vouch nobody gave. Same direction as
+          # seal-coverage.py, and the same reason.
+          if [ "$n" = "REFUSE" ]; then
+            echo "::error title=Could not read the seal::the check-runs API did not answer for $sha, and a seal is never assumed. Re-run this job."
+            exit 1
+          fi
+          if [ "$n" -gt 0 ]; then
+            echo "sealed at $sha — a codeowner has vouched for this diff."
+            exit 0
+          fi
+          echo "::error title=Not sealed::PR #$num has no Seal on $sha. A codeowner of every path in the diff must comment /seal. The next commit voids it, so seal once the diff has settled."
+          exit 1
+
   fmt:
     name: cargo fmt --check
     runs-on: ubuntu-latest
@@ -130,6 +282,18 @@ jobs:
       # `.licenserc.yaml` is still the only place the paths and ignores live.
       - run: pip install --quiet pyyaml
       - run: python3 scripts/check_spdx.py
+
+      # Hosted here because this job is already a repo-wide file lint and is a
+      # required context. The vhost configs are applied to the origin by hand,
+      # so nothing else in CI ever reads them -- without this they are the one
+      # part of the deployment that no gate looks at.
+      - name: nginx vhosts declare one security header set, at server level
+        run: python3 .github/scripts/assert-vhost-headers.py
+
+      # Same reasoning: a doc link that points at nothing is invisible until a
+      # reader follows it, and docs churn here more than most trees.
+      - name: markdown links resolve
+        run: python3 .github/scripts/assert-doc-links.py
 
   typos:
     name: typos
@@ -210,7 +374,7 @@ jobs:
     # suppresses the implicit success() on `needs` — so this job RUNS. Written
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -219,7 +383,7 @@ jobs:
       # feature opts out of cudarc workspace-wide and into the Metal
       # runtime backend (objc2-metal). xcrun + metallib are part of
       # macOS's built-in Xcode Command Line Tools and don't need a
-      # separate install on macos-14 runners.
+      # separate install on the self-hosted Apple Silicon runner.
       # `-p spark-server --features metal` activates the metal
       # feature on every transitive workspace crate via spark-server's
       # forwarding feature flags. Single-flag spelling — no long
@@ -294,8 +458,9 @@ jobs:
           needs.kernel-structure.result == 'success' &&
           (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
-          (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') }}
-    needs: [changes, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+          (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') &&
+          needs.stamp.outputs.stamped != 'false' }}
+    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}
@@ -870,7 +1035,7 @@ jobs:
   pr-benchmark-gate:
     name: PR Benchmark Certifications
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, stamp]
     # The web trees are not measured inputs of any record — `record_covers`
     # invalidates on crates/, kernels/, Cargo.*, vendor/, jinja-templates and
     # the toolchain, none of which a web-only diff can reach. So on such a diff
@@ -879,7 +1044,15 @@ jobs:
     # skip into the required context's pass. Fails open, like every other gate
     # here: a broken classifier runs the certification rather than waving it
     # through.
-    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
+          && needs.stamp.outputs.stamped != 'false' }}
+    # `!= 'false'`, not `== 'true'`: the stamp job fails OPEN, so an empty output
+    # must run the lane rather than hold it. Same shape and same reason as the
+    # `web_only` test beside it — five workflows here carry the lesson that a
+    # positive test on a fail-open signal turns a broken classifier into a
+    # silently skipped gate.
+    #
     # Runs under `merge_group` too, deliberately. There the checkout is the
     # queue's temporary merge commit (latest main + this PR), and the gate
     # answers "do the committed records still cover the MERGED tree" — which
@@ -923,6 +1096,68 @@ jobs:
         run: bash scripts/ci_gpu_stubs.sh
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: One PR, one commit, one signer
+        # The SIGNATURE binds each record to a commit. This binds the records TO
+        # EACH OTHER: without it a PR can present a favourable record measured at
+        # one commit beside another measured at a different commit, each
+        # individually valid and signed, which is exactly the "different records
+        # at different commits" this feature exists to prevent.
+        #
+        # It lives here rather than in `gate/check.rs` for one blunt reason:
+        # `crates/` is a measured input (PERF_PATHS), so editing the Rust gate
+        # would invalidate every record the campaign certifying THIS PR just
+        # produced, costing a five-hour re-measure to add a rule about
+        # bookkeeping. @human-review: fold it into the Rust gate in a follow-up
+        # so the verdict has a single home.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base=$(git merge-base "$BASE" HEAD)
+          # `.json$` also drops the `.json.sig` sidecars, which are read below.
+          mapfile -t added < <(git diff --name-only --diff-filter=AM "$base"...HEAD -- .benchmarks | grep '\.json$' || true)
+          if [ "${#added[@]}" -eq 0 ]; then
+            echo "this PR adds no records — nothing to agree on."
+            exit 0
+          fi
+          shas=(); keys=()
+          for f in "${added[@]}"; do
+            s=$(jq -r '.git_sha // "MISSING"' "$f")
+            k=$(jq -r '.key // "MISSING"' "$f.sig" 2>/dev/null || echo NO_SIDECAR)
+            printf '  %-58s sha=%s signer=%s\n' "$f" "$s" "$k"
+            shas+=("$s"); keys+=("$k")
+          done
+          # A record this PR ADDS must carry a signature, full stop. The Rust
+          # gate exempts anything whose `recorded_at` predates the signing
+          # cutover -- but `recorded_at` is a field INSIDE the file being
+          # authenticated, so backdating it below the cutover skips the
+          # signature entirely. Verified by experiment: an unsigned record
+          # dated 1700000000 claiming 999 tok/s passes `--pull-request-gate-check`
+          # when it is the newest covering record. Grandfathering is for records
+          # already on the base branch; nothing a PR introduces is grandfathered,
+          # and git -- not the file's own contents -- decides which is which.
+          missing=()
+          for f in "${added[@]}"; do
+            [ -f "$f.sig" ] || missing+=("$f")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '  unsigned: %s\n' "${missing[@]}"
+            echo "::error title=Unsigned record added::${#missing[@]} record(s) added by this PR have no .json.sig. A record introduced by a PR is never exempt from signing, whatever its recorded_at says. Commit the sidecar the CLI wrote beside each record."
+            exit 1
+          fi
+          us=$(printf '%s\n' "${shas[@]}" | sort -u | wc -l)
+          uk=$(printf '%s\n' "${keys[@]}" | sort -u | wc -l)
+          if [ "$us" -ne 1 ]; then
+            echo "::error title=Records span more than one commit::This PR adds records measured at $us different commits. A certification is ONE campaign at ONE commit; re-measure the stragglers at the head you intend to merge."
+            exit 1
+          fi
+          if [ "$uk" -ne 1 ]; then
+            echo "::error title=Records carry more than one signer::$uk distinct signing keys across the added records. One campaign, one box, one identity."
+            exit 1
+          fi
+          echo "all ${#added[@]} added record(s) agree: one commit (${shas[0]}), one signer (${keys[0]})."
+
       - name: Check committed benchmark records against their baselines
         env:
           ATLAS_SKIP_BUILD: "1"
@@ -976,7 +1211,7 @@ jobs:
   #   doing 2 without 1 blocks every merge, so 1 comes first.
   pr-benchmark-gate-alias:
     name: PR benchmark gate
-    needs: [changes, pr-benchmark-gate]
+    needs: [changes, stamp, pr-benchmark-gate]
     # `always()`, or a red certification would SKIP this shim rather than fail
     # it — and a skipped required check is treated as unsatisfied-but-pending,
     # which reads as "still running" instead of "the gate said no".
@@ -987,9 +1222,21 @@ jobs:
         env:
           RESULT: ${{ needs.pr-benchmark-gate.result }}
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
+          STAMPED: ${{ needs.stamp.outputs.stamped }}
+          EXPEDITED: ${{ needs.stamp.outputs.expedited }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
           if [ "${RESULT}" = "success" ]; then exit 0; fi
+          # An admin waived the evidence requirement with /expedite. Pass -- but
+          # say so loudly, because a green check that silently means "we did not
+          # measure" is the exact hole this pipeline exists to close. The
+          # Expedite check run carries who waived it and why.
+          if [ "${EXPEDITED}" = "true" ]; then
+            echo "::warning title=Certification waived::An admin expedited this PR, so \
+          certification did not have to pass. See the Expedite check run for who \
+          waived it and the reason they gave."
+            exit 0
+          fi
           # THE ONE SKIP THAT IS A PASS: the certification was deliberately not
           # run because every changed file is under site/ blog/ book/
           # web-shared/, none of which is a measured input of any record. The
@@ -999,6 +1246,20 @@ jobs:
           if [ "${RESULT}" = "skipped" ] && [ "${WEB_ONLY}" = "true" ]; then
             echo "web-only diff: no record's measured inputs were touched — pass."
             exit 0
+          fi
+          # HELD, not failed. Certification never ran because nobody has released
+          # the expensive lane, and the generic message below — "read its log,
+          # not this one" — would send a reader to a job that has no log.
+          #
+          # Still RED. An unstamped PR is genuinely not ready to merge, and a
+          # green check here would say it was.
+          if [ "${RESULT}" = "skipped" ] && [ "${STAMPED}" = "false" ]; then
+            echo "::error title=Certification is held::\
+          Comment /stamp to release certification and the nine release-matrix \
+          builds. They are held so a draft does not spend an hour of runners on \
+          every push. Anyone with write access can stamp, and a stamp survives \
+          new commits."
+            exit 1
           fi
           # Anything else — failure, cancelled, skipped — is not a
           # pass. Defaulting the unknown case to green would make the shim a hole

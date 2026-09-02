@@ -1,0 +1,393 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Certification commands
+
+# ── /help /stamp /seal /review ──────────────────────────────────────────────
+#
+# `/review` is also accepted on a review comment (a comment on a line of the
+# diff), because that is where someone is when they want a second opinion about
+# a specific hunk. The other three are PR-level verbs and stay on the PR
+# conversation.
+#
+# ── Two rules this file must never break ────────────────────────────────────
+#
+# 1. THE COMMAND PATTERN IS FIXED, IN THIS FILE. `cla.yml` removed its
+#    `custom-pr-sign-comment` input precisely because a configurable phrase let
+#    any third-party commenter redefine what counted as consent. The same trap
+#    applies here with more leverage: a redefinable `/seal` is a redefinable
+#    merge gate.
+#
+# 2. NOTHING FROM THE HEAD REF IS CHECKED OUT OR EXECUTED. These triggers carry
+#    repository secrets. Every step reads the API and runs scripts from the
+#    default-branch checkout. A `git checkout` of the PR head here is a
+#    pwn-request.
+#
+# The commenter's permission is read from the API, never from the event payload:
+# `author_association` is a display string and has been spoofable in the past.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  # ── Run a verb without a comment ──────────────────────────────────────────
+  #
+  # A check run can ONLY be created by a GitHub App — a user token gets a 403,
+  # by GitHub's design. So there is no way to stamp a PR from a terminal, and no
+  # way at all to stamp the PR that INTRODUCES this workflow: comment handlers
+  # run from the default branch, where it does not exist yet.
+  #
+  # `workflow_dispatch` closes both. It runs the workflow file from the ref you
+  # dispatch, so this branch can stamp itself, and afterwards it is the
+  # maintainer's path for "stamp #123 from the Actions tab". Triggering it
+  # already requires write access, which is the same bar the comment path checks
+  # for — so this adds a route, not a privilege.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+      verb:
+        description: Which verb to run
+        required: true
+        type: choice
+        options: [/stamp, /seal, /help, /review, /expedite]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cert-cmd-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  command:
+    name: Certification command
+    # The command handler is three API calls and ~20 seconds of work, but on
+    # GitHub-hosted runners it queued behind 15-27 runs per push plus two
+    # sibling repos -- a /stamp once waited 220 MINUTES. It now runs on a
+    # self-hosted runner on the always-on box, which picks up in seconds.
+    #
+    # Safe here specifically because this workflow pins
+    # `ref: default_branch` and NEVER checks out a PR head, so a fork cannot
+    # run its own code on our hardware. `hardening_tests` below enforces that
+    # the label stays off any workflow that does check out untrusted code.
+    #
+    # The variable is the escape hatch: if the box is down, set
+    # CMD_RUNNER_LABEL to `ubuntu-latest` and commands go back to hosted
+    # runners without a code change.
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
+    # Cheap gates first so the overwhelming majority of comments cost one
+    # skipped job: it must be a PR, and the body must START with a verb we own.
+    # `startsWith` on the raw body means a quotation of "/seal" mid-sentence is
+    # not a command, which is the behaviour a reviewer expects when they explain
+    # the process in prose.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          || ((github.event_name == 'pull_request_review_comment'
+               || github.event.issue.pull_request != null)
+              && (startsWith(github.event.comment.body, '/help')
+                  || startsWith(github.event.comment.body, '/stamp')
+                  || startsWith(github.event.comment.body, '/seal')
+                  || startsWith(github.event.comment.body, '/review'))) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Mint the certification App token
+        id: apptoken
+        if: vars.CERTIFICATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.CERTIFICATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CERTIFICATION_APP_PRIVATE_KEY }}
+
+      - name: Parse the command and check who is asking
+        id: cmd
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          # On a dispatch there is no comment: the actor is whoever pressed the
+          # button, and the PR and verb come from the inputs.
+          ACTOR: ${{ github.event.comment.user.login || github.actor }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number || inputs.pr }}
+          INPUT_VERB: ${{ inputs.verb }}
+          # Through the environment, never interpolated into the script: a body
+          # containing backticks or $( ) would otherwise execute here.
+          BODY: ${{ github.event.comment.body }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            verb="$INPUT_VERB"
+            args=""
+          else
+            verb=$(printf '%s' "$BODY" | head -1 | tr -d '\r' | awk '{print $1}')
+            args=$(printf '%s' "$BODY" | head -1 | tr -d '\r' | cut -s -d' ' -f2-)
+          fi
+          case "$verb" in
+            /help|/stamp|/seal|/review|/expedite) ;;
+            *) echo "not a command we own: $verb" >&2; exit 0 ;;
+          esac
+          # /review on a line comment is legal; the other three are not, because
+          # they act on the whole PR and a diff line is the wrong place to say so.
+          if [ "$EVENT_NAME" = "pull_request_review_comment" ] && [ "$verb" != "/review" ]; then
+            echo "skip=true" >>"$GITHUB_OUTPUT"; exit 0
+          fi
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo none)
+          pr_json=$(gh api "repos/$REPO/pulls/$PR")
+          head_sha=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+          author=$(printf '%s' "$pr_json" | jq -r '.user.login')
+          # ★ PR AND ACTOR ARE PUBLISHED HERE, and every later step reads them
+          # from these outputs. They used to be re-derived in each step's own
+          # `env:` from `github.event.*`, which is empty on a workflow_dispatch —
+          # so the first dispatched /stamp created a check run titled
+          # "Released by @." and then 404'd on `issues//comments`. One resolution
+          # point, once, is the fix.
+          { echo "verb=$verb"; echo "args=$args"; echo "perm=$perm"; echo "pr=$PR";
+            echo "actor=$ACTOR"; echo "head_sha=$head_sha"; echo "author=$author";
+            echo "short_sha=${head_sha:0:10}"; } >>"$GITHUB_OUTPUT"
+
+      - name: /help
+        if: steps.cmd.outputs.verb == '/help'
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.cmd.outputs.pr }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@- >/dev/null <<'EOF'
+          ```
+          atlas certification — commands
+          ```
+
+          | | |
+          |---|---|
+          | `/help` | this |
+          | `/stamp` | release the held-back lane: certification + the nine release-matrix builds. Anyone with **write** access. |
+          | `/seal` | vouch for this diff. A **codeowner** of every path in it. Voided by the next commit. |
+          | `/review [question]` | an agentic read of this PR. Optional question, e.g. `/review does the fix cover the C=2 rung?` |
+          | `/expedite <reason>` | **admin only.** Allows the merge without benchmark records or a codeowner seal. Every other check still has to pass, and the reason is recorded on the PR. |
+
+          **Why the lane is held back.** Certification and nine cross-compiles cost
+          about an hour of runners. A draft should not pay that on every push, so
+          they wait for a human to say the PR is worth it. The stamp survives
+          everything — you say it once.
+
+          **Why a seal dies on a push and records sometimes do not.** A sealer
+          vouched for a *diff*; change the diff and the vouching is stale. Records
+          measure a *tree*, and they only stop describing it when a perf path
+          moves — `crates` `kernels` `Cargo.toml` `Cargo.lock` `vendor`
+          `jinja-templates` `rust-toolchain.toml` `3rdparty_patches`. Two campaigns
+          measured apart never compose, which is why a PR carrying records enters
+          the queue alone.
+          EOF
+
+      - name: /stamp and /seal
+        if: steps.cmd.outputs.verb == '/stamp' || steps.cmd.outputs.verb == '/seal'
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.cmd.outputs.pr }}
+          ACTOR: ${{ steps.cmd.outputs.actor }}
+          VERB: ${{ steps.cmd.outputs.verb }}
+          PERM: ${{ steps.cmd.outputs.perm }}
+          AUTHOR: ${{ steps.cmd.outputs.author }}
+          HEAD_SHA: ${{ steps.cmd.outputs.head_sha }}
+          SHORT: ${{ steps.cmd.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          refuse() { gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$1" >/dev/null; exit 0; }
+
+          # A stamp says "this is ready to cost an hour of runners". Write access
+          # means that, and so does being the AUTHOR: nobody is better placed to
+          # say their own PR has stopped churning, and the author is precisely who
+          # the hold was protecting from burnt runners in the first place.
+          #
+          # A seal is a different claim -- a codeowner vouching for the diff -- so
+          # it stays write-only, with the coverage check below supplying the rest.
+          if [ "$VERB" = "/stamp" ] && [ -n "$AUTHOR" ] && [ "$ACTOR" = "$AUTHOR" ]; then
+            :
+          else
+            case "$PERM" in admin|maintain|write) ;; *)
+              if [ "$VERB" = "/stamp" ]; then
+                refuse "@$ACTOR — \`/stamp\` is for anyone with write access, or the author of the PR. Yours is \`$PERM\`, and #$PR was opened by @$AUTHOR."
+              fi
+              refuse "@$ACTOR — \`$VERB\` needs write access to this repository; yours is \`$PERM\`." ;;
+            esac
+          fi
+
+          name="Stamp"
+          detail="Released by @$ACTOR."
+          if [ "$VERB" = "/seal" ]; then
+            name="Seal"
+            # A seal must cover the whole diff. Paths come from the API, not from
+            # a checkout of the head.
+            gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' > /tmp/paths.txt
+            if ! out=$(python3 .github/scripts/seal-coverage.py .github/CODEOWNERS "$ACTOR" </tmp/paths.txt 2>&1); then
+              refuse "@$ACTOR — that seal does not cover the whole diff, so it is not recorded.
+
+          \`\`\`
+          $out
+          \`\`\`
+
+          A seal means *a codeowner of every path here has read it*. Ask an owner of the paths above to \`/seal\` as well, or seal after those files leave the diff."
+            fi
+            detail="Sealed by @$ACTOR, whose owned paths cover every file in this diff."
+          fi
+
+          gh api -X POST "repos/$REPO/check-runs" \
+            -f name="$name" -f head_sha="$HEAD_SHA" -f status=completed -f conclusion=success \
+            -f "output[title]=$detail" \
+            -f "output[summary]=$detail Recorded against $SHORT. A stamp survives new commits; a seal does not." >/dev/null
+
+          # ★ A stamp that does not RE-RUN anything is a stamp that does nothing.
+          # The held jobs already reported "skipped" on this head sha; recording
+          # the check run does not re-evaluate them. Re-running the CI workflow
+          # does, and the second pass sees the Stamp and releases the lane.
+          #
+          # This needs the App token: a re-run triggered by GITHUB_TOKEN does not
+          # produce workflow runs, which is the same limitation
+          # `governance-harvest.yml` mints an App token to work around.
+          rerun_note=""
+          # Both verbs, not just /stamp. `seal status` reads the Seal check run,
+          # ci.yml has no `check_run` trigger, and minting the mark therefore
+          # does not re-evaluate the job -- so a sealed PR kept reporting an
+          # unsealed `seal status` until someone pushed a commit, which VOIDS the
+          # seal. The maxim two lines down is not specific to stamps.
+          #
+          # Re-running is safe for a seal: it adds no commit, and a seal is
+          # voided by commits, not by CI runs.
+          if [ "$VERB" = "/stamp" ] || [ "$VERB" = "/seal" ]; then
+            run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
+              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
+              2>/dev/null || true)
+            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
+              # Capture stderr rather than discarding it. The first time this
+              # failed in production the reason went to /dev/null, the Stamp
+              # check went green, and the gate stayed red telling the operator
+              # to do the thing they had just done. Diagnosing it needed the
+              # job log, and the log had thrown the answer away.
+              if err=$(gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" 2>&1); then
+                echo "re-ran CI run $run_id to release the held lane"
+              else
+                echo "::error title=$name recorded, but CI was NOT re-run::re-running CI run $run_id failed: $err"
+                rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but CI was not re-run.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow by hand, or push any commit to this PR.
+          >
+          > This is usually the App missing \`actions: write\`. \`certification-preflight.yml\` probes it.
+          >
+          > <details><summary>what the API said</summary>
+          >
+          > \`\`\`
+          > $err
+          > \`\`\`
+          > </details>"
+              fi
+            else
+              echo "no CI run found for $HEAD_SHA — nothing to re-run"
+            fi
+          fi
+
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="**$name recorded.** $detail
+
+          | | |
+          |---|---|
+          | who | @$ACTOR (\`$PERM\`) |
+          | commit | \`$SHORT\` |
+
+          $( [ "$VERB" = "/seal" ] && echo "The next commit to this PR voids it — re-\`/seal\` when the diff settles." || echo "This holds for the life of the PR." )$rerun_note" >/dev/null
+
+          # A command that did not do what it said is not a success. The mark is
+          # already recorded and the comment already explains the remedy, so this
+          # only colours the job -- but a green job here would be the same lie
+          # the discarded stderr was telling.
+          [ -z "$rerun_note" ] || exit 1
+
+      - name: /expedite
+        if: steps.cmd.outputs.verb == '/expedite'
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.cmd.outputs.pr }}
+          ACTOR: ${{ steps.cmd.outputs.actor }}
+          PERM: ${{ steps.cmd.outputs.perm }}
+          ARGS: ${{ steps.cmd.outputs.args }}
+          HEAD_SHA: ${{ steps.cmd.outputs.head_sha }}
+          SHORT: ${{ steps.cmd.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          refuse() { gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$1" >/dev/null; exit 0; }
+
+          # ADMIN ONLY, and deliberately narrower than /stamp or /seal. A stamp
+          # spends runners and a seal records a review; an expedite discards the
+          # evidence requirement altogether, so it is not something write access
+          # should confer.
+          case "$PERM" in admin) ;; *)
+            refuse "@$ACTOR — \`/expedite\` is administrative: it merges without benchmark
+          records, without a codeowner seal, or both. That needs \`admin\`; yours is \`$PERM\`.
+
+          If the certification is merely SLOW rather than impossible, \`/stamp\` is what
+          you want — it releases the lane and still proves the numbers." ;;
+          esac
+
+          # A reason is required. An unexplained bypass in six months' time is
+          # indistinguishable from an accident, and this check run is the only
+          # place the reason survives.
+          why=$(printf '%s' "${ARGS:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          if [ -z "$why" ]; then
+            refuse "@$ACTOR — \`/expedite\` needs a reason on the same line, e.g.
+
+          \`\`\`
+          /expedite docs-only change, GPU box is down for maintenance
+          \`\`\`
+
+          The reason goes into the check run and is the only record of why the
+          gate was waived."
+          fi
+
+          gh api -X POST "repos/$REPO/check-runs" \
+            -f name="Expedite" -f head_sha="$HEAD_SHA" -f status=completed \
+            -f conclusion=success \
+            -f "output[title]=Expedited by @$ACTOR — certification waived" \
+            -f "output[summary]=@$ACTOR (admin) waived the certification requirement for
+          $SHORT.
+
+          Reason given: $why
+
+          The rest of the pipeline still has to pass. What this skips is the
+          benchmark records and the codeowner seal -- nothing else." >/dev/null
+
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="### ⚠ Expedited — certification waived
+
+          | | |
+          |---|---|
+          | who | @$ACTOR (\`admin\`) |
+          | commit | \`$SHORT\` |
+          | reason | $why |
+
+          This PR may now merge **without benchmark records and without a codeowner
+          seal**. Every other check still has to pass — expedite skips the evidence,
+          not the pipeline.
+
+          A new commit does not clear this. If the numbers matter for what landed
+          here, run the campaign afterwards on \`main\` and commit the records." >/dev/null
+          echo "expedited by @$ACTOR at $SHORT: $why"
+
+      - name: /review
+        if: steps.cmd.outputs.verb == '/review'
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          # Actions does NOT put org/repo variables in the environment; without
+          # this line the script reads an empty model id and hard-stops on every
+          # invocation. The org variable is the SSOT for the free model id.
+          OPENROUTER_DEFAULT_FREE_MODEL: ${{ vars.OPENROUTER_DEFAULT_FREE_MODEL }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.cmd.outputs.pr }}
+          ACTOR: ${{ steps.cmd.outputs.actor }}
+          ARGS: ${{ steps.cmd.outputs.args }}
+          SHORT: ${{ steps.cmd.outputs.short_sha }}
+        run: ./.github/scripts/pr-review.sh
