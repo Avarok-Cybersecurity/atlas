@@ -1,0 +1,231 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 675" width="1200" height="675" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Atlas certificate of certified merge">
+  <title>Atlas — Certificate of Certified Merge</title>
+  <defs id="cert-defs">
+    <linearGradient id="cert-silverRim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7F9FC"/><stop offset="0.18" stop-color="#C9CFD8"/>
+      <stop offset="0.38" stop-color="#8A919C"/><stop offset="0.52" stop-color="#E2E6EC"/>
+      <stop offset="0.68" stop-color="#757C87"/><stop offset="0.85" stop-color="#B9BFC9"/>
+      <stop offset="1" stop-color="#626976"/>
+    </linearGradient>
+    <radialGradient id="cert-silverPlate" cx="0.42" cy="0.38" r="0.78">
+      <stop offset="0" stop-color="#E6EAF0"/><stop offset="0.55" stop-color="#C4CAD3"/>
+      <stop offset="1" stop-color="#99A0AC"/>
+    </radialGradient>
+    <linearGradient id="cert-goldRim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF3C8"/><stop offset="0.2" stop-color="#F2C95F"/>
+      <stop offset="0.4" stop-color="#B97F1C"/><stop offset="0.55" stop-color="#FFE08A"/>
+      <stop offset="0.72" stop-color="#9C6B12"/><stop offset="0.88" stop-color="#EFB338"/>
+      <stop offset="1" stop-color="#7A5210"/>
+    </linearGradient>
+    <radialGradient id="cert-goldField" cx="0.42" cy="0.36" r="0.8">
+      <stop offset="0" stop-color="#FBE7A9"/><stop offset="0.5" stop-color="#F0C662"/>
+      <stop offset="1" stop-color="#C88E1E"/>
+    </radialGradient>
+    <radialGradient id="cert-shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.55"/>
+      <stop offset="0.72" stop-color="#000000" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cert-fadeHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#171B21" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#171B21" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="cert-fadeRibAg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#59606B" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#59606B" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="cert-fadeRibAu" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9C6B12" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#9C6B12" stop-opacity="1"/>
+    </linearGradient>
+    <clipPath id="cert-clip-pr"><rect x="300" y="122" width="122" height="38"/></clipPath>
+    <clipPath id="cert-clip-author"><rect x="460" y="126" width="134" height="32"/></clipPath>
+    <clipPath id="cert-clip-stamp-user"><rect x="-68" y="-10" width="122" height="22"/></clipPath>
+    <clipPath id="cert-clip-stamp-sha"><rect x="-30" y="20" width="60" height="14"/></clipPath>
+    <clipPath id="cert-clip-seal-user"><rect x="-80" y="-10" width="140" height="22"/></clipPath>
+    <clipPath id="cert-clip-seal-sha"><rect x="-30" y="20" width="60" height="14"/></clipPath>
+    <clipPath id="cert-clip-a1"><rect x="64" y="272" width="780" height="36"/></clipPath>
+    <clipPath id="cert-clip-a2"><rect x="64" y="316" width="780" height="36"/></clipPath>
+    <clipPath id="cert-clip-a3"><rect x="64" y="360" width="780" height="36"/></clipPath>
+    <clipPath id="cert-clip-prline"><rect x="64" y="440" width="784" height="27"/></clipPath>
+    <clipPath id="cert-clip-repo"><rect x="80" y="530" width="270" height="32"/></clipPath>
+    <linearGradient id="cert-fadeBg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0F1216" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#0F1216" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="cert-fadeCell" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#000000" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+  <linearGradient id="cert-atlasGoldCut" x1="0" y1="0" x2="0" y2="1"><stop offset="0.5" stop-color="#12B981"/><stop offset="0.5" stop-color="#EFB338"/></linearGradient>
+  <rect width="1200" height="675" fill="#0F1216"/>
+  <rect x="14" y="14" width="1172" height="647" fill="none" stroke="#2E353F" stroke-width="1.5"/>
+  <rect x="24" y="24" width="1152" height="627" fill="none" stroke="#EFB338" stroke-width="0.8" opacity="0.55"/>
+  <g opacity="0.16" stroke="#EFB338" stroke-width="1" fill="none">
+    <path d="M 34 47 L 40 51.75 L 46 53.48 L 52 51.1 L 58 46.11 L 64 41.69 L 70 40.64 L 76 43.62 L 82 48.75 L 88 52.77 L 94 53.12 L 100 49.59 L 106 44.41 L 112 40.88 L 118 41.23 L 124 45.25 L 130 50.38 L 136 53.36 L 142 52.31 L 148 47.89 L 154 42.9 L 160 40.52 L 166 42.25 L 172 47 L 178 51.75 L 184 53.48 L 190 51.1 L 196 46.11 L 202 41.69 L 208 40.64 L 214 43.62 L 220 48.75 L 226 52.77 L 232 53.12 L 238 49.59 L 244 44.41 L 250 40.88 L 256 41.23 L 262 45.25 L 268 50.38 L 274 53.36 L 280 52.31 L 286 47.89 L 292 42.9 L 298 40.52 L 304 42.25 L 310 47 L 316 51.75 L 322 53.48 L 328 51.1 L 334 46.11 L 340 41.69 L 346 40.64 L 352 43.62 L 358 48.75 L 364 52.77 L 370 53.12 L 376 49.59 L 382 44.41 L 388 40.88 L 394 41.23 L 400 45.25 L 406 50.38 L 412 53.36 L 418 52.31 L 424 47.89 L 430 42.9 L 436 40.52 L 442 42.25 L 448 47 L 454 51.75 L 460 53.48 L 466 51.1 L 472 46.11 L 478 41.69 L 484 40.64 L 490 43.62 L 496 48.75 L 502 52.77 L 508 53.12 L 514 49.59 L 520 44.41 L 526 40.88 L 532 41.23 L 538 45.25 L 544 50.38 L 550 53.36 L 556 52.31 L 562 47.89 L 568 42.9 L 574 40.52 L 580 42.25 L 586 47 L 592 51.75 L 598 53.48 L 604 51.1 L 610 46.11 L 616 41.69 L 622 40.64 L 628 43.62 L 634 48.75 L 640 52.77 L 646 53.12 L 652 49.59 L 658 44.41 L 664 40.88 L 670 41.23 L 676 45.25 L 682 50.38 L 688 53.36 L 694 52.31 L 700 47.89 L 706 42.9 L 712 40.52 L 718 42.25 L 724 47 L 730 51.75 L 736 53.48 L 742 51.1 L 748 46.11 L 754 41.69 L 760 40.64 L 766 43.62 L 772 48.75 L 778 52.77 L 784 53.12 L 790 49.59 L 796 44.41 L 802 40.88 L 808 41.23 L 814 45.25 L 820 50.38 L 826 53.36 L 832 52.31 L 838 47.89 L 844 42.9 L 850 40.52 L 856 42.25 L 862 47 L 868 51.75 L 874 53.48 L 880 51.1 L 886 46.11 L 892 41.69 L 898 40.64 L 904 43.62 L 910 48.75 L 916 52.77 L 922 53.12 L 928 49.59 L 934 44.41 L 940 40.88 L 946 41.23 L 952 45.25 L 958 50.38 L 964 53.36 L 970 52.31 L 976 47.89 L 982 42.9 L 988 40.52 L 994 42.25 L 1000 47 L 1006 51.75 L 1012 53.48 L 1018 51.1 L 1024 46.11 L 1030 41.69 L 1036 40.64 L 1042 43.62 L 1048 48.75 L 1054 52.77 L 1060 53.12 L 1066 49.59 L 1072 44.41 L 1078 40.88 L 1084 41.23 L 1090 45.25 L 1096 50.38 L 1102 53.36 L 1108 52.31 L 1114 47.89 L 1120 42.9 L 1126 40.52 L 1132 42.25 L 1138 47 L 1144 51.75 L 1150 53.48 L 1156 51.1 L 1162 46.11"/>
+    <path d="M 34 47 L 40 42.25 L 46 40.52 L 52 42.9 L 58 47.89 L 64 52.31 L 70 53.36 L 76 50.38 L 82 45.25 L 88 41.23 L 94 40.88 L 100 44.41 L 106 49.59 L 112 53.12 L 118 52.77 L 124 48.75 L 130 43.62 L 136 40.64 L 142 41.69 L 148 46.11 L 154 51.1 L 160 53.48 L 166 51.75 L 172 47 L 178 42.25 L 184 40.52 L 190 42.9 L 196 47.89 L 202 52.31 L 208 53.36 L 214 50.38 L 220 45.25 L 226 41.23 L 232 40.88 L 238 44.41 L 244 49.59 L 250 53.12 L 256 52.77 L 262 48.75 L 268 43.62 L 274 40.64 L 280 41.69 L 286 46.11 L 292 51.1 L 298 53.48 L 304 51.75 L 310 47 L 316 42.25 L 322 40.52 L 328 42.9 L 334 47.89 L 340 52.31 L 346 53.36 L 352 50.38 L 358 45.25 L 364 41.23 L 370 40.88 L 376 44.41 L 382 49.59 L 388 53.12 L 394 52.77 L 400 48.75 L 406 43.62 L 412 40.64 L 418 41.69 L 424 46.11 L 430 51.1 L 436 53.48 L 442 51.75 L 448 47 L 454 42.25 L 460 40.52 L 466 42.9 L 472 47.89 L 478 52.31 L 484 53.36 L 490 50.38 L 496 45.25 L 502 41.23 L 508 40.88 L 514 44.41 L 520 49.59 L 526 53.12 L 532 52.77 L 538 48.75 L 544 43.62 L 550 40.64 L 556 41.69 L 562 46.11 L 568 51.1 L 574 53.48 L 580 51.75 L 586 47 L 592 42.25 L 598 40.52 L 604 42.9 L 610 47.89 L 616 52.31 L 622 53.36 L 628 50.38 L 634 45.25 L 640 41.23 L 646 40.88 L 652 44.41 L 658 49.59 L 664 53.12 L 670 52.77 L 676 48.75 L 682 43.62 L 688 40.64 L 694 41.69 L 700 46.11 L 706 51.1 L 712 53.48 L 718 51.75 L 724 47 L 730 42.25 L 736 40.52 L 742 42.9 L 748 47.89 L 754 52.31 L 760 53.36 L 766 50.38 L 772 45.25 L 778 41.23 L 784 40.88 L 790 44.41 L 796 49.59 L 802 53.12 L 808 52.77 L 814 48.75 L 820 43.62 L 826 40.64 L 832 41.69 L 838 46.11 L 844 51.1 L 850 53.48 L 856 51.75 L 862 47 L 868 42.25 L 874 40.52 L 880 42.9 L 886 47.89 L 892 52.31 L 898 53.36 L 904 50.38 L 910 45.25 L 916 41.23 L 922 40.88 L 928 44.41 L 934 49.59 L 940 53.12 L 946 52.77 L 952 48.75 L 958 43.62 L 964 40.64 L 970 41.69 L 976 46.11 L 982 51.1 L 988 53.48 L 994 51.75 L 1000 47 L 1006 42.25 L 1012 40.52 L 1018 42.9 L 1024 47.89 L 1030 52.31 L 1036 53.36 L 1042 50.38 L 1048 45.25 L 1054 41.23 L 1060 40.88 L 1066 44.41 L 1072 49.59 L 1078 53.12 L 1084 52.77 L 1090 48.75 L 1096 43.62 L 1102 40.64 L 1108 41.69 L 1114 46.11 L 1120 51.1 L 1126 53.48 L 1132 51.75 L 1138 47 L 1144 42.25 L 1150 40.52 L 1156 42.9 L 1162 47.89"/>
+  </g>
+  <g transform="translate(34 34) scale(1 1)" stroke="#EFB338" fill="none"><path d="M 0 24 L 0 0 L 24 0" stroke-width="1.5"/><path d="M 0 34 L 0 28 M 28 0 L 34 0" stroke-width="1" opacity="0.7"/></g>
+  <g transform="translate(1166 34) scale(-1 1)" stroke="#EFB338" fill="none"><path d="M 0 24 L 0 0 L 24 0" stroke-width="1.5"/><path d="M 0 34 L 0 28 M 28 0 L 34 0" stroke-width="1" opacity="0.7"/></g>
+  <g transform="translate(34 641) scale(1 -1)" stroke="#EFB338" fill="none"><path d="M 0 24 L 0 0 L 24 0" stroke-width="1.5"/><path d="M 0 34 L 0 28 M 28 0 L 34 0" stroke-width="1" opacity="0.7"/></g>
+  <g transform="translate(1166 641) scale(-1 -1)" stroke="#EFB338" fill="none"><path d="M 0 24 L 0 0 L 24 0" stroke-width="1.5"/><path d="M 0 34 L 0 28 M 28 0 L 34 0" stroke-width="1" opacity="0.7"/></g>
+  <g transform="translate(64 66) scale(0.052)">
+    <g fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M38 38L358 318L38 598" stroke="#BE9DF8"/>
+      <path d="M318 38L638 318L318 598" stroke="#49C3DB"/>
+      <path d="M598 38L918 318L598 598" stroke="url(#cert-atlasGoldCut)"/>
+    </g>
+  </g>
+  <text x="126" y="88" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5">ATLAS ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>
+  <text x="64" y="156" font-size="38" fill="#EFB338" font-weight="800" letter-spacing="4">CERTIFIED MERGE</text>
+  <line x1="64" y1="172" x2="474" y2="172" stroke="#EFB338" stroke-width="1" opacity="0.5"/>
+  <text x="64" y="204" font-size="13.5" fill="#C9CCD4">Verified, stamped, sealed by a codeowner, and merged to main &#8212;</text>
+  <text x="64" y="224" font-size="13.5" fill="#C9CCD4">with <tspan fill="#EFB338" font-weight="650">all eleven benchmark gates certified</tspan> on GB10 hardware.</text>
+  <text x="64" y="274" font-size="10" fill="#82868F" font-weight="600" letter-spacing="2">AUTHORED BY</text>
+  <g id="field-cert-author-1">
+    <text x="64" y="300" font-size="32" font-weight="700" fill="#EDF0F4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-a1)" id="value-cert-author-1">tbraun96</text>
+    <rect x="808" y="273" width="36" height="36" fill="url(#cert-fadeBg)"/>
+  </g>
+  <g id="field-cert-author-2" display="none">
+    <text x="64" y="344" font-size="32" font-weight="700" fill="#EDF0F4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-a2)" id="value-cert-author-2"></text>
+    <rect x="808" y="317" width="36" height="36" fill="url(#cert-fadeBg)"/>
+  </g>
+  <g id="field-cert-author-3" display="none">
+    <text x="64" y="388" font-size="32" font-weight="700" fill="#EDF0F4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-a3)" id="value-cert-author-3"></text>
+    <rect x="808" y="361" width="36" height="36" fill="url(#cert-fadeBg)"/>
+  </g>
+  <text x="64" y="436" font-size="10" fill="#82868F" font-weight="600" letter-spacing="2">PULL REQUEST</text>
+  <g id="field-cert-merge-count">
+    <text x="848" y="436" font-size="10" fill="#EFB338" font-weight="600" letter-spacing="1.5" text-anchor="end"><tspan id="value-cert-merge-count">THE 263RD MERGED INTO THIS REPOSITORY BY</tspan><tspan dx="6" letter-spacing="0" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" id="value-cert-merge-author">tbraun96</tspan></text>
+  </g>
+  <text x="64" y="460" font-size="17" clip-path="url(#cert-clip-prline)"><tspan fill="#EFB338" font-weight="700" id="value-cert-pr">#840</tspan><tspan dx="10" fill="#C9CCD4" id="value-cert-pr-title">Fuse the GDN spine epilogue into the decode kernel</tspan></text>
+  <rect x="812" y="441" width="36" height="26" fill="url(#cert-fadeBg)"/>
+  <rect x="64" y="500" width="300" height="84" rx="4" fill="#000000" stroke="#2E353F" stroke-width="1"/>
+  <rect x="64" y="500" width="3" height="84" fill="#EFB338"/>
+  <text x="80" y="524" font-size="10" fill="#82868F" font-weight="600" letter-spacing="1.5">REPOSITORY</text>
+  <text x="80" y="558" font-size="12.5" fill="#C9CCD4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-repo)" id="value-cert-repo">Avarok-Cybersecurity/atlas</text>
+  <rect x="322" y="501" width="30" height="82" fill="url(#cert-fadeCell)"/>
+  <rect x="378" y="500" width="160" height="84" rx="4" fill="#000000" stroke="#2E353F" stroke-width="1"/>
+  <rect x="378" y="500" width="3" height="84" fill="#EFB338"/>
+  <text x="394" y="524" font-size="10" fill="#82868F" font-weight="600" letter-spacing="1.5">MERGE COMMIT</text>
+  <text x="394" y="558" font-size="13.5" fill="#C9CCD4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" id="value-cert-commit">9d4e1f07c2</text>
+  <rect x="552" y="500" width="150" height="84" rx="4" fill="#000000" stroke="#2E353F" stroke-width="1"/>
+  <rect x="552" y="500" width="3" height="84" fill="#EFB338"/>
+  <text x="568" y="524" font-size="10" fill="#82868F" font-weight="600" letter-spacing="1.5">MERGED ON</text>
+  <text x="568" y="558" font-size="13.5" fill="#C9CCD4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" id="value-cert-date">2026-09-02</text>
+  <rect x="716" y="500" width="170" height="84" rx="4" fill="#000000" stroke="#2E353F" stroke-width="1"/>
+  <rect x="716" y="500" width="3" height="84" fill="#EFB338"/>
+  <text x="732" y="524" font-size="10" fill="#82868F" font-weight="600" letter-spacing="1.5">GATES</text>
+  <text x="732" y="558" font-size="13.5" fill="#12B981" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" id="value-cert-gates">11 / 11 CERTIFIED</text>
+  <text x="964" y="596" font-size="9.5" fill="#82868F" font-weight="600" letter-spacing="1.5" text-anchor="end">SCAN TO READ</text>
+  <text x="964" y="612" font-size="9.5" fill="#82868F" font-weight="600" letter-spacing="1.5" text-anchor="end">THE MERGED PR</text>
+  <g id="field-stamp" transform="translate(1078 352) rotate(-5) scale(1.15)">
+    <circle cx="4" cy="6" r="76" fill="url(#cert-shadow)"/>
+    <circle r="70" fill="url(#cert-silverRim)" stroke="#4A505A" stroke-width="1"/>
+    <circle r="67.5" fill="none" stroke="#3E444E" stroke-width="1" stroke-dasharray="2 2.2"/>
+    <circle r="58" fill="url(#cert-silverPlate)" stroke="#6E747E" stroke-width="1"/>
+    <circle r="55.5" fill="none" stroke="#FFFFFF" stroke-width="0.9" opacity="0.55"/>
+    <circle r="54.5" fill="none" stroke="#40454E" stroke-width="0.9" opacity="0.45"/>
+    <path d="M -63.76 -5.58 A 64 64 0 0 1 -21.89 -60.14" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
+    <g fill="#454B55" font-size="8.5" font-weight="700" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+    <text transform="rotate(-67.96) translate(0 -45)">P</text>
+    <text transform="rotate(-58.9) translate(0 -45)">R</text>
+    <text transform="rotate(-40.78) translate(0 -45)">C</text>
+    <text transform="rotate(-31.72) translate(0 -45)">E</text>
+    <text transform="rotate(-22.65) translate(0 -45)">R</text>
+    <text transform="rotate(-13.59) translate(0 -45)">T</text>
+    <text transform="rotate(-4.53) translate(0 -45)">I</text>
+    <text transform="rotate(4.53) translate(0 -45)">F</text>
+    <text transform="rotate(13.59) translate(0 -45)">I</text>
+    <text transform="rotate(22.65) translate(0 -45)">C</text>
+    <text transform="rotate(31.72) translate(0 -45)">A</text>
+    <text transform="rotate(40.78) translate(0 -45)">T</text>
+    <text transform="rotate(49.84) translate(0 -45)">I</text>
+    <text transform="rotate(58.9) translate(0 -45)">O</text>
+    <text transform="rotate(67.96) translate(0 -45)">N</text>
+    </g>
+    <g fill="#454B55" font-size="8.5" font-weight="700" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+    <text transform="rotate(55.61) translate(0 55)">◆</text>
+    <text transform="rotate(40.78) translate(0 55)">A</text>
+    <text transform="rotate(33.36) translate(0 55)">T</text>
+    <text transform="rotate(25.95) translate(0 55)">L</text>
+    <text transform="rotate(18.54) translate(0 55)">A</text>
+    <text transform="rotate(11.12) translate(0 55)">S</text>
+    <text transform="rotate(-3.71) translate(0 55)">/</text>
+    <text transform="rotate(-11.12) translate(0 55)">s</text>
+    <text transform="rotate(-18.54) translate(0 55)">t</text>
+    <text transform="rotate(-25.95) translate(0 55)">a</text>
+    <text transform="rotate(-33.36) translate(0 55)">m</text>
+    <text transform="rotate(-40.78) translate(0 55)">p</text>
+    <text transform="rotate(-55.61) translate(0 55)">◆</text>
+    </g>
+    <circle r="40.5" fill="none" stroke="#8A9099" stroke-width="0.8" opacity="0.7"/>
+    <text y="-22" font-size="7.5" fill="#454B55" font-weight="700" letter-spacing="1.6" text-anchor="middle">STAMPED BY</text>
+    <rect x="58" y="-11" width="9" height="24" fill="#000000" opacity="0.18"/>
+    <rect x="-67" y="-11" width="9" height="24" fill="#000000" opacity="0.18"/>
+    <path d="M -80 -11 L 80 -11 L 72 1 L 80 13 L -80 13 L -72 1 Z" fill="#59606B" stroke="#3A3F48" stroke-width="1"/>
+    <line x1="-76" y1="-9.4" x2="76" y2="-9.4" stroke="#C7CCD4" stroke-width="0.8" opacity="0.5"/>
+    <line x1="-76" y1="11.4" x2="76" y2="11.4" stroke="#23272E" stroke-width="0.8" opacity="0.6"/>
+    <text x="-68" y="5.5" font-size="12.5" font-weight="600" fill="#EFF2F6" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-stamp-user)" id="value-stamp-user">m-ferraro</text>
+    <rect x="26" y="-9" width="28" height="20" fill="url(#cert-fadeRibAg)"/>
+    <rect x="-33" y="19.5" width="66" height="15.5" rx="2" fill="#AEB4BE" stroke="#6E747E" stroke-width="0.8"/>
+    <text x="-28.5" y="31" font-size="9.5" fill="#232830" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-stamp-sha)" id="value-stamp-sha">3f9c2d81ab</text>
+  </g>
+  <g id="field-seal" transform="translate(952 150) rotate(3.5) scale(1.25)">
+    <circle cx="4" cy="6" r="84" fill="url(#cert-shadow)"/>
+    <path d="M 74 0 A 11.06 11.06 0 0 1 71.85 17.71 A 11.06 11.06 0 0 1 65.52 34.39 A 11.06 11.06 0 0 1 55.39 49.07 A 11.06 11.06 0 0 1 42.04 60.9 A 11.06 11.06 0 0 1 26.24 69.19 A 11.06 11.06 0 0 1 8.92 73.46 A 11.06 11.06 0 0 1 -8.92 73.46 A 11.06 11.06 0 0 1 -26.24 69.19 A 11.06 11.06 0 0 1 -42.04 60.9 A 11.06 11.06 0 0 1 -55.39 49.07 A 11.06 11.06 0 0 1 -65.52 34.39 A 11.06 11.06 0 0 1 -71.85 17.71 A 11.06 11.06 0 0 1 -74 0 A 11.06 11.06 0 0 1 -71.85 -17.71 A 11.06 11.06 0 0 1 -65.52 -34.39 A 11.06 11.06 0 0 1 -55.39 -49.07 A 11.06 11.06 0 0 1 -42.04 -60.9 A 11.06 11.06 0 0 1 -26.24 -69.19 A 11.06 11.06 0 0 1 -8.92 -73.46 A 11.06 11.06 0 0 1 8.92 -73.46 A 11.06 11.06 0 0 1 26.24 -69.19 A 11.06 11.06 0 0 1 42.04 -60.9 A 11.06 11.06 0 0 1 55.39 -49.07 A 11.06 11.06 0 0 1 65.52 -34.39 A 11.06 11.06 0 0 1 71.85 -17.71 A 11.06 11.06 0 0 1 74 0 Z" fill="url(#cert-goldRim)" stroke="#7A5210" stroke-width="1"/>
+    <circle r="69" fill="none" stroke="#7A5210" stroke-width="1" stroke-dasharray="0.6 4.2" opacity="0.8"/>
+    <circle r="64" fill="url(#cert-goldField)" stroke="#8A5E12" stroke-width="1.2"/>
+    <circle r="61" fill="none" stroke="#FFF0C0" stroke-width="0.9" opacity="0.5"/>
+    <circle r="60" fill="none" stroke="#6B4A0E" stroke-width="0.9" opacity="0.45"/>
+    <path d="M -70.73 -6.19 A 71 71 0 0 1 -24.28 -66.72" fill="none" stroke="#FFF8DC" stroke-width="4" stroke-linecap="round" opacity="0.45"/>
+    <g fill="#4A3407" font-size="9" font-weight="700" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+    <text transform="rotate(-56.38) translate(0 -49)">C</text>
+    <text transform="rotate(-47.71) translate(0 -49)">O</text>
+    <text transform="rotate(-39.03) translate(0 -49)">D</text>
+    <text transform="rotate(-30.36) translate(0 -49)">E</text>
+    <text transform="rotate(-21.68) translate(0 -49)">O</text>
+    <text transform="rotate(-13.01) translate(0 -49)">W</text>
+    <text transform="rotate(-4.34) translate(0 -49)">N</text>
+    <text transform="rotate(4.34) translate(0 -49)">E</text>
+    <text transform="rotate(13.01) translate(0 -49)">R</text>
+    <text transform="rotate(30.36) translate(0 -49)">S</text>
+    <text transform="rotate(39.03) translate(0 -49)">E</text>
+    <text transform="rotate(47.71) translate(0 -49)">A</text>
+    <text transform="rotate(56.38) translate(0 -49)">L</text>
+    </g>
+    <g fill="#4A3407" font-size="9" font-weight="700" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+    <text transform="rotate(51.3) translate(0 58)">◆</text>
+    <text transform="rotate(36.64) translate(0 58)">A</text>
+    <text transform="rotate(29.31) translate(0 58)">T</text>
+    <text transform="rotate(21.98) translate(0 58)">L</text>
+    <text transform="rotate(14.66) translate(0 58)">A</text>
+    <text transform="rotate(7.33) translate(0 58)">S</text>
+    <text transform="rotate(-7.33) translate(0 58)">/</text>
+    <text transform="rotate(-14.66) translate(0 58)">s</text>
+    <text transform="rotate(-21.98) translate(0 58)">e</text>
+    <text transform="rotate(-29.31) translate(0 58)">a</text>
+    <text transform="rotate(-36.64) translate(0 58)">l</text>
+    <text transform="rotate(-51.3) translate(0 58)">◆</text>
+    </g>
+    <path d="M 42 0 L 43.85 1.53 L 44.93 3.14 L 44.8 4.71 L 43.45 6.11 L 41.36 7.29 L 39.24 8.34 L 37.8 9.42 L 37.45 10.74 L 38.16 12.4 L 39.47 14.36 L 40.69 16.44 L 41.15 18.32 L 40.48 19.75 L 38.74 20.6 L 36.37 21 L 34.02 21.26 L 32.3 21.78 L 31.52 22.9 L 31.61 24.7 L 32.17 27 L 32.61 29.36 L 32.4 31.29 L 31.29 32.4 L 29.36 32.61 L 27 32.17 L 24.7 31.61 L 22.9 31.52 L 21.78 32.3 L 21.26 34.02 L 21 36.37 L 20.6 38.74 L 19.75 40.48 L 18.32 41.15 L 16.44 40.69 L 14.36 39.47 L 12.4 38.16 L 10.74 37.45 L 9.42 37.8 L 8.34 39.24 L 7.29 41.36 L 6.11 43.45 L 4.71 44.8 L 3.14 44.93 L 1.53 43.85 L 0 42 L -1.4 40.09 L -2.72 38.86 L -4.07 38.74 L -5.58 39.73 L -7.29 41.36 L -9.12 42.92 L -10.9 43.71 L -12.42 43.3 L -13.56 41.73 L -14.36 39.47 L -15.03 37.2 L -15.85 35.59 L -17.08 35.01 L -18.83 35.42 L -21 36.37 L -23.25 37.21 L -25.19 37.34 L -26.48 36.44 L -27.02 34.58 L -27 32.17 L -26.84 29.81 L -27.06 28.02 L -28.02 27.06 L -29.81 26.84 L -32.17 27 L -34.58 27.02 L -36.44 26.48 L -37.34 25.19 L -37.21 23.25 L -36.37 21 L -35.42 18.83 L -35.01 17.08 L -35.59 15.85 L -37.2 15.03 L -39.47 14.36 L -41.73 13.56 L -43.3 12.42 L -43.71 10.9 L -42.92 9.12 L -41.36 7.29 L -39.73 5.58 L -38.74 4.07 L -38.86 2.72 L -40.09 1.4 L -42 0 L -43.85 -1.53 L -44.93 -3.14 L -44.8 -4.71 L -43.45 -6.11 L -41.36 -7.29 L -39.24 -8.34 L -37.8 -9.42 L -37.45 -10.74 L -38.16 -12.4 L -39.47 -14.36 L -40.69 -16.44 L -41.15 -18.32 L -40.48 -19.75 L -38.74 -20.6 L -36.37 -21 L -34.02 -21.26 L -32.3 -21.78 L -31.52 -22.9 L -31.61 -24.7 L -32.17 -27 L -32.61 -29.36 L -32.4 -31.29 L -31.29 -32.4 L -29.36 -32.61 L -27 -32.17 L -24.7 -31.61 L -22.9 -31.52 L -21.78 -32.3 L -21.26 -34.02 L -21 -36.37 L -20.6 -38.74 L -19.75 -40.48 L -18.32 -41.15 L -16.44 -40.69 L -14.36 -39.47 L -12.4 -38.16 L -10.74 -37.45 L -9.42 -37.8 L -8.34 -39.24 L -7.29 -41.36 L -6.11 -43.45 L -4.71 -44.8 L -3.14 -44.93 L -1.53 -43.85 L -0 -42 L 1.4 -40.09 L 2.72 -38.86 L 4.07 -38.74 L 5.58 -39.73 L 7.29 -41.36 L 9.12 -42.92 L 10.9 -43.71 L 12.42 -43.3 L 13.56 -41.73 L 14.36 -39.47 L 15.03 -37.2 L 15.85 -35.59 L 17.08 -35.01 L 18.83 -35.42 L 21 -36.37 L 23.25 -37.21 L 25.19 -37.34 L 26.48 -36.44 L 27.02 -34.58 L 27 -32.17 L 26.84 -29.81 L 27.06 -28.02 L 28.02 -27.06 L 29.81 -26.84 L 32.17 -27 L 34.58 -27.02 L 36.44 -26.48 L 37.34 -25.19 L 37.21 -23.25 L 36.37 -21 L 35.42 -18.83 L 35.01 -17.08 L 35.59 -15.85 L 37.2 -15.03 L 39.47 -14.36 L 41.73 -13.56 L 43.3 -12.42 L 43.71 -10.9 L 42.92 -9.12 L 41.36 -7.29 L 39.73 -5.58 L 38.74 -4.07 L 38.86 -2.72 L 40.09 -1.4 L 42 -0 Z" fill="none" stroke="#A66B14" stroke-width="0.8" opacity="0.75"/>
+    <path d="M 42 0 L 40.09 1.4 L 38.86 2.72 L 38.74 4.07 L 39.73 5.58 L 41.36 7.29 L 42.92 9.12 L 43.71 10.9 L 43.3 12.42 L 41.73 13.56 L 39.47 14.36 L 37.2 15.03 L 35.59 15.85 L 35.01 17.08 L 35.42 18.83 L 36.37 21 L 37.21 23.25 L 37.34 25.19 L 36.44 26.48 L 34.58 27.02 L 32.17 27 L 29.81 26.84 L 28.02 27.06 L 27.06 28.02 L 26.84 29.81 L 27 32.17 L 27.02 34.58 L 26.48 36.44 L 25.19 37.34 L 23.25 37.21 L 21 36.37 L 18.83 35.42 L 17.08 35.01 L 15.85 35.59 L 15.03 37.2 L 14.36 39.47 L 13.56 41.73 L 12.42 43.3 L 10.9 43.71 L 9.12 42.92 L 7.29 41.36 L 5.58 39.73 L 4.07 38.74 L 2.72 38.86 L 1.4 40.09 L 0 42 L -1.53 43.85 L -3.14 44.93 L -4.71 44.8 L -6.11 43.45 L -7.29 41.36 L -8.34 39.24 L -9.42 37.8 L -10.74 37.45 L -12.4 38.16 L -14.36 39.47 L -16.44 40.69 L -18.32 41.15 L -19.75 40.48 L -20.6 38.74 L -21 36.37 L -21.26 34.02 L -21.78 32.3 L -22.9 31.52 L -24.7 31.61 L -27 32.17 L -29.36 32.61 L -31.29 32.4 L -32.4 31.29 L -32.61 29.36 L -32.17 27 L -31.61 24.7 L -31.52 22.9 L -32.3 21.78 L -34.02 21.26 L -36.37 21 L -38.74 20.6 L -40.48 19.75 L -41.15 18.32 L -40.69 16.44 L -39.47 14.36 L -38.16 12.4 L -37.45 10.74 L -37.8 9.42 L -39.24 8.34 L -41.36 7.29 L -43.45 6.11 L -44.8 4.71 L -44.93 3.14 L -43.85 1.53 L -42 0 L -40.09 -1.4 L -38.86 -2.72 L -38.74 -4.07 L -39.73 -5.58 L -41.36 -7.29 L -42.92 -9.12 L -43.71 -10.9 L -43.3 -12.42 L -41.73 -13.56 L -39.47 -14.36 L -37.2 -15.03 L -35.59 -15.85 L -35.01 -17.08 L -35.42 -18.83 L -36.37 -21 L -37.21 -23.25 L -37.34 -25.19 L -36.44 -26.48 L -34.58 -27.02 L -32.17 -27 L -29.81 -26.84 L -28.02 -27.06 L -27.06 -28.02 L -26.84 -29.81 L -27 -32.17 L -27.02 -34.58 L -26.48 -36.44 L -25.19 -37.34 L -23.25 -37.21 L -21 -36.37 L -18.83 -35.42 L -17.08 -35.01 L -15.85 -35.59 L -15.03 -37.2 L -14.36 -39.47 L -13.56 -41.73 L -12.42 -43.3 L -10.9 -43.71 L -9.12 -42.92 L -7.29 -41.36 L -5.58 -39.73 L -4.07 -38.74 L -2.72 -38.86 L -1.4 -40.09 L -0 -42 L 1.53 -43.85 L 3.14 -44.93 L 4.71 -44.8 L 6.11 -43.45 L 7.29 -41.36 L 8.34 -39.24 L 9.42 -37.8 L 10.74 -37.45 L 12.4 -38.16 L 14.36 -39.47 L 16.44 -40.69 L 18.32 -41.15 L 19.75 -40.48 L 20.6 -38.74 L 21 -36.37 L 21.26 -34.02 L 21.78 -32.3 L 22.9 -31.52 L 24.7 -31.61 L 27 -32.17 L 29.36 -32.61 L 31.29 -32.4 L 32.4 -31.29 L 32.61 -29.36 L 32.17 -27 L 31.61 -24.7 L 31.52 -22.9 L 32.3 -21.78 L 34.02 -21.26 L 36.37 -21 L 38.74 -20.6 L 40.48 -19.75 L 41.15 -18.32 L 40.69 -16.44 L 39.47 -14.36 L 38.16 -12.4 L 37.45 -10.74 L 37.8 -9.42 L 39.24 -8.34 L 41.36 -7.29 L 43.45 -6.11 L 44.8 -4.71 L 44.93 -3.14 L 43.85 -1.53 L 42 -0 Z" fill="none" stroke="#A66B14" stroke-width="0.8" opacity="0.75"/>
+    <circle r="37" fill="none" stroke="#A66B14" stroke-width="0.7" opacity="0.6"/>
+    <text y="-22" font-size="7.5" fill="#6B4A0E" font-weight="700" letter-spacing="1.6" text-anchor="middle">SEALED BY</text>
+    <rect x="64" y="-11" width="9" height="24" fill="#000000" opacity="0.18"/>
+    <rect x="-73" y="-11" width="9" height="24" fill="#000000" opacity="0.18"/>
+    <path d="M -94 -11 L 94 -11 L 86 1 L 94 13 L -94 13 L -86 1 Z" fill="#9C6B12" stroke="#6B4A0E" stroke-width="1"/>
+    <line x1="-90" y1="-9.4" x2="90" y2="-9.4" stroke="#FFE9A8" stroke-width="0.8" opacity="0.5"/>
+    <line x1="-90" y1="11.4" x2="90" y2="11.4" stroke="#4A3407" stroke-width="0.8" opacity="0.6"/>
+    <text x="-80" y="5.5" font-size="12.5" font-weight="600" fill="#FFF3D0" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-seal-user)" id="value-seal-user">a-hoffmann</text>
+    <rect x="32" y="-9" width="28" height="20" fill="url(#cert-fadeRibAu)"/>
+    <rect x="-33" y="19.5" width="66" height="15.5" rx="2" fill="#F3D488" stroke="#8A5E12" stroke-width="0.8"/>
+    <text x="-28.5" y="31" font-size="9.5" fill="#4A3407" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#cert-clip-seal-sha)" id="value-seal-sha">3f9c2d81ab</text>
+  </g>
+  <text x="520" y="642" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlasinference.io</tspan></text>
+  <g id="qr">
+    <rect x="980" y="455" width="168" height="168" rx="6" fill="#FFFFFF" stroke="#2E353F" stroke-width="1"/>
+    <path fill="#0F1216" d="M1000 472h28v4h-28zM1036 472h4v4h-4zM1048 472h4v4h-4zM1064 472h4v4h-4zM1072 472h16v4h-16zM1092 472h4v4h-4zM1104 472h28v4h-28zM1000 476h4v4h-4zM1024 476h4v4h-4zM1036 476h8v4h-8zM1060 476h4v4h-4zM1104 476h4v4h-4zM1128 476h4v4h-4zM1000 480h4v4h-4zM1008 480h12v4h-12zM1024 480h4v4h-4zM1032 480h4v4h-4zM1040 480h8v4h-8zM1056 480h4v4h-4zM1072 480h20v4h-20zM1104 480h4v4h-4zM1112 480h12v4h-12zM1128 480h4v4h-4zM1000 484h4v4h-4zM1008 484h12v4h-12zM1024 484h4v4h-4zM1032 484h8v4h-8zM1044 484h8v4h-8zM1060 484h4v4h-4zM1068 484h8v4h-8zM1080 484h4v4h-4zM1104 484h4v4h-4zM1112 484h12v4h-12zM1128 484h4v4h-4zM1000 488h4v4h-4zM1008 488h12v4h-12zM1024 488h4v4h-4zM1032 488h4v4h-4zM1044 488h8v4h-8zM1056 488h12v4h-12zM1076 488h4v4h-4zM1084 488h4v4h-4zM1092 488h4v4h-4zM1104 488h4v4h-4zM1112 488h12v4h-12zM1128 488h4v4h-4zM1000 492h4v4h-4zM1024 492h4v4h-4zM1032 492h4v4h-4zM1056 492h4v4h-4zM1072 492h4v4h-4zM1104 492h4v4h-4zM1128 492h4v4h-4zM1000 496h28v4h-28zM1032 496h4v4h-4zM1040 496h4v4h-4zM1048 496h4v4h-4zM1056 496h4v4h-4zM1064 496h4v4h-4zM1072 496h4v4h-4zM1080 496h4v4h-4zM1088 496h4v4h-4zM1096 496h4v4h-4zM1104 496h28v4h-28zM1032 500h4v4h-4zM1040 500h8v4h-8zM1056 500h4v4h-4zM1064 500h4v4h-4zM1084 500h4v4h-4zM1096 500h4v4h-4zM1000 504h4v4h-4zM1008 504h20v4h-20zM1036 504h12v4h-12zM1052 504h8v4h-8zM1068 504h4v4h-4zM1076 504h8v4h-8zM1104 504h20v4h-20zM1004 508h4v4h-4zM1020 508h4v4h-4zM1028 508h16v4h-16zM1048 508h12v4h-12zM1064 508h4v4h-4zM1076 508h8v4h-8zM1092 508h4v4h-4zM1104 508h8v4h-8zM1116 508h8v4h-8zM1128 508h4v4h-4zM1024 512h8v4h-8zM1040 512h4v4h-4zM1052 512h16v4h-16zM1072 512h4v4h-4zM1080 512h4v4h-4zM1088 512h4v4h-4zM1096 512h4v4h-4zM1104 512h4v4h-4zM1112 512h4v4h-4zM1120 512h8v4h-8zM1016 516h4v4h-4zM1028 516h4v4h-4zM1040 516h8v4h-8zM1052 516h4v4h-4zM1060 516h4v4h-4zM1072 516h4v4h-4zM1084 516h8v4h-8zM1096 516h8v4h-8zM1112 516h16v4h-16zM1000 520h4v4h-4zM1008 520h4v4h-4zM1020 520h16v4h-16zM1044 520h4v4h-4zM1056 520h4v4h-4zM1064 520h4v4h-4zM1072 520h4v4h-4zM1080 520h4v4h-4zM1088 520h12v4h-12zM1112 520h8v4h-8zM1124 520h4v4h-4zM1004 524h16v4h-16zM1032 524h4v4h-4zM1040 524h8v4h-8zM1052 524h4v4h-4zM1060 524h4v4h-4zM1072 524h8v4h-8zM1088 524h8v4h-8zM1104 524h4v4h-4zM1120 524h12v4h-12zM1004 528h4v4h-4zM1012 528h20v4h-20zM1044 528h4v4h-4zM1056 528h20v4h-20zM1080 528h4v4h-4zM1088 528h4v4h-4zM1096 528h16v4h-16zM1116 528h4v4h-4zM1124 528h4v4h-4zM1000 532h4v4h-4zM1008 532h12v4h-12zM1036 532h8v4h-8zM1052 532h12v4h-12zM1072 532h16v4h-16zM1100 532h8v4h-8zM1116 532h8v4h-8zM1008 536h4v4h-4zM1016 536h4v4h-4zM1024 536h12v4h-12zM1044 536h4v4h-4zM1060 536h12v4h-12zM1076 536h4v4h-4zM1088 536h16v4h-16zM1108 536h12v4h-12zM1128 536h4v4h-4zM1004 540h8v4h-8zM1020 540h4v4h-4zM1036 540h4v4h-4zM1044 540h4v4h-4zM1052 540h4v4h-4zM1064 540h4v4h-4zM1072 540h4v4h-4zM1080 540h8v4h-8zM1092 540h4v4h-4zM1104 540h8v4h-8zM1116 540h8v4h-8zM1128 540h4v4h-4zM1000 544h12v4h-12zM1016 544h4v4h-4zM1024 544h4v4h-4zM1032 544h16v4h-16zM1052 544h16v4h-16zM1072 544h4v4h-4zM1080 544h8v4h-8zM1096 544h20v4h-20zM1120 544h8v4h-8zM1000 548h12v4h-12zM1016 548h8v4h-8zM1036 548h12v4h-12zM1056 548h4v4h-4zM1072 548h16v4h-16zM1100 548h32v4h-32zM1000 552h4v4h-4zM1008 552h8v4h-8zM1024 552h4v4h-4zM1036 552h4v4h-4zM1048 552h4v4h-4zM1060 552h4v4h-4zM1072 552h8v4h-8zM1088 552h4v4h-4zM1096 552h8v4h-8zM1112 552h8v4h-8zM1000 556h4v4h-4zM1012 556h8v4h-8zM1036 556h8v4h-8zM1056 556h24v4h-24zM1084 556h12v4h-12zM1104 556h4v4h-4zM1116 556h8v4h-8zM1128 556h4v4h-4zM1000 560h4v4h-4zM1012 560h16v4h-16zM1032 560h20v4h-20zM1068 560h4v4h-4zM1096 560h8v4h-8zM1116 560h12v4h-12zM1000 564h4v4h-4zM1008 564h4v4h-4zM1016 564h4v4h-4zM1028 564h8v4h-8zM1048 564h4v4h-4zM1064 564h4v4h-4zM1080 564h12v4h-12zM1100 564h24v4h-24zM1128 564h4v4h-4zM1000 568h4v4h-4zM1008 568h4v4h-4zM1016 568h12v4h-12zM1036 568h16v4h-16zM1068 568h4v4h-4zM1076 568h4v4h-4zM1088 568h4v4h-4zM1096 568h24v4h-24zM1124 568h4v4h-4zM1032 572h8v4h-8zM1044 572h12v4h-12zM1060 572h20v4h-20zM1084 572h4v4h-4zM1092 572h8v4h-8zM1112 572h4v4h-4zM1120 572h12v4h-12zM1000 576h28v4h-28zM1036 576h4v4h-4zM1052 576h20v4h-20zM1080 576h20v4h-20zM1104 576h4v4h-4zM1112 576h4v4h-4zM1120 576h8v4h-8zM1000 580h4v4h-4zM1024 580h4v4h-4zM1032 580h8v4h-8zM1056 580h20v4h-20zM1080 580h20v4h-20zM1112 580h12v4h-12zM1128 580h4v4h-4zM1000 584h4v4h-4zM1008 584h12v4h-12zM1024 584h4v4h-4zM1032 584h8v4h-8zM1044 584h4v4h-4zM1056 584h4v4h-4zM1064 584h4v4h-4zM1076 584h4v4h-4zM1088 584h4v4h-4zM1096 584h24v4h-24zM1000 588h4v4h-4zM1008 588h12v4h-12zM1024 588h4v4h-4zM1032 588h4v4h-4zM1044 588h20v4h-20zM1068 588h16v4h-16zM1092 588h12v4h-12zM1112 588h4v4h-4zM1120 588h12v4h-12zM1000 592h4v4h-4zM1008 592h12v4h-12zM1024 592h4v4h-4zM1032 592h12v4h-12zM1048 592h28v4h-28zM1088 592h4v4h-4zM1104 592h8v4h-8zM1000 596h4v4h-4zM1024 596h4v4h-4zM1044 596h12v4h-12zM1060 596h4v4h-4zM1080 596h16v4h-16zM1112 596h12v4h-12zM1000 600h28v4h-28zM1032 600h4v4h-4zM1044 600h12v4h-12zM1060 600h4v4h-4zM1068 600h12v4h-12zM1088 600h16v4h-16zM1108 600h4v4h-4zM1124 600h4v4h-4z"/>
+  </g>
+</svg>
