@@ -145,6 +145,27 @@ impl PleLayer {
         })
     }
 
+    /// Release one sequence's PLE carry.
+    ///
+    /// Same shape of defect as the QSA indexer carry: `conv` is a bare
+    /// `DevicePtr`, so dropping `PleSeqState` frees nothing. Individually
+    /// small (~147 KB) and below the 32 MB allocation-trace threshold, which
+    /// is exactly why it stayed invisible — but it is one per SSM layer (36
+    /// on qwen4_exp) per sequence, and it never comes back.
+    ///
+    /// Idempotent: `conv` is nulled once freed.
+    pub fn release_seq_state(&self, st: &mut PleSeqState, gpu: &dyn GpuBackend) -> Result<()> {
+        if st.conv.is_null() {
+            return Ok(());
+        }
+        let r = gpu.free(st.conv);
+        st.conv = DevicePtr(0);
+        st.history.clear();
+        st.prestaged_va = None;
+        st.last_staged_va = 0;
+        r
+    }
+
     // `reset` + `prestage` live in `aux_state.rs` (≤500 LoC split).
 
     // Marconi aux-state (snapshot_aux / restore_aux) moved to

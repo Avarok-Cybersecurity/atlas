@@ -137,6 +137,26 @@ impl TransformerModel {
             self.ssm_pool.release_slot(slot);
         }
 
+        // Release per-sequence layer state that is NOT pooled: the QSA indexer
+        // carry (12 full-attention layers x ~61.6 MB at 200K ctx) and the PLE
+        // conv carry. Both are bare `DevicePtr`s inside the layer state, so
+        // dropping `seq.layer_states` reclaims the host structs and leaks the
+        // device buffers — ~739 MB per request, invisible to RSS on unified
+        // memory and reported as N/A by `nvidia-smi`, which is why it read as
+        // "the box is growing" with no process to blame.
+        //
+        // Errors are logged, not propagated: this runs on the teardown path,
+        // and a sequence that cannot free its state is still finished. Bailing
+        // here would strand the KV blocks and prefix refs released below —
+        // trading a leak for a worse one.
+        for (layer_idx, ls) in seq.layer_states.iter_mut().enumerate() {
+            if let Some(layer) = self.layers.get(layer_idx)
+                && let Err(e) = layer.release_state(ls.as_mut(), self.gpu.as_ref())
+            {
+                tracing::error!("free_sequence: release_state(layer {layer_idx}): {e:#}");
+            }
+        }
+
         // Task #25: release this sequence's LoRA slot ref (the single terminal
         // chokepoint every stamped seq routes through — normal stop/EOS/length,
         // error/abort, prefill-error frees, and swap-out spill). Guarded by the
