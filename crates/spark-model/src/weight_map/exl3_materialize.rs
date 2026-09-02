@@ -30,23 +30,25 @@
 //! The source trellis/suh/svh/mul1 tensors are freed as each linear lands,
 //! so peak memory ≈ the packed checkpoint + one transient BF16 tensor.
 //!
-//! NOT covered here (documented gaps, each needs its own decode path):
+//! Files the export keeps OUTSIDE the weight index are registered by two
+//! sibling passes on the serve path (`serve_load.rs`), not here:
 //!  * `ngram_embedding.safetensors` (`exl3_ngram_trellis` row format) — the
-//!    PLE n-gram tables. A qwen4_exp load will fail at the PLE loader's
-//!    existing "no shard_* was deferred" check; this pass logs the reason
-//!    up front.
-//!  * `vision_k6.safetensors` — the EXL3-quantized vision encoder ships
-//!    outside the weight index and is not loaded.
+//!    PLE n-gram tables; `register_exl3_ngram_sidecar` (after this pass)
+//!    defers the trellis for the NVMe row cache and uploads the id tables.
+//!  * every other un-indexed `*.safetensors` — on 4.05bpw the whole ViT
+//!    tower in `vision_k6.safetensors`, on the other branches the MTP mixer
+//!    patch; `register_exl3_sidecar_shards` (BEFORE this pass) uploads them
+//!    so their trellis linears take the same route as the indexed ones.
 //!
 //! Double-quantization note: EXL3(K bits) -> BF16 -> NVFP4 costs quality vs
 //! a native-NVFP4 calibration AND vs native EXL3 serving. This pass is the
 //! LOADING path (checkpoint compatibility); the native fused trellis-GEMM
 //! (`.research/EXL3_DECODE_FINDINGS.md`) is the fidelity/memory path.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight, store_has_exl3};
-use spark_runtime::weights::{DeferredTensor, WeightDtype, WeightStore, WeightTensor};
+use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
 
 use super::{DenseWeight, quantize_to_nvfp4};
 
@@ -108,173 +110,53 @@ pub fn exl3_native_serves_with(
         || super::exl3_native_serves_dense(prefix, dense)
 }
 
-/// Whether the vendored kernel set can serve this tensor: a compiled
+/// The K (bits/weight) values the DENSE native arms (lm_head, GDN,
+/// attention) serve: every K with compiled gemm instances
+/// (`ops::EXL3_GEMM_K_BITS` = {2, 3, 4, 5, 6, 8}; ONE definition, named
+/// here for the serving-policy reader).
+///
+/// Per shipped branch of turboderp/Qwen3.8-Flash-Next-exl3 this admits the
+/// dense families of 2.05 (K=4), 3.05 (K=5), 4.05 (K=6) and 6.05 (GDN/attn/
+/// shared K=8, lm_head K=6); 5.05's K=7 dense set has no kernel and keeps
+/// materializing.
+pub const EXL3_NATIVE_DENSE_K_BITS: [u32; 6] = crate::layers::ops::EXL3_GEMM_K_BITS;
+
+/// Whether the vendored kernel set can serve this tensor natively through
+/// the dense arms: a compiled K ([`EXL3_NATIVE_DENSE_K_BITS`]), a compiled
 /// codebook (cb0/"3inst" is not instantiated — no shipped checkpoint uses
 /// it) and the 128-divisible geometry the fused rotation assumes
 /// (guaranteed by the format for quantized tensors, but checked rather
 /// than trusted).
 ///
-/// K is restricted to {2, 4} — the set the GEMV path serves at ANY
-/// `rows <= 8` call. This is a CONCURRENCY invariant, not a kernel gap:
-/// K in {3, 5, 6, 8} would route small-row projections to the split-K GEMM,
-/// whose shared locks buffer is only safe because today's `rows > 8`
-/// callers never overlap across streams — but small-row projections DO run
-/// concurrently under co-dispatched prefill finalize. Kernels for the other
-/// K are compiled and parity-proven; widening this set requires either
-/// per-stream locks buffers or a GEMV envelope that covers those K at
-/// small rows (review finding, 2026-09-01).
+/// K in {3, 5, 6, 8} route `rows <= 8` projections to the split-K GEMM
+/// (the GEMV tier is instantiated for K in 2..=4 only; K=3 has instances
+/// but its Blackwell heuristic mostly declines). That used to be excluded
+/// as a CONCURRENCY hazard — small-row projections on the decode stream
+/// could partially co-reside with a prefill chunk's cooperative GEMM on
+/// the shared locks buffer. Since every cooperative EXL3 launch (MoE, both
+/// dense arms, the LM head) runs inside ONE model-shared
+/// `Exl3LaunchState::section` (host mutex + device fence), no two of them
+/// can overlap regardless of tier, so the GEMV-only restriction is gone.
+/// The routed-expert envelope is the separate, fused-kernel-bound
+/// [`super::exl3_native_supported_moe`].
 pub fn exl3_native_supported(w: &Exl3Weight) -> bool {
-    matches!(w.k_bits, 2 | 4)
+    EXL3_NATIVE_DENSE_K_BITS.contains(&w.k_bits)
         && matches!(w.cb, Exl3Codebook::Mcg | Exl3Codebook::Mul1)
         && w.in_dim.is_multiple_of(128)
         && w.out_dim.is_multiple_of(128)
 }
 
-/// Probe `model_dir/ngram_embedding.safetensors` — the EXL3 export's
-/// standalone PLE n-gram file (`exl3_ngram_trellis` v1) — and register its
-/// tensors in the store under the names the PLE loader expects:
-///
-///  * the big `.trellis` `[rows, 1 + 160*K/16]` I16 tensor is DEFERRED
-///    (the NVMe row cache faults raw rows from it; uploading it whole
-///    would be ~39 GB),
-///  * `head_bias` `[heads, 160]` F16 is uploaded verbatim (exact f16 bits
-///    are gather-kernel inputs),
-///  * `head_offsets` / `head_vocab_sizes` are uploaded RENAMED to the
-///    `ngram_heads_offsets` / `ngram_heads_vocab_sizes` names the standard
-///    checkpoints use; `layer_multipliers` keeps its name.
-///
-/// Returns Ok(true) when the sidecar was found and registered, Ok(false)
-/// when absent or not the exl3_ngram_trellis format (both are fine — the
-/// standard PLE shard walk applies). Call before quant detection.
-pub fn register_exl3_ngram_sidecar(
-    gpu: &dyn GpuBackend,
-    store: &mut WeightStore,
-    model_dir: &std::path::Path,
-) -> Result<bool> {
-    use std::io::Read;
-
-    let path = model_dir.join("ngram_embedding.safetensors");
-    if !path.is_file() {
-        return Ok(false);
-    }
-    let mut f =
-        std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-    let mut len8 = [0u8; 8];
-    f.read_exact(&mut len8)?;
-    let header_len = u64::from_le_bytes(len8) as usize;
-    ensure!(
-        header_len <= 16 * 1024 * 1024,
-        "ngram_embedding.safetensors header is {header_len} bytes; refusing"
-    );
-    let mut hdr = vec![0u8; header_len];
-    f.read_exact(&mut hdr)?;
-    let json: serde_json::Value =
-        serde_json::from_slice(&hdr).context("ngram_embedding.safetensors header is not JSON")?;
-    let meta = json.get("__metadata__");
-    let format = meta
-        .and_then(|m| m.get("format"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if format != "exl3_ngram_trellis" {
-        tracing::warn!(
-            "ngram_embedding.safetensors present but format is {format:?} (expected \
-             exl3_ngram_trellis) — leaving it to the standard PLE path"
-        );
-        return Ok(false);
-    }
-    let version = meta
-        .and_then(|m| m.get("version"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    ensure!(
-        version == "1",
-        "exl3_ngram_trellis version {version:?} is not the understood version 1"
-    );
-
-    let data_start = 8 + header_len as u64;
-    let obj = json.as_object().context("header not an object")?;
-    let mut registered_trellis = false;
-    for (name, info) in obj {
-        if name == "__metadata__" {
-            continue;
-        }
-        let dtype_str = info["dtype"].as_str().unwrap_or("");
-        let shape: Vec<usize> = info["shape"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_u64().map(|n| n as usize))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let offs = info["data_offsets"]
-            .as_array()
-            .and_then(|a| {
-                let s = a.first()?.as_u64()?;
-                let e = a.get(1)?.as_u64()?;
-                Some((s, e))
-            })
-            .with_context(|| format!("ngram sidecar {name}: bad data_offsets"))?;
-
-        if name.ends_with(".trellis") {
-            ensure!(
-                dtype_str == "I16" && shape.len() == 2,
-                "ngram sidecar trellis: dtype {dtype_str} shape {shape:?}, expected I16 2-D"
-            );
-            store.defer(
-                name.clone(),
-                DeferredTensor {
-                    path: path.clone(),
-                    offset: data_start + offs.0,
-                    shape,
-                    dtype: WeightDtype::UInt16,
-                },
-            );
-            registered_trellis = true;
-            continue;
-        }
-
-        // Small tensors: read the bytes and upload. Leaf renames map the
-        // sidecar's names onto the standard checkpoint's.
-        let store_name = if let Some(base) = name.strip_suffix(".ngram_embedding.head_offsets") {
-            format!("{base}.ngram_heads_offsets")
-        } else if let Some(base) = name.strip_suffix(".ngram_embedding.head_vocab_sizes") {
-            format!("{base}.ngram_heads_vocab_sizes")
-        } else if let Some(base) = name.strip_suffix(".ngram_embedding.layer_multipliers") {
-            format!("{base}.layer_multipliers")
-        } else {
-            // head_bias (and anything future) keeps its own name.
-            name.clone()
-        };
-        let dtype = match dtype_str {
-            "I64" => WeightDtype::Int64,
-            "F16" => WeightDtype::F16, // exact bits are gather inputs
-            "BF16" => WeightDtype::BF16,
-            other => bail!("ngram sidecar {name}: unsupported dtype {other}"),
-        };
-        let nbytes = (offs.1 - offs.0) as usize;
-        ensure!(
-            nbytes <= 1 << 20,
-            "ngram sidecar {name}: {nbytes} bytes is not small"
-        );
-        let mut buf = vec![0u8; nbytes];
-        use std::io::{Seek, SeekFrom};
-        f.seek(SeekFrom::Start(data_start + offs.0))?;
-        f.read_exact(&mut buf)?;
-        let ptr = gpu.alloc(nbytes.max(4))?;
-        gpu.copy_h2d(&buf, ptr)?;
-        store.insert(store_name, WeightTensor { ptr, shape, dtype });
-    }
-    ensure!(
-        registered_trellis,
-        "exl3_ngram_trellis sidecar had no .trellis tensor"
-    );
-    tracing::info!(
-        "EXL3 ngram sidecar registered from {} (trellis deferred for the NVMe row cache)",
-        path.display()
-    );
-    Ok(true)
-}
+// Split for the 500-LoC cap: the two sidecar registrations and the tests
+// live in child modules of this file.
+#[path = "exl3_ngram_sidecar.rs"]
+mod ngram_sidecar;
+pub use ngram_sidecar::register_exl3_ngram_sidecar;
+#[path = "exl3_sidecar_shards.rs"]
+mod sidecar_shards;
+pub use sidecar_shards::{
+    Exl3SidecarStats, index_listed_shards, is_exl3_vision_sidecar_name,
+    register_exl3_sidecar_shards, select_exl3_sidecar_shards,
+};
 
 /// What the pass did — for the load log.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -399,7 +281,8 @@ pub(crate) fn materialize_exl3_impl(
     // Same shape as the expert set: resolve every gate-admitted GDN /
     // attention projection up front, then decide ATOMICALLY per (layer,
     // family) — all of a layer's `linear_attn.{qkv,z,out}` (or
-    // `self_attn.{q,k,v,o}`) inside the K in {2,4} GEMV envelope, or the
+    // `self_attn.{q,k,v,o}`) inside the dense kernel envelope (K in
+    // {2,3,4,5,6,8}, `exl3_native_supported`), or the
     // whole family materializes to BF16 exactly as today (see
     // exl3_materialize_dense.rs). The loader arms re-derive "kept" from the
     // family's `.trellis` tensors still being in the store.
@@ -583,349 +466,5 @@ pub(crate) fn materialize_exl3_impl(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use spark_runtime::gpu::mock::MockGpuBackend;
-
-    use super::*;
-
-    /// Dense gate OFF: every pre-existing test keeps its exact behavior.
-    const OFF: crate::weight_map::Exl3DenseFamilies = crate::weight_map::Exl3DenseFamilies::OFF;
-
-    fn t(gpu: &MockGpuBackend, shape: Vec<usize>, dtype: WeightDtype) -> WeightTensor {
-        let bytes: usize = shape.iter().product::<usize>() * dtype.byte_size().max(1);
-        WeightTensor {
-            ptr: gpu.alloc(bytes.max(4)).unwrap(),
-            shape,
-            dtype,
-        }
-    }
-
-    fn exl3_linear(gpu: &MockGpuBackend, m: &mut HashMap<String, WeightTensor>, p: &str, k: u32) {
-        // [2560 -> 640] geometry, K bits.
-        m.insert(
-            format!("{p}.trellis"),
-            t(gpu, vec![160, 40, 16 * k as usize], WeightDtype::UInt16),
-        );
-        m.insert(format!("{p}.suh"), t(gpu, vec![2560], WeightDtype::F16));
-        m.insert(format!("{p}.svh"), t(gpu, vec![640], WeightDtype::F16));
-        m.insert(format!("{p}.mul1"), t(gpu, vec![], WeightDtype::Int32));
-    }
-
-    #[test]
-    fn no_exl3_is_noop() {
-        let gpu = MockGpuBackend::new();
-        let mut m = HashMap::new();
-        m.insert(
-            "a.weight".to_string(),
-            t(&gpu, vec![8, 8], WeightDtype::BF16),
-        );
-        let mut store = WeightStore::from_map(m);
-        let stats = materialize_exl3(&gpu, &mut store).unwrap();
-        assert_eq!(stats, Exl3MaterializeStats::default());
-        assert!(store.contains("a.weight"));
-    }
-
-    #[test]
-    fn routes_experts_to_triplet_and_attention_to_bf16() {
-        let gpu = MockGpuBackend::new();
-        let mut m = HashMap::new();
-        exl3_linear(&gpu, &mut m, "model.layers.0.mlp.experts.3.gate_proj", 4);
-        exl3_linear(&gpu, &mut m, "model.layers.0.mlp.shared_expert.up_proj", 6);
-        exl3_linear(&gpu, &mut m, "model.layers.0.linear_attn.in_proj_qkv", 6);
-        // Bystander that must survive untouched.
-        m.insert(
-            "model.layers.0.norm.weight".to_string(),
-            t(&gpu, vec![2560], WeightDtype::BF16),
-        );
-        let mut store = WeightStore::from_map(m);
-
-        let stats = materialize_exl3(&gpu, &mut store).unwrap();
-        assert_eq!(stats.quantized, 2);
-        assert_eq!(stats.bf16, 1);
-
-        // Expert: ModelOpt-style NVFP4 triplet, [n=640, k=2560].
-        let ep = "model.layers.0.mlp.experts.3.gate_proj";
-        let w = store.get(&format!("{ep}.weight")).unwrap();
-        assert_eq!(w.dtype, WeightDtype::UInt8);
-        assert_eq!(w.shape, vec![640, 1280]); // [n, k/2]
-        let s = store.get(&format!("{ep}.weight_scale")).unwrap();
-        assert_eq!(s.dtype, WeightDtype::FP8E4M3);
-        assert_eq!(s.shape, vec![640, 160]); // [n, k/16]
-        let s2 = store.get(&format!("{ep}.weight_scale_2")).unwrap();
-        assert_eq!(s2.dtype, WeightDtype::FP32);
-
-        // Attention: dense BF16 [out, in].
-        let ap = "model.layers.0.linear_attn.in_proj_qkv";
-        let w = store.get(&format!("{ap}.weight")).unwrap();
-        assert_eq!(w.dtype, WeightDtype::BF16);
-        assert_eq!(w.shape, vec![640, 2560]);
-
-        // Every EXL3 source tensor is gone; the bystander survived.
-        for p in [ep, ap, "model.layers.0.mlp.shared_expert.up_proj"] {
-            for sfx in ["trellis", "suh", "svh", "mul1"] {
-                assert!(!store.contains(&format!("{p}.{sfx}")), "{p}.{sfx} remains");
-            }
-        }
-        assert!(store.contains("model.layers.0.norm.weight"));
-
-        // Idempotent: second call is a no-op.
-        let again = materialize_exl3(&gpu, &mut store).unwrap();
-        assert_eq!(again, Exl3MaterializeStats::default());
-    }
-
-    #[test]
-    fn native_mode_keeps_supported_lm_head_packed() {
-        let gpu = MockGpuBackend::new();
-        let mut m = HashMap::new();
-        exl3_linear(&gpu, &mut m, "lm_head", 4);
-        exl3_linear(&gpu, &mut m, "model.layers.0.linear_attn.in_proj_qkv", 4);
-        exl3_linear(&gpu, &mut m, "model.layers.0.mlp.experts.0.gate_proj", 4);
-        let mut store = WeightStore::from_map(m);
-        // Stamp the mul1 codebook flag — a fresh mock alloc reads back zero,
-        // which is cb0/"3inst" and NOT natively supported.
-        let flag = store.get("lm_head.mul1").unwrap().ptr;
-        gpu.copy_h2d(&0x83DC_D12Du32.to_le_bytes(), flag).unwrap();
-
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
-        assert_eq!(stats.kept_native, 1);
-        assert_eq!(stats.quantized, 1); // the expert still lands as NVFP4
-        assert_eq!(stats.bf16, 1); // the GDN linear still lands as BF16
-
-        // lm_head stays packed — no BF16 rewrite, nothing freed.
-        for sfx in ["trellis", "suh", "svh", "mul1"] {
-            assert!(store.contains(&format!("lm_head.{sfx}")));
-        }
-        assert!(!store.contains("lm_head.weight"));
-        // The non-served GDN linear materialized exactly as before.
-        assert!(store.contains("model.layers.0.linear_attn.in_proj_qkv.weight"));
-        assert!(!store.contains("model.layers.0.linear_attn.in_proj_qkv.trellis"));
-
-        // Second call: still idempotent — keeps keeping, rewrites nothing.
-        let again = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
-        assert_eq!(again.kept_native, 1);
-        assert_eq!(again.quantized + again.bf16, 0);
-    }
-
-    #[test]
-    fn native_mode_unsupported_codebook_falls_back_to_bf16() {
-        // cb0 (unset flag scalar) has no compiled kernels — lm_head must
-        // materialize even when native mode asks for it.
-        let gpu = MockGpuBackend::new();
-        let mut m = HashMap::new();
-        exl3_linear(&gpu, &mut m, "lm_head", 4);
-        let mut store = WeightStore::from_map(m);
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
-        assert_eq!(stats.kept_native, 0);
-        assert_eq!(stats.bf16, 1);
-        assert!(store.contains("lm_head.weight"));
-        assert!(!store.contains("lm_head.trellis"));
-    }
-
-    #[test]
-    fn native_serve_set_and_support_envelope() {
-        assert!(exl3_native_serves("lm_head"));
-        // GDN / attention / ViT stay on the materialize path in milestone 1 —
-        // their dispatch is not routed yet. Experts join the set ONLY under
-        // the MoE gate (threaded explicitly here — env set_var races tests).
-        assert!(!exl3_native_serves_with(
-            "model.layers.0.linear_attn.in_proj_qkv",
-            true,
-            OFF
-        ));
-        assert!(!exl3_native_serves_with(
-            "model.layers.3.self_attn.q_proj",
-            true,
-            OFF
-        ));
-        assert!(!exl3_native_serves_with(
-            "model.visual.blocks.0.attn.q_proj",
-            true,
-            OFF
-        ));
-        assert!(!exl3_native_serves_with(
-            "model.layers.0.mlp.experts.7.down_proj",
-            false,
-            OFF
-        ));
-        assert!(exl3_native_serves_with(
-            "model.layers.0.mlp.experts.7.down_proj",
-            true,
-            OFF
-        ));
-        assert!(exl3_native_serves_with("lm_head", false, OFF));
-        // Shared expert and MTP experts stay materialized under the MoE gate.
-        assert!(!exl3_native_serves_with(
-            "model.layers.0.mlp.shared_expert.up_proj",
-            true,
-            OFF
-        ));
-        assert!(!exl3_native_serves_with(
-            "mtp.layers.0.mlp.experts.7.down_proj",
-            true,
-            OFF
-        ));
-
-        let w = |k_bits, cb| Exl3Weight {
-            trellis: spark_runtime::gpu::DevicePtr(16),
-            suh: spark_runtime::gpu::DevicePtr(32),
-            svh: spark_runtime::gpu::DevicePtr(48),
-            in_dim: 2560,
-            out_dim: 248320,
-            k_bits,
-            cb,
-        };
-        assert!(exl3_native_supported(&w(4, Exl3Codebook::Mul1)));
-        assert!(exl3_native_supported(&w(2, Exl3Codebook::Mcg)));
-        assert!(!exl3_native_supported(&w(4, Exl3Codebook::Inst3))); // cb0 not compiled
-        assert!(!exl3_native_supported(&w(7, Exl3Codebook::Mul1))); // K=7 not compiled
-        let mut odd = w(4, Exl3Codebook::Mul1);
-        odd.in_dim = 2504; // not %128
-        assert!(!exl3_native_supported(&odd));
-    }
-
-    /// One EXL3 linear at explicit `[in -> out]` geometry (the base helper is
-    /// pinned to gate/up's [2560 -> 640]; down runs [640 -> 2560]).
-    fn exl3_linear_dims(
-        gpu: &MockGpuBackend,
-        m: &mut HashMap<String, WeightTensor>,
-        p: &str,
-        k: u32,
-        in_dim: usize,
-        out_dim: usize,
-    ) {
-        m.insert(
-            format!("{p}.trellis"),
-            t(
-                gpu,
-                vec![in_dim / 16, out_dim / 16, 16 * k as usize],
-                WeightDtype::UInt16,
-            ),
-        );
-        m.insert(format!("{p}.suh"), t(gpu, vec![in_dim], WeightDtype::F16));
-        m.insert(format!("{p}.svh"), t(gpu, vec![out_dim], WeightDtype::F16));
-        m.insert(format!("{p}.mul1"), t(gpu, vec![], WeightDtype::Int32));
-    }
-
-    fn stamp_mul1(gpu: &MockGpuBackend, store: &WeightStore, p: &str) {
-        let flag = store.get(&format!("{p}.mul1")).unwrap().ptr;
-        gpu.copy_h2d(&0x83DC_D12Du32.to_le_bytes(), flag).unwrap();
-    }
-
-    #[test]
-    fn native_moe_keeps_uniform_layer_atomically_drops_mixed_layer() {
-        let gpu = MockGpuBackend::new();
-        let mut m = HashMap::new();
-        let expert =
-            |l: usize, e: usize, proj: &str| format!("model.layers.{l}.mlp.experts.{e}.{proj}");
-        // Layer 0: two experts, uniform K=2 everywhere — kept whole.
-        // Layer 1: expert 1's up_proj is K=3 against expert 0's K=2 — the
-        // WHOLE layer must materialize (atomic: no partial keeps, or the
-        // layer double-holds packed + NVFP4 copies).
-        for l in 0..2usize {
-            for e in 0..2usize {
-                let up_k = if l == 1 && e == 1 { 3 } else { 2 };
-                exl3_linear_dims(&gpu, &mut m, &expert(l, e, "gate_proj"), 2, 2560, 640);
-                exl3_linear_dims(&gpu, &mut m, &expert(l, e, "up_proj"), up_k, 2560, 640);
-                exl3_linear_dims(&gpu, &mut m, &expert(l, e, "down_proj"), 2, 640, 2560);
-            }
-        }
-        // Excluded prefixes under the MoE gate: MTP experts and the shared
-        // expert keep materializing to NVFP4 triplets.
-        exl3_linear_dims(
-            &gpu,
-            &mut m,
-            "mtp.layers.0.mlp.experts.0.gate_proj",
-            2,
-            2560,
-            640,
-        );
-        exl3_linear_dims(
-            &gpu,
-            &mut m,
-            "model.layers.0.mlp.shared_expert.up_proj",
-            2,
-            2560,
-            640,
-        );
-        let mut store = WeightStore::from_map(m);
-        for l in 0..2usize {
-            for e in 0..2usize {
-                for proj in ["gate_proj", "up_proj", "down_proj"] {
-                    stamp_mul1(&gpu, &store, &expert(l, e, proj));
-                }
-            }
-        }
-        stamp_mul1(&gpu, &store, "mtp.layers.0.mlp.experts.0.gate_proj");
-        stamp_mul1(&gpu, &store, "model.layers.0.mlp.shared_expert.up_proj");
-
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, true, OFF).unwrap();
-        assert_eq!(stats.kept_native, 6, "layer 0's six projections kept");
-        assert_eq!(stats.kept_native_experts, 6);
-        // Layer 1 (6) + MTP expert (1) + shared expert (1) -> NVFP4 triplets.
-        assert_eq!(stats.quantized, 8);
-        assert_eq!(stats.bf16, 0);
-        // Memory accounting: per kept projection, packed = 2560*640*2/8 +
-        // (2560+640)*2 + 4 = 416,004 B vs NVFP4 = 2560*640/2 + 2560*640/16
-        // + 4 = 921,604 B (both orientations have the same element count).
-        assert_eq!(stats.kept_packed_bytes, 6 * 416_004);
-        assert_eq!(stats.nvfp4_equiv_bytes, 6 * 921_604);
-
-        for e in 0..2usize {
-            for proj in ["gate_proj", "up_proj", "down_proj"] {
-                // Layer 0: fully packed (no `.weight`, all sources present).
-                let p0 = expert(0, e, proj);
-                for sfx in ["trellis", "suh", "svh", "mul1"] {
-                    assert!(store.contains(&format!("{p0}.{sfx}")), "{p0}.{sfx} kept");
-                }
-                assert!(!store.contains(&format!("{p0}.weight")));
-                // Layer 1: fully materialized — including its perfectly
-                // uniform gate/down projections.
-                let p1 = expert(1, e, proj);
-                assert!(store.contains(&format!("{p1}.weight")), "{p1} materialized");
-                assert!(!store.contains(&format!("{p1}.trellis")), "{p1} freed");
-            }
-        }
-        for p in [
-            "mtp.layers.0.mlp.experts.0.gate_proj",
-            "model.layers.0.mlp.shared_expert.up_proj",
-        ] {
-            assert!(store.contains(&format!("{p}.weight")), "{p} materialized");
-            assert!(
-                store.contains(&format!("{p}.weight_scale")),
-                "{p} is a triplet"
-            );
-            assert!(!store.contains(&format!("{p}.trellis")));
-        }
-
-        // Idempotent: the second pass keeps keeping and rewrites nothing.
-        let again = materialize_exl3_impl(&gpu, &mut store, true, true, OFF).unwrap();
-        assert_eq!(again.kept_native, 6);
-        assert_eq!(again.kept_native_experts, 6);
-        assert_eq!(again.quantized + again.bf16, 0);
-    }
-
-    #[test]
-    fn moe_gate_off_experts_materialize_exactly_as_before() {
-        // native=1, moe=0: experts take the NVFP4 triplet path bit-for-bit
-        // as today (the keep-vs-rewrite branch is exclusive).
-        let gpu = MockGpuBackend::new();
-        let mut m = HashMap::new();
-        exl3_linear_dims(
-            &gpu,
-            &mut m,
-            "model.layers.0.mlp.experts.0.gate_proj",
-            2,
-            2560,
-            640,
-        );
-        let mut store = WeightStore::from_map(m);
-        stamp_mul1(&gpu, &store, "model.layers.0.mlp.experts.0.gate_proj");
-        let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
-        assert_eq!(stats.kept_native, 0);
-        assert_eq!(stats.quantized, 1);
-        assert!(store.contains("model.layers.0.mlp.experts.0.gate_proj.weight"));
-        assert!(!store.contains("model.layers.0.mlp.experts.0.gate_proj.trellis"));
-    }
-}
+#[path = "exl3_materialize_tests.rs"]
+mod tests;

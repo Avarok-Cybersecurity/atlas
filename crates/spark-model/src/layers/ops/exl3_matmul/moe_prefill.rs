@@ -36,9 +36,10 @@
 //!    excluded by the sentinel bucket (`expert_count[num_local]`), which the
 //!    kernel's expert loop never reaches — never null entries at reachable
 //!    indices.
-//!  * The fused kernel needs ONE codebook across gate/up/down and K per
-//!    projection in {2,3,4} (k0 runtime-dispatch instances); uniform K uses
-//!    the fixed-K instance.
+//!  * The fused kernel needs ONE codebook across gate/up/down and either
+//!    uniform K in [`EXL3_MOE_FUSED_K_BITS`] = {2,3,4,5,6} (fixed-K
+//!    instance) or mixed K with every value in [`EXL3_MOE_MIXED_K_BITS`] =
+//!    {2,3,4} (k0 runtime-dispatch instance) — [`exl3_moe_fused_serves`].
 //!  * temp slabs `(C, 128, H/I)` need NO zero-init (group barriers protect
 //!    them); `output_state` MUST be zeroed every call.
 //!  * PLAIN launch, but every block spins on group barriers in the shared
@@ -71,6 +72,36 @@ use overflow::run_overflow_expert;
 /// temp slabs hold this many rows per concurrent expert group, and experts
 /// with more sorted rows are skipped (ticket-free) for the overflow path.
 pub const EXL3_MOE_MAX_TOKENS_PER_EXPERT: usize = 128;
+
+/// K values the fused `exl3_moe` module has FIXED-K instances for
+/// (`exl3_moe_k{K}_n{128,256}_cb{1,2}`) — a layer whose gate/up/down share
+/// one K in this set takes the fused tier. Mirrored by
+/// `weight_map::EXL3_NATIVE_MOE_K_BITS` (pinned equal by test). K=8 is
+/// deliberately absent: no shipped checkpoint has K=8 routed experts and each
+/// K adds four full pipelined-GEMM instantiations to the module.
+pub const EXL3_MOE_FUSED_K_BITS: [u32; 5] = [2, 3, 4, 5, 6];
+
+/// K values the fused module's k0 RUNTIME-DISPATCH instances switch over —
+/// the only instances a MIXED-K layer (gate/up/down at different K) can use.
+/// Kept at upstream-minus-{1,5,6,7,8} on purpose: every retained case
+/// instantiates the full pipelined GEMM in all four k0 variants, and widening
+/// the switch to {2..6} measured 3.0x the module's compile time (53.5 s vs
+/// 17.7 s) for a layout no shipped checkpoint has (all five bpw branches are
+/// uniform-K per layer). See `exl3_vendor/exl3_moe_kernel.cuh`.
+pub const EXL3_MOE_MIXED_K_BITS: [u32; 3] = [2, 3, 4];
+
+/// Whether the fused tier can serve a layer with these per-projection K
+/// (gate, up, down): uniform K in [`EXL3_MOE_FUSED_K_BITS`], or mixed K with
+/// every value in [`EXL3_MOE_MIXED_K_BITS`]. The loader's keep-set and the
+/// launch both apply this rule — a K reaching a k0 instance outside its
+/// switch would SILENTLY skip that projection's GEMM.
+pub fn exl3_moe_fused_serves(ks: [u32; 3]) -> bool {
+    if ks[0] == ks[1] && ks[1] == ks[2] {
+        EXL3_MOE_FUSED_K_BITS.contains(&ks[0])
+    } else {
+        ks.iter().all(|k| EXL3_MOE_MIXED_K_BITS.contains(k))
+    }
+}
 
 /// Device scratch for the prefill pipeline; one set serves every MoE layer
 /// (all launches are stream-ordered). See `moe::tables::Exl3MoeState` for
@@ -198,14 +229,13 @@ pub fn exl3_moe_fused(
         "exl3_moe_fused: no active experts — skip the launch"
     );
     let ks = [tables[0].k_bits, tables[1].k_bits, tables[2].k_bits];
-    for k in ks {
-        ensure!(
-            (2..=4).contains(&k),
-            "exl3_moe_fused: K={k} outside the fused-kernel envelope {{2,3,4}} \
-             (mgemm serves {{2..6,8}}; the loader keep-predicate must refuse \
-             this layer)"
-        );
-    }
+    ensure!(
+        exl3_moe_fused_serves(ks),
+        "exl3_moe_fused: gate/up/down K={ks:?} outside the fused-kernel envelope \
+         (uniform K in {EXL3_MOE_FUSED_K_BITS:?}, or mixed K all in \
+         {EXL3_MOE_MIXED_K_BITS:?}; mgemm serves {{2..6,8}}); the loader \
+         keep-predicate must refuse this layer"
+    );
     let cb = tables[0].cb;
     ensure!(
         tables[1].cb == cb && tables[2].cb == cb && (cb == 1 || cb == 2),

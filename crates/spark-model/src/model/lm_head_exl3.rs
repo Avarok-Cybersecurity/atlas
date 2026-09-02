@@ -11,7 +11,10 @@
 //!
 //! ```text
 //!   normed BF16 [rows, H] --exl3_bf16_to_f16--> A fp16 (per-row scratch slab)
-//!   A --cooperative exl3_gemv (rows<=8) / exl3_gemm--> C fp16 [rows, N_pad]
+//!   A --cooperative exl3_gemv (rows<=8, K in 2..=4 only) / exl3_gemm (every
+//!       other case: rows>8, the GEMV heuristic declining, or K in {5,6,8}
+//!       which has gemm instances only — 4.05bpw ships lm_head at K=6)
+//!       --> C fp16 [rows, N_pad]
 //!       (in-kernel: A.*suh, H128 rotation into A_had=A, trellis decode,
 //!        MMA with fp32 accumulate on sm_121a, H128 + svh epilogue)
 //!   C --one pitched cudaMemcpy2DAsync--> dst rows narrowed to V columns
@@ -41,7 +44,7 @@
 //! argument aliases `A` (upstream-sanctioned: the kernel's rotation stage
 //! fully writes A_had behind a grid sync before any reuse), so one slab
 //! serves both. On Qwen3.8-Flash-Next at the default arena (160 rows):
-//! A 0.8 MB + C 79.5 MB + f32 row 1.0 MB ≈ 81 MB, against the ~950 MB the
+//! A 0.8 MB + C 79.5 MB + f32 8 rows 7.9 MB ≈ 88 MB, against the ~950 MB the
 //! BF16 materialized head would have cost.
 //!
 //! Every projection runs inside a dispatch SECTION of the model-shared
@@ -88,7 +91,8 @@ pub(crate) struct Exl3LmHead {
     c_f16: DevicePtr,
     /// One f32 row `[out_dim]` for the single-token FP32-logits path — its
     /// own slab (not two `c_f16` rows) so a concurrent co-dispatched BF16
-    /// projection at another row can never overlap it.
+    /// projection at another row can never overlap it. Sized to 8 rows: it
+    /// is also the fp32-C target of the small-row GEMM at K > 4.
     c_f32_single: DevicePtr,
     /// Logical vocab (`config.vocab_size`) — the narrowed column count.
     vocab: usize,
@@ -114,11 +118,12 @@ impl Exl3LmHead {
         ensure!(
             crate::weight_map::exl3_native_supported(&w),
             "EXL3 native lm_head: K={} cb={:?} [{}x{}] is outside the compiled \
-             kernel envelope (K in 2..=6|8, cb MCG/MUL1, dims %128)",
+             kernel envelope (K in {:?}, cb MCG/MUL1, dims %128)",
             w.k_bits,
             w.cb,
             w.in_dim,
             w.out_dim,
+            crate::weight_map::EXL3_NATIVE_DENSE_K_BITS,
         );
         // The checkpoint's lm_head rows are PADDED past the logical vocab
         // (the HF embedding ships 248320 rows vs Atlas's vocab_size 248077 on
@@ -140,17 +145,19 @@ impl Exl3LmHead {
             Exl3Codebook::Mul1 => 2,
             Exl3Codebook::Inst3 => unreachable!("rejected by exl3_native_supported"),
         };
-        // Fail at load, not mid-serve: the universal shape-2 GEMM instance
-        // existing implies the whole exl3_matmul module is compiled into
-        // this target.
-        gpu.kernel(
-            "exl3_matmul",
-            &format!("exl3_gemm_k{}_cb{cb}_sh2_f16", w.k_bits),
-        )
-        .context(
-            "EXL3 native lm_head needs the exl3_matmul kernel module \
-             (gb10 targets only) — unset ATLAS_EXL3_NATIVE on this target",
-        )?;
+        // Fail at load, not mid-serve: resolve every instance `project` can
+        // select for the head's geometry at this K — the GEMM shape the
+        // Blackwell heuristic picks for [hidden -> vocab_pad] (shape 4 at
+        // n=248320: n % 512 and n > 16384) plus the universal shape-2
+        // fallback, both C dtypes, and the GEMV set only where K has one.
+        for name in ops::exl3_dense_kernel_names(w.in_dim, w.out_dim, w.k_bits, cb)? {
+            gpu.kernel("exl3_matmul", &name).with_context(|| {
+                format!(
+                    "EXL3 native lm_head needs exl3_matmul::{name} (gb10 targets only) — \
+                     unset ATLAS_EXL3_NATIVE on this target"
+                )
+            })?;
+        }
         let launch = ops::Exl3LaunchState::shared(gpu)?;
         let mut owned: Vec<DevicePtr> = Vec::new();
         let mut alloc = |bytes: usize| -> Result<DevicePtr> {
@@ -169,7 +176,11 @@ impl Exl3LmHead {
         };
         let a_f16 = alloc(max_rows * hidden * 2)?;
         let c_f16 = alloc(max_rows * w.out_dim * 2)?;
-        let c_f32_single = alloc(w.out_dim * 4)?;
+        // 8 rows (the GEMV tier's cap): row 0 is the fp32-logits single-token
+        // path; rows 0..8 are the fp32-C GEMM target for small-row
+        // projections at K > 4, where no GEMV instance exists and the f16-C
+        // GEMM would hand split-K partials between blocks in fp16.
+        let c_f32_single = alloc(ops::EXL3_GEMV_MAX_M * w.out_dim * 4)?;
         tracing::info!(
             "EXL3 native lm_head installed: [{hidden} -> {vocab}] K={} cb={:?} \
              (trellis rows {}), scratch {max_rows} rows ({:.1} MB A + {:.1} MB C) \
@@ -217,11 +228,12 @@ impl Exl3LmHead {
         let a = self.a_f16.offset(scratch_row * k * 2);
         let c = self.c_f16.offset(scratch_row * n_pad * 2);
         ops::exl3_bf16_to_f16(gpu, src, a, rows * k, stream)?;
-        // Small-m fused GEMV first (m<=8); Ok(false) = heuristic/envelope
-        // refusal, fall through to the GEMM (any m, slab-chunked in-kernel).
-        // fp16 C lands in the padded slab.
+        // Small-m fused GEMV first (m<=8, K in 2..=4 — the GEMV tier has no
+        // instances at other K, so those go straight to the GEMM); Ok(false)
+        // = heuristic/envelope refusal, fall through to the GEMM (any m,
+        // slab-chunked in-kernel). fp16 C lands in the padded slab.
         let mut launched = false;
-        if rows <= ops::EXL3_GEMV_MAX_M {
+        if rows <= ops::EXL3_GEMV_MAX_M && ops::exl3_gemv_serves_k(self.w.k_bits) {
             launched = ops::exl3_gemv(
                 gpu,
                 a,
@@ -241,6 +253,42 @@ impl Exl3LmHead {
                 self.launch.sm_count,
                 stream,
             )?;
+        }
+        if !launched && rows <= ops::EXL3_GEMV_MAX_M {
+            // Small-row GEMM (K > 4, or the GEMV heuristic declined): keep the
+            // accumulation and the split-K hand-off in fp32, like the dense
+            // arm's small-row tier and the fp32-logits path, then narrow +
+            // convert in one strided pass. The f16-C GEMM below is for rows
+            // > 8 only, where the slab does not exist.
+            ops::exl3_gemm(
+                gpu,
+                a,
+                self.w.trellis,
+                self.c_f32_single,
+                rows,
+                k,
+                n_pad,
+                self.w.k_bits,
+                self.cb,
+                true,
+                self.launch.locks,
+                self.w.suh,
+                a, // A_had aliases A
+                self.w.svh,
+                None,
+                self.launch.sm_count,
+                stream,
+            )?;
+            return ops::exl3_f32_to_bf16_2d(
+                gpu,
+                self.c_f32_single,
+                dst,
+                rows,
+                self.vocab,
+                n_pad,
+                self.vocab,
+                stream,
+            );
         }
         if !launched {
             ops::exl3_gemm(
@@ -293,25 +341,27 @@ impl Exl3LmHead {
         let _section = self.launch.section(gpu, stream)?;
         let a = self.a_f16; // row 0: the single-token head is primary-stream only
         ops::exl3_bf16_to_f16(gpu, src, a, k, stream)?;
-        let launched = ops::exl3_gemv(
-            gpu,
-            a,
-            self.w.trellis,
-            self.c_f32_single,
-            1,
-            k,
-            n_pad,
-            self.w.k_bits,
-            self.cb,
-            true,
-            self.launch.locks,
-            self.w.suh,
-            a,
-            self.w.svh,
-            None,
-            self.launch.sm_count,
-            stream,
-        )?;
+        // GEMV only where instantiated (K in 2..=4); otherwise the f32-C GEMM.
+        let launched = ops::exl3_gemv_serves_k(self.w.k_bits)
+            && ops::exl3_gemv(
+                gpu,
+                a,
+                self.w.trellis,
+                self.c_f32_single,
+                1,
+                k,
+                n_pad,
+                self.w.k_bits,
+                self.cb,
+                true,
+                self.launch.locks,
+                self.w.suh,
+                a,
+                self.w.svh,
+                None,
+                self.launch.sm_count,
+                stream,
+            )?;
         if !launched {
             ops::exl3_gemm(
                 gpu,

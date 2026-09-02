@@ -102,15 +102,22 @@ pub(super) fn build_moe(
         // each projection's (K, cb) — the shape-2 instance existing implies
         // the whole exl3_matmul module is compiled into this target (the
         // Exl3LmHead precedent).
+        // Probe every (shape, C dtype) the decode tier can select — the
+        // heuristic picks sh3/sh4 at larger slot counts and gate/up run
+        // f16-C — so a missing instance fails here, not on the first request.
         for t in [&gate_t, &up_t, &down_t] {
-            gpu.kernel(
-                "exl3_matmul",
-                &format!("exl3_mgemm_k{}_cb{}_sh2_f32", t.k_bits, t.cb),
-            )
-            .context(
-                "EXL3 native MoE needs the exl3_matmul kernel module (gb10 \
-                 targets only) — unset ATLAS_EXL3_NATIVE_MOE on this target",
-            )?;
+            for sh in [2, 3, 4] {
+                for suf in ["f16", "f32"] {
+                    gpu.kernel(
+                        "exl3_matmul",
+                        &format!("exl3_mgemm_k{}_cb{}_sh{sh}_{suf}", t.k_bits, t.cb),
+                    )
+                    .context(
+                        "EXL3 native MoE needs the exl3_matmul kernel module (gb10 \
+                         targets only) — unset ATLAS_EXL3_NATIVE_MOE on this target",
+                    )?;
+                }
+            }
         }
         // The prefill tier lives in a SEPARATE module (`exl3_moe`) — resolve
         // the exact instance the fused launch will select (same name rule as
@@ -118,6 +125,17 @@ pub(super) fn build_moe(
         // here, not on the first prefill.
         {
             let ks = [gate_t.k_bits, up_t.k_bits, down_t.k_bits];
+            // Same per-layer rule the keep-set applied (uniform K in the
+            // fixed-K table, or mixed K inside the k0 runtime switch) — a
+            // divergence would otherwise surface as a silent in-kernel skip.
+            ensure!(
+                crate::layers::ops::exl3_moe_fused_serves(ks),
+                "{lp}: gate/up/down K={ks:?} is outside the fused exl3_moe envelope \
+                 (uniform K in {:?}, or mixed K all in {:?}) — the materialize pass \
+                 should not have kept this layer (keep/load predicate divergence)",
+                crate::layers::ops::EXL3_MOE_FUSED_K_BITS,
+                crate::layers::ops::EXL3_MOE_MIXED_K_BITS,
+            );
             let kname = if ks[0] == ks[1] && ks[1] == ks[2] {
                 ks[0]
             } else {

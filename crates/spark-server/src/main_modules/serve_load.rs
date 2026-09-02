@@ -435,6 +435,27 @@ pub(crate) fn load_model(
         oom_reserve_bytes,
     )?;
 
+    // 3a. Out-of-index sidecar shards: every `*.safetensors` the checkpoint
+    // keeps outside `model.safetensors.index.json` that no loader owns
+    // (the EXL3 export's `vision_k6.safetensors` ViT tower on 4.05bpw, its
+    // MTP mixer patch on the other branches). Registered BEFORE the EXL3
+    // pass so their trellis linears materialize like the indexed ones, under
+    // the SAME skip policy the main shards got. No-op without such files,
+    // and gated to EXL3 stores: a non-EXL3 model dir with a stray un-indexed
+    // *.safetensors (an adapter, a hand-copied export) must not have it
+    // uploaded under new names, uncounted by the pre-flight estimate.
+    if spark_runtime::weights::exl3::store_has_exl3(&store) {
+        let policy = serve_phases::main_shard_skip_policy(&config, ep_rank, ep_size);
+        spark_model::weight_map::register_exl3_sidecar_shards(
+            gpu.as_ref(),
+            &mut store,
+            &model_dir,
+            oom_reserve_bytes,
+            &|name| policy.should_skip_tensor(name),
+        )
+        .context("out-of-index sidecar shard registration failed")?;
+    }
+
     // 3a-bis. EXL3 (QTIP trellis) checkpoints: rewrite trellis linears into
     // loader-consumable tensors NOW, before the preflight and quant-format
     // detection below read the store (both key off `.weight`-style names

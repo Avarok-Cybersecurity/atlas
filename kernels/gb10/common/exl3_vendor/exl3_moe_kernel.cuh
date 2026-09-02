@@ -16,15 +16,28 @@
 //   * include paths made local (no torch/cublas/stdio; cuda::atomic_ref comes
 //     from <cuda/atomic> via ptx.cuh, included by exl3_gemm_inner.cuh)
 //   * the runtime-K dispatch switches (the K=0 / t_bits==0 variant for
-//     mixed-K gate/up/down checkpoints) are TRIMMED from cases 1..8 to cases
-//     2,3,4 — the K envelope Atlas serves in the EXL3 MoE arm (the verified
-//     qwen4_exp 2.05bpw checkpoint is uniform K=4). This bounds PTX size and
-//     compile time: each retained case instantiates the full pipelined
-//     exl3_gemm_kernel_inner at the MoE tile shape per (cb, N) variant.
-//     A K outside {2,3,4} reaching a k0 wrapper at runtime SILENTLY SKIPS
+//     MIXED-K gate/up/down layers) are TRIMMED from upstream's cases 1..8 to
+//     cases 2,3,4. The FIXED-K wrapper instances (exl3_moe.cu) cover K in
+//     {2,3,4,5,6} — every shipped Qwen3.8-Flash-Next-exl3 branch's routed
+//     experts (K=2/3/4/5/6 for 2.05/3.05/4.05/5.05/6.05bpw, each UNIFORM
+//     across gate/up/down and across the 512 experts per the header
+//     inventory). So a real checkpoint never reaches a k0 instance at K=5/6;
+//     the k0 path only exists for a hypothetical mixed-K export, and there it
+//     serves K in {2,3,4} only. Each retained switch case instantiates the
+//     full pipelined exl3_gemm_kernel_inner at the MoE tile shape in EVERY
+//     k0 (cb, N) variant, which is what bounds PTX size / compile time.
+//     Measured on GB10 (nvcc --ptx -arch=sm_121f -O3, single job):
+//       k0{2,3,4} + fixed{2,3,4}     16 instances  17.7 s   8.86 MB PTX
+//       k0{2,3,4} + fixed{2..6}      24 instances  25.6 s  12.24 MB  (SHIPPED)
+//       k0{2..6}  + fixed{2..6}      24 instances  53.5 s  14.67 MB  (rejected:
+//                                    3.0x compile for a case no checkpoint has)
+//     A K outside the switch reaching a k0 wrapper at runtime SILENTLY SKIPS
 //     that projection's GEMM (upstream's switch has no default either) — the
-//     host must refuse the fused path unless all of K_gate/K_up/K_down are
-//     in {2,3,4}. Extend the switches together with new wrapper instances.
+//     host must refuse the fused path for a mixed-K layer unless all of
+//     K_gate/K_up/K_down are in {2,3,4} (the loader keep-predicate
+//     `expert_keep_set` enforces exactly that; uniform K in {2..6} takes the
+//     fixed instance). Extend the switches together with new wrapper
+//     instances if a mixed-K K=5/6 export ever ships.
 //   * `(void)` casts for the two kernel args the body never reads
 //     (num_experts_per_tok, concurrency) — the Atlas kernel build promotes
 //     warnings to errors (--Werror all-warnings)
@@ -174,7 +187,9 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
                     exl3_gemm_kernel_inner<t_bits, false, cb, SHAPE_ARGS, false>(ARGS);
                 else switch(K)
                 {
-                    // cases 1, 5-8 removed — see header (Atlas MoE K envelope)
+                    // cases 1, 5-8 removed — see header (Atlas MoE K envelope:
+                    // the k0 MIXED-K switch stays at {2,3,4}; K=5/6 serve
+                    // through the fixed-K k5/k6 instances)
                     case 2: exl3_gemm_kernel_inner<2, false, cb, SHAPE_ARGS, false>(ARGS); break;
                     case 3: exl3_gemm_kernel_inner<3, false, cb, SHAPE_ARGS, false>(ARGS); break;
                     case 4: exl3_gemm_kernel_inner<4, false, cb, SHAPE_ARGS, false>(ARGS); break;
@@ -244,7 +259,9 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
                     exl3_gemm_kernel_inner<t_bits, false, cb, SHAPE_ARGS, false>(ARGS);
                 else switch(K)
                 {
-                    // cases 1, 5-8 removed — see header (Atlas MoE K envelope)
+                    // cases 1, 5-8 removed — see header (Atlas MoE K envelope:
+                    // the k0 MIXED-K switch stays at {2,3,4}; K=5/6 serve
+                    // through the fixed-K k5/k6 instances)
                     case 2: exl3_gemm_kernel_inner<2, false, cb, SHAPE_ARGS, false>(ARGS); break;
                     case 3: exl3_gemm_kernel_inner<3, false, cb, SHAPE_ARGS, false>(ARGS); break;
                     case 4: exl3_gemm_kernel_inner<4, false, cb, SHAPE_ARGS, false>(ARGS); break;

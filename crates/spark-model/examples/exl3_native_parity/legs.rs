@@ -11,7 +11,12 @@ use crate::util::{
     gate_leg, metrics, run_pipeline, up,
 };
 
-fn gen_weight(rng: &mut Lcg, k: usize, n: usize, k_bits: u32) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+pub fn gen_weight(
+    rng: &mut Lcg,
+    k: usize,
+    n: usize,
+    k_bits: u32,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let trellis: Vec<u16> = (0..(k / 16) * (n / 16) * 16 * k_bits as usize)
         .map(|_| rng.u16())
         .collect();
@@ -240,9 +245,14 @@ pub fn leg_real(ctx: &Ctx, rng: &mut Lcg) -> Result<Option<bool>> {
 /// mgemm smoke: 4 synthetic experts [2560 -> 640] K=4 cb2, weighted routing
 /// for num_tokens in {1, 2}, fp32 C, vs f64 weighted per-expert truth.
 pub fn leg_mgemm(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
+    leg_mgemm_k(ctx, rng, 4)
+}
+
+/// [`leg_mgemm`] at an arbitrary K (the widened-envelope legs run 3/5/6).
+pub fn leg_mgemm_k(ctx: &Ctx, rng: &mut Lcg, k_bits: u32) -> Result<bool> {
     let g = ctx.g;
     let (k, n) = (2560usize, 640usize);
-    let (k_bits, cb) = (4u32, 2u32);
+    let cb = 2u32;
     let num_experts = 4usize;
 
     let mut experts = Vec::new();
@@ -363,7 +373,7 @@ pub fn leg_mgemm(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
             g.free(p).ok();
         }
         ok &= gate_leg(
-            &format!("mgemm 4 experts [2560x640] K=4 cb2 f32 num_tokens={num_tokens}"),
+            &format!("mgemm 4 experts [2560x640] K={k_bits} cb2 f32 num_tokens={num_tokens}"),
             &y_gpu,
             &y64,
             GEMM_REL_RMS,

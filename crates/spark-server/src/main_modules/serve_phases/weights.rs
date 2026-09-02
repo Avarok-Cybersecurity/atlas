@@ -103,6 +103,26 @@ pub(crate) fn load_weight_store(
     Ok(store)
 }
 
+/// The tensor-skip policy the main shards were loaded under (EP sharding +
+/// the per-model `skip_mtp` / `skip_activation_scales` allow-lists), as a
+/// loader value whose `should_skip_tensor` the out-of-index sidecar
+/// registration reuses. Both safetensors loaders carry identical rules, so
+/// this is faithful for the fast path too. GGUF has no sidecars.
+pub(crate) fn main_shard_skip_policy(
+    config: &ModelConfig,
+    ep_rank: usize,
+    ep_size: usize,
+) -> spark_runtime::weights::SafetensorsLoader {
+    let mut policy = if ep_size > 1 {
+        spark_runtime::weights::SafetensorsLoader::with_ep(ep_rank, ep_size, config.num_experts)
+    } else {
+        spark_runtime::weights::SafetensorsLoader::new()
+    };
+    policy.skip_activation_scales = skip_activation_scales(config);
+    policy.skip_mtp = skip_mtp(config);
+    policy
+}
+
 pub(crate) fn load_dflash_drafter(
     args: &cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,

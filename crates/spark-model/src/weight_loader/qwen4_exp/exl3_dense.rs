@@ -132,8 +132,10 @@ impl NativeExl3 {
             tracing::warn!(
                 "ATLAS_EXL3_NATIVE_DENSE=1 but NO layer family was kept packed — every \
                  GDN/attention projection is serving from its materialized BF16 copy \
-                 (not an EXL3 checkpoint, or every family fell outside the K in {{2,4}} \
-                 envelope; see the materialize-pass warnings)"
+                 (not an EXL3 checkpoint, or every family fell outside the K in {:?} \
+                 envelope — e.g. the 5.05bpw branch's K=7 dense set; see the \
+                 materialize-pass warnings)",
+                crate::weight_map::EXL3_NATIVE_DENSE_K_BITS,
             );
         }
     }

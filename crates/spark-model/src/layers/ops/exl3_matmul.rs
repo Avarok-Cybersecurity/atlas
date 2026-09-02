@@ -39,6 +39,11 @@ use spark_runtime::kernel_args::KernelLaunch;
 
 // Explicit `#[path]`: `ops.rs` loads THIS file with one too, so the child
 // resolves against `ops/exl3_matmul/` (moe_grouped_a.rs precedent).
+#[path = "exl3_matmul/envelope.rs"]
+mod envelope;
+pub use envelope::{
+    EXL3_GEMM_K_BITS, exl3_dense_kernel_names, exl3_gemm_serves_k, exl3_gemv_serves_k,
+};
 #[path = "exl3_matmul/mgemm.rs"]
 mod mgemm;
 pub use mgemm::{
@@ -54,8 +59,9 @@ pub use moe_decode::{
 #[path = "exl3_matmul/moe_prefill.rs"]
 mod moe_prefill;
 pub use moe_prefill::{
-    EXL3_MOE_MAX_TOKENS_PER_EXPERT, Exl3MoeOverflowCtx, Exl3MoePrefillScratch, Exl3MoePrefillStats,
-    exl3_moe_fused, exl3_moe_prefill_routed, exl3_moe_stage_sorted,
+    EXL3_MOE_FUSED_K_BITS, EXL3_MOE_MAX_TOKENS_PER_EXPERT, EXL3_MOE_MIXED_K_BITS,
+    Exl3MoeOverflowCtx, Exl3MoePrefillScratch, Exl3MoePrefillStats, exl3_moe_fused,
+    exl3_moe_fused_serves, exl3_moe_prefill_routed, exl3_moe_stage_sorted,
 };
 
 /// Dynamic shared memory every gemm/mgemm instance is launched with (the
@@ -104,8 +110,8 @@ fn c_suffix(c_fp32: bool) -> &'static str {
 
 fn ensure_k_cb(k_bits: u32, cb: u32) -> Result<()> {
     ensure!(
-        matches!(k_bits, 2 | 3 | 4 | 5 | 6 | 8),
-        "exl3: no kernels instantiated for K={k_bits} (have 2,3,4,5,6,8)"
+        exl3_gemm_serves_k(k_bits),
+        "exl3: no kernels instantiated for K={k_bits} (have {EXL3_GEMM_K_BITS:?})"
     );
     ensure!(
         cb == 1 || cb == 2,
@@ -313,7 +319,7 @@ pub fn exl3_gemv(
 ) -> Result<bool> {
     if m == 0
         || m > EXL3_GEMV_MAX_M
-        || !(2..=4).contains(&k_bits)
+        || !exl3_gemv_serves_k(k_bits)
         || (cb != 1 && cb != 2)
         || !k.is_multiple_of(128)
         || !n.is_multiple_of(128)

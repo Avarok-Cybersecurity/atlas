@@ -398,7 +398,10 @@ impl SafetensorsLoader {
     /// Check if a tensor should be skipped under EP.
     /// Skips `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
-    fn should_skip_tensor(&self, name: &str) -> bool {
+    /// Public: the out-of-index sidecar registration (spark-model
+    /// `register_exl3_sidecar_shards`) reuses it so a sidecar cannot smuggle
+    /// in a tensor these rules withheld (fast_weights/skip.rs is identical).
+    pub fn should_skip_tensor(&self, name: &str) -> bool {
         // MTP head weights for a model whose loader does not build one.
         if self.skip_mtp && name.starts_with("mtp.") {
             return true;
@@ -443,6 +446,7 @@ mod loader;
 pub mod mlx_int8;
 pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
 pub(crate) use loader::estimate_load_bytes;
+pub use loader::load_safetensors_file;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path
 // AND by the GGUF loader, which builds everywhere. Gating this on `unix` broke
 // the Windows CUDA build the moment `gguf.rs` started using it.

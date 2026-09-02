@@ -14,18 +14,23 @@
 //!    experts keep the NVFP4 triplet path) and `shared_expert` is EXCLUDED
 //!    for this milestone (it must keep materializing so the fused
 //!    shared-expert decode kernels keep their NVFP4 slot).
-//!  * [`exl3_native_supported_moe`] — the MoE kernel envelope: the
-//!    intersection of the fused `exl3_moe` prefill kernel's K table {2,3,4}
-//!    with mgemm's {2..6,8}, i.e. K in {2,3,4}; cb MCG/MUL1 (cb0/"3inst"
-//!    is not instantiated); both dims %128 (mgemm shape-2 needs k%32 and
-//!    n%128 — %128 on both covers every projection orientation).
+//!  * [`exl3_native_supported_moe`] — the per-tensor MoE kernel envelope:
+//!    the intersection of the fused `exl3_moe` prefill kernel's fixed-K
+//!    instance table {2,3,4,5,6} with mgemm's {2..6,8}, i.e. K in
+//!    {2,3,4,5,6} ([`EXL3_NATIVE_MOE_K_BITS`]; K=8 experts exist on no
+//!    shipped branch, so the fused kernel is not instantiated for it); cb
+//!    MCG/MUL1 (cb0/"3inst" is not instantiated); both dims %128 (mgemm
+//!    shape-2 needs k%32 and n%128 — %128 on both covers every projection
+//!    orientation).
 //!  * [`expert_keep_set`] — per-(layer, projection) K/cb UNIFORMITY (one
-//!    mgemm launch decodes at ONE K/cb template) plus layer-uniform
-//!    codebook (the fused `exl3_moe` prefill kernel runs gate/up/down under
-//!    a single codebook), rolled up to an ATOMIC per-layer keep-or-
-//!    materialize decision. No partial keeps: a layer that kept half its
-//!    experts and then materialized the rest would double-hold memory, and
-//!    a table mixing K would silently decode at the wrong bitrate.
+//!    mgemm launch decodes at ONE K/cb template), layer-uniform codebook
+//!    (the fused `exl3_moe` prefill kernel runs gate/up/down under a single
+//!    codebook) and the per-layer fused-K rule (uniform K in the table, or a
+//!    mixed-K layer entirely inside the k0 runtime switch {2,3,4} —
+//!    `ops::exl3_moe_fused_serves`), rolled up to an ATOMIC per-layer
+//!    keep-or-materialize decision. No partial keeps: a layer that kept half
+//!    its experts and then materialized the rest would double-hold memory,
+//!    and a table mixing K would silently decode at the wrong bitrate.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -68,13 +73,23 @@ pub fn exl3_native_serves_moe(prefix: &str) -> bool {
             || prefix.ends_with(".down_proj"))
 }
 
-/// The MoE kernel envelope (see module docs for the derivation). Distinct
-/// from [`super::exl3_native_supported`]'s K in {2,4}: that set is a
-/// GEMV-concurrency invariant for small-row dense projections, which never
-/// binds the expert path (experts route through mgemm/the fused MoE kernel,
-/// never the small-row GEMV).
+/// The K values the routed-expert arm serves per tensor: the fused
+/// `exl3_moe` prefill kernel's FIXED-K instance table
+/// (`ops::EXL3_MOE_FUSED_K_BITS` = {2,3,4,5,6}; one definition). Per
+/// shipped branch: experts are K=2 (2.05), 3 (3.05), 4 (4.05), 5 (5.05),
+/// 6 (6.05), uniform across gate/up/down — every branch's routed experts
+/// qualify. A MIXED-K layer additionally needs every K inside the k0
+/// runtime-dispatch switch, `ops::EXL3_MOE_MIXED_K_BITS` = {2,3,4}
+/// (`ops::exl3_moe_fused_serves`, applied per layer by [`expert_keep_set`]).
+pub const EXL3_NATIVE_MOE_K_BITS: [u32; 5] = crate::layers::ops::EXL3_MOE_FUSED_K_BITS;
+
+/// The per-TENSOR MoE kernel envelope (see module docs for the derivation).
+/// Distinct from [`super::exl3_native_supported`]'s dense set
+/// {2,3,4,5,6,8}: the expert path never touches the GEMV tier, but the fused
+/// prefill kernel has no K=8 instance (see [`EXL3_NATIVE_MOE_K_BITS`]). The
+/// per-LAYER mixed-K rule lives in [`expert_keep_set`].
 pub fn exl3_native_supported_moe(w: &Exl3Weight) -> bool {
-    matches!(w.k_bits, 2..=4)
+    EXL3_NATIVE_MOE_K_BITS.contains(&w.k_bits)
         && matches!(w.cb, Exl3Codebook::Mcg | Exl3Codebook::Mul1)
         && w.in_dim.is_multiple_of(128)
         && w.out_dim.is_multiple_of(128)
@@ -123,13 +138,14 @@ pub(crate) fn expert_keep_set(experts: &BTreeMap<String, Exl3Weight>) -> HashSet
                 tracing::warn!(
                     "EXL3 native MoE: {layer} experts fall back to NVFP4 \
                      materialization — {p} is outside the MoE kernel envelope \
-                     (K={} cb={:?} [{}x{}]; need K in {{2,3,4}}, cb MCG/MUL1, \
+                     (K={} cb={:?} [{}x{}]; need K in {:?}, cb MCG/MUL1, \
                      dims %128). Atomic per layer: NO expert of this layer is \
                      kept packed.",
                     w.k_bits,
                     w.cb,
                     w.in_dim,
                     w.out_dim,
+                    EXL3_NATIVE_MOE_K_BITS,
                 );
                 continue 'layers;
             }
@@ -161,6 +177,28 @@ pub(crate) fn expert_keep_set(experts: &BTreeMap<String, Exl3Weight>) -> HashSet
                 );
                 continue 'layers;
             }
+        }
+        // Per-layer fused-kernel rule: uniform K across gate/up/down takes
+        // the fixed-K instance (any K in the envelope); a MIXED-K layer can
+        // only use the k0 runtime-dispatch instance, whose switch covers
+        // {2,3,4} — a K outside it would SILENTLY skip that projection's
+        // GEMM in-kernel, so refuse here (no shipped branch mixes K).
+        let ks: Vec<u32> = ["gate_proj", "up_proj", "down_proj"]
+            .iter()
+            .filter_map(|proj| per_proj.get(proj).map(|(k, _)| *k))
+            .collect();
+        if let [kg, ku, kd] = ks[..]
+            && !crate::layers::ops::exl3_moe_fused_serves([kg, ku, kd])
+        {
+            tracing::warn!(
+                "EXL3 native MoE: {layer} experts fall back to NVFP4 \
+                 materialization — gate/up/down K={ks:?} is mixed and outside \
+                 the fused kernel's runtime-dispatch set {:?} (uniform K may be \
+                 any of {:?}). Atomic per layer: no partial keeps.",
+                crate::layers::ops::EXL3_MOE_MIXED_K_BITS,
+                crate::layers::ops::EXL3_MOE_FUSED_K_BITS,
+            );
+            continue 'layers;
         }
         for (p, _) in tensors {
             keep.insert((*p).to_string());
@@ -228,8 +266,9 @@ mod tests {
 
     #[test]
     fn supported_moe_envelope() {
-        // qwen4_exp shapes: gate/up [2560 -> 640], down [640 -> 2560].
-        for k in [2, 3, 4] {
+        // qwen4_exp shapes: gate/up [2560 -> 640], down [640 -> 2560]. Every
+        // shipped branch's expert K (2/3/4/5/6 for 2.05/3.05/4.05/5.05/6.05).
+        for k in [2, 3, 4, 5, 6] {
             assert!(exl3_native_supported_moe(&w(
                 k,
                 Exl3Codebook::Mul1,
@@ -243,8 +282,9 @@ mod tests {
                 2560
             )));
         }
-        // K=5/6/8 are mgemm-compiled but OUTSIDE the fused exl3_moe table.
-        for k in [1, 5, 6, 7, 8] {
+        // K=8 is mgemm-compiled but OUTSIDE the fused exl3_moe table; K=1/7
+        // have no kernels at all.
+        for k in [1, 7, 8] {
             assert!(!exl3_native_supported_moe(&w(
                 k,
                 Exl3Codebook::Mul1,
@@ -252,6 +292,12 @@ mod tests {
                 640
             )));
         }
+        // The fused set must stay inside the mgemm (decode-tier) envelope.
+        assert!(
+            EXL3_NATIVE_MOE_K_BITS
+                .iter()
+                .all(|k| crate::layers::ops::exl3_gemm_serves_k(*k))
+        );
         // cb0 has no compiled instances.
         assert!(!exl3_native_supported_moe(&w(
             2,
@@ -330,9 +376,47 @@ mod tests {
     #[test]
     fn keep_set_out_of_envelope_falls_back() {
         let mut m = BTreeMap::new();
-        m.insert(ep(0, 0, "gate_proj"), w(6, Exl3Codebook::Mul1, 2560, 640));
+        m.insert(ep(0, 0, "gate_proj"), w(8, Exl3Codebook::Mul1, 2560, 640));
         m.insert(ep(0, 0, "up_proj"), w(2, Exl3Codebook::Mul1, 2560, 640));
         m.insert(ep(0, 0, "down_proj"), w(2, Exl3Codebook::Mul1, 640, 2560));
         assert!(expert_keep_set(&m).is_empty());
+    }
+
+    #[test]
+    fn keep_set_k5_k6_uniform_layers_kept_mixed_high_k_dropped() {
+        // 5.05bpw (K=5) and 6.05bpw (K=6) expert layers take the fixed-K
+        // fused instances. A MIXED-K layer can only use the k0 runtime
+        // instance, whose switch covers {2,3,4}: gate/up K=6 + down K=5 is
+        // refused (the kernel would silently skip the GEMM), while a mixed
+        // layer inside {2,3,4} (gate/up K=2, down K=3) is kept.
+        let mut m = BTreeMap::new();
+        for e in 0..2 {
+            m.insert(ep(0, e, "gate_proj"), w(5, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(0, e, "up_proj"), w(5, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(0, e, "down_proj"), w(5, Exl3Codebook::Mul1, 640, 2560));
+            m.insert(ep(1, e, "gate_proj"), w(6, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(1, e, "up_proj"), w(6, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(1, e, "down_proj"), w(6, Exl3Codebook::Mul1, 640, 2560));
+            m.insert(ep(2, e, "gate_proj"), w(6, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(2, e, "up_proj"), w(6, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(2, e, "down_proj"), w(5, Exl3Codebook::Mul1, 640, 2560));
+            m.insert(ep(3, e, "gate_proj"), w(2, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(3, e, "up_proj"), w(2, Exl3Codebook::Mul1, 2560, 640));
+            m.insert(ep(3, e, "down_proj"), w(3, Exl3Codebook::Mul1, 640, 2560));
+        }
+        let keep = expert_keep_set(&m);
+        assert_eq!(keep.len(), 18);
+        for e in 0..2 {
+            for proj in ["gate_proj", "up_proj", "down_proj"] {
+                assert!(keep.contains(&ep(0, e, proj)), "uniform K=5 kept");
+                assert!(keep.contains(&ep(1, e, proj)), "uniform K=6 kept");
+                assert!(!keep.contains(&ep(2, e, proj)), "mixed 6/6/5 dropped");
+                assert!(keep.contains(&ep(3, e, proj)), "mixed 2/2/3 kept");
+            }
+        }
+        assert!(crate::layers::ops::exl3_moe_fused_serves([5, 5, 5]));
+        assert!(crate::layers::ops::exl3_moe_fused_serves([2, 2, 3]));
+        assert!(!crate::layers::ops::exl3_moe_fused_serves([6, 6, 5]));
+        assert!(!crate::layers::ops::exl3_moe_fused_serves([8, 8, 8]));
     }
 }
