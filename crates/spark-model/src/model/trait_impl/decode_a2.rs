@@ -96,8 +96,29 @@ impl TransformerModel {
             let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
             seqs.iter().any(|s| s.seq_len >= bound)
         };
-        let hc_perseq = self.config.hc_mult > 0
-            && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"));
+        // ★ `qsa_active` NO LONGER forces the per-seq loop: the batched
+        // multi-seq attention path consumes a per-row `QsaSelection`
+        // (`layers/qwen3_attention/trait_impl/multi_seq/qsa.rs`). The full
+        // rationale + the unit tests that pin it live in `decode_route.rs`.
+        // `ATLAS_HC_PERSEQ_DECODE=1` remains the kill switch.
+        let hc_perseq = super::decode_route::hc_perseq_fallback(
+            self.config.hc_mult,
+            qsa_active,
+            std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"),
+            self.multi_rank_protocol_active(),
+        );
+        if qsa_active && !hc_perseq {
+            // Provable engagement, once per process: grep the serve log for
+            // "QSA-active batch" to confirm long-context batches are batched.
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| {
+                tracing::info!(
+                    "QSA-active batch on the BATCHED multi-seq decode path \
+                     (per-row selection consumed in multi_seq/qsa.rs); \
+                     ATLAS_HC_PERSEQ_DECODE=1 restores the per-seq staging loop"
+                );
+            });
+        }
         // ★ The per-seq routing decision is resolved ABOVE the EP branch on
         // purpose. It used to sit below, so under EP a QSA-active batch
         // returned at `decode_batch_compute_main` before ever reaching the
@@ -138,10 +159,10 @@ impl TransformerModel {
         // Highway models: the BATCHED multi-seq path (per-layer hc-bracketed
         // decode, weight reads amortized at the GEMM level next increment)
         // is the default. Fall back to the per-seq staging loop when
-        //   * ATLAS_HC_PERSEQ_DECODE=1 (A/B escape hatch), or
-        //   * QSA would be ACTIVE for any sequence (the ms attention path has
-        //     no per-seq indexer hook yet — dense past the budget is NOT the
-        //     reference model, so keep those batches on the proven loop).
+        //   * ATLAS_HC_PERSEQ_DECODE=1 (A/B escape hatch).
+        // QSA-active batches used to be listed here too; they are not any
+        // more — `multi_seq/qsa.rs` consumes a per-row selection, so the
+        // batched path serves them at the reference model's sparsity.
         if mla_perseq_fallback || hc_perseq {
             use std::sync::atomic::Ordering;
             let logits = self.decode_logits_ptr();

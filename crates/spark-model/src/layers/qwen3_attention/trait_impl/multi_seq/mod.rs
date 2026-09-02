@@ -28,6 +28,7 @@ mod mla;
 mod mla_gemv;
 mod qkv;
 mod qkv_exl3;
+mod qsa;
 
 impl Qwen3AttentionLayer {
     #[allow(clippy::too_many_arguments)]
@@ -218,13 +219,32 @@ impl Qwen3AttentionLayer {
             .expect("attention layer requires metadata");
 
         // ── Phases 2-6: attention ──
+        // QSA (#753 phase G): once a row's visible prefix passes the indexer's
+        // inert bound its attention must read the SELECTED KV, not the whole
+        // paged cache. `ms_qsa_phase_paged_decode` selects and consumes per row
+        // (the indexer owns ONE set of scratch buffers, so a selection has to
+        // be attended before the next row selects — see `qsa.rs`) and ingests
+        // every row on the way, which is why the ingest-only sweep below is
+        // skipped in that case. Batches entirely inside the bound keep the
+        // bit-identical batched attention + ingest-only loop.
+        let qsa_selecting = self.ms_qsa_selection_active(seq_lens, n);
         let o_out = if let Some(ref _mla) = self.mla {
+            anyhow::ensure!(
+                !qsa_selecting,
+                "QSA selection active on the batched MLA multi-seq decode path; \
+                 the absorbed-MLA kernel has no selection hook — serve with \
+                 ATLAS_HC_PERSEQ_DECODE=1"
+            );
             self.ms_mla_decode(&c, kv_cache, meta)?
         } else {
             self.ms_phase_qkv(&c)?;
             self.ms_phase_rope(&c, meta)?;
             self.ms_phase_cache_write(&c, kv_cache, meta)?;
-            let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
+            let attn_out = if qsa_selecting {
+                self.ms_qsa_phase_paged_decode(&c, states, seq_lens, kv_cache, meta)?
+            } else {
+                self.ms_phase_paged_decode(&c, kv_cache, meta)?
+            };
             self.ms_phase_o_proj(&c, attn_out)?
         };
 
@@ -236,33 +256,11 @@ impl Qwen3AttentionLayer {
         }
 
         // ── QSA ingest continuity (per-seq) ──
-        // Below the inert bound `decode_select` is ingest-only and returns
-        // `None`; the dispatch gate (decode_a2) routes any batch with an
-        // ACTIVE-selection sequence to the per-seq loop, so a `Some` here
-        // means the gate and this path disagree — refuse loudly rather than
-        // serve dense-past-budget (not the reference model).
-        if let Some(qsa) = self.qsa.as_ref() {
-            for (i, state) in states.iter_mut().enumerate().take(n) {
-                let st =
-                    crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, *state, ctx.gpu)?;
-                let sel = qsa.decode_select(
-                    st,
-                    c.normed.offset(i * h * c.bf16),
-                    seq_lens[i],
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
-                    meta.block_table
-                        .offset(i * meta.max_blocks_per_seq as usize * 4),
-                    c.bs,
-                    ctx.gpu,
-                    stream,
-                )?;
-                anyhow::ensure!(
-                    sel.is_none(),
-                    "QSA selection active for seq {i} on the batched ms path; \
-                     the dispatch gate should have routed this batch per-seq"
-                );
-            }
+        // Every row must be ingested every step or the indexer's raw-key cache
+        // loses sync. When `qsa_selecting`, `ms_qsa_phase_paged_decode` already
+        // did the ingest as part of selecting, so this would double-ingest.
+        if !qsa_selecting {
+            self.ms_qsa_ingest_only(&c, states, seq_lens, kv_cache, meta)?;
         }
 
         // Expand attention output back into multi-stream state.
