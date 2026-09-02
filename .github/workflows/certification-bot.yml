@@ -177,3 +177,39 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
             echo "posted a new comment -> $STATE"
           fi
+
+          # ── The certificate ────────────────────────────────────────────────
+          # Everything above edits ONE comment in place, which is right for a
+          # state machine: the reader wants the current state, not a thread of
+          # stale ones. Merge is the exception, for a blunt reason -- GitHub
+          # does NOT notify on an @mention added by EDITING a comment, only on
+          # creation. Tagging the authors in the edited state comment would
+          # alert nobody. So the certificate is a second, new comment, posted
+          # once.
+          if [ "$STATE" = "pr-certification-merged" ]; then
+            already=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                        --jq '[.[] | select(.body | contains("<!-- atlas-certificate -->"))] | length' \
+                        2>/dev/null) || already=1
+            case "$already" in ''|*[!0-9]*) already=1 ;; esac
+            if [ "$already" -eq 0 ]; then
+              # Recipients: whoever opened it, plus every distinct commit author.
+              # A PR is often more than one person, and a certificate that names
+              # only the opener quietly erases the others.
+              who=$( { gh api "repos/$REPO/pulls/$PR" --jq '.user.login' 2>/dev/null
+                       gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+                         --jq '.[].author.login // empty' 2>/dev/null; } \
+                     | grep -v '\[bot\]$' | awk 'NF' | sort -u | awk '{printf "@%s ", $0}')
+              merge_sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.merge_commit_sha // ""' 2>/dev/null)
+              cert="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/certificate-merged.png"
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
+          ${who:-@}— merged. Every required benchmark gate was certified against a
+          frozen commit before this landed, and the record is public.
+
+          <img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">
+
+          Merge commit \`${merge_sha:0:10}\`. Yours to share." >/dev/null
+              echo "posted the certificate -> ${who:-nobody}"
+            else
+              echo "certificate already posted; not posting a second"
+            fi
+          fi
