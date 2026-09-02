@@ -17,6 +17,7 @@ mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
 mod gpu_impl_graph;
+mod gpu_impl_launch;
 pub mod tensormap;
 
 // ── Raw CUDA driver API for memory operations ──
