@@ -72,7 +72,21 @@
 //     concurrently with another exl3 kernel that shares the locks buffer
 //     unless ordered on the same stream.
 //
-// ── Argument list (EXL3_MOE_KERNEL_ARGS, 30 args) ──────────────────────────
+// ── Argument list (EXL3_MOE_KERNEL_ARGS, 31 args) ──────────────────────────
+//   output_slots   fp32 (T * top_k, hidden_dim) or nullptr — the Atlas
+//                  DETERMINISTIC epilogue (default-ON; kill switch
+//                  `--deterministic-moe-prefill false`). Non-null: each
+//                  expert PLAIN-STORES its weighted output row to its own
+//                  sorted slot, `output_state` is never touched by this
+//                  kernel, and the host reduces each token's top_k slots in
+//                  fixed flat-slot order (`exl3_moe_reduce_slots_f32` in
+//                  exl3_matmul.cu) — which is what makes prefill bit-
+//                  reproducible. Null: upstream's atomicAdd epilogue into
+//                  `output_state`, whose commit order the dynamic expert
+//                  ticket scheduler makes nondeterministic. NO zero-init
+//                  needed: every LOCAL slot is written exactly once, by this
+//                  kernel (0 < count <= 128) or the overflow tier
+//                  (count > 128), and the reduce skips EP-remote slots.
 //   hidden_state   fp16 (T, hidden_dim)  — token-major activations (RAW, the
 //                  kernel applies suh+Hadamard itself while gathering)
 //   temp_state_g/u fp16 (C, 128, hidden_dim)         C = concurrency
@@ -80,8 +94,10 @@
 //                  (qwen4_exp, C=6: 2×3.75 MB + 2×0.94 MB ≈ 9.4 MB total;
 //                  no zero-init needed, protected by the group barriers;
 //                  allocate ONCE at construction — 901 playbook)
-//   output_state   fp32 (T, hidden_dim) — MUST be zero-initialized every
-//                  call; the kernel atomicAdds weight-scaled expert outputs
+//   output_state   fp32 (T, hidden_dim) — the atomicAdd arm (output_slots
+//                  == nullptr) accumulates weight-scaled expert outputs here
+//                  and REQUIRES it zero-initialized every call; the
+//                  deterministic arm never writes it
 //   expert_count   int64 (num_experts + 1) — bincount over LOCAL expert ids
 //                  of the sorted assignment; the last (sentinel) bucket
 //                  collects EP-remote/invalid slots and is never processed
@@ -121,7 +137,7 @@
     expert_count, token_sorted, weight_sorted,                                \
     hidden_dim, intermediate_dim, num_experts, num_experts_per_tok,           \
     max_tokens_per_expert, concurrency, act_limit, act_function,              \
-    K_gate, K_up, K_down, locks
+    K_gate, K_up, K_down, locks, output_slots
 
 #define EXL3_MOE_WRAP(K, N, CB)                                               \
     extern "C" __global__                                                     \

@@ -295,6 +295,28 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub prefill_varlen_batch: Option<bool>,
 
+    /// Deterministic native-EXL3 MoE PREFILL epilogue — DEFAULT ON; this is
+    /// the KILL SWITCH (`--deterministic-moe-prefill false`).
+    ///
+    /// The fused `exl3_moe` prefill kernel's upstream epilogue atomicAdds
+    /// each of a token's top_k expert rows into one shared fp32 accumulator
+    /// row, in whatever order the in-kernel DYNAMIC expert-group ticket
+    /// scheduler produces. fp32 addition is not associative, so two identical
+    /// temp-0 requests produce different prefill hidden states, and greedy
+    /// decode turns that into different text (measured on qwen4_exp with the
+    /// prefix cache off: 7/8 identical prompts gave different prompt-logprob
+    /// vectors). ON, each expert stores its row to its OWN sorted slot and
+    /// the pipeline reduces a token's slots in a fixed order — same adds, one
+    /// order — at the cost of an fp32 `[prefill_batch * top_k, hidden]`
+    /// scratch sized once at load.
+    ///
+    /// Pass `false` only to A/B against the previous (nondeterministic)
+    /// numerics; it also gives the scratch back. NO environment fallback on
+    /// purpose: nondeterministic prefill should not be reachable by a stray
+    /// variable.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub deterministic_moe_prefill: Option<bool>,
+
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the

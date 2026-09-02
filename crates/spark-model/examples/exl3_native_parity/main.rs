@@ -29,6 +29,11 @@
 //!     {3 (no-sync shortcut), 64 (host-sync fused), 64-EP (sentinel tail +
 //!     exact-zero + control), 192 skewed (overflow >128 rows, asserted via
 //!     stats)} (legs_moe_prefill.rs).
+//!  G2. prefill-MoE DETERMINISM (legs_moe_prefill_det.rs): 8 identical T=192
+//!     skewed batches must give ONE distinct fp32 routed accumulator on the
+//!     deterministic epilogue (the serving default), with the kill-switch
+//!     atomic epilogue as the negative control (must race, or the gate is
+//!     vacuous); both arms also gated against the f64 reference.
 //!  H. dense-linear: the PRODUCTION `exl3_dense_linear` dispatch (bf16
 //!     ingress, gemv/gemm over the shared dense stage under a launch-state
 //!     section, bf16 egress incl. STRIDED arena rows + the shared-A pair
@@ -64,6 +69,7 @@ mod legs_kladder;
 mod legs_moe;
 mod legs_moe_prefill;
 mod legs_moe_prefill_debug;
+mod legs_moe_prefill_det;
 mod truth;
 mod util;
 
@@ -208,6 +214,7 @@ fn main() -> Result<()> {
     clean &= legs::leg_mgemm(&ctx, &mut rng)?;
     clean &= legs_moe::leg_moe_decode(&ctx, &mut rng)?;
     clean &= legs_moe_prefill::leg_moe_prefill(&ctx, &mut rng)?;
+    clean &= legs_moe_prefill_det::leg_moe_prefill_determinism(&ctx, &mut rng)?;
     clean &= legs_dense::run(&ctx, &mut rng)?;
     clean &= legs_dense_gdn::run(&ctx, &mut rng)?;
     clean &= legs_dense_attn::run(&ctx, &mut rng)?;

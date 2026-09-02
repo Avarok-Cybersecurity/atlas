@@ -36,8 +36,8 @@ use spark_runtime::gpu::DevicePtr;
 use crate::legs_moe::{ProjSet, ref_token};
 use crate::util::{Ctx, Lcg, as_bytes, gate_leg, metrics};
 
-const MOE_REL_RMS: f64 = 8e-3;
-const MOE_MAX_Z: f64 = 8e-2;
+pub const MOE_REL_RMS: f64 = 8e-3;
+pub const MOE_MAX_Z: f64 = 8e-2;
 const OV_REL_RMS: f64 = MOE_REL_RMS;
 const OV_MAX_Z: f64 = MOE_MAX_Z;
 
@@ -73,6 +73,9 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
     };
     let hidden_f16 = a(T_MAX * H * 2)?;
     let out_f32 = a(T_MAX * H * 4)?;
+    // Deterministic epilogue's per-sorted-slot rows (the serving default), so
+    // every sub-leg below gates the arm production actually runs.
+    let slot_f32 = a(s_max * H * 4)?;
     let temp_state_g = a(c * 128 * H * 2)?;
     let temp_state_u = a(c * 128 * H * 2)?;
     let temp_inter_g = a(c * 128 * I * 2)?;
@@ -97,6 +100,7 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
         scratch: Exl3MoePrefillScratch {
             hidden_f16,
             out_f32,
+            slot_f32: Some(slot_f32),
             temp_state_g,
             temp_state_u,
             temp_inter_g,
@@ -110,6 +114,7 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
             ov_up_f16,
             ov_down_f32,
             t_cap: T_MAX,
+            slot_cap: s_max,
             e_cap: E,
             concurrency: c,
             ov_chunk: OV_CHUNK,

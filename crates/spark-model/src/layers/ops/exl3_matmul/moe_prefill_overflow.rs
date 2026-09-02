@@ -183,16 +183,34 @@ pub(super) fn run_overflow_expert(
             hidden,
             true,
         )?;
-        scatter_add_f32(
-            gpu,
-            scratch.ov_down_f32,
-            ts,
-            ws,
-            scratch.out_f32,
-            m,
-            hidden,
-            stream,
-        )?;
+        // DETERMINISTIC arm: this chunk's weighted rows go to their OWN
+        // slots (`slot` is their local-sorted base), to be reduced with the
+        // fused tier's in fixed order. The atomic arm below carries the same
+        // unordered-fp32-accumulation defect as the fused kernel's epilogue,
+        // and this is the tier that fires on LONG prefills — leaving it
+        // atomic would keep long-context serving nondeterministic.
+        if let Some(slots) = scratch.slot_f32 {
+            super::super::moe_prefill_det::exl3_moe_store_slots_f32(
+                gpu,
+                scratch.ov_down_f32,
+                ws,
+                slots.offset(slot * hidden * 4),
+                m,
+                hidden,
+                stream,
+            )?;
+        } else {
+            scatter_add_f32(
+                gpu,
+                scratch.ov_down_f32,
+                ts,
+                ws,
+                scratch.out_f32,
+                m,
+                hidden,
+                stream,
+            )?;
+        }
         done += m;
     }
     Ok(())

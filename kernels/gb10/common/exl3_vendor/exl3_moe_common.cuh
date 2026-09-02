@@ -7,7 +7,14 @@
 // snapshot; a fetch copy was kept at the build-job tmp dir). Content VERBATIM
 // except this header block.
 //
-// Constants + the argument-list macro for the fused MoE prefill kernel:
+// ATLAS DELTA: EXL3_MOE_KERNEL_ARGS gains a 31st argument,
+// `float* output_slots` — the DETERMINISTIC epilogue's per-sorted-slot fp32
+// scratch `[T*top_k, hidden_dim]`. Non-null selects it (plain stores, one
+// writer per slot row, reduced afterwards in fixed slot order); null keeps
+// upstream's atomicAdd-into-`output_state` epilogue. See
+// `hadamard_inner.cuh::had_hf_r_128_d_inner_t`.
+//
+//   Constants + the argument-list macro for the fused MoE prefill kernel:
 //   MOE_SMS_PER_EXPERT=8 also fixes max concurrency C = num_sms/8 — the
 //   number of (128-row) temp-slab sets the host must allocate.
 //   MOE_TILESIZE_K=32 fixes the block dim: 256*32/16 = 512 threads.
@@ -71,4 +78,5 @@
     const int K_up,                             \
     const int K_down,                           \
                                                 \
-    int* __restrict__ locks
+    int* __restrict__ locks,                    \
+    float* __restrict__ output_slots

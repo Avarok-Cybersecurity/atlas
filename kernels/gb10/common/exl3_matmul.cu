@@ -127,7 +127,10 @@
 // forms (local-expert order + EP sentinel tail bucket);
 // exl3_moe_gather_rows_h16 / exl3_moe_scatter_add_f32 are the
 // overflow-expert (count > 128) f16 row gather and weighted fp32 scatter-add
-// around the chunked exl3_gemm tier.
+// around the chunked exl3_gemm tier; exl3_moe_store_slots_f32 and
+// exl3_moe_reduce_slots_f32 are the DETERMINISTIC epilogue's replacement for
+// that scatter-add (per-sorted-slot store + fixed-order reduce, shared with
+// the fused kernel's `output_slots` arm — see moe_prefill_det.rs).
 
 #include <cstdint>
 #include <cuda_fp16.h>
@@ -460,5 +463,85 @@ extern "C" __global__ void __launch_bounds__(256) exl3_moe_scatter_add_f32(
         long long col = i - r * hidden;
         atomicAdd(out + token_sorted[r] * hidden + col,
                   __half2float(weight_sorted[r]) * down[i]);
+    }
+}
+
+// Overflow-expert epilogue, DETERMINISTIC arm: the same weighted rows written
+// to their OWN sorted slots instead of atomically accumulated into the shared
+// per-token row. The caller offsets `out_slots` to the chunk's slot base, so
+// this is a pure elementwise scale-and-store — the >128-rows-per-expert tier
+// carries exactly the same defect as the fused kernel's atomicAdd epilogue
+// (unordered fp32 accumulation into one row), and it is the tier that fires
+// on LONG prefills, so fixing only the fused tier would leave long-context
+// serving nondeterministic. Numerically identical to the atomic arm: f16
+// routing weight widened to f32, product in f32.
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_store_slots_f32(
+    const float* __restrict__ down,             // [m, hidden] fp32 GEMM C
+    const half* __restrict__ weight_sorted,     // span base, [m]
+    float* __restrict__ out_slots,              // slot base, [m, hidden]
+    long long hidden,
+    long long total)                            // = m * hidden
+{
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long r = i / hidden;
+        out_slots[i] = __half2float(weight_sorted[r]) * down[i];
+    }
+}
+
+// Fixed-order reduction of the per-slot rows into the fp32 routed accumulator
+// — the second half of the deterministic prefill epilogue, and the contract
+// the DECODE tier already meets by construction (its mgemm reduces a token's
+// expert slots in a fixed j = 0..stride-1 loop).
+//
+// One thread owns one (token, column) output element and adds that token's
+// top_k slots in ASCENDING FLAT-SLOT ORDER k = 0..top_k-1 — the routing order
+// the router emitted, identical every run — so the fp32 sum is bit-
+// reproducible no matter how the expert groups were scheduled. The flat slot
+// (token*top_k + k) is mapped to its LOCAL-sorted position by the SAME
+// rotation `exl3_moe_stage_sorted` used to lay the slots out:
+//     p = token_to_perm[flat];  lo = offsets[local_start];
+//     hi = offsets[local_start + num_local];  nloc = hi - lo
+//     p in [lo, hi) -> p - lo   |   p < lo -> p + nloc   |   p >= hi -> p
+// and a slot whose mapped position is >= nloc is EP-REMOTE (the sentinel tail
+// the fused kernel never processes), so it is skipped — a token whose experts
+// are all remote yields an exact 0.0 row, the EP partial-sum convention.
+//
+// No zero-init of `slots` is required or performed: every local slot is
+// written exactly once per call by the fused kernel or the overflow tier, and
+// no remote slot is ever read. `out` is fully overwritten, so its memset is
+// skipped on this arm too.
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_reduce_slots_f32(
+    const float* __restrict__ slots,            // [s, hidden] per-slot rows
+    const int* __restrict__ token_to_perm,      // [s] flat slot -> sorted pos
+    const int* __restrict__ expert_offsets,     // [num_experts_global + 1]
+    float* __restrict__ out,                    // [T, hidden] fp32 accumulator
+    int local_start,
+    int num_local,
+    int top_k,
+    long long hidden,
+    long long total)                            // = T * hidden
+{
+    const long long lo = (long long) expert_offsets[local_start];
+    const long long hi = (long long) expert_offsets[local_start + num_local];
+    const long long nloc = hi - lo;
+    long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (; i < total; i += stride)
+    {
+        long long tok = i / hidden;
+        long long col = i - tok * hidden;
+        float acc = 0.0f;
+        for (int k = 0; k < top_k; ++k)
+        {
+            long long p = (long long) token_to_perm[tok * top_k + k];
+            long long dst = (p >= lo && p < hi) ? (p - lo)
+                          : (p < lo)            ? (p + nloc)
+                                                : p;
+            if (dst < nloc) acc += slots[dst * hidden + col];
+        }
+        out[i] = acc;
     }
 }

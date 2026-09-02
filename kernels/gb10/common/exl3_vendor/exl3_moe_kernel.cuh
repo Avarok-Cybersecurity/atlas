@@ -38,6 +38,17 @@
 //     `expert_keep_set` enforces exactly that; uniform K in {2..6} takes the
 //     fixed instance). Extend the switches together with new wrapper
 //     instances if a mixed-K K=5/6 export ever ships.
+//   * DETERMINISTIC EPILOGUE (Atlas addition, default-ON at the host): a 31st
+//     argument `float* output_slots`. Upstream's `had_d_out` atomicAdds each
+//     expert's weighted row into the token's ONE shared fp32 `output_state`
+//     row; because the expert->group assignment below is a dynamic ticket
+//     draw and ~6 groups run concurrently, the commit order — and so the
+//     non-associative fp32 sum — differs between two identical runs, which is
+//     the whole of qwen4_exp's measured temp-0 prefill nondeterminism. With
+//     `output_slots` non-null each expert instead PLAIN-STORES its row to its
+//     own sorted slot, and the host reduces each token's top_k slots in fixed
+//     flat-slot order (`exl3_moe_reduce_slots_f32`). Identical arithmetic,
+//     one order. `output_slots == nullptr` restores upstream's arm verbatim.
 //   * `(void)` casts for the two kernel args the body never reads
 //     (num_experts_per_tok, concurrency) — the Atlas kernel build promotes
 //     warnings to errors (--Werror all-warnings)
@@ -278,8 +289,16 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
         gemm_down(temp_intermediate_g, temp_state_g, exp_down_trellis, K_down);
         group_barrier(group_idx, group_size, barrier_counters_sense);
 
-        // Output hadamard for d + scatter add
-        auto had_d_out = [&]()
+        // Output hadamard for d + scatter add.
+        //
+        // ATLAS DELTA (determinism): with `output_slots` non-null each expert
+        // writes its weighted row to its OWN sorted slot (`start + slot_off`,
+        // the slot the row already occupies in token_sorted/weight_sorted) by
+        // plain store, and the host reduces a token's slots afterwards in a
+        // fixed order. Upstream's arm — `output_slots == nullptr` — keeps the
+        // atomicAdd into the shared per-token row of `output_state`, whose
+        // commit order the ticket scheduler above makes nondeterministic.
+        auto had_d_out = [&](float* __restrict__ slots)
         {
             const int warps_per_token = hidden_dim / 128;
             const int total_warps = token_count * warps_per_token;
@@ -287,21 +306,29 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
             const half* weights = weight_sorted + start;
             for (int warp_idx = warp_idx0; warp_idx < total_warps; warp_idx += warps_per_group)
             {
-                int token_idx = top_x[warp_idx / warps_per_token];
-                half weight = weights[warp_idx / warps_per_token];
+                int slot_off = warp_idx / warps_per_token;
+                half weight = weights[slot_off];
                 int token_off = warp_idx % warps_per_token;
-                float* out_ptr = output_state + token_idx * hidden_dim + token_off * 128;
-                had_hf_r_128_d_inner
-                (
-                    temp_state_g + 128 * warp_idx,
-                    out_ptr,
-                    exp_down_svh + 128 * token_off,
-                    0.088388347648f * __half2float(weight)
-                );
+                const half* in_ptr = temp_state_g + 128 * warp_idx;
+                const half* svh_ptr = exp_down_svh + 128 * token_off;
+                const float r_scale = 0.088388347648f * __half2float(weight);
+                if (slots)
+                {
+                    float* slot_ptr = slots
+                        + ((int64_t) (start + slot_off)) * hidden_dim
+                        + token_off * 128;
+                    had_hf_r_128_d_inner_t<false>(in_ptr, slot_ptr, svh_ptr, r_scale);
+                }
+                else
+                {
+                    int token_idx = top_x[slot_off];
+                    float* out_ptr = output_state + token_idx * hidden_dim + token_off * 128;
+                    had_hf_r_128_d_inner_t<true>(in_ptr, out_ptr, svh_ptr, r_scale);
+                }
             }
         };
 
-        had_d_out();
+        had_d_out(output_slots);
 
         // Draw the next ticket and publish it to the group through the end-of-expert barrier, which also protects
         // the temp buffers for reuse. Grabbed tickets continue from num_groups since 0..num_groups-1 are implicit

@@ -286,6 +286,20 @@ impl Exl3MoeState {
         let ov = EXL3_MOE_OVERFLOW_CHUNK_ROWS;
         let pf_hidden_f16 = alloc(pf_t_cap * hidden * 2)?;
         let pf_out_f32 = alloc(pf_t_cap * hidden * 4)?;
+        // DETERMINISTIC prefill epilogue (default ON): one fp32 row per
+        // sorted slot, so the fused kernel and the overflow tier can store
+        // instead of atomicAdd and the pipeline can reduce a token's slots in
+        // a FIXED order. Sized here, at load, inside the util pledge —
+        // `pf_t_cap * top_k` rows is the widest batch the prefill tier can
+        // present, and the hot path never allocates. The kill switch
+        // (`--deterministic-moe-prefill false`) restores upstream's atomic
+        // epilogue and skips this slab entirely.
+        let det_prefill = crate::layers::ops::exl3_det_moe_prefill_enabled();
+        let pf_slot_f32 = if det_prefill {
+            Some(alloc(pf_t_cap * top_k * hidden * 4)?)
+        } else {
+            None
+        };
         let pf_temp_state_g = alloc(pf_concurrency * 128 * hidden * 2)?;
         let pf_temp_state_u = alloc(pf_concurrency * 128 * hidden * 2)?;
         let pf_temp_inter_g = alloc(pf_concurrency * 128 * inter * 2)?;
@@ -298,18 +312,27 @@ impl Exl3MoeState {
         let pf_ov_gate = alloc(ov * inter * 2)?;
         let pf_ov_up = alloc(ov * inter * 2)?;
         let pf_ov_down = alloc(ov * hidden * 4)?;
+        let slot_bytes = if det_prefill {
+            pf_t_cap * top_k * hidden * 4
+        } else {
+            0
+        };
         let total: usize = s_cap * (hidden * 2 * 2 + inter * 4 * 2 + hidden * 4 + inter * 2 + 12)
             + pf_t_cap * (hidden * 6 + top_k * 10)
             + pf_concurrency * 128 * (hidden + inter) * 4
             + (pf_e_cap + 1) * 8
-            + ov * (hidden * 8 + inter * 4);
+            + ov * (hidden * 8 + inter * 4)
+            + slot_bytes;
         tracing::info!(
             "EXL3 native MoE state allocated: {s_cap} decode slots \
              ({EXL3_MOE_SLOT_BATCH_TOKENS} tokens x top_k {top_k}) + prefill \
              batch {pf_t_cap} tokens (fused C={pf_concurrency}, overflow \
              chunk {ov}), {:.1} MB slabs over the shared launch state (locks + \
-             fence; shared across all MoE layers and the dense arms)",
+             fence; shared across all MoE layers and the dense arms); \
+             deterministic prefill epilogue {} ({:.1} MB per-slot scratch)",
             total as f64 / 1e6,
+            if det_prefill { "ON" } else { "OFF (atomic)" },
+            slot_bytes as f64 / 1e6,
         );
         Ok(Self {
             launch,
@@ -329,6 +352,7 @@ impl Exl3MoeState {
             sm_count,
             pf_hidden_f16,
             pf_out_f32,
+            pf_slot_f32,
             pf_temp_state_g,
             pf_temp_state_u,
             pf_temp_inter_g,

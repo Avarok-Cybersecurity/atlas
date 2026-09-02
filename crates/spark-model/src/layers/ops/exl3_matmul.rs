@@ -56,6 +56,11 @@ pub use moe_decode::{
     Exl3MoeProj, Exl3MoeScratch, exl3_moe_decode_routed, exl3_moe_replicate_a_bf16,
     exl3_moe_stage_routing, exl3_silu_mul_f16,
 };
+#[path = "exl3_matmul/moe_prefill_det.rs"]
+mod moe_prefill_det;
+pub use moe_prefill_det::{
+    exl3_det_moe_prefill_enabled, set_exl3_det_moe_prefill_from_cli, slot_of_flat,
+};
 #[path = "exl3_matmul/moe_prefill.rs"]
 mod moe_prefill;
 pub use moe_prefill::{

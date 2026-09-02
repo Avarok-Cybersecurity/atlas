@@ -19,7 +19,10 @@
 //!                   bucket) + expert_count i64 [num_local+1] bincount
 //!   ingress:        bf16 [T, H] -> f16 hidden_f16 (RAW; the kernel applies
 //!                   suh+Hadamard itself while gathering)
-//!   out_f32:        zeroed [T, H] accumulator (the kernel atomicAdds)
+//!   out_f32:        [T, H] fp32 routed accumulator — written whole by the
+//!                   slot reduce (det arm), or zeroed + atomicAdded (atomic)
+//!   slot_f32:       det arm only: [T*top_k, H] fp32, one row per sorted
+//!                   slot, reduced in fixed order — see `moe_prefill_det`
 //!   tier select:    S <= 128 -> NO-SYNC shortcut (num_active = -1, no D2H,
 //!                   overflow impossible); else ONE stream-sync D2H of the
 //!                   local expert_offsets slice (upstream's
@@ -112,8 +115,16 @@ pub struct Exl3MoePrefillScratch {
     /// `hidden_state`).
     pub hidden_f16: DevicePtr,
     /// f32 `[t_cap, hidden]` routed accumulator (`output_state`) — zeroed by
-    /// the pipeline every call.
+    /// the pipeline every call on the ATOMIC arm; on the deterministic arm
+    /// the reduce overwrites it whole and the memset is skipped.
     pub out_f32: DevicePtr,
+    /// f32 `[t_cap * top_k, hidden]` PER-SORTED-SLOT rows — the DETERMINISTIC
+    /// epilogue (`moe_prefill_det`, default-ON, and see its module docs).
+    /// `Some`: each expert plain-stores its weighted row to its own slot and
+    /// the pipeline reduces a token's slots in fixed order. `None`: upstream's
+    /// unordered fp32-`atomicAdd` epilogue, which is nondeterministic by
+    /// construction. Needs NO zero-init.
+    pub slot_f32: Option<DevicePtr>,
     /// f16 `[concurrency, 128, hidden]` gate staging slab (no zero-init).
     pub temp_state_g: DevicePtr,
     /// f16 `[concurrency, 128, hidden]` up staging slab.
@@ -143,6 +154,10 @@ pub struct Exl3MoePrefillScratch {
     /// Token capacity of `hidden_f16`/`out_f32` (+`token_sorted`/
     /// `weight_sorted` at `t_cap * top_k` slots) — callers batch above it.
     pub t_cap: usize,
+    /// Slot rows `slot_f32` holds (0 when it is absent). Carried, not
+    /// derived: `top_k` is a per-call argument, and a call wider than the
+    /// slab was sized for would be a silent OOB write rather than an error.
+    pub slot_cap: usize,
     /// Local-expert capacity of `expert_count` (slab holds `e_cap + 1`).
     pub e_cap: usize,
     /// Temp-slab count C; the launch requires `C * 8 <= sm_count`.
@@ -315,6 +330,9 @@ pub fn exl3_moe_fused(
         .arg_i32(ks[1] as i32)
         .arg_i32(ks[2] as i32)
         .arg_ptr(locks)
+        // `output_slots`: non-null = the deterministic per-slot epilogue,
+        // null = upstream's atomicAdd into `output_state`.
+        .arg_ptr(scratch.slot_f32.unwrap_or(DevicePtr(0)))
         .launch(stream)?;
     let _ = t; // geometry is carried by the staged tensors
     Ok(())
@@ -374,6 +392,13 @@ pub fn exl3_moe_prefill_routed(
         "exl3_moe_prefill_routed: hidden {hidden} / inter {inter} must be \
          multiples of 128 (trellis tile + Hadamard block)"
     );
+    ensure!(
+        scratch.slot_f32.is_none() || s <= scratch.slot_cap,
+        "exl3_moe_prefill_routed: {t} tokens x top_k {top_k} = {s} slots \
+         exceeds the deterministic slot slab's {} rows — an undersized slab \
+         is a silent out-of-bounds write, not a slower path",
+        scratch.slot_cap
+    );
 
     // 1) Staging (LOCAL-expert order + sentinel tail) and f16 ingress.
     exl3_moe_stage_sorted(
@@ -392,9 +417,13 @@ pub fn exl3_moe_prefill_routed(
     )?;
     super::exl3_bf16_to_f16(gpu, input_bf16, scratch.hidden_f16, t * hidden, stream)?;
 
-    // 2) Zero the fp32 accumulator (the kernel and the overflow epilogue
-    //    both accumulate into it).
-    gpu.memset_async(scratch.out_f32, 0, t * hidden * 4, stream)?;
+    // 2) ATOMIC arm only: zero the fp32 accumulator (there both tiers
+    //    accumulate into it). The DETERMINISTIC arm writes one row per
+    //    sorted slot — every local slot exactly once — and its reduce
+    //    (step 6) overwrites the accumulator whole, so neither wants a memset.
+    if scratch.slot_f32.is_none() {
+        gpu.memset_async(scratch.out_f32, 0, t * hidden * 4, stream)?;
+    }
 
     // 3) Tier select. S <= 128: upstream's no-sync shortcut — every expert
     //    count is <= S <= 128, so the fused kernel covers everything and no
@@ -444,7 +473,24 @@ pub fn exl3_moe_prefill_routed(
         )?;
     }
 
-    // 6) Egress: fp32 accumulator -> BF16 token-major output.
+    // 6) DETERMINISTIC arm: reduce each token's top_k per-slot rows into the
+    //    accumulator in FIXED flat-slot order — the step that makes prefill
+    //    bit-reproducible whatever order the ticket scheduler ran the experts
+    //    in. No-op on the atomic arm; both leave `out_f32` holding the sums.
+    super::moe_prefill_det::reduce_slots_if_deterministic(
+        gpu,
+        scratch,
+        token_to_perm,
+        expert_offsets,
+        local_start,
+        num_local,
+        top_k,
+        t,
+        hidden,
+        stream,
+    )?;
+
+    // 7) Egress: fp32 accumulator -> BF16 token-major output.
     super::exl3_f32_to_bf16(gpu, scratch.out_f32, out_bf16, t * hidden, stream)?;
 
     Ok(Exl3MoePrefillStats {

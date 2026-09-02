@@ -433,10 +433,22 @@ void had_hf_r_128_guad_inner
     ((half4*) output_ptr)[t] = vg;
 }
 
-// Fused op: o += float(out_had(i)), atomic
-
+// Fused op: o += float(out_had(i)) (accumulate = true, upstream's atomic
+// epilogue) or o = float(out_had(i)) (accumulate = false, an Atlas addition).
+//
+// ATLAS DELTA (determinism). Upstream has only the atomic-accumulate form:
+// every one of a token's top_k experts atomicAdds into that token's ONE fp32
+// output row, and the commit order is whatever the dynamic expert-group
+// ticket scheduler produces. fp32 addition is not associative, so the prefill
+// hidden states differ at the bit level between two identical runs. The
+// `accumulate = false` instantiation writes each expert's contribution to its
+// OWN sorted-slot row with a plain store; the host then reduces a token's
+// slots in fixed flat-slot order (`exl3_moe_reduce_slots_f32`). Same values,
+// same fp32 adds, ONE order. A template parameter rather than a runtime
+// branch, so the atomic arm's generated code stays exactly upstream's.
+template <bool accumulate>
 inline __device__
-void had_hf_r_128_d_inner
+void had_hf_r_128_d_inner_t
 (
     const half* __restrict__ input_ptr,
     float* __restrict__ output_ptr,
@@ -478,7 +490,7 @@ void had_hf_r_128_d_inner
     h2 *= __low2float(scales.y);
     h3 *= __high2float(scales.y);
 
-    // Reshuffle in shmem for coalesced store with atomicAdd
+    // Reshuffle in shmem for the coalesced store
     extern __shared__ float temp_shared[];
     int warp_id = threadIdx.x / 32;
     float* sh = temp_shared + warp_id * 128;
@@ -487,8 +499,34 @@ void had_hf_r_128_d_inner
     sh[t * 4 + 2] = h2;
     sh[t * 4 + 3] = h3;
     __syncwarp();
-    atomicAdd(output_ptr +  0 + t, sh[ 0 + t]);
-    atomicAdd(output_ptr + 32 + t, sh[32 + t]);
-    atomicAdd(output_ptr + 64 + t, sh[64 + t]);
-    atomicAdd(output_ptr + 96 + t, sh[96 + t]);
+    if constexpr (accumulate)
+    {
+        atomicAdd(output_ptr +  0 + t, sh[ 0 + t]);
+        atomicAdd(output_ptr + 32 + t, sh[32 + t]);
+        atomicAdd(output_ptr + 64 + t, sh[64 + t]);
+        atomicAdd(output_ptr + 96 + t, sh[96 + t]);
+    }
+    else
+    {
+        // One writer per (slot, column): the slot row belongs to exactly this
+        // expert's warp, so a plain store is enough and no order matters.
+        output_ptr[ 0 + t] = sh[ 0 + t];
+        output_ptr[32 + t] = sh[32 + t];
+        output_ptr[64 + t] = sh[64 + t];
+        output_ptr[96 + t] = sh[96 + t];
+    }
+}
+
+// Upstream's spelling, kept so any other caller (and any future re-vendor
+// diff) sees the original signature: the atomic-accumulate instantiation.
+inline __device__
+void had_hf_r_128_d_inner
+(
+    const half* __restrict__ input_ptr,
+    float* __restrict__ output_ptr,
+    const half* __restrict__ post_scale,
+    const float r_scale
+)
+{
+    had_hf_r_128_d_inner_t<true>(input_ptr, output_ptr, post_scale, r_scale);
 }

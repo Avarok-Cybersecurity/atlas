@@ -239,6 +239,13 @@ pub(crate) struct Exl3MoeState {
     pub(crate) pf_hidden_f16: DevicePtr,
     /// f32 `[pf_t_cap, hidden]` routed accumulator (`output_state`).
     pub(crate) pf_out_f32: DevicePtr,
+    /// f32 `[pf_t_cap * top_k, hidden]` per-sorted-slot rows of the
+    /// DETERMINISTIC prefill epilogue (`ops::moe_prefill_det`), allocated
+    /// only when it is enabled (the default). `None` = the kill switch
+    /// `--deterministic-moe-prefill false`, which restores upstream's
+    /// unordered fp32-atomicAdd epilogue AND gives the memory back. Sized
+    /// ONCE here, at load, inside the util pledge — never on the hot path.
+    pub(crate) pf_slot_f32: Option<DevicePtr>,
     /// f16 `[pf_concurrency, 128, hidden]` x2 staging slabs (no zero-init).
     pub(crate) pf_temp_state_g: DevicePtr,
     pub(crate) pf_temp_state_u: DevicePtr,
@@ -289,6 +296,7 @@ impl Exl3MoeState {
         crate::layers::ops::Exl3MoePrefillScratch {
             hidden_f16: self.pf_hidden_f16,
             out_f32: self.pf_out_f32,
+            slot_f32: self.pf_slot_f32,
             temp_state_g: self.pf_temp_state_g,
             temp_state_u: self.pf_temp_state_u,
             temp_inter_g: self.pf_temp_inter_g,
@@ -302,6 +310,11 @@ impl Exl3MoeState {
             ov_up_f16: self.pf_ov_up,
             ov_down_f32: self.pf_ov_down,
             t_cap: self.pf_t_cap,
+            slot_cap: if self.pf_slot_f32.is_some() {
+                self.pf_t_cap * self.top_k
+            } else {
+                0
+            },
             e_cap: self.pf_e_cap,
             concurrency: self.pf_concurrency,
             ov_chunk: EXL3_MOE_OVERFLOW_CHUNK_ROWS,
@@ -339,6 +352,10 @@ impl Exl3MoeState {
             self.pf_ov_up,
             self.pf_ov_down,
         ] {
+            gpu.free(p)?;
+        }
+        // Optional: absent under `--deterministic-moe-prefill false`.
+        if let Some(p) = self.pf_slot_f32 {
             gpu.free(p)?;
         }
         Ok(())
