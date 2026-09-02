@@ -226,30 +226,39 @@ fn keep_set_keeps_the_routed_leaves_only() {
 #[test]
 fn keep_set_bad_projection_drops_that_layer_only() {
     let mut m = BTreeMap::new();
-    // Layer 0: out_proj at K=6 (outside {2,4}) — the WHOLE layer-0 family
-    // materializes (in_proj pair included), atomically.
+    // Layer 0: out_proj at K=7 (no compiled kernel) — the WHOLE layer-0
+    // family materializes (in_proj pair included), atomically.
     gdn_layer(&mut m, 0, 4, Exl3Codebook::Mul1);
     m.insert(
         "model.layers.0.linear_attn.out_proj".to_string(),
-        w(6, Exl3Codebook::Mul1, 6144, 2560),
+        w(7, Exl3Codebook::Mul1, 6144, 2560),
     );
     // Layer 1: fine.
     gdn_layer(&mut m, 1, 4, Exl3Codebook::Mul1);
     // Layer 2: cb0 — out.
     gdn_layer(&mut m, 2, 4, Exl3Codebook::Inst3);
-    // Layer 3: in_proj_z alone at K=3 — out (the pair is one unit with out).
+    // Layer 3: in_proj_z at K=6 against a K=4 pair/out — KEPT: every
+    // projection launches at its own K (there is no shared-template
+    // constraint across a dense family, unlike the MoE pointer tables), and
+    // K=6 is inside the widened dense envelope.
     gdn_layer(&mut m, 3, 4, Exl3Codebook::Mul1);
     m.insert(
         "model.layers.3.linear_attn.in_proj_z".to_string(),
-        w(3, Exl3Codebook::Mul1, 2560, 6144),
+        w(6, Exl3Codebook::Mul1, 2560, 6144),
     );
+    // Layer 4: uniform K=6 (the 4.05bpw dense set) — kept.
+    gdn_layer(&mut m, 4, 6, Exl3Codebook::Mul1);
+    // Layer 5: uniform K=8 (the 6.05bpw dense set) — kept (gemm-only tier).
+    gdn_layer(&mut m, 5, 8, Exl3Codebook::Mul1);
     let (keep, stats) = dense_keep_set(&m);
-    assert_eq!(keep.len(), 3);
-    for leaf in ["in_proj_qkv", "in_proj_z", "out_proj"] {
-        assert!(keep.contains(&format!("model.layers.1.linear_attn.{leaf}")));
+    assert_eq!(keep.len(), 12);
+    for l in [1, 3, 4, 5] {
+        for leaf in ["in_proj_qkv", "in_proj_z", "out_proj"] {
+            assert!(keep.contains(&format!("model.layers.{l}.linear_attn.{leaf}")));
+        }
     }
-    assert_eq!(stats.gdn_layers_kept, 1);
-    assert_eq!(stats.gdn_layers_materialized, 3);
+    assert_eq!(stats.gdn_layers_kept, 4);
+    assert_eq!(stats.gdn_layers_materialized, 2);
     assert_eq!(stats.attn_layers_kept + stats.attn_layers_materialized, 0);
 }
 
@@ -337,13 +346,14 @@ mod pass {
         gpu.copy_h2d(&0x83DC_D12Du32.to_le_bytes(), flag).unwrap();
     }
 
-    /// Two GDN layers (one at K=6, outside the envelope), one attention
-    /// layer, one MTP attention layer (excluded), the QSA indexer (excluded).
+    /// Two GDN layers (one at K=7, the one K with no compiled kernel — K=6
+    /// is inside the widened envelope), one attention layer, one MTP
+    /// attention layer (excluded), the QSA indexer (excluded).
     fn build() -> (MockGpuBackend, WeightStore, Vec<String>) {
         let gpu = MockGpuBackend::new();
         let mut m = HashMap::new();
         let mut all = Vec::new();
-        for (l, k) in [(0usize, 4u32), (1, 6)] {
+        for (l, k) in [(0usize, 4u32), (1, 7)] {
             let lp = format!("model.language_model.layers.{l}");
             for (leaf, i, o) in [
                 ("in_proj_qkv", 2560, 10240),
@@ -383,7 +393,7 @@ mod pass {
         let stats =
             materialize_exl3_impl(&gpu, &mut store, true, false, Exl3DenseFamilies::ALL).unwrap();
         // Layer 0's whole GDN family (3 tensors) and layer 3's whole attention
-        // family (4 tensors) kept; layer 1 GDN (K=6), the MTP block (excluded
+        // family (4 tensors) kept; layer 1 GDN (K=7), the MTP block (excluded
         // by prefix) and the indexer all materialize to BF16.
         assert_eq!(stats.kept_native, 7);
         assert_eq!(stats.bf16, all.len() - 7);

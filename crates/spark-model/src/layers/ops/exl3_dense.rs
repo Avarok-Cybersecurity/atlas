@@ -12,7 +12,9 @@
 //! ```text
 //!   A bf16 [m, k] --exl3_bf16_to_f16--> stage.a_f16 (raw fp16)
 //!   m <= 8 : exl3_gemv (fp32 C into stage.c_f32; gemm fallthrough when the
-//!            GEMV heuristic declines) --exl3_f32_to_bf16[_2d]--> dst
+//!            GEMV heuristic declines, and ALWAYS for K outside the GEMV
+//!            set 2..=4 — K in {5,6,8} has gemm instances only)
+//!            --exl3_f32_to_bf16[_2d]--> dst
 //!   m >  8 : per row batch of stage.rows_cap:
 //!              contiguous dst: exl3_gemm fp16 C straight into dst, then
 //!                              exl3_f16_to_bf16 IN PLACE (lm_head precedent)
@@ -44,8 +46,9 @@ mod stage;
 pub use stage::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage};
 
 use super::exl3_matmul::{
-    EXL3_GEMV_MAX_M, exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d, exl3_f32_to_bf16,
-    exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemv,
+    EXL3_GEMM_K_BITS, EXL3_GEMV_MAX_M, exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d,
+    exl3_f32_to_bf16, exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemm_serves_k, exl3_gemv,
+    exl3_gemv_serves_k,
 };
 
 /// One packed dense linear as the kernels address it: device pointers +
@@ -68,10 +71,12 @@ pub struct Exl3DenseWeight {
 }
 
 impl Exl3DenseWeight {
-    /// Validate against the compiled dense envelope (K in 2..=4 so the m<=8
-    /// GEMV tier exists, cb MCG/MUL1, dims % 128) and convert the codebook.
-    /// The stricter serving policy (`exl3_native_supported`, K in {2,4}) is
-    /// the loader's predicate, applied before this.
+    /// Validate against the compiled dense envelope (K in
+    /// [`EXL3_GEMM_K_BITS`] = {2,3,4,5,6,8} — every K with gemm instances;
+    /// K in 2..=4 additionally has the m<=8 GEMV tier, the rest take the
+    /// f32-C GEMM at every m — cb MCG/MUL1, dims % 128) and convert the
+    /// codebook. The serving policy (`exl3_native_supported`) is the loader's
+    /// predicate, applied before this; the two sets are the same today.
     pub fn from_exl3(w: &Exl3Weight) -> Result<Self> {
         let cb = match w.cb {
             Exl3Codebook::Mcg => 1,
@@ -81,8 +86,8 @@ impl Exl3DenseWeight {
             }
         };
         ensure!(
-            (2..=4).contains(&w.k_bits),
-            "EXL3 dense: K={} is outside the GEMV envelope (2..=4)",
+            exl3_gemm_serves_k(w.k_bits),
+            "EXL3 dense: K={} has no compiled gemm instances (have {EXL3_GEMM_K_BITS:?})",
             w.k_bits
         );
         ensure!(
@@ -244,25 +249,30 @@ pub fn exl3_dense_linear_shared_a(
         exl3_bf16_to_f16(gpu, a_bf16, stage.a_f16, m * k, stream)?;
         for (w, out) in ws {
             let n = w.out_dim;
-            let launched = exl3_gemv(
-                gpu,
-                stage.a_f16,
-                w.trellis,
-                stage.c_f32,
-                m,
-                k,
-                n,
-                w.k_bits,
-                w.cb,
-                true,
-                launch.locks,
-                w.suh,
-                stage.a_had_f16,
-                w.svh,
-                None,
-                launch.sm_count,
-                stream,
-            )?;
+            // The GEMV tier exists for K in 2..=4 only; K in {5,6,8} goes
+            // straight to the f32-C GEMM (same C slab, same egress). Not an
+            // error: every cooperative launch runs under this call's section,
+            // so the split-K GEMM at small m is as safe as the GEMV here.
+            let launched = exl3_gemv_serves_k(w.k_bits)
+                && exl3_gemv(
+                    gpu,
+                    stage.a_f16,
+                    w.trellis,
+                    stage.c_f32,
+                    m,
+                    k,
+                    n,
+                    w.k_bits,
+                    w.cb,
+                    true,
+                    launch.locks,
+                    w.suh,
+                    stage.a_had_f16,
+                    w.svh,
+                    None,
+                    launch.sm_count,
+                    stream,
+                )?;
             if !launched {
                 exl3_gemm(
                     gpu,

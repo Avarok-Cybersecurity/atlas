@@ -72,12 +72,13 @@ fn resolve_checked(
     ensure!(
         crate::weight_map::exl3_native_supported(&w),
         "EXL3 native dense: {prefix} K={} cb={:?} [{}x{}] is outside the dense \
-         kernel envelope (K in {{2,4}}, cb MCG/MUL1, dims %128) — the materialize \
+         kernel envelope (K in {:?}, cb MCG/MUL1, dims %128) — the materialize \
          pass should have fallen this layer's family back to BF16",
         w.k_bits,
         w.cb,
         w.in_dim,
         w.out_dim,
+        crate::weight_map::EXL3_NATIVE_DENSE_K_BITS,
     );
     ensure!(
         w.in_dim == in_dim && w.out_dim == out_dim,
@@ -89,32 +90,16 @@ fn resolve_checked(
     Exl3DenseWeight::from_exl3(&w).with_context(|| format!("EXL3 native dense: {prefix}"))
 }
 
-/// Resolve the `exl3_matmul` instances a projection can dispatch to — the
-/// small-row GEMV set (m=1 and 2..=8 modes x narrow/wide cfg x f16/f32 C,
-/// the exact name rule of `ops::exl3_gemv`) and the universal shape-2 GEMM
-/// (f16 and f32 C) — so a missing module or a JIT-compile failure is paid
-/// at load, never on the first request. Mirrors the lm_head / MoE probes.
+/// Resolve the `exl3_matmul` instances a projection can dispatch to
+/// (`ops::exl3_dense_kernel_names`: the GEMM shape the Blackwell heuristic
+/// resolves for this geometry — shape 3 for n in {6144, 10240, 12288}, shape
+/// 4 for the widest — plus the universal shape-2 fallback, f16 and f32 C
+/// each, and the small-row GEMV set ONLY for K in 2..=4 where it is
+/// instantiated) so a missing module or a JIT-compile failure is paid at
+/// load, never on the first request. Mirrors the lm_head / MoE probes.
 fn probe_kernels(gpu: &dyn GpuBackend, w: &Exl3DenseWeight, what: &str) -> Result<()> {
-    let (k, cb) = (w.k_bits, w.cb);
-    // The shape the Blackwell heuristic actually selects for this geometry
-    // (shape 3 for n in {6144, 10240, 12288}) plus the universal shape-2
-    // fallback — probing only sh2 left the first prefill to discover sh3.
-    let picked = crate::layers::ops::select_exl3_gemm_shape(w.in_dim, w.out_dim, k, false, 1, 1);
-    let mut names = vec![
-        format!("exl3_gemm_k{k}_cb{cb}_sh2_f16"),
-        format!("exl3_gemm_k{k}_cb{cb}_sh2_f32"),
-    ];
-    if picked != 2 && crate::layers::ops::exl3_gemm_shape_compat(picked, w.in_dim, w.out_dim) {
-        names.push(format!("exl3_gemm_k{k}_cb{cb}_sh{picked}_f16"));
-        names.push(format!("exl3_gemm_k{k}_cb{cb}_sh{picked}_f32"));
-    }
-    for mmode in [0, 1] {
-        for cfg in [0, 1] {
-            for suf in ["f16", "f32"] {
-                names.push(format!("exl3_gemv_k{k}_cb{cb}_m{mmode}_cfg{cfg}_{suf}"));
-            }
-        }
-    }
+    let names = crate::layers::ops::exl3_dense_kernel_names(w.in_dim, w.out_dim, w.k_bits, w.cb)
+        .with_context(|| format!("EXL3 native dense ({what}): no dispatchable kernel"))?;
     for name in names {
         gpu.kernel("exl3_matmul", &name).with_context(|| {
             format!(

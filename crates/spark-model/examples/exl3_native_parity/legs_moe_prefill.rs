@@ -130,7 +130,7 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
 /// overflow) over the given table/EP range; returns (out_f64, out_bf16_bits,
 /// num_active, overflow_experts).
 #[allow(clippy::too_many_arguments)]
-fn run_native(
+pub fn run_native(
     ctx: &Ctx,
     sl: &Slabs,
     tables: &[spark_model::layers::ops::Exl3MoeProj; 3],
@@ -200,7 +200,8 @@ fn run_native(
     Ok((y, bits, stats.num_active, stats.overflow_experts))
 }
 
-fn ref_all(
+#[allow(clippy::too_many_arguments)]
+pub fn ref_all(
     input_f16: &[u16],
     ids: &[u32],
     probs: &[f32],

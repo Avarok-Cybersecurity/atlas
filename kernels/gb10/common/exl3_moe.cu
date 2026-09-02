@@ -10,7 +10,7 @@
 // wrappers so the Rust host selects instances by name.
 //
 // This is a SEPARATE top-level module from exl3_matmul.cu, deliberately:
-//   + each common/*.cu is its own nvcc job — the 16 instances here (each
+//   + each common/*.cu is its own nvcc job — the 24 instances here (each
 //     embedding the full pipelined exl3_gemm_kernel_inner) don't serialize
 //     behind the ~200 gemm/gemv instances of exl3_matmul.cu, and vice versa;
 //   − the host must load/attribute-raise two modules for the EXL3 MoE layer
@@ -23,12 +23,16 @@
 //
 // ── Symbol grammar ─────────────────────────────────────────────────────────
 // exl3_moe_k{K}_n{N}_cb{CB}
-//   K  ∈ {0, 2, 3, 4}: trellis bits/weight for gate, up AND down. K > 0 =
-//        compile-time, requires K_gate == K_up == K_down == K. K = 0 =
-//        runtime dispatch per projection (mixed-K checkpoints) — SUPPORTS
-//        ONLY K_x ∈ {2,3,4}; any other value silently skips that
-//        projection's GEMM (vendor header documents the trim), so the host
-//        MUST refuse the fused path outside that envelope.
+//   K  ∈ {0, 2, 3, 4, 5, 6}: trellis bits/weight for gate, up AND down.
+//        K > 0 = compile-time, requires K_gate == K_up == K_down == K — the
+//        set is every shipped Qwen3.8-Flash-Next-exl3 branch's expert K
+//        (2/3/4/5/6 for 2.05/3.05/4.05/5.05/6.05bpw, uniform per branch);
+//        K=8 experts exist nowhere, so no k8 instance. K = 0 = runtime
+//        dispatch per projection (a MIXED-K layer) — SUPPORTS ONLY
+//        K_x ∈ {2,3,4}; any other value silently skips that projection's
+//        GEMM (vendor header documents the trim and the measured compile
+//        cost of widening it), so the host MUST refuse the fused path for a
+//        mixed-K layer with any K outside {2,3,4}.
 //   N  ∈ {128, 256}: MOE_TILESIZE_N. Upstream selection:
 //        N = 256 iff (hidden_dim % 256 == 0 && intermediate_dim % 256 == 0),
 //        else N = 128. Upstream index [4*K + 2*cb_idx + N_off] maps here by
@@ -133,7 +137,9 @@
     EXL3_MOE_WRAP(K, 128, 2)                                                  \
     EXL3_MOE_WRAP(K, 256, 2)
 
-EXL3_MOE_SET(0)  // runtime per-projection K dispatch, K_x in {2,3,4} only
+EXL3_MOE_SET(0)  // runtime per-projection K dispatch (mixed-K layers), K_x in {2,3,4} only
 EXL3_MOE_SET(2)
 EXL3_MOE_SET(3)
 EXL3_MOE_SET(4)
+EXL3_MOE_SET(5)
+EXL3_MOE_SET(6)

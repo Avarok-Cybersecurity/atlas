@@ -37,6 +37,12 @@
 //!     control + launch timing (legs_dense.rs). I/J. GDN / attention
 //!     layer-arm legs (legs_dense_gdn.rs / legs_dense_attn.rs — placeholders
 //!     until the layer arms land).
+//!  K. K-ladder (legs_kladder.rs): the widened envelope at the higher-bpw
+//!     branches — gemm K in {3,5,6,8} at real shapes, mgemm K in {3,5,6},
+//!     the 3x-mgemm decode and fused-prefill pipelines at K in {5,6} (new
+//!     k5/k6 fused instances), lm_head geometry [2560->248320] K=6 (m=1 f32
+//!     C GEMM fallthrough, m=64 f16 C), `exl3_dense_linear` at every
+//!     GDN/attention shape K=6 with m in {1,8,64} (m<=8 on the GEMM tier).
 //!
 //! With EXL3_BENCH=1 also times gemv/gemm at qwen4_exp decode/prefill
 //! shapes (20 warmup + 200 timed launches, us/launch).
@@ -54,6 +60,7 @@ mod legs;
 mod legs_dense;
 mod legs_dense_attn;
 mod legs_dense_gdn;
+mod legs_kladder;
 mod legs_moe;
 mod legs_moe_prefill;
 mod legs_moe_prefill_debug;
@@ -204,6 +211,7 @@ fn main() -> Result<()> {
     clean &= legs_dense::run(&ctx, &mut rng)?;
     clean &= legs_dense_gdn::run(&ctx, &mut rng)?;
     clean &= legs_dense_attn::run(&ctx, &mut rng)?;
+    clean &= legs_kladder::run(&ctx, &mut rng)?;
 
     if std::env::var("EXL3_BENCH").as_deref() == Ok("1") {
         bench::run(&ctx, &mut rng)?;

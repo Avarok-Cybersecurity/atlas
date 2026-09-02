@@ -350,3 +350,24 @@ pub(crate) fn check_oom_guard(
 }
 mod load_fns;
 use load_fns::{load_sharded, load_single};
+
+/// Load every tensor of ONE safetensors file that `skip_fn` does not reject,
+/// under the loaders' standard ingest rules: F16 is converted to BF16 on the
+/// host EXCEPT the EXL3 Hadamard sign vectors (`.suh`/`.svh` keep their exact
+/// f16 bits — they are decode inputs), I16 lands as raw `UInt16` trellis
+/// codes, I32 as `Int32`. The file need not be listed in any index: this is
+/// the `extra_weights.safetensors` path, exposed so a model crate can
+/// register an out-of-index sidecar after the main load (the EXL3 export's
+/// `vision_k6.safetensors`, whose 987 `model.visual.*` tensors are in no
+/// `model.safetensors.index.json`). Returns the loaded tensors — the caller
+/// owns inserting them into its store (and the device memory). The OOM
+/// guard runs once after the file.
+pub fn load_safetensors_file(
+    path: &Path,
+    gpu: &dyn GpuBackend,
+    oom_reserve_bytes: usize,
+    skip_fn: &dyn Fn(&str) -> bool,
+) -> Result<HashMap<String, super::WeightTensor>> {
+    load_single(path, gpu, oom_reserve_bytes, skip_fn)
+        .with_context(|| format!("loading safetensors file {}", path.display()))
+}

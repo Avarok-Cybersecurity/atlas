@@ -30,13 +30,15 @@
 //! The source trellis/suh/svh/mul1 tensors are freed as each linear lands,
 //! so peak memory ≈ the packed checkpoint + one transient BF16 tensor.
 //!
-//! NOT covered here (documented gaps, each needs its own decode path):
+//! Files the export keeps OUTSIDE the weight index are registered by two
+//! sibling passes on the serve path (`serve_load.rs`), not here:
 //!  * `ngram_embedding.safetensors` (`exl3_ngram_trellis` row format) — the
-//!    PLE n-gram tables. A qwen4_exp load will fail at the PLE loader's
-//!    existing "no shard_* was deferred" check; this pass logs the reason
-//!    up front.
-//!  * `vision_k6.safetensors` — the EXL3-quantized vision encoder ships
-//!    outside the weight index and is not loaded.
+//!    PLE n-gram tables; `register_exl3_ngram_sidecar` (after this pass)
+//!    defers the trellis for the NVMe row cache and uploads the id tables.
+//!  * every other un-indexed `*.safetensors` — on 4.05bpw the whole ViT
+//!    tower in `vision_k6.safetensors`, on the other branches the MTP mixer
+//!    patch; `register_exl3_sidecar_shards` (BEFORE this pass) uploads them
+//!    so their trellis linears take the same route as the indexed ones.
 //!
 //! Double-quantization note: EXL3(K bits) -> BF16 -> NVFP4 costs quality vs
 //! a native-NVFP4 calibration AND vs native EXL3 serving. This pass is the
@@ -55,7 +57,8 @@ use super::{DenseWeight, quantize_to_nvfp4};
 #[path = "exl3_materialize_native.rs"]
 mod native;
 pub use native::{
-    exl3_native_enabled, exl3_native_serves, exl3_native_serves_with, exl3_native_supported,
+    EXL3_NATIVE_DENSE_K_BITS, exl3_native_enabled, exl3_native_serves, exl3_native_serves_with,
+    exl3_native_supported,
 };
 
 // `register_exl3_ngram_sidecar` lives in the child module (≤500 LoC split);
@@ -63,6 +66,14 @@ pub use native::{
 #[path = "exl3_materialize_ngram.rs"]
 mod ngram;
 pub use ngram::register_exl3_ngram_sidecar;
+// Out-of-index sidecar shards (the 4.05bpw `vision_k6.safetensors`, the
+// mtp mixer patch) — registered before this pass runs.
+#[path = "exl3_sidecar_shards.rs"]
+mod sidecar_shards;
+pub use sidecar_shards::{
+    Exl3SidecarStats, index_listed_shards, is_exl3_vision_sidecar_name,
+    register_exl3_sidecar_shards, select_exl3_sidecar_shards,
+};
 
 /// What the pass did — for the load log.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -187,7 +198,8 @@ pub(crate) fn materialize_exl3_impl(
     // Same shape as the expert set: resolve every gate-admitted GDN /
     // attention projection up front, then decide ATOMICALLY per (layer,
     // family) — all of a layer's `linear_attn.{qkv,z,out}` (or
-    // `self_attn.{q,k,v,o}`) inside the K in {2,4} GEMV envelope, or the
+    // `self_attn.{q,k,v,o}`) inside the dense kernel envelope (K in
+    // {2,3,4,5,6,8}, `exl3_native_supported`), or the
     // whole family materializes to BF16 exactly as today (see
     // exl3_materialize_dense.rs). The loader arms re-derive "kept" from the
     // family's `.trellis` tensors still being in the store.

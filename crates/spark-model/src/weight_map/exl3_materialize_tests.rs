@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Unit tests for `exl3_materialize.rs` (child module; split out for the
-//! ≤500 LoC cap, same shape as `exl3_materialize_dense_tests.rs`).
+//! Mock-backend tests for the EXL3 materialize pass (split from
+//! `exl3_materialize.rs` for the 500-LoC cap).
 
 use std::collections::HashMap;
 
@@ -196,13 +196,47 @@ fn native_serve_set_and_support_envelope() {
         k_bits,
         cb,
     };
-    assert!(exl3_native_supported(&w(4, Exl3Codebook::Mul1)));
-    assert!(exl3_native_supported(&w(2, Exl3Codebook::Mcg)));
+    // Every K with gemm instances: 2.05 (K=4), 3.05 (K=5), 4.05 (K=6)
+    // and 6.05 (K=8 dense / K=6 lm_head) dense sets all qualify.
+    for k in [2u32, 3, 4, 5, 6, 8] {
+        assert!(exl3_native_supported(&w(k, Exl3Codebook::Mul1)), "K={k}");
+        assert!(exl3_native_supported(&w(k, Exl3Codebook::Mcg)), "K={k}");
+    }
     assert!(!exl3_native_supported(&w(4, Exl3Codebook::Inst3))); // cb0 not compiled
     assert!(!exl3_native_supported(&w(7, Exl3Codebook::Mul1))); // K=7 not compiled
+    assert!(!exl3_native_supported(&w(1, Exl3Codebook::Mul1))); // K=1 not compiled
     let mut odd = w(4, Exl3Codebook::Mul1);
     odd.in_dim = 2504; // not %128
     assert!(!exl3_native_supported(&odd));
+    // The dense arm admits exactly the K the dense dispatch accepts.
+    for k in EXL3_NATIVE_DENSE_K_BITS {
+        assert!(crate::layers::ops::exl3_gemm_serves_k(k));
+    }
+}
+
+#[test]
+fn native_mode_keeps_k6_lm_head_packed() {
+    // 4.05bpw ships lm_head at K=6: no GEMV instance, gemm-only — kept.
+    let gpu = MockGpuBackend::new();
+    let mut m = HashMap::new();
+    exl3_linear(&gpu, &mut m, "lm_head", 6);
+    let mut store = WeightStore::from_map(m);
+    stamp_mul1(&gpu, &store, "lm_head");
+    let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
+    assert_eq!(stats.kept_native, 1);
+    assert!(store.contains("lm_head.trellis"));
+    assert!(!store.contains("lm_head.weight"));
+
+    // K=7 (5.05bpw's dense set) has no kernel: materializes to BF16 with
+    // the envelope warning, exactly as before the widening.
+    let mut m = HashMap::new();
+    exl3_linear(&gpu, &mut m, "lm_head", 7);
+    let mut store = WeightStore::from_map(m);
+    stamp_mul1(&gpu, &store, "lm_head");
+    let stats = materialize_exl3_impl(&gpu, &mut store, true, false, OFF).unwrap();
+    assert_eq!(stats.kept_native, 0);
+    assert_eq!(stats.bf16, 1);
+    assert!(store.contains("lm_head.weight"));
 }
 
 /// One EXL3 linear at explicit `[in -> out]` geometry (the base helper is

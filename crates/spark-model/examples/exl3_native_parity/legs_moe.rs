@@ -48,14 +48,28 @@ pub struct ProjSet {
     pub weights: Vec<(Vec<u16>, Vec<u16>, Vec<u16>)>, // (trellis, suh, svh) per expert
     pub whats: Vec<Vec<f64>>,                         // f64 reconstruction per expert
     pub dev: Vec<DevWeight>,
+    /// Trellis bits/weight of every expert in the set (MUL1 codebook).
+    pub k_bits: u32,
 }
 
 impl ProjSet {
     /// `e` experts of one projection at `[k -> n]` (K=4 MUL1 template).
     pub fn generate(ctx: &Ctx, rng: &mut Lcg, e: usize, k: usize, n: usize) -> Result<Self> {
+        Self::generate_k(ctx, rng, e, k, n, K_BITS)
+    }
+
+    /// `e` experts of one projection at `[k -> n]`, `k_bits` MUL1.
+    pub fn generate_k(
+        ctx: &Ctx,
+        rng: &mut Lcg,
+        e: usize,
+        k: usize,
+        n: usize,
+        k_bits: u32,
+    ) -> Result<Self> {
         let mut weights = Vec::with_capacity(e);
         for _ in 0..e {
-            let trellis: Vec<u16> = (0..(k / 16) * (n / 16) * 16 * K_BITS as usize)
+            let trellis: Vec<u16> = (0..(k / 16) * (n / 16) * 16 * k_bits as usize)
                 .map(|_| rng.u16())
                 .collect();
             let suh: Vec<u16> = (0..k).map(|_| rng.scale_f16()).collect();
@@ -64,7 +78,7 @@ impl ProjSet {
         }
         let whats = weights
             .iter()
-            .map(|(t, _, _)| decode_what_f64(t, k, n, K_BITS, cb_enum(CB)))
+            .map(|(t, _, _)| decode_what_f64(t, k, n, k_bits, cb_enum(CB)))
             .collect();
         let dev = weights
             .iter()
@@ -74,6 +88,7 @@ impl ProjSet {
             weights,
             whats,
             dev,
+            k_bits,
         })
     }
 
@@ -93,7 +108,7 @@ impl ProjSet {
                 trellis_ptrs,
                 suh_ptrs,
                 svh_ptrs,
-                k_bits: K_BITS,
+                k_bits: self.k_bits,
                 cb: CB,
             },
             [trellis_ptrs, suh_ptrs, svh_ptrs],
@@ -153,16 +168,16 @@ pub fn ref_token(
     y
 }
 
-struct Slabs {
+pub struct Slabs {
     scratch: Exl3MoeScratch,
-    owned: Vec<DevicePtr>,
+    pub owned: Vec<DevicePtr>,
     out: DevicePtr,
     input: DevicePtr,
     indices: DevicePtr,
     probs: DevicePtr,
 }
 
-fn alloc_slabs(ctx: &Ctx, s_cap: usize, t_max: usize) -> Result<Slabs> {
+pub fn alloc_slabs(ctx: &Ctx, s_cap: usize, t_max: usize) -> Result<Slabs> {
     let g = ctx.g;
     let a_f16 = g.alloc(s_cap * H * 2)?;
     let a_had_f16 = g.alloc(s_cap * H * 2)?;
@@ -203,7 +218,7 @@ fn alloc_slabs(ctx: &Ctx, s_cap: usize, t_max: usize) -> Result<Slabs> {
 /// Run the production pipeline for T tokens over the given table/EP range;
 /// returns (out_f64, out_bf16_bits).
 #[allow(clippy::too_many_arguments)]
-fn run_native(
+pub fn run_native(
     ctx: &Ctx,
     sl: &Slabs,
     tables: &[Exl3MoeProj; 3],

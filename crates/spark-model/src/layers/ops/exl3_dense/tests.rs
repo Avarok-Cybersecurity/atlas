@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Unit tests for `exl3_dense.rs` (child module; split out for the ≤500 LoC
-//! cap — the mock records kernel resolutions, which IS the launch plan).
-
-use spark_runtime::gpu::mock::MockGpuBackend;
+//! Mock-backend launch-plan tests for `ops::exl3_dense` (split from the
+//! parent for the 500-LoC cap): the recorded kernel resolutions ARE the
+//! dispatch plan per tier; numerics are the GPU parity example's job.
 
 use super::*;
+use spark_runtime::gpu::mock::MockGpuBackend;
 
 fn weight(gpu: &MockGpuBackend, k: usize, n: usize) -> Exl3DenseWeight {
+    weight_k(gpu, k, n, 4)
+}
+
+fn weight_k(gpu: &MockGpuBackend, k: usize, n: usize, k_bits: u32) -> Exl3DenseWeight {
     Exl3DenseWeight {
-        trellis: gpu.alloc((k / 16) * (n / 16) * 16 * 4 * 2).unwrap(),
+        trellis: gpu
+            .alloc((k / 16) * (n / 16) * 16 * k_bits as usize * 2)
+            .unwrap(),
         suh: gpu.alloc(k * 2).unwrap(),
         svh: gpu.alloc(n * 2).unwrap(),
         in_dim: k,
         out_dim: n,
-        k_bits: 4,
+        k_bits,
         cb: 2,
     }
 }
@@ -101,6 +107,51 @@ fn launch_plan_gemv_tier_and_row_batched_gemm_tier() {
 }
 
 #[test]
+fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
+    // K in {5,6,8} has no GEMV instances: the m<=8 tier must go straight
+    // to the f32-C GEMM (never ask the module for a k6 gemv name), then
+    // egress from the same f32 slab. m>8 is the ordinary GEMM tier.
+    let gpu = MockGpuBackend::new();
+    let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
+    let stage = Exl3DenseStage::new(&gpu, launch, 256, 6144, 12288).unwrap();
+    let a = gpu.alloc(64 * 2560 * 2).unwrap();
+    let dst = gpu.alloc(64 * 10240 * 2).unwrap();
+    for k_bits in [5u32, 6, 8] {
+        let w = weight_k(&gpu, 2560, 10240, k_bits);
+        for m in [1usize, 8] {
+            let before = gpu.kernel_lookups_snapshot().len();
+            exl3_dense_linear(&gpu, &w, a, contiguous(dst), m, &stage, 0).unwrap();
+            let names = kernel_names(&gpu)[before..].to_vec();
+            assert_eq!(names.len(), 3, "K={k_bits} m={m}: {names:?}");
+            assert_eq!(names[0], "exl3_bf16_to_f16");
+            assert!(
+                names[1].starts_with(&format!("exl3_gemm_k{k_bits}_cb2_sh"))
+                    && names[1].ends_with("_f32"),
+                "K={k_bits} m={m}: {names:?}"
+            );
+            assert_eq!(names[2], "exl3_f32_to_bf16");
+            assert!(!names.iter().any(|n| n.contains("gemv")));
+        }
+        let before = gpu.kernel_lookups_snapshot().len();
+        exl3_dense_linear(&gpu, &w, a, contiguous(dst), 64, &stage, 0).unwrap();
+        let names = kernel_names(&gpu)[before..].to_vec();
+        assert_eq!(names.len(), 3, "K={k_bits} m=64: {names:?}");
+        assert!(names[1].starts_with(&format!("exl3_gemm_k{k_bits}_cb2_sh")));
+        assert!(names[1].ends_with("_f16"));
+    }
+    // K=3 HAS gemv instances: the tier is attempted (the heuristic may
+    // still decline for some shapes; [2560->10240] accepts the wide cfg).
+    let w3 = weight_k(&gpu, 2560, 10240, 3);
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear(&gpu, &w3, a, contiguous(dst), 1, &stage, 0).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert!(
+        names[1].starts_with("exl3_gemv_k3_cb2_m0_cfg") || names[1].starts_with("exl3_gemm_k3_"),
+        "{names:?}"
+    );
+}
+
+#[test]
 fn contract_checks_refuse_bad_geometry() {
     let gpu = MockGpuBackend::new();
     let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
@@ -150,7 +201,14 @@ fn from_exl3_maps_codebook_and_rejects_envelope_breaches() {
         ..base
     };
     assert!(Exl3DenseWeight::from_exl3(&inst3).is_err());
-    assert!(Exl3DenseWeight::from_exl3(&Exl3Weight { k_bits: 6, ..base }).is_err());
+    // Every K with gemm instances is admitted (K>4 skips the GEMV tier);
+    // K=1/7 have no instances at all.
+    for k in [2u32, 3, 4, 5, 6, 8] {
+        assert!(Exl3DenseWeight::from_exl3(&Exl3Weight { k_bits: k, ..base }).is_ok());
+    }
+    for k in [1u32, 7] {
+        assert!(Exl3DenseWeight::from_exl3(&Exl3Weight { k_bits: k, ..base }).is_err());
+    }
     let odd = Exl3Weight {
         out_dim: 10200,
         ..base

@@ -23,9 +23,10 @@
 //!    shared expert.
 //!  * [`dense_keep_set`] — per-(layer, family) ATOMIC keep-or-materialize:
 //!    every ROUTED projection of the family must be present as EXL3 AND
-//!    inside [`super::exl3_native_supported`] (K in {2,4} — the GEMV
-//!    envelope that keeps small-row launches off the shared-locks GEMM — cb
-//!    MCG/MUL1, dims %128), or the WHOLE routed set of that layer
+//!    inside [`super::exl3_native_supported`] (K in {2,3,4,5,6,8} — every K
+//!    with gemm instances; K>4 serves small rows through the f32-C GEMM
+//!    under the shared launch section — cb MCG/MUL1, dims %128), or the
+//!    WHOLE routed set of that layer
 //!    materializes to BF16 exactly as today. No half-native layers: the
 //!    loader arms decide "kept" from the projections' `.trellis` still being
 //!    in the store, so a partially-kept set would be read half from trellis,
@@ -320,8 +321,12 @@ pub(crate) fn dense_keep_set(
                 .map(|(p, w)| {
                     format!(
                         "{p} is outside the dense kernel envelope (K={} cb={:?} \
-                         [{}x{}]; need K in {{2,4}}, cb MCG/MUL1, dims %128)",
-                        w.k_bits, w.cb, w.in_dim, w.out_dim,
+                         [{}x{}]; need K in {:?}, cb MCG/MUL1, dims %128)",
+                        w.k_bits,
+                        w.cb,
+                        w.in_dim,
+                        w.out_dim,
+                        super::EXL3_NATIVE_DENSE_K_BITS,
                     )
                 })
         };
