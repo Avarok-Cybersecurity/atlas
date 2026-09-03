@@ -22,6 +22,19 @@ ROOT=$(pwd)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
 
+# Prerequisites, checked up front and LOUDLY. The alternative -- skipping the
+# checks whose tools are missing -- turns a suite that cannot run into a suite
+# that reports success, which is the exact failure this file exists to prevent.
+missing=""
+for tool in python3 jq; do command -v "$tool" >/dev/null || missing="$missing $tool"; done
+python3 -c 'import yaml' 2>/dev/null || missing="$missing python3-yaml"
+python3 -c 'import segno' 2>/dev/null || missing="$missing python3-segno"
+if [ -n "$missing" ]; then
+  echo "cannot run: missing$missing" >&2
+  echo "install them and re-run; this suite never skips a check it cannot perform." >&2
+  exit 2
+fi
+
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
 # want_rc <expected> <label> <cmd...>

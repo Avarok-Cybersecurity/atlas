@@ -71,3 +71,35 @@ target the behaviour under test, or the control is theatre.
 **Still open.** `certification-state.sh` and the `ci.yml` stamp/seal/expedite
 shell have no coverage in the suite yet. The one-commit-one-signer step is
 tested only in a scratch repo, by hand.
+
+---
+
+## Wave 2 — the gate itself was not portable
+
+**Found.** CI went red on `cargo deny` — the job wave 1 had just added the
+self-test to. Not a flake: the suite's three certificate-rendering checks failed
+on `ubuntu-latest` because `render-certificate.py` imports `segno`, which had
+been installed by hand on this box and on avarok but exists nowhere in CI.
+
+The gate built to catch regressions was itself broken in a way that only CI
+could see. Worth stating plainly: wave 1 reported "19 passed" from a machine
+where the dependency happened to be present, and that number was true and
+useless.
+
+**Changed.** The suite now checks its prerequisites up front — `python3`, `jq`,
+PyYAML, segno — and exits 2 with a named list if any are absent. The security
+job installs them before running it.
+
+**The control proved it.** With a shimmed `python3` that reports segno missing,
+the suite exits **2** and names `python3-segno`, rather than running a reduced
+set of checks and reporting success. With the prerequisites present it is 19/19
+again.
+
+The tempting fix was to skip the QR-dependent checks when segno is unavailable.
+That would have turned a suite that *cannot run* into a suite that *reports
+success* — the precise failure mode this file exists to prevent, reintroduced
+inside the file itself.
+
+**Still open.** Unchanged from wave 1: `certification-state.sh` and the
+`ci.yml` stamp/seal/expedite shell have no coverage; the one-commit-one-signer
+step is exercised only by hand.
