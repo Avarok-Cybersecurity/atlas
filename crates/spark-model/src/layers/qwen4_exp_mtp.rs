@@ -171,6 +171,24 @@ pub struct Qwen4ExpMtpHead {
     /// scheduler samples from — the stash/restore the shadow path needed is
     /// unnecessary once the arena is private.
     lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
+    /// The target's NATIVE EXL3 vocab head, BORROWED (`Arc`), not copied.
+    ///
+    /// Under `ATLAS_EXL3_NATIVE` the lm_head is served from packed trellis and
+    /// there is no NVFP4 head at all — `build.rs` sets all three NVFP4/FP8
+    /// head slots to `None` — so without this arm the draft errored on EVERY
+    /// propose and speculation silently degenerated to serial.
+    ///
+    /// Borrowing is also the CORRECT reading of the checkpoint: the 4.05bpw
+    /// tensor map ships exactly one `lm_head` trellis `[248320,2560]` K=6 and
+    /// no `mtp.lm_head` — the MTP block SHARES the target's vocab head. A
+    /// second materialized copy would be both wrong and ~325 MB wasted.
+    ///
+    /// The shared head carries the model-wide `Exl3LaunchState` (one locks
+    /// buffer, one host mutex, one cross-stream fence), so the draft is a
+    /// third caller of the SAME section — never a second launch state. It
+    /// projects into the DRAFT's private arena through the head's reserved
+    /// draft scratch row, so the private-arena isolation (PR #782) is intact.
+    lm_head_exl3: Option<std::sync::Arc<crate::model::lm_head_exl3::Exl3LmHead>>,
     w4a16_gemv_k: KernelHandle,
     w4a16_gemv_sw_k: KernelHandle,
     argmax_k: KernelHandle,
@@ -225,11 +243,15 @@ pub fn shadow_stage() -> ShadowStage {
 }
 
 impl Qwen4ExpMtpHead {
+    // `pub(crate)`: the signature now names `Exl3LmHead`, which is a
+    // crate-private type (the native head is an internal dispatch arm). The
+    // only caller is `model/impl_b3_accessors.rs`.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         module: Qwen4ExpMtpModule,
         embed_tokens: DenseWeight,
         lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
+        lm_head_exl3: Option<std::sync::Arc<crate::model::lm_head_exl3::Exl3LmHead>>,
         config: &atlas_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
@@ -312,6 +334,7 @@ impl Qwen4ExpMtpHead {
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             lm_head_nvfp4,
+            lm_head_exl3,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: KernelHandle(0),
             argmax_k: gpu.kernel("argmax", "argmax_bf16")?,
@@ -400,22 +423,33 @@ impl Qwen4ExpMtpHead {
         let vocab = ctx.config.vocab_size as u32;
         let h = ctx.config.hidden_size as u32;
         let logits = self.arena.logits();
-        let w = self
-            .lm_head_nvfp4
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: no NVFP4 lm_head for the draft head"))?;
-        ops::w4a16_decode_gemv(
-            ctx.gpu,
-            self.w4a16_gemv_k,
-            self.w4a16_gemv_sw_k,
-            false,
-            h_out,
-            w,
-            logits,
-            vocab,
-            h,
-            stream,
-        )?;
+        // NATIVE EXL3 FIRST. Under `ATLAS_EXL3_NATIVE` there is no NVFP4 head
+        // to fall back to, and the borrowed trellis head is the SAME head the
+        // target samples from — which is the whole point of scoring a draft.
+        // `project_draft` writes ONE row into the DRAFT's own arena using the
+        // head's reserved scratch row, inside a section of the model-shared
+        // `Exl3LaunchState`.
+        if let Some(exl3) = self.lm_head_exl3.as_ref() {
+            exl3.project_draft(ctx.gpu, h_out, logits, stream)?;
+        } else {
+            let w = self.lm_head_nvfp4.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "qwen4_exp MTP: no NVFP4 and no native-EXL3 lm_head for the draft head"
+                )
+            })?;
+            ops::w4a16_decode_gemv(
+                ctx.gpu,
+                self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                false,
+                h_out,
+                w,
+                logits,
+                vocab,
+                h,
+                stream,
+            )?;
+        }
         let out_ptr = self.arena.scratch();
         ops::argmax_bf16(ctx.gpu, self.argmax_k, logits, out_ptr, vocab, stream)?;
         let mut b = [0u8; 4];
