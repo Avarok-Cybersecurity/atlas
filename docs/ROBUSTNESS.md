@@ -542,3 +542,27 @@ and not sufficient. Check that the edit changes what the code does.**
 **Still open.** Nothing known. Every layer — shell logic, Rust logic, live
 authority, and the wiring that runs it all — has now been shown to fail when the
 thing it guards is broken.
+
+---
+
+## Wave 14 — landing it, and the pipeline exercising itself
+
+**Found.** Thirteen waves of guards protect nothing while they sit on a branch.
+The suite gates `main` only once it is *on* `main`.
+
+**Changed.** Nothing new. `/stamp` and `/seal` on #843, dispatched against the
+branch's own workflow so they ran on the self-hosted runner the PR introduces.
+
+**The measurement.** Both marks recorded in **47 seconds** for two commands.
+Earlier the same day, on hosted runners, a single `/stamp` waited **220
+minutes**. Same repo, same commands, same account.
+
+That number is the point of the runner change, and it is now demonstrated by the
+change certifying itself rather than by a benchmark written to flatter it.
+
+**What this wave actually proves.** The pipeline ran its own three stages on the
+PR that hardens it: `/seal` verified codeowner coverage across the diff,
+`/stamp` released the held lane, both marks landed on the head, and the 81-check
+suite plus the wiring guard ran as required contexts on the same commit.
+
+**Still open.** Nothing known. The record's last entry is the merge itself.
