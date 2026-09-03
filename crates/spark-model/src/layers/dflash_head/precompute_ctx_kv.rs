@@ -200,7 +200,12 @@ impl BlockDiffusionDraftHead {
         // py:386–391  `all_kv = all_kv_flat.view(n,L,2,nkv,hd)
         //                          .permute(2,1,0,3,4).contiguous()`
         //              `all_k = all_kv[0]`  → [L, n, nkv, hd] contiguous.
-        // Atlas: copy_d2d row-by-row to build the same [L, n, kv_dim] layout
+        // Atlas: copy row-by-row to build the same [L, n, kv_dim] layout.
+        // ASYNC on the caller's stream: the synchronous `copy_d2d` here was a
+        // cuStreamSynchronize per row per layer (2 x L x n per sequence, ~500
+        // per C=16 step) and the host stall between them was ~22 ms/step of
+        // GPU idle in the 2026-09-02 nsys trace. Every consumer of these
+        // buffers is on `stream`, so ordering is unchanged.
         // in mlp_intermediate (borrowed; not used until step 3j of the
         // γ-block layer loop). Capacity: n_attn × inter × 2 >> L×n×kv_dim×2.
         let all_k_stage = self.scratch.mlp_intermediate;
@@ -211,7 +216,7 @@ impl BlockDiffusionDraftHead {
                     .fused_kv_out
                     .offset(row * row_stride + l * 2 * kv_slab_bytes);
                 let k_dst = all_k_stage.offset((l * new_ctx_count + row) * kv_slab_bytes);
-                gpu.copy_d2d(k_src, k_dst, kv_slab_bytes)?;
+                gpu.copy_d2d_async(k_src, k_dst, kv_slab_bytes, stream)?;
             }
         }
 
@@ -283,7 +288,7 @@ impl BlockDiffusionDraftHead {
                     .fused_kv_out
                     .offset(row * row_stride + l * 2 * kv_slab_bytes + kv_slab_bytes);
                 let v_dst = v_stage.offset(row * kv_slab_bytes);
-                gpu.copy_d2d(v_src, v_dst, kv_slab_bytes)?;
+                gpu.copy_d2d_async(v_src, v_dst, kv_slab_bytes, stream)?;
             }
 
             if dump && l == 0 {
