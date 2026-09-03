@@ -654,8 +654,8 @@ pub trait TransformerLayer: Send + Sync {
 #[cfg(test)]
 mod verify_wy_table_tests {
     use super::{
-        VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLES_PER_LAYER, VERIFY_WY_TABLE_SEQS,
-        VERIFY_WY_TABLE_STRIDE_BYTES,
+        VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS, VERIFY_WY_TABLE_STRIDE_BYTES,
+        VERIFY_WY_TABLES_PER_LAYER,
     };
 
     /// The batched verify's widest arm is K=16, which stages h + Hi0..Hi14
@@ -688,6 +688,6 @@ mod verify_wy_table_tests {
     /// C=16 batches (plus ghost entries) must fit the per-slab entry count.
     #[test]
     fn seqs_capacity_covers_c16() {
-        assert!(VERIFY_WY_TABLE_SEQS >= 16);
+        const { assert!(VERIFY_WY_TABLE_SEQS >= 16) };
     }
 }
