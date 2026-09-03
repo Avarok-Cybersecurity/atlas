@@ -503,3 +503,42 @@ says exactly that rather than leaving someone to guess.
 **Still open.** Nothing known. This wave closed the last structural gap I can
 name: the pipeline's logic is covered offline, its authority is probed live, and
 its wiring is now guarded from a job that cannot be removed in the same edit.
+
+---
+
+## Wave 13 — the Rust tests were trusted the way the shell was before wave 1
+
+**Found.** `gate/signing.rs` and `gate/card.rs` have 21 tests that run on every
+PR, and this record has leaned on that fact since wave 1 to argue the Rust half
+was covered. Not one of them had ever been **shown to fail**. That is exactly
+the position the shell half was in before any of this started, one level up:
+green tests, trusted because they are green.
+
+**Changed.** Nothing in the code. Three sabotages, to find out whether the
+existing tests measure anything.
+
+| Sabotage | Caught by |
+|---|---|
+| signature verification always succeeds | `editing_the_record_breaks_the_signature`, `a_record_cannot_be_repointed_at_another_commit`, `a_signature_from_another_record_does_not_transfer` |
+| `sig_path` uses `with_extension("sig")` | `the_sidecar_path_appends_and_does_not_eat_a_versioned_model_name`, `no_committed_record_escapes_the_cutover_unsigned` |
+| card formats a metric to 3 decimals instead of 1 | `formats_round_the_way_a_reader_expects` |
+
+All three caught, by the tests written for them. The Rust half is genuinely
+covered — now demonstrated rather than assumed.
+
+**A sabotage of mine that was inert, and why it matters.** The first attempt at
+the `sig_path` bug used `with_extension("json.sig")`. On
+`…-qwen3.8-27b.json` that yields `…-qwen3.8-27b.json.sig` — byte-identical to
+appending. The suite stayed green and I very nearly recorded an uncovered path.
+It was not one: the sabotage did not change behaviour. The real bug is
+`with_extension("sig")`, which produces `…-qwen3.8-27b.sig` and is caught
+immediately.
+
+Twice now a green result has meant "my sabotage did nothing" rather than "the
+guard is missing" — wave 5 with a non-matching anchor, and here with a matching
+anchor that made no behavioural difference. **Asserting the anchor is necessary
+and not sufficient. Check that the edit changes what the code does.**
+
+**Still open.** Nothing known. Every layer — shell logic, Rust logic, live
+authority, and the wiring that runs it all — has now been shown to fail when the
+thing it guards is broken.
