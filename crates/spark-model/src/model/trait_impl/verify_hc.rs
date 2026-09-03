@@ -732,7 +732,16 @@ impl TransformerModel {
             comm: self.comm_ref(),
             // Host-built metadata: capture is illegal here.
             graph_capture: false,
-            gdn_exact_replay: false,
+            // The verify must agree TOKEN-FOR-TOKEN with serial decode: row 0
+            // re-processes a row the decode already committed. `prefill()`
+            // would otherwise pick the FLA chunked scan while `decode()`
+            // carries H forward one token at a time — equivalent in exact
+            // arithmetic, not in bf16 (measured on this model: chunked 110428
+            // / 2097152 words differ, relL2 1.212e-3; sequential 0). That ~1%
+            // per layer compounds over 48 layers and flips greedy argmaxes
+            // wherever the top-2 margin is under ~0.9 logit units.
+            // `ATLAS_QWEN4EXP_MTP_VERIFY_FLA=1` restores the chunked scan.
+            gdn_exact_replay: !verify_uses_fla_scan(),
             token_ids: None,
             // PLE reads HOST ids for the rows it is about to process.
             host_token_ids: Some(tokens),
@@ -872,6 +881,17 @@ fn rollback_armed() -> bool {
 /// `commit_rewind_index(num_accepted)` and short-circuits at
 /// `num_accepted == k`, so the highest index it can ever read is `k - 2`.
 /// `hc_publish_covers_every_commit_rewind` pins that agreement.
+/// Opt back into the FLA chunked GDN scan inside the mHC verify.
+///
+/// Default OFF: the verify has to reproduce `decode()` bit-for-bit or greedy
+/// speculation is not lossless, and the chunked scan does not. This exists so
+/// the cost of the sequential path can be A/B'd, not because the chunked one is
+/// ever correct here.
+pub(super) fn verify_uses_fla_scan() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY_FLA").as_deref() == Ok("1"))
+}
+
 pub(super) fn hc_publish_rows(k: usize) -> std::ops::Range<usize> {
     0..k.saturating_sub(1)
 }
