@@ -191,7 +191,7 @@ impl BlockDiffusionDraftHead {
         // `block_g` = rows per SEQUENCE, `g` = TOTAL rows in this forward.
         // Weight-bearing ops below want the total; anything describing one
         // sequence's attention window wants the per-sequence length.
-        let block_g = self.gamma as u32;
+        let block_g = self.block_g() as u32;
         let g = block_g * args.n_seq.max(1);
         let kv_len = ctx_count + block_g;
 
@@ -632,7 +632,7 @@ impl BlockDiffusionDraftHead {
             ..
         } = *args;
         let gpu = ctx.gpu;
-        let g = self.gamma as u32;
+        let g = self.block_g() as u32;
 
         // 3f. paged attention — q_len=γ, kv_len=ctx_count+γ, causal=false.
         // dflash.py:84-97  `attn_output, _ = attn_fn(self, q, k, v, ...)`
@@ -744,7 +744,7 @@ impl BlockDiffusionDraftHead {
              attention path; set ATLAS_DFLASH_CONTIG_ATTN=0",
             args.n_seq
         );
-        let g = self.gamma as u32;
+        let g = self.block_g() as u32;
         let ctx_us = ctx_count as usize;
         let g_us = g as usize;
         let seq_len = ctx_count + g;
@@ -944,7 +944,7 @@ impl BlockDiffusionDraftHead {
         let gpu = ctx.gpu;
         // Total rows: o_proj and the FFN are weight-bearing, so they span
         // every sequence in the batch.
-        let g = self.gamma as u32 * args.n_seq.max(1);
+        let g = self.block_g() as u32 * args.n_seq.max(1);
 
         // Phase G — same swap helper as pre_attn (q/k/v). Single call
         // site per logical GEMM; the row-scaled FP8 GEMM kernel applies
