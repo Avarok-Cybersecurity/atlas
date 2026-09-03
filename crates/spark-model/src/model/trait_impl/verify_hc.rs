@@ -199,22 +199,139 @@ impl TransformerModel {
             return Ok(Vec::new());
         }
         let stream_d = self.gpu.default_stream();
-        // Committed row first, on its own.
-        let mut out = self.verify_hc_rows(&tokens[..1], seq, stream)?;
-        if k == 1 {
+
+        // ── ROW-AT-A-TIME so the per-row SSM intermediates exist ──
+        //
+        // MEASURED ROOT CAUSE (2026-09-03). `commit_accepted_prefix` rewinds
+        // every GDN layer's live `h_state`/`conv_state` from
+        // `ssm_pool.h_intermediate(l, slot, num_accepted - 1)` — buffers that
+        // are written ONLY by the fused batched verify kernels in
+        // `qwen3_ssm/trait_decode_batched_conv_gdn*.rs`. This mHC verify runs
+        // every layer through `prefill()` and writes NONE of them, so a
+        // partial accept copied NEVER-WRITTEN pool memory into 36 layers of
+        // live recurrent state.
+        //
+        // The arithmetic says which widths are hit: `verify_k3_step` computes
+        // `num_accepted` from TWO drafts, so it is at most 2 against `k = 3`
+        // — EVERY K=3 step took the partial-accept branch and corrupted the
+        // state. K=2 only corrupted on a REJECT (`(1, 2)`); its accept branch
+        // passes `(2, 2)`, which `commit_accepted_prefix_dispatch`
+        // short-circuits. Hence the observed split: gamma=1 mostly coherent
+        // with occasional dropped tokens, gamma=2 degenerate from step one.
+        //
+        // The evidence that this, and not the K-row pass, is the defect:
+        //   K3 verify: tokens=[1156,369,29350] -> v=[369,9859,391]
+        //              drafts=[369,29350] accepted=1
+        // against a serial decode of `1156, 369, 9859, 364, ...`. Rows 0 and 1
+        // MATCH serial exactly; row 2's input was the REJECTED draft 29350,
+        // not 9859, so its 391 is a correct logit row for a different token.
+        // The verify was right; the commit that followed it was not.
+        //
+        // Fix: run one row per pass and publish the live state into
+        // `h_state_intermediates[t]` / `conv_state_intermediates[t]` after row
+        // `t`, which is exactly the contract `commit_accepted_prefix_dispatch`
+        // reads (index `num_accepted - 1` = "state after token
+        // num_accepted-1"). `ATLAS_QWEN4EXP_MTP_HC_COMMIT=0` restores the old
+        // fused 1 + (K-1) split for A/B — it re-enables the corruption, so it
+        // is a diagnostic switch, not a supported mode.
+        if !hc_verify_publishes_intermediates() {
+            let mut out = self.verify_hc_rows(&tokens[..1], seq, stream)?;
+            if k == 1 {
+                return Ok(out);
+            }
+            let stash = self.collect_aux_states(seq, stream_d)?;
+            *self
+                .pending_verify_aux
+                .lock()
+                .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+            out.extend(self.verify_hc_rows(&tokens[1..], seq, stream)?);
             return Ok(out);
         }
-        // Snapshot the carries with token_0 committed and no draft applied.
-        // `collect_aux_states` covers BOTH: qwen3_attention's snapshot_aux
-        // serializes the QSA carry, qwen3_ssm's serializes PLE's.
-        let stash = self.collect_aux_states(seq, stream_d)?;
-        *self
-            .pending_verify_aux
-            .lock()
-            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
 
-        out.extend(self.verify_hc_rows(&tokens[1..], seq, stream)?);
+        let mut out = Vec::with_capacity(k);
+        for t in 0..k {
+            out.extend(self.verify_hc_rows(&tokens[t..t + 1], seq, stream)?);
+            // State after token `t`. Only indices [0, k-2] are reachable by
+            // `commit_accepted_prefix` (`num_accepted <= k-1` on every partial
+            // accept), so the last row's snapshot is skipped: it is the live
+            // state already, and `num_accepted == k` short-circuits.
+            if hc_publish_rows(k).contains(&t) {
+                self.publish_verify_row_state(seq, t, stream_d)?;
+            }
+            // Snapshot the carries with token_0 committed and no draft
+            // applied. `collect_aux_states` covers BOTH: qwen3_attention's
+            // snapshot_aux serializes the QSA carry, qwen3_ssm's serializes
+            // PLE's.
+            if t == 0 && k > 1 {
+                let stash = self.collect_aux_states(seq, stream_d)?;
+                *self
+                    .pending_verify_aux
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+            }
+        }
         Ok(out)
+    }
+
+    /// Copy this sequence's live GDN `h_state`/`conv_state` into the verify
+    /// intermediate slot for row `t`, so `commit_accepted_prefix` has a real
+    /// snapshot to rewind to.
+    ///
+    /// The batched verify kernels populate these slots as a side effect of
+    /// their own scan; the mHC prefill body has no such side effect, so this
+    /// publishes them explicitly. The widths are the SSOT ones
+    /// `commit_accepted_prefix_dispatch` copies BACK —
+    /// `ssm_pool.h_stored_bytes` for h (it tracks `--ssm-h-dtype`) and the
+    /// conv blob computed from config — so the two must not drift apart.
+    fn publish_verify_row_state(
+        &self,
+        seq: &mut SequenceState,
+        t: usize,
+        stream: u64,
+    ) -> Result<()> {
+        use atlas_core::config::LayerType;
+
+        use crate::layer::SsmLayerState;
+
+        let nv = self.config.linear_num_value_heads;
+        let vd = self.config.linear_value_head_dim;
+        let nk = self.config.linear_num_key_heads;
+        let kd = self.config.linear_key_head_dim;
+        let h_bytes = self.ssm_pool.h_stored_bytes;
+        let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
+
+        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
+            if self.config.layer_type(i) != LayerType::LinearAttention {
+                continue;
+            }
+            let ssm = layer_state
+                .as_any_mut()
+                .downcast_mut::<SsmLayerState>()
+                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
+            // No MTP pools (`has_mtp == false`) means no speculative verify
+            // reaches `commit_accepted_prefix` either — nothing to publish.
+            if ssm.h_state_intermediates.is_empty() && ssm.conv_state_intermediates.is_empty() {
+                return Ok(());
+            }
+            let h_dst = *ssm.h_state_intermediates.get(t).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mHC verify: row {t} has no h intermediate slot ({} sized) — the \
+                     verify width exceeds what ssm_reserve sized, and a partial accept \
+                     would rewind onto never-written pool memory",
+                    ssm.h_state_intermediates.len()
+                )
+            })?;
+            let c_dst = *ssm.conv_state_intermediates.get(t).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mHC verify: row {t} has no conv intermediate slot ({} sized)",
+                    ssm.conv_state_intermediates.len()
+                )
+            })?;
+            self.gpu.copy_d2d_async(ssm.h_state, h_dst, h_bytes, stream)?;
+            self.gpu
+                .copy_d2d_async(ssm.conv_state, c_dst, conv_bytes, stream)?;
+        }
+        Ok(())
     }
 
     /// Undo `rows` draft rows after a rejected verify, restoring both aux
@@ -478,5 +595,60 @@ impl TransformerModel {
         seq.tokens.extend_from_slice(tokens);
         seq.seq_len += k;
         Ok(out)
+    }
+}
+
+/// `ATLAS_QWEN4EXP_MTP_HC_COMMIT=0` reverts to the pre-fix fused split, which
+/// leaves the SSM verify intermediates unwritten. Diagnostic only.
+pub(crate) fn hc_verify_publishes_intermediates() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_COMMIT").as_deref() != Ok("0"))
+}
+
+/// The verify rows an mHC verify of width `k` must publish an SSM
+/// intermediate for.
+///
+/// The last row is excluded on purpose: `commit_accepted_prefix` reads
+/// `commit_rewind_index(num_accepted)` and short-circuits at
+/// `num_accepted == k`, so the highest index it can ever read is `k - 2`.
+/// `hc_publish_covers_every_commit_rewind` pins that agreement.
+pub(super) fn hc_publish_rows(k: usize) -> std::ops::Range<usize> {
+    0..k.saturating_sub(1)
+}
+
+#[cfg(test)]
+mod hc_intermediate_contract_tests {
+    use super::hc_publish_rows;
+    use super::super::async_chkpt::commit_rewind_index;
+
+    /// THE regression this pins: every intermediate slot
+    /// `commit_accepted_prefix` can read on a partial accept must have been
+    /// published by the verify that preceded it. When the mHC verify ran as a
+    /// fused `1 + (K-1)` pair it published NOTHING, so every K=3 step rewound
+    /// 36 GDN layers onto never-written pool memory.
+    #[test]
+    fn hc_publish_covers_every_commit_rewind() {
+        for k in 2..=8usize {
+            let published = hc_publish_rows(k);
+            // `num_accepted == k` short-circuits before any rewind; 0 bails.
+            for num_accepted in 1..k {
+                let idx = commit_rewind_index(num_accepted);
+                assert!(
+                    published.contains(&idx),
+                    "k={k}: commit_accepted_prefix({num_accepted}) reads intermediate \
+                     {idx}, which the verify never publishes ({published:?})"
+                );
+            }
+        }
+    }
+
+    /// And nothing beyond: publishing the LAST row would cost a copy per GDN
+    /// layer that no rewind can reach (`num_accepted == k` short-circuits).
+    #[test]
+    fn hc_publish_stops_at_the_last_reachable_row() {
+        assert_eq!(hc_publish_rows(1), 0..0);
+        assert_eq!(hc_publish_rows(2), 0..1);
+        assert_eq!(hc_publish_rows(3), 0..2);
+        assert_eq!(hc_publish_rows(4), 0..3);
     }
 }

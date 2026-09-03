@@ -309,7 +309,7 @@ impl TransformerModel {
             // Partial accept: rewind live state to the last accepted token's
             // intermediate (state after token `num_accepted-1`).
             let slot = seq.slot_idx;
-            let inter_idx = num_accepted - 1;
+            let inter_idx = commit_rewind_index(num_accepted);
             h_plan.push(StateCopy {
                 src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
                 dst: ssm.h_state,
@@ -329,4 +329,18 @@ impl TransformerModel {
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
     }
+}
+
+/// The verify-intermediate slot `commit_accepted_prefix` rewinds the live SSM
+/// state to for `num_accepted` committed rows: "state after token
+/// `num_accepted - 1`".
+///
+/// Named, and paired with `verify_hc::hc_publish_rows`, because the two halves
+/// of this contract live in different files and a verify path that publishes
+/// FEWER rows than this can read rewinds onto never-written pool memory —
+/// which is exactly what the mHC verify did before 2026-09-03 (36 GDN layers
+/// of live `h_state`/`conv_state` overwritten with garbage on every K=3 step).
+/// Callers guarantee `num_accepted >= 1`.
+pub(super) const fn commit_rewind_index(num_accepted: usize) -> usize {
+    num_accepted - 1
 }
