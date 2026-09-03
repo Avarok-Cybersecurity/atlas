@@ -110,6 +110,48 @@ pub(super) fn maybe_dump_gdn_buf(
     Ok(())
 }
 
+/// DIAGNOSTIC ONLY (`ATLAS_QWEN4EXP_HC_STAGE_PROBE=1`, default off, no-op
+/// otherwise, and additionally only inside a pass that declares
+/// `ForwardContext::gdn_exact_replay` — i.e. the mHC MTP verify).
+///
+/// Sum of |x| over ONE row of an mHC sublayer boundary buffer, so the K-row
+/// batched verify body and the K one-row decode bodies can be A/B'd stage by
+/// stage instead of layer by layer. Synchronizes, so it is never legal under
+/// graph capture — the native EXL3 path already refuses capture.
+pub(super) fn hc_stage_probe(
+    ctx: &crate::layer::ForwardContext,
+    tag: &str,
+    ptr: DevicePtr,
+    n_elements: usize,
+    f32_elems: bool,
+    stream: u64,
+) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        std::env::var("ATLAS_QWEN4EXP_HC_STAGE_PROBE").as_deref() == Ok("1")
+    });
+    if !on || !ctx.gdn_exact_replay || ctx.graph_capture {
+        return;
+    }
+    let width = if f32_elems { 4 } else { 2 };
+    let mut buf = vec![0u8; n_elements * width];
+    if ctx.gpu.synchronize(stream).is_err() || ctx.gpu.copy_d2h(ptr, &mut buf).is_err() {
+        return;
+    }
+    let mut sabs = 0f64;
+    for c in buf.chunks_exact(width) {
+        let v = if f32_elems {
+            f32::from_le_bytes([c[0], c[1], c[2], c[3]])
+        } else {
+            f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16)
+        };
+        if v.is_finite() {
+            sabs += f64::from(v.abs());
+        }
+    }
+    tracing::info!("HC_STAGE[{tag}] n={n_elements} sabs={sabs:.6}");
+}
+
 impl Qwen3SsmLayer {
     /// Debug: read first N BF16 values from device and log them.
     pub(super) fn debug_bf16(gpu: &dyn GpuBackend, label: &str, ptr: DevicePtr, n: usize) {
