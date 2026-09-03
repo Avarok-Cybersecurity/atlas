@@ -574,6 +574,7 @@ impl BlockDiffusionDraftHead {
             vocab_size,
             draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
+            block_gamma: std::sync::atomic::AtomicUsize::new(gamma_val),
             max_batch: nb,
             mask_token_id,
             window_size,
@@ -632,9 +633,8 @@ impl BlockDiffusionDraftHead {
             ctx_window,
             // Phase F: per-subgraph graph state — empty until the first
             // capture pass lands. Layout: [pre_0, post_0, ..., tail].
-            propose_graphs: parking_lot::Mutex::new(None),
+            propose_graphs: parking_lot::Mutex::new(super::ProposeGraphs::default()),
             suppress_graphs: std::sync::atomic::AtomicBool::new(false),
-            propose_warmup_count: std::sync::atomic::AtomicUsize::new(0),
             quant: DflashQuantization::Bf16,
             // DSpark heads. `markov_rank` is zeroed when the tensors are
             // absent so the runtime gate is a single field check.
