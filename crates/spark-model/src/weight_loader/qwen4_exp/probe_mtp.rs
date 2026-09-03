@@ -82,6 +82,39 @@ impl Chk<'_> {
             }
         }
     }
+
+    /// Like [`Self::need`], but also accepts the NVFP4-PACKED form of the same
+    /// tensor: two 4-bit values per byte, so the trailing dim is half `want`'s.
+    ///
+    /// This is not a loosening, it is the same allowance the routed-expert arm
+    /// already makes explicitly ("those tensors are NVFP4-packed, so their
+    /// on-disk width is half the logical one"). On an EXL3 checkpoint the
+    /// `mtp.*` namespace ships NO `.weight` at all — every linear is
+    /// trellis/suh/svh — and `exl3_materialize` synthesizes the `.weight` this
+    /// audit reads. It classifies the SHARED expert with the routed ones, so it
+    /// materializes an NVFP4 triplet rather than a BF16 dense: measured on
+    /// `qwen38-flash-next-4.05bpw`, `mtp.layers.0.mlp.shared_expert.gate_proj`
+    /// / `up_proj` arrive as [640, 1280] against a logical [640, 2560] and
+    /// `down_proj` as [2560, 320] against [2560, 640]. Demanding the BF16
+    /// width there refused a checkpoint the MoE loader consumes correctly.
+    fn need_or_nvfp4_packed(&mut self, name: String, want: &[usize]) {
+        let mut packed = want.to_vec();
+        if let Some(last) = packed.last_mut() {
+            *last /= 2;
+        }
+        match self.store.get(&name) {
+            Err(_) => self.missing.push(name),
+            Ok(t) => {
+                if t.shape != want && t.shape != packed {
+                    self.shape_errors.push(format!(
+                        "{name}: checkpoint shape {:?}, loader expects {want:?} \
+                         (or {packed:?} NVFP4-packed)",
+                        t.shape
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Pre-flight audit of the `mtp.*` namespace, by shape.
@@ -167,9 +200,9 @@ pub fn audit_mtp_namespace(store: &WeightStore, config: &ModelConfig) -> MtpName
     let mp = format!("{lp}.mlp");
     let si = config.shared_expert_intermediate_size;
     c.need(format!("{mp}.gate.weight"), &[config.num_experts, h]);
-    c.need(format!("{mp}.shared_expert.gate_proj.weight"), &[si, h]);
-    c.need(format!("{mp}.shared_expert.up_proj.weight"), &[si, h]);
-    c.need(format!("{mp}.shared_expert.down_proj.weight"), &[h, si]);
+    c.need_or_nvfp4_packed(format!("{mp}.shared_expert.gate_proj.weight"), &[si, h]);
+    c.need_or_nvfp4_packed(format!("{mp}.shared_expert.up_proj.weight"), &[si, h]);
+    c.need_or_nvfp4_packed(format!("{mp}.shared_expert.down_proj.weight"), &[h, si]);
     c.need(format!("{mp}.shared_expert_gate.weight"), &[1, h]);
 
     // ── The four MTP-ONLY tensors — the one place this namespace is not a

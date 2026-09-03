@@ -456,6 +456,11 @@ impl TransformerModel {
         let mut out = Vec::with_capacity(k);
         for t in 0..k {
             let logits_t = self.buffers.logits().offset(t * vocab * bf16);
+            // ATLAS_LOGIT_PROBE=1: the verify side of the row-by-row A/B
+            // against a serial decode of the same prefix. `lm_head_batched`
+            // always writes BF16 here (the FP32-logits buffer is the
+            // single-token decode path only).
+            self.logit_probe("verify_hc", t, logits_t, false, stream);
             let out_ptr = self.buffers.scratch().offset(t * 4);
             ops::argmax_bf16(
                 self.gpu.as_ref(),

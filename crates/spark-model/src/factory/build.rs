@@ -200,6 +200,23 @@ pub fn build_model(
     // pre-KV, of which the arena (872 MB) and the GDN prefill scratch (88 MB)
     // explain under a gigabyte. Without these three lines the only way to
     // find the rest is to guess.
+    // ── The native-EXL3 LOADER state's strong holder. ──
+    //
+    // `load_layers` (below) and `load_qwen4_exp_mtp_module` (step 5, further
+    // down this same function) are two different load phases that must be
+    // built against ONE `Exl3LaunchState` — one locks buffer, one host mutex,
+    // one cross-stream fence — plus one dense stage and one MoE state.
+    // `NativeExl3::shared()` anchors that instance only WEAKLY; this binding
+    // is the strong reference that keeps it alive BETWEEN the two phases, and
+    // this function's body is the smallest scope that contains both. Dropped
+    // at the end of the build, which releases the container (never the
+    // launch state / stage / MoE state themselves — the layers own those).
+    //
+    // Held for every model, not just qwen4_exp: the constructor allocates no
+    // device memory and reads only the gate env vars, and gating it on
+    // `model_type` here would put the invariant's lifetime behind a string
+    // comparison in a second place.
+    let _exl3_native_load_state = crate::weight_loader::qwen4_exp::NativeExl3::shared();
     let free_before_layers = gpu.free_memory().unwrap_or(0);
     let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
     let free_after_layers = gpu.free_memory().unwrap_or(0);
