@@ -38,7 +38,12 @@ concurrency:
 jobs:
   state:
     name: Certification state
-    runs-on: ubuntu-latest
+    # Same self-hosted runner as the command handler, for the same reason: this
+    # posts the pipeline STATUS, and a status that lands an hour after the event
+    # is not a status. Safe on our own hardware because the checkout below pins
+    # the default branch and never the fork's head -- and
+    # assert-cmd-runner-safe.py enforces that for every workflow on this label.
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
     # A comment on a plain issue has no PR to describe. `check_run` events carry
     # their PRs in an array that is empty for pushes to main.
     if: >-
