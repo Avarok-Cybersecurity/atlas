@@ -178,14 +178,27 @@ pub fn step_verify_dflash_batched(
             ])
             .inc();
 
-        // STree-style in-place SSM commit: h_state is canonical, a partial
-        // accept restores intermediate[total_accepted-1].
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, num_accepted + 1, k) {
-            tracing::error!("commit_accepted_prefix (dflash batched): {e:#}");
-            a.finished = true;
-        }
+        // SSM commit is deferred to after this loop: the write-on-accept
+        // fold needs every sequence's verdict in one batched launch first.
         // Row of THIS sequence's bonus generator in the shared hidden buffer.
         stash_rows.push(off + num_accepted);
+    }
+
+    // ── Write-on-accept fold (one launch per GDN layer over the batch), then
+    // the per-sequence commit (conv restore; h too when nothing folded). ──
+    {
+        let slots: Vec<usize> = batch.iter().map(|a| a.seq.slot_idx).collect();
+        let rows: Vec<u32> = accepted_per_seq.iter().map(|&na| (na + 1) as u32).collect();
+        if let Err(e) = model.gdn_fold_accepted(&slots, &rows, k) {
+            tracing::error!("gdn_fold_accepted (dflash batched): {e:#}");
+        }
+        for (i, a) in batch.iter_mut().enumerate() {
+            let num_accepted = accepted_per_seq[i];
+            if let Err(e) = model.commit_accepted_prefix(&mut a.seq, num_accepted + 1, k) {
+                tracing::error!("commit_accepted_prefix (dflash batched): {e:#}");
+                a.finished = true;
+            }
+        }
     }
 
     // Park every sequence's bonus hidden in the 32-slot stash while the rows

@@ -425,6 +425,13 @@ impl TransformerModel {
         } else {
             DevicePtr::NULL
         };
+        let gdn_woa_na_tab = if verify_wy_tables.is_null() {
+            DevicePtr::NULL
+        } else {
+            let b = gpu.alloc(crate::layer::VERIFY_WY_TABLE_SEQS * 4)?;
+            gpu.memset(b, 0, crate::layer::VERIFY_WY_TABLE_SEQS * 4)?;
+            b
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -819,6 +826,8 @@ impl TransformerModel {
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
             verify_wy_tables,
+            gdn_woa_na_tab,
+            gdn_woa_folded_slots: parking_lot::Mutex::new(Vec::new()),
             // Nothing staged yet: the buffer was memset to zero above, and no
             // key describes zero, so the first verify step always uploads.
             verify_wy_cache: Mutex::new(None),
