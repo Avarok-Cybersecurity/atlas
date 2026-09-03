@@ -293,6 +293,13 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize; // bytes per BF16
         let fp32 = 4usize; // bytes per FP32
 
+        // Whether THIS pass must run its rows as sequential decode rows —
+        // SSOT for the projections, the conv+GDN arm and the phase-8 norm
+        // skip. Resolved once: it is a pure function of process flags and the
+        // pass's own contract, so it is CUDA-graph-stable.
+        let row_exact =
+            super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::Proj);
+
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
         let nv = ctx.config.linear_num_value_heads;
@@ -330,7 +337,32 @@ impl Qwen3SsmLayer {
             // pair is the ONLY live QKVZ weight on this layer (install-time
             // check), so no arm below is shadowed. Never under graph capture
             // (exl3_graph_veto; the funnel refuses loudly).
-            self.exl3_in_proj(g, ctx, normed, proj_dst, num_tokens, stream)?;
+            //
+            // ROW-EXACT: `exl3_gemv` picks its kernel INSTANCE from the row
+            // count — `exl3_gemv_k{K}_cb{CB}_m0_*` at m == 1 and the `_m1_`
+            // instance at 2..=8 (ops/exl3_matmul.rs, `let mmode = if m == 1
+            // { 0 } else { 1 }`). The two are different compiled bodies, so a
+            // verify row processed inside a K-row launch is NOT the bits the
+            // M=1 decode GEMV produced for it. When the pass declares
+            // `gdn_exact_replay` the funnel is called once per row at m = 1
+            // instead: the identical call `ssm_forward` makes
+            // (`self.exl3_in_proj(g, ctx, normed, deinterleaved, 1, stream)`),
+            // at this row's bases. Costs K weight passes instead of one over
+            // the packed pair.
+            if row_exact {
+                for t in 0..num_tokens {
+                    self.exl3_in_proj(
+                        g,
+                        ctx,
+                        normed.offset(t * h * bf16),
+                        proj_dst.offset(t * qkvz_size * bf16),
+                        1,
+                        stream,
+                    )?;
+                }
+            } else {
+                self.exl3_in_proj(g, ctx, normed, proj_dst, num_tokens, stream)?;
+            }
         } else if let Some(ref q2) = self.qkvz_q2 {
             // Tier-1c keep-packed Q2_0: per-token 2-bit fused-qkvz GEMV. Bonsai
             // (dense qwen35) has no MTP, so this batched path is only reached
@@ -719,7 +751,30 @@ impl Qwen3SsmLayer {
         let gates_buf = ctx.buffers.ssm_gates(); // [K, gate(nv) + beta(nv)] FP32
         let gate_beta_stride = nv * 2 * fp32; // bytes per token in gates buffer
         let ba_size = ctx.config.ssm_ba_size(); // 64
-        if batched_ba_gates_enabled() {
+        if row_exact {
+            // ROW-EXACT: `dense_gemv_ba_gates` — the FUSED single-row kernel
+            // `ssm_forward` calls — once per row, at this row's bases. The
+            // token-parallel `dense_gemm_ba_gates_prefill` below is
+            // arithmetically line-for-line the same reduction, but the
+            // row-exact arm exists to keep the WHOLE block on the decode
+            // kernels rather than to argue each one individually.
+            for t in 0..num_tokens {
+                ops::dense_gemv_ba_gates(
+                    ctx.gpu,
+                    self.ba_gates_k,
+                    normed.offset(t * h * bf16),
+                    &self.ssm.in_proj_ba,
+                    self.ssm.a_log.weight,
+                    self.ssm.dt_bias.weight,
+                    gates_buf.offset(t * gate_beta_stride),
+                    gates_buf.offset(t * gate_beta_stride + nv * fp32),
+                    ba_size as u32,
+                    h as u32,
+                    vpg as u32,
+                    stream,
+                )?;
+            }
+        } else if batched_ba_gates_enabled() {
             // ONE fused launch for all rows instead of `num_tokens` × (dense
             // GEMV + compute_gdn_gates). The per-token loop re-read the whole
             // [64, hidden] BA weight once PER ROW PER LAYER — 655 KB × 32 rows ×
@@ -994,7 +1049,7 @@ impl Qwen3SsmLayer {
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
-        if super::verify_exact_enabled() {
+        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn) {
             // Issue #435 exact arm (phase 5-7 above): the norm is already
             // applied inside the per-token chain — the SAME fused/unfused arm
             // sequential decode uses — and the normed rows are already in
@@ -1073,7 +1128,23 @@ impl Qwen3SsmLayer {
             // the ONLY live out_proj weight (all other slots null, enforced
             // at install). C is the contiguous [K, h] block; the GEMV tier
             // covers K <= 8, the GEMM tier the wider chain verifies.
-            self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+            //
+            // ROW-EXACT: same m-instance split as the QKVZ funnel above —
+            // one m = 1 call per row, which is the call `ssm_forward` makes.
+            if row_exact {
+                for t in 0..num_tokens {
+                    self.exl3_out_proj(
+                        g,
+                        ctx,
+                        normed_out_buf.offset(t * value_dim * bf16),
+                        out_proj_buf.offset(t * h * bf16),
+                        1,
+                        stream,
+                    )?;
+                }
+            } else {
+                self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+            }
         } else if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,

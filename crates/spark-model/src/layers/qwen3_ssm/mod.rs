@@ -420,6 +420,7 @@ pub use gdn_flags::{
     GdnFlags, MAX_F16_TWIN_DFLASH_GAMMA, MAX_F16_TWIN_K, default_dflash_gamma,
     gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_dtype_bits,
     ssm_h_f16_pool_enabled, ssm_h_fp16_enabled, verify_exact_enabled,
+    RowExactLeg, verify_row_exact_for_pass, verify_row_exact_leg, verify_row_exact_required,
 };
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──

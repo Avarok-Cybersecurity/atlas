@@ -104,6 +104,83 @@ impl Qwen3SsmLayer {
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
 
+        // ── The row-exact contract for THIS pass ──
+        //
+        // `hc_pre` is the FIRST place a K-row verify stops reproducing K
+        // decode rows, and it is not in the GDN body at all. Its low-rank
+        // collapse runs three cuBLASLt GEMMs at M = num_tokens
+        // (`hyper_connection_lowrank_gemm.rs::hc_pre_gemm`), and cuBLASLt
+        // picks its kernel per M — so row 0 of an M=2 collapse is not the
+        // bits the M=1 decode collapse produced. MEASURED on
+        // qwen3.8-flash-next (native EXL3, gamma=1, first verify pass, SSM
+        // layer 0, sum|x| over row 0): the highway going IN is bit-identical
+        // (37.252170 both arms), `hc_pre`'s output is not — 1479.630222
+        // batched vs 1479.306446 for the one-row decode body — and every
+        // stage after it inherits that. `hc_post` needs no such treatment:
+        // it is one elementwise kernel at grid=[T], row-parallel by
+        // construction.
+        //
+        // So under the row-exact contract the two `hc_pre` sites run once
+        // per row at n = 1, at that row's bases: streams by `hc_row`, the
+        // block input by `h` BF16, and the injection vector by `hc_mult`
+        // FP32 — the same `[T, ...]` layouts the K-row call writes, so the
+        // K-row `hc_post` that follows reads them unchanged.
+        let row_exact = crate::layers::qwen3_ssm::verify_row_exact_leg(
+            ctx.gdn_exact_replay,
+            crate::layers::qwen3_ssm::RowExactLeg::HcPre,
+        );
+        let hc_row = hc.hc_mult * h * 4;
+        anyhow::ensure!(
+            !row_exact
+                || matches!(
+                    ops::HcVariant::of(hc),
+                    ops::HcVariant::LowRank
+                ),
+            "row-exact mHC verify: the per-row hc_pre passes ONE `comb` for every \
+             row, which only the low-rank variant (which never writes it) admits. \
+             A Sinkhorn site here would have its rows clobber each other — refuse \
+             rather than corrupt. Set ATLAS_NO_VERIFY_ROW_HC to run the K-row \
+             collapse instead."
+        );
+        // One closure so the attn and ffn sites cannot drift apart.
+        let hc_pre_rows = |site: &crate::layers::qwen3_attention::HcSiteWeights| -> Result<()> {
+            if !row_exact {
+                return ops::hc_pre_site(
+                    ctx.gpu,
+                    self.hc_pre_k,
+                    streams,
+                    site,
+                    hc,
+                    hidden,
+                    post,
+                    comb,
+                    ctx.buffers.hc_lowrank_scratch(),
+                    n,
+                    h as u32,
+                    eps,
+                    stream,
+                );
+            }
+            for t in 0..num_tokens {
+                ops::hc_pre_site(
+                    ctx.gpu,
+                    self.hc_pre_k,
+                    streams.offset(t * hc_row),
+                    site,
+                    hc,
+                    hidden.offset(t * h * 2),
+                    post.offset(t * hc.hc_mult * 4),
+                    comb,
+                    ctx.buffers.hc_lowrank_scratch(),
+                    1,
+                    h as u32,
+                    eps,
+                    stream,
+                )?;
+            }
+            Ok(())
+        };
+
         if hc.is_first_model_layer {
             ops::hc_expand(
                 ctx.gpu,
@@ -146,7 +223,6 @@ impl Qwen3SsmLayer {
                 "hc batched verify: {} host ids for {num_tokens} rows",
                 host.len()
             );
-            let hc_row = hc.hc_mult * h * 4;
             let ssm = state
                 .as_any_mut()
                 .downcast_mut::<crate::layer::SsmLayerState>()
@@ -168,22 +244,18 @@ impl Qwen3SsmLayer {
             }
         }
 
-        // ── GDN sublayer. `hidden` is scratch; the highway is the residual. ──
-        ops::hc_pre_site(
-            ctx.gpu,
-            self.hc_pre_k,
+        super::debug::hc_stage_probe(
+            ctx,
+            "bat_ple",
             streams,
-            &hc.attn,
-            hc,
-            hidden,
-            post,
-            comb,
-            ctx.buffers.hc_lowrank_scratch(),
-            n,
-            h as u32,
-            eps,
+            hc.hc_mult * h,
+            true,
             stream,
-        )?;
+        );
+
+        // ── GDN sublayer. `hidden` is scratch; the highway is the residual. ──
+        hc_pre_rows(&hc.attn)?;
+        super::debug::hc_stage_probe(ctx, "bat_pre_attn", hidden, h, false, stream);
         // ── Carry 1: the recurrence + its per-row intermediates ──
         let out_proj_buf = self.decode_batched_block(
             hidden,
@@ -192,6 +264,7 @@ impl Qwen3SsmLayer {
             ctx,
             stream,
         )?;
+        super::debug::hc_stage_probe(ctx, "bat_ssm_out", out_proj_buf, h, false, stream);
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
@@ -210,27 +283,22 @@ impl Qwen3SsmLayer {
         // `decode_batched_block` returned `moe_output()`, which the FFN is
         // about to overwrite — safe only because `hc_post` above already
         // consumed it into the highway. Keep that order.
-        ops::hc_pre_site(
-            ctx.gpu,
-            self.hc_pre_k,
-            streams,
-            &hc.ffn,
-            hc,
-            hidden,
-            post,
-            comb,
-            ctx.buffers.hc_lowrank_scratch(),
-            n,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        hc_pre_rows(&hc.ffn)?;
         // Same small-M substitution the mini-prefill body makes, and for the
         // same reason: `forward_prefill` routes the MoE through the grouped
         // GEMM, which streams all 512 experts' weights regardless of row
         // count (2700 us -> 191 us per row, measured). All four arms write
         // `moe_output()`, so this is a kernel-shape choice, not a math change.
+        super::debug::hc_stage_probe(ctx, "bat_pre_ffn", hidden, h, false, stream);
         self.hc_small_m_ffn(hidden, num_tokens, ctx, stream)?;
+        super::debug::hc_stage_probe(
+            ctx,
+            "bat_moe_out",
+            ctx.buffers.moe_output(),
+            h,
+            false,
+            stream,
+        );
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
@@ -244,6 +312,7 @@ impl Qwen3SsmLayer {
             h as u32,
             stream,
         )?;
+        super::debug::hc_stage_probe(ctx, "bat_end", streams, hc.hc_mult * h, true, stream);
         Ok(())
     }
 
@@ -265,6 +334,41 @@ impl Qwen3SsmLayer {
             *SMALL_M
                 .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0"))
         };
+        // ROW-EXACT (`ForwardContext::gdn_exact_replay`, kill switch
+        // ATLAS_NO_VERIFY_ROW_EXACT): every arm below dispatches on ROW COUNT
+        // — `forward_k2` fuses both rows' expert GEMVs into 5 launches where
+        // `forward` runs 5 per row — and row-count-shaped MoE arms round
+        // differently from the single-row one (#459). A verify whose row 0
+        // re-processes an already-committed token has to reproduce that
+        // token's serial `decode()`, and decode's MoE is `ffn.forward` at ONE
+        // row. So under the row-exact contract the FFN runs one row at a time.
+        //
+        // DESCENDING, and that is load-bearing: `forward` always writes ROW 0
+        // of `moe_output()`, so each row's result has to be moved aside before
+        // the next call overwrites it. The FFN is stateless across rows, so
+        // visiting them K-1..0 lets every row but 0 be copied out immediately
+        // and leaves row 0's result in the place it already belongs — no
+        // staging buffer, no lost row.
+        if crate::layers::qwen3_ssm::verify_row_exact_leg(
+            ctx.gdn_exact_replay,
+            crate::layers::qwen3_ssm::RowExactLeg::Ffn,
+        ) {
+            let h = ctx.config.hidden_size;
+            let moe_out = ctx.buffers.moe_output();
+            for t in (0..num_tokens).rev() {
+                let out = self.ffn.forward(rows.offset(t * h * 2), ctx, stream)?;
+                anyhow::ensure!(
+                    out == moe_out,
+                    "row-exact FFN: single-token MoE returned a buffer other than \
+                     moe_output(), which the hc post-site reads unconditionally"
+                );
+                if t > 0 {
+                    ctx.gpu
+                        .copy_d2d_async(moe_out, moe_out.offset(t * h * 2), h * 2, stream)?;
+                }
+            }
+            return Ok(());
+        }
         match num_tokens {
             1 if small_m => {
                 let out = self.ffn.forward(rows, ctx, stream)?;
