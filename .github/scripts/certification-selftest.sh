@@ -563,6 +563,90 @@ grep -q 'UNTRUSTED' .github/scripts/pr-review.sh \
   && ok "untrusted PR prose is fenced in the prompt" \
   || bad "PR prose is not fenced -- a title could instruct the model"
 
+echo "== the bot's one comment, and the certificate =="
+# The bot keeps ONE comment and edits it in place, except on merge, where it
+# posts a second one -- because GitHub does not notify on an @mention added by
+# EDITING a comment, so tagging the authors in the edited comment would alert
+# nobody. Both halves are asserted here, plus the idempotency that stops a
+# contributor being tagged four times.
+xbot() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/certification-bot.yml"))
+for j in d["jobs"].values():
+    for st in j.get("steps", []) or []:
+        if (st.get("name") or "") == sys.argv[1]:
+            print(st["run"]); sys.exit(0)
+' "$1"; }
+xbot 'Post or edit the one comment' > "$TMP/bot.sh"
+if [ -s "$TMP/bot.sh" ]; then
+  botstub() {  # botstub <existing-certificate-count>
+    mkdir -p "$TMP/bin"; : > "$TMP/bcalls"
+    cat > "$TMP/bin/gh" <<STUB
+#!/bin/bash
+printf 'ARGV: %s\\n' "\$*" >> "\$BCALLS"
+case "\$*" in
+  *comments*--jq*) echo "$1" ;;                       # certificate-marker count
+  *"/pulls/"*commits*) echo "alice" ;;
+  *"/pulls/"*) echo "alice" ;;
+  *) : ;;
+esac
+exit 0
+STUB
+    chmod +x "$TMP/bin/gh"
+    printf '#!/bin/bash\nexit 0\n' > "$TMP/bin/sudo"; chmod +x "$TMP/bin/sudo"
+    # rsvg-convert must actually PRODUCE its output. A no-op stub left no PNG,
+    # so the sha256sum that names the file failed and `set -euo pipefail` aborted
+    # the step before it ever posted -- which read as "the bot does not post a
+    # certificate on merge" when the bot was right and the stub was hollow.
+    cat > "$TMP/bin/rsvg-convert" <<'STUB'
+#!/bin/bash
+out=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) shift;; esac; done
+[ -n "$out" ] && printf 'PNG-STUB' > "$out"
+exit 0
+STUB
+    chmod +x "$TMP/bin/rsvg-convert"
+  }
+  runbot() {  # runbot <state> <comment_id> <cert-count>
+    botstub "$3"
+    ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+      STATE="$1" HEADLINE=h COMMENT_ID="$2" HEAD_SHA=abc1234567 \
+      bash "$TMP/bot.sh" >/dev/null 2>&1 ); }
+  patched() { grep -q 'PATCH' "$TMP/bcalls"; }
+  posted()  { grep -q 'POST.*issues/1/comments' "$TMP/bcalls"; }
+  # The idempotency QUERY also contains the literal marker, inside its --jq
+  # filter. Grepping for the marker alone matched the lookup and reported a
+  # certificate that was never posted -- the assertion could not tell "asked
+  # whether one exists" from "posted one". Require the POST too.
+  certed()  { grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; }
+
+  runbot pr-certification-stage-1 "" 0
+  posted && ! patched && ok "no prior comment -> posts one" || bad "no prior comment -> did not post exactly one"
+  # CONTROL: with a prior comment it must EDIT, never post a second. A thread of
+  # stale state comments is precisely what the marker exists to prevent.
+  runbot pr-certification-stage-1 12345 0
+  patched && ok "control: an existing comment is edited, not duplicated" \
+    || bad "control: it posted a second state comment instead of editing"
+
+  # The marker is both the lookup key and the memory of the previous state.
+  grep -q 'atlas-certification-state' "$TMP/bot.sh" \
+    && ok "the state marker is written into the comment" \
+    || bad "no state marker -- the next run cannot find its own comment"
+
+  # THE CERTIFICATE: only on merge, and only once.
+  runbot pr-certification-merged "" 0
+  certed && ok "merged -> the certificate is posted" || bad "merged -> no certificate"
+  runbot pr-certification-stage-3 "" 0
+  ! certed && ok "control: a non-merged state posts no certificate" \
+    || bad "control: a certificate was posted for a PR that has not merged"
+  # CONTROL: the bot also fires on check_run completions AFTER a merge. Without
+  # the marker check a contributor is tagged once per event.
+  runbot pr-certification-merged "" 1
+  ! certed && ok "control: a certificate already posted is not posted again" \
+    || bad "control: it posted a second certificate"
+else
+  bad "could not extract the bot's comment step"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

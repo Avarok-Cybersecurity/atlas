@@ -363,3 +363,54 @@ PR title becomes an instruction — and the guard now notices.
 **Still open.** The bot's state-comment editing — finding its own comment by the
 `<!-- atlas-certification-state:… -->` marker and PATCHing it in place — has no
 coverage. That is the last uncovered path.
+
+---
+
+## Wave 10 — the bot's comment lifecycle, and two hollow assertions of mine
+
+**Found.** The bot keeps ONE comment and edits it in place, except on merge,
+where it posts a second one — because GitHub does not notify on an `@mention`
+added by *editing* a comment, so tagging the authors in the edited comment would
+alert nobody. It also fires on `check_run` completions *after* a merge, so
+without an idempotency guard a contributor is tagged once per event. None of it
+was tested. This was the last uncovered path.
+
+**Changed.** 6 checks, 4 controls. Total 81.
+
+**Two hollow assertions, both mine, both found by the checks disagreeing.**
+
+*One.* `certed()` grepped the recorded calls for `atlas-certificate`. The
+idempotency **query** contains that literal string inside its `--jq` filter, so
+the helper matched the *lookup* and reported a certificate that was never
+posted. It could not distinguish "asked whether one exists" from "posted one".
+Now it requires a `POST` to the comments endpoint carrying the marker.
+
+*Two.* With that fixed, the positive went red: "merged -> no certificate". The
+bot was right again. My `rsvg-convert` stub was a no-op that produced no file,
+so the `sha256sum` naming it failed and `set -euo pipefail` aborted the step
+before the POST. A stub that does not produce its output is not a stub, it is a
+different failure.
+
+That is the fourth time in this record that a red check meant the harness was
+wrong, not the code. The pattern is consistent enough to state as a rule: **when
+a new test fails against code that has been working, suspect the test first.**
+
+**The controls proved it**, each anchor-asserted:
+
+| Sabotage | What went red |
+|---|---|
+| the certificate loses its once-only guard | `a certificate already posted is not posted again` |
+| the bot posts instead of editing | `an existing comment is edited, not duplicated` |
+| the certificate is posted regardless of state | `a certificate was posted for a PR that has not merged` |
+
+**Coverage is now complete.** Every gate, command and bot path in the
+certification pipeline has at least one check and at least one negative control
+proven able to fail: seal coverage, runner safety, certificate rendering,
+pr-review truncation and refusals, the stamp/seal/alias/one-commit decision
+logic, the eleven-state machine, command permissions, command authority, the
+merge-queue seal path, and the bot's comment lifecycle.
+
+**Still open.** Nothing structural. The suite runs offline, so it cannot catch a
+defect that only appears against the real GitHub API — the App's token
+permissions, for instance, are asserted nowhere and would fail only in
+production.
