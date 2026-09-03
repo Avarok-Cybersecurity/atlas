@@ -62,6 +62,23 @@ pub trait TransformerLayer: Send + Sync {
         None
     }
 
+    /// Write-on-accept fold (GDN layers only): apply the accepted rows of the
+    /// last batched K=4 verify to this layer's h states. `h_table` is the
+    /// layer's slab-0 pointer table from the verify, `na_tab` a device
+    /// `u32[n]` of accepted row counts in batch order. `Ok(false)` when the
+    /// layer has nothing armed (not a GDN layer, or the parent kernel ran).
+    fn gdn_fold_accepted(
+        &self,
+        _gpu: &dyn GpuBackend,
+        _h_table: DevicePtr,
+        _na_tab: DevicePtr,
+        _k_rows: usize,
+        _n: usize,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Whether this layer's ONLINE FP8-KV calibration has frozen its scale.
     /// `None` = this layer runs no online calibration (non-attention layer,
     /// static checkpoint scales, or a non-FP8 KV dtype). The scheduler's
