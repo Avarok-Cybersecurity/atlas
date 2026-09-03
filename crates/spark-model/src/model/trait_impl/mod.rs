@@ -401,32 +401,36 @@ impl Model for TransformerModel {
         self.decode_verify_graphed_dispatch(tokens, seq, _stream)
     }
 
-    /// mHC verify advances the QSA carry by K rows; on reject the scheduler's
-    /// generic `seq_len` rewind leaves that carry one row ahead. Restore it.
+    /// Land the auxiliary carries on the `num_accepted` rows this step
+    /// actually committed, for models that verify by K-row mini-prefill.
     ///
-    /// ⚠ OFF BY DEFAULT (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm) — UNPROVEN.
-    /// The un-restored aux carry was the leading suspect for this model's
-    /// degenerate speculative output. Wiring it up settles that: armed and
-    /// unarmed diverge at the SAME point (~token 2-3 against a coherent
-    /// baseline), with 0 rollback errors and 0 panics. So this is neither the
-    /// fix nor a regression — it ships off because nothing yet demonstrates it
-    /// is needed, and shipping an unexercised rewind on by default would only
-    /// add a suspect. See `verify_hc.rs` for the four-arm table and for why the
-    /// remaining signature (early divergence + leaked special-token ids) points
-    /// at the verify's LOGITS rather than at any carry.
-    fn rollback_verify_rows(&self, seq: &mut SequenceState, rows: usize) -> Result<bool> {
-        if rows == 0 || !self.verify_needs_hc_path() {
+    /// DEFAULT ON; `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0` is the kill switch. It
+    /// replaces the retired `ATLAS_QWEN4EXP_MTP_ROLLBACK=1`, whose arm-to-use
+    /// polarity encoded a rollback that was both unproven AND wrong: it fired
+    /// only from the K=2 reject branch and always restored row 0, so K=3 —
+    /// where `num_accepted <= 2 < k`, i.e. EVERY step is a partial accept —
+    /// had no rollback at all, and a K=3 two-row commit would have been
+    /// restored a row short even if it had. See `verify_hc.rs`.
+    fn commit_verify_aux(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        k: usize,
+    ) -> Result<bool> {
+        if !self.verify_needs_hc_path() {
             return Ok(false);
         }
-        let armed = {
-            static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ARMED
-                .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_ROLLBACK").as_deref() == Ok("1"))
-        };
-        if !armed {
+        if !verify_hc::hc_verify_commits_aux() {
+            // Diagnostic A/B only: drop the stash so the next verify's
+            // snapshot cannot be read against the wrong step.
+            let _ = self
+                .pending_verify_aux
+                .lock()
+                .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
+                .take();
             return Ok(false);
         }
-        self.restore_verify_aux(seq, 0)?;
+        self.restore_verify_aux_at(seq, num_accepted, k)?;
         Ok(true)
     }
     fn decode_verify_graphed_k3(
@@ -982,6 +986,58 @@ impl TransformerModel {
             }
         }
         Ok(out)
+    }
+
+    /// The speculative-verify subset of [`Self::collect_aux_states`]: only the
+    /// layers whose carry CANNOT be rebuilt by truncation.
+    ///
+    /// A Marconi snapshot must serialize everything, because it is restored
+    /// into a sequence with no history at all. A verify rollback is restored
+    /// into a sequence that still holds every earlier row, so any carry that
+    /// `align_aux` can rewind by moving a mark is better realigned than
+    /// round-tripped — see `Layer::aux_rewind_is_exact`. Concretely this drops
+    /// QSA's per-layer raw-key D2H (megabytes per step at context) and keeps
+    /// PLE's small conv+history blob.
+    pub(in crate::model) fn collect_verify_aux_states(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        let mut out = Vec::new();
+        for (i, l) in self.layers.iter().enumerate() {
+            if l.aux_rewind_is_exact() {
+                continue;
+            }
+            if let Some(blob) =
+                l.snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
+            {
+                out.push((i as u32, blob));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Move every mark-rewindable aux carry to an ABSOLUTE sequence position.
+    /// The other half of `collect_verify_aux_states`: what that one declines to
+    /// snapshot, this one realigns.
+    pub(in crate::model) fn align_verify_aux_states(
+        &self,
+        seq: &mut SequenceState,
+        to_pos: usize,
+        stream: u64,
+    ) -> Result<()> {
+        for (i, l) in self.layers.iter().enumerate() {
+            if !l.aux_rewind_is_exact() {
+                continue;
+            }
+            l.align_aux(
+                seq.layer_states[i].as_mut(),
+                to_pos,
+                self.gpu.as_ref(),
+                stream,
+            )?;
+        }
+        Ok(())
     }
 
     /// Whether restoring a snapshot WITHOUT aux blobs would be unsound for
