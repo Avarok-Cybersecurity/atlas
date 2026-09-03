@@ -361,6 +361,7 @@ pub fn gdn_decode_wyn(
 /// - `slab_entry_stride` MUST be `VERIFY_WY_TABLE_SEQS as u32` — the
 ///   kernel reinterprets the contiguous-form stride argument as "pointer
 ///   entries between Hi slabs".
+///
 /// Tables are staged by `upload_verify_wy_tables` (verify_e2.rs) into a
 /// fixed buffer refreshed pre-replay, so the launch is CUDA-graph-stable.
 #[allow(clippy::too_many_arguments)]
