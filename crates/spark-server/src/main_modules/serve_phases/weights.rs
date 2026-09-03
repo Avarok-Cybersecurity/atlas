@@ -70,7 +70,7 @@ pub(crate) fn load_weight_store(
             };
             loader.peak_memory_multiplier = mult;
             loader.skip_activation_scales = skip_activation_scales(config);
-            loader.skip_mtp = skip_mtp(config);
+            loader.skip_mtp = skip_mtp(config, want_mtp(args));
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -107,7 +107,7 @@ pub(crate) fn load_weight_store(
         };
         loader.peak_memory_multiplier = mult;
         loader.skip_activation_scales = skip_activation_scales(config);
-        loader.skip_mtp = skip_mtp(config);
+        loader.skip_mtp = skip_mtp(config, want_mtp(args));
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
             .context("Failed to load model weights")?
@@ -122,6 +122,7 @@ pub(crate) fn load_weight_store(
 /// registration reuses. Both safetensors loaders carry identical rules, so
 /// this is faithful for the fast path too. GGUF has no sidecars.
 pub(crate) fn main_shard_skip_policy(
+    args: &cli::ServeArgs,
     config: &ModelConfig,
     ep_rank: usize,
     ep_size: usize,
@@ -132,7 +133,12 @@ pub(crate) fn main_shard_skip_policy(
         spark_runtime::weights::SafetensorsLoader::new()
     };
     policy.skip_activation_scales = skip_activation_scales(config);
-    policy.skip_mtp = skip_mtp(config);
+    // Same predicate as the main load above, not a re-derived one: this
+    // policy's whole contract is that it reproduces what the main shards were
+    // loaded under, and `mtp.*` is uploaded only when the operator asked. A
+    // second spelling of the gate is exactly the defect this series already
+    // shipped once (`--dflash` alone reporting an MTP load failure).
+    policy.skip_mtp = skip_mtp(config, want_mtp(args));
     policy
 }
 
@@ -416,13 +422,52 @@ fn skip_activation_scales(config: &ModelConfig) -> bool {
     matches!(config.model_type.as_str(), "qwen4_exp")
 }
 
-/// Whether this model's loader builds no MTP head, so `mtp.*` need not be
-/// uploaded at all.
+/// Whether `mtp.*` can be left on disk for this model.
 ///
-/// `Qwen4ExpWeightLoader::load_mtp_weights` returns `None` (#753 item I: the
-/// MTP block is effectively a second model — its own 512-expert MoE, its own
-/// hyper-connection mixer, its own indexer). Uploading ~1.5 GB of weights
-/// that are then discarded is memory the KV cache needs.
-fn skip_mtp(config: &ModelConfig) -> bool {
-    matches!(config.model_type.as_str(), "qwen4_exp")
+/// The reason is no longer that the loader builds no MTP head — it does now
+/// (`weight_loader::qwen4_exp::load_qwen4_exp_mtp_module`). It is MEMORY: the
+/// qwen4_exp MTP block is a second model, ~1.5 GB resident on the per-expert
+/// NVFP4 snapshot and a ~5 GB BF16 transient on the fused one, on a model that
+/// already sits at ~94.6 GB with ~2.7 GB of headroom. That is memory the KV
+/// cache needs unless MTP is actually armed.
+///
+/// So it is skipped by DEFAULT and uploaded only when asked: `--speculative`,
+/// or `ATLAS_QWEN4EXP_MTP=1` to load and audit the block without arming
+/// speculation. No other `model_type` ever returns true here, in either arm.
+fn skip_mtp(config: &ModelConfig, want_mtp: bool) -> bool {
+    matches!(config.model_type.as_str(), "qwen4_exp") && !want_mtp
+}
+
+/// True when the operator asked for the `mtp.*` tensors to be uploaded.
+fn want_mtp(args: &cli::ServeArgs) -> bool {
+    args.speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1")
+}
+
+#[cfg(test)]
+mod skip_mtp_tests {
+    use super::*;
+
+    fn cfg(model_type: &str) -> ModelConfig {
+        let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+        c.model_type = model_type.to_string();
+        c
+    }
+
+    /// Default serving must stay byte-identical: `mtp.*` still never uploaded.
+    #[test]
+    fn qwen4_exp_skips_by_default_and_uploads_when_asked() {
+        assert!(skip_mtp(&cfg("qwen4_exp"), false));
+        assert!(!skip_mtp(&cfg("qwen4_exp"), true));
+    }
+
+    /// The new parameter cannot regress another family: `skip_mtp` is false
+    /// for every other `model_type` in BOTH arms, so nothing else changes
+    /// behaviour when MTP is armed.
+    #[test]
+    fn other_model_types_are_unaffected_in_both_arms() {
+        for mt in ["qwen3_next", "qwen3_5_moe", "deepseek_v4", "holo3_1_moe"] {
+            assert!(!skip_mtp(&cfg(mt), false), "{mt}");
+            assert!(!skip_mtp(&cfg(mt), true), "{mt}");
+        }
+    }
 }

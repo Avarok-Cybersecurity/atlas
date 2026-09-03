@@ -47,6 +47,7 @@ mod verify_d;
 mod verify_e;
 pub(in crate::model) mod verify_e2;
 mod verify_fused;
+mod verify_hc;
 
 impl Model for TransformerModel {
     fn teardown(&mut self) -> Result<()> {
@@ -385,7 +386,48 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 2]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // ★ ROUTE BEFORE CAPTURE. Under an mHC highway the graphed dispatch
+        // reaches `qwen3_ssm::decode_batched`, which REFUSES — and it refuses
+        // INSIDE the capture region, leaving the stream recording so every
+        // later op dies with status 901 (measured: alloc_sequence,
+        // free_sequence and the next prefill all failed after one refusal).
+        // Taking the mHC path here means the refusal never happens; taking it
+        // BEFORE capture starts means a future refusal is survivable.
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 2, "verify_hc returned {} rows, want 2", v.len());
+            return Ok([v[0], v[1]]);
+        }
         self.decode_verify_graphed_dispatch(tokens, seq, _stream)
+    }
+
+    /// mHC verify advances the QSA carry by K rows; on reject the scheduler's
+    /// generic `seq_len` rewind leaves that carry one row ahead. Restore it.
+    ///
+    /// ⚠ OFF BY DEFAULT (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm) — UNPROVEN.
+    /// The un-restored aux carry was the leading suspect for this model's
+    /// degenerate speculative output. Wiring it up settles that: armed and
+    /// unarmed diverge at the SAME point (~token 2-3 against a coherent
+    /// baseline), with 0 rollback errors and 0 panics. So this is neither the
+    /// fix nor a regression — it ships off because nothing yet demonstrates it
+    /// is needed, and shipping an unexercised rewind on by default would only
+    /// add a suspect. See `verify_hc.rs` for the four-arm table and for why the
+    /// remaining signature (early divergence + leaked special-token ids) points
+    /// at the verify's LOGITS rather than at any carry.
+    fn rollback_verify_rows(&self, seq: &mut SequenceState, rows: usize) -> Result<bool> {
+        if rows == 0 || !self.verify_needs_hc_path() {
+            return Ok(false);
+        }
+        let armed = {
+            static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ARMED
+                .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_ROLLBACK").as_deref() == Ok("1"))
+        };
+        if !armed {
+            return Ok(false);
+        }
+        self.restore_verify_aux(seq, 0)?;
+        Ok(true)
     }
     fn decode_verify_graphed_k3(
         &self,
@@ -394,6 +436,11 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 3]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 3, "verify_hc returned {} rows, want 3", v.len());
+            return Ok([v[0], v[1], v[2]]);
+        }
         self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream)
     }
     fn decode_verify_graphed_k4(
@@ -403,6 +450,11 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 4]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 4, "verify_hc returned {} rows, want 4", v.len());
+            return Ok([v[0], v[1], v[2], v[3]]);
+        }
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
