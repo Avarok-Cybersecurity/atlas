@@ -215,3 +215,40 @@ Treating any Seal conclusion as a seal turns four red.
 a `gh-readonly-queue/<base>/pr-<N>-<sha>` branch name — is exercised only by
 hand. `/expedite` has no end-to-end coverage; its `admin`-only refusal and its
 required-reason refusal are both untested.
+
+---
+
+## Wave 6 — who may bypass the gate
+
+**Found.** The command handlers decide who may release the expensive lane, who
+may vouch for a diff, and — with `/expedite` — who may merge without proving
+anything at all. None was tested. `/expedite` is the highest-consequence path in
+the pipeline and had zero coverage from the moment it was written.
+
+**Changed.** 11 checks, 8 of them controls, driven through a `gh` stub that
+records every call. Total 54.
+
+**The assertion that matters.** A refusal is not merely "prints a message" — a
+refused command must create **no check run**. A refusal that still mints the
+mark is cosmetic, and would be invisible in a log. Every control here asserts
+both halves: a comment was posted *and* no `Stamp`/`Seal`/`Expedite` was minted.
+
+**The controls proved it.** Three sabotages, each with an asserted anchor so a
+silent no-op could not masquerade as a pass:
+
+| Sabotage | What went red |
+|---|---|
+| `/expedite` accepts `write`/`maintain`, not just `admin` | `control: write access cannot expedite` |
+| `/expedite` stops requiring a reason | both reason controls |
+| `/seal` accepts authorship instead of write access | `control: authorship was accepted as a seal` |
+
+The last is worth stating plainly: authorship and ownership are different
+claims. A stamp says "this is ready to cost an hour of runners", which its
+author is well placed to judge. A seal says "a codeowner has read this diff",
+which its author is not. Conflating them would let anyone self-certify their own
+work, and now that cannot regress silently.
+
+**Still open.** The seal job's `merge_group` branch — deriving a PR number from
+`gh-readonly-queue/<base>/pr-<N>-<sha>` — is exercised only by hand. `/help` and
+`/review` have no coverage; both are low-consequence (they post text and cannot
+change a verdict), which is why they are last.

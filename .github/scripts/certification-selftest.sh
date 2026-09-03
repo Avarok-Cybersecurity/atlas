@@ -297,6 +297,95 @@ state_is pr-certification-blocked "control: blocked outranks stage 3"    false d
 state_is pr-certification-stage-2-both "control: a failed Seal is not a seal" false clean success failure ""
 state_is pr-certification-stage-2-needs-seal "control: a failed Seal with records still needs a seal" false clean success failure success
 
+echo "== command handlers: who may do what =="
+# The handlers live in certification-commands.yml. What matters is not only that
+# a refusal prints a message, but that a REFUSED command creates NO check run --
+# a refusal that still mints the mark is cosmetic. The stub records every call so
+# both halves can be asserted.
+xcmd() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/certification-commands.yml"))
+for j in d["jobs"].values():
+    for st in j.get("steps", []) or []:
+        if (st.get("name") or "") == sys.argv[1]:
+            print(st["run"]); sys.exit(0)
+' "$1"; }
+
+ghspy() {  # records every gh invocation to $TMP/calls
+  mkdir -p "$TMP/bin"; : > "$TMP/calls"
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CALLS"
+for a in "$@"; do case "$a" in body=*|output*) printf '%s\n' "$a" >> "$CALLS.body";; esac; done
+exit 0
+STUB
+  chmod +x "$TMP/bin/gh"
+}
+# made_check <name> -> did the handler POST a check run of that name?
+made_check() { grep -q -- "-f name=$1" "$TMP/calls" 2>/dev/null; }
+refused()    { grep -qi 'issues/.*/comments' "$TMP/calls" 2>/dev/null && ! made_check "$1"; }
+
+xcmd '/expedite' > "$TMP/exp.sh"
+if [ -s "$TMP/exp.sh" ]; then
+  runexp() { ghspy; : > "$TMP/calls.body"
+    ( PATH="$TMP/bin:$PATH" CALLS="$TMP/calls" REPO=o/r PR=1 ACTOR=u \
+      PERM="$1" ARGS="$2" HEAD_SHA=abc1234567 SHORT=abc1234567 \
+      bash "$TMP/exp.sh" >/dev/null 2>&1 ); }
+
+  runexp admin "the GPU box is down for maintenance"
+  made_check Expedite && ok "expedite: admin with a reason mints the waiver" \
+    || bad "expedite: admin with a reason did NOT mint the waiver"
+  grep -q 'maintenance' "$TMP/calls.body" 2>/dev/null && ok "expedite: the reason is recorded" \
+    || bad "expedite: the reason was not recorded anywhere"
+
+  # CONTROL: write access is NOT enough. /expedite discards the requirement to
+  # prove anything, so it must be admin-only -- and the refusal must not mint.
+  runexp write "trust me"
+  refused Expedite && ok "control: write access cannot expedite" \
+    || bad "control: write access expedited (or the refusal still minted the waiver)"
+  runexp read "trust me"
+  refused Expedite && ok "control: read access cannot expedite" \
+    || bad "control: read access expedited"
+  runexp none "trust me"
+  refused Expedite && ok "control: a stranger cannot expedite" \
+    || bad "control: a stranger expedited"
+
+  # CONTROL: a reason is required. An unexplained bypass six months on is
+  # indistinguishable from an accident.
+  runexp admin ""
+  refused Expedite && ok "control: admin without a reason is refused" \
+    || bad "control: an unexplained expedite was accepted"
+  runexp admin "   "
+  refused Expedite && ok "control: whitespace is not a reason" \
+    || bad "control: whitespace passed as a reason"
+else
+  bad "could not extract the /expedite handler"
+fi
+
+xcmd '/stamp and /seal' > "$TMP/ss.sh"
+if [ -s "$TMP/ss.sh" ]; then
+  runss() { ghspy
+    ( PATH="$TMP/bin:$PATH" CALLS="$TMP/calls" REPO=o/r PR=1 ACTOR="$1" AUTHOR="$2" \
+      VERB="$3" PERM="$4" HEAD_SHA=abc1234567 SHORT=abc1234567 \
+      bash "$TMP/ss.sh" >/dev/null 2>&1 ); }
+
+  runss alice alice /stamp none
+  made_check Stamp && ok "stamp: the PR's author may stamp their own PR" \
+    || bad "stamp: the author could not stamp their own PR"
+  runss bob alice /stamp write
+  made_check Stamp && ok "stamp: write access may stamp" || bad "stamp: write access could not stamp"
+  # CONTROL: a stranger with no write access is neither.
+  runss bob alice /stamp none
+  refused Stamp && ok "control: a non-author without write cannot stamp" \
+    || bad "control: a stranger stamped"
+  # CONTROL: /seal is a different claim -- authorship confers nothing.
+  runss alice alice /seal none
+  refused Seal && ok "control: the author cannot seal without write access" \
+    || bad "control: authorship was accepted as a seal"
+else
+  bad "could not extract the /stamp and /seal handler"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
