@@ -484,4 +484,85 @@ impl TransformerModel {
             self.buffers.logits()
         }
     }
+
+    /// DIAGNOSTIC ONLY (`ATLAS_LOGIT_PROBE=1`, default off, no-op otherwise).
+    ///
+    /// Dumps one logits ROW so a speculative verify's rows can be A/B'd
+    /// against a serial `decode()` of the same prefix: the row's argmax, its
+    /// value, and the top-8 (id, value) pairs, tagged with the call site.
+    /// The full row is copied D2H after an explicit stream sync — this is a
+    /// ~500 KB transfer plus a full-vocab host sort per row, so it is a
+    /// bisection instrument, never something to leave armed while measuring
+    /// throughput.
+    pub(crate) fn logit_probe(
+        &self,
+        tag: &str,
+        row: usize,
+        logits_row: DevicePtr,
+        fp32: bool,
+        stream: u64,
+    ) {
+        if !logit_probe_enabled() {
+            return;
+        }
+        let v = self.config.vocab_size;
+        let width = if fp32 { 4usize } else { 2usize };
+        let mut host = vec![0u8; v * width];
+        if let Err(e) = self.gpu.synchronize(stream) {
+            tracing::warn!("LOGIT_PROBE[{tag}] row {row}: stream sync failed: {e:#}");
+            return;
+        }
+        if let Err(e) = self.gpu.copy_d2h(logits_row, &mut host) {
+            tracing::warn!("LOGIT_PROBE[{tag}] row {row}: D2H failed: {e:#}");
+            return;
+        }
+        let val = |i: usize| -> f32 {
+            if fp32 {
+                f32::from_le_bytes([
+                    host[i * 4],
+                    host[i * 4 + 1],
+                    host[i * 4 + 2],
+                    host[i * 4 + 3],
+                ])
+            } else {
+                // BF16 -> f32 is a left shift into the high half.
+                f32::from_bits(u32::from(u16::from_le_bytes([host[i * 2], host[i * 2 + 1]])) << 16)
+            }
+        };
+        let mut idx: Vec<u32> = (0..v as u32).collect();
+        idx.sort_unstable_by(|a, b| {
+            val(*b as usize)
+                .partial_cmp(&val(*a as usize))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(b))
+        });
+        let top: Vec<String> = idx
+            .iter()
+            .take(8)
+            .map(|i| format!("{i}:{:.6}", val(*i as usize)))
+            .collect();
+        // A cheap fingerprint of the WHOLE row, so two runs can be compared
+        // without dumping 248320 numbers: sum and max-abs over the vocab.
+        let mut sum = 0f64;
+        let mut maxabs = 0f32;
+        for i in 0..v {
+            let x = val(i);
+            sum += x as f64;
+            maxabs = maxabs.max(x.abs());
+        }
+        tracing::info!(
+            "LOGIT_PROBE[{tag}] row={row} dtype={} argmax={} argmax_val={:.6} \
+             sum={sum:.4} maxabs={maxabs:.6} top8=[{}]",
+            if fp32 { "f32" } else { "bf16" },
+            idx[0],
+            val(idx[0] as usize),
+            top.join(" "),
+        );
+    }
+}
+
+/// `ATLAS_LOGIT_PROBE=1` arms [`TransformerModel::logit_probe`]. Read once.
+pub(crate) fn logit_probe_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_LOGIT_PROBE").as_deref() == Ok("1"))
 }

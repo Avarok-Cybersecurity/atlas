@@ -71,6 +71,7 @@ mod probe_mtp;
 
 #[cfg(test)]
 pub use ckpt_header::ple_shard_layout;
+pub(crate) use exl3_dense::NativeExl3;
 pub use mtp::{Qwen4ExpMtpModule, load_qwen4_exp_mtp_module};
 pub use probe::audit_namespace;
 pub use probe_mtp::{MTP_LAYER_PREFIX, MtpExpertLayout, MtpNamespaceReport, audit_mtp_namespace};
@@ -202,7 +203,14 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         // Native EXL3 (ATLAS_EXL3_NATIVE_MOE / _DENSE): ONE model-shared launch
         // state (locks + fence) under the MoE mgemm slabs and the dense staging,
         // built by the first native layer (`exl3_dense.rs`, arms decide per layer).
-        let mut exl3 = exl3_dense::NativeExl3::new();
+        //
+        // Resolved through `NativeExl3::shared()` rather than constructed here:
+        // the MTP draft module loads in a LATER phase (`factory::build`, after
+        // this returns) and must reach THIS instance, not a second one. That
+        // phase holds the strong `Arc` across both loads; the guard taken here
+        // covers this loop only and is dropped before it.
+        let exl3_shared = exl3_dense::NativeExl3::shared();
+        let mut exl3 = exl3_dense::NativeExl3::lock(&exl3_shared);
 
         for i in 0..config.num_hidden_layers {
             let lp = config.layer_prefix(i);

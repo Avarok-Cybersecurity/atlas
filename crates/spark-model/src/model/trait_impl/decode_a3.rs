@@ -103,6 +103,16 @@ impl TransformerModel {
 
         // LM head reads from normed directly (no D2D copy needed)
         self.lm_head(normed, stream)?;
+        // ATLAS_LOGIT_PROBE=1: the DECODE side of the row-by-row A/B against
+        // the K-row verify (`verify_hc.rs`). `decode_logits_ptr` /
+        // `decode_logits_fp32` because this path may write the FP32 scratch.
+        self.logit_probe(
+            "decode",
+            0,
+            self.decode_logits_ptr(),
+            self.decode_logits_fp32(),
+            stream,
+        );
         Ok(())
     }
 }

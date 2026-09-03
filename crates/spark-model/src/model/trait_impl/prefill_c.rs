@@ -563,6 +563,15 @@ impl TransformerModel {
 
         // ── 7. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
+        // ATLAS_LOGIT_PROBE=1: token 0 of a completion comes from PREFILL, not
+        // decode, so the A/B needs this row too or its indices are off by one.
+        self.logit_probe(
+            "prefill_last",
+            0,
+            self.decode_logits_ptr(),
+            self.decode_logits_fp32(),
+            stream,
+        );
 
         // ── 8. Insert into prefix cache + Marconi snapshot ──
         self.prefill_save_snapshot_and_insert(tokens, seq, &mut kv_cache, bs, stream);

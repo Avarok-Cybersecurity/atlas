@@ -13,7 +13,7 @@
 //! layer; the tally only counts the same predicate so the summary cannot
 //! disagree with what the arms did.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use anyhow::Result;
 use atlas_core::config::ModelConfig;
@@ -24,7 +24,7 @@ use crate::layers::moe::Exl3MoeState;
 use crate::layers::ops::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage, Exl3LaunchState};
 use crate::weight_map::{Exl3DenseFamilies, Exl3DenseFamily, exl3_dense_family_kept};
 
-pub(super) struct NativeExl3 {
+pub(crate) struct NativeExl3 {
     /// The per-model launch state; created by whichever arm needs it first.
     pub(super) launch: Option<Arc<Exl3LaunchState>>,
     /// Native MoE mgemm state (`ATLAS_EXL3_NATIVE_MOE=1`), ~140 MB of slabs.
@@ -37,7 +37,10 @@ pub(super) struct NativeExl3 {
 }
 
 impl NativeExl3 {
-    pub(super) fn new() -> Self {
+    /// Private on purpose: [`Self::shared`] is the ONLY constructor, so a
+    /// second `NativeExl3` — and with it a second dense stage / MoE state —
+    /// cannot be built by accident from a second load phase.
+    fn new() -> Self {
         Self {
             launch: None,
             moe: None,
@@ -46,6 +49,58 @@ impl NativeExl3 {
             gdn_layers: 0,
             attn_layers: 0,
         }
+    }
+
+    /// The live model-shared native-EXL3 LOADER state, created if none is
+    /// alive. This is the hoist that lets the MTP draft module — loaded in a
+    /// LATER phase than `load_layers`, from `factory::build` — land on the
+    /// same [`Exl3LaunchState`], the same [`Exl3DenseStage`] and the same
+    /// [`Exl3MoeState`] as the main layers.
+    ///
+    /// # Why a WEAK anchor plus an external strong holder
+    ///
+    /// Deliberately the same shape as [`Exl3LaunchState::shared`], and for
+    /// the same reason: the pieces of one model are built in places that
+    /// cannot pass a value to each other, but they must agree on ONE
+    /// dispatch section (locks buffer + host mutex + cross-stream fence) or
+    /// the "one cooperative section at a time" rule is not global.
+    ///
+    /// The static holds only a `Weak`. The STRONG holder is a local in
+    /// `factory::build::build_model`, taken before `load_layers` and dropped
+    /// after `load_qwen4_exp_mtp_module` — a scope that by construction spans
+    /// both phases. That local is what keeps this instance alive between
+    /// them; when it drops, this state dies and hands its `Arc`s on the launch
+    /// state / stage / MoE state back to the layers that actually own them.
+    /// So nothing leaks for the process lifetime and a hot-swapped model still
+    /// builds its own state against its own backend. Without that holder this
+    /// degrades exactly to the old behaviour — one instance scoped to
+    /// `load_layers` — never to a silent second launch state.
+    ///
+    /// # Why a `Mutex` when loading is single-threaded
+    ///
+    /// Not contention machinery. `observe` and `stage` mutate (`&mut self`)
+    /// during LOAD — the stage is sized once, on first use, from the model
+    /// maxima — so two phases sharing one `Arc` need interior mutability. The
+    /// guard is held for the whole of each phase's layer loop and the phases
+    /// never overlap, so it is never contended and never nested. SERVE-time
+    /// use touches none of this: by then the layers hold their own
+    /// `Arc<Exl3DenseStage>` / `Arc<Exl3MoeState>` and this container is gone.
+    pub(crate) fn shared() -> Arc<Mutex<NativeExl3>> {
+        static SHARED: Mutex<Weak<Mutex<NativeExl3>>> = Mutex::new(Weak::new());
+        let mut slot = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(s) = slot.upgrade() {
+            return s;
+        }
+        let s = Arc::new(Mutex::new(NativeExl3::new()));
+        *slot = Arc::downgrade(&s);
+        s
+    }
+
+    /// Lock the shared state for one load phase. Poison is recovered rather
+    /// than propagated: a panic in an earlier phase already failed the load,
+    /// and refusing here would replace that error with a less informative one.
+    pub(crate) fn lock(shared: &Arc<Mutex<NativeExl3>>) -> MutexGuard<'_, NativeExl3> {
+        shared.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Count layer `lp` if either of its families is kept packed.

@@ -96,30 +96,31 @@ pub fn load_qwen4_exp_mtp_module(
     if config.num_mtp_modules == 0 {
         return Ok(None);
     }
-    // ── MTP x native EXL3: REFUSED, and the reason is an invariant. ──
+    // ── MTP x native EXL3: SHARED, not refused. ──
     //
-    // The main loader threads ONE model-shared `NativeExl3` — a single
-    // `Exl3LaunchState` whose rule is "one dispatch section at a time,
-    // GLOBALLY" (locks buffer + host mutex + cross-stream fence). This module
-    // is loaded from a DIFFERENT phase (serve_phases/weights.rs step 5) than
-    // `Qwen4ExpWeightLoader::load_layers`, where that instance is a local, so
-    // there is no way to hand it the shared state from here. Building a second
-    // one is not an option: two locks buffers corrupt each other's split-K
-    // counters, and two cooperative kernels partially co-resident on the device
-    // is the recorded deadlock class the MoE milestone hit in serving.
+    // This module is loaded from a DIFFERENT phase (`factory::build`, after
+    // `Qwen4ExpWeightLoader::load_layers` has returned) than the main layers.
+    // It used to REFUSE to load whenever ATLAS_EXL3_NATIVE_MOE /
+    // ATLAS_EXL3_NATIVE_DENSE were engaged, because the main loader's
+    // `NativeExl3` was a LOCAL in `load_layers` and there was no way to reach
+    // it from here — and building a second one would have meant a second
+    // `Exl3DenseStage` and a second `Exl3MoeState`.
     //
-    // So this refuses by name instead of silently constructing a second launch
-    // state. Both features work on their own; only the intersection is unbuilt.
-    // Lifting it means hoisting the shared `NativeExl3` out of `load_layers`
-    // into the phase that loads both, not relaxing this check.
-    if crate::weight_map::exl3_native_enabled()
-        && (crate::weight_map::exl3_native_moe_enabled()
-            || crate::weight_map::exl3_native_dense_enabled())
-    {
-        anyhow::bail!(
-            "qwen4_exp MTP: the draft module cannot load while native EXL3 is              engaged (ATLAS_EXL3_NATIVE_MOE / ATLAS_EXL3_NATIVE_DENSE). The              module loads in a different phase than the main layers and so              cannot share their single Exl3LaunchState; a second one would              break the global one-dispatch-section-at-a-time rule (split-K              lock corruption + the cooperative co-residency deadlock). Unset              the native EXL3 gates to load MTP, or drop --speculative /              ATLAS_QWEN4EXP_MTP to keep native EXL3."
-        );
-    }
+    // `NativeExl3::shared()` (see its doc comment) is the hoist: a weak
+    // process anchor whose strong holder is a local in `factory::build`
+    // spanning BOTH phases, so this resolves to the exact instance
+    // `load_layers` used. One `Exl3LaunchState` — one locks buffer, one host
+    // mutex, one cross-stream fence — is therefore still the global truth,
+    // which is what the "one cooperative dispatch section at a time" rule
+    // needs (split-K lock corruption + the cooperative co-residency deadlock).
+    //
+    // The launch state was in fact never the exposure even before the hoist:
+    // `Exl3LaunchState::get_or_create` on an empty cache falls through to
+    // `Exl3LaunchState::shared()`, which is itself a process-wide weak anchor
+    // kept alive by the layers' strong `Arc`s. What a second `NativeExl3`
+    // WOULD have duplicated is the dense stage and the MoE slabs. The hoist
+    // removes both duplications and, more importantly, lets this module's own
+    // weights serve natively instead of being handed inert placeholders.
     // The combiner's `fc_embedding` is the cheapest MTP-only marker (the role
     // `mtp.0.enorm.weight` plays for DeepSeek-V4): it exists in no other
     // namespace and is not something a shard split can move.
@@ -156,12 +157,30 @@ pub fn load_qwen4_exp_mtp_module(
     // snapshot this uploads ~5.0 GB of BF16 experts that collapse to ~1.3 GB
     // NVFP4 and frees the sources; on the per-expert NVFP4 snapshot the
     // packed tensors pass straight through.
-    // The `NativeExl3` argument is this branch's model-shared native-EXL3 state.
-    // A fresh, never-`observe`d instance is passed deliberately: the guard at
-    // the top of this function has already refused every configuration in which
-    // `build_moe` could reach its native branch, so this instance is provably
-    // inert — it allocates nothing and creates no second launch state.
-    let mut exl3 = super::exl3_dense::NativeExl3::new();
+    // The `NativeExl3` argument is the MODEL-SHARED native-EXL3 state — the
+    // same instance the 48 main layers were built against (see the note at the
+    // top of this function). `build_moe` may now genuinely take its native
+    // branch here, over the shared `Exl3MoeState`; `get_or_create_with_launch`
+    // re-asserts the geometry (hidden / moe_intermediate / top_k / E) and the
+    // launch-state identity on every reuse, so a mismatch is an error, not a
+    // silent second state. `observe` first, so this layer's kept families are
+    // counted the same way the main loop counts its own.
+    let exl3_shared = super::exl3_dense::NativeExl3::shared();
+    let mut exl3 = super::exl3_dense::NativeExl3::lock(&exl3_shared);
+    exl3.observe(store, lp);
+    tracing::info!(
+        "qwen4_exp MTP: sharing the model's native-EXL3 loader state (one \
+         Exl3LaunchState / dense stage / MoE state across the main layers and \
+         this draft module); native gates moe={} dense={}, mtp attention family \
+         kept packed: {}",
+        crate::weight_map::exl3_native_moe_enabled(),
+        crate::weight_map::exl3_native_dense_enabled(),
+        crate::weight_map::exl3_dense_family_kept(
+            store,
+            lp,
+            crate::weight_map::Exl3DenseFamily::Attn
+        ),
+    );
     let ffn = super::ffn::build_moe(store, lp, config, gpu, variant, &mut exl3)
         .context("qwen4_exp MTP: MoE block")?;
     let f1 = free_now(gpu);
@@ -204,10 +223,13 @@ pub fn load_qwen4_exp_mtp_module(
             input_norm,
             post_attn_norm,
             ffn,
-            // No model-shared dense stage: see the native-EXL3 refusal above.
-            // `install_native_attn` bails loudly on `None`, so this can never
-            // be a silent wrong answer even if that guard were ever relaxed.
-            None,
+            // The REAL model-shared dense stage, not the `None` the old
+            // native-EXL3 refusal justified. `stage()` returns `None` only
+            // when the dense gate is off, in which case the attention arm
+            // never reaches its native branch; when the gate IS on this is the
+            // same `Arc<Exl3DenseStage>` every main layer got, so
+            // `stage_or_bail` no longer has anything to catch.
+            exl3.stage(gpu, config)?,
         )
         .context("qwen4_exp MTP: full-attention body")?;
     let f2 = free_now(gpu);
