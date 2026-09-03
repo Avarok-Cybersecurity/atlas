@@ -244,6 +244,59 @@ else
   bad "could not extract the one-commit-one-signer shell from ci.yml"
 fi
 
+echo "== certification-state.sh: the state machine =="
+# Eleven states, chosen from the PR's merged flag, its mergeable_state, its
+# queue entry, and three check-run conclusions. Driven here by a stubbed `gh`
+# so every branch is reachable without a live PR.
+mkstate() {  # mkstate <merged> <mergeable_state> <stamp> <seal> <records>
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/gh" <<STUB
+#!/bin/bash
+args="\$*"
+case "\$args" in
+  *"/pulls/"*"/merge"*) exit 1 ;;
+  *check-runs*)
+      # emit one line per matching check run, as --jq would
+      # Print unconditionally. A guarded echo returns non-zero on an
+      # empty value, which made the whole stub exit 1 and every "no such check
+      # run" case look like an API failure rather than an absent check.
+      case "\$args" in
+        *Stamp*)  printf '%s\\n' "$3" ;;
+        *Seal*)   printf '%s\\n' "$4" ;;
+        *Certifications*) printf '%s\\n' "$5" ;;
+      esac
+      exit 0 ;;
+  *"/pulls/"*) printf '{"merged":%s,"head":{"sha":"abc1234567"},"mergeable_state":"%s"}\n' "$1" "$2" ;;
+  *) echo "" ;;
+esac
+STUB
+  chmod +x "$TMP/bin/gh"
+}
+state_is() {  # state_is <expected> <label> <merged> <mergeable> <stamp> <seal> <records>
+  local want=$1 label=$2; shift 2
+  mkstate "$@"
+  local got
+  got=$(PATH="$TMP/bin:$PATH" REPO=o/r PREV_STATE="" bash .github/scripts/certification-state.sh 7 2>/dev/null | cut -f1)
+  if [ "$got" = "$want" ]; then ok "$label"; else bad "$label (got '$got', want '$want')"; fi
+}
+
+state_is pr-certification-stage-1 "unstamped -> stage 1"                 false clean ""        ""        ""
+state_is pr-certification-stage-2-both "stamped, nothing else -> stage 2 (both)" false clean success ""  ""
+state_is pr-certification-stage-2-needs-records "stamped + seal -> needs records" false clean success success ""
+state_is pr-certification-stage-2-needs-seal "stamped + records -> needs seal"   false clean success ""  success
+state_is pr-certification-stage-3 "stamped + seal + records -> stage 3"  false clean success success success
+state_is pr-certification-merged "a merged PR reads merged"              true  clean ""        ""        ""
+state_is pr-certification-blocked "a conflicting PR reads blocked"       false dirty success success success
+
+# CONTROL: precedence. A merged PR is merged whatever its checks say, and a
+# conflicting one is blocked however green it is -- if either ever lost to the
+# stage ladder, the bot would show a stale stage on a PR nobody can merge.
+state_is pr-certification-merged "control: merged outranks a full stage-3 board" true clean success success success
+state_is pr-certification-blocked "control: blocked outranks stage 3"    false dirty success success success
+# CONTROL: a check that exists but did NOT succeed must not count as done.
+state_is pr-certification-stage-2-both "control: a failed Seal is not a seal" false clean success failure ""
+state_is pr-certification-stage-2-needs-seal "control: a failed Seal with records still needs a seal" false clean success failure success
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

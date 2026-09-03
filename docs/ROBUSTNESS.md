@@ -177,3 +177,41 @@ fails correctly, naming the missing message.
 **Still open.** `certification-state.sh` has no coverage. The seal job's
 `merge_group` branch — which derives the PR number from a queue branch name — is
 exercised only by hand.
+
+---
+
+## Wave 5 — the state machine, and two harness bugs that looked like results
+
+**Found.** `certification-state.sh` picks one of eleven states from the PR's
+merged flag, its mergeable_state, its queue entry and three check-run
+conclusions. It is what the bot shows an author. Nothing tested it.
+
+**Changed.** 11 checks driven by a stubbed `gh`, covering every stage the ladder
+can reach plus the two precedence rules that outrank it. Total 43.
+
+**Two of my own bugs, both of which first read as findings.**
+
+*One.* Four state checks failed with empty output. The obvious reading was a
+defect in the script. Running it directly showed it emitting `stage-1`
+perfectly — the fault was my stub: `[ -n "$v" ] && echo "$v"` returns non-zero
+on an empty value, so the stub exited 1 and every *absent check run* looked like
+an *API failure*. Fixed by printing unconditionally. Had I trusted the first
+reading, I would have "fixed" a script that was already correct.
+
+*Two.* Sabotage B — forcing `has_seal=true` — showed the suite green at 43/43,
+which reads as a hole. It was not. The anchor matched **zero** times: the real
+line has two spaces after the semicolon and quotes around `success`. The
+sabotage never applied. Re-run with an asserted anchor, it turns **four** checks
+red, including both "a failed Seal is not a seal" controls.
+
+A silently no-op'd sabotage is indistinguishable from an uncaught regression,
+and both look like green. Assert the anchor before drawing the conclusion.
+
+**The controls proved it.** Removing the merged-outranks-everything rule turns
+`a merged PR reads merged` and `merged outranks a full stage-3 board` red.
+Treating any Seal conclusion as a seal turns four red.
+
+**Still open.** The seal job's `merge_group` branch — deriving a PR number from
+a `gh-readonly-queue/<base>/pr-<N>-<sha>` branch name — is exercised only by
+hand. `/expedite` has no end-to-end coverage; its `admin`-only refusal and its
+required-reason refusal are both untested.
