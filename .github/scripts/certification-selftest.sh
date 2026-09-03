@@ -499,6 +499,70 @@ mkwf 'echo ok' '  contents: write
 want_rc 1 "control: widened workflow permissions are refused" \
   sh -c "cd '$TMP/auth' && python3 assert-command-authority.py"
 
+echo "== /review refuses safely =="
+# Every refusal here exits 0 on purpose: a /review that cannot reach a model
+# must not fail anyone's CI. That makes the exit code useless as an assertion,
+# so each check pins the MESSAGE -- and, for the two missing-config cases, that
+# no request was attempted at all.
+revstub() {  # revstub <http-code> <response-body>
+  mkdir -p "$TMP/bin"; : > "$TMP/rcalls"; : > "$TMP/curled"
+  # pr-review.sh posts with `-F body=@-`, i.e. the message arrives on STDIN, not
+  # in argv. A stub that only records arguments captures the call and loses the
+  # text -- which read as "the script never explained itself" when it had.
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+printf 'ARGV: %s\n' "$*" >> "$RCALLS"
+case "$*" in *body=@-*) cat >> "$RCALLS" ;; esac
+exit 0
+STUB
+  cat > "$TMP/bin/curl" <<STUB
+#!/bin/bash
+echo called >> "\$CURLED"
+for a in "\$@"; do case "\$a" in /tmp/or.json) : ;; esac; done
+printf '%s' '$2' > /tmp/or.json
+printf '%s' '$1'
+STUB
+  chmod +x "$TMP/bin/gh" "$TMP/bin/curl"
+}
+runrev() {
+  ( PATH="$TMP/bin:$PATH" RCALLS="$TMP/rcalls" CURLED="$TMP/curled" \
+    REPO=o/r PR=1 ACTOR=u ARGS="" SHORT=abc1234567 \
+    OPENROUTER_KEY="$1" OPENROUTER_DEFAULT_FREE_MODEL="$2" \
+    bash .github/scripts/pr-review.sh >/dev/null 2>&1 ); echo $?; }
+
+revstub 200 '{"choices":[{"message":{"content":"looks fine"}}]}'
+rc=$(runrev "" "nvidia/x:free")
+[ "$rc" = 0 ] && grep -qi 'key' "$TMP/rcalls" && ok "no API key: says so, and does not fail CI" \
+  || bad "no API key: rc=$rc, or it never explained itself"
+# CONTROL: with no key it must not attempt a request.
+[ ! -s "$TMP/curled" ] && ok "control: no key -> no request attempted" \
+  || bad "control: it called the endpoint without a key"
+
+revstub 200 '{"choices":[{"message":{"content":"looks fine"}}]}'
+rc=$(runrev "k" "")
+[ "$rc" = 0 ] && grep -q 'OPENROUTER_DEFAULT_FREE_MODEL' "$TMP/rcalls" \
+  && ok "no model id: names the variable that is empty" \
+  || bad "no model id: rc=$rc, or it did not name the variable"
+[ ! -s "$TMP/curled" ] && ok "control: no model -> no request attempted" \
+  || bad "control: it called the endpoint with no model"
+
+revstub 500 '{}'
+rc=$(runrev "k" "nvidia/x:free")
+[ "$rc" = 0 ] && grep -qi 'could not reach the model' "$TMP/rcalls" \
+  && ok "a 500 is reported, not swallowed" || bad "a 500 was not reported (rc=$rc)"
+grep -q '500' "$TMP/rcalls" && ok "the HTTP code is in the message" || bad "the HTTP code was not reported"
+
+revstub 200 '{"choices":[{"message":{"content":"THE REVIEW BODY"}}]}'
+rc=$(runrev "k" "nvidia/x:free")
+grep -q 'THE REVIEW BODY' "$TMP/rcalls" && ok "a 200 posts the model's answer" \
+  || bad "a 200 did not post the answer"
+
+# The PR's own prose is attacker-controlled. It must be fenced so a title or
+# body cannot issue instructions to the model.
+grep -q 'UNTRUSTED' .github/scripts/pr-review.sh \
+  && ok "untrusted PR prose is fenced in the prompt" \
+  || bad "PR prose is not fenced -- a title could instruct the model"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

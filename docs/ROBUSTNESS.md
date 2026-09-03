@@ -328,3 +328,38 @@ commands stay powerless.
 or a non-200 — is untested; the harness would need to fake an OpenRouter
 endpoint. The bot's state-comment editing (marker lookup, in-place PATCH) has no
 coverage.
+
+---
+
+## Wave 9 — /review's refusals, and a stub that lost the message
+
+**Found.** `pr-review.sh` refuses in three ways — no model id, no API key, a
+non-200 from the endpoint — and every one of them exits **0** on purpose: a
+`/review` that cannot reach a model must not fail anyone's CI. That makes the
+exit code useless as an assertion, so all three had to be pinned by message.
+None was tested.
+
+**Changed.** 8 checks, 5 controls. Total 75.
+
+**A harness bug that read as a script bug.** Five checks failed with "it never
+explained itself". The script had explained itself perfectly: it posts with
+`gh api ... -F body=@-`, so the message arrives on **stdin**, and my stub only
+recorded argv. Third time this record notes the same shape — the first reading
+of a red test was "the code is broken" and the truth was "the harness is".
+
+**The controls proved it**, each with an asserted anchor:
+
+| Sabotage | What went red |
+|---|---|
+| the missing-key guard removed — would call the endpoint with no credential | both the message check and `no key -> no request attempted` |
+| a non-200 reported as success | `a 500 is reported, not swallowed` |
+| the `UNTRUSTED` fence renamed | `PR prose is not fenced` |
+
+The last is the one worth keeping. A PR's title and body are attacker-controlled
+text that gets fed to a model. They are fenced between `UNTRUSTED` markers with
+the system prompt told to treat anything inside as data. Remove the fence and a
+PR title becomes an instruction — and the guard now notices.
+
+**Still open.** The bot's state-comment editing — finding its own comment by the
+`<!-- atlas-certification-state:… -->` marker and PATCHing it in place — has no
+coverage. That is the last uncovered path.
