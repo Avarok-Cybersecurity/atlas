@@ -98,6 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       stamped: ${{ steps.q.outputs.stamped }}
+      expedited: ${{ steps.q.outputs.expedited }}
     steps:
       - id: q
         env:
@@ -130,7 +131,7 @@ jobs:
             # the exact inverse of the fail-open doctrine. Assign, then test the
             # command's own status, and require a clean integer.
             k=$(gh api "repos/$REPO/commits/$s/check-runs?per_page=100" \
-                  --jq '[.check_runs[] | select(.name == "Stamp" and .conclusion == "success")] | length' \
+                  --jq '[.check_runs[] | select((.name == "Stamp" or .name == "Expedite") and .conclusion == "success")] | length' \
                   2>/dev/null) || k=FAILOPEN
             case "$k" in ''|*[!0-9]*) k=FAILOPEN ;; esac
             if [ "$k" = "FAILOPEN" ]; then
@@ -146,6 +147,22 @@ jobs:
           else
             echo "stamped=false" >>"$GITHUB_OUTPUT"
             echo "not stamped on any commit of PR #$PR — certification and the release matrix are held."
+          fi
+
+          # Separately: did an admin WAIVE the evidence with /expedite? The loop
+          # above already treats an Expedite as a stamp, because an expedited PR
+          # must still run the lane -- the point is to merge without RECORDS, not
+          # to skip the build. This publishes the waiver on its own so the alias
+          # can turn a red certification green and say why.
+          exp=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                  --jq '[.check_runs[] | select(.name == "Expedite" and .conclusion == "success")] | length' \
+                  2>/dev/null) || exp=0
+          case "$exp" in ''|*[!0-9]*) exp=0 ;; esac
+          if [ "$exp" -gt 0 ]; then
+            echo "expedited=true" >>"$GITHUB_OUTPUT"
+            echo "EXPEDITED at $SHA — an admin waived the certification requirement."
+          else
+            echo "expedited=false" >>"$GITHUB_OUTPUT"
           fi
 
   # The binding half of `/seal`. The Seal CHECK RUN is minted by the App in
@@ -194,7 +211,7 @@ jobs:
           # A seal vouches for a DIFF, so only a Seal on the CURRENT head counts
           # — unlike a stamp, which deliberately carries across new commits.
           n=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" \
-                --jq '[.check_runs[] | select(.name == "Seal" and .conclusion == "success")] | length' \
+                --jq '[.check_runs[] | select((.name == "Seal" or .name == "Expedite") and .conclusion == "success")] | length' \
                 2>/dev/null) || n=REFUSE
           case "$n" in ''|*[!0-9]*) n=REFUSE ;; esac
           # Deliberately fails CLOSED, inverting the fail-open shape of `stamp`
@@ -1194,9 +1211,20 @@ jobs:
           RESULT: ${{ needs.pr-benchmark-gate.result }}
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
           STAMPED: ${{ needs.stamp.outputs.stamped }}
+          EXPEDITED: ${{ needs.stamp.outputs.expedited }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
           if [ "${RESULT}" = "success" ]; then exit 0; fi
+          # An admin waived the evidence requirement with /expedite. Pass -- but
+          # say so loudly, because a green check that silently means "we did not
+          # measure" is the exact hole this pipeline exists to close. The
+          # Expedite check run carries who waived it and why.
+          if [ "${EXPEDITED}" = "true" ]; then
+            echo "::warning title=Certification waived::An admin expedited this PR, so \
+          certification did not have to pass. See the Expedite check run for who \
+          waived it and the reason they gave."
+            exit 0
+          fi
           # THE ONE SKIP THAT IS A PASS: the certification was deliberately not
           # run because every changed file is under site/ blog/ book/
           # web-shared/, none of which is a measured input of any record. The

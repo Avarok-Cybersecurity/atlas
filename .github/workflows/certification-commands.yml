@@ -49,7 +49,7 @@ on:
         description: Which verb to run
         required: true
         type: choice
-        options: [/stamp, /seal, /help, /review]
+        options: [/stamp, /seal, /help, /review, /expedite]
 
 permissions:
   contents: read
@@ -61,7 +61,20 @@ concurrency:
 jobs:
   command:
     name: Certification command
-    runs-on: ubuntu-latest
+    # The command handler is three API calls and ~20 seconds of work, but on
+    # GitHub-hosted runners it queued behind 15-27 runs per push plus two
+    # sibling repos -- a /stamp once waited 220 MINUTES. It now runs on a
+    # self-hosted runner on the always-on box, which picks up in seconds.
+    #
+    # Safe here specifically because this workflow pins
+    # `ref: default_branch` and NEVER checks out a PR head, so a fork cannot
+    # run its own code on our hardware. `hardening_tests` below enforces that
+    # the label stays off any workflow that does check out untrusted code.
+    #
+    # The variable is the escape hatch: if the box is down, set
+    # CMD_RUNNER_LABEL to `ubuntu-latest` and commands go back to hosted
+    # runners without a code change.
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
     # Cheap gates first so the overwhelming majority of comments cost one
     # skipped job: it must be a PR, and the body must START with a verb we own.
     # `startsWith` on the raw body means a quotation of "/seal" mid-sentence is
@@ -113,7 +126,7 @@ jobs:
             args=$(printf '%s' "$BODY" | head -1 | tr -d '\r' | cut -s -d' ' -f2-)
           fi
           case "$verb" in
-            /help|/stamp|/seal|/review) ;;
+            /help|/stamp|/seal|/review|/expedite) ;;
             *) echo "not a command we own: $verb" >&2; exit 0 ;;
           esac
           # /review on a line comment is legal; the other three are not, because
@@ -154,6 +167,7 @@ jobs:
           | `/stamp` | release the held-back lane: certification + the nine release-matrix builds. Anyone with **write** access. |
           | `/seal` | vouch for this diff. A **codeowner** of every path in it. Voided by the next commit. |
           | `/review [question]` | an agentic read of this PR. Optional question, e.g. `/review does the fix cover the C=2 rung?` |
+          | `/expedite <reason>` | **admin only.** Allows the merge without benchmark records or a codeowner seal. Every other check still has to pass, and the reason is recorded on the PR. |
 
           **Why the lane is held back.** Certification and nine cross-compiles cost
           about an hour of runners. A draft should not pay that on every push, so
@@ -256,6 +270,76 @@ jobs:
           | commit | \`$SHORT\` |
 
           $( [ "$VERB" = "/seal" ] && echo "The next commit to this PR voids it — re-\`/seal\` when the diff settles." || echo "This holds for the life of the PR." )" >/dev/null
+
+      - name: /expedite
+        if: steps.cmd.outputs.verb == '/expedite'
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.cmd.outputs.pr }}
+          ACTOR: ${{ steps.cmd.outputs.actor }}
+          PERM: ${{ steps.cmd.outputs.perm }}
+          ARGS: ${{ steps.cmd.outputs.args }}
+          HEAD_SHA: ${{ steps.cmd.outputs.head_sha }}
+          SHORT: ${{ steps.cmd.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          refuse() { gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$1" >/dev/null; exit 0; }
+
+          # ADMIN ONLY, and deliberately narrower than /stamp or /seal. A stamp
+          # spends runners and a seal records a review; an expedite discards the
+          # evidence requirement altogether, so it is not something write access
+          # should confer.
+          case "$PERM" in admin) ;; *)
+            refuse "@$ACTOR — \`/expedite\` is administrative: it merges without benchmark
+          records, without a codeowner seal, or both. That needs \`admin\`; yours is \`$PERM\`.
+
+          If the certification is merely SLOW rather than impossible, \`/stamp\` is what
+          you want — it releases the lane and still proves the numbers." ;;
+          esac
+
+          # A reason is required. An unexplained bypass in six months' time is
+          # indistinguishable from an accident, and this check run is the only
+          # place the reason survives.
+          why=$(printf '%s' "${ARGS:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          if [ -z "$why" ]; then
+            refuse "@$ACTOR — \`/expedite\` needs a reason on the same line, e.g.
+
+          \`\`\`
+          /expedite docs-only change, GPU box is down for maintenance
+          \`\`\`
+
+          The reason goes into the check run and is the only record of why the
+          gate was waived."
+          fi
+
+          gh api -X POST "repos/$REPO/check-runs" \
+            -f name="Expedite" -f head_sha="$HEAD_SHA" -f status=completed \
+            -f conclusion=success \
+            -f "output[title]=Expedited by @$ACTOR — certification waived" \
+            -f "output[summary]=@$ACTOR (admin) waived the certification requirement for
+          $SHORT.
+
+          Reason given: $why
+
+          The rest of the pipeline still has to pass. What this skips is the
+          benchmark records and the codeowner seal -- nothing else." >/dev/null
+
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="### ⚠ Expedited — certification waived
+
+          | | |
+          |---|---|
+          | who | @$ACTOR (\`admin\`) |
+          | commit | \`$SHORT\` |
+          | reason | $why |
+
+          This PR may now merge **without benchmark records and without a codeowner
+          seal**. Every other check still has to pass — expedite skips the evidence,
+          not the pipeline.
+
+          A new commit does not clear this. If the numbers matter for what landed
+          here, run the campaign afterwards on \`main\` and commit the records." >/dev/null
+          echo "expedited by @$ACTOR at $SHORT: $why"
 
       - name: /review
         if: steps.cmd.outputs.verb == '/review'

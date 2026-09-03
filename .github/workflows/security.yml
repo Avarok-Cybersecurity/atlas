@@ -42,6 +42,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The self-hosted command runner executes on our own hardware. It is
+      # only safe while no workflow that reaches its label checks out untrusted
+      # code -- a property of the files today, which this turns into a rule.
+      # Cheap, pure-Python, and it lives in the security job because that is
+      # what it is.
+      - name: The command runner cannot reach untrusted code
+        run: python3 .github/scripts/assert-cmd-runner-safe.py
       # `rust-version` pins the action's in-container toolchain to our
       # rust-toolchain.toml channel. Without it, the action's bundled Rust
       # can't honor the repo pin and rustup errors ("override toolchain
