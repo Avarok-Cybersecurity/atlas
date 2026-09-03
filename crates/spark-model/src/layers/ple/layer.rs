@@ -51,6 +51,21 @@ pub struct PleSeqState {
     /// in `slots_dev` and history has already advanced, so re-hashing would
     /// double-count the token — re-arming is the only correct recovery.
     last_staged_va: u64,
+    /// HOST snapshots of this carry taken at each row boundary of a K-row
+    /// speculative verify — index `t` is "the carry AFTER row t".
+    ///
+    /// The SSM's `h_state`/`conv_state` get the same treatment in device pool
+    /// memory (`h_state_intermediates`); PLE's is a host blob instead because
+    /// the carry is ~150 KB and lives on exactly ONE model layer, so K-1
+    /// snapshots per verify is a rounding error next to 36 layers of GDN, and
+    /// a host Vec cannot leak the way a per-sequence device buffer can
+    /// (`release_seq_state` frees `conv`; this frees itself).
+    ///
+    /// Empty except between `begin_verify_rows` and the commit that consumes
+    /// it. Unlike QSA's `ingested`/`pooled` marks, this carry CANNOT be
+    /// rebuilt by truncation: `conv` is a rolling FP32 state and `history` is
+    /// a fixed window whose oldest entries have already rolled off.
+    verify_rows: Vec<Vec<u8>>,
 }
 
 pub struct PleLayer {
@@ -177,6 +192,7 @@ impl PleLayer {
             history: Vec::new(),
             prestaged_va: None,
             last_staged_va: 0,
+            verify_rows: Vec::new(),
         })
     }
 

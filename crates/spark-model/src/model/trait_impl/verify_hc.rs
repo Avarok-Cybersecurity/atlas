@@ -173,6 +173,8 @@ use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::layers::ops;
 use crate::traits::SequenceState;
 
+use super::async_chkpt::commit_rewind_index;
+
 impl TransformerModel {
     /// True when K-row verify must take the mHC path.
     pub(super) fn verify_needs_hc_path(&self) -> bool {
@@ -234,6 +236,52 @@ impl TransformerModel {
         // num_accepted-1"). `ATLAS_QWEN4EXP_MTP_HC_COMMIT=0` restores the old
         // fused 1 + (K-1) split for A/B — it re-enables the corruption, so it
         // is a diagnostic switch, not a supported mode.
+        // ── ONE K-ROW PASS (ATLAS_QWEN4EXP_MTP_HC_BATCHED=1) ──
+        //
+        // With the batched conv+GDN kernels serving the GDN layers, the per-row
+        // intermediates are written by the kernel, so the K single-row passes
+        // that e53b78427 needed collapse back into one.
+        //
+        // ALL THREE CARRIES ARE PER-ROW IN THIS PASS, which matters more than
+        // the pass count:
+        //   * SSM `h_state`/`conv_state` — the conv+GDN kernels write
+        //     `h_state_intermediates[t]` / `conv_state_intermediates[t]`
+        //     natively for `t in 0..K-1`, exactly the range
+        //     `commit_rewind_index` reads.
+        //   * PLE's rolling conv + history — `decode_batched_inner_hc` runs
+        //     `forward_row` ONE ROW AT A TIME and snapshots the carry at every
+        //     boundary a commit can land on (`push_verify_row`).
+        //   * QSA's `ingested`/`pooled` — contiguous marks, so no snapshot is
+        //     needed: `align_aux` rewinds them to `base + num_accepted`.
+        // `commit_verify_aux_rows` lands the last two, called from
+        // `commit_accepted_prefix` immediately after the SSM copies.
+        //
+        // `ATLAS_QWEN4EXP_MTP_ROLLBACK=1` is REFUSED alongside this arm. That
+        // path restores a PRE-verify aux blob, which here would undo the
+        // committed row 0 on top of a commit that already landed correctly.
+        // It is default-off and documented unproven; this arm supersedes it.
+        if crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled() {
+            anyhow::ensure!(
+                !rollback_armed(),
+                "ATLAS_QWEN4EXP_MTP_HC_BATCHED=1 and ATLAS_QWEN4EXP_MTP_ROLLBACK=1 \
+                 are incompatible: the batched arm commits the PLE and QSA carries \
+                 per row through commit_accepted_prefix, and rollback would then \
+                 restore a PRE-verify blob over it, undoing the committed row. \
+                 Arm one or the other."
+            );
+            // The ABSOLUTE base a partial accept is measured from. Recorded
+            // before the pass, because `verify_hc_rows` advances `seq.seq_len`
+            // by K and the scheduler's reject branches rewind it at different
+            // points — deriving the base from a moving `seq_len` is how the
+            // carries end up one row off.
+            *self
+                .pending_verify_span
+                .lock()
+                .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))? =
+                Some((seq.seq_len, k));
+            return self.verify_hc_rows(tokens, seq, stream);
+        }
+
         if !hc_verify_publishes_intermediates() {
             let mut out = self.verify_hc_rows(&tokens[..1], seq, stream)?;
             if k == 1 {
@@ -360,6 +408,57 @@ impl TransformerModel {
             );
         };
         self.apply_aux_states(seq, &blobs, stream)
+    }
+
+    /// Land ALL THREE per-row carries on a partial accept of `num_accepted`
+    /// rows out of the K-row batched mHC verify.
+    ///
+    /// The SSM carry is not here — `commit_accepted_prefix` already rewinds
+    /// `h_state`/`conv_state` from the pool intermediates the conv+GDN kernels
+    /// wrote. What this adds is the other two, which that function has never
+    /// touched:
+    ///
+    /// * PLE's rolling conv + history window, from the per-row snapshot
+    ///   `decode_batched_inner_hc` recorded (`commit_verify_row`); and
+    /// * QSA's `ingested`/`pooled` marks, rewound to the ABSOLUTE position
+    ///   `base + num_accepted` (`align_aux`) — contiguous marks need no blob.
+    ///
+    /// Leaving either advanced over the rejected rows is the measured
+    /// degeneration: PLE then hashes a window shifted by the discarded
+    /// drafts, and QSA trips its own `pos == ingested` assertion or indexes
+    /// past the committed prefix.
+    ///
+    /// No-op unless the BATCHED arm ran: the per-row reference path advances
+    /// its carries one row per pass and snapshots between rows 0 and 1
+    /// instead.
+    pub(super) fn commit_verify_aux_rows(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let span = self
+            .pending_verify_span
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))?
+            .take();
+        let Some((base, k)) = span else {
+            return Ok(());
+        };
+        // A full accept keeps the live carries — they are already exactly
+        // `base + k`. Zero accepted has no row-0 snapshot to land on and is
+        // rejected upstream by `commit_accepted_prefix`.
+        if num_accepted == 0 || num_accepted >= k {
+            return Ok(());
+        }
+        let row = commit_rewind_index(num_accepted);
+        let to_pos = base + num_accepted;
+        for (i, layer) in self.layers.iter().enumerate() {
+            let st = seq.layer_states[i].as_mut();
+            layer.commit_verify_row(st, row, self.gpu.as_ref(), stream)?;
+            layer.align_aux(st, to_pos, self.gpu.as_ref(), stream)?;
+        }
+        Ok(())
     }
 
     pub(super) fn rollback_verify_hc(
@@ -545,8 +644,56 @@ impl TransformerModel {
             moe_lora_route: self.decode_moe_route(),
         };
 
-        // ── Every layer through its K-row mHC prefill path ──
+        // ── Every layer over the same K rows ──
+        //
+        // The 12 full-attention layers always take the K-row mHC prefill path
+        // — that is also what advances the QSA `ingested`/`pooled` marks, the
+        // third of the three per-row carries.
+        //
+        // The 36 GDN layers take one of two bodies:
+        //   * DEFAULT — `prefill()` -> `prefill_inner_hc` -> `prefill_block`,
+        //     the CHUNK SCAN. It writes no `h_state_intermediates`, so the
+        //     caller must run one row per pass and publish them by hand
+        //     (`publish_verify_row_state`).
+        //   * `ATLAS_QWEN4EXP_MTP_HC_BATCHED=1` — `decode_batched()` ->
+        //     `decode_batched_inner_hc` -> `decode_batched_block`, the fused
+        //     conv+GDN verify kernels. They advance the recurrence over all K
+        //     rows in ONE pass and write the per-row intermediates natively,
+        //     which is the whole point: one pass instead of K, and the state
+        //     published by the kernel that owns it.
+        //
+        // Both bodies are K-row and both sit at `hc_row_offset = 0`, so the
+        // `[T, hc, H]` highway layout is uniform either way.
+        let batched_gdn = crate::layers::qwen3_ssm::trait_decode_batched_hc::
+            hc_batched_verify_enabled();
+        // LIVENESS, once per process. The switch is an env read; this line is
+        // the proof the batched body actually ran, which a flag is not.
+        if batched_gdn {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    "mHC verify: K-row BATCHED GDN armed (ATLAS_QWEN4EXP_MTP_HC_BATCHED=1),                      first pass k={k} over {} layers",
+                    self.layers.len()
+                );
+            });
+        }
         for (i, layer) in self.layers.iter().enumerate() {
+            if batched_gdn && layer.is_ssm_layer() {
+                layer.decode_batched(
+                    hidden,
+                    residual,
+                    k,
+                    seq.layer_states[i].as_mut(),
+                    &mut kv_cache,
+                    seq.seq_len,
+                    &mut seq.block_table,
+                    &mut seq.disk_block_ids,
+                    &mut seq.disk_last_offloaded_per_layer,
+                    &ctx,
+                    stream,
+                )?;
+                continue;
+            }
             layer.prefill(
                 hidden,
                 residual,
@@ -605,6 +752,14 @@ pub(crate) fn hc_verify_publishes_intermediates() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_COMMIT").as_deref() != Ok("0"))
 }
 
+/// `ATLAS_QWEN4EXP_MTP_ROLLBACK=1` — the same switch `rollback_verify_rows`
+/// reads (`trait_impl/mod.rs`), duplicated here so the batched arm can refuse
+/// the incompatible combination at the point of use rather than desyncing.
+fn rollback_armed() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_ROLLBACK").as_deref() == Ok("1"))
+}
+
 /// The verify rows an mHC verify of width `k` must publish an SSM
 /// intermediate for.
 ///
@@ -637,6 +792,31 @@ mod hc_intermediate_contract_tests {
                     published.contains(&idx),
                     "k={k}: commit_accepted_prefix({num_accepted}) reads intermediate \
                      {idx}, which the verify never publishes ({published:?})"
+                );
+            }
+        }
+    }
+
+    /// The PLE carry's snapshot boundaries must be the SAME set as the SSM
+    /// carry's. They are recorded in different crates' worth of code — the
+    /// SSM's by the conv+GDN kernels via `hc_publish_rows`, PLE's by
+    /// `decode_batched_inner_hc`'s row loop via `hc_verify_snapshot_rows` —
+    /// and a partial accept reads BOTH at the same index. One range shorter
+    /// than the other is a silent desync of exactly the kind this pins.
+    #[test]
+    fn hc_ple_snapshot_range_matches_the_ssm_one() {
+        use crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_verify_snapshot_rows;
+        for k in 1..=8usize {
+            assert_eq!(
+                hc_verify_snapshot_rows(k),
+                hc_publish_rows(k),
+                "k={k}: the PLE and SSM verify carries disagree about which row \
+                 boundaries a commit can land on"
+            );
+            for num_accepted in 1..k {
+                assert!(
+                    hc_verify_snapshot_rows(k).contains(&commit_rewind_index(num_accepted)),
+                    "k={k}: commit of {num_accepted} rows has no PLE snapshot"
                 );
             }
         }

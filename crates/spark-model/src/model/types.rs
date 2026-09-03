@@ -230,6 +230,11 @@ pub struct TransformerModel {
     /// committed row and the draft rows of an mHC K-row verify, so a rejected
     /// draft can be rolled back to exactly "token_0 committed". See verify_hc.
     pub(super) pending_verify_aux: std::sync::Mutex<Option<Vec<(u32, Vec<u8>)>>>,
+    /// `(seq_len before the verify, verify width K)` for the K-row mHC
+    /// BATCHED verify, so the aux commit can compute the ABSOLUTE position a
+    /// partial accept lands on (`base + num_accepted`) instead of guessing
+    /// whether the scheduler has already rewound `seq.seq_len`.
+    pub(super) pending_verify_span: std::sync::Mutex<Option<(usize, usize)>>,
     /// The head's single-sequence draft state. Shadow mode is C=1 only: one
     /// state, so a concurrent batch would interleave two sequences' drafts into
     /// it. The shadow step refuses to run when the batch is wider than one.

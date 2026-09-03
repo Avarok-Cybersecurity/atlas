@@ -327,6 +327,12 @@ impl TransformerModel {
         }
         run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
         self.gpu.record_event(self.secondary_event, stream)?;
+        // The SSM carry is now committed. The OTHER TWO per-row carries — PLE's
+        // rolling conv/history window and QSA's ingested/pooled marks — are
+        // still sitting `k - num_accepted` rows ahead, which is the measured
+        // degeneration class. No-op unless the K-row BATCHED mHC verify ran
+        // (it is what records the per-row PLE snapshots and the verify span).
+        self.commit_verify_aux_rows(seq, num_accepted, stream)?;
         Ok(())
     }
 }
