@@ -252,3 +252,42 @@ work, and now that cannot regress silently.
 `gh-readonly-queue/<base>/pr-<N>-<sha>` — is exercised only by hand. `/help` and
 `/review` have no coverage; both are low-consequence (they post text and cannot
 change a verdict), which is why they are last.
+
+---
+
+## Wave 7 — the merge-queue seal path, and the hollow control again
+
+**Found.** The seal job also runs inside the merge queue, where there is no
+`pull_request` payload and the PR number must be recovered from a
+GitHub-generated branch name, `gh-readonly-queue/<base>/pr-<N>-<sha>`. Wrong
+here means either the queue deadlocks or an unsealed entry lands. Hand-tested
+only.
+
+**Changed.** 8 checks, 5 controls. Total 62.
+
+**A wrong assertion of mine.** The first version asserted the recovered PR
+number appears in the success output. It does not — the success path prints only
+the sha. The number is named on the *failure* path, so the assertion moved
+there: `PR #840` in the refusal proves both that the number was derived from the
+branch and that the right PR was consulted. A wrong number would have looked up
+someone else's seal and passed.
+
+**The hollow control, a second time.** Sabotage A deleted the fail-closed branch
+and the suite stayed green at 62/62. Not a safe outcome — an accident. With the
+branch gone the script still exits 1, via
+`[: REFUSE: integer expression expected` falling through to the generic "Not
+sealed" message. Safe today, fragile tomorrow, and it tells the operator the
+wrong thing: *"no seal"* when the truth is *"we could not look"*.
+
+The control asserted `rc=1` and nothing else, so it could not tell a deliberate
+refusal from an arithmetic crash. It now pins the message — `Could not read the
+seal` — and re-running the sabotage fails correctly.
+
+This is the same defect class as wave 4, found in a different file one wave
+apart. The generalisation is worth stating: **when several paths can produce the
+same exit code, asserting the exit code tests none of them.** Pin the
+diagnostic.
+
+**Still open.** `/help` and `/review` have no coverage. Both only post text and
+cannot change a verdict, which is why they are last — but "cannot change a
+verdict" is itself an untested claim.

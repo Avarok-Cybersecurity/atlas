@@ -386,6 +386,83 @@ else
   bad "could not extract the /stamp and /seal handler"
 fi
 
+echo "== seal status: the merge-queue path =="
+# The seal job runs in the queue too, where there is no pull_request payload --
+# the PR number has to be recovered from a GitHub-generated branch name. Getting
+# this wrong either deadlocks the queue (nothing can land) or lets an unsealed
+# entry through. It had only ever been exercised by hand.
+xseal() { python3 -c '
+import yaml
+d = yaml.safe_load(open(".github/workflows/ci.yml"))
+print(d["jobs"]["seal"]["steps"][0]["run"])
+'; }
+xseal > "$TMP/seal.sh"
+if [ -s "$TMP/seal.sh" ]; then
+  sealstub() {  # sealstub <check-runs-count> <pull-head-sha>
+    mkdir -p "$TMP/bin"
+    printf '#!/bin/bash\ncase "$*" in\n  *check-runs*) printf "%%s\\n" "%s"; exit 0 ;;\n  *pulls/*) printf "%%s\\n" "%s"; exit 0 ;;\n  *) exit 0 ;;\nesac\n' "$1" "$2" > "$TMP/bin/gh"
+    chmod +x "$TMP/bin/gh"
+  }
+  runseal() {  # runseal <event> <pr_sha> <pr_num> <mq_ref>
+    ( PATH="$TMP/bin:$PATH" REPO=o/r EVENT="$1" PR_SHA="$2" PR_NUM="$3" MQ_HEAD_REF="$4" \
+      bash "$TMP/seal.sh" >"$TMP/sealout" 2>&1 ); }
+
+  sealstub 1 abc1234567
+  runseal pull_request abc1234567 7 ""; rc=$?
+  [ "$rc" = 0 ] && ok "seal: a sealed PR passes" || bad "seal: a sealed PR did not pass (rc=$rc)"
+
+  sealstub 0 abc1234567
+  runseal pull_request abc1234567 7 ""; rc=$?
+  [ "$rc" = 1 ] && ok "control: an unsealed PR fails" || bad "control: an unsealed PR passed (rc=$rc)"
+
+  # A push to main has no PR to seal; holding it would block main forever.
+  sealstub 0 ""
+  runseal push "" "" ""; rc=$?
+  [ "$rc" = 0 ] && ok "a push carries no PR and is not held" || bad "a push was held (rc=$rc)"
+
+  # THE QUEUE PATH: recover the PR from gh-readonly-queue/<base>/pr-<N>-<sha>.
+  sealstub 1 abc1234567
+  runseal merge_group "" "" "refs/heads/gh-readonly-queue/main/pr-840-abc1234567"; rc=$?
+  [ "$rc" = 0 ] && ok "queue: a sealed entry passes" || bad "queue: a sealed entry failed (rc=$rc)"
+  # The success path prints only the sha, so the recovered number is asserted on
+  # the FAILURE path, which names "PR #<n>". That proves the number was derived
+  # from the branch AND that the right PR was consulted -- a wrong number would
+  # look up someone else's seal.
+  sealstub 0 abc1234567
+  runseal merge_group "" "" "refs/heads/gh-readonly-queue/main/pr-840-abc1234567"
+  grep -q '#840' "$TMP/sealout" 2>/dev/null && ok "queue: the PR number is recovered from the branch" \
+    || bad "queue: the PR number was not recovered from the branch name"
+
+  sealstub 0 abc1234567
+  runseal merge_group "" "" "refs/heads/gh-readonly-queue/main/pr-840-abc1234567"; rc=$?
+  [ "$rc" = 1 ] && ok "control: an unsealed queue entry is ejected" || bad "control: an unsealed queue entry passed (rc=$rc)"
+
+  # CONTROL: an unparseable queue branch must REFUSE, not guess. Guessing here
+  # would either seal the wrong PR or wave through an unknown one.
+  sealstub 1 abc1234567
+  runseal merge_group "" "" "refs/heads/gh-readonly-queue/main/garbage"; rc=$?
+  [ "$rc" = 1 ] && ok "control: an unparseable queue branch is refused" || bad "control: an unparseable branch was accepted (rc=$rc)"
+
+  # CONTROL: fail CLOSED. This inverts the stamp job beside it on purpose -- a
+  # stamp only spends runners, but a seal is a person vouching, and an
+  # unreadable API must never be read as a vouch nobody gave.
+  mkdir -p "$TMP/bin"; printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  runseal pull_request abc1234567 7 ""; rc=$?
+  # rc=1 alone is NOT enough here. With the fail-closed branch deleted the script
+  # still exits 1 -- by accident, via `[: REFUSE: integer expression expected`
+  # falling through to the generic "Not sealed" message. That is safe today and
+  # fragile tomorrow, and it tells the operator the wrong thing: "no seal" when
+  # the truth is "we could not look". So pin the DELIBERATE path by its message.
+  if [ "$rc" = 1 ] && grep -q 'Could not read the seal' "$TMP/sealout"; then
+    ok "control: an unreadable API fails CLOSED, deliberately"
+  else
+    bad "control: unreadable API -> rc=$rc, and not via the fail-closed branch"
+    sed 's/^/       /' "$TMP/sealout" | head -3
+  fi
+else
+  bad "could not extract the seal job's shell from ci.yml"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
