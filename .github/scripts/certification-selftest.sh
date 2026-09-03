@@ -463,6 +463,42 @@ else
   bad "could not extract the seal job's shell from ci.yml"
 fi
 
+echo "== command authority is bounded =="
+want_rc 0 "only state-changing commands can change state" \
+  python3 .github/scripts/assert-command-authority.py
+# CONTROL x3: each way a text-only command could quietly gain authority.
+mkdir -p "$TMP/auth/.github/workflows"; cp .github/scripts/assert-command-authority.py "$TMP/auth/"
+mkwf() {  # mkwf <extra-run-line-for-/review> <permissions-yaml>
+  cat > "$TMP/auth/.github/workflows/certification-commands.yml" <<WF
+name: c
+on: { issue_comment: { types: [created] } }
+permissions:
+$2
+jobs:
+  cmd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: /review
+        run: |
+          echo reviewing
+          $1
+      - name: /stamp and /seal
+        run: gh api -X POST "repos/o/r/check-runs" -f name=Stamp
+WF
+}
+mkwf 'echo ok' '  contents: read'
+want_rc 0 "a text-only /review passes" sh -c "cd '$TMP/auth' && python3 assert-command-authority.py"
+mkwf 'gh api -X POST "repos/o/r/check-runs" -f name=Seal' '  contents: read'
+want_rc 1 "control: /review minting a check run is refused" \
+  sh -c "cd '$TMP/auth' && python3 assert-command-authority.py"
+mkwf 'gh api -X POST "repos/o/r/actions/runs/1/rerun"' '  contents: read'
+want_rc 1 "control: /review re-running CI is refused" \
+  sh -c "cd '$TMP/auth' && python3 assert-command-authority.py"
+mkwf 'echo ok' '  contents: write
+  checks: write'
+want_rc 1 "control: widened workflow permissions are refused" \
+  sh -c "cd '$TMP/auth' && python3 assert-command-authority.py"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

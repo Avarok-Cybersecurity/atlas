@@ -291,3 +291,40 @@ diagnostic.
 **Still open.** `/help` and `/review` have no coverage. Both only post text and
 cannot change a verdict, which is why they are last — but "cannot change a
 verdict" is itself an untested claim.
+
+---
+
+## Wave 8 — "it cannot change a verdict" was an inspection, not a test
+
+**Found.** `/help` and `/review` post text and mint nothing. That was true by
+reading the file, which is exactly the kind of claim that stops being true
+quietly. It matters more than it looks: `/review`'s permission check is
+deliberately weak — anyone who can comment may ask it a question — because it
+only posts prose. Give it the ability to create a check run and an outside
+contributor could mint their own `Seal` by asking about the diff.
+
+**Changed.** `.github/scripts/assert-command-authority.py`: only
+`/stamp and /seal` and `/expedite` may POST a check run, re-run CI, or PATCH,
+PUT or DELETE anything. It also pins the workflow to `permissions: {contents:
+read}`, since every step inherits the top-level grant and none of them needs
+more. 5 checks, 4 controls. Total 67.
+
+**The controls proved it**, on synthetic workflows and then on the real one:
+
+| Sabotage | Result |
+|---|---|
+| `/review` gains `POST .../check-runs -f name=Seal` (real file, anchor asserted) | ❌ refused |
+| top-level permissions widened to `contents: write, checks: write` (real file) | ❌ refused |
+| `/review` gains `/rerun` (synthetic) | ❌ refused |
+| a text-only `/review` | ✅ passes |
+
+**What this closes.** The three preceding waves tested whether a guard reaches
+the right verdict. This one tests whether a command *has the authority to reach
+a verdict at all* — a different question, and the one an attacker would ask
+first. The permission checks in wave 6 only matter while the weakly-checked
+commands stay powerless.
+
+**Still open.** `pr-review.sh`'s own behaviour — its refusals on a missing key
+or a non-200 — is untested; the harness would need to fake an OpenRouter
+endpoint. The bot's state-comment editing (marker lookup, in-place PATCH) has no
+coverage.
