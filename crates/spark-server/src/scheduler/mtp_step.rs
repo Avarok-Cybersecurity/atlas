@@ -26,6 +26,16 @@ pub fn step_mtp(
     // bootstrap, D-Cut plan, chunk sort) — one component of the out-of-step
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
     let t_step_outer = std::time::Instant::now();
+    // DFlash GAMMA RESOLVER: this step's draft count from the current
+    // concurrency (and, single-stream, the accept signal). Shadows the
+    // serve-wide value so every propose and re-propose below inherits it;
+    // the verify width follows `pending_drafts.len()` on the next step.
+    // Identity when pinned (`--dflash-gamma`) or not DFlash.
+    let num_drafts = if dflash_verify_raw_argmax {
+        crate::scheduler::dflash_rung::drafts_for(active.len(), num_drafts)
+    } else {
+        num_drafts
+    };
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
