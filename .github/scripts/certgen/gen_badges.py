@@ -337,33 +337,41 @@ def write(p, s):
     with open(p, "w") as f: f.write(s)
     print("wrote", p)
 
-stage1 = read(f"{SRC}/pr-certification-stage-1.svg")
-stage2 = read(f"{SRC}/pr-certification-stage-2-both.svg")
-stage3 = read(f"{SRC}/pr-certification-stage-3.svg")
+# The build section runs only when this file is EXECUTED. At module level it
+# printed on import, which code-quality flagged: anything importing these
+# helpers would silently rebuild every asset and write to disk.
+def main():
+    stage1 = read(f"{SRC}/pr-certification-stage-1.svg")
+    stage2 = read(f"{SRC}/pr-certification-stage-2-both.svg")
+    stage3 = read(f"{SRC}/pr-certification-stage-3.svg")
 
-write(f"{OUT}/header.svg", standalone_header("#840", "tbraun96"))
-write(f"{OUT}/stamp-silver.svg", standalone_badge("stamp"))
-write(f"{OUT}/seal-gold.svg", standalone_badge("seal"))
-write(f"{OUT}/qr-demo.svg", standalone_qr())
+    write(f"{OUT}/header.svg", standalone_header("#840", "tbraun96"))
+    write(f"{OUT}/stamp-silver.svg", standalone_badge("stamp"))
+    write(f"{OUT}/seal-gold.svg", standalone_badge("seal"))
+    write(f"{OUT}/qr-demo.svg", standalone_qr())
 
-write(f"{OUT}/preview-none.svg",
-      inject(stage1, "#840", "tbraun96"))
-write(f"{OUT}/preview-stamped.svg",
-      inject(stage2, "#840", "tbraun96", stamp=("m-ferraro", "3f9c2d81ab")))
-write(f"{OUT}/preview-sealed.svg",
-      inject(stage3, "#840", "tbraun96",
-             stamp=("m-ferraro", "3f9c2d81ab"), seal=("a-hoffmann", "3f9c2d81ab")))
+    write(f"{OUT}/preview-none.svg",
+          inject(stage1, "#840", "tbraun96"))
+    write(f"{OUT}/preview-stamped.svg",
+          inject(stage2, "#840", "tbraun96", stamp=("m-ferraro", "3f9c2d81ab")))
+    write(f"{OUT}/preview-sealed.svg",
+          inject(stage3, "#840", "tbraun96",
+                 stamp=("m-ferraro", "3f9c2d81ab"), seal=("a-hoffmann", "3f9c2d81ab")))
 
-LONG = "an-extraordinarily-long-github-username"
-assert len(LONG) == 39, len(LONG)
-write(f"{OUT}/preview-longnames.svg",
-      inject(stage3, "#840", LONG, stamp=(LONG, "3f9c2d81ab"), seal=(LONG, "3f9c2d81ab")))
+    LONG = "an-extraordinarily-long-github-username"
+    assert len(LONG) == 39, len(LONG)
+    write(f"{OUT}/preview-longnames.svg",
+          inject(stage3, "#840", LONG, stamp=(LONG, "3f9c2d81ab"), seal=(LONG, "3f9c2d81ab")))
 
-for name in ["preview-none", "preview-stamped", "preview-sealed", "preview-longnames",
-             "header", "stamp-silver", "seal-gold", "qr-demo"]:
-    subprocess.run(["rsvg-convert", "-w", "900", f"{OUT}/{name}.svg",
-                    "-o", f"{OUT}/{name}.png"], check=True)
-    print("rendered", name)
+    for name in ["preview-none", "preview-stamped", "preview-sealed", "preview-longnames",
+                 "header", "stamp-silver", "seal-gold", "qr-demo"]:
+        subprocess.run(["rsvg-convert", "-w", "900", f"{OUT}/{name}.svg",
+                        "-o", f"{OUT}/{name}.png"], check=True)
+        print("rendered", name)
 
-subprocess.run(["cp", f"{OUT}/preview-sealed.png", f"{OUT}/qr-scan-test.png"], check=True)
-print("done")
+    subprocess.run(["cp", f"{OUT}/preview-sealed.png", f"{OUT}/qr-scan-test.png"], check=True)
+    print("done")
+
+
+if __name__ == "__main__":
+    main()

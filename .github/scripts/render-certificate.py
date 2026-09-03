@@ -114,7 +114,8 @@ def main():
     ap.add_argument("--qr-y", type=int, default=0)
     a = ap.parse_args()
 
-    svg = open(a.template, encoding="utf-8").read()
+    with open(a.template, encoding="utf-8") as fh:
+        svg = fh.read()
 
     for id_, val in (
         ("value-cert-pr", f"#{a.pr}"),
@@ -161,9 +162,10 @@ def main():
         new = qr_group(a.url, a.qr_x, a.qr_y)
         svg = re.sub(r'<g id="qr">.*?</g>', lambda _: new, svg, count=1, flags=re.S)
 
-    open(a.out, "w", encoding="utf-8").write(svg)
+    with open(a.out, "w", encoding="utf-8") as fh:
+        fh.write(svg)
     print(f"wrote {a.out}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
