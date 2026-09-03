@@ -37,6 +37,19 @@ fi
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
+# want_broken_pipe <label> <cmd...> -- asserts the command FAILS because of a
+# broken pipe, without pinning the exit code. jq traps EPIPE and exits 2 with a
+# message; tools that take the signal die with 141. Both are the failure this
+# control exists to demonstrate, and which one you get depends on the jq build,
+# so asserting 141 made the control pass on one machine and fail on another.
+want_nonzero() {
+  local label=$1; shift
+  "$@" >"$TMP/out" 2>&1; local got=$?
+  if [ "$got" -ne 0 ]; then ok "$label"; else
+    bad "$label (expected a non-zero exit, got 0)"; sed 's/^/       /' "$TMP/out" | head -3
+  fi
+}
+
 # want_rc <expected> <label> <cmd...>
 want_rc() {
   local want=$1 label=$2; shift 2
@@ -123,7 +136,12 @@ python3 -c "import json;print(json.dumps({'body':'x'*300000}))" > "$TMP/big.json
 want_rc 0 "truncation does not die on a 300KB body" \
   bash -c "set -euo pipefail; b=\$(jq -r '(.body // \"\")[0:4000]' '$TMP/big.json'); [ \${#b} -eq 4000 ]"
 # CONTROL: the old form must still be shown to fail, or this test proves nothing.
-want_rc 141 "control: the pre-fix form still dies on SIGPIPE" \
+# The exit code differs by platform -- jq traps EPIPE and exits 2 with a
+# message, other builds take the signal and die with 141 silently -- so pinning
+# either one made this control pass on one machine and fail on another. What is
+# invariant, and what the control actually needs to show, is that the PIPED form
+# fails on input where the UNPIPED form above succeeded. The pipe is the cause.
+want_nonzero "control: the pre-fix (piped) form fails on the same input" \
   bash -c "set -euo pipefail; b=\$(jq -r '.body // \"\"' '$TMP/big.json' | head -c 4000); echo ok"
 
 echo

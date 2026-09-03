@@ -103,3 +103,37 @@ inside the file itself.
 **Still open.** Unchanged from wave 1: `certification-state.sh` and the
 `ci.yml` stamp/seal/expedite shell have no coverage; the one-commit-one-signer
 step is exercised only by hand.
+
+---
+
+## Wave 3 — a control that asserted an implementation detail
+
+**Found.** With the dependency fixed, CI still failed — on the SIGPIPE control
+itself, not on the code it guards. The pre-fix form exits **2 in CI** and **141
+locally**: `jq` traps `EPIPE` and exits 2 with a diagnostic, while other builds
+take the signal and die silently with 141. The control asserted `rc=141`, so it
+passed on this box and failed on `ubuntu-latest`.
+
+The guarded behaviour was correct on both machines the entire time. The control
+was wrong.
+
+**Two wrong fixes, both tried.** First `rc=141` → "non-zero **and** the output
+mentions a broken pipe". That went red locally, where the process dies silently
+and prints nothing. Pinning the *message* is the same mistake as pinning the
+*code*: both are platform detail dressed up as an invariant.
+
+**Changed.** The control now asserts the property that is actually invariant:
+the **piped** form fails on the very input where the **unpiped** form, asserted
+green one line above, succeeded. That isolates the pipe as the cause without
+depending on how the platform reports it.
+
+**The control proved it.** Substituting the fixed (unpiped) command in for the
+"pre-fix" one turns that control red — so it is still measuring something. 19/19
+locally.
+
+**The lesson, since it generalises.** A negative control that pins an exit code
+or an error string is testing the platform, not the property. Ask what would
+still be true on a machine you have never used.
+
+**Still open.** `certification-state.sh` and the `ci.yml` stamp/seal/expedite
+shell remain uncovered. CI has not yet confirmed this wave.
