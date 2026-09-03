@@ -90,7 +90,12 @@ pub struct TransformerModel {
     /// `lm_head_weight` is NULL — see `factory/build.rs`), and decode-graph
     /// capture is vetoed (cooperative launches cannot be captured). Installed
     /// post-construction via `set_lm_head_exl3`.
-    pub(super) lm_head_exl3: Option<super::lm_head_exl3::Exl3LmHead>,
+    /// Shared (`Arc`) because the qwen4_exp MTP draft head borrows the SAME
+    /// head: the checkpoint ships exactly ONE `lm_head` trellis (there is no
+    /// `mtp.lm_head`), so the draft must project through the target's head —
+    /// and through the same `Exl3LaunchState` section — rather than
+    /// materialize a second copy.
+    pub(super) lm_head_exl3: Option<std::sync::Arc<super::lm_head_exl3::Exl3LmHead>>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer

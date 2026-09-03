@@ -1036,8 +1036,22 @@ pub fn build_model(
         // flag the mHC K-row verify path is gated on, so the two arm together
         // or not at all — a proposer without that verify path would produce
         // drafts the verify step then refuses on, mid-request.
-        let arm_spec =
+        //
+        // ★ The predicate must also check that the draft has a vocab head to
+        // project through. It used to arm on the two flags alone, and the
+        // comment above promised a "speculative disabled" fallback that did
+        // not exist: with no head, `draft_token` failed on EVERY propose, the
+        // scheduler logged an error per decode step, and speculation
+        // degenerated to serial while the startup banner said ARMED. Fall back
+        // cleanly instead — one WARN at load, serial decode after.
+        let requested_spec =
             use_speculative && std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
+        let arm_spec = requested_spec && model.qwen4_exp_mtp_draft_head_available();
+        if requested_spec && !arm_spec {
+            tracing::warn!(
+                "qwen4_exp MTP: speculation was requested (--speculative +                  ATLAS_QWEN4EXP_MTP_VERIFY=1) but the model exposes NO vocab head                  the draft can project through (no NVFP4 head, and no native EXL3                  trellis head) — the proposer is NOT armed and decoding stays                  SERIAL. Arming anyway would fail every propose, once per decode                  step."
+            );
+        }
         if crate::layers::qwen4_exp_mtp::shadow_enabled() || arm_spec {
             if let Err(e) =
                 model.set_qwen4_exp_mtp_head(*module, target_embed_for_mtp, max_seq_len, arm_spec)

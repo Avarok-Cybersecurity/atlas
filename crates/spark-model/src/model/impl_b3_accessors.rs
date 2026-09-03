@@ -59,6 +59,18 @@ impl TransformerModel {
         self.qwen4_exp_mtp = Some(module);
     }
 
+    /// Is a vocab head the qwen4_exp MTP draft can project through available?
+    ///
+    /// The draft needs either the target's NVFP4 head or — under
+    /// `ATLAS_EXL3_NATIVE`, where `build.rs` deliberately leaves every
+    /// materialized head slot `None` — the native EXL3 trellis head. Arming
+    /// the proposer without one made `draft_token` fail on EVERY propose: an
+    /// error logged per decode step and speculation degenerating to serial
+    /// while the logs claimed it was armed.
+    pub fn qwen4_exp_mtp_draft_head_available(&self) -> bool {
+        self.lm_head_nvfp4.is_some() || self.lm_head_exl3.is_some()
+    }
+
     /// Install the qwen4_exp MTP draft head for SHADOW measurement.
     ///
     /// The head owns the module, so this replaces `set_qwen4_exp_mtp` rather
@@ -86,6 +98,11 @@ impl TransformerModel {
             // a drafter scored against a different head measures the head, not
             // the draft.
             self.lm_head_nvfp4,
+            // ...or, under ATLAS_EXL3_NATIVE, the target's PACKED-TRELLIS head,
+            // borrowed. The checkpoint ships one `lm_head` and no `mtp.lm_head`,
+            // so this is a share, not a copy — and it routes the draft through
+            // the model's single `Exl3LaunchState`.
+            self.lm_head_exl3_shared(),
             &self.config,
             self.gpu.as_ref(),
             max_seq_len,

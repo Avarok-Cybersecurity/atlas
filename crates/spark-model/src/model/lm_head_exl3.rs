@@ -96,8 +96,16 @@ pub(crate) struct Exl3LmHead {
     c_f32_single: DevicePtr,
     /// Logical vocab (`config.vocab_size`) — the narrowed column count.
     vocab: usize,
-    /// Row capacity of the slabs, equal to the logits arena's row capacity.
+    /// Row capacity reachable through the logits arena, equal to that arena's
+    /// row capacity. Rows `0..max_rows` are keyed by the destination logits
+    /// row; row `max_rows` is the RESERVED DRAFT ROW (see `draft_row`).
     max_rows: usize,
+    /// Allocated rows of the fp16 slabs = `max_rows + 1`. The extra row is
+    /// the qwen4_exp MTP draft head's, whose destination is its own PRIVATE
+    /// arena and therefore has no logits-arena row to key on. Reserving a row
+    /// instead of borrowing row 0 keeps the draft's rotation scratch disjoint
+    /// from every co-dispatched prefill row.
+    slab_rows: usize,
 }
 
 impl Exl3LmHead {
@@ -174,8 +182,10 @@ impl Exl3LmHead {
                 }
             }
         };
-        let a_f16 = alloc(max_rows * hidden * 2)?;
-        let c_f16 = alloc(max_rows * w.out_dim * 2)?;
+        // One row past the logits arena: the reserved MTP-draft row.
+        let slab_rows = max_rows + 1;
+        let a_f16 = alloc(slab_rows * hidden * 2)?;
+        let c_f16 = alloc(slab_rows * w.out_dim * 2)?;
         // 8 rows (the GEMV tier's cap): row 0 is the fp32-logits single-token
         // path; rows 0..8 are the fp32-C GEMM target for small-row
         // projections at K > 4, where no GEMV instance exists and the f16-C
@@ -189,8 +199,8 @@ impl Exl3LmHead {
             w.k_bits,
             w.cb,
             w.out_dim,
-            max_rows as f64 * hidden as f64 * 2.0 / 1e6,
-            max_rows as f64 * w.out_dim as f64 * 2.0 / 1e6,
+            slab_rows as f64 * hidden as f64 * 2.0 / 1e6,
+            slab_rows as f64 * w.out_dim as f64 * 2.0 / 1e6,
         );
         Ok(Self {
             w,
@@ -201,7 +211,31 @@ impl Exl3LmHead {
             c_f32_single,
             vocab,
             max_rows,
+            slab_rows,
         })
+    }
+
+    /// The reserved scratch row for the qwen4_exp MTP draft head. Its logits
+    /// live in the draft's own private `BufferArena`, so it cannot key the
+    /// scratch by a logits-arena row the way every other caller does.
+    pub(crate) fn draft_scratch_row(&self) -> usize {
+        self.max_rows
+    }
+
+    /// One-row draft projection into an ARBITRARY destination (the qwen4_exp
+    /// MTP head's private arena), using the reserved scratch row. Everything
+    /// else — the shared `Exl3LaunchState` section, the fp32-C small-row tier
+    /// at K > 4, the pitched narrow copy — is the same path the target's own
+    /// head takes, which is the point: a draft scored against a different head
+    /// measures the head, not the draft.
+    pub(crate) fn project_draft(
+        &self,
+        gpu: &dyn GpuBackend,
+        src: DevicePtr,
+        dst: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        self.project(gpu, src, 1, self.draft_scratch_row(), dst, stream)
     }
 
     /// Project `src` BF16 `[rows, H]` into `dst` BF16 `[rows, V]` (contiguous
@@ -219,10 +253,10 @@ impl Exl3LmHead {
     ) -> Result<()> {
         let (k, n_pad) = (self.w.in_dim, self.w.out_dim);
         ensure!(
-            rows >= 1 && scratch_row + rows <= self.max_rows,
+            rows >= 1 && scratch_row + rows <= self.slab_rows,
             "EXL3 lm_head: rows={rows} at scratch row {scratch_row} exceeds the \
-             {}-row scratch (logits arena capacity)",
-            self.max_rows,
+             {}-row scratch (logits arena capacity + 1 reserved draft row)",
+            self.slab_rows,
         );
         let _section = self.launch.section(gpu, stream)?;
         let a = self.a_f16.offset(scratch_row * k * 2);
@@ -391,7 +425,15 @@ impl TransformerModel {
     /// Install the native EXL3 LM head (factory, post-construction — the
     /// `set_dflash_proposer` precedent; keeps the `new` signature stable).
     pub(crate) fn set_lm_head_exl3(&mut self, head: Exl3LmHead) {
-        self.lm_head_exl3 = Some(head);
+        self.lm_head_exl3 = Some(std::sync::Arc::new(head));
+    }
+
+    /// Share the native EXL3 head with the qwen4_exp MTP draft head. The
+    /// checkpoint has exactly ONE `lm_head` trellis — no `mtp.lm_head` — so
+    /// the draft BORROWS this one rather than materializing a copy, and by
+    /// construction goes through the same single `Exl3LaunchState`.
+    pub(crate) fn lm_head_exl3_shared(&self) -> Option<std::sync::Arc<Exl3LmHead>> {
+        self.lm_head_exl3.clone()
     }
 
     /// BF16 vocab projection through the native EXL3 head, with the scratch
