@@ -895,8 +895,9 @@ impl Qwen3AttentionLayer {
         // same rows at decode cost into the same moe_output().
         let small_m = {
             static SMALL_M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *SMALL_M
-                .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0"))
+            *SMALL_M.get_or_init(|| {
+                std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
+            })
         };
         // The K=1 arm carries the weight: `decode_verify_hc` splits verify into
         // row-0-then-drafts, so at gamma=1 both calls arrive as a single row.

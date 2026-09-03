@@ -18,6 +18,7 @@
 //! phase-3 proposes have already clobbered the live rows).
 
 use super::*;
+use super::verify_k2_step::commit_verify_aux_or_finish;
 
 /// Source of the accepted-position hidden fed to `run_mtp_propose_multi`.
 #[derive(Clone, Copy)]
@@ -127,6 +128,11 @@ pub(super) fn k4_apply_verdict(
             a.finished = true;
             return;
         }
+        // `decode_verify_graphed_k4` routes to the mHC mini-prefill too, so this
+        // path owes the auxiliary carries the same commit K=2/K=3 owe them.
+        if !commit_verify_aux_or_finish(model, a, k_rows, k_rows) {
+            return;
+        }
     } else {
         // ── Partial accept / reject: rewind the rejected tail. ──
         a.seq.seq_len -= nd - na;
@@ -144,6 +150,9 @@ pub(super) fn k4_apply_verdict(
                 na + 1
             );
             a.finished = true;
+            return;
+        }
+        if !commit_verify_aux_or_finish(model, a, na + 1, k_rows) {
             return;
         }
         for j in 0..na {

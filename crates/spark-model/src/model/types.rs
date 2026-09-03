@@ -32,6 +32,26 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight
 /// 512 covers the gate's 256-token serial re-probe interval with 2x margin.
 pub(super) const MTP_CATCHUP_RING_ROWS: usize = 512;
 
+/// The per-row auxiliary-carry snapshots an mHC K-row verify leaves behind for
+/// the commit that follows it.
+///
+/// `rows[t]` is `collect_verify_aux_states` taken AFTER verify row `t`, for
+/// every `t` in `verify_hc::hc_publish_rows(k)`. It carries only the layers
+/// whose carry cannot be rebuilt by truncation (PLE's rolling conv + n-gram
+/// history); the mark-rewindable ones (QSA `ingested`/`pooled`) are realigned
+/// from `base_pos + num_accepted` instead of restored from a blob, which keeps
+/// a per-step multi-megabyte key D2H out of the decode loop.
+pub(crate) struct VerifyAuxRows {
+    /// `seq_len` BEFORE the verify — the position row 0 was processed at. The
+    /// absolute alignment target for a commit of `n` rows is `base_pos + n`.
+    pub(crate) base_pos: usize,
+    /// The verify width this stash was taken for. A commit quoting a different
+    /// `k` is a scheduler/model disagreement, not something to paper over.
+    pub(crate) k: usize,
+    /// Snapshot after row `t`, indexed by `t`.
+    pub(crate) rows: Vec<Vec<(u32, Vec<u8>)>>,
+}
+
 pub struct TransformerModel {
     pub(super) config: ModelConfig,
     /// Which GEMM implementation each projection takes, resolved from the
@@ -231,10 +251,17 @@ pub struct TransformerModel {
     /// It drafts a token each decode step and records whether the target's next
     /// token matches — nothing is ever fed back, so no speculation occurs.
     pub(super) qwen4_exp_mtp_head: Option<Arc<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead>>,
-    /// Aux carries (QSA marks + PLE conv/history) snapshotted between the
-    /// committed row and the draft rows of an mHC K-row verify, so a rejected
-    /// draft can be rolled back to exactly "token_0 committed". See verify_hc.
-    pub(super) pending_verify_aux: std::sync::Mutex<Option<Vec<(u32, Vec<u8>)>>>,
+    /// PER-ROW aux snapshots taken during an mHC K-row verify, one entry per
+    /// row in `verify_hc::hc_publish_rows(k)`: entry `t` is the carry state
+    /// after verify row `t`. `commit_verify_aux` restores entry
+    /// `commit_rewind_index(num_accepted)` — the SAME index
+    /// `commit_accepted_prefix` rewinds the SSM state to — so a partial accept
+    /// lands the carries on exactly the rows that were committed.
+    ///
+    /// A single row-0 snapshot (what this held before 2026-09-03) is only
+    /// correct when exactly one row commits; every K=3 partial accept restored
+    /// a row SHORT. See verify_hc.
+    pub(super) pending_verify_aux: std::sync::Mutex<Option<VerifyAuxRows>>,
     /// The head's single-sequence draft state. Shadow mode is C=1 only: one
     /// state, so a concurrent batch would interleave two sequences' drafts into
     /// it. The shadow step refuses to run when the batch is wider than one.
