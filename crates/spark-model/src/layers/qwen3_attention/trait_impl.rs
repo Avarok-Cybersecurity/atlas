@@ -124,6 +124,15 @@ impl TransformerLayer for Qwen3AttentionLayer {
         self.qsa.is_some()
     }
 
+    /// QSA is a MARK rewind: `align_aux` below moves `ingested`/`pooled` to an
+    /// absolute position and every buffer is written forward from them, so a
+    /// speculative rollback needs no blob from this layer. Snapshotting it
+    /// instead would push `ingested * hd * 2` bytes per layer through the host
+    /// on every verify step. Pairs with `aux_rewind_is_exact`'s doc comment.
+    fn aux_rewind_is_exact(&self) -> bool {
+        true
+    }
+
     fn snapshot_aux(
         &self,
         state: &dyn LayerState,

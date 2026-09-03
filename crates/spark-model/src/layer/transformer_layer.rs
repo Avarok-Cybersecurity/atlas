@@ -129,6 +129,27 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when [`Self::align_aux`] alone restores this layer's aux carry
+    /// exactly, so a speculative rollback needs NO blob for it.
+    ///
+    /// The two carries this model class advances during a K-row verify want
+    /// different mechanisms, and the difference is not stylistic:
+    ///
+    /// * QSA's `ingested`/`pooled` are CONTIGUOUS MARKS over buffers written
+    ///   forward from them, so moving the mark back to the committed position
+    ///   is a complete rewind — and it costs nothing, where a snapshot would
+    ///   round-trip `ingested * head_dim * 2` bytes of raw keys per attention
+    ///   layer through the host on EVERY speculative step.
+    /// * PLE's rolling conv state and its fixed-length n-gram history window
+    ///   have already discarded their oldest entries, so truncation cannot
+    ///   rebuild them. Those must be snapshotted.
+    ///
+    /// `collect_verify_aux_states` skips layers that answer `true` here;
+    /// `commit_verify_aux` realigns them by absolute position instead.
+    fn aux_rewind_is_exact(&self) -> bool {
+        false
+    }
+
     /// Align this layer's aux carry to an ABSOLUTE sequence position.
     ///
     /// Used before a verify replays rows the carry may already have ingested.
