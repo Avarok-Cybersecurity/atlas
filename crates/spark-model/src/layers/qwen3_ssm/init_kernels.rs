@@ -129,8 +129,16 @@ mod table_registry_tests {
     fn table_names_hold_the_index_contract() {
         for (i, (n, f)) in WYN_TABLE_NAMES.iter().zip(WYN_F16_TABLE_NAMES).enumerate() {
             let k = i + 5;
-            assert_eq!(*n, format!("gated_delta_rule_wy{k}_table"), "fp32 index {i}");
-            assert_eq!(f, format!("gated_delta_rule_wy{k}_f16_table"), "f16 index {i}");
+            assert_eq!(
+                *n,
+                format!("gated_delta_rule_wy{k}_table"),
+                "fp32 index {i}"
+            );
+            assert_eq!(
+                f,
+                format!("gated_delta_rule_wy{k}_f16_table"),
+                "f16 index {i}"
+            );
         }
     }
 
