@@ -566,3 +566,50 @@ PR that hardens it: `/seal` verified codeowner coverage across the diff,
 suite plus the wiring guard ran as required contexts on the same commit.
 
 **Still open.** Nothing known. The record's last entry is the merge itself.
+
+---
+
+## Wave 15 — #843 merged, and the merge exposed a real defect
+
+**#843 merged** at 21:10:18Z as `dc6dd82a31`. The suite, the wiring guard, the
+authority assertion and the preflight are all on `main`, and the guard confirms
+the suite still runs in a required job.
+
+**The bot answered the merge in 3 seconds** and finished in 25, on the
+self-hosted runner. It posted the first certificate this pipeline has ever
+produced — #836 and #840 could not certificate themselves, because a
+comment-handler workflow runs from the default branch *as it was when the event
+fired*, and the machinery was landing in those very merges.
+
+**Then the verification found a defect.** The certificate comment shipped a
+broken image: `bot-cards/pr-843-112aac4b.png` is a **404**. `rsvg-convert` and
+`segno` are both present on avarok, the branch exists — but it still contains
+only `README.md`. The upload never happened, almost certainly for want of
+`contents: write`, and the PUT is deliberately non-fatal so that a missing grant
+cannot swallow the certificate itself. Non-fatal made it **silent**.
+
+**Two fixes, because there were two defects.**
+
+*The bot* now checks the object exists before linking it, and falls back to the
+committed generic certificate with a `::warning` when it does not. A generic
+image is worse than a bespoke one; a 404 is worse than both.
+
+*The preflight* — the guard I built in wave 11 specifically to catch permission
+gaps — probed `contents:read` and **never `contents:write`**, which is the
+permission that actually failed. It now performs a real write to `bot-cards` and
+deletes the probe file afterwards.
+
+**The control proved it.** A new suite check drives the bot with a stub whose
+contents lookup fails and asserts the comment does not reference the missing
+object. Reverting the bot to link unconditionally turns it red. 82 checks now.
+
+**The lesson.** Wave 11 asserted every permission the pipeline *reads* and one
+it writes, and I recorded it as closing the offline gap. It closed most of it.
+The write that mattered was the one I did not think to probe — and the failure
+mode I had designed in (non-fatal upload) is exactly what hid it. **A guard
+built from your own model of the system inherits the blind spots of that model.
+Only running the real thing found this.**
+
+**Still open.** The App very likely lacks `contents: write` on this repo. The
+preflight will now say so on its next run; granting it is a change to the App's
+permissions that a human has to accept.

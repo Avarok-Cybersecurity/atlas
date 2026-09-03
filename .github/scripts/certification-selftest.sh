@@ -643,6 +643,36 @@ STUB
   runbot pr-certification-merged "" 1
   ! certed && ok "control: a certificate already posted is not posted again" \
     || bad "control: it posted a second certificate"
+
+  # CONTROL: when the image upload fails, the comment must NOT link an object
+  # that was never written. #843 shipped a certificate whose <img> was a 404,
+  # because the PUT is non-fatal by design and nothing checked the result.
+  # The stub's contents lookup fails, so the fallback must be chosen.
+  botstub 0
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+printf 'ARGV: %s\n' "$*" >> "$BCALLS"
+case "$*" in
+  *contents*bot-cards*) exit 1 ;;                 # the image is NOT there
+  *comments*--jq*) echo "0" ;;
+  *"/pulls/"*) echo "alice" ;;
+  *) : ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/bin/gh"
+  ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+    STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
+    bash "$TMP/bot.sh" >/dev/null 2>&1 )
+  if grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; then
+    if grep -q 'bot-cards/pr-1-' "$TMP/bcalls"; then
+      bad "control: it linked an image that was never uploaded"
+    else
+      ok "control: a failed upload falls back, never links a 404"
+    fi
+  else
+    bad "control: no certificate was posted at all when the upload failed"
+  fi
 else
   bad "could not extract the bot's comment step"
 fi

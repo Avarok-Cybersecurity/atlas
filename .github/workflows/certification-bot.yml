@@ -261,7 +261,18 @@ jobs:
                      -f message="certificate for #$PR" -f content="$b64" \
                      -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
                      >/dev/null 2>&1 || true
-              cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
+              # Only point at the generated image if it is ACTUALLY THERE. The
+              # upload needs `contents: write` on bot-cards, and the PUT above is
+              # deliberately non-fatal so a missing grant cannot swallow the
+              # certificate itself -- but referencing an object that was never
+              # written posts a broken image, which is worse than posting the
+              # generic one. Verified on #843: the comment shipped a 404.
+              cert="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/certificate-merged.png"
+              if gh api "repos/$REPO/contents/$path?ref=bot-cards" >/dev/null 2>&1; then
+                cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
+              else
+                echo "::warning title=Certificate image was not uploaded::falling back to the generic certificate. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this."
+              fi
               gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
           ${who:-@}— merged. Every required benchmark gate was certified against a
           frozen commit before this landed, and the record is public.
