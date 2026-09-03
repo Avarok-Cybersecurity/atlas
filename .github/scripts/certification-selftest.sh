@@ -50,6 +50,21 @@ want_nonzero() {
   fi
 }
 
+# want_rc_msg <expected-rc> <substring> <label> <cmd...> -- rc AND which guard
+# fired. Several guards here overlap: a record with no sidecar trips the
+# signature check AND the one-signer check, because "no sidecar" reads as a
+# distinct signer. A control that only asserts rc=1 therefore passes even when
+# the guard it targets has been deleted -- verified: removing the signature
+# check left the suite green at 32/32.
+want_rc_msg() {
+  local want=$1 needle=$2 label=$3; shift 3
+  "$@" >"$TMP/out" 2>&1; local got=$?
+  if [ "$got" = "$want" ] && grep -qF "$needle" "$TMP/out"; then ok "$label"; else
+    bad "$label (rc=$got want=$want; expected message containing '$needle')"
+    sed 's/^/       /' "$TMP/out" | head -4
+  fi
+}
+
 # want_rc <expected> <label> <cmd...>
 want_rc() {
   local want=$1 label=$2; shift 2
@@ -143,6 +158,91 @@ want_rc 0 "truncation does not die on a 300KB body" \
 # fails on input where the UNPIPED form above succeeded. The pipe is the cause.
 want_nonzero "control: the pre-fix (piped) form fails on the same input" \
   bash -c "set -euo pipefail; b=\$(jq -r '.body // \"\"' '$TMP/big.json' | head -c 4000); echo ok"
+
+echo "== ci.yml decision logic (extracted and run against a stubbed API) =="
+# These shell blocks decide whether anything merges uncertified. They live
+# inside ci.yml where nothing could execute them, so they are pulled out and run
+# here against a fake `gh` -- no network, deterministic.
+extract() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/ci.yml"))
+job, name = sys.argv[1].split("/", 1)
+for st in d["jobs"][job]["steps"]:
+    if (st.get("name") or "") == name or (name == "-" and st.get("run")):
+        print(st["run"]); break
+' "$1"; }
+
+mkstub() {
+  mkdir -p "$TMP/bin"
+  printf '#!/bin/bash\ncase "$*" in\n  *check-runs*) echo "%s" ;;\n  *pulls/*/commits*) echo "" ;;\n  *pulls/*) echo deadbeefcafe ;;\n  *) echo "" ;;\nesac\n' "$1" > "$TMP/bin/gh"
+  chmod +x "$TMP/bin/gh"
+}
+
+extract 'stamp/-' > "$TMP/stamp.sh"
+if [ -s "$TMP/stamp.sh" ]; then
+  mkstub 1
+  : > "$TMP/go1"
+  ( PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/go1" REPO=o/r EVENT=pull_request \
+    SHA=abc PR=1 MQ_HEAD_REF= bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  grep -q 'stamped=true' "$TMP/go1" && ok "stamp: a Stamp releases the lane" || bad "stamp: a Stamp did not release the lane"
+  mkstub 0
+  : > "$TMP/go2"
+  ( PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/go2" REPO=o/r EVENT=pull_request \
+    SHA=abc PR=1 MQ_HEAD_REF= bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  grep -q 'stamped=false' "$TMP/go2" && ok "control: no Stamp holds the lane" || bad "control: an unstamped PR did not hold the lane"
+  : > "$TMP/go3"
+  ( PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/go3" REPO=o/r EVENT=merge_group \
+    SHA=abc PR= MQ_HEAD_REF= bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  grep -q 'stamped=true' "$TMP/go3" && ok "merge_group is never held" || bad "merge_group was held -- that would wedge the queue"
+else
+  bad "could not extract the stamp shell from ci.yml"
+fi
+
+extract 'pr-benchmark-gate-alias/Mirror the certification verdict' > "$TMP/alias.sh"
+if [ -s "$TMP/alias.sh" ]; then
+  want_rc 0 "alias: a green certification passes" \
+    env RESULT=success WEB_ONLY=false STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  want_rc 0 "alias: a web-only diff passes on a deliberate skip" \
+    env RESULT=skipped WEB_ONLY=true STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  want_rc 0 "alias: an admin expedite passes" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=true bash "$TMP/alias.sh"
+  want_rc 1 "control: held (unstamped) stays red" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=false EXPEDITED=false bash "$TMP/alias.sh"
+  want_rc 1 "control: a failed certification stays red" \
+    env RESULT=failure WEB_ONLY=false STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # The one that matters most: a BROKEN classifier leaves WEB_ONLY empty. If that
+  # ever passed, any diff could skip certification by breaking classify-diff.
+  want_rc 1 "control: a broken classifier (empty web_only) stays red" \
+    env RESULT=skipped WEB_ONLY= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+else
+  bad "could not extract the alias shell from ci.yml"
+fi
+
+echo "== one PR, one commit, one signer =="
+extract 'pr-benchmark-gate/One PR, one commit, one signer' > "$TMP/oc.sh"
+if [ -s "$TMP/oc.sh" ]; then
+  R="$TMP/ocrepo"; rm -rf "$R"; mkdir -p "$R/.benchmarks/b"
+  ( cd "$R" && git init -q . && git config user.email t@t && git config user.name t \
+    && echo s > s && git add -A && git commit -qm base ) >/dev/null 2>&1
+  BASE=$( cd "$R" && git rev-parse HEAD )
+  mk() { printf '{"git_sha":"%s","recorded_at":1788300000}' "$2" > "$R/.benchmarks/b/$1.json"; }
+  sg() { printf '{"v":1,"key":"%s","sig":"x"}' "$2" > "$R/.benchmarks/b/$1.json.sig"; }
+  mk r1 aaaaaaaaaa; sg r1 k1; ( cd "$R" && git add -A && git commit -qm r1 ) >/dev/null 2>&1
+  want_rc 0 "records that agree pass" sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
+  mk r2 bbbbbbbbbb; sg r2 k1; ( cd "$R" && git add -A && git commit -qm r2 ) >/dev/null 2>&1
+  want_rc_msg 1 "span more than one commit" "control: records from two commits are refused" \
+    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
+  mk r2 aaaaaaaaaa; sg r2 k2; ( cd "$R" && git add -A && git commit -qm r3 ) >/dev/null 2>&1
+  want_rc_msg 1 "more than one signer" "control: records from two signers are refused" \
+    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
+  # The backdating bypass: an ADDED record with no signature at all.
+  rm -f "$R/.benchmarks/b/r2.json.sig"; sg r1 k1
+  ( cd "$R" && git add -A && git rm -q --cached .benchmarks/b/r2.json.sig 2>/dev/null; git commit -qm r4 ) >/dev/null 2>&1
+  want_rc_msg 1 "Unsigned record added" "control: an added record with no signature is refused" \
+    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
+else
+  bad "could not extract the one-commit-one-signer shell from ci.yml"
+fi
 
 echo
 echo "  $PASS passed, $FAIL failed"

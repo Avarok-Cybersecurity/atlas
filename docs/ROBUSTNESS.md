@@ -137,3 +137,43 @@ still be true on a machine you have never used.
 
 **Still open.** `certification-state.sh` and the `ci.yml` stamp/seal/expedite
 shell remain uncovered. CI has not yet confirmed this wave.
+
+---
+
+## Wave 4 — the ci.yml decision logic, and a control that measured nothing
+
+**Found.** Four shell blocks inside `ci.yml` decide whether anything merges
+uncertified — the stamp verdict, the seal verdict, the alias that mirrors
+certification into a required check, and the one-commit-one-signer step. They
+live inside a workflow file, where nothing could execute them. None had ever
+run outside a real CI job.
+
+**Changed.** The suite now extracts each block from `ci.yml` with PyYAML and
+runs it against a stubbed `gh`. 13 new checks, 7 of them controls. Total 32.
+
+**The control proved it — and then failed to.** Three sabotages of `ci.yml`:
+
+| Sabotage | Caught? |
+|---|---|
+| alias flips `WEB_ONLY = "true"` to `!= "false"` (the fail-open doctrine violation) | ✅ `control: a broken classifier (empty web_only) stays red` |
+| stamp stops short-circuiting non-PR events (would wedge the merge queue) | ✅ `merge_group was held` |
+| **one-commit step stops requiring a signature on added records** | ❌ **32/32, green** |
+
+The third is the finding. The control asserted only `rc=1`, and several guards
+in that step overlap: a record with no sidecar trips the signature check *and*
+the one-signer check, because "no sidecar" reads as a distinct signer. Deleting
+the guard under test left the suite green, because a different guard caught the
+same fixture.
+
+**A control that passes when the thing it tests has been deleted is measuring
+nothing.** It is the exact failure this record exists to catch, and it was in a
+check written one wave earlier specifically to catch such things.
+
+**Fixed.** `want_rc_msg` pins the exit code *and* which guard fired. The three
+one-commit controls now assert their own diagnostic — `Unsigned record added`,
+`span more than one commit`, `more than one signer`. Re-running sabotage 3 now
+fails correctly, naming the missing message.
+
+**Still open.** `certification-state.sh` has no coverage. The seal job's
+`merge_group` branch — which derives the PR number from a queue branch name — is
+exercised only by hand.
