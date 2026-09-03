@@ -215,6 +215,12 @@ pub fn step_verify_k2(
             a.finished = true;
             return;
         }
+        // Full accept discards no row, so no carry is restored — but the call
+        // still releases the verify's aux stash, and realigns the QSA marks
+        // that the mini-prefill advanced.
+        if !commit_verify_aux_or_finish(model, a, 2, 2) {
+            return;
+        }
         sched.timing.record(Phase::Commit, t_commit);
 
         // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
@@ -280,23 +286,6 @@ pub fn step_verify_k2(
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
 
-        // Models that verify by K-row mini-prefill (mHC highway) also advanced
-        // auxiliary carries the rewind above does not touch — notably the QSA
-        // `ingested`/`pooled` marks, guarded by a hard `pos == st.ingested`
-        // equality. Without this the desync compounds one row per rejection and
-        // output degenerates a dozen tokens in. No-op (`Ok(false)`) for every
-        // model without such a path.
-        match model.rollback_verify_rows(&mut a.seq, 1) {
-            Ok(_) => {}
-            Err(e) => {
-                // The carries are now untrustworthy; emitting from them would
-                // produce coherent-looking tokens off desynced state.
-                tracing::error!("rollback_verify_rows (reject): {e:#}");
-                a.finished = true;
-                return;
-            }
-        }
-
         let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
@@ -310,6 +299,15 @@ pub fn step_verify_k2(
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 2) {
             tracing::error!("commit_accepted_prefix (reject): {e:#}");
             a.finished = true;
+            return;
+        }
+        // Models that verify by K-row mini-prefill (mHC highway) also advanced
+        // auxiliary carries the SSM commit above does not touch: PLE's rolling
+        // conv + n-gram history, and the QSA `ingested`/`pooled` marks guarded
+        // by a hard `pos == st.ingested` equality. Without this the desync
+        // compounds one row per rejection. No-op (`Ok(false)`) for every model
+        // without such a path.
+        if !commit_verify_aux_or_finish(model, a, 1, 2) {
             return;
         }
         sched.timing.record(Phase::Commit, t_commit);
@@ -366,5 +364,30 @@ pub fn step_verify_k2(
         model.decode_marconi_checkpoint(&mut a.seq);
         sched.timing.record(Phase::MarconiCkpt, t_marconi);
         mtp_timing::step_done(&sched.timing, t_step, a.seq.seq_len);
+    }
+}
+
+/// Land the mHC auxiliary carries (PLE conv+history, QSA marks) on the rows
+/// this step committed. Shared with `verify_k3_step`, deliberately: it mirrors
+/// the `commit_accepted_prefix` call it sits next to, argument for argument,
+/// and one helper is what keeps the K=2 and K=3 halves from drifting — a
+/// mismatch rewinds the SSM state and the carries to different tokens.
+///
+/// Returns `false` and finishes the sequence when the carries could not be
+/// landed: emitting from a desynced carry produces coherent-looking tokens off
+/// state that never happened, which is worse than stopping.
+pub(super) fn commit_verify_aux_or_finish(
+    model: &dyn Model,
+    a: &mut ActiveSeq,
+    num_accepted: usize,
+    k: usize,
+) -> bool {
+    match model.commit_verify_aux(&mut a.seq, num_accepted, k) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::error!("commit_verify_aux({num_accepted}/{k}): {e:#}");
+            a.finished = true;
+            false
+        }
     }
 }

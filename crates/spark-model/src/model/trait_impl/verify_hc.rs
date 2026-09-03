@@ -128,47 +128,77 @@
 //! Speculation therefore stays behind BOTH `--speculative` and
 //! `ATLAS_QWEN4EXP_MTP_VERIFY=1`, and neither is a default.
 //!
-//! # What the caller still owes
+//! # THE THREE CARRIES, AND WHAT LANDS EACH (2026-09-03)
 //!
-//! This advances sequence state by K rows and does NOT roll back. The caller
-//! must `checkpoint_ssm_states` before and rewind on partial accept, exactly as
-//! the non-hc verify path requires. Two rewinds are NOT yet implemented and are
-//! why this stays behind a flag:
-//!   * QSA `ingested` is monotone with a hard `ensure!(pos == st.ingested)` and
-//!     has no rewind API;
-//!   * PLE host history advances per row with a documented corruption class.
+//! A K-row mini-prefill advances THREE pieces of per-sequence state one row at
+//! a time. A partial accept keeps `num_accepted` of those rows and discards the
+//! rest, so all three must be walked back to the SAME boundary — "state after
+//! row `num_accepted - 1`". They need three different mechanisms, which is why
+//! one blanket "restore the snapshot" never worked:
 //!
-//! # The rewind design (step 4), worked out but not yet wired
+//! | carry | mechanism | published by | landed by |
+//! |---|---|---|---|
+//! | SSM `h_state`/`conv_state` | per-row publish into the pool intermediates | `publish_verify_row_state` | `commit_accepted_prefix` |
+//! | PLE conv + n-gram history | per-row SNAPSHOT | `collect_verify_aux_states` | `restore_verify_aux_at` |
+//! | QSA `ingested`/`pooled` | ABSOLUTE mark rewind, no blob | — | `align_verify_aux_states` |
 //!
-//! The two carries need DIFFERENT mechanisms, which is why one blanket
-//! "restore the snapshot" does not work:
-//!
-//! * **QSA is a mark rewind and is now implemented** —
-//!   `QsaIndexer::rewind_seq_state`. `ingested`/`pooled` are contiguous marks
-//!   and both device buffers are written forward from them, so moving the marks
+//! * **QSA is a mark rewind.** `ingested`/`pooled` are contiguous marks and
+//!   both device buffers are written forward from them, so moving the marks
 //!   back is sufficient; stale bytes past the mark are overwritten by the next
-//!   ingest. Cheap, no replay.
+//!   ingest. It is also the one that MUST NOT be snapshotted: the blob carries
+//!   `ingested * head_dim * 2` bytes of raw keys PER ATTENTION LAYER, which at
+//!   context is megabytes through the host on every speculative step.
+//!   `Layer::aux_rewind_is_exact` is what routes it here.
 //! * **PLE needs a SNAPSHOT.** `PleSeqState::conv` is a rolling FP32 device
 //!   convolution state and `history` is a fixed-length window whose oldest
 //!   entries have already rolled off, so neither can be reconstructed by
-//!   truncation. `snapshot_aux`/`restore_aux` already serialize both.
+//!   truncation. It is one layer and a ~100 KB blob, so per-row is cheap.
 //!
-//! ★ The placement is the subtle part. Restoring a PRE-verify snapshot leaves
-//! the carries at `seq_len`, but a partial accept lands the sequence at
-//! `seq_len + accepted` — one or more rows short. Taking the snapshot AFTER the
-//! committed row 0 (the real sampled token) and before the DRAFT rows makes
-//! restore land exactly right for the common γ=1 case: accept keeps everything,
-//! reject restores to precisely "token_0 committed, draft discarded". That
-//! argues for running verify as row-0-then-drafts rather than one K-row pass,
-//! and is the open design decision for step 4.
+//! ## ★ The index is the whole fix
 //!
-//! `snapshot_aux`/`restore_aux` are today wired only into the prefix-cache
-//! path.
+//! The earlier cut took ONE snapshot, after row 0, and restored it
+//! unconditionally from the K=2 reject branch. Two things were wrong with that,
+//! and the second is the one that explains the severity gradient:
+//!
+//! 1. It was DEFAULT-OFF (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm), so on the
+//!    default path a rejected row left both carries permanently advanced.
+//! 2. Row 0 is the right snapshot only for a ONE-ROW commit. `verify_k3_step`
+//!    computes `num_accepted <= 2` against `k = 3`, so EVERY K=3 step is a
+//!    partial accept, and its two-row commit needed row 1. Restoring row 0
+//!    there left the carries one row BEHIND the SSM state the very same commit
+//!    had just rewound — the two halves of one commit landing on different
+//!    tokens.
+//!
+//! So the stash is now per-row over `hc_publish_rows(k)` — the SAME range the
+//! SSM intermediates are published over — and the restore index is
+//! `commit_rewind_index(num_accepted)`, the SAME function
+//! `commit_accepted_prefix` uses. `verify_aux_restore_row` is the named pairing;
+//! `aux_restore_row_tracks_the_ssm_rewind_index` is the CPU test that fails if
+//! the two ever drift.
+//!
+//! The absolute base matters too. `verify_hc_rows` advances `seq.seq_len` by K
+//! and the scheduler's reject branches rewind it at different points, so
+//! `VerifyAuxRows::base_pos` is captured BEFORE the pass and the QSA alignment
+//! target is `base_pos + num_accepted`, never a delta off a moving `seq_len`.
+//! `restore_verify_aux_at` asserts the two agree.
+//!
+//! DEFAULT ON, kill switch `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0`. Callers must
+//! still `checkpoint_ssm_states` before the verify, exactly as the non-hc path
+//! requires.
+//!
+//! ## Call sites
+//!
+//! Every scheduler branch that calls `commit_accepted_prefix(n, k)` for an mHC
+//! model calls `commit_verify_aux(n, k)` beside it with the same arguments:
+//! `verify_k2_step` (both branches), `verify_k3_step` (all three) and
+//! `verify_k4_verdict` (both). One shared helper,
+//! `commit_verify_aux_or_finish`, so the K=2/K=3/K=4 copies cannot drift.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
-use super::super::types::TransformerModel;
+use super::super::types::{TransformerModel, VerifyAuxRows};
+use super::async_chkpt::commit_rewind_index;
 use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::layers::ops;
 use crate::traits::SequenceState;
@@ -183,11 +213,11 @@ impl TransformerModel {
     /// back exactly.
     ///
     /// Row 0 is the already-sampled real token and is always kept; rows 1.. are
-    /// the drafts. The aux carries (QSA marks + PLE conv/history) are
-    /// snapshotted BETWEEN the two, which is what makes `rollback_verify_hc`
-    /// land on "token_0 committed, drafts discarded" rather than on pre-verify.
-    /// Restoring a pre-verify snapshot would leave the carries a row SHORT of
-    /// the sequence, which is a silent desync, not an error.
+    /// the drafts. The PLE carry is snapshotted after EVERY row a partial
+    /// accept can land on, not just after row 0, so `commit_verify_aux` can
+    /// restore the row the commit actually kept. A single row-0 snapshot is
+    /// correct only for a one-row commit; every wider partial accept restored
+    /// it a row SHORT of the sequence, which is a silent desync, not an error.
     pub(super) fn decode_verify_hc(
         &self,
         tokens: &[u32],
@@ -234,43 +264,67 @@ impl TransformerModel {
         // num_accepted-1"). `ATLAS_QWEN4EXP_MTP_HC_COMMIT=0` restores the old
         // fused 1 + (K-1) split for A/B — it re-enables the corruption, so it
         // is a diagnostic switch, not a supported mode.
+        let base_pos = seq.seq_len;
         if !hc_verify_publishes_intermediates() {
             let mut out = self.verify_hc_rows(&tokens[..1], seq, stream)?;
             if k == 1 {
                 return Ok(out);
             }
-            let stash = self.collect_aux_states(seq, stream_d)?;
-            *self
-                .pending_verify_aux
-                .lock()
-                .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+            // The pre-fix stash, reproduced deliberately: ONE snapshot after
+            // row 0, handed to every restore index. That is the single-snapshot
+            // behaviour this file's fix replaced, so the diagnostic arm
+            // reproduces the corruption rather than erroring on a missing row.
+            let stash = self.collect_verify_aux_states(seq, stream_d)?;
+            self.stash_verify_aux(VerifyAuxRows {
+                base_pos,
+                k,
+                rows: vec![stash; hc_publish_rows(k).len().max(1)],
+            })?;
             out.extend(self.verify_hc_rows(&tokens[1..], seq, stream)?);
             return Ok(out);
         }
 
         let mut out = Vec::with_capacity(k);
+        let mut aux_rows: Vec<Vec<(u32, Vec<u8>)>> = Vec::with_capacity(hc_publish_rows(k).len());
         for t in 0..k {
             out.extend(self.verify_hc_rows(&tokens[t..t + 1], seq, stream)?);
             // State after token `t`. Only indices [0, k-2] are reachable by
             // `commit_accepted_prefix` (`num_accepted <= k-1` on every partial
             // accept), so the last row's snapshot is skipped: it is the live
             // state already, and `num_accepted == k` short-circuits.
+            //
+            // ★ ONE RANGE GOVERNS BOTH HALVES OF THE ROLLBACK. The SSM
+            // intermediates and the auxiliary carries are rewound by the same
+            // index (`commit_rewind_index(num_accepted)`) from the same
+            // commit, so they must be published for the same rows or the two
+            // land on different tokens. Publishing them in one branch is what
+            // keeps that true by construction.
             if hc_publish_rows(k).contains(&t) {
                 self.publish_verify_row_state(seq, t, stream_d)?;
-            }
-            // Snapshot the carries with token_0 committed and no draft
-            // applied. `collect_aux_states` covers BOTH: qwen3_attention's
-            // snapshot_aux serializes the QSA carry, qwen3_ssm's serializes
-            // PLE's.
-            if t == 0 && k > 1 {
-                let stash = self.collect_aux_states(seq, stream_d)?;
-                *self
-                    .pending_verify_aux
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+                // Carries with rows [0..=t] applied and no later draft. Only
+                // the non-mark-rewindable half is serialized (PLE's conv +
+                // n-gram history); QSA is realigned by absolute position in
+                // `restore_verify_aux_at`, which costs nothing and avoids a
+                // per-layer raw-key round trip on every speculative step.
+                aux_rows.push(self.collect_verify_aux_states(seq, stream_d)?);
             }
         }
+        if k > 1 {
+            self.stash_verify_aux(VerifyAuxRows {
+                base_pos,
+                k,
+                rows: aux_rows,
+            })?;
+        }
         Ok(out)
+    }
+
+    fn stash_verify_aux(&self, stash: VerifyAuxRows) -> Result<()> {
+        *self
+            .pending_verify_aux
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+        Ok(())
     }
 
     /// Copy this sequence's live GDN `h_state`/`conv_state` into the verify
@@ -327,55 +381,98 @@ impl TransformerModel {
                     ssm.conv_state_intermediates.len()
                 )
             })?;
-            self.gpu.copy_d2d_async(ssm.h_state, h_dst, h_bytes, stream)?;
+            self.gpu
+                .copy_d2d_async(ssm.h_state, h_dst, h_bytes, stream)?;
             self.gpu
                 .copy_d2d_async(ssm.conv_state, c_dst, conv_bytes, stream)?;
         }
         Ok(())
     }
 
-    /// Undo `rows` draft rows after a rejected verify, restoring both aux
-    /// carries to the snapshot taken after the committed row.
+    /// Land the auxiliary carries on a commit of `num_accepted` out of `k`
+    /// verify rows, leaving `seq_len`/`tokens` to the caller.
     ///
-    /// The KV written for the discarded positions is left alone deliberately:
-    /// it is past `seq_len` and the next step overwrites it.
-    /// Restore ONLY the auxiliary carries stashed by `decode_verify_hc`, leaving
-    /// `seq_len`/`tokens` to the caller.
+    /// PLE is restored from the per-row snapshot at
+    /// `verify_aux_restore_row(num_accepted, k)`; QSA is realigned to the
+    /// absolute position `base_pos + num_accepted`. The KV written for the
+    /// discarded positions is left alone deliberately: it is past `seq_len` and
+    /// the next step overwrites it.
     ///
-    /// The scheduler's reject branch already owns the token/seq_len rewind
-    /// (`seq_len -= 1` + `commit_accepted_prefix`); what it cannot do is rewind
-    /// the QSA `ingested`/`pooled` marks a mini-prefill advanced. Splitting the
-    /// aux half out lets the scheduler call exactly the missing piece instead of
-    /// rewinding `seq_len` a second time.
-    pub(super) fn restore_verify_aux(&self, seq: &mut SequenceState, stream: u64) -> Result<()> {
+    /// The scheduler's branch already owns the token/`seq_len` rewind
+    /// (`seq_len -= rejected` + `commit_accepted_prefix`); what it cannot do is
+    /// walk back the carries a mini-prefill advanced. Splitting the aux half out
+    /// lets the scheduler call exactly the missing piece instead of rewinding
+    /// `seq_len` a second time.
+    pub(super) fn restore_verify_aux_at(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        k: usize,
+    ) -> Result<()> {
+        let stream = self.gpu.default_stream();
         let stash = self
             .pending_verify_aux
             .lock()
             .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
             .take();
-        let Some(blobs) = stash else {
+        let Some(stash) = stash else {
             anyhow::bail!(
-                "restore_verify_aux with no stashed aux snapshot — decode_verify_hc \
-                 must run first, or the carries cannot be rewound"
+                "commit_verify_aux({num_accepted}/{k}) with no stashed aux snapshot — \
+                 decode_verify_hc must run first, or the carries cannot be rewound"
             );
         };
-        self.apply_aux_states(seq, &blobs, stream)
-    }
+        anyhow::ensure!(
+            stash.k == k,
+            "commit_verify_aux quotes k={k} but the stash was taken for k={} — the \
+             scheduler and the verify disagree about the draft width, and restoring \
+             across that mismatch would land the carries on the wrong token",
+            stash.k
+        );
+        anyhow::ensure!(
+            num_accepted >= 1 && num_accepted <= k,
+            "commit_verify_aux: num_accepted={num_accepted} outside 1..={k}"
+        );
+        // The scheduler owns the token/`seq_len` rewind and runs it BEFORE the
+        // commit; this pins that the two agree about where the sequence landed.
+        // If they ever disagree the QSA alignment below would move the marks to
+        // a position the sequence is not at, which the next decode reports as
+        // "decode at pos N but M tokens ingested" — a confusing symptom a long
+        // way from its cause.
+        anyhow::ensure!(
+            stash.base_pos + num_accepted == seq.seq_len,
+            "commit_verify_aux({num_accepted}/{k}): verify started at {} so the \
+             sequence should be at {} after committing {num_accepted} rows, but \
+             seq_len is {} — the scheduler's rewind and this commit disagree",
+            stash.base_pos,
+            stash.base_pos + num_accepted,
+            seq.seq_len
+        );
 
-    pub(super) fn rollback_verify_hc(
-        &self,
-        seq: &mut SequenceState,
-        rows: usize,
-        stream: u64,
-    ) -> Result<()> {
-        if rows == 0 {
-            return Ok(());
+        // ── The snapshot half: PLE's conv + n-gram history ──
+        // Skipped on a FULL accept: no row was discarded, so the live carry is
+        // already the committed one (and `hc_publish_rows` never snapshots the
+        // last row for exactly that reason).
+        if let Some(idx) = verify_aux_restore_row(num_accepted, k) {
+            let blobs = stash.rows.get(idx).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mHC verify: commit of {num_accepted}/{k} rows needs aux snapshot \
+                     {idx}, but the verify stashed only {} — the publish range and \
+                     `commit_rewind_index` have drifted apart",
+                    stash.rows.len()
+                )
+            })?;
+            self.apply_aux_states(seq, blobs, stream)?;
         }
-        self.restore_verify_aux(seq, stream)?;
-        seq.seq_len = seq.seq_len.saturating_sub(rows);
-        let keep = seq.tokens.len().saturating_sub(rows);
-        seq.tokens.truncate(keep);
-        Ok(())
+
+        // ── The mark half: QSA `ingested`/`pooled` ──
+        // ALWAYS, including full accept, and by ABSOLUTE position. The verify
+        // advanced the marks by `k`; the sequence kept `num_accepted`. Aligning
+        // to `base_pos + num_accepted` is a no-op when they already agree, so
+        // this is safe to run on every branch and leaves nothing for the next
+        // step's `align_aux` to discover — which matters because a Marconi
+        // checkpoint can be taken between the two, and would otherwise
+        // serialize marks that are ahead of the sequence.
+        self.align_verify_aux_states(seq, stash.base_pos + num_accepted, stream)
     }
 
     /// One K-row mini-prefill. Advances sequence state by K rows.
@@ -616,10 +713,40 @@ pub(super) fn hc_publish_rows(k: usize) -> std::ops::Range<usize> {
     0..k.saturating_sub(1)
 }
 
+/// `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0` disables the auxiliary-carry commit.
+/// Diagnostic only — with it off, every rejected verify row leaves PLE's
+/// rolling conv/history and QSA's marks one row ahead of the sequence.
+///
+/// It replaces `ATLAS_QWEN4EXP_MTP_ROLLBACK=1`, which was the same rollback in
+/// arm-to-use polarity AND wrong: reachable only from the K=2 reject branch,
+/// and hard-wired to snapshot row 0.
+pub(super) fn hc_verify_commits_aux() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_AUX_COMMIT").as_deref() != Ok("0"))
+}
+
+/// The aux snapshot row a commit of `num_accepted` out of `k` verify rows must
+/// restore, or `None` when the live carries are already correct.
+///
+/// This is the auxiliary-carry twin of `commit_rewind_index`, and it delegates
+/// to it rather than restating the arithmetic: the PLE carry and the SSM state
+/// are rewound by the SAME commit and must land on the SAME token, so if the
+/// two indices could drift the model would run one carry a row out from the
+/// other. `hc_publish_rows` is the range both are published over.
+///
+/// `None` at `num_accepted == k` mirrors `commit_accepted_prefix`'s
+/// short-circuit: nothing was discarded, so nothing is restored.
+pub(super) fn verify_aux_restore_row(num_accepted: usize, k: usize) -> Option<usize> {
+    if num_accepted == 0 || num_accepted >= k {
+        return None;
+    }
+    Some(commit_rewind_index(num_accepted))
+}
+
 #[cfg(test)]
 mod hc_intermediate_contract_tests {
-    use super::hc_publish_rows;
     use super::super::async_chkpt::commit_rewind_index;
+    use super::hc_publish_rows;
 
     /// THE regression this pins: every intermediate slot
     /// `commit_accepted_prefix` can read on a partial accept must have been
@@ -650,5 +777,74 @@ mod hc_intermediate_contract_tests {
         assert_eq!(hc_publish_rows(2), 0..1);
         assert_eq!(hc_publish_rows(3), 0..2);
         assert_eq!(hc_publish_rows(4), 0..3);
+    }
+
+    /// THE regression this pins, aux half: every aux snapshot a commit can
+    /// restore must be one the verify actually stashed, and it must be the row
+    /// the SSM rewind lands on.
+    ///
+    /// This FAILS against the pre-fix code, which stashed exactly ONE snapshot
+    /// (after row 0) and restored it unconditionally: at k=3 with two rows
+    /// committed the correct row is 1, so the carries came back a row short of
+    /// the SSM state the same commit had just rewound.
+    #[test]
+    fn aux_restore_row_tracks_the_ssm_rewind_index() {
+        for k in 2..=8usize {
+            let published = hc_publish_rows(k);
+            for num_accepted in 1..k {
+                let idx = super::verify_aux_restore_row(num_accepted, k).unwrap_or_else(|| {
+                    panic!("k={k}: partial accept of {num_accepted} restores no aux row")
+                });
+                assert_eq!(
+                    idx,
+                    commit_rewind_index(num_accepted),
+                    "k={k}, accepted={num_accepted}: the aux carry and the SSM state \
+                     would be rewound to different tokens"
+                );
+                assert!(
+                    published.contains(&idx),
+                    "k={k}: commit of {num_accepted} rows restores aux snapshot {idx}, \
+                     which the verify never stashed ({published:?})"
+                );
+            }
+        }
+    }
+
+    /// The single-snapshot behaviour this replaced, stated as the thing that is
+    /// now false. Row 0 is correct ONLY for a one-row commit.
+    #[test]
+    fn aux_restore_row_is_not_always_row_zero() {
+        assert_eq!(super::verify_aux_restore_row(1, 2), Some(0));
+        assert_eq!(super::verify_aux_restore_row(1, 3), Some(0));
+        assert_eq!(super::verify_aux_restore_row(2, 3), Some(1));
+        assert_eq!(super::verify_aux_restore_row(2, 4), Some(1));
+        assert_eq!(super::verify_aux_restore_row(3, 4), Some(2));
+    }
+
+    /// A full accept discarded nothing, so it restores nothing — the same
+    /// short-circuit `commit_accepted_prefix` takes at `num_accepted == k`.
+    #[test]
+    fn aux_restore_row_is_none_on_a_full_accept() {
+        for k in 1..=8usize {
+            assert_eq!(super::verify_aux_restore_row(k, k), None, "k={k}");
+        }
+    }
+
+    /// The stash the verify builds must be exactly as long as the restore can
+    /// index. `decode_verify_hc` pushes one entry per `hc_publish_rows` row, so
+    /// the highest valid index is `len - 1`.
+    #[test]
+    fn every_restorable_row_is_inside_the_stash() {
+        for k in 2..=8usize {
+            let stashed = hc_publish_rows(k).len();
+            for num_accepted in 1..=k {
+                if let Some(idx) = super::verify_aux_restore_row(num_accepted, k) {
+                    assert!(
+                        idx < stashed,
+                        "k={k}: restore row {idx} but the verify stashes {stashed}"
+                    );
+                }
+            }
+        }
     }
 }
