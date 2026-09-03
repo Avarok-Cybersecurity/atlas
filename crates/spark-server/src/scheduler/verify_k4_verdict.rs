@@ -105,6 +105,10 @@ pub(super) fn k4_apply_verdict(
     let drafts = &drafts[..nd];
     let na = num_accepted.min(nd);
 
+    // Context-vs-emit ledger (debug): the graphed K=4 path shares this
+    // bookkeeping with K=2/K=3, so it is pinned by the same instrument.
+    crate::scheduler::verify_ledger::trace_ctx_vs_emit("K4", a, k_rows, v, drafts, na);
+
     if na == nd {
         // ── Full accept: every draft matched; v[nd] is the free bonus. ──
         for j in 0..nd {
