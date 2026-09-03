@@ -224,6 +224,17 @@ pub fn step_verify_k3(
         2
     };
 
+    // Context-vs-emit ledger (debug): pins that this branch commits to the
+    // model exactly what it emits to the client. See `verify_ledger`.
+    crate::scheduler::verify_ledger::trace_ctx_vs_emit(
+        "K3",
+        a,
+        3,
+        &[v0, v1, v2],
+        drafts,
+        num_accepted,
+    );
+
     // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
     // `base` is seq_len at step entry = the propose-time position of draft 0.

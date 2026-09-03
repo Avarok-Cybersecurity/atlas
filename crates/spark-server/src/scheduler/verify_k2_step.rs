@@ -168,6 +168,16 @@ pub fn step_verify_k2(
         )
     };
     let accepted = drafts[0] == v0;
+    // Context-vs-emit ledger (debug): pins that this branch commits to the
+    // model exactly what it emits to the client. See `verify_ledger`.
+    crate::scheduler::verify_ledger::trace_ctx_vs_emit(
+        "K2",
+        a,
+        2,
+        &[v0, v1],
+        drafts,
+        accepted as usize,
+    );
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {

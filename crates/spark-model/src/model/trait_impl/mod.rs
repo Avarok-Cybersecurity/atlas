@@ -420,6 +420,19 @@ impl Model for TransformerModel {
         if !self.verify_needs_hc_path() {
             return Ok(false);
         }
+        // The BATCHED arm lands the same two carries itself, from inside
+        // `commit_accepted_prefix` (`commit_verify_aux_rows`), keyed off
+        // `pending_verify_span` rather than the per-row `pending_verify_aux`
+        // stash this path reads. The two are ALTERNATIVES, not layers: with the
+        // batched arm on, `decode_verify_hc` returns before ever taking a
+        // per-row snapshot, so reaching the code below finds an empty stash and
+        // `restore_verify_aux_at` bails "with no stashed aux snapshot" — which
+        // the scheduler converts into `finished = true`, i.e. a 4-token empty
+        // reply rather than an error anyone sees. Measured exactly that before
+        // this guard: every prompt returned 4 tokens (gamma=1) / 2 (gamma=2).
+        if crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled() {
+            return Ok(false);
+        }
         if !verify_hc::hc_verify_commits_aux() {
             // Diagnostic A/B only: drop the stash so the next verify's
             // snapshot cannot be read against the wrong step.

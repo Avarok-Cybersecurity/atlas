@@ -805,12 +805,20 @@ impl TransformerModel {
                 &ctx,
                 stream,
             )?;
+            self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
         }
         drop(kv_cache);
 
         // ── K-row head: same tail as the non-hc verify ──
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
+        // ATLAS_LOGIT_PROBE=1: the VERIFY side of the hidden-state A/B against
+        // `decode_forward_body`. Same point in the pipeline (pre-final-norm),
+        // same row stride, so an equal fingerprint blames the head and an
+        // unequal one blames the layer bodies.
+        for t in 0..k {
+            self.hidden_probe("verify_hc", t, hidden.offset(t * h * 2), stream);
+        }
         self.final_norm_apply(hidden, normed, k as u32, h as u32, eps, stream)?;
         self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 

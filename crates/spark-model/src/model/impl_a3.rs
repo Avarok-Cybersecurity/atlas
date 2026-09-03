@@ -487,6 +487,45 @@ impl TransformerModel {
 
     /// DIAGNOSTIC ONLY (`ATLAS_LOGIT_PROBE=1`, default off, no-op otherwise).
     ///
+    /// Fingerprint of ONE pre-final-norm hidden row (sum of |x| over the row,
+    /// BF16). Paired with `logit_probe` so a verify-vs-decode A/B can say WHERE
+    /// the two paths part: equal hidden + different logits blames the head
+    /// (`lm_head` vs `lm_head_batched`), different hidden blames the layer
+    /// bodies (`decode()` vs `prefill()`).
+    pub(crate) fn hidden_probe_layer(&self, tag: &str, layer: usize, row: usize, hidden_row: DevicePtr, stream: u64) {
+        // Formatting the per-layer tag allocates, and this sits inside the
+        // decode layer loop, so the gate comes FIRST.
+        if !logit_probe_enabled() {
+            return;
+        }
+        self.hidden_probe(&format!("{tag}_L{layer}"), row, hidden_row, stream);
+    }
+
+    pub(crate) fn hidden_probe(&self, tag: &str, row: usize, hidden_row: DevicePtr, stream: u64) {
+        if !logit_probe_enabled() {
+            return;
+        }
+        let h = self.config.hidden_size;
+        let mut host = vec![0u8; h * 2];
+        if self.gpu.synchronize(stream).is_err() || self.gpu.copy_d2h(hidden_row, &mut host).is_err()
+        {
+            tracing::warn!("HIDDEN_PROBE[{tag}] row {row}: readback failed");
+            return;
+        }
+        let mut sabs = 0f64;
+        let mut maxabs = 0f32;
+        for c in host.chunks_exact(2) {
+            let v = f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16);
+            if v.is_finite() {
+                sabs += f64::from(v.abs());
+                maxabs = maxabs.max(v.abs());
+            }
+        }
+        tracing::info!("HIDDEN_PROBE[{tag}] row={row} sabs={sabs:.6} maxabs={maxabs:.6}");
+    }
+
+    /// DIAGNOSTIC ONLY (`ATLAS_LOGIT_PROBE=1`, default off, no-op otherwise).
+    ///
     /// Dumps one logits ROW so a speculative verify's rows can be A/B'd
     /// against a serial `decode()` of the same prefix: the row's argmax, its
     /// value, and the top-8 (id, value) pairs, tagged with the call site.
