@@ -24,11 +24,32 @@
 //! MINI-PREFILL of the K candidate tokens at positions
 //! `[seq_len, seq_len + K)`.
 //!
-//! Running EVERY layer through prefill (rather than mixing per-token attention
-//! decode with K-row SSM prefill) is not a stylistic choice: the highway buffer
-//! is laid out `[T, hc, H]`, so a 1-row attention path and a K-row SSM path
-//! would disagree about what row a stream belongs to. Uniform K keeps one
-//! layout.
+//! Running EVERY layer through prefill was the FIRST cut, on the belief that
+//! mixing per-token attention decode with a K-row SSM body could not work: the
+//! highway buffer is laid out `[T, hc, H]`, and a 1-row attention path was
+//! assumed to disagree with a K-row SSM path about what row a stream belongs
+//! to. That is not true, and the belief cost correctness. `hc_row_offset` is
+//! already a ROW INDEX into that same buffer -- `prefill_inner_hc` addresses
+//! the highway at `hc_row_offset * hc_mult * H * 4`
+//! (`qwen3_attention/trait_impl/prefill_inner.rs:565`), and the K-row GDN body
+//! at `trait_decode_batched_hc.rs:103` uses the identical expression. Teaching
+//! `decode_inner_hc` the same arithmetic (it had hard-coded row 0) makes a
+//! one-row decode body at `hc_row_offset = t` land on exactly the row a K-row
+//! body would have written. So the two layouts ARE the same layout, indexed
+//! the same way.
+//!
+//! That is what the default path now does: the 12 attention layers run as K
+//! sequential one-row `decode()` bodies (rows 0..K), the 36 GDN layers run as
+//! ONE K-row `decode_batched()` pass. Both write the same `[T, hc, H]`
+//! highway. It matters because verify row 0 re-processes a token a serial
+//! decode already committed, and prefill attention (chunked/flash paged
+//! kernel, GEMM projections, grouped MoE, QSA `prefill_ingest`) is a
+//! different reduction order from decode attention (paged-decode GEMV, GEMV
+//! projections, decode MoE, QSA `decode_select`) -- equivalent in exact
+//! arithmetic, not in bf16.
+//!
+//! Kill switch: `ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE=0` restores the K-row
+//! `prefill()` body for the attention layers.
 //!
 //! # MEASURED END TO END (2026-08-28) — RUNS, BUT WRONG AND SLOW
 //!
@@ -718,6 +739,34 @@ impl TransformerModel {
             moe_row_adapter: DevicePtr::NULL,
         };
 
+        // ── Per-row `seq_len` for the decode-shaped attention replay ──
+        //
+        // `prefill_b_upload_paged` writes ONE `i32` (the chunk end,
+        // `seq_len + K`) because a prefill's paged attention is causal-masked
+        // over the whole chunk. A DECODE step instead reads
+        // `seq_lens[0]` as "how many keys are visible", so row `t` needs its
+        // own value `seq_len + t + 1`. Parked immediately past the i64 slot
+        // table inside the SAME metadata region, which nothing else writes.
+        let attn_rows = verify_attn_decode_enabled();
+        let row_seq_lens = meta_base.offset(verify_row_seq_len_offset(meta.slot_offset, k));
+        if attn_rows {
+            let need = verify_row_seq_len_offset(meta.slot_offset, k) + k * VERIFY_SEQ_LEN_STRIDE;
+            anyhow::ensure!(
+                need <= meta_region,
+                "verify_hc: metadata region {meta_region} B cannot hold the per-row \
+                 seq_len array ({need} B needed)"
+            );
+            let vals: Vec<i32> = (0..k)
+                .map(|t| verify_row_seq_len_value(seq.seq_len, t))
+                .collect();
+            // SAFETY: exactly `k * 4` bytes over the live, fully initialised
+            // `vals` Vec built on the lines above.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(vals.as_ptr() as *const u8, k * VERIFY_SEQ_LEN_STRIDE)
+            };
+            self.gpu.copy_h2d(bytes, row_seq_lens)?;
+        }
+
         let ctx = ForwardContext {
             buffers: &self.buffers,
             hc_row_offset: 0,
@@ -783,7 +832,116 @@ impl TransformerModel {
                 );
             });
         }
+        if attn_rows {
+            static SAID_ATTN: std::sync::Once = std::sync::Once::new();
+            SAID_ATTN.call_once(|| {
+                tracing::info!(
+                    "mHC verify: attention layers replayed as K sequential one-row \
+                     DECODE bodies (kill switch ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE=0)"
+                );
+            });
+        }
+        // EXPERIMENTAL, opt-in (`ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1`): send the
+        // GDN layers down the same one-row decode body. Legal ONLY at k == 1 --
+        // the per-row reference arm's pass width -- because a plain `decode()`
+        // writes no `h_state_intermediates`, and at k > 1 the commit rewind
+        // would read never-written pool memory. At k == 1 `hc_publish_rows(1)`
+        // is empty and the CALLER publishes the row state after the pass
+        // (`publish_verify_row_state`), so the contract still holds.
+        let ssm_rows = attn_rows && k == 1 && verify_ssm_decode_enabled();
+        anyhow::ensure!(
+            !(verify_ssm_decode_enabled() && k > 1),
+            "ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1 needs the per-row verify arm \
+             (one row per pass); this pass is k={k}. Unset \
+             ATLAS_QWEN4EXP_MTP_HC_BATCHED."
+        );
+        let base_seq_len = seq.seq_len;
         for (i, layer) in self.layers.iter().enumerate() {
+            // ── Attention: K sequential one-row decode bodies ──
+            //
+            // Row 0 re-processes a token a serial decode already committed, so
+            // its logits MUST equal that decode's. `prefill()` cannot give
+            // that: prefill attention is the chunked/flash paged kernel over K
+            // queries with a causal mask, decode attention is the paged-decode
+            // GEMV against the KV cache at M=1 -- different reduction order,
+            // and on this checkpoint different enough to flip greedy argmaxes.
+            // The same split applies to the projections (GEMM at M=K vs GEMV
+            // at M=1), to the MoE (grouped/fused-small-M vs the decode
+            // expert path) and to QSA (`prefill_ingest` vs `decode_select`).
+            //
+            // LAYOUT RECONCILIATION -- the reason the module doc above said
+            // this could not be done. The highway is `[T, hc_mult, H]` FP32
+            // and `prefill_inner_hc` addresses it at
+            // `hc_row_offset * hc_mult * H * 4` (prefill_inner.rs:565).
+            // `decode_inner_hc` used to hard-code row 0. It now applies the
+            // IDENTICAL arithmetic (decode_inner.rs:467), so a one-row decode
+            // body at `hc_row_offset = t` reads and writes exactly the row the
+            // K-row GDN body would have. `hidden`/`residual` are offset by the
+            // same row in BF16 stride, and `hc_post`/`hc_comb`/`norm_output`
+            // are per-pass scratch that a one-row body uses at its base. So
+            // the 1-row attention path and the K-row SSM path agree about
+            // which row a stream belongs to.
+            //
+            // The metadata is re-pointed per row rather than rebuilt: the
+            // K-row pack already holds `[K]` u32 positions and `[K]` i64
+            // slots, so row `t` is a pointer bump of `t*4` / `t*8`. Only the
+            // device `seq_len` differs in KIND between the two shapes, and it
+            // is uploaded above.
+            if attn_rows && (ssm_rows || !layer.is_ssm_layer()) {
+                for t in 0..k {
+                    let row_meta = AttnMetadataDev {
+                        positions: attn_metadata.positions.offset(t * VERIFY_POS_STRIDE),
+                        positions_h: attn_metadata.positions_h.offset(t * VERIFY_POS_STRIDE),
+                        positions_w: attn_metadata.positions_w.offset(t * VERIFY_POS_STRIDE),
+                        slot: attn_metadata.slot.offset(t * VERIFY_SLOT_STRIDE),
+                        seq_len: row_seq_lens.offset(t * VERIFY_SEQ_LEN_STRIDE),
+                        block_table: attn_metadata.block_table,
+                        max_blocks_per_seq: attn_metadata.max_blocks_per_seq,
+                        num_seqs: 1,
+                        seq_slot: attn_metadata.seq_slot,
+                        moe_row_adapter: attn_metadata.moe_row_adapter,
+                    };
+                    let row_ctx = ForwardContext {
+                        buffers: &self.buffers,
+                        hc_row_offset: t,
+                        gpu: self.gpu.as_ref(),
+                        config: &self.config,
+                        dispatch: &self.dispatch,
+                        derived: &self.derived,
+                        levers: &self.levers,
+                        stats: &self.stats,
+                        attn_metadata: Some(row_meta),
+                        profile: false,
+                        comm: self.comm_ref(),
+                        graph_capture: false,
+                        // Attention layers never read it; carried so the two
+                        // contexts cannot drift.
+                        gdn_exact_replay: !verify_uses_fla_scan(),
+                        token_ids: None,
+                        host_token_ids: Some(&tokens[t..t + 1]),
+                        routed_lora_layers: None,
+                        midchunk_capture: None,
+                        moe_lora_route: self.decode_moe_route(),
+                    };
+                    layer.decode(
+                        hidden.offset(t * h * 2),
+                        residual.offset(t * h * 2),
+                        seq.layer_states[i].as_mut(),
+                        &mut kv_cache,
+                        // PRE-APPEND length, the decode convention: the token
+                        // being processed sits at absolute position
+                        // `base_seq_len + t`.
+                        verify_row_decode_seq_len(base_seq_len, t),
+                        &mut seq.block_table,
+                        &mut seq.disk_block_ids,
+                        &mut seq.disk_last_offloaded_per_layer,
+                        &row_ctx,
+                        stream,
+                    )?;
+                }
+                self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
+                continue;
+            }
             if batched_gdn && layer.is_ssm_layer() {
                 layer.decode_batched(
                     hidden,
@@ -892,6 +1050,63 @@ pub(super) fn verify_uses_fla_scan() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY_FLA").as_deref() == Ok("1"))
 }
 
+/// Element strides of the three per-row attention metadata streams, as
+/// `prefill_b_upload_meta_at` packs them and as `layer::AttnMetadataDev`
+/// documents them. They are NOT the same width, which is the whole reason
+/// these are named constants: `positions` is `[N] u32`, `slots` is `[N] i64`
+/// (`fill_slots_from_block_table` / `reshape_and_cache` both take i64), and
+/// `seq_lens` is `[N] i32`. Bumping the slot pointer by 4 instead of 8 aims
+/// the KV write at the wrong cache slot for every row past 0 -- silently,
+/// because the value there is still a plausible slot index.
+pub(super) const VERIFY_POS_STRIDE: usize = 4;
+pub(super) const VERIFY_SLOT_STRIDE: usize = 8;
+pub(super) const VERIFY_SEQ_LEN_STRIDE: usize = 4;
+
+/// Byte offset, inside the verify's metadata block at `meta_base`, of the
+/// `[k]` i32 per-row `seq_len` array.
+///
+/// The pack owns `[0, slot_offset)` for the position streams and
+/// `[slot_offset, slot_offset + k*8)` for the i64 slot table
+/// (`prefill_b_upload_paged` fills exactly `k` entries there). The seq_len
+/// array goes immediately past it, 4-byte aligned.
+pub(super) fn verify_row_seq_len_offset(slot_offset: usize, k: usize) -> usize {
+    (slot_offset + k * VERIFY_SLOT_STRIDE).next_multiple_of(VERIFY_SEQ_LEN_STRIDE)
+}
+
+/// The DEVICE `seq_len` value row `t` of a verify based at `base_seq_len`
+/// must present to the paged-decode attention: the number of VISIBLE KEYS,
+/// which includes the row's own token because `write_kv_cache` runs first.
+pub(super) fn verify_row_seq_len_value(base_seq_len: usize, t: usize) -> i32 {
+    (base_seq_len + t + 1) as i32
+}
+
+/// The HOST `seq_len` argument for row `t`'s `Layer::decode`. That parameter
+/// is the PRE-APPEND length -- serial decode of the token at absolute
+/// position `p` passes `p` (see `attention_forward.rs`, the QSA
+/// `decode_select` call site) -- so it is one less than the device value.
+pub(super) fn verify_row_decode_seq_len(base_seq_len: usize, t: usize) -> usize {
+    base_seq_len + t
+}
+
+/// Default-ON. `ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE=0` puts the attention
+/// layers back on the K-row `prefill()` body.
+pub(super) fn verify_attn_decode_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE").as_deref() != Ok("0")
+    })
+}
+
+/// EXPERIMENTAL, default-OFF. `ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1` puts the
+/// GDN layers on the same one-row `decode()` body the attention layers take,
+/// making the WHOLE verify decode-shaped. Only valid at k == 1 (see the call
+/// site); the check there refuses anything wider rather than corrupting the
+/// commit rewind.
+pub(super) fn verify_ssm_decode_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE").as_deref() == Ok("1"))
+}
+
 pub(super) fn hc_publish_rows(k: usize) -> std::ops::Range<usize> {
     0..k.saturating_sub(1)
 }
@@ -924,6 +1139,92 @@ pub(super) fn verify_aux_restore_row(num_accepted: usize, k: usize) -> Option<us
         return None;
     }
     Some(commit_rewind_index(num_accepted))
+}
+
+#[cfg(test)]
+mod verify_attn_row_tests {
+    use super::{
+        VERIFY_POS_STRIDE, VERIFY_SEQ_LEN_STRIDE, VERIFY_SLOT_STRIDE, verify_row_decode_seq_len,
+        verify_row_seq_len_offset, verify_row_seq_len_value,
+    };
+
+    /// THE contract the decode-shaped attention replay rests on: row 0 of a
+    /// K-row verify re-processes a token a serial decode already committed,
+    /// so it must be handed EXACTLY the arguments that decode was handed.
+    /// Serial decode of the token at absolute position `p` passes host
+    /// `seq_len = p` (pre-append) and a device `seq_len = p + 1` (keys
+    /// visible after `write_kv_cache`). Off by one in either direction and
+    /// row 0 attends over the wrong prefix.
+    #[test]
+    fn row_zero_matches_a_serial_decode_of_the_committed_token() {
+        for base in [1usize, 35, 367, 4096] {
+            assert_eq!(verify_row_decode_seq_len(base, 0), base);
+            assert_eq!(verify_row_seq_len_value(base, 0), base as i32 + 1);
+        }
+    }
+
+    /// Each further row is one token later, and the device value stays
+    /// exactly one ahead of the host one.
+    #[test]
+    fn each_row_advances_by_exactly_one_token() {
+        let base = 367usize;
+        for k in 1..=8usize {
+            for t in 0..k {
+                assert_eq!(verify_row_decode_seq_len(base, t), base + t, "t={t}");
+                assert_eq!(
+                    verify_row_seq_len_value(base, t),
+                    verify_row_decode_seq_len(base, t) as i32 + 1,
+                    "t={t}: device seq_len must count the row's own key"
+                );
+            }
+        }
+    }
+
+    /// The three metadata streams are packed at DIFFERENT element widths.
+    /// This is the arithmetic the per-row pointer bumps use; the failure it
+    /// pins is the natural (and wrong) assumption that a row is `t * 4` in
+    /// all three.
+    #[test]
+    fn the_per_row_metadata_strides_are_not_uniform() {
+        assert_eq!(VERIFY_POS_STRIDE, 4, "positions are [N] u32");
+        assert_eq!(VERIFY_SLOT_STRIDE, 8, "slots are [N] i64");
+        assert_eq!(VERIFY_SEQ_LEN_STRIDE, 4, "seq_lens are [N] i32");
+        assert_ne!(
+            VERIFY_SLOT_STRIDE, VERIFY_POS_STRIDE,
+            "a row's slot is not at the same byte offset as its position"
+        );
+    }
+
+    /// The per-row seq_len array must start past the LAST slot entry the
+    /// pack writes -- `fill_slots_from_block_table` fills `k` i64 slots at
+    /// `slot_offset` -- and must be 4-byte aligned for an i32 store.
+    #[test]
+    fn the_row_seq_len_array_clears_the_slot_table() {
+        for slot_offset in [8usize, 16, 24, 4104] {
+            for k in 1..=8usize {
+                let at = verify_row_seq_len_offset(slot_offset, k);
+                assert!(
+                    at >= slot_offset + k * VERIFY_SLOT_STRIDE,
+                    "slot_offset={slot_offset} k={k}: seq_len array at {at} overlaps \
+                     the {k}-entry i64 slot table"
+                );
+                assert_eq!(at % VERIFY_SEQ_LEN_STRIDE, 0, "unaligned i32 store");
+            }
+        }
+    }
+
+    /// Distinct rows address distinct seq_len words -- a shared word would
+    /// give every row the same visible-key count, which is precisely the
+    /// prefill shape this replaces.
+    #[test]
+    fn every_row_gets_its_own_seq_len_word() {
+        let base = verify_row_seq_len_offset(16, 4);
+        let mut seen = std::collections::BTreeSet::new();
+        for t in 0..4usize {
+            assert!(seen.insert(base + t * VERIFY_SEQ_LEN_STRIDE));
+        }
+        assert_eq!(seen.len(), 4);
+    }
 }
 
 #[cfg(test)]
