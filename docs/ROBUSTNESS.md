@@ -613,3 +613,35 @@ Only running the real thing found this.**
 **Still open.** The App very likely lacks `contents: write` on this repo. The
 preflight will now say so on its next run; granting it is a change to the App's
 permissions that a human has to accept.
+
+---
+
+## Wave 16 — the probe confirmed the diagnosis
+
+**Ran the new preflight against the live App.** It reports exactly what wave 15
+predicted from the 404 alone:
+
+    ok    pull_requests:read     /stamp resolves the head sha and the author
+    ok    checks:read            every gate reads Stamp, Seal and Expedite
+    ok    issues:read            the bot finds its own comment by marker
+    ok    members:read           /stamp and /seal check who is asking
+    ok    actions:read           /stamp re-runs the held CI run
+    ok    contents:read          the bot-cards branch hosts generated certificates
+    FAIL  contents:write         certificate images CANNOT be uploaded
+    ok    checks:write           /stamp, /seal and /expedite mint their marks
+
+So the certification App has every permission the pipeline needs **except**
+`contents: write`, and that single gap is exactly what made #843's certificate
+ship a broken image. Nothing else is affected: `/stamp`, `/seal` and `/expedite`
+all mint their marks, because `checks:write` is present.
+
+**What this closes.** The defect is understood, the code no longer posts a
+broken link, and the guard that missed it now catches it — verified by running
+it rather than by reasoning about it. Everything in this record that can be
+fixed in code has been.
+
+**What only a human can do.** Granting `contents: write` to the certification
+App is a change to the App's repository permissions, accepted in the GitHub UI.
+Until then the certificate falls back to the generic image and the preflight
+stays red — deliberately, because a red check that names a real missing grant is
+the correct state, not something to paper over.
