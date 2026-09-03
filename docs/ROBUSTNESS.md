@@ -463,3 +463,43 @@ narrowed; on-demand covers the case where someone has just edited the App.
 50 controls, and its authority now has a live probe with a control. What is not
 covered — and cannot be, short of a staging org — is GitHub changing the
 semantics of an endpoint underneath us.
+
+---
+
+## Wave 12 — the guard on the guard
+
+**Found.** Eighty-one checks and fifty controls hang on **one line in one
+workflow**. Delete that line and every one of them stops running — silently,
+with `cargo deny`, the job it lived in, still green. Ten waves of work,
+removable in a one-line diff nobody would notice in review.
+
+The good half: `cargo deny` *is* a required context, so a **failing** suite does
+block a merge. The gap was never enforcement of the result; it was enforcement
+of the **wiring**.
+
+**Why it could not go in the suite.** If the step is removed the suite never
+executes, so a check inside it can never fire. A guard cannot notice its own
+absence. It has to live somewhere that still runs.
+
+**Changed.** `assert-selftest-wired.py`, hosted in the **LoC-cap job** — a
+different required context. Removing the suite from `security.yml` now breaks
+`Enforce ≤500 LoC per source file` instead. It asserts two things: that some job
+invokes the suite, and that the job reports under a name branch protection
+requires — because a suite in a job nobody has to pass is a suite that can be
+ignored.
+
+**The controls proved it**, both anchor-asserted:
+
+| Sabotage | Result |
+|---|---|
+| the self-test step deleted from `security.yml` | ❌ *"nothing runs certification-selftest.sh"* |
+| the suite moved to a non-required job | ❌ *"runs, but only in non-required job(s)"* |
+
+**On the literal in that file.** `REQUIRED_CONTEXTS = {"cargo deny"}` is
+hardcoded, because the assertion must work without network access. If branch
+protection changes, that line is what needs updating — and the failure message
+says exactly that rather than leaving someone to guess.
+
+**Still open.** Nothing known. This wave closed the last structural gap I can
+name: the pipeline's logic is covered offline, its authority is probed live, and
+its wiring is now guarded from a job that cannot be removed in the same edit.

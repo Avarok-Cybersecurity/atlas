@@ -31,6 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # Deliberately hosted HERE and not in the certification suite it guards.
+      # The suite is 81 checks behind one line in security.yml; delete that line
+      # and every check stops running while the job it lived in stays green. A
+      # guard inside the suite cannot notice its own absence, so it lives in a
+      # different REQUIRED job -- removing the suite now breaks this one instead.
+      - name: The certification self-test still runs, in a job that must pass
+        run: |
+          python3 -m pip install --quiet PyYAML
+          python3 .github/scripts/assert-selftest-wired.py
+
       - name: Check no .rs file exceeds 500 lines
         shell: bash
         run: |
