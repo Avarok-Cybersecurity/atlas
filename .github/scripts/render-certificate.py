@@ -14,7 +14,6 @@ which reads as a rendering bug rather than an absent value.
 import argparse
 import html
 import re
-import sys
 
 # The QR must clear the image border by >=38 device px at the 900px embed or
 # OpenCV -- and phone cameras -- stop decoding it, even with the modules
