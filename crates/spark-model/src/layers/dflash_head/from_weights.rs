@@ -322,6 +322,9 @@ impl BlockDiffusionDraftHead {
             // i64 slot mapping for reshape_and_cache (kernel takes
             // `long long*`). One entry per new ctx row.
             slot_mapping_dev: gpu.alloc(ctx_window * 8)?,
+            precompute_in: gpu.alloc(
+                super::PRECOMPUTE_BATCH_ROWS * target_layer_ids.len() * target_hidden_size * bf16,
+            )?,
             // 12 bytes of device memory holding the per-call triple
             // `[u32 kv_len, u32 q_offset, u32 q_rope_pos]` that the indirect
             // paged-attention kernel reads at entry. Host writes via H2D

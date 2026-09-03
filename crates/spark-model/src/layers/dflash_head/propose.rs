@@ -380,7 +380,12 @@ impl BlockDiffusionDraftHead {
                 dstate.ctx_committed.min(dstate.ctx_len)
             };
             let new_count = dstate.ctx_len - committed;
-            if dstate.ctx_len > 0 && new_count > 0 {
+            // Batched propose: the tail is precomputed ONCE for the whole
+            // batch by `precompute_ctx_kv_batched` after every sequence's
+            // prep (weights streamed once, not n times). Leave
+            // `ctx_committed` where it is so that pass sees the same tail.
+            let defer_to_batch = collect_prep.is_some() && super::batched_precompute_enabled();
+            if !defer_to_batch && dstate.ctx_len > 0 && new_count > 0 {
                 // Ctx-holes follow-up (2026-07-08): the precompute scratch
                 // (fc_proj / fused_kv_out / slot_mapping_dev) is sized for
                 // ctx_window rows. A serial-append stretch (think-gated /
