@@ -47,8 +47,12 @@ jobs:
       # code -- a property of the files today, which this turns into a rule.
       # Cheap, pure-Python, and it lives in the security job because that is
       # what it is.
-      - name: The command runner cannot reach untrusted code
-        run: python3 .github/scripts/assert-cmd-runner-safe.py
+      # The whole certification self-test, which includes the command-runner
+      # assertion. Every check in it has a negative control -- the guard is
+      # shown FAILING on input it must reject, not merely passing on input it
+      # should accept. Offline: no network, no API, no GPU.
+      - name: Certification pipeline self-test
+        run: bash .github/scripts/certification-selftest.sh
       # `rust-version` pins the action's in-container toolchain to our
       # rust-toolchain.toml channel. Without it, the action's bundled Rust
       # can't honor the repo pin and rustup errors ("override toolchain
