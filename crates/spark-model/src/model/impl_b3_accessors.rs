@@ -8,6 +8,8 @@ use spark_runtime::gpu::GpuBackend;
 
 use super::types::TransformerModel;
 use crate::speculative::DraftProposer;
+// `argmax_on_device` lives on the Model trait; the shadow step calls it.
+use crate::traits::Model;
 
 impl TransformerModel {
     /// Borrow the GPU backend for post-construction wiring (e.g. installing
@@ -38,6 +40,143 @@ impl TransformerModel {
             tracing::info!("DFlash: replacing existing MTP proposer with BlockDiffusionDraftHead");
         }
         self.proposer = Some(proposer);
+    }
+
+    /// Take ownership of a loaded qwen4_exp MTP draft module.
+    ///
+    /// This is NOT decoration. `DevicePtr` has no `Drop`, so a module that is
+    /// built and then dropped leaks its quantized MoE and attention buffers.
+    /// Nothing reads the field yet: no proposer consumes it, so
+    /// `has_proposer()` stays false and speculation stays off.
+    pub fn set_qwen4_exp_mtp(
+        &mut self,
+        module: Box<crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule>,
+    ) {
+        tracing::info!(
+            "qwen4_exp MTP module installed on the served model (held so its \
+             device buffers are not leaked; no proposer consumes it yet)"
+        );
+        self.qwen4_exp_mtp = Some(module);
+    }
+
+    /// Install the qwen4_exp MTP draft head for SHADOW measurement.
+    ///
+    /// The head owns the module, so this replaces `set_qwen4_exp_mtp` rather
+    /// than accompanying it. Installing it does NOT enable speculation:
+    /// `has_proposer()` is unaffected and nothing feeds a draft back into the
+    /// sequence. It only lets the decode path ask "would this draft have been
+    /// right?" and count.
+    pub fn set_qwen4_exp_mtp_head(
+        &mut self,
+        module: crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule,
+        embed_tokens: crate::weight_map::DenseWeight,
+        max_seq_len: usize,
+        // Install the head as the ACTIVE proposer, so the scheduler drafts and
+        // verifies with it. Separate from merely holding the head: shadow mode
+        // holds it without ever feeding a draft back.
+        install_as_proposer: bool,
+    ) -> anyhow::Result<()> {
+        // Built here rather than in the factory because the model owns `gpu`
+        // by this point.
+        let head = crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead::new(
+            module,
+            embed_tokens,
+            // Share the target's NVFP4 vocab head (Copy pointers) so the draft
+            // goes through the SAME quantization ladder the real token does —
+            // a drafter scored against a different head measures the head, not
+            // the draft.
+            self.lm_head_nvfp4,
+            &self.config,
+            self.gpu.as_ref(),
+            max_seq_len,
+        )?;
+        let state = head.alloc_state(self.gpu.as_ref())?;
+        if !install_as_proposer {
+            tracing::warn!(
+                "qwen4_exp MTP SHADOW MODE is on: the draft head runs every decode \
+                 step and its accept rate is logged. Verified INERT — shadow-on \
+                 output is byte-identical to a shadow-off control — because the \
+                 draft runs in its own BufferArena. It still costs a FULL EXTRA \
+                 draft forward per token and produces NO speedup (nothing is fed \
+                 back), so do not benchmark with it on."
+            );
+        }
+        let head = std::sync::Arc::new(head);
+        if install_as_proposer {
+            tracing::warn!(
+                "qwen4_exp MTP SPECULATION ARMED: the draft head is installed as \
+                 the active proposer, and the mHC K-row verify path is live. \
+                 Measured draft accept is 86.5-95.5%, but this is the FIRST \
+                 configuration in which a draft is actually fed back — treat \
+                 output quality as unproven until the agentic battery runs."
+            );
+            self.proposer = Some(head.clone());
+        }
+        self.qwen4_exp_mtp_head = Some(head);
+        self.qwen4_exp_mtp_state = Some(std::sync::Mutex::new(state));
+        Ok(())
+    }
+
+    /// Run one shadow draft step: score the previous step's draft against the
+    /// token the target just produced, then draft the next one.
+    ///
+    /// `target_streams` is the four-stream mHC highway for the row that
+    /// produced `actual_token`. No-op unless shadow mode is installed.
+    pub(super) fn qwen4_exp_mtp_shadow_step(
+        &self,
+        actual_token: u32,
+        target_streams: spark_runtime::gpu::DevicePtr,
+        position: usize,
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+    ) {
+        let (Some(head), Some(state)) = (&self.qwen4_exp_mtp_head, &self.qwen4_exp_mtp_state)
+        else {
+            return;
+        };
+        use crate::layers::qwen4_exp_mtp::{ShadowStage, shadow_stage};
+        let Ok(mut st) = state.lock() else { return };
+        // Score the draft made LAST step against what the target actually just
+        // emitted. This is the whole measurement.
+        head.shadow_observe(st.pending_draft.take(), actual_token);
+
+        // BISECTION stage 1: count only. If the target's output is DIRTY even
+        // here, the corruption is the extra `argmax_on_device` itself (it writes
+        // `buffers.scratch()` and runs on the DEFAULT stream, not this one) —
+        // not the draft forward.
+        if shadow_stage() == ShadowStage::Observe {
+            return;
+        }
+
+        // Draft the NEXT token from (token just emitted, this row's highway).
+        let h_out = self.mtp_hidden_save;
+        if let Err(e) = head.draft_hidden(
+            actual_token,
+            target_streams,
+            position,
+            &mut st,
+            h_out,
+            ctx,
+            stream,
+        ) {
+            // Shadow is diagnostic: never fail the real decode over it.
+            tracing::warn!("qwen4_exp MTP shadow draft failed, disabling: {e:#}");
+            return;
+        }
+        // BISECTION stage 3: stop before the draft's own LM head.
+        if shadow_stage() < ShadowStage::Full {
+            return;
+        }
+
+        // The draft's logits go into the DRAFT's arena, so nothing here can
+        // touch the buffer the scheduler is about to sample from. The earlier
+        // stash/restore of the target's logits existed only because the draft
+        // borrowed the target's LM-head buffer; private-arena isolation removed
+        // the need for it entirely.
+        match head.draft_token(h_out, ctx, stream) {
+            Ok(d) => st.pending_draft = Some(d),
+            Err(e) => tracing::warn!("qwen4_exp MTP shadow draft head failed: {e:#}"),
+        }
     }
 
     /// Install the fused n-gram input embedding (LongCat family). Once set,

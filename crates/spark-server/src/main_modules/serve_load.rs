@@ -445,7 +445,7 @@ pub(crate) fn load_model(
     // *.safetensors (an adapter, a hand-copied export) must not have it
     // uploaded under new names, uncounted by the pre-flight estimate.
     if spark_runtime::weights::exl3::store_has_exl3(&store) {
-        let policy = serve_phases::main_shard_skip_policy(&config, ep_rank, ep_size);
+        let policy = serve_phases::main_shard_skip_policy(&args, &config, ep_rank, ep_size);
         spark_model::weight_map::register_exl3_sidecar_shards(
             gpu.as_ref(),
             &mut store,

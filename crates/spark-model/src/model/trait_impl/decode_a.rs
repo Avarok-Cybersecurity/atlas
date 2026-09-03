@@ -454,6 +454,29 @@ impl TransformerModel {
             }
         }
 
+        // ── MTP SHADOW (ATLAS_QWEN4EXP_MTP_SHADOW=1, default OFF) ──
+        // THIS is the path a qwen4_exp decode actually takes: decode_batch_dispatch
+        // delegates every n == 1 step straight to decode(), so a hook in the
+        // batched path never fires.
+        //
+        // Draft the next token and score the PREVIOUS draft against what the
+        // target just produced. Feeds nothing back — it measures whether the
+        // combiner reading is right before the verify path is built. `hc_streams`
+        // still holds this row's four-stream highway: the last layer's hc_head
+        // READ it and wrote the collapsed hidden elsewhere.
+        if self.qwen4_exp_mtp_head.is_some() {
+            match self.argmax_on_device(self.decode_logits_ptr(), 0) {
+                Ok(actual) => self.qwen4_exp_mtp_shadow_step(
+                    actual,
+                    self.buffers.hc_streams(),
+                    seq.seq_len,
+                    &ctx,
+                    stream,
+                ),
+                Err(e) => tracing::warn!("qwen4_exp MTP shadow: argmax failed: {e:#}"),
+            }
+        }
+
         seq.tokens.push(token);
         seq.seq_len += 1;
 
