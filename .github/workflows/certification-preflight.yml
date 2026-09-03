@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Does the certification App still have the permissions the pipeline needs?
+#
+# The offline self-test proves the LOGIC is right. It cannot prove the App is
+# still allowed to act: every write the pipeline makes goes through an
+# installation token, and an App whose grant is narrowed -- by an org policy, by
+# someone editing the App, by a permission added to the manifest and never
+# accepted -- keeps working right up until the moment somebody types /stamp.
+#
+# Several of those failures are SILENT by design. The bot swallows API errors so
+# a broken lookup cannot fail a contributor's CI, and the certificate step
+# treats an unreadable comments API as "already posted". Those are the right
+# behaviours and they are exactly why a permission regression would go unnoticed
+# until a release was blocked.
+#
+# This probes each permission with the smallest real call that needs it, on a
+# schedule and on demand. It writes nothing a human has to clean up.
+name: Certification preflight
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: certification preflight
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - name: Mint the certification App token
+        id: apptoken
+        if: vars.CERTIFICATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.CERTIFICATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CERTIFICATION_APP_PRIVATE_KEY }}
+
+      - name: Probe every permission the pipeline needs
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error title=No App token::CERTIFICATION_APP_CLIENT_ID is unset, so every command that mints a mark is already broken."
+            exit 1
+          fi
+          fail=0
+          probe() {  # probe <permission> <why it matters> <cmd...>
+            local perm=$1 why=$2; shift 2
+            if "$@" >/dev/null 2>&1; then
+              printf '  ok    %-22s %s\n' "$perm" "$why"
+            else
+              printf '  FAIL  %-22s %s\n' "$perm" "$why"; fail=1
+            fi
+          }
+
+          probe "pull_requests:read" "/stamp resolves the head sha and the author" \
+            gh api "repos/$REPO/pulls?per_page=1"
+          probe "checks:read" "every gate reads Stamp, Seal and Expedite" \
+            gh api "repos/$REPO/commits/$SHA/check-runs?per_page=1"
+          probe "issues:read" "the bot finds its own comment by marker" \
+            gh api "repos/$REPO/issues?per_page=1"
+          probe "members:read" "/stamp and /seal check who is asking" \
+            gh api "repos/$REPO/collaborators?per_page=1"
+          probe "actions:read" "/stamp re-runs the held CI run" \
+            gh api "repos/$REPO/actions/runs?per_page=1"
+          probe "contents:read" "the bot-cards branch hosts generated certificates" \
+            gh api "repos/$REPO/branches?per_page=1"
+
+          # The one WRITE worth probing for real: without checks:write, /stamp,
+          # /seal and /expedite all fail, and they are the whole pipeline. A
+          # check run is additive and named for what it is, so this costs a line
+          # in the checks list and nothing else.
+          if gh api -X POST "repos/$REPO/check-runs" \
+               -f name="Certification preflight" -f head_sha="$SHA" \
+               -f status=completed -f conclusion=success \
+               -f "output[title]=App permissions verified" \
+               -f "output[summary]=Probed by certification-preflight.yml. If this is missing or red, /stamp, /seal and /expedite cannot mint their marks." \
+               >/dev/null 2>&1; then
+            printf '  ok    %-22s %s\n' "checks:write" "/stamp, /seal and /expedite mint their marks"
+          else
+            printf '  FAIL  %-22s %s\n' "checks:write" "/stamp, /seal and /expedite CANNOT mint their marks"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error title=The certification App has lost a permission::A command will fail the next time someone uses it, and several of those failures are silent by design. Re-check the App's repository permissions and that the installation has accepted them."
+            exit 1
+          fi
+          echo "every permission the pipeline needs is present."

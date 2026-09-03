@@ -414,3 +414,52 @@ merge-queue seal path, and the bot's comment lifecycle.
 defect that only appears against the real GitHub API — the App's token
 permissions, for instance, are asserted nowhere and would fail only in
 production.
+
+---
+
+## Wave 11 — the offline gap: is the App still allowed to act?
+
+**Found.** Wave 10 closed the last *logic* path and named what remained: the
+suite runs offline, so it proves the pipeline decides correctly but not that it
+is still permitted to act. Every write goes through an installation token, and
+an App whose grant narrows — an org policy, an edit to the App, a permission
+added to the manifest and never accepted — keeps working right up until someone
+types `/stamp`.
+
+Worse, several of those failures are **silent by design**. The bot swallows API
+errors so a broken lookup cannot fail a contributor's CI; the certificate step
+treats an unreadable comments API as "already posted". Both are correct
+behaviours, and both are exactly why a permission regression would go unnoticed
+until a release was blocked.
+
+**Changed.** `certification-preflight.yml` probes each permission with the
+smallest real call that needs it — weekly and on demand. It names *why* each
+one matters, so a failure says what will break rather than which endpoint
+returned 403:
+
+    pull_requests:read   /stamp resolves the head sha and the author
+    checks:read          every gate reads Stamp, Seal and Expedite
+    issues:read          the bot finds its own comment by marker
+    members:read         /stamp and /seal check who is asking
+    actions:read         /stamp re-runs the held CI run
+    contents:read        the bot-cards branch hosts generated certificates
+    checks:write         /stamp, /seal and /expedite mint their marks
+
+`checks:write` is probed for real, by creating a check run named "Certification
+preflight". Without it the three commands that mint marks are all dead, which is
+the whole pipeline. A check run is additive and self-describing, so the probe
+costs one line in the checks list and leaves nothing to clean up.
+
+**The control proved it.** All six read probes pass against the live API with a
+valid token, and **all six fail** with an invalid one — so the probes are
+reaching GitHub rather than passing vacuously.
+
+**Why this is not in the self-test.** It needs the network and a real App token,
+which the offline suite deliberately does not have. Running it per-PR would also
+add a check run to every PR for no benefit. Weekly catches a grant that was
+narrowed; on-demand covers the case where someone has just edited the App.
+
+**Still open.** Nothing known. The pipeline's logic has 81 offline checks with
+50 controls, and its authority now has a live probe with a control. What is not
+covered — and cannot be, short of a staging org — is GitHub changing the
+semantics of an endpoint underneath us.
