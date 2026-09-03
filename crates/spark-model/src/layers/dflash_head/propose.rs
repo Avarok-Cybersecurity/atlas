@@ -18,7 +18,7 @@ impl BlockDiffusionDraftHead {
         last_token: u32,
         _target_hidden: DevicePtr,
         position: usize,
-        _num_drafts: usize,
+        num_drafts: usize,
         state: &mut dyn ProposerState,
         ctx: &ForwardContext,
         _stream: u64,
@@ -33,6 +33,11 @@ impl BlockDiffusionDraftHead {
         // single-sequence paths cannot drift apart if only one of them exists.
         collect_prep: Option<&mut Vec<(DevicePtr, u32)>>,
     ) -> Result<Vec<u32>> {
+        // Gamma resolver: the block this propose runs is the scheduler's draft
+        // count + 1 (anchor row), never wider than the head was sized for.
+        // The batched entry armed the same value before its prep loop; the
+        // store is idempotent.
+        self.set_block_g(num_drafts);
         let dstate = state
             .as_any_mut()
             .downcast_mut::<DflashProposerState>()
@@ -543,7 +548,7 @@ impl BlockDiffusionDraftHead {
         let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(self.gamma);
+            .unwrap_or(self.block_g());
 
         // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across
