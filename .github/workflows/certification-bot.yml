@@ -135,6 +135,10 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.which.outputs.pr }}
           STATE: ${{ steps.state.outputs.state }}
+          # Read by the certificate step to resolve who stamped and who sealed
+          # from the check runs on this commit. Used-but-not-passed is exactly
+          # how /review shipped broken, so it is bound here explicitly.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           HEADLINE: ${{ steps.state.outputs.headline }}
           COMMENT_ID: ${{ steps.prev.outputs.comment_id }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -176,4 +180,92 @@ jobs:
           else
             gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
             echo "posted a new comment -> $STATE"
+          fi
+
+          # ── The certificate ────────────────────────────────────────────────
+          # Everything above edits ONE comment in place, which is right for a
+          # state machine: the reader wants the current state, not a thread of
+          # stale ones. Merge is the exception, for a blunt reason -- GitHub
+          # does NOT notify on an @mention added by EDITING a comment, only on
+          # creation. Tagging the authors in the edited state comment would
+          # alert nobody. So the certificate is a second, new comment, posted
+          # once.
+          if [ "$STATE" = "pr-certification-merged" ]; then
+            already=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                        --jq '[.[] | select(.body | contains("<!-- atlas-certificate -->"))] | length' \
+                        2>/dev/null) || already=1
+            case "$already" in ''|*[!0-9]*) already=1 ;; esac
+            if [ "$already" -eq 0 ]; then
+              # Recipients: whoever opened it, plus every distinct commit author.
+              # A PR is often more than one person, and a certificate that names
+              # only the opener quietly erases the others.
+              who=$( { gh api "repos/$REPO/pulls/$PR" --jq '.user.login' 2>/dev/null
+                       gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+                         --jq '.[].author.login // empty' 2>/dev/null; } \
+                     | grep -v '\[bot\]$' | awk 'NF' | sort -u | awk '{printf "@%s ", $0}')
+              merge_sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.merge_commit_sha // ""' 2>/dev/null)
+
+              # Render THIS PR's certificate. Embedding the committed template
+              # directly would publish a certificate carrying the placeholder
+              # names it was designed with, which is worse than no image.
+              sudo apt-get -qq update >/dev/null 2>&1 || true
+              sudo apt-get -qq install -y librsvg2-bin >/dev/null 2>&1 || true
+              python3 -m pip install --quiet segno >/dev/null 2>&1 || true
+
+              # Who stamped and who sealed, read back from the check runs that
+              # recorded them -- they are already the source of truth for who
+              # and at which commit, so nothing extra has to be stored.
+              runs=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null || echo '{}')
+              st_user=$(printf '%s' "$runs" | jq -r '[.check_runs[]?|select(.name=="Stamp")]|last|.output.title // ""' | sed -n 's/.*by @\([A-Za-z0-9-]*\).*/\1/p')
+              sl_user=$(printf '%s' "$runs" | jq -r '[.check_runs[]?|select(.name=="Seal")]|last|.output.title // ""' | sed -n 's/.*by @\([A-Za-z0-9-]*\).*/\1/p')
+
+              opener=$(gh api "repos/$REPO/pulls/$PR" --jq '.user.login' 2>/dev/null)
+              # Search is rate-limited and 422s on a login that no longer
+              # exists. An absent count hides its row; it never blocks.
+              count=$(gh api -X GET search/issues \
+                        -f q="repo:$REPO type:pr is:merged author:$opener" \
+                        --jq '.total_count' 2>/dev/null) || count=""
+              case "$count" in ''|*[!0-9]*) count="" ;; esac
+
+              title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null)
+              authors=$(printf '%s' "${who:-}" | tr -d '@' | tr -s ' ' ',' | sed 's/,$//')
+
+              python3 .github/scripts/render-certificate.py \
+                --template docs/diagrams/states/certificate-merged.svg \
+                --out /tmp/cert.svg \
+                --url "https://github.com/$REPO/pull/$PR" \
+                --pr "$PR" --title "$title" --repo "$REPO" \
+                --commit "${merge_sha:0:10}" --date "$(date -u +%Y-%m-%d)" \
+                --gates "11 / 11 CERTIFIED" --authors "$authors" \
+                --merge-count "$count" \
+                --stamp-user "$st_user" --stamp-sha "${HEAD_SHA:0:10}" \
+                --seal-user "$sl_user" --seal-sha "${HEAD_SHA:0:10}" \
+                --qr-x 980 --qr-y 455
+              rsvg-convert -w 1200 /tmp/cert.svg -o /tmp/cert.png
+
+              # GitHub proxies images through camo and caches them BY URL, so a
+              # stable filename would keep serving the first render forever.
+              # The content hash makes each certificate its own permanent URL.
+              hash=$(sha256sum /tmp/cert.png | cut -c1-8)
+              path="pr-$PR-$hash.png"
+              b64=$(base64 -w0 /tmp/cert.png)
+              gh api -X PUT "repos/$REPO/contents/$path" \
+                -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
+                >/dev/null 2>&1 \
+                || gh api -X PUT "repos/$REPO/contents/$path" \
+                     -f message="certificate for #$PR" -f content="$b64" \
+                     -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
+                     >/dev/null 2>&1 || true
+              cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
+          ${who:-@}— merged. Every required benchmark gate was certified against a
+          frozen commit before this landed, and the record is public.
+
+          <img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">
+
+          Merge commit \`${merge_sha:0:10}\`. Yours to share." >/dev/null
+              echo "posted the certificate -> ${who:-nobody}"
+            else
+              echo "certificate already posted; not posting a second"
+            fi
           fi
