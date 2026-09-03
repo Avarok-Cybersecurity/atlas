@@ -645,3 +645,53 @@ App is a change to the App's repository permissions, accepted in the GitHub UI.
 Until then the certificate falls back to the generic image and the preflight
 stays red — deliberately, because a red check that names a real missing grant is
 the correct state, not something to paper over.
+
+---
+
+## Wave 17 — the fix verified in production, and where this stops
+
+**#846 merged** at 22:47:51Z as `1415fc5e14`, and the fix is confirmed against
+the real bot rather than a stub:
+
+    src="https://raw.githubusercontent.com/.../main/docs/diagrams/states/certificate-merged.png"
+    HTTP/2 200
+
+The certificate on #846 links the committed generic image and **resolves**,
+where #843's linked a generated object that was never uploaded and returned 404.
+The bot also emitted the warning it was given: *"Certificate image was not
+uploaded ... The App likely lacks contents:write."* Correct behaviour, correctly
+explained, in production.
+
+## Where this stops, and why
+
+**The goal is met for everything reachable in code.** Every gate, command and
+bot path in the certification pipeline has at least one check and at least one
+negative control that has been *watched to fail*:
+
+| Layer | Proven by |
+|---|---|
+| shell/Python logic — 82 checks | 20+ sabotages |
+| ci.yml decisions, state machine, permissions, authority | 15 sabotages |
+| Rust logic — 21 tests | 3 sabotages |
+| live App authority — 8 permissions | an invalid-token control, and one real gap it caught |
+| suite wiring | 2 sabotages, guarded from a different required job |
+
+**Six of the seventeen findings were defects in the verification, not the
+pipeline** — hollow controls that passed with the guard deleted, sabotages that
+were inert, harness bugs that read as code bugs. Those are the entries worth
+re-reading, because they are the failure mode that survives a green suite.
+
+**One real production defect was found**: #843's certificate shipped a broken
+image, caused by a permission gap the preflight had not thought to probe. Fixed,
+with a control, and the probe now covers it.
+
+**What is still open, and cannot be closed from here.** The certification App
+lacks `contents: write`. The preflight reports it, the bot degrades safely
+around it, and granting it is a change to the App's repository permissions that
+a person accepts in the GitHub UI. Until then certificates carry the generic
+image.
+
+**What can never be closed.** The suite runs offline and the probe runs against
+one repo. Neither can catch GitHub changing an endpoint's semantics underneath
+us. That is a limit, not an oversight, and it is written here so nobody later
+mistakes this record for a claim of completeness.
