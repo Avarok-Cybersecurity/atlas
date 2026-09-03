@@ -397,6 +397,7 @@ mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;
 mod trait_decode_batched;
+pub(crate) mod trait_decode_batched_hc;
 mod trait_decode_batched_conv_gdn;
 mod trait_decode_batched_conv_gdn_exact;
 mod trait_decode_batched_conv_gdn_multi;

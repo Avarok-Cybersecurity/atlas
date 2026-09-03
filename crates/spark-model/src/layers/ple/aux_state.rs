@@ -105,3 +105,65 @@ impl PleLayer {
         Ok(())
     }
 }
+
+// ── Per-row carry checkpoints for the K-row speculative verify ──
+//
+// The mHC K-row verify (`qwen3_ssm/trait_decode_batched_hc.rs`) advances THREE
+// per-row carries in one pass. Two of them already had a mechanism:
+//
+//   * the SSM `h_state`/`conv_state` are written per row into pool
+//     intermediates by the conv+GDN kernels, and
+//   * QSA's `ingested`/`pooled` are contiguous marks, so
+//     `QsaIndexer::align_seq_state` rewinds them to an ABSOLUTE position with
+//     no snapshot at all.
+//
+// PLE was the one with neither. Its conv is a rolling FP32 state and its
+// history is a fixed-length window whose oldest ids have already rolled off,
+// so nothing about it can be reconstructed by truncation — a partial accept
+// left it ADVANCED over the rejected rows, which is the documented corruption
+// class. These three calls give it the same per-row granularity the other two
+// carries have.
+impl PleLayer {
+    /// Start a K-row verify: drop any snapshots a previous verify left.
+    pub fn begin_verify_rows(&self, st: &mut PleSeqState) {
+        st.verify_rows.clear();
+    }
+
+    /// Record "the carry after row `t`". Called once per row boundary a
+    /// partial accept can land on — rows `0..K-1`, matching `hc_publish_rows`;
+    /// the last row needs none because a full accept keeps the live state.
+    pub fn push_verify_row(
+        &self,
+        st: &mut PleSeqState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let blob = self.snapshot_aux(st, gpu, stream)?;
+        st.verify_rows.push(blob);
+        Ok(())
+    }
+
+    /// Rewind the carry to the boundary after row `t`, i.e. to a commit of
+    /// `t + 1` rows.
+    ///
+    /// Errors rather than silently no-opping when the row was never recorded:
+    /// a missing snapshot means the carry stays ahead of the sequence, which
+    /// is precisely the silent desync this exists to prevent.
+    pub fn rewind_verify_row(
+        &self,
+        st: &mut PleSeqState,
+        t: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let blob = st.verify_rows.get(t).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "PLE verify rewind to row {t}, but only {} row snapshots were \
+                 recorded. The carry would be left ADVANCED over the rejected \
+                 rows — the documented degeneration class — so this refuses.",
+                st.verify_rows.len()
+            )
+        })?;
+        self.restore_aux(st, &blob, gpu, stream)
+    }
+}

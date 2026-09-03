@@ -144,6 +144,27 @@ pub trait TransformerLayer: Send + Sync {
         Ok(())
     }
 
+    /// Rewind this layer's aux carry to the boundary AFTER verify row `row`,
+    /// i.e. to a commit of `row + 1` rows out of a K-row speculative verify.
+    ///
+    /// The third of the three per-row carries, and the only one that needs a
+    /// snapshot. The SSM `h_state`/`conv_state` are rewound from pool
+    /// intermediates by `commit_accepted_prefix`, and QSA's contiguous marks
+    /// are rewound by `align_aux` to an absolute position — neither goes
+    /// through here. PLE does: its rolling conv + fixed history window cannot
+    /// be reconstructed by truncation.
+    ///
+    /// Default no-op: only the one layer carrying PLE has anything to do.
+    fn commit_verify_row(
+        &self,
+        _state: &mut dyn LayerState,
+        _row: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Roll this layer's aux carry back by `rows`, after a rejected
     /// speculative draft.
     ///

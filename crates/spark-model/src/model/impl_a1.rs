@@ -823,6 +823,7 @@ impl TransformerModel {
             qwen4_exp_mtp: None,
             qwen4_exp_mtp_head: None,
             pending_verify_aux: std::sync::Mutex::new(None),
+            pending_verify_span: std::sync::Mutex::new(None),
             qwen4_exp_mtp_state: None,
             mtp_hidden_save,
             verify_hidden_stash,
