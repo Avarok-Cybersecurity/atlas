@@ -1333,6 +1333,11 @@ job, must not attempt a re-run, and must not post the warning.
 
 ## Wave 30 — out of CI and into the product: an OOB write guarded only by `debug_assert!`
 
+> The code for waves 30 and 31 landed separately in #866: both fixes touch
+> `crates/`, which re-opens all 11 gates, and holding this record behind a GPU
+> campaign would have been the tail wagging the dog. These entries are the
+> record; #866 is the diff.
+
 **The defect (#799), and it is the most serious thing in this record.** A single
 video request wrote **4.7× past** the ViT output allocation, raised
 `CUDA_ERROR_ILLEGAL_ADDRESS` and poisoned the CUDA context. The process survived
