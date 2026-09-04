@@ -677,6 +677,47 @@ else
   bad "could not extract the bot's comment step"
 fi
 
+# ---------------------------------------------------------------------------
+# A test suite that gates nothing (#810)
+# ---------------------------------------------------------------------------
+# `Site unit tests` ran on every PR and blocked neither merge nor deploy. The
+# guard below is pinned here rather than in site.yml's own lane on purpose: a
+# suite cannot be trusted to notice that it has been unwired from itself.
+#
+# Each control pins the *message* as well as the exit code. Three different
+# defects all exit 1 through the same `fail()`, so asserting rc alone would
+# assert nothing about which one fired.
+want_rc 0 "the site suite gates the deploy as things stand" \
+  python3 .github/scripts/assert-site-tests-gate.py
+mkdir -p "$TMP/sg/scripts" "$TMP/sg/workflows"
+cp .github/scripts/assert-site-tests-gate.py "$TMP/sg/scripts/"
+
+sg_sabotage() {  # $1 = python edit applied to the copied site.yml
+  cp .github/workflows/site.yml "$TMP/sg/workflows/site.yml"
+  python3 - "$TMP/sg/workflows/site.yml" "$1" <<'PY'
+import pathlib, sys, yaml
+p = pathlib.Path(sys.argv[1]); d = yaml.safe_load(p.read_text())
+exec(sys.argv[2], {"d": d})
+p.write_text(yaml.safe_dump(d, sort_keys=False))
+PY
+}
+
+sg_sabotage 'd["jobs"]["deploy"]["needs"] = ["build"]'
+want_rc_msg 1 "does not need" "control: dropping unit from deploy's needs is caught" \
+  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+
+sg_sabotage 'd["jobs"]["unit"]["if"] = "github.event_name == \"push\""'
+want_rc_msg 1 "grew an \`if:\`" "control: making the suite conditional is caught" \
+  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+
+sg_sabotage 'd[True]["pull_request"] = {"branches": ["main"], "paths": ["site/**"]}'
+want_rc_msg 1 "grew a \`paths:\` filter" "control: a paths filter that would deadlock PRs is caught" \
+  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+
+sg_sabotage 'd["jobs"].pop("unit")'
+want_rc_msg 1 "no longer exists" "control: deleting the suite outright is caught" \
+  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

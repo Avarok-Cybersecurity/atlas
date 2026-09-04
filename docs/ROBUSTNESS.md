@@ -695,3 +695,64 @@ image.
 one repo. Neither can catch GitHub changing an endpoint's semantics underneath
 us. That is a limit, not an oversight, and it is written here so nobody later
 mistakes this record for a claim of completeness.
+
+---
+
+## Wave 18 — a suite that reported for months and gated nothing (#810)
+
+**Found.** Not by sweeping for a mechanism, but by reading the open issues:
+#810 had already written the defect down. `Site unit tests` ran on every pull
+request and on every merge-queue entry, reported green, and blocked neither the
+merge nor the deploy. Two independent reasons, and fixing either alone would
+have left the other:
+
+| | before | after |
+|---|---|---|
+| required contexts on `main` | 19, none of them the site suite | 20 |
+| `deploy` needs | `build` | `[build, unit]` |
+
+The issue notes what this cost: a latching-state regression (#805) reached
+`main` and was only caught later, in the window when the suite could not import
+a `.svelte.js` rune module at all.
+
+**Verified.** Three consecutive `site.yml` runs on three different PR branches
+each show `Site unit tests: success` alongside `Deploy to avarok via rsync:
+skipped` — the suite was demonstrably running and demonstrably not consulted.
+
+**Fixed.** `deploy` now needs `unit` as well as `build`, and `Site unit tests`
+was added to branch protection through the additive contexts endpoint rather
+than a full `PATCH`, so the other nineteen contexts and every unrelated setting
+could not be clobbered by a malformed payload. Diffed before and after: one
+context added, none removed, the rest of the protection object identical.
+
+**Proved, and proved the proof.** `assert-site-tests-gate.py` was written and
+run *before* the fix, against the unfixed tree, where it refused. It is hosted
+in `certification-selftest.sh` — a required context — rather than in the site's
+own lane, because a suite cannot be relied on to notice it has been unwired
+from itself. Four controls, each pinning the message and not just the exit code
+(three distinct defects leave through the same `fail()`, so an exit code alone
+distinguishes none of them): drop `unit` from `deploy`'s needs, give `unit` an
+`if:`, give `pull_request` a `paths:` filter, delete `unit` outright.
+
+**The third control failed on first run, and was right to.** YAML 1.1 parses a
+bare `on:` key as the boolean `True`, so `d["on"]` raised `KeyError` and the
+sabotage never applied — the guard then passed, and the control went red for
+exactly the right reason. This is the wave 5 failure recurring in a new
+disguise: a sabotage that does not land makes green mean nothing. It was caught
+here only because the control asserted the guard *must* fail; had it been
+written the usual way round, an inert edit would have read as a passing test.
+
+**Why the second assertion exists.** Requiring a context is only safe if the
+job reports on *every* PR — a job held behind an `if:` is never created for the
+PRs it skips, and GitHub waits on it forever. Five workflows in this repo carry
+that scar. So the guard also refuses if `unit` grows an `if:` or a `needs:`, or
+if `site.yml`'s `pull_request` trigger grows a `paths:` filter. The fix and the
+thing that makes the fix dangerous are pinned in the same file.
+
+**Also this wave.** Closed #839 as a duplicate of #835 — my own issue, filed a
+day after an existing one describing the same C=2 bimodality. The measurements
+were moved onto #835 before closing, so consolidating cost no evidence.
+
+**What is still open.** The branch-protection half is not expressible in the
+tree, so no committed file can guard it; if someone removes the context, only
+this record and the API say it was ever there.
