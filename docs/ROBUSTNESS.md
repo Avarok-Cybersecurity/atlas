@@ -1147,3 +1147,40 @@ The `unit` job now refuses if a `*.test.*` file exists outside `src/lib` in
 either tree. It belongs in that job precisely because that is the job which
 would otherwise silently lose the test. Planting one is caught; removing it is
 clean again.
+
+---
+
+## Wave 26 — seven digs, nothing found
+
+No defect this wave. The record of where the ground was broken and found solid
+is the deliverable, because the alternative is re-digging it later.
+
+| dig | scale | result |
+|---|---|---|
+| install URL: canary vs what the website tells users | 2 URLs | agree |
+| install endpoints live | `install.sh`, `install.ps1` | both 200, correct content-types |
+| installer is POSIX, as its `#!/bin/sh` claims | 606 lines | `dash -n` clean — no bashisms |
+| **served installer vs its source of truth** | 2 files | **byte-identical** |
+| committed secrets | 4500 tracked files, 6 patterns | none |
+| security reporting actually reachable | `security@avarok.net` | valid Protonmail MX; private reporting, secret scanning and push protection all enabled |
+| orphaned assets over 500 KB | whole tree | none; the 14 MB demo GIF and 6 MB MP4 are both referenced by the README |
+
+**One scare, resolved by looking.** Neither `install.sh` nor `install.ps1` is in
+this repository, which for a script every user pipes into `sh` looked like an
+unversioned, unreviewed artefact. It is not: both live in
+`Avarok-Cybersecurity/atlas-recipes` under `scripts/`, with a 24 KB test suite
+beside them, and the served copies are byte-identical to source. Worth recording
+because "the installer is not in this repo" is true, alarming, and wrong as a
+conclusion.
+
+**One real gap, deliberately not closed.** 415 of 600 first-party `unsafe` sites
+(69%, excluding vendored `cudarc`) carry no SAFETY note within six lines. The
+Rust API guidelines want one on each. Retrofitting 415 comments across a CUDA
+FFI codebase is a large mechanical diff that would not make a single one of them
+more correct — it is the busywork this record exists to displace, and doing it
+would bury the waves that found something. Written down as a known gap for
+whoever decides it is worth a dedicated pass, with the honest note that the
+value is in reviewing the unsafe, not in annotating it.
+
+**Not defects, checked:** the three tracked `.log` files under
+`docs/campaigns/**/raw/` are deliberate benchmark evidence, not stray artefacts.
