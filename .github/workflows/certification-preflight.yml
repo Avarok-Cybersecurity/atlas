@@ -68,44 +68,55 @@ jobs:
             gh api "repos/$REPO/issues?per_page=1"
           probe "members:read" "/stamp and /seal check who is asking" \
             gh api "repos/$REPO/collaborators?per_page=1"
-          probe "actions:read" "/stamp re-runs the held CI run" \
+          probe "actions:read" "/stamp finds the CI run for a head sha" \
             gh api "repos/$REPO/actions/runs?per_page=1"
           probe "contents:read" "the bot-cards branch hosts generated certificates" \
             gh api "repos/$REPO/branches?per_page=1"
 
-          # contents:WRITE, probed for real. Without it the certificate's image
-          # is never uploaded and the comment ships a broken link -- which is
-          # exactly what happened on #843, silently, because the upload is
-          # non-fatal by design. Read-only probes cannot see this.
-          probe_file="preflight-$(date -u +%Y%m%dT%H%M%SZ).txt"
-          if gh api -X PUT "repos/$REPO/contents/$probe_file" \
-               -f message="preflight write probe" \
-               -f content="$(printf 'permission probe' | base64 -w0)" \
-               -f branch=bot-cards >/dev/null 2>&1; then
-            printf '  ok    %-22s %s\n' "contents:write" "certificate images reach the bot-cards branch"
-            sha=$(gh api "repos/$REPO/contents/$probe_file?ref=bot-cards" --jq .sha 2>/dev/null)
-            [ -n "$sha" ] && gh api -X DELETE "repos/$REPO/contents/$probe_file" \
-              -f message="preflight cleanup" -f sha="$sha" -f branch=bot-cards >/dev/null 2>&1
-          else
-            printf '  FAIL  %-22s %s\n' "contents:write" "certificate images CANNOT be uploaded; the comment will ship a broken image"
-            fail=1
-          fi
+          # A write probe is a probe that performs the real mutation. It is a
+          # distinct name only so assert-preflight-covers-writes.py can find
+          # them: every write verb the pipeline issues must have one here.
+          # Read probes cannot see a missing write permission, and #843 shipped
+          # a broken image for exactly that reason -- contents:read passed while
+          # contents:write was absent, and the upload is non-fatal by design.
+          probe_write() { probe "$@"; }
 
-          # The one WRITE worth probing for real: without checks:write, /stamp,
-          # /seal and /expedite all fail, and they are the whole pipeline. A
-          # check run is additive and named for what it is, so this costs a line
-          # in the checks list and nothing else.
-          if gh api -X POST "repos/$REPO/check-runs" \
-               -f name="Certification preflight" -f head_sha="$SHA" \
-               -f status=completed -f conclusion=success \
-               -f "output[title]=App permissions verified" \
-               -f "output[summary]=Probed by certification-preflight.yml. If this is missing or red, /stamp, /seal and /expedite cannot mint their marks." \
-               >/dev/null 2>&1; then
-            printf '  ok    %-22s %s\n' "checks:write" "/stamp, /seal and /expedite mint their marks"
-          else
-            printf '  FAIL  %-22s %s\n' "checks:write" "/stamp, /seal and /expedite CANNOT mint their marks"
-            fail=1
-          fi
+          # contents:write. Without it the certificate image is never uploaded
+          # and the merge comment ships a broken link.
+          contents_write_probe() {
+            local f="preflight-$(date -u +%Y%m%dT%H%M%SZ).txt" sha
+            gh api -X PUT "repos/$REPO/contents/$f" \
+              -f message="preflight write probe" \
+              -f content="$(printf 'permission probe' | base64 -w0)" \
+              -f branch=bot-cards || return 1
+            sha=$(gh api "repos/$REPO/contents/$f?ref=bot-cards" --jq .sha 2>/dev/null)
+            [ -n "$sha" ] && gh api -X DELETE "repos/$REPO/contents/$f" \
+              -f message="preflight cleanup" -f sha="$sha" -f branch=bot-cards
+            return 0
+          }
+          probe_write "contents:write" "certificate images reach the bot-cards branch" \
+            contents_write_probe
+
+          # actions:write. Without it /stamp records its mark and then fails to
+          # re-run the held lane, so the gate stays red telling the operator to
+          # comment /stamp -- which they just did. That shipped: the failure was
+          # sent to /dev/null and the Stamp check went green regardless.
+          #
+          # Enabling an already-enabled workflow is the probe: it needs
+          # actions:write, it is idempotent, and this very workflow is provably
+          # enabled because it is the one running.
+          probe_write "actions:write" "/stamp re-runs the held CI run to release it" \
+            gh api -X PUT "repos/$REPO/actions/workflows/certification-preflight.yml/enable"
+
+          # checks:write. Without it /stamp, /seal and /expedite cannot mint
+          # their marks, which is the whole pipeline. A check run is additive
+          # and named for what it is, so this costs one line in the checks list.
+          probe_write "checks:write" "/stamp, /seal and /expedite mint their marks" \
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name="Certification preflight" -f head_sha="$SHA" \
+              -f status=completed -f conclusion=success \
+              -f "output[title]=App permissions verified" \
+              -f "output[summary]=Probed by certification-preflight.yml. If this is missing or red, /stamp, /seal and /expedite cannot mint their marks."
 
           if [ "$fail" -ne 0 ]; then
             echo "::error title=The certification App has lost a permission::A command will fail the next time someone uses it, and several of those failures are silent by design. Re-check the App's repository permissions and that the installation has accepted them."

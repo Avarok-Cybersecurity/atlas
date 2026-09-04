@@ -249,14 +249,35 @@ jobs:
           # This needs the App token: a re-run triggered by GITHUB_TOKEN does not
           # produce workflow runs, which is the same limitation
           # `governance-harvest.yml` mints an App token to work around.
+          rerun_note=""
           if [ "$VERB" = "/stamp" ]; then
             run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
               --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
               2>/dev/null || true)
             if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
-              gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
-                && echo "re-ran CI run $run_id to release the held lane" \
-                || echo "could not re-run CI run $run_id; push an empty commit or re-run by hand"
+              # Capture stderr rather than discarding it. The first time this
+              # failed in production the reason went to /dev/null, the Stamp
+              # check went green, and the gate stayed red telling the operator
+              # to do the thing they had just done. Diagnosing it needed the
+              # job log, and the log had thrown the answer away.
+              if err=$(gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" 2>&1); then
+                echo "re-ran CI run $run_id to release the held lane"
+              else
+                echo "::error title=Stamp recorded, but the held lane was NOT released::re-running CI run $run_id failed: $err"
+                rerun_note="
+
+          > [!WARNING]
+          > **The stamp is recorded, but the held lane was not released.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow by hand, or push any commit to this PR.
+          >
+          > This is usually the App missing \`actions: write\`. \`certification-preflight.yml\` probes it.
+          >
+          > <details><summary>what the API said</summary>
+          >
+          > \`\`\`
+          > $err
+          > \`\`\`
+          > </details>"
+              fi
             else
               echo "no CI run found for $HEAD_SHA — nothing to re-run"
             fi
@@ -269,7 +290,13 @@ jobs:
           | who | @$ACTOR (\`$PERM\`) |
           | commit | \`$SHORT\` |
 
-          $( [ "$VERB" = "/seal" ] && echo "The next commit to this PR voids it — re-\`/seal\` when the diff settles." || echo "This holds for the life of the PR." )" >/dev/null
+          $( [ "$VERB" = "/seal" ] && echo "The next commit to this PR voids it — re-\`/seal\` when the diff settles." || echo "This holds for the life of the PR." )$rerun_note" >/dev/null
+
+          # A command that did not do what it said is not a success. The mark is
+          # already recorded and the comment already explains the remedy, so this
+          # only colours the job -- but a green job here would be the same lie
+          # the discarded stderr was telling.
+          [ -z "$rerun_note" ] || exit 1
 
       - name: /expedite
         if: steps.cmd.outputs.verb == '/expedite'

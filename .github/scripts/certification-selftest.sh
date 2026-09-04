@@ -744,6 +744,97 @@ sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["name"] = "Ancestry"'
 want_rc_msg 1 "leaves the required context uncreated" "control: renaming a required job is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
+# ---------------------------------------------------------------------------
+# A write whose failure is swallowed, and no probe behind it
+# ---------------------------------------------------------------------------
+# Shipped twice. #843: the certificate image never uploaded because
+# contents:write was absent, the PUT is non-fatal, and the preflight probed
+# contents:READ. #847: /stamp recorded its mark and did not re-run the held
+# lane, because actions:write was absent, the re-run's stderr went to
+# /dev/null, and the preflight probed actions:READ -- under a justification
+# that read "/stamp re-runs the held CI run".
+want_rc 0 "every suppressed write has a real probe behind it" \
+  python3 .github/scripts/assert-preflight-covers-writes.py
+mkdir -p "$TMP/pw/scripts" "$TMP/pw/workflows"
+cp .github/scripts/assert-preflight-covers-writes.py "$TMP/pw/scripts/"
+
+pw_sabotage() {  # $1 = permission whose probe is deleted from the preflight copy
+  for w in certification-preflight.yml certification-commands.yml certification-bot.yml; do
+    cp ".github/workflows/$w" "$TMP/pw/workflows/$w"
+  done
+  python3 - "$TMP/pw/workflows/certification-preflight.yml" "$1" <<'PY'
+import pathlib, sys, re
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+n = t.count(f'probe_write "{sys.argv[2]}"')
+assert n == 1, f"sabotage would not land: {n} probe_write for {sys.argv[2]}"
+p.write_text(re.sub(r'probe_write\s+"%s"' % re.escape(sys.argv[2]), 'probe "%s"' % sys.argv[2], t))
+PY
+}
+
+# Downgrading the probe to a read-style `probe` is the exact shape of both real
+# defects -- the call is still made, so a grep for the permission name would
+# still find it. Only the probe_write marker distinguishes them.
+pw_sabotage "actions:write"
+want_rc_msg 1 "actions:write is written by a call that swallows" \
+  "control: losing the actions:write probe is caught" \
+  python3 "$TMP/pw/scripts/assert-preflight-covers-writes.py"
+
+# This one also proves the continuation-joining works: the bot's PUT spans five
+# lines and its `||` sits on the last. Matched line-by-line it would read as
+# unsuppressed, and the guard would pass by construction.
+pw_sabotage "contents:write"
+want_rc_msg 1 "contents:write is written by a call that swallows" \
+  "control: losing the contents:write probe is caught (multi-line call)" \
+  python3 "$TMP/pw/scripts/assert-preflight-covers-writes.py"
+
+# ---------------------------------------------------------------------------
+# /stamp must not report success when it did not release the lane
+# ---------------------------------------------------------------------------
+python3 - > "$TMP/stamp.sh" <<'PY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/certification-commands.yml").read_text())
+for st in d["jobs"]["command"]["steps"]:
+    if st.get("name") == "/stamp and /seal":
+        print(st["run"]); break
+PY
+if [ -s "$TMP/stamp.sh" ]; then
+  mkdir -p "$TMP/sbin"
+  cat > "$TMP/sbin/gh" <<'STUB'
+#!/usr/bin/env bash
+all="$*"
+case "$all" in
+  *"actions/runs/"*"/rerun"*) echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+  *"actions/runs?head_sha"*)  echo 12345; exit 0 ;;
+  *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
+  *)                          exit 0 ;;
+esac
+STUB
+  chmod +x "$TMP/sbin/gh"
+  : > "$TMP/scalls"
+  set +e
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/stamp ACTOR=me AUTHOR=me \
+    PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  src=$?
+  set -e
+  if [ "$src" -ne 0 ]; then
+    ok "control: a stamp that could not release the lane fails the command job"
+  else
+    bad "control: the stamp step reported success while the lane stayed held"
+  fi
+  if grep -q "held lane was not released" "$TMP/scalls"; then
+    ok "control: the PR comment says the lane was not released"
+  else
+    bad "control: the comment claimed a clean stamp after the re-run failed"
+  fi
+  if grep -q "403" "$TMP/scalls"; then
+    ok "control: the comment carries what the API actually said"
+  else
+    bad "control: the API's reason was discarded again"
+  fi
+else
+  bad "could not extract the /stamp step"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

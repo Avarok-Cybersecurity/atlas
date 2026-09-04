@@ -818,3 +818,69 @@ requiring a context before the job that produces it can deadlock the queue.
 Sequencing, not oversight; it is the last step of this wave and is recorded
 here so that an unrequired context later is read as a regression rather than
 the intended state.
+
+---
+
+## Wave 20 — the stamp that stamped nothing
+
+**Found by using the pipeline, not by reading it.** `/stamp` on #847 minted a
+green `Stamp` check in 39 seconds, and the benchmark gate stayed red saying
+*"Comment /stamp to release certification"* — which had just been done. The
+handler's own comment says it: **"★ A stamp that does not RE-RUN anything is a
+stamp that does nothing."** It was doing nothing.
+
+Three defects, stacked, each hiding the next:
+
+| # | defect | why it was invisible |
+|---|---|---|
+| 1 | the App installation lacks `actions: write` | no probe covered it |
+| 2 | the preflight probed `actions:**read**` | its justification read "/stamp re-runs the held CI run" — a *write* |
+| 3 | the re-run's stderr went to `/dev/null` | the reason was destroyed at the moment it was produced |
+
+The third is what cost the time. `gh api -X POST .../rerun >/dev/null 2>&1 ||
+echo "could not re-run"` reports that something failed and discards what. The
+diagnosis needed a token comparison — my own PAT re-runs the same run with
+`rc=0` — to establish what the log had thrown away.
+
+**This is #843 one endpoint family over.** There, `contents:write` was absent,
+the certificate upload is non-fatal by design, and the preflight probed
+`contents:read`. Same shape, same silence, and the lesson had not propagated
+from `contents` to `actions`.
+
+**Fixed.** The re-run's stderr is captured and surfaced three ways: an `::error`
+annotation, a `> [!WARNING]` block appended to the PR comment carrying the
+verbatim API response, and a non-zero exit so the command job is red. The mark
+is still recorded first — a stamp survives new commits and is worth keeping even
+when the re-run fails — but the command no longer reports success for work it
+did not do. The preflight's three hand-rolled write probes became one
+`probe_write` helper, and `actions:write` joined them, probed by enabling an
+already-enabled workflow: idempotent, needs the permission, and this very
+workflow is provably enabled because it is the one running.
+
+**Proved against history, which is the only control that counts here.**
+`assert-preflight-covers-writes.py` derives, from the workflows themselves,
+every write call that *swallows its own failure*, and requires a `probe_write`
+for each. Run against the tree as it stood at `HEAD` — before any of this
+wave's edits — it refuses on **both** `actions:write` and `contents:write`.
+It would have caught #843 and #847 alike, on the day each was written.
+
+Its scope is deliberately narrow and the file says why: a write that fails
+*loudly* under `set -e` announces itself the first time it breaks, and demanding
+a probe for it would mean inventing noisy probes (posting and deleting comments,
+creating labels) for failures that are already self-announcing. Only suppressed
+writes are pinned. Widening it would be the busywork the guard exists to
+displace.
+
+**Five controls, and the joining one matters.** Losing either `probe_write` is
+caught — and the `contents:write` case doubles as proof that the guard rejoins
+backslash continuations, since that PUT spans five lines with its `||` on the
+last. Matched line-by-line it would read as *unsuppressed*, and the guard would
+have passed by construction. Three more drive the extracted `/stamp` step with a
+stubbed `gh` whose re-run returns 403: the step must exit non-zero, the comment
+must say the lane was not released, and it must carry the API's own words.
+Reverting the fix turns all three red; that was checked, not assumed.
+
+**What is still open, and needs a person.** The App must be granted
+`actions: write` (and still `contents: write`) and the installation must accept
+both. Until then `/stamp` records a mark, posts the warning, and goes red — the
+honest behaviour, but the lane still needs a manual re-run or any new commit.
