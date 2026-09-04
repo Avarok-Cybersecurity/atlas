@@ -953,3 +953,55 @@ decision for a person, not a default a linter installs. Raised, not taken.
 `kernel-compile.yml` genuinely executes 7 of them (`running 6 tests` /
 `running 1 test` in the log, not a hollow `ok`); and there are no skipped JS
 tests and no tautological assertions anywhere in the tree.
+
+---
+
+## Wave 22 — one dig found nothing, the next found a required check that is structurally blind
+
+**First dig: the Rust half of the gate. Nothing found, and that is the result.**
+The hypothesis was that `scoring.rs` (which decides whether a measured value
+passes its bound) and `record_path.rs` had no tests — a first grep for
+`scoring::` in the test files returned zero. That grep was wrong: both modules
+are re-exported through `record.rs`, so tests call `check_record` and `date_of`
+unprefixed. `scoring::check_record` has three named tests, `date_of` has one,
+and every gate module but `check_fmt.rs` (27 lines, no public functions) is
+exercised. Recorded here so it is not re-dug, and because a hypothesis that
+survives one grep and dies on the second is worth writing down as a warning
+about the first grep.
+
+**Second dig: the security alert every push in this session printed.**
+`GHSA-rhfx-m35p-ff5j` — `lru < 0.16.3`, `IterMut` violating Stacked Borrows —
+was open against `main`'s lockfile.
+
+The interesting part is not the crate. It is that **`cargo deny` is a required
+context, it runs `check advisories`, it was green, and the advisory was open on
+the same lockfile.** Not a misconfiguration: `cargo deny` resolves against
+RustSec, Dependabot resolves against the GitHub Advisory Database, and this
+advisory carries a GHSA id and **no RUSTSEC id**. No configuration of
+`cargo deny` can see it. A green `cargo deny` is therefore not the claim
+"no known advisory affects this lockfile", which is how a required check named
+`cargo deny` reads.
+
+**Exposure, established rather than assumed.** `lru` is not a direct dependency
+of anything in the workspace; it enters twice-removed through `ratatui 0.29`.
+Its only use there is `type Cache = LruCache<(Rect, Layout), (Segments,
+Spacers)>` in `layout/layout.rs`, and the methods called on it are `cap()`,
+`get()` and `resize()`. That file contains **zero** occurrences of `iter_mut`,
+and `tui-textarea` — the other path to `ratatui` — does not depend on `lru` at
+all. The advisory is about `lru::IterMut` specifically, so the vulnerable
+iterator is never constructed in this graph. The alert is dismissed as
+`not_used` with that reasoning and the condition for re-opening it (a ratatui
+bump that iterates the cache mutably, or `lru` becoming direct).
+
+**No guard was added, deliberately.** The honest options were a fragile one —
+re-checking a vendored dependency's source in CI, which breaks the moment
+ratatui is bumped and would fail for the wrong reason — or a CI step reading
+the Dependabot alerts API, which needs a token permission this repo's
+`GITHUB_TOKEN` does not carry, and there are already two permission grants
+waiting on a person. Adding a third that sits red would be worse than the gap.
+What was added instead is the blind spot written into `deny.toml` itself, beside
+the `db-urls` line that causes it, so the next reader of that file learns it
+there rather than by discovering an open alert behind a green check.
+
+**Open, and a decision for a person:** whether to gate on Dependabot alerts at
+all. Today they report on the default branch and block nothing.

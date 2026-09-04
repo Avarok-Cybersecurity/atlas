@@ -6,6 +6,23 @@ all-features = true
 
 [advisories]
 # RustSec advisory database.
+#
+# KNOWN BLIND SPOT, and it is structural rather than a misconfiguration.
+# `cargo deny check advisories` resolves against RustSec. GitHub's Dependabot
+# resolves against the GitHub Advisory Database, which is a superset: an
+# advisory can carry a GHSA id with no RUSTSEC id, and cargo-deny then cannot
+# see it however it is configured.
+#
+# That is not hypothetical here. GHSA-rhfx-m35p-ff5j (lru < 0.16.3,
+# `IterMut` violating Stacked Borrows) was open against this lockfile while
+# `cargo deny` -- a REQUIRED context -- was green, because the advisory has no
+# RUSTSEC id. It was dismissed as not-reachable: lru enters only through
+# ratatui 0.29's layout cache, which calls cap(), get() and resize(), and
+# layout.rs contains no `iter_mut` at all.
+#
+# Practical consequence: a green `cargo deny` is not the same claim as "no
+# known advisory affects this lockfile". Dependabot is what covers the
+# difference, and it reports on the default branch rather than blocking a PR.
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 # Ignored advisories — only `unmaintained` notices on transitive deps
