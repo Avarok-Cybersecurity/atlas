@@ -34,6 +34,7 @@ emit() {
     echo "web_only=$1"
     echo "web_touched=$2"
     echo "blog_touched=$3"
+    echo "builds_binaries=$4"
   } >>"${GITHUB_OUTPUT:-/dev/stdout}"
 }
 
@@ -63,7 +64,7 @@ case "${classify_only:+stdin}${GITHUB_EVENT_NAME:-}" in
     ;;
   *)
     # push, schedule, workflow_dispatch, workflow_call: never fast-path.
-    emit false true true
+    emit false true true true
     echo "event '${GITHUB_EVENT_NAME:-?}' never classifies as web-only"
     exit 0
     ;;
@@ -79,6 +80,30 @@ if [ "$total" -gt 0 ] && [ "$non_web" -eq 0 ]; then web_only=true; fi
 web_touched=false; [ "$web" -gt 0 ] && web_touched=true
 blog_touched=false; [ "$blog" -gt 0 ] && blog_touched=true
 
-emit "$web_only" "$web_touched" "$blog_touched"
+# Can this diff change a shipped binary?
+#
+# The nine cross-platform release-matrix builds are the most expensive thing a
+# PR can trigger, and a diff that cannot alter a binary has no business
+# triggering them. Measured 2026-09-04: a docs-and-CI-only PR released all nine
+# on a queue where hosted runners were completing ~8 jobs an hour.
+#
+# FAIL-SAFE BY CONSTRUCTION: this asks whether every changed path is provably
+# inert, and answers `true` (build) the moment one is not. A new top-level
+# directory therefore builds until someone deliberately adds it here.
+#
+# `.github/` is inert with a CARVE-OUT, and the carve-out is the point.
+# `certification-commands.yml` cannot change a binary; `release-build.yml`,
+# `release.yml` and `.github/actions/**` decide how binaries are produced, so a
+# change there must build even though it lives under `.github/`.
+inert_re='^(site|blog|book|web-shared|docs|assets)/|^[^/]*\.md$|^\.github/'
+build_re='^\.github/(workflows/(release|dev-release|kernel-compile)|actions/)'
+non_inert=$(printf '%s\n' "$files" | grep -cvE "$inert_re" || true)
+build_touched=$(printf '%s\n' "$files" | grep -cE "$build_re" || true)
+builds_binaries=true
+if [ "$total" -gt 0 ] && [ "$non_inert" -eq 0 ] && [ "$build_touched" -eq 0 ]; then
+  builds_binaries=false
+fi
+
+emit "$web_only" "$web_touched" "$blog_touched" "$builds_binaries"
 echo "changed=$total non_web=$non_web web=$web blog=$blog -> web_only=$web_only"
 printf '%s\n' "$files" | sed 's/^/  /'

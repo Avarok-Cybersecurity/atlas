@@ -467,6 +467,7 @@ jobs:
       pr_mode: true
       retention_days: 1
       web_only: ${{ needs.changes.outputs.web_only == 'true' }}
+      builds_binaries: ${{ needs.changes.outputs.builds_binaries != 'false' }}
 
   # OBSERVE-ONLY, and structurally incapable of being anything else.
   #
