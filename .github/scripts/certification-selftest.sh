@@ -19,7 +19,15 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d)
+
+# A suite that exits early is indistinguishable from a suite that ran and
+# failed: same non-zero status, no summary line, and every check after the exit
+# point silently not run. That shipped here -- a stray `set -e` left over from
+# one control turned errexit on, and the next control that was SUPPOSED to fail
+# killed the run after 97 checks, reporting nothing but exit 1.
+REACHED_SUMMARY=0
+trap 'rm -rf "$TMP"; [ "$REACHED_SUMMARY" = 1 ] || { echo; echo "  SUITE TRUNCATED: exited after $PASS checks, before the summary."; echo "  Everything after that point did not run. This is not a normal failure."; }' EXIT
 PASS=0; FAIL=0
 
 # Prerequisites, checked up front and LOUDLY. The alternative -- skipping the
@@ -619,6 +627,42 @@ STUB
   # whether one exists" from "posted one". Require the POST too.
   certed()  { grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; }
 
+  # CONTROL: the render tools are installed with `|| true`, so ask what happens
+  # when that install fails. Before the guard, `rsvg-convert` was then missing,
+  # the step died under `set -e` BEFORE the comment POST, and a merged PR got no
+  # certificate and no comment at all -- strictly worse than the generic image
+  # the fallback exists to serve.
+  #
+  # The host running this suite HAS both tools, so their absence is manufactured
+  # rather than assumed: a PATH of the stubs plus a symlink farm of the commands
+  # the step actually uses, resolved at runtime so it adapts to wherever they
+  # live. Asserting "the host happens not to have librsvg" is the wave-2
+  # mistake -- a control that only holds on one machine.
+  mkdir -p "$TMP/farm"
+  for c in bash sh env python3 jq sed awk grep tr cut date base64 sha256sum \
+           cat head tail printf dirname basename mktemp sort uniq wc xargs; do
+    src=$(command -v "$c" 2>/dev/null) && ln -sf "$src" "$TMP/farm/$c"
+  done
+  if [ -e "$TMP/farm/rsvg-convert" ]; then
+    bad "control setup: the farm leaked rsvg-convert; absence was not manufactured"
+  else
+    botstub 0
+    rm -f "$TMP/bin/rsvg-convert"
+    ( PATH="$TMP/bin:$TMP/farm" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+      STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
+      bash "$TMP/bot.sh" >/dev/null 2>&1 )
+    if certed; then
+      ok "control: with no rsvg-convert the certificate is still posted"
+    else
+      bad "control: a missing render tool swallowed the certificate entirely"
+    fi
+    if grep -q 'certificate-merged.png' "$TMP/bcalls"; then
+      ok "control: and it points at the generic image, not a render that never happened"
+    else
+      bad "control: it linked a rendered certificate that was never produced"
+    fi
+  fi
+
   runbot pr-certification-stage-1 "" 0
   posted && ! patched && ok "no prior comment -> posts one" || bad "no prior comment -> did not post exactly one"
   # CONTROL: with a prior comment it must EDIT, never post a second. A thread of
@@ -677,6 +721,285 @@ else
   bad "could not extract the bot's comment step"
 fi
 
+# ---------------------------------------------------------------------------
+# Jobs that report a verdict nobody consults (#810, and the ancestry guard)
+# ---------------------------------------------------------------------------
+# Two instances of one defect. `Site unit tests` ran on every PR and blocked
+# neither merge nor deploy. And `Merge-ancestry guard self-test` -- the test
+# proving the guard CAN fail -- was required, while the guard's actual verdict
+# on your branch was not.
+#
+# The guard is hosted here, in a required context, rather than in either
+# workflow's own lane: a job cannot be relied on to notice it has been unwired
+# from itself.
+#
+# Every control pins the *message* as well as the exit code. Six distinct
+# defects leave through the same exit 1, so asserting rc alone asserts nothing
+# about which one fired -- the wave 4 and wave 7 lesson.
+want_rc 0 "both gated jobs are wired as things stand" \
+  python3 .github/scripts/assert-gates-are-wired.py
+mkdir -p "$TMP/sg/scripts" "$TMP/sg/workflows"
+cp .github/scripts/assert-gates-are-wired.py "$TMP/sg/scripts/"
+
+# $1 = workflow filename, $2 = python edit applied to the parsed doc as `d`.
+# NOTE `d[True]`, not `d["on"]`: YAML 1.1 parses a bare `on:` key as the boolean
+# True. An edit reaching for the string raises KeyError, the sabotage silently
+# does not land, and the control then passes against unmodified input -- which
+# is a green light that measured nothing. Caught exactly that way once already.
+sg_sabotage() {
+  for w in site.yml merge-ancestry.yml; do cp ".github/workflows/$w" "$TMP/sg/workflows/$w"; done
+  python3 - "$TMP/sg/workflows/$1" "$2" <<'PY'
+import pathlib, sys, yaml
+p = pathlib.Path(sys.argv[1]); d = yaml.safe_load(p.read_text())
+exec(sys.argv[2], {"d": d})
+p.write_text(yaml.safe_dump(d, sort_keys=False))
+PY
+}
+
+sg_sabotage site.yml 'd["jobs"]["deploy"]["needs"] = ["build"]'
+want_rc_msg 1 "does not need" "control: dropping unit from deploy's needs is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage site.yml 'd["jobs"]["unit"]["if"] = "github.event_name == \"push\""'
+want_rc_msg 1 "grew an \`if:\`" "control: making the site suite conditional is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage site.yml 'd[True]["pull_request"] = {"branches": ["main"], "paths": ["site/**"]}'
+want_rc_msg 1 "grew a \`paths:\` filter" "control: a paths filter that would deadlock PRs is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage site.yml 'd["jobs"].pop("unit")'
+want_rc_msg 1 "no longer exists" "control: deleting the site suite outright is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# The ancestry guard's own regression: restoring the `if:` that made its
+# verdict advisory while its self-test stayed required.
+sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["if"] = "github.event_name == \"pull_request\""'
+want_rc_msg 1 "must report on every run" "control: re-adding the ancestry guard's if: is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage merge-ancestry.yml 'd[True].pop("merge_group")'
+want_rc_msg 1 "every entry would deadlock" "control: dropping merge_group support is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# A rename is the quietest way to lose a required context: the job still runs,
+# still passes, and reports under a name branch protection is not waiting for.
+sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["name"] = "Ancestry"'
+want_rc_msg 1 "leaves the required context uncreated" "control: renaming a required job is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# ---------------------------------------------------------------------------
+# A write whose failure is swallowed, and no probe behind it
+# ---------------------------------------------------------------------------
+# Shipped twice. #843: the certificate image never uploaded because
+# contents:write was absent, the PUT is non-fatal, and the preflight probed
+# contents:READ. #847: /stamp recorded its mark and did not re-run the held
+# lane, because actions:write was absent, the re-run's stderr went to
+# /dev/null, and the preflight probed actions:READ -- under a justification
+# that read "/stamp re-runs the held CI run".
+want_rc 0 "every suppressed write has a real probe behind it" \
+  python3 .github/scripts/assert-preflight-covers-writes.py
+mkdir -p "$TMP/pw/scripts" "$TMP/pw/workflows"
+cp .github/scripts/assert-preflight-covers-writes.py "$TMP/pw/scripts/"
+
+pw_sabotage() {  # $1 = permission whose probe is deleted from the preflight copy
+  for w in certification-preflight.yml certification-commands.yml certification-bot.yml; do
+    cp ".github/workflows/$w" "$TMP/pw/workflows/$w"
+  done
+  python3 - "$TMP/pw/workflows/certification-preflight.yml" "$1" <<'PY'
+import pathlib, sys, re
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+n = t.count(f'probe_write "{sys.argv[2]}"')
+assert n == 1, f"sabotage would not land: {n} probe_write for {sys.argv[2]}"
+p.write_text(re.sub(r'probe_write\s+"%s"' % re.escape(sys.argv[2]), 'probe "%s"' % sys.argv[2], t))
+PY
+}
+
+# Downgrading the probe to a read-style `probe` is the exact shape of both real
+# defects -- the call is still made, so a grep for the permission name would
+# still find it. Only the probe_write marker distinguishes them.
+pw_sabotage "actions:write"
+want_rc_msg 1 "actions:write is written by a call that swallows" \
+  "control: losing the actions:write probe is caught" \
+  python3 "$TMP/pw/scripts/assert-preflight-covers-writes.py"
+
+# This one also proves the continuation-joining works: the bot's PUT spans five
+# lines and its `||` sits on the last. Matched line-by-line it would read as
+# unsuppressed, and the guard would pass by construction.
+pw_sabotage "contents:write"
+want_rc_msg 1 "contents:write is written by a call that swallows" \
+  "control: losing the contents:write probe is caught (multi-line call)" \
+  python3 "$TMP/pw/scripts/assert-preflight-covers-writes.py"
+
+# ---------------------------------------------------------------------------
+# /stamp must not report success when it did not release the lane
+# ---------------------------------------------------------------------------
+python3 - > "$TMP/stamp.sh" <<'PY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/certification-commands.yml").read_text())
+for st in d["jobs"]["command"]["steps"]:
+    if st.get("name") == "/stamp and /seal":
+        print(st["run"]); break
+PY
+if [ -s "$TMP/stamp.sh" ]; then
+  mkdir -p "$TMP/sbin"
+  cat > "$TMP/sbin/gh" <<'STUB'
+#!/usr/bin/env bash
+all="$*"
+case "$all" in
+  *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+  *"actions/runs?head_sha"*)  echo 12345; exit 0 ;;
+  *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
+  *)                          exit 0 ;;
+esac
+STUB
+  chmod +x "$TMP/sbin/gh"
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/stamp ACTOR=me AUTHOR=me \
+    PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  src=$?
+  if [ "$src" -ne 0 ]; then
+    ok "control: a stamp that could not release the lane fails the command job"
+  else
+    bad "control: the stamp step reported success while the lane stayed held"
+  fi
+  if grep -q "but CI was not re-run" "$TMP/scalls"; then
+    ok "control: the PR comment says CI was not re-run"
+  else
+    bad "control: the comment claimed a clean stamp after the re-run failed"
+  fi
+  if grep -q "403" "$TMP/scalls"; then
+    ok "control: the comment carries what the API actually said"
+  else
+    bad "control: the API's reason was discarded again"
+  fi
+
+  # CONTROL: a SEAL must re-run too. `seal status` reads the Seal check run,
+  # and ci.yml has no `check_run` trigger -- so minting the mark alone left a
+  # sealed PR reporting an unsealed `seal status` until someone pushed a
+  # commit, which is the one thing that VOIDS a seal.
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/seal ACTOR=me AUTHOR=me \
+    PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  if grep -q '^RERUN ' "$TMP/scalls"; then
+    ok "control: /seal re-runs CI so seal status is re-evaluated"
+  else
+    bad "control: /seal minted its mark and never refreshed the job that reads it"
+  fi
+else
+  bad "could not extract the /stamp step"
+fi
+
+# ---------------------------------------------------------------------------
+# nginx add_header does not accumulate across contexts
+# ---------------------------------------------------------------------------
+# Three vhosts, one rule, three separate incidents -- each found by hand after
+# the fact. The docs vhost served every HTML document with no security headers
+# because Cache-Control sat inside `location ~* \.html$`; the site vhost
+# discarded Alt-Svc on every proxied response and sent its dotfile refusal bare;
+# and the site vhost was independently missing Referrer-Policy that the other
+# two sent. All three are fixed. Nothing stopped a fourth.
+#
+# There is no historical config to replay: the docs vhost has a single commit,
+# so the pre-fix text is not in the tree. The sabotages below reconstruct the
+# defect SHAPE instead, which is stated plainly rather than dressed up as a
+# regression test against real history.
+want_rc 0 "the three vhosts agree, at server level" \
+  python3 .github/scripts/assert-vhost-headers.py
+mkdir -p "$TMP/vh/.github/scripts"
+cp .github/scripts/assert-vhost-headers.py "$TMP/vh/.github/scripts/"
+
+vh_sabotage() {  # $1 = vhost path, $2 = python edit over the file text as `t`
+  for f in site/deploy/nginx/atlasinference.io.conf \
+           blog/deploy/nginx/blog.atlasinference.io.conf \
+           book/deploy/nginx/docs.atlasinference.io.conf; do
+    mkdir -p "$TMP/vh/$(dirname "$f")"; cp "$f" "$TMP/vh/$f"
+  done
+  [ -n "${1:-}" ] || return 0
+  python3 - "$TMP/vh/$1" "$2" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+ns = {"t": t}; exec(sys.argv[2], ns)
+assert ns["t"] != t, "sabotage did not change the file -- the control would measure nothing"
+p.write_text(ns["t"])
+PY
+}
+
+# The docs incident, reconstructed: a location that declares any add_header
+# drops every inherited one for that path.
+vh_sabotage book/deploy/nginx/docs.atlasinference.io.conf \
+  't = t.replace("    location / {", "    location ~* \\\\.html$ {\n        add_header Cache-Control \"no-store\" always;\n    }\n\n    location / {", 1)'
+want_rc_msg 1 "inside a location" "control: an add_header inside a location is caught" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+# The site incident: one vhost quietly lacking a header the other two send.
+vh_sabotage blog/deploy/nginx/blog.atlasinference.io.conf \
+  't = t.replace("    add_header Referrer-Policy", "    # add_header Referrer-Policy", 1)'
+want_rc_msg 1 "does not declare Referrer-Policy" "control: a vhost missing a core header is caught" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+vh_sabotage blog/deploy/nginx/blog.atlasinference.io.conf \
+  't = t.replace("    add_header Referrer-Policy", "    # add_header Referrer-Policy", 1)'
+want_rc_msg 1 "have drifted" "control: drift between the vhosts is named as drift" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+# The value that was live on atlasinference.io when this was written.
+vh_sabotage site/deploy/nginx/atlasinference.io.conf \
+  't = t.replace("X-XSS-Protection \"0\"", "X-XSS-Protection \"1; mode=block\"", 1)'
+want_rc_msg 1 "OWASP" "control: re-enabling the legacy XSS auditor is caught" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+# ---------------------------------------------------------------------------
+# Markdown links that point at nothing
+# ---------------------------------------------------------------------------
+# docs/lora-implementation-status.md linked to two files that have never existed
+# in this repository's history -- dead the day it was committed.
+#
+# The controls below matter more than usual because the throwaway sweep that
+# found that defect reported nineteen broken links and SEVENTEEN were its own
+# bugs (it stripped the dot from `.github`, and resolved `/images/...` against
+# the filesystem). A checker that cries wolf gets muted. So the controls prove
+# both directions: that real breakage is caught, AND that the site-root and
+# generated-path cases are resolved rather than quietly skipped -- a checker
+# that skips what it cannot resolve passes vacuously.
+want_rc 0 "every in-repo markdown link resolves" \
+  python3 .github/scripts/assert-doc-links.py
+
+dl_tree() {  # build a miniature repo the checker can be pointed at
+  rm -rf "$TMP/dl"
+  mkdir -p "$TMP/dl/.github/scripts" "$TMP/dl/docs" \
+           "$TMP/dl/blog/src" "$TMP/dl/blog/static/images" "$TMP/dl/book/src"
+  cp .github/scripts/assert-doc-links.py "$TMP/dl/.github/scripts/"
+  : > "$TMP/dl/docs/target.md"
+  printf 'PNG' > "$TMP/dl/blog/static/images/hero.webp"
+  printf '[ok](target.md)\n'          > "$TMP/dl/docs/good.md"
+  printf '![h](/images/hero.webp)\n'  > "$TMP/dl/blog/src/post.md"
+  printf '[api](/api/atlas_core/)\n'  > "$TMP/dl/book/src/redirect.md"
+}
+dl_run() { python3 "$TMP/dl/.github/scripts/assert-doc-links.py"; }
+
+dl_tree
+want_rc 0 "control: a good tree passes (relative, site-root and generated all resolve)" dl_run
+
+# The defect exactly as it was found.
+dl_tree; printf '[mvp](lora-mvp-proposal.md)\n' > "$TMP/dl/docs/dead.md"
+want_rc_msg 1 "no such file" "control: a relative link to a missing file is caught" dl_run
+
+# If site-root links were skipped rather than resolved, this would still pass.
+dl_tree; rm "$TMP/dl/blog/static/images/hero.webp"
+want_rc_msg 1 "no such file" "control: a site-root link is really resolved, not skipped" dl_run
+
+# A site-root link from a tree that publishes no static dir must be loud, not
+# silently ignored -- silence is how the seventeen false negatives would hide.
+dl_tree; printf '![x](/images/hero.webp)\n' > "$TMP/dl/docs/rooted.md"
+want_rc_msg 1 "no known static root" "control: a site-root link from an unknown tree is refused" dl_run
+
+# And the generated rustdoc path must NOT be flagged: docs.yml assembles it at
+# deploy time, so requiring it in the tree would fail every PR forever.
+dl_tree; printf '[a](/api/spark_model/)\n[b](/api/)\n' > "$TMP/dl/book/src/more.md"
+want_rc 0 "control: generated /api/ paths are not treated as breakage" dl_run
+
 echo
 echo "  $PASS passed, $FAIL failed"
+REACHED_SUMMARY=1
 [ "$FAIL" -eq 0 ]

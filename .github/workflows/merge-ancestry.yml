@@ -53,7 +53,12 @@ concurrency:
 jobs:
   guard:
     name: PR shares history with its base
-    if: github.event_name == 'pull_request'
+    # Deliberately unconditional. This is a required context, and a job held
+    # behind an `if:` is never created for the events it skips -- GitHub then
+    # waits on it forever. It therefore has to report in the merge queue too,
+    # where the answer is trivially yes (a queue commit descends from the base
+    # by construction). Reporting a foregone conclusion is the price of the
+    # verdict being enforceable at all on the events where it is not foregone.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -71,15 +76,41 @@ jobs:
 
       - name: Check merge ancestry
         env:
+          EVENT: ${{ github.event_name }}
           # head.sha tracks the PR's latest push. base.sha in the payload is
           # the base tip at PR CREATION and goes stale, so the base is
           # resolved from the just-fetched origin/<base.ref> instead.
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # A merge_group payload carries no pull_request object, so the pair
+          # is read from the merge_group instead. Both shas are already in the
+          # object store after the fetch-depth: 0 checkout above -- base_sha is
+          # an ancestor of the queue commit.
+          MG_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          BASE_SHA="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
-          bash scripts/check_merge_ancestry.sh "$BASE_SHA" "$HEAD_SHA" "$BASE_REF"
+          case "$EVENT" in
+            pull_request)
+              base_ref="$PR_BASE_REF"
+              base_sha="$(git rev-parse "refs/remotes/origin/${base_ref}")"
+              head_sha="$PR_HEAD_SHA"
+              ;;
+            merge_group)
+              base_ref="${MG_BASE_REF#refs/heads/}"
+              base_sha="$MG_BASE_SHA"
+              head_sha="$MG_HEAD_SHA"
+              ;;
+            *)
+              # workflow_dispatch carries neither pair. Report success rather
+              # than failing: there is nothing to compare, and a red here would
+              # say "unrelated histories", which is a different claim.
+              echo "::notice title=Nothing to compare::$EVENT carries no base/head pair"
+              exit 0
+              ;;
+          esac
+          bash scripts/check_merge_ancestry.sh "$base_sha" "$head_sha" "$base_ref"
 
   self-test:
     name: Merge-ancestry guard self-test

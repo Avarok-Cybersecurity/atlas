@@ -217,6 +217,22 @@ jobs:
               sudo apt-get -qq install -y librsvg2-bin >/dev/null 2>&1 || true
               python3 -m pip install --quiet segno >/dev/null 2>&1 || true
 
+              # Those installs are deliberately non-fatal, so ASK whether they worked.
+              # Without this the step runs `rsvg-convert` under `set -e`, dies before the
+              # comment POST below, and a merged PR gets no certificate AND no comment --
+              # strictly worse than the generic image the fallback already exists to
+              # serve. Same reasoning as the contents:write fallback further down: a
+              # missing capability must degrade the picture, never swallow the certificate.
+              render_ok=1
+              command -v rsvg-convert >/dev/null 2>&1 || {
+                echo "::warning title=rsvg-convert is missing::librsvg2-bin did not install; posting the generic certificate."
+                render_ok=0
+              }
+              python3 -c 'import segno' >/dev/null 2>&1 || {
+                echo "::warning title=segno is missing::the QR code cannot be generated; posting the generic certificate."
+                render_ok=0
+              }
+
               # Who stamped and who sealed, read back from the check runs that
               # recorded them -- they are already the source of truth for who
               # and at which commit, so nothing extra has to be stored.
@@ -235,43 +251,45 @@ jobs:
               title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null)
               authors=$(printf '%s' "${who:-}" | tr -d '@' | tr -s ' ' ',' | sed 's/,$//')
 
-              python3 .github/scripts/render-certificate.py \
-                --template docs/diagrams/states/certificate-merged.svg \
-                --out /tmp/cert.svg \
-                --url "https://github.com/$REPO/pull/$PR" \
-                --pr "$PR" --title "$title" --repo "$REPO" \
-                --commit "${merge_sha:0:10}" --date "$(date -u +%Y-%m-%d)" \
-                --gates "11 / 11 CERTIFIED" --authors "$authors" \
-                --merge-count "$count" \
-                --stamp-user "$st_user" --stamp-sha "${HEAD_SHA:0:10}" \
-                --seal-user "$sl_user" --seal-sha "${HEAD_SHA:0:10}" \
-                --qr-x 980 --qr-y 455
-              rsvg-convert -w 1200 /tmp/cert.svg -o /tmp/cert.png
-
-              # GitHub proxies images through camo and caches them BY URL, so a
-              # stable filename would keep serving the first render forever.
-              # The content hash makes each certificate its own permanent URL.
-              hash=$(sha256sum /tmp/cert.png | cut -c1-8)
-              path="pr-$PR-$hash.png"
-              b64=$(base64 -w0 /tmp/cert.png)
-              gh api -X PUT "repos/$REPO/contents/$path" \
-                -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
-                >/dev/null 2>&1 \
-                || gh api -X PUT "repos/$REPO/contents/$path" \
-                     -f message="certificate for #$PR" -f content="$b64" \
-                     -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
-                     >/dev/null 2>&1 || true
-              # Only point at the generated image if it is ACTUALLY THERE. The
-              # upload needs `contents: write` on bot-cards, and the PUT above is
-              # deliberately non-fatal so a missing grant cannot swallow the
-              # certificate itself -- but referencing an object that was never
-              # written posts a broken image, which is worse than posting the
-              # generic one. Verified on #843: the comment shipped a 404.
               cert="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/certificate-merged.png"
-              if gh api "repos/$REPO/contents/$path?ref=bot-cards" >/dev/null 2>&1; then
-                cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
-              else
-                echo "::warning title=Certificate image was not uploaded::falling back to the generic certificate. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this."
+              if [ "$render_ok" = 1 ]; then
+                python3 .github/scripts/render-certificate.py \
+                  --template docs/diagrams/states/certificate-merged.svg \
+                  --out /tmp/cert.svg \
+                  --url "https://github.com/$REPO/pull/$PR" \
+                  --pr "$PR" --title "$title" --repo "$REPO" \
+                  --commit "${merge_sha:0:10}" --date "$(date -u +%Y-%m-%d)" \
+                  --gates "11 / 11 CERTIFIED" --authors "$authors" \
+                  --merge-count "$count" \
+                  --stamp-user "$st_user" --stamp-sha "${HEAD_SHA:0:10}" \
+                  --seal-user "$sl_user" --seal-sha "${HEAD_SHA:0:10}" \
+                  --qr-x 980 --qr-y 455
+                rsvg-convert -w 1200 /tmp/cert.svg -o /tmp/cert.png
+
+                # GitHub proxies images through camo and caches them BY URL, so a
+                # stable filename would keep serving the first render forever.
+                # The content hash makes each certificate its own permanent URL.
+                hash=$(sha256sum /tmp/cert.png | cut -c1-8)
+                path="pr-$PR-$hash.png"
+                b64=$(base64 -w0 /tmp/cert.png)
+                gh api -X PUT "repos/$REPO/contents/$path" \
+                  -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
+                  >/dev/null 2>&1 \
+                  || gh api -X PUT "repos/$REPO/contents/$path" \
+                       -f message="certificate for #$PR" -f content="$b64" \
+                       -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
+                       >/dev/null 2>&1 || true
+                # Only point at the generated image if it is ACTUALLY THERE. The
+                # upload needs `contents: write` on bot-cards, and the PUT above is
+                # deliberately non-fatal so a missing grant cannot swallow the
+                # certificate itself -- but referencing an object that was never
+                # written posts a broken image, which is worse than posting the
+                # generic one. Verified on #843: the comment shipped a 404.
+                if gh api "repos/$REPO/contents/$path?ref=bot-cards" >/dev/null 2>&1; then
+                  cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
+                else
+                  echo "::warning title=Certificate image was not uploaded::falling back to the generic certificate. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this."
+                fi
               fi
               gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
           ${who:-@}— merged. Every required benchmark gate was certified against a

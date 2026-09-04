@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # harvest-triage.sh — decide what governance-harvest.yml should do about an
 # already-open harvest PR. Prints exactly one word:
 #

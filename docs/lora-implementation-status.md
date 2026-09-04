@@ -1,6 +1,5 @@
 # Atlas LoRA v0 — Implementation Status (M0 + M1-attention)
 
-Implements the [MVP proposal](lora-mvp-proposal.md) / [codebase brief](lora-codebase-brief.md).
 This is a **working POC**: a served, fine-tuned tiny model on GB10, verified end-to-end.
 
 ## What ships

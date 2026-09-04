@@ -144,6 +144,23 @@ jobs:
       # density and fails if any text token drops below WCAG AA. It is also
       # what stops a token edit on the marketing site from silently pushing
       # the blog's metadata gray under 4.5:1.
+      # Both suites above are scoped to `src/lib`, so a test added anywhere else
+      # is collected by nothing and reports nothing -- it would look like
+      # coverage and be none. This job is a required context (#810), which is
+      # exactly why the check belongs in it: the job that would silently lose a
+      # test is the job that has to refuse.
+      - name: no test file lives where the suite will not look
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          stray=$(find site/src blog/src -name '*.test.*' -not -path '*/src/lib/*' 2>/dev/null | sort)
+          if [ -n "$stray" ]; then
+            echo "::error title=Test files outside the tested path::these are collected by no suite:"
+            printf '  %s\n' $stray
+            exit 1
+          fi
+          echo "every test file sits under a src/lib the suites actually run"
+
       - name: Chevron-field contrast budget
         working-directory: ${{ github.workspace }}
         run: bun .contrast-check.mjs
@@ -299,7 +316,10 @@ jobs:
 
   deploy:
     name: Deploy to avarok via rsync
-    needs: build
+    # `unit` as well as `build`: a red site test has to stop the deploy, not
+    # just report next to it (#810). Both jobs are unconditional, so this adds
+    # no path on which deploy is skipped for want of a dependency.
+    needs: [build, unit]
     if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     environment:

@@ -645,3 +645,505 @@ App is a change to the App's repository permissions, accepted in the GitHub UI.
 Until then the certificate falls back to the generic image and the preflight
 stays red — deliberately, because a red check that names a real missing grant is
 the correct state, not something to paper over.
+
+---
+
+## Wave 17 — the fix verified in production, and where this stops
+
+**#846 merged** at 22:47:51Z as `1415fc5e14`, and the fix is confirmed against
+the real bot rather than a stub:
+
+    src="https://raw.githubusercontent.com/.../main/docs/diagrams/states/certificate-merged.png"
+    HTTP/2 200
+
+The certificate on #846 links the committed generic image and **resolves**,
+where #843's linked a generated object that was never uploaded and returned 404.
+The bot also emitted the warning it was given: *"Certificate image was not
+uploaded ... The App likely lacks contents:write."* Correct behaviour, correctly
+explained, in production.
+
+## Where this stops, and why
+
+**The goal is met for everything reachable in code.** Every gate, command and
+bot path in the certification pipeline has at least one check and at least one
+negative control that has been *watched to fail*:
+
+| Layer | Proven by |
+|---|---|
+| shell/Python logic — 82 checks | 20+ sabotages |
+| ci.yml decisions, state machine, permissions, authority | 15 sabotages |
+| Rust logic — 21 tests | 3 sabotages |
+| live App authority — 8 permissions | an invalid-token control, and one real gap it caught |
+| suite wiring | 2 sabotages, guarded from a different required job |
+
+**Six of the seventeen findings were defects in the verification, not the
+pipeline** — hollow controls that passed with the guard deleted, sabotages that
+were inert, harness bugs that read as code bugs. Those are the entries worth
+re-reading, because they are the failure mode that survives a green suite.
+
+**One real production defect was found**: #843's certificate shipped a broken
+image, caused by a permission gap the preflight had not thought to probe. Fixed,
+with a control, and the probe now covers it.
+
+**What is still open, and cannot be closed from here.** The certification App
+lacks `contents: write`. The preflight reports it, the bot degrades safely
+around it, and granting it is a change to the App's repository permissions that
+a person accepts in the GitHub UI. Until then certificates carry the generic
+image.
+
+**What can never be closed.** The suite runs offline and the probe runs against
+one repo. Neither can catch GitHub changing an endpoint's semantics underneath
+us. That is a limit, not an oversight, and it is written here so nobody later
+mistakes this record for a claim of completeness.
+
+---
+
+## Wave 18 — a suite that reported for months and gated nothing (#810)
+
+**Found.** Not by sweeping for a mechanism, but by reading the open issues:
+#810 had already written the defect down. `Site unit tests` ran on every pull
+request and on every merge-queue entry, reported green, and blocked neither the
+merge nor the deploy. Two independent reasons, and fixing either alone would
+have left the other:
+
+| | before | after |
+|---|---|---|
+| required contexts on `main` | 19, none of them the site suite | 20 |
+| `deploy` needs | `build` | `[build, unit]` |
+
+The issue notes what this cost: a latching-state regression (#805) reached
+`main` and was only caught later, in the window when the suite could not import
+a `.svelte.js` rune module at all.
+
+**Verified.** Three consecutive `site.yml` runs on three different PR branches
+each show `Site unit tests: success` alongside `Deploy to avarok via rsync:
+skipped` — the suite was demonstrably running and demonstrably not consulted.
+
+**Fixed.** `deploy` now needs `unit` as well as `build`, and `Site unit tests`
+was added to branch protection through the additive contexts endpoint rather
+than a full `PATCH`, so the other nineteen contexts and every unrelated setting
+could not be clobbered by a malformed payload. Diffed before and after: one
+context added, none removed, the rest of the protection object identical.
+
+**Proved, and proved the proof.** `assert-site-tests-gate.py` was written and
+run *before* the fix, against the unfixed tree, where it refused. It is hosted
+in `certification-selftest.sh` — a required context — rather than in the site's
+own lane, because a suite cannot be relied on to notice it has been unwired
+from itself. Four controls, each pinning the message and not just the exit code
+(three distinct defects leave through the same `fail()`, so an exit code alone
+distinguishes none of them): drop `unit` from `deploy`'s needs, give `unit` an
+`if:`, give `pull_request` a `paths:` filter, delete `unit` outright.
+
+**The third control failed on first run, and was right to.** YAML 1.1 parses a
+bare `on:` key as the boolean `True`, so `d["on"]` raised `KeyError` and the
+sabotage never applied — the guard then passed, and the control went red for
+exactly the right reason. This is the wave 5 failure recurring in a new
+disguise: a sabotage that does not land makes green mean nothing. It was caught
+here only because the control asserted the guard *must* fail; had it been
+written the usual way round, an inert edit would have read as a passing test.
+
+**Why the second assertion exists.** Requiring a context is only safe if the
+job reports on *every* PR — a job held behind an `if:` is never created for the
+PRs it skips, and GitHub waits on it forever. Five workflows in this repo carry
+that scar. So the guard also refuses if `unit` grows an `if:` or a `needs:`, or
+if `site.yml`'s `pull_request` trigger grows a `paths:` filter. The fix and the
+thing that makes the fix dangerous are pinned in the same file.
+
+**Also this wave.** Closed #839 as a duplicate of #835 — my own issue, filed a
+day after an existing one describing the same C=2 bimodality. The measurements
+were moved onto #835 before closing, so consolidating cost no evidence.
+
+**What is still open.** The branch-protection half is not expressible in the
+tree, so no committed file can guard it; if someone removes the context, only
+this record and the API say it was ever there.
+
+---
+
+## Wave 19 — the same defect, one workflow over: the guard's self-test was required, the guard was not
+
+**Found by propagating, not by luck.** Wave 18 fixed one instance; step 6 of a
+wave is to ask where else the *mechanism* lives. Sweeping every workflow for
+jobs that run on pull requests but are neither a required context nor depended
+upon by another job returned ten, of which one was the same defect with a
+sharper edge:
+
+| job | reports as | required? |
+|---|---|---|
+| `self-test` | Merge-ancestry guard self-test | **yes** |
+| `guard` | PR shares history with its base | **no** |
+
+The test that proves the guard *can* fail was mandatory. The guard's verdict on
+your actual branch was advisory. A PR of the #452 class — an orphan branch whose
+root commit is a whole-tree snapshot, which GitHub reports as `MERGEABLE`
+because it computes mergeability over trees rather than ancestry, and whose
+squash-merge silently reverts everything before it — would have gone red on
+`guard` and merged regardless.
+
+**Why it was advisory, and why that was not fixable by simply requiring it.**
+`guard` carried `if: github.event_name == 'pull_request'`, because it read
+`github.event.pull_request.*`. A merge-queue entry has no such payload, so the
+job would never be created there, the required context would never appear, and
+every queue entry would block forever. The `if:` was load-bearing. Requiring the
+context without removing it would have converted a silent gap into an outage.
+
+**Fixed** by resolving the pair per event: `pull_request` from the payload
+(base re-resolved from `origin/<base.ref>`, since `base.sha` is the tip at PR
+*creation* and goes stale), `merge_group` from `merge_group.base_sha`/`head_sha`,
+and `workflow_dispatch` reporting success with a notice — it carries neither
+pair, and a red there would assert "unrelated histories", which is a different
+claim than "nothing to compare". In the queue the answer is trivially yes; that
+foregone report is the price of the verdict being enforceable on the events
+where it is not foregone, and the comment in the workflow says so.
+
+**Proved twice, at two levels.** The workflow-level guard from wave 18 was
+generalised from one hard-coded site check into a declarative table
+(`assert-gates-are-wired.py`) rather than copied — the second instance was
+found *by* generalising it, since the new entry refused on an unmodified tree.
+Seven controls now, each pinning the message and not just the exit code:
+dropping `unit` from `deploy`'s needs, an `if:` on the site suite, a `paths:`
+filter, deleting the suite, restoring the ancestry guard's `if:`, dropping the
+`merge_group` trigger, and **renaming a required job** — the quietest failure of
+the set, since the job still runs and still passes while reporting under a name
+branch protection is not waiting for.
+
+Separately, the guard's own `run:` block was extracted and driven through all
+three events against real commits, then against a purpose-built orphan: the
+`merge_group` path exits 1 with `NO MERGE BASE`. Without that last step the
+three green runs would only have shown the path executes, not that it can
+still refuse.
+
+**What is still open.** Requiring `PR shares history with its base` must wait
+until this change is on `main` — the queue leg does not exist until then, and
+requiring a context before the job that produces it can deadlock the queue.
+Sequencing, not oversight; it is the last step of this wave and is recorded
+here so that an unrequired context later is read as a regression rather than
+the intended state.
+
+---
+
+## Wave 20 — the stamp that stamped nothing
+
+**Found by using the pipeline, not by reading it.** `/stamp` on #847 minted a
+green `Stamp` check in 39 seconds, and the benchmark gate stayed red saying
+*"Comment /stamp to release certification"* — which had just been done. The
+handler's own comment says it: **"★ A stamp that does not RE-RUN anything is a
+stamp that does nothing."** It was doing nothing.
+
+Three defects, stacked, each hiding the next:
+
+| # | defect | why it was invisible |
+|---|---|---|
+| 1 | the App installation lacks `actions: write` | no probe covered it |
+| 2 | the preflight probed `actions:**read**` | its justification read "/stamp re-runs the held CI run" — a *write* |
+| 3 | the re-run's stderr went to `/dev/null` | the reason was destroyed at the moment it was produced |
+
+The third is what cost the time. `gh api -X POST .../rerun >/dev/null 2>&1 ||
+echo "could not re-run"` reports that something failed and discards what. The
+diagnosis needed a token comparison — my own PAT re-runs the same run with
+`rc=0` — to establish what the log had thrown away.
+
+**This is #843 one endpoint family over.** There, `contents:write` was absent,
+the certificate upload is non-fatal by design, and the preflight probed
+`contents:read`. Same shape, same silence, and the lesson had not propagated
+from `contents` to `actions`.
+
+**Fixed.** The re-run's stderr is captured and surfaced three ways: an `::error`
+annotation, a `> [!WARNING]` block appended to the PR comment carrying the
+verbatim API response, and a non-zero exit so the command job is red. The mark
+is still recorded first — a stamp survives new commits and is worth keeping even
+when the re-run fails — but the command no longer reports success for work it
+did not do. The preflight's three hand-rolled write probes became one
+`probe_write` helper, and `actions:write` joined them, probed by enabling an
+already-enabled workflow: idempotent, needs the permission, and this very
+workflow is provably enabled because it is the one running.
+
+**Proved against history, which is the only control that counts here.**
+`assert-preflight-covers-writes.py` derives, from the workflows themselves,
+every write call that *swallows its own failure*, and requires a `probe_write`
+for each. Run against the tree as it stood at `HEAD` — before any of this
+wave's edits — it refuses on **both** `actions:write` and `contents:write`.
+It would have caught #843 and #847 alike, on the day each was written.
+
+Its scope is deliberately narrow and the file says why: a write that fails
+*loudly* under `set -e` announces itself the first time it breaks, and demanding
+a probe for it would mean inventing noisy probes (posting and deleting comments,
+creating labels) for failures that are already self-announcing. Only suppressed
+writes are pinned. Widening it would be the busywork the guard exists to
+displace.
+
+**Five controls, and the joining one matters.** Losing either `probe_write` is
+caught — and the `contents:write` case doubles as proof that the guard rejoins
+backslash continuations, since that PUT spans five lines with its `||` on the
+last. Matched line-by-line it would read as *unsuppressed*, and the guard would
+have passed by construction. Three more drive the extracted `/stamp` step with a
+stubbed `gh` whose re-run returns 403: the step must exit non-zero, the comment
+must say the lane was not released, and it must carry the API's own words.
+Reverting the fix turns all three red; that was checked, not assumed.
+
+**What is still open, and needs a person.** The App must be granted
+`actions: write` (and still `contents: write`) and the installation must accept
+both. Until then `/stamp` records a mark, posts the warning, and goes red — the
+honest behaviour, but the lane still needs a manual re-run or any new commit.
+
+---
+
+## Wave 21 — a stray `set -e` had been silently truncating this suite
+
+**The wave's own tooling was the first defect it found.** The vhost controls
+added below reported nothing at all: the suite stopped after 97 checks with exit
+1 and no summary line. Cause: the `/stamp` control added in wave 20 ended with
+`set -e` to "restore" state that never existed — this suite runs `set -uo
+pipefail`, with errexit deliberately **off**, because every control in it runs a
+command that is *supposed* to fail. The first such control after that line
+killed the run.
+
+For one wave, `certification-selftest.sh` was a suite that stopped a quarter of
+the way through and looked like an ordinary failure. Same non-zero status, no
+summary, thirty checks silently not run — including every control this wave was
+adding. It is the exact defect this whole record is about, committed by the file
+whose job is to catch it.
+
+**Fixed** by removing the stray `set -e`, and then by making the failure
+impossible to miss: the EXIT trap now reports `SUITE TRUNCATED: exited after N
+checks, before the summary` unless the summary was reached. Reintroducing the
+`set -e` prints it after 97 checks — verified, not assumed.
+
+**Then the wave proper.** Three public vhosts, one nginx rule, three separate
+incidents, each found by hand after the fact:
+
+| vhost | what was lost | how |
+|---|---|---|
+| docs | every HTML doc served with no security headers at all | `Cache-Control` inside `location ~* \.html$` |
+| site | `Alt-Svc` on every proxied response; the dotfile refusal went out bare | headers inside `location /` |
+| site | `Referrer-Policy`, which the other two sent | drift nobody was watching for |
+
+`add_header` does not accumulate across contexts: a location declaring *any*
+`add_header` discards every one inherited from the server block. All three were
+fixed reactively. Nothing stopped a fourth.
+
+`assert-vhost-headers.py` pins four things: the core set is declared at *server*
+level in every vhost; no `add_header` appears inside any location at all
+(refusing the construct outright, rather than reasoning about which uses would
+be safe — per-path values belong in a `map`, which is how blog and docs compute
+Cache-Control today); the core set is identical across the three; and
+`X-XSS-Protection`, if present, is exactly `"0"`.
+
+**One live defect fixed.** `atlasinference.io` was serving
+`x-xss-protection: 1; mode=block` — confirmed by request, and absent from the
+other two. The header is deprecated, every current browser has removed the
+auditor it controls, and OWASP's Secure Headers Project recommends `"0"`
+because the legacy filter is itself exploitable. Set to `"0"` rather than
+deleted: with no header at all a legacy browser falls back to its default, which
+is the filter **on**.
+
+**Controls.** Four, each pinning the message. The docs incident is
+reconstructed rather than replayed, and the file says so — that vhost has a
+single commit, so its pre-fix text is not in the tree and there was nothing
+honest to replay against. The sabotage harness asserts the edit actually
+changed the file before trusting the result, which caught one control whose
+escaping produced a Python `SyntaxError` instead of an edit.
+
+**Not pinned, deliberately: HSTS.** None of the three sends
+`Strict-Transport-Security`. That is a real gap, but a browser caches HSTS for
+`max-age`, and choosing that value — and whether to preload — is a policy
+decision for a person, not a default a linter installs. Raised, not taken.
+
+**Two areas dug and found clean**, recorded so they are not re-dug: 115
+`#[ignore]`d Rust tests are all documented GPU tests and the `--ignored` lane in
+`kernel-compile.yml` genuinely executes 7 of them (`running 6 tests` /
+`running 1 test` in the log, not a hollow `ok`); and there are no skipped JS
+tests and no tautological assertions anywhere in the tree.
+
+---
+
+## Wave 22 — one dig found nothing, the next found a required check that is structurally blind
+
+**First dig: the Rust half of the gate. Nothing found, and that is the result.**
+The hypothesis was that `scoring.rs` (which decides whether a measured value
+passes its bound) and `record_path.rs` had no tests — a first grep for
+`scoring::` in the test files returned zero. That grep was wrong: both modules
+are re-exported through `record.rs`, so tests call `check_record` and `date_of`
+unprefixed. `scoring::check_record` has three named tests, `date_of` has one,
+and every gate module but `check_fmt.rs` (27 lines, no public functions) is
+exercised. Recorded here so it is not re-dug, and because a hypothesis that
+survives one grep and dies on the second is worth writing down as a warning
+about the first grep.
+
+**Second dig: the security alert every push in this session printed.**
+`GHSA-rhfx-m35p-ff5j` — `lru < 0.16.3`, `IterMut` violating Stacked Borrows —
+was open against `main`'s lockfile.
+
+The interesting part is not the crate. It is that **`cargo deny` is a required
+context, it runs `check advisories`, it was green, and the advisory was open on
+the same lockfile.** Not a misconfiguration: `cargo deny` resolves against
+RustSec, Dependabot resolves against the GitHub Advisory Database, and this
+advisory carries a GHSA id and **no RUSTSEC id**. No configuration of
+`cargo deny` can see it. A green `cargo deny` is therefore not the claim
+"no known advisory affects this lockfile", which is how a required check named
+`cargo deny` reads.
+
+**Exposure, established rather than assumed.** `lru` is not a direct dependency
+of anything in the workspace; it enters twice-removed through `ratatui 0.29`.
+Its only use there is `type Cache = LruCache<(Rect, Layout), (Segments,
+Spacers)>` in `layout/layout.rs`, and the methods called on it are `cap()`,
+`get()` and `resize()`. That file contains **zero** occurrences of `iter_mut`,
+and `tui-textarea` — the other path to `ratatui` — does not depend on `lru` at
+all. The advisory is about `lru::IterMut` specifically, so the vulnerable
+iterator is never constructed in this graph. The alert is dismissed as
+`not_used` with that reasoning and the condition for re-opening it (a ratatui
+bump that iterates the cache mutably, or `lru` becoming direct).
+
+**No guard was added, deliberately.** The honest options were a fragile one —
+re-checking a vendored dependency's source in CI, which breaks the moment
+ratatui is bumped and would fail for the wrong reason — or a CI step reading
+the Dependabot alerts API, which needs a token permission this repo's
+`GITHUB_TOKEN` does not carry, and there are already two permission grants
+waiting on a person. Adding a third that sits red would be worse than the gap.
+What was added instead is the blind spot written into `deny.toml` itself, beside
+the `db-urls` line that causes it, so the next reader of that file learns it
+there rather than by discovering an open alert behind a green check.
+
+**Open, and a decision for a person:** whether to gate on Dependabot alerts at
+all. Today they report on the default branch and block nothing.
+
+---
+
+## Wave 23 — two more capabilities that fail silently, found by sweeping for suppressed failure
+
+**The sweep.** Every workflow step line ending in `|| true`, and every
+`continue-on-error`. Twelve `|| true` lines; ten are benign (optional file
+copies, diagnostic `ls`, apt fallbacks that nothing depends on). Two were not.
+
+**Defect 1 — a missing render tool swallowed the whole certificate.**
+`certification-bot.yml` installs `librsvg2-bin` and `segno` with `|| true`, then
+runs `rsvg-convert` under `set -euo pipefail` with **no check that the install
+worked**. If apt failed, the step died *before* the comment POST: a merged PR
+got no certificate **and no comment at all**. The design three lines below
+already states the rule it was breaking — a missing `contents:write` "cannot
+swallow the certificate itself", which is exactly what a missing renderer did.
+
+Fixed with a `render_ok` guard: absent tools now emit a warning, skip the
+render, and fall through to the generic image that the fallback already exists
+to serve. Degrade the picture, never the certificate.
+
+**The control had to manufacture the absence.** This host has both tools
+installed, so "the tool happens to be missing" would be the wave-2 mistake — a
+control that only holds on one machine. It runs the extracted step against a
+PATH containing the stubs plus a symlink farm of the commands the step actually
+uses, resolved with `command -v` at runtime so it adapts to wherever they live,
+and it asserts the farm did not leak `rsvg-convert` before trusting the result.
+Reverting the guard turns both new controls red.
+
+**Defect 2 — `/seal` minted its mark and never refreshed the job that reads it.**
+This is wave 20's defect in the other verb, and it was live on this very PR:
+`Seal` went green in 33 s while `seal status` stayed red. `ci.yml` has no
+`check_run` trigger, so minting a check run does not re-evaluate anything, and
+the re-run block was `if [ "$VERB" = "/stamp" ]`. The only way to refresh
+`seal status` was to push a commit — **which is the one thing that voids a
+seal**. The handler's own maxim, written for stamps, was never applied to the
+verb next to it.
+
+Re-running is safe for a seal: it adds no commit, and a seal is voided by
+commits, not by CI runs.
+
+**One existing control went red, correctly.** Rewording the warning from "the
+held lane was not released" to "CI was not re-run" — necessary, since it now
+covers both verbs — broke a control that pinned the old wording. That is a
+message-pinned assertion doing its job: it noticed the text it depends on
+changed, which is the behaviour that distinguishes it from asserting an exit
+code six defects share.
+
+**Not a defect, checked and recorded:** `coverage.yml`'s and `coderag.yml`'s
+`continue-on-error: true` are deliberate and documented at their call sites, and
+`ci.yml:1062` records that a previous one was made enforcing.
+
+---
+
+## Wave 24 — four sweeps found nothing, the fifth found dead links, and my own tooling was wrong twice
+
+**Four digs, empty, recorded so they are not repeated:**
+
+| swept | scale | result |
+|---|---|---|
+| jobs that never execute on a PR | 19 found | all legitimately post-merge (deploy/publish) or `workflow_call`ed from CI |
+| shell syntax in every workflow `run:` | 147 blocks, 24 workflows | clean |
+| shell syntax in standalone scripts | 55 scripts | clean |
+| Python in `.github/scripts` | 10 files | clean |
+| scripts a workflow invokes but that do not exist | 20 paths | none missing |
+
+**The fifth found something, and the sweep that found it was mostly wrong.**
+A markdown link sweep reported nineteen broken links. **Seventeen were bugs in
+the sweep**: it stripped the leading dot from `.github`, and it resolved
+site-root URLs like `/images/...` against the filesystem instead of against the
+static directory the tree publishes. Both were caught by checking the findings
+before believing them — the blog images exist under `blog/static/`, and `/api/`
+is assembled at deploy time by `docs.yml` (`cp -a target/doc/. book/output/api/`)
+and cannot be in the tree.
+
+The two survivors are real: `docs/lora-implementation-status.md` linked to
+`lora-mvp-proposal.md` and `lora-codebase-brief.md`, **neither of which has ever
+existed in this repository's history**. Dead the day the file was committed.
+Removed; the sentence carried nothing else.
+
+**The guard is written for precision, not coverage, because of the above.**
+A link checker that cries wolf gets muted or deleted, so
+`assert-doc-links.py` is explicit about every root it knows —
+`blog/**` → `blog/static`, `site/**` → `site/static`, `/api/**` generated — and
+refuses loudly on a site-root link from a tree with no known static root rather
+than skipping it. It reports 199 links, all resolving, with no false positives.
+
+**Five controls, and two of them exist to catch vacuous passing.** Real breakage
+caught; a site-root link whose target is deleted must also be caught (if
+site-root links were *skipped* rather than resolved, the checker would pass
+trivially and look identical); an unknown-tree site-root link must be loud, not
+silent; and `/api/` must NOT be flagged, or every PR fails forever. Run against
+the defect as it stood on `main`, the checker refuses with both links named.
+
+**Note on this wave's honesty.** Two of my own checkers were wrong within one
+wave — the path-stripping bug and the site-root bug — and in both cases the
+error was found by checking a suspicious finding rather than by reading the
+code. Nineteen findings, two real, is a 10% precision rate for a first-pass
+sweep, and that ratio is the argument for verifying findings before acting on
+them, not after.
+
+---
+
+## Wave 25 — licence drift I caused, and a check on the gate I made required
+
+**Defect 1, and four of the six were mine.** `.github/scripts` had a real but
+unenforced convention: 11 of 17 files carried an SPDX header. The six without
+were the four scripts added during this record's own waves, plus
+`harvest-triage.sh` and its test. `.licenserc.yaml` covered only
+`crates/**/*.rs` and the CUDA trees, so nothing noticed.
+
+Headers added, and the convention promoted from custom to gate by adding
+`.github/scripts/*.{sh,py}` to `.licenserc.yaml`. `scripts/` is deliberately
+**not** included: 12 of 95 files there carry a header, so there is no convention
+to enforce and sweeping it in would be an 83-file change dressed as a lint.
+
+**The control has two halves, and the second is the one that matters.** Removing
+a header makes `check_spdx.py` exit 1 and name the file. Then, with the header
+still removed but the `.licenserc.yaml` line reverted, the same missing header
+is **invisible** — exit 0. That proves the config line is what does the work,
+rather than the check having been going to catch it anyway.
+
+**Defect 2: none — but it was worth checking, because wave 18 made this gate
+blocking.** Making `Site unit tests` a required context put its reliability on
+the critical path, so the risk that created had to be measured rather than
+assumed. The suite has no randomness, no wall-clock reads, no network, and no
+`performance.now`; run the way CI runs it, **626 tests pass in 230 ms**.
+
+Along the way I ran `bun test src` and saw two failures, which were **my own
+invocation error, not a repo defect**: the rune modules need
+`--preload ./test-runes.js`, which CI passes and I had not. Recorded because the
+first reading of a red suite is often the reader's mistake, and publishing it as
+a finding would have been wrong.
+
+**Defect 3: none, but the trap is now closed.** Both suites are scoped to
+`src/lib`. Every one of the 52 test files is already under it, so nothing is
+being lost today — but a test added anywhere else would be collected by nothing
+and report nothing, which is this record's recurring defect in its purest form.
+The `unit` job now refuses if a `*.test.*` file exists outside `src/lib` in
+either tree. It belongs in that job precisely because that is the job which
+would otherwise silently lose the test. Planting one is caught; removing it is
+clean again.
