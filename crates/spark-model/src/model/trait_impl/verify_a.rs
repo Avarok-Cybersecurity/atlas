@@ -575,8 +575,9 @@ impl TransformerModel {
             // SAFETY: length derived from `bt_i32` itself (`len() * 4`), a
             // fresh `collect()` above; i32 is POD; `bt_i32` outlives the
             // H2D enqueue.
-            let bt_bytes: &[u8] =
-                unsafe { std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4) };
+            let bt_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4)
+            };
             self.gpu
                 .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
 
@@ -610,6 +611,8 @@ impl TransformerModel {
                 graph_capture: false,
                 gdn_exact_replay: false,
                 token_ids: None,
+                hc_row_offset: 0,
+                host_token_ids: None,
                 routed_lora_layers: None,
                 midchunk_capture: None,
                 moe_lora_route: self.decode_moe_route(),
