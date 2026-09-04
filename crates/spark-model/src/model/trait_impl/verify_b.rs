@@ -275,6 +275,7 @@ impl TransformerModel {
             graph_capture: use_graphs,
             decode_step: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: Some(self.buffers.token_ids()),
             host_token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.

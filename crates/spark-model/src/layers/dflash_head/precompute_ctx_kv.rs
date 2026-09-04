@@ -69,6 +69,13 @@ impl BlockDiffusionDraftHead {
         if new_ctx_count == 0 {
             return Ok(());
         }
+        // `fc_proj`, `fused_kv_out` and `slot_mapping_dev` hold `ctx_window`
+        // rows; a wider call would write past them.
+        anyhow::ensure!(
+            new_ctx_count <= self.ctx_window,
+            "DFlash precompute_ctx_kv: {new_ctx_count} rows exceed the {}-row ctx window",
+            self.ctx_window
+        );
 
         let Some(fused_kv) = self.fused_kv_weight else {
             anyhow::bail!(

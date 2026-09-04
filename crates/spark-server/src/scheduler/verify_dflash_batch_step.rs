@@ -70,7 +70,12 @@ pub fn step_verify_dflash_batched(
     let t_verify = std::time::Instant::now();
     let results = {
         let mut seq_refs: Vec<&mut SequenceState> = batch.iter_mut().map(|a| &mut a.seq).collect();
-        match model.decode_verify_batched(&tokens, &ks, &mut seq_refs, 0) {
+        // Write-on-accept is OUR request: this step folds every verdict
+        // below before any commit, which is what makes the K=4 twin sound.
+        let opts = spark_model::traits::VerifyBatchedOpts {
+            write_on_accept: true,
+        };
+        match model.decode_verify_batched(&tokens, &ks, &mut seq_refs, 0, opts) {
             Ok(v) => v,
             Err(e) => {
                 // No sequence state was advanced on Err — restore the drafts
@@ -190,7 +195,14 @@ pub fn step_verify_dflash_batched(
         let slots: Vec<usize> = batch.iter().map(|a| a.seq.slot_idx).collect();
         let rows: Vec<u32> = accepted_per_seq.iter().map(|&na| (na + 1) as u32).collect();
         if let Err(e) = model.gdn_fold_accepted(&slots, &rows, k) {
+            // The h states of the whole batch are no longer trustworthy
+            // (the twin wrote nothing and the fold did not land): finish
+            // every sequence, the same verdict a commit error gets.
             tracing::error!("gdn_fold_accepted (dflash batched): {e:#}");
+            for a in batch.iter_mut() {
+                a.finished = true;
+            }
+            return;
         }
         for (i, a) in batch.iter_mut().enumerate() {
             let num_accepted = accepted_per_seq[i];

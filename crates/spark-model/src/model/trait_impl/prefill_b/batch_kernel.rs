@@ -542,6 +542,7 @@ impl TransformerModel {
             graph_capture: false,
             decode_step: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: None,
             host_token_ids: None,
             // #30: batched multi-seq prefill legitimately mixes adapters and keeps

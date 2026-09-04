@@ -261,19 +261,20 @@ pub struct Qwen3SsmLayer {
     /// kill switch ATLAS_NO_GDN_WY3_RESIDENT (PRESENCE — `=0` is NOT off).
     gdn_wy3_resident_k: KernelHandle,
     gdn_wy4_k: KernelHandle,
-    /// Write-on-accept K=4 twin + its post-verdict fold (2026-09-03).
-    /// `KernelHandle(0)` when the module is absent; `ATLAS_NO_GDN_WOA=1`
-    /// disables. `woa_armed` is set by the batched verify that launched the
-    /// twin and consumed by `gdn_fold_accepted`.
+    /// Write-on-accept K=4 twin + its post-verdict fold (2026-09-03, see
+    /// `woa.rs`). `KernelHandle(0)` when the module is absent;
+    /// `ATLAS_NO_GDN_WOA=1` disables. Engaged only on a per-call request.
     gdn_wy4_woa_k: KernelHandle,
     gdn_wy4_fold_k: KernelHandle,
     gdn_wy4_clear_k: KernelHandle,
-    /// Device u32: 1 after the woa twin ran (written inside the graph).
-    woa_flag: DevicePtr,
-    woa_stash: DevicePtr,
-    woa_stash_seq_floats: usize,
+    /// Device addresses bound by the model on the first request (NULL until
+    /// then): the engaged u32 (1 = the twin ran for the last requesting
+    /// verify, written inside the graph) and this layer's stash slab of
+    /// `woa_seqs` sequences.
+    woa_flag: std::sync::atomic::AtomicU64,
+    woa_stash: std::sync::atomic::AtomicU64,
+    woa_seqs: std::sync::atomic::AtomicUsize,
     woa_dims: [usize; 4],
-    woa_armed: std::sync::atomic::AtomicBool,
     /// FP16 h-state twins of the five WY verify kernels above
     /// (`ATLAS_SSM_H_FP16` stage 2). Same launch contracts, same float
     /// expressions and accumulation orders as their FP32 parents — the h-state
@@ -422,6 +423,7 @@ mod trait_prefill_phase1;
 mod trait_prefill_phase3;
 mod trait_prefill_proj;
 mod trait_prefill_recur;
+mod woa;
 
 pub use gdn_flags::{
     GdnFlags, MAX_F16_TWIN_DFLASH_GAMMA, MAX_F16_TWIN_K, default_dflash_gamma,
