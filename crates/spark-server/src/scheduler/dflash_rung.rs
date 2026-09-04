@@ -9,15 +9,22 @@
 //! | C     | prose (Volvo)        | code (MinHeap)        |
 //! |-------|----------------------|-----------------------|
 //! | 1     | γ5 27.0 / γ10 24.6   | γ10 66.8 / γ4 ~23     |
-//! | 16    | γ4 187.7 / γ5 119.5  | γ4 269.7 / γ10 214.2  |
+//! | 16    | γ4 180.7 / γ5 119.5  | γ4 279.5 / γ10 214.2  |
 //!
 //! Two facts fall out. (1) At C>=2 the K=4 write-on-accept verify wins BOTH
 //! workloads: the state is read once and written once per step, and that
 //! kernel exists only for K=4. (2) At C=1 the verify pass is a fixed cost, so
 //! the width should track how many drafts the target will accept: code
-//! accepts ~7.6 of 9 (p1 0.97) and wants the full block; prose accepts ~1.7
-//! of 9 (p1 0.76) and wants a narrow block. `p1` (first-draft accept) is the
-//! signal: it is bimodal, independent of the width, and free.
+//! accepts ~7.6 of 9 and wants the full block; prose accepts ~1.7 of 9 and
+//! wants a narrow block. `p1` (first-draft accept) is the signal: it is
+//! bimodal and free. It is NOT independent of the width: measured at C=1 on
+//! 2026-09-04 (MinHeap / Volvo, this head), code hits 0.97 on the narrow rung
+//! but only 0.875 on the wide rung (56/64), while prose hits 0.56..0.76 on
+//! either. The two thresholds therefore see different processes: ENTER is
+//! judged on the narrow rung (prose ~49 vs code ~62 of 64), LEAVE on the wide
+//! rung (prose ~40..49 vs code ~56). The costs are asymmetric too: code on the
+//! narrow rung loses ~18% (51 vs 63 tok/s), prose on the wide rung ~8% (24.8
+//! vs 27.0), so LEAVE sits low and the resolver leaves wide reluctantly.
 //!
 //! The width is a DRAFT COUNT handed to the drafter per propose; the head runs
 //! that many block rows (never more than it was sized for) and the verify
@@ -38,10 +45,17 @@
 //! the popcount. A 10-step EWMA of a 0.76 process has sigma ~0.10 and brushed
 //! the enter line about once per hundred steps (measured 2026-09-03: a flip
 //! up and, one dwell later, a flip back, inside a single prose request).
-//! Sized by simulation (300 seeds x 2000 steps per cell): at 60/55 of 64 with
-//! a 64-step dwell, steady prose (0.76) flips 0.11 times per 2000 steps and
+//! Sized by simulation (300 seeds x 2000 steps per cell): at 60 of 64 with a
+//! 64-step dwell, steady prose (0.76) flips up 0.11 times per 2000 steps and
 //! steady code (0.97) 0.01; a real transition flips once, ~65 steps after it
-//! (~8 s at C=1). A 32-bit register at 29/27 was tried first and flipped 12.8
+//! (~8 s at C=1). LEAVE was first set at 55, which sits ON wide-rung code's
+//! mean of 56 and dropped a MinHeap request to the narrow rung in its
+//! docstring block (2026-09-04, hits=55/64; 93% of 140-step code requests
+//! would drop at 55). At 46, Bin(64, 0.875) is below the line 6.5e-4 per
+//! sample, ~1.3% of code requests, while prose at 0.76 is below it 27% per
+//! sample and leaves within the request 98% of the time (0.63: at once).
+//! 44 was tried and left prose at 0.76 wide for a whole request 12% of the
+//! time; the windows are sliding, so per-sample odds compound slowly. A 32-bit register at 29/27 was tried first and flipped 12.8
 //! times per 2000 prose steps: the tails of Bin(32, 0.76) are fat.
 //!
 //! Overrides (tuning, all optional, read ONCE in [`configure`] and held in
@@ -49,7 +63,7 @@
 //! (K at C>=2, default 4), `ATLAS_DFLASH_RUNG_NARROW` (C=1 prose K, default
 //! 5), `ATLAS_DFLASH_RUNG_WIDE` (C=1 code K, default = cap),
 //! `ATLAS_DFLASH_RUNG_ENTER` (window hits at/above which C=1 goes wide, 60),
-//! `ATLAS_DFLASH_RUNG_LEAVE` (hits at/below which it goes narrow, 55),
+//! `ATLAS_DFLASH_RUNG_LEAVE` (hits at/below which it goes narrow, 46),
 //! `ATLAS_DFLASH_RUNG_DWELL` (min steps between switches, 64 = one window).
 //!
 //! The C>=2 rung is K=4 BECAUSE of the write-on-accept kernel (#844). With
@@ -66,11 +80,12 @@ const NARROW_K: usize = 5;
 /// Window length in verify steps (bits of the shift register; the whole u64).
 pub const WINDOW: u32 = 64;
 /// Go wide when at least this many of the last `WINDOW` first drafts were
-/// accepted (60/64 = 0.9375; prose sits ~0.76, code ~0.97).
+/// accepted (60/64 = 0.9375; on the narrow rung prose sits ~0.76, code ~0.97).
 const ENTER: u32 = 60;
-/// Go narrow when at most this many were (55/64 = 0.859). The band between
-/// holds state.
-const LEAVE: u32 = 55;
+/// Go narrow when at most this many were (46/64 = 0.72). On the WIDE rung
+/// code hits ~0.875 (56/64) and prose 0.56..0.76 (36..49); 46 is 3.8 sigma
+/// under code and inside prose. The band between holds state.
+const LEAVE: u32 = 46;
 /// Minimum verify steps between two switches: one full window, so every
 /// decision is made on a fully refreshed register.
 const DWELL: u64 = WINDOW as u64;
