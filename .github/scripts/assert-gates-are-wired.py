@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Assert that jobs whose verdict is supposed to gate something actually do.
 
 Two instances of one defect prompted this, and they were found a wave apart:

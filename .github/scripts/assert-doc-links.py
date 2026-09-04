@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Relative and site-root markdown links must resolve to something that exists.
 
 Found by sweeping: `docs/lora-implementation-status.md` linked to

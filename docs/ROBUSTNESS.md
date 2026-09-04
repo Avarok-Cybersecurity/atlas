@@ -1105,3 +1105,45 @@ error was found by checking a suspicious finding rather than by reading the
 code. Nineteen findings, two real, is a 10% precision rate for a first-pass
 sweep, and that ratio is the argument for verifying findings before acting on
 them, not after.
+
+---
+
+## Wave 25 — licence drift I caused, and a check on the gate I made required
+
+**Defect 1, and four of the six were mine.** `.github/scripts` had a real but
+unenforced convention: 11 of 17 files carried an SPDX header. The six without
+were the four scripts added during this record's own waves, plus
+`harvest-triage.sh` and its test. `.licenserc.yaml` covered only
+`crates/**/*.rs` and the CUDA trees, so nothing noticed.
+
+Headers added, and the convention promoted from custom to gate by adding
+`.github/scripts/*.{sh,py}` to `.licenserc.yaml`. `scripts/` is deliberately
+**not** included: 12 of 95 files there carry a header, so there is no convention
+to enforce and sweeping it in would be an 83-file change dressed as a lint.
+
+**The control has two halves, and the second is the one that matters.** Removing
+a header makes `check_spdx.py` exit 1 and name the file. Then, with the header
+still removed but the `.licenserc.yaml` line reverted, the same missing header
+is **invisible** — exit 0. That proves the config line is what does the work,
+rather than the check having been going to catch it anyway.
+
+**Defect 2: none — but it was worth checking, because wave 18 made this gate
+blocking.** Making `Site unit tests` a required context put its reliability on
+the critical path, so the risk that created had to be measured rather than
+assumed. The suite has no randomness, no wall-clock reads, no network, and no
+`performance.now`; run the way CI runs it, **626 tests pass in 230 ms**.
+
+Along the way I ran `bun test src` and saw two failures, which were **my own
+invocation error, not a repo defect**: the rune modules need
+`--preload ./test-runes.js`, which CI passes and I had not. Recorded because the
+first reading of a red suite is often the reader's mistake, and publishing it as
+a finding would have been wrong.
+
+**Defect 3: none, but the trap is now closed.** Both suites are scoped to
+`src/lib`. Every one of the 52 test files is already under it, so nothing is
+being lost today — but a test added anywhere else would be collected by nothing
+and report nothing, which is this record's recurring defect in its purest form.
+The `unit` job now refuses if a `*.test.*` file exists outside `src/lib` in
+either tree. It belongs in that job precisely because that is the job which
+would otherwise silently lose the test. Planting one is caught; removing it is
+clean again.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """The three public vhosts must carry the same security headers, at server level.
 
 nginx's `add_header` does not accumulate across contexts: a `location` that

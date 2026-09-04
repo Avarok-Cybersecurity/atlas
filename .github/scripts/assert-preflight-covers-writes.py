@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Every write call the pipeline SUPPRESSES must have a real probe behind it.
 
 Twice now the same defect has shipped, one endpoint family apart:

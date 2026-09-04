@@ -144,6 +144,23 @@ jobs:
       # density and fails if any text token drops below WCAG AA. It is also
       # what stops a token edit on the marketing site from silently pushing
       # the blog's metadata gray under 4.5:1.
+      # Both suites above are scoped to `src/lib`, so a test added anywhere else
+      # is collected by nothing and reports nothing -- it would look like
+      # coverage and be none. This job is a required context (#810), which is
+      # exactly why the check belongs in it: the job that would silently lose a
+      # test is the job that has to refuse.
+      - name: no test file lives where the suite will not look
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          stray=$(find site/src blog/src -name '*.test.*' -not -path '*/src/lib/*' 2>/dev/null | sort)
+          if [ -n "$stray" ]; then
+            echo "::error title=Test files outside the tested path::these are collected by no suite:"
+            printf '  %s\n' $stray
+            exit 1
+          fi
+          echo "every test file sits under a src/lib the suites actually run"
+
       - name: Chevron-field contrast budget
         working-directory: ${{ github.workspace }}
         run: bun .contrast-check.mjs

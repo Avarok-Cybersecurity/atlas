@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # Table-driven test for harvest-triage.sh. Every row is a state the harvest
 # has actually been in, or one it will be in eventually; the comment names the
 # incident where that row was learned the hard way.
