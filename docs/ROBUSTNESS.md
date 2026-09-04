@@ -1383,3 +1383,76 @@ before the timeout fires. **I did not capture the actual message**, so the cause
 is unexplained rather than diagnosed, and it is filed as such. `cargo test
 --workspace` is a required context, which makes this a latent source of red
 builds that has nothing to do with the change under review.
+
+---
+
+## Wave 31 — a second bound asserted in prose, and a flake I could not reproduce
+
+**Defect (#842): a json_schema request killed the scheduler thread three times
+in one day.** The API kept accepting requests and logging sessions, generated
+nothing ever again, and `/v1/models` still answered — so the server looked
+healthy while being dead. Only a restart recovered it.
+
+```
+cannot roll back 96 tokens: only 1 steps recorded
+```
+
+**The diagnosis came from the codebase disagreeing with itself.** Four
+production callers rewind the grammar matcher. Three of them —
+`spec_step.rs:462→470` and `verify_pipeline_helper.rs:343→391` and `503→548` —
+capture `num_history_steps()` before the span and pass the *delta*. One, the
+watchdog path, passed a raw count of **sequence** tokens. The crate already
+documents why that is wrong, on `num_history_steps` itself, calling it BUG#3:
+`accept_token` returns `true` for stop/EOS and in the **terminated** state
+without advancing the matcher. A `json_schema` matcher terminates the moment its
+object closes, so every token after that records nothing — 96 dropped against 1
+recorded step.
+
+The comment above the call stated the precondition that had stopped holding:
+
+> every dropped token ... was therefore fed to `grammar_state.accept_token`, so
+> `rollback(dropped)` is exact.
+
+That is wave 30's defect again, one crate over: **a bound asserted in prose**.
+Two waves, two outages, both from a comment standing where a check belonged.
+
+**`min(dropped, steps)` was considered and rejected**, and the reasoning is
+pinned in a test so a later "helpful" clamp has to argue with it: with a
+terminated matcher the recorded steps belong to tokens that are being **kept**,
+so a partial rewind corrupts state that the panic at least left visible.
+Refusing is the honest answer and is the correct one in the reported case —
+those 96 tokens advanced the matcher zero times.
+
+**The control is the tempting wrong fix.** Changing refuse to clamp turns three
+of the four tests red — and leaves `an_accountable_span_still_rewinds_exactly`
+green, because clamping and refusing genuinely agree when `dropped ≤ steps`.
+A control that reddened all four would have been measuring less, not more.
+
+**Two process failures of my own this wave, both recorded because they nearly
+cost something.**
+
+1. `cargo test -p spark-server --lib scheduler::rollback` printed
+   **`ok. 0 passed; 104 filtered out`**. `mod scheduler` belongs to the *binary*
+   target, not the lib, so `--lib` could never contain those tests — and cargo
+   reports that as success. That is the "a passing test may not have run" trap,
+   and it was caught only by noticing the count was zero.
+2. The sabotage run was killed mid-build (exit 137, OOM under parallel `rustc`)
+   **after** writing the sabotage and **before** restoring it. The clamp sat in
+   the working tree until the next command checked. Re-run under a `trap ...
+   EXIT INT TERM` and `-j 6`, which is how a destructive edit should have been
+   written the first time.
+
+**#858 — the flake — could not be reproduced.** 24 concurrent copies of the test
+binary: 0 failures. Full suite under 40 CPU-burn processes on 20 cores, ×4: 0
+failures. Full suite immediately after a forced rebuild and relink, ×2: 0
+failures. Env-var races are ruled out (`FfmpegPolicy` reads no env; the crate
+has no `set_var` in tests, deliberately) and temp-path collision is ruled out
+(keyed on pid+seq). The remaining untested hypothesis is memory/IO pressure from
+a **cold** full release build, which is what the three original failures ran
+under. The message was never captured, so the cause stays unexplained and the
+issue says so.
+
+I also had to correct myself publicly on that issue: a first "reproduced 3/3
+under load" was `grep -q a_hanging_decoder`, which matches the **passing**
+`test ... ok` line. Fourth checker bug of this record, same shape as the other
+three.
