@@ -295,6 +295,12 @@ jobs:
       - name: markdown links resolve
         run: python3 .github/scripts/assert-doc-links.py
 
+      # A command a user cannot discover is a command that does not exist for
+      # them -- and /expedite skips certification, so it is the last one that
+      # should live only in a workflow file.
+      - name: every bot command is documented
+        run: python3 .github/scripts/assert-commands-documented.py
+
   typos:
     name: typos
     runs-on: ubuntu-latest

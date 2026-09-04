@@ -1184,3 +1184,58 @@ value is in reviewing the unsafe, not in annotating it.
 
 **Not defects, checked:** the three tracked `.log` files under
 `docs/campaigns/**/raw/` are deliberate benchmark evidence, not stray artefacts.
+
+---
+
+## Wave 27 — three of the five commands existed only in a workflow file
+
+**Two digs clean, recorded so they are not repeated:**
+
+| dig | scale | result |
+|---|---|---|
+| every action SHA-pinned | 101 `uses:` across 24 workflows | 0 unpinned |
+| composite actions' **internal** `uses:` pinned | 5 composites fetched and parsed | 0 unpinned |
+| mdBook pages on disk vs linked from `SUMMARY.md` | 38 pages | 38 linked, 0 orphaned, 0 missing |
+
+The composite check is the one worth keeping: `sha_pinning_required` is a
+ruleset on *this* repo's workflow files and says nothing about what a composite
+action does internally. This repo has already been bitten there — the SPDX job
+carries a comment explaining that `apache/skywalking-eyes/header` was dropped
+because it internally used an unpinned `actions/setup-go@v5`. All five current
+composites are clean.
+
+**Then the dig that landed, in the place I was most likely to have caused
+damage.** Nine commits of this record changed who may stamp, added `/expedite`,
+and changed what `/seal` does. So: does the documentation still describe the
+code?
+
+| command | accepted by the bot | in the README |
+|---|---|---|
+| `/help` | yes | **no** |
+| `/stamp` | yes | yes, but **wrong** — said "anyone with write access", omitting the PR author |
+| `/seal` | yes | yes |
+| `/review` | yes | **no** |
+| `/expedite` | yes | **no** |
+
+**`/expedite` is the one that matters.** It skips certification and lets a PR
+merge on the pipeline's own checks — an administrative override discoverable
+only by reading a workflow file. Every one of these gaps was introduced by this
+record's own waves, one commit at a time, and no single change looked like it
+was leaving something out. That is how documentation drift actually happens: not
+by neglect, but by a sequence of individually reasonable edits.
+
+Fixed: the `/stamp` line now states the author rule and why it exists, and all
+five commands are documented in a table with who may use each and what survives
+a new commit.
+
+**The guard reads the handler's own `case` arm rather than restating the verb
+list.** A second hand-maintained list would drift from the first exactly the way
+the README drifted from the handler. Run against the README as it stood, it
+names `/help`, `/review` and `/expedite` and refuses.
+
+**Three controls, and the third is the one that earns its place.** A complete
+README passes; a missing verb is caught; and if the `case` arm is renamed or
+restructured so the guard cannot find its input, it **refuses** rather than
+finding nothing and reporting success. A guard that silently passes when it
+cannot locate what it checks is the precise failure this suite exists to catch,
+and it would be an embarrassing one to ship in the guard that checks for it.

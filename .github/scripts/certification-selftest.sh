@@ -999,6 +999,43 @@ want_rc_msg 1 "no known static root" "control: a site-root link from an unknown 
 dl_tree; printf '[a](/api/spark_model/)\n[b](/api/)\n' > "$TMP/dl/book/src/more.md"
 want_rc 0 "control: generated /api/ paths are not treated as breakage" dl_run
 
+# ---------------------------------------------------------------------------
+# Commands that exist only in a workflow file
+# ---------------------------------------------------------------------------
+# Three of the five -- /help, /review and /expedite -- were accepted by the bot
+# and mentioned nowhere in the README. /expedite skips certification outright.
+# All three arrived during this record's own waves, one commit at a time, and no
+# single change looked like it was leaving something out.
+want_rc 0 "every accepted command is documented" \
+  python3 .github/scripts/assert-commands-documented.py
+mkdir -p "$TMP/cd/.github/workflows"
+cp .github/scripts/assert-commands-documented.py "$TMP/cd/.github/"
+mkdir -p "$TMP/cd/.github/scripts"
+mv "$TMP/cd/.github/assert-commands-documented.py" "$TMP/cd/.github/scripts/"
+
+cd_case() { printf '%s\n' \
+  "jobs:" "  command:" "    steps:" "      - run: |" "          case \"\$VERB\" in" \
+  "            $1) ;;" "            *) exit 0 ;;" "          esac" \
+  > "$TMP/cd/.github/workflows/certification-commands.yml"; }
+
+cd_case '/help|/stamp|/seal'
+printf 'we document /help and /stamp and /seal here.\n' > "$TMP/cd/README.md"
+want_rc 0 "control: a README covering every verb passes" \
+  python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
+
+cd_case '/help|/stamp|/seal|/expedite'
+want_rc_msg 1 "accepts \`/expedite\`" "control: a command missing from the README is caught" \
+  python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
+
+# If the case arm is renamed or restructured, the guard must REFUSE rather than
+# find nothing and report success -- a guard that cannot locate its input and
+# passes is the failure mode this whole suite exists to catch.
+printf 'jobs:\n  command:\n    steps:\n      - run: echo no case arm here\n' \
+  > "$TMP/cd/.github/workflows/certification-commands.yml"
+want_rc_msg 1 "could not find the verb whitelist" \
+  "control: a guard that cannot find its input refuses, it does not pass" \
+  python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
