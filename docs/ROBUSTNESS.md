@@ -884,3 +884,72 @@ Reverting the fix turns all three red; that was checked, not assumed.
 `actions: write` (and still `contents: write`) and the installation must accept
 both. Until then `/stamp` records a mark, posts the warning, and goes red — the
 honest behaviour, but the lane still needs a manual re-run or any new commit.
+
+---
+
+## Wave 21 — a stray `set -e` had been silently truncating this suite
+
+**The wave's own tooling was the first defect it found.** The vhost controls
+added below reported nothing at all: the suite stopped after 97 checks with exit
+1 and no summary line. Cause: the `/stamp` control added in wave 20 ended with
+`set -e` to "restore" state that never existed — this suite runs `set -uo
+pipefail`, with errexit deliberately **off**, because every control in it runs a
+command that is *supposed* to fail. The first such control after that line
+killed the run.
+
+For one wave, `certification-selftest.sh` was a suite that stopped a quarter of
+the way through and looked like an ordinary failure. Same non-zero status, no
+summary, thirty checks silently not run — including every control this wave was
+adding. It is the exact defect this whole record is about, committed by the file
+whose job is to catch it.
+
+**Fixed** by removing the stray `set -e`, and then by making the failure
+impossible to miss: the EXIT trap now reports `SUITE TRUNCATED: exited after N
+checks, before the summary` unless the summary was reached. Reintroducing the
+`set -e` prints it after 97 checks — verified, not assumed.
+
+**Then the wave proper.** Three public vhosts, one nginx rule, three separate
+incidents, each found by hand after the fact:
+
+| vhost | what was lost | how |
+|---|---|---|
+| docs | every HTML doc served with no security headers at all | `Cache-Control` inside `location ~* \.html$` |
+| site | `Alt-Svc` on every proxied response; the dotfile refusal went out bare | headers inside `location /` |
+| site | `Referrer-Policy`, which the other two sent | drift nobody was watching for |
+
+`add_header` does not accumulate across contexts: a location declaring *any*
+`add_header` discards every one inherited from the server block. All three were
+fixed reactively. Nothing stopped a fourth.
+
+`assert-vhost-headers.py` pins four things: the core set is declared at *server*
+level in every vhost; no `add_header` appears inside any location at all
+(refusing the construct outright, rather than reasoning about which uses would
+be safe — per-path values belong in a `map`, which is how blog and docs compute
+Cache-Control today); the core set is identical across the three; and
+`X-XSS-Protection`, if present, is exactly `"0"`.
+
+**One live defect fixed.** `atlasinference.io` was serving
+`x-xss-protection: 1; mode=block` — confirmed by request, and absent from the
+other two. The header is deprecated, every current browser has removed the
+auditor it controls, and OWASP's Secure Headers Project recommends `"0"`
+because the legacy filter is itself exploitable. Set to `"0"` rather than
+deleted: with no header at all a legacy browser falls back to its default, which
+is the filter **on**.
+
+**Controls.** Four, each pinning the message. The docs incident is
+reconstructed rather than replayed, and the file says so — that vhost has a
+single commit, so its pre-fix text is not in the tree and there was nothing
+honest to replay against. The sabotage harness asserts the edit actually
+changed the file before trusting the result, which caught one control whose
+escaping produced a Python `SyntaxError` instead of an edit.
+
+**Not pinned, deliberately: HSTS.** None of the three sends
+`Strict-Transport-Security`. That is a real gap, but a browser caches HSTS for
+`max-age`, and choosing that value — and whether to preload — is a policy
+decision for a person, not a default a linter installs. Raised, not taken.
+
+**Two areas dug and found clean**, recorded so they are not re-dug: 115
+`#[ignore]`d Rust tests are all documented GPU tests and the `--ignored` lane in
+`kernel-compile.yml` genuinely executes 7 of them (`running 6 tests` /
+`running 1 test` in the log, not a hollow `ok`); and there are no skipped JS
+tests and no tautological assertions anywhere in the tree.

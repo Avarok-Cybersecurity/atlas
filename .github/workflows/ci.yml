@@ -283,6 +283,13 @@ jobs:
       - run: pip install --quiet pyyaml
       - run: python3 scripts/check_spdx.py
 
+      # Hosted here because this job is already a repo-wide file lint and is a
+      # required context. The vhost configs are applied to the origin by hand,
+      # so nothing else in CI ever reads them -- without this they are the one
+      # part of the deployment that no gate looks at.
+      - name: nginx vhosts declare one security header set, at server level
+        run: python3 .github/scripts/assert-vhost-headers.py
+
   typos:
     name: typos
     runs-on: ubuntu-latest

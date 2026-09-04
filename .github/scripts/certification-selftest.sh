@@ -19,7 +19,15 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d)
+
+# A suite that exits early is indistinguishable from a suite that ran and
+# failed: same non-zero status, no summary line, and every check after the exit
+# point silently not run. That shipped here -- a stray `set -e` left over from
+# one control turned errexit on, and the next control that was SUPPOSED to fail
+# killed the run after 97 checks, reporting nothing but exit 1.
+REACHED_SUMMARY=0
+trap 'rm -rf "$TMP"; [ "$REACHED_SUMMARY" = 1 ] || { echo; echo "  SUITE TRUNCATED: exited after $PASS checks, before the summary."; echo "  Everything after that point did not run. This is not a normal failure."; }' EXIT
 PASS=0; FAIL=0
 
 # Prerequisites, checked up front and LOUDLY. The alternative -- skipping the
@@ -811,11 +819,9 @@ esac
 STUB
   chmod +x "$TMP/sbin/gh"
   : > "$TMP/scalls"
-  set +e
   ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/stamp ACTOR=me AUTHOR=me \
     PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
   src=$?
-  set -e
   if [ "$src" -ne 0 ]; then
     ok "control: a stamp that could not release the lane fails the command job"
   else
@@ -835,6 +841,66 @@ else
   bad "could not extract the /stamp step"
 fi
 
+# ---------------------------------------------------------------------------
+# nginx add_header does not accumulate across contexts
+# ---------------------------------------------------------------------------
+# Three vhosts, one rule, three separate incidents -- each found by hand after
+# the fact. The docs vhost served every HTML document with no security headers
+# because Cache-Control sat inside `location ~* \.html$`; the site vhost
+# discarded Alt-Svc on every proxied response and sent its dotfile refusal bare;
+# and the site vhost was independently missing Referrer-Policy that the other
+# two sent. All three are fixed. Nothing stopped a fourth.
+#
+# There is no historical config to replay: the docs vhost has a single commit,
+# so the pre-fix text is not in the tree. The sabotages below reconstruct the
+# defect SHAPE instead, which is stated plainly rather than dressed up as a
+# regression test against real history.
+want_rc 0 "the three vhosts agree, at server level" \
+  python3 .github/scripts/assert-vhost-headers.py
+mkdir -p "$TMP/vh/.github/scripts"
+cp .github/scripts/assert-vhost-headers.py "$TMP/vh/.github/scripts/"
+
+vh_sabotage() {  # $1 = vhost path, $2 = python edit over the file text as `t`
+  for f in site/deploy/nginx/atlasinference.io.conf \
+           blog/deploy/nginx/blog.atlasinference.io.conf \
+           book/deploy/nginx/docs.atlasinference.io.conf; do
+    mkdir -p "$TMP/vh/$(dirname "$f")"; cp "$f" "$TMP/vh/$f"
+  done
+  [ -n "${1:-}" ] || return 0
+  python3 - "$TMP/vh/$1" "$2" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+ns = {"t": t}; exec(sys.argv[2], ns)
+assert ns["t"] != t, "sabotage did not change the file -- the control would measure nothing"
+p.write_text(ns["t"])
+PY
+}
+
+# The docs incident, reconstructed: a location that declares any add_header
+# drops every inherited one for that path.
+vh_sabotage book/deploy/nginx/docs.atlasinference.io.conf \
+  't = t.replace("    location / {", "    location ~* \\\\.html$ {\n        add_header Cache-Control \"no-store\" always;\n    }\n\n    location / {", 1)'
+want_rc_msg 1 "inside a location" "control: an add_header inside a location is caught" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+# The site incident: one vhost quietly lacking a header the other two send.
+vh_sabotage blog/deploy/nginx/blog.atlasinference.io.conf \
+  't = t.replace("    add_header Referrer-Policy", "    # add_header Referrer-Policy", 1)'
+want_rc_msg 1 "does not declare Referrer-Policy" "control: a vhost missing a core header is caught" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+vh_sabotage blog/deploy/nginx/blog.atlasinference.io.conf \
+  't = t.replace("    add_header Referrer-Policy", "    # add_header Referrer-Policy", 1)'
+want_rc_msg 1 "have drifted" "control: drift between the vhosts is named as drift" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
+# The value that was live on atlasinference.io when this was written.
+vh_sabotage site/deploy/nginx/atlasinference.io.conf \
+  't = t.replace("X-XSS-Protection \"0\"", "X-XSS-Protection \"1; mode=block\"", 1)'
+want_rc_msg 1 "OWASP" "control: re-enabling the legacy XSS auditor is caught" \
+  python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
+
 echo
 echo "  $PASS passed, $FAIL failed"
+REACHED_SUMMARY=1
 [ "$FAIL" -eq 0 ]
