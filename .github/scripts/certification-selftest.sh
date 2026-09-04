@@ -82,6 +82,18 @@ want_rc() {
   fi
 }
 
+# want_out <expected-stdout> <label> <cmd...> -- for checks whose answer is a
+# VALUE rather than an exit code. Asserting on rc would conflate "the step
+# decided false" with "the step crashed", and those must stay distinguishable:
+# one is a verdict, the other is the fail-safe path.
+want_out() {
+  local want=$1 label=$2; shift 2
+  local got; got=$("$@" 2>"$TMP/out")
+  if [ "$got" = "$want" ]; then ok "$label"; else
+    bad "$label (expected output '$want', got '$got')"; sed 's/^/       /' "$TMP/out" | head -4
+  fi
+}
+
 echo "== seal coverage =="
 printf 'README.md\n' > "$TMP/one.txt"
 want_rc 0 "a codeowner of every path covers the diff" \
@@ -222,8 +234,88 @@ if [ -s "$TMP/alias.sh" ]; then
   # ever passed, any diff could skip certification by breaking classify-diff.
   want_rc 1 "control: a broken classifier (empty web_only) stays red" \
     env RESULT=skipped WEB_ONLY= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+
+  # ── Stack-aware certification ───────────────────────────────────────────
+  # A lower layer of a stack defers its campaign to the aggregation PR, so its
+  # deliberate skip must report GREEN -- otherwise branch protection blocks a
+  # layer that was never meant to certify.
+  want_rc 0 "alias: a lower stack layer passes on a deliberate skip" \
+    env RESULT=skipped WEB_ONLY=false IS_STACK_LAYER=true STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # Same trap as the web_only one above, and the reason the condition is
+  # positive: if a BROKEN stack query (empty) ever passed, any PR could skip
+  # certification by breaking the `gh pr list` call in the classify job.
+  want_rc 1 "control: a broken stack query (empty is_stack_layer) stays red" \
+    env RESULT=skipped WEB_ONLY=false IS_STACK_LAYER= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # An explicit "not a layer" is the aggregation PR itself: it owes the campaign,
+  # so a skip there is a hole, not a pass.
+  want_rc 1 "control: the aggregation PR skipping certification stays red" \
+    env RESULT=skipped WEB_ONLY=false IS_STACK_LAYER=false STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # The branch keys on `skipped` on purpose. A layer whose certification RAN and
+  # FAILED must not be waved through by being a layer.
+  want_rc 1 "control: a failed certification on a stack layer stays red" \
+    env RESULT=failure WEB_ONLY=false IS_STACK_LAYER=true STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
 else
   bad "could not extract the alias shell from ci.yml"
+fi
+
+# ── The classify side: what DECIDES is_stack_layer ──────────────────────────
+# The alias rows above prove the verdict is translated correctly. These prove
+# the verdict itself is reached correctly -- including that every way the
+# lookup can go wrong lands on "certify".
+extract 'changes/Stack position' > "$TMP/stack.sh"
+if [ -s "$TMP/stack.sh" ]; then
+  # `gh pr list ... --jq length` prints the number of open PRs stacked on top.
+  stub_gh_count() { printf '#!/bin/bash\nprintf "%s\\n"\n' "$1" > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"; }
+  stack_says() {
+    mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
+    env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
+        GITHUB_EVENT_NAME="$1" BASE_REF="$2" HEAD_REF=feat/mine REPO=o/r \
+        bash "$TMP/stack.sh" >/dev/null 2>&1
+    grep -c "^is_stack_layer=true$" "$TMP/gh_out"
+  }
+
+  stub_gh_count 0
+  want_out 0 "stack: a PR on main with nothing above it is the aggregation PR" stack_says pull_request main
+  stub_gh_count 2
+  want_out 1 "stack: a PR on main with 2 PRs stacked above it is a lower layer" stack_says pull_request main
+  stub_gh_count 0
+  want_out 1 "stack: a PR whose base is another branch is a lower layer" stack_says pull_request feat/below
+
+  # FAIL-SAFE, all three ways the lookup can break. Each must CERTIFY (false),
+  # never skip: an extra campaign is recoverable, an uncertified merge is not.
+  printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  want_out 0 "control: a failing gh call certifies rather than skipping" stack_says pull_request main
+  stub_gh_count "not-a-number"
+  want_out 0 "control: garbage from gh certifies rather than skipping" stack_says pull_request main
+  stub_gh_count 2
+  want_out 0 "control: a merge_group run certifies (no PR context to read)" stack_says merge_group main
+else
+  bad "could not extract the stack-position shell from ci.yml"
+fi
+
+# ── release matrix: the summary's skip-acceptance logic ─────────────────────
+# `dry-run summary` is a required context; its first step converts upstream
+# results into a verdict. Exactly two skips are acceptable, and each must be
+# NAMED by its input -- a bare skip is still a failure.
+extract_rb() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/release-build.yml"))
+for st in d["jobs"]["dry-run-summary"]["steps"]:
+    if (st.get("name") or "") == sys.argv[1]:
+        print(st["run"]); break
+' "$1"; }
+extract_rb 'Fail explicitly if anything upstream failed' > "$TMP/rbsum.sh"
+if [ -s "$TMP/rbsum.sh" ]; then
+  want_rc 0 "matrix summary: a stack layer's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: an UNEXPLAINED skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: a FAILED build on a stack layer stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=failure WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: being a stack layer does not excuse a failed validate" \
+    env VALIDATE_RESULT=failure BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+else
+  bad "could not extract the dry-run summary shell from release-build.yml"
 fi
 
 echo "== one PR, one commit, one signer =="

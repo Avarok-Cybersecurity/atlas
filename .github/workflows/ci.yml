@@ -58,8 +58,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # `gh pr list`, to see whether anything is stacked on this PR's head
+      # ref. Read-only: this job classifies, it never writes.
+      pull-requests: read
     outputs:
       web_only: ${{ steps.classify.outputs.web_only }}
+      is_stack_layer: ${{ steps.stack.outputs.is_stack_layer }}
       web_touched: ${{ steps.classify.outputs.web_touched }}
       blog_touched: ${{ steps.classify.outputs.blog_touched }}
     steps:
@@ -77,6 +81,49 @@ jobs:
           MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash .github/scripts/classify-diff.sh
+
+      # Is this PR a LOWER LAYER of a stack? If so, the expensive lane defers to
+      # the aggregation PR — the one whose tree actually reaches main — so a
+      # stack of N costs one campaign instead of N.
+      #
+      # FAIL-SAFE BY CONSTRUCTION: `layer` starts false and only a POSITIVE
+      # answer sets it. A failed API call, an empty ref, or a non-pull_request
+      # event all leave it false, which CERTIFIES. An extra campaign is
+      # recoverable; an uncertified merge is not.
+      - name: Stack position
+        id: stack
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -uo pipefail
+          layer=false
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+            case "${BASE_REF:-}" in
+              ""|main)
+                # Base IS main, so this is the bottom of the stack. It is still a
+                # lower layer if something is stacked ON it: under both models —
+                # "collapse everything into one PR" and gh-stack's "merge the top
+                # to land every layer below" — exactly one PR has nothing above
+                # it, and that is the one whose tree reaches main.
+                above=$(gh pr list --repo "$REPO" --state open \
+                          --base "${HEAD_REF:-}" --json number --jq 'length' 2>/dev/null) || above=""
+                case "$above" in ''|*[!0-9]*) above="" ;; esac
+                if [ -n "$above" ] && [ "$above" -gt 0 ]; then
+                  layer=true
+                  echo "$above open PR(s) target '$HEAD_REF' — something is stacked above this one"
+                fi
+                ;;
+              *)
+                layer=true
+                echo "base is '$BASE_REF', not main — this is a lower layer of a stack"
+                ;;
+            esac
+          fi
+          echo "is_stack_layer=$layer" >> "$GITHUB_OUTPUT"
+          echo "is_stack_layer=$layer"
 
 
   # ── Is the expensive lane released? ───────────────────────────────────────
@@ -467,6 +514,7 @@ jobs:
       pr_mode: true
       retention_days: 1
       web_only: ${{ needs.changes.outputs.web_only == 'true' }}
+      stack_layer: ${{ needs.changes.outputs.is_stack_layer == 'true' }}
 
   # OBSERVE-ONLY, and structurally incapable of being anything else.
   #
@@ -1046,6 +1094,7 @@ jobs:
     # through.
     if: >-
       ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
+          && needs.changes.outputs.is_stack_layer != 'true'
           && needs.stamp.outputs.stamped != 'false' }}
     # `!= 'false'`, not `== 'true'`: the stamp job fails OPEN, so an empty output
     # must run the lane rather than hold it. Same shape and same reason as the
@@ -1223,6 +1272,7 @@ jobs:
           RESULT: ${{ needs.pr-benchmark-gate.result }}
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
           STAMPED: ${{ needs.stamp.outputs.stamped }}
+          IS_STACK_LAYER: ${{ needs.changes.outputs.is_stack_layer }}
           EXPEDITED: ${{ needs.stamp.outputs.expedited }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
@@ -1245,6 +1295,19 @@ jobs:
           # branch cannot become a hole in branch protection.
           if [ "${RESULT}" = "skipped" ] && [ "${WEB_ONLY}" = "true" ]; then
             echo "web-only diff: no record's measured inputs were touched — pass."
+            exit 0
+          fi
+          # THE SECOND SKIP THAT IS A PASS: this PR is a lower layer of a
+          # stack, so certification defers to the aggregation PR — the only one
+          # whose tree reaches main. Certifying every layer would spend N
+          # campaigns to land one tree, and the composed tree is the only one
+          # any of the measurements would describe.
+          #
+          # Positive condition, for exactly the reason given above: a broken or
+          # absent stack query leaves IS_STACK_LAYER empty and stays red below,
+          # so this cannot become a hole in branch protection either.
+          if [ "${RESULT}" = "skipped" ] && [ "${IS_STACK_LAYER}" = "true" ]; then
+            echo "lower layer of a stack: the aggregation PR certifies the composed tree — pass."
             exit 0
           fi
           # HELD, not failed. Certification never ran because nobody has released

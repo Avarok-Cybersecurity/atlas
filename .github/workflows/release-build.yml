@@ -48,6 +48,18 @@ on:
         required: false
         type: boolean
         default: false
+      stack_layer:
+        description: >-
+          The caller classified this PR as a LOWER LAYER of a stack: another
+          open PR is stacked on top, or its base is not main. Only the
+          aggregation PR's composed tree lands on main, and that PR builds the
+          full matrix; nine build legs per layer would spend N matrices to
+          land one tree. Same shape as web_only, for the same reason: the skip
+          lives INSIDE this workflow so `dry-run summary` still runs and
+          reports.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -159,7 +171,9 @@ jobs:
     needs: validate
     # Nothing under site/ blog/ book/ web-shared/ reaches any build leg, so a
     # web-only diff would compile nine targets to prove it changed nothing.
-    if: ${{ !inputs.web_only }}
+    # A lower stack layer skips for a different reason: only the aggregation
+    # PR's composed tree lands on main, and that PR builds the full matrix.
+    if: ${{ !inputs.web_only && !inputs.stack_layer }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental }}
     strategy:
@@ -578,6 +592,7 @@ jobs:
           VALIDATE_RESULT: ${{ needs.validate.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           WEB_ONLY: ${{ inputs.web_only }}
+          STACK_LAYER: ${{ inputs.stack_layer }}
         run: |
           set -euo pipefail
           bad=""
@@ -586,6 +601,8 @@ jobs:
           # condition names it. Any other skip is still a failure.
           if [ "$WEB_ONLY" = "true" ] && [ "$BUILD_RESULT" = skipped ]; then
             echo "build legs deliberately skipped: web-only diff"
+          elif [ "$STACK_LAYER" = "true" ] && [ "$BUILD_RESULT" = skipped ]; then
+            echo "build legs deliberately skipped: lower layer of a stack"
           elif [ "$BUILD_RESULT" != success ]; then
             bad="${bad:+$bad, }build ($BUILD_RESULT)"
           fi
@@ -605,23 +622,36 @@ jobs:
             echo "still runs, and is still the required context, precisely so the merge"
             echo "is never left waiting on a check that was never created."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report the stack-layer skip
+        if: ${{ inputs.stack_layer && !inputs.web_only }}
+        run: |
+          {
+            echo "### Release matrix: not built — lower layer of a stack"
+            echo
+            echo "Another open PR is stacked on this one (or its base is not"
+            echo "\`main\`), so the tree that actually lands is the aggregation"
+            echo "PR's — that PR builds the full matrix and owes the campaign."
+            echo "This summary still runs and reports, for the same reason the"
+            echo "web-only skip above does."
+          } >> "$GITHUB_STEP_SUMMARY"
       # From here down the job inspects artifacts. On a web-only diff there are
       # none by design, so these steps stand down while the job itself still
       # reports — which is the whole point of keeping it running.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: ${{ !inputs.web_only }}
+        if: ${{ !inputs.web_only && !inputs.stack_layer }}
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: ${{ !inputs.web_only }}
+        if: ${{ !inputs.web_only && !inputs.stack_layer }}
         with:
           path: dist
           merge-multiple: true
 
       - name: Verify every artifact is real (checksums + non-empty)
-        if: ${{ !inputs.web_only }}
+        if: ${{ !inputs.web_only && !inputs.stack_layer }}
         run: |
           set -euo pipefail
           # The point of the PR dry run is that a later release CANNOT fail in
@@ -644,7 +674,7 @@ jobs:
       # a publishing run, and a summary that contradicts what the run just did
       # is worse than no summary.
       - name: Report what WOULD be published
-        if: ${{ !inputs.publishing && !inputs.web_only }}
+        if: ${{ !inputs.publishing && !inputs.web_only && !inputs.stack_layer }}
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_VERSION: ${{ inputs.version }}
