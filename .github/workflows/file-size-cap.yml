@@ -680,3 +680,8 @@ jobs:
       # a required context.
       - name: no workflow_run workflow can re-trigger itself via a branch it pushes
         run: python3 .github/scripts/assert-no-workflow-feedback-loop.py
+      # Hosted here, not in the workflow it protects: a workflow whose own
+      # concurrency block can cancel its required check is exactly the thing
+      # that cannot be trusted to notice. This job is a required context.
+      - name: no required check is cancellable by an event that cannot rewrite it
+        run: python3 .github/scripts/assert-required-checks-not-cancellable.py
