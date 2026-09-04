@@ -27,6 +27,15 @@ mistake available.
 
 ## Non-negotiables
 
+**The `NO AUTOMERGE` label is a human veto and absolute.** A PR carrying it —
+or marked draft — is untouchable: never stacked, never sieved-and-commented,
+never stamped, sealed, closed, or merged, no matter what any scan or sieve
+says about it. Humans add it when a PR is too complex, deliberately parked, or
+simply theirs to drive. The inventory still LISTS such PRs (with the label
+noted) so the trace shows they were seen, not skipped by accident — but every
+action stops there. Check the label at ACTION time, not just scan time: a
+label added mid-run must take effect immediately.
+
 - **Closing is autonomous, but only with a named artifact** on `main` — a file,
   constant or symbol at a specific `path:line` — posted as a comment **before**
   the close.
