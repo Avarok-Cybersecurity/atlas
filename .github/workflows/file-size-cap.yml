@@ -496,3 +496,9 @@ jobs:
           fi
 
           echo "✓ All .rs files in crates/ are ≤500 LoC (or in the allow-list)."
+
+      # Hosted here rather than in the workflow it protects: a workflow that can
+      # re-trigger itself is exactly the thing that will not notice. This job is
+      # a required context.
+      - name: no workflow_run workflow can re-trigger itself via a branch it pushes
+        run: python3 .github/scripts/assert-no-workflow-feedback-loop.py

@@ -70,7 +70,26 @@ jobs:
     runs-on: ubuntu-latest
     # Only pull_request CI runs carry a governance artifact; schedule and
     # dispatch triggers pass through and enumerate for themselves.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
+    # The third clause breaks a FEEDBACK LOOP, and it is the whole point of
+    # this condition being three lines instead of one.
+    #
+    # This workflow triggers on `workflow_run: [CI] completed`. Its own pull
+    # request is a pull request, so that PR's CI completing re-triggered the
+    # harvest, which force-pushed the branch again, which started CI again.
+    # Measured 2026-09-04: twelve harvest PRs opened and closed in one day
+    # (#854..#871, one every 20-30 minutes), and 11 of the 27 runs queued at
+    # that moment belonged to this branch -- roughly half the repository's
+    # runner backlog, self-inflicted, starving every other PR.
+    #
+    # The loop stayed hot because the harvest CLOSES its PR (see "Superseded
+    # automatically" below) whenever the PR looks unmergeable, and an unstamped
+    # PR always does: certification is HELD until someone comments /stamp, which
+    # nobody does for a bot PR. So every cycle: open, look broken, close,
+    # recreate, run CI, trigger the harvest, repeat.
+    if: >-
+      github.event_name != 'workflow_run'
+      || (github.event.workflow_run.event == 'pull_request'
+          && github.event.workflow_run.head_branch != 'bot/governance-harvest')
     permissions:
       # Pushes governance/*.jsonl to the rolling bot branch. main itself is
       # only ever written through the merge queue.
