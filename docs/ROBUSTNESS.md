@@ -756,3 +756,65 @@ were moved onto #835 before closing, so consolidating cost no evidence.
 **What is still open.** The branch-protection half is not expressible in the
 tree, so no committed file can guard it; if someone removes the context, only
 this record and the API say it was ever there.
+
+---
+
+## Wave 19 — the same defect, one workflow over: the guard's self-test was required, the guard was not
+
+**Found by propagating, not by luck.** Wave 18 fixed one instance; step 6 of a
+wave is to ask where else the *mechanism* lives. Sweeping every workflow for
+jobs that run on pull requests but are neither a required context nor depended
+upon by another job returned ten, of which one was the same defect with a
+sharper edge:
+
+| job | reports as | required? |
+|---|---|---|
+| `self-test` | Merge-ancestry guard self-test | **yes** |
+| `guard` | PR shares history with its base | **no** |
+
+The test that proves the guard *can* fail was mandatory. The guard's verdict on
+your actual branch was advisory. A PR of the #452 class — an orphan branch whose
+root commit is a whole-tree snapshot, which GitHub reports as `MERGEABLE`
+because it computes mergeability over trees rather than ancestry, and whose
+squash-merge silently reverts everything before it — would have gone red on
+`guard` and merged regardless.
+
+**Why it was advisory, and why that was not fixable by simply requiring it.**
+`guard` carried `if: github.event_name == 'pull_request'`, because it read
+`github.event.pull_request.*`. A merge-queue entry has no such payload, so the
+job would never be created there, the required context would never appear, and
+every queue entry would block forever. The `if:` was load-bearing. Requiring the
+context without removing it would have converted a silent gap into an outage.
+
+**Fixed** by resolving the pair per event: `pull_request` from the payload
+(base re-resolved from `origin/<base.ref>`, since `base.sha` is the tip at PR
+*creation* and goes stale), `merge_group` from `merge_group.base_sha`/`head_sha`,
+and `workflow_dispatch` reporting success with a notice — it carries neither
+pair, and a red there would assert "unrelated histories", which is a different
+claim than "nothing to compare". In the queue the answer is trivially yes; that
+foregone report is the price of the verdict being enforceable on the events
+where it is not foregone, and the comment in the workflow says so.
+
+**Proved twice, at two levels.** The workflow-level guard from wave 18 was
+generalised from one hard-coded site check into a declarative table
+(`assert-gates-are-wired.py`) rather than copied — the second instance was
+found *by* generalising it, since the new entry refused on an unmodified tree.
+Seven controls now, each pinning the message and not just the exit code:
+dropping `unit` from `deploy`'s needs, an `if:` on the site suite, a `paths:`
+filter, deleting the suite, restoring the ancestry guard's `if:`, dropping the
+`merge_group` trigger, and **renaming a required job** — the quietest failure of
+the set, since the job still runs and still passes while reporting under a name
+branch protection is not waiting for.
+
+Separately, the guard's own `run:` block was extracted and driven through all
+three events against real commits, then against a purpose-built orphan: the
+`merge_group` path exits 1 with `NO MERGE BASE`. Without that last step the
+three green runs would only have shown the path executes, not that it can
+still refuse.
+
+**What is still open.** Requiring `PR shares history with its base` must wait
+until this change is on `main` — the queue leg does not exist until then, and
+requiring a context before the job that produces it can deadlock the queue.
+Sequencing, not oversight; it is the last step of this wave and is recorded
+here so that an unrequired context later is read as a regression rather than
+the intended state.

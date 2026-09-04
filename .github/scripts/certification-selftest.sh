@@ -678,23 +678,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# A test suite that gates nothing (#810)
+# Jobs that report a verdict nobody consults (#810, and the ancestry guard)
 # ---------------------------------------------------------------------------
-# `Site unit tests` ran on every PR and blocked neither merge nor deploy. The
-# guard below is pinned here rather than in site.yml's own lane on purpose: a
-# suite cannot be trusted to notice that it has been unwired from itself.
+# Two instances of one defect. `Site unit tests` ran on every PR and blocked
+# neither merge nor deploy. And `Merge-ancestry guard self-test` -- the test
+# proving the guard CAN fail -- was required, while the guard's actual verdict
+# on your branch was not.
 #
-# Each control pins the *message* as well as the exit code. Three different
-# defects all exit 1 through the same `fail()`, so asserting rc alone would
-# assert nothing about which one fired.
-want_rc 0 "the site suite gates the deploy as things stand" \
-  python3 .github/scripts/assert-site-tests-gate.py
+# The guard is hosted here, in a required context, rather than in either
+# workflow's own lane: a job cannot be relied on to notice it has been unwired
+# from itself.
+#
+# Every control pins the *message* as well as the exit code. Six distinct
+# defects leave through the same exit 1, so asserting rc alone asserts nothing
+# about which one fired -- the wave 4 and wave 7 lesson.
+want_rc 0 "both gated jobs are wired as things stand" \
+  python3 .github/scripts/assert-gates-are-wired.py
 mkdir -p "$TMP/sg/scripts" "$TMP/sg/workflows"
-cp .github/scripts/assert-site-tests-gate.py "$TMP/sg/scripts/"
+cp .github/scripts/assert-gates-are-wired.py "$TMP/sg/scripts/"
 
-sg_sabotage() {  # $1 = python edit applied to the copied site.yml
-  cp .github/workflows/site.yml "$TMP/sg/workflows/site.yml"
-  python3 - "$TMP/sg/workflows/site.yml" "$1" <<'PY'
+# $1 = workflow filename, $2 = python edit applied to the parsed doc as `d`.
+# NOTE `d[True]`, not `d["on"]`: YAML 1.1 parses a bare `on:` key as the boolean
+# True. An edit reaching for the string raises KeyError, the sabotage silently
+# does not land, and the control then passes against unmodified input -- which
+# is a green light that measured nothing. Caught exactly that way once already.
+sg_sabotage() {
+  for w in site.yml merge-ancestry.yml; do cp ".github/workflows/$w" "$TMP/sg/workflows/$w"; done
+  python3 - "$TMP/sg/workflows/$1" "$2" <<'PY'
 import pathlib, sys, yaml
 p = pathlib.Path(sys.argv[1]); d = yaml.safe_load(p.read_text())
 exec(sys.argv[2], {"d": d})
@@ -702,21 +712,37 @@ p.write_text(yaml.safe_dump(d, sort_keys=False))
 PY
 }
 
-sg_sabotage 'd["jobs"]["deploy"]["needs"] = ["build"]'
+sg_sabotage site.yml 'd["jobs"]["deploy"]["needs"] = ["build"]'
 want_rc_msg 1 "does not need" "control: dropping unit from deploy's needs is caught" \
-  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
-sg_sabotage 'd["jobs"]["unit"]["if"] = "github.event_name == \"push\""'
-want_rc_msg 1 "grew an \`if:\`" "control: making the suite conditional is caught" \
-  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+sg_sabotage site.yml 'd["jobs"]["unit"]["if"] = "github.event_name == \"push\""'
+want_rc_msg 1 "grew an \`if:\`" "control: making the site suite conditional is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
-sg_sabotage 'd[True]["pull_request"] = {"branches": ["main"], "paths": ["site/**"]}'
+sg_sabotage site.yml 'd[True]["pull_request"] = {"branches": ["main"], "paths": ["site/**"]}'
 want_rc_msg 1 "grew a \`paths:\` filter" "control: a paths filter that would deadlock PRs is caught" \
-  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
-sg_sabotage 'd["jobs"].pop("unit")'
-want_rc_msg 1 "no longer exists" "control: deleting the suite outright is caught" \
-  python3 "$TMP/sg/scripts/assert-site-tests-gate.py"
+sg_sabotage site.yml 'd["jobs"].pop("unit")'
+want_rc_msg 1 "no longer exists" "control: deleting the site suite outright is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# The ancestry guard's own regression: restoring the `if:` that made its
+# verdict advisory while its self-test stayed required.
+sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["if"] = "github.event_name == \"pull_request\""'
+want_rc_msg 1 "must report on every run" "control: re-adding the ancestry guard's if: is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage merge-ancestry.yml 'd[True].pop("merge_group")'
+want_rc_msg 1 "every entry would deadlock" "control: dropping merge_group support is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# A rename is the quietest way to lose a required context: the job still runs,
+# still passes, and reports under a name branch protection is not waiting for.
+sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["name"] = "Ancestry"'
+want_rc_msg 1 "leaves the required context uncreated" "control: renaming a required job is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
 echo
 echo "  $PASS passed, $FAIL failed"
