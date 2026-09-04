@@ -1239,3 +1239,42 @@ restructured so the guard cannot find its input, it **refuses** rather than
 finding nothing and reporting success. A guard that silently passes when it
 cannot locate what it checks is the precise failure this suite exists to catch,
 and it would be an embarrassing one to ship in the guard that checks for it.
+
+---
+
+## Wave 28 — five digs, nothing found, and a pattern in my own tooling
+
+No defect this wave.
+
+| dig | scale | result |
+|---|---|---|
+| every CODEOWNERS principal exists | 4 users | all exist; 3 write, 1 admin |
+| ...and holds write access | 4 users | yes — a codeowner without write could never seal |
+| commented CODEOWNERS rules are ignored | both parsers | `seal-coverage.py` refuses, `codeowners.rs` splits on `#` |
+| issue forms are valid | 3 templates | 0 problems; blank issues disabled |
+| the security contact link resolves | 1 link | HTTP 200 |
+
+**The CODEOWNERS comment test is the one that was worth running.** A first sweep
+reported `@someone-else` as a code owner — a placeholder-shaped name that turns
+out to be a **real GitHub user** with read access. It is inside a comment, as an
+illustrative example, so GitHub ignores it. But the question it raised was real:
+if my sweep was fooled by a comment, is the code that decides seal coverage? A
+commented-out rule honoured as live would grant a seal nobody granted. Both
+parsers were checked directly against a fixture whose only grant is commented
+out; both refuse. No defect, and now demonstrated rather than assumed.
+
+**A pattern across this record worth naming.** Three separate throwaway checkers
+written during these waves have been wrong, and each time the error was found by
+questioning a suspicious finding rather than by reading the code:
+
+| wave | my checker's bug | how it surfaced |
+|---|---|---|
+| 24 | `lstrip("./")` stripped the dot from `.github` | 14 "missing" scripts that obviously existed |
+| 24 | resolved `/images/...` against the filesystem, not the site root | blog images "missing" from a working blog |
+| 28 | treated a commented CODEOWNERS line as a rule | a placeholder-looking owner nobody had added |
+
+Across waves 24 and 28 the first-pass sweeps produced 19 and 1 findings of which
+2 and 0 were real. **The finding rate of an unverified sweep is not its defect
+rate**, and the gap is large enough that acting on a raw sweep would have meant
+mostly fixing things that were not broken. Every guard that survived into CI did
+so only after being run against the defect it claims to catch.
