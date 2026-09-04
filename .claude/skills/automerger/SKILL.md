@@ -69,7 +69,9 @@ every close with the recourse offer:
 
 Not every open PR deserves to merge: some are sloppy, some are useless, some
 may be malicious. Every candidate passes **three sieves of static analysis**
-before inclusion, run by a fable agent per cluster reading the actual diff:
+before inclusion, run by a **sonnet** agent per cluster reading the actual
+diff (per-PR static review is diligent reading, not deep design judgement —
+the Adversary tier stays on fable):
 
 | sieve | looks for | label on failure |
 |---|---|---|
