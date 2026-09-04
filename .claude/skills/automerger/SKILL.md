@@ -149,11 +149,24 @@ certify, not skip. Both holes have selftest controls proven able to fail.
 
 **Native stacks (public preview) — the mechanics that matter:**
 
-- **Registration**: `POST /repos/{repo}/stacks` with `pull_requests[]` numbers
-  (bottom first) links an existing chain; `GET /repos/{repo}/stacks` lists.
-  The chain must already be base-linked (each PR's base = the head below).
-  The UI banner offers the same conversion by hand. gh-stack CLI needs
-  gh >= 2.90.
+- **Registration — the exact call that works** (proven on stack #885,
+  2026-09-04; this is what makes the stack icon appear). The chain must
+  already be base-linked (each PR's base = the head branch of the PR below),
+  and the numbers go **bottom first**:
+
+  ```bash
+  gh api -X POST repos/$REPO/stacks \
+    -F "pull_requests[]=<bottom>" -F "pull_requests[]=<next>" ... -F "pull_requests[]=<top>"
+  # verify:  gh api repos/$REPO/stacks        (lists stacks; open:true = live)
+  # inspect: gh api repos/$REPO/stacks/<stack_number>
+  ```
+
+  The response is the stack object (`number`, `open`, ordered
+  `pull_requests[]`) — read it back and confirm `open: true` and the order,
+  the same read-back discipline every silent-failure gh path demands. The UI
+  banner ("This pull request can be stacked…") offers the same conversion by
+  hand; the gh-stack CLI needs gh >= 2.90 and is NOT required — the plain
+  REST call above works on gh 2.45.
 - **Workflow signal**: a registered stack adds
   `github.event.pull_request.stack.{number,size,position,base}` to the PR
   payload — position is 1-based from the bottom, the TOP is
