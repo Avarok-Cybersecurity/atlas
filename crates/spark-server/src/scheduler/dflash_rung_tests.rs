@@ -55,15 +55,21 @@ fn no_woa_pins_the_multi_rung_at_the_cap() {
 #[test]
 fn hysteresis_separates_prose_from_code() {
     let r = r10();
-    // Measured p1: prose ~0.76 (49/64), code ~0.97 (62/64).
-    assert!(!next_wide(true, 49, &r), "prose must leave wide");
+    // Measured p1 on the narrow rung: prose ~0.76 (49/64), code ~0.97 (62/64);
+    // on the wide rung code drops to ~0.875 (56/64) and prose to 0.56..0.76.
+    assert!(!next_wide(true, 40, &r), "prose must leave wide");
     assert!(next_wide(false, 62, &r), "code must enter wide");
-    // Dead band: 58/64 holds whichever state it is in.
+    assert!(next_wide(true, 56, &r), "wide-rung code must hold wide");
+    // Dead band: 49..=59 holds whichever state it is in (prose at 0.76 does
+    // not leave from 49 alone; it leaves on its low windows).
+    assert!(next_wide(true, 49, &r));
+    assert!(!next_wide(false, 49, &r));
     assert!(next_wide(true, 58, &r));
     assert!(!next_wide(false, 58, &r));
     // Edges.
     assert!(next_wide(false, 60, &r));
-    assert!(!next_wide(true, 55, &r));
+    assert!(!next_wide(true, 46, &r));
+    assert!(next_wide(true, 47, &r));
 }
 
 #[test]
@@ -116,6 +122,12 @@ fn simulate(start_wide: bool, hits: &[bool]) -> (u64, bool) {
     (flips() - before, wide)
 }
 
+/// Flips allowed for 40k steady wide-rung-code steps (p1 0.875): the sized
+/// rate is ~2.5 false drops per 40k steps, each paired with a re-entry once
+/// the register clears 60 again, so ~5 flips expected (30 seed sets: mean
+/// 4.7, sd 2.7, max 10). 16 is four sigma over the mean.
+const CODE_WIDE_FLIP_BOUND: u64 = 16;
+
 #[test]
 fn steady_workloads_never_flip_and_transitions_do() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -129,11 +141,22 @@ fn steady_workloads_never_flip_and_transitions_do() {
     let code: u64 = (1..=20u64)
         .map(|s| simulate(true, &stream(0.97, 2000, s)).0)
         .sum();
+    // Code as the WIDE rung actually sees it (p1 ~0.875, 2026-09-04): the
+    // leave line sits 3.8 sigma under 56/64, Bin(64, 0.875) <= 46 is 6.5e-4
+    // per sample. Each false drop is followed by a re-entry once the register
+    // clears 60 again, so flips come in pairs; see the bound below.
+    let code_wide: u64 = (1..=20u64)
+        .map(|s| simulate(true, &stream(0.875, 2000, s)).0)
+        .sum();
     assert!(
         prose <= 6,
         "steady prose flipped {prose} times in 40k steps"
     );
     assert!(code <= 2, "steady code flipped {code} times in 40k steps");
+    assert!(
+        code_wide <= CODE_WIDE_FLIP_BOUND,
+        "steady wide-rung code (0.875) flipped {code_wide} times in 40k steps (bound {CODE_WIDE_FLIP_BOUND})"
+    );
     // A real transition (prose then code, and back) must END in the right
     // state every time, and the flip total over 20 seeds x 2 directions must
     // be the 40 real flips plus at most the sized false-alarm allowance
