@@ -40,7 +40,13 @@ on:
   # comment body into a shell, converts this into a pwn-request: arbitrary
   # fork-controlled input executing with the write scopes declared below.
   pull_request_target:
-    types: [opened, closed, synchronize]
+    # `reopened` is here so a stuck check has a NON-DESTRUCTIVE way out. Only a
+    # `pull_request_target` run writes `CLAAssistant` to the head sha: an
+    # `issue_comment` run completes and writes nothing there, and a push clears
+    # it but also voids any seal on the PR. Without `reopened`, a check left
+    # `cancelled` (see the concurrency note above) could be cleared only by
+    # changing the PR. Thirteen open PRs were in exactly that state.
+    types: [opened, closed, reopened, synchronize]
   # Merge queue: entries are validated on a temporary gh-readonly-queue/**
   # merge-commit that fires NONE of the above events, and `CLAAssistant` is a
   # required check the queue waits for — without this trigger it is never
