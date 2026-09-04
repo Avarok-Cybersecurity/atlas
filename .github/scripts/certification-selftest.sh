@@ -368,6 +368,23 @@ if [ -s "$TMP/rbsum.sh" ]; then
     env VALIDATE_RESULT=success BUILD_RESULT=failure WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
   want_rc 1 "control: being a stack layer does not excuse a failed validate" \
     env VALIDATE_RESULT=failure BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  # The inert-diff skip. Before this acceptance branch existed, ci-cost-controls
+  # added the builds_binaries SKIP without teaching the summary that it was
+  # legitimate -- so `dry-run summary` went red on exactly the diffs the
+  # feature was built for. The pair below is the fix and its control.
+  want_rc 0 "matrix summary: an inert diff's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: builds_binaries=true with a skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=true bash "$TMP/rbsum.sh"
+
+  # The classifier that decides builds_binaries, driven through its stdin mode.
+  classify() { printf '%s\n' "$@" | GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
+  want_rc_msg 0 "builds_binaries=false" "classify: a docs-only diff cannot change a binary" \
+    classify docs/AUTOMERGER.md README.md
+  want_rc_msg 0 "builds_binaries=true" "control: touching release-build.yml builds, .github or not" \
+    classify docs/AUTOMERGER.md .github/workflows/release-build.yml
+  want_rc_msg 0 "builds_binaries=true" "control: one crates/ file makes the whole diff build" \
+    classify docs/AUTOMERGER.md crates/spark-model/src/lib.rs
 else
   bad "could not extract the dry-run summary shell from release-build.yml"
 fi
