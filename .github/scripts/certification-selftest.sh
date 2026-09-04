@@ -627,6 +627,42 @@ STUB
   # whether one exists" from "posted one". Require the POST too.
   certed()  { grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; }
 
+  # CONTROL: the render tools are installed with `|| true`, so ask what happens
+  # when that install fails. Before the guard, `rsvg-convert` was then missing,
+  # the step died under `set -e` BEFORE the comment POST, and a merged PR got no
+  # certificate and no comment at all -- strictly worse than the generic image
+  # the fallback exists to serve.
+  #
+  # The host running this suite HAS both tools, so their absence is manufactured
+  # rather than assumed: a PATH of the stubs plus a symlink farm of the commands
+  # the step actually uses, resolved at runtime so it adapts to wherever they
+  # live. Asserting "the host happens not to have librsvg" is the wave-2
+  # mistake -- a control that only holds on one machine.
+  mkdir -p "$TMP/farm"
+  for c in bash sh env python3 jq sed awk grep tr cut date base64 sha256sum \
+           cat head tail printf dirname basename mktemp sort uniq wc xargs; do
+    src=$(command -v "$c" 2>/dev/null) && ln -sf "$src" "$TMP/farm/$c"
+  done
+  if [ -e "$TMP/farm/rsvg-convert" ]; then
+    bad "control setup: the farm leaked rsvg-convert; absence was not manufactured"
+  else
+    botstub 0
+    rm -f "$TMP/bin/rsvg-convert"
+    ( PATH="$TMP/bin:$TMP/farm" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+      STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
+      bash "$TMP/bot.sh" >/dev/null 2>&1 )
+    if certed; then
+      ok "control: with no rsvg-convert the certificate is still posted"
+    else
+      bad "control: a missing render tool swallowed the certificate entirely"
+    fi
+    if grep -q 'certificate-merged.png' "$TMP/bcalls"; then
+      ok "control: and it points at the generic image, not a render that never happened"
+    else
+      bad "control: it linked a rendered certificate that was never produced"
+    fi
+  fi
+
   runbot pr-certification-stage-1 "" 0
   posted && ! patched && ok "no prior comment -> posts one" || bad "no prior comment -> did not post exactly one"
   # CONTROL: with a prior comment it must EDIT, never post a second. A thread of
@@ -811,7 +847,7 @@ if [ -s "$TMP/stamp.sh" ]; then
 #!/usr/bin/env bash
 all="$*"
 case "$all" in
-  *"actions/runs/"*"/rerun"*) echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+  *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
   *"actions/runs?head_sha"*)  echo 12345; exit 0 ;;
   *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
   *)                          exit 0 ;;
@@ -827,8 +863,8 @@ STUB
   else
     bad "control: the stamp step reported success while the lane stayed held"
   fi
-  if grep -q "held lane was not released" "$TMP/scalls"; then
-    ok "control: the PR comment says the lane was not released"
+  if grep -q "but CI was not re-run" "$TMP/scalls"; then
+    ok "control: the PR comment says CI was not re-run"
   else
     bad "control: the comment claimed a clean stamp after the re-run failed"
   fi
@@ -836,6 +872,19 @@ STUB
     ok "control: the comment carries what the API actually said"
   else
     bad "control: the API's reason was discarded again"
+  fi
+
+  # CONTROL: a SEAL must re-run too. `seal status` reads the Seal check run,
+  # and ci.yml has no `check_run` trigger -- so minting the mark alone left a
+  # sealed PR reporting an unsealed `seal status` until someone pushed a
+  # commit, which is the one thing that VOIDS a seal.
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/seal ACTOR=me AUTHOR=me \
+    PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  if grep -q '^RERUN ' "$TMP/scalls"; then
+    ok "control: /seal re-runs CI so seal status is re-evaluated"
+  else
+    bad "control: /seal minted its mark and never refreshed the job that reads it"
   fi
 else
   bad "could not extract the /stamp step"

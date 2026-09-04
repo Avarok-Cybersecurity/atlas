@@ -1005,3 +1005,54 @@ there rather than by discovering an open alert behind a green check.
 
 **Open, and a decision for a person:** whether to gate on Dependabot alerts at
 all. Today they report on the default branch and block nothing.
+
+---
+
+## Wave 23 — two more capabilities that fail silently, found by sweeping for suppressed failure
+
+**The sweep.** Every workflow step line ending in `|| true`, and every
+`continue-on-error`. Twelve `|| true` lines; ten are benign (optional file
+copies, diagnostic `ls`, apt fallbacks that nothing depends on). Two were not.
+
+**Defect 1 — a missing render tool swallowed the whole certificate.**
+`certification-bot.yml` installs `librsvg2-bin` and `segno` with `|| true`, then
+runs `rsvg-convert` under `set -euo pipefail` with **no check that the install
+worked**. If apt failed, the step died *before* the comment POST: a merged PR
+got no certificate **and no comment at all**. The design three lines below
+already states the rule it was breaking — a missing `contents:write` "cannot
+swallow the certificate itself", which is exactly what a missing renderer did.
+
+Fixed with a `render_ok` guard: absent tools now emit a warning, skip the
+render, and fall through to the generic image that the fallback already exists
+to serve. Degrade the picture, never the certificate.
+
+**The control had to manufacture the absence.** This host has both tools
+installed, so "the tool happens to be missing" would be the wave-2 mistake — a
+control that only holds on one machine. It runs the extracted step against a
+PATH containing the stubs plus a symlink farm of the commands the step actually
+uses, resolved with `command -v` at runtime so it adapts to wherever they live,
+and it asserts the farm did not leak `rsvg-convert` before trusting the result.
+Reverting the guard turns both new controls red.
+
+**Defect 2 — `/seal` minted its mark and never refreshed the job that reads it.**
+This is wave 20's defect in the other verb, and it was live on this very PR:
+`Seal` went green in 33 s while `seal status` stayed red. `ci.yml` has no
+`check_run` trigger, so minting a check run does not re-evaluate anything, and
+the re-run block was `if [ "$VERB" = "/stamp" ]`. The only way to refresh
+`seal status` was to push a commit — **which is the one thing that voids a
+seal**. The handler's own maxim, written for stamps, was never applied to the
+verb next to it.
+
+Re-running is safe for a seal: it adds no commit, and a seal is voided by
+commits, not by CI runs.
+
+**One existing control went red, correctly.** Rewording the warning from "the
+held lane was not released" to "CI was not re-run" — necessary, since it now
+covers both verbs — broke a control that pinned the old wording. That is a
+message-pinned assertion doing its job: it noticed the text it depends on
+changed, which is the behaviour that distinguishes it from asserting an exit
+code six defects share.
+
+**Not a defect, checked and recorded:** `coverage.yml`'s and `coderag.yml`'s
+`continue-on-error: true` are deliberate and documented at their call sites, and
+`ci.yml:1062` records that a previous one was made enforcing.

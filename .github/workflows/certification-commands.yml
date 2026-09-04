@@ -250,7 +250,15 @@ jobs:
           # produce workflow runs, which is the same limitation
           # `governance-harvest.yml` mints an App token to work around.
           rerun_note=""
-          if [ "$VERB" = "/stamp" ]; then
+          # Both verbs, not just /stamp. `seal status` reads the Seal check run,
+          # ci.yml has no `check_run` trigger, and minting the mark therefore
+          # does not re-evaluate the job -- so a sealed PR kept reporting an
+          # unsealed `seal status` until someone pushed a commit, which VOIDS the
+          # seal. The maxim two lines down is not specific to stamps.
+          #
+          # Re-running is safe for a seal: it adds no commit, and a seal is
+          # voided by commits, not by CI runs.
+          if [ "$VERB" = "/stamp" ] || [ "$VERB" = "/seal" ]; then
             run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
               --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
               2>/dev/null || true)
@@ -263,11 +271,11 @@ jobs:
               if err=$(gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" 2>&1); then
                 echo "re-ran CI run $run_id to release the held lane"
               else
-                echo "::error title=Stamp recorded, but the held lane was NOT released::re-running CI run $run_id failed: $err"
+                echo "::error title=$name recorded, but CI was NOT re-run::re-running CI run $run_id failed: $err"
                 rerun_note="
 
           > [!WARNING]
-          > **The stamp is recorded, but the held lane was not released.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow by hand, or push any commit to this PR.
+          > **The $name is recorded, but CI was not re-run.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow by hand, or push any commit to this PR.
           >
           > This is usually the App missing \`actions: write\`. \`certification-preflight.yml\` probes it.
           >
