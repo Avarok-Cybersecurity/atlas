@@ -82,6 +82,44 @@ jobs:
           MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash .github/scripts/classify-diff.sh
 
+      # Is this PR a LOWER LAYER of a stack? A stack layer is a PR that has
+      # another open PR stacked ON TOP of it — and only that. The base ref is
+      # deliberately NOT part of the test: under gh-stack's merge-the-top
+      # model the TOP of a stack has a non-main base yet is exactly the PR
+      # whose merge lands the whole stack on main, so "base != main => layer"
+      # would wave the landing tree through uncertified (caught live on the
+      # #655 -> #651 -> #650 chain: all three layers classified as "lower").
+      # Under both stacking models exactly one PR has nothing above it, and
+      # that one pays for everything.
+      #
+      # FAIL-SAFE BY CONSTRUCTION: `layer` starts false and only a POSITIVE
+      # answer sets it. A failed API call, garbage output, a fork PR (whose
+      # head branch name could coincide with a stack's base branch), or a
+      # non-pull_request event all leave it false, which CERTIFIES. An extra
+      # campaign is recoverable; an uncertified merge is not.
+      - name: Stack position
+        id: stack
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -uo pipefail
+          layer=false
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] \
+             && [ -n "${HEAD_REF:-}" ] && [ "${HEAD_REPO:-}" = "$REPO" ]; then
+            above=$(gh pr list --repo "$REPO" --state open \
+                      --base "$HEAD_REF" --json number --jq 'length' 2>/dev/null) || above=""
+            case "$above" in ''|*[!0-9]*) above="" ;; esac
+            if [ -n "$above" ] && [ "$above" -gt 0 ]; then
+              layer=true
+              echo "$above open PR(s) target '$HEAD_REF' — something is stacked above this one"
+            fi
+          fi
+          echo "is_stack_layer=$layer" >> "$GITHUB_OUTPUT"
+          echo "is_stack_layer=$layer"
+
 
   # ── Is the expensive lane released? ───────────────────────────────────────
   #

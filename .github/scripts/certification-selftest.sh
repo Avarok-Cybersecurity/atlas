@@ -305,6 +305,73 @@ else
   bad "could not extract the alias shell from ci.yml"
 fi
 
+# ── The classify side: what DECIDES is_stack_layer ──────────────────────────
+# The alias rows above prove the verdict is translated correctly. These prove
+# the verdict itself is reached correctly -- including that every way the
+# lookup can go wrong lands on "certify".
+extract 'changes/Stack position' > "$TMP/stack.sh"
+if [ -s "$TMP/stack.sh" ]; then
+  # `gh pr list ... --jq length` prints the number of open PRs stacked on top.
+  stub_gh_count() { printf '#!/bin/bash\nprintf "%s\\n"\n' "$1" > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"; }
+  # stack_says <event> <head_repo> -- head ref fixed; the layer test must not
+  # depend on the base ref at all (see the workflow comment: the top of a
+  # native stack has a non-main base and is the PR that lands on main).
+  stack_says() {
+    mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
+    env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
+        GITHUB_EVENT_NAME="$1" HEAD_REPO="$2" HEAD_REF=feat/mine REPO=o/r \
+        bash "$TMP/stack.sh" >/dev/null 2>&1
+    grep -c "^is_stack_layer=true$" "$TMP/gh_out"
+  }
+
+  stub_gh_count 0
+  want_out 0 "stack: a PR with nothing stacked above it certifies — whatever its base" stack_says pull_request o/r
+  stub_gh_count 2
+  want_out 1 "stack: a PR with 2 PRs stacked above it is a lower layer" stack_says pull_request o/r
+
+  # FAIL-SAFE, every way the classification can break. Each must CERTIFY
+  # (false), never skip: an extra campaign is recoverable, an uncertified
+  # merge is not.
+  printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  want_out 0 "control: a failing gh call certifies rather than skipping" stack_says pull_request o/r
+  stub_gh_count "not-a-number"
+  want_out 0 "control: garbage from gh certifies rather than skipping" stack_says pull_request o/r
+  stub_gh_count 2
+  want_out 0 "control: a merge_group run certifies (no PR context to read)" stack_says merge_group o/r
+  # A FORK PR's head branch name can coincide with a stack's base branch in
+  # this repo -- `--base` matches by name. If that coincidence ever counted as
+  # "stacked above", any fork could skip certification by naming its branch.
+  stub_gh_count 2
+  want_out 0 "control: a fork PR certifies even when its branch name matches a stack base" stack_says pull_request someone/fork
+else
+  bad "could not extract the stack-position shell from ci.yml"
+fi
+
+# ── release matrix: the summary's skip-acceptance logic ─────────────────────
+# `dry-run summary` is a required context; its first step converts upstream
+# results into a verdict. Exactly two skips are acceptable, and each must be
+# NAMED by its input -- a bare skip is still a failure.
+extract_rb() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/release-build.yml"))
+for st in d["jobs"]["dry-run-summary"]["steps"]:
+    if (st.get("name") or "") == sys.argv[1]:
+        print(st["run"]); break
+' "$1"; }
+extract_rb 'Fail explicitly if anything upstream failed' > "$TMP/rbsum.sh"
+if [ -s "$TMP/rbsum.sh" ]; then
+  want_rc 0 "matrix summary: a stack layer's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: an UNEXPLAINED skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: a FAILED build on a stack layer stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=failure WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: being a stack layer does not excuse a failed validate" \
+    env VALIDATE_RESULT=failure BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+else
+  bad "could not extract the dry-run summary shell from release-build.yml"
+fi
+
 echo "== one PR, one commit, one signer =="
 extract 'pr-benchmark-gate/One PR, one commit, one signer' > "$TMP/oc.sh"
 if [ -s "$TMP/oc.sh" ]; then
