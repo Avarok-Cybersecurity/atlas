@@ -229,8 +229,10 @@ pub(crate) fn ssm_m128_min_m() -> Option<u32> {
 }
 
 /// Write-on-accept K=4 batched verify (default ON). `ATLAS_NO_GDN_WOA=1`
-/// restores the parent wy4 kernel (writes every intermediate).
-pub(super) fn gdn_woa_enabled() -> bool {
+/// restores the parent wy4 kernel (writes every intermediate). Public so the
+/// serve can tell the gamma resolver whether the K=4 rung still has its
+/// kernel (review of #845, question 3).
+pub fn gdn_woa_enabled() -> bool {
     std::env::var("ATLAS_NO_GDN_WOA").ok().as_deref() != Some("1")
 }
 

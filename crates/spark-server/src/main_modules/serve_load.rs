@@ -888,7 +888,11 @@ pub(crate) fn load_model(
     };
     if args.dflash {
         // Gamma resolver: the head's gamma is the cap; an explicit flag pins.
-        crate::scheduler::dflash_rung::configure(num_drafts + 1, args.dflash_gamma.is_some());
+        crate::scheduler::dflash_rung::configure(
+            num_drafts + 1,
+            args.dflash_gamma.is_some(),
+            spark_model::layers::qwen3_ssm::gdn_flags::gdn_woa_enabled(),
+        );
     }
 
     if args.dflash {
