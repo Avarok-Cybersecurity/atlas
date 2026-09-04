@@ -34,7 +34,10 @@ says about it. Humans add it when a PR is too complex, deliberately parked, or
 simply theirs to drive. The inventory still LISTS such PRs (with the label
 noted) so the trace shows they were seen, not skipped by accident — but every
 action stops there. Check the label at ACTION time, not just scan time: a
-label added mid-run must take effect immediately.
+label added mid-run must take effect immediately. The same veto applies to
+the pre-existing `DO NOT MERGE — YET` label and to any PR whose title carries
+"DO NOT MERGE" — those are the same human signal in older dialects (e.g.
+#658), and a veto is read by intent, not by exact spelling.
 
 - **Closing is autonomous, but only with a named artifact** on `main` — a file,
   constant or symbol at a specific `path:line` — posted as a comment **before**
