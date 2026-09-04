@@ -5,7 +5,20 @@ name: "CLA Assistant"
 # ref alone would let the two trigger types queue against each other.
 concurrency:
   group: cla-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
+  # NOT `cancel-in-progress: true`, and the reason is the whole point of this
+  # block. `CLAAssistant` is a REQUIRED context. Only the `pull_request_target`
+  # run writes a check to the head sha; an `issue_comment` run does not. With
+  # cancelling on, any comment on a PR killed the run that owned the required
+  # check and put nothing in its place -- leaving `cancelled`, which branch
+  # protection reads as failure, permanently, with no event able to clear it.
+  #
+  # Measured on 2026-09-04: 13 of 60 open PRs were blocked exactly this way,
+  # including one whose only offence was being commented on.
+  #
+  # Grouping still unifies the two trigger types, so they serialise rather than
+  # double-post. They now queue instead of one killing the other, which is the
+  # behaviour the group was always meant to produce.
+  cancel-in-progress: false
 
 on:
   issue_comment:
