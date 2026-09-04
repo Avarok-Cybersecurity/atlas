@@ -1328,3 +1328,58 @@ is not `completed` produces a calm `::notice` explaining that its gate jobs will
 read the mark, instead of a re-run attempt that cannot succeed. Three controls,
 all three red when the check is reverted: stamping mid-run must not fail the
 job, must not attempt a re-run, and must not post the warning.
+
+---
+
+## Wave 30 — out of CI and into the product: an OOB write guarded only by `debug_assert!`
+
+**The defect (#799), and it is the most serious thing in this record.** A single
+video request wrote **4.7× past** the ViT output allocation, raised
+`CUDA_ERROR_ILLEGAL_ADDRESS` and poisoned the CUDA context. The process survived
+and answered `503` to every subsequent request, **for every tenant**, until
+someone restarted it.
+
+The bound existed. It was a `debug_assert!` — compiled out of the `--release`
+binaries we serve. So in production there was no bound at all, only a comment
+saying there was one:
+
+> The scheduler caps Σp ≤ p_max so this is normally unreachable — a correctness
+> guard only.
+
+Video defeats that cap. All temporal groups of one clip arrive as a **single**
+media item and encode as one batch, so the per-item cap never sees the sum: 19
+groups of 30×34 patches merge to 4845 rows against a 1024-row buffer.
+
+**Fixed** by promoting the bound to a pure free function returning `Result`,
+mirroring `check_pixel_len` in the sibling file — whose own doc comment already
+observed that `forward_oversized_fallback` "bounds Σ*merged* p and not per-image
+`p`", and closes with the line this wave earned: *prose is not a bound; this
+is.* Two further hazards closed on the way: the old expression reached
+`mp_i.last().unwrap()` whenever `mp_off` was non-empty, so a length mismatch was
+a panic rather than an error; and the sum now uses `checked_add`, so an
+overflowing offset cannot wrap into a passing comparison.
+
+**The control is the bug's own shape, and it only means anything in release.**
+Four tests, run under `--release`. Restoring `debug_assert!` makes two of them
+**fail in release and pass in debug** — which is precisely the blindness that
+caused the outage, and precisely what a debug-only test can never catch. The
+issue asked for exactly this and named why.
+
+**Scope, stated plainly.** This is the issue's fix (1): the outage. Fix (2) —
+chunking the encode so long videos *work* rather than being refused — is not
+done here. Video is now a clean per-request error instead of a multi-tenant
+outage, which is strictly better and still not "video works".
+
+**A second, separate defect found while verifying the first.**
+`video_decode_ffmpeg::tests::a_hanging_decoder_is_killed_at_timeout` fails
+intermittently in the full `--release` suite: three consecutive failures under
+post-build load, then three consecutive passes on an idle machine, **with and
+without this wave's change** (639+1 failing before it, 643+1 after — the four
+extra are this wave's). It is therefore pre-existing and not caused here.
+
+The panic is on the *message* assertion (`err.contains("decoding exceeded 1s")`),
+not the elapsed-time one, so under load the decode fails for some other reason
+before the timeout fires. **I did not capture the actual message**, so the cause
+is unexplained rather than diagnosed, and it is filed as such. `cargo test
+--workspace` is a required context, which makes this a latent source of red
+builds that has nothing to do with the change under review.
