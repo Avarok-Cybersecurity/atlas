@@ -28,6 +28,7 @@ mod decode_checkpoint;
 mod decode_graph_key;
 mod drafter_prefill;
 mod ep_misc;
+mod gdn_woa;
 mod graph_borrow;
 mod lm_head_batched;
 mod meta;
@@ -413,9 +414,10 @@ impl Model for TransformerModel {
         ks: &[usize],
         seqs: &mut [&mut SequenceState],
         _stream: u64,
+        opts: crate::traits::VerifyBatchedOpts,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
+        self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream, opts)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
         self.stash_verify_hidden_rows_dispatch(rows, _stream)
@@ -852,45 +854,7 @@ impl Model for TransformerModel {
         accepted_rows: &[u32],
         k_rows: usize,
     ) -> Result<bool> {
-        use crate::layer::{VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS};
-        if self.gdn_woa_na_tab.is_null()
-            || self.verify_wy_tables.is_null()
-            || accepted_rows.is_empty()
-            || accepted_rows.len() > VERIFY_WY_TABLE_SEQS
-        {
-            return Ok(false);
-        }
-        let mut host = [0u32; VERIFY_WY_TABLE_SEQS];
-        host[..accepted_rows.len()].copy_from_slice(accepted_rows);
-        let bytes: Vec<u8> = host.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let stream = self.gpu.default_stream();
-        self.gpu
-            .copy_h2d_async(&bytes, self.gdn_woa_na_tab, stream)?;
-        let mut ssm_idx = 0usize;
-        let mut any = false;
-        for (i, layer) in self.layers.iter().enumerate() {
-            if self.config.layer_type(i) != atlas_core::config::LayerType::LinearAttention {
-                continue;
-            }
-            let h_table = self
-                .verify_wy_tables
-                .offset(ssm_idx * VERIFY_WY_LAYER_STRIDE_BYTES);
-            any |= layer.gdn_fold_accepted(
-                self.gpu.as_ref(),
-                h_table,
-                self.gdn_woa_na_tab,
-                k_rows,
-                accepted_rows.len(),
-                stream,
-            )?;
-            ssm_idx += 1;
-        }
-        if any {
-            let mut f = self.gdn_woa_folded_slots.lock();
-            f.clear();
-            f.extend_from_slice(slots);
-        }
-        Ok(any)
+        self.gdn_fold_accepted_dispatch(slots, accepted_rows, k_rows)
     }
 
     fn commit_accepted_prefix(

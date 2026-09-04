@@ -63,8 +63,9 @@ impl BlockDiffusionDraftHead {
         // Oversized tails (a serial-append stretch) take the per-sequence
         // chunk loop; the rest are batched in groups that fit the staging.
         let mut batched: Vec<(usize, usize, usize)> = Vec::with_capacity(jobs.len());
+        let budget = PRECOMPUTE_BATCH_ROWS.min(self.ctx_window);
         for &(i, committed, count) in &jobs {
-            if count > PRECOMPUTE_BATCH_ROWS {
+            if count > budget {
                 let d = states[i]
                     .as_any_mut()
                     .downcast_mut::<DflashProposerState>()
@@ -75,12 +76,16 @@ impl BlockDiffusionDraftHead {
             }
         }
 
+        // Group budget: the staging slab holds PRECOMPUTE_BATCH_ROWS rows, but
+        // `fc_proj`, `fused_kv_out` and `slot_mapping_dev` are sized for
+        // `ctx_window` rows, so the budget is the smaller of the two (an
+        // `ATLAS_DFLASH_CTX_WINDOW` below 256 would otherwise overrun them).
         let mut lo = 0usize;
         while lo < batched.len() {
             // Greedy group: consecutive jobs whose rows sum to <= budget.
             let mut hi = lo;
             let mut rows = 0usize;
-            while hi < batched.len() && rows + batched[hi].2 <= PRECOMPUTE_BATCH_ROWS {
+            while hi < batched.len() && rows + batched[hi].2 <= budget {
                 rows += batched[hi].2;
                 hi += 1;
             }
@@ -100,6 +105,15 @@ impl BlockDiffusionDraftHead {
                 let dst = self.scratch.precompute_in.offset(row_off * ctx_slot_bytes);
                 gpu.copy_d2d_async(src, dst, count * ctx_slot_bytes, stream)?;
                 positions.extend_from_slice(&d.ctx_positions[committed..committed + count]);
+                // Slots come from the HOST block table. The per-sequence
+                // path fills them on-device from `block_table_dev`; both are
+                // grown together in `propose.rs` (host push, then one H2D of
+                // the whole table), so they agree. A device-only growth path
+                // would break that invariant silently: pin it here.
+                debug_assert!(
+                    d.block_table_dev.is_some() && !d.block_table.is_empty(),
+                    "precompute_ctx_kv_batched: host/device drafter block tables out of step"
+                );
                 for idx in committed..committed + count {
                     let logical = idx / BLOCK_SIZE;
                     let physical = *d.block_table.get(logical).ok_or_else(|| {

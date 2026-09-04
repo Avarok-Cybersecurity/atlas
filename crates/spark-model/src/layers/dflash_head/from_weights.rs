@@ -216,28 +216,19 @@ impl BlockDiffusionDraftHead {
             // try_kernel: absent on targets whose w4a16 module predates
             // Phase G — the FP8 drafter path is then skipped at the
             // ATLAS_DFLASH_DRAFTER_FP8 gate below (BF16 fallback).
-            // 2026-09-03: `_p4` = same kernel with a 4-stage cp.async ring
-            // (byte-identical output; 2-stage ran at ~1/3 of DRAM peak at
-            // M=64). `ATLAS_DFLASH_FP8_GEMM_P2=1` pins the 2-stage original.
+            // 2026-09-03: `_k64` = the same kernel reading 64 B per weight
+            // row per K step (half the DRAM row-opens per byte; byte-
+            // identical output). `ATLAS_DFLASH_FP8_GEMM_P2=1` pins the
+            // 2-stage original for an A/B. (A 4-stage-ring twin was
+            // measured neutral on GB10 and dropped in review of #844.)
             fp8_gemm_n128_row_scaled: {
                 let pin_p2 = std::env::var("ATLAS_DFLASH_FP8_GEMM_P2").ok().as_deref() == Some("1");
-                // Preference: `_k64` (64 B per weight row per K step) ->
-                // `_p4` (4-stage ring) -> original. All three byte-identical.
-                let pin_p4 = std::env::var("ATLAS_DFLASH_FP8_GEMM_P4").ok().as_deref() == Some("1");
                 let mut h = spark_runtime::gpu::KernelHandle(0);
-                if !pin_p2 && !pin_p4 {
+                if !pin_p2 {
                     h = crate::layers::try_kernel(gpu, "w4a16", "fp8_gemm_t_row_scaled_k64");
                     if h.0 != 0 {
                         tracing::info!(
                             "DFlash drafter FP8 GEMM: fp8_gemm_t_row_scaled_k64 (deep-K)"
-                        );
-                    }
-                }
-                if h.0 == 0 && !pin_p2 {
-                    h = crate::layers::try_kernel(gpu, "w4a16", "fp8_gemm_t_row_scaled_p4");
-                    if h.0 != 0 {
-                        tracing::info!(
-                            "DFlash drafter FP8 GEMM: fp8_gemm_t_row_scaled_p4 (4-stage ring)"
                         );
                     }
                 }

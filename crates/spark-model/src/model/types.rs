@@ -324,6 +324,17 @@ pub struct TransformerModel {
     /// h restore for them). NULL/empty when no batched verify exists.
     pub(super) gdn_woa_na_tab: DevicePtr,
     pub(super) gdn_woa_folded_slots: Mutex<Vec<usize>>,
+    /// Set at the END of a batched verify that ran under a write-on-accept
+    /// request with its pointer tables staged; cleared at the START of every
+    /// batched verify and consumed by the fold. The fold declines (host h
+    /// restore runs) unless the verify that just completed set it.
+    pub(super) gdn_woa_eligible: std::sync::atomic::AtomicBool,
+    /// Write-on-accept engaged words and stash for every GDN layer, bound
+    /// on the FIRST write-on-accept request (pre-capture) and never moved:
+    /// `(flags, stash, seqs)`. NULL until then, so an MTP serve, a C=1
+    /// serve, a serve with the kernels absent or with `ATLAS_NO_GDN_WOA=1`
+    /// never pays the ~4 MB per layer.
+    pub(super) gdn_woa_bound: Mutex<(DevicePtr, DevicePtr, usize)>,
     /// Encoded key of the bytes CURRENTLY staged in `verify_wy_tables`, or
     /// `None` when nothing has been staged (the buffer is memset to zero at
     /// allocation, which no key describes).

@@ -127,6 +127,15 @@ impl Qwen3SsmLayer {
     ) -> Result<bool> {
         let n = states.len();
         let kk = args.num_tokens;
+        // Write-on-accept request: clear this layer's engaged word FIRST,
+        // inside the same capture, so it describes this launch only (a
+        // previous step that ran the twin and never folded cannot leak its
+        // stash into this step's fold). Before every decline below on
+        // purpose: a declined arm runs the parent per-sequence loop, and the
+        // fold must then see 0.
+        if ctx.gdn_write_on_accept {
+            self.woa_clear_at_entry(ctx.gpu, args.stream)?;
+        }
         // ── Issue #435 route (a), OPT-IN via `--exact-verify`: exact batched
         // verify (strided sequential-decode chain at batch=n, bitwise-equal
         // to spec-off decode). Ok(false) → the caller's per-sequence loop,
@@ -278,24 +287,12 @@ impl Qwen3SsmLayer {
         let hi = |t: usize| wy_tables.offset(t * VERIFY_WY_TABLE_STRIDE_BYTES);
         // Write-on-accept (2026-09-03): the K=4 twin writes no state; the
         // model folds the accepted rows after the verdict (`gdn_fold_accepted`).
-        let woa_now = kk == 4
-            && super::gdn_flags::gdn_woa_enabled()
-            && !super::ssm_h_fp16_enabled()
-            && kd == 128
-            && vd == 128
-            && self.gdn_wy4_woa_k.0 != 0
-            && self.gdn_wy4_fold_k.0 != 0
-            && self.gdn_wy4_clear_k.0 != 0
-            && !self.woa_stash.is_null()
-            && !self.woa_flag.is_null();
-        static WOA_DISABLED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        let woa_now = woa_now && !WOA_DISABLED.load(std::sync::atomic::Ordering::Relaxed);
-        let mut woa_launched = false;
+        // Engaged ONLY on the caller's request (`ctx.gdn_write_on_accept`,
+        // the DFlash batched step); the decision is `woa::woa_decision`.
+        let woa_now = self.woa_now(ctx.gdn_write_on_accept, kk, n);
         if woa_now {
-            match ops::gdn_decode_wy4_woa(
+            self.woa_launch(
                 ctx.gpu,
-                self.gdn_wy4_woa_k,
                 wy_tables,
                 q_ptr,
                 k_ptr,
@@ -303,43 +300,10 @@ impl Qwen3SsmLayer {
                 gate_ptr,
                 beta_ptr,
                 gdn_out_buf,
-                self.woa_stash,
-                n as u32,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                (nv * 2) as u32,
-                self.woa_stash_seq_floats as u32,
-                self.woa_flag,
+                n,
+                conv_dim,
                 stream,
-            ) {
-                Ok(()) => {
-                    woa_launched = true;
-                    self.woa_armed
-                        .store(true, std::sync::atomic::Ordering::Release);
-                }
-                Err(e) => {
-                    // Most likely the 64 KB dynamic-smem launch was refused.
-                    // Disarm for the process and run the parent kernel below.
-                    WOA_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-                    tracing::warn!(
-                        "GDN write-on-accept launch refused ({e:#}) — parent wy4 for the rest of this process"
-                    );
-                }
-            }
-        }
-        if woa_launched {
-            static WOA_LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !WOA_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                tracing::info!(
-                    "batched-verify GDN WRITE-ON-ACCEPT ENGAGED (n={n}, k=4): wy4_woa + post-verdict fold \
-                     (state read once, written once per step)"
-                );
-            }
+            )?;
         } else {
             match kk {
                 2 => ops::gdn_decode_wy2(

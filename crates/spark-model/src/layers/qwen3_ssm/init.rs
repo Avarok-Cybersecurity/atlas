@@ -23,9 +23,7 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
-        // Write-on-accept engaged word, zeroed: the fold treats 0 as "parent ran".
-        let woa_flag = gpu.alloc(4)?;
-        gpu.memset(woa_flag, 0, 4)?;
+        let woa = super::woa::woa_kernels(gpu);
 
         Ok(Self {
             // mHC is attached later by the loader, and only for models that
@@ -343,29 +341,14 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy3_resident",
             ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
-            gdn_wy4_woa_k: super::super::try_kernel(
-                gpu,
-                "gated_delta_rule_wy4_woa",
-                "gated_delta_rule_wy4_woa",
-            ),
-            gdn_wy4_fold_k: super::super::try_kernel(
-                gpu,
-                "gated_delta_rule_wy4_woa",
-                "gated_delta_rule_wy4_fold",
-            ),
-            gdn_wy4_clear_k: super::super::try_kernel(
-                gpu,
-                "gated_delta_rule_wy4_woa",
-                "gated_delta_rule_wy4_flag_clear",
-            ),
-            woa_flag,
-            // vn[4][nv][vd] | g[4][nv] | sk[4][nk][kd], f32, one slab per
-            // batch entry (VERIFY_WY_TABLE_SEQS). ~131 KB/seq at 48x128.
-            woa_stash: gpu
-                .alloc(crate::layer::VERIFY_WY_TABLE_SEQS * 4 * (nv * vd + nv + nk * kd) * 4)?,
-            woa_stash_seq_floats: 4 * (nv * vd + nv + nk * kd),
+            gdn_wy4_woa_k: woa.woa_k,
+            gdn_wy4_fold_k: woa.fold_k,
+            gdn_wy4_clear_k: woa.clear_k,
+            // Bound by the model on the first write-on-accept request.
+            woa_flag: std::sync::atomic::AtomicU64::new(0),
+            woa_stash: std::sync::atomic::AtomicU64::new(0),
+            woa_seqs: std::sync::atomic::AtomicUsize::new(0),
             woa_dims: [nk, nv, kd, vd],
-            woa_armed: std::sync::atomic::AtomicBool::new(false),
             // ── ATLAS_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
             // verify WY kernels. try_kernel for the same reason as the
             // resident twins above — a miss is a silent handle 0, and the

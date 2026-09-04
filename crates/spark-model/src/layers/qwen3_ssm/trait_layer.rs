@@ -12,6 +12,14 @@ use super::Qwen3SsmLayer;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer};
 
 impl TransformerLayer for Qwen3SsmLayer {
+    fn gdn_woa_stash_seq_floats(&self) -> Option<usize> {
+        self.woa_stash_seq_floats_impl()
+    }
+
+    fn gdn_woa_bind(&self, flag: DevicePtr, stash: DevicePtr, seqs: usize) {
+        self.woa_bind_impl(flag, stash, seqs)
+    }
+
     fn gdn_fold_accepted(
         &self,
         gpu: &dyn GpuBackend,
@@ -21,45 +29,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         n: usize,
         stream: u64,
     ) -> Result<bool> {
-        // Flag-driven, not host-armed: the batched verify replays as a CUDA
-        // graph, so the only reliable record of WHICH kernel ran is the device
-        // word the woa twin writes inside the graph. The fold kernel reads it
-        // and either folds the stash (woa ran) or performs the parent's
-        // partial-accept restore from the Hi tables (parent ran). Either way
-        // h is committed here, so the caller skips its h restore.
-        let _ = self
-            .woa_armed
-            .swap(false, std::sync::atomic::Ordering::AcqRel);
-        if !super::gdn_flags::gdn_woa_enabled()
-            || self.gdn_wy4_fold_k.0 == 0
-            || self.gdn_wy4_clear_k.0 == 0
-            || self.woa_flag.is_null()
-            || h_table.is_null()
-        {
-            return Ok(false);
-        }
-        let [nk, nv, kd, vd] = self.woa_dims;
-        let hi_tables = h_table.offset(crate::layer::VERIFY_WY_TABLE_STRIDE_BYTES);
-        crate::layers::ops::gdn_wy4_fold(
-            gpu,
-            self.gdn_wy4_fold_k,
-            h_table,
-            self.woa_stash,
-            na_tab,
-            hi_tables,
-            crate::layer::VERIFY_WY_TABLE_SEQS as u32,
-            self.woa_flag,
-            k_rows as u32,
-            n as u32,
-            nk as u32,
-            nv as u32,
-            kd as u32,
-            vd as u32,
-            self.woa_stash_seq_floats as u32,
-            stream,
-        )?;
-        crate::layers::ops::gdn_wy4_flag_clear(gpu, self.gdn_wy4_clear_k, self.woa_flag, stream)?;
-        Ok(true)
+        self.fold_accepted_impl(gpu, h_table, na_tab, k_rows, n, stream)
     }
 
     /// Downcast hook so the LoRA install walk can reach this layer's MoE FFN

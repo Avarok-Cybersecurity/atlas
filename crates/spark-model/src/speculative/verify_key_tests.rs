@@ -17,7 +17,7 @@ fn key_for(batch: &[(usize, usize)], canonical: bool) -> Vec<u32> {
         .zip(&depths)
         .map(|(&i, &k)| (slots[i] as u32, k as u32))
         .collect();
-    verify_graph_key(&pairs, false)
+    verify_graph_key(&pairs, false, false)
 }
 
 /// THE DEFECT, pinned. The same depth multiset spread over the same slots
@@ -113,9 +113,30 @@ fn different_slot_sets_have_different_keys() {
 fn wy_table_presence_splits_the_key() {
     let pairs = [(0u32, 4u32), (1, 3)];
     assert_ne!(
-        verify_graph_key(&pairs, true),
-        verify_graph_key(&pairs, false)
+        verify_graph_key(&pairs, true, false),
+        verify_graph_key(&pairs, false, false)
     );
+}
+
+/// The write-on-accept bit splits the key too: the captured K=4 GDN launch
+/// is a different kernel under it, so a graph captured for one request must
+/// never replay for the other. All four sentinel states are distinct.
+#[test]
+fn write_on_accept_splits_the_key() {
+    let pairs = [(0u32, 4u32), (1, 4)];
+    let keys = [
+        verify_graph_key(&pairs, false, false),
+        verify_graph_key(&pairs, true, false),
+        verify_graph_key(&pairs, false, true),
+        verify_graph_key(&pairs, true, true),
+    ];
+    for i in 0..keys.len() {
+        for j in 0..keys.len() {
+            assert_eq!(keys[i] == keys[j], i == j, "{i} vs {j}");
+        }
+    }
+    // The pairs are untouched; only the sentinel moves.
+    assert_eq!(keys[0][..4], keys[2][..4]);
 }
 
 /// Canonical assignment puts slots in ascending order and depths in
@@ -244,7 +265,7 @@ fn uniform_depths_are_identical_under_both_arms() {
 fn empty_and_single_batches_are_well_formed() {
     assert_eq!(verify_batch_order(&[], &[], true), (vec![], vec![]));
     assert_eq!(verify_batch_order(&[5], &[3], true), (vec![0], vec![3]));
-    assert_eq!(verify_graph_key(&[], false), vec![u32::MAX]);
+    assert_eq!(verify_graph_key(&[], false, false), vec![u32::MAX]);
 }
 
 #[test]

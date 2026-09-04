@@ -28,6 +28,16 @@
 // State args are device POINTER TABLES (one entry per sequence), the same
 // slab-0 table the parent's state_is_table=1 form reads.
 //
+// The twin needs 64 KB of dynamic shared memory (the head's 128x128 f32 H
+// slice). The launch path sets CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
+// for every launch over 48 KB (atlas-core registry.rs), so no separate
+// opt-in is needed here; a refused launch is an error to the caller, never
+// a silent swap to the parent.
+//
+// Engaged ONLY on the caller's request: the DFlash batched verify asks for
+// it and folds; the MTP batched K-row verify never asks and keeps the
+// parent wy4 (see spark-model qwen3_ssm/woa.rs).
+//
 // provenance-id: 526f6e616c6420522e205374657369616b
 
 #include <cuda_bf16.h>
@@ -61,13 +71,18 @@ extern "C" __global__ void gated_delta_rule_wy4_woa(
     unsigned int gb_stride,
     unsigned int stash_seq_floats,
     // Device word this layer's fold reads: 1 = the woa twin ran for the last
-    // batched verify (set here, INSIDE the captured graph, so replays count);
-    // the fold's clear kernel resets it. 0 = the parent wy4 ran.
+    // batched verify (set here, INSIDE the captured graph, so replays count).
+    // The HOST clears it (gated_delta_rule_wy4_flag_clear) at the top of
+    // every batched verify that requests write-on-accept, in the same
+    // capture, so the word describes that launch only. 0 = the parent ran.
     unsigned int* __restrict__ engaged_flag
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
-    if (vh >= num_v_heads || b >= batch_size || k_dim != WOA_KD) return;
+    if (vh >= num_v_heads || b >= batch_size) return;
+    // k_dim == v_dim == 128 is the HOST's check (woa.rs `woa_decision`):
+    // no in-kernel dim guard on purpose. A silent early return here would
+    // leave `output` unwritten with no kernel having run in its place.
     if (threadIdx.x == 0) *engaged_flag = 1u;
 
     const unsigned int tid = threadIdx.x;
@@ -253,7 +268,7 @@ extern "C" __global__ void gated_delta_rule_wy4_fold(
     const float vn0 = WOA_VN(sb, 0, vh, v_dim)[tid], vn1 = WOA_VN(sb, 1, vh, v_dim)[tid];
     const float vn2 = WOA_VN(sb, 2, vh, v_dim)[tid], vn3 = WOA_VN(sb, 3, vh, v_dim)[tid];
 
-    if (k_dim != WOA_KD) return;
+    // Dims are host-checked (see the twin above); no guard here either.
     #pragma unroll
     for (unsigned int j=0; j<WOA_KD; j+=4) {
         float h0=H[(j+0)*v_dim+tid], h1=H[(j+1)*v_dim+tid];

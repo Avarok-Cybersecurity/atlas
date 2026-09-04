@@ -62,11 +62,27 @@ pub trait TransformerLayer: Send + Sync {
         None
     }
 
+    /// Write-on-accept capability (GDN layers only): the per-sequence stash
+    /// size in f32 elements when this layer can run the K=4 write-on-accept
+    /// twin (kernels linked, write-on-accept not disabled), `None` otherwise.
+    /// The model sizes the stash from it and binds with [`Self::gdn_woa_bind`].
+    fn gdn_woa_stash_seq_floats(&self) -> Option<usize> {
+        None
+    }
+
+    /// Bind this layer's write-on-accept engaged word and stash slab (`seqs`
+    /// sequences of [`Self::gdn_woa_stash_seq_floats`] f32 each). Called once
+    /// by the model, pre-capture, on the first write-on-accept request; the
+    /// addresses are baked into verify graphs afterwards and never move.
+    fn gdn_woa_bind(&self, _flag: DevicePtr, _stash: DevicePtr, _seqs: usize) {}
+
     /// Write-on-accept fold (GDN layers only): apply the accepted rows of the
     /// last batched K=4 verify to this layer's h states. `h_table` is the
     /// layer's slab-0 pointer table from the verify, `na_tab` a device
     /// `u32[n]` of accepted row counts in batch order. `Ok(false)` when the
-    /// layer has nothing armed (not a GDN layer, or the parent kernel ran).
+    /// layer has nothing bound (not a GDN layer, or write-on-accept is off).
+    /// When the parent kernel ran for the last verify (engaged word 0) the
+    /// fold performs the parent's partial-accept restore instead.
     fn gdn_fold_accepted(
         &self,
         _gpu: &dyn GpuBackend,

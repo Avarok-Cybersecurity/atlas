@@ -156,7 +156,12 @@ impl TransformerModel {
         ks: &[usize],
         seqs: &mut [&mut SequenceState],
         _stream: u64,
+        opts: crate::traits::VerifyBatchedOpts,
     ) -> Result<Vec<u32>> {
+        // Nothing is foldable until THIS call says so at its end: an Err
+        // anywhere below leaves the fold declined and the host restore on.
+        self.gdn_woa_eligible
+            .store(false, std::sync::atomic::Ordering::Release);
         let t_launch = std::time::Instant::now();
         let mapped_argmax = mapped_argmax_host_dev(self.gpu.as_ref());
         let stream = self.gpu.default_stream();
@@ -242,6 +247,13 @@ impl TransformerModel {
         // simply leaves its tail slabs unread (the WY launch for its depth
         // reads `k-1` intermediate tables), and the strides are k-independent.
         let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k_max, &[], stream)?;
+        // Write-on-accept is a per-call request from the DFlash batched step
+        // (never a layer default): honoured only with the pointer tables
+        // staged, since without them the per-sequence loop runs and the
+        // fold's tables would describe some earlier batch. Binding the
+        // stash happens here, pre-capture, on the first request.
+        let write_on_accept =
+            opts.write_on_accept && !wy_tables_base.is_null() && self.gdn_woa_bind()?;
 
         // ── Graph decision: exact slot-vector hit, or drain-tail borrow ──
         // Keyed by the ssm-slot VECTOR (verify_e2.rs): every baked SSM
@@ -257,7 +269,7 @@ impl TransformerModel {
         // the baked depth.
         let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
         let graph_key = if graphs_on {
-            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
+            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null(), write_on_accept)
         } else {
             None
         };
@@ -493,6 +505,7 @@ impl TransformerModel {
                 comm: self.comm_ref(),
                 graph_capture: capture,
                 gdn_exact_replay: false,
+                gdn_write_on_accept: write_on_accept,
                 token_ids: None,
                 host_token_ids: None,
                 routed_lora_layers: None,
@@ -827,6 +840,9 @@ impl TransformerModel {
             seq.seq_len += ks[i];
         }
 
+        // The verify completed under the request: the fold may run once.
+        self.gdn_woa_eligible
+            .store(write_on_accept, std::sync::atomic::Ordering::Release);
         Ok(out)
     }
 }
