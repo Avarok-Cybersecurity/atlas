@@ -338,6 +338,55 @@ if [ -s "$TMP/rbsum.sh" ]; then
     classify docs/AUTOMERGER.md .github/workflows/release-build.yml
   want_rc_msg 0 "builds_binaries=true" "control: one crates/ file makes the whole diff build" \
     classify docs/AUTOMERGER.md crates/spark-model/src/lib.rs
+
+# ── /stamp vs an in-flight CI run ────────────────────────────────────────────
+# Stamping a freshly-opened PR always races its first CI run: the rerun API
+# refuses 403 "already running" while it is in flight, and the handler used to
+# treat that as fatal (observed live on #877, 2026-09-04). The benign race must
+# succeed; a rerun failure with any OTHER cause must still fail loudly.
+extract_cc() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/certification-commands.yml"))
+for st in d["jobs"]["command"]["steps"]:
+    if (st.get("name") or "") == sys.argv[1]:
+        print(st["run"]); break
+' "$1"; }
+extract_cc '/stamp and /seal' > "$TMP/cmd.sh"
+if [ -s "$TMP/cmd.sh" ]; then
+  # gh stub: rerun always 403s "already running"; the stamp job status and the
+  # run status come from files so each row can steer the scenario.
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+case "$*" in
+  *"/rerun"*)
+    # refuses while the run is in flight, succeeds once it has completed --
+    # the actual API contract the handler must survive
+    if grep -q completed "$TMP_STATE/run_status"; then exit 0; fi
+    echo "HTTP 403: This workflow is already running" >&2; exit 1 ;;
+  *"/jobs?"*)          cat "$TMP_STATE/stamp_job_status" ;;
+  *"actions/runs?"*)   echo "9001" ;;
+  *"actions/runs/9001"*)
+    # self-advancing clock: report the current status, then complete the run,
+    # so the wait loop observes in_progress -> completed across two polls
+    cat "$TMP_STATE/run_status"; echo completed > "$TMP_STATE/run_status" ;;
+  *check-runs*)        echo "{}" ;;
+  *) echo "" ;;
+esac
+STUB
+  chmod +x "$TMP/bin/gh"
+  printf '#!/bin/bash\nexit 0\n' > "$TMP/bin/sleep"; chmod +x "$TMP/bin/sleep"
+  cmd_env() { env PATH="$TMP/bin:$PATH" TMP_STATE="$TMP" \
+      REPO=o/r PR=1 ACTOR=t VERB=/stamp PERM=admin AUTHOR=t HEAD_SHA=abc SHORT=abc GH_TOKEN=x \
+      bash "$TMP/cmd.sh"; }
+
+  echo queued > "$TMP/stamp_job_status"; echo in_progress > "$TMP/run_status"
+  want_rc_msg 0 "no re-run needed" "stamp: racing an in-flight run whose stamp job has not decided is benign" cmd_env
+  echo completed > "$TMP/stamp_job_status"; echo in_progress > "$TMP/run_status"
+  want_rc_msg 0 "after it finished" "stamp: a frozen pre-stamp run is re-run once it completes" cmd_env
+else
+  bad "could not extract the /stamp step from certification-commands.yml"
+fi
 else
   bad "could not extract the dry-run summary shell from release-build.yml"
 fi
