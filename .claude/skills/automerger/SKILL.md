@@ -65,6 +65,27 @@ every close with the recourse offer:
 > If any hunk here did not make it across, point at it and I will lift it onto
 > a fresh branch.
 
+### B2 — Sieve (mandatory before any PR is included in a stack)
+
+Not every open PR deserves to merge: some are sloppy, some are useless, some
+may be malicious. Every candidate passes **three sieves of static analysis**
+before inclusion, run by a fable agent per cluster reading the actual diff:
+
+| sieve | looks for | label on failure |
+|---|---|---|
+| **security** | CI/workflow tampering, gate/threshold edits riding along, new network calls, secrets, dependency confusion (every lockfile change named and checksum-verified against the registry), command injection, unjustified `unsafe` | `sieve:security` |
+| **integrity** | tests that cannot fail, production paths bypassed for tests, dead code, a diff contradicting its own description, silent error swallowing, debug leftovers | `sieve:integrity` |
+| **goal** | does it advance the repo's actual goals, or is it useless, stale, or duplicative | `sieve:goal` |
+
+Verdicts are per-sieve PASS/FAIL with a named artifact (file:line, symbol,
+package/version) — never a vibe. A PR failing ANY sieve is **excluded from the
+stack**, labelled, and given a comment that states the specific defect and the
+specific cure ("what clears it"), plus an offer to write the cure ourselves.
+PRs passing all three get `sieve:cleared`. Labels go through the REST API
+(`gh api -X POST repos/$R/issues/$N/labels`) — `gh pr edit --add-label` fails
+SILENTLY on gh 2.45 (GraphQL deprecation), as does `gh pr edit --base`; verify
+every label/retarget by reading it back.
+
 ### C — Group
 
 Stacks are **one subsystem, one author where possible**. Confirm chain ancestry
@@ -125,6 +146,26 @@ clause, all three layers classified as "lower" and nothing would ever have
 certified.) Fork PRs never classify as layers — `--base` matches branch names,
 and a fork whose branch name coincides with a stack's base branch must
 certify, not skip. Both holes have selftest controls proven able to fail.
+
+**Native stacks (public preview) — the mechanics that matter:**
+
+- **Registration**: `POST /repos/{repo}/stacks` with `pull_requests[]` numbers
+  (bottom first) links an existing chain; `GET /repos/{repo}/stacks` lists.
+  The chain must already be base-linked (each PR's base = the head below).
+  The UI banner offers the same conversion by hand. gh-stack CLI needs
+  gh >= 2.90.
+- **Workflow signal**: a registered stack adds
+  `github.event.pull_request.stack.{number,size,position,base}` to the PR
+  payload — position is 1-based from the bottom, the TOP is
+  `position == size`. The classify gate prefers this (race-free, fork-proof)
+  and falls back to the open-PR query for unregistered chains; garbage falls
+  through, never into a skip.
+- **No automatic CI dedup**: GitHub runs every layer's workflows
+  independently — the repo-side gate is what buys one certification.
+- **Landing**: native stacks merge BOTTOM-UP, each layer rebasing onto main —
+  through a merge queue that is one merge_group certification PER LAYER.
+  So land a certified stack by **collapsing**: retarget the certified top PR
+  to `main` and merge it as ONE queue entry; the layers close as contained.
 
 Three constraints, each learned by breaking them:
 

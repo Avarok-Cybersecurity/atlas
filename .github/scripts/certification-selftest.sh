@@ -296,6 +296,25 @@ if [ -s "$TMP/stack.sh" ]; then
   # "stacked above", any fork could skip certification by naming its branch.
   stub_gh_count 2
   want_out 0 "control: a fork PR certifies even when its branch name matches a stack base" stack_says pull_request someone/fork
+
+  # Native stacked-PR payload (github.event.pull_request.stack.*): when
+  # present and numeric it decides alone -- below the top is a layer, the top
+  # certifies -- and garbage falls through to the query, never to a skip.
+  stack_native() {
+    mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
+    env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
+        GITHUB_EVENT_NAME=pull_request HEAD_REPO=o/r HEAD_REF=feat/mine REPO=o/r \
+        STACK_POSITION="$1" STACK_SIZE="$2" \
+        bash "$TMP/stack.sh" >/dev/null 2>&1
+    grep -c "^is_stack_layer=true$" "$TMP/gh_out"
+  }
+  stub_gh_count 0
+  want_out 1 "stack: native payload 2 of 5 is a lower layer, no API call consulted" stack_native 2 5
+  want_out 0 "stack: native payload top of the stack (5 of 5) certifies" stack_native 5 5
+  stub_gh_count 2
+  want_out 1 "stack: garbage native fields fall through to the query" stack_native garbage 5
+  printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  want_out 0 "control: garbage native fields with a failing query still certifies" stack_native garbage 5
 else
   bad "could not extract the stack-position shell from ci.yml"
 fi

@@ -104,3 +104,32 @@ on "certify", proven by sabotage, not asserted in a comment).
 **Cost:** 0 campaigns spent. 1 stamp on #875, 1 on #877; 9 comments (8 constituent tables + 1 stamp), each a deliberate protocol action, not triage churn.
 
 **CITED:** R-named-artifact (constituent mapping derived from the branch, phantom #799/#842 rejected); R-stack-dont-fan-out (ci-cost-controls folded into #876 on a 6-hunk conflict); R-comment-then-close etiquette pre-staged in every constituent comment (recourse offer included); R-mid-campaign-push trap → head SHA pinned and freeze requested in writing.
+
+---
+
+## Run 2 — 2026-09-04 — sieves, the native stack, and two exclusions
+
+```text
+2026-09-04T21:49Z +0m   communicate user directive: three sieves (security/integrity/goal) before any PR is included; failures labelled + commented
+2026-09-04T21:50Z +1m   tool       #875/#877 CLA reds = CANCELLED by comment-race (fix waits in #868, queued); both re-run
+2026-09-04T21:51Z +2m   tool       'Certification commands' red on main root-caused: /stamp raced #877's first CI run, rerun API 403 'already running' treated as fatal; fixed with two-path handling (undecided stamp job → no re-run needed; decided → bounded wait then re-run); 2 selftest rows, pre-fix handler fails both
+2026-09-04T21:52Z +3m   spawn      4 sieve agents (fable), one per cluster, all three sieves each, read-only
+2026-09-04T21:55Z +6m   tool       labels created: sieve:security/integrity/goal/cleared (422s were >100-char descriptions)
+2026-09-04T21:58Z +9m   communicate user: #877 is the collapse model, not a native stack — fix and research the Stacks API
+2026-09-04T22:00Z +11m  tool       reorder rebase: full per-cluster grouping CONFLICTS (gdn/dflash interleave in ssm_gdn_b.rs); minimal reorder (one commit moved) yields TREE-IDENTICAL head b0a5664df3 — the 5503-test validation carries
+2026-09-04T22:02Z +13m  tool       own rulebook violated then vindicated: `cherry-pick -q` usage error swallowed by a pipe (R-capture-rc); redone with captured rc
+2026-09-04T22:04Z +15m  tool       8 layers cut and pushed; #877 retargeted to L7 via REST (gh pr edit silently failed AGAIN — R-gh-edit-lies verified twice in one hour)
+2026-09-04T22:06Z +17m  return     sieve verdicts: INCLUDE #869 #777 #745 #845 #837 #838; EXCLUDE #742 (EOS suppression wholly untested), #844 (fp8 twin + slot-order fix: receipts, no in-tree tests) — every verdict artifact-named
+2026-09-04T22:08Z +19m  tool       labels applied via REST after gh pr edit --add-label ALSO failed silently; cure-comments on #742/#844 with re-inclusion offers
+2026-09-04T22:10Z +21m  communicate user found docs/optimizing-ci-for-stacked-pull-requests: native payload stack.{position,size}; gate upgraded to prefer it (4 selftest rows, flipped-comparison control red)
+2026-09-04T22:12Z +23m  tool       STACK #885 REGISTERED via POST /repos/{repo}/stacks — 8 PRs bottom-up #884..#877, open:true; the icon the user asked for
+2026-09-04T22:13Z +24m  aggregate  wrong-branch near-miss: gate edits attempted while HEAD was wip/stack-reorder; every anchor assert refused against the wrong tree — zero damage (R-assert-anchors pays again)
+```
+
+**Cost:** 0 campaigns. 7 layer PRs opened (cheap lanes only — the gate defers their expensive lanes), 2 cure-comments, 8 labels.
+
+**AMENDED:** sieve doctrine (§B2) written into the skill: three sieves, artifact-named verdicts, label + cure comment, REST for labels. Native-stack mechanics written into "One certification per stack": REST registration, `stack.position/size` payload preferred by the gate, no automatic CI dedup, and the landing rule — native stacks merge bottom-up (one merge_group certification PER LAYER), so a certified stack lands by collapsing the top to one queue entry.
+
+**CITED:** R-capture-rc (violated, caught in-wave by its own usage error); R-gh-edit-lies (twice: --base and --add-label both silently no-oped; REST + read-back both times); R-assert-anchors (refused edits against the wrong checked-out branch).
+
+**Sieve consequence:** #742 and #844 are excluded from certification until their named tests exist. The stack layers containing them (#883, #879) stay in the chain for review, but the campaign will not be requested until either (a) the tests are written and the sieve re-run clears them, or (b) the stack is recomposed without them.

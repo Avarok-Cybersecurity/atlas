@@ -104,10 +104,29 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          # Native stacked-PR payload (public preview): present only when this
+          # PR is registered in a stack (REST: /repos/{repo}/stacks). position
+          # is 1-based from the bottom; the TOP (position == size) is the
+          # aggregation PR and certifies for the whole stack.
+          STACK_POSITION: ${{ github.event.pull_request.stack.position }}
+          STACK_SIZE: ${{ github.event.pull_request.stack.size }}
         run: |
           set -uo pipefail
           layer=false
+          numeric() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
           if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] \
+             && numeric "${STACK_POSITION:-}" && numeric "${STACK_SIZE:-}" \
+             && [ "${STACK_SIZE}" -gt 0 ]; then
+            # Native signal, race-free and fork-proof: any position below the
+            # top is a lower layer. Garbage or absent fields fall through to
+            # the query below, which fails safe to "certify".
+            if [ "${STACK_POSITION}" -lt "${STACK_SIZE}" ]; then
+              layer=true
+              echo "native stack payload: position ${STACK_POSITION} of ${STACK_SIZE} — lower layer"
+            else
+              echo "native stack payload: position ${STACK_POSITION} of ${STACK_SIZE} — top of the stack, certifies"
+            fi
+          elif [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] \
              && [ -n "${HEAD_REF:-}" ] && [ "${HEAD_REPO:-}" = "$REPO" ]; then
             above=$(gh pr list --repo "$REPO" --state open \
                       --base "$HEAD_REF" --json number --jq 'length' 2>/dev/null) || above=""
