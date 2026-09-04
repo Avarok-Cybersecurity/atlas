@@ -1278,3 +1278,53 @@ Across waves 24 and 28 the first-pass sweeps produced 19 and 1 findings of which
 rate**, and the gap is large enough that acting on a raw sweep would have meant
 mostly fixing things that were not broken. Every guard that survived into CI did
 so only after being run against the defect it claims to catch.
+
+---
+
+## Wave 29 — the fix from wave 20 found the next defect, in production, within the hour
+
+**First, a dig that came back clean, and stronger than clean.** The 599
+committed benchmark records were checked against the gate's own cutover rule
+(`SIGNATURE_REQUIRED_AFTER = 1_788_268_400`): 11 records fall after it and **all
+11 carry a sidecar**; 588 fall before it and none does; no record has an
+unusable timestamp; one signer fingerprint is registered.
+
+Then the part worth having done: all 11 signatures were verified **with an
+independent implementation** — Python's `cryptography`, reconstructing the
+signed message from `signing.rs` (`record_bytes || git_sha`) rather than
+trusting the Rust that produced them. **11 verify, 0 do not.** Cross-
+implementation agreement is a materially stronger statement than the gate
+re-checking its own arithmetic, and it is the kind of check worth doing once
+rather than gating on.
+
+**Then the wave's real finding, and its provenance is the point.** Wave 20 fixed
+`/stamp` discarding the API's error. #856 was the first PR stamped with that fix
+live. The warning it produced said:
+
+```
+403 "This workflow is already running"
+```
+
+**Not** the missing `actions: write` that wave 20 had inferred. The CI run was
+`queued` — stamping while CI is in flight *always* 403s, and that is not a
+failure at all: a run still in flight reads the mark when its gate jobs execute,
+so there is nothing to re-run. The handler was raising a red job and a scary
+warning for the ordinary case of stamping a PR shortly after opening it.
+
+Two things follow, and both are worth stating plainly:
+
+1. **Wave 20's stated cause was at best incomplete.** The reasoning there —
+   "my PAT can re-run this, the App cannot, therefore `actions: write`" — was
+   inference from a discarded error. On the run in question (already *completed*)
+   it may well be right. As a general diagnosis of "the re-run failed" it was
+   not, and the record should not read as though it were.
+2. **The fix paid for itself immediately.** The only reason this is known is
+   that wave 20 made the handler print what the API actually said. A guard that
+   surfaces evidence keeps finding things after the wave that built it has
+   ended; one that only reports a verdict does not.
+
+Fixed: the handler now reads the run's `status` alongside its id, and a run that
+is not `completed` produces a calm `::notice` explaining that its gate jobs will
+read the mark, instead of a re-run attempt that cannot succeed. Three controls,
+all three red when the check is reverted: stamping mid-run must not fail the
+job, must not attempt a re-run, and must not post the warning.

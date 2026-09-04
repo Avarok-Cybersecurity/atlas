@@ -848,7 +848,7 @@ if [ -s "$TMP/stamp.sh" ]; then
 all="$*"
 case "$all" in
   *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
-  *"actions/runs?head_sha"*)  echo 12345; exit 0 ;;
+  *"actions/runs?head_sha"*)  echo "${RUNMETA:-12345 completed}"; exit 0 ;;
   *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
   *)                          exit 0 ;;
 esac
@@ -885,6 +885,32 @@ STUB
     ok "control: /seal re-runs CI so seal status is re-evaluated"
   else
     bad "control: /seal minted its mark and never refreshed the job that reads it"
+  fi
+
+  # CONTROL: stamping while CI is still in flight must NOT warn. Re-running an
+  # unfinished run returns 403 "This workflow is already running", which the
+  # warning would report as a failure -- and it is not one: a run still in
+  # flight reads the mark when its gate jobs execute. Found in production the
+  # first time the warning printed the API's own words, which is what it is for.
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" RUNMETA="777 queued" REPO=o/r PR=1 VERB=/stamp \
+    ACTOR=me AUTHOR=me PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 \
+    bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  src=$?
+  if [ "$src" -eq 0 ]; then
+    ok "control: stamping mid-run is not an error"
+  else
+    bad "control: stamping while CI was queued failed the command job"
+  fi
+  if grep -q '^RERUN ' "$TMP/scalls"; then
+    bad "control: it tried to re-run a run that had not finished"
+  else
+    ok "control: a run still in flight is not re-run"
+  fi
+  if grep -q "but CI was not re-run" "$TMP/scalls"; then
+    bad "control: it warned about a benign in-flight run"
+  else
+    ok "control: and no false warning is posted"
   fi
 else
   bad "could not extract the /stamp step"
