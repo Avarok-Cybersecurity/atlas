@@ -172,6 +172,16 @@ escalation is triggered by **measurement**, not by feel.
 | queue | hosted jobs **executed** over the window == 0 while runs are queued — count executions, *not* queue depth |
 | loop | same command or error signature ≥ 3 times |
 
+**Triage escalates on evidence already in the ledger — it never waits for more
+when both halves are present.** `external` requires (a) a **window**
+measurement, not a snapshot, and (b) a **discriminating intervention** (e.g.
+"freed 24 concurrency slots → 0 starts" rules out caps). When one is missing,
+`continue` and name the missing half. When the ledger already contains both,
+**escalating is mandatory** — returning `continue` past a confirmed stall is
+the polling-a-dead-queue failure this ladder exists to prevent. (This rule was
+added because the first negative control caught Triage doing exactly that: the
+discriminating measurement was in the ledger and it asked for more evidence.)
+
 **The Adversary must answer, in writing, on the trace:**
 
 1. Is every "already landed" verdict backed by a **named artifact**, not a
