@@ -290,6 +290,11 @@ jobs:
       - name: nginx vhosts declare one security header set, at server level
         run: python3 .github/scripts/assert-vhost-headers.py
 
+      # Same reasoning: a doc link that points at nothing is invisible until a
+      # reader follows it, and docs churn here more than most trees.
+      - name: markdown links resolve
+        run: python3 .github/scripts/assert-doc-links.py
+
   typos:
     name: typos
     runs-on: ubuntu-latest

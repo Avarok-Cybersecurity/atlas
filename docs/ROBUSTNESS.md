@@ -1056,3 +1056,52 @@ code six defects share.
 **Not a defect, checked and recorded:** `coverage.yml`'s and `coderag.yml`'s
 `continue-on-error: true` are deliberate and documented at their call sites, and
 `ci.yml:1062` records that a previous one was made enforcing.
+
+---
+
+## Wave 24 — four sweeps found nothing, the fifth found dead links, and my own tooling was wrong twice
+
+**Four digs, empty, recorded so they are not repeated:**
+
+| swept | scale | result |
+|---|---|---|
+| jobs that never execute on a PR | 19 found | all legitimately post-merge (deploy/publish) or `workflow_call`ed from CI |
+| shell syntax in every workflow `run:` | 147 blocks, 24 workflows | clean |
+| shell syntax in standalone scripts | 55 scripts | clean |
+| Python in `.github/scripts` | 10 files | clean |
+| scripts a workflow invokes but that do not exist | 20 paths | none missing |
+
+**The fifth found something, and the sweep that found it was mostly wrong.**
+A markdown link sweep reported nineteen broken links. **Seventeen were bugs in
+the sweep**: it stripped the leading dot from `.github`, and it resolved
+site-root URLs like `/images/...` against the filesystem instead of against the
+static directory the tree publishes. Both were caught by checking the findings
+before believing them — the blog images exist under `blog/static/`, and `/api/`
+is assembled at deploy time by `docs.yml` (`cp -a target/doc/. book/output/api/`)
+and cannot be in the tree.
+
+The two survivors are real: `docs/lora-implementation-status.md` linked to
+`lora-mvp-proposal.md` and `lora-codebase-brief.md`, **neither of which has ever
+existed in this repository's history**. Dead the day the file was committed.
+Removed; the sentence carried nothing else.
+
+**The guard is written for precision, not coverage, because of the above.**
+A link checker that cries wolf gets muted or deleted, so
+`assert-doc-links.py` is explicit about every root it knows —
+`blog/**` → `blog/static`, `site/**` → `site/static`, `/api/**` generated — and
+refuses loudly on a site-root link from a tree with no known static root rather
+than skipping it. It reports 199 links, all resolving, with no false positives.
+
+**Five controls, and two of them exist to catch vacuous passing.** Real breakage
+caught; a site-root link whose target is deleted must also be caught (if
+site-root links were *skipped* rather than resolved, the checker would pass
+trivially and look identical); an unknown-tree site-root link must be loud, not
+silent; and `/api/` must NOT be flagged, or every PR fails forever. Run against
+the defect as it stood on `main`, the checker refuses with both links named.
+
+**Note on this wave's honesty.** Two of my own checkers were wrong within one
+wave — the path-stripping bug and the site-root bug — and in both cases the
+error was found by checking a suspicious finding rather than by reading the
+code. Nineteen findings, two real, is a 10% precision rate for a first-pass
+sweep, and that ratio is the argument for verifying findings before acting on
+them, not after.

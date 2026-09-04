@@ -949,6 +949,56 @@ vh_sabotage site/deploy/nginx/atlasinference.io.conf \
 want_rc_msg 1 "OWASP" "control: re-enabling the legacy XSS auditor is caught" \
   python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
 
+# ---------------------------------------------------------------------------
+# Markdown links that point at nothing
+# ---------------------------------------------------------------------------
+# docs/lora-implementation-status.md linked to two files that have never existed
+# in this repository's history -- dead the day it was committed.
+#
+# The controls below matter more than usual because the throwaway sweep that
+# found that defect reported nineteen broken links and SEVENTEEN were its own
+# bugs (it stripped the dot from `.github`, and resolved `/images/...` against
+# the filesystem). A checker that cries wolf gets muted. So the controls prove
+# both directions: that real breakage is caught, AND that the site-root and
+# generated-path cases are resolved rather than quietly skipped -- a checker
+# that skips what it cannot resolve passes vacuously.
+want_rc 0 "every in-repo markdown link resolves" \
+  python3 .github/scripts/assert-doc-links.py
+
+dl_tree() {  # build a miniature repo the checker can be pointed at
+  rm -rf "$TMP/dl"
+  mkdir -p "$TMP/dl/.github/scripts" "$TMP/dl/docs" \
+           "$TMP/dl/blog/src" "$TMP/dl/blog/static/images" "$TMP/dl/book/src"
+  cp .github/scripts/assert-doc-links.py "$TMP/dl/.github/scripts/"
+  : > "$TMP/dl/docs/target.md"
+  printf 'PNG' > "$TMP/dl/blog/static/images/hero.webp"
+  printf '[ok](target.md)\n'          > "$TMP/dl/docs/good.md"
+  printf '![h](/images/hero.webp)\n'  > "$TMP/dl/blog/src/post.md"
+  printf '[api](/api/atlas_core/)\n'  > "$TMP/dl/book/src/redirect.md"
+}
+dl_run() { python3 "$TMP/dl/.github/scripts/assert-doc-links.py"; }
+
+dl_tree
+want_rc 0 "control: a good tree passes (relative, site-root and generated all resolve)" dl_run
+
+# The defect exactly as it was found.
+dl_tree; printf '[mvp](lora-mvp-proposal.md)\n' > "$TMP/dl/docs/dead.md"
+want_rc_msg 1 "no such file" "control: a relative link to a missing file is caught" dl_run
+
+# If site-root links were skipped rather than resolved, this would still pass.
+dl_tree; rm "$TMP/dl/blog/static/images/hero.webp"
+want_rc_msg 1 "no such file" "control: a site-root link is really resolved, not skipped" dl_run
+
+# A site-root link from a tree that publishes no static dir must be loud, not
+# silently ignored -- silence is how the seventeen false negatives would hide.
+dl_tree; printf '![x](/images/hero.webp)\n' > "$TMP/dl/docs/rooted.md"
+want_rc_msg 1 "no known static root" "control: a site-root link from an unknown tree is refused" dl_run
+
+# And the generated rustdoc path must NOT be flagged: docs.yml assembles it at
+# deploy time, so requiring it in the tree would fail every PR forever.
+dl_tree; printf '[a](/api/spark_model/)\n[b](/api/)\n' > "$TMP/dl/book/src/more.md"
+want_rc 0 "control: generated /api/ paths are not treated as breakage" dl_run
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
