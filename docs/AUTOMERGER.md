@@ -53,6 +53,8 @@ runs), so every published run this day cost queue slots, not runner-minutes.
 2026-09-04 +5h  return     Triage: returned `continue` past a ledger that already held the window measurement AND the discriminating intervention — FAIL; the retracted-escalation cautionary tale biased it toward under-escalation, the polling-a-dead-queue failure itself
 2026-09-04 +5h  aggregate  doctrine amended, not the agent: `external` is MANDATORY when both halves are already in the ledger; retest on the same ledger → `external`, citing both — PASS
 2026-09-04 +5h  return     Adversary: BLOCKED the sabotaged stack — named the cherry-pick-emptiness trap on the planted #708 verdict, and surfaced two defects the control did not plant (two perf constituents = non-attributable campaign; no mergeable-tree assertion) — PASS
+2026-09-04 +6h  tool       gate tested against the LIVE #655→#651→#650 chain — all three layers classified "lower": the base!=main clause misclassifies the top of a native stack, i.e. the landing tree would merge UNCERTIFIED
+2026-09-04 +6h  aggregate  rule corrected to the plan's own words — a layer is a PR with something stacked above it, nothing else; fork PRs excluded (branch-name collision on --base); both holes given selftest controls proven able to fail; live retest: exactly one aggregation PR per chain
 ```
 
 **Cost:** 0 campaigns, 0 hosted runner-minutes (pool down; all checks executed
@@ -61,6 +63,12 @@ attempt (assert-before-write caught both at zero cost); a selftest insertion
 orphaned an `else` and truncated the suite at 32 checks — caught by the suite's
 own `REACHED_SUMMARY` trap, which exists because of rule R-13 (checks appended
 after a suite's exit can never fail).
+
+**AMENDED:** the layer rule is "something stacked above", *only* — the
+`base != main` clause certified nothing on a real 3-layer chain and would have
+let the top of a native stack merge uncertified. Evidence: live classification
+of #650/#651/#655. Check: the selftest rows "nothing stacked above it
+certifies — whatever its base" and the fork-PR control.
 
 **AMENDED:** Triage escalation criterion added to the skill's supervision
 section — `external` requires a window measurement plus a discriminating

@@ -115,10 +115,16 @@ Split the lanes instead:
 | cheap correctness — fmt, clippy, tests, LoC, SPDX | **every layer** | each layer is independently reviewable, and these cost seconds |
 | expensive — benchmark gate + release matrix | **the aggregation PR only** | it is the only tree that reaches `main` |
 
-**The aggregation PR is the one with nothing stacked above it**: `base.ref ==
-main` *and* no open PR targets its head ref. That holds under both models —
-"collapse everything into one PR" and gh-stack's "merge the top to land every
-layer below".
+**The aggregation PR is the one with nothing stacked above it** — no open PR
+targets its head ref, and that is the *whole* test. The base ref is
+deliberately no part of it: under gh-stack's merge-the-top model the top of a
+stack has a non-main base yet is exactly the PR whose merge lands everything
+on `main`, so a "base != main ⇒ layer" clause waves the landing tree through
+uncertified. (Caught live on the #655 → #651 → #650 chain: with the base
+clause, all three layers classified as "lower" and nothing would ever have
+certified.) Fork PRs never classify as layers — `--base` matches branch names,
+and a fork whose branch name coincides with a stack's base branch must
+certify, not skip. Both holes have selftest controls proven able to fail.
 
 Three constraints, each learned by breaking them:
 

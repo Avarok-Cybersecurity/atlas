@@ -266,29 +266,36 @@ extract 'changes/Stack position' > "$TMP/stack.sh"
 if [ -s "$TMP/stack.sh" ]; then
   # `gh pr list ... --jq length` prints the number of open PRs stacked on top.
   stub_gh_count() { printf '#!/bin/bash\nprintf "%s\\n"\n' "$1" > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"; }
+  # stack_says <event> <head_repo> -- head ref fixed; the layer test must not
+  # depend on the base ref at all (see the workflow comment: the top of a
+  # native stack has a non-main base and is the PR that lands on main).
   stack_says() {
     mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
     env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
-        GITHUB_EVENT_NAME="$1" BASE_REF="$2" HEAD_REF=feat/mine REPO=o/r \
+        GITHUB_EVENT_NAME="$1" HEAD_REPO="$2" HEAD_REF=feat/mine REPO=o/r \
         bash "$TMP/stack.sh" >/dev/null 2>&1
     grep -c "^is_stack_layer=true$" "$TMP/gh_out"
   }
 
   stub_gh_count 0
-  want_out 0 "stack: a PR on main with nothing above it is the aggregation PR" stack_says pull_request main
+  want_out 0 "stack: a PR with nothing stacked above it certifies — whatever its base" stack_says pull_request o/r
   stub_gh_count 2
-  want_out 1 "stack: a PR on main with 2 PRs stacked above it is a lower layer" stack_says pull_request main
-  stub_gh_count 0
-  want_out 1 "stack: a PR whose base is another branch is a lower layer" stack_says pull_request feat/below
+  want_out 1 "stack: a PR with 2 PRs stacked above it is a lower layer" stack_says pull_request o/r
 
-  # FAIL-SAFE, all three ways the lookup can break. Each must CERTIFY (false),
-  # never skip: an extra campaign is recoverable, an uncertified merge is not.
+  # FAIL-SAFE, every way the classification can break. Each must CERTIFY
+  # (false), never skip: an extra campaign is recoverable, an uncertified
+  # merge is not.
   printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
-  want_out 0 "control: a failing gh call certifies rather than skipping" stack_says pull_request main
+  want_out 0 "control: a failing gh call certifies rather than skipping" stack_says pull_request o/r
   stub_gh_count "not-a-number"
-  want_out 0 "control: garbage from gh certifies rather than skipping" stack_says pull_request main
+  want_out 0 "control: garbage from gh certifies rather than skipping" stack_says pull_request o/r
   stub_gh_count 2
-  want_out 0 "control: a merge_group run certifies (no PR context to read)" stack_says merge_group main
+  want_out 0 "control: a merge_group run certifies (no PR context to read)" stack_says merge_group o/r
+  # A FORK PR's head branch name can coincide with a stack's base branch in
+  # this repo -- `--base` matches by name. If that coincidence ever counted as
+  # "stacked above", any fork could skip certification by naming its branch.
+  stub_gh_count 2
+  want_out 0 "control: a fork PR certifies even when its branch name matches a stack base" stack_says pull_request someone/fork
 else
   bad "could not extract the stack-position shell from ci.yml"
 fi
