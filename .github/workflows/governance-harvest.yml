@@ -379,15 +379,20 @@ jobs:
             # on current main refreshes it and re-triggers CI, which is the same
             # repair a human would do by hand.
             pr_state=$(gh pr view "$open_pr" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo UNKNOWN)
-            buckets=$(gh pr checks "$open_pr" --json bucket --jq '[.[].bucket]' 2>/dev/null || echo '[]')
-            in_flight=$(printf '%s' "$buckets" | jq '[.[]|select(.=="pending")]|length')
-            broken=$(printf '%s' "$buckets" | jq '[.[]|select(.=="fail" or .=="cancel")]|length')
+            # NAMES as well as buckets: harvest-triage.sh discounts checks that are
+            # HELD rather than broken (certification waits for /stamp, seal for
+            # /seal — neither is fixed by rebuilding the branch), and it cannot
+            # tell them apart from a bucket count alone.
+            checks=$(gh pr checks "$open_pr" --json name,bucket 2>/dev/null || echo '[]')
+            in_flight=$(printf '%s' "$checks" | jq '[.[]|select(.bucket=="pending")]|length')
+            broken=$(printf '%s' "$checks" | jq '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length')
+            failing_names=$(printf '%s' "$checks" | jq -r '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name')
 
             # The decision itself lives in .github/scripts/harvest-triage.sh so
             # it can be unit-tested. Every bug in this subsystem has been in
             # this decision, and each one was found on a stalled PR rather than
             # in CI.
-            decision=$(.github/scripts/harvest-triage.sh "$pr_state" "${in_flight:-0}" "${broken:-0}")
+            decision=$(.github/scripts/harvest-triage.sh "$pr_state" "${in_flight:-0}" "${broken:-0}" "$failing_names")
             case "$decision" in
               wait)
                 echo "harvest PR #$open_pr has ${in_flight} check(s) in flight — leaving it to converge"
