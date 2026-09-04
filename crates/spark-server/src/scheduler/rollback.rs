@@ -403,12 +403,25 @@ fn apply_rollback(a: &mut ActiveSeq, keep_len: usize, dropped: usize) {
     // 5. Rewind the grammar FSM by the same token count so the
     //    constrained-decoding matcher stays in sync with the truncated
     //    token stream. Every dropped token is a post-`</think>` content
-    //    token (the watchdogs that call this fire after thinking has
-    //    closed) and was therefore fed to `grammar_state.accept_token`,
-    //    so `rollback(dropped)` is exact. Reuses the existing
-    //    spec-decode grammar-rewind path (`GrammarState::rollback`).
+    //    token, so it was fed to `grammar_state.accept_token`.
+    //
+    //    That did NOT make `rollback(dropped)` exact, and #842 is what it
+    //    cost: `accept_token` returns true for stop/EOS and in the TERMINATED
+    //    state without advancing the matcher, so a `json_schema` matcher that
+    //    has already closed its object records no steps for the tokens that
+    //    follow. One report dropped 96 tokens against 1 recorded step; the
+    //    assert inside the matcher then panicked the scheduler thread and the
+    //    server accepted requests forever without generating.
     if let Some(ref mut gs) = a.grammar_state {
-        gs.rollback(dropped);
+        match grammar_rewind(dropped, gs.num_history_steps()) {
+            Some(n) => gs.rollback(n),
+            None => tracing::warn!(
+                "grammar rollback skipped: {dropped} tokens dropped but the matcher \
+                 recorded only {} steps. Constrained output may drift for this \
+                 sequence; it is not a reason to kill the scheduler (#842).",
+                gs.num_history_steps()
+            ),
+        }
     }
 
     // 6. Reset the watchdog accumulators so the just-cleared window does
@@ -448,6 +461,32 @@ pub trait RomHead: Send + Sync {
 // A trained ROM head belongs to the MODEL that was trained with it, so the
 // seam is `SchedCtx::rom_head` rather than a process global — correct by
 // construction before the artifact loader lands, rather than after.
+
+/// How far to rewind the grammar matcher for `dropped` sequence tokens.
+///
+/// `None` means "do not rewind at all": the caller's count cannot be reconciled
+/// with the matcher's history, so any rewind would be a guess.
+///
+/// The three speculative-decode callers of `GrammarState::rollback` all pass a
+/// delta of `num_history_steps()` measured across the span they are undoing —
+/// see `spec_step.rs` and `verify_pipeline_helper.rs`. The watchdog path passed
+/// a raw count of sequence tokens instead, and `accept_token` returns true
+/// without advancing the matcher for stop/EOS tokens and in the terminated
+/// state. A `json_schema` matcher terminates as soon as its object closes, so
+/// every token after that is a token the matcher never recorded.
+///
+/// Rewinding `min(dropped, steps)` was rejected: with a terminated matcher the
+/// recorded steps belong to tokens that are being KEPT, so a partial rewind
+/// would corrupt the state that a panic at least left visible. Refusing is the
+/// honest answer, and it is the correct one in the reported case — those 96
+/// tokens genuinely advanced the matcher zero times.
+///
+/// This removes the outage. It does not make the accounting exact; that needs
+/// the anchor the speculative paths have, captured where the droppable window
+/// begins.
+fn grammar_rewind(dropped: usize, history_steps: usize) -> Option<usize> {
+    (dropped <= history_steps).then_some(dropped)
+}
 
 #[cfg(test)]
 #[path = "rollback_tests.rs"]
