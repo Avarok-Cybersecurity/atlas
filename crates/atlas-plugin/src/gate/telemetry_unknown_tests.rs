@@ -102,6 +102,10 @@ fn the_comment_labels_every_assumed_row_as_assumed() {
         row.contains("| unknown |"),
         "no matched owner and no paths to match are different cells: {row}"
     );
+    assert!(
+        row.contains("unknown (changed files unreadable)"),
+        "\"host / non-kernel\" is a claim about a diff nobody read: {row}"
+    );
     let debt = body
         .lines()
         .find(|l| l.starts_with("| #7 |"))

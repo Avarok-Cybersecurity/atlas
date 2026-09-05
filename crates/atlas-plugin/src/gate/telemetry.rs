@@ -240,7 +240,13 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
     out.push_str("|---|---|---|---|\n");
     let mut grouped: BTreeMap<String, Vec<&PrView>> = BTreeMap::new();
     for view in views.iter().filter(|v| !v.facts.merged) {
-        let key = if view.hardware.is_empty() {
+        // "host / non-kernel" is a CLAIM about the diff — the hardware span
+        // is empty because no changed path named a kernel. With no changed
+        // paths at all there is nothing to have named one, so grouping a blind
+        // PR under it asserts something this run cannot know.
+        let key = if view.facts.paths_unknown {
+            "unknown (changed files unreadable)".to_string()
+        } else if view.hardware.is_empty() {
             "host / non-kernel".to_string()
         } else {
             view.hardware
