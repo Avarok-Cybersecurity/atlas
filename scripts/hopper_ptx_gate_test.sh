@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Tests for scripts/hopper_ptx_gate.sh. No CUDA toolchain, no GPU: every case
-# goes through `--list-tasks`, which resolves the source set and prints it
-# without compiling anything.
+# Tests for scripts/hopper_ptx_gate.sh. No GPU anywhere: cases (a)-(d) go
+# through `--list-tasks`, which resolves the source set and prints it without
+# compiling anything, and case (e) cross-compiles one fixture with nvcc/ptxas
+# on the host CPU. (e) is SKIPPED, not failed, where no nvcc+ptxas pair is
+# installed.
 #
 # What each case is actually defending:
 #
@@ -26,7 +28,14 @@
 #   (d) a nonexistent model is REFUSED (exit 2), naming what it looked for.
 #       Before, an unknown name simply produced the common kernels and
 #       attributed them to it -- a receipt for a model that is not in the tree.
-#   (e) shellcheck on the gate and on this file.
+#   (e) the ledger records EVERY ptxas error for a file, not just the first.
+#       ptxas emits one `error   :` line per rejected entry function, so a file
+#       with several rejected entries used to appear in the Failures table as
+#       one -- 22 files standing in for 42 rejected entries. The fixture
+#       known_bad_two_entries.cu has two oversized-shared entries and one valid
+#       one, so `error_count`, `len(errors)` and `summary.rejected_entries` all
+#       have a known answer: 2.
+#   (f) shellcheck on the gate and on this file.
 #
 # Usage: bash scripts/hopper_ptx_gate_test.sh
 set -uo pipefail
@@ -93,13 +102,100 @@ grep -Fq -- "qwen3.6-27b" <<<"$out_bad" \
   || fail d "the refusal must list the models that do exist: $out_bad"
 ok d "an unknown model exits 2 and names what it looked for"
 
-# ── (e) lints ───────────────────────────────────────────────────────────────
-if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$GATE" || fail e "shellcheck failed on $GATE"
-  shellcheck "${BASH_SOURCE[0]}" || fail e "shellcheck failed on this test"
-  ok e "shellcheck clean on the gate and on this test"
+# ── (e) every ptxas error is recorded, not just the first ───────────────────
+# The one case that needs a toolchain. It cross-compiles for sm_90a, so it
+# needs no NVIDIA hardware and touches no GPU if one is present.
+#
+# The gate compiles what is under `kernels/<hw>/`, so the fixture is handed a
+# throwaway hardware set in a sandbox tree: a copy of scripts/ (the gate finds
+# its fixtures relative to itself and derives the repo root from its own path)
+# plus a one-model kernels/ tree holding the fixture. Nothing is written into
+# the real tree; the sandbox is a mktemp -d the trap removes.
+find_toolchain() {
+  local n
+  for n in "${NVCC_BIN:-}" "${CUDA_HOME:-}/bin/nvcc" \
+           "$(command -v nvcc 2>/dev/null)" /usr/local/cuda/bin/nvcc; do
+    # ptxas is what rejects this fixture, so nvcc on its own is not enough.
+    if [ -n "$n" ] && [ -x "$n" ] && [ -x "$(dirname "$n")/ptxas" ]; then
+      printf '%s\n' "$n"
+      return 0
+    fi
+  done
+  return 1
+}
+
+NVCC="$(find_toolchain)" || NVCC=""
+if [ -z "$NVCC" ]; then
+  echo "  -- [e] no nvcc+ptxas pair found, skipped"
 else
-  echo "  -- [e] shellcheck not installed, skipped"
+  SB="$(mktemp -d)"
+  trap 'rm -rf "$SB"' EXIT
+  mkdir -p "$SB/scripts" "$SB/kernels/gatefx/common" \
+           "$SB/kernels/gatefx/twoentries/nvfp4"
+  cp "$GATE" "$SB/scripts/"
+  cp -R "$HERE/fixtures" "$SB/scripts/"
+  cp "$HERE/fixtures/hopper_gate/known_bad_two_entries.cu" \
+     "$SB/kernels/gatefx/twoentries/nvfp4/"
+  # sm_90a because that is an arch whose registered negative self-test fixture
+  # (known_bad_post_hopper.cu) is measured to fail there: the gate's own
+  # self-test keeps a working failure path inside the sandbox.
+  cat >"$SB/kernels/gatefx/HARDWARE.toml" <<'TOML'
+[hardware]
+name = "gatefx"
+vendor = "nvidia"
+arch = "sm_90a"
+TOML
+  cat >"$SB/kernels/gatefx/twoentries/MODEL.toml" <<'TOML'
+[model]
+name = "twoentries"
+TOML
+  out_e="$(bash "$SB/scripts/hopper_ptx_gate.sh" --hw gatefx --model twoentries \
+             --jobs 1 --nvcc "$NVCC" --out "$SB/ledger.json" 2>&1)"; rc=$?
+  # 1, not 0: the fixture is there to be rejected. A 2 is the gate refusing to
+  # run at all (no toolchain, no arch, no negative fixture) and is a test bug.
+  [ $rc -eq 1 ] || fail e "the gate must exit 1 on the two-entry fixture, got $rc:
+$out_e"
+  python3 - "$SB/ledger.json" <<'PY' || fail e "the ledger must record BOTH ptxas errors:
+$out_e"
+import json
+import sys
+
+led = json.load(open(sys.argv[1]))
+bad = []
+rows = [r for r in led["results"] if r["stem"] == "known_bad_two_entries"]
+if len(rows) != 1:
+    bad.append(f"expected exactly one result row, got {len(rows)}")
+else:
+    r = rows[0]
+    # nvcc emits the PTX; the 48 KiB static shared limit is ptxas's to enforce.
+    if (r["ptx_ok"], r["ptxas_ok"]) != (True, False):
+        bad.append("expected ptx_ok=True, ptxas_ok=False; got "
+                   f"{r['ptx_ok']}, {r['ptxas_ok']}")
+    if r.get("error_count") != 2:
+        bad.append(f"error_count: expected 2, got {r.get('error_count')!r}")
+    errors = r.get("errors")
+    if not isinstance(errors, list) or len(errors) != 2:
+        bad.append(f"errors: expected a list of 2, got {errors!r}")
+    elif r.get("error_head") != errors[0]:
+        bad.append("error_head must stay the first of errors: "
+                   f"{r.get('error_head')!r} vs {errors[0]!r}")
+if led["summary"].get("rejected_entries") != 2:
+    bad.append("summary.rejected_entries: expected 2, got "
+               f"{led['summary'].get('rejected_entries')!r}")
+if bad:
+    print("\n".join("    " + b for b in bad), file=sys.stderr)
+    sys.exit(1)
+PY
+  ok e "both ptxas errors land in the ledger (error_count=2, rejected_entries=2)"
+fi
+
+# ── (f) lints ───────────────────────────────────────────────────────────────
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck "$GATE" || fail f "shellcheck failed on $GATE"
+  shellcheck "${BASH_SOURCE[0]}" || fail f "shellcheck failed on this test"
+  ok f "shellcheck clean on the gate and on this test"
+else
+  echo "  -- [f] shellcheck not installed, skipped"
 fi
 
 echo ""
