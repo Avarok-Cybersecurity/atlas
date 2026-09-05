@@ -94,6 +94,20 @@ fn test_no_match() {
     let m = tree.lookup(&tokens_b, 16, 0, 0);
 
     assert!(m.is_empty());
+    assert!(m.matched_blocks.is_empty(), "a miss hands back no blocks");
+
+    // Positive control: the miss must be caused by the token mismatch, not by
+    // a cache that misses everything. `is_empty()` alone is satisfied by any
+    // lookup-wide defect (verified: a walk that stops one block short of the
+    // deepest node leaves the assertion above green), which is exactly the
+    // shape of failure a no-match check is least able to notice.
+    let hit = tree.lookup(&tokens_a, 16, 0, 0);
+    assert_eq!(
+        hit.matched_tokens, 16,
+        "the same cache still hits its own key"
+    );
+    assert_eq!(hit.matched_blocks, vec![10]);
+    tree.release(&tokens_a, 16, 0);
 }
 
 #[test]
