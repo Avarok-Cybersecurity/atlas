@@ -254,3 +254,45 @@ fn unmeasured_rows_are_attributed_to_their_actual_round() {
         .expect("unmeasured tile");
     assert_eq!(unmeasured.style, CellStyle::Bad);
 }
+
+/// ★ "The cache gave back nothing" and "no round reported a figure" are
+/// different findings and must not share a value.
+///
+/// `min_turn1_cached` is `None` when not one replay produced a turn-1
+/// attestation — every replay errored, or came back with no turns. Writing 0
+/// for that stamped the record with the VACUITY signature the metric exists to
+/// detect, so the gate's failure line read "min_cached_prompt_tokens 0 < 1" —
+/// "the prefix cache restored nothing" — for a run in which nothing was ever
+/// measured. Both still fail the floor; only one of them is true.
+#[test]
+fn an_unmeasured_cache_is_absent_from_the_record_not_zero() {
+    let replays: Vec<_> = (1..=3)
+        .map(|n| RoundRecord {
+            round: n,
+            verdict: RoundVerdict::Unmeasured {
+                reason: "connection reset".into(),
+            },
+            turn1_cached: None,
+        })
+        .collect();
+    let m = metrics(&score(&replays));
+    assert!(
+        !m.contains_key("min_cached_prompt_tokens"),
+        "an unmeasured cache must not be written as the vacuity value: {m:?}"
+    );
+    // The rest of the record is unaffected — the run still says, loudly, that
+    // three rounds went unmeasured.
+    assert_eq!(m["rounds"], 3.0);
+    assert_eq!(m["unmeasured"], 3.0);
+    // And a REAL zero is still recorded as a zero, so the key still
+    // discriminates. (`a_zero_cache_run_records_a_zero_metric` above pins
+    // that direction; asserted here too so one edit cannot silence both.)
+    let vacuous: Vec<_> = (1..=3)
+        .map(|n| RoundRecord {
+            round: n,
+            verdict: RoundVerdict::Invariant,
+            turn1_cached: Some(0),
+        })
+        .collect();
+    assert_eq!(metrics(&score(&vacuous))["min_cached_prompt_tokens"], 0.0);
+}
