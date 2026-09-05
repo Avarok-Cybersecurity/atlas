@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "campaign": "hopper-atlas-vs-vllm-2026-09",
-  "note": "Atlas serve recipes for the campaign, one entry per (model_key, sku). Sourced from the campaign PRD section 6 (common flags and the per-model table) and the repo's own recipe fixtures under crates/spark-server/tests/fixtures/recipes/**.yaml; every flag name was checked against crates/spark-server/src/cli/serve_args.rs. A (model_key, sku) pair with no entry has no Atlas recipe and run_cell.sh exits 3 on it -- the PRD's reconstructed topologies (Qwen3-Next on 2xH100, GLM/Kimi/MiniMax/Qwen3.8 on Atlas at all) are absent on purpose rather than invented here. Every FP8-checkpoint entry carries --fp8-kv-calibration-tokens 256 (see per-entry notes); remove it only for a checkpoint proven to ship k_scale tensors.",
+  "note": "Atlas serve recipes for the campaign, one entry per (model_key, sku). Sourced from the campaign PRD section 6 (common flags and the per-model table) and the repo's own recipe fixtures under crates/spark-server/tests/fixtures/recipes/**.yaml; every flag name was checked against crates/spark-server/src/cli/serve_args.rs. A (model_key, sku) pair with no entry has no Atlas recipe and run_cell.sh exits 3 on it -- the PRD's reconstructed topologies (Qwen3-Next on 2xH100, GLM/Kimi/MiniMax/Qwen3.8-Flash-Next on Atlas) are absent on purpose rather than invented here. Every FP8-checkpoint entry carries --fp8-kv-calibration-tokens 256 (see per-entry notes); remove it only for a checkpoint proven to ship k_scale tensors.",
   "launcher": "scripts/start-node-ep.sh",
   "launcher_note": "The launcher owns --rank/--world-size/--ep-size/--tp-size/--gpu-ordinal/--port/--master-addr/--master-port/--no-tui, and adds --bind on rank 0 and --warmup-prompt from WARMUP_PROMPT. Those are therefore NOT in common_args: EXTRA_ARGS is appended verbatim to every rank and its header says not to put topology flags in it. The PRD section 6 common block lists --bind/--port/--no-tui/--warmup-prompt alongside the rest; this file splits them by owner so the same flag is never set twice from two places.",
   "launcher_env": {
@@ -540,6 +540,33 @@
         "PRD section 6.1 row 'DeepSeek V4-Flash FP8' ('4xB200 EP=4')"
       ],
       "notes": "The paired vLLM b200 recipe is TEP8 on eight GPUs, so topology.matched is false for this row -- a footnoted matched-topology cell. recipe_max stays true: EP=4 on four B200s is what the PRD's own Atlas row renders, not a step down from it. Spec off on both, as on H200. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3.8-27b-fp8",
+      "sku": "h200",
+      "hf_id": "Qwen/Qwen3.8-27B-FP8",
+      "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "24576",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD-atlas-vs-vllm-hopper.md section 16 first paid cell",
+        "kernels/gb10/qwen3.8-27b/MODEL.toml: effective_context=24576, mtp_layers=0, native FP8 checkpoint",
+        "https://huggingface.co/Qwen/Qwen3.8-27B-FP8/tree/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+      ],
+      "notes": "Single H200 FP8 first paid pair. No repo recipe fixture or explicit PRD 27B flag block exists; context24576 follows the model target effective_context. Common serving flags are the campaign PRD section6 policy; calibration256 is the existing FP8 campaign mitigation. Intended revision is metadata only, not proof of loaded bytes. MTP-scored variant is RECIPE_GAP: target declares mtp_layers=0 and captured vLLM H200 recipe has no speculative profile; both legs use spec off."
     }
   ],
   "recipe_max_note": "recipe_max is true when the entry's topology is the maximum Atlas's own recipe renders for that SKU, and false when the campaign stepped down from it. It is independent of topology.matched, which is about the OTHER engine."
