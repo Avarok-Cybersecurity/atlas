@@ -370,12 +370,20 @@ fn reinsert_unspills() {
 #[test]
 fn test_snapshot_index_insert_lookup_roundtrip() {
     let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..32).collect();
+    // 48 verified tokens, anchored at 32: the prompt is longer than the anchor.
+    let tokens: Vec<u32> = (0..48).collect();
     let prefix_hash = super::hash_token_prefix(&tokens, 32, 0);
 
     assert!(idx.insert(prefix_hash, 42, 100, 32).is_none());
-    let result = idx.lookup(&tokens, 32, 100, 0);
+    // Look up with MORE matched tokens than the anchor covers. At
+    // `matched_tokens == token_count` the two possible sources of the returned
+    // depth are indistinguishable, and returning the caller's matched_tokens
+    // instead of the entry's own depth would make the restore site skip SSM
+    // tokens it never had state for.
+    let result = idx.lookup(&tokens, 48, 100, 0);
     assert_eq!(result, Some((42, 32)));
+    // An anchor deeper than the verified prefix is not a candidate at all.
+    assert_eq!(idx.lookup(&tokens, 31, 100, 0), None);
 }
 
 #[test]
