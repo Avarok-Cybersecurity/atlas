@@ -7,13 +7,14 @@ import os
 import pathlib
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.error
+import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -26,6 +27,8 @@ SPARK_SOURCE = r'''// SPDX-License-Identifier: AGPL-3.0-only
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--check-kernels")) {
@@ -35,10 +38,33 @@ int main(int argc, char **argv) {
                 fputs("audit environment differs from declared serve environment\n", stderr);
                 return 19;
             }
+            puts("CPU fixture kernel audit ran");
             return 0;
         }
     }
-    for (;;) pause();
+    int port = 0;
+    for (int i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--port")) port = atoi(argv[i + 1]);
+    int listener = socket(AF_INET, SOCK_STREAM, 0), reuse = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)) || listen(listener, 16)) {
+        perror("owned CPU fixture listener");
+        return 18;
+    }
+    for (;;) {
+        int client = accept(listener, NULL, NULL);
+        if (client < 0) continue;
+        char input[4096];
+        if (read(client, input, sizeof(input)) > 0) {
+            const char *reply = "HTTP/1.1 503 Loading\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"status\":\"loading\"}";
+            write(client, reply, strlen(reply));
+        }
+        close(client);
+    }
 }
 '''
 
@@ -87,24 +113,18 @@ class ProcessRunnerTests(unittest.TestCase):
         self.runner = None
         self.stream = None
         self.foreign_record = None
-        self.hit = threading.Event()
-        hit = self.hit
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.port = listener.getsockname()[1]
 
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                hit.set()
-                body = b'{"status":"loading"}'
-                self.send_response(503)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *_args):
-                pass
-
-        self.http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
-        self.http_thread.start()
+    def loading(self):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=0.2).close()
+        except urllib.error.HTTPError as error:
+            return error.code == 503
+        except (OSError, urllib.error.URLError):
+            return False
+        return False
 
     def tearDown(self):
         if self.runner is not None and self.runner.poll() is None:
@@ -120,16 +140,13 @@ class ProcessRunnerTests(unittest.TestCase):
         for record in records:
             subprocess.run([sys.executable, str(MANAGER), "stop", "--record", str(record),
                             "--timeout", "0.1"], capture_output=True, timeout=5)
-        self.http.shutdown()
-        self.http.server_close()
-        self.http_thread.join(timeout=3)
         if self.stream:
             self.stream.close()
         self.temp.cleanup()
 
     def start_runner(self, blocked=False):
         env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                   SPARK_BIN=str(self.spark), ATLAS_PORT=str(self.http.server_port),
+                   SPARK_BIN=str(self.spark), ATLAS_PORT=str(self.port),
                    CUDA_VISIBLE_DEVICES="-1", RUST_LOG="error")
         env.pop("IMAGE", None)
         env.pop("ATLAS_NODE_RUN_DIR", None)
@@ -175,7 +192,7 @@ class ProcessRunnerTests(unittest.TestCase):
                 return False
 
         self.wait_for(owned, "the completed owned process record")
-        self.wait_for(self.hit.is_set, "the boot health request")
+        self.wait_for(self.loading, "the owned boot health response")
         owner = json.loads(record.read_text())
         self.runner.send_signal(signal.SIGTERM)
         self.assertEqual(self.runner.wait(timeout=25), 143, self.log.read_text())

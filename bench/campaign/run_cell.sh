@@ -373,6 +373,9 @@ if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
   run_child bash "$TTR" --url "$URL" --model "$HF_ID" --engine "$ENGINE" \
        --start-epoch "$START_EPOCH" --timeout-s "$BOOT_CAP" --out "$BOOT_JSON" \
     || note_fail boot
+  if [ "$PROCESS_MODE" = "1" ] && [ -z "$FAILING_STAGE" ]; then
+    prove_process_endpoint
+  fi
 fi
 
 # ── 4. coherency gate ────────────────────────────────────────────────────────
@@ -385,6 +388,9 @@ fi
 
 # ── 5. latency pack ──────────────────────────────────────────────────────────
 stage ladder "stage 5/7 latency pack"
+if [ "$DRY_RUN" != "1" ] && [ "$PROCESS_MODE" = "1" ] && [ -z "$FAILING_STAGE" ]; then
+  prove_process_endpoint
+fi
 show "python3 $LADDER --url $URL --model $HF_ID --label $CELL_ID --out $LADDER_JSON --concs $CONC --reps $REPS --isl $ISL --osl $OSL --warmup $WARMUP ${LADDER_THINK[*]:-}"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
   run_child python3 "$LADDER" --url "$URL" --model "$HF_ID" --label "$CELL_ID" \

@@ -19,6 +19,7 @@ that a cell is reproducible from its artifact alone.
 | `vllm_render.py` | JSON arithmetic behind `vllm_control.sh` (spec on/off, flag audit, docker argv). |
 | `process_recipe.py` | Adapts the existing recipe argv to an explicit pinned snapshot and a prepared local executable. |
 | `process_launch.py` | Starts, captures and stops only a Linux process whose PID/start identity, group and run marker match its ownership record. |
+| `process_endpoint.py` | Refuses occupied ports before process launch and proves the listener and an accepted connection belong to the recorded process group. |
 | `atlas_recipes.json` | The Atlas serve side: 17 entries from PRD §6 plus the repo's own recipe fixtures. Data only. |
 | `atlas_render.py` | Renders `EXTRA_ARGS` for `scripts/start-node-ep.sh`. `--selftest`. |
 | `cell_assemble.py` | Turns the stage outputs into the §10 artifact. Every field is copied or null. |
@@ -89,7 +90,13 @@ identity is supplied through verified evidence. Do not substitute the outer
 container digest after changing its Python environment. Atlas records its
 actual executable hash. The existing Docker path is unchanged.
 
-Failed preflight prevents every serve path, including the kernel audit.
+Failed preflight prevents every serve path, including the kernel audit. Process
+mode requires readable Linux TCP namespace tables and owned-process FD links;
+it refuses an occupied endpoint before invoking the engine. After boot and
+immediately before the ladder it proves both listener ownership and which
+process accepted a fresh TCP connection. These are observations at those
+boundaries, not a reservation of every future request socket. Endpoint JSON and
+logs are retained in the cell output directory. A refused proof blocks scoring.
 
 ## Environment
 

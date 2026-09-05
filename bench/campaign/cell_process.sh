@@ -17,6 +17,12 @@ PY
     return 0
   fi
   PROCESS_DIR_RESERVED=1
+  if ! run_child python3 "$HERE/process_endpoint.py" free --url "$URL" \
+      --out "$OUT/endpoint-admission.json" > "$OUT/endpoint-admission.log" 2>&1; then
+    note_fail serve
+    add_note "process endpoint admission refused; see endpoint-admission.log"
+    return 0
+  fi
   if ! python3 "$HERE/process_recipe.py" "${PROCESS_RENDER_ARGS[@]}" --stage "$OUT" \
       > "$OUT/process-render.log" 2>&1; then
     note_fail serve
@@ -43,6 +49,25 @@ PY
       --argv-nul "$SERVE_ARGV" --env-json "$OUT/process-env.json" \
       > "$OUT/process-start.log" 2>&1; then
     note_fail serve
+  fi
+}
+
+# Called after readiness and again immediately before the ladder. This proves
+# a current connection; it is not a reservation of every future request socket.
+prove_process_endpoint() {
+  [ "$PROCESS_MODE" = "1" ] || return 0
+  [ "$DRY_RUN" != "1" ] || return 0
+  if [ "$PROCESS_DIR_RESERVED" != "1" ] || [ ! -f "$PROCESS_RECORD" ]; then
+    note_fail boot
+    add_note "process endpoint proof lacks this cell's owner record"
+    return 1
+  fi
+  if ! run_child python3 "$HERE/process_endpoint.py" owned --url "$URL" \
+      --record "$PROCESS_RECORD" --out "$OUT/endpoint-owned.json" \
+      > "$OUT/endpoint-owned.log" 2>&1; then
+    note_fail boot
+    add_note "ready endpoint was not proved owned; see endpoint-owned.log"
+    return 1
   fi
 }
 
