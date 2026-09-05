@@ -96,28 +96,31 @@ class ProcessLaunchTests(unittest.TestCase):
         self.record.write_text(json.dumps(self.owner))
         self.assertEqual(self.call("capture").returncode, 0)
 
-    def test_decode_timing_is_explicit_and_preserved_in_actual_process_evidence(self):
-        env_file = self.root / "env.json"
-        self.argv_file.write_text(json.dumps([sys.executable, "-c", "import time; time.sleep(300)"]))
-        env_file.write_text(json.dumps({"ATLAS_DECODE_TIMING": "1", "UNLISTED_DIAGNOSTIC": "1"}))
-        refused = self.call("start", "--env-json", str(env_file))
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("not allowed", refused.stderr)
-        self.assertFalse(self.record.exists(), "unknown keys must refuse before process creation")
+    def test_recorded_diagnostics_are_explicit_and_preserved_in_actual_process_evidence(self):
+        for key in ("ATLAS_DECODE_TIMING", "ATLAS_DENSE_FP8"):
+            env_file = self.root / "env.json"
+            self.argv_file.write_text(json.dumps([sys.executable, "-c", "import time; time.sleep(300)"]))
+            env_file.write_text(json.dumps({key: "1", "UNLISTED_DIAGNOSTIC": "1"}))
+            refused = self.call("start", "--env-json", str(env_file))
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("not allowed", refused.stderr)
+            self.assertFalse(self.record.exists(), "unknown keys must refuse before process creation")
 
-        env_file.write_text(json.dumps({"ATLAS_DECODE_TIMING": "1"}))
-        snapshot = self.start("import time; time.sleep(300)", "--env-json", str(env_file))
-        actual = Path(f"/proc/{snapshot['pid']}/environ").read_bytes().split(b"\0")
-        self.assertIn(b"ATLAS_DECODE_TIMING=1", actual)
-        for proof in (snapshot, self.owner):
-            self.assertEqual(proof["environment"]["ATLAS_DECODE_TIMING"], "1")
-        captured = self.call("capture")
-        self.assertEqual(captured.returncode, 0, captured.stderr)
-        self.assertEqual(json.loads(self.evidence.read_text())["environment"]["ATLAS_DECODE_TIMING"], "1")
-        stopped = self.call("stop", "--timeout", "0.2")
-        self.assertEqual(stopped.returncode, 0, stopped.stderr)
-        self.assertFalse(self.running(snapshot["pid"]))
-        self.owner = None
+            env_file.write_text(json.dumps({key: "1"}))
+            snapshot = self.start("import time; time.sleep(300)", "--env-json", str(env_file))
+            actual = Path(f"/proc/{snapshot['pid']}/environ").read_bytes().split(b"\0")
+            self.assertIn((key + "=1").encode(), actual)
+            for proof in (snapshot, self.owner):
+                self.assertEqual(proof["environment"][key], "1")
+            captured = self.call("capture")
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            self.assertEqual(json.loads(self.evidence.read_text())["environment"][key], "1")
+            stopped = self.call("stop", "--timeout", "0.2")
+            self.assertEqual(stopped.returncode, 0, stopped.stderr)
+            self.assertFalse(self.running(snapshot["pid"]))
+            self.owner = None
+            self.record.unlink()
+
 
     def test_stop_reaps_owned_group_children_even_when_they_ignore_term(self):
         code = ("import subprocess,sys,time; "
