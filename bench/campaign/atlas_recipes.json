@@ -2,10 +2,8 @@
   "schema": 1,
   "campaign": "hopper-atlas-vs-vllm-2026-09",
   "note": "Atlas serve recipes for the campaign, one entry per (model_key, sku). Sourced from the campaign PRD section 6 (common flags and the per-model table) and the repo's own recipe fixtures under crates/spark-server/tests/fixtures/recipes/**.yaml; every flag name was checked against crates/spark-server/src/cli/serve_args.rs. A (model_key, sku) pair with no entry has no Atlas recipe and run_cell.sh exits 3 on it -- the PRD's reconstructed topologies (Qwen3-Next on 2xH100, GLM/Kimi/MiniMax/Qwen3.8 on Atlas at all) are absent on purpose rather than invented here.",
-
   "launcher": "scripts/start-node-ep.sh",
   "launcher_note": "The launcher owns --rank/--world-size/--ep-size/--tp-size/--gpu-ordinal/--port/--master-addr/--master-port/--no-tui, and adds --bind on rank 0 and --warmup-prompt from WARMUP_PROMPT. Those are therefore NOT in common_args: EXTRA_ARGS is appended verbatim to every rank and its header says not to put topology flags in it. The PRD section 6 common block lists --bind/--port/--no-tui/--warmup-prompt alongside the rest; this file splits them by owner so the same flag is never set twice from two places.",
-
   "launcher_env": {
     "BIND": "0.0.0.0",
     "PORT_BASE": "8888",
@@ -14,25 +12,37 @@
     "WARMUP_PROMPT": "bench/hopper_ab/warmup_1024.txt"
   },
   "launcher_env_note": "NCCL_PROFILE=default is the Hopper/Blackwell setting and emits no NCCL_* variable at all: the gb10-roce block pins a NIC that does not exist on an H100 box, disables NVLink SHARP on a machine that has NVLink, and forces Ring/Simple onto an intra-node transport (PRD section 6.2). BOOT_TIMEOUT_S 1800 is the PRD boot gate. WARMUP_PROMPT is the autotune-killer; the file does not exist in-tree yet, so run_cell.sh drops it with a loud warning and records warmup_prompt null in the artifact rather than silently serving a cold first request.",
-
   "common_args": [
-    "--request-timeout", "0",
-    "--gpu-memory-utilization", "0.90",
-    "--max-num-seqs", "128",
-    "--max-batch-size", "32",
-    "--enable-prefix-caching", "true",
-    "--scheduling-policy", "slai",
-    "--kv-cache-dtype", "fp8",
-    "--kv-high-precision-layers", "auto"
+    "--request-timeout",
+    "0",
+    "--gpu-memory-utilization",
+    "0.90",
+    "--max-num-seqs",
+    "128",
+    "--max-batch-size",
+    "32",
+    "--enable-prefix-caching",
+    "true",
+    "--scheduling-policy",
+    "slai",
+    "--kv-cache-dtype",
+    "fp8",
+    "--kv-high-precision-layers",
+    "auto"
   ],
   "common_args_source": "PRD section 6, 'Common flags for every cell (from the ladder38 Atlas leg, adapted)'.",
-
-  "think_off_args": ["--disable-thinking"],
+  "think_off_args": [
+    "--disable-thinking"
+  ],
   "think_off_source": "PRD section 6: 'Think-off rows add --disable-thinking'.",
-
-  "spec_args": ["--speculative", "--num-drafts", "3", "--mtp-quantization", "bf16"],
+  "spec_args": [
+    "--speculative",
+    "--num-drafts",
+    "3",
+    "--mtp-quantization",
+    "bf16"
+  ],
   "spec_args_source": "PRD section 6: 'Spec-on rows add --speculative --num-drafts 3 --mtp-quantization bf16 (K=4) and the vLLM leg must use num_speculative_tokens: 3'. num-drafts is therefore matched 1:1 against the vLLM recipe's num_speculative_tokens; an entry whose paired vLLM recipe renders a different K carries its own spec_args override.",
-
   "known_flag_prefixes": [
     "--disable-thinking",
     "--enable-prefix-caching",
@@ -54,7 +64,6 @@
     "--tool-call-parser"
   ],
   "known_flag_prefixes_note": "Frozen from this file's own contents at authoring time and cross-checked against the clap definitions in crates/spark-server/src/cli/serve_args.rs. Not re-derived from `entries` at load: a flag present in an entry but absent here was hand-edited in, which is exactly what the audit has to catch.",
-
   "entries": [
     {
       "model_key": "nemotron-3-nano-fp8",
@@ -64,8 +73,12 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "32768"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -83,8 +96,12 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "32768"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -102,8 +119,12 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "32768"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -121,8 +142,14 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
-      "overrides": {"--gpu-memory-utilization": "0.88"},
-      "extra_args": ["--max-seq-len", "8192"],
+      "recipe_max": true,
+      "overrides": {
+        "--gpu-memory-utilization": "0.88"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "8192"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": false,
@@ -131,7 +158,6 @@
       ],
       "notes": "Rehearsal row on the GB10 dev box. NOT pairable: the upstream vLLM recipe endpoint 404s for dgx_spark_gb10, so no control leg exists and a gb10 cell can never reach CERTIFIED. Quant is nvfp4 and max-seq-len 8192 because that is what the fixture pins; both differ from the scored Hopper rows."
     },
-
     {
       "model_key": "nemotron-3-super-fp8",
       "sku": "h100",
@@ -140,8 +166,16 @@
       "ngpus": 2,
       "ep_size": 2,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "65536", "--ssm-cache-slots", "0", "--tool-call-parser", "bare_json"],
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -160,8 +194,18 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
-      "overrides": {"--gpu-memory-utilization": "0.92"},
-      "extra_args": ["--max-seq-len", "65536", "--ssm-cache-slots", "0", "--tool-call-parser", "bare_json"],
+      "recipe_max": false,
+      "overrides": {
+        "--gpu-memory-utilization": "0.92"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -178,8 +222,18 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
-      "overrides": {"--gpu-memory-utilization": "0.92"},
-      "extra_args": ["--max-seq-len", "65536", "--ssm-cache-slots", "0", "--tool-call-parser", "bare_json"],
+      "recipe_max": false,
+      "overrides": {
+        "--gpu-memory-utilization": "0.92"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -187,7 +241,7 @@
         "PRD section 6.1 row 'Nemotron 3 Super FP8'",
         "PRD section 7 row 'Nemotron 3 Super FP8 | 1xB200'"
       ],
-      "notes": "The paired vLLM b200 recipe is TP1 on one GPU, so this is the one Super row where the topologies match."
+      "notes": "The paired vLLM b200 recipe is TP1 on one GPU, so this is the one Super row where the topologies match. recipe_max is false all the same: EP=2 is the layout the PRD calls validated, and one GPU is a step down from it."
     },
     {
       "model_key": "nemotron-3-super-fp8",
@@ -197,8 +251,18 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
-      "overrides": {"--gpu-memory-utilization": "0.92"},
-      "extra_args": ["--max-seq-len", "65536", "--ssm-cache-slots", "0", "--tool-call-parser", "bare_json"],
+      "recipe_max": false,
+      "overrides": {
+        "--gpu-memory-utilization": "0.92"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": false,
@@ -207,7 +271,6 @@
       ],
       "notes": "Rehearsal row on the GB10 dev box; not pairable (no vLLM gb10 profile)."
     },
-
     {
       "model_key": "qwen3.6-35b-a3b-fp8",
       "sku": "h100",
@@ -216,8 +279,14 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "65536", "--max-prefill-tokens", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768"
+      ],
       "spec_supported": true,
       "spec_args": null,
       "pairable": true,
@@ -235,8 +304,14 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "65536", "--max-prefill-tokens", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768"
+      ],
       "spec_supported": true,
       "spec_args": null,
       "pairable": true,
@@ -254,8 +329,14 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "65536", "--max-prefill-tokens", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768"
+      ],
       "spec_supported": true,
       "spec_args": null,
       "pairable": true,
@@ -273,8 +354,16 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
-      "overrides": {"--gpu-memory-utilization": "0.88"},
-      "extra_args": ["--max-seq-len", "65536", "--max-prefill-tokens", "32768"],
+      "recipe_max": true,
+      "overrides": {
+        "--gpu-memory-utilization": "0.88"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768"
+      ],
       "spec_supported": true,
       "spec_args": null,
       "pairable": false,
@@ -283,7 +372,6 @@
       ],
       "notes": "Rehearsal row on the GB10 dev box; not pairable (no vLLM gb10 profile). The fixture's own gpu_memory_utilization 0.88 is restored here because on GB10 it is a hard fit, not a preference."
     },
-
     {
       "model_key": "qwen3-next-80b-fp8",
       "sku": "h200",
@@ -292,10 +380,20 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "32768"
+      ],
       "spec_supported": true,
-      "spec_args": ["--speculative", "--num-drafts", "2", "--mtp-quantization", "bf16"],
+      "spec_args": [
+        "--speculative",
+        "--num-drafts",
+        "2",
+        "--mtp-quantization",
+        "bf16"
+      ],
       "pairable": true,
       "sources": [
         "PRD section 6.1 row 'Qwen3-Next-80B-A3B Instruct FP8'",
@@ -311,10 +409,20 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
+      "recipe_max": true,
       "overrides": {},
-      "extra_args": ["--max-seq-len", "32768"],
+      "extra_args": [
+        "--max-seq-len",
+        "32768"
+      ],
       "spec_supported": true,
-      "spec_args": ["--speculative", "--num-drafts", "2", "--mtp-quantization", "bf16"],
+      "spec_args": [
+        "--speculative",
+        "--num-drafts",
+        "2",
+        "--mtp-quantization",
+        "bf16"
+      ],
       "pairable": true,
       "sources": [
         "PRD section 6.1 row 'Qwen3-Next-80B-A3B Instruct FP8'"
@@ -329,17 +437,28 @@
       "ngpus": 1,
       "ep_size": 1,
       "tp_size": 1,
-      "overrides": {"--gpu-memory-utilization": "0.88"},
-      "extra_args": ["--max-seq-len", "8192"],
+      "recipe_max": true,
+      "overrides": {
+        "--gpu-memory-utilization": "0.88"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "8192"
+      ],
       "spec_supported": true,
-      "spec_args": ["--speculative", "--num-drafts", "2", "--mtp-quantization", "bf16"],
+      "spec_args": [
+        "--speculative",
+        "--num-drafts",
+        "2",
+        "--mtp-quantization",
+        "bf16"
+      ],
       "pairable": false,
       "sources": [
         "crates/spark-server/tests/fixtures/recipes/qwen3-next/qwen3-next-80b-a3b-nvfp4.yaml"
       ],
       "notes": "Rehearsal row on the GB10 dev box; not pairable (no vLLM gb10 profile)."
     },
-
     {
       "model_key": "deepseek-v4-flash",
       "sku": "h200",
@@ -348,8 +467,16 @@
       "ngpus": 8,
       "ep_size": 8,
       "tp_size": 1,
-      "overrides": {"--max-batch-size": "1"},
-      "extra_args": ["--max-seq-len", "32768", "--oom-guard-mb", "512"],
+      "recipe_max": true,
+      "overrides": {
+        "--max-batch-size": "1"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--oom-guard-mb",
+        "512"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
@@ -367,15 +494,24 @@
       "ngpus": 4,
       "ep_size": 4,
       "tp_size": 1,
-      "overrides": {"--max-batch-size": "1"},
-      "extra_args": ["--max-seq-len", "32768", "--oom-guard-mb", "512"],
+      "recipe_max": true,
+      "overrides": {
+        "--max-batch-size": "1"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--oom-guard-mb",
+        "512"
+      ],
       "spec_supported": false,
       "spec_args": null,
       "pairable": true,
       "sources": [
         "PRD section 6.1 row 'DeepSeek V4-Flash FP8' ('4xB200 EP=4')"
       ],
-      "notes": "The paired vLLM b200 recipe is TEP8 on eight GPUs, so topology.matched is false and recipe_max is false for this row -- a footnoted matched-topology cell. Spec off on both, as on H200."
+      "notes": "The paired vLLM b200 recipe is TEP8 on eight GPUs, so topology.matched is false for this row -- a footnoted matched-topology cell. recipe_max stays true: EP=4 on four B200s is what the PRD's own Atlas row renders, not a step down from it. Spec off on both, as on H200."
     }
-  ]
+  ],
+  "recipe_max_note": "recipe_max is true when the entry's topology is the maximum Atlas's own recipe renders for that SKU, and false when the campaign stepped down from it. It is independent of topology.matched, which is about the OTHER engine."
 }

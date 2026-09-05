@@ -64,7 +64,10 @@
       "required": ["gpu", "gpu_count", "hardware_id", "driver", "cuda",
                    "sm_clock_mhz", "clocks_locked", "nvidia_smi_q_sha256"],
       "properties": {
-        "gpu": {"type": "string"},
+        "gpu": {
+          "type": ["string", "null"],
+          "description": "Product name from `nvidia-smi -q`. Null when preflight could not read one -- a cell that failed before the box was described still has to produce an artifact."
+        },
         "gpu_count": {"type": "integer", "minimum": 1},
         "hardware_id": {"type": "string", "enum": ["h100", "h200", "b200", "gb10"]},
         "driver": {"type": ["string", "null"]},
@@ -135,7 +138,11 @@
       "description": "Client provenance, kept strictly separate from the engine's (SCHEMA-GAPS: the ladder's driver_sha256 is the CLIENT hash and has been mistaken for a server revision).",
       "properties": {
         "name": {"type": "string"},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA256 of the client source as executed. Null if it could not be read -- never a placeholder, which would be an invented hash."
+        },
         "isl_nominal": {
           "type": "integer", "minimum": 1,
           "description": "The --isl the client was given. make_prompt() builds isl-12 filler WORDS plus a nonce and a suffix, so this is nominal, not tokenizer-exact."
@@ -267,7 +274,7 @@
       "type": ["string", "null"],
       "enum": ["preflight", "serve", "boot", "coherency", "ladder", "teardown",
                "validate", "pair", null],
-      "description": "Null iff the verdict is CERTIFIED. Cross-check verdict_failing_stage."
+      "description": "The stage that did not complete. Null iff the verdict is CERTIFIED. A cell whose gates all passed but whose paired cell is not yet recorded names `pair`: it is unfinished, not broken. Cross-check verdict_failing_stage."
     },
     "notes": {"type": "string"}
   }
