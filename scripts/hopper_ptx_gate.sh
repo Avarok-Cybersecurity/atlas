@@ -418,6 +418,46 @@ def head(path):
             return l[:400]
     return lines[0][:400] if lines else ""
 
+# ptxas emits ONE `error   :` line per rejected entry function, and a .cu holds
+# many. Keeping only the first made a file with several rejected entries look
+# like one problem: a 22-file Failures table stood for 42 rejected entries, and
+# a reviewer sizing the work from the ledger under-counted it by half.
+ERROR_CAP = 64
+
+
+def error_lines(path):
+    """Every distinct line naming an error, rstripped and clipped to 400."""
+    if not os.path.exists(path):
+        return []
+    seen, out = set(), []
+    for l in open(path, errors="replace"):
+        l = l.rstrip()
+        if not l.strip() or "error" not in l.lower():
+            continue
+        l = l[:400]
+        # Distinct, not unique-by-position: the same entry function can be
+        # named by both stages, and a repeated line is one problem.
+        if l in seen:
+            continue
+        seen.add(l)
+        out.append(l)
+    return out
+
+
+def errors_of(err_path, vrb_path):
+    """(list, count) for one failing result.
+
+    Falls back from nvcc's output to ptxas's the way `head` does -- a ptxas
+    rejection leaves the nvcc file empty. The list is capped so one pathological
+    file cannot bloat the ledger; `count` is the total BEFORE the cap, which is
+    what `summary.rejected_entries` sums.
+    """
+    lines = error_lines(err_path) or error_lines(vrb_path)
+    n = len(lines)
+    if n > ERROR_CAP:
+        lines = lines[:ERROR_CAP] + [f"... {n - ERROR_CAP} more"]
+    return lines, n
+
 # ptxas -v reports per entry function; the target-wide numbers that matter are
 # the worst ones — the kernel that spills is the kernel that is slow.
 REG = re.compile(r"Used (\d+) registers")
@@ -436,13 +476,20 @@ for line in open(os.path.join(work, "map.tsv")):
     model, stem, key, src = line.rstrip("\n").split("\t")
     ptx_ok, ptxas_ok = res.get(key, (False, False))
     regs, spill = pressure(os.path.join(work, "vrb", key + ".txt"))
+    err_path = os.path.join(work, "err", key + ".txt")
+    vrb_path = os.path.join(work, "vrb", key + ".txt")
+    errors, error_count = ([], 0) if (ptx_ok and ptxas_ok) \
+        else errors_of(err_path, vrb_path)
     results.append({
         "file": src, "stem": stem, "model": model,
         "ptx_ok": ptx_ok, "ptxas_ok": ptxas_ok,
         "registers_max": regs, "spill_bytes": spill,
+        # Unchanged, and still the first error where there is one: consumers
+        # that read only this keep working. `errors` is the whole list.
         "error_head": "" if (ptx_ok and ptxas_ok)
-                      else head(os.path.join(work, "err", key + ".txt"))
-                           or head(os.path.join(work, "vrb", key + ".txt")),
+                      else head(err_path) or head(vrb_path),
+        "errors": errors,
+        "error_count": error_count,
     })
 results.sort(key=lambda r: (r["model"], r["stem"]))
 
@@ -452,6 +499,11 @@ for r in results:
     b["total"] += 1
     b["pass" if (r["ptx_ok"] and r["ptxas_ok"]) else "fail"] += 1
 failures = [r for r in results if not (r["ptx_ok"] and r["ptxas_ok"])]
+# Files and rejected entry functions are different counts, and the second is
+# the size of the work. They differ by more than rounding: 22 files, 42
+# rejected entries on the gb10 sm_121f run of 2026-09-05. Only ptxas-stage
+# failures count here: nvcc's error lines are compile diagnostics, not entries.
+rejected_entries = sum(r["error_count"] for r in failures if r["ptx_ok"])
 
 hw_flags_path = os.path.join(work, "hw_flags.txt")
 hw_flags = [l for l in open(hw_flags_path).read().split("\n") if l] \
@@ -476,6 +528,9 @@ ledger = {
         "total": len(results),
         "pass": len(results) - len(failures),
         "fail": len(failures),
+        # Entry functions ptxas refused, summed over the failing files. One
+        # file can hold several.
+        "rejected_entries": rejected_entries,
         "by_model": by_model,
     },
     "results": results,
@@ -497,7 +552,8 @@ if hw_flags:
 L.append(f"* self-test: known_good passed={ledger['selftest']['good_passed']}, "
          f"`{bad_fixture}` failed={ledger['selftest']['bad_failed']}")
 L.append(f"* **{ledger['summary']['pass']}/{ledger['summary']['total']} kernels compiled**"
-         f" ({ledger['summary']['fail']} failed)\n")
+         f" ({ledger['summary']['fail']} failed,"
+         f" {ledger['summary']['rejected_entries']} rejected entry function(s))\n")
 L.append("| model | kernels | pass | fail |")
 L.append("|---|---:|---:|---:|")
 for m, b in sorted(by_model.items()):
@@ -505,12 +561,16 @@ for m, b in sorted(by_model.items()):
 L.append("")
 if failures:
     L.append("## Failures\n")
-    L.append("| model | kernel | stage | first error |")
-    L.append("|---|---|---|---|")
+    # `errors` is the count for the FILE, which is not 1 per row: ptxas
+    # rejects entry functions, and a .cu holds many. The full list is in the
+    # JSON ledger under each result's `errors`.
+    L.append("| model | kernel | stage | errors | first error |")
+    L.append("|---|---|---|---:|---|")
     for r in failures:
         stage = "nvcc --ptx" if not r["ptx_ok"] else "ptxas"
         err = r["error_head"].replace("|", "\\|")
-        L.append(f"| {r['model']} | `{r['stem']}` | {stage} | `{err}` |")
+        L.append(f"| {r['model']} | `{r['stem']}` | {stage} | "
+                 f"{r['error_count']} | `{err}` |")
     L.append("")
 else:
     L.append("No failures: every kernel in this hardware set emitted PTX and "
@@ -531,7 +591,8 @@ L.append(f"Compilation is not correctness. Nothing here has run on {hw} "
 open(md, "w").write("\n".join(L))
 
 print(f"{ledger['summary']['pass']}/{ledger['summary']['total']} kernels compiled "
-      f"for {arch}; {ledger['summary']['fail']} failed")
+      f"for {arch}; {ledger['summary']['fail']} failed "
+      f"({ledger['summary']['rejected_entries']} rejected entry function(s))")
 print(f"ledger:  {out}")
 print(f"summary: {md}")
 sys.exit(1 if failures else 0)
