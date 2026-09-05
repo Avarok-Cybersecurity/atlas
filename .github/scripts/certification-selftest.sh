@@ -969,6 +969,91 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The PR classifier must never run on a diff that could not be computed
+# ---------------------------------------------------------------------------
+# `pr-categorize` builds the model's context from the changed paths, and the
+# ★ note on that step records why: when the paths were computed and never
+# read, "the classifier's entire input was attacker-authored prose -- titling
+# a decode-kernel PR 'docs: tidy a comment' was a complete bypass".
+#
+# The collection step reopened that bypass from the other end. `git diff ... >
+# changed.txt || true` truncates the file BEFORE git runs, so a failed diff
+# leaves it empty and the prompt reads "Changed paths (0 total)" -- a PR that
+# changes nothing, classified from its title and body, with the model's answer
+# appended to the journey ledger as evidence. The deterministic fallback
+# abstains too (`all_match` needs total > 0), so nothing catches it.
+echo "== the pr classifier refuses an uncomputable diff =="
+python3 - > "$TMP/diffstep.sh" <<'DFPY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml").read_text())
+for st in d["jobs"]["pr-categorize"]["steps"]:
+    if st.get("name") == "Collect the changed paths":
+        print(st["run"]); break
+DFPY
+if [ -s "$TMP/diffstep.sh" ]; then
+  mkdir -p "$TMP/gbin" "$TMP/grun"
+  cat > "$TMP/gbin/git" <<'GITSTUB'
+#!/usr/bin/env bash
+# `diff` answers per GIT_STUB_MODE; anything else is not this step's business.
+case "$1" in
+  diff)
+    case "${GIT_STUB_MODE:-ok}" in
+      # The real failure: a base sha that is no longer reachable. git writes
+      # nothing to stdout, so the redirect leaves an empty file behind.
+      fail) echo "fatal: bad object $2" >&2; exit 128 ;;
+      *)    printf 'kernels/gb10/x.cu\ncrates/spark-server/src/lib.rs\n' ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+GITSTUB
+  chmod +x "$TMP/gbin/git"
+  df_run() {  # $1 = step script, $2 = stub mode -> rc; step outputs in $TMP/gout
+    : > "$TMP/gout"
+    ( cd "$TMP/grun" && rm -f changed.txt histogram.txt sorted.txt paths.txt
+      PATH="$TMP/gbin:$PATH" GITHUB_OUTPUT="$TMP/gout" GIT_STUB_MODE="$2" \
+        BASE_SHA=aaaaaaa HEAD_SHA=bbbbbbb bash "$1" >"$TMP/gerr" 2>&1 )
+  }
+  df_run "$TMP/diffstep.sh" ok
+  if [ $? -eq 0 ] && grep -q '^count=2$' "$TMP/gout"; then
+    ok "a diff that CAN be computed is emitted with its real count"
+  else
+    bad "the step no longer works on a readable diff"
+    sed 's/^/       /' "$TMP/gerr" | head -3
+  fi
+  df_run "$TMP/diffstep.sh" fail
+  drc=$?
+  if [ "$drc" -ne 0 ]; then
+    ok "a diff that cannot be computed fails the step"
+  else
+    bad "a failed git diff was recorded as a PR that changes nothing ($(grep -m1 '^count=' "$TMP/gout"))"
+  fi
+  # The reason has to reach the run, not just the exit code: this job is
+  # advisory, so a bare non-zero with no annotation is a red X nobody can act
+  # on -- which is how it gets rerun-until-green instead of fixed.
+  if grep -q '::error title=Changed paths unavailable' "$TMP/gerr"; then
+    ok "the failure names itself in the run's annotations"
+  else
+    bad "the step failed silently; no annotation says why"
+  fi
+  # CONTROL: put the `|| true` back and watch the failure become "0 paths".
+  sed 's|^\( *\)if ! git diff --name-only "\$BASE_SHA" "\$HEAD_SHA" > changed.txt; then|\1git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt \|\| true\n\1if false; then|' \
+    "$TMP/diffstep.sh" > "$TMP/diffstep-bad.sh"
+  if cmp -s "$TMP/diffstep.sh" "$TMP/diffstep-bad.sh"; then
+    bad "control: the sabotage did not change the step -- it would measure nothing"
+  else
+    df_run "$TMP/diffstep-bad.sh" fail
+    if [ $? -eq 0 ] && grep -q '^count=0$' "$TMP/gout"; then
+      ok "control: with '|| true' restored, a failed diff emits count=0"
+    else
+      bad "control: the sabotage did not reproduce the fail-open defect"
+      sed 's/^/       /' "$TMP/gerr" | head -3
+    fi
+  fi
+else
+  bad "could not extract the changed-paths step"
+fi
+
+# ---------------------------------------------------------------------------
 # nginx add_header does not accumulate across contexts
 # ---------------------------------------------------------------------------
 # Three vhosts, one rule, three separate incidents -- each found by hand after
