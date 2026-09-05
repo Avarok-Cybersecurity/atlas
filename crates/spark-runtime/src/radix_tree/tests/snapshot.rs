@@ -406,4 +406,21 @@ fn test_ssm_snapshot_adapter_isolation_via_tree() {
     assert_eq!(m_a.matched_tokens, 32);
     assert_eq!(m_a.ssm_snapshot, Some(42));
     tree.release(&tokens, 16, A);
+
+    // Give B its OWN KV for the same tokens (disjoint radix root) so B's walk
+    // HITS. Without this, `lookup` short-circuits on `matched_tokens == 0` and
+    // never reaches the snapshot index — so `m_b.ssm_snapshot == None` above is
+    // proved by the tree's root isolation alone and says nothing about whether
+    // the snapshot KEY carries the adapter.
+    tree.insert(&tokens, &[30, 40], &[], 16, 0, B);
+    tree.release(&tokens, 16, B);
+    let m_b2 = tree.lookup(&tokens, 16, 0, B);
+    assert_eq!(m_b2.matched_tokens, 32, "B now has its own cached KV");
+    assert_eq!(m_b2.matched_blocks, vec![30, 40]);
+    assert_eq!(
+        m_b2.ssm_snapshot, None,
+        "A's SSM snapshot must not restore for B even on a B-side KV hit"
+    );
+    assert_eq!(m_b2.ssm_snapshot_tier_key, None);
+    tree.release(&tokens, 16, B);
 }
