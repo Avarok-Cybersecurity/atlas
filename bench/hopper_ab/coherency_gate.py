@@ -403,15 +403,50 @@ def check_think_leak(url, model, timeout, exchanges=None):
     return True, f"{len(text)} chars, no leak signals"
 
 
+# ── the complete-answer matcher ──
+#
+# A substring test cannot tell a number from the digits inside a larger one:
+# `"391" in "1391"` and `"391" in "3910"` are both true, so a reply stating
+# either was certified as 17*23. The same hole passed `Tokyoto` for `Tokyo`.
+# So the line is TOKENISED and the expected answer has to be a whole token.
+#
+# Numbers and words need different tokenisers, and the expected answer says
+# which: `1,391` is ONE number (a word tokeniser would split it into `1` and
+# `391` and let the near miss back in), while `rotaregirfer.` is one word with
+# a full stop attached. NUMBER accepts a digit-and-comma run with an optional
+# decimal tail; WORD accepts a run of alphanumerics, which drops the `**`,
+# `=`, commas and full stops a model wraps a stated answer in.
+NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+WORD = re.compile(r"[^\W_]+")
+
+
+def _answer_tokens(text, numeric):
+    if numeric:
+        return {m.group(0).replace(",", "") for m in NUMBER.finditer(text)}
+    return {m.group(0).lower() for m in WORD.finditer(text)}
+
+
+def states_answer(text, expect):
+    """Is `expect` a COMPLETE token of `text`, rather than a substring of one?"""
+    numeric = bool(NUMBER.fullmatch(expect.strip()))
+    want = expect.strip().replace(",", "") if numeric else expect.strip().lower()
+    return want in _answer_tokens(text, numeric)
+
+
 def judge_known_answer(text, expect):
     """`bench/agentic/coherence_check.py`'s judgement, plus the loop detector.
 
-    That script's rule, kept verbatim because changing it would make the two
-    probes disagree about the same reply: the expected value must appear in the
-    FIRST or LAST non-empty line -- a direct answer, or an explicit final
-    answer. `expect in out` once passed a reply that opened with "271" for
-    17*23 and only reached 391 inside its working; that is reported here as
-    WORKING-ONLY, separately, rather than silently passed or silently failed.
+    That script's rule, kept because changing it would make the two probes
+    disagree about the same reply: the expected value must appear in the FIRST
+    or LAST non-empty line -- a direct answer, or an explicit final answer.
+    `expect in out` once passed a reply that opened with "271" for 17*23 and
+    only reached 391 inside its working; that is reported here as WORKING-ONLY,
+    separately, rather than silently passed or silently failed.
+
+    What IS changed is "appear": `states_answer` requires a complete token, so
+    `1391`, `3910` and `Tokyoto` no longer answer a probe whose answers are
+    `391` and `Tokyo`, while `391.`, `**391**`, `= 391` and `rotaregirfer.`
+    still do.
 
     Returns (status, detail) where status is "OK", "WORKING-ONLY" or "FAIL".
     Only "OK" passes the gate; WORKING-ONLY is a distinct diagnosis, not a
@@ -420,9 +455,8 @@ def judge_known_answer(text, expect):
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "FAIL", "empty reply"
-    head, tail, want = lines[0].lower(), lines[-1].lower(), expect.lower()
-    stated = want in head or want in tail
-    buried = (not stated) and want in text.lower()
+    stated = states_answer(lines[0], expect) or states_answer(lines[-1], expect)
+    buried = (not stated) and states_answer(text, expect)
     # Garbled output is the aliasing signature even when the expected token
     # happens to appear, so the text checks come before the answer verdict.
     printable = sum(c.isprintable() or c.isspace() for c in text)
@@ -521,6 +555,18 @@ WRONG = {
     "Japan": "Kyoto\n\nKyoto was the imperial seat for centuries and remains the capital.",
     "refrigerator": "rotaregirf\n\nI dropped a letter on the way back through the word.",
 }
+# One near miss per red case in the review of this gate: a substring test
+# accepted 1391 and 3910 for a probe whose answer is 391, and Tokyoto for one
+# whose answer is Tokyo. Each entry replaces exactly ONE probe's reply; the
+# other two stay GOOD, so the gate has to fail on the answer rather than on
+# anything else about the exchange.
+NEAR_MISS = {
+    "answer-1391": ("17 * 23", "1391\n\nMultiplying 17 by 23 gives 1391 in my working."),
+    "answer-3910": ("17 * 23", "3910\n\nMultiplying 17 by 23 gives 3910 in my working."),
+    "answer-tokyoto": ("Japan", "Tokyoto\n\nTokyoto is the capital of Japan and the seat "
+                                "of its national government. It grew out of the castle town "
+                                "of Edo and now spreads around the head of its bay."),
+}
 BURIED = {
     "17 * 23": "Let me work through it.\n17 * 20 = 340 and 17 * 3 = 51, so the product is 391.\nThat is how the multiplication goes.",
     "Japan": "Let me think about the geography.\nThe seat of government moved to Tokyo in 1868.\nThat is the answer to the question.",
@@ -565,7 +611,11 @@ class H(BaseHTTPRequestHandler):
         elif any(key in prompt for key in GOOD):
             key = next(k for k in GOOD if k in prompt)
             table = {"wrong-answer": WRONG, "working-only": BURIED}.get(MODE, GOOD)
-            body = reply(table[key])
+            text = table[key]
+            near = NEAR_MISS.get(MODE)
+            if near and near[0] == key:
+                text = near[1]
+            body = reply(text)
         elif MODE == "leak":
             body = reply("<think>the user wants a definition</think> To measure a system.")
         else:
@@ -623,7 +673,7 @@ def selftest():
         stub = pathlib.Path(d) / "stub.py"
         stub.write_text(STUB)
         results = {}
-        for mode in ("clean", "leak", "missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200", "degenerate-primes", "length-capped", "wrong-answer", "working-only"):
+        for mode in ("clean", "leak", "missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200", "degenerate-primes", "length-capped", "wrong-answer", "working-only", "answer-1391", "answer-3910", "answer-tokyoto"):
             port = _free_port()
             proc = subprocess.Popen([sys.executable, str(stub), str(port), mode, str(FIXTURES)])
             try:
@@ -637,6 +687,7 @@ def selftest():
                 proc.wait(timeout=10)
 
     print(json.dumps(results, indent=2))
+    _assert_judgement()
     _assert_stub_results(results)
     # Validate the selftest's own exception sentinel against a known bad case.
     crashed = {**results, "clean": {"passed": True, "crashed": "known clean-path failure"}}
@@ -648,6 +699,34 @@ def selftest():
         raise AssertionError("a clean-stub crash must fail the selftest")
     print("SELFTEST OK: clean passes; every known-bad response -- including the recorded GB10 "
           "repetition loop -- and a clean-stub crash fail")
+
+
+# (reply, expected answer, verdict). The near misses are the review's red
+# cases; the OK rows are the formats a model actually uses to state a final
+# answer, which the completeness rule must not start rejecting.
+JUDGEMENT_CASES = (
+    ("1391\n\nMultiplying 17 by 23 gives 1391.", "391", "FAIL"),
+    ("3910\n\nMultiplying 17 by 23 gives 3910.", "391", "FAIL"),
+    ("1,391\n\nMultiplying 17 by 23 gives 1,391.", "391", "FAIL"),
+    ("3.91\n\nMultiplying 17 by 23 gives 3.91.", "391", "FAIL"),
+    ("Tokyoto\n\nTokyoto is the capital.", "Tokyo", "FAIL"),
+    ("rotaregirferx\n\nThat is the word backwards.", "rotaregirfer", "FAIL"),
+    ("391.\n\nThat is 17 * 23.", "391", "OK"),
+    ("**391**\n\nThat is 17 * 23.", "391", "OK"),
+    ("The product is\n= 391", "391", "OK"),
+    ("391, as it happens.\n\nThat is 17 * 23.", "391", "OK"),
+    ("The word backwards is\nrotaregirfer.", "rotaregirfer", "OK"),
+    ("Tokyo, on Honshu.\n\nIt is the seat of government.", "Tokyo", "OK"),
+    ("tokyo\n\nIt is the seat of government.", "Tokyo", "OK"),
+)
+
+
+def _assert_judgement():
+    """`judge_known_answer` on the formats, without a server in the way."""
+    wrong = [f"{text!r} for {expect!r}: expected {want}, got {judge_known_answer(text, expect)[0]}"
+             for text, expect, want in JUDGEMENT_CASES
+             if judge_known_answer(text, expect)[0] != want]
+    assert not wrong, "\n".join(wrong)
 
 
 def _assert_stub_results(results):
@@ -698,7 +777,9 @@ def _assert_stub_results(results):
     # determinism check, looking straight at it, certified it.
     degenerate_text = (FIXTURES / "degenerate_primes.txt").read_text().rstrip("\n")
     isolated = {"degenerate-primes": "determinism_ok", "length-capped": "determinism_ok",
-                "wrong-answer": "known_answer_ok", "working-only": "known_answer_ok"}
+                "wrong-answer": "known_answer_ok", "working-only": "known_answer_ok",
+                "answer-1391": "known_answer_ok", "answer-3910": "known_answer_ok",
+                "answer-tokyoto": "known_answer_ok"}
     for mode, key in isolated.items():
         result = results[mode]
         if result[key] or result["passed"]:
@@ -732,6 +813,14 @@ def _assert_stub_results(results):
             failures.append(f"the clean stub must report {expect} OK: {clean['details']['known_answer_ok']}")
     if "FAIL" not in results["wrong-answer"]["details"]["known_answer_ok"]:
         failures.append(f"a wrong known answer must be FAIL: {results['wrong-answer']['details']['known_answer_ok']}")
+    # The three near misses. Each must be FAIL, not WORKING-ONLY: 1391 does not
+    # contain the answer anywhere, it merely contains its digits.
+    for mode, expect in (("answer-1391", "391"), ("answer-3910", "391"),
+                         ("answer-tokyoto", "Tokyo")):
+        detail = results[mode]["details"]["known_answer_ok"]
+        if f"{expect!r} FAIL" not in detail:
+            failures.append(f"{mode}: {expect} must be FAIL, got: {detail}")
+
     working_only = results["working-only"]["details"]["known_answer_ok"]
     if "WORKING-ONLY" not in working_only:
         failures.append(f"an answer reached only in the working must be WORKING-ONLY: {working_only}")
