@@ -114,7 +114,7 @@ jobs:
           set -euo pipefail
           cargo run --quiet -p atlas-plugin --bin pr_telemetry -- . < facts.json > body.md
           # The body is the artifact the next job posts. Also echoed into the
-          # run summary so the view is readable even when no tracking issue is
+          # run summary so the view is readable even when no Discussion is
           # configured and nothing gets posted anywhere.
           cat body.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -132,43 +132,31 @@ jobs:
     runs-on: ubuntu-latest
     # The ONLY job with a write scope, and it holds exactly one. Rendering runs
     # read-only, so a bug in the analysis has nowhere to write even in principle.
+    #
+    # `discussions`, not `issues`: this report is a standing document that
+    # rewrites itself every four hours, and an issue nobody ever closes reads as
+    # a task left unfinished. The thread it maintains is
+    # https://github.com/Avarok-Cybersecurity/atlas/discussions/619 — the old
+    # issue #434 carries a pointer to it.
     permissions:
-      issues: write
+      discussions: write
     steps:
+      # Only the composite action is needed, so only the composite action is
+      # fetched — the publish job never reads the tree it is reporting on.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/actions/upsert-discussion-comment
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-telemetry-body
 
-      - name: Upsert the comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          # PCND: no default issue number. Unset means "not configured yet",
-          # and the step says so and exits 0 rather than guessing an issue and
-          # commenting on something arbitrary.
-          ISSUE: ${{ vars.PR_TELEMETRY_ISSUE }}
-          MARKER: "<!-- atlas-pr-telemetry:start -->"
-        run: |
-          set -euo pipefail
-          if [ -z "${ISSUE:-}" ]; then
-            echo "PR_TELEMETRY_ISSUE is not set — rendered the view but posted nothing."
-            echo "Set the repository variable to the tracking issue number to enable it."
-            echo "The body is attached to this run as the pr-telemetry-body artifact."
-            exit 0
-          fi
-
-          # Find OUR previous comment by its marker rather than by a stored id,
-          # so there is no state to keep in sync and a deleted comment simply
-          # results in a new one.
-          existing=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-            --jq "[.[] | select(.body | contains(\"$MARKER\"))] | .[0].id // empty")
-
-          if [ -n "$existing" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$existing" \
-              -F body=@body.md > /dev/null
-            echo "updated comment $existing"
-          else
-            gh api -X POST "repos/$REPO/issues/$ISSUE/comments" \
-              -F body=@body.md > /dev/null
-            echo "created a new comment"
-          fi
+      - uses: ./.github/actions/upsert-discussion-comment
+        with:
+          # PCND: no default number. Unset means "not configured yet", and the
+          # action says so and exits 0 rather than commenting somewhere arbitrary.
+          discussion-number: ${{ vars.PR_TELEMETRY_DISCUSSION }}
+          # Must match telemetry::MARKER_START, which is what the renderer emits.
+          marker: "<!-- atlas-pr-telemetry:start -->"
+          body-file: body.md
+          token: ${{ github.token }}
