@@ -52,6 +52,35 @@ fn test_partial_match() {
 
     assert_eq!(m.matched_tokens, 32);
     assert_eq!(m.matched_blocks, vec![10, 20]);
+    tree.release(&tokens_b, 16, 0);
+
+    // The match must stop at the DIVERGENCE, not merely somewhere before the
+    // end of the request: the assertions above are equally satisfied by a walk
+    // that stops one block short of the deepest cached node, because block 3
+    // was never cached. Cache a third block under one continuation, then ask
+    // for a different one.
+    let mut tokens_c: Vec<u32> = (0..32).collect();
+    tokens_c.extend(200..216);
+    tree.insert(&tokens_c, &[10, 20, 30], &[], 16, 0, 0);
+    tree.release(&tokens_c, 16, 0);
+
+    let deep = tree.lookup(&tokens_c, 16, 0, 0);
+    assert_eq!(
+        deep.matched_tokens, 48,
+        "the deepest cached block must match"
+    );
+    assert_eq!(deep.matched_blocks, vec![10, 20, 30]);
+    tree.release(&tokens_c, 16, 0);
+
+    let mut tokens_d: Vec<u32> = (0..32).collect();
+    tokens_d.extend(700..716);
+    let diverged = tree.lookup(&tokens_d, 16, 0, 0);
+    assert_eq!(
+        diverged.matched_tokens, 32,
+        "the match stops at the divergent block, not before it"
+    );
+    assert_eq!(diverged.matched_blocks, vec![10, 20]);
+    tree.release(&tokens_d, 16, 0);
 }
 
 #[test]
