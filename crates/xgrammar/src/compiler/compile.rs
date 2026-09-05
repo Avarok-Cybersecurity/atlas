@@ -38,9 +38,8 @@ use super::rule_cache::RuleLevelCache;
 /// `GrammarCompiler` entry points guarantee this.
 ///
 /// Adaptive token masks are NOT computed here — they are compiled
-/// lazily on first matcher lookup (XGrammar-2 JIT). `_max_threads` is
-/// retained for API parity but is now unused: there is no eager
-/// per-state mask loop left to parallelize.
+/// lazily on first matcher lookup (XGrammar-2 JIT). `max_threads` is
+/// retained on the result to bound explicit `compile_top_k_masks` prewarming.
 ///
 /// `rule_cache` is the optional cross-grammar [`RuleLevelCache`] (passed
 /// from the [`super::GrammarCompiler`] so it is shared across every
@@ -49,7 +48,7 @@ use super::rule_cache::RuleLevelCache;
 pub(super) fn compile_optimized_grammar(
     mut grammar: GrammarData,
     tokenizer_info: &TokenizerInfo,
-    _max_threads: usize,
+    max_threads: usize,
     rule_cache: Option<RuleLevelCache>,
 ) -> CompiledGrammar {
     debug_assert!(
@@ -64,6 +63,7 @@ pub(super) fn compile_optimized_grammar(
     if tokenizer_info.vocab_size() == 0 {
         let decomposition = decompose_static_regions(&grammar);
         return CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
+            prewarm_max_threads: max_threads,
             grammar: Arc::new(grammar),
             tokenizer_info: tokenizer_info.clone(),
             mask_cache: Mutex::new(AHashMap::new()),
@@ -101,6 +101,7 @@ pub(super) fn compile_optimized_grammar(
     // The mask cache starts empty and is populated lazily; on a miss the
     // lazy path consults `rule_cache` before recomputing.
     CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
+        prewarm_max_threads: max_threads,
         grammar: Arc::new(grammar),
         tokenizer_info: tokenizer_info.clone(),
         mask_cache: Mutex::new(AHashMap::new()),

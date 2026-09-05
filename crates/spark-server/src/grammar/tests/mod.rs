@@ -9,6 +9,7 @@ mod engine_state;
 mod gemma4_required;
 mod minimax;
 mod misc;
+mod native_prewarm;
 mod parallel_calls;
 mod param_key_constraint;
 mod poolside;

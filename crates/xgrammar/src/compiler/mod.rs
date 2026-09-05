@@ -68,6 +68,7 @@ mod decompose;
 mod grammar_cache;
 mod mask;
 mod mask_gen;
+mod prewarm;
 mod rule_cache;
 
 pub use coalesce::{Forced, analyze_bitmask};
