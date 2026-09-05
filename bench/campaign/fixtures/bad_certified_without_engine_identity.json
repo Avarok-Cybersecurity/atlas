@@ -12,7 +12,7 @@
   "engine_version": {
     "git_sha": "e3fb473f8662d1e62a74dc9762877caf514af359",
     "image_digest": null,
-    "binary_sha256": "9f2b1c0a7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f10",
+    "binary_sha256": null,
     "vllm_version": null
   },
   "harness": {
@@ -148,7 +148,8 @@
     "ttft_p99_ms": 941.0,
     "tpot_p50_ms": 21.4,
     "e2e_p50_s": 6.09,
-    "vacuous": false
+    "vacuous": false,
+    "ladder_json_path": "out/ladder.json"
   },
   "ptx_gate_receipt_sha256": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
   "ptx_gate_not_applicable_reason": null,

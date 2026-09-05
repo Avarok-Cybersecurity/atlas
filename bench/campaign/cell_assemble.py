@@ -20,6 +20,12 @@ get misread:
     floor, request errors, and throughput spread -- are conditions the ladder
     reports while exiting 0, and a paired artifact is only a pair if it is the
     same cell on the other engine within 24 h. See gate_blockers/pair_check.
+  * engine_version is the ENGINE's identity and harness.git_sha is this
+    checkout's. They were one field, and the harness SHA was written into it
+    for either engine -- so an artifact named a revision nothing had verified
+    while the digest of the image that ran and the hash of the binary that ran
+    were both null. What run_cell can verify goes in engine_version; what it
+    merely knows about itself goes in harness.
   * isl_measured_p50 is filled in ONLY when every rep observed a single prompt
     length. The ladder stores a sorted SET of prompt_tokens per rep, so
     multiplicities are gone and a median over the union would be a number with
@@ -329,7 +335,13 @@ def main():
     ap.add_argument("--serve-argv")
     ap.add_argument("--serve-env")
     ap.add_argument("--nvidia-smi-q")
-    ap.add_argument("--git-sha")
+    ap.add_argument("--git-sha", help="the ENGINE's own revision, when something "
+                                      "verified it (an image's revision label, a "
+                                      "binary that prints one) -- never this "
+                                      "checkout's HEAD")
+    ap.add_argument("--harness-git-sha", help="the campaign checkout that drove the "
+                                             "cell; provenance for the harness, not "
+                                             "for the engine")
     ap.add_argument("--binary")
     ap.add_argument("--image-digest")
     ap.add_argument("--vllm-version")
@@ -459,6 +471,11 @@ def main():
             "binary_sha256": sha256_file(args.binary),
             "vllm_version": args.vllm_version or None,
         },
+        # Separate from engine_version on purpose: this is the checkout that
+        # RAN the cell, and it says nothing about which engine build served
+        # the requests. The ladder client's hash is not repeated here -- it is
+        # client.sha256, its single source.
+        "harness": {"git_sha": args.harness_git_sha or None},
         "hardware": {
             "gpu": smi["gpu"],
             "gpu_count": world,

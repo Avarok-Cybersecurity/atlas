@@ -79,6 +79,11 @@
 #       recoverable, and the query that reconciles it carries the exact name
 #       AND this launch's label -- a container of another run wearing that
 #       name is untouched.
+#   (p) engine_version is the ENGINE's identity. The checkout SHA was passed
+#       as --git-sha for either engine and a digest was captured only for
+#       vLLM, so an Atlas container cell claimed the campaign's revision with
+#       neither a digest nor a binary hash -- and certified. Each engine now
+#       records what actually ran, and the checkout SHA is `harness`.
 #
 # Usage: bash bench/campaign/campaign_test.sh
 set -uo pipefail
@@ -294,7 +299,7 @@ python3 "$HERE/cell_assemble.py" --engine atlas --model-key nemotron-3-super-fp8
   --boot-json "$HERE/fixtures/stub_boot.json" \
   --coherency-json "$HERE/fixtures/stub_coherency.json" \
   --ladder-json "$HERE/fixtures/stub_ladder_c16.json" \
-  --git-sha "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo 0000000)" \
+  --harness-git-sha "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo 0000000)" \
   >/dev/null 2>&1 || fail h "cell_assemble failed on the stub stage outputs"
 python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
   || fail h "the assembled artifact does not validate:
@@ -336,6 +341,10 @@ ok h "a boot-gate failure still writes a VALID artifact, verdict NO-GO"
 # ── (k) CERTIFIED comes from the gates and from a real pair ─────────────────
 # One assemble helper: everything is the all-green cell except what a case
 # overrides, so each red is exactly one changed input.
+# A stand-in for the engine binary the cell would have run: a CERTIFIED cell
+# has to identify the build that produced its numbers, and for a local-binary
+# Atlas cell that identity is the hash of the file that ran.
+printf 'not really the spark binary\n' > "$tmp/fake-spark"
 k_assemble() {  # k_assemble OUT [extra cell_assemble args...]
   local out="$1"; shift
   python3 "$HERE/cell_assemble.py" --engine atlas --model-key nemotron-3-super-fp8 \
@@ -347,6 +356,7 @@ k_assemble() {  # k_assemble OUT [extra cell_assemble args...]
     --boot-json "${K_BOOT:-$HERE/fixtures/stub_boot.json}" \
     --coherency-json "${K_COH:-$HERE/fixtures/stub_coherency.json}" \
     --ladder-json "${K_LADDER:-$HERE/fixtures/stub_ladder_c16.json}" \
+    --binary "$tmp/fake-spark" \
     "$@" >/dev/null 2>&1
 }
 k_verdict() {
@@ -505,14 +515,30 @@ case "${1:-}" in
     done < "$running"
     ;;
   inspect)
-    # Only a name this stub created exists. The launcher asks before it
-    # creates anything, and an answer of "yes" is a REFUSAL there.
-    for a in "$@"; do name="$a"; done
-    { [ -n "$running" ] && [ -f "$running" ]; } || exit 1
-    while read -r cid lab nm; do
-      if [ "$nm" = "$name" ]; then echo "true"; exit 0; fi
-    done < "$running"
-    exit 1
+    # Three questions share this verb: does a container name exist (the
+    # launcher's pre-create probe, where "yes" is a REFUSAL), what digest the
+    # image that ran has, and what revision or version that image declares.
+    # The go template says which one is being asked.
+    fmt=""; target=""; prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--format" ]; then fmt="$a"; fi
+      prev="$a"; target="$a"
+    done
+    case "$fmt" in
+      *RepoDigests*)
+        [ -n "${DOCKER_FAKE_DIGEST:-}" ] || exit 1
+        echo "$target@$DOCKER_FAKE_DIGEST"
+        ;;
+      *image.revision*) echo "${DOCKER_FAKE_REVISION:-<no value>}" ;;
+      *image.version*) echo "${DOCKER_FAKE_IMAGE_VERSION:-<no value>}" ;;
+      *)
+        { [ -n "$running" ] && [ -f "$running" ]; } || exit 1
+        while read -r cid lab nm; do
+          if [ "$nm" = "$target" ]; then echo "true"; exit 0; fi
+        done < "$running"
+        exit 1
+        ;;
+    esac
     ;;
   stop|rm)
     { [ -n "$running" ] && [ -f "$running" ]; } || exit 0
@@ -924,8 +950,13 @@ ok n "the interrupted atlas cell still writes an artifact that validates"
 atlas_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
 ACID="1111111111111111111111111111111111111111111111111111111111111111"
 DECOY_CID="2222222222222222222222222222222222222222222222222222222222222222"
+# What the image itself says it is, read back by (p) below: the digest
+# `docker inspect` reports for it, and the revision label it carries.
+ADIGEST="sha256:$(printf 'c%.0s' $(seq 64))"
+AREV="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 : > "$DOCKER_CALLS"; : > "$DOCKER_RUNNING"
 DOCKER_FAKE_CID="$ACID" DOCKER_RUN_BLOCK_S=60 PATH="$tmp/bin:$PATH" \
+  DOCKER_FAKE_DIGEST="$ADIGEST" DOCKER_FAKE_REVISION="$AREV" \
   IMAGE="avarok/atlas-fake:campaign-test" ATLAS_PORT="$atlas_port" \
   bash "$RUN" --engine atlas --model nemotron-3-nano-fp8 --sku h100 \
   --workload lat --concurrency 1 --spec off --think off \
@@ -983,6 +1014,57 @@ case "$stage_name" in
   *) fail o "a cell killed around its create was killed at serve or boot, got $stage_name" ;;
 esac
 ok o "the artifact is a valid NO-GO at '$stage_name'"
+
+# ── (p) engine_version identifies the ENGINE, not the harness checkout ──────
+# The reviewer's second finding: run_cell passed `git rev-parse HEAD` of this
+# checkout as --git-sha for either engine and captured a digest only for vLLM,
+# so an Atlas container cell reported the campaign's revision with
+# image_digest=null and binary_sha256=null -- and validated as CERTIFIED. What
+# an artifact has to name is the build that actually served the requests: the
+# digest of the image that ran and the revision that image declares, or the
+# hash of the binary that ran. The checkout SHA is harness provenance, and it
+# now says so.
+harness_sha="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+
+atlas_art="$tmp/creating-atlas/artifact.json"
+python3 - "$atlas_art" "$ADIGEST" "$AREV" "$harness_sha" <<'PY' || fail p "the Atlas container cell did not record the engine that ran: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["engine_version"], d.get("harness"))' "$atlas_art")"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+digest, rev, harness = sys.argv[2], sys.argv[3], sys.argv[4]
+ev = doc["engine_version"]
+assert ev["image_digest"] == digest, ev
+assert ev["git_sha"] == rev, ev
+assert ev["git_sha"] != harness, ev
+assert ev["binary_sha256"] is None, ev
+assert doc["harness"]["git_sha"] == (harness or None), (doc["harness"], harness)
+PY
+ok p "an Atlas container cell records the image's digest and revision, not the checkout"
+
+local_art="$tmp/live/artifact.json"
+python3 - "$local_art" "$tmp/stub-spark-alive" "$harness_sha" <<'PY' || fail p "the Atlas local-binary cell did not record the binary that ran: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["engine_version"], d.get("harness"))' "$local_art")"
+import hashlib, json, sys
+doc = json.load(open(sys.argv[1]))
+ev = doc["engine_version"]
+assert ev["binary_sha256"] == hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest(), ev
+# `spark --version` prints CARGO_PKG_VERSION and nothing else
+# (crates/spark-server/src/cli.rs), so there is no engine revision to record.
+assert ev["git_sha"] is None, ev
+assert ev["image_digest"] is None, ev
+assert doc["harness"]["git_sha"] == (sys.argv[3] or None), doc["harness"]
+PY
+ok p "an Atlas local-binary cell hashes the binary it ran and claims no revision"
+
+vllm_art="$tmp/creating/artifact.json"
+python3 - "$vllm_art" "$DIGEST" "$harness_sha" <<'PY' || fail p "the vLLM cell's provenance changed: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["engine_version"], d.get("harness"))' "$vllm_art")"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+ev = doc["engine_version"]
+assert ev["image_digest"] == sys.argv[2], ev
+assert ev["git_sha"] is None, ev
+assert ev["binary_sha256"] is None, ev
+assert doc["harness"]["git_sha"] == (sys.argv[3] or None), doc["harness"]
+PY
+ok p "the vLLM cell keeps the digest it was pinned to and claims no engine revision"
 
 # ── (i) lints ────────────────────────────────────────────────────────────────
 if command -v shellcheck >/dev/null 2>&1; then

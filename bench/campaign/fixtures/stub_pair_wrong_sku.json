@@ -15,6 +15,9 @@
     "binary_sha256": null,
     "vllm_version": "0.11.2"
   },
+  "harness": {
+    "git_sha": "e3fb473f8662d1e62a74dc9762877caf514af359"
+  },
   "hardware": {
     "gpu": "NVIDIA H100",
     "gpu_count": 1,

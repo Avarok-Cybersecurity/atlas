@@ -10,10 +10,13 @@
     "quant": "fp8"
   },
   "engine_version": {
-    "git_sha": "e3fb473f8662d1e62a74dc9762877caf514af359",
+    "git_sha": null,
     "image_digest": null,
     "binary_sha256": "9f2b1c0a7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f10",
     "vllm_version": null
+  },
+  "harness": {
+    "git_sha": "e3fb473f8662d1e62a74dc9762877caf514af359"
   },
   "hardware": {
     "gpu": "NVIDIA H200",

@@ -241,6 +241,27 @@ def _certified_needs_gate_evidence(doc, errors):
                       f"CERTIFIED, got {pair.get('within_24h')!r}")
 
 
+def _certified_needs_engine_identity(doc, errors):
+    """A CERTIFIED cell has to say WHICH engine build produced its numbers.
+
+    `git_sha` used to be filled in with the CAMPAIGN checkout's HEAD for either
+    engine, so an artifact could name a revision nothing had verified while the
+    two fields that are actually verifiable -- the digest of the image that ran
+    and the hash of the binary that ran -- were both null, and still certify.
+    A revision that was read off the harness is not evidence about the engine,
+    so CERTIFIED requires one of the two that is.
+    """
+    if doc.get("verdict") != "CERTIFIED":
+        return
+    ev = doc.get("engine_version") if isinstance(doc.get("engine_version"), dict) else {}
+    if not isinstance(ev.get("image_digest"), str) and not isinstance(
+            ev.get("binary_sha256"), str):
+        errors.append("$.engine_version.image_digest: a CERTIFIED cell identifies the "
+                      "engine that produced it -- image_digest (container) or "
+                      "binary_sha256 (local binary) must be non-null; a harness "
+                      "checkout SHA is not the engine's identity")
+
+
 CROSS_CHECKS = {
     "ptx_receipt_or_reason": _ptx_receipt_or_reason,
     "world_size_equals_gpu_count": _world_size_equals_gpu_count,
@@ -248,6 +269,7 @@ CROSS_CHECKS = {
     "verdict_failing_stage": _verdict_failing_stage,
     "ladder_cannot_pool": _ladder_cannot_pool,
     "certified_needs_gate_evidence": _certified_needs_gate_evidence,
+    "certified_needs_engine_identity": _certified_needs_engine_identity,
 }
 
 
@@ -280,6 +302,7 @@ BAD_FIXTURES = {
     "bad_percentile_method_missing.json": "$.metrics.percentile_method",
     "bad_ladder_claims_pooled.json": "$.metrics.percentile_method",
     "bad_certified_with_failing_stage.json": "$.failing_stage",
+    "bad_certified_without_engine_identity.json": "$.engine_version.image_digest",
 }
 
 

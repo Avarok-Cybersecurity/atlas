@@ -162,6 +162,12 @@ d=json.load(open(sys.argv[1]))
 print(next(e["hf_id"] for e in d["entries"]
            if e["model_key"]==sys.argv[2] and e["sku"]==sys.argv[3]))' \
     "$VLLM_RECIPES" "$MODEL" "$SKU")"
+  VLLM_IMAGE_NAME="$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(next(e["image"] for e in d["entries"]
+           if e["model_key"]==sys.argv[2] and e["sku"]==sys.argv[3]))' \
+    "$VLLM_RECIPES" "$MODEL" "$SKU")"
   PORT="${VLLM_PORT:-8000}"
 fi
 URL="http://127.0.0.1:$PORT"
@@ -257,7 +263,19 @@ SMI_Q="$OUT/nvidia-smi-q.txt"
 BOOT_JSON="$OUT/boot.json"
 COH_JSON="$OUT/coherency.json"
 LADDER_JSON="$OUT/ladder.json"
-GIT_SHA=""
+# THIS CHECKOUT, and nothing about the engine. `git rev-parse HEAD` here
+# describes run_cell.sh, the assembler and the recipes -- the harness. It used
+# to be passed as engine_version.git_sha for either engine, which is how an
+# artifact came to name a revision nothing had verified while the digest of the
+# image that ran and the hash of the binary that ran were both null. It is
+# harness provenance, and the engine's identity is read from the engine below.
+HARNESS_GIT_SHA=""
+# Filled in by capture_engine_identity, from what actually served the requests.
+ENGINE_GIT_SHA=""
+ENGINE_IMAGE_DIGEST=""
+ENGINE_BINARY=""
+ENGINE_VLLM_VERSION=""
+IDENTITY_CAPTURED=0
 
 # ── the finalizer: the ONE way out ───────────────────────────────────────────
 # Everything this invocation created is released here and nowhere else, so the
@@ -413,6 +431,69 @@ teardown_owned() {
   done
 }
 
+# ── engine identity: what served the requests, asked of the engine ──────────
+# One `docker inspect` of the image that ran, or one hash of the binary that
+# ran. Run once, from the finalizer, because that is the moment the answer is
+# available on every path: a container image is local by the time a create has
+# been attempted, and a cell that was interrupted still has to say what it was
+# running. Every lookup is best-effort -- no daemon, no image, no label all
+# leave the field null, which is the schema's "not measured".
+docker_label() {  # docker_label REF TEMPLATE -> the value, or nothing
+  local out
+  out="$("${DOCKER:-docker}" inspect --format "$2" "$1" 2>/dev/null || true)"
+  case "$out" in
+    ""|"<no value>"|"<nil>") ;;
+    *) printf '%s\n' "$out" ;;
+  esac
+}
+
+capture_engine_identity() {
+  [ "$IDENTITY_CAPTURED" = "1" ] && return 0
+  IDENTITY_CAPTURED=1
+  [ "$DRY_RUN" = "1" ] && return 0
+
+  local ref="" digest="" rev=""
+  if [ "$ENGINE" = "atlas" ] && [ -z "${IMAGE:-}" ]; then
+    # The local binary. `spark --version` prints ATLAS_VERSION, which is
+    # env!("CARGO_PKG_VERSION") and carries no revision
+    # (crates/spark-server/src/cli.rs), so the hash of the file that ran is the
+    # only identity there is to record -- and git_sha stays null rather than
+    # being filled in with something that describes a different artefact.
+    ENGINE_BINARY="${SPARK_BIN:-./target/release/spark}"
+    [ -f "$ENGINE_BINARY" ] || ENGINE_BINARY=""
+    return 0
+  fi
+
+  if [ "$ENGINE" = "atlas" ]; then
+    ref="$IMAGE"
+  else
+    # vLLM's identity is its digest, and the digest is PINNED by the operator:
+    # vllm_control.sh refuses to run without VLLM_IMAGE_DIGEST and builds the
+    # reference as <repo>@<digest>, so what ran is what that names.
+    ENGINE_IMAGE_DIGEST="${VLLM_IMAGE_DIGEST:-}"
+    ref="${VLLM_IMAGE:-${VLLM_IMAGE_NAME:-}}"
+    [ -n "$ref" ] || return 0
+    ENGINE_VLLM_VERSION="$(docker_label "$ref" '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+    return 0
+  fi
+
+  # RepoDigests reads back as <repo>@sha256:...; only the sha256 half is the
+  # image's identity, and a tag-only image (never pushed, or built locally) has
+  # no digest at all.
+  digest="$(docker_label "$ref" '{{index .RepoDigests 0}}')"
+  digest="${digest##*@}"
+  case "$digest" in
+    sha256:*) ENGINE_IMAGE_DIGEST="$digest" ;;
+  esac
+  # The revision the IMAGE declares. An image built without the label says
+  # nothing, and nothing is what gets recorded.
+  rev="$(docker_label "$ref" '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+  if printf '%s' "$rev" | grep -Eq '^[0-9a-f]{7,40}$'; then
+    ENGINE_GIT_SHA="$rev"
+  fi
+  return 0
+}
+
 # Built at call time, not once: the failing stage and the interruption note are
 # only known when the cell is over, however it got there.
 build_assemble() {
@@ -424,8 +505,11 @@ build_assemble() {
     --vllm-recipes "$VLLM_RECIPES" --client "$LADDER"
     --serve-argv "$SERVE_ARGV" --serve-env "$SERVE_ENV" --nvidia-smi-q "$SMI_Q"
     --boot-json "$BOOT_JSON" --coherency-json "$COH_JSON" --ladder-json "$LADDER_JSON" )
-  [ -n "$GIT_SHA" ] && ASSEMBLE+=( --git-sha "$GIT_SHA" )
-  [ -n "${VLLM_IMAGE_DIGEST:-}" ] && [ "$ENGINE" = "vllm" ] && ASSEMBLE+=( --image-digest "$VLLM_IMAGE_DIGEST" )
+  [ -n "$HARNESS_GIT_SHA" ] && ASSEMBLE+=( --harness-git-sha "$HARNESS_GIT_SHA" )
+  [ -n "$ENGINE_GIT_SHA" ] && ASSEMBLE+=( --git-sha "$ENGINE_GIT_SHA" )
+  [ -n "$ENGINE_IMAGE_DIGEST" ] && ASSEMBLE+=( --image-digest "$ENGINE_IMAGE_DIGEST" )
+  [ -n "$ENGINE_BINARY" ] && ASSEMBLE+=( --binary "$ENGINE_BINARY" )
+  [ -n "$ENGINE_VLLM_VERSION" ] && ASSEMBLE+=( --vllm-version "$ENGINE_VLLM_VERSION" )
   [ -n "$PAIRED" ] && ASSEMBLE+=( --paired-artifact "$PAIRED" )
   [ -n "$PTX_RECEIPT" ] && ASSEMBLE+=( --ptx-receipt "$PTX_RECEIPT" )
   if [ -n "$EXTRA_NOTE" ]; then note="${note:+$note; }$EXTRA_NOTE"; fi
@@ -458,6 +542,7 @@ finalize() {
   teardown_owned
 
   step "stage 7/7 assemble and validate"
+  capture_engine_identity
   build_assemble
   show "${ASSEMBLE[*]}"
   show "python3 $HERE/validate_artifact.py $ARTIFACT"
@@ -535,9 +620,10 @@ if [ "$DRY_RUN" != "1" ]; then
     note_fail preflight
   fi
   df -h "$OUT" > "$OUT/df.txt" 2>&1
-  GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+  HARNESS_GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
   if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
-    echo "NOTE: the tree is dirty; git_sha $GIT_SHA does not fully describe it."
+    echo "NOTE: the tree is dirty; harness.git_sha $HARNESS_GIT_SHA does not fully"
+    echo "  describe it."
   fi
 fi
 
