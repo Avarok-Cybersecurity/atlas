@@ -772,10 +772,31 @@ PY
   patched && ok "control: an existing comment is edited, not duplicated" \
     || bad "control: it posted a second state comment instead of editing"
 
-  # The marker is both the lookup key and the memory of the previous state.
-  grep -q 'atlas-certification-state' "$TMP/bot.sh" \
-    && ok "the state marker is written into the comment" \
-    || bad "no state marker -- the next run cannot find its own comment"
+  # The marker is both the lookup key and the memory of the previous state, and
+  # BOTH halves live in the state it carries. A substring grep of the step's
+  # source could not see that: deleting the `:$STATE` leaves the string
+  # `atlas-certification-state` in the file, so this check stayed green while
+  # the lookup's `contains("<!-- atlas-certification-state:")` matched nothing,
+  # `prev` was empty on every run, and the bot posted a fresh comment per event
+  # instead of editing one -- the thread of stale states the marker exists to
+  # prevent. Assert the marker the bot actually EMITS, and that the lookup's own
+  # literal is a prefix of it. (The nearby "edited, not duplicated" control
+  # cannot catch this either: it feeds COMMENT_ID in, bypassing the lookup.)
+  LOOKUP=$(python3 - <<'PY'
+import re, pathlib
+t = pathlib.Path(".github/workflows/certification-bot.yml").read_text()
+m = re.search(r'contains\("(<!-- atlas-certification-state[^"]*)"\)', t)
+print(m.group(1) if m else "")
+PY
+)
+  runbot pr-certification-stage-3 "" 0
+  if [ -z "$LOOKUP" ]; then
+    bad "the bot has no marker lookup -- it cannot find its own comment at all"
+  elif grep -qF "${LOOKUP}pr-certification-stage-3 -->" "$TMP/bcalls"; then
+    ok "the state marker is written into the comment, and matches the bot's own lookup"
+  else
+    bad "the posted marker does not match the lookup '$LOOKUP' plus the state -- prev can never be read back"
+  fi
 
   # THE CERTIFICATE: only on merge, and only once.
   runbot pr-certification-merged "" 0
