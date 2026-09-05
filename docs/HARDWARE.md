@@ -417,8 +417,11 @@ To add a new scheme (e.g., MX4, INT4):
 in `build_target.rs`); nothing assembles the PTX until the runtime hands it to
 `cuModuleLoadData`. A green `cargo build` therefore proves that every kernel
 *emits* PTX, not that every entry *assembles* for the target. Static
-`__shared__` allocations above 48 KiB are the known case: `nvcc --ptx` accepts
-them and `ptxas` rejects the entry (`uses too much shared data`). The
+`__shared__` allocations above the target's static limit are the known case:
+`nvcc --ptx` accepts them and `ptxas` rejects the entry (`uses too much shared
+data`). The limit is per target: `ptxas` reports 48 KiB (`0xc000`) for
+`sm_121f` and 227 KiB (`0x38c00`) for `sm_90a`, so a kernel can assemble for
+Hopper and fail for gb10. The
 `MAX_DYNAMIC_SHARED_SIZE_BYTES` opt-in does not rescue a fixed-size array.
 
 `scripts/hopper_ptx_gate.sh` closes that gap for a hardware set by running
