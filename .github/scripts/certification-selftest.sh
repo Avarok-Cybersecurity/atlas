@@ -848,7 +848,7 @@ if [ -s "$TMP/stamp.sh" ]; then
 all="$*"
 case "$all" in
   *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
-  *"actions/runs?head_sha"*)  echo 12345; exit 0 ;;
+  *"actions/runs?head_sha"*)  echo '{"workflow_runs":[{"id":12345,"name":"CI","created_at":"2026-01-01T00:00:00Z"}]}'; exit 0 ;;
   *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
   *)                          exit 0 ;;
 esac
@@ -873,6 +873,65 @@ STUB
   else
     bad "control: the API's reason was discarded again"
   fi
+
+  # THE LISTING, not just the re-run. `run_id=$(gh api ... 2>/dev/null || true)`
+  # made an unanswered API indistinguishable from "this sha has no CI run": the
+  # benign branch said "nothing to re-run", $rerun_note stayed empty, the comment
+  # read "**Stamp recorded.** ... This holds for the life of the PR." and the job
+  # went green -- while the held lane kept its `skipped` result and the gate went
+  # on telling the operator to comment /stamp. Same defect as #847, one call
+  # earlier, and the checks above could not see it because their stub answers.
+  s_run() {  # s_run <gh stub body>  -> echoes the step's exit code
+    cat > "$TMP/sbin/gh" <<STUB
+#!/usr/bin/env bash
+all="\$*"
+$1
+STUB
+    chmod +x "$TMP/sbin/gh"
+    : > "$TMP/scalls"
+    ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/stamp ACTOR=me AUTHOR=me \
+      PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+    echo $?
+  }
+
+  rc=$(s_run 'case "$all" in
+  *"actions/runs?head_sha"*) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1 ;;
+  *"issues/"*"/comments"*)   printf "%s\n" "$all" >> "$SCALLS"; exit 0 ;;
+  *)                         exit 0 ;;
+esac')
+  [ "$rc" -ne 0 ] \
+    && ok "a stamp whose CI run could not be LOOKED UP fails the command job" \
+    || bad "the stamp reported success after the run listing failed -- the lane is still held"
+  grep -q "but CI was not re-run" "$TMP/scalls" \
+    && ok "and the comment says CI was not re-run" \
+    || bad "the comment claimed a clean stamp after the run listing failed"
+  grep -q "401" "$TMP/scalls" \
+    && ok "and it carries what the API actually said" \
+    || bad "the listing failure's reason was discarded"
+
+  # CONTROL, the other side: an API that ANSWERS "no CI run for this sha" is a
+  # different fact and must stay benign, or every stamp before CI starts would
+  # refuse. Absent and unanswered must not collapse into one branch.
+  rc=$(s_run 'case "$all" in
+  *"actions/runs?head_sha"*) echo "{\"workflow_runs\":[]}"; exit 0 ;;
+  *"issues/"*"/comments"*)   printf "%s\n" "$all" >> "$SCALLS"; exit 0 ;;
+  *)                         exit 0 ;;
+esac')
+  [ "$rc" -eq 0 ] \
+    && ok "control: a sha that genuinely has no CI run still stamps cleanly" \
+    || bad "control: a PR stamped before CI started was refused"
+  grep -q "but CI was not re-run" "$TMP/scalls" \
+    && bad "control: it warned about a re-run that was never needed" \
+    || ok "control: and says nothing about a re-run that was never needed"
+
+  # s_run leaves its last stub behind; the /seal control below wants the
+  # original one (a listing that answers, a re-run that 403s).
+  s_run 'case "$all" in
+  *"actions/runs/"*"/rerun"*) printf "RERUN %s\n" "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+  *"actions/runs?head_sha"*)  echo "{\"workflow_runs\":[{\"id\":12345,\"name\":\"CI\",\"created_at\":\"2026-01-01T00:00:00Z\"}]}"; exit 0 ;;
+  *"issues/"*"/comments"*)    printf "%s\n" "$all" >> "$SCALLS"; exit 0 ;;
+  *)                          exit 0 ;;
+esac' >/dev/null
 
   # CONTROL: a SEAL must re-run too. `seal status` reads the Seal check run,
   # and ci.yml has no `check_run` trigger -- so minting the mark alone left a

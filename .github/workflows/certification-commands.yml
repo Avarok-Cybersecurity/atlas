@@ -259,10 +259,37 @@ jobs:
           # Re-running is safe for a seal: it adds no commit, and a seal is
           # voided by commits, not by CI runs.
           if [ "$VERB" = "/stamp" ] || [ "$VERB" = "/seal" ]; then
-            run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
-              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
-              2>/dev/null || true)
-            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
+            # The LISTING kept the hole the re-run POST below just closed:
+            # `2>/dev/null || true` made an unanswered API indistinguishable
+            # from "this sha has no CI run", and the benign branch then said
+            # "nothing to re-run", left $rerun_note empty, posted "**Stamp
+            # recorded.** ... This holds for the life of the PR." and exited 0.
+            # The held lane keeps its `skipped` result and the gate stays red
+            # telling the operator to comment /stamp -- which they just did.
+            # Same defect as #847, one call earlier. Absent and unanswered are
+            # different answers and must not share a branch.
+            run_id=""; list_err=""
+            if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" 2>&1); then
+              run_id=$(printf '%s' "$runs_json" \
+                | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' 2>&1) \
+                || { list_err="$run_id"; run_id=""; }
+            else
+              list_err="$runs_json"
+            fi
+            if [ -n "$list_err" ]; then
+              echo "::error title=$name recorded, but CI was NOT re-run::could not list the CI runs for $HEAD_SHA: $list_err"
+              rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but CI was not re-run.** The CI run for \`$SHORT\` could not even be looked up, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before this command. Re-run the CI workflow by hand, or push any commit to this PR.
+          >
+          > <details><summary>what the API said</summary>
+          >
+          > \`\`\`
+          > $list_err
+          > \`\`\`
+          > </details>"
+            elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
               # Capture stderr rather than discarding it. The first time this
               # failed in production the reason went to /dev/null, the Stamp
               # check went green, and the gate stayed red telling the operator
