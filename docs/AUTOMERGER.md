@@ -389,3 +389,18 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept (the dead-enum claim settled by grep on origin/main, not by reading the report); R-a-passing-test-may-not-have-run (the lane caught cargo serving it a stale binary mid-control and disclosed it).
+
+---
+
+## Run 18 — 2026-09-05T04:15Z — obs lane verified; fable limit reached, ladder falls back to opus 5
+
+```text
+2026-09-05T04:15Z  return     obs lane (fable): 3 commits, 5/5 new tests, tree clean
+2026-09-05T04:16Z  tool       coordinator verified the headline on origin/main: error_body — the SSOT every OpenAI error envelope passes through — contained ZERO tracing calls, and there is no TraceLayer on the router. A failing request produced NO server-side record at all; the 500 existed only in the client's response body. CONFIRMED by grep of both.
+2026-09-05T04:17Z  aggregate  also fixed: cause collapse ({e} -> {e:#} so OOM / kernel-launch / swap-out stop looking alike), and a dropped response sender reported as "Inference cancelled" when it actually means the SCHEDULER DIED — three in-tree comments already called that message misleading; and per-key runtime-quantization fallbacks (uncalibrated-scale numerics) that logged at debug only, now warn-once-per-kind with counted debug
+2026-09-05T04:18Z  aggregate  the lane stated the level rule it applied rather than bumping indiscriminately: warn iff operator-actionable AND bounded — 5xx per occurrence (rare when healthy), 4xx stays debug (one bad client could spam it), load-time per-key fallbacks warn once per kind (a mixed checkpoint hits 100+ keys). It also declined to bump two SSM/GDN debugs that already follow first-occurrence-info + counted-debug
+2026-09-05T04:20Z  communicate FABLE SESSION LIMIT REACHED — the ctl2 lane died mid-write ("resets 2am America/New_York") while composing a dial_and_pair deadline fix. Per the standing overnight instruction the ladder falls back to OPUS 5 for nightly lanes from here.
+2026-09-05T04:21Z  aggregate  wave 2 accounting: sched / api / obs COMPLETE and verified; ctl2 incomplete and being relaunched on opus 5 with its partial work named so the replacement does not redo it
+```
+
+**CITED:** R-verify-dont-accept (error_body's zero tracing calls and the absent TraceLayer both confirmed on origin/main before entering the record); R-state-the-rule (a level-bump wave is only trustworthy if the rule is written down and exceptions are named).
