@@ -26,6 +26,63 @@ use crate::cli;
 /// number in `$?` is never silently wrong.
 const MAX_EXIT_CODE: usize = 255;
 
+/// Retain the preflight error while reporting an early `--check-kernels` refusal.
+/// No kernel-audit count is available before the backend has been constructed.
+#[cfg(feature = "cuda")]
+pub(crate) fn gate_arch_preflight(
+    checking: bool,
+    ptx_set: &atlas_kernels::TargetPtxSet,
+    result: Result<()>,
+) -> Result<()> {
+    if let Err(error) = &result
+        && let Some(line) = arch_refusal_json(
+            checking,
+            ptx_set.target.model,
+            ptx_set.target.quant,
+            ptx_set.modules.len(),
+            error,
+        )
+    {
+        use std::io::Write as _;
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+    }
+    result
+}
+
+#[cfg(any(feature = "cuda", test))]
+fn arch_refusal_json(
+    checking: bool,
+    model: &str,
+    quant: &str,
+    modules_embedded: usize,
+    error: &anyhow::Error,
+) -> Option<String> {
+    let mismatch = error.downcast_ref::<atlas_core::arch::ArchMismatch>()?;
+    checking.then(|| {
+        serde_json::json!({
+            "atlas_kernel_check": {
+                "model": model,
+                "arch": mismatch.compiled_arch,
+                "compiled_arch": mismatch.compiled_arch,
+                "device_cc": mismatch.device_cc,
+                "quant": quant,
+                "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
+                "modules_embedded": modules_embedded,
+                "lookups": null,
+                "unresolved": null,
+                "expected_absent": null,
+                "unresolved_kernels": null,
+                "ok": false,
+                "exit_code": 1,
+                "failing_stage": "arch_preflight",
+                "error": error.to_string(),
+            }
+        })
+        .to_string()
+    })
+}
+
 /// Print the audit, gate on it, and seal the audit for the rest of the run.
 ///
 /// Under `--check-kernels` this function does NOT return: it exits the process
@@ -168,16 +225,12 @@ struct CheckSummary<'a> {
 /// is the unambiguous one now that a second architecture — the DEVICE's — sits
 /// beside it in the same object.
 fn check_json_from(summary: &CheckSummary) -> String {
-    let device_cc = match summary.device_cc {
-        Some((major, minor)) => serde_json::json!(format!("{major}.{minor}")),
-        None => serde_json::Value::Null,
-    };
     serde_json::json!({
         "atlas_kernel_check": {
             "model": summary.model,
             "arch": summary.compiled_arch,
             "compiled_arch": summary.compiled_arch,
-            "device_cc": device_cc,
+            "device_cc": summary.device_cc,
             "quant": summary.quant,
             "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
             "modules_embedded": summary.modules_embedded,
@@ -247,7 +300,7 @@ fn check_json(
 
 #[cfg(test)]
 mod tests {
-    use super::{CheckSummary, MAX_EXIT_CODE, check_json_from, exit_code_for};
+    use super::{CheckSummary, MAX_EXIT_CODE, arch_refusal_json, check_json_from, exit_code_for};
 
     fn a_clean_gb10_check() -> CheckSummary<'static> {
         CheckSummary {
@@ -274,7 +327,7 @@ mod tests {
             serde_json::from_str(&check_json_from(&a_clean_gb10_check())).expect("valid JSON");
         let c = &v["atlas_kernel_check"];
         assert_eq!(c["compiled_arch"], "sm_121f");
-        assert_eq!(c["device_cc"], "12.1");
+        assert_eq!(c["device_cc"], serde_json::json!([12, 1]));
         // The pre-existing name for the same value, kept for existing sweeps.
         assert_eq!(c["arch"], "sm_121f");
     }
@@ -315,6 +368,40 @@ mod tests {
         assert_eq!(c["ok"], false);
         assert_eq!(c["exit_code"], 3);
         assert_eq!(c["unresolved_kernels"][0]["kernel"], "m::k");
+        assert_eq!(c["device_cc"], serde_json::json!([12, 1]));
+        assert_eq!(c["compiled_arch"], "sm_121f");
+    }
+
+    /// Oracle: the actual runtime compatibility decision, before any GPU or
+    /// kernel lookup. A mismatch must survive as structured failure evidence.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn early_arch_refusals_report_the_same_numeric_device_contract() {
+        for arch in ["sm_90a", "sm_100a"] {
+            let error = spark_runtime::cuda_backend::arch_preflight::check_arch(arch, (12, 1))
+                .expect_err("architecture-specific PTX must refuse GB10");
+            let line = arch_refusal_json(true, "nano", "nvfp4", 42, &error)
+                .expect("--check-kernels must retain preflight mismatch JSON");
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let check = &value["atlas_kernel_check"];
+            assert_eq!(check["compiled_arch"], arch);
+            assert_eq!(check["arch"], arch);
+            assert_eq!(check["device_cc"], serde_json::json!([12, 1]));
+            assert_eq!(check["ok"], false);
+            assert_eq!(check["exit_code"], 1);
+            assert_eq!(check["failing_stage"], "arch_preflight");
+            assert!(check["lookups"].is_null());
+            assert!(check["unresolved"].is_null());
+            assert!(check["error"].as_str().unwrap().contains("12.1"));
+            assert!(check["error"].as_str().unwrap().contains(arch));
+            assert!(arch_refusal_json(false, "nano", "nvfp4", 42, &error).is_none());
+        }
+    }
+
+    #[test]
+    fn an_unrelated_error_does_not_invent_device_facts() {
+        let error = anyhow::anyhow!("CUDA initialization failed before the device query");
+        assert!(arch_refusal_json(true, "nano", "nvfp4", 42, &error).is_none());
     }
 
     #[test]

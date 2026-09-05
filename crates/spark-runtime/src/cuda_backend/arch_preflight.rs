@@ -101,7 +101,9 @@ pub fn device_compute_capability_of(ordinal: usize) -> Result<(u32, u32)> {
 /// is every machine CI runs on.
 pub fn check_arch(compiled_arch: &str, device_cc: (u32, u32)) -> Result<String> {
     if let Err(mismatch) = atlas_core::arch::ptx_arch_runs_on_device(compiled_arch, device_cc) {
-        bail!("{mismatch}");
+        // Keep the device facts typed so --check-kernels can report an early
+        // refusal without parsing this error's human-readable message.
+        return Err(mismatch.into());
     }
     Ok(format!(
         "device CC {}.{}, kernels built for {compiled_arch}",
