@@ -747,7 +747,12 @@ cp .github/scripts/assert-gates-are-wired.py "$TMP/sg/scripts/"
 # does not land, and the control then passes against unmodified input -- which
 # is a green light that measured nothing. Caught exactly that way once already.
 sg_sabotage() {
-  for w in site.yml merge-ancestry.yml; do cp ".github/workflows/$w" "$TMP/sg/workflows/$w"; done
+  # EVERY workflow, not just the sabotaged one: the assertions read across
+  # files (ci.yml calls release-build.yml, and the required-context list
+  # spans nine of them). Staging a subset made the script die with
+  # FileNotFoundError -- rc=1 for the wrong reason, which want_rc_msg
+  # catches only because it also pins the message.
+  for w in .github/workflows/*.yml; do cp "$w" "$TMP/sg/workflows/"; done
   python3 - "$TMP/sg/workflows/$1" "$2" <<'PY'
 import pathlib, sys, yaml
 p = pathlib.Path(sys.argv[1]); d = yaml.safe_load(p.read_text())
@@ -787,6 +792,173 @@ want_rc_msg 1 "every entry would deadlock" "control: dropping merge_group suppor
 sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["name"] = "Ancestry"'
 want_rc_msg 1 "leaves the required context uncreated" "control: renaming a required job is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# ---------------------------------------------------------------------------
+# A required check whose verdict is not about the thing it claims to test
+# ---------------------------------------------------------------------------
+# `cargo test --features metal (macOS aarch64)` inherited ci.yml's
+# workflow-level ATLAS_SKIP_BUILD=1 (there so the ubuntu jobs type-check
+# without nvcc). atlas-kernels' build.rs honours it first and emits a stub
+# whose `metallib_modules()` is Vec::new(), so MetalGpuBackend loaded ZERO
+# libraries and all 35 parity tests died with `Metal: unknown module`. The
+# check was permanently red about a stub, and the merge queue was impassable
+# for every non-web PR. Same family as a check that passes vacuously: the
+# verdict is not about the capability named on the tin.
+#
+# Staged with the same sg_sabotage helper above -- it copies every workflow,
+# which these assertions need.
+#
+# The metal step's env, addressed by name so a sabotage that does not land is
+# an AssertionError rather than a control that silently measured nothing.
+rc_metal_env='
+steps = [s for s in d["jobs"]["test-macos-metal"]["steps"] if s.get("name","").startswith("cargo test -p spark-runtime")]
+assert len(steps) == 1, f"sabotage would not land: {len(steps)} metal test steps"
+env = steps[0]["env"]
+'
+
+want_rc 0 "every required context resolves to a live job that a failed dependency cannot skip" \
+  python3 .github/scripts/assert-gates-are-wired.py
+
+# The regression itself: put the stub env back on the metal test step.
+sg_sabotage ci.yml "$rc_metal_env"'env["ATLAS_SKIP_BUILD"] = "1"'
+want_rc_msg 1 "is about the stub, not the kernels" \
+  "control: running the metal suite against a kernel-build stub is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# Inheritance, not just the step: deleting the step override lets ci.yml's
+# workflow-level ATLAS_SKIP_BUILD=1 reach the job again. A guard that only
+# looked at the step's own env would pass here.
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_SKIP_BUILD")'
+want_rc_msg 1 "is about the stub, not the kernels" \
+  "control: dropping the override so the workflow-level stub env is inherited is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# Without ATLAS_TARGET_HW, build.rs takes its macOS auto-skip and embeds
+# nothing even with ATLAS_SKIP_BUILD=0 -- the same empty set by another route.
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_TARGET_HW")'
+want_rc_msg 1 "build.rs takes the macOS auto-skip" \
+  "control: dropping ATLAS_TARGET_HW from the metal suite is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# The other half of the family: a required job that a FAILED dependency
+# silently skips. Branch protection counts a skipped check as satisfied, so
+# the gate reports safety it never measured. This is the exact pre-fix state
+# of docs.yml `build` -- `needs: [changes]` with no `if:` at all.
+sg_sabotage docs.yml 'd["jobs"]["build"].pop("if")'
+want_rc_msg 1 "would pass vacuously" \
+  "control: a required job a failed dependency can skip is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# Renames and deletes across the whole required list, not just the two GATES.
+sg_sabotage security.yml 'd["jobs"]["cargo-deny"]["name"] = "deny"'
+want_rc_msg 1 "a renamed job leaves the required context uncreated" \
+  "control: renaming cargo deny is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage gdn-so-pin.yml 'd["jobs"].pop("verify-gdn-so-pins")'
+want_rc_msg 1 "every PR would hang" \
+  "control: deleting the GDN pin job is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# The nested reusable-workflow context. `release matrix / dry-run summary` is
+# TWO names -- the caller's and the callee's -- and renaming either one leaves
+# protection waiting on a string nothing emits.
+sg_sabotage release-build.yml 'd["jobs"]["dry-run-summary"]["name"] = "summary"'
+want_rc_msg 1 "would never be created" \
+  "control: renaming the nested dry-run summary job is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage ci.yml 'd["jobs"]["release-matrix"]["uses"] = "./.github/workflows/release.yml"'
+want_rc_msg 1 "no longer calls release-build.yml" \
+  "control: repointing the release-matrix caller is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# ---------------------------------------------------------------------------
+# A grep-based gate that scanned nothing and said OK
+# ---------------------------------------------------------------------------
+# `No block_on under tui/ or recipe/` is a required context implemented as
+# `if hits=$(grep -r ... dirs 2>/dev/null); then fail; fi`. On a MISSING
+# directory grep exits 2, the redirect hides the reason, and the `if` reads any
+# non-zero as "no hits" -- so the check printed OK and exited 0 against a tree
+# with no tui/ at all. Verified in an empty directory before the fix. A rename
+# of either tree would have retired the rule while the check stayed green.
+#
+# Run the step's REAL shell, extracted from the workflow, so the control cannot
+# drift from what CI executes.
+mkdir -p "$TMP/bo"
+python3 - "$TMP/bo/step.sh" "$TMP/bo/scan_dirs" <<'PY'
+import pathlib, sys, yaml
+d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
+job = d["jobs"]["no-blocking-on-the-render-thread"]
+steps = [s for s in job["steps"] if s.get("name", "").startswith("Check the render thread")]
+assert len(steps) == 1, f"expected one render-thread step, found {len(steps)}"
+pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
+pathlib.Path(sys.argv[2]).write_text(steps[0]["env"]["SCAN_DIRS"])
+PY
+BO_DIRS=$(cat "$TMP/bo/scan_dirs")
+
+want_rc 0 "the render-thread gate passes on the real tree" \
+  env SCAN_DIRS="$BO_DIRS" bash "$TMP/bo/step.sh"
+
+# A tree where one scanned directory does not exist. Pre-fix this printed
+# "OK: no block_on/block_in_place under tui/ or recipe/" and exited 0.
+mkdir -p "$TMP/bo/moved/crates/spark-server/src/recipe"
+want_rc_msg 1 "does not exist, so this check scanned nothing" \
+  "control: the render-thread gate refuses a tree it cannot scan" \
+  env -C "$TMP/bo/moved" SCAN_DIRS="$BO_DIRS" bash "$TMP/bo/step.sh"
+
+# ...and the existence assertion did not neuter the rule it guards: a real
+# block_on in a present tree is still caught.
+mkdir -p "$TMP/bo/dirty/crates/spark-server/src/tui" "$TMP/bo/dirty/crates/spark-server/src/recipe"
+printf 'fn f() { handle.block_on(fut); }\n' > "$TMP/bo/dirty/crates/spark-server/src/tui/draw.rs"
+want_rc_msg 1 "must never poll a future" \
+  "control: the render-thread gate still catches a real block_on" \
+  env -C "$TMP/bo/dirty" SCAN_DIRS="$BO_DIRS" bash "$TMP/bo/step.sh"
+
+# The same defect twice more, in the two other gates that decide by scanning a
+# tree. Both were verified passing on a tree they could not see.
+#
+# `Enforce <=500 LoC per source file`: `find crates ...` on a missing directory
+# feeds the loop nothing, `violations` stays 0, and the step printed its tick
+# and exited 0 -- the cap unenforced repo-wide. `set -euo pipefail` does not
+# catch it: the find lives in a process substitution whose status is not the
+# command's.
+mkdir -p "$TMP/fs"
+python3 - "$TMP/fs/step.sh" <<'PY'
+import pathlib, sys, yaml
+d = yaml.safe_load(pathlib.Path(".github/workflows/file-size-cap.yml").read_text())
+steps = [s for s in d["jobs"]["check-file-sizes"]["steps"]
+         if s.get("name", "").startswith("Check no .rs file")]
+assert len(steps) == 1, f"expected one file-size step, found {len(steps)}"
+pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
+PY
+want_rc 0 "the 500-LoC cap passes on the real tree" bash "$TMP/fs/step.sh"
+
+mkdir -p "$TMP/fs/nocrates"
+want_rc_msg 1 "the 500-line cap scanned nothing" \
+  "control: the 500-LoC cap refuses a tree with no crates/ to scan" \
+  env -C "$TMP/fs/nocrates" bash "$TMP/fs/step.sh"
+
+# `kernel shadow structure`: the scan loop skipped any hardware tree that was
+# not present, so an empty (or renamed) kernels/ printed
+# "kernel shadow structure: OK" and exited 0. HW_SOURCE_EXT is the list of
+# trees the check CLAIMS to cover; every one of them must be there.
+want_rc 0 "the kernel-shadow check passes on the real kernels/ tree" \
+  python3 scripts/check_kernel_shadows.py
+
+mkdir -p "$TMP/ks/kernels"
+want_rc_msg 1 "is missing hardware tree(s)" \
+  "control: the kernel-shadow check refuses a kernels/ tree it cannot scan" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/kernels"
+
+# ...and it still catches the violation it exists for: a shadow byte-identical
+# to the common file it overrides is a dead override.
+mkdir -p "$TMP/ks/live/gb10/common" "$TMP/ks/live/gb10/m1/q" \
+         "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip"
+printf '__global__ void k() {}\n' > "$TMP/ks/live/gb10/common/k.cu"
+cp "$TMP/ks/live/gb10/common/k.cu" "$TMP/ks/live/gb10/m1/q/k.cu"
+want_rc_msg 1 "RULE1" "control: the kernel-shadow check still catches a dead override" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/live"
 
 # ---------------------------------------------------------------------------
 # A write whose failure is swallowed, and no probe behind it
