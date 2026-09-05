@@ -109,6 +109,10 @@
     },
     "prompt_mode": "essay"
   },
+  "timing": {
+    "started_utc": "2026-09-05T09:00:00Z",
+    "finished_utc": "2026-09-05T09:02:00Z"
+  },
   "spec": {
     "on": false,
     "method": "none",

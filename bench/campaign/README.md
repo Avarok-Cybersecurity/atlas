@@ -63,8 +63,22 @@ script exits 2.
 
 ## The rule about CERTIFIED
 
-> A cell is **CERTIFIED** only when the validator passes **and** the paired cell
-> from the other engine exists, on the same box, within 24 hours.
+> A cell is **CERTIFIED** only when the validator passes, **every gate reports a
+> pass**, **and** the paired cell from the other engine exists, on the same box,
+> within 24 hours.
+
+"Every gate" means the recorded evidence, not the exit codes: the boot gate's
+`passed`, all four coherency probes, and the three measurement gates the ladder
+reports *while exiting 0* — the 80% vacuity floor, request errors, and the 10%
+throughput spread. A null gate value is "this gate did not report", which is not
+a pass.
+
+"The paired cell" means this cell's other leg: the same model, SKU, workload,
+concurrency, spec and think settings on the other engine, with both
+`timing.started_utc` and `timing.finished_utc` (copied from the ladder's own
+header) inside the 24-hour window. `paired_cell.within_24h` is that whole
+check's verdict, and `validate_artifact.py` refuses a `CERTIFIED` artifact whose
+own gate values and pairing record do not support it.
 
 `run_cell.sh` cannot certify a cell on its own. A cell whose gates all pass but
 whose pair is not yet recorded is written as `PARTIAL` with

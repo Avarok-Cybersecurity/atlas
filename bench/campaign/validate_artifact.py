@@ -205,12 +205,49 @@ def _ladder_cannot_pool(doc, errors):
                       "cannot produce pooled_requests percentiles")
 
 
+def _certified_needs_gate_evidence(doc, errors):
+    """CERTIFIED is a claim about evidence, so the evidence has to be present.
+
+    An artifact reached this validator CERTIFIED with every gate value null and
+    a `{}` paired artifact, and it was accepted: the schema alone cannot say
+    that a verdict must be supported, only what shape each field has. So the
+    rule is written here. It duplicates no judgement -- cell_assemble.py
+    decides the verdict from the same evidence -- but a verdict is exactly the
+    field an artifact can be edited to claim, and this is the check that
+    refuses the claim.
+    """
+    if doc.get("verdict") != "CERTIFIED":
+        return
+    boot = doc.get("boot")
+    if not isinstance(boot, dict) or boot.get("pass") is not True:
+        errors.append("$.boot.pass: must be true when the verdict is CERTIFIED")
+    coh = doc.get("coherency") if isinstance(doc.get("coherency"), dict) else {}
+    for key in ("determinism_ok", "toolcall_ok", "think_leak_ok", "known_answer_ok"):
+        if coh.get(key) is not True:
+            errors.append(f"$.coherency.{key}: must be true when the verdict is "
+                          f"CERTIFIED, got {coh.get(key)!r}")
+    metrics = doc.get("metrics") if isinstance(doc.get("metrics"), dict) else {}
+    if metrics.get("vacuous") is not False:
+        errors.append(f"$.metrics.vacuous: must be false when the verdict is "
+                      f"CERTIFIED, got {metrics.get('vacuous')!r} -- null is "
+                      f"'the floor could not be applied', not 'it was cleared'")
+    if metrics.get("tok_s_mean") is None:
+        errors.append("$.metrics.tok_s_mean: a CERTIFIED cell has a measured rate")
+    pair = doc.get("paired_cell") if isinstance(doc.get("paired_cell"), dict) else {}
+    if not isinstance(pair.get("cell_id"), str) or not pair["cell_id"].strip():
+        errors.append("$.paired_cell.cell_id: a CERTIFIED cell names its pair")
+    if pair.get("within_24h") is not True:
+        errors.append(f"$.paired_cell.within_24h: must be true when the verdict is "
+                      f"CERTIFIED, got {pair.get('within_24h')!r}")
+
+
 CROSS_CHECKS = {
     "ptx_receipt_or_reason": _ptx_receipt_or_reason,
     "world_size_equals_gpu_count": _world_size_equals_gpu_count,
     "spec_method_iff_on": _spec_method_iff_on,
     "verdict_failing_stage": _verdict_failing_stage,
     "ladder_cannot_pool": _ladder_cannot_pool,
+    "certified_needs_gate_evidence": _certified_needs_gate_evidence,
 }
 
 

@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "campaign": "hopper-atlas-vs-vllm-2026-09",
-  "cell_id": "atlas.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkon",
-  "engine": "atlas",
+  "cell_id": "vllm.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkoff",
+  "engine": "vllm",
   "model": {
     "hf_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
     "model_key": "nemotron-3-super-fp8",
@@ -10,10 +10,10 @@
     "quant": "fp8"
   },
   "engine_version": {
-    "git_sha": "e3fb473f8662d1e62a74dc9762877caf514af359",
-    "image_digest": null,
-    "binary_sha256": "9f2b1c0a7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f10",
-    "vllm_version": null
+    "git_sha": null,
+    "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "binary_sha256": null,
+    "vllm_version": "0.11.2"
   },
   "hardware": {
     "gpu": "NVIDIA H200",
@@ -109,16 +109,12 @@
     },
     "prompt_mode": "essay"
   },
-  "timing": {
-    "started_utc": "2026-09-05T09:00:00Z",
-    "finished_utc": "2026-09-05T09:02:00Z"
-  },
   "spec": {
     "on": false,
     "method": "none",
     "k": null
   },
-  "think": "on",
+  "think": "off",
   "boot": {
     "time_to_ready_s": 412.0,
     "first_token_s": 1.83,
@@ -133,7 +129,7 @@
     "known_answer_ok": true
   },
   "metrics": {
-    "percentile_method": "pooled_requests",
+    "percentile_method": "mean_of_rep_percentiles",
     "tok_s_series": [
       1180.4,
       1192.7,
@@ -148,14 +144,18 @@
     "vacuous": false,
     "ladder_json_path": "out/ladder.json"
   },
-  "ptx_gate_receipt_sha256": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
-  "ptx_gate_not_applicable_reason": null,
+  "ptx_gate_receipt_sha256": null,
+  "ptx_gate_not_applicable_reason": "the Atlas PTX gate does not apply to an official vLLM image",
   "paired_cell": {
-    "cell_id": "vllm.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkon",
-    "artifact_path": "out/vllm.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkon/artifact.json",
+    "cell_id": "atlas.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkoff",
+    "artifact_path": "out/atlas.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkoff/artifact.json",
     "within_24h": true
   },
   "verdict": "CERTIFIED",
   "failing_stage": null,
-  "notes": "Illustrative fixture, not a measurement. Numbers are plausible shapes for the validator to chew on; no H200 was booked. topology.matched is false because the paired vLLM h200 recipe is TP8 while this Atlas row is a single GPU."
+  "notes": "Illustrative fixture: a correct pair measured three days earlier, which the PRD section 4 24 h window excludes.",
+  "timing": {
+    "started_utc": "2026-09-02T09:00:00Z",
+    "finished_utc": "2026-09-02T09:02:00Z"
+  }
 }

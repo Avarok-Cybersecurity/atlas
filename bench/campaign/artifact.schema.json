@@ -18,6 +18,7 @@
     "serve_env",
     "workload",
     "client",
+    "timing",
     "spec",
     "think",
     "boot",
@@ -35,7 +36,8 @@
     "world_size_equals_gpu_count",
     "spec_method_iff_on",
     "verdict_failing_stage",
-    "ladder_cannot_pool"
+    "ladder_cannot_pool",
+    "certified_needs_gate_evidence"
   ],
   "x-atlas-cross-checks-note": "Conditional rules the draft-2020-12 keyword set would express with if/then. validate_artifact.py implements them by these names; adding one here without adding it there is an error the validator reports on itself.",
   "properties": {
@@ -389,6 +391,31 @@
         }
       }
     },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_utc",
+        "finished_utc"
+      ],
+      "description": "When the measured run happened, copied from the ladder JSON's own header. These are the artifact's ONLY timestamps and the ones PRD section 4's 24 h pairing window is measured across. Null when no ladder ran: a cell that failed before measurement has no measurement time, and stamping the assembly time here would make an unmeasured cell look pairable.",
+      "properties": {
+        "started_utc": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "finished_utc": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      }
+    },
     "spec": {
       "type": "object",
       "additionalProperties": false,
@@ -622,7 +649,7 @@
         "artifact_path",
         "within_24h"
       ],
-      "description": "The other engine's cell. A cell is CERTIFIED only when this is filled in and within_24h is true (PRD section 4 A/B gate).",
+      "description": "The other engine's cell. A cell is CERTIFIED only when this is filled in and within_24h is true (PRD section 4 A/B gate). within_24h is the verdict of the whole pairing check -- same model/SKU/workload/concurrency/spec/think on the OTHER engine, and both timing fields inside the window -- not the timestamp comparison alone; null means it could not be decided.",
       "properties": {
         "cell_id": {
           "type": [

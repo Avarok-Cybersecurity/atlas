@@ -38,6 +38,14 @@
 #       VALIDATES. The assembler is the piece with no natural test on a GPU-less
 #       host, so it gets fed fixtures.
 #   (i) lints: shellcheck on every .sh, py_compile on every .py, typos clean.
+#   (k) CERTIFIED eligibility. The verdict has to come from gate EVIDENCE and
+#       from a pair that is actually this cell's other leg. Any parseable
+#       --paired-artifact used to be enough -- `{}` included -- and the three
+#       measurement gates the ladder reports while exiting 0 (the 80% vacuity
+#       floor, request errors, the 10% spread) only reached `notes`. Each red
+#       below is one of those: an empty pair, a pair on the wrong SKU, a pair
+#       three days old, a failed boot gate, a failed known-answer probe, and
+#       ladder JSONs that exit 0 while failing each measurement gate.
 #   (j) teardown ownership, against a PATH-shimmed `docker` that records every
 #       call. A `docker run` that exits 125 (the name is already in use) means
 #       somebody else owns that container, and the cell must stop and remove
@@ -299,6 +307,118 @@ $(python3 "$HERE/validate_artifact.py" "$tmp/nogo.json")"
 v="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$tmp/nogo.json")"
 [ "$v" = "NO-GO" ] || fail h "a failed boot gate must be NO-GO, got $v"
 ok h "a boot-gate failure still writes a VALID artifact, verdict NO-GO"
+
+# ── (k) CERTIFIED comes from the gates and from a real pair ─────────────────
+# One assemble helper: everything is the all-green cell except what a case
+# overrides, so each red is exactly one changed input.
+k_assemble() {  # k_assemble OUT [extra cell_assemble args...]
+  local out="$1"; shift
+  python3 "$HERE/cell_assemble.py" --engine atlas --model-key nemotron-3-super-fp8 \
+    --sku h200 --workload lat --concurrency 16 --spec off --think off --out "$out" \
+    --workloads "$ROOT/bench/hopper_ab/workloads.json" \
+    --atlas-recipes "$HERE/atlas_recipes.json" --vllm-recipes "$HERE/vllm_recipes.json" \
+    --client "$ROOT/bench/ladder38/harness_w55_conc_ladder.py" \
+    --nvidia-smi-q "$HERE/fixtures/stub_nvidia_smi_q.txt" \
+    --boot-json "${K_BOOT:-$HERE/fixtures/stub_boot.json}" \
+    --coherency-json "${K_COH:-$HERE/fixtures/stub_coherency.json}" \
+    --ladder-json "${K_LADDER:-$HERE/fixtures/stub_ladder_c16.json}" \
+    "$@" >/dev/null 2>&1
+}
+k_verdict() {
+  python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+print(d["verdict"], d["failing_stage"], d["paired_cell"]["within_24h"])' "$1"
+}
+GOOD_PAIR="$HERE/fixtures/stub_pair_vllm_cell.json"
+
+k_assemble "$tmp/k-certified.json" --paired-artifact "$GOOD_PAIR" \
+  || fail k "cell_assemble failed on the all-green inputs"
+read -r v st w <<<"$(k_verdict "$tmp/k-certified.json")"
+[ "$v" = "CERTIFIED" ] || fail k "an all-green paired cell must be CERTIFIED, got $v ($st)"
+[ "$st" = "None" ] || fail k "a CERTIFIED cell names no stage, got $st"
+[ "$w" = "True" ] || fail k "a CERTIFIED cell records within_24h=true, got $w"
+python3 "$HERE/validate_artifact.py" "$tmp/k-certified.json" >/dev/null \
+  || fail k "the CERTIFIED artifact must validate:
+$(python3 "$HERE/validate_artifact.py" "$tmp/k-certified.json")"
+ok k "an all-green cell with its real pair is CERTIFIED and validates"
+
+# Each red: (label, extra assemble args...) -> the verdict and stage it owes.
+k_red() {  # k_red LABEL EXPECT_VERDICT EXPECT_STAGE -- ARGS...
+  local label="$1" want_v="$2" want_st="$3"; shift 4
+  local out="$tmp/k-$label.json"
+  k_assemble "$out" "$@" || fail k "$label: cell_assemble failed"
+  read -r v st _w <<<"$(k_verdict "$out")"
+  [ "$v" = "$want_v" ] || fail k "$label: expected $want_v, got $v (stage $st)"
+  [ "$st" = "$want_st" ] || fail k "$label: expected stage $want_st, got $st"
+  python3 "$HERE/validate_artifact.py" "$out" >/dev/null \
+    || fail k "$label: the artifact must still validate:
+$(python3 "$HERE/validate_artifact.py" "$out")"
+}
+
+k_red no-pair PARTIAL pair --
+k_red empty-pair PARTIAL pair -- --paired-artifact "$HERE/fixtures/stub_pair_empty.json"
+k_red wrong-sku-pair PARTIAL pair -- --paired-artifact "$HERE/fixtures/stub_pair_wrong_sku.json"
+k_red stale-pair PARTIAL pair -- --paired-artifact "$HERE/fixtures/stub_pair_stale.json"
+ok k "no pair, an empty {} pair, a pair on another SKU and a three-day-old pair are all PARTIAL/pair"
+
+w="$(k_verdict "$tmp/k-empty-pair.json" | awk '{print $3}')"
+[ "$w" = "False" ] || fail k "an empty pair must record within_24h=false, got $w"
+w="$(k_verdict "$tmp/k-stale-pair.json" | awk '{print $3}')"
+[ "$w" = "False" ] || fail k "a stale pair must record within_24h=false, got $w"
+have "$(cat "$tmp/k-stale-pair.json")" "outside the 24 h window" \
+  || fail k "the stale pair must say why: $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["notes"])' "$tmp/k-stale-pair.json")"
+ok k "a rejected pair records within_24h=false and names the reason"
+
+K_BOOT="$HERE/fixtures/stub_boot_timeout.json" \
+  k_red failed-boot NO-GO boot -- --paired-artifact "$GOOD_PAIR"
+K_COH="$HERE/fixtures/stub_coherency_wrong_answer.json" \
+  k_red failed-coherency NO-GO coherency -- --paired-artifact "$GOOD_PAIR"
+k_red absent-gates NO-GO boot -- --paired-artifact "$GOOD_PAIR" \
+  --boot-json /nonexistent --coherency-json /nonexistent --ladder-json /nonexistent
+ok k "a boot timeout, a failed known-answer probe and absent gate JSONs are NO-GO, never CERTIFIED"
+
+K_LADDER="$HERE/fixtures/stub_ladder_c16_vacuous.json" \
+  k_red vacuous-ladder PARTIAL ladder -- --paired-artifact "$GOOD_PAIR"
+K_LADDER="$HERE/fixtures/stub_ladder_c16_errors.json" \
+  k_red errored-ladder PARTIAL ladder -- --paired-artifact "$GOOD_PAIR"
+K_LADDER="$HERE/fixtures/stub_ladder_c16_spread.json" \
+  k_red spread-ladder PARTIAL ladder -- --paired-artifact "$GOOD_PAIR"
+ok k "a ladder that exits 0 while failing the vacuity, error or spread gate is PARTIAL/ladder"
+
+# The validator must refuse the claim on its own, not only trust the assembler.
+python3 - "$tmp/k-certified.json" "$tmp/k-forged.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["metrics"]["vacuous"] = None
+d["coherency"]["known_answer_ok"] = None
+d["paired_cell"] = {"cell_id": None, "artifact_path": None, "within_24h": None}
+json.dump(d, open(sys.argv[2], "w"), indent=2)
+PY
+python3 "$HERE/validate_artifact.py" "$tmp/k-forged.json" >"$tmp/k-forged.err" 2>&1 \
+  && fail k "a CERTIFIED artifact with null gates and no pair must be REJECTED"
+for path in "\$.coherency.known_answer_ok" "\$.metrics.vacuous" "\$.paired_cell.within_24h"; do
+  grep -Fq -- "$path" "$tmp/k-forged.err" \
+    || fail k "the rejection must name $path: $(cat "$tmp/k-forged.err")"
+done
+ok k "validate_artifact refuses a CERTIFIED verdict its own gate values do not support"
+
+# ── (k2) --spec off records method=none even for a spec-capable recipe ───────
+python3 "$HERE/cell_assemble.py" --engine atlas --model-key qwen3.6-35b-a3b-fp8 \
+  --sku h200 --workload lat --concurrency 16 --spec off --think off \
+  --out "$tmp/specoff.json" --workloads "$ROOT/bench/hopper_ab/workloads.json" \
+  --atlas-recipes "$HERE/atlas_recipes.json" --vllm-recipes "$HERE/vllm_recipes.json" \
+  --client "$ROOT/bench/ladder38/harness_w55_conc_ladder.py" >/dev/null 2>&1 \
+  || fail k "cell_assemble failed for a spec-capable recipe with --spec off"
+read -r on method <<<"$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))["spec"]
+print(d["on"], d["method"])' "$tmp/specoff.json")"
+[ "$on" = "False" ] || fail k "--spec off must record spec.on=false, got $on"
+[ "$method" = "none" ] || fail k "--spec off must record spec.method=none, got $method"
+python3 "$HERE/validate_artifact.py" "$tmp/specoff.json" >/dev/null \
+  || fail k "a spec-off cell on a spec-capable recipe must validate:
+$(python3 "$HERE/validate_artifact.py" "$tmp/specoff.json")"
+ok k "qwen3.6-35b-a3b-fp8 on h200 with --spec off records method=none and validates"
 
 # ── (j) teardown only touches the container this invocation created ─────────
 # The stubs are PATH-shimmed rather than passed through $DOCKER so that a

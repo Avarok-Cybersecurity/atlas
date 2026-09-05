@@ -15,6 +15,11 @@ get misread:
     samples, so a pooled cell percentile is not reconstructible from its JSON.
     percentile_method records exactly that, and the validator refuses a
     ladder-sourced artifact that claims pooled_requests.
+  * The verdict is derived from gate EVIDENCE, not from the exit codes of the
+    stages that produced it. Three of the measurement gates -- the vacuity
+    floor, request errors, and throughput spread -- are conditions the ladder
+    reports while exiting 0, and a paired artifact is only a pair if it is the
+    same cell on the other engine within 24 h. See gate_blockers/pair_check.
   * isl_measured_p50 is filled in ONLY when every rep observed a single prompt
     length. The ladder stores a sorted SET of prompt_tokens per rep, so
     multiplicities are gone and a median over the union would be a number with
@@ -23,6 +28,7 @@ get misread:
 """
 
 import argparse
+import datetime
 import hashlib
 import json
 import pathlib
@@ -37,6 +43,128 @@ VACUITY_FLOOR = 0.8  # PRD section 9 / crates/atlas-plugin/src/benchmarks/concur
 SPREAD_MAX_PCT = 10.0  # PRD section 4 latency-pack gate
 
 HARD_STAGES = ("preflight", "serve", "boot", "coherency")
+
+PAIR_WINDOW_S = 24 * 3600  # PRD section 4: the two legs must be a day apart at most
+
+COHERENCY_GATES = ("determinism_ok", "toolcall_ok", "think_leak_ok", "known_answer_ok")
+
+
+def parse_utc(text):
+    """`2026-09-05T09:00:00Z` -> aware datetime, or None. No other format."""
+    if not isinstance(text, str):
+        return None
+    try:
+        return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+
+
+def gate_blockers(boot, coh, ladder, rung, metrics):
+    """Every gate whose evidence is absent or negative, in stage order.
+
+    This is the difference between "the stage exited 0" and "the gate passed".
+    `run_cell.sh` sets --failing-stage from a stage's EXIT CODE, and three of
+    the measurement gates -- the 80% vacuity floor, request errors, and the
+    10% throughput spread -- are conditions the ladder reports while exiting
+    successfully. They used to be appended to `notes` and nothing else, so a
+    cell whose every timed request returned 32 of 256 tokens was CERTIFIED
+    with the fact written in prose beside the verdict that contradicted it.
+    A gate is a result or it is not a gate.
+
+    Returns [(stage, reason)]; the first entry names the failing stage.
+    """
+    out = []
+    if boot is None:
+        out.append(("boot", "no boot gate JSON was recorded for this cell"))
+    elif boot.get("passed") is not True:
+        out.append(("boot", f"the boot gate did not pass "
+                            f"(passed={boot.get('passed')!r}, status={boot.get('status')!r})"))
+
+    if coh is None:
+        out.append(("coherency", "no coherency gate JSON was recorded for this cell"))
+    else:
+        for key in COHERENCY_GATES:
+            if coh.get(key) is not True:
+                # null is "this gate did not report", which is not a pass: a
+                # coherency JSON written before the known-answer probe existed
+                # is evidence of three gates, not four.
+                out.append(("coherency", f"coherency {key}={coh.get(key)!r}"))
+
+    if ladder is None:
+        out.append(("ladder", "no ladder JSON was recorded for this cell"))
+    elif rung is None:
+        out.append(("ladder", "the ladder JSON carries no rung at this concurrency"))
+    else:
+        if metrics["vacuous"] is not False:
+            out.append(("ladder",
+                        "the 80% vacuity floor was not cleared"
+                        if metrics["vacuous"] else
+                        "the 80% vacuity floor could not be applied"))
+        errors_total = rung.get("errors_total")
+        if errors_total is None:
+            out.append(("ladder", "the rung records no error count"))
+        elif errors_total:
+            out.append(("ladder", f"{errors_total} request error(s) in the measured reps"))
+        spread = metrics["tok_s_spread_pct"]
+        if spread is None:
+            out.append(("ladder", "the rung records no throughput spread"))
+        elif spread > SPREAD_MAX_PCT:
+            out.append(("ladder", f"throughput spread {spread:.2f}% exceeds "
+                                  f"the {SPREAD_MAX_PCT}% gate"))
+        if metrics["tok_s_mean"] is None:
+            out.append(("ladder", "the rung records no mean throughput"))
+    return out
+
+
+def pair_check(paired, args, timing):
+    """(within_24h, reasons) for the other engine's cell.
+
+    `within_24h` is the verdict of the WHOLE check, not the clock comparison
+    alone: a cell measured four minutes ago on a different SKU is not a pair,
+    and neither is `{}`. True only when the pair is the same cell on the other
+    engine and both timestamps fall inside the window; False when something
+    checkable is wrong; None when it could not be decided at all.
+    """
+    if paired is None:
+        return None, ["no paired artifact was recorded"]
+    if not isinstance(paired, dict) or not paired:
+        return False, ["the paired artifact carries no cell (an empty JSON "
+                       "object is not a measurement of anything)"]
+
+    reasons = []
+
+    def same(path, got, expect):
+        if got != expect:
+            reasons.append(f"paired {path}={got!r}, this cell has {expect!r}")
+
+    same("engine", paired.get("engine"), "vllm" if args.engine == "atlas" else "atlas")
+    same("model.model_key", (paired.get("model") or {}).get("model_key"), args.model_key)
+    same("hardware.hardware_id", (paired.get("hardware") or {}).get("hardware_id"), args.sku)
+    same("workload.name", (paired.get("workload") or {}).get("name"), args.workload)
+    same("workload.concurrency", (paired.get("workload") or {}).get("concurrency"),
+         args.concurrency)
+    same("spec.on", (paired.get("spec") or {}).get("on"), args.spec == "on")
+    same("think", paired.get("think"), args.think)
+
+    theirs = paired.get("timing") or {}
+    deltas, undecidable = [], False
+    for field in ("started_utc", "finished_utc"):
+        ours, other = parse_utc(timing.get(field)), parse_utc(theirs.get(field))
+        if ours is None or other is None:
+            undecidable = True
+            missing = "this cell" if ours is None else "the paired cell"
+            reasons.append(f"timing.{field}: {missing} has no usable timestamp")
+            continue
+        deltas.append((field, abs((ours - other).total_seconds())))
+    for field, delta in deltas:
+        if delta > PAIR_WINDOW_S:
+            reasons.append(f"timing.{field}: the two legs are {delta / 3600:.1f} h "
+                           f"apart, outside the {PAIR_WINDOW_S // 3600} h window")
+
+    if undecidable:
+        return None, reasons
+    return not reasons, reasons
 
 
 def read_json(path):
@@ -230,9 +358,15 @@ def main():
         top = {"tp": entry["tp_size"], "ep": entry["ep_size"], "pp": 1, "dp": 1,
                "world_size": world, "nnodes": 1}
         spec_supported = entry["spec_supported"]
-        spec_method = "mtp" if spec_supported else "none"
+        # The method describes what this cell RAN, not what the recipe could
+        # run. `--spec off` against a spec-capable recipe used to record
+        # method="mtp", which the validator correctly rejects (method must be
+        # `none` while `on` is false) -- turning a valid speculation-off cell
+        # into a validation failure. The vLLM branch below already does this.
+        spec_method = "none"
         spec_k = None
         if args.spec == "on" and spec_supported:
+            spec_method = "mtp"
             sargs = entry["spec_args"] or recipes["spec_args"]
             spec_k = int(sargs[sargs.index("--num-drafts") + 1])
         recipe_max = entry["recipe_max"]
@@ -280,23 +414,33 @@ def main():
         notes.append(args.extra_note)
     notes.append(entry.get("notes", ""))
 
-    stage = args.failing_stage or None
-    if stage is None:
-        # Every gate passed, but a cell is only CERTIFIED once its pair exists
-        # within 24 h (PRD section 4). Without one the cell is complete and
-        # uncertified, and `pair` is the stage that has not happened yet.
-        paired = read_json(args.paired_artifact)
-        if paired is None:
-            stage = "pair"
-            verdict = "PARTIAL"
-            notes.append("gates all passed; awaiting the paired cell from the "
-                         "other engine within 24 h before this can be CERTIFIED")
-        else:
-            verdict = "CERTIFIED"
-    else:
-        verdict = "NO-GO" if stage in HARD_STAGES else "PARTIAL"
+    timing = {field: (ladder or {}).get(field) if isinstance(
+                  (ladder or {}).get(field), str) else None
+              for field in ("started_utc", "finished_utc")}
 
     paired_doc = read_json(args.paired_artifact)
+    if args.paired_artifact and paired_doc is None:
+        notes.append(f"the paired artifact {args.paired_artifact} could not be read "
+                     "as JSON, so this cell has no pair")
+
+    # CERTIFIED is a claim about evidence, and it is assembled from that
+    # evidence here -- never from "a stage exited 0" or "a file was parseable".
+    within_24h, pair_reasons = pair_check(paired_doc, args, timing)
+    stage = args.failing_stage or None
+    if stage is None:
+        blockers = gate_blockers(ladder=ladder, boot=boot, coh=coh, rung=rung,
+                                 metrics=metrics)
+        if blockers:
+            stage = blockers[0][0]
+            notes.append("not CERTIFIED, gate evidence: "
+                         + "; ".join(f"{st}: {why}" for st, why in blockers))
+        elif within_24h is not True:
+            stage = "pair"
+            notes.append("gates all passed; not CERTIFIED because "
+                         + ("; ".join(pair_reasons) if pair_reasons else
+                            "the paired cell from the other engine is not recorded"))
+    verdict = "CERTIFIED" if stage is None else (
+        "NO-GO" if stage in HARD_STAGES else "PARTIAL")
     artifact = {
         "schema": 1,
         "campaign": workloads["campaign"],
@@ -347,6 +491,9 @@ def main():
             },
             "prompt_mode": "essay",
         },
+        # From the ladder's own header, so the pairing window is measured
+        # across when the two legs were MEASURED, not when they were written.
+        "timing": timing,
         "spec": {"on": args.spec == "on", "method": spec_method, "k": spec_k},
         "think": args.think,
         "boot": {
@@ -368,7 +515,7 @@ def main():
         "paired_cell": {
             "cell_id": (paired_doc or {}).get("cell_id"),
             "artifact_path": args.paired_artifact or None,
-            "within_24h": None,
+            "within_24h": within_24h,
         },
         "verdict": verdict,
         "failing_stage": stage,

@@ -109,6 +109,10 @@
     },
     "prompt_mode": "essay"
   },
+  "timing": {
+    "started_utc": "2026-09-05T09:00:00Z",
+    "finished_utc": "2026-09-05T09:02:00Z"
+  },
   "spec": {
     "on": false,
     "method": "none",
@@ -126,7 +130,7 @@
     "toolcall_ok": true,
     "think_leak_ok": true,
     "gate_json_path": "out/coherency.json",
-    "known_answer_ok": null
+    "known_answer_ok": true
   },
   "metrics": {
     "percentile_method": "mean_of_rep_percentiles",
