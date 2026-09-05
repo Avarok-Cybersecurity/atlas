@@ -4,6 +4,9 @@
 
 use super::*;
 
+#[path = "bf16_verify_out.rs"]
+mod bf16_verify_out;
+
 /// ATLAS_K4_DIAG=1 phase checkpoint (see verify_c2.rs). Synchronizes the
 /// stream after a named phase of the batched GDN decode so an illegal access
 /// is attributed to the exact op. No-op (and no env read past the first call)
@@ -297,8 +300,7 @@ impl Qwen3SsmLayer {
         // SSOT for the projections, the conv+GDN arm and the phase-8 norm
         // skip. Resolved once: it is a pure function of process flags and the
         // pass's own contract, so it is CUDA-graph-stable.
-        let row_exact =
-            super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::Proj);
+        let row_exact = super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::Proj);
 
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
@@ -1146,15 +1148,17 @@ impl Qwen3SsmLayer {
                 self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
             }
         } else if let Some(ref dense_out) = self.out_proj_dense {
-            ops::dense_gemm(
+            bf16_verify_out::project(
                 ctx.gpu,
+                self.dense_gemv_k,
                 self.dense_gemm_k,
                 normed_out_buf,
                 dense_out,
                 out_proj_buf,
-                k,
-                h as u32,
-                value_dim as u32,
+                num_tokens,
+                h,
+                value_dim,
+                row_exact,
                 stream,
             )?;
         } else if (2..=4).contains(&num_tokens)
