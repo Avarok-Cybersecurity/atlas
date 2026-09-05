@@ -31,18 +31,16 @@
 #
 # WHAT IT WARNS ABOUT, LOUDLY, AND RECORDS
 #
-#  * --think on. harness_w55_conc_ladder.py hardcodes
-#    chat_template_kwargs.enable_thinking=false in every request body, so a
-#    think-on cell driven by this client sets a SERVE-side flag whose effect the
-#    client then suppresses. The cell still runs -- the serve command genuinely
-#    differs -- but the artifact says in `notes` that it is not evidence of
-#    thinking-enabled generation. Fixing it needs a change to the ladder, whose
-#    owner is not this script.
+#  * --think on. The ladder sends chat_template_kwargs.enable_thinking=true
+#    only when passed --enable-thinking (default false, the GB10 campaign's
+#    setting). This script passes it for a think-on cell and the ladder header
+#    records which value was sent, so compare.py refuses a think-mismatched
+#    pair. Older ladder JSONs without the flag were think-off.
 #  * A missing warmup prompt. PRD section 6 pins
-#    --warmup-prompt bench/hopper_ab/warmup_1024.txt to kill the 5-30 s
-#    first-request autotune; that file is not in the tree yet. Rather than
-#    silently serving a cold first request or refusing to run, the launcher is
-#    given no warmup prompt and the artifact says so.
+#    --warmup-prompt bench/hopper_ab/warmup_1024.txt (a copy of the repo's
+#    tests/fixtures/bench_prompt_1024.txt) to kill the 5-30 s first-request
+#    autotune. If the file is absent the launcher is given no warmup prompt and
+#    the artifact says so rather than silently serving a cold first request.
 #
 # Usage:
 #   run_cell.sh --engine atlas|vllm --model <key> --sku h100|h200|b200|gb10 \
@@ -171,14 +169,11 @@ echo "client url:  $URL"
 if [ "$DRY_RUN" = "1" ]; then echo "mode:        DRY RUN (nothing is launched, nothing is written)"; fi
 echo ""
 
-if [ "$THINK" = "on" ]; then
-  echo "WARNING: --think on sets a SERVE-side flag only."
-  echo "  bench/ladder38/harness_w55_conc_ladder.py hardcodes"
-  echo "  chat_template_kwargs.enable_thinking=false in every request body, so this"
-  echo "  cell does not measure thinking-enabled generation. The artifact records"
-  echo "  that in notes. Changing it needs a ladder-owner change."
-  echo ""
-fi
+# --think on is a client-side setting too: the ladder sends
+# chat_template_kwargs.enable_thinking=true only with --enable-thinking, and
+# records which it sent in its header (compare.py refuses a mismatched pair).
+LADDER_THINK=()
+if [ "$THINK" = "on" ]; then LADDER_THINK=(--enable-thinking); fi
 
 WARMUP_PROMPT="$ROOT/bench/hopper_ab/warmup_1024.txt"
 WARMUP_NOTE=""
@@ -189,7 +184,7 @@ if [ ! -f "$WARMUP_PROMPT" ]; then
   echo "  Recording warmup_prompt=null rather than pretending it was used."
   echo ""
   WARMUP_PROMPT=""
-  WARMUP_NOTE="served with no --warmup-prompt: bench/hopper_ab/warmup_1024.txt does not exist in the tree, so the first request may carry autotune cost"
+  WARMUP_NOTE="served with no --warmup-prompt: bench/hopper_ab/warmup_1024.txt was not found, so the first request may carry autotune cost"
 fi
 
 # ── plumbing ─────────────────────────────────────────────────────────────────
@@ -307,11 +302,11 @@ fi
 
 # ── 5. latency pack ──────────────────────────────────────────────────────────
 step "stage 5/7 latency pack"
-show "python3 $LADDER --url $URL --model $HF_ID --label $CELL_ID --out $LADDER_JSON --concs $CONC --reps $REPS --isl $ISL --osl $OSL --warmup $WARMUP"
+show "python3 $LADDER --url $URL --model $HF_ID --label $CELL_ID --out $LADDER_JSON --concs $CONC --reps $REPS --isl $ISL --osl $OSL --warmup $WARMUP ${LADDER_THINK[*]:-}"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
   python3 "$LADDER" --url "$URL" --model "$HF_ID" --label "$CELL_ID" \
           --out "$LADDER_JSON" --concs "$CONC" --reps "$REPS" \
-          --isl "$ISL" --osl "$OSL" --warmup "$WARMUP" || note_fail ladder
+          --isl "$ISL" --osl "$OSL" --warmup "$WARMUP" "${LADDER_THINK[@]}" || note_fail ladder
 fi
 
 # ── 6. teardown (always) ─────────────────────────────────────────────────────

@@ -267,11 +267,15 @@ def main():
     if isl_note:
         notes.append(f"isl_measured_p50 is null: {isl_note}")
     if args.think == "on":
-        notes.append(
-            "think=on is a SERVE-SIDE setting only: the ladder client hardcodes "
-            "chat_template_kwargs.enable_thinking=false in every request body "
-            "(harness_w55_conc_ladder.py), so this cell does not measure a "
-            "thinking-enabled generation. Changing that needs a ladder owner.")
+        # The ladder must have been run with --enable-thinking; its header is
+        # the proof. A think-on cell whose ladder header says false is a
+        # mismatch, not a measurement.
+        sent = ((ladder or {}).get("chat_template_kwargs") or {}).get("enable_thinking")
+        if sent is not True:
+            notes.append(
+                "think=on but the ladder header records chat_template_kwargs."
+                f"enable_thinking={sent!r}: the client did not request thinking, "
+                "so this cell is not evidence of thinking-enabled generation.")
     if args.extra_note:
         notes.append(args.extra_note)
     notes.append(entry.get("notes", ""))

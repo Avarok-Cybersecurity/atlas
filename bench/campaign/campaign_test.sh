@@ -103,10 +103,10 @@ $atlas_out"
 have "$atlas_out" "--kv-cache-dtype fp8" || fail b "campaign common KV dtype missing: $atlas_out"
 ok b "serve line carries the recipe flags (util 0.92, bare_json, fp8 KV)"
 
-have "$atlas_out" "WARNING: --think on sets a SERVE-side flag only." \
-  || fail b "think-on must warn that the client pins enable_thinking=false:
+have "$atlas_out" "--warmup 1 --enable-thinking" \
+  || fail b "think-on must pass --enable-thinking to the ladder client:
 $atlas_out"
-ok b "--think on warns that the ladder client suppresses it"
+ok b "--think on reaches the ladder client as --enable-thinking"
 
 # ── (c) vllm dry run, agent shape ────────────────────────────────────────────
 vllm_out="$(bash "$RUN" --engine vllm --model qwen3.6-35b-a3b-fp8 --sku h100 \
@@ -259,8 +259,8 @@ ok h "unpaired all-green cell is PARTIAL/pair with mean_of_rep_percentiles"
 python3 -c '
 import json,sys
 d=json.load(open(sys.argv[1]))
-assert "enable_thinking=false" in d["notes"], d["notes"]
-' "$art" || fail h "a think-on cell must record the client caveat in notes"
+assert "enable_thinking=False" in d["notes"] and "not evidence of thinking-enabled" in d["notes"], d["notes"]
+' "$art" || fail h "a think-on cell whose ladder header says false must say so in notes"
 [ "$thinkv" = "on" ] || fail h "think must round-trip into the artifact, got $thinkv"
 ok h "the think-on caveat reaches the artifact notes"
 

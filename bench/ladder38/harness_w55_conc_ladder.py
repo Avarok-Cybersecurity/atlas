@@ -59,6 +59,7 @@ SUFFIX_ESSAY = (" Using the text above only as a starting point, write a long, r
                 "Do not summarise and do not stop early.")
 TEMPERATURE = 0.0
 SEED = 42
+ENABLE_THINKING = False  # set from --enable-thinking in main()
 REQUEST_TIMEOUT_S = 900
 
 PROMPT_MODE = os.environ.get("W55_PROMPT_MODE", "essay")
@@ -106,9 +107,11 @@ async def one_request(session, url, model, prompt, osl):
         "seed": SEED,
         "stream": True,
         "stream_options": {"include_usage": True},
-        # ★ the ONLY key that disables thinking on vLLM. {"thinking": false} is
+        # ★ the ONLY key that toggles thinking on vLLM. {"thinking": false} is
         # silently ignored. Sent to both engines so the bodies are identical.
-        "chat_template_kwargs": {"enable_thinking": False},
+        # Default False (the GB10 campaign's setting); --enable-thinking flips
+        # it for a think-on cell, and the run header records which was sent.
+        "chat_template_kwargs": {"enable_thinking": ENABLE_THINKING},
     }
     t0 = time.perf_counter()
     t_first = None
@@ -208,7 +211,11 @@ async def main():
     ap.add_argument("--isl", type=int, required=True)
     ap.add_argument("--osl", type=int, required=True)
     ap.add_argument("--warmup", type=int, required=True)
+    ap.add_argument("--enable-thinking", action="store_true",
+                    help="send chat_template_kwargs.enable_thinking=true (default false)")
     a = ap.parse_args()
+    global ENABLE_THINKING
+    ENABLE_THINKING = bool(a.enable_thinking)
 
     concs = [int(x) for x in a.concs.split(",") if x.strip()]
     chat = a.url.rstrip("/") + "/v1/chat/completions"
@@ -219,7 +226,7 @@ async def main():
         "label": a.label, "url": a.url, "model": a.model,
         "isl": a.isl, "osl": a.osl, "reps": a.reps, "warmup": a.warmup,
         "temperature": TEMPERATURE, "seed": SEED,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": ENABLE_THINKING},
         "driver_sha256": me,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "rungs": [],
