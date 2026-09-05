@@ -179,7 +179,7 @@ fn empty_output_edges() {
 /// Minimal `Model`: only the paths `finish_sequence` exercises
 /// (`cache_sequence`, `free_sequence`, `ep_broadcast_cmd_for_seq`
 /// default) are live; everything else is unreachable in these tests.
-struct StubModel;
+pub(super) struct StubModel;
 
 impl Model for StubModel {
     fn prefill(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {

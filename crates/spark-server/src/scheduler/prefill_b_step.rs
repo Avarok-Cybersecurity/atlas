@@ -68,6 +68,9 @@ pub fn prefill_request(
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
+    // Match the chunked path: include grammar preparation once in service TTFT,
+    // while retaining the existing exclusion of HTTP handling and queue time.
+    let request_start = Instant::now();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
@@ -103,7 +106,6 @@ pub fn prefill_request(
         ),
     };
 
-    let request_start = Instant::now();
     tracing::info!(
         "Prefilling: {} prompt tokens, max_tokens={max_tokens}",
         prompt_tokens.len(),

@@ -83,6 +83,9 @@ pub fn start_chunked_prefill(
     let req_prompt_logprobs = req.prompt_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
+    // Scheduler-service TTFT includes grammar compilation and mask warmup.
+    // HTTP handling/queue time precedes this clock; decode_start stays unchanged.
+    let request_start = Instant::now();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
@@ -118,7 +121,6 @@ pub fn start_chunked_prefill(
         ),
     };
 
-    let request_start = Instant::now();
     let total = prompt_tokens.len();
     let chunk_len = total.min(max_prefill_tokens);
     let is_last = chunk_len >= total;
