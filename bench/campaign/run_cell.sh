@@ -71,7 +71,8 @@
 #
 # Exit: 0 every gate passed · 1 a gate failed (artifact written anyway) ·
 #       2 usage or refusal-to-start · 3 no recipe for the pair · 4 --spec on
-#       with no speculative profile · 9 excluded thinking mode ·
+#       with no speculative profile · 8 invalid vLLM revision identity ·
+#       9 excluded thinking mode ·
 #       128+N terminated by signal N (130 INT,
 #       143 TERM, 129 HUP), with the same teardown run and the artifact naming
 #       the stage that was interrupted

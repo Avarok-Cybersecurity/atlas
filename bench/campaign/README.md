@@ -14,8 +14,8 @@ that a cell is reproducible from its artifact alone.
 | File | What it does |
 |---|---|
 | `run_cell.sh` | The driver. Preflight → serve → boot gate → coherency gate → latency pack → teardown → assemble → validate, for one cell. Orchestrates the existing tools; rewrites none of them. |
-| `vllm_control.sh` | Renders (or runs) the **verified** vLLM recipe command for a `(model, SKU)`. Composes nothing. `--selftest`, `--list`. |
-| `vllm_recipes.json` | The 29 rendered vLLM profiles, transcribed verbatim from the recipe evidence captured 2026-09-05. Data only. |
+| `vllm_control.sh` | Renders (or runs) the captured vLLM recipe with declared revision pins for a `(model, SKU)`. `--selftest`, `--list`. |
+| `vllm_recipes.json` | The 29 captured vLLM profiles with an explicit revision-pin adaptation. Original evidence hashes retain their original meaning. Data only. |
 | `vllm_render.py` | JSON arithmetic behind `vllm_control.sh` (spec on/off, flag audit, docker argv). |
 | `atlas_recipes.json` | The Atlas serve side: 17 entries from PRD §6 plus the repo's own recipe fixtures. Data only. |
 | `atlas_render.py` | Renders `EXTRA_ARGS` for `scripts/start-node-ep.sh`. `--selftest`. |
@@ -94,7 +94,17 @@ needs as much as a win.
 or a refusal to start without `--yes` · `3` no rendered recipe for that
 `(model, SKU)` · `4` `--spec on` against a recipe with no speculative profile ·
 `5` (vLLM) a real run with no image digest · `6` (vLLM) a real run of a
-multi-node profile · `9` a thinking mode excluded by the PRD.
+multi-node profile · `7` an unknown recipe flag · `8` an invalid or overridden
+vLLM revision identity · `9` a thinking mode excluded by the PRD.
+
+Every vLLM head/worker command pins its primary checkpoint with `--revision`.
+External draft profiles pin `revision` inside `--speculative-config`; spec off
+removes that entire group. The renderer checks full SHA values, repository and
+rank consistency, and rejects identity changes through `--extra`. Pins come
+from the Step D metadata inventory linked in `revision_adaptation`; they name
+intended revisions and do not prove which bytes loaded. In particular, support
+for the draft `revision` field still needs verification in the selected image.
+The assembler does not copy these candidate pins into `artifact.model.revision`.
 
 `thinking_policy.json` records request-mode eligibility for each recipe model.
 GLM-5.3 and GLM-5.3-Flash require `--think on`; Qwen3-Next Instruct requires
@@ -114,6 +124,9 @@ or malformed policy evidence even when the four gate booleans are true, and
 also rejects a mismatched ladder header. Historical JSON without policy
 fields predates thinking support and can support only an off cell. HTTP
 fixture tests prove this wiring; a real engine still has to pass the probes.
+The probes judge final answer content and tool calls. Separately returned
+reasoning fields remain in the raw HTTP evidence; a pass does not establish
+reasoning-stream determinism or freedom from repetition.
 
 **Percentiles are means of per-rep percentiles, not pooled.** The ladder keeps
 one percentile per rep and discards the per-request samples, so pooled cell

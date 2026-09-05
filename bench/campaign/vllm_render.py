@@ -10,15 +10,16 @@ quotes in it (`--reasoning-config '{"reasoning_parser":"deepseek_v4",...}'`,
 a shell string is where a control leg quietly stops being verbatim, so the argv
 never becomes a string: it is handed to the launcher NUL-separated.
 
-Nothing here composes a command. Every token in `args` / `worker_args` /
-`spec_args` comes from bench/campaign/vllm_recipes.json, which was transcribed
-from the captured recipe evidence. The only tokens this file can add are the
+Every token in `args` / `worker_args` / `spec_args` comes from
+bench/campaign/vllm_recipes.json: captured recipe evidence plus the declared
+revision-pin adaptation. Original evidence hashes still identify the captured
+recipe, not the adapted command. The only tokens this file can add are the
 `docker run` preamble and whatever the caller passed in `--extra`, and both are
 labelled as such in the printed block.
 
 Exit codes match vllm_control.sh: 0 ok · 2 usage · 3 no rendered profile ·
-4 --spec on with no speculative profile · 7 an entry carries a flag that is not
-in the frozen recipe vocabulary.
+4 --spec on with no speculative profile · 7 an unknown recipe flag ·
+8 an invalid or overridden model/draft revision identity.
 """
 
 import argparse
@@ -30,11 +31,13 @@ import shlex
 import sys
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+REVISION_RE = re.compile(r"[0-9a-f]{40}")
 
 E_USAGE = 2
 E_NO_PROFILE = 3
 E_NO_SPEC = 4
 E_UNKNOWN_FLAG = 7
+E_REVISION = 8
 
 
 def load(path):
@@ -90,6 +93,90 @@ def apply_spec(args, spec_args, spec):
     return off + list(spec_args or [])
 
 
+def revision_error(doc, entry, extra_tokens):
+    """Validate intended identity before rendering; this does not prove loading.
+
+    Fail closed on duplicate flags and stale embedded speculative groups: a
+    different JSON spelling must not leave an unpinned draft in a spec-off run.
+    """
+    protected = ("--revision", "--model", "--tokenizer", "--tokenizer-revision",
+                 "--code-revision", "--speculative-config", "--config")
+    for token in extra_tokens:
+        if not token.startswith("--"):
+            continue
+        flag = token.split("=", 1)[0].replace("_", "-")
+        if any(flag == p or flag.startswith(p + ".") or p.startswith(flag)
+               for p in protected):
+            return f"--extra cannot override {flag}; update the declared recipe pins"
+
+    # The same Hub repository may occur on several SKUs and as a draft. It
+    # must have one intended revision throughout this recipe document.
+    revisions = {}
+    for candidate in doc["entries"]:
+        identities = [(candidate["hf_id"], candidate.get("revision"))]
+        draft = candidate.get("draft_revision")
+        if draft is not None:
+            if not isinstance(draft, dict):
+                return "draft_revision must name a repository and full revision"
+            identities.append((draft.get("repo_id"), draft.get("revision")))
+        for repo, revision in identities:
+            if not isinstance(repo, str) or not repo:
+                return "empty repository in declared pins"
+            if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
+                return f"{repo} requires a full 40-character lowercase commit SHA"
+            if repo in revisions and revisions[repo] != revision:
+                return f"{repo} has inconsistent revisions across profiles"
+            revisions[repo] = revision
+
+    spec_groups = groups(entry.get("spec_args") or [])
+    configs = [g for g in spec_groups if g[0] == "--speculative-config"]
+    if len(configs) != (1 if entry.get("spec_args") else 0):
+        return "spec_args must contain exactly one speculative config when enabled"
+    draft = entry.get("draft_revision")
+    if configs:
+        try:
+            config = json.loads(configs[0][1]) if len(configs[0]) == 2 else None
+        except (ValueError, TypeError):
+            config = None
+        if not isinstance(config, dict):
+            return "speculative config must be one JSON object"
+        if config.get("model"):
+            if not draft or (config["model"], config.get("revision")) != (
+                    draft["repo_id"], draft["revision"]):
+                return "external speculative model/revision differs from declared draft pin"
+        elif draft:
+            return "declared draft pin has no external speculative model"
+        elif "revision" in config:
+            return "internal speculation must inherit the primary model revision"
+    elif draft:
+        return "declared draft pin has no speculative config"
+
+    for rank, tokens in enumerate([entry["args"]] + (entry.get("worker_args") or [])):
+        if tokens[:3] != ["vllm", "serve", entry["hf_id"]]:
+            return f"node {rank} must serve the declared repository {entry['hf_id']}"
+        command_groups = groups(tokens)
+        embedded = [g for g in command_groups if g[0].startswith("--speculative-config")]
+        if embedded and embedded != configs:
+            return f"node {rank} has a duplicate or undeclared speculative config"
+        for mode in ("off", "on"):
+            rendered = apply_spec(tokens, entry.get("spec_args"), mode)
+            rendered_groups = groups(rendered)
+            # Validate after spec arithmetic: spec_args can otherwise append a
+            # second --revision that wins over the pinned primary argument.
+            primary = [g for g in rendered_groups if g[0].split("=", 1)[0] == "--revision"]
+            if primary != [["--revision", entry["revision"]]]:
+                return f"node {rank} spec {mode} requires exactly one --revision matching the declared pin"
+            for group in rendered_groups:
+                flag = group[0].split("=", 1)[0].replace("_", "-")
+                if flag in ("--model", "--tokenizer", "--tokenizer-revision", "--code-revision", "--config"):
+                    return f"node {rank} spec {mode} cannot override {flag}; update the declared recipe pins"
+            expected = configs if mode == "on" else []
+            actual = [g for g in rendered_groups if g[0].startswith("--speculative-config")]
+            if actual != expected:
+                return f"node {rank} spec {mode} does not preserve the declared config"
+    return None
+
+
 def flag_audit(tokens, known):
     """Flags in `tokens` that appear nowhere in the frozen recipe vocabulary."""
     return [t for t in tokens if t.startswith("--") and t not in known]
@@ -130,20 +217,25 @@ def pasteable(argv):
 def describe(entry, spec, extra_tokens, image, digest, unknown_recipe, unknown_extra):
     top = entry["topology"]
     lines = [
-        "=== vLLM control leg (recipe render, not a composed command) ===",
+        "=== vLLM control leg (recipe with declared revision adaptation) ===",
         f"model_key:   {entry['model_key']}",
         f"sku:         {entry['sku']}",
         f"hf_id:       {entry['hf_id']}",
+        f"revision:    {entry['revision']} (intended identity; not loaded-byte proof)",
         f"quant:       {entry['quant']}",
         f"topology:    gpus={entry['gpus']} nnodes={entry['nnodes']} "
         f"tp={top['tp']} pp={top['pp']} dp={top['dp']} ({entry['strategy']})",
         f"verdict:     {entry['verdict']}",
         f"source:      {entry['source_url']}",
-        f"retrieved:   {entry['retrieved_utc']}  evidence sha256 {entry['evidence_sha256']}",
+        f"retrieved:   {entry['retrieved_utc']}  original recipe evidence sha256 {entry['evidence_sha256']}",
         f"image:       {image}",
         f"image_ref:   {image_ref(image, digest)}"
         + ("" if digest else "   (tag only -- a non-dry run will be REFUSED, exit 5)"),
     ]
+    if entry.get("draft_revision"):
+        draft = entry["draft_revision"]
+        lines.append(f"draft pin:   {draft['repo_id']}@{draft['revision']} "
+                     "(selected image support unproven)")
     if entry["spec_args"]:
         lines.append(f"spec:        {spec}   (recipe renders spec "
                      f"{entry['spec_rendered_default']}; the switchable group is "
@@ -187,6 +279,17 @@ def cmd_render(doc, args):
               "or pick a model whose recipe has one.", file=sys.stderr)
         return E_NO_SPEC
 
+    try:
+        extra_tokens = shlex.split(args.extra or "")
+    except ValueError as error:
+        print(f"ERROR: malformed --extra: {error}", file=sys.stderr)
+        return E_USAGE
+    pin_error = revision_error(doc, entry, extra_tokens)
+    if pin_error:
+        print(f"ERROR: revision identity for {args.model}/{args.sku}: {pin_error}",
+              file=sys.stderr)
+        return E_REVISION
+
     all_recipe = list(entry["args"]) + list(entry["spec_args"] or [])
     for w in entry.get("worker_args") or []:
         all_recipe += list(w)
@@ -195,12 +298,11 @@ def cmd_render(doc, args):
         print(f"ERROR: entry {args.model}/{args.sku} carries flags that are not in "
               f"the frozen recipe vocabulary: {' '.join(sorted(set(unknown_recipe)))}",
               file=sys.stderr)
-        print("       vllm_recipes.json is a transcription; a flag that is in an "
-              "entry but not in known_flag_prefixes was hand-edited in.",
+        print("       A flag in an entry must belong to the frozen vocabulary "
+              "or an explicitly recorded recipe adaptation.",
               file=sys.stderr)
         return E_UNKNOWN_FLAG
 
-    extra_tokens = shlex.split(args.extra or "")
     unknown_extra = flag_audit(extra_tokens, known)
 
     image = args.image or entry["image"]
@@ -264,6 +366,8 @@ def selftest(doc):
 
     for e in doc["entries"]:
         tag = f"{e['model_key']}/{e['sku']}"
+        pin_error = revision_error(doc, e, [])
+        check(pin_error is None, f"{tag}: {pin_error}")
         off = apply_spec(e["args"], e["spec_args"], "off")
 
         # Every render must name the model it serves. The recipes place the HF

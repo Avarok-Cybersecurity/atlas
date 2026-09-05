@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Render (and optionally run) the VERIFIED vLLM control leg for one
+# Render (and optionally run) the pinned vLLM recipe for one
 # (model, SKU) pair of the Hopper campaign.
 #
 # WHY THIS EXISTS. The control leg is only a control if its flags are the
@@ -9,8 +9,9 @@
 # campaign acquires an unverifiable number: nobody can tell afterwards whether
 # `--moe-backend flashinfer_cutlass` was in the recipe or in somebody's
 # muscle memory. So this script owns exactly one job -- take a (model, SKU),
-# look up the captured render in bench/campaign/vllm_recipes.json, and emit it
-# unchanged. It composes nothing. If the pair has no rendered profile it says
+# look up the captured render with its declared revision-pin adaptation in
+# bench/campaign/vllm_recipes.json and emit it. Original evidence hashes name
+# the captured recipe, not the adapted command. If no profile exists it says
 # so and exits 3; it does not reconstruct one.
 #
 # THREE REFUSALS, EACH LOAD-BEARING
@@ -73,8 +74,8 @@
 #   VLLM_RECIPES       path to the recipe data file (default: next to this script)
 #
 # Exit codes: 0 ok · 2 usage · 3 no rendered profile · 4 --spec on with no
-#             speculative profile in the recipe · 5 run without a digest ·
-#             6 run of a multi-node profile
+# speculative profile · 5 run without a digest · 6 run of a multi-node profile
+# · 7 unknown recipe flag · 8 invalid or overridden revision identity
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -118,6 +118,8 @@ ok policy "campaign thinking eligibility refuses excluded modes before launch"
 python3 "$HERE/../hopper_ab/coherency_policy_test.py" || fail coherency "HTTP thinking policy regression"
 python3 "$HERE/coherency_evidence_test.py" || fail coherency "artifact thinking policy regression"
 ok coherency "gate requests and artifact certification match the cell's thinking mode"
+python3 "$HERE/vllm_pins_test.py" || fail pins "vLLM revision identity regression"
+ok pins "vLLM primary and draft pins survive rendering and reject identity overrides"
 
 # ── (a0) every FP8-checkpoint Atlas entry carries FP8 KV calibration ────────
 # Oracle: spark-runtime/src/weights.rs fp8_kv_scale_count — a checkpoint with

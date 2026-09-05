@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "campaign": "hopper-atlas-vs-vllm-2026-09",
-  "note": "Transcribed 2026-09-05 from the captured recipe evidence under docs/campaigns/hopper-atlas-vs-vllm-2026-09/vllm-control/recipe-evidence/ (issue Avarok-Cybersecurity/atlas#899). Every args/worker_args/spec_args array is copied verbatim from the captured render; nothing here is composed by hand. A (model_key, sku) pair with no rendered profile is ABSENT rather than reconstructed -- vllm_control.sh exits 3 on it.",
+  "note": "Transcribed 2026-09-05 from captured recipe evidence, then adapted with explicit primary and external draft revision pins from the Step D metadata inventory. evidence_sha256 continues to identify the ORIGINAL captured recipe, not the adapted argv. A (model_key, sku) pair with no rendered profile is ABSENT rather than reconstructed; vllm_control.sh exits 3 on it.",
   "known_flag_prefixes": [
     "--async-scheduling",
     "--attention-backend",
@@ -31,13 +31,14 @@
     "--reasoning-config",
     "--reasoning-parser",
     "--reasoning-parser-plugin",
+    "--revision",
     "--speculative-config",
     "--tensor-parallel-size",
     "--tokenizer-mode",
     "--tool-call-parser",
     "--trust-remote-code"
   ],
-  "known_flag_prefixes_note": "Frozen at transcription time from the captured renders. It is NOT re-derived from `entries` at load: a flag that appears in an entry but not in this list is by definition not in any recipe, which is exactly the hand-edit the validator has to catch.",
+  "known_flag_prefixes_note": "Frozen recipe vocabulary plus the explicitly approved --revision adaptation below; not re-derived from entries.",
   "entries": [
     {
       "model_key": "nemotron-3-super-fp8",
@@ -58,7 +59,7 @@
       "source_url": "https://recipes.vllm.ai/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.067715+00:00",
       "evidence_sha256": "0727b33029537710896cc04499107202c40d7bc0ab23a90305b4f2bba43b3c16",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -72,7 +73,9 @@
         "--tool-call-parser",
         "qwen3_xml",
         "--reasoning-parser",
-        "nemotron_v3"
+        "nemotron_v3",
+        "--revision",
+        "744b1880a37996c5d56bf454ae164dfd74d77c4e"
       ],
       "worker_args": null,
       "spec_args": [
@@ -80,7 +83,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "MTP speculative decoding for accelerated inference"
+      "spec_description": "MTP speculative decoding for accelerated inference",
+      "original_verdict": "verbatim",
+      "revision": "744b1880a37996c5d56bf454ae164dfd74d77c4e",
+      "draft_revision": null
     },
     {
       "model_key": "nemotron-3-super-fp8",
@@ -101,7 +107,7 @@
       "source_url": "https://recipes.vllm.ai/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.067749+00:00",
       "evidence_sha256": "5005a54f09256b41e41469dc55ada4709a53f04c995da2c2a8cd0a01532ed154",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -115,7 +121,9 @@
         "--tool-call-parser",
         "qwen3_xml",
         "--reasoning-parser",
-        "nemotron_v3"
+        "nemotron_v3",
+        "--revision",
+        "744b1880a37996c5d56bf454ae164dfd74d77c4e"
       ],
       "worker_args": null,
       "spec_args": [
@@ -123,7 +131,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "MTP speculative decoding for accelerated inference"
+      "spec_description": "MTP speculative decoding for accelerated inference",
+      "original_verdict": "verbatim",
+      "revision": "744b1880a37996c5d56bf454ae164dfd74d77c4e",
+      "draft_revision": null
     },
     {
       "model_key": "nemotron-3-super-fp8",
@@ -144,7 +155,7 @@
       "source_url": "https://recipes.vllm.ai/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.067782+00:00",
       "evidence_sha256": "126d1a6a5ed81dc1e2634e365a3f409d7e0be86c0c8d40f476e201755d9b2a85",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -158,7 +169,9 @@
         "--tool-call-parser",
         "qwen3_xml",
         "--reasoning-parser",
-        "nemotron_v3"
+        "nemotron_v3",
+        "--revision",
+        "744b1880a37996c5d56bf454ae164dfd74d77c4e"
       ],
       "worker_args": null,
       "spec_args": [
@@ -166,7 +179,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "MTP speculative decoding for accelerated inference"
+      "spec_description": "MTP speculative decoding for accelerated inference",
+      "original_verdict": "verbatim",
+      "revision": "744b1880a37996c5d56bf454ae164dfd74d77c4e",
+      "draft_revision": null
     },
     {
       "model_key": "nemotron-3-nano-fp8",
@@ -187,7 +203,7 @@
       "source_url": "https://recipes.vllm.ai/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.067941+00:00",
       "evidence_sha256": "4d316eedb01d0239bf5764bc1738c7b99c7455eb219c764b9dea1537677ac5ad",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -206,12 +222,17 @@
         "--reasoning-parser-plugin",
         "nano_v3_reasoning_parser.py",
         "--reasoning-parser",
-        "nano_v3"
+        "nano_v3",
+        "--revision",
+        "9bee19446c0dfd01f356e10979d225b2a6621944"
       ],
       "worker_args": null,
       "spec_args": null,
       "spec_rendered_default": "off",
-      "spec_description": null
+      "spec_description": null,
+      "original_verdict": "verbatim",
+      "revision": "9bee19446c0dfd01f356e10979d225b2a6621944",
+      "draft_revision": null
     },
     {
       "model_key": "nemotron-3-nano-fp8",
@@ -232,7 +253,7 @@
       "source_url": "https://recipes.vllm.ai/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.355010+00:00",
       "evidence_sha256": "bd3b732b7d19ebd92e01828ffa6c7934106b8b92ee7eb17bbe31c3ba553ffda9",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -251,12 +272,17 @@
         "--reasoning-parser-plugin",
         "nano_v3_reasoning_parser.py",
         "--reasoning-parser",
-        "nano_v3"
+        "nano_v3",
+        "--revision",
+        "9bee19446c0dfd01f356e10979d225b2a6621944"
       ],
       "worker_args": null,
       "spec_args": null,
       "spec_rendered_default": "off",
-      "spec_description": null
+      "spec_description": null,
+      "original_verdict": "verbatim",
+      "revision": "9bee19446c0dfd01f356e10979d225b2a6621944",
+      "draft_revision": null
     },
     {
       "model_key": "nemotron-3-nano-fp8",
@@ -277,7 +303,7 @@
       "source_url": "https://recipes.vllm.ai/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.364970+00:00",
       "evidence_sha256": "f71a091a924015390117802f80c7af6ee0a599da9597c8935f73c819dcef8404",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -296,12 +322,17 @@
         "--reasoning-parser-plugin",
         "nano_v3_reasoning_parser.py",
         "--reasoning-parser",
-        "nano_v3"
+        "nano_v3",
+        "--revision",
+        "9bee19446c0dfd01f356e10979d225b2a6621944"
       ],
       "worker_args": null,
       "spec_args": null,
       "spec_rendered_default": "off",
-      "spec_description": null
+      "spec_description": null,
+      "original_verdict": "verbatim",
+      "revision": "9bee19446c0dfd01f356e10979d225b2a6621944",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3.6-35b-a3b-fp8",
@@ -322,7 +353,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B-FP8/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.067202+00:00",
       "evidence_sha256": "d460be445b19b8a062eb8f8473d71c24f3552a5a16c7a4b29874f093e99db9b4",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -336,7 +367,9 @@
         "--reasoning-parser",
         "qwen3",
         "--mm-encoder-tp-mode",
-        "data"
+        "data",
+        "--revision",
+        "95a723d08a9490559dae23d0cff1d9466213d989"
       ],
       "worker_args": null,
       "spec_args": [
@@ -344,7 +377,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"moe_backend\":\"triton\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Multi-token prediction speculative decoding for lower latency"
+      "spec_description": "Multi-token prediction speculative decoding for lower latency",
+      "original_verdict": "verbatim",
+      "revision": "95a723d08a9490559dae23d0cff1d9466213d989",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3.6-35b-a3b-fp8",
@@ -365,7 +401,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B-FP8/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.067462+00:00",
       "evidence_sha256": "ed0a2b2c94122c37fd86c8f7781b4e8ad4b5b44b7a004f1927afc82550c36fec",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -379,7 +415,9 @@
         "--reasoning-parser",
         "qwen3",
         "--mm-encoder-tp-mode",
-        "data"
+        "data",
+        "--revision",
+        "95a723d08a9490559dae23d0cff1d9466213d989"
       ],
       "worker_args": null,
       "spec_args": [
@@ -387,7 +425,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"moe_backend\":\"triton\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Multi-token prediction speculative decoding for lower latency"
+      "spec_description": "Multi-token prediction speculative decoding for lower latency",
+      "original_verdict": "verbatim",
+      "revision": "95a723d08a9490559dae23d0cff1d9466213d989",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3.6-35b-a3b-fp8",
@@ -408,7 +449,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B-FP8/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.067547+00:00",
       "evidence_sha256": "8b6f35be19a7700360a36bc2c4868f374c7b0d793073f8aa4d1dcb00886ff340",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -422,7 +463,9 @@
         "--reasoning-parser",
         "qwen3",
         "--mm-encoder-tp-mode",
-        "data"
+        "data",
+        "--revision",
+        "95a723d08a9490559dae23d0cff1d9466213d989"
       ],
       "worker_args": null,
       "spec_args": [
@@ -430,7 +473,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"moe_backend\":\"triton\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Multi-token prediction speculative decoding for lower latency"
+      "spec_description": "Multi-token prediction speculative decoding for lower latency",
+      "original_verdict": "verbatim",
+      "revision": "95a723d08a9490559dae23d0cff1d9466213d989",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3-next-80b-fp8",
@@ -451,7 +497,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3-Next-80B-A3B-Instruct-FP8/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.067598+00:00",
       "evidence_sha256": "38c5a241a55a7e7ed39157785e6f2cd5de3aad1a0ff29e69a53c8783397189c5",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -460,7 +506,9 @@
         "8",
         "--enable-auto-tool-choice",
         "--tool-call-parser",
-        "hermes"
+        "hermes",
+        "--revision",
+        "c5f5f263bdd5cc134092897864e8905d8fe7b928"
       ],
       "worker_args": null,
       "spec_args": [
@@ -469,7 +517,10 @@
         "--no-enable-chunked-prefill"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Multi-token prediction speculative decoding for lower latency"
+      "spec_description": "Multi-token prediction speculative decoding for lower latency",
+      "original_verdict": "verbatim",
+      "revision": "c5f5f263bdd5cc134092897864e8905d8fe7b928",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3-next-80b-fp8",
@@ -490,7 +541,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3-Next-80B-A3B-Instruct-FP8/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.067642+00:00",
       "evidence_sha256": "1f8336404fc7cde551b4190d86a4a029b1e27c1cc128c6c2ef979fdecc1594ca",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -499,7 +550,9 @@
         "1",
         "--enable-auto-tool-choice",
         "--tool-call-parser",
-        "hermes"
+        "hermes",
+        "--revision",
+        "c5f5f263bdd5cc134092897864e8905d8fe7b928"
       ],
       "worker_args": null,
       "spec_args": [
@@ -508,7 +561,10 @@
         "--no-enable-chunked-prefill"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Multi-token prediction speculative decoding for lower latency"
+      "spec_description": "Multi-token prediction speculative decoding for lower latency",
+      "original_verdict": "verbatim",
+      "revision": "c5f5f263bdd5cc134092897864e8905d8fe7b928",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3-next-80b-fp8",
@@ -531,7 +587,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3-Next-80B-A3B-Instruct-FP8/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.067678+00:00",
       "evidence_sha256": "c9a5439ae6ac376e45daed37f8e5e3d283f9e550daa0839565e33dd3ed5b9eb9",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -544,7 +600,9 @@
         "FLASH_ATTN",
         "--enable-auto-tool-choice",
         "--tool-call-parser",
-        "hermes"
+        "hermes",
+        "--revision",
+        "c5f5f263bdd5cc134092897864e8905d8fe7b928"
       ],
       "worker_args": null,
       "spec_args": [
@@ -553,7 +611,10 @@
         "--no-enable-chunked-prefill"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Multi-token prediction speculative decoding for lower latency"
+      "spec_description": "Multi-token prediction speculative decoding for lower latency",
+      "original_verdict": "verbatim",
+      "revision": "c5f5f263bdd5cc134092897864e8905d8fe7b928",
+      "draft_revision": null
     },
     {
       "model_key": "deepseek-v4-flash",
@@ -574,7 +635,7 @@
       "source_url": "https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.393756+00:00",
       "evidence_sha256": "a07043e1b8d42c8b07a5bb6cc128d2db08c938d20848e05648d6bf00715d1d50",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -597,7 +658,9 @@
         "--reasoning-config",
         "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}",
         "--speculative-config",
-        "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
+        "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}",
+        "--revision",
+        "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
       ],
       "worker_args": null,
       "spec_args": [
@@ -605,7 +668,10 @@
         "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
       ],
       "spec_rendered_default": "on",
-      "spec_description": "Speculative decoding \u2014 pick a drafting method."
+      "spec_description": "Speculative decoding \u2014 pick a drafting method.",
+      "original_verdict": "verbatim",
+      "revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+      "draft_revision": null
     },
     {
       "model_key": "deepseek-v4-flash",
@@ -626,7 +692,7 @@
       "source_url": "https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.395240+00:00",
       "evidence_sha256": "1b86b6bb85d649a72466cfcb12df061470036a20641be75eb4b42e0afa362377",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -653,7 +719,9 @@
         "--reasoning-config",
         "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}",
         "--speculative-config",
-        "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
+        "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}",
+        "--revision",
+        "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
       ],
       "worker_args": null,
       "spec_args": [
@@ -661,7 +729,10 @@
         "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
       ],
       "spec_rendered_default": "on",
-      "spec_description": "Speculative decoding \u2014 pick a drafting method."
+      "spec_description": "Speculative decoding \u2014 pick a drafting method.",
+      "original_verdict": "verbatim",
+      "revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3.8-flash-next-fp8",
@@ -684,7 +755,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next-FP8/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:43:24.405910+00:00",
       "evidence_sha256": "d60dca3a03eb6eee0252a5a49423dd5c63d7cd43876997e418d2d9f2bce84553",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -703,7 +774,9 @@
         "--tool-call-parser",
         "qwen3_xml",
         "--reasoning-parser",
-        "qwen3"
+        "qwen3",
+        "--revision",
+        "236dfdf285828023ca3bcd3f37366c58a3469b13"
       ],
       "worker_args": null,
       "spec_args": [
@@ -711,7 +784,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use the checkpoint's Multi-Token Prediction module for faster decoding"
+      "spec_description": "Use the checkpoint's Multi-Token Prediction module for faster decoding",
+      "original_verdict": "verbatim",
+      "revision": "236dfdf285828023ca3bcd3f37366c58a3469b13",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3.8-flash-next-fp8",
@@ -732,7 +808,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next-FP8/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:43:24.405947+00:00",
       "evidence_sha256": "2d309ec043ea2961c1006be4c07ecd1c27a64ff166983fa74b40553c39728a85",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -751,7 +827,9 @@
         "--tool-call-parser",
         "qwen3_xml",
         "--reasoning-parser",
-        "qwen3"
+        "qwen3",
+        "--revision",
+        "236dfdf285828023ca3bcd3f37366c58a3469b13"
       ],
       "worker_args": null,
       "spec_args": [
@@ -759,7 +837,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use the checkpoint's Multi-Token Prediction module for faster decoding"
+      "spec_description": "Use the checkpoint's Multi-Token Prediction module for faster decoding",
+      "original_verdict": "verbatim",
+      "revision": "236dfdf285828023ca3bcd3f37366c58a3469b13",
+      "draft_revision": null
     },
     {
       "model_key": "qwen3.8-flash-next-fp8",
@@ -780,7 +861,7 @@
       "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next-FP8/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:43:24.405981+00:00",
       "evidence_sha256": "2fd9c86e5bc0cee72694045dc153e353c5811e21d86e252079ed9b40691622f7",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -797,7 +878,9 @@
         "--tool-call-parser",
         "qwen3_xml",
         "--reasoning-parser",
-        "qwen3"
+        "qwen3",
+        "--revision",
+        "236dfdf285828023ca3bcd3f37366c58a3469b13"
       ],
       "worker_args": null,
       "spec_args": [
@@ -805,7 +888,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use the checkpoint's Multi-Token Prediction module for faster decoding"
+      "spec_description": "Use the checkpoint's Multi-Token Prediction module for faster decoding",
+      "original_verdict": "verbatim",
+      "revision": "236dfdf285828023ca3bcd3f37366c58a3469b13",
+      "draft_revision": null
     },
     {
       "model_key": "glm-5.3",
@@ -829,7 +915,7 @@
       "source_url": "https://recipes.vllm.ai/zai-org/GLM-5.3/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.395519+00:00",
       "evidence_sha256": "60fbd2573711bec9c8ddb88b0b41c1458627245542d5106b5d1ff0bdffd11724",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -848,7 +934,9 @@
         "glm47",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "glm45"
+        "glm45",
+        "--revision",
+        "aca966e4e02791568aa6a4ced368624b3d897f42"
       ],
       "worker_args": [
         [
@@ -870,7 +958,9 @@
           "glm47",
           "--enable-auto-tool-choice",
           "--reasoning-parser",
-          "glm45"
+          "glm45",
+          "--revision",
+          "aca966e4e02791568aa6a4ced368624b3d897f42"
         ]
       ],
       "spec_args": [
@@ -878,7 +968,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":5}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Built-in Multi-Token Prediction \u2014 5 draft tokens on NVIDIA/AMD, 1 on Ascend (draft stays eager)."
+      "spec_description": "Built-in Multi-Token Prediction \u2014 5 draft tokens on NVIDIA/AMD, 1 on Ascend (draft stays eager).",
+      "original_verdict": "verbatim",
+      "revision": "aca966e4e02791568aa6a4ced368624b3d897f42",
+      "draft_revision": null
     },
     {
       "model_key": "glm-5.3",
@@ -899,7 +992,7 @@
       "source_url": "https://recipes.vllm.ai/zai-org/GLM-5.3/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.466395+00:00",
       "evidence_sha256": "266497ebfb86b33bdbcef95b579f061327639bcd0db9f2fc50cfd9e0936f800a",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -912,7 +1005,9 @@
         "glm47",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "glm45"
+        "glm45",
+        "--revision",
+        "aca966e4e02791568aa6a4ced368624b3d897f42"
       ],
       "worker_args": null,
       "spec_args": [
@@ -920,7 +1015,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":5}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Built-in Multi-Token Prediction \u2014 5 draft tokens on NVIDIA/AMD, 1 on Ascend (draft stays eager)."
+      "spec_description": "Built-in Multi-Token Prediction \u2014 5 draft tokens on NVIDIA/AMD, 1 on Ascend (draft stays eager).",
+      "original_verdict": "verbatim",
+      "revision": "aca966e4e02791568aa6a4ced368624b3d897f42",
+      "draft_revision": null
     },
     {
       "model_key": "glm-5.3",
@@ -941,7 +1039,7 @@
       "source_url": "https://recipes.vllm.ai/zai-org/GLM-5.3/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.493976+00:00",
       "evidence_sha256": "6202c7046f2aee549cc48b14e06a0d1f0bc591e8224b747c3b83d2a934cb995d",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -954,7 +1052,9 @@
         "glm47",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "glm45"
+        "glm45",
+        "--revision",
+        "aca966e4e02791568aa6a4ced368624b3d897f42"
       ],
       "worker_args": null,
       "spec_args": [
@@ -962,7 +1062,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":5}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Built-in Multi-Token Prediction \u2014 5 draft tokens on NVIDIA/AMD, 1 on Ascend (draft stays eager)."
+      "spec_description": "Built-in Multi-Token Prediction \u2014 5 draft tokens on NVIDIA/AMD, 1 on Ascend (draft stays eager).",
+      "original_verdict": "verbatim",
+      "revision": "aca966e4e02791568aa6a4ced368624b3d897f42",
+      "draft_revision": null
     },
     {
       "model_key": "glm-5.3-flash",
@@ -985,7 +1088,7 @@
       "source_url": "https://recipes.vllm.ai/zai-org/GLM-5.3-Flash/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.650686+00:00",
       "evidence_sha256": "277ccfd992e29bd8035e9f7131b27f2abb9a9c64dc4c421e9a60cb601641feb7",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -997,7 +1100,9 @@
         "glm47",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "glm45"
+        "glm45",
+        "--revision",
+        "690b705278a3a58e538fcb37c2ca8b5f9511213c"
       ],
       "worker_args": null,
       "spec_args": [
@@ -1005,7 +1110,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":5}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use the checkpoint's single MTP layer to draft one token"
+      "spec_description": "Use the checkpoint's single MTP layer to draft one token",
+      "original_verdict": "verbatim",
+      "revision": "690b705278a3a58e538fcb37c2ca8b5f9511213c",
+      "draft_revision": null
     },
     {
       "model_key": "glm-5.3-flash",
@@ -1028,7 +1136,7 @@
       "source_url": "https://recipes.vllm.ai/zai-org/GLM-5.3-Flash/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.679759+00:00",
       "evidence_sha256": "4ed435fd50c8e5b007d30d31ce2afa4b645ccfad2b1350d4f07ebc0a12145216",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1040,7 +1148,9 @@
         "glm47",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "glm45"
+        "glm45",
+        "--revision",
+        "690b705278a3a58e538fcb37c2ca8b5f9511213c"
       ],
       "worker_args": null,
       "spec_args": [
@@ -1048,7 +1158,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":5}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use the checkpoint's single MTP layer to draft one token"
+      "spec_description": "Use the checkpoint's single MTP layer to draft one token",
+      "original_verdict": "verbatim",
+      "revision": "690b705278a3a58e538fcb37c2ca8b5f9511213c",
+      "draft_revision": null
     },
     {
       "model_key": "glm-5.3-flash",
@@ -1071,7 +1184,7 @@
       "source_url": "https://recipes.vllm.ai/zai-org/GLM-5.3-Flash/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.680013+00:00",
       "evidence_sha256": "7e3393e9226e2920d670e4e7bcac1e719793de2f5b74e9d11628fafc6ffb28e8",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1084,7 +1197,9 @@
         "glm47",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "glm45"
+        "glm45",
+        "--revision",
+        "690b705278a3a58e538fcb37c2ca8b5f9511213c"
       ],
       "worker_args": null,
       "spec_args": [
@@ -1092,7 +1207,10 @@
         "{\"method\":\"mtp\",\"num_speculative_tokens\":5}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use the checkpoint's single MTP layer to draft one token"
+      "spec_description": "Use the checkpoint's single MTP layer to draft one token",
+      "original_verdict": "verbatim",
+      "revision": "690b705278a3a58e538fcb37c2ca8b5f9511213c",
+      "draft_revision": null
     },
     {
       "model_key": "minimax-m3",
@@ -1116,7 +1234,7 @@
       "source_url": "https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.728512+00:00",
       "evidence_sha256": "5fae16e15c8702a54ba5bebcc9f830cddf7a269fb45e2fc58263e39a70295013",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1135,7 +1253,9 @@
         "minimax_m3",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "minimax_m3"
+        "minimax_m3",
+        "--revision",
+        "f0e1c1e04d40177e4673a22097036854f536e9c0"
       ],
       "worker_args": [
         [
@@ -1157,15 +1277,23 @@
           "minimax_m3",
           "--enable-auto-tool-choice",
           "--reasoning-parser",
-          "minimax_m3"
+          "minimax_m3",
+          "--revision",
+          "f0e1c1e04d40177e4673a22097036854f536e9c0"
         ]
       ],
       "spec_args": [
         "--speculative-config",
-        "{\"method\": \"eagle3\", \"model\": \"Inferact/MiniMax-M3-EAGLE3\", \"num_speculative_tokens\": 3, \"attention_backend\": \"FLASH_ATTN\"}"
+        "{\"method\":\"eagle3\",\"model\":\"Inferact/MiniMax-M3-EAGLE3\",\"num_speculative_tokens\":3,\"attention_backend\":\"FLASH_ATTN\",\"revision\":\"44cafa5ace418d8b22e2958df0c6aa1f2476842c\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments)."
+      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments).",
+      "original_verdict": "verbatim",
+      "revision": "f0e1c1e04d40177e4673a22097036854f536e9c0",
+      "draft_revision": {
+        "repo_id": "Inferact/MiniMax-M3-EAGLE3",
+        "revision": "44cafa5ace418d8b22e2958df0c6aa1f2476842c"
+      }
     },
     {
       "model_key": "minimax-m3",
@@ -1186,7 +1314,7 @@
       "source_url": "https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.744947+00:00",
       "evidence_sha256": "e02a2add94f4a0b7b8acf1f650968991962d67cf37f8cf81337fb93e65a2089f",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1199,15 +1327,23 @@
         "minimax_m3",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "minimax_m3"
+        "minimax_m3",
+        "--revision",
+        "f0e1c1e04d40177e4673a22097036854f536e9c0"
       ],
       "worker_args": null,
       "spec_args": [
         "--speculative-config",
-        "{\"method\": \"eagle3\", \"model\": \"Inferact/MiniMax-M3-EAGLE3\", \"num_speculative_tokens\": 3, \"attention_backend\": \"FLASH_ATTN\"}"
+        "{\"method\":\"eagle3\",\"model\":\"Inferact/MiniMax-M3-EAGLE3\",\"num_speculative_tokens\":3,\"attention_backend\":\"FLASH_ATTN\",\"revision\":\"44cafa5ace418d8b22e2958df0c6aa1f2476842c\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments)."
+      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments).",
+      "original_verdict": "verbatim",
+      "revision": "f0e1c1e04d40177e4673a22097036854f536e9c0",
+      "draft_revision": {
+        "repo_id": "Inferact/MiniMax-M3-EAGLE3",
+        "revision": "44cafa5ace418d8b22e2958df0c6aa1f2476842c"
+      }
     },
     {
       "model_key": "minimax-m3",
@@ -1228,7 +1364,7 @@
       "source_url": "https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3/hw/b200.json",
       "retrieved_utc": "2026-09-05T02:41:14.767156+00:00",
       "evidence_sha256": "5a7cb568ddafc91a661a11873a4caaada021405c8a74cc344e53367f699c70f4",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1241,15 +1377,23 @@
         "minimax_m3",
         "--enable-auto-tool-choice",
         "--reasoning-parser",
-        "minimax_m3"
+        "minimax_m3",
+        "--revision",
+        "f0e1c1e04d40177e4673a22097036854f536e9c0"
       ],
       "worker_args": null,
       "spec_args": [
         "--speculative-config",
-        "{\"method\": \"eagle3\", \"model\": \"Inferact/MiniMax-M3-EAGLE3\", \"num_speculative_tokens\": 3, \"attention_backend\": \"FLASH_ATTN\"}"
+        "{\"method\":\"eagle3\",\"model\":\"Inferact/MiniMax-M3-EAGLE3\",\"num_speculative_tokens\":3,\"attention_backend\":\"FLASH_ATTN\",\"revision\":\"44cafa5ace418d8b22e2958df0c6aa1f2476842c\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments)."
+      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments).",
+      "original_verdict": "verbatim",
+      "revision": "f0e1c1e04d40177e4673a22097036854f536e9c0",
+      "draft_revision": {
+        "repo_id": "Inferact/MiniMax-M3-EAGLE3",
+        "revision": "44cafa5ace418d8b22e2958df0c6aa1f2476842c"
+      }
     },
     {
       "model_key": "kimi-k3",
@@ -1277,7 +1421,7 @@
       "source_url": "https://recipes.vllm.ai/moonshotai/Kimi-K3/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.375914+00:00",
       "evidence_sha256": "20eb535dafa9e63e64859106b02bec526f924ade135abadffb853461f6a1233e",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1309,7 +1453,9 @@
         "--tool-call-parser",
         "kimi_k3",
         "--reasoning-parser",
-        "kimi_k3"
+        "kimi_k3",
+        "--revision",
+        "f831ab66814297da540d832a5235f8e904f29d06"
       ],
       "worker_args": [
         [
@@ -1344,7 +1490,9 @@
           "--tool-call-parser",
           "kimi_k3",
           "--reasoning-parser",
-          "kimi_k3"
+          "kimi_k3",
+          "--revision",
+          "f831ab66814297da540d832a5235f8e904f29d06"
         ],
         [
           "vllm",
@@ -1378,7 +1526,9 @@
           "--tool-call-parser",
           "kimi_k3",
           "--reasoning-parser",
-          "kimi_k3"
+          "kimi_k3",
+          "--revision",
+          "f831ab66814297da540d832a5235f8e904f29d06"
         ],
         [
           "vllm",
@@ -1412,15 +1562,23 @@
           "--tool-call-parser",
           "kimi_k3",
           "--reasoning-parser",
-          "kimi_k3"
+          "kimi_k3",
+          "--revision",
+          "f831ab66814297da540d832a5235f8e904f29d06"
         ]
       ],
       "spec_args": [
         "--speculative-config",
-        "{\"model\":\"RedHatAI/Kimi-K3-speculator.dspark\", \"num_speculative_tokens\":8, \"method\": \"dspark\", \"draft_sample_method\": \"probabilistic\", \"rejection_sample_method\": \"block\"}"
+        "{\"model\":\"RedHatAI/Kimi-K3-speculator.dspark\",\"num_speculative_tokens\":8,\"method\":\"dspark\",\"draft_sample_method\":\"probabilistic\",\"rejection_sample_method\":\"block\",\"revision\":\"48beb88daae33227c148ea2b78a2ac2f493dbccb\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use DSpark speculative decoding."
+      "spec_description": "Use DSpark speculative decoding.",
+      "original_verdict": "verbatim",
+      "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+      "draft_revision": {
+        "repo_id": "RedHatAI/Kimi-K3-speculator.dspark",
+        "revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb"
+      }
     },
     {
       "model_key": "kimi-k3",
@@ -1448,7 +1606,7 @@
       "source_url": "https://recipes.vllm.ai/moonshotai/Kimi-K3/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.393368+00:00",
       "evidence_sha256": "3097d85ce78e768e5ec54c689684bd930945bd92812eef3e94887557a3db8ec3",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1480,7 +1638,9 @@
         "--tool-call-parser",
         "kimi_k3",
         "--reasoning-parser",
-        "kimi_k3"
+        "kimi_k3",
+        "--revision",
+        "f831ab66814297da540d832a5235f8e904f29d06"
       ],
       "worker_args": [
         [
@@ -1515,15 +1675,23 @@
           "--tool-call-parser",
           "kimi_k3",
           "--reasoning-parser",
-          "kimi_k3"
+          "kimi_k3",
+          "--revision",
+          "f831ab66814297da540d832a5235f8e904f29d06"
         ]
       ],
       "spec_args": [
         "--speculative-config",
-        "{\"model\":\"RedHatAI/Kimi-K3-speculator.dspark\", \"num_speculative_tokens\":8, \"method\": \"dspark\", \"draft_sample_method\": \"probabilistic\", \"rejection_sample_method\": \"block\"}"
+        "{\"model\":\"RedHatAI/Kimi-K3-speculator.dspark\",\"num_speculative_tokens\":8,\"method\":\"dspark\",\"draft_sample_method\":\"probabilistic\",\"rejection_sample_method\":\"block\",\"revision\":\"48beb88daae33227c148ea2b78a2ac2f493dbccb\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use DSpark speculative decoding."
+      "spec_description": "Use DSpark speculative decoding.",
+      "original_verdict": "verbatim",
+      "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+      "draft_revision": {
+        "repo_id": "RedHatAI/Kimi-K3-speculator.dspark",
+        "revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb"
+      }
     },
     {
       "model_key": "kimi-k3",
@@ -1553,7 +1721,7 @@
       "source_url": "https://recipes.vllm.ai/moonshotai/Kimi-K3/hw/b200/strategies/multi_node_tp_pp.json",
       "retrieved_utc": "2026-09-05T02:43:24.405867+00:00",
       "evidence_sha256": "700e6327dcd3aa4d8f2241ee4cc59e4072f45abe97e2578022759aaccd7850cc",
-      "verdict": "verbatim",
+      "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1589,7 +1757,9 @@
         "--tool-call-parser",
         "kimi_k3",
         "--reasoning-parser",
-        "kimi_k3"
+        "kimi_k3",
+        "--revision",
+        "f831ab66814297da540d832a5235f8e904f29d06"
       ],
       "worker_args": [
         [
@@ -1628,15 +1798,34 @@
           "--tool-call-parser",
           "kimi_k3",
           "--reasoning-parser",
-          "kimi_k3"
+          "kimi_k3",
+          "--revision",
+          "f831ab66814297da540d832a5235f8e904f29d06"
         ]
       ],
       "spec_args": [
         "--speculative-config",
-        "{\"model\":\"RedHatAI/Kimi-K3-speculator.dspark\", \"num_speculative_tokens\":8, \"method\": \"dspark\", \"draft_sample_method\": \"probabilistic\", \"rejection_sample_method\": \"block\"}"
+        "{\"model\":\"RedHatAI/Kimi-K3-speculator.dspark\",\"num_speculative_tokens\":8,\"method\":\"dspark\",\"draft_sample_method\":\"probabilistic\",\"rejection_sample_method\":\"block\",\"revision\":\"48beb88daae33227c148ea2b78a2ac2f493dbccb\"}"
       ],
       "spec_rendered_default": "off",
-      "spec_description": "Use DSpark speculative decoding."
+      "spec_description": "Use DSpark speculative decoding.",
+      "original_verdict": "verbatim",
+      "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+      "draft_revision": {
+        "repo_id": "RedHatAI/Kimi-K3-speculator.dspark",
+        "revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb"
+      }
     }
-  ]
+  ],
+  "revision_adaptation": {
+    "kind": "approved_revision_pins",
+    "source": "docs/campaigns/hopper-atlas-vs-vllm-2026-09/evidence/model-pins-2026-09-05.json",
+    "source_sha256": "5c33baf63a5a00d2502592f0f3842b5989aa6f42c43481af452f745f85994384",
+    "source_pr": "https://github.com/TheTom/atlas/pull/4",
+    "evidence_sha256_semantics": "Original recipe evidence hash; does not hash the adapted command.",
+    "loaded_bytes_proven": false,
+    "pin_semantics": "Explicit intended revisions, not loaded-byte proof. Do not populate artifact.model.revision from recipes alone.",
+    "external_draft_revision_support": "revision is present in official vLLM speculative config at the inspected source commit below; acceptance by each selected recipe image remains unproven.",
+    "external_draft_revision_source": "https://github.com/vllm-project/vllm/blob/7fbd44cbe0a90b9c8fd3a94a0f0401ac4b1bc719/vllm/config/speculative.py#L422"
+  }
 }
