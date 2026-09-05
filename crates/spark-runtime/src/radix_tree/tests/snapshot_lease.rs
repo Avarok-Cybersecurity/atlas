@@ -244,12 +244,19 @@ fn all_leased_pool_still_evicts() {
     assert_eq!(idx.len(), 1, "and the reclaim must actually have happened");
 }
 
-/// Sibling entries are exact-prefix keyed and carry NO `is_tail` gate: the
-/// same session and sessionless lookers may use them (a tail would refuse the
-/// sessionless looker). Different-NONZERO-session lookers are excluded by the
-/// long-standing general session filter that applies to every session-tagged
-/// snapshot — in practice two conversations sharing a >=1024-token prefix
-/// hash to the SAME session anyway.
+/// Sibling entries are exact-prefix keyed and carry NO session gate of any
+/// kind: same-session, sessionless AND different-session lookers may all use
+/// them (a tail would refuse the latter two). A sibling stores state at
+/// EXACTLY `token_count`, so it is a pure function of the verified token
+/// prefix — content-addressed, exactly like the KV radix, which shares blocks
+/// on token match with no session gate at all.
+///
+/// There is NO "general session filter" behind non-tail entries in
+/// `lookup_tiered` — an earlier version of this comment claimed one excluded
+/// different-nonzero-session lookers, and the third assertion below is the
+/// executable refutation. That is the intended contract (see the `is_tail`
+/// INVARIANT on `SnapshotEntry`), not a hole: it is what un-broke warm TTFT
+/// when `session_hash` proved unstable across turns of a growing prompt.
 #[test]
 fn sibling_not_session_gated_in_lookup() {
     let mut idx = SsmSnapshotIndex::new();
@@ -262,6 +269,12 @@ fn sibling_not_session_gated_in_lookup() {
     assert!(
         idx.lookup_tiered(&toks, 64, 0, 0).is_some(),
         "sibling must not carry the is_tail session gate"
+    );
+    // A DIFFERENT non-zero session: hit as well — the partition a re-added
+    // blanket gate would silently break while the two above stayed green.
+    assert!(
+        idx.lookup_tiered(&toks, 64, 8, 0).is_some(),
+        "a sibling is content-addressed: another session may restore from it"
     );
 }
 
