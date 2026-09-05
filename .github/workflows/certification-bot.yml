@@ -37,6 +37,17 @@ concurrency:
 
 jobs:
   state:
+    # contents: write is what makes the certificate IMAGE exist. The render
+    # writes a PNG to the `bot-cards` branch and the comment links it; without
+    # the grant the PUT fails and the comment has no picture.
+    #
+    # Safe under pull_request_target because this job never touches PR code:
+    # the checkout below pins `github.event.repository.default_branch` with
+    # persist-credentials: false, and every PR-derived string (title, logins)
+    # reaches the SVG through render-certificate.py's `html.escape`. Nothing
+    # authored by the PR is executed, and nothing is written outside bot-cards.
+    permissions:
+      contents: write
     name: Certification state
     # Same self-hosted runner as the command handler, for the same reason: this
     # posts the pipeline STATUS, and a status that lands an hour after the event
@@ -137,6 +148,8 @@ jobs:
         if: steps.which.outputs.pr != ''
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          # The App may lack contents:write; the job's own grant always has it.
+          WORKFLOW_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.which.outputs.pr }}
           STATE: ${{ steps.state.outputs.state }}
@@ -281,13 +294,28 @@ jobs:
                 hash=$(sha256sum /tmp/cert.png | cut -c1-8)
                 path="pr-$PR-$hash.png"
                 b64=$(base64 -w0 /tmp/cert.png)
-                gh api -X PUT "repos/$REPO/contents/$path" \
-                  -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
-                  >/dev/null 2>&1 \
-                  || gh api -X PUT "repos/$REPO/contents/$path" \
-                       -f message="certificate for #$PR" -f content="$b64" \
-                       -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
-                       >/dev/null 2>&1 || true
+                # Upload under the App identity when it has the grant, else under
+                # GITHUB_TOKEN, which the job's own `contents: write` guarantees.
+                # The App was missing contents:write in practice (certification
+                # preflight's permission probe fails on it), so relying on the
+                # App alone left bot-cards empty and every certificate imageless.
+                # Each PUT keeps its `||` in the SAME statement: that is what
+                # assert-preflight-covers-writes.py reads to know this write
+                # swallows its own failure and therefore needs a probe_write.
+                # An `&& return 0` form hides it from that guard.
+                put_cert() {
+                  local tok="$1" sha
+                  GH_TOKEN="$tok" gh api -X PUT "repos/$REPO/contents/$path" \
+                    -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
+                    >/dev/null 2>&1 || {
+                      sha=$(GH_TOKEN="$tok" gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)
+                      [ -n "$sha" ] || return 1
+                      GH_TOKEN="$tok" gh api -X PUT "repos/$REPO/contents/$path" \
+                        -f message="certificate for #$PR" -f content="$b64" \
+                        -f branch=bot-cards -f sha="$sha" >/dev/null 2>&1 || return 1
+                    }
+                }
+                put_cert "${GH_TOKEN:-}" || put_cert "${WORKFLOW_TOKEN:-}" || true
                 # Only point at the generated image if it is ACTUALLY THERE. The
                 # upload needs `contents: write` on bot-cards, and the PUT above is
                 # deliberately non-fatal so a missing grant cannot swallow the

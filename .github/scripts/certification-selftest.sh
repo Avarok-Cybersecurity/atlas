@@ -673,6 +673,28 @@ STUB
     fi
   fi
 
+  # The certificate IMAGE only exists if the PNG reaches bot-cards, and that
+  # PUT needs contents:write. The App did not have it (certification-preflight's
+  # permission probe fails), which is why bot-cards held zero pr-*.png and every
+  # certificate went imageless. The job's own grant is the guarantee, so pin it.
+  if python3 - <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/certification-bot.yml"))
+perms = (d["jobs"]["state"].get("permissions") or {})
+sys.exit(0 if perms.get("contents") == "write" else 1)
+PY
+  then
+    ok "the bot job grants itself contents:write — the certificate image can be uploaded"
+  else
+    bad "the bot job lacks contents:write — the certificate PNG can never reach bot-cards"
+  fi
+  # ...and the upload must actually FALL BACK to that token, not rely on the App.
+  if grep -q 'put_cert "${WORKFLOW_TOKEN:-}"' .github/workflows/certification-bot.yml; then
+    ok "and the upload retries under the workflow token when the App lacks the grant"
+  else
+    bad "the upload never falls back to the token that is guaranteed to have contents:write"
+  fi
+
   runbot pr-certification-stage-1 "" 0
   posted && ! patched && ok "no prior comment -> posts one" || bad "no prior comment -> did not post exactly one"
   # CONTROL: with a prior comment it must EDIT, never post a second. A thread of
