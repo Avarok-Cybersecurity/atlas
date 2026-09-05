@@ -17,7 +17,6 @@ use super::*;
 /// Process logits for a single active sequence: dequant, adjust, sample, return token + optional logprobs.
 #[allow(clippy::too_many_arguments)]
 pub fn process_seq_logits(
-    _model: &dyn Model,
     a: &mut ActiveSeq,
     buf: &[u8],
     i: usize,

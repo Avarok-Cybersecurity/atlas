@@ -286,7 +286,6 @@ pub fn process_decode_logits(
                             timing: timing.clone(),
                         };
                         process_seq_logits(
-                            model,
                             a,
                             &buf,
                             i,
@@ -313,7 +312,6 @@ pub fn process_decode_logits(
                 .enumerate()
                 .map(|(i, a)| {
                     process_seq_logits(
-                        model,
                         a,
                         &buf,
                         i,

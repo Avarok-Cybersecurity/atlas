@@ -4,6 +4,8 @@
 
 use super::*;
 
+mod sampling;
+
 // The AtomicU64 counters that lived here are now `SchedCtx::stats`
 // (`scheduler::spec_stats::SpecStats`), so a run's acceptance rate describes
 // the model that produced it rather than blending two across a swap.
@@ -148,13 +150,32 @@ pub fn step_verify_k2(
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax) = (result_vec[0], result_vec[1]);
 
-    let (v0, v1) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
-        // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD) basis.
-        (v0_argmax, v1_argmax)
+    // MTP retains both host rows until acceptance is known. Never process a
+    // rejected suffix: its stateful masks and RNG draws belong to no emission.
+    let mtp_rows = if !dflash_verify_raw_argmax {
+        let t_copy = Instant::now();
+        let rows = match sampling::Rows::copy(model) {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!("copy K2 verify logits: {e:#}");
+                // Workers are waiting for the verdict even when the host copy
+                // fails. Release them before ending this sequence.
+                let _ = model.ep_broadcast_cmd(0);
+                a.finished = true;
+                return;
+            }
+        };
+        sched.timing.record(Phase::D2h, t_copy);
+        Some(rows)
     } else {
-        // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
-        // Phase C-2 (2026-05-24): apply the logits-processor pipeline to each
-        // verify position so MTP-emitted tokens see the same masks as non-MTP.
+        None
+    };
+    let (v0, mut v1, first_lp) = if let Some(rows) = &mtp_rows {
+        let (first, lp) = rows.pick(0, a, verify_ctx);
+        (first, v1_argmax, lp)
+    } else if !sched.levers.dflash_masked_verify {
+        (v0_argmax, v1_argmax, None)
+    } else {
         let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
             model,
             &[v0_argmax, v1_argmax],
@@ -165,22 +186,26 @@ pub fn step_verify_k2(
         (
             processed.first().copied().unwrap_or(v0_argmax),
             processed.get(1).copied().unwrap_or(v1_argmax),
+            None,
         )
     };
     let accepted = drafts[0] == v0;
     // Context-vs-emit ledger (debug): pins that this branch commits to the
     // model exactly what it emits to the client. See `verify_ledger`.
+    let computed = [v0, v1];
     crate::scheduler::verify_ledger::trace_ctx_vs_emit(
         "K2",
         a,
         2,
-        &[v0, v1],
+        &computed[..if mtp_rows.is_some() { 1 } else { 2 }],
         drafts,
         accepted as usize,
     );
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
-    let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
+    let verify_lps = if mtp_rows.is_some() {
+        first_lp.into_iter().collect()
+    } else if let Some(top_logprobs) = a.top_logprobs {
         extract_verify_logprobs(model, &[v0, v1], top_logprobs, 0)
     } else {
         Vec::new()
@@ -204,9 +229,16 @@ pub fn step_verify_k2(
 
     if accepted {
         // ── ACCEPTED ──
-        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
-        if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned(), sched);
+        if let Some(rows) = &mtp_rows {
+            match rows.emit_accepted((v0, verify_lps.first().cloned()), a, sched, verify_ctx) {
+                Some(bonus) => v1 = bonus,
+                None => return,
+            }
+        } else {
+            emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
+            if !a.finished {
+                emit_token(a, v1, verify_lps.get(1).cloned(), sched);
+            }
         }
         if a.finished {
             return;
