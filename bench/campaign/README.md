@@ -89,6 +89,8 @@ identity is supplied through verified evidence. Do not substitute the outer
 container digest after changing its Python environment. Atlas records its
 actual executable hash. The existing Docker path is unchanged.
 
+Failed preflight prevents every serve path, including the kernel audit.
+
 ## Environment
 
 | Variable | Used by | Meaning |

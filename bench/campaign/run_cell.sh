@@ -357,10 +357,13 @@ stage serve "stage 2/7 serve"
 START_EPOCH=""
 # shellcheck source=bench/campaign/cell_serve.sh
 source "$HERE/cell_serve.sh"
-if [ "$PROCESS_MODE" = "1" ]; then
-  serve_process
-else
-  serve_recipe
+# A recorded preflight failure must also prevent every engine launch path.
+if [ "$DRY_RUN" = "1" ] || [ -z "$FAILING_STAGE" ]; then
+  if [ "$PROCESS_MODE" = "1" ]; then
+    serve_process
+  else
+    serve_recipe
+  fi
 fi
 
 # ── 3. boot gate ─────────────────────────────────────────────────────────────

@@ -113,6 +113,8 @@ have() { grep -Fq -- "$2" <<<"$1"; }
 # A nested refusal must remain nonzero after the dry-run finalizer.
 python3 "$HERE/dryrun_failure_test.py" || fail dryrun "renderer failure regression"
 ok dryrun "3 dry-run exit regressions passed (both engines, refusal before boot)"
+python3 "$HERE/admission_test.py" || fail admission "preflight admission regression"
+ok admission "failed preflight never launches either engine"
 python3 "$HERE/thinking_policy_test.py" || fail policy "thinking policy regression"
 ok policy "campaign thinking eligibility refuses excluded modes before launch"
 python3 "$HERE/../hopper_ab/coherency_policy_test.py" || fail coherency "HTTP thinking policy regression"
