@@ -1,0 +1,1 @@
+../../gb10/common/per_token_group_quant_fp8.cu
