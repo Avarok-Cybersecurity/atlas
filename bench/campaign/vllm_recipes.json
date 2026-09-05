@@ -1926,7 +1926,7 @@
       "retrieved_utc": "2026-09-05T21:20:10.479559+00:00",
       "evidence_sha256": "6ab7df7b00ec231ca31008004c859792e2ace451f6af7bcf1cfd027a2ce8bbd1",
       "original_verdict": "verbatim",
-      "verdict": "revision_adaptation",
+      "verdict": "revision_and_capacity_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1941,14 +1941,16 @@
         "--mm-encoder-tp-mode",
         "data",
         "--revision",
-        "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+        "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+        "--max-num-seqs",
+        "512"
       ],
       "worker_args": null,
       "spec_args": null,
       "spec_rendered_default": "off",
       "spec_description": "No speculative profile in the captured H100 recipe; Atlas target declares mtp_layers=0. Both legs use spec off.",
       "draft_revision": null,
-      "notes": "Official single-H100 recipe, pinned for the rental shakedown. Runtime support and coherency must be observed on the selected engine environment; metadata is not loaded-byte proof."
+      "notes": "Rental profile qwen38-h100-vllm028-capacity512: revision and capacity adaptation for the recorded direct vLLM 0.28.0 environment, not the verbatim official command. source_url and evidence_sha256 identify the original captured H100 recipe, which omits --max-num-seqs; the first failed cell and original recipe commit are retained. The installed H100 default of 1024 exceeded 810 observed Mamba cache blocks after weights loaded. The explicit 512 limit preserves the existing 512 graph ceiling, leaves 298 blocks below that observed capacity, and exceeds frozen C16 concurrency; this is a capacity compatibility change, not a throughput-tuned setting. The original floating image tag is not proof of the installed version. A fresh boot and coherency gate remain required; metadata is not loaded-byte proof."
     }
   ],
   "revision_adaptation": {
