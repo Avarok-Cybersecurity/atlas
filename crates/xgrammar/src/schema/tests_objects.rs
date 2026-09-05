@@ -207,23 +207,42 @@ fn object_preserves_property_order() {
 
 #[test]
 fn any_of_combinator() {
-    let got = json_schema_to_ebnf(
-        r#"{"anyOf":[{"type":"integer"},{"type":"string"}]}"#,
-        &no_space(),
-    )
-    .unwrap();
+    let schema = r#"{"anyOf":[{"type":"integer"},{"type":"string"}]}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(got.contains("root ::="));
     assert!(parse_ebnf_default(&got).is_ok());
+    // Oracle: `anyOf` must restrict to the union of its branches, not
+    // merely list them alongside an implicit catch-all that admits any
+    // JSON value (e.g. a bare boolean, which is in neither branch).
+    let opts = no_space();
+    assert!(schema_accepts(schema, &opts, "5"));
+    assert!(schema_accepts(schema, &opts, "\"x\""));
+    assert!(
+        !schema_accepts(schema, &opts, "true"),
+        "boolean is in neither anyOf branch and must be rejected"
+    );
 }
 
 #[test]
 fn one_of_treated_like_any_of() {
-    let got = json_schema_to_ebnf(
-        r#"{"oneOf":[{"type":"integer"},{"type":"boolean"}]}"#,
-        &no_space(),
-    )
-    .unwrap();
+    // NONCLAIM: xgrammar's grammar-based constraint cannot enforce
+    // `oneOf`'s "exactly one branch matches" exclusivity at generation
+    // time (matching upstream's documented simplification) — this test
+    // only claims the union-of-branches restriction that `anyOf` gives,
+    // same underlying `generate_any_of` as `any_of_combinator` above
+    // (redundant with it for a mutant that widens that shared union to
+    // "any"; kept separately because the two exercise disjoint branch
+    // types: integer|string there vs integer|boolean here).
+    let schema = r#"{"oneOf":[{"type":"integer"},{"type":"boolean"}]}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    let opts = no_space();
+    assert!(schema_accepts(schema, &opts, "5"));
+    assert!(schema_accepts(schema, &opts, "true"));
+    assert!(
+        !schema_accepts(schema, &opts, "\"x\""),
+        "string is in neither oneOf branch and must be rejected"
+    );
 }
 
 #[test]
@@ -251,9 +270,21 @@ fn any_of_must_be_array() {
 
 #[test]
 fn type_array() {
-    let got = json_schema_to_ebnf(r#"{"type":["string","integer","null"]}"#, &no_space()).unwrap();
+    let schema = r#"{"type":["string","integer","null"]}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(got.contains("root ::="));
     assert!(parse_ebnf_default(&got).is_ok());
+    // Oracle: a type array must *restrict* to the listed types, not
+    // merely list them alongside an implicit escape hatch that accepts
+    // everything else too.
+    let opts = no_space();
+    assert!(schema_accepts(schema, &opts, "\"hello\""));
+    assert!(schema_accepts(schema, &opts, "5"));
+    assert!(schema_accepts(schema, &opts, "null"));
+    assert!(
+        !schema_accepts(schema, &opts, "true"),
+        "boolean is not in the type array and must be rejected"
+    );
 }
 
 #[test]
