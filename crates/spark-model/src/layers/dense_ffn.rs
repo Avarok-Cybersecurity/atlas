@@ -2666,6 +2666,10 @@ fn native_small_batch_uses_prefill(has_bf16: bool, has_fp8: bool) -> bool {
 }
 
 #[cfg(test)]
+#[path = "dense_ffn_mmq_tests.rs"]
+mod mmq_tests;
+
+#[cfg(test)]
 mod tests {
     use super::native_small_batch_uses_prefill;
 
