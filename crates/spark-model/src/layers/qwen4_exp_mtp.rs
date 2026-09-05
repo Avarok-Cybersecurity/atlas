@@ -78,6 +78,7 @@
 //! has no API today. 86.5% accept is what makes that work worth doing.
 
 mod sampling;
+mod state;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -257,6 +258,7 @@ impl Qwen4ExpMtpHead {
         config: &atlas_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
+        max_sequences: usize,
     ) -> Result<Self> {
         let h = config.hidden_size;
         let hc = config.hc_mult.max(1);
@@ -277,23 +279,32 @@ impl Qwen4ExpMtpHead {
             layer_dims: vec![],
             cache_blocks_per_seq: None,
         };
-        let num_blocks = max_seq_len / kv_config.block_size + 2;
+        let num_blocks =
+            state::draft_pool_blocks(max_seq_len, kv_config.block_size, max_sequences)?;
         let (bs, kvh, hd) = (
             kv_config.block_size,
             kv_config.num_kv_heads,
             kv_config.head_dim,
         );
+        let kv_bytes = [num_blocks, bs, kvh, hd, 2, 2]
+            .into_iter()
+            .try_fold(1usize, |bytes, dim| bytes.checked_mul(dim))
+            .ok_or_else(|| anyhow::anyhow!("Qwen MTP KV pool byte size overflow"))?;
+        anyhow::ensure!(
+            kv_bytes <= gpu.free_memory()?,
+            "Qwen MTP private KV pool needs {kv_bytes} bytes for {max_sequences} sequence slots; insufficient free GPU memory"
+        );
         let kv_cache = PagedKvCache::new(kv_config, num_blocks, gpu)?;
         tracing::info!(
             "qwen4_exp MTP head: private KV pool {} blocks x {} tok = {} tokens, \
-             {} kv_heads x {} head_dim BF16 (~{:.2} GB). This is allocated AFTER \
+             {} kv_heads x {} head_dim BF16 (~{:.2} GB), capacity {max_sequences} sequence slots ({kv_bytes} bytes). This is allocated AFTER \
              the main pool and is therefore OUTSIDE the util pledge.",
             num_blocks,
             bs,
             num_blocks * bs,
             kvh,
             hd,
-            (num_blocks * bs * kvh * hd * 2 * 2) as f64 / 1e9,
+            kv_bytes as f64 / 1e9,
         );
 
         // T=1 arena for the draft. `max_batch_tokens = 1` keeps every

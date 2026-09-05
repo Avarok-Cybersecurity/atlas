@@ -74,7 +74,8 @@ impl DraftProposer for Qwen4ExpMtpHead {
             .downcast_mut::<Qwen4ExpMtpProposerState>()
             .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
 
-        // Apply any rewind `after_verify` deferred (it has no GPU handle).
+        st.inner.begin_round()?;
+        // Apply rejected or abandoned rows before starting a new round.
         if st.inner.pending_rewind > 0 {
             let rows = st.inner.pending_rewind;
             self.rewind_draft(&mut st.inner, rows, ctx.gpu, stream)?;
@@ -84,7 +85,6 @@ impl DraftProposer for Qwen4ExpMtpHead {
         // Snapshot the DRAFT body's own carry before advancing it, so
         // `after_verify` can unwind the rejected rows.
         st.inner.pre_draft_aux = self.snapshot_draft_aux(&st.inner, ctx.gpu, stream)?;
-        st.inner.last_num_drafted = num_drafts;
 
         let mut drafts = Vec::with_capacity(num_drafts);
         let mut token = last_token;
@@ -108,6 +108,9 @@ impl DraftProposer for Qwen4ExpMtpHead {
                 ctx,
                 stream,
             )?;
+            // Count only completed body forwards, including one whose logit
+            // sampling fails, so a later retry rewinds exactly those rows.
+            st.inner.last_num_drafted += 1;
             token = self.draft_token_with_grammar(
                 h_out,
                 ctx,
@@ -145,11 +148,12 @@ impl DraftProposer for Qwen4ExpMtpHead {
         Ok(())
     }
 
-    fn free_state(&self, _gpu: &dyn GpuBackend, _state: &mut dyn ProposerState) -> Result<()> {
-        // The head owns every device buffer the draft touches (its arena, its
-        // KV pool); per-sequence state holds only host bookkeeping plus the
-        // body's layer state, which drops with the box.
-        Ok(())
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
+        let state = state
+            .as_any_mut()
+            .downcast_mut::<Qwen4ExpMtpProposerState>()
+            .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
+        self.release_draft_state(&mut state.inner, gpu)
     }
 }
 

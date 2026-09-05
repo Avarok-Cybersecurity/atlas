@@ -30,6 +30,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+#[path = "verify_e_eligibility.rs"]
+mod eligibility;
+
 use anyhow::{Result, bail, ensure};
 
 /// Batched-verify metadata overlay, every offset derived from
@@ -69,6 +72,9 @@ impl TransformerModel {
     /// logits-rows / meta-gap / bt-staging capacity — sizes.rs). Everything
     /// outside falls back to the per-seq loop.
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
+        if !eligibility::supports_verify_layout(self.config.hc_mult) {
+            return false;
+        }
         let n = ks.len();
         // Two admissible shapes:
         //  * MTP ladder — every k in 2..=4, no DFlash capture buffer.

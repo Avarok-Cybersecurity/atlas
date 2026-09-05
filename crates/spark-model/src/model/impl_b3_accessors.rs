@@ -106,8 +106,21 @@ impl TransformerModel {
             &self.config,
             self.gpu.as_ref(),
             max_seq_len,
+            // Every active Qwen sequence owns an SSM slot. Shadow mode only
+            // owns the one diagnostic state; active MTP uses the actual pool.
+            if install_as_proposer {
+                self.ssm_pool.mtp_slots
+            } else {
+                1
+            },
         )?;
-        let state = head.alloc_state(self.gpu.as_ref())?;
+        // Active MTP owns state per sequence. A second global shadow owner
+        // would accumulate private KV across requests and exceed the slot cap.
+        let shadow_state = if install_as_proposer {
+            None
+        } else {
+            Some(std::sync::Mutex::new(head.alloc_state(self.gpu.as_ref())?))
+        };
         if !install_as_proposer {
             tracing::warn!(
                 "qwen4_exp MTP SHADOW MODE is on: the draft head runs every decode \
@@ -130,7 +143,7 @@ impl TransformerModel {
             self.proposer = Some(head.clone());
         }
         self.qwen4_exp_mtp_head = Some(head);
-        self.qwen4_exp_mtp_state = Some(std::sync::Mutex::new(state));
+        self.qwen4_exp_mtp_state = shadow_state;
         Ok(())
     }
 
