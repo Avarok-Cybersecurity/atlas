@@ -113,6 +113,8 @@ have() { grep -Fq -- "$2" <<<"$1"; }
 # A nested refusal must remain nonzero after the dry-run finalizer.
 python3 "$HERE/dryrun_failure_test.py" || fail dryrun "renderer failure regression"
 ok dryrun "3 dry-run exit regressions passed (both engines, refusal before boot)"
+python3 "$HERE/thinking_policy_test.py" || fail policy "thinking policy regression"
+ok policy "campaign thinking eligibility refuses excluded modes before launch"
 
 # ── (a0) every FP8-checkpoint Atlas entry carries FP8 KV calibration ────────
 # Oracle: spark-runtime/src/weights.rs fp8_kv_scale_count — a checkpoint with

@@ -37,6 +37,8 @@
 #    Reconstructing a serve command is how a campaign measures a guess.
 #  * --spec on against a model whose recipe declares no speculative profile
 #    exits 4. Both-or-neither is only enforceable if neither side can improvise.
+#  * A thinking mode excluded by the PRD exits 9 before launch. Missing
+#    recipes still exit 3; a thinking policy does not supply a recipe.
 #
 # WHAT IT WARNS ABOUT, LOUDLY, AND RECORDS
 #
@@ -69,7 +71,8 @@
 #
 # Exit: 0 every gate passed · 1 a gate failed (artifact written anyway) ·
 #       2 usage or refusal-to-start · 3 no recipe for the pair · 4 --spec on
-#       with no speculative profile · 128+N terminated by signal N (130 INT,
+#       with no speculative profile · 9 excluded thinking mode ·
+#       128+N terminated by signal N (130 INT,
 #       143 TERM, 129 HUP), with the same teardown run and the artifact naming
 #       the stage that was interrupted
 set -uo pipefail
@@ -127,7 +130,8 @@ if [ "$DRY_RUN" != "1" ] && [ "$YES" != "1" ]; then
   exit 2
 fi
 
-for f in "$WORKLOADS" "$LADDER" "$TTR" "$COHERENCY" "$ATLAS_RECIPES" "$VLLM_RECIPES"; do
+for f in "$WORKLOADS" "$LADDER" "$TTR" "$COHERENCY" "$ATLAS_RECIPES" "$VLLM_RECIPES" \
+         "$HERE/thinking_policy.py" "$HERE/thinking_policy.json"; do
   [ -f "$f" ] || die "missing required tool or data file: $f"
 done
 
@@ -170,6 +174,7 @@ print(next(e["image"] for e in d["entries"]
     "$VLLM_RECIPES" "$MODEL" "$SKU")"
   PORT="${VLLM_PORT:-8000}"
 fi
+python3 "$HERE/thinking_policy.py" --model "$MODEL" --think "$THINK" || exit $?
 URL="http://127.0.0.1:$PORT"
 
 CELL_ID="$ENGINE.$MODEL.$SKU.$WORKLOAD.c$CONC.spec$SPEC.think$THINK"

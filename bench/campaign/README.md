@@ -94,7 +94,14 @@ needs as much as a win.
 or a refusal to start without `--yes` · `3` no rendered recipe for that
 `(model, SKU)` · `4` `--spec on` against a recipe with no speculative profile ·
 `5` (vLLM) a real run with no image digest · `6` (vLLM) a real run of a
-multi-node profile.
+multi-node profile · `9` a thinking mode excluded by the PRD.
+
+`thinking_policy.json` records request-mode eligibility for each recipe model.
+GLM-5.3 and GLM-5.3-Flash require `--think on`; Qwen3-Next Instruct requires
+`--think off`. The driver refuses an excluded mode before creating resources,
+and the Atlas renderer enforces the same policy. A missing recipe still exits
+3, even when the requested thinking mode is excluded. New model keys need an
+explicit policy entry; eligibility alone does not add a scored cell or recipe.
 
 ## Two limits worth knowing before you book a box
 

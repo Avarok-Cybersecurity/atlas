@@ -16,7 +16,7 @@ Setting a flag from two places is how two ranks end up disagreeing.
 
 Exit codes: 0 ok · 2 usage · 3 no Atlas recipe for the pair · 4 --spec on
 against a model whose recipe declares no speculative support · 7 an entry
-carries a flag outside the frozen vocabulary.
+carries a flag outside the frozen vocabulary · 9 an excluded thinking mode.
 """
 
 import argparse
@@ -24,6 +24,8 @@ import json
 import pathlib
 import shlex
 import sys
+
+from thinking_policy import E_THINK_POLICY, POLICY_PATH, refusal
 
 E_USAGE = 2
 E_NO_PROFILE = 3
@@ -179,6 +181,10 @@ def main():
     if not args.spec or not args.think:
         print("ERROR: --spec and --think are required to render args", file=sys.stderr)
         return E_USAGE
+    error = refusal(json.loads(POLICY_PATH.read_text()), args.model, args.think)
+    if error:
+        print(error, file=sys.stderr)
+        return E_THINK_POLICY
     if args.spec == "on" and not entry["spec_supported"]:
         print(f"ERROR: --spec on, but the Atlas recipe for {args.model} on {args.sku} "
               f"declares no speculative support.", file=sys.stderr)
