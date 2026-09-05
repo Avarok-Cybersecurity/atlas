@@ -25,7 +25,7 @@ pub(super) fn for_each_bounded<T: Sync>(
             // Under host thread pressure, finish the same work with fewer
             // workers. The caller also drains the queue; no job is dropped.
             if std::thread::Builder::new()
-                .spawn_scoped(scope, &run)
+                .spawn_scoped(scope, run)
                 .is_err()
             {
                 break;
