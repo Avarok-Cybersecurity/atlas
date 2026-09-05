@@ -100,10 +100,18 @@ def image_ref(image, digest):
     return f"{repo}@{digest}" if digest else image
 
 
-def docker_argv(entry, vllm_args, image, digest, container, hf_cache, docker):
-    argv = [docker, "run", "-d", "--name", container,
-            "--gpus", "all", "--ipc=host", "--network", "host",
-            "-v", f"{hf_cache}:/root/.cache/huggingface"]
+def docker_argv(entry, vllm_args, image, digest, container, hf_cache, docker,
+                labels=()):
+    # `labels` is orchestration, not recipe: it is how the caller stamps WHICH
+    # run created this container, so a teardown can prove ownership instead of
+    # inferring it from a name anybody could have taken. Constant across a
+    # spec-on/spec-off pair, so the two renders still differ by nothing but the
+    # speculative tokens.
+    argv = [docker, "run", "-d", "--name", container]
+    for label in labels:
+        argv += ["--label", label]
+    argv += ["--gpus", "all", "--ipc=host", "--network", "host",
+             "-v", f"{hf_cache}:/root/.cache/huggingface"]
     for key in sorted(entry.get("env") or {}):
         argv += ["-e", f"{key}={entry['env'][key]}"]
     # --entrypoint: the recipe renders `vllm serve ...` as the command, and the
@@ -217,7 +225,8 @@ def cmd_render(doc, args):
     stage = pathlib.Path(args.stage) if args.stage else None
     for rank, vargs in heads:
         name = args.container if rank == 0 else f"{args.container}-node{rank}"
-        argv = docker_argv(entry, vargs, image, digest, name, args.hf_cache, args.docker)
+        argv = docker_argv(entry, vargs, image, digest, name, args.hf_cache,
+                           args.docker, args.label)
         role = "head (node-rank 0, serves HTTP)" if rank == 0 else f"worker node-rank {rank} (--headless)"
         print("")
         print(f"# node {rank} -- {role}")
@@ -340,6 +349,9 @@ def main():
     ap.add_argument("--extra", default="")
     ap.add_argument("--stage")
     ap.add_argument("--container", default="vllm-control")
+    ap.add_argument("--label", action="append", default=[],
+                    help="docker --label KEY=VALUE, repeatable; the caller's "
+                         "ownership stamp on the container it creates")
     ap.add_argument("--hf-cache", default=os.path.expanduser("~/.cache/huggingface"))
     ap.add_argument("--docker", default="docker")
     ap.add_argument("--image")

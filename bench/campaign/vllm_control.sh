@@ -36,8 +36,18 @@
 # `--speculative-config` tokens and `--spec off` removes exactly those; the
 # selftest asserts the two renders differ by nothing else.
 #
+# WHAT A REAL RUN HANDS BACK. `docker run -d` prints the ID of the container it
+# created, and that ID -- not the name -- is what a caller may later stop and
+# remove. A name is a claim anybody can hold; an ID is proof this invocation
+# created that container. So a successful run ends by printing
+# `container_id: <id>` as its LAST line and, with --id-file, writing the bare
+# ID to that path. A `docker run` that fails (125 = the name is already in
+# use) writes nothing: there is no container of ours to clean up, and the one
+# holding the name is not ours to delete.
+#
 # Usage:
 #   vllm_control.sh <model-key> <sku> --spec on|off [--dry-run] [--extra "..."]
+#                   [--label KEY=VALUE] [--id-file PATH]
 #   vllm_control.sh --list
 #   vllm_control.sh --selftest
 #
@@ -70,6 +80,8 @@ SKU=""
 SPEC=""
 DRY_RUN=0
 EXTRA=""
+ID_FILE=""
+LABELS=()
 LIST=0
 SELFTEST=0
 
@@ -80,6 +92,8 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1; shift ;;
     --spec) SPEC="${2:-}"; shift 2 ;;
     --extra) EXTRA="${2:-}"; shift 2 ;;
+    --label) LABELS+=( --label "${2:-}" ); shift 2 ;;
+    --id-file) ID_FILE="${2:-}"; shift 2 ;;
     --list) LIST=1; shift ;;
     --selftest) SELFTEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -151,6 +165,7 @@ CONTAINER="${VLLM_CONTAINER:-vllm-control-$(printf '%s' "$MODEL_KEY" | tr '.' '-
 render --recipes "$RECIPES" --model "$MODEL_KEY" --sku "$SKU" --spec "$SPEC" \
        --stage "$STAGE" --container "$CONTAINER" --hf-cache "$HF_CACHE" \
        --docker "$DOCKER_CMD" --extra "$EXTRA" \
+       ${LABELS[@]+"${LABELS[@]}"} \
        ${VLLM_IMAGE:+--image "$VLLM_IMAGE"} \
        ${VLLM_IMAGE_DIGEST:+--image-digest "$VLLM_IMAGE_DIGEST"}
 rc=$?
@@ -192,5 +207,25 @@ while IFS= read -r -d '' arg; do CMD+=( "$arg" ); done < "$STAGE/head.argv"
 
 echo ""
 echo "=== launching $CONTAINER ==="
-"${CMD[@]}"
-exit $?
+CID="$("${CMD[@]}")"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "" >&2
+  if [ "$rc" -eq 125 ]; then
+    echo "docker run exited 125: the name '$CONTAINER' is already in use." >&2
+    echo "  That container belongs to another run. NOTHING was created here, so" >&2
+    echo "  nothing is recorded and nothing must be stopped or removed." >&2
+  else
+    echo "docker run exited $rc; no container was created by this invocation." >&2
+  fi
+  exit "$rc"
+fi
+CID="$(printf '%s' "$CID" | tail -1 | tr -d '[:space:]')"
+if [ -z "$CID" ]; then
+  echo "docker run succeeded but printed no container ID; refusing to guess one." >&2
+  exit 5
+fi
+if [ -n "$ID_FILE" ]; then
+  printf '%s\n' "$CID" > "$ID_FILE"
+fi
+echo "container_id: $CID"

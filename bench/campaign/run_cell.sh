@@ -154,8 +154,19 @@ URL="http://127.0.0.1:$PORT"
 
 CELL_ID="$ENGINE.$MODEL.$SKU.$WORKLOAD.c$CONC.spec$SPEC.think$THINK"
 # Docker accepts dots in a name, but a name that reads back as the cell it
-# belongs to is what makes a stray container identifiable an hour later.
-CONTAINER="vllm-$(printf '%s' "$MODEL-$SKU-$WORKLOAD-c$CONC-spec$SPEC-think$THINK" | tr '.' '-')"
+# belongs to is what makes a stray container identifiable an hour later. The
+# pid is appended because the name must ALSO be this invocation's alone: a
+# deterministic name is a name a re-run, or a second operator, already holds,
+# and `docker run` then fails with 125 while the teardown below aims at
+# somebody else's live server.
+CONTAINER="atlas-campaign-$(printf '%s' "$MODEL-$SKU-$WORKLOAD-c$CONC-spec$SPEC-think$THINK" | tr '.' '-')-$$"
+# The ownership stamp that survives on the container itself, so a stray one can
+# be traced back to the cell and the moment that created it.
+RUN_LABEL="atlas-campaign.run=$CELL_ID-$(date +%s)"
+# Written by vllm_control.sh only when its `docker run -d` actually created a
+# container. Its absence is the proof that there is nothing to tear down.
+CONTAINER_ID_FILE="$OUT/container.id"
+CONTAINER_ID=""
 
 echo "=== campaign cell $CELL_ID ==="
 echo "engine:      $ENGINE"
@@ -263,8 +274,8 @@ PY
     echo "launcher pid $SERVE_PID; log $OUT/serve.log"
   fi
 else
-  VC_ARGS=( "$MODEL" "$SKU" --spec "$SPEC" )
-  show "VLLM_CONTAINER=$CONTAINER bash $HERE/vllm_control.sh ${VC_ARGS[*]}"
+  VC_ARGS=( "$MODEL" "$SKU" --spec "$SPEC" --label "$RUN_LABEL" )
+  show "VLLM_CONTAINER=$CONTAINER bash $HERE/vllm_control.sh ${VC_ARGS[*]} --id-file $CONTAINER_ID_FILE"
   if [ "$DRY_RUN" = "1" ]; then
     VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
       bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --dry-run 2>&1 | sed 's/^/  | /'
@@ -272,8 +283,21 @@ else
     printf 'VLLM_IMAGE_DIGEST=%s\n' "${VLLM_IMAGE_DIGEST:-}" > "$SERVE_ENV"
     START_EPOCH="$(date +%s)"
     VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
-      bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" > "$OUT/serve.log" 2>&1 \
-      || note_fail serve
+      bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --id-file "$CONTAINER_ID_FILE" \
+      > "$OUT/serve.log" 2>&1
+    serve_rc=$?
+    if [ "$serve_rc" -eq 125 ]; then
+      echo "docker run exited 125: a container named $CONTAINER already exists and"
+      echo "  was NOT created by this invocation. Nothing of it is stopped or removed;"
+      echo "  the serve stage fails and the cell records it."
+      note_fail serve
+    elif [ "$serve_rc" -ne 0 ]; then
+      note_fail serve
+    fi
+    if [ -s "$CONTAINER_ID_FILE" ]; then
+      CONTAINER_ID="$(cat "$CONTAINER_ID_FILE")"
+      echo "container id: $CONTAINER_ID"
+    fi
     sed -n 's/^docker run /docker run /p' "$OUT/serve.log" | head -1 > "$OUT/serve-cmd.txt"
     python3 - "$OUT/serve-cmd.txt" "$SERVE_ARGV" <<'PY'
 import pathlib, shlex, sys
@@ -317,12 +341,26 @@ if [ "$ENGINE" = "atlas" ]; then
     bash "$LAUNCHER" --stop || note_fail teardown
   fi
 else
-  # By container NAME, never `pkill -f`: a `pkill -f vllm` pattern matches this
-  # script's own command line, which is how a teardown becomes a self-kill.
-  show "docker stop $CONTAINER && docker rm $CONTAINER"
-  if [ "$DRY_RUN" != "1" ]; then
-    "${DOCKER:-docker}" stop "$CONTAINER" >/dev/null 2>&1 || true
-    "${DOCKER:-docker}" rm "$CONTAINER" >/dev/null 2>&1 || true
+  # By the container ID this invocation's `docker run -d` returned, and never
+  # by `pkill -f`: a `pkill -f vllm` pattern matches this script's own command
+  # line, which is how a teardown becomes a self-kill.
+  #
+  # The ID, not the name, because this block runs even when the serve stage
+  # failed. If it failed with 125 the name belongs to a container somebody else
+  # is using, and `docker stop <name>` / `docker rm <name>` then deletes their
+  # live server -- exactly the sequence a stub Docker recorded: run, stop
+  # <same-name>, rm <same-name>. No ID means nothing was created here, and
+  # nothing is this cell's to remove.
+  if [ "$DRY_RUN" = "1" ]; then
+    show "docker stop <id from docker run -d> && docker rm <the same id>"
+  elif [ -n "$CONTAINER_ID" ]; then
+    show "docker stop $CONTAINER_ID && docker rm $CONTAINER_ID"
+    "${DOCKER:-docker}" stop "$CONTAINER_ID" >/dev/null 2>&1 || true
+    "${DOCKER:-docker}" rm "$CONTAINER_ID" >/dev/null 2>&1 || true
+  else
+    echo "no container was created by this invocation ($CONTAINER_ID_FILE is absent):"
+    echo "  nothing to stop or remove. A container already holding the name"
+    echo "  '$CONTAINER' is not this cell's to delete."
   fi
 fi
 

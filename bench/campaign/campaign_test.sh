@@ -38,6 +38,14 @@
 #       VALIDATES. The assembler is the piece with no natural test on a GPU-less
 #       host, so it gets fed fixtures.
 #   (i) lints: shellcheck on every .sh, py_compile on every .py, typos clean.
+#   (j) teardown ownership, against a PATH-shimmed `docker` that records every
+#       call. A `docker run` that exits 125 (the name is already in use) means
+#       somebody else owns that container, and the cell must stop and remove
+#       NOTHING -- the old teardown ran `docker stop <name>` / `docker rm
+#       <name>` unconditionally and deleted the other run's live server. The
+#       cell tears down by the container ID its own `docker run -d` returned,
+#       and the name carries this invocation's pid so the collision is
+#       unlikely in the first place.
 #
 # Usage: bash bench/campaign/campaign_test.sh
 set -uo pipefail
@@ -291,6 +299,96 @@ $(python3 "$HERE/validate_artifact.py" "$tmp/nogo.json")"
 v="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$tmp/nogo.json")"
 [ "$v" = "NO-GO" ] || fail h "a failed boot gate must be NO-GO, got $v"
 ok h "a boot-gate failure still writes a VALID artifact, verdict NO-GO"
+
+# ── (j) teardown only touches the container this invocation created ─────────
+# The stubs are PATH-shimmed rather than passed through $DOCKER so that a
+# hardcoded `docker` anywhere in the chain is caught too. nvidia-smi is stubbed
+# because otherwise preflight fails first and the serve stage never runs.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/docker" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_CALLS"
+if [ "${1:-}" = run ]; then
+  if [ "${DOCKER_RUN_RC:-0}" != "0" ]; then
+    echo "docker: Error response from daemon: Conflict. The container name is already in use." >&2
+    exit "${DOCKER_RUN_RC}"
+  fi
+  echo "${DOCKER_FAKE_CID:?}"
+fi
+exit 0
+SH
+cat > "$tmp/bin/nvidia-smi" <<'SH'
+#!/usr/bin/env bash
+cat <<'Q'
+==============NVSMI LOG==============
+Driver Version                            : 999.00
+CUDA Version                              : 99.9
+Attached GPUs                             : 1
+GPU 00000000:01:00.0
+    Product Name                          : Stub Hopper
+Q
+SH
+chmod +x "$tmp/bin/docker" "$tmp/bin/nvidia-smi"
+DIGEST="sha256:$(printf 'a%.0s' $(seq 64))"
+CID="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# (j1) vllm_control.sh hands the container ID back, or reports that it made none.
+export DOCKER_CALLS="$tmp/vc.calls"; : > "$DOCKER_CALLS"
+out="$(DOCKER_FAKE_CID="$CID" PATH="$tmp/bin:$PATH" VLLM_IMAGE_DIGEST="$DIGEST" \
+        VLLM_CONTAINER=atlas-campaign-selftest-1 \
+        bash "$VC" nemotron-3-nano-fp8 h100 --spec off \
+        --label atlas-campaign.run=selftest-1 --id-file "$tmp/vc.id" 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail j "vllm_control with a stub docker exited $rc:
+$out"
+[ "$(tail -1 <<<"$out")" = "container_id: $CID" ] \
+  || fail j "the container ID must be the last line: $(tail -3 <<<"$out")"
+[ "$(cat "$tmp/vc.id")" = "$CID" ] || fail j "--id-file must hold the container ID"
+have "$(cat "$DOCKER_CALLS")" "--label atlas-campaign.run=selftest-1" \
+  || fail j "the ownership label must reach docker run: $(cat "$DOCKER_CALLS")"
+ok j "vllm_control returns the created container ID and labels it as this run's"
+
+: > "$DOCKER_CALLS"; rm -f "$tmp/vc.id"
+out="$(DOCKER_FAKE_CID="$CID" DOCKER_RUN_RC=125 PATH="$tmp/bin:$PATH" \
+        VLLM_IMAGE_DIGEST="$DIGEST" VLLM_CONTAINER=atlas-campaign-selftest-2 \
+        bash "$VC" nemotron-3-nano-fp8 h100 --spec off --id-file "$tmp/vc.id" 2>&1)"; rc=$?
+[ $rc -eq 125 ] || fail j "a name conflict must propagate exit 125, got $rc:
+$out"
+[ -e "$tmp/vc.id" ] && fail j "a failed docker run must write no container ID"
+ok j "a docker run name conflict exits 125 and records no container ID"
+
+# (j2) the cell: a name conflict stops and removes nothing.
+: > "$DOCKER_CALLS"
+out="$(DOCKER_FAKE_CID="$CID" DOCKER_RUN_RC=125 PATH="$tmp/bin:$PATH" \
+        VLLM_IMAGE_DIGEST="$DIGEST" \
+        bash "$RUN" --engine vllm --model nemotron-3-nano-fp8 --sku h100 \
+        --workload lat --concurrency 1 --spec off --think off \
+        --out "$tmp/collide" --yes 2>&1)"; rc=$?
+[ $rc -eq 1 ] || fail j "a cell whose serve stage failed must exit 1, got $rc:
+$out"
+touched="$(grep -E '^(stop|rm) ' "$DOCKER_CALLS" || true)"
+[ -z "$touched" ] || fail j "a name conflict must stop and remove NOTHING, saw:
+$touched"
+ok j "docker run exit 125 -> no stop, no rm, nothing of another run is touched"
+
+stage="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["failing_stage"])' \
+          "$tmp/collide/artifact.json")"
+[ "$stage" = "serve" ] || fail j "a name conflict must fail the serve stage, got $stage"
+python3 "$HERE/validate_artifact.py" "$tmp/collide/artifact.json" >/dev/null \
+  || fail j "the collision artifact must still validate:
+$(python3 "$HERE/validate_artifact.py" "$tmp/collide/artifact.json")"
+ok j "a name conflict is recorded as a serve-stage failure in a valid artifact"
+
+names="$(grep '^run ' "$DOCKER_CALLS" | grep -o -- '--name [^ ]*' | sort -u)"
+have "$names" "atlas-campaign-" || fail j "the container name must be campaign-scoped: $names"
+: > "$DOCKER_CALLS"
+DOCKER_FAKE_CID="$CID" DOCKER_RUN_RC=125 PATH="$tmp/bin:$PATH" \
+  VLLM_IMAGE_DIGEST="$DIGEST" \
+  bash "$RUN" --engine vllm --model nemotron-3-nano-fp8 --sku h100 \
+  --workload lat --concurrency 1 --spec off --think off \
+  --out "$tmp/collide2" --yes >/dev/null 2>&1
+names2="$(grep '^run ' "$DOCKER_CALLS" | grep -o -- '--name [^ ]*' | sort -u)"
+[ "$names" != "$names2" ] || fail j "two invocations must not share a container name: $names"
+ok j "each invocation names its container uniquely ($names vs $names2)"
 
 # ── (i) lints ────────────────────────────────────────────────────────────────
 if command -v shellcheck >/dev/null 2>&1; then
