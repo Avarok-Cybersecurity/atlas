@@ -454,3 +454,24 @@ on "certify", proven by sabotage, not asserted in a comment).
 **AMENDED — rule 27b (removing a bound is a security change):** a fix that deletes a clamp must prove every remaining path to the value passes the replacement check (naming the *enclosing function* of that check, not the module) AND that the downstream consumer is safe without the bound, so a missed path degrades instead of crashing. Evidence and check are written into the rulebook.
 
 **CITED:** R-verify-dont-accept (the lane's "adapters inherit it" claim was true but unproven — proving it took four greps); R-stop-spawning-into-a-failing-mode (two agents died to API errors on the same task; the third attempt was made by hand).
+
+---
+
+## Run 22 — 2026-09-05T13:00Z — CAMPAIGNS APPROVED; the first tripwire caught a vacuous control
+
+```text
+2026-09-05T12:43Z  communicate user approved the campaigns and opened dgx2 + dgx3 for parallel work
+2026-09-05T12:44Z  tool       Step-0 safety on all three boxes: dgx1 0% idle no containers; dgx2 (spark-43fa) 0%; dgx3 (spark-28c2) 0%; no foreign serve anywhere
+2026-09-05T12:44Z  tool       condition 4 discharged AT APPROVAL TIME: both stacks behind origin/main by 0; pins current
+2026-09-05T12:45Z  tool       authoritative work-list from the branch's own binary: ELEVEN gates owed for #877 (agentic-webserver, bfcl-subset, bfcl-subset-echolp, vision/video-fidelity, ttft-warm/cold, ssm-state-poisoning, decode-floor, concurrency-sweep, concurrency-sweep-dflash2) — every record invalidated by Cargo.lock + device code across 26 targets
+2026-09-05T12:47Z  aggregate  MY OWN RULE 16 VIOLATED AND CAUGHT: I read the oracle's exit code from `$?` after a pipe — that was tail's status (0). The oracle's real code was 2. Re-run without the pipe.
+2026-09-05T12:48Z  tool       oracle exit 2 = "absent from this target set": ATLAS_TARGET_HW/MODEL/QUANT are BUILD-time selectors (the oracle's own doc line shows them on `cargo run`). Rebuilt target-scoped for gb10/qwen3.6-27b/nvfp4.
+2026-09-05T12:57Z  aggregate  ★ THE TRIPWIRE PAID FOR ITSELF BEFORE ONE GPU-HOUR: the oracle graded every twin byte-identical and then FAILED ITSELF — "CONTROL 1-ULP perturbation detected=false / FAIL — this harness is VACUOUS". Its control flipped the LOW MANTISSA bit of one bf16 activation; summed over K=5120 and rounded back to bf16 that delta vanishes, so the harness could not distinguish identical from different and every byte-identical verdict it had ever printed was worthless.
+2026-09-05T12:58Z  tool       fixed: perturb an EXPONENT bit (bf16 [lo,hi]; hi bit 0 = exponent LSB, a factor-of-two move). Re-run: CONTROL detected=true on every shape, PASS on every twin, EXIT=0. Condition 3 now GENUINELY met — #844's fp8 twin parity is verified for the first time.
+2026-09-05T12:59Z  tool       tree finalised BEFORE the campaign per rule 1: oracle fix committed, new pin f3f77c82fc, pushed. The stamp bound to 82552fe34d must be re-issued against the new pin.
+2026-09-05T13:00Z  tool       parallel fan-out: dgx2 (~/wt-877) and dgx3 (/workspace/wt-877) both at the stack pin, release builds running; dgx2 needed HOME not /workspace (permission denied)
+```
+
+**AMENDED — rule 24 extension (a control must survive the arithmetic it polices):** a negative control perturbing an INPUT must be large enough to survive the operation under test — accumulation length and output rounding both attenuate it. A 1-ULP mantissa flip vanished across K=5120 into bf16. CHECK: the control must print `detected=true`; a harness whose control cannot fire must exit nonzero and say it is vacuous (this one did, which is the only reason it was caught).
+
+**CITED:** R-16 (pipeline `$?` — violated by me, caught in the same minute); R-24 (prove every guard can fail — the oracle proved itself unable and said so); R-1 (finalise the tree before the campaign — the oracle fix landed before any gate started).
