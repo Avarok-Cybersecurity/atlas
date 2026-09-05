@@ -144,6 +144,75 @@ PY
 }
 [ "$(vis "$TMP/c1.svg")" = "1" ] && ok "one author -> one visible slot" || bad "one author -> $(vis "$TMP/c1.svg") visible slots"
 [ "$(vis "$TMP/c3.svg")" = "3" ] && ok "three authors -> three visible slots" || bad "three authors -> $(vis "$TMP/c3.svg") visible slots"
+
+# THE SPECIMEN MUST NEVER SURVIVE. The template is artwork drawn on a specimen
+# PR -- its title, its commit and its author are all real-looking strings sitting
+# in the file. A row with no group cannot be hidden, so an empty value used to be
+# answered by SKIPPING the substitution, which does not blank the row: it leaves
+# the specimen's data standing and publishes it as this PR's. Reachable, not
+# theoretical -- the bot reads both the title and the merge sha through
+# `gh api ... 2>/dev/null`, so either comes back empty on a rate limit or a 404.
+SPECIMEN_TITLE='Fuse the GDN spine epilogue into the decode kernel'
+SPECIMEN_COMMIT='9d4e1f07c2'
+SPECIMEN_AUTHOR=$(grep -o 'id="value-cert-author-1"[^>]*>[^<]*' "$T" | sed 's/.*>//')
+if grep -qF "$SPECIMEN_TITLE" "$T" && grep -qF "$SPECIMEN_COMMIT" "$T" && [ -n "$SPECIMEN_AUTHOR" ]; then
+  ok "the template does carry specimen data (so the checks below mean something)"
+else
+  bad "setup: the template no longer carries the specimen strings these checks look for"
+fi
+
+want_nonzero "an empty --title is refused, not drawn over with the specimen's" \
+  render "$TMP/spec-t.svg" --authors alice --title ""
+want_nonzero "an empty --commit is refused, not drawn over with the specimen's" \
+  render "$TMP/spec-c.svg" --authors alice --commit ""
+render "$TMP/spec-ok.svg" --authors alice >/dev/null 2>&1
+if grep -qF "$SPECIMEN_TITLE" "$TMP/spec-ok.svg" || grep -qF "$SPECIMEN_COMMIT" "$TMP/spec-ok.svg"; then
+  bad "a rendered certificate still carries the template's specimen data"
+else
+  ok "a rendered certificate carries none of the template's specimen data"
+fi
+
+# CONTROL: the pre-fix behaviour -- skip the substitution when the value is
+# empty -- restored in a COPY. It must publish the specimen's title, which is
+# what proves the three checks above are not passing by construction.
+mkdir -p "$TMP/rc"
+python3 - .github/scripts/render-certificate.py "$TMP/rc/render.py" <<'RCSAB'
+import pathlib, re, sys
+t = pathlib.Path(sys.argv[1]).read_text()
+new, n = re.subn(r'        if not str\(val\)\.strip\(\):\n(?:            .*\n)+',
+                 '        if not str(val).strip():\n            continue\n', t)
+assert n == 1, "sabotage would not land: the empty-value guard was not found"
+pathlib.Path(sys.argv[2]).write_text(new)
+RCSAB
+python3 "$TMP/rc/render.py" --template "$T" --out "$TMP/rc/out.svg" \
+  --url https://github.com/o/r/pull/7 --pr 7 --title "" --repo o/r --commit abc1234567 \
+  --date 2026-01-01 --gates "11 / 11" --authors alice --qr-x 980 --qr-y 455 >/dev/null 2>&1
+grep -qF "$SPECIMEN_TITLE" "$TMP/rc/out.svg" \
+  && ok "control: skipping an empty field publishes the specimen's title" \
+  || bad "control: the sabotage did not reproduce the defect -- the checks above prove nothing"
+
+# ZERO authors is reachable too: `who` is built from two `gh api ... 2>/dev/null`
+# calls and can come back empty. Slot 1 is the only one the template ships
+# VISIBLE, so vis() above cannot see this -- it counts slots the template had
+# already hidden, and a run with hide() deleted left every check in this section
+# green while a certificate named the specimen author.
+render "$TMP/c-none.svg" --authors "" >/dev/null 2>&1
+[ "$(vis "$TMP/c-none.svg")" = "0" ] \
+  && ok "no authors -> no visible slot (the specimen author is not left standing)" \
+  || bad "no authors -> $(vis "$TMP/c-none.svg") visible slots, drawing the specimen's name"
+python3 - .github/scripts/render-certificate.py "$TMP/rc/nohide.py" <<'HDSAB'
+import pathlib, sys
+t = pathlib.Path(sys.argv[1]).read_text()
+old = '        else:\n            svg = hide(svg, f"field-cert-author-{i}")\n'
+assert t.count(old) == 1, "sabotage would not land: the author hide() was not found"
+pathlib.Path(sys.argv[2]).write_text(t.replace(old, '        else:\n            pass\n'))
+HDSAB
+python3 "$TMP/rc/nohide.py" --template "$T" --out "$TMP/rc/nohide.svg" \
+  --url https://github.com/o/r/pull/7 --pr 7 --title t --repo o/r --commit abc1234567 \
+  --date 2026-01-01 --gates "11 / 11" --authors "" --qr-x 980 --qr-y 455 >/dev/null 2>&1
+[ "$(vis "$TMP/rc/nohide.svg")" != "0" ] \
+  && ok "control: dropping hide() leaves the specimen author visible" \
+  || bad "control: the sabotage did not reproduce the defect -- the check above proves nothing"
 # CONTROL: a template that lacks an id must be an error, not a silent no-op.
 sed 's/id="value-cert-pr"/id="value-cert-pr-RENAMED"/' "$T" > "$TMP/broken.svg"
 want_rc 1 "control: a renamed id is an error, not a silent skip" \
