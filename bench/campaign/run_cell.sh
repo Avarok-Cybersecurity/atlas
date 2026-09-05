@@ -192,6 +192,9 @@ RUN_LABEL="atlas-campaign.run=$CELL_ID-$(date +%s)-$$"
 # container. Its absence is the proof that there is nothing to tear down.
 CONTAINER_ID_FILE="$OUT/container.id"
 CONTAINER_ID=""
+# What that container is RUNNING, as opposed to what it was asked to run:
+# vllm_control.sh writes the created container's resolved image ID here.
+CONTAINER_IMAGE_FILE="$OUT/container.image"
 # The name and the label are both chosen HERE and written down BEFORE the
 # create, because the window that leaks is the one inside `docker run -d`: the
 # container exists and its ID has not come back yet. A record written after the
@@ -464,19 +467,34 @@ teardown_owned() {
 }
 
 # ── engine identity: what served the requests, asked of the engine ──────────
-# One `docker inspect` of the image that ran, or one hash of the binary that
-# ran. Run once, from the finalizer, because that is the moment the answer is
-# available on every path: a container image is local by the time a create has
-# been attempted, and a cell that was interrupted still has to say what it was
-# running. Every lookup is best-effort -- no daemon, no image, no label all
-# leave the field null, which is the schema's "not measured".
+# One `docker image inspect` of the image that ran, or one hash of the binary
+# that ran. Run from the finalizer BEFORE teardown, because teardown removes
+# the container and deletes the launcher's record of what it was running --
+# after that the only thing left to ask about is the image TAG, and a tag is a
+# pointer that may have moved. Running it there also means a cell that was
+# interrupted still says what it was running. Every lookup is best-effort --
+# no daemon, no image, no label all leave the field null, which is the
+# schema's "not measured".
 docker_label() {  # docker_label REF TEMPLATE -> the value, or nothing
   local out
-  out="$("${DOCKER:-docker}" inspect --format "$2" "$1" 2>/dev/null || true)"
+  out="$("${DOCKER:-docker}" image inspect --format "$2" "$1" 2>/dev/null || true)"
   case "$out" in
     ""|"<no value>"|"<nil>") ;;
     *) printf '%s\n' "$out" ;;
   esac
+}
+
+# The image ID rank 0's create resolved its tag to, written by the launcher
+# the moment `docker run -d` returned (scripts/start-node-ep.sh,
+# record_rank_image). An ID cannot move under a rebuild the way the tag it was
+# resolved from can, so this -- not $IMAGE -- is what the identity is read of.
+recorded_rank0_image() {
+  local f="$NODE_RUN_DIR/rank0.image" line id=""
+  [ -f "$f" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in id=*) id="${line#id=}" ;; esac
+  done < "$f"
+  printf '%s' "$id"
 }
 
 capture_engine_identity() {
@@ -497,14 +515,34 @@ capture_engine_identity() {
   fi
 
   if [ "$ENGINE" = "atlas" ]; then
-    ref="$IMAGE"
+    ref="$(recorded_rank0_image)"
+    if [ -z "$ref" ]; then
+      # No create ever returned (a launch that was refused, or one interrupted
+      # inside `docker run -d`), so there is no resolved ID to name. The tag is
+      # the only reference left and it is only as good as the moment it is
+      # read -- which the artifact says out loud rather than implying.
+      ref="$IMAGE"
+      add_note "engine identity read from the image tag $IMAGE: the launcher recorded no resolved image ID for rank 0, so a tag re-pointed during this run would not be visible here"
+    fi
   else
     # vLLM's identity is its digest, and the digest is PINNED by the operator:
     # vllm_control.sh refuses to run without VLLM_IMAGE_DIGEST and builds the
-    # reference as <repo>@<digest>, so what ran is what that names.
+    # reference as <repo>@<digest>, so what ran is what that names. The
+    # version label is read of the SAME reference -- of the container's
+    # resolved image where the create recorded one, else of the pinned
+    # <repo>@<digest>, and only as a last resort of the floating tag.
     ENGINE_IMAGE_DIGEST="${VLLM_IMAGE_DIGEST:-}"
-    ref="${VLLM_IMAGE:-${VLLM_IMAGE_NAME:-}}"
-    [ -n "$ref" ] || return 0
+    ref="$(recorded_container_image)"
+    if [ -z "$ref" ]; then
+      local repo="${VLLM_IMAGE:-${VLLM_IMAGE_NAME:-}}"
+      [ -n "$repo" ] || return 0
+      if [ -n "${VLLM_IMAGE_DIGEST:-}" ]; then
+        ref="${repo%%@*}@$VLLM_IMAGE_DIGEST"
+      else
+        ref="$repo"
+        add_note "vLLM engine identity read from the image tag $repo: neither a resolved image ID nor a pinned digest was available"
+      fi
+    fi
     ENGINE_VLLM_VERSION="$(docker_label "$ref" '{{index .Config.Labels "org.opencontainers.image.version"}}')"
     return 0
   fi
@@ -524,6 +562,17 @@ capture_engine_identity() {
     ENGINE_GIT_SHA="$rev"
   fi
   return 0
+}
+
+# The same record on the vLLM side: vllm_control.sh knows the container ID the
+# moment its create returns, and writes down what that container is running.
+recorded_container_image() {
+  local line id=""
+  [ -f "$CONTAINER_IMAGE_FILE" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in id=*) id="${line#id=}" ;; esac
+  done < "$CONTAINER_IMAGE_FILE"
+  printf '%s' "$id"
 }
 
 # Built at call time, not once: the failing stage and the interruption note are
@@ -570,11 +619,14 @@ finalize() {
     add_note "interrupted by SIG$INTERRUPT_SIG during the ${CURRENT_STAGE:-preflight} stage: this cell was terminated before it finished, so its gates are unfinished rather than passed"
   fi
 
+  # Before teardown, not after: teardown removes the container this cell's
+  # identity is read of, and takes the launcher's record of it with it.
+  capture_engine_identity
+
   step "stage 6/7 teardown"
   teardown_owned
 
   step "stage 7/7 assemble and validate"
-  capture_engine_identity
   build_assemble
   show "${ASSEMBLE[*]}"
   show "python3 $HERE/validate_artifact.py $ARTIFACT"
@@ -717,7 +769,7 @@ PY
   fi
 else
   VC_ARGS=( "$MODEL" "$SKU" --spec "$SPEC" --label "$RUN_LABEL" )
-  show "VLLM_CONTAINER=$CONTAINER bash $HERE/vllm_control.sh ${VC_ARGS[*]} --id-file $CONTAINER_ID_FILE"
+  show "VLLM_CONTAINER=$CONTAINER bash $HERE/vllm_control.sh ${VC_ARGS[*]} --id-file $CONTAINER_ID_FILE --image-file $CONTAINER_IMAGE_FILE"
   if [ "$DRY_RUN" = "1" ]; then
     VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
       bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --dry-run 2>&1 | sed 's/^/  | /'
@@ -739,6 +791,7 @@ OWNER
     START_EPOCH="$(date +%s)"
     run_child env VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
       bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --id-file "$CONTAINER_ID_FILE" \
+      --image-file "$CONTAINER_IMAGE_FILE" \
       > "$OUT/serve.log" 2>&1
     serve_rc=$?
     if [ "$serve_rc" -eq 125 ]; then

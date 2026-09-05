@@ -43,13 +43,18 @@
 # `container_id: <id>` as its LAST line and, with --id-file, writing the bare
 # ID to that path -- via a temp file and a rename, so a caller reading that
 # path concurrently sees either no file or the whole ID, never a prefix of one.
+# With --image-file it also writes what that container is RUNNING: the image
+# ID the create resolved, which is the engine's identity in the campaign
+# artifact. The reference handed to `docker run` is <repo>@<digest> and so
+# cannot drift, but the resolved ID is the container's own answer and stays
+# true after the tag, the digest pin or the container itself are gone.
 # A `docker run` that fails (125 = the name is already in use) writes nothing:
 # there is no container of ours to clean up, and the one holding the name is
 # not ours to delete.
 #
 # Usage:
 #   vllm_control.sh <model-key> <sku> --spec on|off [--dry-run] [--extra "..."]
-#                   [--label KEY=VALUE] [--id-file PATH]
+#                   [--label KEY=VALUE] [--id-file PATH] [--image-file PATH]
 #   vllm_control.sh --list
 #   vllm_control.sh --selftest
 #
@@ -83,6 +88,7 @@ SPEC=""
 DRY_RUN=0
 EXTRA=""
 ID_FILE=""
+IMAGE_FILE=""
 LABELS=()
 LIST=0
 SELFTEST=0
@@ -96,6 +102,7 @@ while [ $# -gt 0 ]; do
     --extra) EXTRA="${2:-}"; shift 2 ;;
     --label) LABELS+=( --label "${2:-}" ); shift 2 ;;
     --id-file) ID_FILE="${2:-}"; shift 2 ;;
+    --image-file) IMAGE_FILE="${2:-}"; shift 2 ;;
     --list) LIST=1; shift ;;
     --selftest) SELFTEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -234,5 +241,16 @@ if [ -n "$ID_FILE" ]; then
   # ID -- `docker stop <truncated>` is a stop of nothing while the container it
   # was meant to name keeps the GPU.
   printf '%s\n' "$CID" > "$ID_FILE.tmp.$$" && mv -f "$ID_FILE.tmp.$$" "$ID_FILE"
+fi
+if [ -n "$IMAGE_FILE" ]; then
+  # Best effort, and written the same all-or-nothing way. This is provenance:
+  # a daemon that will not answer costs the artifact a field, never the run.
+  IMG_ID="$("$DOCKER_CMD" inspect --format '{{.Image}}' "$CID" 2>/dev/null || true)"
+  if [ -n "$IMG_ID" ]; then
+    IMG_REF="$("$DOCKER_CMD" inspect --format '{{.Config.Image}}' "$CID" 2>/dev/null || true)"
+    printf 'id=%s\nref=%s\n' "$IMG_ID" "$IMG_REF" > "$IMAGE_FILE.tmp.$$" \
+      && mv -f "$IMAGE_FILE.tmp.$$" "$IMAGE_FILE"
+    echo "container_image: $IMG_ID"
+  fi
 fi
 echo "container_id: $CID"

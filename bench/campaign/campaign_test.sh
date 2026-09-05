@@ -79,6 +79,11 @@
 #       recoverable, and the query that reconciles it carries the exact name
 #       AND this launch's label -- a container of another run wearing that
 #       name is untouched.
+#   (r) engine identity under a MUTABLE tag. capture_engine_identity ran after
+#       teardown and inspected the image TAG, so a rebuild that re-pointed the
+#       tag during the run made the artifact name a build that never served a
+#       request. The identity is the launched container's resolved image ID,
+#       recorded at create time and read before teardown removes it.
 #   (q) a teardown lookup that FAILED, mirrored from the launcher's case (l):
 #       `docker ps --filter label=... || true` read an unreachable daemon as
 #       "nothing was created here", and the cell finished its teardown stage
@@ -477,6 +482,20 @@ cat > "$tmp/bin/docker" <<'SH'
 # after an interruption: is the container this cell created still there?
 printf '%s\n' "$*" >> "$DOCKER_CALLS"
 running="${DOCKER_RUNNING:-}"
+# `docker image inspect` and `docker inspect` answer the same questions here;
+# the sub-verb is dropped so one branch serves both.
+if [ "${1:-}" = "image" ] && [ "${2:-}" = "inspect" ]; then shift; fi
+# What the mutable TAG resolves to right now. A tag is a pointer: re-pointing
+# this file mid-run is a rebuild under the same tag, which is what makes
+# inspecting the tag after a run the wrong question.
+tag_image() { [ -s "${DOCKER_TAG_IMAGE:-}" ] 2>/dev/null && cat "$DOCKER_TAG_IMAGE"; }
+# "<image-id-or-tag> <digest> <revision>" per line: what each image says about
+# ITSELF, so image A's answers stay distinguishable from image B's.
+registry() {  # registry TARGET FIELD -> the field, or nothing
+  { [ -n "${DOCKER_REGISTRY:-}" ] && [ -f "$DOCKER_REGISTRY" ]; } || return 1
+  awk -v t="$1" -v f="$2" '$1 == t { print $f; found = 1 } END { exit !found }' \
+    "$DOCKER_REGISTRY"
+}
 case "${1:-}" in
   run)
     if [ "${DOCKER_RUN_RC:-0}" != "0" ]; then
@@ -495,6 +514,12 @@ case "${1:-}" in
     if [ "$detached" = "1" ]; then
       if [ -n "$running" ]; then
         printf '%s %s %s\n' "${DOCKER_FAKE_CID:?}" "$label" "$name" >> "$running"
+      fi
+      # The image the create RESOLVED the tag to, recorded at create time the
+      # way the daemon does. `inspect {{.Image}}` answers from here.
+      if [ -n "${DOCKER_CREATED_IMAGES:-}" ]; then
+        printf '%s %s %s\n' "${DOCKER_FAKE_CID:?}" "$name" "$(tag_image)" \
+          >> "$DOCKER_CREATED_IMAGES"
       fi
       if [ -n "${DOCKER_RUN_BLOCK_S:-}" ]; then sleep "$DOCKER_RUN_BLOCK_S"; fi
     fi
@@ -538,11 +563,22 @@ case "${1:-}" in
     done
     case "$fmt" in
       *RepoDigests*)
-        [ -n "${DOCKER_FAKE_DIGEST:-}" ] || exit 1
-        echo "$target@$DOCKER_FAKE_DIGEST"
+        digest="$(registry "$target" 2)" || digest="${DOCKER_FAKE_DIGEST:-}"
+        [ -n "$digest" ] || exit 1
+        echo "$target@$digest"
         ;;
-      *image.revision*) echo "${DOCKER_FAKE_REVISION:-<no value>}" ;;
+      *image.revision*)
+        registry "$target" 3 || echo "${DOCKER_FAKE_REVISION:-<no value>}"
+        ;;
       *image.version*) echo "${DOCKER_FAKE_IMAGE_VERSION:-<no value>}" ;;
+      # The reference the create was GIVEN, and the image it resolved to. The
+      # second is the immutable one, and the only honest answer to "what ran".
+      *Config.Image*) echo "${DOCKER_FAKE_IMAGE_REF:-$target}" ;;
+      *.Image*)
+        { [ -n "${DOCKER_CREATED_IMAGES:-}" ] && [ -f "$DOCKER_CREATED_IMAGES" ]; } || exit 1
+        awk -v t="$target" '$1 == t || $2 == t { print $3; found = 1 } END { exit !found }' \
+          "$DOCKER_CREATED_IMAGES"
+        ;;
       *)
         { [ -n "$running" ] && [ -f "$running" ]; } || exit 1
         while read -r cid lab nm; do
@@ -581,13 +617,23 @@ CID="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 # The stub's running set: what `docker run` created and stop/rm have not yet
 # taken away. A cleanup that misses is visible here as a leftover line.
 export DOCKER_RUNNING="$tmp/docker.running"; : > "$DOCKER_RUNNING"
+# "<cid> <name> <image-id>": what each create resolved its tag to, at the
+# moment it created the container.
+export DOCKER_CREATED_IMAGES="$tmp/docker.created-images"; : > "$DOCKER_CREATED_IMAGES"
 
 # (j1) vllm_control.sh hands the container ID back, or reports that it made none.
 export DOCKER_CALLS="$tmp/vc.calls"; : > "$DOCKER_CALLS"
+# The image this create resolves. The reference vllm_control launches is
+# <repo>@<digest> and so cannot drift, but the container's own resolved ID is
+# what stays true once the container is gone -- so it is recorded too.
+VC_IMAGE="sha256:$(printf 'f%.0s' $(seq 64))"
+printf '%s\n' "$VC_IMAGE" > "$tmp/docker.tag-image"
 out="$(DOCKER_FAKE_CID="$CID" PATH="$tmp/bin:$PATH" VLLM_IMAGE_DIGEST="$DIGEST" \
+        DOCKER_TAG_IMAGE="$tmp/docker.tag-image" \
         VLLM_CONTAINER=atlas-campaign-selftest-1 \
         bash "$VC" nemotron-3-nano-fp8 h100 --spec off \
-        --label atlas-campaign.run=selftest-1 --id-file "$tmp/vc.id" 2>&1)"; rc=$?
+        --label atlas-campaign.run=selftest-1 --id-file "$tmp/vc.id" \
+        --image-file "$tmp/vc.image" 2>&1)"; rc=$?
 [ $rc -eq 0 ] || fail j "vllm_control with a stub docker exited $rc:
 $out"
 [ "$(tail -1 <<<"$out")" = "container_id: $CID" ] \
@@ -596,6 +642,12 @@ $out"
 have "$(cat "$DOCKER_CALLS")" "--label atlas-campaign.run=selftest-1" \
   || fail j "the ownership label must reach docker run: $(cat "$DOCKER_CALLS")"
 ok j "vllm_control returns the created container ID and labels it as this run's"
+
+have "$(cat "$tmp/vc.image" 2>&1)" "id=$VC_IMAGE" \
+  || fail j "--image-file must hold the image the created container resolved, got:
+$(cat "$tmp/vc.image" 2>&1)"
+rm -f "$tmp/docker.tag-image"
+ok j "--image-file records what the created container is running, not the tag"
 
 : > "$DOCKER_CALLS"; rm -f "$tmp/vc.id"
 out="$(DOCKER_FAKE_CID="$CID" DOCKER_RUN_RC=125 PATH="$tmp/bin:$PATH" \
@@ -1077,6 +1129,87 @@ assert ev["binary_sha256"] is None, ev
 assert doc["harness"]["git_sha"] == (sys.argv[3] or None), doc["harness"]
 PY
 ok p "the vLLM cell keeps the digest it was pinned to and claims no engine revision"
+
+# ── (r) the engine identity is the image that RAN, not the tag afterwards ───
+# capture_engine_identity used to run AFTER teardown and inspect $IMAGE -- the
+# tag. A tag is a mutable pointer: a rebuild or a pull between the launch and
+# the finalizer re-points it, and the artifact then names a build that never
+# served a request. What the container started from is its resolved image ID,
+# recorded the moment the create returns and inspected before teardown removes
+# the container. Here tag T resolves to image A at create time and is
+# re-pointed to B during the run; the artifact must say A.
+IMG_A="sha256:$(printf 'd%.0s' $(seq 64))"
+IMG_B="sha256:$(printf 'e%.0s' $(seq 64))"
+DIGEST_A="sha256:$(printf '1%.0s' $(seq 64))"
+DIGEST_B="sha256:$(printf '2%.0s' $(seq 64))"
+REV_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+REV_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+MUTABLE_TAG="avarok/atlas-fake:mutable"
+export DOCKER_REGISTRY="$tmp/docker.registry"
+export DOCKER_TAG_IMAGE="$tmp/docker.tag-image"
+{
+  printf '%s %s %s\n' "$IMG_A" "$DIGEST_A" "$REV_A"
+  printf '%s %s %s\n' "$IMG_B" "$DIGEST_B" "$REV_B"
+  # The TAG's own answers are B's, because by the time anything inspects the
+  # tag it has been re-pointed. An artifact carrying these is the bug.
+  printf '%s %s %s\n' "$MUTABLE_TAG" "$DIGEST_B" "$REV_B"
+} > "$DOCKER_REGISTRY"
+printf '%s\n' "$IMG_A" > "$DOCKER_TAG_IMAGE"
+
+mutable_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+: > "$STUB_HITS"
+python3 "$tmp/loading_stub.py" "$mutable_port" >/dev/null 2>&1 & stub_pid=$!
+: > "$DOCKER_CALLS"; : > "$DOCKER_RUNNING"; : > "$DOCKER_CREATED_IMAGES"
+DOCKER_FAKE_CID="3333333333333333333333333333333333333333333333333333333333333333" \
+  PATH="$tmp/bin:$PATH" IMAGE="$MUTABLE_TAG" ATLAS_PORT="$mutable_port" \
+  bash "$RUN" --engine atlas --model nemotron-3-nano-fp8 --sku h100 \
+  --workload lat --concurrency 1 --spec off --think off \
+  --out "$tmp/mutable-tag" --yes > "$tmp/mutable-tag.log" 2>&1 &
+run_pid=$!
+
+mutable_dir="$tmp/mutable-tag/node-ep-$run_pid"
+wait_for 120 "the launcher to record the image its create resolved" \
+  test -s "$mutable_dir/rank0.image" \
+  || fail r "the launcher recorded no image for the rank it created:
+$(cat "$tmp/mutable-tag.log")"
+have "$(cat "$mutable_dir/rank0.image")" "id=$IMG_A" \
+  || fail r "the launcher must record the resolved image ID, got:
+$(cat "$mutable_dir/rank0.image")"
+ok r "the launcher writes down the image its detached create actually resolved"
+
+# The rebuild: same tag, different image, while the cell is still running.
+printf '%s\n' "$IMG_B" > "$DOCKER_TAG_IMAGE"
+
+kill -TERM "$run_pid"
+wait "$run_pid"; rc=$?
+kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null
+log="$(cat "$tmp/mutable-tag.log")"
+
+[ $rc -eq 143 ] || fail r "the interrupted cell must exit 143, got $rc:
+$log"
+art="$tmp/mutable-tag/artifact.json"
+[ -f "$art" ] || fail r "an interrupted cell must still write its artifact:
+$log"
+python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
+  || fail r "the artifact must validate:
+$(python3 "$HERE/validate_artifact.py" "$art")"
+python3 - "$art" "$DIGEST_A" "$REV_A" "$DIGEST_B" "$REV_B" <<'RPY' \
+  || fail r "the artifact names the build the tag points at NOW, not the one that ran: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["engine_version"])' "$art")"
+import json, sys
+ev = json.load(open(sys.argv[1]))["engine_version"]
+ran_digest, ran_rev, rebuilt_digest, rebuilt_rev = sys.argv[2:6]
+assert ev["image_digest"] == ran_digest, ev
+assert ev["git_sha"] == ran_rev, ev
+assert ev["image_digest"] != rebuilt_digest, ev
+assert ev["git_sha"] != rebuilt_rev, ev
+RPY
+ok r "a tag re-pointed during the run does not change the build the artifact names"
+
+grep -Fq -- "$IMG_A" "$DOCKER_CALLS" \
+  || fail r "the identity lookup never inspected the recorded image ID:
+$(cat "$DOCKER_CALLS")"
+ok r "the identity is read from the recorded image ID, not from the tag"
+unset DOCKER_REGISTRY DOCKER_TAG_IMAGE
 
 # ── (q) a teardown lookup that FAILED is not a teardown that found nothing ──
 # The launcher's half of this is scripts/start_node_ep_test.sh case (l); this

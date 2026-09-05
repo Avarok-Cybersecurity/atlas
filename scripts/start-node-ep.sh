@@ -48,6 +48,7 @@
 #     its caller read "nothing was created" and stopped nothing, leaving a
 #     rank on the GPU. So the name and a per-launch label are written to
 #     rank<N>.intent BEFORE each create, the label goes on the container, and
+#     rank<N>.image records what the create resolved the image tag to, and
 #     --stop reconciles an intent that has no container record by asking
 #     Docker for that exact name wearing that label. Both filters, always:
 #     the name alone would match a LATER launch's rank, and the label alone
@@ -248,7 +249,7 @@ stop_ranks() {
     echo "stopping container $name"
     "$DOCKER" stop "$name" >/dev/null 2>&1 || true
     "$DOCKER" rm "$name" >/dev/null 2>&1 || true
-    rm -f "$f"
+    rm -f "$f" "${f%.container}.image"
     stopped=$((stopped + 1))
   done
   for f in "$RUN_DIR"/rank*.pid; do
@@ -444,6 +445,28 @@ container_name() { printf '%s-rank%s' "$RUN_ID" "$1"; }
 # `docker inspect` on a name: exit 0 iff a container by that name exists, and
 # `true` on stdout iff it is running. One command answers both questions.
 container_exists() { "$DOCKER" inspect --format '{{.State.Running}}' "$1" >/dev/null 2>&1; }
+
+# record_rank_image RANK NAME -- what this rank actually STARTED from.
+#
+# $IMAGE is a tag, and a tag is a pointer. `docker run` resolves it to an
+# image ID once, at create time; a rebuild or a `docker pull` a minute later
+# re-points the tag, and anything that inspects the tag afterwards then
+# describes a build that never served a request. `{{.Image}}` is the resolved
+# ID the container is running -- immutable, and the only honest answer to
+# "what ran" once the container is gone. `{{.Config.Image}}` is the reference
+# the create was given, kept beside it so the record reads back to a human.
+#
+# Best effort by design: this is provenance, not control. An inspect that
+# fails leaves no file, and the reader (bench/campaign/run_cell.sh) falls back
+# to the tag and says in the artifact's notes that it did.
+record_rank_image() {
+  local rank="$1" cname="$2" id ref
+  id="$("$DOCKER" inspect --format '{{.Image}}' "$cname" 2>/dev/null || true)"
+  [ -n "$id" ] || return 0
+  ref="$("$DOCKER" inspect --format '{{.Config.Image}}' "$cname" 2>/dev/null || true)"
+  printf 'id=%s\nref=%s\n' "$id" "$ref" > "$RUN_DIR/rank$rank.image.tmp"
+  mv "$RUN_DIR/rank$rank.image.tmp" "$RUN_DIR/rank$rank.image"
+}
 container_running() {
   [ "$("$DOCKER" inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
 }
@@ -707,6 +730,9 @@ for rank in "${LAUNCH_ORDER[@]}"; do
     # the intent, never half a container name.
     printf '%s\n' "$cname" > "$RUN_DIR/rank$rank.container.tmp"
     mv "$RUN_DIR/rank$rank.container.tmp" "$RUN_DIR/rank$rank.container"
+    # Immediately, while the container still exists: teardown removes it, and
+    # after that the only thing left to inspect is the tag.
+    record_rank_image "$rank" "$cname"
   else
     if [ -n "$SETSID" ]; then
       $SETSID nohup "${RANK_CMD[@]}" >"$log" 2>&1 </dev/null &

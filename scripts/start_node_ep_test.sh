@@ -31,6 +31,9 @@
 #       reported time-to-ready must be >= 2 s. A poll loop that treats a
 #       loading 503 as ready would report ~0 and make every boot number in the
 #       campaign a fiction.
+#       Each create also records the IMAGE it resolved (rank<N>.image): the
+#       campaign artifact names the build that served, and a tag inspected
+#       after the fact is whatever the tag points at now.
 #   (h) two invocations with different run directories and ports, against a
 #       fake Docker: neither may stop or remove the other's rank, and --stop
 #       from one run directory must leave the other's container alone. The
@@ -330,9 +333,22 @@ case "$cmd" in
     done < "$DOCKER_STATE"
     ;;
   inspect)
-    for a in "$@"; do name="$a"; done
-    awk -v n="$name" '$2 == n { found = 1 } END { exit !found }' "$DOCKER_STATE" || exit 1
-    echo "true"
+    # Three questions share this verb: does a container by this name exist
+    # (the pre-create probe), what IMAGE did its create resolve the tag to,
+    # and what reference was that create given. The go template says which.
+    fmt=""; prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--format" ]; then fmt="$a"; fi
+      prev="$a"; name="$a"
+    done
+    case "$fmt" in
+      *Config.Image*) echo "${DOCKER_FAKE_IMAGE_REF:-avarok/atlas-gb10:latest}" ;;
+      *.Image*) echo "${DOCKER_FAKE_IMAGE_ID:-sha256:feedfacefeedfacefeedfacefeedface}" ;;
+      *)
+        awk -v n="$name" '$2 == n { found = 1 } END { exit !found }' "$DOCKER_STATE" || exit 1
+        echo "true"
+        ;;
+    esac
     ;;
   stop|rm)
     # Same one-shot marker for the OTHER half of a reconciliation: the lookup
@@ -380,6 +396,13 @@ name_a="$(cat "$run_a/rank0.container")"
 state_has_name "$name_a" || fail h "run A's container is not live: $name_a"
 [ -f "$run_a/rank0.intent" ] \
   || fail h "run A recorded no intent for the create it made: $(ls "$run_a")"
+# The image the create RESOLVED, written down while the container still
+# exists. IMAGE is a tag and a tag can be re-pointed; the campaign's artifact
+# reads this file so it can name the build that actually served, rather than
+# whatever the tag points at once the container is gone.
+have "$(cat "$run_a/rank0.image" 2>&1)" "id=sha256:feedfacefeedfacefeedfacefeedface" \
+  || fail h "run A recorded no resolved image for its rank: $(ls "$run_a")"
+ok h "a create records the image ID it resolved, not just the tag it was given"
 
 : > "$DOCKER_CALLS"
 run_b="$tmp/run-b"
@@ -409,6 +432,7 @@ $(cat "$DOCKER_CALLS")"
 state_has_name "$name_b" || fail h "run B's container did not survive run A's --stop"
 state_has_name "$name_a" && fail h "--stop must have removed run A's own container"
 [ -e "$run_a/rank0.intent" ] && fail h "--stop must clear the intent it has reconciled"
+[ -e "$run_a/rank0.image" ] && fail h "--stop must clear the image record with the container"
 ok h "--stop from run A's directory removes only run A's container"
 
 kill "$stub_a" "$stub_b" 2>/dev/null
