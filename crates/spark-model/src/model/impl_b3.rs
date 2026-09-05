@@ -81,7 +81,9 @@ impl TransformerModel {
             buffers: &self.buffers,
             // Qwen's proposer reads the accepted target highway row. Other
             // proposers consume the copied collapsed hidden as before.
-            hc_row_offset: if self.config.model_type == "qwen4_exp" {
+            hc_row_offset: if self.config.model_type == "qwen4_exp"
+                && crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled()
+            {
                 self.last_mtp_hidden_idx.load(std::sync::atomic::Ordering::Relaxed)
             } else {
                 0
