@@ -83,3 +83,71 @@ jobs:
             # a red health check every 15 minutes trains people to ignore it.
             echo "::warning title=Cannot switch runners automatically::the token cannot write CMD_RUNNER_LABEL (needs 'administration: write' on the certification App). Set it by hand to '$want'."
           fi
+
+  macos-health:
+    name: macOS burst runner health
+    # Same idea as the job above, for the opt-in macOS burst runner that
+    # ci.yml's test-macos-metal job routes to. The crucial difference: for a
+    # BURST runner, offline is the normal resting state, not a failure. The Mac
+    # is a workstation that opts in for a while and then goes Off again, so a
+    # cleared variable is routine and is reported as a notice, never a warning.
+    #
+    # Without this, turning the Mac Off would leave MACOS_RUNNER_LABEL pointing
+    # at a label no online runner carries, and every Metal job would sit in
+    # "waiting for a runner" instead of falling back to GitHub-hosted.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint the certification App token
+        id: apptoken
+        if: vars.CERTIFICATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.CERTIFICATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CERTIFICATION_APP_PRIVATE_KEY }}
+
+      - name: Point the Metal job at a runner that answers
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          WANT: atlas-macos-burst
+          FALLBACK: macos-14
+        run: |
+          set -uo pipefail
+          # The burst controller removes the label before it stops the service,
+          # so "online AND carrying the label" is the only honest test of
+          # whether a job routed here would actually be picked up.
+          online=$(gh api "repos/$REPO/actions/runners" \
+                     --jq "[.runners[] | select(any(.labels[]; .name == \"$WANT\")) | select(.status == \"online\")] | length" \
+                     2>/dev/null) || online=UNKNOWN
+          case "$online" in ''|*[!0-9]*) online=UNKNOWN ;; esac
+
+          cur=$(gh api "repos/$REPO/actions/variables/MACOS_RUNNER_LABEL" --jq '.value' 2>/dev/null) || cur=""
+          echo "runners online with '$WANT': $online   MACOS_RUNNER_LABEL=${cur:-<unset>}"
+
+          if [ "$online" = "UNKNOWN" ]; then
+            echo "::warning title=Runner health unknown::could not read the runner list; leaving MACOS_RUNNER_LABEL as ${cur:-<unset>}."
+            exit 0
+          fi
+
+          want="$WANT"
+          [ "$online" -eq 0 ] && want="$FALLBACK"
+          if [ "$cur" = "$want" ]; then
+            echo "already correct - nothing to do."
+            exit 0
+          fi
+
+          # The variable may not exist yet on the first run; PATCH fails on a
+          # missing variable, so fall back to POST to create it.
+          if gh api -X PATCH "repos/$REPO/actions/variables/MACOS_RUNNER_LABEL" \
+               -f name=MACOS_RUNNER_LABEL -f value="$want" >/dev/null 2>&1 \
+             || gh api -X POST "repos/$REPO/actions/variables" \
+                  -f name=MACOS_RUNNER_LABEL -f value="$want" >/dev/null 2>&1; then
+            if [ "$want" = "$FALLBACK" ]; then
+              echo "::notice title=Burst Mac is Off::test-macos-metal is on $FALLBACK. This is the normal resting state."
+            else
+              echo "::notice title=Burst Mac is Available::test-macos-metal moved to $WANT."
+            fi
+            echo "MACOS_RUNNER_LABEL: ${cur:-<unset>} -> $want"
+          else
+            echo "::warning title=Cannot switch runners automatically::the token cannot write MACOS_RUNNER_LABEL (needs 'administration: write' on the certification App). Set it by hand to '$want'."
+          fi
