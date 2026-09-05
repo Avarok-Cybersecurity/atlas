@@ -1,0 +1,15 @@
+[hardware]
+name = "b200"
+vendor = "nvidia"
+# B200 / GB200 SXM — SM 10.0 (datacenter Blackwell). `sm_100a` exposes
+# tcgen05 / TMA / native NVFP4 (cvt e2m1x2, mma kind::mxf4nvf4); the shared
+# gb10-derived kernels compile as plain sm_100 code today. Arch-specific PTX
+# is NOT forward-compatible: B300 / GB300 are SM 10.3 (`sm_103a`) and need
+# their own target. Consumer/GB10 Blackwell (sm_120/sm_121) lacks tcgen05.
+arch = "sm_100a"
+compute_capability = "10.0"
+# B200 SXM 180 GB HBM3e: ~8000 GB/s. Documentation + roofline input only;
+# the runtime reads real free memory via cuMemGetInfo.
+memory_bandwidth_gbps = 8000
+memory_type = "HBM3e"
+memory_gb = 180

@@ -32,7 +32,9 @@ use std::path::{Path, PathBuf};
 /// `scripts/check_kernel_shadows.py` and `source_extension()` in
 /// `build_target.rs`.
 const HW_SOURCE_EXT: &[(&str, &str)] = &[
+    ("b200", "cu"),
     ("gb10", "cu"),
+    ("hopper", "cu"),
     ("metal", "metal"),
     ("strix", "cu"),
     ("strix-hip", "cu"),
@@ -291,5 +293,34 @@ fn no_model_shadow_drops_a_common_kernel() {
         "{} shadowing file(s) drop a kernel their common/ namesake declares:\n  {}",
         drift.len(),
         drift.join("\n  ")
+    );
+}
+
+/// Every hardware set in the tree is in `HW_SOURCE_EXT`.
+///
+/// The list is hand-maintained on both sides of the kernel-structure gate
+/// (here and in `scripts/check_kernel_shadows.py`), and an unlisted hardware
+/// set is not partially checked — it is not checked at all, silently, which is
+/// the same shape as the macro blind spot this file was written for. A
+/// directory with a HARDWARE.toml is a build target by `build.rs`'s own rule
+/// (`resolve_targets` accepts any `kernels/<hw>` that has one), so that is the
+/// oracle for what must be listed.
+#[test]
+fn every_hardware_set_in_the_tree_is_guarded() {
+    let root = kernels_root();
+    let mut unguarded: Vec<String> = std::fs::read_dir(&root)
+        .expect("kernels/")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("HARDWARE.toml").is_file())
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .filter(|hw| !HW_SOURCE_EXT.iter().any(|(known, _)| known == hw))
+        .collect();
+    unguarded.sort();
+    assert!(
+        unguarded.is_empty(),
+        "hardware set(s) not in HW_SOURCE_EXT, so no shadow or entry-point check \
+         ever looks at them: {unguarded:?} — add them here AND in \
+         scripts/check_kernel_shadows.py"
     );
 }

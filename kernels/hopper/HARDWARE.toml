@@ -1,0 +1,16 @@
+[hardware]
+name = "hopper"
+vendor = "nvidia"
+# H100 SXM5 / H200 SXM5 — both SM 9.0. `sm_90a` enables the arch-specific
+# Hopper feature set (wgmma/TMA/setmaxnreg) for kernels that opt in; the
+# shared gb10-derived kernels below use none of it yet and compile as
+# plain sm_90 code. PTX built for sm_90a is NOT forward-compatible with
+# sm_100/sm_120 devices — this target is Hopper-only by design.
+arch = "sm_90a"
+compute_capability = "9.0"
+# H100 SXM5 80 GB HBM3: 3350 GB/s. H200 SXM5 141 GB HBM3e: 4800 GB/s.
+# Sized to the smaller SKU; the runtime reads real free memory via
+# cuMemGetInfo, this is documentation + roofline input only.
+memory_bandwidth_gbps = 3350
+memory_type = "HBM3"
+memory_gb = 80

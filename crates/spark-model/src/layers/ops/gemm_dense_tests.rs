@@ -174,6 +174,11 @@ fn ldb_kernels_actually_use_the_parameter() {
 #[test]
 fn ldb_kernels_keep_their_dialect_specific_bounds() {
     let (mut scalar, mut tile) = (0usize, 0usize);
+    // Of the scalar paths, how many are REAL files rather than symlinks into
+    // another hardware set's `common/`. That is the number the alarm below is
+    // actually about: a symlinked backend inherits the port for free, a forked
+    // one has to be edited by hand.
+    let mut scalar_forked = 0usize;
     for p in &cu_files() {
         let src = std::fs::read_to_string(p).unwrap();
         for name in LDB_KERNELS {
@@ -190,6 +195,12 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             // independent of the property it is testing.
             if util::rel(p).contains("/common/") {
                 scalar += 1;
+                if std::fs::symlink_metadata(p)
+                    .map(|m| !m.file_type().is_symlink())
+                    .unwrap_or(true)
+                {
+                    scalar_forked += 1;
+                }
                 assert!(
                     body.contains("gn < N"),
                     "{where_}: the scalar column guard `gn < N` is gone. N is the \
@@ -211,16 +222,27 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             }
         }
     }
-    // ★ 3 PATHS, 2 FILES: `kernels/strix/common/w4a16_gemm.cu` is a SYMLINK to
-    // `../../gb10/common/w4a16_gemm.cu`, so the strix copy was ported the
-    // moment gb10's was. `strix-hip/common/` is a real, separate HIP file and
-    // had to be done by hand. Count paths — that is what the build walks — but
-    // do not read "3" as "3 edits".
+    // ★ 5 PATHS, 2 FILES. `kernels/{strix,hopper,b200}/common/w4a16_gemm.cu`
+    // are all SYMLINKS to `../../gb10/common/w4a16_gemm.cu`, so those copies
+    // were ported the moment gb10's was. `strix-hip/common/` is a real,
+    // separate HIP file and had to be done by hand.
+    //
+    // BOTH numbers are asserted, and the second is the one that matters. Path
+    // count is what the build walks, so it has to track the tree — but a new
+    // symlinked hardware set costs nothing, while a new FORKED `common/` copy
+    // is a file somebody has to port by hand and is exactly what this test
+    // exists to catch. Asserting only the total would fire on the free case
+    // and, once bumped, would go quiet on the expensive one.
     assert_eq!(
-        scalar, 3,
-        "expected exactly the 3 shared `common/` scalar paths (gb10, strix -> \
-         symlink to gb10, strix-hip); a 4th means a new backend needs the same \
-         hand port"
+        scalar, 5,
+        "the shared `common/` scalar paths moved (gb10, strix, strix-hip, \
+         hopper, b200) — update this count with the tree"
+    );
+    assert_eq!(
+        scalar_forked, 2,
+        "expected exactly 2 FORKED `common/` scalar copies (gb10 and \
+         strix-hip); a 3rd is a new backend that needs the same hand port, \
+         where a symlinked one would have inherited it"
     );
     assert!(tile > 20, "only {tile} tile copies found — tree moved?");
 }
