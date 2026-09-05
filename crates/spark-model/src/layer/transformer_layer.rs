@@ -129,6 +129,82 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when [`Self::align_aux`] alone restores this layer's aux carry
+    /// exactly, so a speculative rollback needs NO blob for it.
+    ///
+    /// The two carries this model class advances during a K-row verify want
+    /// different mechanisms, and the difference is not stylistic:
+    ///
+    /// * QSA's `ingested`/`pooled` are CONTIGUOUS MARKS over buffers written
+    ///   forward from them, so moving the mark back to the committed position
+    ///   is a complete rewind — and it costs nothing, where a snapshot would
+    ///   round-trip `ingested * head_dim * 2` bytes of raw keys per attention
+    ///   layer through the host on EVERY speculative step.
+    /// * PLE's rolling conv state and its fixed-length n-gram history window
+    ///   have already discarded their oldest entries, so truncation cannot
+    ///   rebuild them. Those must be snapshotted.
+    ///
+    /// `collect_verify_aux_states` skips layers that answer `true` here;
+    /// `commit_verify_aux` realigns them by absolute position instead.
+    fn aux_rewind_is_exact(&self) -> bool {
+        false
+    }
+
+    /// Align this layer's aux carry to an ABSOLUTE sequence position.
+    ///
+    /// Used before a verify replays rows the carry may already have ingested.
+    /// Absolute, because the overlap is not a constant — see
+    /// `QsaIndexer::align_seq_state`.
+    fn align_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Rewind this layer's aux carry to the boundary AFTER verify row `row`,
+    /// i.e. to a commit of `row + 1` rows out of a K-row speculative verify.
+    ///
+    /// The third of the three per-row carries, and the only one that needs a
+    /// snapshot. The SSM `h_state`/`conv_state` are rewound from pool
+    /// intermediates by `commit_accepted_prefix`, and QSA's contiguous marks
+    /// are rewound by `align_aux` to an absolute position — neither goes
+    /// through here. PLE does: its rolling conv + fixed history window cannot
+    /// be reconstructed by truncation.
+    ///
+    /// Default no-op: only the one layer carrying PLE has anything to do.
+    fn commit_verify_row(
+        &self,
+        _state: &mut dyn LayerState,
+        _row: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Roll this layer's aux carry back by `rows`, after a rejected
+    /// speculative draft.
+    ///
+    /// Distinct from `restore_aux` on purpose. `snapshot_aux` returns `None`
+    /// when a sequence has not reached this layer's ingest yet, so a
+    /// snapshot/restore pair CANNOT undo the very first draft — there is
+    /// nothing to restore, and the carry is left ahead of the sequence
+    /// (measured: `QSA: decode at pos 0 but 1 tokens ingested`). A mark rewind
+    /// has no such hole and needs no blob.
+    fn rewind_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Restore the aux state captured by [`Self::snapshot_aux`] on a
     /// prefix-cache hit, BEFORE the resumed prefill runs.
     fn restore_aux(

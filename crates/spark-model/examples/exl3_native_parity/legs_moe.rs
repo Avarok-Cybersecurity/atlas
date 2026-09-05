@@ -169,12 +169,12 @@ pub fn ref_token(
 }
 
 pub struct Slabs {
-    scratch: Exl3MoeScratch,
+    pub(super) scratch: Exl3MoeScratch,
     pub owned: Vec<DevicePtr>,
-    out: DevicePtr,
-    input: DevicePtr,
-    indices: DevicePtr,
-    probs: DevicePtr,
+    pub(super) out: DevicePtr,
+    pub(super) input: DevicePtr,
+    pub(super) indices: DevicePtr,
+    pub(super) probs: DevicePtr,
 }
 
 pub fn alloc_slabs(ctx: &Ctx, s_cap: usize, t_max: usize) -> Result<Slabs> {
@@ -253,6 +253,7 @@ pub fn run_native(
         local_start,
         num_local,
         0.0,
+        false,
         ctx.sms,
         stream,
     )?;

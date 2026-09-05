@@ -23,6 +23,9 @@
 //!     reconstruct->f64->silu->weighted-sum reference; EP sub-leg with
 //!     remote experts masked -1 + exact-zero all-remote token + negative
 //!     control (legs_moe.rs).
+//!  F2. verify-grid: exact BF16 equality against serial routed decode for
+//!     Kbits4/5/6, top-k3/10, verify rows2/3/4; old batch grid is a negative
+//!     control. Run only this leg with EXL3_VERIFY_GRID_ONLY=1.
 //!  G. prefill-MoE: the PRODUCTION sort-by-expert tier (Atlas counting sort
 //!     + exl3_moe_stage_sorted + the fused persistent exl3_moe kernel + the
 //!     reconstruct overflow path) — 16 experts K=4 MUL1, top_k=4, T in
@@ -67,6 +70,7 @@ mod legs_dense_attn;
 mod legs_dense_gdn;
 mod legs_kladder;
 mod legs_moe;
+mod legs_moe_verify_grid;
 mod legs_moe_prefill;
 mod legs_moe_prefill_debug;
 mod legs_moe_prefill_det;
@@ -194,6 +198,11 @@ fn main() -> Result<()> {
     let ctx = Ctx { g, locks, sms };
     let mut rng = Lcg(0x5EED_D06E);
 
+    if std::env::var("EXL3_VERIFY_GRID_ONLY").as_deref() == Ok("1") {
+        anyhow::ensure!(legs_moe_verify_grid::run(&ctx)?, "EXL3 verify grid parity failed");
+        return Ok(());
+    }
+
     if std::env::var("EXL3_PF_DEBUG").as_deref() == Ok("1") {
         legs_moe_prefill_debug::debug_pf(&ctx, &mut rng)?;
         std::process::exit(3);
@@ -213,6 +222,7 @@ fn main() -> Result<()> {
     }
     clean &= legs::leg_mgemm(&ctx, &mut rng)?;
     clean &= legs_moe::leg_moe_decode(&ctx, &mut rng)?;
+    clean &= legs_moe_verify_grid::run(&ctx)?;
     clean &= legs_moe_prefill::leg_moe_prefill(&ctx, &mut rng)?;
     clean &= legs_moe_prefill_det::leg_moe_prefill_determinism(&ctx, &mut rng)?;
     clean &= legs_dense::run(&ctx, &mut rng)?;

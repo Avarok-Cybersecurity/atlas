@@ -61,7 +61,10 @@ impl MoeLayer {
         // token-major decode router.
         let router_in = self.router_input(input, n, h, ctx, stream)?;
         let gate_logits = ctx.buffers.gate_logits();
-        if let Some(ref nvfp4) = self.gate_nvfp4 {
+        let row_router = self.exl3_row_router(router_in, gate_logits, num_tokens, ctx, stream)?;
+        if row_router {
+            // Decode-shaped projections already populated every router row.
+        } else if let Some(ref nvfp4) = self.gate_nvfp4 {
             ops::w4a16_gemm(
                 ctx.gpu,
                 self.w4a16_gemm,
@@ -90,7 +93,9 @@ impl MoeLayer {
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(num_tokens * top_k as usize * 4);
-        if let Some(bias) = self.correction_bias_dev {
+        if row_router {
+            self.exl3_row_topk(gate_logits, indices_dev, weights_dev, num_tokens, ctx, stream)?;
+        } else if let Some(bias) = self.correction_bias_dev {
             // Same envelope as the prefill arm: a bias-carrying model with
             // softmax/sqrtsoftplus scoring must refuse here too, not silently
             // route through sigmoid numerics.
@@ -233,6 +238,7 @@ impl MoeLayer {
             local_start,
             num_local,
             0.0, // qwen4_exp declares no activation clamp
+            super::forward_exl3_router::stable_grid_enabled(ctx, num_tokens),
             st.sm_count,
             stream,
         )?;

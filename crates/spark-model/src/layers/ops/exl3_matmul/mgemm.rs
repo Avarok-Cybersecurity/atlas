@@ -9,6 +9,9 @@ use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
+#[path = "mgemm_grid.rs"]
+mod mgemm_grid;
+
 use super::{
     BLOCKDIM, EXL3_SMEM_MAX, TILESIZE_K, TILESIZE_N, c_suffix, ensure_k_cb, raise_smem_once,
     resolve_gemm_shape,
@@ -20,6 +23,10 @@ use super::{
 /// `b_weights != None` triggers the grouped weighted reduction: each of the
 /// `num_tokens` groups of `bszm/num_tokens` contiguous slots is summed into
 /// row-block `t` of C (fp32 sums only when `c_fp32` — use fp32 C for MoE).
+/// `replay_group_size = Some(top_k)` keeps one token's kernel shape and
+/// split-K grid, scheduling all slots in waves within the same cooperative
+/// launch. `None` selects the ordinary batch-shaped launch. Replay requires
+/// equal, non-broadcast input/output slot batches divisible by the group.
 /// `a_had_capacity_elems` is the scratch capacity in halves and MUST cover
 /// `bszm*m*k` (asserted here; undersize is silent OOB in the kernel).
 #[allow(clippy::too_many_arguments)]
@@ -49,6 +56,7 @@ pub fn exl3_mgemm(
     size_n_list: Option<DevicePtr>,
     c_list: Option<DevicePtr>,
     force_shape: Option<usize>,
+    replay_group_size: Option<usize>,
     sm_count: u32,
     stream: u64,
 ) -> Result<()> {
@@ -90,20 +98,21 @@ pub fn exl3_mgemm(
              filtering, or weighted reduction (upstream contract)"
         );
     }
-    let shape = resolve_gemm_shape(k, n, k_bits, true, bszm_in, bszm_out, force_shape)?;
-
-    // Upstream's caller-side grid computation (exl3_gemm.cu lines 599-605) —
-    // the selector's own num_sms write is dead there and not reproduced.
-    let total_sms = sm_count as usize;
+    // The replay group is one token's expert slots. Keep decode's shape
+    // and split-K geometry while the kernel walks the additional slot waves.
+    if let Some(group) = replay_group_size {
+        ensure!(
+            group > 0 && bszm.is_multiple_of(group) && bszm_in == bszm && bszm_out == bszm,
+            "exl3_mgemm: replay group requires aligned, non-broadcast slot batches"
+        );
+    }
+    let shape_in = replay_group_size.unwrap_or(bszm_in);
+    let shape_out = replay_group_size.unwrap_or(bszm_out);
+    let shape = resolve_gemm_shape(k, n, k_bits, true, shape_in, shape_out, force_shape)?;
     let tiles = ((k / TILESIZE_K[shape]) * (n / TILESIZE_N[shape])).max(1);
-    let mut num_sms = tiles;
-    if num_sms * bszm > total_sms {
-        num_sms = (total_sms / bszm).max(1);
-    }
-    if num_sms <= total_sms && tiles / num_sms > 48 {
-        num_sms = total_sms.min(num_sms * 2);
-    }
-    let concurrency = (total_sms / num_sms).min(bszm).max(1);
+    let (num_sms, concurrency) =
+        mgemm_grid::grid(tiles, bszm, sm_count as usize, replay_group_size)
+            .ok_or_else(|| anyhow::anyhow!("exl3_mgemm: invalid cooperative grid dimensions"))?;
 
     let name = format!("exl3_mgemm_k{k_bits}_cb{cb}_sh{shape}_{}", c_suffix(c_fp32));
     let h = gpu.kernel("exl3_matmul", &name)?;

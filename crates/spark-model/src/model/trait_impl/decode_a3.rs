@@ -69,6 +69,14 @@ impl TransformerModel {
                     tracing::warn!("ATLAS_LAYER_H[step0] L{i} hidden_sabs={s:.6}");
                 }
             }
+            // Per-layer hidden fingerprint under the probe env (eager only —
+            // a stream sync is illegal inside a capture region). Pairs with the
+            // identical call in `verify_hc_rows` so the FIRST layer whose
+            // post-layer hidden differs between decode() and prefill() is
+            // named, instead of only the logits at the end.
+            if !use_graphs {
+                self.hidden_probe_layer("decode", i, 0, hidden, stream);
+            }
             // DFlash 5-layer hidden capture (no-op when proposer is not DFlash).
             // Single-token decode: row 0 of `hidden_states()` holds the post-layer
             // activation. Cheap d2d when the layer index matches; otherwise a
@@ -99,10 +107,23 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
+        // ATLAS_LOGIT_PROBE=1: the DECODE side of the hidden-state A/B against
+        // the K-row verify. Taken pre-norm so it isolates the layer stack.
+        self.hidden_probe("decode", 0, hidden, stream);
         self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
 
         // LM head reads from normed directly (no D2D copy needed)
         self.lm_head(normed, stream)?;
+        // ATLAS_LOGIT_PROBE=1: the DECODE side of the row-by-row A/B against
+        // the K-row verify (`verify_hc.rs`). `decode_logits_ptr` /
+        // `decode_logits_fp32` because this path may write the FP32 scratch.
+        self.logit_probe(
+            "decode",
+            0,
+            self.decode_logits_ptr(),
+            self.decode_logits_fp32(),
+            stream,
+        );
         Ok(())
     }
 }

@@ -36,8 +36,17 @@ pub(crate) fn hc_pre_gemm(
     norm_eps: f32,
     inject: bool,
     use_cublas: bool,
+    row_exact: bool,
     stream: u64,
 ) -> Result<()> {
+    anyhow::ensure!(
+        !inject || !w.inject_w.is_null(),
+        "HC injection requires block_inject_weight"
+    );
+    anyhow::ensure!(
+        !row_exact || use_cublas,
+        "row-exact HC requires decode cuBLAS projections"
+    );
     const SLAB: u32 = 2048;
     let hc_dim = (hc_mult * hidden_size) as usize;
     let rank = w.rank as u32;
@@ -75,13 +84,14 @@ pub(crate) fn hc_pre_gemm(
 
         // low_pre = normed x down_w^T   [ts, rank]
         if use_cublas {
-            crate::layers::ops::cublas_bf16_proj_dense(
+            project_rows(
                 normed,
                 w.down_w,
                 low,
                 ts,
                 rank,
                 hc_dim as u32,
+                row_exact,
                 stream,
             )?;
         } else {
@@ -108,13 +118,14 @@ pub(crate) fn hc_pre_gemm(
 
         // up_pre = low x up_w^T   [ts, hc_dim]
         if use_cublas {
-            crate::layers::ops::cublas_bf16_proj_dense(
+            project_rows(
                 low,
                 w.up_w,
                 up_pre,
                 ts,
                 hc_dim as u32,
                 rank,
+                row_exact,
                 stream,
             )?;
         } else {
@@ -133,13 +144,14 @@ pub(crate) fn hc_pre_gemm(
         if inject {
             // inj_pre = normed x inject_w^T   [ts, hc]
             if use_cublas {
-                crate::layers::ops::cublas_bf16_proj_dense(
+                project_rows(
                     normed,
                     w.inject_w,
                     inj_pre,
                     ts,
                     hc_mult,
                     hc_dim as u32,
+                    row_exact,
                     stream,
                 )?;
             } else {
@@ -171,6 +183,34 @@ pub(crate) fn hc_pre_gemm(
             .launch(stream)?;
 
         t0 += ts;
+    }
+    Ok(())
+}
+
+/// Keep cuBLAS's decode reduction shape while sharing row-independent
+/// staging, activation and mixing launches across the verification batch.
+#[allow(clippy::too_many_arguments)]
+fn project_rows(
+    a: DevicePtr,
+    w: DevicePtr,
+    out: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    row_exact: bool,
+    stream: u64,
+) -> Result<()> {
+    let batch = if row_exact { 1 } else { m };
+    for row in (0..m).step_by(batch as usize) {
+        crate::layers::ops::cublas_bf16_proj_dense(
+            a.offset(row as usize * k as usize * 2),
+            w,
+            out.offset(row as usize * n as usize * 2),
+            batch,
+            n,
+            k,
+            stream,
+        )?;
     }
     Ok(())
 }

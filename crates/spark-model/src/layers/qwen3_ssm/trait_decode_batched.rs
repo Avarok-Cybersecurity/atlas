@@ -126,19 +126,6 @@ impl Qwen3SsmLayer {
         let eps = ctx.config.rms_norm_eps as f32;
         let k = num_tokens as u32;
         let bf16 = 2usize; // bytes per BF16
-        let fp32 = 4usize; // bytes per FP32
-
-        let nk = ctx.config.linear_num_key_heads;
-        let kd = ctx.config.linear_key_head_dim;
-        let nv = ctx.config.linear_num_value_heads;
-        let vd = ctx.config.linear_value_head_dim;
-        let vpg = nv / nk;
-        let key_dim = nk * kd; // 2048
-        let value_dim = nv * vd; // 4096
-        let conv_dim = key_dim * 2 + value_dim; // 8192
-        let qk_ch = (key_dim * 2) as u32; // Q+K channels for fused L2 norm
-        let d_conv = ctx.config.linear_conv_kernel_dim;
-        let qkvz_size = ctx.config.ssm_qkvz_size(); // 12288
 
         // ── 1. RMS norm + residual for K tokens ──
         let normed = ctx.buffers.norm_output();
@@ -156,6 +143,174 @@ impl Qwen3SsmLayer {
         )?;
 
         k4_diag_checkpoint(ctx, "1:rms_norm_residual", stream)?;
+
+        // ── 2-9. The residual-free GDN block. ──
+        // Everything between the two residual sites depends only on the
+        // normed rows and the per-sequence GDN state — `hidden`/`residual`
+        // appear nowhere in it. That is what lets the mHC twin
+        // (`decode_batched_inner_hc`) reuse it verbatim under a different
+        // bracket.
+        let out_proj_buf = self.decode_batched_block(normed, num_tokens, gdn, ctx, stream)?;
+
+        // ── 10. Batched residual + post-norm, then MoE + residual ──
+        // residual_add_rms_norm supports multi-token (grid.x = num_tokens)
+        let normed2_base = ctx.buffers.norm_output();
+        ops::residual_add_rms_norm(
+            ctx.gpu,
+            self.residual_add_rms_norm_k,
+            hidden,
+            out_proj_buf,
+            &self.post_attn_norm,
+            normed2_base,
+            residual,
+            num_tokens as u32,
+            h as u32,
+            eps,
+            stream,
+        )?;
+        if num_tokens == 3 {
+            // Fused K=3 MoE: 5 kernel launches instead of 15
+            self.ffn.forward_k3(normed2_base, ctx, stream)?;
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (3 * h) as u32,
+                stream,
+            )?;
+        } else if num_tokens == 2 {
+            // Fused K=2 MoE: 5 kernel launches instead of 10
+            self.ffn.forward_k2(normed2_base, ctx, stream)?;
+            // Batched residual add for 2 tokens (flat element-wise, 2*h elements)
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (2 * h) as u32,
+                stream,
+            )?;
+        } else if (4..=8).contains(&num_tokens)
+            && self
+                .ffn
+                .try_forward_km(normed2_base, num_tokens as u32, ctx, stream)
+                .inspect_err(|e| tracing::error!("ffn.try_forward_km: {e:#}"))
+                .unwrap_or(false)
+        {
+            // K=4..8 verify FFN via batched GEMV (batch4 M<=4, batch8
+            // M=5..8): one weight read per projection for all rows at
+            // near-peak stream bandwidth. nsys (2026-07-18): the
+            // forward_prefill MMQ arm below cost 54.8 ms/verify-step across
+            // the 64-layer dense FFN stack at M=4 vs the ~31 ms
+            // weight-traffic floor this path hits. Falls through to
+            // forward_prefill when unavailable (MoE / missing kernel).
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (num_tokens * h) as u32,
+                stream,
+            )?;
+        } else if self.ffn.is_dense() {
+            // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, num_tokens=17). This
+            // is the MAJORITY layer type (GDN/SSM) on the hybrid 27B, so its
+            // per-token FFN loop was the dominant remaining verify cost after
+            // the attention layers were batched. normed2_base is already
+            // [num_tokens, h] (batched residual_add_rms_norm above), so
+            // forward_prefill reads gate/up/down ONCE for all tokens.
+            //
+            // DENSE ONLY: the per-token `else` below is retained for 256-expert
+            // MoE, where grouped-GEMM is a net loss at small batch (per-expert
+            // M~1 + sort/permute overhead across the 36-layer SSM stack).
+            k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
+            self.ffn
+                .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
+            k4_diag_checkpoint(ctx, "10b:ffn_forward_prefill", stream)?;
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (num_tokens * h) as u32,
+                stream,
+            )?;
+        } else {
+            // Per-token MoE fallback for K!=2 (256-expert MoE).
+            // CONCURRENT-DECODE BUG (sibling of decode_multi_seq fix at line 1102):
+            // hardcoded `t * h * 4` over-strides for BF16 hidden (GB10 default).
+            let residual_elem = 2usize;
+            for t in 0..(num_tokens as u32) {
+                let normed2 = normed2_base.offset(t as usize * h * bf16);
+                let moe_out = self.ffn.forward(normed2, ctx, stream)?;
+                let hidden_t = hidden.offset(t as usize * h * residual_elem);
+                ops::residual_add(
+                    ctx.gpu,
+                    self.residual_add_k,
+                    hidden_t,
+                    moe_out,
+                    h as u32,
+                    stream,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Steps 2-9 of the batched GDN decode: the QKVZ projection, the BA
+    /// projection and GDN gates, the conv1d/L2-norm/GDN scan (which is what
+    /// writes the per-row `h_state_intermediates` /
+    /// `conv_state_intermediates` that `commit_accepted_prefix` rewinds
+    /// from), the gated RMS norm and the output projection.
+    ///
+    /// RESIDUAL-FREE BY CONSTRUCTION. `hidden` and `residual` are not
+    /// parameters because nothing here touches them: the caller owns both
+    /// residual sites (`rms_norm_residual` before, `residual_add_rms_norm` +
+    /// `residual_add` after) and an mHC caller replaces them with
+    /// `hc_pre_site` / `hc_post_site` instead.
+    ///
+    /// Returns the `[num_tokens, H]` block output — `ctx.buffers.moe_output()`,
+    /// which the FFN is about to overwrite, so the caller must consume it
+    /// before dispatching the FFN.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn decode_batched_block(
+        &self,
+        normed: DevicePtr,
+        num_tokens: usize,
+        gdn: GdnStates<'_, '_>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<DevicePtr> {
+        let h = ctx.config.hidden_size;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let k = num_tokens as u32;
+        let bf16 = 2usize; // bytes per BF16
+        let fp32 = 4usize; // bytes per FP32
+
+        // Whether THIS pass must run its rows as sequential decode rows —
+        // SSOT for the projections, the conv+GDN arm and the phase-8 norm
+        // skip. Resolved once: it is a pure function of process flags and the
+        // pass's own contract, so it is CUDA-graph-stable.
+        let row_exact =
+            super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::Proj);
+
+        let nk = ctx.config.linear_num_key_heads;
+        let kd = ctx.config.linear_key_head_dim;
+        let nv = ctx.config.linear_num_value_heads;
+        let vd = ctx.config.linear_value_head_dim;
+        let vpg = nv / nk;
+        let key_dim = nk * kd; // 2048
+        let value_dim = nv * vd; // 4096
+        let conv_dim = key_dim * 2 + value_dim; // 8192
+        let qk_ch = (key_dim * 2) as u32; // Q+K channels for fused L2 norm
+        let d_conv = ctx.config.linear_conv_kernel_dim;
+        let qkvz_size = ctx.config.ssm_qkvz_size(); // 12288
 
         // ── 2+3. QKVZ projection (+ deinterleave if needed) ──
         // For sequential_qkvz (Qwen3.5): write directly to deinterleaved buffer.
@@ -182,7 +337,32 @@ impl Qwen3SsmLayer {
             // pair is the ONLY live QKVZ weight on this layer (install-time
             // check), so no arm below is shadowed. Never under graph capture
             // (exl3_graph_veto; the funnel refuses loudly).
-            self.exl3_in_proj(g, ctx, normed, proj_dst, num_tokens, stream)?;
+            //
+            // ROW-EXACT: `exl3_gemv` picks its kernel INSTANCE from the row
+            // count — `exl3_gemv_k{K}_cb{CB}_m0_*` at m == 1 and the `_m1_`
+            // instance at 2..=8 (ops/exl3_matmul.rs, `let mmode = if m == 1
+            // { 0 } else { 1 }`). The two are different compiled bodies, so a
+            // verify row processed inside a K-row launch is NOT the bits the
+            // M=1 decode GEMV produced for it. When the pass declares
+            // `gdn_exact_replay` the funnel is called once per row at m = 1
+            // instead: the identical call `ssm_forward` makes
+            // (`self.exl3_in_proj(g, ctx, normed, deinterleaved, 1, stream)`),
+            // at this row's bases. Costs K weight passes instead of one over
+            // the packed pair.
+            if row_exact {
+                for t in 0..num_tokens {
+                    self.exl3_in_proj(
+                        g,
+                        ctx,
+                        normed.offset(t * h * bf16),
+                        proj_dst.offset(t * qkvz_size * bf16),
+                        1,
+                        stream,
+                    )?;
+                }
+            } else {
+                self.exl3_in_proj(g, ctx, normed, proj_dst, num_tokens, stream)?;
+            }
         } else if let Some(ref q2) = self.qkvz_q2 {
             // Tier-1c keep-packed Q2_0: per-token 2-bit fused-qkvz GEMV. Bonsai
             // (dense qwen35) has no MTP, so this batched path is only reached
@@ -571,7 +751,30 @@ impl Qwen3SsmLayer {
         let gates_buf = ctx.buffers.ssm_gates(); // [K, gate(nv) + beta(nv)] FP32
         let gate_beta_stride = nv * 2 * fp32; // bytes per token in gates buffer
         let ba_size = ctx.config.ssm_ba_size(); // 64
-        if batched_ba_gates_enabled() {
+        if row_exact {
+            // ROW-EXACT: `dense_gemv_ba_gates` — the FUSED single-row kernel
+            // `ssm_forward` calls — once per row, at this row's bases. The
+            // token-parallel `dense_gemm_ba_gates_prefill` below is
+            // arithmetically line-for-line the same reduction, but the
+            // row-exact arm exists to keep the WHOLE block on the decode
+            // kernels rather than to argue each one individually.
+            for t in 0..num_tokens {
+                ops::dense_gemv_ba_gates(
+                    ctx.gpu,
+                    self.ba_gates_k,
+                    normed.offset(t * h * bf16),
+                    &self.ssm.in_proj_ba,
+                    self.ssm.a_log.weight,
+                    self.ssm.dt_bias.weight,
+                    gates_buf.offset(t * gate_beta_stride),
+                    gates_buf.offset(t * gate_beta_stride + nv * fp32),
+                    ba_size as u32,
+                    h as u32,
+                    vpg as u32,
+                    stream,
+                )?;
+            }
+        } else if batched_ba_gates_enabled() {
             // ONE fused launch for all rows instead of `num_tokens` × (dense
             // GEMV + compute_gdn_gates). The per-token loop re-read the whole
             // [64, hidden] BA weight once PER ROW PER LAYER — 655 KB × 32 rows ×
@@ -846,7 +1049,7 @@ impl Qwen3SsmLayer {
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
-        if super::verify_exact_enabled() {
+        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn) {
             // Issue #435 exact arm (phase 5-7 above): the norm is already
             // applied inside the per-token chain — the SAME fused/unfused arm
             // sequential decode uses — and the normed rows are already in
@@ -925,7 +1128,23 @@ impl Qwen3SsmLayer {
             // the ONLY live out_proj weight (all other slots null, enforced
             // at install). C is the contiguous [K, h] block; the GEMV tier
             // covers K <= 8, the GEMM tier the wider chain verifies.
-            self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+            //
+            // ROW-EXACT: same m-instance split as the QKVZ funnel above —
+            // one m = 1 call per row, which is the call `ssm_forward` makes.
+            if row_exact {
+                for t in 0..num_tokens {
+                    self.exl3_out_proj(
+                        g,
+                        ctx,
+                        normed_out_buf.offset(t * value_dim * bf16),
+                        out_proj_buf.offset(t * h * bf16),
+                        1,
+                        stream,
+                    )?;
+                }
+            } else {
+                self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+            }
         } else if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,
@@ -1183,114 +1402,6 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "9:out_proj", stream)?;
 
-        // ── 10. Batched residual + post-norm, then MoE + residual ──
-        // residual_add_rms_norm supports multi-token (grid.x = num_tokens)
-        let normed2_base = ctx.buffers.norm_output();
-        ops::residual_add_rms_norm(
-            ctx.gpu,
-            self.residual_add_rms_norm_k,
-            hidden,
-            out_proj_buf,
-            &self.post_attn_norm,
-            normed2_base,
-            residual,
-            num_tokens as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
-        if num_tokens == 3 {
-            // Fused K=3 MoE: 5 kernel launches instead of 15
-            self.ffn.forward_k3(normed2_base, ctx, stream)?;
-            let moe_out = ctx.buffers.moe_output();
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                hidden,
-                moe_out,
-                (3 * h) as u32,
-                stream,
-            )?;
-        } else if num_tokens == 2 {
-            // Fused K=2 MoE: 5 kernel launches instead of 10
-            self.ffn.forward_k2(normed2_base, ctx, stream)?;
-            // Batched residual add for 2 tokens (flat element-wise, 2*h elements)
-            let moe_out = ctx.buffers.moe_output();
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                hidden,
-                moe_out,
-                (2 * h) as u32,
-                stream,
-            )?;
-        } else if (4..=8).contains(&num_tokens)
-            && self
-                .ffn
-                .try_forward_km(normed2_base, num_tokens as u32, ctx, stream)
-                .inspect_err(|e| tracing::error!("ffn.try_forward_km: {e:#}"))
-                .unwrap_or(false)
-        {
-            // K=4..8 verify FFN via batched GEMV (batch4 M<=4, batch8
-            // M=5..8): one weight read per projection for all rows at
-            // near-peak stream bandwidth. nsys (2026-07-18): the
-            // forward_prefill MMQ arm below cost 54.8 ms/verify-step across
-            // the 64-layer dense FFN stack at M=4 vs the ~31 ms
-            // weight-traffic floor this path hits. Falls through to
-            // forward_prefill when unavailable (MoE / missing kernel).
-            let moe_out = ctx.buffers.moe_output();
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                hidden,
-                moe_out,
-                (num_tokens * h) as u32,
-                stream,
-            )?;
-        } else if self.ffn.is_dense() {
-            // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, num_tokens=17). This
-            // is the MAJORITY layer type (GDN/SSM) on the hybrid 27B, so its
-            // per-token FFN loop was the dominant remaining verify cost after
-            // the attention layers were batched. normed2_base is already
-            // [num_tokens, h] (batched residual_add_rms_norm above), so
-            // forward_prefill reads gate/up/down ONCE for all tokens.
-            //
-            // DENSE ONLY: the per-token `else` below is retained for 256-expert
-            // MoE, where grouped-GEMM is a net loss at small batch (per-expert
-            // M~1 + sort/permute overhead across the 36-layer SSM stack).
-            k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
-            self.ffn
-                .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
-            k4_diag_checkpoint(ctx, "10b:ffn_forward_prefill", stream)?;
-            let moe_out = ctx.buffers.moe_output();
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                hidden,
-                moe_out,
-                (num_tokens * h) as u32,
-                stream,
-            )?;
-        } else {
-            // Per-token MoE fallback for K!=2 (256-expert MoE).
-            // CONCURRENT-DECODE BUG (sibling of decode_multi_seq fix at line 1102):
-            // hardcoded `t * h * 4` over-strides for BF16 hidden (GB10 default).
-            let residual_elem = 2usize;
-            for t in 0..(num_tokens as u32) {
-                let normed2 = normed2_base.offset(t as usize * h * bf16);
-                let moe_out = self.ffn.forward(normed2, ctx, stream)?;
-                let hidden_t = hidden.offset(t as usize * h * residual_elem);
-                ops::residual_add(
-                    ctx.gpu,
-                    self.residual_add_k,
-                    hidden_t,
-                    moe_out,
-                    h as u32,
-                    stream,
-                )?;
-            }
-        }
-
-        Ok(())
+        Ok(out_proj_buf)
     }
 }

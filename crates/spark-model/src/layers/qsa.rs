@@ -353,6 +353,45 @@ impl QsaIndexer {
     /// Decode-step ingest + selection for the token at `pos` (0-based;
     /// `pos + 1` visible). `None` inside the inert bound (dense is exact).
     #[allow(clippy::too_many_arguments)]
+    /// Align this sequence's indexer carry to an ABSOLUTE position.
+    ///
+    /// Prefer this over `rewind_seq_state` whenever the caller knows where the
+    /// carry SHOULD be rather than how far it drifted. A verify replay overlaps
+    /// the current position by an amount that is not constant — rewinding by a
+    /// fixed 1 overshot and produced the mirror-image failure ("starts at 366
+    /// but 365 ingested") of the one it fixed. Never advances: ingesting is the
+    /// only thing that may move the mark forward.
+    pub fn align_seq_state(&self, st: &mut QsaSeqState, to_pos: usize) {
+        if st.ingested <= to_pos {
+            return;
+        }
+        st.ingested = to_pos;
+        st.pooled = st.ingested / (self.ratio as usize).max(1);
+    }
+
+    /// Roll this sequence's indexer carry back by `rows`, after a rejected
+    /// speculative draft.
+    ///
+    /// `ingested` and `pooled` are contiguous marks — raw keys are written from
+    /// `ingested` forward and block keys from `pooled` forward — so rewinding is
+    /// just moving the marks back. The bytes past them are stale but
+    /// unreachable: the next ingest overwrites from the mark. `pooled` is
+    /// recomputed rather than decremented because a block that contained a
+    /// rewound token must be re-pooled once its replacement arrives.
+    ///
+    /// This exists because the ingest paths assert hard on position agreement
+    /// (`pos == st.ingested`, `seq_start == st.ingested`). Without a rewind a
+    /// rejected draft leaves the carry one row ahead of the sequence and the
+    /// NEXT token trips that assert — which is the loud failure; the quiet one
+    /// is a selection computed against keys that never got overwritten.
+    pub fn rewind_seq_state(&self, st: &mut QsaSeqState, rows: usize) {
+        if rows == 0 {
+            return;
+        }
+        st.ingested = st.ingested.saturating_sub(rows);
+        st.pooled = st.ingested / (self.ratio as usize).max(1);
+    }
+
     pub fn decode_select(
         &self,
         st: &mut QsaSeqState,

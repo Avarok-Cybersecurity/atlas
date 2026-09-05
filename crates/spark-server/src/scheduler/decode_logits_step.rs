@@ -286,7 +286,6 @@ pub fn process_decode_logits(
                             timing: timing.clone(),
                         };
                         process_seq_logits(
-                            model,
                             a,
                             &buf,
                             i,
@@ -313,7 +312,6 @@ pub fn process_decode_logits(
                 .enumerate()
                 .map(|(i, a)| {
                     process_seq_logits(
-                        model,
                         a,
                         &buf,
                         i,
@@ -841,6 +839,16 @@ pub fn process_decode_logits(
                 "EOS suppressed; model forced to continue"
             );
         } else {
+            // Per-token ledger (debug) — parity mirror of the `TOK` line in
+            // `emit_step::emit_token`, which only the spec/MTP paths reach.
+            // Without a twin here a serial run cannot be diffed against a
+            // speculative run in TOKEN space, only in text.
+            tracing::debug!(
+                "TOK slot={} out_idx={} tok={}",
+                a.seq.slot_idx,
+                a.output_tokens.len(),
+                tok,
+            );
             a.output_tokens.push(tok);
             // SM1 (2026-05-26): drive the tool-body / parameter-body
             // state machine from the non-spec decode path. Previously

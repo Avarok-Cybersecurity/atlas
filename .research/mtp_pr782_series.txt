@@ -1,0 +1,902 @@
+commit 8526fb54a7f2a08d0a83deb2f201895d36ff59ed
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 00:20:31 2026 -0400
+
+    qwen4_exp: load + audit the MTP draft module (NO speculation yet)
+    
+    The checkpoint ships a complete MTP block — 6173 tensors: its own 512-expert
+    MoE, shared expert, full attention, QSA indexer, mHC sites and mixer, plus
+    fc_embedding/fc_hidden and two pre-fc norms. load_mtp_weights had returned
+    Ok(None) since v1 (#753 item I) on the grounds that wiring it before the main
+    forward worked would be "building on sand". The main forward works now.
+    
+    Atlas's MtpWeights does NOT fit this block: it wants a fused `fc`
+    [hidden,2*hidden] where this has split fc_embedding/fc_hidden, and it assumes a
+    pre-norm residual layer (input_layernorm / post_attn_layernorm) where this
+    carries an mHC hyper-connection bracket and an indexer. So MtpWeights is left
+    alone and load_mtp_weights still returns Ok(None); the module is loaded by a
+    bespoke `load_qwen4_exp_mtp_module` that replays the EXISTING prefix-parameterized
+    qwen4_exp helpers once with lp = "mtp.layers.0" — the DeepSeek-V4 "Track B" shape.
+    
+    WHAT THIS DOES NOT DO: --speculative on qwen4_exp still produces NO speculation.
+    The module is loaded, shape-audited and stored; nothing decodes it. That is the
+    honest headline. A proposer installed today would route the draft into
+    refuse_batched_under_hc mid-verify, which the scheduler converts into a
+    TRUNCATED RESPONSE rather than a fallback — so the proposer, the draft body's
+    private KV cache, the K-row mHC verify, and QSA/PLE rewind across a rejected
+    draft are all deliberately deferred, with the analysis recorded in the module
+    docs.
+    
+    Includes: `num_mtp_modules` parsed from text_config.mtp; a shape-checking
+    namespace audit that resolves the expert layout explicitly (fused vs
+    per-expert) and asserts the asymmetric combiner widths
+    (pre_fc_norm_embedding [2560] vs pre_fc_norm_hidden [10240]); an offline
+    safetensors-header inventory test against both real snapshots; and
+    hc::load_head_at so the module's own mixer loads without touching load_head's
+    main-model behaviour.
+    
+    Adversarial review caught four defects in the first cut; all fixed here:
+    - parse_mtp refused with `ensure!` at CONFIG-PARSE time, which runs on EVERY
+      launch. A checkpoint whose mtp block differed would have stopped booting
+      ENTIRELY over an optional feature — a main-model regression. It now declines
+      to advertise the module (num_mtp_modules = 0, the absent-key path) and the
+      refusal-by-name moved to ensure_loadable, which only runs when MTP is asked
+      for. Tests updated to pin "not advertised, still boots", plus a positive test
+      so they cannot pass vacuously.
+    - The upload gate (--speculative or env) and the load gate (use_speculative =
+      --speculative OR --dflash) were different predicates, so `--dflash` alone
+      logged "MTP module load FAILED" on every boot, blaming the wrong cause. The
+      load now requires the tensors to actually be resident, which stays correct
+      however the flags drift.
+    - The per-arm memory instrumentation used saturating_sub on unsigned free-memory
+      readings and printed 0.00 GB precisely on the fused arm — where build_moe
+      frees ~5 GB of BF16 sources while allocating ~1.3 GB, so free memory RISES.
+      It read as "the MTP block is free". Deltas are signed now and labelled as
+      free-memory differences, not resident cost.
+    - Two overclaims in the agent report ("threaded into BOTH call sites", "cannot
+      leak") are corrected in the docs: the Err arm still strands buffers, recorded
+      as a known gap.
+    
+    Gates: fmt clean; clippy --all-targets clean across all kernel targets;
+    atlas-core 132 passed, spark-model 662 passed, 0 failed. Release build of
+    spark-server verified with the NCCL RUSTFLAGS path.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/atlas-core/src/config/parsers/qwen4_exp.rs  |  68 ++++
+ .../src/config/parsers/qwen4_exp_tests.rs          |  68 ++++
+ crates/spark-model/src/factory/build.rs            |  93 ++++-
+ crates/spark-model/src/model/impl_a1.rs            |   3 +
+ crates/spark-model/src/model/impl_b3_accessors.rs  |  17 +
+ crates/spark-model/src/model/types.rs              |   9 +
+ crates/spark-model/src/weight_loader/qwen4_exp.rs  | 102 ++---
+ .../src/weight_loader/qwen4_exp/ckpt_header.rs     |  68 ++++
+ .../spark-model/src/weight_loader/qwen4_exp/hc.rs  |  28 +-
+ .../spark-model/src/weight_loader/qwen4_exp/mtp.rs | 264 +++++++++++++
+ .../src/weight_loader/qwen4_exp/probe_mtp.rs       | 315 +++++++++++++++
+ .../src/weight_loader/qwen4_exp/probe_mtp_tests.rs | 422 +++++++++++++++++++++
+ .../src/main_modules/serve_phases/weights.rs       |  59 ++-
+ 13 files changed, 1432 insertions(+), 84 deletions(-)
+
+commit 746ac904e793b33ac9b9ea64641a5ed20d066e4f
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 06:29:48 2026 -0400
+
+    qwen4_exp MTP: the draft head — combiner + body forward (not yet called)
+    
+    Adds `Qwen4ExpMtpHead`: the combiner, the body decode against a PRIVATE
+    single-layer KV cache, and the low-rank mHC head collapse. It produces the
+    draft's final hidden state and lets the caller finish with its own
+    final_norm + lm_head + argmax, so this never duplicates the target's LM-head
+    quantization ladder.
+    
+    Nothing references it yet — `git grep Qwen4ExpMtpHead` shows only this file and
+    the module declaration — so this commit cannot change any served path. The
+    shadow hook and the factory construction are the next commit.
+    
+    ★ THE COMBINER UNKNOWN IS RESOLVED, from repo precedent rather than argument.
+    PR #782 recorded it as undecidable: `mtp.pre_fc_norm_hidden` is [10240] while
+    `mtp.fc_hidden` is [2560,2560], and a [2560,2560] matrix cannot consume a
+    10240 vector, so either (A) per-stream or (B) collapse-then-expand held, with
+    "no shape check discriminates" and both fc matrices square.
+    
+    The NORM WIDTH discriminates. `HcLowRank::norm_w` documents `[hc_mult*hidden]`
+    as "a GROUPED RMSNorm scale: the streams normalize independently inside the
+    vector, group_size = hidden" — the exact shape and semantics of
+    pre_fc_norm_hidden. A norm weight's width is what it normalizes, so this
+    combiner consumes the FOUR-STREAM highway and its output IS the body's highway.
+    Collapse-then-expand would require a [2560] weight. It is not [2560].
+    
+    Independent corroboration: DeepSeek-V4's MTP norms a COLLAPSED [H] hidden and
+    then calls `hc_expand` to build streams. qwen4_exp ships no such expand step and
+    its norm is already stream-width — the two models differ in exactly the way (A)
+    predicts.
+    
+    So: grouped-norm the streams (one `rms_norm_strided` per stream, since that op
+    applies ONE weight to every row it normalizes while each stream owns its own
+    [hidden] slice of the [hc*hidden] scale), apply the shared fc_hidden per stream,
+    and broadcast-add fc_embedding(rms_norm(embed)).
+    
+    ⚠ STILL UNVERIFIED NUMERICALLY. HF ships no MTP class
+    (`_keys_to_ignore_on_load_unexpected = [r"^mtp.*"]`), so no golden exists and
+    the argument above is structural. A wrong combiner costs ~100% of ACCEPTANCE and
+    0% of correctness — it would look exactly like "MTP does not help on this
+    model". That is what the shadow mode is for.
+    
+    Details that are contracts, not choices:
+    - Atlas's offset-from-1 `rms_norm`, NOT V4's `rms_norm_vanilla`.
+    - The low-rank head collapse. V4's MTP asserts `head.lowrank.is_none()`;
+      qwen4_exp's head IS low-rank, so it calls `hc_head_lowrank` directly.
+    - Private KV pool of exactly ONE layer (the body is built `attn_idx = 0`, a raw
+      slice index — handing it the main pool would read/write full-attention layer
+      0's live K/V). Its size is logged, and the log says out loud that it sits
+      OUTSIDE the util pledge, the class that caused the recorded DFlash OOM.
+    - Every buffer the head writes is privately owned, so it cannot alias the
+      target's live state — an aliasing bug here does not error, it yields ~0%
+      accept.
+    - MTP attention metadata goes to a DISTINCT scratch offset via the shared
+      `pack_mtp_attn_meta`, so it cannot clobber the target metadata.
+    - `comm: None` and `graph_capture: false` on the draft context.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed. 395 LoC, under the file cap.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layers/mod.rs           |   1 +
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs | 395 +++++++++++++++++++++++++
+ 2 files changed, 396 insertions(+)
+
+commit 696ce4bd0667759036d63d3d7d8f8a0fed07be25
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 09:41:00 2026 -0400
+
+    qwen4_exp MTP: shadow harness + bisect — NOT working, three defects localized
+    
+    Wires the draft head from 746ac904 behind ATLAS_QWEN4EXP_MTP_SHADOW (default
+    OFF): factory construction, model install, per-seq draft state, and the hook in
+    `decode_a.rs`. Adds ATLAS_QWEN4EXP_MTP_SHADOW_STAGE as a bisect handle.
+    
+    ⚠ MTP DOES NOT WORK. The default `full`/`body` stage CORRUPTS THIS SERVER'S
+    OUTPUT. Shadow mode is default-off, the install logs a warning saying so, and
+    only `observe` and `combine` are verified inert. Nothing about speculation is
+    enabled: has_proposer() is untouched and no draft is ever fed back.
+    
+    WHAT THE HARNESS FOUND (each of these was invisible to review and only appeared
+    by running it):
+    
+    1. Wrong kernel module — `rms_norm::rms_norm` does not exist, it is
+       `norm::rms_norm`. The engine refused to start rather than serve on a null
+       handle ("its dispatch site is on a silent fallback path"), which is the guard
+       working.
+    
+    2. The hook was in a decode path qwen4_exp never takes. `decode_batch_dispatch`
+       returns early for n == 1 straight to `decode()`, so a hook on the batched
+       path can never fire on the single-sequence decode it was meant to measure.
+       Moved to decode_a.rs; a note is left at the old site.
+    
+    3. The body's highway is `ctx.buffers.hc_streams()`, not a buffer the caller can
+       hand it. The combiner must write THERE or the body silently runs on the
+       target's own highway, and that buffer is PERSISTENT per-sequence state so it
+       must be saved and restored. Both fixed; error paths restore before
+       propagating.
+    
+    4. ★ `hc_streams` IS FP32, not BF16 — `m*hc_mult*h*4`, because "BF16 storage
+       swamps the small per-layer signal at scale and collapses generation". Sizing
+       the save/restore as BF16 restored only HALF the highway, so the body's
+       full-width writes survived and poisoned every later target step.
+    
+    THE BISECT, and why it is trustworthy (250-token greedy completion vs a
+    shadow-off control, one stage at a time):
+        observe  -> matches control exactly     INERT
+        combine  -> matches control exactly     INERT
+        body     -> degenerate/empty, watchdog  CORRUPTS
+    `combine` being clean is not luck: at the time it was measured the save/restore
+    covered exactly the half of the highway the combiner touched, which is itself
+    the evidence for defect 4.
+    
+    WHAT IS STILL BROKEN, in fix order:
+    - Fixing 4 changed the symptom (degenerate text -> empty text) WITHOUT curing
+      the corruption. At least one more shared-state dependency in the body forward
+      is unidentified. This is the blocker.
+    - The combiner is dtype-mismatched for the same reason: BF16 ops over an FP32
+      highway. So the draft is meaningless and the 0% accept rate measured so far
+      says NOTHING about the combiner reading. No BF16->FP32 primitive exists yet.
+    - ★ The combiner READING is genuinely open again. The [10240] grouped-norm width
+      argues for the per-stream form implemented here; the loader's own "the
+      proposer owns BOTH ENDS" says an `hc_expand` belongs at the front, which this
+      form has no place for. Decide empirically behind ATLAS_QWEN4EXP_MTP_COMBINER —
+      but only after the two above, or the comparison is noise.
+    
+    I previously reported the combiner unknown as RESOLVED from the grouped-norm
+    precedent. That was overconfident: the precedent is real but does not exclude
+    the collapse-then-expand form. Corrected in the module docs.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/factory/build.rs            |  20 ++-
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs     | 187 +++++++++++++++++++--
+ crates/spark-model/src/model/impl_a1.rs            |   2 +
+ crates/spark-model/src/model/impl_b3_accessors.rs  | 128 ++++++++++++++
+ .../spark-model/src/model/trait_impl/decode_a.rs   |  23 +++
+ .../spark-model/src/model/trait_impl/decode_a2.rs  |   6 +
+ crates/spark-model/src/model/types.rs              |  10 ++
+ 7 files changed, 358 insertions(+), 18 deletions(-)
+
+commit 99b2452cc479aa3c2e0387fccd29918e91ef2675
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 10:10:08 2026 -0400
+
+    qwen4_exp MTP: 3 more real bugs fixed — but the SHARING MODEL is the problem
+    
+    Continues the shadow-harness debugging. Three genuine defects found and fixed;
+    the corruption SURVIVED all of them, which is the actual finding.
+    
+    FIXED:
+    - `head_scratch` was under-allocated by 1280 B — a real heap overflow.
+      `hc_head_lowrank`'s decode-split layout is `t*(hc*h + hc_lowrank)*4` (normed
+      FP32 [t,hc*H] THEN low FP32 [t,rank]); sizing it `hc*h*4` covers only the
+      first part and the collapse writes past the allocation.
+    - A local `MTP_META_OFFSET = 40960` replaced by the SHARED 49152. 40960 sits
+      inside the region the target's metadata slab reserves for its block table
+      (32768 + 256 + 4 B/block => 49152 covers 4096 blocks = 65536 tokens). It does
+      not collide at short context because the target only fills as many entries as
+      it has blocks — the shape of bug that first appears at long context.
+    - `hc_post` / `hc_lowrank_scratch` / `norm_output` are now saved and restored
+      around the body, on the error path too. These are the buffers the new
+      `ATLAS_QWEN4EXP_MTP_DIFF=1` fingerprint diff NAMED. I had reasoned they were
+      "transient scratch" and skipped them; that reasoning is what kept the bug
+      alive for several rounds, so they are now saved rather than argued about.
+    
+    Also fixed the diff probe itself: the baseline was sampled AFTER the combiner
+    had written hc_streams, making hc_streams a false positive. Sampled before the
+    combiner now — and hc_streams no longer appears, which PROVES the highway
+    save/restore is correct rather than assuming it.
+    
+    THE FINDING: none of it cured the corruption. `body` still degenerates the
+    target (empty completion, finish=length) while `observe` and `combine` remain
+    byte-identical to the shadow-off control. Every shared buffer this file can name
+    is now saved and restored, so the damage is NOT in `ctx.buffers`.
+    
+    Enumerating buffers to save is therefore the WRONG STRATEGY. The draft body
+    inherits the target's entire `ForwardContext` via `..*ctx` and can reach state
+    that is not a buffer this file can enumerate. The sound fix is isolation by
+    CONSTRUCTION: give the draft its own `BufferArena` (sized for T=1 — a few MB)
+    and build its `ForwardContext` from that, so it cannot touch the target at all.
+    That is the next step, and it should be taken before any further patching here.
+    
+    Shadow mode stays default-OFF and the install warning names the `body`/`full`
+    stages as known-corrupting. `--speculative` still produces NO speculation.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs | 147 ++++++++++++++++++++++---
+ 1 file changed, 132 insertions(+), 15 deletions(-)
+
+commit de14a2be461b9562e6d26021d81b8264123d310a
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 10:37:37 2026 -0400
+
+    qwen4_exp MTP: shadow harness is INERT — private BufferArena fixes the corruption
+    
+    The draft body now runs inside its OWN `BufferArena` (max_batch_tokens = 1),
+    and its ForwardContext carries `buffers: &self.arena`. It therefore cannot
+    reach any buffer the target owns.
+    
+    VERIFIED INERT: shadow-on output is BYTE-IDENTICAL to the shadow-off control,
+    `finish: stop` (was: empty/degenerate with `finish: length`), 0 failures. The
+    arena costs under 1 MB — it logs 0.000 GB, because at T=1 every token-scaled
+    buffer is a single row.
+    
+    ★ This is the fix the previous commit predicted, and it let every save/restore
+    be DELETED rather than extended — the compiler confirmed by flagging the three
+    save slots as never read. Four earlier rounds each found a REAL bug
+    (FP32-vs-BF16 highway sizing, a 1280 B `head_scratch` heap overflow, a local
+    MTP_META_OFFSET inside the target's block-table region, three unsaved scratch
+    buffers) and NONE of them converged, because a full decoder layer touches state
+    the caller cannot enumerate. Isolate structurally; do not enumerate.
+    
+    STILL NOT WORKING, and the next blocker is known rather than mysterious: the
+    combiner is dtype-mismatched. `hc_streams` is FP32 but `rms_norm_strided` /
+    `dense_gemv` / `residual_add` are BF16 ops, so the combiner reads the FP32
+    highway as BF16 and writes BF16 back into it. The draft is numerically
+    meaningless and the 0% accept rate still says NOTHING about the combiner
+    reading. That is the next fix.
+    
+    `--speculative` still produces NO speculation; shadow stays default-off.
+    
+    Gates: fmt clean; clippy --all-targets clean; spark-model + atlas-core tests
+    pass, 0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs | 123 ++++++++++---------------
+ 1 file changed, 49 insertions(+), 74 deletions(-)
+
+commit 3b8b29843213c1ecc95c56da8962143929741d4b
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 10:49:42 2026 -0400
+
+    qwen4_exp MTP: the draft head WORKS — 86.5% shadow accept, harness inert
+    
+    Two fixes turn the draft head from meaningless into a working next-token
+    predictor, and the shadow harness now measures it without perturbing the server.
+    
+    MEASURED (250-token greedy completion, shadow-off control):
+        shadow off -> full answer, finish: stop
+        shadow on  -> BYTE-IDENTICAL output, finish: stop, 0 failures
+        accept     -> 83/96 drafts matched the target's next token = 86.5%
+    
+    THE COMBINER READING IS NOW SETTLED BY MEASUREMENT, not argument. 86.5%
+    validates the PER-STREAM form: grouped-norm the four-stream FP32 highway with
+    pre_fc_norm_hidden [10240], apply the square fc_hidden per stream, and
+    broadcast-add fc_embedding(rms_norm(embed)); the result IS the body's highway,
+    with no hc_expand. The alternative collapse-then-expand arm was built and then
+    REMOVED — not needed, and it would be dead code in a model kernel file.
+    
+    FIX 1 — isolation by construction (the corruption). The draft body runs in its
+    OWN BufferArena (max_batch_tokens = 1, measured <1 MB) and its ForwardContext
+    carries buffers: &self.arena, so it cannot reach a buffer the target owns.
+    This is what four earlier rounds of "find the shared buffer, save and restore
+    it" never achieved: each found a REAL bug (FP32-vs-BF16 highway sizing, a 1280 B
+    head_scratch heap overflow, a local MTP_META_OFFSET inside the target's
+    block-table region, three unsaved scratch buffers) and none converged, because a
+    full decoder layer touches state the caller cannot enumerate. The arena fixed it
+    at once and let every save/restore be DELETED — the compiler confirmed by
+    flagging the save slots as never read.
+    
+    FIX 2 — dtype correctness across the FP32/BF16 seam (the 0% accept). The highway
+    is FP32; the projections are BF16 GEMVs. The combiner now runs
+    hc_pre_stage_bf16 (FP32 highway -> BF16 grouped norm; per-stream RMS,
+    offset-from-1 scale, [hc*H] weight — the model's OWN kernel for exactly this
+    shape, which is itself independent evidence for the per-stream reading), then
+    fc_hidden per stream as BF16 GEMVs, then a new qhc_mtp_combine_streams
+    (BF16 per-stream + broadcast row -> FP32 highway). hc_expand cannot serve that
+    tail: it broadcasts ONE row to every stream.
+    
+    Running BF16 ops directly over the FP32 highway — the previous state — is silent
+    garbage, not an error, and is why every earlier accept measurement read 0% and
+    said nothing about the architecture.
+    
+    The new kernel lives in qwen3.8-flash-next's OWN hyper_connection.cu (verified
+    NOT a symlink before editing) and compiles into target 24 only.
+    
+    STILL NOT SPECULATION: nothing is fed back, so there is no speedup yet. The
+    verify path remains — decode_batched and decode_verify_multi both refuse under
+    the highway (they keep their own residual, which the highway replaces), so K-row
+    verify must route through prefill_inner_hc, and a rejected draft needs QSA/PLE
+    rewind that has no API. 86.5% accept is what makes that work worth doing.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ .../spark-model/src/layers/ops/hyper_connection.rs |  57 +++++++
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs     | 165 +++++++++++----------
+ .../qwen3.8-flash-next/nvfp4/hyper_connection.cu   |  33 +++++
+ 3 files changed, 173 insertions(+), 82 deletions(-)
+
+commit 0e6aec0e51525b936408353328af9db8e3aba18d
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 11:21:01 2026 -0400
+
+    qwen4_exp MTP: accept profiled at 91%, and the K-row mHC verify path
+    
+    Two things: the measurement that justifies the verify work, and the verify path
+    itself (default-off, untested end to end — no proposer feeds it yet).
+    
+    ACCEPT PROFILE (single-token draft, shadow mode, per-workload):
+        factual-short                    83/96   = 86.5%
+        code-rust                       356/400  = 89.0%
+        list-structured                 266/288  = 92.4%
+        reasoning                       375/400  = 93.8%
+        long-context 18.8K, QSA ACTIVE  275/288  = 95.5%
+        cumulative                     1080/1184 = 91.2%
+    
+    The long-context arm matters beyond coverage: QSA is INERT below 2051 tokens, so
+    every other number was measured with the draft body's indexer doing nothing.
+    Above the bound it engages — and accept went UP, with zero shadow failures. The
+    draft body's own QSA indexer works.
+    
+    Code and reasoning traffic came in ABOVE the factual baseline, which was the
+    risk being checked. 91% justifies building verify.
+    
+    THE VERIFY PATH (verify_hc.rs, ATLAS_QWEN4EXP_MTP_VERIFY=1, default OFF):
+    
+    `decode_verify_dispatch` runs attention layers per-token through `decode()` and
+    SSM layers through `decode_batched()`. Under an mHC highway that second call
+    REFUSES — the batched paths keep their own residual, which the highway replaces,
+    so running them would count every block output twice. The scheduler turns that
+    error into `a.finished = true`: a SILENTLY TRUNCATED RESPONSE, not a fallback.
+    
+    ★ THIS IS NOT MTP-SPECIFIC. The same refusal sits under DFlash's batched verify
+    (`verify_e.rs` routes the GDN conv+WY body through `decode_verify_multi`), so
+    this path is the prerequisite for ANY proposer on an mHC+GDN model.
+    
+    Shape: the only working multi-row mHC path is `prefill_inner_hc`, and BOTH layer
+    types have one — `prefill()` dispatches to it whenever `hc.is_some()`. So K-row
+    verify is a MINI-PREFILL of the K candidates at [seq_len, seq_len+K). Every
+    layer goes through prefill, not just the SSM ones: the highway is laid out
+    [T, hc, H], so a 1-row attention path mixed with a K-row SSM path would disagree
+    about which row a stream belongs to.
+    
+    Metadata is built with the REAL prefill helpers (`prefill_b_upload_meta_at`,
+    `prefill_b_upload_paged`) rather than hand-rolled. An earlier cut of this file
+    pointed every AttnMetadataDev field at `meta_base`, which makes attention read
+    the position stream as its slot / seq_len / block table — silently wrong, and
+    exactly the class of bug this session kept producing. Fixed before any run.
+    
+    WHY IT IS DEFAULT-OFF AND GUARDED: a REJECTED draft still has no QSA/PLE rewind.
+    QSA's `ingested` is monotone with a hard ensure!() and no rewind API; PLE host
+    history advances per row with a documented corruption class. `snapshot_aux`/
+    `restore_aux` already serialize both carries but are wired only into the
+    prefix-cache path. Without those, a partial accept leaves both carries ahead of
+    the sequence. The flag refuses by name rather than silently mis-verifying.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/model/trait_impl/mod.rs     |   1 +
+ .../spark-model/src/model/trait_impl/verify_a.rs   |  16 ++
+ .../spark-model/src/model/trait_impl/verify_hc.rs  | 240 +++++++++++++++++++++
+ 3 files changed, 257 insertions(+)
+
+commit b593c68663908e80b5c24ff0357dcb0cd1b8351a
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 11:50:58 2026 -0400
+
+    qwen4_exp MTP: allocate the SSM verify pools for a BESPOKE proposer
+    
+    `has_mtp` gated the SSM checkpoint pools on `!mtp_weights.is_empty()`. That is
+    the wrong test for a Track-B proposer: qwen4_exp's MTP module is installed AFTER
+    construction and leaves `mtp_weights` EMPTY, so the term is false even under
+    --speculative, `num_intermediates` stays 0, and no checkpoint pools are
+    allocated. Its 36 GDN layers read exactly those pools for partial-accept
+    rollback (DeepSeek-V4 never hit this — it is all-attention).
+    
+    Fixed by threading a `bespoke_mtp: bool` into `TransformerModel::new`, set from
+    `qwen4_exp_mtp_module.is_some()` (known at that point: the module loads in
+    Step 5, before construction). Deliberately NOT a `model_type == "qwen4_exp"`
+    test — string gates on model_type are fragile, and it is the CAPABILITY that
+    matters. DFlash already needed the same escape hatch (`dflash_kgamma > 0`), so
+    this follows an established pattern rather than inventing one.
+    
+    Not silent, for the record: `verify_draft_capacity` returns usize::MAX when
+    `!has_mtp` (ssm_pool.rs:591-594) so the scheduler does not zero out
+    speculation, and dispatch then hits `require_verify_rollback_supported`'s LOUD
+    refusal instead. The pre-fix behaviour was therefore a refusal, not corruption.
+    This makes the pools exist so verify can actually proceed.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/factory/build.rs |  4 ++++
+ crates/spark-model/src/model/impl_a1.rs | 19 +++++++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+commit f919cdd486170bb0a3f870ee132730084328941b
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 11:56:13 2026 -0400
+
+    qwen4_exp MTP: QSA rewind primitive + the PLE rewind design
+    
+    Step 4 groundwork. The two speculative carries need DIFFERENT rewind
+    mechanisms, which is why one blanket "restore the snapshot" does not work:
+    
+    QSA — IMPLEMENTED. `QsaIndexer::rewind_seq_state(st, rows)`. `ingested` and
+    `pooled` are contiguous marks, and raw keys / block keys are both written
+    FORWARD from them, so a rewind is just moving the marks back; the bytes past
+    them are stale but unreachable because the next ingest overwrites from the mark.
+    `pooled` is recomputed rather than decremented, because a block that contained a
+    rewound token must be re-pooled once its replacement arrives. No replay, no
+    device copy.
+    
+    This matters because the ingest paths assert hard on position agreement
+    (`pos == st.ingested`, `seq_start == st.ingested`). Without a rewind, a rejected
+    draft leaves the carry one row ahead and the NEXT token trips that assert — the
+    loud failure. The quiet one is a selection computed against keys that were never
+    overwritten.
+    
+    PLE — needs a SNAPSHOT, not a mark rewind, and the design is recorded in
+    verify_hc.rs. `PleSeqState::conv` is a rolling FP32 device convolution state and
+    `history` is a fixed-length window whose oldest entries have already rolled off,
+    so neither reconstructs by truncation. `snapshot_aux`/`restore_aux` already
+    serialize both.
+    
+    ★ The placement is the subtle part, and it is the open decision for step 4:
+    restoring a PRE-verify snapshot leaves the carries at `seq_len`, but a partial
+    accept lands the sequence at `seq_len + accepted`. Snapshotting AFTER the
+    committed row 0 and before the DRAFT rows makes restore land exactly right for
+    the common gamma=1 case — accept keeps everything, reject restores to precisely
+    "token_0 committed, draft discarded". That argues for verify running
+    row-0-then-drafts rather than one K-row pass.
+    
+    Gates: fmt clean; clippy --all-targets clean; tests pass, 0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layers/qsa.rs               | 23 ++++++++++++++++++
+ .../spark-model/src/model/trait_impl/verify_hc.rs  | 28 ++++++++++++++++++++--
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+commit 743bbacda7fc773c7f62c55731bfd8446b66e011
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 12:07:43 2026 -0400
+
+    qwen4_exp MTP: split the mHC verify so a rejected draft rolls back exactly
+    
+    Implements the step-4 design decision recorded in the previous commit, which
+    changes the SHAPE of the verify built in step 2.
+    
+    `decode_verify_hc` now runs the committed row and the draft rows as SEPARATE
+    mini-prefills, and snapshots the aux carries BETWEEN them:
+    
+        row 0 (the real sampled token)   -> always kept
+        collect_aux_states               <- snapshot here
+        rows 1..K (the drafts)           -> discardable
+    
+    `rollback_verify_hc(seq, rows)` restores that snapshot and rewinds seq_len /
+    tokens, landing on exactly "token_0 committed, drafts discarded".
+    
+    ★ WHY THE PLACEMENT IS THE WHOLE POINT: restoring a PRE-verify snapshot would
+    leave the carries at seq_len while a partial accept lands the sequence at
+    seq_len + accepted — the carries a row SHORT. That is a silent desync, not an
+    error, and it is the same class as every state bug this branch has produced.
+    Snapshotting after the committed row makes restore exact for the common gamma=1
+    case, where accept keeps everything and reject discards precisely one row.
+    
+    One `collect_aux_states` covers BOTH carries — qwen3_attention's `snapshot_aux`
+    serializes the QSA state, qwen3_ssm's serializes PLE's — so the two mechanisms
+    (QSA marks, PLE rolling conv) need no separate call sites here. The cheaper
+    `QsaIndexer::rewind_seq_state` from the previous commit stays available for the
+    fast path once this is measured.
+    
+    The KV written for discarded positions is deliberately left in place: it is past
+    seq_len and the next step overwrites it.
+    
+    Still gated behind ATLAS_QWEN4EXP_MTP_VERIFY=1 and still never executed — no
+    proposer feeds it yet. That is the remaining step.
+    
+    Gates: fmt clean; clippy --all-targets clean; tests pass, 0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/model/impl_a1.rs            |  1 +
+ .../spark-model/src/model/trait_impl/verify_hc.rs  | 74 +++++++++++++++++++++-
+ crates/spark-model/src/model/types.rs              |  4 ++
+ 3 files changed, 76 insertions(+), 3 deletions(-)
+
+commit 0889d4783c17302e2488fd336a740c94f1406dd1
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 12:20:48 2026 -0400
+
+    qwen4_exp MTP: the draft head owns its LM head — stash/restore deleted
+    
+    `Qwen4ExpMtpHead::draft_token` turns the draft's final hidden into a token id
+    using the target's SHARED NVFP4 vocab head (Copy pointers), writing logits into
+    the DRAFT's own arena.
+    
+    Two consequences, both simplifications:
+    
+    1. THE LOGITS STASH/RESTORE IS GONE. It existed only because the draft borrowed
+       the target's LM-head buffer — `lm_head` writes `buffers.logits()`, the buffer
+       the scheduler samples the real token from. With a private arena the draft
+       cannot reach it, so the most delicate part of the shadow path (park the
+       target's logits, restore them unconditionally on every error path) simply
+       stopped being necessary. Private-arena isolation keeps paying.
+    
+    2. The draft goes through the SAME quantization ladder as the real token. A
+       drafter scored against a different head measures the head, not the draft.
+    
+    No final norm on this path: qwen4_exp sets `final_norm_identity`, so the mHC
+    head's own `hc_norm` plays that role. Applying one would be an uninvited extra
+    RMS divide — the exact bug this model already shipped once (a7d28180).
+    
+    REGRESSION CHECK: 83/96 = 86.5% accept, IDENTICAL to the previous
+    implementation, with shadow-on output byte-identical to the shadow-off control
+    and 0 failures. Same number from a different LM-head call site is the evidence
+    the wiring is right.
+    
+    Also corrected a now-FALSE warning: the install message still said the
+    `body`/`full` stages are "known to corrupt this server's output". That was true
+    when written and was fixed by the private arena. A stale warning that
+    contradicts reality is worse than none, so it now states what is actually
+    verified — inert, but costs a full extra forward and produces no speedup yet.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs    | 47 +++++++++++++++++++
+ crates/spark-model/src/model/impl_b3_accessors.rs | 57 +++++++----------------
+ 2 files changed, 64 insertions(+), 40 deletions(-)
+
+commit 3fb32ff2b5698c32f850dd9f5ceda7286190c80f
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 12:26:18 2026 -0400
+
+    qwen4_exp MTP: DraftProposer over the head, with the draft-side rewind
+    
+    Adapts the working draft head (86.5-95.5% measured accept) to the engine's
+    proposer interface. Not yet installed — nothing calls it — so `has_proposer()`
+    is still false and no speculation runs.
+    
+    TWO CONTRACT MISMATCHES, both handled here rather than by changing the trait:
+    
+    1. `target_hidden` is the WRONG INPUT. The trait hands every proposer the
+       COLLAPSED [1, hidden] BF16 row; this combiner consumes the FP32 four-stream
+       highway. That highway is still live in `ctx.buffers.hc_streams()` when
+       propose runs — the last layer's hc_head READS the streams and writes the
+       collapsed hidden elsewhere — so the argument is deliberately ignored and the
+       highway read from the context. Documented at the top of the file so the
+       unused parameter does not read as an oversight.
+    
+    2. Chaining is autoregressive THROUGH THE DRAFT'S OWN ARENA. For num_drafts > 1,
+       draft j+1 needs the highway the draft body just produced, not the target's.
+       The private arena makes that natural: draft 1 reads the target's streams,
+       every later draft reads `arena.hc_streams()`.
+    
+    THE DRAFT-SIDE REWIND is the mirror of the target-side `rollback_verify_hc`, and
+    it exists because BOTH sides advance independently. The draft body has its own
+    seq_len, its own single-layer KV pool and its OWN QSA carry; rewinding only the
+    target would leave the draft a row ahead. Its QSA ingest asserts
+    `pos == ingested`, so that failure is at least loud on the next draft.
+    
+    `after_verify` receives no GPU handle, so it records `pending_rewind` and the
+    rewind is APPLIED at the top of the next `propose`, where `ctx.gpu` exists.
+    Deferring is safe: nothing reads the draft body's state in between. The KV past
+    the rewound seq_len is left in place — the next draft overwrites it.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layers/mod.rs               |   1 +
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs     |  67 ++++++++++
+ .../src/layers/qwen4_exp_mtp_proposer.rs           | 144 +++++++++++++++++++++
+ 3 files changed, 212 insertions(+)
+
+commit 9f5f88960cd81c62c5bd9d903d25e10c3ee65652
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 13:17:45 2026 -0400
+
+    qwen4_exp MTP: route the GRAPHED verify entries through the mHC path
+    
+    First end-to-end speculation attempt. Speculation ARMS and reaches a verify
+    step; it does not yet produce correct output. Three diagnosed failures below —
+    recorded because each names a specific missing piece.
+    
+    THE FIX HERE: `decode_verify_graphed{,_k3,_k4}` now take the mHC path when the
+    highway is live. I had gated only `decode_verify_dispatch`, but the scheduler's
+    gamma=1 path is `verify_k2_step -> decode_verify_graphed` — a DIFFERENT entry.
+    Same class of mistake as the decode hook that sat in a path this model never
+    takes: gating one entry point proves nothing about the one actually used.
+    
+    ★ WHY IT CASCADED. The old route reached `qwen3_ssm::decode_batched`, which
+    refused INSIDE the capture region, leaving the stream recording — so every later
+    op died with status 901: alloc_sequence, free_sequence, the finish-leaf SSM
+    snapshot, and the next prefill. One refusal bricked the server, exactly as
+    `decode_batch`'s abort_capture_if_active comment warns. Routing BEFORE capture
+    starts means the refusal never happens, and a future one stays survivable.
+    
+    MEASURED AFTER THE FIX: the 901 cascade is gone, speculation arms, the SSM
+    verify pools allocate, a draft is produced and reaches verify. Output is still
+    empty, with three errors:
+    
+    1. `QSA: decode at pos 0 but 1 tokens ingested` (DRAFT side)
+    2. `QSA: decode at pos 367 but 368 tokens ingested` (TARGET side)
+    3. `chunked prefill metadata capacity 4 < required 7 blocks`
+    
+    ★ (1) NAMES THE REAL GAP: THE DRAFT BODY HAS NO PREFILL. Its KV and QSA carry
+    start empty at position 0 while the target is at 367, so the first draft asks
+    the indexer to ingest at a position it has no history for. DeepSeek-V4 solves
+    this with a drafter prefill pass (`MTP eager drafter prefill ENGAGED` appears in
+    this very log, for the OTHER head); qwen4_exp's head has no equivalent yet. That
+    is the next piece, and it is a real subsystem, not a patch.
+    
+    (2) is the target's carry left one row ahead — the rollback plumbing exists
+    (`rollback_verify_hc`) but nothing calls it yet; the scheduler's accept path
+    does its own rewind arithmetic.
+    
+    (3) is mine: verify_hc sizes `prefill_b_upload_paged` from `all_tokens.len()`
+    while `chunked_prefill_meta` was allocated for the original prefill. Needs
+    `ensure_chunked_prefill_meta` before the upload.
+    
+    Gates: fmt clean; clippy --all-targets clean; tests pass, 0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/factory/build.rs           | 31 ++++++++++++++-------
+ crates/spark-model/src/model/impl_b3_accessors.rs | 33 +++++++++++++++++------
+ crates/spark-model/src/model/trait_impl/mod.rs    | 22 +++++++++++++++
+ crates/spark-model/src/model/types.rs             |  2 +-
+ 4 files changed, 69 insertions(+), 19 deletions(-)
+
+commit 3eed693026a5e206f36fa41edefef449484b4c3e
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 13:44:52 2026 -0400
+
+    qwen4_exp MTP: the chain RUNS end to end — 0 errors, but wrong and 8x slow
+    
+    First revision in which draft, verify, rollback and both carries complete a
+    generation without a single error. Speculation is still NOT usable: the output
+    degenerates and it is far slower than plain decode. Measured, 4K ctx, greedy,
+    --speculative --num-drafts 1 + ATLAS_QWEN4EXP_MTP_VERIFY=1, vs same-config
+    baseline:
+    
+        baseline     19.8 tok/s   correct output
+        speculative   2.5 tok/s   degenerates after ~12 tokens
+        errors: 0
+    
+    FIXES IN THIS COMMIT, each from a measured failure rather than inspection:
+    
+    1. `rewind_aux` on TransformerLayer (QSA mark rewind). `snapshot_aux` returns
+       None until a sequence reaches a layer's ingest, so the snapshot/restore pair
+       CANNOT undo the first draft — nothing to restore, carry left ahead, and the
+       next draft died on `QSA: decode at pos 0 but 1 tokens ingested`.
+    
+    2. `align_aux` / `QsaIndexer::align_seq_state` — ABSOLUTE alignment, replacing a
+       fixed rewind-by-1 before the verify replay. The overlap between what verify
+       replays and what the indexer already ingested is NOT constant: rewinding by 1
+       produced the mirror-image failure ("starts at 366 but 365 ingested"). The
+       caller knows where the carry BELONGS, not how far it drifted. Aligning never
+       advances the mark, so an already-correct carry is untouched.
+    
+    3. Paged metadata GROWTH in verify_hc. `ensure_chunked_prefill_meta` BAILS on a
+       short capacity rather than growing it, so verify extending past the original
+       prefill's allocation failed with "capacity 4 < required 7 blocks". Now drops
+       the undersized meta (freeing both device buffers explicitly — DevicePtr has
+       no Drop) and reallocates.
+    
+    WHAT IS LEFT, both predicted rather than surprising:
+    
+    * CORRECTNESS. The first ~12 tokens match the baseline EXACTLY, then collapse.
+      Right-then-drifting is the signature of a per-step state leak, not a wrong
+      draft: the head measures 86.5-95.5% accept in shadow mode, where nothing is
+      fed back. Prime suspect is that `rollback_verify_hc` is written but NOTHING
+      CALLS IT — the scheduler's K=2 path does its own rewind arithmetic, so a
+      rejected draft never restores the aux carries.
+    
+    * COST. 398 ms/token against a 50 ms decode — verify-by-mini-prefill is ~8x a
+      decode step. Expected in kind (prefill kernels are small-M inefficient here;
+      the recorded "~1.1-1.3 s floor regardless of slice"), but 8x means even 100%
+      accept LOSES. A K=2 verify must cost under 2 decodes to break even, so this
+      needs a decode-shaped verify rather than a prefill-shaped one.
+    
+    Speculation stays behind BOTH --speculative and ATLAS_QWEN4EXP_MTP_VERIFY=1;
+    neither is a default, and the shadow path (which IS correct and inert) is
+    unaffected.
+    
+    Gates: fmt clean; clippy --all-targets clean; atlas-core 132, spark-model 662,
+    0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ crates/spark-model/src/layer/transformer_layer.rs  | 34 +++++++++++
+ crates/spark-model/src/layers/qsa.rs               | 16 ++++++
+ .../src/layers/qwen3_attention/trait_impl.rs       | 40 +++++++++++++
+ crates/spark-model/src/layers/qwen4_exp_mtp.rs     | 14 +++--
+ .../spark-model/src/model/trait_impl/verify_hc.rs  | 67 ++++++++++++++++++++++
+ 5 files changed, 166 insertions(+), 5 deletions(-)
+
+commit d129e3ece3e5b36a53b4b83476bbf6d154878d30
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 13:52:15 2026 -0400
+
+    qwen4_exp MTP: the economics, measured — the DRAFT is free, the VERIFY is blocked
+    
+    Isolates the two costs that decide whether speculation can ever pay here, and
+    the answer is structural rather than a tuning problem.
+    
+    MEASURED (gamma=1, 4K ctx, greedy):
+        decode step             50.5 ms
+        draft forward            2.6 ms    (shadow-on 53.1 vs baseline 50.5)
+        verify, 2-row prefill  ~395 ms
+    
+    ★ THE DRAFT IS ESSENTIALLY FREE — 5% of a decode step. Every earlier worry
+    about draft cost was misplaced; the draft head is done, cheap, and accurate
+    (86.5-95.5% accept). The economics are ENTIRELY about verify.
+    
+    Break-even at 91% accept: each step costs `draft + verify(2 rows)` and yields
+    `1 + accept` tokens, so beating a 50 ms decode needs draft + verify2 < 95 ms —
+    i.e. verify under ~92 ms.
+    
+        mini-prefill verify   ~395 ms   4x over budget
+        2 sequential decodes  ~101 ms   ALSO over, before counting the draft
+    
+    So a cheaper SERIAL verify does not rescue this. Only a genuinely BATCHED K-row
+    step can pay, and that is blocked two ways:
+    
+      * the GDN prefill path has a documented FLOOR — "the fused chunk has a
+        ~1.1-1.3 s floor regardless of slice (small-M prefill inefficiency)" — so a
+        2-row prefill pays close to what a large chunk pays. That IS the 395 ms.
+      * the decode-shaped alternative is exactly what `refuse_batched_under_hc`
+        refuses: "the mHC highway has no batched GDN path yet" (Avarok #753 item B).
+    
+    CONCLUSION: MTP speculation on qwen4_exp cannot pay until a cheap multi-row GDN
+    step under the mHC highway exists. That is an engine feature, not a fix to this
+    file — and it also unblocks DFlash and DSpark on this model, since `verify_e.rs`
+    routes their GDN body through the same refusing `decode_verify_multi`.
+    
+    What this branch leaves behind, all working and measured: a draft head at
+    86.5-95.5% accept costing 2.6 ms, a shadow harness verified inert against a
+    control, a K-row mHC verify that RUNS (0 errors end to end), the SSM verify
+    pools for bespoke proposers, and QSA mark-rewind/alignment primitives.
+    
+    Speculation stays behind both --speculative and ATLAS_QWEN4EXP_MTP_VERIFY=1.
+    
+    Gates: fmt clean; clippy --all-targets clean; tests pass, 0 failed.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ .../spark-model/src/model/trait_impl/verify_hc.rs  | 30 +++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+commit 2a9b4e5d8b2a659a958cb081f9257636fefcc9be
+Author: Richard Safier <richardj@safier.com>
+Date:   Fri Aug 28 14:31:51 2026 -0400
+
+    qwen4_exp MTP: small-M MoE in the hc verify — 14x, and the GDN-floor story was wrong
+    
+    The published conclusion on this branch said MTP speculation here was
+    STRUCTURALLY blocked: that the GDN prefill floor made a 2-row verify cost
+    what a large chunk costs, so nothing short of a batched multi-row GDN step
+    (#753 item B) could pay. Profiling the verify disproves it.
+    
+    Per-layer, per verify row:
+    
+                   before    after
+      moe         2700 us    191 us   (14x)
+      gdn_block    860 us    862 us   (unchanged)
+    
+    The dominant term was never the GDN. forward_prefill routes the MoE through
+    the grouped GEMM, which streams all 512 experts' weights regardless of row
+    count — one row paid nearly what a 28-row chunk paid (T=16 6.7-9.6 ms,
+    T=28 8.5-12.3 ms: 1.75x the rows for 1.2x the time). The fused single-token
+    /K=2/K=3 MoE kernels already exist for exactly this shape (built for the
+    DFlash/DSpark verify), and both hc bodies now dispatch to them at small row
+    counts. ATLAS_QWEN4EXP_HC_SMALL_M_FFN=0 restores the grouped path.
+    
+    The K=1 arm is the one that fires: decode_verify_hc splits a verify into
+    row-0-then-drafts, so at the default gamma=1 BOTH calls arrive as ONE row and
+    the k2/k3 arms never trigger.
+    
+    End to end: 205 -> 120 ms/token against a 50 ms decode. Speculation still does
+    not pay, but the remaining cost has moved to the GDN (36 x 862 us x 2 rows
+    ~= 62 ms) and the next lever is the same 1-row substitution, not the batched
+    feature the old conclusion pinned this on.
+    
+    Correctness is still open, and this settles its leading hypothesis. Model::
+    rollback_verify_rows wires up the previously-uncalled rollback_verify_hc from
+    the scheduler's K=2 reject branch; armed and unarmed diverge at the SAME point
+    (~token 2-3), so the un-restored aux carry is not the cause. Forcing the old
+    grouped-MoE verify reproduces the identical corruption, exonerating the
+    substitution above. Ships off behind ATLAS_QWEN4EXP_MTP_ROLLBACK=1 as unproven.
+    Early divergence plus leaked raw special-token ids points at the verify's
+    LOGITS; a row-by-row A/B against a serial decode is the cheapest next test.
+    
+    Also: the "first ~12 tokens match baseline" figure does not reproduce — every
+    speculative arm diverges within 2-3 tokens. Docs corrected accordingly.
+    
+    Speculation remains behind both --speculative and ATLAS_QWEN4EXP_MTP_VERIFY=1.
+    Baseline serving (spec off) verified coherent with the new MoE dispatch on.
+    
+    Claude-Session: https://claude.ai/code/session_01PE72NZ6oBfrjVKZEmPoUHd
+
+ .../qwen3_attention/trait_impl/prefill_inner.rs    |  39 +++++-
+ .../src/layers/qwen3_ssm/trait_prefill_hc.rs       |  30 ++++-
+ crates/spark-model/src/model/trait_impl/mod.rs     |  30 +++++
+ .../spark-model/src/model/trait_impl/verify_hc.rs  | 146 +++++++++++++++------
+ crates/spark-model/src/traits/model.rs             |  17 +++
+ .../spark-server/src/scheduler/verify_k2_step.rs   |  17 +++
+ 6 files changed, 232 insertions(+), 47 deletions(-)

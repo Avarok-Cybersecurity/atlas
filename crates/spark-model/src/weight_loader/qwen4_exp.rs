@@ -57,80 +57,24 @@ use crate::weight_map::{DenseWeight, MtpWeights, dense};
 // path" on every Windows runner, which killed the release-matrix builds.
 #[path = "qwen4_exp/aux_sites.rs"]
 mod aux;
+/// Offline safetensors-header readers. Test-only: they exist so a checkpoint's
+/// layout can be checked without uploading it.
+#[cfg(test)]
+mod ckpt_header;
 mod exl3_dense;
 mod ffn;
 mod hc;
+mod mtp;
 mod ple;
 mod probe;
+mod probe_mtp;
 
-pub use probe::audit_namespace;
-
-/// The PLE table's shard layout, read straight from a checkpoint's
-/// safetensors header.
-///
-/// Exists so a test can rebuild the segmented row cache WITHOUT loading a
-/// 75 GB model — the gather is the one part of PLE whose failure is invisible
-/// downstream, so it needs a cheap isolated arm.
 #[cfg(test)]
-pub fn ple_shard_layout(snapshot: &str) -> Result<(Vec<(std::path::PathBuf, u64)>, u64)> {
-    use std::io::{Read, Seek, SeekFrom};
-    let idx: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
-        std::path::Path::new(snapshot).join("model.safetensors.index.json"),
-    )?)?;
-    let map = idx["weight_map"].as_object().context("weight_map")?;
-    let mut names: Vec<(usize, &String)> = map
-        .keys()
-        .filter(|k| k.contains(".ngram_embedding.shard_"))
-        .map(|k| {
-            let n = k
-                .rsplit("shard_")
-                .next()
-                .and_then(|r| r.split('.').next())
-                .and_then(|r| r.parse().ok())
-                .unwrap_or(usize::MAX);
-            (n, k)
-        })
-        .collect();
-    names.sort();
-    anyhow::ensure!(!names.is_empty(), "no PLE shards in {snapshot}");
-
-    // Header per FILE, read once and reused. The released NVFP4 checkpoint
-    // spreads these 128 shards across ten `model-plefp8-*.safetensors`, so an
-    // offset is only meaningful against its own file's `data_start` — computing
-    // every one against shard 0's file put each row in the wrong place, when it
-    // did not simply refuse to load.
-    let mut headers: std::collections::HashMap<String, (serde_json::Value, u64)> =
-        std::collections::HashMap::new();
-    let mut shards = Vec::with_capacity(names.len());
-    let mut rows_per = 0u64;
-    for (i, name) in &names {
-        let file = map[name.as_str()].as_str().context("shard file")?;
-        if !headers.contains_key(file) {
-            let path = std::path::Path::new(snapshot).join(file);
-            let mut fh = std::fs::File::open(&path)?;
-            let mut len = [0u8; 8];
-            fh.read_exact(&mut len)?;
-            let hlen = u64::from_le_bytes(len);
-            let mut hdr = vec![0u8; hlen as usize];
-            fh.seek(SeekFrom::Start(8))?;
-            fh.read_exact(&mut hdr)?;
-            headers.insert(file.to_owned(), (serde_json::from_slice(&hdr)?, 8 + hlen));
-        }
-        let (hdr, data_start) = &headers[file];
-        let e = &hdr[name.as_str()];
-        let off = e["data_offsets"][0].as_u64().context("data_offsets")?;
-        let rows = e["shape"][0].as_u64().context("shape")?;
-        if *i == 0 {
-            rows_per = rows;
-        }
-        anyhow::ensure!(
-            rows == rows_per,
-            "shard {i} has {rows} rows, not {rows_per}"
-        );
-        shards.push((std::path::Path::new(snapshot).join(file), data_start + off));
-    }
-    Ok((shards, rows_per))
-}
+pub use ckpt_header::ple_shard_layout;
+pub(crate) use exl3_dense::NativeExl3;
+pub use mtp::{Qwen4ExpMtpModule, load_qwen4_exp_mtp_module};
+pub use probe::audit_namespace;
+pub use probe_mtp::{MTP_LAYER_PREFIX, MtpExpertLayout, MtpNamespaceReport, audit_mtp_namespace};
 
 pub struct Qwen4ExpWeightLoader;
 
@@ -259,7 +203,14 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         // Native EXL3 (ATLAS_EXL3_NATIVE_MOE / _DENSE): ONE model-shared launch
         // state (locks + fence) under the MoE mgemm slabs and the dense staging,
         // built by the first native layer (`exl3_dense.rs`, arms decide per layer).
-        let mut exl3 = exl3_dense::NativeExl3::new();
+        //
+        // Resolved through `NativeExl3::shared()` rather than constructed here:
+        // the MTP draft module loads in a LATER phase (`factory::build`, after
+        // this returns) and must reach THIS instance, not a second one. That
+        // phase holds the strong `Arc` across both loads; the guard taken here
+        // covers this loop only and is dropped before it.
+        let exl3_shared = exl3_dense::NativeExl3::shared();
+        let mut exl3 = exl3_dense::NativeExl3::lock(&exl3_shared);
 
         for i in 0..config.num_hidden_layers {
             let lp = config.layer_prefix(i);
@@ -464,11 +415,34 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
     ) -> Result<Option<MtpWeights>> {
-        // Dropped for v1 (#753 item I). The MTP block is effectively a second
-        // model: its own 512-expert MoE, its own hyper-connection mixer, its
-        // own QSA indexer, and `fc_embedding`/`fc_hidden` where Atlas's
-        // `MtpWeights` wants a fused `eh_proj`. Wiring it before the main
-        // forward path works would be building on sand.
+        // NOT a deferral any more — a routing decision, the same one
+        // `DeepSeekV4WeightLoader::load_mtp_weights` makes.
+        //
+        // `MtpWeights` is STRUCTURALLY the wrong container for this family:
+        //   * it demands a fused `fc [h, 2h]` over `concat(norm(embed),
+        //     norm(hidden))`; this checkpoint ships two square projections,
+        //     `mtp.fc_embedding` and `mtp.fc_hidden`;
+        //   * it types `pre_fc_norm_hidden` as `[h]`; this ships
+        //     `[hc_mult * h]` (10240 against 2560), because the incoming
+        //     hidden state is the four-stream mHC highway, not a collapsed
+        //     one;
+        //   * it requires `input_layernorm`, `post_attn_layernorm` and a final
+        //     `norm`, none of which exist in this architecture — normalization
+        //     lives inside the hyper-connection blocks;
+        //   * and `MtpHead`'s forward hard-codes a single pre-norm residual
+        //     stream, which an mHC bracket does not have.
+        //
+        // So qwen4_exp is Track B, and the real loader is
+        // `mtp::load_qwen4_exp_mtp_module` — a bespoke `Qwen4ExpMtpModule`
+        // built out of this file's own per-layer helpers at
+        // `lp = "mtp.layers.0"`. Do not re-derive this refusal; extend that.
+        //
+        // NO PREFLIGHT CHANGE IS NEEDED, checked: `check_layer_count` parses
+        // `mtp.layers.0` as index 0 (it splits on the first `.layers.`), so
+        // `max_layer_idx` stays 47, `47 + 1 > 48` is false, and neither
+        // `check_mtp_consumability` nor its `MTP_SUPPORTED_MODEL_TYPES`
+        // allowlist is ever reached. `check_expert_count` sees experts 0..511
+        // against `num_experts = 512` and passes.
         Ok(None)
     }
 }

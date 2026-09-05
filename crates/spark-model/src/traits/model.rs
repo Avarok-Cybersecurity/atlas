@@ -778,6 +778,42 @@ pub trait Model: Send + Sync {
         self.decode_verify_graphed_kgamma(tokens, seq, stream)
     }
 
+    /// Land the auxiliary carries on the `num_accepted` of `k` verify rows this
+    /// step committed, for models whose verify runs as a K-row mini-prefill
+    /// (currently: an mHC highway, where that is the only working multi-row
+    /// path).
+    ///
+    /// ## Call it exactly where `commit_accepted_prefix` is called, with the
+    /// ## same `(num_accepted, k)`
+    ///
+    /// The scheduler's generic rewind — `seq_len -= rejected` plus
+    /// `commit_accepted_prefix` — restores the SSM h_state/conv_state but NOT
+    /// the auxiliary state a mini-prefill also advances by one row per row:
+    ///
+    /// * QSA's `ingested`/`pooled` marks, guarded by a hard
+    ///   `pos == st.ingested` equality on the very next decode;
+    /// * PLE's rolling conv state and n-gram history window, which unlike the
+    ///   QSA marks CANNOT be rebuilt by truncation and must be snapshotted.
+    ///
+    /// Left un-landed, every rejected row desynchronises both carries and the
+    /// drift compounds until output degenerates — the failure tracks DRAFT
+    /// WIDTH, because a wider draft rejects more rows per step.
+    ///
+    /// `num_accepted == k` (full accept) is not a no-op call: it releases the
+    /// stash the verify left behind, so a later step cannot read it against
+    /// the wrong verify.
+    ///
+    /// Returns `false` when the model has no such path, in which case the
+    /// caller's generic rewind is already sufficient and nothing more is owed.
+    fn commit_verify_aux(
+        &self,
+        _seq: &mut SequenceState,
+        _num_accepted: usize,
+        _k: usize,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Save the post-norm hidden state at `token_idx` (0 or 1) to a
     /// dedicated MTP input buffer. Must precede `run_mtp_propose` — MTP
     /// overwrites shared buffers including `norm_output`.

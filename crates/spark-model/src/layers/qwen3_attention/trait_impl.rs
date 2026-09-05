@@ -124,6 +124,15 @@ impl TransformerLayer for Qwen3AttentionLayer {
         self.qsa.is_some()
     }
 
+    /// QSA is a MARK rewind: `align_aux` below moves `ingested`/`pooled` to an
+    /// absolute position and every buffer is written forward from them, so a
+    /// speculative rollback needs no blob from this layer. Snapshotting it
+    /// instead would push `ingested * hd * 2` bytes per layer through the host
+    /// on every verify step. Pairs with `aux_rewind_is_exact`'s doc comment.
+    fn aux_rewind_is_exact(&self) -> bool {
+        true
+    }
+
     fn snapshot_aux(
         &self,
         state: &dyn LayerState,
@@ -142,6 +151,46 @@ impl TransformerLayer for Qwen3AttentionLayer {
             // Sequence never reached this layer's ingest: nothing to carry.
             None => Ok(None),
         }
+    }
+
+    fn align_aux(
+        &self,
+        state: &mut dyn LayerState,
+        to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.align_seq_state(st, to_pos);
+        }
+        Ok(())
+    }
+
+    fn rewind_aux(
+        &self,
+        state: &mut dyn LayerState,
+        rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.rewind_seq_state(st, rows);
+        }
+        Ok(())
     }
 
     fn restore_aux(
