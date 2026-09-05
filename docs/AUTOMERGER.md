@@ -330,3 +330,17 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-coordinator-owns-the-seams (parallel lanes cannot see each other; cross-lane staleness and conflicts are the coordinator's job, and both appeared in the very first wave); R-path-rule-owns-the-economics (docs-only lands free; vendor/ owes a campaign — split the stack on that line, not on subject).
+
+---
+
+## Run 14 — 2026-09-05T03:45Z — nightly wave 1 closed: two stacks composed
+
+```text
+2026-09-05T03:45Z  return     robustness lane (fable): 3 commits, all the PCND class (bad user input silently changing behaviour); spark-server 2344/2344; discipline note — it extracted each lenient parser VERBATIM first and wrote the strict test against it, so every control failed for the right reason before the fix existed
+2026-09-05T03:47Z  tool       coordinator re-ran the worst one's control: reverting `Some(v) => v.as_str().map(Some).ok_or_else(...)` to the original lenient `Ok(v.as_str())` turns `a_non_string_mapped_value_is_an_error_not_a_silent_disable` RED. Honest nuance: the sibling typo test stayed green under that particular revert — its guard lives in the format-matching arm, a different code path, so my sabotage exercised one of the two halves, not both.
+2026-09-05T03:50Z  tool       stack/nightly-hardening composed (5 lane commits + 1 fmt): cargo check EXIT=0, spark-server 2345/2345, selftest 110/110
+2026-09-05T03:51Z  aggregate  COMPOSITION-ONLY DEFECT found: `cargo fmt --check` failed on the composed tree while both lanes were individually clean — an unformatted match arm in the list-query parser. Neither agent could have seen it; it exists only in the merge. Fixed as its own commit.
+2026-09-05T03:52Z  aggregate  recorded-not-fixed (correctly deferred by the lane): 8 hot-path `let _ =` CUDA event record/wait sites (silent KV corruption class, unprovable without GPU); ATLAS_SPEC_ENTRY_PIN's inverted-intent fallback where `off` parses to ENABLED-at-8 and is CODIFIED BY TESTS — changing it reverses an asserted decision, so it is a daytime call, not a night edit
+```
+
+**CITED:** R-compose-then-gate (the fmt defect existed only in the composition — gate the merged tree, never trust per-lane green); R-defer-what-you-cannot-prove (the lane recorded three findings with file:line instead of half-fixing them at night).
