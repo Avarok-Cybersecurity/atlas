@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#ifndef ATLAS_NO_WARP_BLOCKSCALE_MMA
 //
 // W4A4 NVFP4 prefill GEMM for the dense FFN gate/up/down — native FP4 tensor cores (sm_121a).
 // mma.sync kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64 (E2M1 x E2M1, E4M3 group-16 scales).
@@ -8,6 +9,9 @@
 // MUST be compiled for sm_121a (FP4 MMA): KERNEL.toml extra_nvcc_flags=["-arch=sm_121a"].
 //
 // Output C is BF16 [M, N]. C[m,n] = scaleA2 * scaleB2 * sum_k deq(A) * deq(B).
+// Hopper cannot assemble the warp-level block-scale MMA below. Its hardware
+// flags exclude this optional NVFP4 kernel; the Hopper model declares the
+// absence. GB10 leaves the macro undefined and retains the original kernel.
 #include <cuda_bf16.h>
 #include <cstdint>
 
@@ -106,3 +110,5 @@ extern "C" __global__ __launch_bounds__(W4A4_THREADS, 2) void w4a4_gemm(
         if (r1 < (unsigned)M && c1 < (unsigned)N) C[(size_t)r1 * N + c1] = __float2bfloat16(acc[nt][3] * g);
     }
 }
+
+#endif  // ATLAS_NO_WARP_BLOCKSCALE_MMA

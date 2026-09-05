@@ -40,16 +40,25 @@ pub struct Inherited {
     pub blockscale_rejection: &'static str,
 }
 
-/// The five P0 models of the Hopper/B200 campaign. Both inherited targets
-/// carry the same set, so this is one const, not two — but it is a CURATED
-/// subset of gb10's 26, not a mirror of it, and adding a model to a target
-/// means adding its directory AND this list.
+/// The five P0 models shared by the Hopper/B200 campaign.
 pub const P0_MODELS: &[&str] = &[
     "deepseek-v4-flash",
     "nemotron-3-nano-30b-a3b",
     "nemotron-super-120b-a12b",
     "qwen3-next-80b-a3b",
     "qwen3.6-35b-a3b",
+];
+
+/// Hopper additionally carries the PRD section 16 first paid 27B cell and
+/// the same-hardware source target its kernel_source redirect requires.
+pub const HOPPER_MODELS: &[&str] = &[
+    "deepseek-v4-flash",
+    "nemotron-3-nano-30b-a3b",
+    "nemotron-super-120b-a12b",
+    "qwen3-next-80b-a3b",
+    "qwen3.6-27b",
+    "qwen3.6-35b-a3b",
+    "qwen3.8-27b",
 ];
 
 /// Every hardware set whose kernels are gb10's, reached by symlink.
@@ -65,7 +74,7 @@ pub const INHERITED: &[Inherited] = &[
         arch: "sm_90a",
         cc: "9.0",
         provenance: "Hopper target: kernel set inherited from gb10 via symlink",
-        models: P0_MODELS,
+        models: HOPPER_MODELS,
         blockscale_rejection: "cvt with .e2m1x2",
     },
     Inherited {
