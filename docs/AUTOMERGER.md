@@ -275,3 +275,13 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-print-the-clock (a duration claim without a same-command timestamp is a guess wearing units).
+
+---
+
+## Run 10 — 2026-09-05T02:40Z — overnight mode engaged
+
+```text
+2026-09-05T02:40Z  communicate user directive: work overnight; hourly waves of 3-4 fable deep-inspection agents (opus 5 once fable limits hit) improving DX, robustness, and atlasctl real-life usage
+2026-09-05T02:40Z  tool       atlasctl 0.2.0 found installed; `doctor` on this box already reports two REAL problems (config-dir uid mismatch 1000 vs 996; sparkrun registry redirect to Atlas-Inf/sparkrun-recipes, which Atlas does not control) — the ctl lane starts with live material
+2026-09-05T02:40Z  spawn      wave 1: 4 fable agents in isolated worktrees (nightly/w1-{dx,rob,ctl,journey}), local commits only, negative controls mandatory, no pushes into the starved CI pool
+```
