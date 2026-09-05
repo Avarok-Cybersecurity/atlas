@@ -77,6 +77,8 @@
 //! through `prefill_inner_hc`, and a rejected draft needs QSA/PLE rewind that
 //! has no API today. 86.5% accept is what makes that work worth doing.
 
+mod sampling;
+
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -420,6 +422,18 @@ impl Qwen4ExpMtpHead {
     /// the mHC head's own `hc_norm` plays that role. Applying one would be an
     /// uninvited extra RMS divide (a bug this model already shipped once).
     pub fn draft_token(&self, h_out: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<u32> {
+        self.draft_token_with_grammar(h_out, ctx, stream, None)
+    }
+
+    /// Grammar state belongs to the scheduler. Only the first draft can use
+    /// its current mask; later draft rows are checked by target verification.
+    pub(super) fn draft_token_with_grammar(
+        &self,
+        h_out: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+        grammar_bitmask: Option<&[i32]>,
+    ) -> Result<u32> {
         let vocab = ctx.config.vocab_size as u32;
         let h = ctx.config.hidden_size as u32;
         let logits = self.arena.logits();
@@ -449,6 +463,9 @@ impl Qwen4ExpMtpHead {
                 h,
                 stream,
             )?;
+        }
+        if let Some(bitmask) = grammar_bitmask {
+            return sampling::grammar_argmax(ctx.gpu, logits, vocab as usize, bitmask);
         }
         let out_ptr = self.arena.scratch();
         ops::argmax_bf16(ctx.gpu, self.argmax_k, logits, out_ptr, vocab, stream)?;

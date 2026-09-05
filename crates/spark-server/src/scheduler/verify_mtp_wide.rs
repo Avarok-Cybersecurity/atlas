@@ -4,6 +4,8 @@
 //! Only sampled prefix rows can mutate request policies. Real emission between
 //! rows supplies the serial history, RNG seed, grammar and thinking state.
 
+pub(super) mod grammar;
+
 use super::ActiveSeq;
 use super::decode_logits_seq::process_seq_logits;
 use super::emit_step::emit_token;
@@ -116,7 +118,7 @@ pub(super) fn finish(
     match model.run_mtp_propose_multi(
         seq.last_token,
         seq.seq.seq_len,
-        super::spec_step::effective_drafts_under_grammar(seq, num_drafts),
+        grammar::drafts(seq, num_drafts, false),
         &mut seq.seq,
         0,
         grammar_mask.as_deref(),
@@ -126,5 +128,7 @@ pub(super) fn finish(
     }
 }
 
+#[cfg(test)]
+mod grammar_tests;
 #[cfg(test)]
 mod tests;

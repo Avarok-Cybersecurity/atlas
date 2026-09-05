@@ -294,7 +294,7 @@ pub fn step_verify_k2(
         match model.run_mtp_propose_multi(
             v1,
             a.seq.seq_len,
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts),
+            super::verify_mtp_wide::grammar::drafts(a, num_drafts, dflash_verify_raw_argmax),
             &mut a.seq,
             0,
             _mtp_grammar_mask.as_deref(),
@@ -373,7 +373,7 @@ pub fn step_verify_k2(
         match model.run_mtp_propose_multi(
             v0,
             a.seq.seq_len,
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts),
+            super::verify_mtp_wide::grammar::drafts(a, num_drafts, dflash_verify_raw_argmax),
             &mut a.seq,
             0,
             _mtp_grammar_mask.as_deref(),

@@ -66,7 +66,7 @@ impl DraftProposer for Qwen4ExpMtpHead {
         ctx: &ForwardContext,
         stream: u64,
         _draft_embed_target: Option<DevicePtr>,
-        _grammar_bitmask: Option<&[i32]>,
+        grammar_bitmask: Option<&[i32]>,
         _target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>> {
         let st = state
@@ -108,7 +108,12 @@ impl DraftProposer for Qwen4ExpMtpHead {
                 ctx,
                 stream,
             )?;
-            token = self.draft_token(h_out, ctx, stream)?;
+            token = self.draft_token_with_grammar(
+                h_out,
+                ctx,
+                stream,
+                if j == 0 { grammar_bitmask } else { None },
+            )?;
             drafts.push(token);
             streams = self.draft_streams();
         }
