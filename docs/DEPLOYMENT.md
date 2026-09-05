@@ -129,6 +129,25 @@ scripts/start-node-ep.sh --stop
 | 2 Sparks, DeepSeek V4-Flash | `start-deepseek-ep2.sh` | RoCEv2, EP-only |
 | 1 host, N NVLink GPUs | `start-node-ep.sh` | NVLink / PCIe P2P, intra-node |
 
+#### A prebuilt binary for a rental box
+
+The fastest way to get `spark` onto an hourly H100/H200/B200 is not to build
+it there. None of the compilation needs a GPU — the kernels are cross-compiled
+to PTX and embedded in the binary — so
+[`.github/workflows/datacenter-binaries.yml`](../.github/workflows/datacenter-binaries.yml)
+builds it on a GitHub-hosted runner instead. Dispatch it with `hw` =
+`hopper` | `b200` | `both` (and `model` = `*` or one model slug), then
+download the `spark-hopper-x86_64` / `spark-b200-x86_64` artifact — a
+14-day-retention zip holding the binary, its `sha256`, and a `BUILD-INFO.txt`
+naming the git sha, target hardware/arch/model, nvcc and NCCL versions, and
+the PTX module count it was built with. `chmod +x spark` and run it: the box
+needs an NVIDIA driver, a CUDA 13 runtime, `libnccl2 >= 2.28` and
+libibverbs/librdmacm, but no toolchain and no cargo. First command should be
+`./spark serve <model> --check-kernels --no-tui`. If you would rather the
+image carry those runtime libraries for you, build `docker/hopper/Dockerfile`
+or `docker/b200/Dockerfile` — also GPU-free — and see
+[`docker/docker-guide.md`](../docker/docker-guide.md#hopper--b200-images).
+
 #### NCCL profile: start from nothing
 
 `NCCL_PROFILE` selects one of three environments, and the default is the
@@ -339,4 +358,10 @@ you build one — happy to merge.
 - [`scripts/start-node-ep.sh`](../scripts/start-node-ep.sh) — the single-node,
   N-GPU launcher described above; `scripts/start_node_ep_test.sh` is its
   GPU-free test.
+- [`docker/docker-guide.md`](../docker/docker-guide.md#hopper--b200-images) —
+  the GPU-free Hopper (`sm_90a`) and B200 (`sm_100a`) images, and what their
+  arch lock means.
+- [`.github/workflows/datacenter-binaries.yml`](../.github/workflows/datacenter-binaries.yml)
+  — builds those same binaries on a hosted runner and uploads them as
+  artifacts.
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — what's running inside the binary.
