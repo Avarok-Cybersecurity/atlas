@@ -300,3 +300,17 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept (three agent claims re-run by the coordinator before entering the record); R-negative-control (the agent quoted failing output for each fix).
+
+---
+
+## Run 12 — 2026-09-05T03:10Z — nightly wave 1: atlasctl lane, three real defects
+
+```text
+2026-09-05T03:10Z  return     atlasctl lane (fable): full CLI sweep + a real run/stop inference cycle; 3 defects fixed in the UPSTREAM repo (Avarok-Cybersecurity/atlas-recipes, branch fix/doctor-and-registry-ux, 3 commits on cf7ec41), read-only clone in scratchpad, nothing pushed
+2026-09-05T03:12Z  tool       coordinator verified the dangerous one first-hand: ~/.config/atlasctl is owned by uid 1000 = `nologik`, a LIVE login account whose agent answers on 127.0.0.1:34333 right now. doctor's printed remedy `sudo chown -R 996 ...` would take a working install's identity from that user. CONFIRMED destructive advice.
+2026-09-05T03:13Z  tool       also confirmed: NO sparkrun binary anywhere on this box (only ~/.config/sparkrun remains), yet doctor says "a sparkrun install was found" and prescribes `pipx uninstall sparkrun` — which would answer "Nothing to uninstall"; the "redirect is compiled into sparkrun" claim is asserted about a binary that does not exist
+2026-09-05T03:14Z  aggregate  worst NEW defect: `atlasctl registry add <name> ftp://...` HANGS FOREVER — git spawns git-remote-ftp with no deadline; still alive at T+3m30s, killed by hand. Fix refuses helper transports before any network I/O and adds http low-speed deadlines
+2026-09-05T03:15Z  aggregate  real-life validation PASSED: run 7s -> ready 100s -> inference 52.9 tok/s TTFT 168ms -> stop 6s, GPU back to 0%, no leftover containers
+```
+
+**CITED:** R-verify-dont-accept (the destructive-advice claim re-proven by the coordinator against live process state before entering the record); R-exercise-it-for-real (the run/stop cycle is what turned a CLI review into a validated user journey).
