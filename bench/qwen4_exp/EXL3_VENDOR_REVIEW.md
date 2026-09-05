@@ -37,3 +37,9 @@ PASS cooperative launch + grid.sync stream capture and 3 graph replays
 ```
 
 This proves cooperative stream capture support on this CUDA 13.0/GB10 host. It does **not** prove that Atlas's complete EXL3 path, its driver launch wrapper, PLE, or verify rollback is graph-ready. No latency/throughput claim was measured.
+
+## Implemented follow-up
+
+Ingress fusion and the later concurrency/state-lifetime fixes are documented in
+[MTP_PERFORMANCE.md](MTP_PERFORMANCE.md), including exact parity, measured limits,
+and the remaining graph-capture boundary.

@@ -1,6 +1,11 @@
 # Wider native EXL3 MTP review — 2026-09-05
 
-**Current status:** rebased onto `avarok/main` at `8682329cc` (rebased tip `0d099342e`). Runtime/kernel/dependency trees are unchanged and the rebased release build succeeds. All three widths match 15/15 complete greedy responses. **Agentic profile correction:** the completed two/three-draft runs omitted `ATLAS_AGENTIC_PRESERVE_THINKING=1`; they are compatibility evidence only. Requested preserve-thinking agentic reruns and direct thinking-speculation on/off parity control are pending.
+**Current status:** the branch includes `avarok/main` at `8682329cc`. See
+[MTP_PERFORMANCE.md](MTP_PERFORMANCE.md) for the final performance/concurrency
+follow-up: all widths pass deterministic output checks; one and two drafts pass
+the corrected preserve-thinking agentic profile; the three-draft agentic run
+exceeded the wall budget and was cancelled. The local TUI now defaults to two
+drafts. The results below retain their original, explicitly limited profiles.
 
 This follow-up to [MTP_REVIEW.md](MTP_REVIEW.md) validates one, two and three drafts on the single-sequence, batched-highway Qwen3.8-Flash-Next EXL3 path. Performance observations are preliminary, single-harness results; the model-card agentic runs are single-shot sanity checks.
 
@@ -29,7 +34,7 @@ An earlier configured-two-draft agentic run actually used one draft because the 
 
 ## Vendor review
 
-See [EXL3_VENDOR_REVIEW.md](EXL3_VENDOR_REVIEW.md). Core reference math sources already match upstream v1.4.6. A standalone cooperative graph capture/replay test passes on GB10; full EXL3 capture is still unverified. Fusing routing and activation staging is another bounded candidate. No kernel speedup is claimed from this review.
+See [EXL3_VENDOR_REVIEW.md](EXL3_VENDOR_REVIEW.md). Core reference math sources already match upstream v1.4.6. A standalone cooperative graph capture/replay test passes on GB10; full EXL3 capture is still unverified. The subsequent ingress fusion and its measured limits are recorded in [MTP_PERFORMANCE.md](MTP_PERFORMANCE.md). No kernel speedup is claimed from this read-only review.
 
 ## Completed wider-draft results
 
@@ -44,7 +49,7 @@ Both widths match all five complete greedy responses, including reasoning, in th
 
 Both agents wrote the project/tests, ran them, launched and curled the server, and tore it down. The three-draft run crossed 8K context. These are single-shot stochastic sanity checks, not comparative speed gates. Raw records, output choices, per-request usage and complete configuration fingerprint: [mtp-wide-results.json](mtp-wide-results.json).
 
-Local TUI launcher: `/home/ms/run-atlas-pr834-tui.sh`; use `MTP_DRAFTS=2` or `MTP_DRAFTS=3`. Default remains one draft. The launcher enables thinking speculation and the CPU post-thinking sampling policy used in the parity checks.
+Local TUI launcher: `/home/ms/run-atlas-pr834-tui.sh`; use `MTP_DRAFTS=2` or `MTP_DRAFTS=3`. The current launcher defaults to two drafts; see the performance follow-up. The launcher enables thinking speculation and the CPU post-thinking sampling policy used in the parity checks.
 
 ## Measurement lesson
 
