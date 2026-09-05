@@ -53,7 +53,7 @@ class PinTests(unittest.TestCase):
                         self.assertEqual(argv.count('--revision'), 1)
                         self.assertEqual(argv[argv.index('--revision') + 1], entry['revision'])
                         commands += 1
-        self.assertEqual(commands, 37)
+        self.assertEqual(commands, 38)  # Includes the single-H100 Qwen3.8-27B profile.
 
     def test_external_draft_revision_and_exact_spec_arithmetic(self):
         drafts = 0
