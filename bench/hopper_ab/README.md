@@ -9,7 +9,8 @@ numbers already exist and are reused verbatim:
   — the engine-agnostic ladder client. ONE client drives both engines, which is
   the point: two harnesses measuring two engines is not an A/B. It owns the
   sampling parity pins (`presence_penalty`/`frequency_penalty` at 0,
-  `chat_template_kwargs.enable_thinking=false`, temp 0, seed 42), the
+  `chat_template_kwargs.enable_thinking` selected by `--enable-thinking`
+  (default false), temp 0, seed 42), the
   per-request nonce that defeats prefix caching, and the output JSON schema
   everything downstream reads.
 - **[`bench/phaseA_c_sweep.sh`](../phaseA_c_sweep.sh)** — the serve → health →
@@ -27,7 +28,7 @@ whether the two result files are comparable at all.
 |---|---|
 | `workloads.json` | The frozen shapes. ISL/OSL, concurrencies, ladder rungs, sampling pins. The SSOT both legs read; a leg that does not match it is not in the campaign. |
 | `time_to_ready.sh` | Measures boot: start → first `HTTP 200` on `/health` → first token. Requires health and a valid nonempty one-token completion within `--timeout-s` of launch (default 1800). |
-| `coherency_gate.py` | Determinism, tool-call JSON, `<think>` containment and three known answers against a live endpoint. Any failure is a non-zero exit. |
+| `coherency_gate.py` | Determinism, tool-call JSON and three known answers use `--think on\|off`; the separately labelled leakage probe requests off. Policies and HTTP exchanges are retained. Any failure is a non-zero exit. |
 | `compare.py` | Two ladder JSONs in, the Pareto table out. Refuses to compare files whose workload axes differ. |
 | `fixtures/` | Tiny hand-written ladder JSONs for `compare.py --selftest`, including the mismatched pair it must refuse, plus `degenerate_primes.txt` — a recorded GB10 failure the coherency gate must reject. |
 
@@ -45,12 +46,19 @@ engine resident on the GPU is a third variable.
 1. Atlas leg
    a. start `spark serve …`, note the epoch BEFORE the process starts
    b. time_to_ready.sh --engine atlas --start-epoch <that>   -> boot json
-   c. coherency_gate.py                                      -> gate json (hard stop on failure)
+   c. coherency_gate.py --think <cell mode>                  -> gate json (hard stop on failure)
    d. harness_w55_conc_ladder.py --warmup 1 --reps 3         -> atlas ladder json
    e. tear the server down; confirm the GPUs are idle before continuing
 2. vLLM leg — identical steps against the official recipe image
 3. compare.py --atlas <a> --vllm <b>                         -> RESULTS.md rows + json
 ```
+
+An on cell also passes `--enable-thinking` to the ladder. The campaign driver
+does both and refuses modes excluded by `campaign_policy.json`; the assembler
+checks gate and ladder policy evidence before certification. These probes judge
+final answers and tool calls, not separately returned reasoning text. Model
+templates that use another request-policy key need a verified adaptation before
+their on/off labels can be trusted.
 
 ### Why boot time is measured, not estimated
 
