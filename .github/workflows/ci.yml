@@ -400,6 +400,14 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
+          # The workflow-wide ATLAS_SKIP_BUILD=1 stubs atlas-kernels' build
+          # script, so `metallib_modules()` is EMPTY and every parity test
+          # fails with `Metal: unknown module '...'`. That never showed on
+          # GitHub-hosted macOS runners because MTLCreateSystemDefaultDevice
+          # returns null there and the tests skip themselves; on a real Mac
+          # (the self-hosted M5) they run and go red. This step is the one
+          # place the metal kernel set must actually be built.
+          ATLAS_SKIP_BUILD: "0"
           ATLAS_TARGET_HW: metal
           ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
           ATLAS_TARGET_QUANT: mlx_int8
