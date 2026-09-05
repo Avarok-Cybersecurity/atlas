@@ -13,3 +13,22 @@ compute_capability = "10.0"
 memory_bandwidth_gbps = 8000
 memory_type = "HBM3e"
 memory_gb = 180
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Datacentre Blackwell DOES
+# have NVFP4, but issues block-scaled MMA through tcgen05; the warp-level
+# `mma.sync ... .kind::mxf4nvf4.block_scale` is a consumer/GB10 Blackwell
+# (sm_120/sm_121) instruction — ptxas: "Instruction 'mma with block scale'
+# not supported on .target 'sm_100a'" (measured 2026-09-05, CUDA 13.0.88;
+# receipt under docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/).
+# A tcgen05 rewrite of that kernel would lift this; nothing here does that.
+#
+# A hardware-level define, not a per-model one, because it is a fact about
+# the ISA and because every KERNEL.toml under this tree is a symlink into
+# kernels/gb10 — saying it per model would fork a shared file once per
+# model, which tests/inherited_targets.rs forbids.
+[build]
+extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
