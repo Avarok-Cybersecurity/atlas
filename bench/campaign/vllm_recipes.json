@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "campaign": "hopper-atlas-vs-vllm-2026-09",
-  "note": "Transcribed 2026-09-05 from captured recipe evidence, then adapted with explicit primary and external draft revision pins from the Step D metadata inventory. evidence_sha256 continues to identify the ORIGINAL captured recipe, not the adapted argv. A (model_key, sku) pair with no rendered profile is ABSENT rather than reconstructed; vllm_control.sh exits 3 on it.",
+  "note": "Captured official recipe evidence from 2026-09-05, with explicit primary/draft revision pins and PRD context adaptations. Each source_url/evidence_sha256 identifies its original captured recipe, not the adapted argv; superseded checkpoint evidence is retained separately. A (model_key, sku) pair with no rendered profile is ABSENT rather than reconstructed; vllm_control.sh exits 3 on it.",
   "known_flag_prefixes": [
     "--async-scheduling",
     "--attention-backend",
@@ -1297,7 +1297,9 @@
       "draft_revision": {
         "repo_id": "Inferact/MiniMax-M3-EAGLE3",
         "revision": "44cafa5ace418d8b22e2958df0c6aa1f2476842c"
-      }
+      },
+      "draft_revision_image_refs": [],
+      "draft_revision_support": "RECIPE_GAP: external draft revision support has not been proven for a pinned recipe image. Spec-on refuses until an exact image@sha256 reference with a support receipt is recorded; spec-off remains available."
     },
     {
       "model_key": "minimax-m3",
@@ -1347,7 +1349,9 @@
       "draft_revision": {
         "repo_id": "Inferact/MiniMax-M3-EAGLE3",
         "revision": "44cafa5ace418d8b22e2958df0c6aa1f2476842c"
-      }
+      },
+      "draft_revision_image_refs": [],
+      "draft_revision_support": "RECIPE_GAP: external draft revision support has not been proven for a pinned recipe image. Spec-on refuses until an exact image@sha256 reference with a support receipt is recorded; spec-off remains available."
     },
     {
       "model_key": "minimax-m3",
@@ -1602,7 +1606,9 @@
         "original_max_model_len": 32768,
         "scored_max_model_len": 49152,
         "source": "PRD-atlas-vs-vllm-hopper.md section 16; explicit 2026-09-05 lead handoff"
-      }
+      },
+      "draft_revision_image_refs": [],
+      "draft_revision_support": "RECIPE_GAP: external draft revision support has not been proven for a pinned recipe image. Spec-on refuses until an exact image@sha256 reference with a support receipt is recorded; spec-off remains available."
     },
     {
       "model_key": "kimi-k3",
@@ -1720,7 +1726,9 @@
         "original_max_model_len": 32768,
         "scored_max_model_len": 49152,
         "source": "PRD-atlas-vs-vllm-hopper.md section 16; explicit 2026-09-05 lead handoff"
-      }
+      },
+      "draft_revision_image_refs": [],
+      "draft_revision_support": "RECIPE_GAP: external draft revision support has not been proven for a pinned recipe image. Spec-on refuses until an exact image@sha256 reference with a support receipt is recorded; spec-off remains available."
     },
     {
       "model_key": "kimi-k3",
@@ -1848,7 +1856,9 @@
         "original_max_model_len": 1048576,
         "scored_max_model_len": 49152,
         "source": "PRD-atlas-vs-vllm-hopper.md section 16; explicit 2026-09-05 lead handoff"
-      }
+      },
+      "draft_revision_image_refs": [],
+      "draft_revision_support": "RECIPE_GAP: external draft revision support has not been proven for a pinned recipe image. Spec-on refuses until an exact image@sha256 reference with a support receipt is recorded; spec-off remains available."
     },
     {
       "model_key": "qwen3.8-27b-fp8",
@@ -1904,7 +1914,7 @@
     "evidence_sha256_semantics": "Original recipe evidence hash; does not hash the adapted command.",
     "loaded_bytes_proven": false,
     "pin_semantics": "Explicit intended revisions, not loaded-byte proof. Do not populate artifact.model.revision from recipes alone.",
-    "external_draft_revision_support": "revision is present in official vLLM speculative config at the inspected source commit below; acceptance by each selected recipe image remains unproven.",
+    "external_draft_revision_support": "The field exists in the inspected official source, but source support does not prove selected-image support. External-draft spec-on refuses unless the exact pinned image reference is in that entry's evidenced draft_revision_image_refs list; all lists are currently empty.",
     "external_draft_revision_source": "https://github.com/vllm-project/vllm/blob/7fbd44cbe0a90b9c8fd3a94a0f0401ac4b1bc719/vllm/config/speculative.py#L422"
   }
 }

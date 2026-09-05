@@ -19,11 +19,11 @@ class PinTests(unittest.TestCase):
         self.doc = json.loads(RECIPES.read_text())
         self.entry = self.doc['entries'][0]
 
-    def render(self, entry=None, extra='', spec='off'):
+    def render(self, entry=None, extra='', spec='off', digest=None, image=None):
         entry = entry or self.entry
         with tempfile.TemporaryDirectory() as stage:
             args = argparse.Namespace(model=entry['model_key'], sku=entry['sku'],
-                spec=spec, extra=extra, image=None, image_digest=None,
+                spec=spec, extra=extra, image=image, image_digest=digest,
                 stage=stage, container='pins-test', hf_cache='/unused-cache',
                 docker='docker', label=[])
             out, err = io.StringIO(), io.StringIO()
@@ -61,9 +61,14 @@ class PinTests(unittest.TestCase):
             if not entry['spec_args']:
                 continue
             with self.subTest(model=entry['model_key'], sku=entry['sku']):
-                rc, _, err, off_files = self.render(entry=entry)
+                digest = None
+                if entry.get('draft_revision'):
+                    # Synthetic CPU support receipt for argv arithmetic only.
+                    digest = 'sha256:' + 'a' * 64
+                    entry['draft_revision_image_refs'] = [renderer.image_ref(entry['image'], digest)]
+                rc, _, err, off_files = self.render(entry=entry, digest=digest)
                 self.assertEqual(rc, 0, err)
-                rc, _, err, on_files = self.render(entry=entry, spec='on')
+                rc, _, err, on_files = self.render(entry=entry, spec='on', digest=digest)
                 self.assertEqual(rc, 0, err)
                 for name, off in off_files.items():
                     if not (name.startswith('node') and name.endswith('.argv')):

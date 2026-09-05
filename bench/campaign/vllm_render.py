@@ -12,13 +12,13 @@ never becomes a string: it is handed to the launcher NUL-separated.
 
 Every token in `args` / `worker_args` / `spec_args` comes from
 bench/campaign/vllm_recipes.json: captured recipe evidence plus the declared
-revision-pin adaptation. Original evidence hashes still identify the captured
+campaign adaptations. Original evidence hashes still identify the captured
 recipe, not the adapted command. The only tokens this file can add are the
 `docker run` preamble and whatever the caller passed in `--extra`, and both are
 labelled as such in the printed block.
 
 Exit codes match vllm_control.sh: 0 ok · 2 usage · 3 no rendered profile ·
-4 --spec on with no speculative profile · 7 an unknown recipe flag ·
+4 no speculative profile or unproven draft-image support · 7 unknown recipe flag ·
 8 an invalid or overridden model/draft revision identity.
 """
 
@@ -217,7 +217,7 @@ def pasteable(argv):
 def describe(entry, spec, extra_tokens, image, digest, unknown_recipe, unknown_extra):
     top = entry["topology"]
     lines = [
-        "=== vLLM control leg (recipe with declared revision adaptation) ===",
+        "=== vLLM control leg (recipe with declared campaign adaptations) ===",
         f"model_key:   {entry['model_key']}",
         f"sku:         {entry['sku']}",
         f"hf_id:       {entry['hf_id']}",
@@ -236,7 +236,9 @@ def describe(entry, spec, extra_tokens, image, digest, unknown_recipe, unknown_e
         draft = entry["draft_revision"]
         lines.append(f"draft pin:   {draft['repo_id']}@{draft['revision']} "
                      "(selected image support unproven)")
-    if entry["spec_args"]:
+    if entry.get("draft_revision") and spec == "off":
+        lines.append("spec:        off (external draft config is not launched)")
+    elif entry["spec_args"]:
         lines.append(f"spec:        {spec}   (recipe renders spec "
                      f"{entry['spec_rendered_default']}; the switchable group is "
                      f"{pasteable(entry['spec_args'])})")
@@ -311,6 +313,14 @@ def cmd_render(doc, args):
         print(f"ERROR: VLLM_IMAGE_DIGEST must match sha256:<64 hex>, got '{digest}'",
               file=sys.stderr)
         return E_USAGE
+
+    if args.spec == "on" and entry.get("draft_revision"):
+        supported = entry.get("draft_revision_image_refs")
+        if (not digest or not isinstance(supported, list)
+                or image_ref(image, digest) not in supported):
+            print(f"RECIPE_GAP: {args.model}/{args.sku} external draft revision support "
+                  "is unproven for this pinned image; use --spec off", file=sys.stderr)
+            return E_NO_SPEC
 
     print(describe(entry, args.spec, extra_tokens, image, digest,
                    unknown_recipe, unknown_extra))
