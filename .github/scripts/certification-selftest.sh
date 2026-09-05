@@ -904,6 +904,84 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# PR telemetry must not record an unreadable diff as an empty one
+# ---------------------------------------------------------------------------
+# The collector calls `pulls/N/files` once per PR, and that call can fail. It
+# used to fall through to `paths='[]'` with no warning, and every consumer of
+# the record reads an empty path list as a MEASUREMENT: no targets, no owners,
+# no promotion debt, no collisions -- the most reassuring record this view can
+# emit, manufactured out of an API error and posted to the tracking issue.
+#
+# The Rust half (gate/telemetry.rs) has tests for how the marker is HONOURED.
+# Nothing tested that the shell half still EMITS it, and the shell half is the
+# one with no other coverage, so this runs the real step against a gh stub.
+echo "== pr telemetry marks an unreadable diff =="
+python3 - > "$TMP/collect.sh" <<'TELPY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/pr-telemetry.yml").read_text())
+for st in d["jobs"]["render"]["steps"]:
+    if st.get("name", "").startswith("Collect open PRs"):
+        print(st["run"]); break
+TELPY
+if [ -s "$TMP/collect.sh" ]; then
+  mkdir -p "$TMP/tbin" "$TMP/trun"
+  # #1's files come back; #2's call fails the way a 404 does -- non-zero exit
+  # AND an error body on stdout, so a length check would read that body as a
+  # filename. That shape is why the collector guards on the exit status.
+  cat > "$TMP/tbin/gh" <<'TELSTUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls?state=all"*)
+    echo '[{"number":1,"title":"one","author":"a","draft":false,"merged":false},{"number":2,"title":"two","author":"b","draft":false,"merged":false}]' ;;
+  *"pulls/1/files"*) printf 'kernels/gb10/x.cu\n' ;;
+  *"pulls/2/files"*) echo '{"message":"Not Found","status":"404"}'; exit 1 ;;
+  *) exit 1 ;;
+esac
+TELSTUB
+  chmod +x "$TMP/tbin/gh"
+  tel_run() {  # $1 = step script -> facts.json on stdout
+    ( cd "$TMP/trun" && rm -f facts.json prs.json prs.ndjson enriched.ndjson
+      PATH="$TMP/tbin:$PATH" GH_TOKEN=x REPO=o/r bash "$1" >/dev/null 2>&1 )
+    jq -c '.' "$TMP/trun/facts.json" 2>/dev/null
+  }
+  tel_run "$TMP/collect.sh" > "$TMP/facts.txt"
+  if jq -e 'any(.[]; .number == 2 and .paths_unknown == true)' "$TMP/facts.txt" >/dev/null 2>&1; then
+    ok "a PR whose files could not be read is recorded as paths_unknown"
+  else
+    bad "an API failure was recorded as a PR that changes nothing"
+    sed 's/^/       /' "$TMP/facts.txt" | head -2
+  fi
+  # The marker must DISCRIMINATE. A collector that stamped every record
+  # `paths_unknown: true` would pass the check above and make the view useless,
+  # so the readable PR must come back marked known, with its path.
+  if jq -e 'any(.[]; .number == 1 and .paths_unknown == false and (.changed_paths | length) == 1)' \
+       "$TMP/facts.txt" >/dev/null 2>&1; then
+    ok "a PR whose files WERE read is recorded as known"
+  else
+    bad "the marker does not discriminate: a readable diff came back unknown"
+    sed 's/^/       /' "$TMP/facts.txt" | head -2
+  fi
+  # CONTROL: the pre-fix behaviour, reconstructed by flipping the one flag.
+  # It must turn the first check red and leave the second green, which is what
+  # proves the check measures the failure path and not the happy one.
+  sed 's/^\( *\)unknown=true$/\1unknown=false/' "$TMP/collect.sh" > "$TMP/collect-bad.sh"
+  if cmp -s "$TMP/collect.sh" "$TMP/collect-bad.sh"; then
+    bad "control: the sabotage did not change the step -- it would measure nothing"
+  else
+    tel_run "$TMP/collect-bad.sh" > "$TMP/facts-bad.txt"
+    if jq -e 'any(.[]; .number == 2 and .paths_unknown == false)' "$TMP/facts-bad.txt" >/dev/null 2>&1 \
+       && jq -e 'any(.[]; .number == 1 and .paths_unknown == false)' "$TMP/facts-bad.txt" >/dev/null 2>&1; then
+      ok "control: dropping the marker is caught (#2 renders as changing nothing)"
+    else
+      bad "control: the sabotaged collector did not reproduce the defect"
+      sed 's/^/       /' "$TMP/facts-bad.txt" | head -2
+    fi
+  fi
+else
+  bad "could not extract the telemetry collect step"
+fi
+
+# ---------------------------------------------------------------------------
 # nginx add_header does not accumulate across contexts
 # ---------------------------------------------------------------------------
 # Three vhosts, one rule, three separate incidents -- each found by hand after

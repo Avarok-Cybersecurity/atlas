@@ -18,6 +18,7 @@ fn pr(number: u64, paths: &[&str]) -> PrFacts {
         author: "someone".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: paths.iter().map(|s| s.to_string()).collect(),
     }
 }
