@@ -169,6 +169,41 @@ class ProcessLaunchTests(unittest.TestCase):
         self.assertFalse(self.running(child))
         self.assertEqual(json.loads(self.record.read_text())["status"], "failed")
 
+    def test_signal_during_start_cannot_orphan_the_new_session(self):
+        code = "import os,time; print(os.getpid(),flush=True); time.sleep(300)"
+        self.argv_file.write_text(json.dumps([sys.executable, "-u", "-c", code]))
+        command = [sys.executable, str(MANAGER), "start", "--record", str(self.record),
+                   "--evidence", str(self.evidence), "--log", str(self.log),
+                   "--argv-json", str(self.argv_file)]
+        manager = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True)
+        descriptor = None
+        try:
+            until = time.monotonic() + 3
+            while time.monotonic() < until:
+                if self.log.exists() and self.log.read_text().strip():
+                    break
+                time.sleep(0.001)
+            child = int(self.log.read_text().strip())
+            descriptor = os.pidfd_open(child)
+            manager.send_signal(signal.SIGTERM)
+            manager.communicate(timeout=5)
+            self.assertNotEqual(manager.returncode, 0)
+            until = time.monotonic() + 1
+            while self.running(child) and time.monotonic() < until:
+                time.sleep(0.01)
+            self.assertFalse(self.running(child), "SIGTERM orphaned the new server session")
+        finally:
+            if descriptor is not None:
+                try:
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.close(descriptor)
+            if manager.poll() is None:
+                manager.kill()
+                manager.wait()
+
 
 if __name__ == "__main__":
     unittest.main()

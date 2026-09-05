@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import time
 import uuid
@@ -52,7 +53,7 @@ def launch_argv(args):
     return argv
 
 
-def start(args):
+def _start(args):
     argv = launch_argv(args)
     environment = launch_environment(args)
     marker = uuid.uuid4().hex
@@ -100,6 +101,30 @@ def start(args):
         atomic_json(record, {"schema": 1, "kind": "linux-proc-owner",
                             "status": "failed", "run_marker": marker})
         raise
+
+
+def start(args):
+    # A server starts in a new session, so terminating this short-lived manager
+    # must not leave a child behind before its owner record has been published.
+    interrupted = []
+
+    def defer(signum, _frame):
+        interrupted.append(signum)
+
+    previous = {number: signal.signal(number, defer)
+                for number in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        result = _start(args)
+        if interrupted:
+            error = "launch interrupted by " + signal.Signals(interrupted[0]).name
+            stop(read_owner(args.record), 0.2)
+            atomic_json(args.evidence, {"schema": 1, "kind": "linux-proc",
+                                       "running": False, "error": error})
+            raise ValueError(error)
+        return result
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 def parser():
