@@ -344,3 +344,17 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-compose-then-gate (the fmt defect existed only in the composition — gate the merged tree, never trust per-lane green); R-defer-what-you-cannot-prove (the lane recorded three findings with file:line instead of half-fixing them at night).
+
+---
+
+## Run 15 — 2026-09-05T03:05Z — nightly-hardening cleared, and a correction to my own reporting
+
+```text
+2026-09-05T03:05Z  return     Adversary (fable) on stack/nightly-hardening: PUBLISH on 3 conditions. It re-executed rather than read: 11/11 new tests visibly run (2346 filtered, not a phantom pass), and it rebuilt one negative control from scratch — test-only hunk of 1e70e89d93 applied to its PARENT -> 1 failed, green on the stack
+2026-09-05T03:06Z  aggregate  CORRECTION TO MY OWN EARLIER REPORT: I called the tool_defaults.toml defect operator-facing ("a typo silently disabled the parser"). It is NOT. The file is include_str!-baked (tool_defaults_lookup.rs:24) — VERIFIED by the coordinator — so no operator can typo it. The real exposure is a COMMITTED BUILD DEFECT, which is what the 2026-08-27 incident actually was. Still a real fix; smaller blast radius than I stated.
+2026-09-05T03:08Z  aggregate  ECONOMICS CORRECTION, and it is the valuable part: this stack touches NO perf path (no kernels/ops/prefill/decode/scheduler), so gate C never triggers. A full ~5 GPU-h A/B/D campaign on it would be waste. Correct spend is C2 + one boot smoke (minutes) — or ride the next perf-bearing stack's campaign. My "three stacks owe three campaigns" framing was wrong.
+2026-09-05T03:10Z  tool       condition 1 discharged: CHANGELOG entry naming all operator-visible changes, with limit>100 clamp->400 called out as the single case an external client could have relied on; tool_defaults deliberately EXCLUDED with the include_str! reason stated. Suite still 2345/2345.
+2026-09-05T03:11Z  aggregate  conditions 2-3 are morning gates: no GPU leg until pushed and hosted CI (incl. the Windows `check` job) is green — CI is stalled, so waiting is the instruction, not substituting
+```
+
+**CITED:** R-verify-dont-accept (the include_str! check overturned my own published claim); R-path-rule-owns-the-economics — applied in the OTHER direction this time: the rule that says a docs PR in crates/ OWES a campaign also says a non-perf-path stack does NOT owe the full one; R-adversary-earns-its-seat (fourth consecutive review to find something no checklist held).
