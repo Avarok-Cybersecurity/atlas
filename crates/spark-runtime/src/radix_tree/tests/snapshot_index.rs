@@ -52,10 +52,10 @@ fn index(entries: Vec<SnapshotEntry>, live: u64) -> SsmSnapshotIndex {
     }
 }
 
-/// Pure-LRU within a session: the older entry is the victim regardless of
-/// how often it was hit historically (regression for the 07-10 fossil
-/// pathology — the old `last_access * (1 + hit_count)` score let a once-hit
-/// old entry outlive every fresh save).
+/// Pure-LRU within a session once the lease is DISARMED: the older entry is
+/// the victim even when it is the live session's deep `is_tail` restore point.
+/// id 9 has to be a tail — with a pool of plain entries `tail_protect` is
+/// inert and the check says nothing about the flag it is named after.
 #[test]
 fn deep_tail_evicted_without_tail_protect() {
     let idx = index(
@@ -63,7 +63,7 @@ fn deep_tail_evicted_without_tail_protect() {
             entry(
                 /*id*/ 7, /*sess*/ 1, /*tok*/ 8192, /*last*/ 100,
             ),
-            entry(
+            tail_entry(
                 /*id*/ 9, /*sess*/ 1, /*tok*/ 16000, /*last*/ 50,
             ),
         ],
@@ -72,6 +72,11 @@ fn deep_tail_evicted_without_tail_protect() {
     // Victim is the OLDER entry (id 9) under pure LRU.
     let v = idx.session_aware_victim(false, false).unwrap();
     assert_eq!(idx.entries[v].snapshot_id, 9);
+    // Control on the SAME pool: armed, the lease spares that tail. Without
+    // this pair, a `leased` predicate that ignores `tail_protect` entirely is
+    // indistinguishable from one that honours it.
+    let armed = idx.session_aware_victim(true, false).unwrap();
+    assert_eq!(idx.entries[armed].snapshot_id, 7);
 }
 
 // ─────────── 07-10 fossil-pinning regressions (re-landed, #317 revert) ──────────
@@ -88,10 +93,19 @@ fn eviction_ignores_hit_history() {
     let toks: Vec<u32> = (0..100).collect();
     let ph = super::hash_token_prefix(&toks, 40, 0);
     idx.insert(ph, /*slot*/ 1, /*session*/ 7, /*tok*/ 40);
-    // Hit the anchor 5 times (each legitimately bumps recency).
+    // A never-hit entry saved AFTER the anchor: fresher on save order alone.
+    let ph50 = super::hash_token_prefix(&toks, 50, 0);
+    idx.insert(ph50, /*slot*/ 4, /*session*/ 7, /*tok*/ 50);
+    // Hit the anchor 5 times. `matched_tokens = 40` keeps the depth-50 entry
+    // out of range, so only slot 1 is touched.
     for _ in 0..5 {
-        assert!(idx.lookup_tiered(&toks, 60, 7, 0).is_some());
+        assert!(idx.lookup_tiered(&toks, 40, 7, 0).is_some());
     }
+    // Those hits must have MOVED recency: slot 1 is now fresher than the
+    // never-hit slot 4, so slot 4 dies first. Without this the five lookups
+    // above are decorative — the assertion below holds whether or not a hit
+    // bumps `last_access` at all.
+    assert_eq!(idx.evict_lru(), Some(4), "a hit must refresh recency");
     // Two fresh saves AFTER the last hit — strictly more recent.
     let ph80 = super::hash_token_prefix(&toks, 80, 0);
     let ph90 = super::hash_token_prefix(&toks, 90, 0);
@@ -153,6 +167,20 @@ fn lookup_tracks_live_session() {
     // No matching entries — lookup returns None but must still latch the session.
     let _ = idx.lookup(&[1, 2, 3], 3, /*session*/ 42, /*adapter*/ 0);
     assert_eq!(idx.last_lookup_session, 42);
+    // A sessionless (single-turn) lookup must not steal the latch.
+    let _ = idx.lookup(&[1, 2, 3], 3, /*session*/ 0, /*adapter*/ 0);
+    assert_eq!(idx.last_lookup_session, 42, "session 0 must not latch");
+    // The SERVING path latches too, and renews the lease by clearing the
+    // eviction counter. `lookup` is the retained reference implementation;
+    // production arms the tail lease from `lookup_tiered`, so asserting only
+    // on `lookup` leaves the latch that actually runs unprotected.
+    idx.evictions_since_lookup = 7;
+    let _ = idx.lookup_tiered(&[1, 2, 3], 3, /*session*/ 99, /*adapter*/ 0);
+    assert_eq!(idx.last_lookup_session, 99);
+    assert_eq!(
+        idx.evictions_since_lookup, 0,
+        "a live lookup renews the lease"
+    );
 }
 
 /// Telemetry: a miss records full-recompute; a hit records the residual
