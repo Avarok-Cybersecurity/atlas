@@ -358,3 +358,19 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept (the include_str! check overturned my own published claim); R-path-rule-owns-the-economics — applied in the OTHER direction this time: the rule that says a docs PR in crates/ OWES a campaign also says a non-perf-path stack does NOT owe the full one; R-adversary-earns-its-seat (fourth consecutive review to find something no checklist held).
+
+---
+
+## Run 16 — 2026-09-05T03:45Z — wave 2 scheduler lane: a wave-1 claim downgraded
+
+```text
+2026-09-05T03:45Z  return     sched lane (fable) on wave 1's three DEFERRED items: A PARTIAL, B VERIFIED-as-intended, C PARTIAL — and it argued DOWN its predecessor rather than inheriting the alarm
+2026-09-05T03:46Z  aggregate  Item A downgraded with evidence: the 8 swallowed fences CAN only fail on a poisoned CUDA context, where every later kernel launch fails loudly too — so the harm is losing the earliest, best-attributed canary, NOT silently-wrong tokens. Wave 1's "silent KV corruption" framing was too strong.
+2026-09-05T03:47Z  tool       coordinator verified the sharpest correction: prefill_a_step.rs:395's `let _ = model.synchronize` sits INSIDE `if std::env::var("ATLAS_VISION_TIMING").is_ok()` — a debug-timing block. Wave 1 listed it as a corruption site; it can only skew a timing log. REFUTED, confirmed by reading origin/main.
+2026-09-05T03:48Z  aggregate  Item C also narrowed: free_sequence_dispatch frees main KV blocks UNCONDITIONALLY before the fallible calls, so an Err leaks drafter-KV/chunk-meta, not main KV. Real, smaller.
+2026-09-05T03:49Z  aggregate  Item B: the inverted-intent pin is an ASSERTED decision (#513, documented three times, codified by tests) — the lane implemented only the safe half (warn that the value was ignored and the pin stays ENABLED) and left a precise daytime proposal, including which two test lines would have to change. Exactly the deferral discipline asked for.
+2026-09-05T03:50Z  tool       commit 345d782fe0: SSOT fence helper across all 8 sites + 2 free_sequence error logs + the pin warning. 239/239 scheduler tests, fmt/clippy clean, mutation control (DEFAULT_PIN_TOKENS 8->9 fails the guard test).
+2026-09-05T03:51Z  aggregate  honest boundary stated by the lane and accepted: CPU mocks are infallible, so the error BRANCHES are unreachable in test — what is proven is compile-correctness plus success-path preservation. Any policy stronger than log-and-continue needs GPU fault injection.
+```
+
+**CITED:** R-verify-dont-accept, applied wave-on-wave — the value of a second pass is that it can argue the first one DOWN, and this one did, twice; R-defer-what-you-cannot-prove (the pin proposal names the exact test lines a daytime engineer must change).
