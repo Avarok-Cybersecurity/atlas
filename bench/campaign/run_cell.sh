@@ -634,7 +634,7 @@ finalize() {
   if [ "$DRY_RUN" = "1" ]; then
     echo ""
     echo "dry-run: nothing launched, nothing written."
-    exit "${sig_rc:-0}"
+    exit "${sig_rc:-$rc}"
   fi
 
   "${ASSEMBLE[@]}" || note_fail validate
@@ -728,7 +728,8 @@ if [ "$ENGINE" = "atlas" ]; then
   show "env ${ATLAS_ENV[*]} bash $LAUNCHER --check-kernels $HF_ID"
   show "env ${ATLAS_ENV[*]} bash $LAUNCHER $HF_ID   # backgrounded; time_to_ready.sh owns the boot clock"
   if [ "$DRY_RUN" = "1" ]; then
-    env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --dry-run "$HF_ID" 2>&1 | sed 's/^/  | /'
+    env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --dry-run "$HF_ID" 2>&1 | sed 's/^/  | /' \
+      || exit $?
   else
     # `mkdir`, deliberately without -p: this cell must CREATE the directory it
     # hands the launcher. A directory that already exists may hold an earlier
@@ -772,7 +773,8 @@ else
   show "VLLM_CONTAINER=$CONTAINER bash $HERE/vllm_control.sh ${VC_ARGS[*]} --id-file $CONTAINER_ID_FILE --image-file $CONTAINER_IMAGE_FILE"
   if [ "$DRY_RUN" = "1" ]; then
     VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
-      bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --dry-run 2>&1 | sed 's/^/  | /'
+      bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --dry-run 2>&1 | sed 's/^/  | /' \
+      || exit $?
   else
     printf 'VLLM_IMAGE_DIGEST=%s\n' "${VLLM_IMAGE_DIGEST:-}" > "$SERVE_ENV"
     # Ownership is written down BEFORE the create, not after it: from the next

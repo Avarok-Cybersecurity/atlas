@@ -110,6 +110,10 @@ fail() { echo "ASSERT FAILED [$1]: $2" >&2; exit 1; }
 ok() { asserts=$((asserts + 1)); echo "  ok [$1] $2"; }
 have() { grep -Fq -- "$2" <<<"$1"; }
 
+# A nested refusal must remain nonzero after the dry-run finalizer.
+python3 "$HERE/dryrun_failure_test.py" || fail dryrun "renderer failure regression"
+ok dryrun "3 dry-run exit regressions passed (both engines, refusal before boot)"
+
 # ── (a0) every FP8-checkpoint Atlas entry carries FP8 KV calibration ────────
 # Oracle: spark-runtime/src/weights.rs fp8_kv_scale_count — a checkpoint with
 # no *.k_scale gets scale 1.0 and clips; the GB10 rehearsal (2026-09-05) saw
