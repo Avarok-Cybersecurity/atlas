@@ -435,3 +435,22 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept, wave-on-wave and now with instruments — a claim about a timeout is worth exactly the stopwatch behind it, and 132.95 vs 135.16 killed a fix's headline; R-report-your-own-errors (the lane's predecessor and its sibling were both corrected in public).
+
+---
+
+## Run 21 — 2026-09-05T06:45Z — /automerger invoked; the dead sieve's question answered by hand
+
+```text
+2026-09-05T06:45Z  communicate user invoked /automerger; skill loaded and executed against live state
+2026-09-05T06:46Z  aggregate  TWO agents died to API errors (sieve retry: "Connection lost mid-response"; TUI lane: "Request timed out"). The sieve died mid-sentence on a REAL question: "A removed clamp is a real risk — does every path reaching resolve_top_logprobs also pass validate_input, and is downstream bounds-safe?"
+2026-09-05T06:47Z  tool       coordinator answered it BY HAND rather than spawning a third agent that might also die:
+                              (a) path: responses.rs:154 calls chat_completions_inner; validate_input is at chat/mod.rs:227, INSIDE chat_completions_inner (fn starts 214) — the adapter DOES inherit the check
+                              (b) type: top_logprobs is Option<u8>, ceiling 255, not unbounded
+                              (c) downstream: the SSOT top-k math clamps `let nth = k.min(indexed.len().saturating_sub(1))` (spark-model traits/logprobs.rs:51) — 255 cannot panic or read OOB; worst case is an oversized alternatives list
+                              VERDICT: the clamp removal is safe on both halves. The api lane asserted this without proving it; the reviewer was right to ask.
+2026-09-05T06:49Z  tool       #876's original run (created 01:00) was found 100% queued — 9/9 jobs — while 19 newer runs completed around it: permanently starved, not slow. Pushed 12 held trace commits to supersede it; new run 33950388528 created 06:38 on head c5693e2730.
+```
+
+**AMENDED — rule 27b (removing a bound is a security change):** a fix that deletes a clamp must prove every remaining path to the value passes the replacement check (naming the *enclosing function* of that check, not the module) AND that the downstream consumer is safe without the bound, so a missed path degrades instead of crashing. Evidence and check are written into the rulebook.
+
+**CITED:** R-verify-dont-accept (the lane's "adapters inherit it" claim was true but unproven — proving it took four greps); R-stop-spawning-into-a-failing-mode (two agents died to API errors on the same task; the third attempt was made by hand).

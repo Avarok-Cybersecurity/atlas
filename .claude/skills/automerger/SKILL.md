@@ -442,6 +442,10 @@ AUTOMERGER RULEBOOK — 30 rules (distilled from 59 candidates × 3 adversarial 
     EVIDENCE: the body comparison caught two would-be-shipped defects in one session (a truncated `use` block, an unbalanced cut); silent allow-listing previously grew 1121- and 1484-line monoliths that took a dedicated wave to lift.
     CHECK: per-function body diff shows zero differences; every allow-list entry has an adjacent rationale and `gh issue view <n>` exits 0.
 
+27b. DO treat a fix that REMOVES a bound (a clamp, a truncate, a saturating cast) as a security change, not a validation change: prove (a) every path that can still reach the now-unbounded value passes the replacement check — trace each adapter to the function that actually calls it, not to the module — and (b) the downstream consumer is safe WITHOUT the bound, so a missed path degrades rather than crashes.
+    EVIDENCE: the top_logprobs fix deleted `n.min(20)` at the wire edge and moved the check to `validate_input`. Both halves held — `responses.rs:154` calls `chat_completions_inner`, which calls `validate_input` at its own line 227, and the SSOT top-k math clamps with `k.min(indexed.len().saturating_sub(1))`, so even the u8 ceiling of 255 cannot read out of bounds — but neither was proven by the lane that made the change, and a reviewer died mid-sentence raising exactly this.
+    CHECK: for each adapter, name the enclosing function of the validation call and show the adapter reaches it; and quote the downstream clamp expression.
+
 ═══ ETIQUETTE ═══
 
 28. DO close someone's PR only via the atomic `gh pr close <n> --comment '<full reasoning>'` — so the explanation can never lag the close.
