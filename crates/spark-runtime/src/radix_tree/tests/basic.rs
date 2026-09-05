@@ -294,10 +294,27 @@ fn test_sub_block_tokens_ignored() {
     let tree = RadixTree::new();
     // Only 10 tokens — less than one block of 16, not inserted
     let tokens: Vec<u32> = (0..10).collect();
-    tree.insert(&tokens, &[42], &[], 16, 0, 0);
+    let acquired = tree.insert(&tokens, &[42], &[], 16, 0, 0);
 
     // No full blocks → nothing cached
     assert_eq!(tree.stats(), (0, 0));
+
+    // …and therefore no reference is owed on block 42. The node count cannot
+    // see the acquisition report, and a reference the cache claims but never
+    // stores is never handed back by `evict`: the block leaks out of the pool
+    // for the life of the run. Nothing else in the radix_tree suite observes
+    // this — verified by reporting the partial block on the root-guard arm of
+    // RadixTreeInner::insert, which left all 86 checks green.
+    assert!(
+        acquired.blocks.is_empty(),
+        "no ref is owed on a block the cache did not store; got {acquired:?}"
+    );
+    assert!(acquired.disk_block_ids.is_empty());
+    assert!(acquired.released_blocks.is_empty());
+    assert!(
+        tree.lookup(&tokens, 16, 0, 0).is_empty(),
+        "and nothing is findable"
+    );
 }
 
 #[test]
