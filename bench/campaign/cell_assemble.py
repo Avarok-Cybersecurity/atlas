@@ -45,6 +45,7 @@ import time
 from cell_gate_checks import (HARD_STAGES, SPREAD_MAX_PCT, VACUITY_FLOOR,
                               gate_blockers, pair_check)
 from model_launch_evidence import launched_revision
+from process_model_evidence import launched_process_revision
 
 def read_json(path):
     if not path:
@@ -214,6 +215,8 @@ def main():
     ap.add_argument("--model-launch-json", help="selected actual Docker inspect fields captured before teardown")
     ap.add_argument("--model-launch-container-id", help="container ID returned by this run's create")
     ap.add_argument("--model-launch-label", help="this run's exact ownership KEY=VALUE label")
+    ap.add_argument("--model-launch-process-json", help="actual Linux /proc snapshot captured before teardown")
+    ap.add_argument("--model-launch-process-owner-json", help="exclusive process launch ownership record")
     ap.add_argument("--nvidia-smi-q")
     ap.add_argument("--git-sha", help="the ENGINE's own revision, when something "
                                       "verified it (an image's revision label, a "
@@ -320,9 +323,16 @@ def main():
     # evidence here -- never from "a stage exited 0" or "a file was parseable".
     stage = args.failing_stage or None
     try:
-        model_revision, model_note = launched_revision(
-            args.model_launch_json, engine=args.engine, hf_id=entry["hf_id"],
-            container_id=args.model_launch_container_id, run_label=args.model_launch_label, boot=boot)
+        if args.model_launch_process_json or args.model_launch_process_owner_json:
+            if args.model_launch_json or args.model_launch_container_id or args.model_launch_label:
+                raise ValueError("Docker and process model launch evidence are mutually exclusive")
+            model_revision, model_note = launched_process_revision(
+                args.model_launch_process_json, args.model_launch_process_owner_json,
+                engine=args.engine, hf_id=entry["hf_id"], boot=boot)
+        else:
+            model_revision, model_note = launched_revision(
+                args.model_launch_json, engine=args.engine, hf_id=entry["hf_id"],
+                container_id=args.model_launch_container_id, run_label=args.model_launch_label, boot=boot)
     except ValueError as error:
         model_revision = None
         model_note = f"invalid model launch evidence: {error}"

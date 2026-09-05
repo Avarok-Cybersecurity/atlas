@@ -36,15 +36,16 @@ def launch(engine="vllm"):
 
 
 class AssemblyTest(unittest.TestCase):
-    def assemble(self, evidence=None, *, engine="vllm", boot=None, coh=None):
+    def assemble(self, evidence=None, *, engine="vllm", boot=None, coh=None,
+                 process=None, owner=None, boot_engine=None, boot_model=None):
         with tempfile.TemporaryDirectory() as directory:
             folder = pathlib.Path(directory)
             paired = fixture("stub_pair_vllm_cell.json")
             paired["engine"] = "atlas" if engine == "vllm" else "vllm"
             paired["cell_id"] = paired["engine"] + paired["cell_id"][4:]
             boot = copy.deepcopy(boot if boot is not None else fixture("stub_boot.json"))
-            boot["engine"] = engine
-            boot["model"] = HF_ID
+            boot["engine"] = engine if boot_engine is None else boot_engine
+            boot["model"] = HF_ID if boot_model is None else boot_model
             coh = coh if coh is not None else fixture("stub_coherency.json")
             for name, data in (("pair", paired), ("boot", boot), ("coh", coh)):
                 (folder / (name + ".json")).write_text(json.dumps(data))
@@ -67,6 +68,11 @@ class AssemblyTest(unittest.TestCase):
                 args += ["--model-launch-json", str(path),
                          "--model-launch-container-id", CONTAINER_ID,
                          "--model-launch-label", RUN_LABEL]
+            for name, data in (("process", process), ("process-owner", owner)):
+                if data is not None:
+                    path = folder / (name + ".json")
+                    path.write_text(json.dumps(data))
+                    args += ["--model-launch-" + name + "-json", str(path)]
             result = subprocess.run(args, text=True, capture_output=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             validation = subprocess.run(["python3", str(HERE / "validate_artifact.py"), str(output)],
@@ -145,7 +151,9 @@ class AssemblyTest(unittest.TestCase):
 
 
 def selftest():
+    from process_model_evidence_test import ProcessAssemblyTest
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(AssemblyTest)
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ProcessAssemblyTest))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if result.wasSuccessful():
         print(f"cell_assemble selftest: {result.testsRun}/{result.testsRun} test methods passed")
