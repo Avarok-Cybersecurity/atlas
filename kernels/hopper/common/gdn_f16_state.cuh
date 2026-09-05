@@ -1,0 +1,1 @@
+../../gb10/common/gdn_f16_state.cuh
