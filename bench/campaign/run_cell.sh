@@ -132,7 +132,7 @@ if [ "$DRY_RUN" != "1" ] && [ "$YES" != "1" ]; then
 fi
 
 for f in "$WORKLOADS" "$LADDER" "$TTR" "$COHERENCY" "$ATLAS_RECIPES" "$VLLM_RECIPES" \
-         "$HERE/thinking_policy.py" "$HERE/thinking_policy.json"; do
+         "$HERE/thinking_policy.py" "$HERE/campaign_policy.json"; do
   [ -f "$f" ] || die "missing required tool or data file: $f"
 done
 

@@ -7,7 +7,7 @@ import json
 import pathlib
 import sys
 
-POLICY_PATH = pathlib.Path(__file__).with_suffix(".json")
+POLICY_PATH = pathlib.Path(__file__).with_name("campaign_policy.json")
 E_THINK_POLICY = 9
 
 

@@ -106,7 +106,7 @@ intended revisions and do not prove which bytes loaded. In particular, support
 for the draft `revision` field still needs verification in the selected image.
 The assembler does not copy these candidate pins into `artifact.model.revision`.
 
-`thinking_policy.json` records request-mode eligibility for each recipe model.
+`campaign_policy.json` records request-mode eligibility for each recipe model.
 GLM-5.3 and GLM-5.3-Flash require `--think on`; Qwen3-Next Instruct requires
 `--think off`. The driver refuses an excluded mode before creating resources,
 and the Atlas renderer enforces the same policy. A missing recipe still exits

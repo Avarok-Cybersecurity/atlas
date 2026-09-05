@@ -75,7 +75,7 @@ class ThinkingPolicyTest(unittest.TestCase):
                 self.assertIn("no rendered profile", result.stdout + result.stderr)
 
     def test_e_catalog_covers_exact_recipe_models(self):
-        policy = json.loads((HERE / "thinking_policy.json").read_text())
+        policy = json.loads((HERE / "campaign_policy.json").read_text())
         models = {e["model_key"] for name in ("atlas_recipes.json", "vllm_recipes.json")
                   for e in json.loads((HERE / name).read_text())["entries"]}
         self.assertEqual(set(policy["models"]), models)
