@@ -159,5 +159,3 @@ def pair_check(paired, args, timing):
     if undecidable:
         return None, reasons
     return not reasons, reasons
-
-

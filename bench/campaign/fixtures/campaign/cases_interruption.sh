@@ -282,4 +282,3 @@ python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
   || fail n "the interrupted atlas artifact must validate:
 $(python3 "$HERE/validate_artifact.py" "$art")"
 ok n "the interrupted atlas cell still writes an artifact that validates"
-

@@ -230,4 +230,3 @@ DOCKER_FAKE_CID="$CID" DOCKER_RUN_RC=125 PATH="$tmp/bin:$PATH" \
 names2="$(grep '^run ' "$DOCKER_CALLS" | grep -o -- '--name [^ ]*' | sort -u)"
 [ "$names" != "$names2" ] || fail j "two invocations must not share a container name: $names"
 ok j "each invocation names its container uniquely ($names vs $names2)"
-

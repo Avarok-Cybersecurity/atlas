@@ -175,4 +175,3 @@ teardown_owned() {
     fi
   done
 }
-

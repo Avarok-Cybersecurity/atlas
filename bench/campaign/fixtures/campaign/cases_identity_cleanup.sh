@@ -270,4 +270,3 @@ assert doc["verdict"] == "NO-GO", doc["verdict"]' "$art" \
   || fail q "the notes must carry the leaked container forward:
 $(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"notes\"])" "$art")"
 ok q "the artifact validates as NO-GO and its notes name the container that may be leaked"
-

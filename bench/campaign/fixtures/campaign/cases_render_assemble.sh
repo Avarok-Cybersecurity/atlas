@@ -356,4 +356,3 @@ python3 "$HERE/validate_artifact.py" "$tmp/specoff.json" >/dev/null \
   || fail k "a spec-off cell on a spec-capable recipe must validate:
 $(python3 "$HERE/validate_artifact.py" "$tmp/specoff.json")"
 ok k "qwen3.6-35b-a3b-fp8 on h200 with --spec off records method=none and validates"
-
