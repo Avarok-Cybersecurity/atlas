@@ -133,3 +133,134 @@ on "certify", proven by sabotage, not asserted in a comment).
 **CITED:** R-capture-rc (violated, caught in-wave by its own usage error); R-gh-edit-lies (twice: --base and --add-label both silently no-oped; REST + read-back both times); R-assert-anchors (refused edits against the wrong checked-out branch).
 
 **Sieve consequence:** #742 and #844 are excluded from certification until their named tests exist. The stack layers containing them (#883, #879) stay in the chain for review, but the campaign will not be requested until either (a) the tests are written and the sieve re-run clears them, or (b) the stack is recomposed without them.
+
+---
+
+## Run 3 — 2026-09-04 — cures verified, our own leftovers eaten
+
+```text
+2026-09-04T22:20Z  return     cure agent: 3 commits, each with an OBSERVED negative control; found that `cargo test -p spark-server --lib` matches 0 scheduler tests (they live in the bin target) — the lib filter silently runs nothing
+2026-09-04T22:22Z  tool       cures re-run first-hand: 5/5 pass in --bins with 2352 filtered (the suite really ran); pushed; new pin 82552fe34d; stack #885 tracked the force-push, chain intact
+2026-09-04T22:24Z  spawn      re-sieve of #742/#844 cures on SONNET (tier moved by user directive)
+2026-09-04T22:26Z  tool       NO AUTOMERGE veto label created + doctrine (absolute, action-time, includes drafts, DO NOT MERGE — YET, and title-carried DO NOT MERGE)
+2026-09-04T22:30Z  aggregate  scanner surfaced OUR OWN forgot-to-delete pattern: #870/#874 are the pre-consolidation intermediate stacks, still open
+2026-09-04T22:32Z  tool       #870 proven contained (merge-tree returns the stack's own tree); #874 proven contained in the PRE-CURE tree (divergence = the cure commits only); both closed with evidence + recourse offer
+2026-09-04T22:33Z  tool       #621 proven byte-identical-contained in QUEUED #868 — close staged for after #868 actually merges, never before
+```
+
+**CITED:** R-named-artifact (merge-tree hashes quoted in both closes); R-eat-your-own-dogfood — the forgot-to-delete pattern the skill was born from was recreated by our own consolidation, caught by the scanner the skill mandates; R-test-really-ran (the --lib filter that matches nothing).
+
+---
+
+## Run 3b — 2026-09-04 — sieve gate closed
+
+```text
+2026-09-04T22:35Z  return     re-sieve (sonnet): BOTH CURES CLEARED — and it verified rather than accepted: mutation-tested #742's cure (deleting the disjunct fails exactly the in-think test), confirmed the slot-sort extraction verbatim against the call site, reproduced the oracle compile check, confirmed base-not-twin grading
+2026-09-04T22:37Z  tool       labels swapped to sieve:cleared on #742/#844 (REST DELETE + POST, read back); cleared-comments carry the residuals honestly
+2026-09-04T22:38Z  aggregate  residuals promoted to campaign-prep conditions on #877: the fp8 oracle's GPU verdict is UNOBSERVED (mandatory run at prep); grammar-armed thinking turns take a different disjunct and are uncovered
+2026-09-04T22:39Z  stop       stop condition 1 re-armed: all 8 constituents sieve-cleared, stack pinned 82552fe34d, offline-green — the ONLY remaining gate is explicit human approval for the campaign
+```
+
+**CITED:** R-verify-dont-accept (the re-sieve mutation-tested the cure instead of reading it); R-residuals-are-conditions (unobserved GPU verdict became a named prep step, not a footnote).
+
+---
+
+## Run 4 — 2026-09-04 — stack pipeline goes two-wide
+
+```text
+2026-09-04T22:50Z  aggregate  #693 proven hunk-identical to stack commit d8778c441d — the scanner tests against main and cannot see stack carriage; commented, labelled, ninth constituent of #885's accounting
+2026-09-04T22:52Z  spawn      sieve (sonnet) on #705/#781 for the next stack
+2026-09-04T22:58Z  return     both INCLUDE with live-tree verification: #705's unload path drop-safe (registry.rs:143 sole caller), #781's skip reproduces documented zero-contribution EP semantics (forward_prefill_routed.rs:135-143 + loaders_moe.rs:62-65), not an error swallow
+2026-09-04T23:00Z  tool       stack/perf-plumbing composed OFFLINE in .wt-perf (2 PRs, authorship preserved, clean cherry-picks); cargo check EXIT=0; atlas-core 128/128; spark-runtime 277/277; LoC cap ok — NOT pushed (CI conservation during runner starvation)
+2026-09-04T23:01Z  aggregate  pipeline now two-wide: #885 fully gated awaiting approval; perf-plumbing composed awaiting adversary + runner recovery
+```
+
+**CITED:** R-scanner-blind-to-stacks (a carried PR reads "applies" vs main — check candidate PRs against pending stack trees, not only main); R-conserve-starved-CI (compose and gate offline, publish when the pool can absorb it).
+
+---
+
+## Run 4b — 2026-09-04 — perf-plumbing published
+
+```text
+2026-09-04T23:15Z  return     Adversary (fable): PUBLISH, 4 conditions — patch-id-verified the composition equals the sieved diffs; caught that the campaign's single-node config is exactly the config #781 has never executed (its evidence is two-node EP=2) → blocking single-node MoE smoke; EP=2 claim stays uncertified by the campaign
+2026-09-04T23:17Z  tool       #891 opened (stack/perf-plumbing, 2 PRs, disjoint phase signatures as the attribution map); constituents #705/#781 given self-marking table comments with the freeze request
+2026-09-04T23:18Z  stop       stop condition 1 re-armed for stack 2: published, campaign owed, awaiting approval — now TWO stacks at the approval door (#877: 9 constituents; #891: 2)
+```
+
+**CITED:** R-adversary-earns-its-seat (third consecutive review that found a condition no checklist held: the config-coverage gap between two-node evidence and a single-node campaign).
+
+---
+
+## Run 5 — 2026-09-04/05 — the docs pair rides the owed campaign
+
+```text
+2026-09-04T23:30Z  return     sieve (sonnet) on #667/#669: both INCLUDE — and it caught the premise error: #669 is bench-harness CODE in crates/, #667 is rustdoc in crates/; a "docs stack" would owe a full campaign by path rule
+2026-09-04T23:32Z  aggregate  economics decision: fold both into #891, whose campaign is already owed — marginal certification cost zero; a standalone pair would have spent ~5 GPU-h on comments and one bench cell
+2026-09-04T23:34Z  tool       cherry-picked (authorship preserved), offline gates re-green (cargo check EXIT=0, atlas-plugin 900/900), pushed; #891 pin now 85b190322f, 4 constituents
+2026-09-04T23:35Z  communicate delta re-clearance requested from the SAME adversary agent (resumed with context) rather than a fresh review — the four answers only need the delta judged
+2026-09-04T23:36Z  tool       #833 and #646 proven carried by #875 (merge-tree returns its own tree); commented, labelled, close-on-landing staged
+```
+
+**CITED:** R-path-rule-owns-the-economics (a "docs" PR in crates/ owes a campaign no matter what the lines contain — group by owed-campaign, not by content type); R-resume-dont-respawn (the adversary kept its context; a delta needs a delta review).
+
+---
+
+## Run 5b — 2026-09-05 — delta re-clearance
+
+```text
+2026-09-05T00:05Z  return     Adversary delta review: RE-CLEARED at 85b190322f — verified both folds by patch-id, not narrative; corrected MY count (#667 = 4 commits, not 5); flagged that #669's new cell may gate in its own PR only because it is a content-independent binary contract; surfaced the 13/14 pre-existing mixed-media red as a provenance note so a red video leg is never misattributed to this stack
+2026-09-05T00:07Z  tool       record corrected on #667 and #891 — the wrong count was mine, said so plainly
+```
+
+**CITED:** R-report-your-own-errors (the correction names whose mistake it was); R-provenance-beats-blame (a pre-existing red recorded before it can be misread as a regression).
+
+---
+
+## Run 6 — 2026-09-05 — #866 rides, composition frozen
+
+```text
+2026-09-05T00:20Z  return     sieve (sonnet) #866: INCLUDE — both defects confirmed LIVE on main (debug_assert! forward.rs:249; unconditional rollback rollback.rs:411), fixes fail-fast, tests pin the real outage numbers, zero overlap with either stack
+2026-09-05T00:22Z  aggregate  the phantom "#799/#842 PRs" from compaction resolved: they were ISSUE numbers, carried by PR #866's commit subjects
+2026-09-05T00:24Z  tool       folded into #891 (pin 338a6babd7), offline gates re-green (rollback 25/25, vision 1/1); labelled + commented; SECOND delta re-clearance requested from the same adversary; composition DECLARED CLOSED — unbounded folding is scope creep with a pin attached
+```
+
+**CITED:** R-verify-before-quote (the phantom numbers finally traced to their artifact); R-close-the-composition (a stack that keeps growing never reaches the approval door).
+
+---
+
+## Run 6b — 2026-09-05 — #891 fully gated
+
+```text
+2026-09-05T00:35Z  return     Adversary second delta: RE-CLEARED at 338a6babd7 — disjointness proven by file-set intersection; found the vision tests STRONGER than my summary (4 tests incl. the exact 1024-boundary case); caught that my "1/1" run used the dev profile while the commit's claim requires RELEASE
+2026-09-05T00:36Z  tool       discharged in-wave: both vision-bound tests re-run under --release, 2/2 pass — the ensure! is proven in the profile where a debug_assert! would have vanished
+2026-09-05T00:37Z  stop       stop condition 1: BOTH stacks fully gated at the approval door — #877 (9 constituents) and #891 (6 constituents); 15 backlog PRs, two campaigns, zero started without approval
+```
+
+**CITED:** R-profile-matters (a release-only guarantee tested in dev proves nothing — the adversary's nit was the whole point of the original fix); R-composition-closure (clearance is pinned to a closed set).
+
+---
+
+## Run 7 — 2026-09-05 — the stall diagnosed to its class, and a retraction
+
+```text
+2026-09-05T00:50Z  aggregate  RETRACTION: the 23:00 "pool recovering" call was WRONG — queue length fell by supersession churn, not throughput; the class split proves it: every completion since 22:00 is a SELF-HOSTED lane (bot/CLA on avarok-cmd), every hosted run is queued
+2026-09-05T00:52Z  tool       githubstatus.com: Actions operational, no incident — the cause is org-side
+2026-09-05T00:53Z  aggregate  verdict: org Actions spending-limit exhaustion is the strongest remaining hypothesis (signature: hosted queues indefinitely, no errors, self-hosted unaffected, no incident; morning intervention already ruled out concurrency caps)
+2026-09-05T00:54Z  communicate PushNotification sent — only the org owner can check Settings→Billing→Actions; every landing is blocked on it
+```
+
+**CITED:** R-queue-length-lies (measure per-class executions, not queue depth — the same rule the Monitor table encodes, violated by me at 23:00 and caught by the class split).
+
+---
+
+## Run 8 — 2026-09-05 — the detached-HEAD incident, and CI's selftest failure
+
+```text
+2026-09-05T02:10Z  aggregate  #876's "cargo deny" red = the certification SELFTEST failing 3 rows ON CI while 135/135 locally — my classify() harness greps stdout, but inside Actions GITHUB_OUTPUT points at the step-output file and emit's lines vanish from the pipe
+2026-09-05T02:20Z  aggregate  INCIDENT while fixing it: stackA HEAD was silently DETACHED — runs 3-7 trace commits sat on the stack's tree, not the branch; every push since pushed a ref missing them; a `git show HEAD:` against the wrong tree also manufactured a phantom "lost hunk" (the branch's emit was 4-arg all along)
+2026-09-05T02:25Z  tool       repair: orphan line held ONLY docs/AUTOMERGER.md (117 lines) — rescued and appended to the branch's trace; wrong-tree edit discarded; back on feat/automerger-skill
+2026-09-05T02:30Z  tool       real fix: classify() pins GITHUB_OUTPUT=/dev/stdout; wildcard-branch coverage row added; suite 136/136 bare AND under simulated Actions env; un-pinning under that env reproduces CI's exact 3 failures
+2026-09-05T02:32Z  aggregate  AMENDED: assert-branch-before-commit written into the skill's non-negotiables; trust no HEAD-relative read for comparisons
+```
+
+**CITED:** R-reproduce-the-runner (the failure was invisible locally until the Actions env was simulated — 2>/dev/null in a harness hides exactly the evidence CI dies on); R-assert-anchors (the wrong-tree edit was refused by anchors ONCE and slipped through a sed the second time — sed has no anchors, prefer asserted replaces).

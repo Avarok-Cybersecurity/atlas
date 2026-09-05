@@ -27,6 +27,14 @@ mistake available.
 
 ## Non-negotiables
 
+**Assert the branch before every commit.** In a session juggling worktrees,
+rebases and detached-HEAD compositions, `git commit` lands wherever HEAD
+points — this run lost seven trace commits to a silently detached HEAD, and
+"committed locally, push held" pushed a REF that no longer contained them.
+Before any wave commit: `[ "$(git branch --show-current)" = "<expected>" ]` or
+stop. Corollary: never trust `git show HEAD:` for a comparison — name the
+branch explicitly; a wrong-tree read here manufactured a phantom "lost hunk".
+
 **The `NO AUTOMERGE` label is a human veto and absolute.** A PR carrying it —
 or marked draft — is untouchable: never stacked, never sieved-and-commented,
 never stamped, sealed, closed, or merged, no matter what any scan or sieve

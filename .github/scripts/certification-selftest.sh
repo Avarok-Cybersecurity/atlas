@@ -350,13 +350,21 @@ if [ -s "$TMP/rbsum.sh" ]; then
     env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=true bash "$TMP/rbsum.sh"
 
   # The classifier that decides builds_binaries, driven through its stdin mode.
-  classify() { printf '%s\n' "$@" | GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
+  # GITHUB_OUTPUT must be pinned: inside Actions it points at the step-output
+  # file and emit's lines silently vanish from the pipe -- these rows passed
+  # locally (var unset -> /dev/stdout) and failed on the runner exactly so.
+  classify() { printf '%s\n' "$@" | env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
   want_rc_msg 0 "builds_binaries=false" "classify: a docs-only diff cannot change a binary" \
     classify docs/AUTOMERGER.md README.md
   want_rc_msg 0 "builds_binaries=true" "control: touching release-build.yml builds, .github or not" \
     classify docs/AUTOMERGER.md .github/workflows/release-build.yml
   want_rc_msg 0 "builds_binaries=true" "control: one crates/ file makes the whole diff build" \
     classify docs/AUTOMERGER.md crates/spark-model/src/lib.rs
+  # The wildcard (push/schedule/workflow_call) branch must emit ALL FOUR
+  # outputs: under `set -u` a three-argument emit would die on unbound $4,
+  # and no row exercised that branch until a wrong-tree read made us LOOK.
+  wildcard_classify() { env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=schedule bash .github/scripts/classify-diff.sh 2>/dev/null | grep "^builds_binaries="; }
+  want_rc_msg 0 "builds_binaries=true" "classify: a schedule event never fast-paths and emits all four outputs" wildcard_classify
 
 # ── /stamp vs an in-flight CI run ────────────────────────────────────────────
 # Stamping a freshly-opened PR always races its first CI run: the rerun API
