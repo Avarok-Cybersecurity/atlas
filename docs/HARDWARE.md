@@ -411,6 +411,26 @@ To add a new scheme (e.g., MX4, INT4):
 
 ## Testing a new target
 
+### PTX emission is not assembly validation
+
+`crates/atlas-kernels/build.rs` runs `nvcc --ptx` only (`NvidiaTarget::compile`
+in `build_target.rs`); nothing assembles the PTX until the runtime hands it to
+`cuModuleLoadData`. A green `cargo build` therefore proves that every kernel
+*emits* PTX, not that every entry *assembles* for the target. Static
+`__shared__` allocations above 48 KiB are the known case: `nvcc --ptx` accepts
+them and `ptxas` rejects the entry (`uses too much shared data`). The
+`MAX_DYNAMIC_SHARED_SIZE_BYTES` opt-in does not rescue a fixed-size array.
+
+`scripts/hopper_ptx_gate.sh` closes that gap for a hardware set by running
+`ptxas` on every emitted module. On 2026-09-05 it found 22 of 173 gb10
+`qwen3.6-35b-a3b` modules (42 entry functions, the BR=64 prefill variants and
+their BR=32 siblings) rejected for `sm_121f` on CUDA 13.0.88. That is a
+pre-existing gb10 finding, independent of the Hopper and B200 targets; the
+inventory, receipts and runtime trace live with the campaign notes in
+Avarok-Cybersecurity/atlas#899.
+
+### Device validation
+
 Once compiled:
 
 ```bash
