@@ -127,6 +127,11 @@ done
 python3 "$HERE/cell_assemble.py" --selftest || fail recovery "assembler selftest"
 ok recovery "recipe and launch identity regressions passed"
 
+for test in process_mode process_launch process_runner; do
+  python3 "$HERE/${test}_test.py" || fail process "$test regression"
+  ok process "$test CPU regression suite passed (Linux-only cases skip elsewhere)"
+done
+
 # shellcheck source=bench/campaign/fixtures/campaign/cases_render_assemble.sh
 source "$HERE/fixtures/campaign/cases_render_assemble.sh"
 # shellcheck source=bench/campaign/fixtures/campaign/cases_docker_setup.sh

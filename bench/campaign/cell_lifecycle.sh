@@ -79,6 +79,11 @@ teardown_owned() {
   done
   CHILD_PIDS=""
 
+  if [ "$PROCESS_MODE" = "1" ]; then
+    stop_process
+    return 0
+  fi
+
   if [ "$ENGINE" = "atlas" ]; then
     show "env ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR bash $LAUNCHER --stop"
     if [ "$DRY_RUN" = "1" ]; then return 0; fi

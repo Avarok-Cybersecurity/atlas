@@ -17,6 +17,8 @@ that a cell is reproducible from its artifact alone.
 | `vllm_control.sh` | Renders (or runs) the captured vLLM recipe with declared revision pins for a `(model, SKU)`. `--selftest`, `--list`. |
 | `vllm_recipes.json` | The 29 captured vLLM profiles with an explicit revision-pin adaptation. Original evidence hashes retain their original meaning. Data only. |
 | `vllm_render.py` | JSON arithmetic behind `vllm_control.sh` (spec on/off, flag audit, docker argv). |
+| `process_recipe.py` | Adapts the existing recipe argv to an explicit pinned snapshot and a prepared local executable. |
+| `process_launch.py` | Starts, captures and stops only a Linux process whose PID/start identity, group and run marker match its ownership record. |
 | `atlas_recipes.json` | The Atlas serve side: 17 entries from PRD §6 plus the repo's own recipe fixtures. Data only. |
 | `atlas_render.py` | Renders `EXTRA_ARGS` for `scripts/start-node-ep.sh`. `--selftest`. |
 | `cell_assemble.py` | Turns the stage outputs into the §10 artifact. Every field is copied or null. |
@@ -49,11 +51,50 @@ Drop `--yes` and add `--dry-run` to see every command without launching
 anything. **Nothing starts on a box without `--yes`** — with neither flag the
 script exits 2.
 
+## Containers supplied by a rental provider
+
+When the instance is already a container, use `--process` with the absolute
+Hugging Face snapshot path and prepared executables. For example:
+
+```bash
+SPARK_BIN=/workspace/atlas-rental/bin/spark \
+VLLM_BIN=/workspace/atlas-rental/vllm/bin/vllm \
+HF_HUB_CACHE=/workspace/atlas-rental/hf/hub \
+bash bench/campaign/run_cell.sh --engine vllm \
+  --model qwen3.6-35b-a3b-fp8 --sku h100 --workload lat --concurrency 1 \
+  --spec off --think off --out out/qwen.vllm.lat.c1 --process \
+  --model-path /workspace/atlas-rental/hf/hub/models--Qwen--Qwen3.6-35B-A3B-FP8/snapshots/95a723d08a9490559dae23d0cff1d9466213d989 \
+  --dry-run
+```
+
+Replace `--dry-run` with `--yes` after the environment and checkpoint are ready.
+Select `--engine atlas` for the Atlas leg and use a separate output directory.
+Process mode currently supports one Atlas rank or one vLLM node. Multi-rank
+Atlas and multi-node vLLM recipes refuse with exit 6. Recipe flags still come
+from the existing renderers. The adapter adds a stable served-model alias and
+explicit client port; it refuses a conflicting recipe alias or port.
+
+Both audit and serve use the same allowlisted environment, offline model access
+and `SPT_NOENV=1`, which preserves Linux ownership markers when vLLM workers
+change their process titles. No download credential is inherited by the server.
+Actual `/proc` argv, executable hash and launch identity are captured before
+teardown; a successful matching boot is required to prove the model revision.
+A snapshot path proves the intended revision, not a hash of its loaded bytes;
+retain independent download verification evidence.
+
+Process mode does not require a Docker image digest. Its vLLM engine identity
+currently remains null because a Python interpreter hash cannot identify the
+installed vLLM build. Such cells remain uncertifiable until immutable engine
+identity is supplied through verified evidence. Do not substitute the outer
+container digest after changing its Python environment. Atlas records its
+actual executable hash. The existing Docker path is unchanged.
+
 ## Environment
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `VLLM_IMAGE_DIGEST` | vLLM legs | `sha256:<64 hex>`. **Required for a real run.** A vLLM cell's engine identity IS its image digest; a tag can be re-pointed between the two legs of an A/B. |
+| `VLLM_IMAGE_DIGEST` | Docker vLLM legs | `sha256:<64 hex>`. **Required for a real Docker run.** A tag can be re-pointed between the two legs of an A/B. |
+| `VLLM_BIN` | process vLLM legs | Executable in the prepared vLLM environment (default `vllm`). |
 | `VLLM_IMAGE` | vLLM legs | Override the recipe's image tag. |
 | `VLLM_PORT` / `ATLAS_PORT` | both | Client port (default 8000 / 8888). |
 | `SPARK_BIN` | Atlas legs | Path to the `spark` binary (default `./target/release/spark`). |

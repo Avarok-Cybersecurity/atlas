@@ -23,10 +23,21 @@ MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 
 SPARK_SOURCE = r'''// SPDX-License-Identifier: AGPL-3.0-only
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 int main(int argc, char **argv) {
-    for (int i = 1; i < argc; ++i)
-        if (!strcmp(argv[i], "--check-kernels")) return 0;
+    for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--check-kernels")) {
+            const char *offline = getenv("HF_HUB_OFFLINE");
+            const char *level = getenv("RUST_LOG");
+            if (!offline || strcmp(offline, "1") || !level || strcmp(level, "info")) {
+                fputs("audit environment differs from declared serve environment\n", stderr);
+                return 19;
+            }
+            return 0;
+        }
+    }
     for (;;) pause();
 }
 '''

@@ -5,6 +5,10 @@
 
 capture_model_launch() {
   [ "$DRY_RUN" = "1" ] && return 0
+  if [ "$PROCESS_MODE" = "1" ]; then
+    capture_process_launch
+    return 0
+  fi
   local cid="" label="" line=""
   if [ "$ENGINE" = "atlas" ]; then
     # Only a completed create records a container ID. Intent recovery remains
@@ -71,6 +75,20 @@ capture_engine_identity() {
   [ "$DRY_RUN" = "1" ] && return 0
 
   local ref="" digest="" rev=""
+  if [ "$PROCESS_MODE" = "1" ] && [ "$ENGINE" = "atlas" ]; then
+    ENGINE_BINARY="${SPARK_BIN:-./target/release/spark}"
+    [ -f "$ENGINE_BINARY" ] || ENGINE_BINARY=""
+    return 0
+  fi
+  if [ "$PROCESS_MODE" = "1" ] && [ "$ENGINE" = "vllm" ]; then
+    # A Python interpreter or console-script hash is not the vLLM build.
+    # Outer image attribution needs its own verified provider receipt; leave
+    # it null here rather than certifying an unknown or modified environment.
+    # The harness Python may differ from the server's virtual environment.
+    ENGINE_VLLM_VERSION=""
+    add_note "vLLM process environment has no verified immutable engine build identity; image_digest remains null"
+    return 0
+  fi
   if [ "$ENGINE" = "atlas" ] && [ -z "${IMAGE:-}" ]; then
     # The local binary. `spark --version` prints ATLAS_VERSION, which is
     # env!("CARGO_PKG_VERSION") and carries no revision
@@ -157,6 +175,10 @@ build_assemble() {
   if [ -n "$MODEL_LAUNCH_JSON" ]; then
     ASSEMBLE+=( --model-launch-json "$MODEL_LAUNCH_JSON"
       --model-launch-container-id "$MODEL_LAUNCH_CONTAINER_ID" --model-launch-label "$MODEL_LAUNCH_LABEL" )
+  fi
+  if [ -n "$MODEL_LAUNCH_PROCESS_JSON" ]; then
+    ASSEMBLE+=( --model-launch-process-json "$MODEL_LAUNCH_PROCESS_JSON"
+      --model-launch-process-owner-json "$MODEL_LAUNCH_PROCESS_OWNER_JSON" )
   fi
   [ -n "$HARNESS_GIT_SHA" ] && ASSEMBLE+=( --harness-git-sha "$HARNESS_GIT_SHA" )
   [ -n "$ENGINE_GIT_SHA" ] && ASSEMBLE+=( --git-sha "$ENGINE_GIT_SHA" )

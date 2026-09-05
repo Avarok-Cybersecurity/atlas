@@ -352,6 +352,11 @@ def cmd_render(doc, args):
             if rank == 0:
                 with open(stage / "head.argv", "wb") as fh:
                     fh.write(b"\0".join(a.encode() for a in argv) + b"\0")
+                # A provider may already run this environment in a container.
+                # Export the same validated server argv for direct execution;
+                # this is not a second recipe or a Docker inspection fixture.
+                (stage / "head.serve.argv").write_bytes(
+                    b"\0".join(a.encode() for a in vargs) + b"\0")
     if stage and entry["nnodes"] > 1:
         (stage / "multinode").write_text(f"{entry['nnodes']}\n")
     if stage:
