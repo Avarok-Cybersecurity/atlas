@@ -163,13 +163,22 @@ fn test_evict_lru_order() {
     tree.insert(&tokens_b, &[20], &[], 16, 0, 0);
     tree.release(&tokens_b, 16, 0);
 
-    // Evict 1 — should be A (older LRU)
+    // A cache HIT on A makes it the most recently USED. Ordering the victims by
+    // insertion order alone would still pick A here — this is the partition
+    // that separates real LRU from FIFO, and the only one that observes
+    // `inc_refs` refreshing `last_access` on a hit.
+    let hit = tree.lookup(&tokens_a, 16, 0, 0);
+    assert_eq!(hit.matched_blocks, vec![10]);
+    tree.release(&tokens_a, 16, 0);
+
+    // Evict 1 — must be B, the block that was NOT re-used.
+    let evicted = tree.evict(1);
+    assert_eq!(evicted.physical, vec![20], "the least recently USED block");
+
+    // Evict 1 more — now A is the only entry left.
     let evicted = tree.evict(1);
     assert_eq!(evicted.physical, vec![10]);
-
-    // Evict 1 more — should be B
-    let evicted = tree.evict(1);
-    assert_eq!(evicted.physical, vec![20]);
+    assert_eq!(tree.stats(), (0, 0), "and nothing else survived");
 }
 
 #[test]
