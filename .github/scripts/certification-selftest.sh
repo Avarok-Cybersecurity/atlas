@@ -1054,6 +1054,103 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The unsigned-record guard must not pass on a diff it could not read
+# ---------------------------------------------------------------------------
+# "One PR, one commit, one signer" is the check that stops a PR adding an
+# UNSIGNED benchmark record -- the ci.yml comment beside it records the
+# experiment: an unsigned record dated 1700000000 claiming 999 tok/s passes
+# the Rust gate, so this shell step is the thing standing in its way.
+#
+# Its entire input was `mapfile -t added < <(git diff ... | grep ...)`, and a
+# process substitution's exit status is invisible to `set -euo pipefail`. A
+# failed enumeration therefore produced an empty array, and empty is the one
+# value this guard reads as "nothing to check": it printed "this PR adds no
+# records" and exited 0, waving through every unsigned record, every
+# cross-commit set and every second signer at once.
+echo "== the unsigned-record guard reads its own input =="
+python3 - > "$TMP/signer.sh" <<'SGPY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml").read_text())
+for st in d["jobs"]["pr-benchmark-gate"]["steps"]:
+    if st.get("name") == "One PR, one commit, one signer":
+        print(st["run"]); break
+SGPY
+if [ -s "$TMP/signer.sh" ]; then
+  mkdir -p "$TMP/sgbin" "$TMP/sgrun/.benchmarks/x"
+  # An added record with NO .json.sig beside it -- the case the guard exists
+  # for. It must be caught when the diff works, and must NOT be silently
+  # excused when the diff does not.
+  echo '{"git_sha":"abc1234567"}' > "$TMP/sgrun/.benchmarks/x/2026-01-01-abc1234567.json"
+  cat > "$TMP/sgbin/git" <<'SGSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  merge-base) echo base0000000 ;;
+  diff)
+    case "${GIT_STUB_MODE:-ok}" in
+      fail) echo "fatal: bad revision" >&2; exit 128 ;;
+      *)    echo ".benchmarks/x/2026-01-01-abc1234567.json" ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+SGSTUB
+  chmod +x "$TMP/sgbin/git"
+  sg_run() {  # $1 = step script, $2 = stub mode -> rc, output in $TMP/sgout
+    ( cd "$TMP/sgrun" && rm -f added_all.txt
+      PATH="$TMP/sgbin:$PATH" GIT_STUB_MODE="$2" BASE=deadbeef \
+        bash "$1" >"$TMP/sgout" 2>&1 )
+  }
+  sg_run "$TMP/signer.sh" ok
+  if [ $? -ne 0 ] && grep -q 'Unsigned record added' "$TMP/sgout"; then
+    ok "an added record with no sidecar is refused"
+  else
+    bad "the guard stopped catching an unsigned record"
+    sed 's/^/       /' "$TMP/sgout" | head -3
+  fi
+  sg_run "$TMP/signer.sh" fail
+  sgrc=$?
+  if [ "$sgrc" -ne 0 ] && ! grep -q 'adds no records' "$TMP/sgout"; then
+    ok "an unreadable diff fails the guard instead of clearing the PR"
+  else
+    bad "a failed enumeration was reported as a PR that adds no records"
+    sed 's/^/       /' "$TMP/sgout" | head -3
+  fi
+  if grep -q 'It is NOT reporting that the PR adds none' "$TMP/sgout"; then
+    ok "the annotation distinguishes 'could not look' from 'found nothing'"
+  else
+    bad "the guard failed without saying it had been blinded"
+  fi
+  # CONTROL: the pre-fix single line, restored. The unsigned record must go
+  # through, which is the defect this guard is here to make impossible.
+  python3 - "$TMP/signer.sh" "$TMP/signer-bad.sh" <<'SGSAB'
+import pathlib, sys, re
+t = pathlib.Path(sys.argv[1]).read_text()
+new = re.sub(
+    r'if ! git diff --name-only --diff-filter=AM "\$base"\.\.\.HEAD -- \.benchmarks \\\n'
+    r' *> added_all\.txt; then\n.*?\n *exit 1\n *fi\n',
+    '', t, count=1, flags=re.S)
+new = new.replace(
+    "mapfile -t added < <(grep '\\.json$' added_all.txt || true)",
+    "mapfile -t added < <(git diff --name-only --diff-filter=AM \"$base\"...HEAD "
+    "-- .benchmarks | grep '\\.json$' || true)", 1)
+assert new != t, "sabotage did not change the step -- it would measure nothing"
+pathlib.Path(sys.argv[2]).write_text(new)
+SGSAB
+  if [ -s "$TMP/signer-bad.sh" ]; then
+    sg_run "$TMP/signer-bad.sh" fail
+    if [ $? -eq 0 ] && grep -q 'adds no records' "$TMP/sgout"; then
+      ok "control: the old form clears an unsigned record when the diff fails"
+    else
+      bad "control: the sabotage did not reproduce the fail-open defect"
+      sed 's/^/       /' "$TMP/sgout" | head -3
+    fi
+  else
+    bad "control: could not build the sabotaged step"
+  fi
+else
+  bad "could not extract the one-signer step"
+fi
+
+# ---------------------------------------------------------------------------
 # nginx add_header does not accumulate across contexts
 # ---------------------------------------------------------------------------
 # Three vhosts, one rule, three separate incidents -- each found by hand after

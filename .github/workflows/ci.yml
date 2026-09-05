@@ -1136,8 +1136,27 @@ jobs:
         run: |
           set -euo pipefail
           base=$(git merge-base "$BASE" HEAD)
+          # ★ The enumeration is checked SEPARATELY from the filter.
+          #
+          # `mapfile -t added < <(git diff ... | grep ...)` reports the status
+          # of `mapfile`, never of the pipeline inside the process
+          # substitution -- `set -euo pipefail` does not reach in there. So a
+          # failed `git diff` produced an EMPTY list, and an empty list is the
+          # one input this guard reads as "nothing to check": it printed "this
+          # PR adds no records" and exited 0, waving through every unsigned
+          # record, every cross-commit record set, and every second signer it
+          # exists to stop. A guard that cannot see its input must not report
+          # that the input was clean.
+          #
+          # `|| true` stays on the GREP, where it means what it says: no match
+          # is grep's normal "nothing found", not a failure to look.
+          if ! git diff --name-only --diff-filter=AM "$base"...HEAD -- .benchmarks \
+               > added_all.txt; then
+            echo "::error title=Cannot enumerate added records::git diff $base...HEAD failed, so this step could not see which records the PR adds. It is NOT reporting that the PR adds none."
+            exit 1
+          fi
           # `.json$` also drops the `.json.sig` sidecars, which are read below.
-          mapfile -t added < <(git diff --name-only --diff-filter=AM "$base"...HEAD -- .benchmarks | grep '\.json$' || true)
+          mapfile -t added < <(grep '\.json$' added_all.txt || true)
           if [ "${#added[@]}" -eq 0 ]; then
             echo "this PR adds no records — nothing to agree on."
             exit 0
