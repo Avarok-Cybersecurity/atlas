@@ -169,12 +169,55 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemGetInfo_v2 failed: status {status}");
         }
-        // On unified memory (GB10), cuMemGetInfo reports Linux "free" memory
-        // which excludes reclaimable buff/cache. Use MemAvailable instead.
-        if let Some(mem_available) = super::system_available_memory_bytes() {
-            free = free.max(mem_available);
+        // RULE: host `MemAvailable` substitutes for the driver's device-free
+        // figure ONLY on an integrated GPU.
+        //
+        // On integrated memory (GB10 / DGX Spark, unified LPDDR5X) device and
+        // host share one physical pool and `cuMemGetInfo` reports Linux
+        // MemFree, which excludes reclaimable buff/cache — MemAvailable is the
+        // truer number, so taking the max is right there.
+        //
+        // On a DISCRETE GPU host RAM is a different pool entirely and the max
+        // is nonsense: on a 3x RTX PRO 6000 Blackwell box (95 GiB per card,
+        // 1 TB host RAM) MemAvailable read 1,038,438,936 kB, so this returned
+        // ~990 GB free for a 95 GB card, `used_so_far` came out 0, and the KV
+        // pool was sized as if nothing had been allocated — the load then died
+        // in `cuMemAlloc_v2` with 4280.2 MB actually free.
+        //
+        // `CU_DEVICE_ATTRIBUTE_INTEGRATED` (18) is the discriminator, measured
+        // 2026-09-04: 1 on NVIDIA GB10, 0 on RTX PRO 6000 Blackwell (and 0 on
+        // every discrete datacenter part).
+        // `CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS` (99) reads 1 on BOTH,
+        // so it does NOT discriminate and must not be used here.
+        Ok(effective_free_bytes(
+            free,
+            super::system_available_memory_bytes(),
+            self.device_is_integrated_cu()?,
+        ))
+    }
+
+    /// `CU_DEVICE_ATTRIBUTE_INTEGRATED` on the current context's device: true
+    /// when the GPU shares the host's physical memory (GB10), false on a
+    /// discrete card. Cheap enough to query per call — it is a driver-side
+    /// table lookup, and `free_memory` is not on any hot path.
+    ///
+    /// Fails loudly rather than guessing, like `sm_count_cu`: a wrong answer
+    /// here mis-sizes the KV pool by hundreds of gigabytes in either
+    /// direction.
+    pub(super) fn device_is_integrated_cu(&self) -> Result<bool> {
+        const CU_DEVICE_ATTRIBUTE_INTEGRATED: u32 = 18;
+        let mut dev: i32 = 0;
+        let status = unsafe { cuCtxGetDevice(&mut dev) };
+        if status != 0 {
+            bail!("cuCtxGetDevice failed: status {status}");
         }
-        Ok(free)
+        let mut integrated: i32 = 0;
+        let status =
+            unsafe { cuDeviceGetAttribute(&mut integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, dev) };
+        if status != 0 {
+            bail!("cuDeviceGetAttribute(INTEGRATED) failed: status {status}");
+        }
+        Ok(integrated != 0)
     }
 
     pub(super) fn create_stream_cu(&self) -> Result<u64> {
@@ -285,5 +328,69 @@ impl AtlasCudaBackend {
             }
         }
         Ok(())
+    }
+}
+
+/// Free device memory to report, given the driver's figure, host
+/// `MemAvailable`, and whether the device is integrated.
+///
+/// Host memory may stand in for device memory on an INTEGRATED GPU ONLY,
+/// where the two are one physical pool. On a discrete GPU they are unrelated,
+/// and substituting host RAM reports a free figure many times the card's
+/// capacity. Pure so the rule is testable without a GPU.
+pub(super) fn effective_free_bytes(
+    cu_free: usize,
+    mem_available: Option<usize>,
+    integrated: bool,
+) -> usize {
+    match mem_available {
+        Some(avail) if integrated => cu_free.max(avail),
+        _ => cu_free,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_free_bytes;
+
+    const GIB: usize = 1024 * 1024 * 1024;
+
+    #[test]
+    fn discrete_device_ignores_host_mem_available() {
+        // Reproduces the RTX PRO 6000 failure: 95 GiB card, 4.2 GiB actually
+        // free, host MemAvailable 1,038,438,936 kB (~990 GiB). Host RAM is a
+        // different pool; substituting it made free_memory() report ~990 GB
+        // and the KV pool was sized as if nothing had been allocated.
+        let cu_free = 4 * GIB + 280 * 1024 * 1024;
+        let mem_available = Some(1_038_438_936usize * 1024);
+        assert_eq!(
+            effective_free_bytes(cu_free, mem_available, false),
+            cu_free,
+            "a discrete GPU must report the driver's device-free figure verbatim"
+        );
+    }
+
+    #[test]
+    fn integrated_device_takes_the_max() {
+        // GB10 (DGX Spark): device and host share one LPDDR5X pool, and
+        // cuMemGetInfo reports MemFree, which excludes reclaimable buff/cache.
+        let cu_free = 20 * GIB;
+        let mem_available = Some(90 * GIB);
+        assert_eq!(effective_free_bytes(cu_free, mem_available, true), 90 * GIB);
+    }
+
+    #[test]
+    fn integrated_device_without_meminfo_uses_driver_figure() {
+        // /proc/meminfo missing or unparseable (non-Linux, container).
+        let cu_free = 20 * GIB;
+        assert_eq!(effective_free_bytes(cu_free, None, true), cu_free);
+    }
+
+    #[test]
+    fn integrated_device_keeps_driver_figure_when_it_is_larger() {
+        // MemAvailable can be the smaller of the two; `max` must not shrink
+        // the driver's figure.
+        let cu_free = 60 * GIB;
+        assert_eq!(effective_free_bytes(cu_free, Some(10 * GIB), true), cu_free);
     }
 }
