@@ -16,6 +16,13 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(atlas_scale)");
     println!("cargo:rustc-check-cfg=cfg(atlas_cutlass)");
     println!("cargo:rustc-check-cfg=cfg(atlas_flashinfer)");
+
+    // Resolved HERE, before every early return: the SM architecture is a
+    // property of the selected target, not of whether an optional reference
+    // object happens to be compiled, and resolving it once is what stops the
+    // CUTLASS and FlashInfer objects from disagreeing with each other or with
+    // the PTX they are benchmarked against.
+    let cuda_arch = resolve_cuda_arch();
     if std::env::var("ATLAS_TARGET_HW")
         .as_deref()
         .map(|hw| hw.starts_with("strix"))
@@ -90,11 +97,11 @@ fn main() {
     // stays OFF by default. Canonical rationale: the module docs on
     // `spark_runtime::cutlass` and `spark_runtime::flashinfer`.
     if let Some(cutlass_home) = std::env::var_os("CUTLASS_HOME") {
-        build_cutlass_object(std::path::PathBuf::from(cutlass_home));
+        build_cutlass_object(std::path::PathBuf::from(cutlass_home), &cuda_arch);
     }
 
     if let Some(fi_home) = std::env::var_os("FLASHINFER_HOME") {
-        build_flashinfer_object(std::path::PathBuf::from(fi_home));
+        build_flashinfer_object(std::path::PathBuf::from(fi_home), &cuda_arch);
     }
 }
 
@@ -103,12 +110,11 @@ fn main() {
 /// codegens for sm_121f on GB10. Gated on `FLASHINFER_HOME`. Needs FlashInfer's
 /// PINNED CCCL via `-isystem` ahead of the CUDA-13 toolkit CCCL (which lacks
 /// `cuda::fast_mod_div`).
-fn build_flashinfer_object(fi_home: std::path::PathBuf) {
+fn build_flashinfer_object(fi_home: std::path::PathBuf, arch: &str) {
     use std::process::Command;
 
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR set"));
     let lib = out_dir.join("libatlas_flashinfer.a");
-    let arch = std::env::var("ATLAS_CUDA_ARCH").unwrap_or_else(|_| "sm_121f".to_string());
     let cuda_home = std::env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".to_string());
     let nvcc = std::path::Path::new(&cuda_home).join("bin/nvcc");
 
@@ -161,12 +167,11 @@ fn build_flashinfer_object(fi_home: std::path::PathBuf) {
     println!("cargo:rustc-link-lib=dylib=stdc++");
 }
 
-fn build_cutlass_object(cutlass_home: std::path::PathBuf) {
+fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
     use std::process::Command;
 
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR set"));
     let lib = out_dir.join("libatlas_cutlass.a");
-    let arch = std::env::var("ATLAS_CUDA_ARCH").unwrap_or_else(|_| "sm_121f".to_string());
     let cuda_home = std::env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".to_string());
     let nvcc = std::path::Path::new(&cuda_home).join("bin/nvcc");
 
@@ -230,4 +235,51 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf) {
     println!("cargo:rustc-link-lib=static=atlas_cutlass");
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=stdc++");
+}
+
+/// The SM architecture the CUTLASS / FlashInfer reference objects compile for.
+///
+/// SSOT is `kernels/<hw>/HARDWARE.toml` `[hardware].arch` — the same file
+/// `atlas-kernels/build.rs` compiles Atlas's own kernels from. Hard-coding
+/// `sm_121f` here meant a build for any other hardware silently produced
+/// reference objects for GB10, which is a benchmark comparing two different
+/// GPUs' code. `ATLAS_CUDA_ARCH` still wins when set explicitly.
+///
+/// The literal survives only as the fallback for an unreadable file, announced
+/// as a `cargo:warning` rather than applied silently.
+fn resolve_cuda_arch() -> String {
+    const FALLBACK: &str = "sm_121f";
+    if let Ok(explicit) = std::env::var("ATLAS_CUDA_ARCH") {
+        return explicit;
+    }
+    let hw = std::env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| "gb10".to_string());
+    let manifest =
+        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let hardware_toml = manifest
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("crates/<crate> sits two levels below the workspace root")
+        .join("kernels")
+        .join(&hw)
+        .join("HARDWARE.toml");
+    println!("cargo:rerun-if-changed={}", hardware_toml.display());
+    match hardware_arch(&hardware_toml) {
+        Some(arch) => arch,
+        None => {
+            println!(
+                "cargo:warning=spark-runtime: no [hardware].arch in {} — reference objects fall \
+                 back to {FALLBACK}; set ATLAS_TARGET_HW to a target under kernels/, or \
+                 ATLAS_CUDA_ARCH to override",
+                hardware_toml.display()
+            );
+            FALLBACK.to_string()
+        }
+    }
+}
+
+/// `[hardware].arch` from a `HARDWARE.toml`, or `None` if it cannot be read.
+fn hardware_arch(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc: toml::Value = text.parse().ok()?;
+    Some(doc.get("hardware")?.get("arch")?.as_str()?.to_string())
 }
