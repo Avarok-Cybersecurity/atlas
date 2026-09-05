@@ -162,7 +162,7 @@ pub(super) fn gemma4_to_json(native: &str) -> String {
 }
 
 /// Shared tool_choice instruction appended to all system prompts.
-pub(super) fn append_tool_choice_instruction(prompt: &mut String, tool_choice: &ToolChoice) {
+pub(crate) fn append_tool_choice_instruction(prompt: &mut String, tool_choice: &ToolChoice) {
     match tool_choice {
         ToolChoice::Mode(s) if s == "required" => {
             prompt.push_str(

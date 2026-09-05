@@ -90,13 +90,16 @@ impl ChatTokenizer {
         } else {
             super::jinja_helpers::load_override_template(model_type, repo_root)
         };
-        let chat_template = if let Some(override_tmpl) = override_tmpl {
-            override_tmpl
+        let (chat_template, checkpoint_template) = if let Some(override_tmpl) = override_tmpl {
+            (override_tmpl, false)
         } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
-            config_tmpl
+            (config_tmpl, true)
         } else {
             tracing::warn!("No chat template found — using default ChatML");
-            super::jinja_helpers::default_chatml_template(supports_thinking)
+            (
+                super::jinja_helpers::default_chatml_template(supports_thinking),
+                false,
+            )
         };
 
         let jinja_env = super::jinja_helpers::build_jinja_env(&chat_template)?;
@@ -116,16 +119,29 @@ impl ChatTokenizer {
             ChatEncoding::Jinja
         };
 
+        let native_qwen_tool_template = checkpoint_owns_qwen_tool_prompt(
+            model_type,
+            checkpoint_template,
+            openai_jinja_env.is_some(),
+        ) && jinja_env
+            .get_template("chat")?
+            .undeclared_variables(false)
+            .contains("tools");
         tracing::info!("Loaded tokenizer from {}", tokenizer_path.display());
         Ok(Self {
             tokenizer,
             eos_token_id,
             supports_thinking,
             chat_encoding,
+            native_qwen_tool_template,
             chat_template,
             jinja_env,
             openai_jinja_env,
         })
+    }
+
+    pub(crate) fn uses_native_qwen_tool_template(&self) -> bool {
+        self.native_qwen_tool_template
     }
 
     /// Returns a borrowed reference to the underlying HF tokenizer (for
@@ -446,4 +462,19 @@ impl ChatTokenizer {
         }
         out
     }
+}
+
+/// Only the known Qwen checkpoint templates own XML tool instructions.
+/// Custom overrides and ChatML fallback retain parser-provided instructions.
+fn checkpoint_owns_qwen_tool_prompt(
+    model_type: &str,
+    checkpoint: bool,
+    openai_override: bool,
+) -> bool {
+    checkpoint
+        && !openai_override
+        && matches!(
+            model_type,
+            "qwen3_5" | "qwen3_5_moe" | "qwen3_6" | "qwen3_6_moe"
+        )
 }

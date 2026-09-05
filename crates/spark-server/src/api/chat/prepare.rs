@@ -54,16 +54,20 @@ pub(crate) fn prepare_chat_prompt(
         && !req.tools.is_empty()
         && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
-    // ST-995 fix: restore the parser-specific behavioral system prompt #90
-    // removed. For the hermes parser this is the canonical NousResearch
-    // function-calling prompt ("you MAY call one or more functions...
-    // don't make assumptions"), which the GDN model needs to correctly
-    // DECLINE on irrelevance prompts. With it (and compact tool-JSON)
-    // hallucination returns to ~96 (vs 30/64 without).
+    // Preserve parser-owned prompts (including Hermes and TSCG). Native
+    // Qwen checkpoint templates already render their tool instructions;
+    // adding the parser block there duplicates the schema and changes the
+    // request with unrelated behavioral guidance.
     if tools_active && let Some(ref parser) = state.tool_call_parser {
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt = parser.system_prompt(&req.tools, tool_choice, &state.chat.prompt);
+        let tool_prompt = parser_tool_prompt(
+            parser.as_ref(),
+            &req.tools,
+            tool_choice,
+            &state.chat.prompt,
+            state.tokenizer.uses_native_qwen_tool_template(),
+        );
         inject_tool_system_prompt(&mut req.messages, tool_prompt);
     }
 
@@ -185,9 +189,32 @@ fn effective_reasoning_effort(
     }
 }
 
+/// Resolve the parser contribution independently of the native template renderer.
+pub(crate) fn parser_tool_prompt(
+    parser: &dyn crate::tool_parser::ToolCallParser,
+    tools: &[crate::tool_parser::ToolDefinition],
+    choice: &crate::tool_parser::ToolChoice,
+    levers: &crate::tool_parser::PromptLevers,
+    native_qwen_template: bool,
+) -> String {
+    if native_qwen_template && !levers.tscg && matches!(parser.name(), "qwen3_coder" | "qwen3_xml")
+    {
+        // The checkpoint template already owns the schema and XML format.
+        // Keep required/named tool-choice constraints, but do not inject a
+        // second copy or unrelated Bash/Write/Edit behavioral instructions.
+        let mut prompt = String::new();
+        crate::tool_parser::append_tool_choice_instruction(&mut prompt, choice);
+        return prompt;
+    }
+    parser.system_prompt(tools, choice, levers)
+}
+
 /// Inject a parser's behavioral prompt without changing requests for parsers
 /// whose native chat template already owns tool instructions.
-fn inject_tool_system_prompt(messages: &mut Vec<crate::ir::Message>, tool_prompt: String) {
+pub(crate) fn inject_tool_system_prompt(
+    messages: &mut Vec<crate::ir::Message>,
+    tool_prompt: String,
+) {
     if tool_prompt.is_empty() {
         return;
     }
