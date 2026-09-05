@@ -182,6 +182,31 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertIsNone(artifact["model"]["revision"])
         return artifact
 
+    def test_server_exit_during_boot_fails_promptly_with_boot_json(self):
+        record = self.start_runner()
+        self.wait_for(self.loading, "the owned boot health response")
+        self.wait_for(lambda: record.exists() and 'pid' in json.loads(record.read_text()),
+                      "the completed owned process record")
+        self.wait_for(lambda: 'stage 3/7 boot gate' in self.log.read_text(),
+                      "the boot gate")
+        stopped = subprocess.run([sys.executable, str(MANAGER), "stop", "--record",
+                                  str(record), "--timeout", "0.1"],
+                                 capture_output=True, text=True, timeout=5)
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        started = time.monotonic()
+        try:
+            rc = self.runner.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.fail("boot gate kept polling after its owned server exited")
+        self.assertNotEqual(rc, 0)
+        boot = json.loads((self.output / "boot.json").read_text())
+        self.assertEqual(boot["status"], "process-exited", boot)
+        self.assertFalse(boot["passed"])
+        self.read_artifact("boot")
+        print(json.dumps({"oracle": "owned server exit ends boot before the cap",
+                          "exit": rc, "elapsed_s": time.monotonic() - started,
+                          "boot_status": boot["status"]}), flush=True)
+
     def test_term_during_boot_stops_owned_process_and_retains_environment(self):
         record = self.start_runner()
 

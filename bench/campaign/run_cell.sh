@@ -393,11 +393,16 @@ fi
 
 # ── 3. boot gate ─────────────────────────────────────────────────────────────
 stage boot "stage 3/7 boot gate (cap ${BOOT_CAP}s)"
-show "bash $TTR --url $URL --model $HF_ID --engine $ENGINE --start-epoch <serve-start> --timeout-s $BOOT_CAP --out $BOOT_JSON"
+BOOT_ARGS=(--url "$URL" --model "$HF_ID" --engine "$ENGINE" --start-epoch "$START_EPOCH"
+           --timeout-s "$BOOT_CAP" --out "$BOOT_JSON")
+BOOT_PROCESS_HINT=""
+if [ "$PROCESS_MODE" = "1" ]; then
+  BOOT_ARGS+=(--process-owner "$PROCESS_RECORD")
+  BOOT_PROCESS_HINT=" --process-owner $PROCESS_RECORD"
+fi
+show "bash $TTR --url $URL --model $HF_ID --engine $ENGINE --start-epoch <serve-start> --timeout-s $BOOT_CAP --out $BOOT_JSON$BOOT_PROCESS_HINT"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
-  run_child bash "$TTR" --url "$URL" --model "$HF_ID" --engine "$ENGINE" \
-       --start-epoch "$START_EPOCH" --timeout-s "$BOOT_CAP" --out "$BOOT_JSON" \
-    || note_fail boot
+  run_child bash "$TTR" "${BOOT_ARGS[@]}" || note_fail boot
   if [ "$PROCESS_MODE" = "1" ] && [ -z "$FAILING_STAGE" ]; then
     prove_process_endpoint
   fi
