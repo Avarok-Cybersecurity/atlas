@@ -209,24 +209,53 @@ fn test_partial_suffix_eviction_frees_both_blocks() {
     assert!(evicted.physical.contains(&20));
 }
 
+/// A real child node SUPERSEDES the partial-suffix slot it overlaps: the slot
+/// is cleared and the KV block it held comes back in `released_blocks` so the
+/// caller can drop the cache's reference on it.
+///
+/// Rewritten (was `#[ignore]`d as "tests removed behavior"): the OLD
+/// assertions expected the 20-token prefix to become unmatchable, which the
+/// sub-block child-key arm made false — the deeper node now serves those 20
+/// tokens. The clearing itself is NOT removed behaviour; what it must produce
+/// is the released-block accounting asserted below, and no serving of the
+/// retired block. The partial→partial overwrite arm is covered by
+/// `tests::basic::test_partial_suffix_block_is_owned_and_released`; this is
+/// the distinct child-supersedes-partial arm.
 #[test]
-#[ignore = "tests removed behavior — partial-suffix clearing was replaced \
-            with partial-block-matching during the radix-tree refactor; \
-            assertions need rewriting against the new lookup semantics"]
 fn test_partial_suffix_cleared_when_extended() {
     let tree = RadixTree::new();
-    // Insert 20 tokens (1 full + 4 partial)
+    // Insert 20 tokens (1 full + a 4-token partial held in block 20).
     let tokens_20: Vec<u32> = (0..20).collect();
-    tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
+    let first = tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
+    assert!(
+        first.blocks.contains(&20),
+        "the partial slot takes a ref on block 20; got {:?}",
+        first.blocks
+    );
 
-    // Insert 32 tokens (2 full blocks, extends past partial)
+    // Insert 32 tokens: a real child now covers [16..32), superseding the slot.
     let tokens_32: Vec<u32> = (0..32).collect();
-    tree.insert(&tokens_32, &[10, 30], &[], 16, 0, 0);
+    let extended = tree.insert(&tokens_32, &[10, 30], &[], 16, 0, 0);
+    assert_eq!(
+        extended.released_blocks,
+        vec![20],
+        "the superseded partial block must be handed back, not leaked"
+    );
+    assert!(
+        extended.blocks.contains(&30),
+        "the superseding child block is acquired; got {:?}",
+        extended.blocks
+    );
 
-    // Lookup 20 tokens — partial suffix was cleared by the 32-token insert
+    // Lookup 20 tokens — served by the DEEPER node (block 30) through the
+    // sub-block child-key arm, never by the retired partial block 20.
     let m = tree.lookup(&tokens_20, 16, 0, 0);
-    assert_eq!(m.matched_tokens, 16);
-    assert_eq!(m.matched_blocks, vec![10]);
+    assert_eq!(m.matched_tokens, 20);
+    assert_eq!(m.matched_blocks, vec![10, 30]);
+    assert!(
+        !m.matched_blocks.contains(&20),
+        "the retired partial block must never be served again"
+    );
     tree.release(&tokens_20, 16, 0);
 
     // Lookup 32 tokens — full match
