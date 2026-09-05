@@ -17,7 +17,7 @@
 #
 # See the "Single node, N GPUs (Hopper / B200)" section of docs/DEPLOYMENT.md
 # and the campaign PRD §6.2
-# (docs/campaigns/hopper-atlas-vs-vllm-2026-09/PRD-atlas-vs-vllm-hopper.md).
+# (https://github.com/Avarok-Cybersecurity/atlas/issues/899 — campaign PRD).
 #
 # TWO DECISIONS WORTH READING BEFORE YOU CHANGE THEM
 #

@@ -1,7 +1,7 @@
 # Hopper A/B — Atlas vs vLLM on H100 / H200
 
 Driver skeleton for the campaign in
-[`docs/campaigns/hopper-atlas-vs-vllm-2026-09/`](../../docs/campaigns/hopper-atlas-vs-vllm-2026-09/).
+the campaign issue (https://github.com/Avarok-Cybersecurity/atlas/issues/899).
 Nothing here is new measurement machinery. The two components that produce the
 numbers already exist and are reused verbatim:
 
@@ -108,7 +108,7 @@ They need `python3` and `curl`, no GPU and no network.
 
 ## Control validation and remaining limits
 
-The [vLLM control report](../../docs/campaigns/hopper-atlas-vs-vllm-2026-09/vllm-control/REPORT.md) records CPU red/green tests and Spark 2's read-only resource preflight. The requested Nano/image combination exceeds the task's 40 GB new-storage cap; no live engine run was performed.
+The [vLLM control report](https://github.com/Avarok-Cybersecurity/atlas/issues/899) (comment 3) records CPU red/green tests and Spark 2's read-only resource preflight. The requested Nano/image combination exceeds the task's 40 GB new-storage cap; no live engine run was performed.
 
 Readiness now rejects HTTP errors, invalid/empty completion bodies, and boots whose first completion misses the process-start deadline. The first request pins the same sampling settings as the ladder. `first_token_s` is the latency of a one-token **non-streaming** completion including response framing, not the ladder's SSE TTFT; `total_s` includes health polling. `--model` is required to establish usability. `--out` write failures are nonzero. The readiness selftest also invokes `readiness_selftest.py` for HTTP boundary regressions.
 
@@ -116,4 +116,4 @@ The coherency selftest covers all three gates independently, malformed response 
 
 The comparator requires matching valid `reps`, `warmup` and client `driver_sha256` as well as the original parity fields. Equal throughput is TIE; missing rungs appear as NO-PAIR on either side. Request errors, missing or short per-request usage, incomplete reps, invalid metrics and more than 10% rate spread remain visible as INVALID with reasons and no ratio. INVALID/NO-PAIR reports exit 0 because report generation succeeded; callers must inspect verdicts. Header/schema mismatches exit 2. Old tiny fixtures without request usage are no longer evidence of valid rungs.
 
-Bare ladder JSON cannot establish model revision, hardware, server speculation, cache state or prompt-mode parity. Its latency columns are means of per-rep percentiles, not pooled request percentiles. Its first saved rep follows the discarded warmup. Its nominal ISL is word-based, and its nonce restarts across separate invocations. See [SCHEMA-GAPS.md](../../docs/campaigns/hopper-atlas-vs-vllm-2026-09/vllm-control/SCHEMA-GAPS.md) before producing a campaign receipt. The ladder measurement code was not changed.
+Bare ladder JSON cannot establish model revision, hardware, server speculation, cache state or prompt-mode parity. Its latency columns are means of per-rep percentiles, not pooled request percentiles. Its first saved rep follows the discarded warmup. Its nominal ISL is word-based, and its nonce restarts across separate invocations. See the schema-gaps section of https://github.com/Avarok-Cybersecurity/atlas/issues/899 (comment 3) before producing a campaign receipt. The ladder measurement code was not changed.
