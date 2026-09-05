@@ -122,8 +122,12 @@ pub(super) fn generate_target_ptx_rs(
          \x20   vec![\n",
     );
     for (idx, target) in targets.iter().enumerate() {
-        // Strip trailing 'f' from arch for KernelTarget (sm_121f → sm_121)
-        let arch_clean = target.arch.trim_end_matches('f');
+        // HARDWARE.toml declares nvcc's feature arch (sm_121f, sm_90a). The
+        // registry records BOTH readings of it: `KernelTarget.arch` is the
+        // base SM (sm_121, sm_90), the identity every baseline and record is
+        // keyed by; `ptx_arch` is the declaration verbatim, which is the only
+        // one the GPU compatibility rules can be applied to.
+        let (arch_clean, ptx_arch) = super::build_arch::target_arch_fields(&target.arch);
         let fn_name = if single_target {
             "ptx_modules".to_string()
         } else {
@@ -155,6 +159,7 @@ pub(super) fn generate_target_ptx_rs(
         g.push_str(&format!(
             "        TargetPtxSet {{\n\
              \x20           target: KernelTarget {{ arch: \"{arch_clean}\", model: \"{}\", quant: \"{}\" }},\n\
+             \x20           ptx_arch: \"{ptx_arch}\",\n\
              \x20           modules: {fn_name}(),\n\
              \x20           sampling: SamplingPresets {{\n\
              \x20               thinking_text: {},\n\
