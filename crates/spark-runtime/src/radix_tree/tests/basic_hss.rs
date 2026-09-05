@@ -87,4 +87,23 @@ fn test_hss_disk_ref_acquisition_no_op_when_hss_inactive() {
     // of whether nodes are new or pre-existing.
     let acquired = tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
     assert!(acquired.disk_block_ids.is_empty());
+    // The KV side is NOT conditional on HSS: both nodes are new, so the cache
+    // still owes a ref on each block. Without this the assertion above is
+    // equally satisfied by an insert that does nothing at all when HSS is off.
+    assert_eq!(acquired.blocks, vec![10, 20]);
+
+    // And the LOOKUP side must report no disk ids either. Callers use a
+    // non-empty `matched_disk_block_ids` as the "HSS engaged" signal, so the
+    // u32::MAX sentinels these nodes carry have to be filtered out rather than
+    // handed back. Nothing else in the radix_tree suite observes that filter —
+    // verified by deleting it from RadixTree::lookup, which left all 86 checks
+    // green.
+    let m = tree.lookup(&tokens, 16, 0, 0);
+    assert_eq!(m.matched_tokens, 32);
+    assert!(
+        m.matched_disk_block_ids.is_empty(),
+        "an HSS-off match must not signal disk ids; got {:?}",
+        m.matched_disk_block_ids
+    );
+    tree.release(&tokens, 16, 0);
 }
