@@ -54,6 +54,13 @@
 #       cell tears down by the container ID its own `docker run -d` returned,
 #       and the name carries this invocation's pid so the collision is
 #       unlikely in the first place.
+#   (l) the same ownership, on the way out of a SIGNAL. The teardown marked
+#       "always" was reached by normal control flow only: a cell killed during
+#       its boot poll exited -15 with the container it had just created still
+#       running and no artifact at all, while the otherwise identical boot
+#       FAILURE stopped and removed that same container and wrote its NO-GO.
+#       Same owned resources, opposite outcome -- and on a rented box the
+#       difference is a vLLM server holding the GPU until somebody finds it.
 #
 # Usage: bash bench/campaign/campaign_test.sh
 set -uo pipefail
@@ -509,6 +516,118 @@ DOCKER_FAKE_CID="$CID" DOCKER_RUN_RC=125 PATH="$tmp/bin:$PATH" \
 names2="$(grep '^run ' "$DOCKER_CALLS" | grep -o -- '--name [^ ]*' | sort -u)"
 [ "$names" != "$names2" ] || fail j "two invocations must not share a container name: $names"
 ok j "each invocation names its container uniquely ($names vs $names2)"
+
+# ── (l) a TERMINATED cell tears down what it owns and says what happened ────
+# The stub server answers 503 forever, which is exactly what a loading engine
+# looks like, so the runner is parked in its boot poll when the signal lands --
+# the moment a container of its own exists and no gate has finished.
+port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+export STUB_HITS="$tmp/loading.hits"; : > "$STUB_HITS"
+cat > "$tmp/loading_stub.py" <<'PY'
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+BODY = b'{"status": "loading"}'
+
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(os.environ["STUB_HITS"], "a") as fh:
+            fh.write(self.path + "\n")
+        self.send_response(503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(BODY)))
+        self.end_headers()
+        self.wfile.write(BODY)
+
+    def log_message(self, *args):
+        pass
+
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+python3 "$tmp/loading_stub.py" "$port" & stub_pid=$!
+
+# Poll for a condition rather than sleeping a guessed interval: a fixed sleep
+# either flakes on a slow box or wastes the difference on a fast one.
+wait_for() {  # wait_for SECONDS WHAT COMMAND...
+  local deadline what
+  deadline=$(( $(date +%s) + $1 )); shift
+  what="$1"; shift
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if "$@"; then return 0; fi
+    sleep 0.2
+  done
+  echo "timed out waiting for $what" >&2
+  return 1
+}
+
+: > "$DOCKER_CALLS"
+DOCKER_FAKE_CID="$CID" PATH="$tmp/bin:$PATH" VLLM_IMAGE_DIGEST="$DIGEST" \
+  VLLM_PORT="$port" \
+  bash "$RUN" --engine vllm --model nemotron-3-nano-fp8 --sku h100 \
+  --workload lat --concurrency 1 --spec off --think off \
+  --out "$tmp/killed" --yes > "$tmp/killed.log" 2>&1 &
+run_pid=$!
+
+wait_for 120 "the cell's own docker run" grep -q '^run ' "$DOCKER_CALLS" \
+  || fail l "the cell never created its container:
+$(cat "$tmp/killed.log")"
+wait_for 120 "the boot poll to reach the stub" test -s "$STUB_HITS" \
+  || fail l "the cell never reached its boot gate:
+$(cat "$tmp/killed.log")"
+
+kill -TERM "$run_pid"
+wait "$run_pid"; rc=$?
+kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null
+log="$(cat "$tmp/killed.log")"
+
+[ $rc -eq 143 ] || fail l "a cell killed with SIGTERM must exit 143, got $rc:
+$log"
+ok l "SIGTERM during the boot gate exits 143, not a bare -15"
+
+have "$(cat "$DOCKER_CALLS")" "stop $CID" \
+  || fail l "the container this cell created was never stopped:
+$(cat "$DOCKER_CALLS")"
+have "$(cat "$DOCKER_CALLS")" "rm $CID" \
+  || fail l "the container this cell created was never removed:
+$(cat "$DOCKER_CALLS")"
+stray="$(grep -E '^(stop|rm) ' "$DOCKER_CALLS" | grep -v -F -- "$CID" || true)"
+[ -z "$stray" ] || fail l "a terminated cell must touch nothing but its own container, saw:
+$stray"
+ok l "SIGTERM stops and removes exactly the container this invocation created"
+
+have "$log" "killing pid" \
+  || fail l "the in-flight boot-gate child must be killed by pid:
+$log"
+ok l "the boot-gate child this cell started is killed by pid, not left polling"
+
+art="$tmp/killed/artifact.json"
+[ -f "$art" ] || fail l "a terminated cell must still write its artifact:
+$log"
+python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
+  || fail l "the interruption artifact must validate:
+$(python3 "$HERE/validate_artifact.py" "$art")"
+ok l "a terminated cell still writes an artifact, and it validates"
+
+read -r verdict stage_name <<<"$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["verdict"], d["failing_stage"])' "$art")"
+[ "$verdict" = "NO-GO" ] || fail l "an interrupted cell is a NO-GO, got $verdict"
+[ "$stage_name" = "boot" ] \
+  || fail l "an interrupted cell must name the stage it was killed in, got $stage_name"
+ok l "the artifact is NO-GO at 'boot' -- the stage that was in flight"
+
+python3 -c '
+import json, sys
+notes = json.load(open(sys.argv[1]))["notes"]
+assert "interrupted by SIGTERM" in notes, notes
+assert "boot stage" in notes, notes' "$art" \
+  || fail l "the notes must record the interruption, not just a failed stage:
+$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"notes\"])" "$art")"
+ok l "the notes say it was interrupted by SIGTERM rather than that boot failed on its own"
 
 # ── (i) lints ────────────────────────────────────────────────────────────────
 if command -v shellcheck >/dev/null 2>&1; then

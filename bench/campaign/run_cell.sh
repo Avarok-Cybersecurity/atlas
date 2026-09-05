@@ -18,6 +18,15 @@
 # cell failed. The alternative -- die on the first non-zero and leave nothing
 # behind -- is how an expensive hour on a rented box produces a shrug.
 #
+# AND IT IS WRITTEN ON THE WAY OUT OF A SIGNAL, TOO. Teardown that only normal
+# control flow reaches is teardown that does not run when an operator Ctrl-Cs
+# the campaign or a scheduler sends SIGTERM -- and a detached `docker run -d`
+# server then keeps the GPU until somebody notices it by hand. So every way out
+# of this script, clean or signalled, goes through ONE idempotent finalizer:
+# kill the children this invocation started, stop and remove only what it
+# created, and assemble the artifact naming the stage that was interrupted. A
+# cell killed at its boot gate is a NO-GO at `boot`, not a silent -15.
+#
 # WHAT IT REFUSES
 #
 #  * Nothing starts on a box without --yes. --dry-run prints every command and
@@ -54,10 +63,15 @@
 #   IMAGE                    Atlas container image; empty = run SPARK_BIN
 #   VLLM_IMAGE_DIGEST        sha256:... -- required for a real vLLM run
 #   HF_CACHE                 host HF cache (default ~/.cache/huggingface)
+#   ATLAS_NODE_RUN_DIR       node-EP pid files and logs; this cell's teardown
+#                            stops only what this directory recorded
+#                            (default <out>/node-ep)
 #
 # Exit: 0 every gate passed · 1 a gate failed (artifact written anyway) ·
 #       2 usage or refusal-to-start · 3 no recipe for the pair · 4 --spec on
-#       with no speculative profile
+#       with no speculative profile · 128+N terminated by signal N (130 INT,
+#       143 TERM, 129 HUP), with the same teardown run and the artifact naming
+#       the stage that was interrupted
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -74,7 +88,7 @@ VLLM_RECIPES="$HERE/vllm_recipes.json"
 ENGINE=""; MODEL=""; SKU=""; WORKLOAD=""; CONC=""; SPEC=""; THINK=""; OUT=""
 DRY_RUN=0; YES=0; PAIRED=""; PTX_RECEIPT=""
 
-usage() { sed -n '2,68p' "$0"; }
+usage() { sed -n '2,74p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -167,6 +181,11 @@ RUN_LABEL="atlas-campaign.run=$CELL_ID-$(date +%s)"
 # container. Its absence is the proof that there is nothing to tear down.
 CONTAINER_ID_FILE="$OUT/container.id"
 CONTAINER_ID=""
+# The launcher identifies a launch by (run dir, PORT_BASE), and its --stop
+# reaches only what its own run directory recorded. A run directory of this
+# cell's own is what keeps the teardown below -- normal or interrupted -- aimed
+# at the ranks this invocation started and at nobody else's.
+NODE_RUN_DIR="${ATLAS_NODE_RUN_DIR:-$OUT/node-ep}"
 
 echo "=== campaign cell $CELL_ID ==="
 echo "engine:      $ENGINE"
@@ -204,6 +223,12 @@ note_fail() { [ -n "$FAILING_STAGE" ] || FAILING_STAGE="$1"; echo "STAGE FAILED:
 
 step() { echo ""; echo "--- $* ---"; }
 
+# The stage in progress, in the artifact schema's own vocabulary, so a cell
+# that is killed mid-flight can name where it was killed. "The runner exited"
+# is not a campaign result; "NO-GO at boot" is.
+CURRENT_STAGE=""
+stage() { CURRENT_STAGE="$1"; shift; step "$@"; }
+
 show() { echo "\$ $*"; }
 
 if [ "$DRY_RUN" != "1" ]; then
@@ -217,14 +242,221 @@ SMI_Q="$OUT/nvidia-smi-q.txt"
 BOOT_JSON="$OUT/boot.json"
 COH_JSON="$OUT/coherency.json"
 LADDER_JSON="$OUT/ladder.json"
+GIT_SHA=""
+
+# ── the finalizer: the ONE way out ───────────────────────────────────────────
+# Everything this invocation created is released here and nowhere else, so the
+# path through a signal is the same path as the path through a clean finish.
+# The alternative -- teardown written inline where only normal control flow
+# reaches it -- is what leaves a detached vLLM container holding the GPU when
+# the campaign is interrupted, with no artifact to say the cell ever ran.
+CHILD_PIDS=""          # pids this invocation started, space separated
+SERVE_PID=""
+ATLAS_LAUNCHED=0
+FINALIZED=0
+MAIN_DONE=0
+INTERRUPT_SIG=""
+EXTRA_NOTE=""
+
+add_note() {
+  if [ -n "$EXTRA_NOTE" ]; then EXTRA_NOTE="$EXTRA_NOTE; $1"; else EXTRA_NOTE="$1"; fi
+}
+
+# Kill one pid and the pids it started, by pid. `pgrep -P` walks parent links,
+# so the kill stays inside this invocation's own process tree; a process-PATTERN
+# kill would match this script's own command line, which is how a teardown
+# becomes a self-kill.
+kill_tree() {
+  local pid="$1" kid
+  for kid in $(pgrep -P "$pid" 2>/dev/null); do
+    kill_tree "$kid"
+  done
+  kill "$pid" 2>/dev/null || true
+}
+
+forget_child() {
+  local keep="" p
+  for p in $CHILD_PIDS; do
+    [ "$p" = "$1" ] || keep="$keep $p"
+  done
+  CHILD_PIDS="$keep"
+}
+
+# Run one stage's child in the background and wait for it. The backgrounding is
+# what makes a signal actionable at all: bash defers a trap until the FOREGROUND
+# command returns, and `wait` is the builtin a signal interrupts. Straight-line
+# `bash time_to_ready.sh ...` would sit on a SIGTERM until the boot poll gave up
+# 1800 s later. The pid is recorded so the finalizer can kill exactly this
+# child, by pid.
+run_child() {
+  "$@" &
+  local pid=$! rc=0
+  CHILD_PIDS="$CHILD_PIDS $pid"
+  wait "$pid" || rc=$?
+  forget_child "$pid"
+  return "$rc"
+}
+
+# Only what this invocation owns: the pids it started, plus the ranks or the
+# container it created. Nothing here is addressed by name or by pattern.
+teardown_owned() {
+  local pid
+  for pid in $CHILD_PIDS; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "killing pid $pid, started by this cell"
+      kill_tree "$pid"
+    fi
+  done
+  CHILD_PIDS=""
+
+  if [ "$ENGINE" = "atlas" ]; then
+    show "env ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR bash $LAUNCHER --stop"
+    if [ "$DRY_RUN" = "1" ]; then return 0; fi
+    if [ "$ATLAS_LAUNCHED" != "1" ]; then
+      echo "this invocation launched no ranks into $NODE_RUN_DIR: nothing to stop."
+      return 0
+    fi
+    env "ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR" bash "$LAUNCHER" --stop || note_fail teardown
+    return 0
+  fi
+
+  # By the container ID this invocation's `docker run -d` returned, and never
+  # by `pkill -f`: a `pkill -f vllm` pattern matches this script's own command
+  # line, which is how a teardown becomes a self-kill.
+  #
+  # The ID, not the name, because this block runs even when the serve stage
+  # failed. If it failed with 125 the name belongs to a container somebody else
+  # is using, and `docker stop <name>` / `docker rm <name>` then deletes their
+  # live server -- exactly the sequence a stub Docker recorded: run, stop
+  # <same-name>, rm <same-name>. No ID means nothing was created here, and
+  # nothing is this cell's to remove.
+  if [ "$DRY_RUN" = "1" ]; then
+    show "docker stop <id from docker run -d> && docker rm <the same id>"
+  elif [ -n "$CONTAINER_ID" ]; then
+    show "docker stop $CONTAINER_ID && docker rm $CONTAINER_ID"
+    "${DOCKER:-docker}" stop "$CONTAINER_ID" >/dev/null 2>&1 || true
+    "${DOCKER:-docker}" rm "$CONTAINER_ID" >/dev/null 2>&1 || true
+  else
+    echo "no container was created by this invocation ($CONTAINER_ID_FILE is absent):"
+    echo "  nothing to stop or remove. A container already holding the name"
+    echo "  '$CONTAINER' is not this cell's to delete."
+  fi
+}
+
+# Built at call time, not once: the failing stage and the interruption note are
+# only known when the cell is over, however it got there.
+build_assemble() {
+  local note="$WARMUP_NOTE"
+  ASSEMBLE=( python3 "$HERE/cell_assemble.py"
+    --engine "$ENGINE" --model-key "$MODEL" --sku "$SKU" --workload "$WORKLOAD"
+    --concurrency "$CONC" --spec "$SPEC" --think "$THINK" --out "$ARTIFACT"
+    --workloads "$WORKLOADS" --atlas-recipes "$ATLAS_RECIPES"
+    --vllm-recipes "$VLLM_RECIPES" --client "$LADDER"
+    --serve-argv "$SERVE_ARGV" --serve-env "$SERVE_ENV" --nvidia-smi-q "$SMI_Q"
+    --boot-json "$BOOT_JSON" --coherency-json "$COH_JSON" --ladder-json "$LADDER_JSON" )
+  [ -n "$GIT_SHA" ] && ASSEMBLE+=( --git-sha "$GIT_SHA" )
+  [ -n "${VLLM_IMAGE_DIGEST:-}" ] && [ "$ENGINE" = "vllm" ] && ASSEMBLE+=( --image-digest "$VLLM_IMAGE_DIGEST" )
+  [ -n "$PAIRED" ] && ASSEMBLE+=( --paired-artifact "$PAIRED" )
+  [ -n "$PTX_RECEIPT" ] && ASSEMBLE+=( --ptx-receipt "$PTX_RECEIPT" )
+  if [ -n "$EXTRA_NOTE" ]; then note="${note:+$note; }$EXTRA_NOTE"; fi
+  [ -n "$note" ] && ASSEMBLE+=( --extra-note "$note" )
+  [ -n "$FAILING_STAGE" ] && ASSEMBLE+=( --failing-stage "$FAILING_STAGE" )
+  return 0
+}
+
+# Idempotent: the EXIT trap fires after a signal handler and after normal
+# completion, and neither must tear the same thing down twice.
+finalize() {
+  local rc=$? sig_rc=""
+  if [ "$FINALIZED" = "1" ]; then return "$rc"; fi
+  FINALIZED=1
+
+  if [ -n "$INTERRUPT_SIG" ]; then
+    case "$INTERRUPT_SIG" in
+      INT) sig_rc=130 ;;
+      HUP) sig_rc=129 ;;
+      *)   sig_rc=143 ;;
+    esac
+    echo ""
+    echo "!!! SIG$INTERRUPT_SIG during stage '${CURRENT_STAGE:-preflight}': releasing what"
+    echo "    this cell created, then writing the artifact that says so."
+    note_fail "${CURRENT_STAGE:-preflight}"
+    add_note "interrupted by SIG$INTERRUPT_SIG during the ${CURRENT_STAGE:-preflight} stage: this cell was terminated before it finished, so its gates are unfinished rather than passed"
+  fi
+
+  step "stage 6/7 teardown"
+  teardown_owned
+
+  step "stage 7/7 assemble and validate"
+  build_assemble
+  show "${ASSEMBLE[*]}"
+  show "python3 $HERE/validate_artifact.py $ARTIFACT"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    echo ""
+    echo "dry-run: nothing launched, nothing written."
+    exit "${sig_rc:-0}"
+  fi
+
+  "${ASSEMBLE[@]}" || note_fail validate
+  if [ ! -f "$ARTIFACT" ]; then
+    echo "ERROR: the artifact was not written; there is nothing to validate." >&2
+    exit "${sig_rc:-1}"
+  fi
+  python3 "$HERE/validate_artifact.py" "$ARTIFACT" || {
+    note_fail validate
+    # Re-assemble so the artifact's own verdict admits the validation failure
+    # rather than claiming a verdict its shape does not support.
+    build_assemble
+    "${ASSEMBLE[@]}" --failing-stage validate >/dev/null
+  }
+
+  echo ""
+  if [ -n "$sig_rc" ]; then
+    echo "=== $CELL_ID: TERMINATED by SIG$INTERRUPT_SIG at stage '$FAILING_STAGE'; artifact written to $ARTIFACT ==="
+    exit "$sig_rc"
+  fi
+  if [ -n "$FAILING_STAGE" ]; then
+    echo "=== $CELL_ID: FAILED at stage '$FAILING_STAGE'; artifact written to $ARTIFACT ==="
+    exit 1
+  fi
+  if [ "$MAIN_DONE" != "1" ]; then
+    # An exit that came from neither the main flow nor a handled signal: the
+    # cell is torn down and recorded, but the original status is its own.
+    exit "$rc"
+  fi
+  echo "=== $CELL_ID: all gates passed; artifact written to $ARTIFACT ==="
+  echo "    Verdict is PARTIAL until the paired cell from the other engine exists"
+  echo "    within 24 h; re-run with --paired-artifact to promote it."
+  exit 0
+}
+
+# A handler does none of the work itself: it records WHICH signal and goes
+# through the same finalizer a clean finish does.
+on_signal() {
+  [ -n "$INTERRUPT_SIG" ] || INTERRUPT_SIG="$1"
+  finalize
+  # Reached only if the finalizer had already run (a second signal during
+  # teardown). The process still has to end, and with this signal's status.
+  case "$INTERRUPT_SIG" in INT) exit 130 ;; HUP) exit 129 ;; *) exit 143 ;; esac
+}
+
+trap 'on_signal TERM' TERM
+trap 'on_signal INT' INT
+trap 'on_signal HUP' HUP
+trap finalize EXIT
+# INT is trapped for the interactive Ctrl-C, which is delivered to the
+# foreground process group. A shell STARTED in the background inherits SIGINT
+# ignored, and a signal ignored on entry cannot be trapped -- bash's rule, not
+# this script's. So a campaign driver that backgrounds its cells must terminate
+# them with TERM, which is also what the regression in campaign_test.sh sends.
 
 # ── 1. preflight ─────────────────────────────────────────────────────────────
-step "stage 1/7 preflight"
+stage preflight "stage 1/7 preflight"
 show "nvidia-smi -q > $SMI_Q"
 show "df -h $OUT > $OUT/df.txt"
 show "git -C $ROOT rev-parse HEAD"
 show "sha256sum $LADDER"
-GIT_SHA=""
 if [ "$DRY_RUN" != "1" ]; then
   if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi -q > "$SMI_Q" 2>"$OUT/nvidia-smi-q.err" || note_fail preflight
@@ -240,13 +472,14 @@ if [ "$DRY_RUN" != "1" ]; then
 fi
 
 # ── 2. serve ─────────────────────────────────────────────────────────────────
-step "stage 2/7 serve"
+stage serve "stage 2/7 serve"
 START_EPOCH=""
 if [ "$ENGINE" = "atlas" ]; then
   ATLAS_ENV=(
     "NGPUS=$NGPUS" "EP_SIZE=$EP_SIZE" "TP_SIZE=$TP_SIZE"
     "PORT_BASE=$PORT" "BIND=0.0.0.0" "NCCL_PROFILE=default"
     "BOOT_TIMEOUT_S=$BOOT_CAP" "EXTRA_ARGS=$EXTRA_ARGS"
+    "ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR"
   )
   [ -n "$WARMUP_PROMPT" ] && ATLAS_ENV+=( "WARMUP_PROMPT=$WARMUP_PROMPT" )
   [ -n "${SPARK_BIN:-}" ] && ATLAS_ENV+=( "SPARK_BIN=$SPARK_BIN" )
@@ -266,11 +499,14 @@ line = next((l for l in pathlib.Path(sys.argv[1]).read_text().splitlines()
 argv = shlex.split(line[len("rank0_command: "):]) if line else []
 pathlib.Path(sys.argv[2]).write_bytes(b"\0".join(a.encode() for a in argv))
 PY
-    env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --check-kernels "$HF_ID" > "$OUT/check-kernels.txt" 2>&1 \
-      || note_fail serve
+    run_child env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --check-kernels "$HF_ID" \
+      > "$OUT/check-kernels.txt" 2>&1 || note_fail serve
     START_EPOCH="$(date +%s)"
     env "${ATLAS_ENV[@]}" bash "$LAUNCHER" "$HF_ID" > "$OUT/serve.log" 2>&1 &
     SERVE_PID=$!
+    # This launch is now this invocation's to stop, by pid and by run dir.
+    ATLAS_LAUNCHED=1
+    CHILD_PIDS="$CHILD_PIDS $SERVE_PID"
     echo "launcher pid $SERVE_PID; log $OUT/serve.log"
   fi
 else
@@ -282,7 +518,7 @@ else
   else
     printf 'VLLM_IMAGE_DIGEST=%s\n' "${VLLM_IMAGE_DIGEST:-}" > "$SERVE_ENV"
     START_EPOCH="$(date +%s)"
-    VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
+    run_child env VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
       bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --id-file "$CONTAINER_ID_FILE" \
       > "$OUT/serve.log" 2>&1
     serve_rc=$?
@@ -309,104 +545,34 @@ PY
 fi
 
 # ── 3. boot gate ─────────────────────────────────────────────────────────────
-step "stage 3/7 boot gate (cap ${BOOT_CAP}s)"
+stage boot "stage 3/7 boot gate (cap ${BOOT_CAP}s)"
 show "bash $TTR --url $URL --model $HF_ID --engine $ENGINE --start-epoch <serve-start> --timeout-s $BOOT_CAP --out $BOOT_JSON"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
-  bash "$TTR" --url "$URL" --model "$HF_ID" --engine "$ENGINE" \
+  run_child bash "$TTR" --url "$URL" --model "$HF_ID" --engine "$ENGINE" \
        --start-epoch "$START_EPOCH" --timeout-s "$BOOT_CAP" --out "$BOOT_JSON" \
     || note_fail boot
 fi
 
 # ── 4. coherency gate ────────────────────────────────────────────────────────
-step "stage 4/7 coherency gate"
+stage coherency "stage 4/7 coherency gate"
 show "python3 $COHERENCY --url $URL --model $HF_ID --out $COH_JSON"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
-  python3 "$COHERENCY" --url "$URL" --model "$HF_ID" --out "$COH_JSON" || note_fail coherency
+  run_child python3 "$COHERENCY" --url "$URL" --model "$HF_ID" --out "$COH_JSON" \
+    || note_fail coherency
 fi
 
 # ── 5. latency pack ──────────────────────────────────────────────────────────
-step "stage 5/7 latency pack"
+stage ladder "stage 5/7 latency pack"
 show "python3 $LADDER --url $URL --model $HF_ID --label $CELL_ID --out $LADDER_JSON --concs $CONC --reps $REPS --isl $ISL --osl $OSL --warmup $WARMUP ${LADDER_THINK[*]:-}"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
-  python3 "$LADDER" --url "$URL" --model "$HF_ID" --label "$CELL_ID" \
+  run_child python3 "$LADDER" --url "$URL" --model "$HF_ID" --label "$CELL_ID" \
           --out "$LADDER_JSON" --concs "$CONC" --reps "$REPS" \
           --isl "$ISL" --osl "$OSL" --warmup "$WARMUP" "${LADDER_THINK[@]}" || note_fail ladder
 fi
 
-# ── 6. teardown (always) ─────────────────────────────────────────────────────
-step "stage 6/7 teardown"
-if [ "$ENGINE" = "atlas" ]; then
-  show "bash $LAUNCHER --stop"
-  if [ "$DRY_RUN" != "1" ]; then
-    bash "$LAUNCHER" --stop || note_fail teardown
-  fi
-else
-  # By the container ID this invocation's `docker run -d` returned, and never
-  # by `pkill -f`: a `pkill -f vllm` pattern matches this script's own command
-  # line, which is how a teardown becomes a self-kill.
-  #
-  # The ID, not the name, because this block runs even when the serve stage
-  # failed. If it failed with 125 the name belongs to a container somebody else
-  # is using, and `docker stop <name>` / `docker rm <name>` then deletes their
-  # live server -- exactly the sequence a stub Docker recorded: run, stop
-  # <same-name>, rm <same-name>. No ID means nothing was created here, and
-  # nothing is this cell's to remove.
-  if [ "$DRY_RUN" = "1" ]; then
-    show "docker stop <id from docker run -d> && docker rm <the same id>"
-  elif [ -n "$CONTAINER_ID" ]; then
-    show "docker stop $CONTAINER_ID && docker rm $CONTAINER_ID"
-    "${DOCKER:-docker}" stop "$CONTAINER_ID" >/dev/null 2>&1 || true
-    "${DOCKER:-docker}" rm "$CONTAINER_ID" >/dev/null 2>&1 || true
-  else
-    echo "no container was created by this invocation ($CONTAINER_ID_FILE is absent):"
-    echo "  nothing to stop or remove. A container already holding the name"
-    echo "  '$CONTAINER' is not this cell's to delete."
-  fi
-fi
-
-# ── 7. assemble + validate ───────────────────────────────────────────────────
-step "stage 7/7 assemble and validate"
-ASSEMBLE=( python3 "$HERE/cell_assemble.py"
-  --engine "$ENGINE" --model-key "$MODEL" --sku "$SKU" --workload "$WORKLOAD"
-  --concurrency "$CONC" --spec "$SPEC" --think "$THINK" --out "$ARTIFACT"
-  --workloads "$WORKLOADS" --atlas-recipes "$ATLAS_RECIPES"
-  --vllm-recipes "$VLLM_RECIPES" --client "$LADDER"
-  --serve-argv "$SERVE_ARGV" --serve-env "$SERVE_ENV" --nvidia-smi-q "$SMI_Q"
-  --boot-json "$BOOT_JSON" --coherency-json "$COH_JSON" --ladder-json "$LADDER_JSON" )
-[ -n "$GIT_SHA" ] && ASSEMBLE+=( --git-sha "$GIT_SHA" )
-[ -n "${VLLM_IMAGE_DIGEST:-}" ] && [ "$ENGINE" = "vllm" ] && ASSEMBLE+=( --image-digest "$VLLM_IMAGE_DIGEST" )
-[ -n "$PAIRED" ] && ASSEMBLE+=( --paired-artifact "$PAIRED" )
-[ -n "$PTX_RECEIPT" ] && ASSEMBLE+=( --ptx-receipt "$PTX_RECEIPT" )
-[ -n "$WARMUP_NOTE" ] && ASSEMBLE+=( --extra-note "$WARMUP_NOTE" )
-[ -n "$FAILING_STAGE" ] && ASSEMBLE+=( --failing-stage "$FAILING_STAGE" )
-
-show "${ASSEMBLE[*]}"
-show "python3 $HERE/validate_artifact.py $ARTIFACT"
-
-if [ "$DRY_RUN" = "1" ]; then
-  echo ""
-  echo "dry-run: nothing launched, nothing written."
-  exit 0
-fi
-
-"${ASSEMBLE[@]}" || note_fail validate
-if [ ! -f "$ARTIFACT" ]; then
-  echo "ERROR: the artifact was not written; there is nothing to validate." >&2
-  exit 1
-fi
-python3 "$HERE/validate_artifact.py" "$ARTIFACT" || {
-  note_fail validate
-  # Re-assemble so the artifact's own verdict admits the validation failure
-  # rather than claiming a verdict its shape does not support.
-  "${ASSEMBLE[@]}" --failing-stage validate >/dev/null
-}
-
-echo ""
-if [ -n "$FAILING_STAGE" ]; then
-  echo "=== $CELL_ID: FAILED at stage '$FAILING_STAGE'; artifact written to $ARTIFACT ==="
-  exit 1
-fi
-echo "=== $CELL_ID: all gates passed; artifact written to $ARTIFACT ==="
-echo "    Verdict is PARTIAL until the paired cell from the other engine exists"
-echo "    within 24 h; re-run with --paired-artifact to promote it."
-exit 0
+# ── 6 + 7. teardown, assemble, validate ─────────────────────────────────────
+# Not written out again here: these stages ARE the finalizer above, which is
+# the same code a SIGINT/SIGTERM/SIGHUP takes. One teardown, one artifact, one
+# way out.
+MAIN_DONE=1
+finalize
