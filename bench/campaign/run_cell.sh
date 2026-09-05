@@ -379,7 +379,13 @@ teardown_owned() {
       echo "  to stop."
       return 0
     fi
-    env "ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR" bash "$LAUNCHER" --stop || note_fail teardown
+    # A --stop that could not account for a rank exits non-zero and KEEPS that
+    # rank's intent record, so the cell reports the leak rather than closing
+    # its teardown stage over it.
+    if ! env "ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR" bash "$LAUNCHER" --stop; then
+      note_fail teardown
+      add_note "the launcher could not account for every rank it recorded in $NODE_RUN_DIR: a rank this cell started may still be running and holding a GPU, and its intent record is kept there for a later --stop"
+    fi
     return 0
   fi
 
@@ -407,7 +413,7 @@ teardown_owned() {
   #      printed, and the only thing that survives the window is the label
   #      chosen and recorded before the create. It identifies this invocation
   #      alone (cell, epoch, pid), so what comes back is this cell's own.
-  local ids="$CONTAINER_ID" cid
+  local ids="$CONTAINER_ID" cid rc=0 out=""
   if [ -z "$ids" ] && [ -s "$CONTAINER_ID_FILE" ]; then
     ids="$(cat "$CONTAINER_ID_FILE")"
     echo "the id file holds $ids: the create finished, this shell never read it."
@@ -415,7 +421,22 @@ teardown_owned() {
   if [ -z "$ids" ] && [ "$CREATE_ATTEMPTED" = "1" ]; then
     echo "no container ID reached this shell, and a create was attempted:"
     echo "  asking Docker for anything labelled $RUN_LABEL."
-    ids="$("${DOCKER:-docker}" ps -aq --filter "label=$RUN_LABEL" 2>/dev/null || true)"
+    # The lookup's exit status, read apart from its output. `|| true` used to
+    # collapse a daemon that could not be reached into a daemon that answered
+    # "nothing", and the branch below then reported a confirmed absence for a
+    # container that was up. An unsuccessful lookup is neither presence nor
+    # absence: nothing is stopped on a guess, and the cell records that a
+    # container of its own may still be holding the GPU.
+    out="$("${DOCKER:-docker}" ps -aq --filter "label=$RUN_LABEL" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "  the lookup FAILED (docker ps exited $rc): ${out:-(no output)}"
+      echo "  Whether this cell's container exists is UNKNOWN, so nothing is stopped"
+      echo "  by guesswork -- and it is not reported as absent either."
+      note_fail teardown
+      add_note "teardown could not reach Docker (docker ps exited $rc) to find the container labelled $RUN_LABEL: a container this cell created may still be running and holding the GPU"
+      return 0
+    fi
+    ids="$out"
   fi
 
   if [ -z "$ids" ]; then
@@ -426,8 +447,19 @@ teardown_owned() {
   fi
   for cid in $ids; do
     show "docker stop $cid && docker rm $cid"
-    "${DOCKER:-docker}" stop "$cid" >/dev/null 2>&1 || true
-    "${DOCKER:-docker}" rm "$cid" >/dev/null 2>&1 || true
+    # A removal that failed is reported, for the same reason: the cell's own
+    # artifact is the only place the leak is written down.
+    if ! "${DOCKER:-docker}" stop "$cid" >/dev/null 2>&1; then
+      echo "  docker stop $cid FAILED: the container may still be running."
+      note_fail teardown
+      add_note "teardown could not stop the container $cid this cell created: it may still be running and holding the GPU"
+      continue
+    fi
+    if ! "${DOCKER:-docker}" rm "$cid" >/dev/null 2>&1; then
+      echo "  docker rm $cid FAILED: the container is stopped but not removed."
+      note_fail teardown
+      add_note "teardown stopped the container $cid this cell created but could not remove it"
+    fi
   done
 }
 

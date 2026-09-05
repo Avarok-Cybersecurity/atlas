@@ -149,7 +149,12 @@ DOCKER="${DOCKER:-docker}"
 # By pid file and container name, never `pkill -f`. A `pkill -f spark` here
 # would match this script's own command line (and any editor with the word in
 # an argument), which is how a stop turns into a self-kill.
-# reconcile_intent FILE -> 0 if it stopped a container of this launch's
+# reconcile_intent FILE -> 0 stopped and removed a container of this launch's
+#                          1 there is nothing left to reconcile (the intent may
+#                            be deleted: absence is CONFIRMED)
+#                          2 the answer is unknown or the removal failed (the
+#                            intent must be KEPT)
+#
 # An intent is what a create wrote before it ran: the deterministic container
 # name and the label this launch stamps on every rank it creates. Asking Docker
 # for BOTH is what makes the answer this launch's own -- the name on its own
@@ -157,8 +162,16 @@ DOCKER="${DOCKER:-docker}"
 # launch, and the label on its own is not enough to find anything if the create
 # never reached the daemon. Nothing here is force-removed and nothing is
 # matched by pattern.
+#
+# THE THIRD ANSWER IS THE POINT. `docker ps ... || true` used to collapse a
+# lookup that FAILED into a lookup that found nothing, and the intent -- the
+# only record of the create -- was deleted either way. One transient daemon or
+# connection error therefore turned a recoverable leak into an unrecoverable
+# one: the rank kept its GPU and the evidence that would have found it was
+# gone. So the lookup's exit status is read separately from its output, and
+# recovery evidence is deleted only once absence or removal is confirmed.
 reconcile_intent() {
-  local f="$1" line name="" label="" ids id found=1
+  local f="$1" line name="" label="" out="" ids id found=1 rc=0 failed=0
   while IFS= read -r line; do
     case "$line" in
       name=*) name="${line#name=}" ;;
@@ -171,22 +184,42 @@ reconcile_intent() {
     return 1
   fi
   echo "reconciling the interrupted create of $name (label $label)"
-  ids="$("$DOCKER" ps -aq --filter "name=^$name\$" --filter "label=$label" 2>/dev/null || true)"
+  out="$("$DOCKER" ps -aq --filter "name=^$name\$" --filter "label=$label" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "  CANNOT RECONCILE $name: the lookup itself failed (docker ps exited $rc)." >&2
+    echo "  ${out:-(no output)}" >&2
+    echo "  Whether a container of this launch's exists is UNKNOWN, so nothing is" >&2
+    echo "  stopped and $(basename "$f") is KEPT -- it is the only record of the" >&2
+    echo "  create. Re-run --stop once Docker answers again." >&2
+    return 2
+  fi
+  ids="$out"
   if [ -z "$ids" ]; then
     echo "  nothing wears that name and that label: the create never reached Docker"
     return 1
   fi
   for id in $ids; do
     echo "  stopping container $id"
-    "$DOCKER" stop "$id" >/dev/null 2>&1 || true
-    "$DOCKER" rm "$id" >/dev/null 2>&1 || true
+    if ! "$DOCKER" stop "$id" >/dev/null 2>&1; then
+      echo "  CANNOT RECONCILE $name: docker stop $id failed, so the container may" >&2
+      echo "  still be running. $(basename "$f") is KEPT." >&2
+      failed=1
+      continue
+    fi
+    if ! "$DOCKER" rm "$id" >/dev/null 2>&1; then
+      echo "  CANNOT RECONCILE $name: docker rm $id failed, so the container is" >&2
+      echo "  stopped but not removed. $(basename "$f") is KEPT." >&2
+      failed=1
+      continue
+    fi
     found=0
   done
+  [ "$failed" = "0" ] || return 2
   return "$found"
 }
 
 stop_ranks() {
-  local f pid name stopped=0
+  local f pid name stopped=0 unresolved=0 rc
   if [ ! -d "$RUN_DIR" ]; then
     echo "no run directory at $RUN_DIR — nothing to stop"
     return 0
@@ -199,10 +232,15 @@ stop_ranks() {
       rm -f "$f"
       continue
     fi
-    if reconcile_intent "$f"; then
-      stopped=$((stopped + 1))
-    fi
-    rm -f "$f"
+    rc=0
+    reconcile_intent "$f" || rc=$?
+    case "$rc" in
+      0) stopped=$((stopped + 1)); rm -f "$f" ;;
+      1) rm -f "$f" ;;
+      # Unresolved: the intent is this rank's only recovery evidence and it
+      # stays on disk until a --stop can confirm what became of the container.
+      *) unresolved=$((unresolved + 1)) ;;
+    esac
   done
   for f in "$RUN_DIR"/rank*.container; do
     [ -e "$f" ] || continue
@@ -226,11 +264,25 @@ stop_ranks() {
     stopped=$((stopped + 1))
   done
   echo "stopped $stopped rank(s); logs kept in $RUN_DIR"
+  if [ "$unresolved" != "0" ]; then
+    echo "" >&2
+    echo "INCOMPLETE: $unresolved rank(s) could not be reconciled (see above)." >&2
+    echo "  Their intent records are kept in $RUN_DIR so a later" >&2
+    echo "  ATLAS_NODE_RUN_DIR=$RUN_DIR $0 --stop" >&2
+    echo "  can finish the job. Nothing was deleted that was not confirmed absent" >&2
+    echo "  or removed." >&2
+    return 1
+  fi
+  return 0
 }
 
 if [ "$STOP" = "1" ]; then
-  stop_ranks
-  exit 0
+  # The status is the reconciliation's own: a --stop that could not account for
+  # a rank has not stopped the launch, and a caller (the campaign runner's
+  # teardown, a human) must be able to see that without reading the log.
+  stop_rc=0
+  stop_ranks || stop_rc=$?
+  exit "$stop_rc"
 fi
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
@@ -706,7 +758,7 @@ if [ "$died" = "1" ]; then
     rank_log_tail "$rank" >&2
   done
   echo "" >&2
-  stop_ranks >&2
+  stop_ranks >&2 || true
   exit 1
 fi
 ELAPSED="$(( ${READY_EPOCH:-$(date +%s)} - START_EPOCH ))"
@@ -721,7 +773,7 @@ if [ "$ready" != "1" ]; then
   done
   if [ "$STOP_ON_TIMEOUT" = "1" ]; then
     echo "" >&2
-    stop_ranks >&2
+    stop_ranks >&2 || true
   else
     echo "" >&2
     echo "Ranks left running for inspection. Stop them with:" >&2

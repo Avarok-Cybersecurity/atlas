@@ -47,6 +47,10 @@
 #       the create is what --stop reconciles, and the query it reconciles with
 #       carries the exact name AND this launch's label -- a container of a
 #       later launch wearing the same name is not this run's to remove.
+#   (l) that reconciliation must also survive a lookup that FAILS. `docker ps`
+#       exiting non-zero is not "no such container": the intent is the only
+#       record of the create, and deleting it on a daemon hiccup is what turns
+#       a recoverable leak into an unrecoverable one.
 #
 # Usage: bash scripts/start_node_ep_test.sh
 set -uo pipefail
@@ -300,6 +304,15 @@ case "$cmd" in
     echo "cid-$name"
     ;;
   ps)
+    # A lookup that FAILED is not a lookup that found nothing, and the launcher
+    # has to be able to tell them apart. The marker file named by
+    # DOCKER_PS_FAIL_ONCE is CONSUMED by the first `ps`, so exactly one call
+    # fails the way a daemon hiccup does and the next one answers normally.
+    if [ -n "${DOCKER_PS_FAIL_ONCE:-}" ] && [ -f "$DOCKER_PS_FAIL_ONCE" ]; then
+      rm -f "$DOCKER_PS_FAIL_ONCE"
+      echo "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
+      exit 1
+    fi
     want_name=""; want_label=""; prev=""
     for a in "$@"; do
       if [ "$prev" = "--filter" ]; then
@@ -322,6 +335,13 @@ case "$cmd" in
     echo "true"
     ;;
   stop|rm)
+    # Same one-shot marker for the OTHER half of a reconciliation: the lookup
+    # answered, and the removal it asked for did not go through.
+    if [ -n "${DOCKER_STOP_FAIL_ONCE:-}" ] && [ -f "$DOCKER_STOP_FAIL_ONCE" ]; then
+      rm -f "$DOCKER_STOP_FAIL_ONCE"
+      echo "docker: Error response from daemon: cannot stop container." >&2
+      exit 1
+    fi
     for a in "$@"; do name="$a"; done
     awk -v n="$name" '$1 != n && $2 != n' "$DOCKER_STATE" > "$DOCKER_STATE.next"
     mv "$DOCKER_STATE.next" "$DOCKER_STATE"
@@ -469,6 +489,59 @@ grep -Eq '^(stop|rm) ' "$DOCKER_CALLS" && fail k "nothing of this run's exists, 
 may be stopped:
 $(cat "$DOCKER_CALLS")"
 ok k "a same-named container wearing another launch's label is left alone"
+
+# ── (l) a lookup that FAILED is not a lookup that found nothing ─────────────
+# The intent is the only record of an interrupted create, and --stop used to
+# delete it whether the reconciliation query answered "no such container" or
+# did not answer at all: `docker ps ... || true` collapses both into an empty
+# string. One transient daemon error therefore turned a recoverable leak into
+# an unrecoverable one -- the container kept the GPU and the evidence that
+# would have found it was gone. An unsuccessful lookup keeps the intent, says
+# which rank it could not reconcile, and fails.
+run_l="$tmp/run-l"
+mkdir -p "$run_l"
+name_l="atlas-run-l-9999-rank0"
+label_l="atlas-node-ep.run=atlas-run-l-9999-1757000001-4243"
+write_intent_l() { printf 'name=%s\nlabel=%s\n' "$name_l" "$label_l" > "$run_l/rank0.intent"; }
+write_intent_l
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+printf '%s %s %s\n' "cid-$name_l" "$name_l" "$label_l" >> "$DOCKER_STATE"
+
+: > "$tmp/ps-fail-once"
+out_l="$(DOCKER="$tmp/fake-docker" DOCKER_PS_FAIL_ONCE="$tmp/ps-fail-once" \
+          ATLAS_NODE_RUN_DIR="$run_l" bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -ne 0 ] || fail l "a --stop whose lookup failed must not report success:
+$out_l"
+have "$out_l" "$name_l" || fail l "the failure must name the rank it could not reconcile:
+$out_l"
+[ -f "$run_l/rank0.intent" ] \
+  || fail l "a failed lookup must keep the intent it could not act on: $(ls "$run_l")"
+state_has_cid "cid-$name_l" \
+  || fail l "nothing was confirmed absent, so the container must still be live:
+$(cat "$DOCKER_STATE")"
+grep -Eq '^(stop|rm) ' "$DOCKER_CALLS" && fail l "a lookup that failed answers nothing to act on:
+$(cat "$DOCKER_CALLS")"
+ok l "a --stop whose docker ps failed keeps the intent, touches nothing and exits non-zero"
+
+# The other half of the same rule: the lookup answered and the REMOVAL did not.
+: > "$DOCKER_CALLS"; : > "$tmp/stop-fail-once"
+out_l2="$(DOCKER="$tmp/fake-docker" DOCKER_STOP_FAIL_ONCE="$tmp/stop-fail-once" \
+           ATLAS_NODE_RUN_DIR="$run_l" bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -ne 0 ] || fail l "a --stop whose docker stop failed must not report success:
+$out_l2"
+[ -f "$run_l/rank0.intent" ] || fail l "a failed removal must keep the intent: $(ls "$run_l")"
+state_has_cid "cid-$name_l" || fail l "the container the stop failed on is gone from the state:
+$(cat "$DOCKER_STATE")"
+ok l "a --stop whose docker stop failed keeps the intent and exits non-zero"
+
+: > "$DOCKER_CALLS"
+out_l3="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_l" \
+           bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail l "the retry against a healthy Docker exited $rc: $out_l3"
+state_has_cid "cid-$name_l" && fail l "the retry must remove the container the first --stop left:
+$(cat "$DOCKER_STATE")"
+[ -e "$run_l/rank0.intent" ] && fail l "the retry must clear the intent it reconciled"
+ok l "the next --stop, with Docker answering, removes the leaked rank and clears the intent"
 
 echo ""
 echo "ALL $asserts assertions passed."

@@ -79,6 +79,10 @@
 #       recoverable, and the query that reconciles it carries the exact name
 #       AND this launch's label -- a container of another run wearing that
 #       name is untouched.
+#   (q) a teardown lookup that FAILED, mirrored from the launcher's case (l):
+#       `docker ps --filter label=... || true` read an unreachable daemon as
+#       "nothing was created here", and the cell finished its teardown stage
+#       cleanly while its container kept the GPU.
 #   (p) engine_version is the ENGINE's identity. The checkout SHA was passed
 #       as --git-sha for either engine and a digest was captured only for
 #       vLLM, so an Atlas container cell claimed the campaign's revision with
@@ -497,6 +501,14 @@ case "${1:-}" in
     echo "${DOCKER_FAKE_CID:?}"
     ;;
   ps)
+    # A lookup that FAILED is not a lookup that found nothing. The marker file
+    # named by DOCKER_PS_FAIL_ONCE is CONSUMED by the first `ps`, so exactly
+    # one call fails the way a daemon hiccup does.
+    if [ -n "${DOCKER_PS_FAIL_ONCE:-}" ] && [ -f "$DOCKER_PS_FAIL_ONCE" ]; then
+      rm -f "$DOCKER_PS_FAIL_ONCE"
+      echo "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
+      exit 1
+    fi
     want_label=""; want_name=""; prev=""
     for a in "$@"; do
       if [ "$prev" = "--filter" ]; then
@@ -1065,6 +1077,64 @@ assert ev["binary_sha256"] is None, ev
 assert doc["harness"]["git_sha"] == (sys.argv[3] or None), doc["harness"]
 PY
 ok p "the vLLM cell keeps the digest it was pinned to and claims no engine revision"
+
+# ── (q) a teardown lookup that FAILED is not a teardown that found nothing ──
+# The launcher's half of this is scripts/start_node_ep_test.sh case (l); this
+# is the runner's own label lookup. `docker ps --filter label=... || true`
+# collapsed an unreachable daemon into an empty result, and the cell then
+# printed "no container was created by this invocation" and finished its
+# teardown stage cleanly -- while the container it created in the window the
+# signal landed in kept the GPU. The artifact has to say the container may
+# still be running; a silent clean teardown is the thing that loses it.
+: > "$DOCKER_CALLS"; : > "$DOCKER_RUNNING"; : > "$tmp/ps-fail-once"
+DOCKER_FAKE_CID="$CID" DOCKER_RUN_BLOCK_S=60 PATH="$tmp/bin:$PATH" \
+  DOCKER_PS_FAIL_ONCE="$tmp/ps-fail-once" VLLM_IMAGE_DIGEST="$DIGEST" \
+  bash "$RUN" --engine vllm --model nemotron-3-nano-fp8 --sku h100 \
+  --workload lat --concurrency 1 --spec off --think off \
+  --out "$tmp/lookup-failed" --yes > "$tmp/lookup-failed.log" 2>&1 &
+run_pid=$!
+
+wait_for 120 "docker run to create the container" test -s "$DOCKER_RUNNING" \
+  || fail q "the cell never got as far as creating its container:
+$(cat "$tmp/lookup-failed.log")"
+
+kill -TERM "$run_pid"
+wait "$run_pid"; rc=$?
+# The signal lands while the shell is inside `run_child ... > $OUT/serve.log`,
+# and that redirection is the whole function call's -- so the finalizer the
+# trap runs writes THERE, not to the runner's own log. Both are read.
+log="$(cat "$tmp/lookup-failed.log" "$tmp/lookup-failed/serve.log" 2>&1)"
+
+[ $rc -eq 143 ] || fail q "a cell killed mid-create must exit 143, got $rc:
+$log"
+stray="$(grep -E '^(stop|rm) ' "$DOCKER_CALLS" || true)"
+[ -z "$stray" ] || fail q "the lookup answered nothing, so nothing may be stopped by guess:
+$stray"
+ok q "a teardown whose docker ps failed stops nothing on a guess"
+
+have "$log" "may still be running" \
+  || fail q "the teardown must say the container's fate is unknown, not that there was none:
+$log"
+grep -Fq "no container was created by this invocation" <<<"$log" \
+  && fail q "an unreachable daemon was reported as proof that nothing was created:
+$log"
+ok q "the teardown reports an unknown fate rather than a confirmed absence"
+
+art="$tmp/lookup-failed/artifact.json"
+[ -f "$art" ] || fail q "the cell must still write its artifact:
+$log"
+python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
+  || fail q "the artifact must validate:
+$(python3 "$HERE/validate_artifact.py" "$art")"
+python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+notes = doc["notes"]
+assert "may still be running" in notes, notes
+assert doc["verdict"] == "NO-GO", doc["verdict"]' "$art" \
+  || fail q "the notes must carry the leaked container forward:
+$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"notes\"])" "$art")"
+ok q "the artifact validates as NO-GO and its notes name the container that may be leaked"
 
 # ── (i) lints ────────────────────────────────────────────────────────────────
 if command -v shellcheck >/dev/null 2>&1; then
