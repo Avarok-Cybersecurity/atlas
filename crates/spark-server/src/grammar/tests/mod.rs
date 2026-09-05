@@ -16,6 +16,7 @@ mod poolside;
 mod qwen3_coder_required;
 mod sanitize;
 mod tools_basic;
+mod value_entry;
 
 /// Build a minimal vocabulary for testing.
 /// Contains basic ASCII + JSON structural tokens.
