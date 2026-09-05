@@ -285,3 +285,18 @@ on "certify", proven by sabotage, not asserted in a comment).
 2026-09-05T02:40Z  tool       atlasctl 0.2.0 found installed; `doctor` on this box already reports two REAL problems (config-dir uid mismatch 1000 vs 996; sparkrun registry redirect to Atlas-Inf/sparkrun-recipes, which Atlas does not control) — the ctl lane starts with live material
 2026-09-05T02:40Z  spawn      wave 1: 4 fable agents in isolated worktrees (nightly/w1-{dx,rob,ctl,journey}), local commits only, negative controls mandatory, no pushes into the starved CI pool
 ```
+
+---
+
+## Run 11 — 2026-09-05T03:00Z — nightly wave 1: journey lane returns
+
+```text
+2026-09-05T03:00Z  return     journey lane (fable): 7 doc-fix commits on nightly/w1-journey, docs-only (4 files, +52/-6), tree clean, nothing pushed
+2026-09-05T03:02Z  tool       coordinator VERIFIED the three load-bearing claims first-hand rather than accepting them:
+                              - `cargo test -p spark-server --lib scheduler` -> "running 0 tests ... ok" (242 real tests live in the bin target) CONFIRMED
+                              - PR template's checklist line fails TWICE on Linux: without CUDARC_CUDA_VERSION -> cudarc build.rs:124 nvcc panic; with it, --all-features pulls objc2 -> "only works on Apple platforms" BOTH REPRODUCED
+                              - the template genuinely shipped that line (read from origin/main) CONFIRMED
+2026-09-05T03:03Z  aggregate  worst finding is not a doc gap but an INVERSE one: CONTRIBUTING told contributors scripts/check.sh was broken when it had been fixed — docs lagging a fix, which erodes trust in every other instruction
+```
+
+**CITED:** R-verify-dont-accept (three agent claims re-run by the coordinator before entering the record); R-negative-control (the agent quoted failing output for each fix).
