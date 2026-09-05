@@ -147,7 +147,7 @@ def selftest(doc):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--recipes", required=True)
+    ap.add_argument("--recipes")
     ap.add_argument("--model")
     ap.add_argument("--sku")
     ap.add_argument("--spec", choices=["on", "off"])
@@ -159,6 +159,10 @@ def main():
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
+    if not args.recipes:
+        if not args.selftest:
+            ap.error("--recipes is required outside --selftest")
+        args.recipes = pathlib.Path(__file__).with_name("atlas_recipes.json")
     doc = json.loads(pathlib.Path(args.recipes).read_text())
     if args.selftest:
         return selftest(doc)
