@@ -457,19 +457,23 @@ fn test_partial_suffix_block_is_owned_and_released() {
     // 20 tokens @ bs=16 => 1 full block (10) + a 4-token partial (11).
     let tokens: Vec<u32> = (0..20).collect();
     let acquired = tree.insert(&tokens, &[10, 11], &[], 16, 0, 0);
-    assert!(
-        acquired.blocks.contains(&11),
-        "cache must take a ref on the partial-suffix block; got {:?}",
-        acquired.blocks
+    // Exactly one ref each, and no more: `contains` would also accept a
+    // duplicate report, and the caller inc_refs every entry, so a repeated
+    // block is a ref the cache can never give back. Nothing else in the suite
+    // observes it — verified by pushing the partial block twice, which left
+    // all 86 radix_tree checks green.
+    assert_eq!(
+        acquired.blocks,
+        vec![10, 11],
+        "one ref on the full block and one on the partial-suffix block"
     );
-    assert!(acquired.blocks.contains(&10), "and on the full block");
     assert!(acquired.released_blocks.is_empty());
 
     // Re-inserting the SAME partial block must not re-acquire it.
     let again = tree.insert(&tokens, &[10, 11], &[], 16, 0, 0);
     assert!(
-        !again.blocks.contains(&11),
-        "re-insert must not double-ref the partial block; got {:?}",
+        again.blocks.is_empty(),
+        "re-insert creates no node and re-refs no block; got {:?}",
         again.blocks
     );
 
@@ -477,7 +481,11 @@ fn test_partial_suffix_block_is_owned_and_released() {
     // releases the old, so the displaced block cannot be pinned forever.
     let other: Vec<u32> = (0..16).chain(90..94).collect();
     let swapped = tree.insert(&other, &[10, 12], &[], 16, 0, 0);
-    assert!(swapped.blocks.contains(&12), "new partial block acquired");
+    assert_eq!(
+        swapped.blocks,
+        vec![12],
+        "only the new partial block is acquired"
+    );
     assert_eq!(
         swapped.released_blocks,
         vec![11],
