@@ -1,6 +1,6 @@
 # Wider native EXL3 MTP review — 2026-09-05
 
-**Status at this checkpoint:** two- and three-draft checks passed on runtime commit `03946f4a6`. Final same-build one-draft reference and direct thinking-speculation on/off checks are still running. Rebase onto current `avarok/main` requested; rebased build validation is pending.
+**Current status:** rebased onto `avarok/main` at `8682329cc` (rebased tip `0d099342e`). Runtime/kernel/dependency trees are unchanged and the rebased release build succeeds. All three widths match 15/15 complete greedy responses. **Agentic profile correction:** the completed two/three-draft runs omitted `ATLAS_AGENTIC_PRESERVE_THINKING=1`; they are compatibility evidence only. Requested preserve-thinking agentic reruns and direct thinking-speculation on/off parity control are pending.
 
 This follow-up to [MTP_REVIEW.md](MTP_REVIEW.md) validates one, two and three drafts on the single-sequence, batched-highway Qwen3.8-Flash-Next EXL3 path. Performance observations are preliminary, single-harness results; the model-card agentic runs are single-shot sanity checks.
 
@@ -40,6 +40,14 @@ Both widths match all five complete greedy responses, including reasoning, in th
 | 2 | Pass: webserver and directions | 14 | `run-1788622909880428198` |
 | 3 | Pass: webserver and directions | 19 | `run-1788622181031575941` |
 
+**Profile limitation:** these recorded agentic runs had model-card sampling enabled but preserve-thinking disabled. Their turn counts must not be used to characterize the requested preserve-thinking workload.
+
 Both agents wrote the project/tests, ran them, launched and curled the server, and tore it down. The three-draft run crossed 8K context. These are single-shot stochastic sanity checks, not comparative speed gates. Raw records, output choices, per-request usage and complete configuration fingerprint: [mtp-wide-results.json](mtp-wide-results.json).
 
 Local TUI launcher: `/home/ms/run-atlas-pr834-tui.sh`; use `MTP_DRAFTS=2` or `MTP_DRAFTS=3`. Default remains one draft. The launcher enables thinking speculation and the CPU post-thinking sampling policy used in the parity checks.
+
+## Measurement lesson
+
+Pin `ATLAS_AGENTIC_SAMPLING=model-card` and `ATLAS_AGENTIC_PRESERVE_THINKING=1` independently in every intended agentic sanity command and record both in its fingerprint. `ATLAS_DFLASH_SPEC_THINK=1` controls speculation during the current reasoning span; it does not preserve prior turns' reasoning. Verify the actual harness process environment instead of inferring this setting from serve flags.
+
+Rebase details: [MTP_REBASE.md](MTP_REBASE.md).
