@@ -58,7 +58,7 @@
 #               --workload lat|agent --concurrency <N> --spec on|off \
 #               --think on|off --out <dir> [--dry-run] [--yes] \
 #               [--paired-artifact PATH] [--ptx-receipt PATH]\
-#               [--process --model-path PINNED_SNAPSHOT]
+#               [--process --model-path PINNED_SNAPSHOT] [--cell-timeout-s N]
 #
 # Environment:
 #   ATLAS_PORT / VLLM_PORT   client port (default 8888 / 8000)
@@ -92,7 +92,7 @@ VLLM_RECIPES="$HERE/vllm_recipes.json"
 
 ENGINE=""; MODEL=""; SKU=""; WORKLOAD=""; CONC=""; SPEC=""; THINK=""; OUT=""
 DRY_RUN=0; YES=0; PAIRED=""; PTX_RECEIPT=""
-PROCESS_MODE=0; MODEL_PATH=""; PROCESS_RENDER_JSON=""
+PROCESS_MODE=0; MODEL_PATH=""; PROCESS_RENDER_JSON=""; CELL_TIMEOUT_S=""
 
 usage() { sed -n '2,74p' "$0"; }
 
@@ -110,6 +110,9 @@ while [ $# -gt 0 ]; do
     --ptx-receipt) PTX_RECEIPT="${2:-}"; shift 2 ;;
     --process) PROCESS_MODE=1; shift ;;
     --model-path) MODEL_PATH="${2:-}"; shift 2 ;;
+    --cell-timeout-s)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "--cell-timeout-s requires seconds" >&2; exit 2; }
+      CELL_TIMEOUT_S="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes) YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -128,6 +131,11 @@ case "$CONC" in ''|*[!0-9]*) die "--concurrency must be a positive integer (got 
 [ "$CONC" -gt 0 ] || die "--concurrency must be greater than zero"
 [ -n "$MODEL" ] || die "--model is required"
 [ -n "$OUT" ] || die "--out is required"
+if [ -n "$CELL_TIMEOUT_S" ]; then
+  case "$CELL_TIMEOUT_S" in *[!0-9]*|0) die "--cell-timeout-s must be a positive integer" ;; esac
+  [ "$CELL_TIMEOUT_S" -gt 0 ] && [ "$CELL_TIMEOUT_S" -le 28800 ] \
+    || die "--cell-timeout-s must be within 1..28800 seconds"
+fi
 
 if [ "$DRY_RUN" != "1" ] && [ "$YES" != "1" ]; then
   echo "REFUSED: this would start an engine on this box." >&2
@@ -308,6 +316,8 @@ MODEL_LAUNCH_PROCESS_OWNER_JSON=""
 PROCESS_RUN_DIR="$OUT/process-$$"
 PROCESS_RECORD="$PROCESS_RUN_DIR/owner.json"
 PROCESS_DIR_RESERVED=0
+CELL_DEADLINE_PID=""
+CELL_DEADLINE_RECEIPT="$OUT/cell-deadline.json"
 
 # ── the finalizer: the ONE way out ───────────────────────────────────────────
 # Everything this invocation created is released here and nowhere else, so the
@@ -330,6 +340,21 @@ source "$HERE/cell_identity.sh"
 source "$HERE/cell_process.sh"
 # shellcheck source=bench/campaign/cell_finalize.sh
 source "$HERE/cell_finalize.sh"
+
+if [ -n "$CELL_TIMEOUT_S" ]; then
+  show "whole-cell deadline ${CELL_TIMEOUT_S}s; cleanup grace 60s"
+  if [ "$DRY_RUN" != "1" ]; then
+    python3 "$HERE/cell_deadline.py" watch --pid "$$" --timeout-s "$CELL_TIMEOUT_S" \
+      --grace-s 60 --receipt "$CELL_DEADLINE_RECEIPT" > "$OUT/cell-deadline.log" 2>&1 &
+    CELL_DEADLINE_PID=$!
+    if ! python3 "$HERE/cell_deadline.py" wait-armed --receipt "$CELL_DEADLINE_RECEIPT" \
+        --timeout-s 5 >> "$OUT/cell-deadline.log" 2>&1; then
+      note_fail preflight
+      add_note "whole-cell deadline could not be armed; see cell-deadline.log"
+      exit 1
+    fi
+  fi
+fi
 
 # ── 1. preflight ─────────────────────────────────────────────────────────────
 stage preflight "stage 1/7 preflight"

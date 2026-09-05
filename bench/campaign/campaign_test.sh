@@ -131,7 +131,7 @@ done
 python3 "$HERE/cell_assemble.py" --selftest || fail recovery "assembler selftest"
 ok recovery "recipe and launch identity regressions passed"
 
-for test in process_mode process_launch process_endpoint process_runner; do
+for test in process_mode process_launch process_endpoint process_runner cell_deadline; do
   python3 "$HERE/${test}_test.py" || fail process "$test regression"
   ok process "$test CPU regression suite passed (Linux-only cases skip elsewhere)"
 done

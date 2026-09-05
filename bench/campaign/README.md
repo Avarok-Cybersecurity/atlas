@@ -20,6 +20,7 @@ that a cell is reproducible from its artifact alone.
 | `process_recipe.py` | Adapts the existing recipe argv to an explicit pinned snapshot and a prepared local executable. |
 | `process_launch.py` | Starts, captures and stops only a Linux process whose PID/start identity, group and run marker match its ownership record. |
 | `process_endpoint.py` | Refuses occupied ports before process launch and proves the listener and an accepted connection belong to the recorded process group. |
+| `cell_deadline.py` | Enforces an optional whole-cell Linux deadline through the runner's existing signal cleanup, with an explicit cleanup grace. |
 | `stream_probe.py` | Captures one separate diagnostic stream with raw bytes, event timestamps, usage and terminal validation. |
 | `atlas_recipes.json` | The Atlas serve side: 17 entries from PRD §6 plus the repo's own recipe fixtures. Data only. |
 | `atlas_render.py` | Renders `EXTRA_ARGS` for `scripts/start-node-ep.sh`. `--selftest`. |
@@ -98,6 +99,23 @@ immediately before the ladder it proves both listener ownership and which
 process accepted a fresh TCP connection. These are observations at those
 boundaries, not a reservation of every future request socket. Endpoint JSON and
 logs are retained in the cell output directory. A refused proof blocks scoring.
+
+### Bound the complete cell on Linux
+
+Pass `--cell-timeout-s 2700` to bound a cell to 45 minutes plus a 60-second
+cleanup grace. The option accepts 1–28800 seconds and is omitted by default.
+It covers preflight, audit, boot, coherency, ladder and finalization after the
+watchdog arms. This is a separate wall-clock limit: socket inactivity timeouts
+can be extended indefinitely by a trickling response. Dry-run prints the
+selected budget without starting a watchdog.
+
+Expiry records `cell-deadline.json` before sending TERM to the exact runner
+through a Linux pidfd. The existing finalizer stops owned engines and records
+the interrupted stage. If cleanup exceeds the grace, the watchdog kills the
+runner and explicitly records `cleanup_unconfirmed`; inspect retained owner
+records and provider state because engine cleanup and the artifact may be
+incomplete. This deadline does not stop instance billing. Preserve the separate
+eight-hour provider deadline and result-export reserve.
 
 ### Inspect one diagnostic stream
 
