@@ -1,23 +1,43 @@
 #!/usr/bin/env python3
 """Coherency gate for one leg of the Hopper A/B.
 
-Three claims, each a PRD gate. A leg that fails any of them has no comparable
+Four claims, each a PRD gate. A leg that fails any of them has no comparable
 numbers, however fast it was -- an engine that is nondeterministic at temp 0,
 or that cannot emit a parseable tool call, or that leaks its scratchpad into
-the reply, is not serving the same workload as the engine it is being compared
-against.
+the reply, or that cannot answer a question whose answer is known, is not
+serving the same workload as the engine it is being compared against.
 
-  determinism  the same prompt twice at temperature 0 must be byte-identical
-  toolcall     finish_reason == "tool_calls" and json.loads(arguments) succeeds
-  think_leak   no <think>/</think> in content when thinking is off
+  determinism   the same prompt twice at temperature 0 must be byte-identical,
+                and the reply must not be degenerate or truncated
+  toolcall      finish_reason == "tool_calls" and json.loads(arguments) succeeds
+  think_leak    no <think>/</think> in content when thinking is off
+  known_answer  three questions with checkable answers, answered correctly
 
-The leak check reuses `_has_degeneration` from `scripts/test_coherence.py`
-(defined at line 813 there) rather than re-deriving the signal list. That
-function is the repo's existing answer to "does this reply look wrong", it
-already covers the two think tags plus raw <tool_call> and script mixing, and
-two copies of a heuristic drift apart. It is imported by path because
-`scripts/` is not a package; the import is hard -- a missing source is a broken
-gate, not a reason to fall back to a private copy that says something else.
+Byte-equality alone is not coherence. Measured on a GB10 the determinism check
+certified this reply (Nemotron 3 Nano FP8 through the nvfp4 bundle), because
+both greedy runs produced it identically:
+
+  101, 103, 107, 107, 109, 109, 113, 109, 107, 109, 109, 109, 109, ... 107, 1
+
+Identical garbage is identical. `fixtures/degenerate_primes.txt` is that reply,
+and the selftest now requires the gate to refuse it. The gates are meant to be
+independent oracles: the tool-call check did catch that leg (finish_reason was
+"length"), but a model that loops on plain text has to fail the check that is
+looking at plain text.
+
+The degeneration signals reuse `_has_degeneration` from
+`scripts/test_coherence.py` (defined at line 813 there) rather than re-deriving
+the signal list. That function is the repo's existing answer to "does this
+reply look wrong", it already covers the two think tags plus raw <tool_call>
+and script mixing, and two copies of a heuristic drift apart. What it does not
+cover is a reply that repeats itself, so `_repetition_loop` below adds that,
+here rather than there, because `scripts/test_coherence.py` is out of this
+change's scope and the thresholds want the fixture beside them.
+
+The known-answer probes are `CASES` from `bench/agentic/coherence_check.py`,
+imported by path and judged the way that script judges them. Both imports are
+hard -- a missing source is a broken gate, not a reason to fall back to a
+private copy that says something else.
 
 Usage:
   coherency_gate.py --url URL --model MODEL [--out FILE] [--timeout 300]
@@ -27,16 +47,20 @@ Exits non-zero if any check fails, so a driver can `set -e` around it.
 """
 
 import argparse
+import collections
 import importlib.util
 import http.client
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+
+FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 
 # ── the leak heuristic, from the suite that already owns it ──
 
@@ -57,6 +81,117 @@ def _load_degeneration_check():
 
 
 HAS_DEGENERATION = _load_degeneration_check()
+
+
+def _load_known_answer_probes():
+    """`bench/agentic/coherence_check.py`'s CASES and SYSTEM, imported by path.
+
+    Safe to import for the same reason the degeneration check is: that module's
+    top level is imports, three `os.environ.get` reads and the CASES list;
+    everything that talks to a server is under `if __name__ == "__main__"`.
+    Checked, not assumed -- an import-time request would make this gate open a
+    socket at parse time.
+
+    The system prompt travels with the cases on purpose. That module explains
+    why it sends one (sending none leaves whatever the chat template bakes in,
+    which is a different probe on every model), and a gate that dropped it
+    would be asking a different question than the suite it borrowed from.
+    """
+    src = pathlib.Path(__file__).resolve().parents[1] / "agentic" / "coherence_check.py"
+    spec = importlib.util.spec_from_file_location("atlas_coherence_check", src)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load the known-answer probes from {src}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.CASES, module.SYSTEM
+
+
+KNOWN_ANSWER_CASES, KNOWN_ANSWER_SYSTEM = _load_known_answer_probes()
+
+# ── the repetition-loop detector ──
+#
+# Thresholds, and the oracle each one is set against. The oracle is not taste:
+# `fixtures/degenerate_primes.txt` -- the real GB10 reply -- must trip every
+# one of the three, and the good replies in the selftest plus the three
+# known-answer replies must trip none. Numbers, on that fixture:
+#
+#   top token share      0.73  (109, 38 of 52 tokens)   threshold > 0.50
+#   distinct 3-grams     0.24  (12 of 50)               threshold < 0.35
+#   consecutive repeats  20    ("109" twenty times)     threshold >= 8
+#
+# The margins are wide in the direction that matters. Prose does not reach a
+# 0.50 single-token share (English's most frequent word, "the", sits near 0.07
+# in running text), and it does not fall to 0.24 distinct 3-grams.
+LOOP_MIN_TOKENS = 40
+LOOP_TOP_TOKEN_SHARE = 0.50
+LOOP_MIN_TRIGRAM_DIVERSITY = 0.35
+LOOP_MAX_CONSECUTIVE_REPEATS = 8
+
+# coherence_check.py's garbling floor, kept at its value: a reply is clean when
+# MORE than this fraction of its characters are printable or whitespace.
+PRINTABLE_RATIO_FLOOR = 0.98
+
+
+def _repetition_loop(text):
+    """Signals that a reply has fallen into a repetition loop. [] means prose.
+
+    Three signals over one tokenisation -- split on whitespace OR commas,
+    because the reply that motivated this check was a comma-separated list and
+    a whitespace-only split would have counted "109," and "109" as different
+    tokens:
+
+      token_repeat      one token is more than LOOP_TOP_TOKEN_SHARE of the reply
+      trigram_collapse  distinct 3-grams are under LOOP_MIN_TRIGRAM_DIVERSITY
+                        of all 3-grams -- catches a loop over a repeating
+                        PHRASE, which no single-token count can see
+      segment_repeat    one line or comma segment repeats consecutively at
+                        least LOOP_MAX_CONSECUTIVE_REPEATS times
+
+    The first two are frequency statistics and say nothing about short text --
+    "Tokyo" is a 100% single-token share and has no 3-grams at all -- so both
+    are gated behind LOOP_MIN_TOKENS. The third needs no such gate: it already
+    requires LOOP_MAX_CONSECUTIVE_REPEATS identical segments in a row, which no
+    reply reaches by accident.
+
+    TODO: an n-gram loop whose period is longer than the reply is invisible
+    here (a 200-token answer that says the same thing twice in different
+    words). Semantic repetition needs a model, not a counter.
+    """
+    tokens = [t for t in re.split(r"[\s,]+", text) if t]
+    signals = []
+    if len(tokens) >= LOOP_MIN_TOKENS:
+        top, count = collections.Counter(tokens).most_common(1)[0]
+        share = count / len(tokens)
+        if share > LOOP_TOP_TOKEN_SHARE:
+            signals.append(f"token_repeat: {top!r} is {share:.0%} of {len(tokens)} tokens")
+        grams = [tuple(tokens[i:i + 3]) for i in range(len(tokens) - 2)]
+        if grams:
+            diversity = len(set(grams)) / len(grams)
+            if diversity < LOOP_MIN_TRIGRAM_DIVERSITY:
+                signals.append(
+                    f"trigram_collapse: {len(set(grams))} distinct of {len(grams)} 3-grams ({diversity:.2f})")
+    segments = [s.strip() for s in re.split(r"[\n,]", text) if s.strip()]
+    longest, run = 1, 1
+    for previous, current in zip(segments, segments[1:]):
+        run = run + 1 if current == previous else 1
+        longest = max(longest, run)
+    if longest >= LOOP_MAX_CONSECUTIVE_REPEATS:
+        signals.append(f"segment_repeat: a segment repeats {longest} times in a row")
+    return signals
+
+
+def degeneration_signals(text):
+    """Everything wrong with one reply's text, as a list of reasons.
+
+    The repo's existing leak/script heuristic plus the loop detector, applied
+    to EVERY reply this gate reads. Splitting them by check -- leaks only on
+    the think probe, loops only on the determinism probe -- would leave each
+    check blind to the failure the other one is named after.
+    """
+    degenerate, detail = HAS_DEGENERATION(text)
+    signals = [detail] if degenerate else []
+    return signals + _repetition_loop(text)
+
 
 # ── the fixed tool schema ──
 #
@@ -165,31 +300,55 @@ def choice_of(response):
     return choice
 
 
-def content_of(response):
-    content = choice_of(response)["message"].get("content")
+def completion_of(response):
+    """The reply text and the finish_reason that ended it."""
+    choice = choice_of(response)
+    content = choice["message"].get("content")
     if content is not None and not isinstance(content, str):
         raise ValueError("completion content must be a string or null")
-    return content or ""
+    return content or "", choice.get("finish_reason")
+
+
+def content_of(response):
+    return completion_of(response)[0]
 
 
 def check_determinism(url, model, timeout, exchanges=None):
-    """Two identical requests at temp 0 must return identical bytes.
+    """Two identical requests at temp 0 must return identical, coherent bytes.
 
     Not "similar": at temperature 0 the sampler is argmax, so any difference is
     a difference in the compute -- a batching-dependent reduction order, a
     leaked cache entry, an uninitialised buffer. A/B numbers measured on a
     server that cannot reproduce itself describe nothing repeatable.
+
+    Reproducing itself is necessary and not sufficient, which is the whole
+    reason this check grew two more conditions:
+
+      * the reply must not be degenerate. A decode loop is perfectly
+        reproducible -- see the module docstring and
+        `fixtures/degenerate_primes.txt` -- so byte-equality certifies it.
+      * the reply must not have hit the token cap. DETERMINISM_PROMPT asks for
+        exactly five numbers; five numbers cannot need 256 tokens, so
+        finish_reason "length" here means the model never stopped, and a reply
+        the sampler cut off mid-loop is not an answer. That inference is about
+        THIS prompt being bounded, not a general rule about "length".
     """
-    first = content_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
-    second = content_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
-    if first == second and first.strip():
-        return True, f"{len(first)} chars reproduced exactly"
+    first, finish = completion_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
+    second, _ = completion_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
     if not first.strip():
         return False, "empty reply -- nothing to compare"
-    # Report WHERE they diverged; "not identical" sends the reader to diff two
-    # blobs by eye.
-    at = next((i for i, (a, b) in enumerate(zip(first, second)) if a != b), min(len(first), len(second)))
-    return False, f"diverged at char {at}: {first[at:at + 40]!r} vs {second[at:at + 40]!r}"
+    if first != second:
+        # Report WHERE they diverged; "not identical" sends the reader to diff
+        # two blobs by eye.
+        at = next((i for i, (a, b) in enumerate(zip(first, second)) if a != b), min(len(first), len(second)))
+        return False, f"diverged at char {at}: {first[at:at + 40]!r} vs {second[at:at + 40]!r}"
+    problems = degeneration_signals(first)
+    if finish == "length":
+        problems.append(
+            "truncated_bounded_answer: finish_reason 'length' on a prompt that asked for five numbers")
+    if problems:
+        return False, f"reproduced exactly but incoherent -- {'; '.join(problems)}"
+    return True, f"{len(first)} chars reproduced exactly, no degeneration signals"
 
 
 def check_toolcall(url, model, timeout, exchanges=None):
@@ -238,10 +397,74 @@ def check_think_leak(url, model, timeout, exchanges=None):
     text = content_of(post(url, body(model, THINK_PROMPT), timeout, exchanges))
     if not text.strip():
         return False, "empty reply -- a leak check over no text proves nothing"
-    degenerate, detail = HAS_DEGENERATION(text)
-    if degenerate:
-        return False, detail
+    signals = degeneration_signals(text)
+    if signals:
+        return False, "; ".join(signals)
     return True, f"{len(text)} chars, no leak signals"
+
+
+def judge_known_answer(text, expect):
+    """`bench/agentic/coherence_check.py`'s judgement, plus the loop detector.
+
+    That script's rule, kept verbatim because changing it would make the two
+    probes disagree about the same reply: the expected value must appear in the
+    FIRST or LAST non-empty line -- a direct answer, or an explicit final
+    answer. `expect in out` once passed a reply that opened with "271" for
+    17*23 and only reached 391 inside its working; that is reported here as
+    WORKING-ONLY, separately, rather than silently passed or silently failed.
+
+    Returns (status, detail) where status is "OK", "WORKING-ONLY" or "FAIL".
+    Only "OK" passes the gate; WORKING-ONLY is a distinct diagnosis, not a
+    softer pass.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "FAIL", "empty reply"
+    head, tail, want = lines[0].lower(), lines[-1].lower(), expect.lower()
+    stated = want in head or want in tail
+    buried = (not stated) and want in text.lower()
+    # Garbled output is the aliasing signature even when the expected token
+    # happens to appear, so the text checks come before the answer verdict.
+    printable = sum(c.isprintable() or c.isspace() for c in text)
+    ratio = printable / len(text)
+    if ratio <= PRINTABLE_RATIO_FLOOR:
+        return "FAIL", f"printable ratio {ratio:.3f} is not above {PRINTABLE_RATIO_FLOOR}"
+    signals = degeneration_signals(text)
+    if signals:
+        return "FAIL", "; ".join(signals)
+    if stated:
+        return "OK", ""
+    if buried:
+        return "WORKING-ONLY", "the answer appears only inside the working"
+    return "FAIL", f"answer not stated: {text[:80]!r}"
+
+
+def check_known_answer(url, model, timeout, exchanges=None):
+    """Three questions whose answers are known must come back answered.
+
+    Determinism, a parseable tool call and a clean scratchpad are all
+    properties of the SHAPE of a reply; none of them looks at whether the reply
+    is right. A quantisation bug that turns 17*23 into 271 produces a
+    reproducible, well-formed, leak-free wrong answer, and the other three
+    gates certify it.
+
+    Same pinned sampling as every other request this gate makes, which is NOT
+    what coherence_check.py uses (temp 0.6, 300 tokens): a gate that sampled
+    differently than the ladder would be certifying a server nobody
+    benchmarked. Only the prompts and the judgement are borrowed.
+    """
+    verdicts, ok = [], True
+    for prompt, expect in KNOWN_ANSWER_CASES:
+        payload = body(model, prompt, messages=[
+            {"role": "system", "content": KNOWN_ANSWER_SYSTEM},
+            {"role": "user", "content": prompt},
+        ])
+        text, _ = completion_of(post(url, payload, timeout, exchanges))
+        status, detail = judge_known_answer(text, expect)
+        if status != "OK":
+            ok = False
+        verdicts.append(f"{expect!r} {status}" + (f" ({detail})" if detail else ""))
+    return ok, "; ".join(verdicts)
 
 
 def run(url, model, timeout):
@@ -249,6 +472,7 @@ def run(url, model, timeout):
         ("determinism_ok", check_determinism),
         ("toolcall_ok", check_toolcall),
         ("think_leak_ok", check_think_leak),
+        ("known_answer_ok", check_known_answer),
     )
     out = {"schema": 1, "url": url, "model": model,
            "checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -275,7 +499,33 @@ import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 MODE = sys.argv[2]
+FIXTURES = sys.argv[3]
 PRIME_HITS = 0
+DEGENERATE = open(FIXTURES + "/degenerate_primes.txt").read().rstrip("\n")
+
+# One entry per case in bench/agentic/coherence_check.py::CASES, keyed by a
+# substring of that case's prompt. GOOD states the answer on the first line;
+# WRONG states a different one and never contains the expected string anywhere;
+# BURIED reaches the answer only in the middle, which is the WORKING-ONLY
+# verdict -- the case that motivated that script's first/last-line judgement.
+GOOD = {
+    "17 * 23": "391\n\nWorking: 17 * 20 = 340, and 17 * 3 = 51. Adding the two partial products gives 391.",
+    "Japan": ("Tokyo\n\nTokyo is the capital of Japan and the seat of its national government. "
+              "It grew out of the castle town of Edo and now spreads around the head of its bay. "
+              "The metropolitan area is the largest in the world by population."),
+    "refrigerator": ("rotaregirfer\n\nI read the letters of the word from the last one back to the "
+                     "first and wrote them down in that order."),
+}
+WRONG = {
+    "17 * 23": "271\n\nMultiplying 17 by 23 gives 271 in my working.",
+    "Japan": "Kyoto\n\nKyoto was the imperial seat for centuries and remains the capital.",
+    "refrigerator": "rotaregirf\n\nI dropped a letter on the way back through the word.",
+}
+BURIED = {
+    "17 * 23": "Let me work through it.\n17 * 20 = 340 and 17 * 3 = 51, so the product is 391.\nThat is how the multiplication goes.",
+    "Japan": "Let me think about the geography.\nThe seat of government moved to Tokyo in 1868.\nThat is the answer to the question.",
+    "refrigerator": "Let me reverse the letters one at a time.\nReading backwards the word becomes rotaregirfer in full.\nThat completes the reversal.",
+}
 
 def reply(text, finish="stop", calls=None):
     msg = {"role": "assistant", "content": text}
@@ -287,7 +537,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         global PRIME_HITS
         req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-        prompt = req["messages"][0]["content"]
+        # The LAST message: the known-answer probes send a system message first.
+        prompt = req["messages"][-1]["content"]
         if req.get("tools"):
             body = reply("", "tool_calls", [{"id": "call_0", "type": "function",
                 "function": {"name": "get_weather",
@@ -305,7 +556,16 @@ class H(BaseHTTPRequestHandler):
                 body["choices"][0]["message"]["tool_calls"].append({"type": "function", "function": {"name": "get_weather", "arguments": "{}"}})
         elif "prime" in prompt:
             PRIME_HITS += 1
-            body = reply("101, 103, 107, 109, 113" if MODE != "nondeterministic" or PRIME_HITS == 1 else "127")
+            if MODE == "degenerate-primes":
+                body = reply(DEGENERATE, "length")
+            elif MODE == "length-capped":
+                body = reply("101, 103, 107, 109, 113", "length")
+            else:
+                body = reply("101, 103, 107, 109, 113" if MODE != "nondeterministic" or PRIME_HITS == 1 else "127")
+        elif any(key in prompt for key in GOOD):
+            key = next(k for k in GOOD if k in prompt)
+            table = {"wrong-answer": WRONG, "working-only": BURIED}.get(MODE, GOOD)
+            body = reply(table[key])
         elif MODE == "leak":
             body = reply("<think>the user wants a definition</think> To measure a system.")
         else:
@@ -355,15 +615,17 @@ def selftest():
     """Exercise each gate against clean and known-bad HTTP responses.
 
     Tool-name/type/schema failures, nondeterminism, empty replies, malformed
-    envelopes and leaked thinking must fail rather than certify or crash.
+    envelopes, leaked thinking, a reproducible decode loop, a bounded answer
+    cut off at the token cap, and wrong or buried known answers must all fail
+    rather than certify or crash.
     """
     with tempfile.TemporaryDirectory() as d:
         stub = pathlib.Path(d) / "stub.py"
         stub.write_text(STUB)
         results = {}
-        for mode in ("clean", "leak", "missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200"):
+        for mode in ("clean", "leak", "missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200", "degenerate-primes", "length-capped", "wrong-answer", "working-only"):
             port = _free_port()
-            proc = subprocess.Popen([sys.executable, str(stub), str(port), mode])
+            proc = subprocess.Popen([sys.executable, str(stub), str(port), mode, str(FIXTURES)])
             try:
                 _await_bind(port)
                 try:
@@ -384,7 +646,8 @@ def selftest():
         pass
     else:
         raise AssertionError("a clean-stub crash must fail the selftest")
-    print("SELFTEST OK: clean passes; every known-bad response and a clean-stub crash fail")
+    print("SELFTEST OK: clean passes; every known-bad response -- including the recorded GB10 "
+          "repetition loop -- and a clean-stub crash fail")
 
 
 def _assert_stub_results(results):
@@ -399,9 +662,13 @@ def _assert_stub_results(results):
         if results[mode][key] or results[mode]["passed"]:
             failures.append(f"{mode} must fail {key}")
     prime = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "101, 103, 107, 109, 113"}, "finish_reason": "stop"}]}
+    # Seven requests when the transport works: two determinism, one tool call,
+    # one think probe, three known-answer probes. A mode that breaks the
+    # transport fails each check on its FIRST request, so four.
+    broken_transport = ("malformed", "truncated", "invalid", "http500", "error200")
     for mode in ("clean", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200"):
         exchanges = results[mode].get("http_exchanges", [])
-        count = 4 if mode in ("clean", "nondeterministic", "empty") else 3
+        count = 4 if mode in broken_transport else 7
         if len(exchanges) != count:
             failures.append(f"{mode}: expected {count} retained HTTP exchanges, got {len(exchanges)}")
             continue
@@ -422,11 +689,61 @@ def _assert_stub_results(results):
             second_body = expected_body if mode == "clean" else expected_body.replace("101, 103, 107, 109, 113", "127")
             if exchanges[1].get("response_body") != second_body or exchanges[1].get("check") != "determinism_ok":
                 failures.append(f"{mode}: the second determinism body must remain separately inspectable")
+    # ── the GB10 defect, and the three checks added because of it ──
+    #
+    # Each of these four modes must fail EXACTLY ONE gate. The gates are
+    # independent oracles or they are one gate wearing four names, and the
+    # reply in fixtures/degenerate_primes.txt is the proof that mattered: it
+    # was caught by the tool-call check (finish_reason "length") while the
+    # determinism check, looking straight at it, certified it.
+    degenerate_text = (FIXTURES / "degenerate_primes.txt").read_text().rstrip("\n")
+    isolated = {"degenerate-primes": "determinism_ok", "length-capped": "determinism_ok",
+                "wrong-answer": "known_answer_ok", "working-only": "known_answer_ok"}
+    for mode, key in isolated.items():
+        result = results[mode]
+        if result[key] or result["passed"]:
+            failures.append(f"{mode} must fail {key}")
+        for other in ("determinism_ok", "toolcall_ok", "think_leak_ok", "known_answer_ok"):
+            if other != key and not result[other]:
+                failures.append(f"{mode} must fail {key} ALONE, but {other} also failed: {result['details'][other]}")
+        if len(result.get("http_exchanges", [])) != 7:
+            failures.append(f"{mode}: expected 7 retained HTTP exchanges, got {len(result.get('http_exchanges', []))}")
+
+    detail = results["degenerate-primes"]["details"]["determinism_ok"]
+    for signal in ("token_repeat", "trigram_collapse", "segment_repeat", "truncated_bounded_answer"):
+        if signal not in detail:
+            failures.append(f"the loop detail must name {signal}: {detail}")
+    if "reproduced exactly" not in detail:
+        failures.append(f"the loop detail must say the two runs still matched: {detail}")
+    body_seen = results["degenerate-primes"]["http_exchanges"][0].get("response_body", "")
+    if degenerate_text not in body_seen:
+        failures.append("the degenerate reply must remain inspectable in the retained exchange")
+
+    capped = results["length-capped"]["details"]["determinism_ok"]
+    if "truncated_bounded_answer" not in capped:
+        failures.append(f"a bounded answer cut off at the token cap must say so: {capped}")
+    if any(s in capped for s in ("token_repeat", "trigram_collapse", "segment_repeat")):
+        failures.append(f"a short, clean, truncated reply must not be reported as a loop: {capped}")
+
+    if not clean["known_answer_ok"]:
+        failures.append(f"the clean stub must answer all three probes: {clean['details']['known_answer_ok']}")
+    for expect in ("391", "Tokyo", "rotaregirfer"):
+        if f"{expect!r} OK" not in clean["details"]["known_answer_ok"]:
+            failures.append(f"the clean stub must report {expect} OK: {clean['details']['known_answer_ok']}")
+    if "FAIL" not in results["wrong-answer"]["details"]["known_answer_ok"]:
+        failures.append(f"a wrong known answer must be FAIL: {results['wrong-answer']['details']['known_answer_ok']}")
+    working_only = results["working-only"]["details"]["known_answer_ok"]
+    if "WORKING-ONLY" not in working_only:
+        failures.append(f"an answer reached only in the working must be WORKING-ONLY: {working_only}")
+    if "FAIL" in working_only:
+        failures.append(f"WORKING-ONLY is its own verdict, not FAIL: {working_only}")
+
     assert not failures, "\n".join(failures)
     assert clean["passed"], f"the clean stub must pass: {clean}"
     assert not leak["passed"], "a <think> leak must FAIL the gate"
     assert leak["determinism_ok"], f"the leak must not disturb determinism: {leak}"
     assert leak["toolcall_ok"], f"the leak must not disturb tool calls: {leak}"
+    assert leak["known_answer_ok"], f"the leak must not disturb the known answers: {leak}"
     assert not leak["think_leak_ok"], leak
     assert "think" in leak["details"]["think_leak_ok"], leak["details"]
 
