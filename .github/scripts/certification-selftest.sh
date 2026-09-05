@@ -891,6 +891,80 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# A required check that cannot vouch for the tree must not say OK
+# ---------------------------------------------------------------------------
+# "No block_on under tui/ or recipe/" is one of main's required contexts, and it
+# is one grep. grep exits 2 when the SCAN fails -- a renamed or deleted
+# directory, an unreadable file -- and GNU grep returns 2 even when it also
+# found matches. Written as `if hits=$(grep ... 2>/dev/null); then`, exit 2 is
+# "false", so the step fell through to `echo "OK: ..."` and went green for a
+# scan that never happened. The two directory names are hard-coded again in the
+# workflow's push `paths:` filter, so renaming one is exactly the change that
+# would have hit it -- and it would have taken the gate with it, silently.
+mkdir -p "$TMP/tt"
+python3 - > "$TMP/tt/step.sh" <<'TTX'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
+for st in d["jobs"]["no-blocking-on-the-render-thread"]["steps"]:
+    if "run" in st:
+        print(st["run"]); break
+TTX
+tt_tree() {  # tt_tree <clean|dirty|renamed>
+  rm -rf "$TMP/tt/w"; mkdir -p "$TMP/tt/w/crates/spark-server/src/tui"
+  case "$1" in
+    renamed) mkdir -p "$TMP/tt/w/crates/spark-server/src/recipes" ;;
+    *)       mkdir -p "$TMP/tt/w/crates/spark-server/src/recipe" ;;
+  esac
+  printf 'fn tick() { let _ = rx.try_recv(); }\n' > "$TMP/tt/w/crates/spark-server/src/tui/chat.rs"
+  [ "$1" = dirty ] && printf 'fn tick() { rt.block_on(f); }\n' > "$TMP/tt/w/crates/spark-server/src/tui/bad.rs"
+  return 0
+}
+tt_run() { ( cd "$TMP/tt/w" && bash "$1" ) >"$TMP/tt/out" 2>&1; echo $?; }
+
+if [ -s "$TMP/tt/step.sh" ]; then
+  tt_tree clean
+  [ "$(tt_run "$TMP/tt/step.sh")" = 0 ] && grep -q '^OK: ' "$TMP/tt/out" \
+    && ok "a clean tree passes the render-thread check" \
+    || bad "a clean tree did not pass: $(head -2 "$TMP/tt/out")"
+  tt_tree dirty
+  [ "$(tt_run "$TMP/tt/step.sh")" != 0 ] \
+    && ok "control: a real block_on under tui/ is caught" \
+    || bad "control: a block_on under tui/ passed"
+  # THE ONE THAT SHIPPED: the scan could not read the tree.
+  tt_tree renamed
+  if [ "$(tt_run "$TMP/tt/step.sh")" != 0 ]; then
+    ok "a scan that could not read the tree fails, instead of reporting OK"
+  else
+    bad "a renamed directory made this required check report 'OK' on a tree it never read"
+  fi
+  grep -q '^OK: ' "$TMP/tt/out" \
+    && bad "and it printed OK for a scan that did not run" \
+    || ok "and it does not print OK for a scan that did not run"
+
+  # CONTROL: the pre-fix form -- `if hits=$(grep ... 2>/dev/null)` -- restored in
+  # a COPY, on the same unreadable tree. It must go green, which is what proves
+  # the two checks above are not passing by construction.
+  cat > "$TMP/tt/step-sab.sh" <<'SAB'
+set -euo pipefail
+if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
+            --include='*.rs' --exclude='*_tests.rs' \
+            crates/spark-server/src/tui/ \
+            crates/spark-server/src/recipe/ 2>/dev/null); then
+  echo "::error::The TUI render thread must never poll a future."
+  echo "$hits"
+  exit 1
+fi
+echo "OK: no block_on/block_in_place under tui/ or recipe/"
+SAB
+  tt_tree renamed
+  [ "$(tt_run "$TMP/tt/step-sab.sh")" = 0 ] && grep -q '^OK: ' "$TMP/tt/out" \
+    && ok "control: the pre-fix form reports OK on a tree it could not read" \
+    || bad "control: the sabotage did not reproduce the defect -- the checks above prove nothing"
+else
+  bad "setup: could not extract the render-thread check's step"
+fi
+
+# ---------------------------------------------------------------------------
 # nginx add_header does not accumulate across contexts
 # ---------------------------------------------------------------------------
 # Three vhosts, one rule, three separate incidents -- each found by hand after

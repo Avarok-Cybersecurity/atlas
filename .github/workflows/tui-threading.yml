@@ -75,10 +75,26 @@ jobs:
           # production code is ever put in a file named that way, this check
           # will not see it -- that is the cost, and it is smaller than the
           # alternative.
-          if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
-                      --include='*.rs' --exclude='*_tests.rs' \
-                      crates/spark-server/src/tui/ \
-                      crates/spark-server/src/recipe/ 2>/dev/null); then
+          #
+          # grep's exit 2 means the SCAN FAILED -- a renamed or deleted
+          # directory, an unreadable file -- and GNU grep returns 2 even when it
+          # also found matches. `if hits=$(...)` read 2 as "no hits" and fell
+          # straight through to the OK line, so this REQUIRED check reported a
+          # clean tree for a scan that never happened. The two directory names
+          # are hard-coded again in this workflow's push `paths:` filter, so
+          # renaming one is precisely the change that would have tripped it.
+          # Stderr no longer goes to /dev/null either: the reason belongs in the
+          # log of the job that refuses.
+          rc=0
+          hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
+                   --include='*.rs' --exclude='*_tests.rs' \
+                   crates/spark-server/src/tui/ \
+                   crates/spark-server/src/recipe/) || rc=$?
+          if [ "$rc" -ge 2 ]; then
+            echo "::error::The block_on scan did not run (grep exited $rc). This check cannot vouch for a tree it failed to read -- most likely one of the two directories above was renamed or removed. Update this workflow, including its push paths: filter."
+            exit 1
+          fi
+          if [ "$rc" -eq 0 ]; then
             echo "::error::The TUI render thread must never poll a future."
             echo "$hits"
             echo
