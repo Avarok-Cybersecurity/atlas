@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Real Linux process ownership oracles; no GPU or engine dependency."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -56,7 +57,7 @@ class ProcessLaunchTests(unittest.TestCase):
     def running(pid):
         try:
             return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return False
 
     def test_actual_snapshot_and_environment_are_owned_and_minimal(self):
@@ -203,6 +204,47 @@ class ProcessLaunchTests(unittest.TestCase):
             if manager.poll() is None:
                 manager.kill()
                 manager.wait()
+
+    @unittest.skipUnless(importlib.util.find_spec("setproctitle"),
+                         "requires the optional real setproctitle package")
+    def test_renamed_child_retains_marker_and_can_be_stopped(self):
+        child_code = ("import os,time,setproctitle; "
+                      "setproctitle.setproctitle('VLLM::EngineCore_DP0'); "
+                      "print(os.getpid(),flush=True); time.sleep(300)")
+        parent_code = ("import subprocess,sys,time; "
+                       "subprocess.Popen([sys.executable,'-c'," + repr(child_code) + "]); "
+                       "time.sleep(300)")
+        original = self.start(parent_code)
+        until = time.monotonic() + 3
+        while not self.log.read_text().strip() and time.monotonic() < until:
+            time.sleep(0.01)
+        child = int(self.log.read_text().strip())
+        descriptor = os.pidfd_open(child)
+        try:
+            self.assertIn(b"VLLM::EngineCore_DP0", Path(f"/proc/{child}/cmdline").read_bytes())
+            marker = ("ATLAS_CAMPAIGN_RUN_TOKEN=" + self.owner["run_marker"]).encode()
+            self.assertIn(marker, Path(f"/proc/{child}/environ").read_bytes(),
+                          "setproctitle erased the child's ownership marker")
+            self.assertEqual(original["environment"]["SPT_NOENV"], "1")
+            self.assertEqual(self.call("capture").returncode, 0)
+            self.assertEqual(json.loads(self.evidence.read_text())["argv"], original["argv"])
+            result = self.call("stop", "--timeout", "0.2")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(self.running(child))
+        finally:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(descriptor)
+
+    def test_conflicting_process_title_environment_refuses(self):
+        env_file = self.root / "env.json"
+        env_file.write_text(json.dumps({"SPT_NOENV": ""}))
+        self.argv_file.write_text(json.dumps([sys.executable, "-c", "pass"]))
+        result = self.call("start", "--env-json", str(env_file))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SPT_NOENV must be 1", result.stderr)
 
 
 if __name__ == "__main__":

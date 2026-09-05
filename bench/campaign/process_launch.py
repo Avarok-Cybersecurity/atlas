@@ -31,6 +31,11 @@ def launch_environment(args):
         if key in supplied and supplied[key] != os.environ[key]:
             raise ValueError("conflicting environment values for " + key)
         supplied[key] = os.environ[key]
+    if supplied.get("SPT_NOENV", "1") != "1":
+        raise ValueError("SPT_NOENV must be 1 to preserve process ownership markers")
+    # vLLM workers rename themselves through setproctitle. Its default can
+    # overwrite /proc/PID/environ, which would erase the run ownership marker.
+    supplied["SPT_NOENV"] = "1"
     for key, value in supplied.items():
         if key not in ENV_KEYS:
             raise ValueError("environment key is not allowed: " + key)
