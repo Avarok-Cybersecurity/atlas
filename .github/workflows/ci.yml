@@ -329,6 +329,14 @@ jobs:
       # GPU, no network.
       - run: bash .github/scripts/harvest-triage-test.sh
 
+  serve-matrix-gate:
+    name: serve matrix verdict contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Exercise release evidence and subprocess failure paths without a GPU.
+      - run: python3 -m unittest discover -s tests -p 'test_gate_results*.py' -v
+
   test:
     name: cargo test --workspace
     needs: [changes]
