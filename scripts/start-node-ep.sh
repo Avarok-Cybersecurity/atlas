@@ -34,6 +34,15 @@
 #     UNVERIFIED: no NCCL init has been observed from this script; there is no
 #     multi-GPU NVLink box in reach.
 #
+#  3. OWNERSHIP. A launch is identified by (run dir, PORT_BASE): container
+#     names carry that identity, so two launchers with different run
+#     directories or ports can never name the same container and `--stop`
+#     can only reach what its own run directory recorded. Nothing is ever
+#     force-removed to make room -- an already-existing container name, a run
+#     directory that still holds live rank records, or a port whose /health
+#     already answers are all REFUSALS (exit 2). Each of those is somebody
+#     else's live server, and the previous `docker rm -f` deleted it.
+#
 #  2. Only rank 0 serves HTTP. This is not a convention, it is the code:
 #     `maybe_run_ep_worker` (serve_load.rs:752) returns `Ok(None)` for rank > 0
 #     *before* the router is ever built — "An EP worker (rank > 0) never serves
@@ -49,6 +58,8 @@
 #   --check-kernels     Run rank 0 alone with --check-kernels --no-tui and exit
 #                       with its status (the count of unresolved kernels).
 #   --stop              Kill the ranks recorded in $ATLAS_NODE_RUN_DIR and exit.
+#                       Only that run directory's own ranks: the names it wrote
+#                       carry its (run dir, PORT_BASE) identity.
 #   --stop-on-timeout   On boot timeout, stop the ranks instead of leaving them
 #                       up for inspection.
 #   -h | --help         This header.
@@ -119,7 +130,6 @@ if [ $# -gt 0 ] && [ -z "$MODEL" ]; then MODEL="$1"; shift; fi
 
 RUN_DIR="${ATLAS_NODE_RUN_DIR:-/tmp/atlas-node-ep}"
 DOCKER="${DOCKER:-docker}"
-CONTAINER_PREFIX="atlas-node-ep"
 
 # ── --stop: kill exactly what this script recorded ────────────────────────────
 # By pid file and container name, never `pkill -f`. A `pkill -f spark` here
@@ -191,6 +201,21 @@ WARMUP_PROMPT="${WARMUP_PROMPT:-}"
 BOOT_TIMEOUT_S="${BOOT_TIMEOUT_S:-1800}"
 RUST_LOG="${RUST_LOG:-info}"
 HEALTH_URL="${ATLAS_NODE_HEALTH_URL:-http://127.0.0.1:$PORT_BASE/health}"
+
+# ── Ownership identity ───────────────────────────────────────────────────────
+# (run dir, PORT_BASE) names this invocation. The container name used to be the
+# global `atlas-node-ep-rankN` regardless of either, so a second launcher on a
+# different port force-removed the first one's live rank, and the first one's
+# saved container-name file then pointed at the second one's containers. The
+# name is derived rather than random so it stays readable in `docker ps` and so
+# a re-launch into the SAME run dir and port collides on purpose -- that is the
+# case that should be refused, not silently resolved.
+RUN_TAG="$(printf '%s' "$(basename "$RUN_DIR")" | tr -c 'A-Za-z0-9_.-' '-')"
+case "$RUN_TAG" in
+  atlas-*) ;;
+  *) RUN_TAG="atlas-$RUN_TAG" ;;
+esac
+RUN_ID="$RUN_TAG-$PORT_BASE"
 
 # ── Validation ───────────────────────────────────────────────────────────────
 is_positive_int() { case "$1" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac; }
@@ -293,7 +318,52 @@ WARMUP_HOST="$WARMUP_PROMPT"
 WARMUP_IN_CONTAINER="/warmup/$(basename "${WARMUP_PROMPT:-none}")"
 
 # ── Command construction ─────────────────────────────────────────────────────
-container_name() { printf '%s-rank%s' "$CONTAINER_PREFIX" "$1"; }
+container_name() { printf '%s-rank%s' "$RUN_ID" "$1"; }
+
+# `docker inspect` on a name: exit 0 iff a container by that name exists, and
+# `true` on stdout iff it is running. One command answers both questions.
+container_exists() { "$DOCKER" inspect --format '{{.State.Running}}' "$1" >/dev/null 2>&1; }
+container_running() {
+  [ "$("$DOCKER" inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
+}
+
+# Is rank 0 -- the rank this script launched -- still alive?
+#
+# This is the difference between "the endpoint answers" and "MY endpoint
+# answers". A rank that failed to bind while an older server still owns the
+# port leaves that server answering 200, and a poll that only looks at the
+# HTTP code reports a boot time for a process that is gone.
+#
+# A local rank is a background job of this shell, so after it exits it is a
+# ZOMBIE until reaped: `kill -0` still succeeds on it. The process state is
+# what actually distinguishes the two.
+rank0_alive() {
+  if [ -n "$IMAGE" ]; then
+    container_running "$(container_name 0)"
+    return $?
+  fi
+  local pid state
+  pid="$(cat "$RUN_DIR/rank0.pid" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')"
+  case "$state" in
+    Z*) return 1 ;;
+    '') return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+rank_log_tail() {  # rank_log_tail RANK -> 40 lines, wherever they live
+  if [ -n "$IMAGE" ]; then
+    "$DOCKER" logs --tail 40 "$(container_name "$1")" 2>&1 \
+      || echo "(no container logs for $(container_name "$1"))"
+  elif [ -f "$RUN_DIR/rank$1.log" ]; then
+    tail -n 40 "$RUN_DIR/rank$1.log"
+  else
+    echo "(no log at $RUN_DIR/rank$1.log)"
+  fi
+}
 
 # shquote ARGS... -> a single copy-pasteable shell line.
 shquote() {
@@ -444,6 +514,46 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
+# ── Refuse before creating anything ──────────────────────────────────────────
+# An endpoint that already answers is somebody else's server. Launching into it
+# means the new rank cannot bind, the old one keeps answering 200, and the poll
+# below reports a boot time for a process that never served a request. Refusing
+# is the only honest answer: this script cannot tell whose server that is.
+existing_code="$(curl --silent --output /dev/null --max-time 5 --write-out '%{http_code}' "$HEALTH_URL" || true)"
+if [ "$existing_code" = "200" ]; then
+  echo "REFUSED: $HEALTH_URL is already answering 200 before anything was started." >&2
+  echo "  Some other server owns this port. A rank launched now could not bind, and" >&2
+  echo "  the readiness poll below would time that server rather than this one." >&2
+  echo "  Stop it first, or pick another PORT_BASE." >&2
+  exit 2
+fi
+
+# A run directory that still holds rank records belongs to a launch that has
+# not been stopped. Its pid/container files are what --stop acts on, so
+# overwriting them orphans those ranks.
+for f in "$RUN_DIR"/rank*.pid "$RUN_DIR"/rank*.container; do
+  [ -e "$f" ] || continue
+  echo "REFUSED: $RUN_DIR still records a running launch ($(basename "$f"))." >&2
+  echo "  Stop it with: ATLAS_NODE_RUN_DIR=$RUN_DIR $0 --stop" >&2
+  echo "  or point ATLAS_NODE_RUN_DIR at a fresh directory." >&2
+  exit 2
+done
+
+# And a container name that already exists is a container this invocation did
+# not create. `docker rm -f` used to run here; that is how run B deleted run
+# A's live rank.
+if [ -n "$IMAGE" ]; then
+  for rank in $(seq 0 $((NGPUS - 1))); do
+    if container_exists "$(container_name "$rank")"; then
+      echo "REFUSED: a container named $(container_name "$rank") already exists." >&2
+      echo "  It was not created by this invocation, so it is not this script's to" >&2
+      echo "  remove. Stop the launch that owns it, or use a different run directory" >&2
+      echo "  or PORT_BASE -- the container name is derived from both." >&2
+      exit 2
+    fi
+  done
+fi
+
 mkdir -p "$RUN_DIR"
 
 # `setsid` detaches the rank from this shell's session so a closed terminal
@@ -460,7 +570,8 @@ for rank in "${LAUNCH_ORDER[@]}"; do
   echo "starting rank $rank ($role) -> $log"
   shquote "${RANK_CMD[@]}"; echo ""
   if [ -n "$IMAGE" ]; then
-    "$DOCKER" rm -f "$(container_name "$rank")" >/dev/null 2>&1 || true
+    # No `docker rm -f` first: the name is refused above if it is taken, and
+    # a name this invocation did not create is not this invocation's to delete.
     "${RANK_CMD[@]}" >"$log" 2>&1
     container_name "$rank" > "$RUN_DIR/rank$rank.container"
   else
@@ -481,14 +592,43 @@ echo "polling $HEALTH_URL every 1 s (cap ${BOOT_TIMEOUT_S}s)..."
 deadline=$((START_EPOCH + BOOT_TIMEOUT_S))
 ready=0
 codes_seen=""
+died=0
+READY_EPOCH=""
 while [ "$(date +%s)" -lt "$deadline" ]; do
+  if ! rank0_alive; then died=1; break; fi
   code="$(curl --silent --output /dev/null --max-time 5 --write-out '%{http_code}' "$HEALTH_URL" || true)"
   [ -n "$code" ] || code="000"
   case " $codes_seen " in *" $code "*) ;; *) codes_seen="$codes_seen $code" ;; esac
-  if [ "$code" = "200" ]; then ready=1; break; fi
+  if [ "$code" = "200" ]; then
+    # A 200 is only OUR 200 while our rank 0 is still up, and the check has to
+    # survive the race it exists for: a rank that cannot bind exits within
+    # milliseconds of launch, while the server that already owns the port
+    # answers instantly, so the FIRST poll can land inside that window and see
+    # both a 200 and a rank that has not finished dying. One second of settle
+    # closes it. The clock is read before the settle so the reported
+    # time-to-ready is not inflated by it.
+    READY_EPOCH="$(date +%s)"
+    sleep 1
+    if rank0_alive; then ready=1; break; fi
+    died=1; break
+  fi
   sleep 1
 done
-ELAPSED="$(( $(date +%s) - START_EPOCH ))"
+
+if [ "$died" = "1" ]; then
+  echo "" >&2
+  echo "FAILED: rank 0 exited before $HEALTH_URL was served by it (codes seen:${codes_seen:- none})." >&2
+  echo "  Any 200 on that port is another process; this launch has nothing running." >&2
+  for rank in $(seq 0 $((NGPUS - 1))); do
+    echo "" >&2
+    echo "--- rank $rank (last 40 lines) ---" >&2
+    rank_log_tail "$rank" >&2
+  done
+  echo "" >&2
+  stop_ranks >&2
+  exit 1
+fi
+ELAPSED="$(( ${READY_EPOCH:-$(date +%s)} - START_EPOCH ))"
 
 if [ "$ready" != "1" ]; then
   echo ""
@@ -496,14 +636,7 @@ if [ "$ready" != "1" ]; then
   for rank in $(seq 0 $((NGPUS - 1))); do
     echo "" >&2
     echo "--- rank $rank (last 40 lines) ---" >&2
-    if [ -n "$IMAGE" ]; then
-      "$DOCKER" logs --tail 40 "$(container_name "$rank")" >&2 2>&1 || \
-        echo "(no container logs for $(container_name "$rank"))" >&2
-    elif [ -f "$RUN_DIR/rank$rank.log" ]; then
-      tail -n 40 "$RUN_DIR/rank$rank.log" >&2
-    else
-      echo "(no log at $RUN_DIR/rank$rank.log)" >&2
-    fi
+    rank_log_tail "$rank" >&2
   done
   if [ "$STOP_ON_TIMEOUT" = "1" ]; then
     echo "" >&2

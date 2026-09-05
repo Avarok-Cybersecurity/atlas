@@ -27,10 +27,19 @@
 #   (f) source grep: the script must never contain `pkill -f`. A `pkill -f`
 #       pattern matches the killing shell's own command line, which has cost
 #       this project real hours; --stop uses pid files and `kill`.
-#   (g) health poll against a stub that answers 503, 503, 200 -> the reported
-#       time-to-ready must be >= 2 s. A poll loop that treats a loading 503 as
-#       ready would report ~0 and make every boot number in the campaign a
-#       fiction.
+#   (g) health poll against a stub that answers 503 until it is ready -> the
+#       reported time-to-ready must be >= 2 s. A poll loop that treats a
+#       loading 503 as ready would report ~0 and make every boot number in the
+#       campaign a fiction.
+#   (h) two invocations with different run directories and ports, against a
+#       fake Docker: neither may stop or remove the other's rank, and --stop
+#       from one run directory must leave the other's container alone. The
+#       container name used to be the global `atlas-node-ep-rankN`, so run B
+#       force-removed run A's live rank before starting its own.
+#   (i) a rank that dies while a FOREIGN server answers 200 on the port must
+#       fail the launch, not report a boot time. Otherwise the benchmark that
+#       follows measures the wrong process.
+#   (j) an endpoint that already answers before launch is refused up front.
 #
 # Usage: bash scripts/start_node_ep_test.sh
 set -uo pipefail
@@ -115,7 +124,7 @@ ok c "orthogonal mesh TP=2 EP=2 on 4 GPUs is accepted"
 out_img="$(NGPUS=4 EP_SIZE=4 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
             bash "$SCRIPT" --dry-run "$MODEL" 2>&1)"; rc=$?
 [ $rc -eq 0 ] || fail d "container dry-run exited $rc: $out_img"
-n="$(grep -c '^docker run -d --name atlas-node-ep-rank[0-9] ' <<<"$out_img")"
+n="$(grep -c '^docker run -d --name atlas-node-ep-8888-rank[0-9] ' <<<"$out_img")"
 [ "$n" -eq 4 ] || fail d "expected 4 docker run lines, got $n:
 $out_img"
 have "$out_img" "--gpus all --ipc=host --network host" \
@@ -156,6 +165,7 @@ import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 STATE = {"hits": 0}
+LOADING = int(sys.argv[2])
 
 
 class H(BaseHTTPRequestHandler):
@@ -171,8 +181,12 @@ class H(BaseHTTPRequestHandler):
         if self.path != "/health":
             return self._send(404, {"error": "not found"})
         STATE["hits"] += 1
-        # Atlas's shape: loading, loading, then ready.
-        if STATE["hits"] <= 2:
+        # Atlas's shape: loading for a while, then ready. The count is an
+        # argument because the launcher's pre-launch occupancy probe consumes
+        # the FIRST answer -- a run that starts against a port already serving
+        # 200 is refused, so a test that wants a successful launch has to hand
+        # back at least one loading answer before the poll begins.
+        if STATE["hits"] <= LOADING:
             return self._send(503, {"status": "loading"})
         self._send(200, {"status": "ready"})
 
@@ -182,7 +196,7 @@ class H(BaseHTTPRequestHandler):
 
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
-python3 "$tmp/stub.py" "$port" & stub_pid=$!
+python3 "$tmp/stub.py" "$port" 3 & stub_pid=$!
 python3 - "$port" <<'PY' || fail g "health stub never bound"
 import socket, sys, time
 deadline = time.time() + 10
@@ -220,7 +234,7 @@ $out_poll"
 [ "$elapsed" -ge 2 ] || fail g "two loading polls must cost >= 2 s, reported ${elapsed}s:
 $out_poll"
 have "$out_poll" "time_to_ready_s=$elapsed" || fail g "summary must carry the same number: $out_poll"
-ok g "503,503,200 measures ${elapsed}s (>= 2) and reports it in the summary"
+ok g "one occupancy probe plus 503,503,200 measures ${elapsed}s (>= 2) and reports it"
 
 [ -f "$run_dir/rank0.pid" ] || fail g "no pid file written to $run_dir"
 pid="$(cat "$run_dir/rank0.pid")"
@@ -232,6 +246,154 @@ have "$out_stop" "stopping pid $pid" || fail g "--stop must name the pid it kill
 sleep 1
 kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null; fail g "pid $pid survived --stop"; }
 ok g "--stop kills the recorded pid by pid file and clears it"
+
+# ── shared helpers for (h)-(j) ──────────────────────────────────────────────
+# One stub HTTP server per port, and a fake Docker that records every call and
+# keeps a set of the containers it "created". Both are files so the launcher
+# reaches them the way it reaches the real thing: SPARK_BIN / DOCKER.
+start_health_stub() {  # start_health_stub PORT LOADING -> echoes the pid
+  # stdout redirected, or the command substitution around this function would
+  # hold the stub's inherited pipe open and never return.
+  python3 "$tmp/stub.py" "$1" "$2" >/dev/null 2>&1 &
+  local pid=$!
+  python3 - "$1" <<'PY' || fail helper "health stub on port $1 never bound"
+import socket, sys, time
+deadline = time.time() + 10
+while time.time() < deadline:
+    try:
+        socket.create_connection(("127.0.0.1", int(sys.argv[1])), 0.2).close()
+        sys.exit(0)
+    except OSError:
+        time.sleep(0.05)
+sys.exit(1)
+PY
+  echo "$pid"
+}
+
+cat > "$tmp/fake-docker" <<'SH'
+#!/usr/bin/env bash
+# Records every call, and keeps one line per live container name so `inspect`
+# can answer whether a name exists. No Docker involved.
+printf '%s\n' "$*" >> "$DOCKER_CALLS"
+cmd="${1:-}"; shift || true
+name=""
+case "$cmd" in
+  run)
+    while [ $# -gt 0 ]; do
+      case "$1" in --name) name="$2"; shift 2 ;; *) shift ;; esac
+    done
+    printf '%s\n' "$name" >> "$DOCKER_STATE"
+    echo "cid-$name"
+    ;;
+  inspect)
+    for a in "$@"; do name="$a"; done
+    grep -Fxq -- "$name" "$DOCKER_STATE" 2>/dev/null || exit 1
+    echo "true"
+    ;;
+  stop|rm)
+    for a in "$@"; do name="$a"; done
+    grep -Fxv -- "$name" "$DOCKER_STATE" > "$DOCKER_STATE.next" 2>/dev/null || true
+    mv "$DOCKER_STATE.next" "$DOCKER_STATE"
+    ;;
+  logs) echo "(fake logs for ${*: -1})" ;;
+esac
+exit 0
+SH
+chmod +x "$tmp/fake-docker"
+
+export DOCKER_CALLS="$tmp/docker.calls"
+export DOCKER_STATE="$tmp/docker.state"
+: > "$DOCKER_CALLS"
+: > "$DOCKER_STATE"
+
+# ── (h) two runs cannot touch each other's containers ───────────────────────
+port_a="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+port_b="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+stub_a="$(start_health_stub "$port_a" 1)"
+stub_b="$(start_health_stub "$port_b" 1)"
+
+run_a="$tmp/run-a"
+out_a="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
+          DOCKER="$tmp/fake-docker" PORT_BASE="$port_a" \
+          ATLAS_NODE_RUN_DIR="$run_a" \
+          ATLAS_NODE_HEALTH_URL="http://127.0.0.1:$port_a/health" \
+          BOOT_TIMEOUT_S=30 bash "$SCRIPT" "$MODEL" 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail h "run A exited $rc:
+$out_a"
+name_a="$(cat "$run_a/rank0.container")"
+grep -Fxq -- "$name_a" "$DOCKER_STATE" || fail h "run A's container is not live: $name_a"
+
+: > "$DOCKER_CALLS"
+run_b="$tmp/run-b"
+out_b="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
+          DOCKER="$tmp/fake-docker" PORT_BASE="$port_b" \
+          ATLAS_NODE_RUN_DIR="$run_b" \
+          ATLAS_NODE_HEALTH_URL="http://127.0.0.1:$port_b/health" \
+          BOOT_TIMEOUT_S=30 bash "$SCRIPT" "$MODEL" 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail h "run B exited $rc:
+$out_b"
+name_b="$(cat "$run_b/rank0.container")"
+[ "$name_a" != "$name_b" ] || fail h "two runs must not share the container name $name_a"
+ok h "two run directories on two ports get distinct container names ($name_a / $name_b)"
+
+touched="$(grep -E "^(stop|rm) .*(^| )$name_a( |$)" "$DOCKER_CALLS" || true)"
+[ -z "$touched" ] || fail h "run B stopped or removed run A's container:
+$touched"
+grep -Fxq -- "$name_a" "$DOCKER_STATE" || fail h "run A's container did not survive run B"
+ok h "starting run B leaves run A's rank alone"
+
+: > "$DOCKER_CALLS"
+out_stop_a="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_a" \
+               bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail h "--stop for run A exited $rc: $out_stop_a"
+grep -Fq -- "$name_b" "$DOCKER_CALLS" && fail h "--stop from run A touched run B:
+$(cat "$DOCKER_CALLS")"
+grep -Fxq -- "$name_b" "$DOCKER_STATE" || fail h "run B's container did not survive run A's --stop"
+grep -Fxq -- "$name_a" "$DOCKER_STATE" && fail h "--stop must have removed run A's own container"
+ok h "--stop from run A's directory removes only run A's container"
+
+kill "$stub_a" "$stub_b" 2>/dev/null
+wait "$stub_a" "$stub_b" 2>/dev/null
+
+# ── (i) a dead rank is not readiness, even against a 200 ────────────────────
+port_i="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+stub_i="$(start_health_stub "$port_i" 1)"
+cat > "$tmp/dying-spark" <<'SH'
+#!/usr/bin/env bash
+echo "stub spark: refusing to bind, exiting 42" >&2
+exit 42
+SH
+chmod +x "$tmp/dying-spark"
+
+run_i="$tmp/run-i"
+out_i="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 SPARK_BIN="$tmp/dying-spark" \
+          PORT_BASE="$port_i" ATLAS_NODE_RUN_DIR="$run_i" \
+          ATLAS_NODE_HEALTH_URL="http://127.0.0.1:$port_i/health" \
+          BOOT_TIMEOUT_S=15 bash "$SCRIPT" "$MODEL" 2>&1)"; rc=$?
+kill "$stub_i" 2>/dev/null; wait "$stub_i" 2>/dev/null
+[ $rc -ne 0 ] || fail i "a rank that exited 42 must not be reported ready:
+$out_i"
+have "$out_i" "rank 0" || fail i "the failure must name the rank that died: $out_i"
+have "$out_i" "refusing to bind, exiting 42" \
+  || fail i "the failure must carry the dead rank's log tail: $out_i"
+grep -Fq -- "=== ready in" <<<"$out_i" && fail i "a dead rank must not print a boot time:
+$out_i"
+ok i "a rank that exits while a foreign server answers 200 fails the launch"
+
+# ── (j) an endpoint that already answers is refused before launch ───────────
+port_j="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+stub_j="$(start_health_stub "$port_j" 0)"
+run_j="$tmp/run-j"
+out_j="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 SPARK_BIN="$tmp/stub-spark" \
+          PORT_BASE="$port_j" ATLAS_NODE_RUN_DIR="$run_j" \
+          ATLAS_NODE_HEALTH_URL="http://127.0.0.1:$port_j/health" \
+          BOOT_TIMEOUT_S=15 bash "$SCRIPT" "$MODEL" 2>&1)"; rc=$?
+kill "$stub_j" 2>/dev/null; wait "$stub_j" 2>/dev/null
+[ $rc -ne 0 ] || fail j "an occupied endpoint must be refused, got 0:
+$out_j"
+have "$out_j" "already answering" || fail j "the refusal must say what it found: $out_j"
+[ -f "$run_j/rank0.pid" ] && fail j "a refused launch must start no rank"
+ok j "a port that already answers /health is refused before anything is started"
 
 echo ""
 echo "ALL $asserts assertions passed."
