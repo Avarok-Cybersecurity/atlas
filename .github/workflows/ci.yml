@@ -382,7 +382,7 @@ jobs:
     # suppresses the implicit success() on `needs` — so this job RUNS. Written
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -391,7 +391,7 @@ jobs:
       # feature opts out of cudarc workspace-wide and into the Metal
       # runtime backend (objc2-metal). xcrun + metallib are part of
       # macOS's built-in Xcode Command Line Tools and don't need a
-      # separate install on macos-14 runners.
+      # separate install on the self-hosted Apple Silicon runner.
       # `-p spark-server --features metal` activates the metal
       # feature on every transitive workspace crate via spark-server's
       # forwarding feature flags. Single-flag spelling — no long
