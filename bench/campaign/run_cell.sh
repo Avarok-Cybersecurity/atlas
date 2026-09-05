@@ -63,9 +63,9 @@
 #   IMAGE                    Atlas container image; empty = run SPARK_BIN
 #   VLLM_IMAGE_DIGEST        sha256:... -- required for a real vLLM run
 #   HF_CACHE                 host HF cache (default ~/.cache/huggingface)
-#   ATLAS_NODE_RUN_DIR       node-EP pid files and logs; this cell's teardown
-#                            stops only what this directory recorded
-#                            (default <out>/node-ep)
+#   ATLAS_NODE_RUN_DIR       PREFIX for this cell's node-EP run directory: the
+#                            cell reserves <prefix>-<pid> for itself and stops
+#                            only what it recorded (default <out>/node-ep)
 #
 # Exit: 0 every gate passed · 1 a gate failed (artifact written anyway) ·
 #       2 usage or refusal-to-start · 3 no recipe for the pair · 4 --spec on
@@ -193,10 +193,14 @@ CONTAINER_ID=""
 OWNER_JSON="$OUT/owner.json"
 CREATE_ATTEMPTED=0
 # The launcher identifies a launch by (run dir, PORT_BASE), and its --stop
-# reaches only what its own run directory recorded. A run directory of this
-# cell's own is what keeps the teardown below -- normal or interrupted -- aimed
-# at the ranks this invocation started and at nobody else's.
-NODE_RUN_DIR="${ATLAS_NODE_RUN_DIR:-$OUT/node-ep}"
+# reaches only what its own run directory recorded. So the run directory has to
+# be this invocation's ALONE: a directory shared with an earlier run holds that
+# run's rank records, and a --stop aimed at it stops ranks this cell never
+# started. The pid makes it exclusive, and the serve stage below CREATES it --
+# `mkdir`, not `mkdir -p` -- so "this cell reserved it" is a fact rather than an
+# assumption. ATLAS_NODE_RUN_DIR therefore names the prefix, not the directory.
+NODE_RUN_DIR="${ATLAS_NODE_RUN_DIR:-$OUT/node-ep}-$$"
+NODE_RUN_DIR_RESERVED=0
 
 echo "=== campaign cell $CELL_ID ==="
 echo "engine:      $ENGINE"
@@ -263,7 +267,6 @@ GIT_SHA=""
 # the campaign is interrupted, with no artifact to say the cell ever ran.
 CHILD_PIDS=""          # pids this invocation started, space separated
 SERVE_PID=""
-ATLAS_LAUNCHED=0
 FINALIZED=0
 MAIN_DONE=0
 INTERRUPT_SIG=""
@@ -308,6 +311,22 @@ run_child() {
   return "$rc"
 }
 
+# Did the launcher record a rank of ours? It writes rank<N>.pid (local binary)
+# or rank<N>.container (container mode) as it starts each one, into the run
+# directory this cell reserved for itself. Because that directory is this
+# invocation's alone, anything recorded in it can only be this invocation's --
+# which is why THIS, and not "we backgrounded the launcher", is the ownership
+# test. A launcher that refuses (exit 2 on an occupied port, a run directory it
+# will not overwrite, a container name it did not create) creates nothing and
+# records nothing, and a refusal must never be followed by a --stop.
+atlas_recorded_ranks() {
+  local f
+  for f in "$NODE_RUN_DIR"/rank*.pid "$NODE_RUN_DIR"/rank*.container; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+
 # Only what this invocation owns: the pids it started, plus the ranks or the
 # container it created. Nothing here is addressed by name or by pattern.
 teardown_owned() {
@@ -323,8 +342,13 @@ teardown_owned() {
   if [ "$ENGINE" = "atlas" ]; then
     show "env ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR bash $LAUNCHER --stop"
     if [ "$DRY_RUN" = "1" ]; then return 0; fi
-    if [ "$ATLAS_LAUNCHED" != "1" ]; then
-      echo "this invocation launched no ranks into $NODE_RUN_DIR: nothing to stop."
+    if [ "$NODE_RUN_DIR_RESERVED" != "1" ]; then
+      echo "this invocation reserved no run directory of its own: nothing to stop."
+      return 0
+    fi
+    if ! atlas_recorded_ranks; then
+      echo "the launcher recorded no rank in $NODE_RUN_DIR -- it refused or failed"
+      echo "  before creating anything, so this cell owns nothing to stop."
       return 0
     fi
     env "ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR" bash "$LAUNCHER" --stop || note_fail teardown
@@ -526,6 +550,21 @@ if [ "$ENGINE" = "atlas" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --dry-run "$HF_ID" 2>&1 | sed 's/^/  | /'
   else
+    # `mkdir`, deliberately without -p: this cell must CREATE the directory it
+    # hands the launcher. A directory that already exists may hold an earlier
+    # run's rank records, and the finalizer's --stop reaches whatever the
+    # directory records -- which is how a launch that was refused before it
+    # created anything went on to stop somebody else's ranks.
+    if mkdir -p "$(dirname "$NODE_RUN_DIR")" 2>/dev/null \
+       && mkdir "$NODE_RUN_DIR" 2>/dev/null; then
+      NODE_RUN_DIR_RESERVED=1
+      echo "run dir:     $NODE_RUN_DIR (reserved by this cell)"
+    else
+      echo "REFUSED: $NODE_RUN_DIR could not be reserved for this cell."
+      echo "  It already exists, so whatever it records is not this invocation's"
+      echo "  to stop later. Nothing is launched."
+      note_fail serve
+    fi
     printf '%s\n' "${ATLAS_ENV[@]}" > "$SERVE_ENV"
     env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --dry-run "$HF_ID" > "$OUT/serve-dryrun.txt" 2>&1
     python3 - "$OUT/serve-dryrun.txt" "$SERVE_ARGV" <<'PY'
@@ -535,15 +574,18 @@ line = next((l for l in pathlib.Path(sys.argv[1]).read_text().splitlines()
 argv = shlex.split(line[len("rank0_command: "):]) if line else []
 pathlib.Path(sys.argv[2]).write_bytes(b"\0".join(a.encode() for a in argv))
 PY
-    run_child env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --check-kernels "$HF_ID" \
-      > "$OUT/check-kernels.txt" 2>&1 || note_fail serve
-    START_EPOCH="$(date +%s)"
-    env "${ATLAS_ENV[@]}" bash "$LAUNCHER" "$HF_ID" > "$OUT/serve.log" 2>&1 &
-    SERVE_PID=$!
-    # This launch is now this invocation's to stop, by pid and by run dir.
-    ATLAS_LAUNCHED=1
-    CHILD_PIDS="$CHILD_PIDS $SERVE_PID"
-    echo "launcher pid $SERVE_PID; log $OUT/serve.log"
+    if [ "$NODE_RUN_DIR_RESERVED" = "1" ]; then
+      run_child env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --check-kernels "$HF_ID" \
+        > "$OUT/check-kernels.txt" 2>&1 || note_fail serve
+      START_EPOCH="$(date +%s)"
+      env "${ATLAS_ENV[@]}" bash "$LAUNCHER" "$HF_ID" > "$OUT/serve.log" 2>&1 &
+      SERVE_PID=$!
+      CHILD_PIDS="$CHILD_PIDS $SERVE_PID"
+      # The launcher pid is this invocation's to KILL. What is this invocation's
+      # to STOP is decided later, by what the launcher actually recorded in the
+      # run directory above -- a launcher that refuses records nothing.
+      echo "launcher pid $SERVE_PID; log $OUT/serve.log"
+    fi
   fi
 else
   VC_ARGS=( "$MODEL" "$SKU" --spec "$SPEC" --label "$RUN_LABEL" )
