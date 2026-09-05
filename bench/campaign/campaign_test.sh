@@ -115,6 +115,9 @@ python3 "$HERE/dryrun_failure_test.py" || fail dryrun "renderer failure regressi
 ok dryrun "3 dry-run exit regressions passed (both engines, refusal before boot)"
 python3 "$HERE/thinking_policy_test.py" || fail policy "thinking policy regression"
 ok policy "campaign thinking eligibility refuses excluded modes before launch"
+python3 "$HERE/../hopper_ab/coherency_policy_test.py" || fail coherency "HTTP thinking policy regression"
+python3 "$HERE/coherency_evidence_test.py" || fail coherency "artifact thinking policy regression"
+ok coherency "gate requests and artifact certification match the cell's thinking mode"
 
 # ── (a0) every FP8-checkpoint Atlas entry carries FP8 KV calibration ────────
 # Oracle: spark-runtime/src/weights.rs fp8_kv_scale_count — a checkpoint with
@@ -325,11 +328,11 @@ read -r verdict stage method thinkv <<<"$(python3 -c '
 import json,sys
 d=json.load(open(sys.argv[1]))
 print(d["verdict"], d["failing_stage"], d["metrics"]["percentile_method"], d["think"])' "$art")"
-[ "$verdict" = "PARTIAL" ] || fail h "an unpaired all-green cell must be PARTIAL, got $verdict"
-[ "$stage" = "pair" ] || fail h "an unpaired cell must name the 'pair' stage, got $stage"
+[ "$verdict" = "NO-GO" ] || fail h "legacy think-off gates cannot certify think-on, got $verdict"
+[ "$stage" = "coherency" ] || fail h "mismatched request policy must fail coherency, got $stage"
 [ "$method" = "mean_of_rep_percentiles" ] \
   || fail h "a ladder-derived cell must not claim pooled percentiles, got $method"
-ok h "unpaired all-green cell is PARTIAL/pair with mean_of_rep_percentiles"
+ok h "think-on with legacy think-off gate evidence is NO-GO/coherency with mean_of_rep_percentiles"
 
 python3 -c '
 import json,sys

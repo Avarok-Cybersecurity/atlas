@@ -834,9 +834,9 @@ fi
 
 # ── 4. coherency gate ────────────────────────────────────────────────────────
 stage coherency "stage 4/7 coherency gate"
-show "python3 $COHERENCY --url $URL --model $HF_ID --out $COH_JSON"
+show "python3 $COHERENCY --url $URL --model $HF_ID --think $THINK --out $COH_JSON"
 if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
-  run_child python3 "$COHERENCY" --url "$URL" --model "$HF_ID" --out "$COH_JSON" \
+  run_child python3 "$COHERENCY" --url "$URL" --model "$HF_ID" --think "$THINK" --out "$COH_JSON" \
     || note_fail coherency
 fi
 

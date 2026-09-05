@@ -66,7 +66,15 @@ def parse_utc(text):
         return None
 
 
-def gate_blockers(boot, coh, ladder, rung, metrics):
+def policy_matches(policy, think):
+    """Require the gate's named mode and literal request boolean to agree."""
+    if not isinstance(policy, dict) or policy.get("think") != think:
+        return False
+    kwargs = policy.get("chat_template_kwargs")
+    return isinstance(kwargs, dict) and kwargs.get("enable_thinking") is (think == "on")
+
+
+def gate_blockers(boot, coh, ladder, rung, metrics, think):
     """Every gate whose evidence is absent or negative, in stage order.
 
     This is the difference between "the stage exited 0" and "the gate passed".
@@ -96,12 +104,33 @@ def gate_blockers(boot, coh, ladder, rung, metrics):
                 # coherency JSON written before the known-answer probe existed
                 # is evidence of three gates, not four.
                 out.append(("coherency", f"coherency {key}={coh.get(key)!r}"))
+        if "request_policy" not in coh and "check_request_policy" not in coh:
+            # Before policy recording existed, every gate request hardcoded
+            # enable_thinking=false. That historical evidence is off only.
+            if think != "off":
+                out.append(("coherency", "legacy request policy is think-off; "
+                            "think-on requires explicit matching gate evidence"))
+        else:
+            if not policy_matches(coh.get("request_policy"), think):
+                out.append(("coherency", f"coherency request policy does not match think={think}"))
+            per_check = coh.get("check_request_policy")
+            for key in COHERENCY_GATES:
+                expected = "off" if key == "think_leak_ok" else think
+                got = per_check.get(key) if isinstance(per_check, dict) else None
+                if not policy_matches(got, expected):
+                    out.append(("coherency", f"{key} request policy must be think={expected}"))
 
     if ladder is None:
         out.append(("ladder", "no ladder JSON was recorded for this cell"))
     elif rung is None:
         out.append(("ladder", "the ladder JSON carries no rung at this concurrency"))
     else:
+        # Old headers without this field also predate thinking support and
+        # represent off. A present malformed field is not historical proof.
+        kwargs = ladder.get("chat_template_kwargs", {"enable_thinking": False})
+        if (not isinstance(kwargs, dict)
+                or kwargs.get("enable_thinking") is not (think == "on")):
+            out.append(("ladder", f"ladder request policy does not match think={think}"))
         if metrics["vacuous"] is not False:
             out.append(("ladder",
                         "the 80% vacuity floor was not cleared"
@@ -416,7 +445,8 @@ def main():
         # The ladder must have been run with --enable-thinking; its header is
         # the proof. A think-on cell whose ladder header says false is a
         # mismatch, not a measurement.
-        sent = ((ladder or {}).get("chat_template_kwargs") or {}).get("enable_thinking")
+        kwargs = (ladder or {}).get("chat_template_kwargs")
+        sent = kwargs.get("enable_thinking") if isinstance(kwargs, dict) else None
         if sent is not True:
             notes.append(
                 "think=on but the ladder header records chat_template_kwargs."
@@ -441,7 +471,7 @@ def main():
     stage = args.failing_stage or None
     if stage is None:
         blockers = gate_blockers(ladder=ladder, boot=boot, coh=coh, rung=rung,
-                                 metrics=metrics)
+                                 metrics=metrics, think=args.think)
         if blockers:
             stage = blockers[0][0]
             notes.append("not CERTIFIED, gate evidence: "

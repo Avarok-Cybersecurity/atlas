@@ -40,7 +40,7 @@ hard -- a missing source is a broken gate, not a reason to fall back to a
 private copy that says something else.
 
 Usage:
-  coherency_gate.py --url URL --model MODEL [--out FILE] [--timeout 300]
+  coherency_gate.py --url URL --model MODEL [--think on|off] [--out FILE] [--timeout 300]
   coherency_gate.py --selftest
 
 Exits non-zero if any check fails, so a driver can `set -e` around it.
@@ -262,16 +262,24 @@ def post(url, payload, timeout, exchanges=None):
             exchanges.append(exchange)
 
 
-def body(model, prompt, **extra):
+def request_policy(think):
+    """The explicit request mode recorded beside the gate verdicts."""
+    if think not in ("on", "off"):
+        raise ValueError("think must be 'on' or 'off'")
+    return {"think": think, "chat_template_kwargs": {"enable_thinking": think == "on"}}
+
+
+def body(model, prompt, *, think="off", **extra):
     """The campaign's pinned sampling, on every request this gate makes.
 
     Identical to `bench/ladder38/harness_w55_conc_ladder.py` and
     `workloads.json`: pinning penalties explicitly stops Atlas's non_thinking
     preset injecting presence_penalty=1.5 where vLLM defaults to 0, and
-    `chat_template_kwargs.enable_thinking=false` is the only key that disables
-    thinking on vLLM ({"thinking": false} is silently ignored). A gate that
-    checked a different configuration than the ladder measures would be
-    certifying a server nobody benchmarked.
+    `chat_template_kwargs.enable_thinking` selects the cell's requested mode
+    on both engines ({"thinking": false} is silently ignored by vLLM). A gate
+    that checked a different configuration than the ladder measures would be
+    certifying a server nobody benchmarked. The separate leakage probe always
+    requests think-off, even when the cell requests think-on.
     """
     payload = {
         "model": model,
@@ -281,7 +289,7 @@ def body(model, prompt, **extra):
         "presence_penalty": 0.0,
         "frequency_penalty": 0.0,
         "max_tokens": 256,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": request_policy(think)["chat_template_kwargs"],
     }
     payload.update(extra)
     return payload
@@ -313,7 +321,7 @@ def content_of(response):
     return completion_of(response)[0]
 
 
-def check_determinism(url, model, timeout, exchanges=None):
+def check_determinism(url, model, timeout, exchanges=None, *, think="off"):
     """Two identical requests at temp 0 must return identical, coherent bytes.
 
     Not "similar": at temperature 0 the sampler is argmax, so any difference is
@@ -333,8 +341,8 @@ def check_determinism(url, model, timeout, exchanges=None):
         the sampler cut off mid-loop is not an answer. That inference is about
         THIS prompt being bounded, not a general rule about "length".
     """
-    first, finish = completion_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
-    second, _ = completion_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
+    first, finish = completion_of(post(url, body(model, DETERMINISM_PROMPT, think=think), timeout, exchanges))
+    second, _ = completion_of(post(url, body(model, DETERMINISM_PROMPT, think=think), timeout, exchanges))
     if not first.strip():
         return False, "empty reply -- nothing to compare"
     if first != second:
@@ -351,9 +359,9 @@ def check_determinism(url, model, timeout, exchanges=None):
     return True, f"{len(first)} chars reproduced exactly, no degeneration signals"
 
 
-def check_toolcall(url, model, timeout, exchanges=None):
+def check_toolcall(url, model, timeout, exchanges=None, *, think="off"):
     """A tool call must arrive as a tool call, with arguments that parse."""
-    r = post(url, body(model, TOOLCALL_PROMPT, tools=TOOL_SCHEMA, tool_choice="auto"), timeout, exchanges)
+    r = post(url, body(model, TOOLCALL_PROMPT, think=think, tools=TOOL_SCHEMA, tool_choice="auto"), timeout, exchanges)
     choice = choice_of(r)
     finish = choice.get("finish_reason")
     calls = (choice.get("message") or {}).get("tool_calls") or choice.get("tool_calls") or []
@@ -394,7 +402,7 @@ def check_toolcall(url, model, timeout, exchanges=None):
 
 def check_think_leak(url, model, timeout, exchanges=None):
     """Thinking is off; the scratchpad must not be in the reply."""
-    text = content_of(post(url, body(model, THINK_PROMPT), timeout, exchanges))
+    text = content_of(post(url, body(model, THINK_PROMPT, think="off"), timeout, exchanges))
     if not text.strip():
         return False, "empty reply -- a leak check over no text proves nothing"
     signals = degeneration_signals(text)
@@ -473,7 +481,7 @@ def judge_known_answer(text, expect):
     return "FAIL", f"answer not stated: {text[:80]!r}"
 
 
-def check_known_answer(url, model, timeout, exchanges=None):
+def check_known_answer(url, model, timeout, exchanges=None, *, think="off"):
     """Three questions whose answers are known must come back answered.
 
     Determinism, a parseable tool call and a clean scratchpad are all
@@ -489,7 +497,7 @@ def check_known_answer(url, model, timeout, exchanges=None):
     """
     verdicts, ok = [], True
     for prompt, expect in KNOWN_ANSWER_CASES:
-        payload = body(model, prompt, messages=[
+        payload = body(model, prompt, think=think, messages=[
             {"role": "system", "content": KNOWN_ANSWER_SYSTEM},
             {"role": "user", "content": prompt},
         ])
@@ -501,7 +509,8 @@ def check_known_answer(url, model, timeout, exchanges=None):
     return ok, "; ".join(verdicts)
 
 
-def run(url, model, timeout):
+def run(url, model, timeout, think="off"):
+    policy = request_policy(think)
     checks = (
         ("determinism_ok", check_determinism),
         ("toolcall_ok", check_toolcall),
@@ -510,11 +519,19 @@ def run(url, model, timeout):
     )
     out = {"schema": 1, "url": url, "model": model,
            "checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "request_policy": policy,
+           "check_request_policy": {
+               key: request_policy("off") if key == "think_leak_ok" else policy
+               for key, _ in checks
+           },
            "details": {}, "http_exchanges": []}
     for key, fn in checks:
         exchanges = []
         try:
-            ok, detail = fn(url, model, timeout, exchanges)
+            if key == "think_leak_ok":
+                ok, detail = fn(url, model, timeout, exchanges)
+            else:
+                ok, detail = fn(url, model, timeout, exchanges, think=think)
         except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError, ValueError, KeyError) as e:
             # A transport failure is a FAILED check, never a skipped one: the
             # gate's whole job is to refuse to certify what it could not see.
@@ -843,6 +860,8 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--out")
     ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--think", choices=("on", "off"), default="off",
+                    help="cell thinking mode; the dedicated leakage probe always requests off")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
 
@@ -852,7 +871,7 @@ def main():
     if not a.url or not a.model:
         ap.error("--url and --model are required (or pass --selftest)")
 
-    out = run(a.url, a.model, a.timeout)
+    out = run(a.url, a.model, a.timeout, a.think)
     text = json.dumps(out, indent=2)
     print(text)
     if a.out:

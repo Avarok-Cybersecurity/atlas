@@ -105,12 +105,15 @@ explicit policy entry; eligibility alone does not add a scored cell or recipe.
 
 ## Two limits worth knowing before you book a box
 
-**`--think on` is serve-side only.** `harness_w55_conc_ladder.py` hardcodes
-`chat_template_kwargs.enable_thinking=false` in every request body, so a
-think-on cell sets an Atlas flag whose effect the client then suppresses.
-`run_cell.sh` warns loudly and records it in the artifact's `notes`; the cell is
-not evidence of thinking-enabled generation. Lifting this needs a change from
-the ladder's owner.
+**The gate must exercise the measured thinking mode.** The driver passes
+`--think` to the coherency gate and `--enable-thinking` to the ladder for an
+on cell. Determinism, tool-call and known-answer requests match the cell;
+the separate thinking-leakage probe always requests off. Gate JSON records
+`request_policy` and `check_request_policy`. The assembler refuses mismatched
+or malformed policy evidence even when the four gate booleans are true, and
+also rejects a mismatched ladder header. Historical JSON without policy
+fields predates thinking support and can support only an off cell. HTTP
+fixture tests prove this wiring; a real engine still has to pass the probes.
 
 **Percentiles are means of per-rep percentiles, not pooled.** The ladder keeps
 one percentile per rep and discards the per-request samples, so pooled cell
@@ -124,5 +127,5 @@ ladder-sourced artifact that claims `pooled_requests`.
 bash bench/campaign/campaign_test.sh     # selftests, dry runs, refusals, lints
 ```
 
-No GPU, no engine, no network: every case is a selftest, a `--dry-run`, or a
-refusal.
+No GPU, engine, downloads or external network: cases use selftests, dry runs,
+refusals and local HTTP fixtures.
