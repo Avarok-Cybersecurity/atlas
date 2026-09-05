@@ -61,8 +61,20 @@ fn kernels_root() -> PathBuf {
 /// not compiled.
 fn sources(hw: &str, model: &str) -> BTreeMap<String, PathBuf> {
     let hw_dir = kernels_root().join(hw);
+    let model_dir = hw_dir.join(model);
+    let model_toml: toml::Value = toml::from_str(
+        &std::fs::read_to_string(model_dir.join("MODEL.toml")).expect("model declaration"),
+    )
+    .expect("valid model declaration");
+    // Follow the same-hardware source alias before merging shadows, just as
+    // build.rs does. The 3.8 target deliberately owns no quant directory.
+    let source_dir = model_toml["model"]
+        .get("kernel_source")
+        .and_then(|s| s.as_str())
+        .map(|source| hw_dir.join(source))
+        .unwrap_or(model_dir);
     let mut by_stem = BTreeMap::new();
-    for dir in [hw_dir.join("common"), hw_dir.join(model).join("nvfp4")] {
+    for dir in [hw_dir.join("common"), source_dir.join("nvfp4")] {
         let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
         for path in entries.flatten().map(|e| e.path()) {
             let ext = path.extension().and_then(|e| e.to_str());
@@ -75,6 +87,14 @@ fn sources(hw: &str, model: &str) -> BTreeMap<String, PathBuf> {
     }
     assert!(!by_stem.is_empty(), "kernels/{hw}/{model}: no sources");
     by_stem
+}
+
+#[test]
+fn hopper_dense_38_scans_the_same_sources_as_its_36_alias_target() {
+    assert_eq!(
+        sources("hopper", "qwen3.8-27b"),
+        sources("hopper", "qwen3.6-27b")
+    );
 }
 
 /// Model directories under `kernels/<hw>` — the rule `ATLAS_TARGET_MODEL=*`

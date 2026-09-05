@@ -199,7 +199,7 @@ fn model_dirs(hw: &str) -> Vec<String> {
     names
 }
 
-/// ORACLE: [`P0_MODELS`], the campaign's declared P0 set. A wildcard build
+/// ORACLE: the model lists in [`INHERITED`], the campaign's declared set. A wildcard build
 /// (`ATLAS_TARGET_MODEL=*`) compiles exactly the directories that carry a
 /// MODEL.toml, so this set IS what an image for that hardware would serve.
 #[test]
@@ -278,6 +278,12 @@ fn every_model_toml_records_its_inherited_provenance() {
 fn every_model_nvfp4_dir_mirrors_gb10() {
     for t in INHERITED {
         for model in t.models {
+            // The 3.8 target retains its GB10 alias: only 3.6 owns a source
+            // tree. Creating an nvfp4 directory here would fork that source.
+            if t.hw == "hopper" && *model == "qwen3.8-27b" {
+                assert!(!hw_dir(t.hw).join(model).join("nvfp4").exists());
+                continue;
+            }
             let faults = mirror_faults(
                 &hw_dir(t.hw).join(model).join("nvfp4"),
                 &gb10_dir().join(model).join("nvfp4"),
@@ -328,12 +334,12 @@ fn resolved_targets(hw: &str, quant: &str) -> Vec<(String, String, String, PathB
         .collect()
 }
 
-/// A wildcard build of each inherited target resolves its five P0 targets, all
+/// A wildcard build of each inherited target resolves its declared targets, all
 /// at that hardware's arch, each with a kernel directory that exists. This is
 /// the assertion the real build would make on a CUDA host, made where CI can
 /// actually run it.
 #[test]
-fn a_wildcard_build_resolves_five_targets_at_the_declared_arch() {
+fn a_wildcard_build_resolves_declared_targets_at_the_declared_arch() {
     for t in INHERITED {
         let targets = resolved_targets(t.hw, "nvfp4");
         let names: Vec<&str> = targets.iter().map(|(m, ..)| m.as_str()).collect();
@@ -351,20 +357,23 @@ fn a_wildcard_build_resolves_five_targets_at_the_declared_arch() {
     }
 }
 
-/// No inherited MODEL.toml redirects with `kernel_source`. Redirects are a
-/// WITHIN-hardware mechanism — `build.rs` resolves the name against
-/// `kernels/<hw>/` — so one here would have to name another target in the same
-/// hardware set, not a gb10 one. These sets reuse gb10 through the filesystem
-/// instead, which is why the kernel dirs above resolve to their own paths.
+/// The first paid Hopper cell retains the GB10 3.8 -> 3.6 redirect within
+/// Hopper. Every other target owns its source tree. An accidental cross-hardware
+/// redirect must not bypass the inherited mirror and its hardware flags.
 #[test]
-fn no_inherited_target_redirects_its_kernel_source() {
+fn inherited_redirects_resolve_only_to_the_declared_same_hardware_source() {
     for t in INHERITED {
         let targets = resolved_targets(t.hw, "nvfp4");
         assert!(!targets.is_empty(), "no {} targets resolved at all", t.hw);
         for (model, _, _, kernel_dir) in targets {
+            let source = if t.hw == "hopper" && model == "qwen3.8-27b" {
+                "qwen3.6-27b"
+            } else {
+                &model
+            };
             assert_eq!(
                 kernel_dir,
-                hw_dir(t.hw).join(&model).join("nvfp4"),
+                hw_dir(t.hw).join(source).join("nvfp4"),
                 "{}/{model}: kernel_source redirect changes where kernels come from",
                 t.hw
             );

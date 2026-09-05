@@ -1,0 +1,253 @@
+# Hopper target: kernel set inherited from gb10 via symlink; expected_absent
+# NOT yet harvested on Hopper hardware (`spark serve --check-kernels`).
+# Sampling, behavior and the 3.8 -> 3.6 source redirect retain GB10's settings.
+# Only the architecture-declared optional W4A4 absence below is new here;
+# no H100/H200 correctness or performance measurement is claimed.
+[model]
+name = "qwen3.8-27b"
+hf_id = "Qwen/Qwen3.8-27B"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
+
+# ── Identity vs qwen3.6-27b ────────────────────────────────────────────────
+# ⚠ CORRECTION 2026-08-15: the claim below that the two quantization_configs
+# "differ only in a tooling version string" is FALSE for the checkpoint now on
+# disk (snapshot 9c73e2da, fetched 2026-08-14 11:18). Read from config.json:
+#
+#   unsloth/Qwen3.6-27B-NVFP4  format = nvfp4-pack-quantized
+#                              one group, all Linear, 4-bit tensor_group
+#   unsloth/Qwen3.8-27B-NVFP4  format = MIXED-PRECISION
+#                              group_0  FP8, strategy = CHANNEL (per-row):
+#                                       self_attn q/k/v/o, linear_attn
+#                                       in_proj_qkv/in_proj_z/out_proj,
+#                                       lm_head, layers 56-63 MLP
+#                              group_1  NVFP4: mlp gate/up/down
+#
+# The consequence is real and measured: a per-row FP8 scale cannot feed the
+# native w8a16 path (it indexes a [N/128, K/128] block grid), so those tensors
+# are dequantised to BF16 and RE-quantised to NVFP4 at load — visible as
+# `quantize_to_nvfp4` lines in the serve log. Against Qwen/Qwen3.8-27B-FP8,
+# the same weights in the block-scaled format Atlas loads natively, this
+# checkpoint measured WORSE on the video benchmark's hardest leg. Nothing here
+# is unsound — the fallback is deliberate and documented in
+# weight_loader/qwen35_dense.rs — but this target pays a double-quantisation
+# cost that the note below says it does not have.
+#
+# What the note gets RIGHT, and what the settings below still rest on, is the
+# ARCHITECTURE: same tensor names/shapes, same config fields, so `kernel_source`
+# reuse and `match_names` disambiguation are unaffected.
+#
+# ORIGINAL NOTE (2026-08-14), retained:
+# unsloth/Qwen3.8-27B-NVFP4 was diffed tensor-by-tensor against
+# unsloth/Qwen3.6-27B-NVFP4 (2026-08-14): all 1968 safetensors tensors have
+# identical names/shapes/dtypes, the quantization_config differs only in a
+# tooling version string, and tokenizer vocab/merges/added_tokens hash
+# identical. The checkpoints differ ONLY in weights, so:
+#
+#  * `kernel_source` below reuses qwen3.6-27b's .cu tree verbatim instead of
+#    vendoring 26 duplicate files — there is no 3.8-specific kernel work.
+#  * `match_names` is REQUIRED: config.json cannot distinguish 3.8 from 3.6
+#    (same model_type "qwen3_5", same hidden_size 5120, same every numeric
+#    field), so kernel-target resolution breaks the exact-(qwen3_5, 5120)
+#    tie by matching these needles against the checkpoint reference
+#    (HF id / --model-name / model dir). See atlas-kernels/src/resolve.rs;
+#    an unbroken tie is a hard startup error, never a build-order pick.
+match_names = ["qwen3.8-27b"]
+kernel_source = "qwen3.6-27b"
+
+# Architecture facts below are the same as qwen3.6-27b's because the configs
+# are bit-identical (verified as above), not because they were assumed.
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+mtp_layers = 0
+vision = true
+
+# Carried from the 27B siblings (3.5/3.6 share Atlas's hybrid-GDN
+# long-context behaviour; 3.8 is the same architecture). UNMEASURED on 3.8
+# weights — revisit if long-context evals land.
+effective_context = 24576
+
+# ── Sampling ───────────────────────────────────────────────────────────────
+# Source: the official Qwen3.8-27B model card (NOT copied from qwen3.6-27b):
+#   thinking:      temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
+#                  presence_penalty=0.0, repetition_penalty=1.0
+#   non-thinking:  temperature=0.7, top_p=0.80, top_k=20, presence_penalty=1.5
+#
+# Deviations from the card, and why:
+#
+#  * [sampling.tools] stays PENALTY-FREE (presence 0.0 / repetition 1.0 /
+#    dry 0.0). The card has no tools preset, and the family's hard-won rule
+#    applies unchanged: penalties are applied BEFORE the grammar mask, so
+#    they shift the argmax among legal JSON tokens — tool-call JSON
+#    legitimately repeats `"`, `{`, `,` and key names — which corrupted
+#    grammar-constrained tool args even at temp 0 and regressed BFCL ST-995
+#    non_live ~85 -> ~76 on qwen3.6-27b until its 2026-07-04 penalty-free
+#    sync (see the comment block in qwen3.6-27b/MODEL.toml). Do NOT
+#    reintroduce penalties here. Tools temperature 0.6 follows the family
+#    recommendation ("temperature=0.6, NOT greedy, to avoid repetition
+#    loops" — Qwen3.5 card), which the card's thinking/non-thinking presets
+#    do not override for agentic use.
+#
+#  * thinking temperature 1.0 IS the card value and is deliberately NOT
+#    qwen3.6-27b's empirically-retuned 0.6 — that retune was live-bisected
+#    on 3.6 weights (OpenWebUI chess-prompt degeneration) and has not been
+#    reproduced on 3.8 weights. Card values are the honest starting point
+#    for a new checkpoint; if 3.8 shows the same announce/restart loop
+#    under hard code-gen, retune HERE with its own measurements rather
+#    than importing 3.6's.
+#
+#  * non_thinking presence_penalty 1.5 IS the card value. Family history
+#    (qwen3.5-27b/qwen3.6-35b comments) shows card-recommended presence 1.5
+#    caused max_tokens-overrun wandering on AGENTIC clients — but those
+#    clients run the thinking/tools presets, which are penalty-free here.
+#    Plain non-thinking chat is unconstrained decoding where the card value
+#    stands until 3.8-specific evidence says otherwise. If premature-EOS /
+#    wandering shows up in non-thinking chat, drop to 0.0 and note the
+#    measurement here.
+# ── 2026-08-14: thinking temperature stays at the card's 1.0 ──────────────────
+# It was briefly retuned to 0.6 (matching the architecturally-identical
+# Qwen3.6-27B, whose 0.6 came from a live bisect against degeneration) on the
+# hypothesis that temperature explained a 2x agentic wall-time increase.
+# MEASURED, N=10 each, same box, same binary, only this value differing:
+#   temp 1.0 -> Sigma-wall 4090 s   (10/10 webserver_ok, 10/10 followed_directions)
+#   temp 0.6 -> Sigma-wall 4182 s   (10/10, 10/10)
+# The retune bought NOTHING — 0.6 was marginally worse, inside noise. Both tiers
+# are tail-dominated (one run per tier runs 3x the median), so partial sums are
+# not predictive; an 8-run projection of 0.6 looked 20% better and the tenth run
+# erased it. The wall increase is per-turn decode cost (18 s/turn on the older
+# serve vs ~40 s/turn here, turn counts unchanged), not sampling.
+# Reverted to the card value. 3.6's degeneration failure mode was not observed
+# on 3.8: 20/20 runs across both tiers passed 6/6 with no loops. Revisit only
+# with a measured A/B on THESE weights.
+# min_p = 0.0 is the card's value for BOTH thinking and non-thinking, and is
+# only expressible since the [sampling.*] preset gained the field: the server
+# ships --default-min-p 0.08 and every request that does not name min_p takes
+# it, while [behavior].min_p_floor can only ever RAISE min_p. Without this the
+# checkpoint serves at 0.08 against a card that says 0, and min_p is
+# measurably live (Nemotron-3.5-Lightning, temp 1.6: min_p 0.95 collapsed 8
+# samples to 1 distinct output vs 8/8 at 0.0).
+#
+# NOT set on [sampling.tools]: the card has no tools preset, that one is
+# derived from the family recommendation rather than the card, and min_p
+# interacts with the grammar mask the same way the penalties documented above
+# do. Left at the server default pending a measurement on 3.8 weights.
+
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# Content-loop watchdog: UNOBSERVED on 3.8 weights, but BOTH dense-27B
+# siblings (3.5 and 3.6, independently trained) loop on long-code prompts
+# (2026-04-26 field reports; 2026-05-05 chess stress sweep), so the
+# prose-attractor is treated as a family trait of this architecture+quant
+# until 3.8 evidence says otherwise. The watchdog's false-positive modes
+# (structured-output repetition) are documented at lib.rs::enable_loop_watchdog.
+enable_loop_watchdog = true
+# 3.8 is a hybrid-thinking reasoning model (the card ships thinking AND
+# non-thinking presets); clients that send no enable_thinking flag get
+# reasoning by default, same as every Qwen reasoning-tier target.
+thinking_default = true
+# Project-wide defaults (2026-05-23 sweep), same rationale as the siblings.
+thinking_in_tools = true
+max_thinking_budget = 2048
+# FP8 KV cache: a property of the shared kernel set (cp.async-pipelined
+# inferspark_prefill_paged_fp8.cu, enabled for qwen3.6-27b 2026-07-19),
+# not of the weights — carried with the kernels.
+default_kv_dtype = "fp8"
+# default_num_drafts deliberately NOT set (0 = CLI default). qwen3.6-27b's
+# K=4 (default_num_drafts=3) came from a measured chain-widening sweep on
+# 3.6 WEIGHTS; draft acceptance is a weights property, so 3.8 must earn its
+# own K with its own sweep before pinning one here.
+
+# Upstream Qwen/Qwen3.8-27B reports model_type = "qwen3_5" in config.json,
+# exactly like Qwen3.6-27B (verified: the configs are bit-identical). The
+# MRoPE -> "qwen3_6_moe" dispatch rewrite fires only for MoE checkpoints
+# (is_moe gate in atlas-core config/dispatch.rs), so this DENSE hybrid
+# stays "qwen3_5". No qwen3_6_moe belt-and-braces entry here: unlike
+# qwen3.5-27b/qwen3.6-27b (which carry one for historical re-uploads), no
+# 3.8 checkpoint is known to rewrite, and every extra colliding entry
+# widens the ambiguity surface resolution has to break.
+[[model_types]]
+model_type = "qwen3_5"
+hidden_size = 5120
+
+# ── DFlash: intentionally ABSENT ───────────────────────────────────────────
+# qwen3.6-27b pairs with z-lab/Qwen3.6-27B-DFlash. That drafter was trained
+# on Qwen3.6-27B hidden states (its fc projection consumes target layers
+# [1,16,31,46,61]); Qwen3.8-27B has different weights, so the drafter's
+# inputs would be out-of-distribution — a mismatched drafter degrades to
+# near-zero acceptance and can only slow decode. Add a [dflash] section
+# only when a 3.8-trained drafter exists.
+
+# ── Kernel lookups this model may legitimately fail to resolve ─────────────
+# The compiled kernel set is qwen3.6-27b's (kernel_source above), and the
+# dense-27B dispatch issues the same lookups, so the one declaration carries
+# over with its reasoning. If the shared source tree gains w4a4_gemm_mfast,
+# remove this entry in BOTH MODEL.tomls.
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+Same situation as qwen3.6-27b (the kernel set IS qwen3.6-27b's, via
+kernel_source): the shared w4a4_gemm.cu defines only w4a4_gemm; the mfast
+variant exists solely in nemotron-labs-3-puzzle-75b-a9b. Dispatch
+(qwen3_attention/init.rs) falls back to w4a4_gemm, which is correct but
+UNMEASURED against a ported mfast — see the honesty note in
+qwen3.6-27b/MODEL.toml."""
+
+# ptxas on sm_90a rejects the optional dense warp-level block-scale MMA.
+# HARDWARE.toml disables it with ATLAS_NO_WARP_BLOCKSCALE_MMA; FP8 cells
+# use the W8/BF16 path. Re-harvest all lookup results on real Hopper hardware.
+w4a4_gemm = "Hopper sm_90a: mma with block scale is unsupported; the hardware guard excludes this optional NVFP4 entry point."
