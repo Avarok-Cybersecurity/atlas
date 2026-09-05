@@ -98,9 +98,8 @@ impl PleLayer {
                 w.weight
             }
             NgramTable::Fp8(_) => anyhow::bail!(
-                "PLE: FP8 n-gram tables are not wired. This checkpoint ships BF16 \
-                 rows, which are both simpler and more accurate (on LongCat, BF16 \
-                 measured 0.0050 error vs FP8's 0.0247)."
+                "PLE: resident FP8 tables are unsupported; use cached FP8 rows \
+                 with explicit slot scales."
             ),
         };
         Ok(table_va.0)
@@ -128,6 +127,19 @@ impl PleLayer {
                 stream,
             )
             .context("PLE row gather"),
+            NgramRowFormat::Fp8 { scale } => ops::batched_embed_fp8(
+                gpu,
+                self.embed_fp8_k
+                    .context("PLE: FP8 gather kernel was not loaded")?,
+                self.slots_dev,
+                DevicePtr(table_va),
+                scale,
+                self.emb,
+                (num_tokens * heads) as u32,
+                self.head_dim as u32,
+                stream,
+            )
+            .context("PLE FP8 row gather"),
             // The arena holds RAW exl3_ngram_trellis rows; the kernel decodes
             // (mul1 + row scale + per-head bias) and writes BF16. Row order is
             // [tokens, heads] contiguous, so the kernel derives the head from

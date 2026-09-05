@@ -23,6 +23,8 @@ pub enum NgramRowFormat {
     /// Rows are plain BF16 `[head_dim]` — the historical layout; the plain
     /// `batched_embed` gather copies them.
     Bf16,
+    /// FP8 E4M3 rows with a stable device array of FP32 scales indexed by slot.
+    Fp8 { scale: DevicePtr },
     /// Rows are packed `exl3_ngram_trellis` (`1 + 160*K/16` u16 words:
     /// fp16 row scale + mul1-codebook trellis ring); `batched_embed_exl3`
     /// decodes on gather and adds the per-head bias.
@@ -90,6 +92,7 @@ pub struct PleLayer {
     table: std::sync::Mutex<NgramTable>,
 
     embed_k: KernelHandle,
+    embed_fp8_k: Option<KernelHandle>,
     embed_exl3_k: KernelHandle,
     gemm_k: KernelHandle,
     gate_k: KernelHandle,
@@ -148,6 +151,12 @@ impl PleLayer {
                  says head_dim={head_dim}"
             );
         }
+        if let NgramRowFormat::Fp8 { scale } = ngram_format {
+            anyhow::ensure!(
+                scale != DevicePtr::NULL,
+                "PLE: FP8 rows require slot scales"
+            );
+        }
         let c = hc_mult * hidden;
         let state_len = (k_size - 1) * dilation;
         Ok(Self {
@@ -168,6 +177,11 @@ impl PleLayer {
             table: std::sync::Mutex::new(table),
             ngram_format,
             embed_k: gpu.kernel("embed_from_argmax", "batched_embed")?,
+            embed_fp8_k: if matches!(ngram_format, NgramRowFormat::Fp8 { .. }) {
+                Some(gpu.kernel("embed_from_argmax", "batched_embed_fp8")?)
+            } else {
+                None
+            },
             embed_exl3_k: gpu.kernel("embed_from_argmax", "batched_embed_exl3")?,
             gemm_k: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
             gate_k: gpu.kernel("ple", "ple_gate")?,
@@ -462,3 +476,7 @@ pub struct PleWeights {
 mod aux_state;
 #[path = "gather.rs"]
 mod gather;
+
+#[cfg(all(test, feature = "cuda"))]
+#[path = "fp8_tests.rs"]
+mod fp8_tests;
