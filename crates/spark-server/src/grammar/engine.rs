@@ -139,12 +139,9 @@ impl GrammarEngine {
 
     fn from_tokenizer_info(tokenizer_info: TokenizerInfo) -> Result<Self, GrammarError> {
         let vocab_size = tokenizer_info.vocab_size();
-        // Bound cold mask preparation without occupying the shared sampling
-        // pool. All workers join before prefill; warm masks remain cached.
-        let threads = std::thread::available_parallelism()
-            .map_err(|e| GrammarError::Compilation(format!("grammar CPU count: {e}")))?
-            .get()
-            .min(4) as i32;
+        // Restore the historical serial default: four-worker native-tool
+        // preparation has not improved cold latency in the measured workload.
+        // The compiler still supports bounded parallel preparation for callers.
         // Cache enabled with an explicit memory budget.
         // ★ NOT -1 (unlimited). `CacheKey::Schema` is keyed by the full tool
         // schema, so agentic traffic mints a distinct compiled grammar per
@@ -153,9 +150,8 @@ impl GrammarEngine {
         // above any realistic hot set (tens of schemas) while bounding the
         // tail. `-1` remains available as an explicit opt-in for callers that
         // genuinely want every grammar pinned.
-        let compiler =
-            GrammarCompiler::new(&tokenizer_info, threads, true, GRAMMAR_CACHE_BUDGET_BYTES)
-                .map_err(GrammarError::Compilation)?;
+        let compiler = GrammarCompiler::new(&tokenizer_info, 1, true, GRAMMAR_CACHE_BUDGET_BYTES)
+            .map_err(GrammarError::Compilation)?;
         Ok(Self {
             compiler,
             vocab_size,
