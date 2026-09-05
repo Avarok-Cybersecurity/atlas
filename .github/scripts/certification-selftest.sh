@@ -933,6 +933,80 @@ want_rc_msg 1 "contents:write is written by a call that swallows" \
   python3 "$TMP/pw/scripts/assert-preflight-covers-writes.py"
 
 # ---------------------------------------------------------------------------
+# The preflight's verdict must be the verdict
+# ---------------------------------------------------------------------------
+# This workflow is schedule- and dispatch-only. It is not a PR check, it cannot
+# be a required context, and a red run in the Actions tab notifies nobody by
+# default -- so the check run it mints on the default branch's head is the only
+# place its answer reaches a human. That check run used to be POSTed
+# `conclusion=success` as the checks:write probe, before any verdict existed.
+# Run 33807779248 is the receipt: it failed on contents:write at 21:24:43Z and
+# left a green "Certification preflight / App permissions verified" on
+# de42fb155e, minted half a second earlier by its own probe. Nobody looked
+# further, and the certificate shipped placeholder certifiers for two more days.
+mkdir -p "$TMP/pf/bin"
+python3 - > "$TMP/pf/step.sh" <<'PFX'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/certification-preflight.yml").read_text())
+for st in d["jobs"]["preflight"]["steps"]:
+    if (st.get("name") or "").startswith("Probe every"):
+        print(st["run"]); break
+PFX
+pf_stub() {  # pf_stub <"deny" to refuse the contents:write PUT>
+  : > "$TMP/pf/calls"
+  cat > "$TMP/pf/bin/gh" <<STUB
+#!/bin/bash
+printf 'ARGV: %s\n' "\$*" >> "\$PFCALLS"
+case "\$*" in
+  *"-X PUT"*contents*)    [ "$1" = deny ] && exit 1 ;;
+  *"-X POST"*check-runs*) echo 424242 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/pf/bin/gh"
+}
+pf_run() { ( PATH="$TMP/pf/bin:$PATH" PFCALLS="$TMP/pf/calls" GH_TOKEN=t REPO=o/r SHA=deadbeef \
+             bash -e "$TMP/pf/step.sh" >/dev/null 2>&1 ); }
+pf_verdict() { grep -o 'conclusion=[a-z]*' "$TMP/pf/calls" | tail -1; }
+
+if [ -s "$TMP/pf/step.sh" ]; then
+  # The mark must be minted UNRESOLVED. A check posted already-green cannot be
+  # made to say anything else, whatever the probes then find.
+  pf_stub allow; pf_run
+  grep -q 'POST repos/o/r/check-runs .*status=in_progress' "$TMP/pf/calls" \
+    && ok "the preflight's check run is minted in progress, not pre-concluded" \
+    || bad "the preflight mints its check run already concluded -- the verdict cannot change it"
+  [ "$(pf_verdict)" = "conclusion=success" ] \
+    && ok "all probes green -> the check run concludes success" \
+    || bad "all probes green -> the check run concluded '$(pf_verdict)'"
+
+  # THE REAL CASE: contents:write denied, exactly as production is today.
+  pf_stub deny; pf_run
+  [ "$(pf_verdict)" = "conclusion=failure" ] \
+    && ok "a denied contents:write -> the check run concludes FAILURE" \
+    || bad "a denied contents:write left the check run at '$(pf_verdict)' -- the green lie is back"
+  # The summary is multi-line, so it lands on its own lines of the call log --
+  # the report reaches the API or it does not appear here at all.
+  grep -q '^  FAIL  contents:write' "$TMP/pf/calls" \
+    && ok "and the check run names the permission that was refused" \
+    || bad "the check run reports a failure without saying which permission"
+
+  # CONTROL: restore the pre-fix probe -- mint the check already-concluded and
+  # never patch it -- in a COPY, and confirm the green lie reappears. Without
+  # this the four checks above could be passing on a step that mints nothing.
+  sed -e 's/-f status=in_progress/-f status=completed -f conclusion=success/' \
+      -e '/gh api -X PATCH "repos\/\$REPO\/check-runs\/\$check_run_id"/,+4d' \
+      "$TMP/pf/step.sh" > "$TMP/pf/step-sab.sh"
+  ( PATH="$TMP/pf/bin:$PATH" PFCALLS="$TMP/pf/calls" GH_TOKEN=t REPO=o/r SHA=deadbeef \
+    bash -e "$TMP/pf/step-sab.sh" >/dev/null 2>&1 )
+  [ "$(pf_verdict)" = "conclusion=success" ] \
+    && ok "control: pre-concluding the mark publishes success on a failing preflight" \
+    || bad "control: the sabotage did not reproduce the green lie -- the checks above prove nothing"
+else
+  bad "setup: could not extract the preflight's probe step"
+fi
+
+# ---------------------------------------------------------------------------
 # /stamp must not report success when it did not release the lane
 # ---------------------------------------------------------------------------
 python3 - > "$TMP/stamp.sh" <<'PY'
