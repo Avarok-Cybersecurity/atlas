@@ -314,3 +314,19 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept (the destructive-advice claim re-proven by the coordinator against live process state before entering the record); R-exercise-it-for-real (the run/stop cycle is what turned a CLI review into a validated user journey).
+
+---
+
+## Run 13 — 2026-09-05T03:25Z — nightly wave 1: DX lane + the first nightly stack
+
+```text
+2026-09-05T03:25Z  return     DX lane (fable): 3 commits — cudarc nvcc probe honours CUDA_HOME, serve port-conflict error names port/holder/remedy, CONTRIBUTING check.sh correction
+2026-09-05T03:27Z  tool       coordinator verified BOTH halves of the front-door control: on the unfixed tree, `CUDA_HOME=... cargo check -p cudarc` with nvcc off PATH panics at vendor/cudarc/build.rs:124; on the fixed tree the identical env compiles. Port-conflict test passes and its pre-fix failure was quoted by the lane.
+2026-09-05T03:29Z  aggregate  CROSS-LANE FINDINGS the coordinator had to resolve (neither agent could see them alone):
+                              (a) dx and journey INDEPENDENTLY found the same stale check.sh paragraph and both rewrote it -> merge conflict; convergent discovery is evidence the warning really was misleading, so both corrections were merged rather than one dropped
+                              (b) journey's new comment asserted cudarc "does not consult CUDA_HOME" — TRUE today, FALSE the moment dx's fix lands. A docs-only stack landing first would have shipped a claim its sibling stack invalidates. Rewritten as advice, not as a claim about one build script.
+2026-09-05T03:31Z  tool       stack/nightly-docs composed: 8 commits, docs-only (4 files) -> CAMPAIGN-FREE, can land the moment CI revives
+2026-09-05T03:31Z  aggregate  economics split recorded: dx's cudarc + serve_router fixes touch vendor/ and crates/ -> PERF_PATHS -> they owe a campaign and CANNOT join the docs stack; they also cannot join #891 (its clearance is pinned to a closed composition). They become a third stack.
+```
+
+**CITED:** R-coordinator-owns-the-seams (parallel lanes cannot see each other; cross-lane staleness and conflicts are the coordinator's job, and both appeared in the very first wave); R-path-rule-owns-the-economics (docs-only lands free; vendor/ owes a campaign — split the stack on that line, not on subject).
