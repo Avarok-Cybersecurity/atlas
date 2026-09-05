@@ -89,6 +89,22 @@ pub fn detect_nvfp4_variant(
         return Nvfp4Variant::CompressedTensors;
     }
 
+    // A mixed checkpoint can keep the main experts in Standard NVFP4 while
+    // its MTP experts are FP8. Positive evidence from the first LOCAL main
+    // expert must precede the FP8 sniff, or enabling MTP changes the main
+    // model's variant. A scale name alone is ambiguous; require packed UInt8
+    // data and both Standard companions. Explicit config and packed-format
+    // detection above retain precedence.
+    let main_expert = format!("{lp}.mlp.experts.{local_expert}.gate_proj");
+    if store
+        .get(&format!("{main_expert}.weight"))
+        .is_ok_and(|w| w.dtype == WeightDtype::UInt8)
+        && store.contains(&format!("{main_expert}.weight_scale"))
+        && store.contains(&format!("{main_expert}.weight_scale_2"))
+    {
+        return Nvfp4Variant::Standard;
+    }
+
     // Check for FP8 block-scaled weights (e.g. Qwen/Qwen3.5-35B-A3B-FP8):
     // FP8 models have `weight_scale_inv` alongside FP8E4M3 weights.
     //

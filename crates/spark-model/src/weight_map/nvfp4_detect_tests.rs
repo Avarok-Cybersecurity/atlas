@@ -139,3 +139,6 @@ mod key_variant_tests {
         );
     }
 }
+
+#[path = "nvfp4_detect_mixed_tests.rs"]
+mod mixed_tests;
