@@ -19,7 +19,7 @@
 # Usage:
 #   scripts/hopper_ptx_gate.sh [--hw hopper] [--model NAME|all] [--jobs N]
 #                              [--arch sm_90a] [--nvcc PATH]
-#                              [--out ledger.json] [--selftest]
+#                              [--out ledger.json] [--selftest] [--list-tasks]
 #
 #   --hw       hardware set under kernels/ (default: hopper)
 #   --model    one model directory, or `all` for every model in the set
@@ -32,6 +32,11 @@
 #   --strict   add `--Werror all-warnings`, matching what build.rs does. Use it
 #              to predict whether the real kernel build would go green; leave it
 #              off to ask only whether the instructions exist on this arch.
+#   --list-tasks print the resolved (model, stem, source path) triples, one per
+#              line, and exit. Needs no CUDA toolchain: it answers "which
+#              sources would this gate compile", which is a question about the
+#              tree. The source path is the DECLARED one, before symlink
+#              resolution, so it can be read against `kernels/` directly.
 #   --selftest run ONLY the self-test and exit
 #
 # The self-test runs first, always. It compiles two fixtures under
@@ -102,6 +107,7 @@ NVCC=""
 OUT="hopper_ptx_gate.json"
 SELFTEST_ONLY=0
 STRICT=0
+LIST_TASKS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -112,6 +118,7 @@ while [ $# -gt 0 ]; do
     --nvcc) NVCC="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --strict) STRICT=1; shift ;;
+    --list-tasks) LIST_TASKS=1; shift ;;
     --selftest) SELFTEST_ONLY=1; shift ;;
     -h|--help) sed -n '4,54p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -124,6 +131,180 @@ FIXTURES="$SCRIPT_DIR/fixtures/hopper_gate"
 HW_DIR="$ROOT/kernels/$HW"
 
 [ -d "$HW_DIR" ] || { echo "no such hardware set: $HW_DIR" >&2; exit 2; }
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/ptx" "$WORK/err" "$WORK/vrb" "$WORK/res"
+
+# -- Which models --
+# Resolved before the toolchain is looked for: which sources this gate covers
+# is a question about the tree, and `--list-tasks` answers it with no nvcc.
+if [ "$MODEL" = all ]; then
+  MODELS=()
+  for d in "$HW_DIR"/*/; do
+    [ -f "$d/MODEL.toml" ] || continue
+    MODELS+=("$(basename "$d")")
+  done
+elif [ -f "$HW_DIR/$MODEL/MODEL.toml" ]; then
+  MODELS=("$MODEL")
+else
+  # Not a refinement: without this, an unknown name selected the common/
+  # kernels and the ledger attributed all of them to a model that is not in
+  # the tree -- a green receipt for a target the build cannot produce.
+  echo "no such model target: $HW_DIR/$MODEL (no MODEL.toml there)" >&2
+  echo "  Models under $HW_DIR:" >&2
+  for d in "$HW_DIR"/*/; do
+    if [ -f "$d/MODEL.toml" ]; then echo "    $(basename "$d")" >&2; fi
+  done
+  exit 2
+fi
+[ "${#MODELS[@]}" -gt 0 ] || { echo "no model directories under $HW_DIR" >&2; exit 2; }
+
+# ── Task list ──
+# Mirrors build.rs: the per-quant file set is common/ overridden by the model
+# dir BY FILE STEM -- where "the model dir" is what `[model] kernel_source`
+# resolves to, not the named model's own directory. gb10/qwen3.8-27b redirects
+# to qwen3.6-27b and ships no .cu tree of its own; a gate that ignored the
+# redirect selected 171 common kernels instead of the build's 181, dropped 10
+# model files and replaced 4 model shadows (w4a16_gemm and
+# moe_w4a16_grouped_gemm among them) with the common kernels they override.
+# The flag list has THREE layers, merged
+# least-specific-first and deduped — HARDWARE.toml's [build] extra_nvcc_flags,
+# then common/KERNEL.toml's, then the model quant dir's
+# (build_flags.rs `merge_extra_flags` + build_parse.rs `parse_kernel_toml`).
+#
+# The hardware layer is what makes this gate answer the question it claims to.
+# kernels/hopper and kernels/b200 define -DATLAS_NO_WARP_BLOCKSCALE_MMA there,
+# compiling out a W4A4 region neither ISA can assemble; a gate that ignored
+# that layer would keep reporting a failure the real build does not have.
+#
+# Identical (source, flags) pairs are compiled ONCE. Several gb10 models share
+# one physical kernel through symlinks — deepseek-v4-flash's w4a16_gemm.cu is
+# three models' — and build.rs deduplicates the same way.
+generate_tasks() {
+python3 - "$HW_DIR" "$WORK" "$1" "${MODELS[@]}" <<'PY'
+import hashlib, os, sys, tomllib
+hw_dir, work, listing = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+models = sys.argv[4:]
+common = os.path.join(hw_dir, "common")
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def build_flags(path):
+    """[build] extra_nvcc_flags from one TOML file; [] if it has none."""
+    if not os.path.exists(path):
+        return []
+    with open(path, "rb") as f:
+        t = tomllib.load(f)
+    return list(t.get("build", {}).get("extra_nvcc_flags", []))
+
+def flags(d):
+    return build_flags(os.path.join(d, "KERNEL.toml"))
+
+def kernel_source(model_dir):
+    """`[model] kernel_source` from MODEL.toml, or None.
+
+    Mirrors crates/atlas-kernels/build_parse.rs::parse_kernel_source: the
+    value names ANOTHER kernel-target directory whose per-quant kernel tree
+    this target compiles instead of shipping its own copies. Everything else
+    in MODEL.toml still belongs to the redirecting target.
+    """
+    path = os.path.join(model_dir, "MODEL.toml")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        t = tomllib.load(f)
+    src = t.get("model", {}).get("kernel_source")
+    if src is None:
+        return None
+    if not isinstance(src, str) or not src.strip():
+        die(f"{path}: [model] kernel_source must name a kernel target directory")
+    return src
+
+
+def resolve_kernel_dir(model):
+    """The directory whose quant trees supply this model's kernels.
+
+    build.rs (`kernel_src_dir`, crates/atlas-kernels/build.rs:1065) validates
+    the referent is a kernel target directory and REFUSES chains -- a source
+    has to own its sources. Both refusals are reproduced here, because a gate
+    that resolved a redirect the build would reject is not predicting the
+    build.
+    """
+    own = os.path.join(hw_dir, model)
+    src = kernel_source(own)
+    if src is None:
+        return own
+    src_dir = os.path.join(hw_dir, src)
+    if not (os.path.isdir(src_dir) and os.path.exists(os.path.join(src_dir, "MODEL.toml"))):
+        die(f'{model}/MODEL.toml: kernel_source = "{src}" does not name a kernel '
+            f"target directory under {hw_dir}")
+    if kernel_source(src_dir) is not None:
+        die(f'{model}/MODEL.toml: kernel_source = "{src}" itself redirects -- '
+            f"chains are not allowed; point at the target that owns the sources")
+    return src_dir
+
+
+def cu(d):
+    if not os.path.isdir(d):
+        return {}
+    return {f[:-3]: os.path.join(d, f) for f in os.listdir(d) if f.endswith(".cu")}
+
+hw_flags = build_flags(os.path.join(hw_dir, "HARDWARE.toml"))
+base_flags = flags(common)
+tasks, mapping = {}, []
+for model in models:
+    # `[model] kernel_source` first: the redirect target's quant dir supplies
+    # BOTH the .cu files and the KERNEL.toml flag/include layer, and the
+    # redirecting model's own directory is not compiled at all.
+    mdir = os.path.join(resolve_kernel_dir(model), "nvfp4")
+    merged = []
+    for f in hw_flags + base_flags + flags(mdir):
+        if f not in merged:
+            merged.append(f)
+    files = cu(common)
+    files.update(cu(mdir))
+    incdirs = f"{mdir} {common}"
+    for stem, src in sorted(files.items()):
+        real = os.path.realpath(src)
+        key = hashlib.sha256(
+            (real + "\0" + "\0".join(merged) + "\0" + incdirs).encode()
+        ).hexdigest()[:16]
+        tasks[key] = (key, src, incdirs, " ".join(merged))
+        mapping.append((model, stem, key,
+                        os.path.relpath(real, os.path.dirname(hw_dir)), src))
+
+if listing:
+    # (model, stem, source path) as DECLARED -- the path the build compiles,
+    # before symlink resolution, which is what a reader checks against the tree.
+    root = os.path.dirname(os.path.dirname(hw_dir))
+    for model, stem, _key, _real, src in sorted(mapping):
+        print("\t".join((model, stem, os.path.relpath(src, root))))
+    sys.exit(0)
+
+with open(os.path.join(work, "tasks.tsv"), "w") as f:
+    for t in tasks.values():
+        f.write("\t".join(t) + "\n")
+with open(os.path.join(work, "map.tsv"), "w") as f:
+    for model, stem, key, real, _src in mapping:
+        f.write("\t".join((model, stem, key, real)) + "\n")
+# The hardware flag layer, for the ledger: a receipt that does not say the
+# compile line cannot be checked against the build it claims to predict.
+with open(os.path.join(work, "hw_flags.txt"), "w") as f:
+    f.write("\n".join(hw_flags))
+print(f"{len(mapping)} kernel(s) across {len(models)} model(s); "
+      f"{len(tasks)} unique compile(s) after dedup"
+      + (f"; hardware flags: {' '.join(hw_flags)}" if hw_flags else ""))
+PY
+}
+
+if [ "$LIST_TASKS" = 1 ]; then
+  generate_tasks 1
+  exit $?
+fi
 
 # ── Toolchain ──
 # CUDA is routinely installed without being on PATH (it is not on PATH on the
@@ -166,10 +347,6 @@ if [ -z "$BAD_FIXTURE" ]; then
 fi
 [ -f "$FIXTURES/$BAD_FIXTURE" ] || {
   echo "negative fixture missing: $FIXTURES/$BAD_FIXTURE" >&2; exit 2; }
-
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/ptx" "$WORK/err" "$WORK/vrb" "$WORK/res"
 
 # ── Self-test ──
 # Both fixtures go through the same two-stage pipeline the real kernels do.
@@ -214,89 +391,7 @@ if [ "$SELFTEST_ONLY" = 1 ]; then
   exit 0
 fi
 
-# ── Which models ──
-if [ "$MODEL" = all ]; then
-  MODELS=()
-  for d in "$HW_DIR"/*/; do
-    [ -f "$d/MODEL.toml" ] || continue
-    MODELS+=("$(basename "$d")")
-  done
-else
-  MODELS=("$MODEL")
-fi
-[ "${#MODELS[@]}" -gt 0 ] || { echo "no model directories under $HW_DIR" >&2; exit 2; }
-
-# ── Task list ──
-# Mirrors build.rs: the per-quant file set is common/ overridden by the model
-# dir BY FILE STEM, and the flag list has THREE layers, merged
-# least-specific-first and deduped — HARDWARE.toml's [build] extra_nvcc_flags,
-# then common/KERNEL.toml's, then the model quant dir's
-# (build_flags.rs `merge_extra_flags` + build_parse.rs `parse_kernel_toml`).
-#
-# The hardware layer is what makes this gate answer the question it claims to.
-# kernels/hopper and kernels/b200 define -DATLAS_NO_WARP_BLOCKSCALE_MMA there,
-# compiling out a W4A4 region neither ISA can assemble; a gate that ignored
-# that layer would keep reporting a failure the real build does not have.
-#
-# Identical (source, flags) pairs are compiled ONCE. Several gb10 models share
-# one physical kernel through symlinks — deepseek-v4-flash's w4a16_gemm.cu is
-# three models' — and build.rs deduplicates the same way.
-python3 - "$HW_DIR" "$WORK" "${MODELS[@]}" <<'PY'
-import hashlib, os, sys, tomllib
-hw_dir, work = sys.argv[1], sys.argv[2]
-models = sys.argv[3:]
-common = os.path.join(hw_dir, "common")
-
-def build_flags(path):
-    """[build] extra_nvcc_flags from one TOML file; [] if it has none."""
-    if not os.path.exists(path):
-        return []
-    with open(path, "rb") as f:
-        t = tomllib.load(f)
-    return list(t.get("build", {}).get("extra_nvcc_flags", []))
-
-def flags(d):
-    return build_flags(os.path.join(d, "KERNEL.toml"))
-
-def cu(d):
-    if not os.path.isdir(d):
-        return {}
-    return {f[:-3]: os.path.join(d, f) for f in os.listdir(d) if f.endswith(".cu")}
-
-hw_flags = build_flags(os.path.join(hw_dir, "HARDWARE.toml"))
-base_flags = flags(common)
-tasks, mapping = {}, []
-for model in models:
-    mdir = os.path.join(hw_dir, model, "nvfp4")
-    merged = []
-    for f in hw_flags + base_flags + flags(mdir):
-        if f not in merged:
-            merged.append(f)
-    files = cu(common)
-    files.update(cu(mdir))
-    incdirs = f"{mdir} {common}"
-    for stem, src in sorted(files.items()):
-        real = os.path.realpath(src)
-        key = hashlib.sha256(
-            (real + "\0" + "\0".join(merged) + "\0" + incdirs).encode()
-        ).hexdigest()[:16]
-        tasks[key] = (key, src, incdirs, " ".join(merged))
-        mapping.append((model, stem, key, os.path.relpath(real, os.path.dirname(hw_dir))))
-
-with open(os.path.join(work, "tasks.tsv"), "w") as f:
-    for t in tasks.values():
-        f.write("\t".join(t) + "\n")
-with open(os.path.join(work, "map.tsv"), "w") as f:
-    for m in mapping:
-        f.write("\t".join(m) + "\n")
-# The hardware flag layer, for the ledger: a receipt that does not say the
-# compile line cannot be checked against the build it claims to predict.
-with open(os.path.join(work, "hw_flags.txt"), "w") as f:
-    f.write("\n".join(hw_flags))
-print(f"{len(mapping)} kernel(s) across {len(models)} model(s); "
-      f"{len(tasks)} unique compile(s) after dedup"
-      + (f"; hardware flags: {' '.join(hw_flags)}" if hw_flags else ""))
-PY
+generate_tasks 0
 
 # ── Compile ──
 echo "compiling for $ARCH with $JOBS job(s), strict=$STRICT — $NVCC_VERSION"
