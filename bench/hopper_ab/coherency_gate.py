@@ -92,14 +92,39 @@ TOOLCALL_PROMPT = "What is the weather in Reykjavik over the next three days? Us
 THINK_PROMPT = "In one short sentence, say what a benchmark harness is for."
 
 
-def post(url, payload, timeout):
+def post(url, payload, timeout, exchanges=None):
+    request_json = json.dumps(payload)
     req = urllib.request.Request(
         url.rstrip("/") + "/v1/chat/completions",
-        data=json.dumps(payload).encode(),
+        data=request_json.encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+    exchange = {"request_json": request_json, "response_status": None,
+                "response_body": "", "response_complete": False}
+    raw = b""
+    try:
+        error = None
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            # HTTPError also owns a readable body; retain it before re-raising
+            # so the existing gate failure remains inspectable.
+            resp, error = exc, exc
+        with resp:
+            exchange["response_status"] = resp.status
+            try:
+                raw = resp.read()
+            except http.client.IncompleteRead as exc:
+                raw = exc.partial
+                raise
+            exchange["response_complete"] = True
+        if error is not None:
+            raise error
+        return json.loads(raw)
+    finally:
+        exchange["response_body"] = raw.decode("utf-8", errors="replace")
+        if exchanges is not None:
+            exchanges.append(exchange)
 
 
 def body(model, prompt, **extra):
@@ -147,7 +172,7 @@ def content_of(response):
     return content or ""
 
 
-def check_determinism(url, model, timeout):
+def check_determinism(url, model, timeout, exchanges=None):
     """Two identical requests at temp 0 must return identical bytes.
 
     Not "similar": at temperature 0 the sampler is argmax, so any difference is
@@ -155,8 +180,8 @@ def check_determinism(url, model, timeout):
     leaked cache entry, an uninitialised buffer. A/B numbers measured on a
     server that cannot reproduce itself describe nothing repeatable.
     """
-    first = content_of(post(url, body(model, DETERMINISM_PROMPT), timeout))
-    second = content_of(post(url, body(model, DETERMINISM_PROMPT), timeout))
+    first = content_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
+    second = content_of(post(url, body(model, DETERMINISM_PROMPT), timeout, exchanges))
     if first == second and first.strip():
         return True, f"{len(first)} chars reproduced exactly"
     if not first.strip():
@@ -167,9 +192,9 @@ def check_determinism(url, model, timeout):
     return False, f"diverged at char {at}: {first[at:at + 40]!r} vs {second[at:at + 40]!r}"
 
 
-def check_toolcall(url, model, timeout):
+def check_toolcall(url, model, timeout, exchanges=None):
     """A tool call must arrive as a tool call, with arguments that parse."""
-    r = post(url, body(model, TOOLCALL_PROMPT, tools=TOOL_SCHEMA, tool_choice="auto"), timeout)
+    r = post(url, body(model, TOOLCALL_PROMPT, tools=TOOL_SCHEMA, tool_choice="auto"), timeout, exchanges)
     choice = choice_of(r)
     finish = choice.get("finish_reason")
     calls = (choice.get("message") or {}).get("tool_calls") or choice.get("tool_calls") or []
@@ -208,9 +233,9 @@ def check_toolcall(url, model, timeout):
     return True, f"{len(calls)} {schema['name']} call(s), required argument types valid"
 
 
-def check_think_leak(url, model, timeout):
+def check_think_leak(url, model, timeout, exchanges=None):
     """Thinking is off; the scratchpad must not be in the reply."""
-    text = content_of(post(url, body(model, THINK_PROMPT), timeout))
+    text = content_of(post(url, body(model, THINK_PROMPT), timeout, exchanges))
     if not text.strip():
         return False, "empty reply -- a leak check over no text proves nothing"
     degenerate, detail = HAS_DEGENERATION(text)
@@ -226,16 +251,19 @@ def run(url, model, timeout):
         ("think_leak_ok", check_think_leak),
     )
     out = {"schema": 1, "url": url, "model": model,
-           "checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "details": {}}
+           "checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "details": {}, "http_exchanges": []}
     for key, fn in checks:
+        exchanges = []
         try:
-            ok, detail = fn(url, model, timeout)
+            ok, detail = fn(url, model, timeout, exchanges)
         except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError, ValueError, KeyError) as e:
             # A transport failure is a FAILED check, never a skipped one: the
             # gate's whole job is to refuse to certify what it could not see.
             ok, detail = False, f"{type(e).__name__}: {e}"
         out[key] = ok
         out["details"][key] = detail
+        out["http_exchanges"].extend({"check": key, **e} for e in exchanges)
     out["passed"] = all(out[k] for k, _ in checks)
     return out
 
@@ -286,8 +314,10 @@ class H(BaseHTTPRequestHandler):
             body = reply("")
         elif MODE == "malformed":
             body = {"choices": [7]}
-        raw = json.dumps(body).encode()
-        self.send_response(200)
+        if MODE in ("http500", "error200"):
+            body = {"error": "known failure"}
+        raw = b"not json" if MODE == "invalid" else json.dumps(body).encode()
+        self.send_response(500 if MODE == "http500" else 200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw) + (100 if MODE == "truncated" else 0)))
         self.end_headers()
@@ -331,7 +361,7 @@ def selftest():
         stub = pathlib.Path(d) / "stub.py"
         stub.write_text(STUB)
         results = {}
-        for mode in ("clean", "leak", "missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call", "nondeterministic", "empty", "malformed", "truncated"):
+        for mode in ("clean", "leak", "missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200"):
             port = _free_port()
             proc = subprocess.Popen([sys.executable, str(stub), str(port), mode])
             try:
@@ -365,9 +395,33 @@ def _assert_stub_results(results):
     for mode in ("missing-args", "wrong-types", "wrong-name", "wrong-call-type", "extra-bad-call"):
         if results[mode]["toolcall_ok"] or results[mode]["passed"]:
             failures.append(f"{mode} must fail the tool-call gate")
-    for mode, key in (("nondeterministic", "determinism_ok"), ("empty", "determinism_ok"), ("malformed", "determinism_ok"), ("truncated", "determinism_ok")):
+    for mode, key in (("nondeterministic", "determinism_ok"), ("empty", "determinism_ok"), ("malformed", "determinism_ok"), ("truncated", "determinism_ok"), ("invalid", "determinism_ok"), ("http500", "determinism_ok"), ("error200", "determinism_ok")):
         if results[mode][key] or results[mode]["passed"]:
             failures.append(f"{mode} must fail {key}")
+    prime = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "101, 103, 107, 109, 113"}, "finish_reason": "stop"}]}
+    for mode in ("clean", "nondeterministic", "empty", "malformed", "truncated", "invalid", "http500", "error200"):
+        exchanges = results[mode].get("http_exchanges", [])
+        count = 4 if mode in ("clean", "nondeterministic", "empty") else 3
+        if len(exchanges) != count:
+            failures.append(f"{mode}: expected {count} retained HTTP exchanges, got {len(exchanges)}")
+            continue
+        expected = {"malformed": '{"choices": [7]}', "invalid": "not json",
+                    "http500": '{"error": "known failure"}', "error200": '{"error": "known failure"}'}
+        if mode == "empty":
+            empty = {"choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]}
+            expected_body = json.dumps(empty)
+        else:
+            expected_body = expected.get(mode, json.dumps(prime))
+        first = exchanges[0]
+        if (first.get("check") != "determinism_ok" or first.get("response_body") != expected_body
+                or first.get("response_status") != (500 if mode == "http500" else 200)
+                or first.get("response_complete") != (mode != "truncated")
+                or first.get("request_json") != json.dumps(body("stub-model", DETERMINISM_PROMPT))):
+            failures.append(f"{mode}: exact request/response JSON, HTTP status and completeness must be retained")
+        if mode in ("clean", "nondeterministic"):
+            second_body = expected_body if mode == "clean" else expected_body.replace("101, 103, 107, 109, 113", "127")
+            if exchanges[1].get("response_body") != second_body or exchanges[1].get("check") != "determinism_ok":
+                failures.append(f"{mode}: the second determinism body must remain separately inspectable")
     assert not failures, "\n".join(failures)
     assert clean["passed"], f"the clean stub must pass: {clean}"
     assert not leak["passed"], "a <think> leak must FAIL the gate"

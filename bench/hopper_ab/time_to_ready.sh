@@ -76,7 +76,8 @@ clock = time.monotonic()
 deadline = clock + budget - (now - started)
 out = dict(schema=1, engine=engine, url=url, model=model, start_epoch=started,
            time_to_ready_s=None, first_token_s=None, polls=0,
-           http_codes_seen=[], timeout_s=budget, status='timeout', passed=False)
+           http_codes_seen=[], timeout_s=budget, status='timeout', passed=False,
+           http_exchanges=[])
 
 
 def elapsed():
@@ -97,20 +98,28 @@ def request(path, payload=None):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         emit('timeout', 'process-start deadline exhausted')
-    cmd = ['curl', '--silent', '--show-error', '--max-time', str(remaining)]
+    cmd = ['curl', '--silent', '--show-error', '--max-time', str(remaining),
+           '--write-out', '\n%{http_code}']
     if payload is None:
-        cmd += ['--output', '/dev/null', '--write-out', '%{http_code}',
-                '--max-time', str(min(5, remaining))]
+        cmd += ['--max-time', str(min(5, remaining))]
     else:
-        cmd += ['--fail', '--header', 'Content-Type: application/json', '--data-binary', '@-']
+        cmd += ['--fail-with-body', '--header', 'Content-Type: application/json', '--data-binary', '@-']
     cmd.append(url + path)
-    return subprocess.run(cmd, input=None if payload is None else json.dumps(payload),
-                          text=True, capture_output=True)
+    request_json = None if payload is None else json.dumps(payload)
+    resp = subprocess.run(cmd, input=request_json, text=True, capture_output=True)
+    raw, separator, code = resp.stdout.rpartition('\n')
+    resp.http_code = code if separator else '000'
+    resp.stdout = raw if separator else resp.stdout
+    out['http_exchanges'].append(dict(
+        path=path, request_json=request_json,
+        response_status=int(code) if separator and code.isdigit() and code != '000' else None,
+        response_body=resp.stdout, response_complete=resp.returncode in (0, 22)))
+    return resp
 
 
 while time.monotonic() < deadline:
     resp = request('/health')
-    code = resp.stdout.strip() or '000'
+    code = resp.http_code
     if code == '000':
         # Includes refusal, reset and timeout; curl does not distinguish them
         # through its HTTP code. Preserve the exit code rather than guessing.
@@ -218,9 +227,9 @@ PY
   rm -rf "$dir"
   [ $rc -eq 0 ] || { echo "SELFTEST FAIL: measure exited $rc" >&2; return 1; }
   echo "$out"
-  python3 - <<PY || return 1
+  python3 - "$out" <<'PY' || return 1
 import json, sys
-d = json.loads('''$out''')
+d = json.loads(sys.argv[1])
 assert d["status"] == "ready", d
 assert d["time_to_ready_s"] >= 2.0, f"two loading polls must cost >= 2 s, got {d['time_to_ready_s']}"
 assert d["polls"] >= 3, d

@@ -19,6 +19,7 @@ def selftest():
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
+            self.wfile.write(b'{"status": "ready"}')
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -64,6 +65,33 @@ def selftest():
             expected = mode == 'clean'
             if (proc.returncode == 0) != expected or (result['status'] == 'ready') != expected:
                 failures.append(f'{mode}: expected pass={expected}, got exit {proc.returncode}, status {result["status"]}')
+            exchanges = result.get('http_exchanges', [])
+            if mode == 'expired':
+                if exchanges:
+                    failures.append('expired: no request should have been captured')
+            elif len(exchanges) != 2:
+                failures.append(f'{mode}: both health and completion raw exchanges must be retained')
+            else:
+                health, completion = exchanges
+                if (health.get('path') != '/health' or health.get('response_status') != 200
+                        or health.get('response_body') != '{"status": "ready"}'):
+                    failures.append(f'{mode}: exact health response body/status was not retained')
+                if mode in ('http500', 'error200'):
+                    expected_body = json.dumps({'error': 'known failure'})
+                elif mode == 'invalid':
+                    expected_body = 'not json'
+                elif mode == 'slow':
+                    expected_body = ''
+                else:
+                    expected_body = json.dumps({'choices': [{'message': {'content': '' if mode == 'empty' else 'x'},
+                                                            'finish_reason': 'length'}]})
+                if (completion.get('path') != '/v1/chat/completions'
+                        or completion.get('response_body') != expected_body
+                        or completion.get('response_status') != (500 if mode == 'http500' else 200)
+                        or completion.get('response_complete') != (mode != 'slow')):
+                    failures.append(f'{mode}: exact completion body/status/completeness was not retained')
+                if json.loads(completion.get('request_json') or '{}') != observed[-1]:
+                    failures.append(f'{mode}: exact sent request JSON was not retained')
             if mode == 'slow' and elapsed > 0.65:
                 failures.append(f'slow: first-token request exceeded whole-boot deadline ({elapsed:.3f}s)')
         with tempfile.TemporaryDirectory() as tmp:
