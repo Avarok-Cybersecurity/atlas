@@ -91,7 +91,7 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "gb10/qwen3.8-27b/nvfp4",
             "gb10/qwen3.8-flash-next/nvfp4",
             "gb10/step3p7-flash/nvfp4",
-            // The Hopper P0 five. Their sources are symlinks into gb10's, and
+            // The seven Hopper targets. Their sources are symlinks into gb10's, and
             // `sources()` follows them — so these targets resolve non-empty
             // source sets that OVERLAP gb10's, which is correct: a change to a
             // shared kernel affects both hardware sets and must not be
@@ -100,7 +100,9 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "hopper/nemotron-3-nano-30b-a3b/nvfp4",
             "hopper/nemotron-super-120b-a12b/nvfp4",
             "hopper/qwen3-next-80b-a3b/nvfp4",
+            "hopper/qwen3.6-27b/nvfp4",
             "hopper/qwen3.6-35b-a3b/nvfp4",
+            "hopper/qwen3.8-27b/nvfp4",
             "metal/nllb-200-3.3b/bf16",
             "metal/qwen3-5-4b-vlm-mlx-int8/mlx_int8",
             "strix/qwen3.6-27b/nvfp4",
