@@ -55,6 +55,20 @@ fail() { echo "ASSERT FAILED [$1]: $2" >&2; exit 1; }
 ok() { asserts=$((asserts + 1)); echo "  ok [$1] $2"; }
 have() { grep -Fq -- "$2" <<<"$1"; }
 
+# ── (a0) every FP8-checkpoint Atlas entry carries FP8 KV calibration ────────
+# Oracle: spark-runtime/src/weights.rs fp8_kv_scale_count — a checkpoint with
+# no *.k_scale gets scale 1.0 and clips; the GB10 rehearsal (2026-09-05) saw
+# degenerate output from exactly that. 256 is qwen3.6-35b-a3b's MODEL.toml
+# value for its FP8 checkpoint.
+python3 - "$HERE/atlas_recipes.json" <<'PY' || fail a0 "an FP8 Atlas entry lacks --fp8-kv-calibration-tokens"
+import json, sys
+d = json.load(open(sys.argv[1]))
+bad = [e["model_key"] + "/" + e["sku"] for e in d["entries"]
+       if e.get("quant") == "fp8" and "--fp8-kv-calibration-tokens" not in e["extra_args"]]
+assert not bad, bad
+PY
+ok a0 "every FP8 Atlas entry carries --fp8-kv-calibration-tokens"
+
 # ── (a) the three selftests ──────────────────────────────────────────────────
 out="$(bash "$VC" --selftest 2>&1)"; rc=$?
 [ $rc -eq 0 ] || fail a "vllm_control --selftest exited $rc:
