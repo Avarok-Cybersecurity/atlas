@@ -4,10 +4,10 @@
 //! 1135 tokens and vLLM as 320. Test the production parser contribution and
 //! render core against the pinned checkpoint template, without loading a GPU.
 
-use super::super::chat_render::{RenderFlags, render_chat};
-use super::super::jinja_helpers::{ToolJsonStyle, build_jinja_env_with};
 use crate::api::chat::prepare::{inject_tool_system_prompt, parser_tool_prompt};
 use crate::ir::{ContentPart, Message, Role};
+use crate::tokenizer::chat_render::{RenderFlags, render_chat};
+use crate::tokenizer::jinja_helpers::{ToolJsonStyle, build_jinja_env_with};
 use crate::tool_parser::{
     HermesParser, PromptLevers, Qwen3CoderParser, Qwen3XmlParser, ToolCallParser, ToolChoice,
     ToolChoiceFunction, ToolDefinition,
@@ -41,7 +41,7 @@ fn tools() -> Vec<ToolDefinition> {
 fn render(messages: &[Message], style: ToolJsonStyle) -> String {
     // Qwen/Qwen3.6-35B-A3B-FP8 @ 95a723d08a9490559dae23d0cff1d9466213d989.
     let raw = include_str!("../../../test_data/chat_templates/qwen3.6-35b-a3b-fp8.jinja");
-    let converted = super::super::jinja_helpers::convert_python_jinja_to_minijinja(raw);
+    let converted = crate::tokenizer::jinja_helpers::convert_python_jinja_to_minijinja(raw);
     let env = build_jinja_env_with(&converted, style).unwrap();
     let messages: Vec<_> = messages
         .iter()
@@ -162,7 +162,7 @@ fn native_qwen_tool_prompt_preserves_user_system_message() {
 
 #[test]
 fn native_qwen_tool_prompt_ownership_tracks_actual_template_selection() {
-    use super::super::ChatTokenizer;
+    use crate::tokenizer::ChatTokenizer;
     let root = tempfile::tempdir().unwrap();
     let model = root.path().join("model");
     let repo = root.path().join("repo");
