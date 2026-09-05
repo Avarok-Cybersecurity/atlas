@@ -60,6 +60,15 @@
 #       the image and the intent all stay, --stop fails, and the retry
 #       finishes the job. A container Docker reports as already gone is not a
 #       leak, so that one clears its records and succeeds.
+#   (n) OWNERSHIP on that same completed path. rank<N>.container held only the
+#       container's NAME, and --stop removed by it -- correct only while the
+#       name still belongs to the container the create made. Remove that
+#       container outside this launcher, let a replacement take the name, and
+#       a --stop against the stale record stopped and removed the replacement:
+#       somebody else's live rank, found by a string it merely happens to
+#       hold. The record now carries the ID `docker run -d` returned, --stop
+#       confirms that ID still wears this launch's run label before it acts,
+#       and a name that has moved on means ours is CONFIRMED gone.
 #
 # Usage: bash scripts/start_node_ep_test.sh
 set -uo pipefail
@@ -322,10 +331,11 @@ case "$cmd" in
       echo "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2
       exit 1
     fi
-    want_name=""; want_label=""; prev=""
+    want_id=""; want_name=""; want_label=""; prev=""
     for a in "$@"; do
       if [ "$prev" = "--filter" ]; then
         case "$a" in
+          id=*) want_id="${a#id=}" ;;
           name=*) want_name="${a#name=}"; want_name="${want_name#^}"; want_name="${want_name%\$}" ;;
           label=*) want_label="${a#label=}" ;;
         esac
@@ -333,6 +343,7 @@ case "$cmd" in
       prev="$a"
     done
     while read -r cid nm lab; do
+      if [ -n "$want_id" ] && [ "$cid" != "$want_id" ]; then continue; fi
       if [ -n "$want_name" ] && [ "$nm" != "$want_name" ]; then continue; fi
       if [ -n "$want_label" ] && [ "$lab" != "$want_label" ]; then continue; fi
       echo "$cid"
@@ -398,6 +409,12 @@ chmod +x "$tmp/fake-docker"
 
 # The state file is "CID NAME LABEL" per live container, so a test asks about a
 # container by the field it means rather than by a whole-line match.
+# rank<N>.container is keyed the same way -- id=, name=, label= -- because a
+# name alone cannot say whether the container that answers to it is still the
+# one this launch created.
+record_field() {  # record_field FILE KEY
+  sed -n "s/^$2=//p" "$1"
+}
 state_has_name() { awk -v n="$1" '$2 == n { found = 1 } END { exit !found }' "$DOCKER_STATE"; }
 state_has_cid() { awk -v c="$1" '$1 == c { found = 1 } END { exit !found }' "$DOCKER_STATE"; }
 
@@ -420,7 +437,7 @@ out_a="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
           BOOT_TIMEOUT_S=30 bash "$SCRIPT" "$MODEL" 2>&1)"; rc=$?
 [ $rc -eq 0 ] || fail h "run A exited $rc:
 $out_a"
-name_a="$(cat "$run_a/rank0.container")"
+name_a="$(record_field "$run_a/rank0.container" name)"
 state_has_name "$name_a" || fail h "run A's container is not live: $name_a"
 [ -f "$run_a/rank0.intent" ] \
   || fail h "run A recorded no intent for the create it made: $(ls "$run_a")"
@@ -432,6 +449,16 @@ have "$(cat "$run_a/rank0.image" 2>&1)" "id=sha256:feedfacefeedfacefeedfacefeedf
   || fail h "run A recorded no resolved image for its rank: $(ls "$run_a")"
 ok h "a create records the image ID it resolved, not just the tag it was given"
 
+# And the ID `docker run -d` printed, which is what --stop proves ownership
+# with: the name is only on loan for as long as this container holds it.
+[ "$(record_field "$run_a/rank0.container" id)" = "cid-$name_a" ] \
+  || fail h "run A recorded no created container ID: $(cat "$run_a/rank0.container")"
+[ "$(record_field "$run_a/rank0.container" label)" \
+  = "$(record_field "$run_a/rank0.intent" label)" ] \
+  || fail h "the container record must carry the same run label as the intent:
+$(cat "$run_a/rank0.container")"
+ok h "a create records the container ID it made and the run label it stamped"
+
 : > "$DOCKER_CALLS"
 run_b="$tmp/run-b"
 out_b="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
@@ -441,7 +468,7 @@ out_b="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
           BOOT_TIMEOUT_S=30 bash "$SCRIPT" "$MODEL" 2>&1)"; rc=$?
 [ $rc -eq 0 ] || fail h "run B exited $rc:
 $out_b"
-name_b="$(cat "$run_b/rank0.container")"
+name_b="$(record_field "$run_b/rank0.container" name)"
 [ "$name_a" != "$name_b" ] || fail h "two runs must not share the container name $name_a"
 ok h "two run directories on two ports get distinct container names ($name_a / $name_b)"
 
@@ -610,7 +637,8 @@ mkdir -p "$run_m"
 name_m="atlas-run-m-9999-rank0"
 label_m="atlas-node-ep.run=atlas-run-m-9999-1757000002-4244"
 write_records_m() {
-  printf '%s\n' "$name_m" > "$run_m/rank0.container"
+  printf 'id=%s\nname=%s\nlabel=%s\n' "cid-$name_m" "$name_m" "$label_m" \
+    > "$run_m/rank0.container"
   printf 'id=%s\nref=%s\n' "sha256:feedfacefeedfacefeedfacefeedface" \
     "avarok/atlas-gb10:latest" > "$run_m/rank0.image"
   printf 'name=%s\nlabel=%s\n' "$name_m" "$label_m" > "$run_m/rank0.intent"
@@ -657,6 +685,61 @@ for rec in container image intent; do
   [ -e "$run_m/rank0.$rec" ] && fail m "a confirmed absence must clear rank0.$rec: $out_m3"
 done
 ok m "a container Docker answers 'No such container' for is confirmed absent, not unresolved"
+
+# ── (n) a completed record is owned by ID and label, never by name ──────────
+run_n="$tmp/run-n"
+mkdir -p "$run_n"
+name_n="atlas-run-n-9999-rank0"
+label_n="atlas-node-ep.run=atlas-run-n-9999-1757000003-4245"
+write_records_n() {
+  printf 'id=%s\nname=%s\nlabel=%s\n' "cid-$name_n" "$name_n" "$label_n" \
+    > "$run_n/rank0.container"
+  printf 'id=%s\nref=%s\n' "sha256:feedfacefeedfacefeedfacefeedface" \
+    "avarok/atlas-gb10:latest" > "$run_n/rank0.image"
+  printf 'name=%s\nlabel=%s\n' "$name_n" "$label_n" > "$run_n/rank0.intent"
+}
+
+# Ours, live, wearing our label: stopped and removed, and addressed by the ID
+# the create returned rather than by the name it was given.
+write_records_n
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+printf '%s %s %s\n' "cid-$name_n" "$name_n" "$label_n" >> "$DOCKER_STATE"
+out_n="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_n" \
+          bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail n "--stop against this run's own live container exited $rc: $out_n"
+state_has_cid "cid-$name_n" && fail n "--stop must remove the container it recorded:
+$(cat "$DOCKER_STATE")"
+have "$out_n" "stopped 1 rank(s)" || fail n "--stop must count the rank it stopped: $out_n"
+grep -Eq "^rm cid-$name_n\$" "$DOCKER_CALLS" \
+  || fail n "the removal must address the container by its ID:
+$(cat "$DOCKER_CALLS")"
+for rec in container image intent; do
+  [ -e "$run_n/rank0.$rec" ] && fail n "a confirmed removal must clear rank0.$rec"
+done
+ok n "a completed record is stopped and removed by the container ID its create returned"
+
+# The regression. Our container was removed outside this launcher, and a
+# REPLACEMENT now answers to the same name with a different ID and a different
+# run label. Removing by name destroyed that replacement. Nothing wearing our
+# ID and our label exists any more, and "ours is gone" is the whole of what
+# this record can still say.
+write_records_n
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+printf '%s %s %s\n' "cid-replacement" "$name_n" "atlas-node-ep.run=a-later-launch" \
+  >> "$DOCKER_STATE"
+out_n2="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_n" \
+           bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail n "a rank confirmed gone must not fail the --stop: $out_n2"
+grep -Eq '^(stop|rm) ' "$DOCKER_CALLS" && fail n "nothing of this run's exists, so nothing
+may be stopped:
+$(cat "$DOCKER_CALLS")"
+state_has_cid "cid-replacement" || fail n "--stop removed a container a later launch owns:
+$out_n2"
+have "$out_n2" "$name_n" || fail n "--stop must name the rank it found gone: $out_n2"
+for rec in container image intent; do
+  [ -e "$run_n/rank0.$rec" ] && fail n "a confirmed absence must clear rank0.$rec: $out_n2"
+done
+ok n "a same-named container with another ID and label is left alone, ours confirmed gone"
 
 echo ""
 echo "ALL $asserts assertions passed."

@@ -54,6 +54,14 @@
 #     the name alone would match a LATER launch's rank, and the label alone
 #     is not a thing a stray container can be found by if the create never
 #     reached Docker.
+#     A NAME is not an identity either -- it is only on loan for as long as
+#     the container holding it lives. So rank<N>.container records the ID
+#     `docker run -d` printed, beside the name and the label, and --stop
+#     confirms that ID still wears this launch's label before it stops
+#     anything. A rank removed outside this launcher whose name a later
+#     container has since taken answers that query with nothing, and the
+#     honest reading of nothing is "ours is gone" -- not "remove whatever
+#     holds the name now".
 #
 #  2. Only rank 0 serves HTTP. This is not a convention, it is the code:
 #     `maybe_run_ep_worker` (serve_load.rs:752) returns `Ok(None)` for rank > 0
@@ -70,11 +78,14 @@
 #   --check-kernels     Run rank 0 alone with --check-kernels --no-tui and exit
 #                       with its status (the count of unresolved kernels).
 #   --stop              Kill the ranks recorded in $ATLAS_NODE_RUN_DIR and exit.
-#                       Only that run directory's own ranks: the names it wrote
-#                       carry its (run dir, PORT_BASE) identity. A rank whose
-#                       create was interrupted left an INTENT and no container
-#                       record; --stop reconciles it by asking Docker for that
-#                       exact name wearing that launch's own run label.
+#                       Only that run directory's own ranks: every container
+#                       it records is checked against this launch's own run
+#                       label before it is touched. A rank whose create was
+#                       interrupted left an INTENT and no container record;
+#                       --stop reconciles it by asking Docker for that exact
+#                       name wearing that launch's own run label. A rank whose
+#                       create COMPLETED is reconciled by its recorded ID
+#                       wearing that same label.
 #   --stop-on-timeout   On boot timeout, stop the ranks instead of leaving them
 #                       up for inspection.
 #   -h | --help         This header.
@@ -121,7 +132,7 @@ STOP=0
 STOP_ON_TIMEOUT=0
 MODEL=""
 
-usage() { sed -n '2,114p' "$0"; }
+usage() { sed -n '2,126p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -205,6 +216,39 @@ remove_container() {
   return 0
 }
 
+# container_is_ours CID LABEL -> 0 a container with that ID wears this
+#                                  launch's run label: it is this launch's to
+#                                  stop and remove
+#                                1 CONFIRMED not ours -- nothing has that ID
+#                                  and that label
+#                                2 the lookup itself FAILED: the answer is
+#                                  UNKNOWN and the records must be KEPT
+#
+# This is what a completed create's record is worth on a RETRY. The record
+# used to hold the container's name and --stop removed by that name, which is
+# only correct for as long as the name still belongs to the container the
+# create made. Remove that container outside this launcher, let a replacement
+# take the name, and a --stop against the stale record stopped and removed the
+# replacement -- somebody else's live rank, found by a string it merely
+# happens to hold. The ID is the handle that cannot move, and the label is
+# what makes the ID this launch's rather than one it read off disk, so both
+# are asked for and neither on its own is enough.
+#
+# The third answer is the same one reconcile_intent draws: a lookup that
+# failed is not a lookup that found nothing.
+OWNED_ERR=""
+container_is_ours() {
+  local cid="$1" label="$2" out="" rc=0
+  OWNED_ERR=""
+  out="$("$DOCKER" ps -aq --filter "id=$cid" --filter "label=$label" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    OWNED_ERR="docker ps exited $rc: ${out:-(no output)}"
+    return 2
+  fi
+  [ -n "$out" ] || return 1
+  return 0
+}
+
 reconcile_intent() {
   local f="$1" line name="" label="" out="" ids id found=1 rc=0 failed=0
   while IFS= read -r line; do
@@ -250,7 +294,7 @@ reconcile_intent() {
 }
 
 stop_ranks() {
-  local f pid name stopped=0 unresolved=0 rc
+  local f pid line cid name label stopped=0 unresolved=0 rc
   if [ ! -d "$RUN_DIR" ]; then
     echo "no run directory at $RUN_DIR — nothing to stop"
     return 0
@@ -286,10 +330,44 @@ stop_ranks() {
   # rank, and destroyed the only records that could find it again.
   for f in "$RUN_DIR"/rank*.container; do
     [ -e "$f" ] || continue
-    name="$(cat "$f")"
-    echo "stopping container $name"
+    cid=""; name=""; label=""
+    while IFS= read -r line; do
+      case "$line" in
+        id=*) cid="${line#id=}" ;;
+        name=*) name="${line#name=}" ;;
+        label=*) label="${line#label=}" ;;
+      esac
+    done < "$f"
+    if [ -z "$cid" ] || [ -z "$label" ]; then
+      echo "CANNOT STOP $(basename "$f"): it records no container ID and run" >&2
+      echo "  label (id='$cid' label='$label'), so nothing it names can be shown" >&2
+      echo "  to be this launch's. Nothing is stopped by guesswork and the" >&2
+      echo "  record is KEPT." >&2
+      unresolved=$((unresolved + 1))
+      continue
+    fi
     rc=0
-    remove_container "$name" || rc=$?
+    container_is_ours "$cid" "$label" || rc=$?
+    if [ "$rc" = "2" ]; then
+      echo "CANNOT STOP $name: the ownership lookup itself failed." >&2
+      echo "  $OWNED_ERR" >&2
+      echo "  Whether the container this rank recorded still exists is UNKNOWN," >&2
+      echo "  so nothing is stopped and $(basename "$f") and its image and intent" >&2
+      echo "  records are KEPT. Re-run --stop once Docker answers again." >&2
+      unresolved=$((unresolved + 1))
+      continue
+    fi
+    if [ "$rc" = "1" ]; then
+      echo "container $cid ($name) no longer exists wearing this launch's label:"
+      echo "  the rank is CONFIRMED gone, so its records go with it. Whatever"
+      echo "  answers to the name $name now was created by somebody else and is"
+      echo "  not touched."
+      rm -f "$f" "${f%.container}.image" "${f%.container}.intent"
+      continue
+    fi
+    echo "stopping container $name ($cid)"
+    rc=0
+    remove_container "$cid" || rc=$?
     case "$rc" in
       0) rm -f "$f" "${f%.container}.image" "${f%.container}.intent"
          stopped=$((stopped + 1)) ;;
@@ -774,10 +852,23 @@ for rank in "${LAUNCH_ORDER[@]}"; do
     # and --stop has to be able to find it either way.
     cname="$(container_name "$rank")"
     printf 'name=%s\nlabel=%s\n' "$cname" "$RUN_LABEL" > "$RUN_DIR/rank$rank.intent"
-    "${RANK_CMD[@]}" >"$log" 2>&1
+    # `docker run -d` prints the ID of the container it just made, and that
+    # ID is the one handle on this rank that cannot be re-pointed: the name
+    # is only on loan for as long as the container lives. So it is captured
+    # here instead of being swallowed by the log (which keeps the create's
+    # stderr), and it is what --stop proves ownership with and removes by.
+    cid="$("${RANK_CMD[@]}" 2>"$log")"
+    if [ -z "$cid" ]; then
+      echo "ERROR: docker run -d for rank $rank returned no container ID." >&2
+      echo "  Nothing this launch could later prove to be its own was recorded," >&2
+      echo "  so the rank is not adopted. $RUN_DIR/rank$rank.intent still names" >&2
+      echo "  it: reconcile with ATLAS_NODE_RUN_DIR=$RUN_DIR $0 --stop" >&2
+      exit 1
+    fi
     # Written whole or not at all: a reader between the two lines below sees
-    # the intent, never half a container name.
-    printf '%s\n' "$cname" > "$RUN_DIR/rank$rank.container.tmp"
+    # the intent, never half a container record.
+    printf 'id=%s\nname=%s\nlabel=%s\n' "$cid" "$cname" "$RUN_LABEL" \
+      > "$RUN_DIR/rank$rank.container.tmp"
     mv "$RUN_DIR/rank$rank.container.tmp" "$RUN_DIR/rank$rank.container"
     # Immediately, while the container still exists: teardown removes it, and
     # after that the only thing left to inspect is the tag.
