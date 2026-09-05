@@ -578,7 +578,28 @@ jobs:
               printf '%s\n' "$d"
             } >> "$GITHUB_OUTPUT"
           }
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt || true
+          # ★ NO `|| true` HERE. The redirect truncates `changed.txt` before
+          # git runs, so a failed diff leaves it EMPTY -- and empty is not a
+          # value this step is allowed to emit. Every consumer reads it as a
+          # measurement: `count=0`, an empty histogram, an empty path list,
+          # and a classifier prompt that says "Changed paths (0 total)". That
+          # is the classifier running on the PR's TITLE AND BODY ALONE, which
+          # is exactly the bypass the ★ note on the classify step says was
+          # closed -- reopened by a transient git failure, silently, and with
+          # the model's confident answer appended to the journey ledger as
+          # evidence. The deterministic fallback cannot save it either: its
+          # `all_match` requires `total > 0`, so it abstains too.
+          #
+          # `base.sha` can genuinely be unreachable (force-pushed away from the
+          # base branch and garbage-collected) even under `fetch-depth: 0`. That
+          # is a real condition, and the honest response is to fail this job --
+          # it is advisory and nothing `needs:` it, so red here blocks no merge
+          # and buys a cause one click away, the same trade `implied_benches`
+          # below already makes.
+          if ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt; then
+            echo "::error title=Changed paths unavailable::git diff $BASE_SHA..$HEAD_SHA failed. Refusing to classify from the title and body alone -- an empty path list would read as a PR that changes nothing."
+            exit 1
+          fi
           total=$(wc -l < changed.txt)
           echo "count=$total" >> "$GITHUB_OUTPUT"
           # TWO views of the same diff, complementary by construction:
