@@ -79,7 +79,7 @@ pub struct TargetPtxSet {
     /// resolved model dir) that identify checkpoints THIS target serves.
     /// Consulted only to break a tie when several targets declare the same
     /// `(model_type, hidden_size)` (e.g. qwen3.6-27b vs qwen3.8-27b, whose
-    /// configs are bit-identical); see [`resolve::resolve_target`]. Empty
+    /// configs are bit-identical); see [`crate::resolve::resolve_target`]. Empty
     /// for targets that never collide — `build.rs` panics if a colliding
     /// target omits them.
     pub match_names: &'static [&'static str],
