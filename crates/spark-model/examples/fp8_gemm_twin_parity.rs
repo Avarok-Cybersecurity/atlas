@@ -204,7 +204,16 @@ fn main() -> Result<()> {
             // blank (or aliased) buffers. Run against a GRADED twin.
             let m = MS[0];
             let mut pert = a_bytes.clone();
-            pert[2 * (k + 7)] ^= 1;
+            // Perturb an EXPONENT bit, not the low mantissa bit. bf16 is
+            // little-endian [lo, hi]; hi carries sign + 7 exponent bits, so
+            // flipping hi's bit 0 moves the value by a factor of two. The
+            // original control flipped `pert[2 * (k + 7)] ^= 1` — the low
+            // mantissa bit — and that delta, accumulated over K=5120 and
+            // rounded back to bf16, vanished: the control reported
+            // `detected=false` and the harness declared itself VACUOUS
+            // (observed on GB10, 2026-09-05). A control must survive the
+            // arithmetic it is policing.
+            pert[2 * (k + 7) + 1] ^= 1;
             let a_pert = up(g, &pert)?;
             g.memset(c_base, 0, MAX_M * n * 2)?;
             g.memset(c_twin, 0, MAX_M * n * 2)?;
