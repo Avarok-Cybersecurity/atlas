@@ -101,7 +101,7 @@ fn k3_record_positional(
 }
 
 #[inline]
-fn k3_record_outcome(
+pub(super) fn k3_record_outcome(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
     num_accepted: usize,
     seq_len: usize,
@@ -194,6 +194,10 @@ pub fn step_verify_k3(
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
+    if !dflash_verify_raw_argmax {
+        super::verify_mtp_wide::finish(model, a, sched, &drafts[..2], num_drafts, verify_ctx);
+        return;
+    }
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
 
     let (v0, v1, v2) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
