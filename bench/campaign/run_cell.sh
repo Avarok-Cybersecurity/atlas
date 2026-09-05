@@ -319,9 +319,18 @@ run_child() {
 # test. A launcher that refuses (exit 2 on an occupied port, a run directory it
 # will not overwrite, a container name it did not create) creates nothing and
 # records nothing, and a refusal must never be followed by a --stop.
+#
+# rank<N>.intent counts as much as rank<N>.container, because the container
+# record only appears once `docker run -d` has RETURNED. A cell killed inside
+# that create finds no container record and used to conclude that nothing was
+# created -- while the container was up and stayed up. The intent is written
+# before the create, so its presence is the evidence that a rank may exist, and
+# the --stop it triggers is the thing that reconciles it. A refusal still
+# writes no intent, so a refusal still stops nothing.
 atlas_recorded_ranks() {
   local f
-  for f in "$NODE_RUN_DIR"/rank*.pid "$NODE_RUN_DIR"/rank*.container; do
+  for f in "$NODE_RUN_DIR"/rank*.pid "$NODE_RUN_DIR"/rank*.container \
+           "$NODE_RUN_DIR"/rank*.intent; do
     [ -e "$f" ] && return 0
   done
   return 1
@@ -347,8 +356,9 @@ teardown_owned() {
       return 0
     fi
     if ! atlas_recorded_ranks; then
-      echo "the launcher recorded no rank in $NODE_RUN_DIR -- it refused or failed"
-      echo "  before creating anything, so this cell owns nothing to stop."
+      echo "the launcher recorded no rank or create intent in $NODE_RUN_DIR -- it"
+      echo "  refused or failed before creating anything, so this cell owns nothing"
+      echo "  to stop."
       return 0
     fi
     env "ATLAS_NODE_RUN_DIR=$NODE_RUN_DIR" bash "$LAUNCHER" --stop || note_fail teardown

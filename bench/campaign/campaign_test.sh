@@ -72,6 +72,13 @@
 #       launcher, so a launcher that refused an occupied port before creating
 #       anything still got a --stop -- against a run directory whose records
 #       belonged to an earlier invocation, whose rank it then killed.
+#   (o) the same create window as (m), on the ATLAS side. The launcher records
+#       rank<N>.container only after `docker run -d` returns, so a cell killed
+#       inside the create owned a rank by no record at all and stopped
+#       nothing. The intent written before the create is what makes it
+#       recoverable, and the query that reconciles it carries the exact name
+#       AND this launch's label -- a container of another run wearing that
+#       name is untouched.
 #
 # Usage: bash bench/campaign/campaign_test.sh
 set -uo pipefail
@@ -445,13 +452,15 @@ ok k "qwen3.6-35b-a3b-fp8 on h200 with --spec off records method=none and valida
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
-# A Docker whose bookkeeping is a file. `run` puts the container into the
-# running set BEFORE it answers, because that is the order the real one works
-# in -- `docker run -d` creates the container and then prints its ID -- and
-# DOCKER_RUN_BLOCK_S widens the gap between the two until a signal fits inside
-# it. `ps -aq --filter label=...` answers from that set and stop/rm remove from
-# it, so a test can ask the only question that matters after an interruption:
-# is the container this cell created still there?
+# A Docker whose bookkeeping is a file. A DETACHED `run` puts the container
+# into the running set BEFORE it answers, because that is the order the real
+# one works in -- `docker run -d` creates the container and then prints its ID
+# -- and DOCKER_RUN_BLOCK_S widens the gap between the two until a signal fits
+# inside it. A foreground `docker run --rm` (the launcher's kernel check)
+# outlives nothing and is recorded nowhere. `ps -aq --filter` answers from that
+# set, honouring BOTH a `label=` filter and an exact `name=^...$` one, and
+# stop/rm remove from it, so a test can ask the only question that matters
+# after an interruption: is the container this cell created still there?
 printf '%s\n' "$*" >> "$DOCKER_CALLS"
 running="${DOCKER_RUNNING:-}"
 case "${1:-}" in
@@ -460,33 +469,56 @@ case "${1:-}" in
       echo "docker: Error response from daemon: Conflict. The container name is already in use." >&2
       exit "${DOCKER_RUN_RC}"
     fi
-    label=""; prev=""
+    label=""; name=""; detached=0; prev=""
     for a in "$@"; do
-      if [ "$prev" = "--label" ]; then label="$a"; fi
+      case "$prev" in
+        --label) label="$a" ;;
+        --name) name="$a" ;;
+      esac
+      if [ "$a" = "-d" ]; then detached=1; fi
       prev="$a"
     done
-    if [ -n "$running" ]; then
-      printf '%s %s\n' "${DOCKER_FAKE_CID:?}" "$label" >> "$running"
+    if [ "$detached" = "1" ]; then
+      if [ -n "$running" ]; then
+        printf '%s %s %s\n' "${DOCKER_FAKE_CID:?}" "$label" "$name" >> "$running"
+      fi
+      if [ -n "${DOCKER_RUN_BLOCK_S:-}" ]; then sleep "$DOCKER_RUN_BLOCK_S"; fi
     fi
-    if [ -n "${DOCKER_RUN_BLOCK_S:-}" ]; then sleep "$DOCKER_RUN_BLOCK_S"; fi
     echo "${DOCKER_FAKE_CID:?}"
     ;;
   ps)
-    want=""; prev=""
+    want_label=""; want_name=""; prev=""
     for a in "$@"; do
-      if [ "$prev" = "--filter" ]; then want="${a#label=}"; fi
+      if [ "$prev" = "--filter" ]; then
+        case "$a" in
+          label=*) want_label="${a#label=}" ;;
+          name=*) want_name="${a#name=}"; want_name="${want_name#^}"; want_name="${want_name%\$}" ;;
+        esac
+      fi
       prev="$a"
     done
     { [ -n "$running" ] && [ -f "$running" ]; } || exit 0
-    while read -r cid lab; do
-      if [ -z "$want" ] || [ "$lab" = "$want" ]; then echo "$cid"; fi
+    while read -r cid lab nm; do
+      if [ -n "$want_label" ] && [ "$lab" != "$want_label" ]; then continue; fi
+      if [ -n "$want_name" ] && [ "$nm" != "$want_name" ]; then continue; fi
+      echo "$cid"
     done < "$running"
+    ;;
+  inspect)
+    # Only a name this stub created exists. The launcher asks before it
+    # creates anything, and an answer of "yes" is a REFUSAL there.
+    for a in "$@"; do name="$a"; done
+    { [ -n "$running" ] && [ -f "$running" ]; } || exit 1
+    while read -r cid lab nm; do
+      if [ "$nm" = "$name" ]; then echo "true"; exit 0; fi
+    done < "$running"
+    exit 1
     ;;
   stop|rm)
     { [ -n "$running" ] && [ -f "$running" ]; } || exit 0
     kept=""
-    while read -r cid lab; do
-      if [ "$cid" != "${2:-}" ]; then kept="$kept$cid $lab
+    while read -r cid lab nm; do
+      if [ "$cid" != "${2:-}" ] && [ "$nm" != "${2:-}" ]; then kept="$kept$cid $lab $nm
 "; fi
     done < "$running"
     printf '%s' "$kept" > "$running"
@@ -878,6 +910,79 @@ python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
   || fail n "the interrupted atlas artifact must validate:
 $(python3 "$HERE/validate_artifact.py" "$art")"
 ok n "the interrupted atlas cell still writes an artifact that validates"
+
+# ── (o) SIGTERM inside an ATLAS container create ────────────────────────────
+# The Atlas half of (m), and the same window: the launcher writes
+# rank<N>.container only once `docker run -d` has returned, and the wrapper
+# read an absent record as proof that nothing was created -- so a cell killed
+# inside the create stopped nothing and left a rank holding the GPU. What
+# survives that window is what the launcher wrote BEFORE the create:
+# rank<N>.intent, carrying the deterministic container name and this launch's
+# own label. The decoy below is why the reconciliation has to carry both: a
+# container wearing the SAME name for a DIFFERENT run is somebody else's, and
+# a name-only query would delete it.
+atlas_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+ACID="1111111111111111111111111111111111111111111111111111111111111111"
+DECOY_CID="2222222222222222222222222222222222222222222222222222222222222222"
+: > "$DOCKER_CALLS"; : > "$DOCKER_RUNNING"
+DOCKER_FAKE_CID="$ACID" DOCKER_RUN_BLOCK_S=60 PATH="$tmp/bin:$PATH" \
+  IMAGE="avarok/atlas-fake:campaign-test" ATLAS_PORT="$atlas_port" \
+  bash "$RUN" --engine atlas --model nemotron-3-nano-fp8 --sku h100 \
+  --workload lat --concurrency 1 --spec off --think off \
+  --out "$tmp/creating-atlas" --yes > "$tmp/creating-atlas.log" 2>&1 &
+run_pid=$!
+
+wait_for 120 "the launcher's docker run to create rank 0" test -s "$DOCKER_RUNNING" \
+  || fail o "the launcher never got as far as creating its container:
+$(cat "$tmp/creating-atlas.log")"
+created_name="$(awk 'NR==1 {print $NF}' "$DOCKER_RUNNING")"
+[ -n "$created_name" ] || fail o "the create recorded no container name:
+$(cat "$DOCKER_RUNNING")"
+printf '%s %s %s\n' "$DECOY_CID" "atlas-node-ep.run=some-other-launch" "$created_name" \
+  >> "$DOCKER_RUNNING"
+
+kill -TERM "$run_pid"
+wait "$run_pid"; rc=$?
+log="$(cat "$tmp/creating-atlas.log")"
+
+[ $rc -eq 143 ] || fail o "an atlas cell killed mid-create must exit 143, got $rc:
+$log"
+ok o "SIGTERM during an Atlas container create exits 143"
+
+have "$(cat "$DOCKER_CALLS")" "stop $ACID" \
+  || fail o "the rank the create had already made was never stopped:
+$(cat "$DOCKER_CALLS")"
+have "$(cat "$DOCKER_CALLS")" "rm $ACID" \
+  || fail o "the rank the create had already made was never removed:
+$(cat "$DOCKER_CALLS")"
+ok o "SIGTERM mid-create stops and removes the rank the launcher had created"
+
+left="$(awk '{print $1}' "$DOCKER_RUNNING" | tr '\n' ' ' | sed 's/ $//')"
+[ "$left" = "$DECOY_CID" ] || fail o "the running set must hold the other run's container and
+nothing else, holds: $left
+docker calls:
+$(cat "$DOCKER_CALLS")"
+stray="$(grep -E "^(stop|rm) $DECOY_CID" "$DOCKER_CALLS" || true)"
+[ -z "$stray" ] || fail o "a container of another run wearing the same name was touched:
+$stray"
+ok o "a same-named container from another run is neither stopped nor removed"
+
+art="$tmp/creating-atlas/artifact.json"
+[ -f "$art" ] || fail o "an atlas cell interrupted mid-create must still write its artifact:
+$log"
+python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
+  || fail o "the mid-create interruption artifact must validate:
+$(python3 "$HERE/validate_artifact.py" "$art")"
+read -r verdict stage_name <<<"$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["verdict"], d["failing_stage"])' "$art")"
+[ "$verdict" = "NO-GO" ] || fail o "an interrupted cell is a NO-GO, got $verdict"
+case "$stage_name" in
+  serve|boot) ;;
+  *) fail o "a cell killed around its create was killed at serve or boot, got $stage_name" ;;
+esac
+ok o "the artifact is a valid NO-GO at '$stage_name'"
 
 # ── (i) lints ────────────────────────────────────────────────────────────────
 if command -v shellcheck >/dev/null 2>&1; then

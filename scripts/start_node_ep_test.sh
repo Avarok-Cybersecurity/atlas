@@ -40,6 +40,13 @@
 #       fail the launch, not report a boot time. Otherwise the benchmark that
 #       follows measures the wrong process.
 #   (j) an endpoint that already answers before launch is refused up front.
+#   (k) --stop reconciles an interrupted CREATE. `docker run -d` makes the
+#       container and prints its ID after, so a launch killed inside that
+#       window wrote no rank<N>.container and used to be indistinguishable
+#       from a launch that created nothing. The intent record written before
+#       the create is what --stop reconciles, and the query it reconciles with
+#       carries the exact name AND this launch's label -- a container of a
+#       later launch wearing the same name is not this run's to remove.
 #
 # Usage: bash scripts/start_node_ep_test.sh
 set -uo pipefail
@@ -272,27 +279,51 @@ PY
 
 cat > "$tmp/fake-docker" <<'SH'
 #!/usr/bin/env bash
-# Records every call, and keeps one line per live container name so `inspect`
-# can answer whether a name exists. No Docker involved.
+# Records every call, and keeps one "CID NAME LABEL" line per live container:
+# `inspect` answers whether a name exists, and `ps -aq --filter` answers which
+# container wears a given name AND a given run label -- the query --stop uses
+# to reconcile a create that was interrupted before it could be recorded. No
+# Docker involved.
 printf '%s\n' "$*" >> "$DOCKER_CALLS"
 cmd="${1:-}"; shift || true
-name=""
+name=""; label=""
 case "$cmd" in
   run)
     while [ $# -gt 0 ]; do
-      case "$1" in --name) name="$2"; shift 2 ;; *) shift ;; esac
+      case "$1" in
+        --name) name="$2"; shift 2 ;;
+        --label) label="$2"; shift 2 ;;
+        *) shift ;;
+      esac
     done
-    printf '%s\n' "$name" >> "$DOCKER_STATE"
+    printf '%s %s %s\n' "cid-$name" "$name" "$label" >> "$DOCKER_STATE"
     echo "cid-$name"
+    ;;
+  ps)
+    want_name=""; want_label=""; prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--filter" ]; then
+        case "$a" in
+          name=*) want_name="${a#name=}"; want_name="${want_name#^}"; want_name="${want_name%\$}" ;;
+          label=*) want_label="${a#label=}" ;;
+        esac
+      fi
+      prev="$a"
+    done
+    while read -r cid nm lab; do
+      if [ -n "$want_name" ] && [ "$nm" != "$want_name" ]; then continue; fi
+      if [ -n "$want_label" ] && [ "$lab" != "$want_label" ]; then continue; fi
+      echo "$cid"
+    done < "$DOCKER_STATE"
     ;;
   inspect)
     for a in "$@"; do name="$a"; done
-    grep -Fxq -- "$name" "$DOCKER_STATE" 2>/dev/null || exit 1
+    awk -v n="$name" '$2 == n { found = 1 } END { exit !found }' "$DOCKER_STATE" || exit 1
     echo "true"
     ;;
   stop|rm)
     for a in "$@"; do name="$a"; done
-    grep -Fxv -- "$name" "$DOCKER_STATE" > "$DOCKER_STATE.next" 2>/dev/null || true
+    awk -v n="$name" '$1 != n && $2 != n' "$DOCKER_STATE" > "$DOCKER_STATE.next"
     mv "$DOCKER_STATE.next" "$DOCKER_STATE"
     ;;
   logs) echo "(fake logs for ${*: -1})" ;;
@@ -300,6 +331,11 @@ esac
 exit 0
 SH
 chmod +x "$tmp/fake-docker"
+
+# The state file is "CID NAME LABEL" per live container, so a test asks about a
+# container by the field it means rather than by a whole-line match.
+state_has_name() { awk -v n="$1" '$2 == n { found = 1 } END { exit !found }' "$DOCKER_STATE"; }
+state_has_cid() { awk -v c="$1" '$1 == c { found = 1 } END { exit !found }' "$DOCKER_STATE"; }
 
 export DOCKER_CALLS="$tmp/docker.calls"
 export DOCKER_STATE="$tmp/docker.state"
@@ -321,7 +357,9 @@ out_a="$(NGPUS=1 EP_SIZE=1 TP_SIZE=1 IMAGE=avarok/atlas-gb10:latest \
 [ $rc -eq 0 ] || fail h "run A exited $rc:
 $out_a"
 name_a="$(cat "$run_a/rank0.container")"
-grep -Fxq -- "$name_a" "$DOCKER_STATE" || fail h "run A's container is not live: $name_a"
+state_has_name "$name_a" || fail h "run A's container is not live: $name_a"
+[ -f "$run_a/rank0.intent" ] \
+  || fail h "run A recorded no intent for the create it made: $(ls "$run_a")"
 
 : > "$DOCKER_CALLS"
 run_b="$tmp/run-b"
@@ -339,7 +377,7 @@ ok h "two run directories on two ports get distinct container names ($name_a / $
 touched="$(grep -E "^(stop|rm) .*(^| )$name_a( |$)" "$DOCKER_CALLS" || true)"
 [ -z "$touched" ] || fail h "run B stopped or removed run A's container:
 $touched"
-grep -Fxq -- "$name_a" "$DOCKER_STATE" || fail h "run A's container did not survive run B"
+state_has_name "$name_a" || fail h "run A's container did not survive run B"
 ok h "starting run B leaves run A's rank alone"
 
 : > "$DOCKER_CALLS"
@@ -348,8 +386,9 @@ out_stop_a="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_a" \
 [ $rc -eq 0 ] || fail h "--stop for run A exited $rc: $out_stop_a"
 grep -Fq -- "$name_b" "$DOCKER_CALLS" && fail h "--stop from run A touched run B:
 $(cat "$DOCKER_CALLS")"
-grep -Fxq -- "$name_b" "$DOCKER_STATE" || fail h "run B's container did not survive run A's --stop"
-grep -Fxq -- "$name_a" "$DOCKER_STATE" && fail h "--stop must have removed run A's own container"
+state_has_name "$name_b" || fail h "run B's container did not survive run A's --stop"
+state_has_name "$name_a" && fail h "--stop must have removed run A's own container"
+[ -e "$run_a/rank0.intent" ] && fail h "--stop must clear the intent it has reconciled"
 ok h "--stop from run A's directory removes only run A's container"
 
 kill "$stub_a" "$stub_b" 2>/dev/null
@@ -394,6 +433,42 @@ $out_j"
 have "$out_j" "already answering" || fail j "the refusal must say what it found: $out_j"
 [ -f "$run_j/rank0.pid" ] && fail j "a refused launch must start no rank"
 ok j "a port that already answers /health is refused before anything is started"
+
+# ── (k) --stop reconciles a create that was interrupted ─────────────────────
+# The window `docker run -d` opens: the container exists and its name has not
+# been recorded yet. All that survives it is what the launcher wrote first.
+run_k="$tmp/run-k"
+mkdir -p "$run_k"
+name_k="atlas-run-k-9999-rank0"
+label_k="atlas-node-ep.run=atlas-run-k-9999-1757000000-4242"
+printf 'name=%s\nlabel=%s\n' "$name_k" "$label_k" > "$run_k/rank0.intent"
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+printf '%s %s %s\n' "cid-$name_k" "$name_k" "$label_k" >> "$DOCKER_STATE"
+
+out_k="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_k" \
+          bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail k "--stop with an intent record exited $rc: $out_k"
+state_has_cid "cid-$name_k" && fail k "the container that create made is still live:
+$(cat "$DOCKER_STATE")"
+have "$out_k" "stopped 1 rank(s)" || fail k "--stop must count what it reconciled: $out_k"
+[ -e "$run_k/rank0.intent" ] && fail k "--stop must clear the intent it reconciled"
+ok k "an intent with no container record is reconciled by name and run label"
+
+# And the reason that query carries the label as well as the name: a LATER
+# launch into the same run directory and port derives the SAME container name,
+# and its rank is not this run's to remove.
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+printf 'name=%s\nlabel=%s\n' "$name_k" "$label_k" > "$run_k/rank0.intent"
+printf '%s %s %s\n' "cid-later" "$name_k" "atlas-node-ep.run=a-later-launch" >> "$DOCKER_STATE"
+out_k2="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_k" \
+           bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail k "--stop against another launch's container exited $rc: $out_k2"
+state_has_cid "cid-later" || fail k "--stop removed a container another launch owns:
+$out_k2"
+grep -Eq '^(stop|rm) ' "$DOCKER_CALLS" && fail k "nothing of this run's exists, so nothing
+may be stopped:
+$(cat "$DOCKER_CALLS")"
+ok k "a same-named container wearing another launch's label is left alone"
 
 echo ""
 echo "ALL $asserts assertions passed."

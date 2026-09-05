@@ -42,6 +42,17 @@
 #     directory that still holds live rank records, or a port whose /health
 #     already answers are all REFUSALS (exit 2). Each of those is somebody
 #     else's live server, and the previous `docker rm -f` deleted it.
+#     What a record written AFTER the create cannot describe is the create
+#     itself: `docker run -d` makes the container and prints its ID after, and
+#     a launch killed in that window wrote no rank<N>.container at all -- so
+#     its caller read "nothing was created" and stopped nothing, leaving a
+#     rank on the GPU. So the name and a per-launch label are written to
+#     rank<N>.intent BEFORE each create, the label goes on the container, and
+#     --stop reconciles an intent that has no container record by asking
+#     Docker for that exact name wearing that label. Both filters, always:
+#     the name alone would match a LATER launch's rank, and the label alone
+#     is not a thing a stray container can be found by if the create never
+#     reached Docker.
 #
 #  2. Only rank 0 serves HTTP. This is not a convention, it is the code:
 #     `maybe_run_ep_worker` (serve_load.rs:752) returns `Ok(None)` for rank > 0
@@ -59,7 +70,10 @@
 #                       with its status (the count of unresolved kernels).
 #   --stop              Kill the ranks recorded in $ATLAS_NODE_RUN_DIR and exit.
 #                       Only that run directory's own ranks: the names it wrote
-#                       carry its (run dir, PORT_BASE) identity.
+#                       carry its (run dir, PORT_BASE) identity. A rank whose
+#                       create was interrupted left an INTENT and no container
+#                       record; --stop reconciles it by asking Docker for that
+#                       exact name wearing that launch's own run label.
 #   --stop-on-timeout   On boot timeout, stop the ranks instead of leaving them
 #                       up for inspection.
 #   -h | --help         This header.
@@ -106,7 +120,7 @@ STOP=0
 STOP_ON_TIMEOUT=0
 MODEL=""
 
-usage() { sed -n '2,89p' "$0"; }
+usage() { sed -n '2,114p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -135,12 +149,61 @@ DOCKER="${DOCKER:-docker}"
 # By pid file and container name, never `pkill -f`. A `pkill -f spark` here
 # would match this script's own command line (and any editor with the word in
 # an argument), which is how a stop turns into a self-kill.
+# reconcile_intent FILE -> 0 if it stopped a container of this launch's
+# An intent is what a create wrote before it ran: the deterministic container
+# name and the label this launch stamps on every rank it creates. Asking Docker
+# for BOTH is what makes the answer this launch's own -- the name on its own
+# belongs to whoever holds it now, which after a crashed run may be a later
+# launch, and the label on its own is not enough to find anything if the create
+# never reached the daemon. Nothing here is force-removed and nothing is
+# matched by pattern.
+reconcile_intent() {
+  local f="$1" line name="" label="" ids id found=1
+  while IFS= read -r line; do
+    case "$line" in
+      name=*) name="${line#name=}" ;;
+      label=*) label="${line#label=}" ;;
+    esac
+  done < "$f"
+  if [ -z "$name" ] || [ -z "$label" ]; then
+    echo "intent $(basename "$f") names no container (name='$name' label='$label'):"
+    echo "  nothing is stopped by guesswork"
+    return 1
+  fi
+  echo "reconciling the interrupted create of $name (label $label)"
+  ids="$("$DOCKER" ps -aq --filter "name=^$name\$" --filter "label=$label" 2>/dev/null || true)"
+  if [ -z "$ids" ]; then
+    echo "  nothing wears that name and that label: the create never reached Docker"
+    return 1
+  fi
+  for id in $ids; do
+    echo "  stopping container $id"
+    "$DOCKER" stop "$id" >/dev/null 2>&1 || true
+    "$DOCKER" rm "$id" >/dev/null 2>&1 || true
+    found=0
+  done
+  return "$found"
+}
+
 stop_ranks() {
   local f pid name stopped=0
   if [ ! -d "$RUN_DIR" ]; then
     echo "no run directory at $RUN_DIR — nothing to stop"
     return 0
   fi
+  # Intents first, so an intent whose create DID return is left to the
+  # container record below -- that record is the authoritative one.
+  for f in "$RUN_DIR"/rank*.intent; do
+    [ -e "$f" ] || continue
+    if [ -e "${f%.intent}.container" ]; then
+      rm -f "$f"
+      continue
+    fi
+    if reconcile_intent "$f"; then
+      stopped=$((stopped + 1))
+    fi
+    rm -f "$f"
+  done
   for f in "$RUN_DIR"/rank*.container; do
     [ -e "$f" ] || continue
     name="$(cat "$f")"
@@ -216,6 +279,12 @@ case "$RUN_TAG" in
   *) RUN_TAG="atlas-$RUN_TAG" ;;
 esac
 RUN_ID="$RUN_TAG-$PORT_BASE"
+# The value that survives an interrupted create, because it is chosen before
+# the create and written down with the name it belongs to. RUN_ID keeps it
+# readable in `docker ps`; the epoch and the pid make it THIS invocation's, so
+# a later launch that derives the same container name can never answer this
+# one's reconciliation query.
+RUN_LABEL="atlas-node-ep.run=$RUN_ID-$(date +%s)-$$"
 
 # ── Validation ───────────────────────────────────────────────────────────────
 is_positive_int() { case "$1" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac; }
@@ -401,7 +470,9 @@ build_rank_cmd() {
     if [ "$mode" = "check" ]; then
       RANK_CMD+=( --rm )
     else
-      RANK_CMD+=( -d --name "$(container_name "$rank")" )
+      # The label is the only thing that identifies this container while its
+      # ID is still inside `docker run -d`; see the OWNERSHIP note above.
+      RANK_CMD+=( -d --name "$(container_name "$rank")" --label "$RUN_LABEL" )
     fi
     # No --device=/dev/infiniband, no --cap-add=IPC_LOCK, no memlock ulimit:
     # those exist in start-ep2.sh for RDMA between two chassis. Intra-node
@@ -530,8 +601,9 @@ fi
 
 # A run directory that still holds rank records belongs to a launch that has
 # not been stopped. Its pid/container files are what --stop acts on, so
-# overwriting them orphans those ranks.
-for f in "$RUN_DIR"/rank*.pid "$RUN_DIR"/rank*.container; do
+# overwriting them orphans those ranks. An intent counts: it is the record of a
+# create that was never reconciled, and it may name a container that is up.
+for f in "$RUN_DIR"/rank*.pid "$RUN_DIR"/rank*.container "$RUN_DIR"/rank*.intent; do
   [ -e "$f" ] || continue
   echo "REFUSED: $RUN_DIR still records a running launch ($(basename "$f"))." >&2
   echo "  Stop it with: ATLAS_NODE_RUN_DIR=$RUN_DIR $0 --stop" >&2
@@ -572,8 +644,17 @@ for rank in "${LAUNCH_ORDER[@]}"; do
   if [ -n "$IMAGE" ]; then
     # No `docker rm -f` first: the name is refused above if it is taken, and
     # a name this invocation did not create is not this invocation's to delete.
+    #
+    # The intent goes down BEFORE the create: from the next line on a container
+    # of this launch's may exist whether or not `docker run -d` ever returns,
+    # and --stop has to be able to find it either way.
+    cname="$(container_name "$rank")"
+    printf 'name=%s\nlabel=%s\n' "$cname" "$RUN_LABEL" > "$RUN_DIR/rank$rank.intent"
     "${RANK_CMD[@]}" >"$log" 2>&1
-    container_name "$rank" > "$RUN_DIR/rank$rank.container"
+    # Written whole or not at all: a reader between the two lines below sees
+    # the intent, never half a container name.
+    printf '%s\n' "$cname" > "$RUN_DIR/rank$rank.container.tmp"
+    mv "$RUN_DIR/rank$rank.container.tmp" "$RUN_DIR/rank$rank.container"
   else
     if [ -n "$SETSID" ]; then
       $SETSID nohup "${RANK_CMD[@]}" >"$log" 2>&1 </dev/null &
