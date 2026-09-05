@@ -1,0 +1,32 @@
+DEVICE NVIDIA GB10 cc=12.1 SMs=48 L2=24 MB smem/SM=100 KB clock=2418 MHz memclk=8533 MHz bus=256 bit coop=1
+PEAK streaming read: 232.9 GB/s (4609.9 us per GiB)
+LAUNCH floor: plain<1,32> 2.06 us | plain<48,256> 2.00 us | coop<48,256> grid.sync 4.06 us | coop<48,512,90KB smem> 4.07 us  (per launch, back-to-back)
+DENSE gdn.in_proj_qkv k= 2560 n= 10240 K=6  ATLAS gemm sh3 grid=48 blk=512 occ=1 :     93.9 us   209.5 GB/s  x36/token =    3.38 ms
+                                             BEST  gemm sh4 grid=40                   :     89.5 us   219.6 GB/s  x36/token =    3.22 ms   (1.05x vs Atlas)
+DENSE gdn.in_proj_z  k= 2560 n=  6144 K=6  ATLAS gemm sh3 grid=48 blk=512 occ=1 :     57.7 us   204.5 GB/s  x36/token =    2.08 ms
+                                             BEST  gemm sh2 grid=48                   :     57.1 us   206.7 GB/s  x36/token =    2.05 ms   (1.01x vs Atlas)
+DENSE gdn.out_proj   k= 6144 n=  2560 K=6  ATLAS gemm sh2 grid=48 blk=512 occ=1 :     59.5 us   198.4 GB/s  x36/token =    2.14 ms
+                                             BEST  gemm sh2 grid=48                   :     58.6 us   201.3 GB/s  x36/token =    2.11 ms   (1.01x vs Atlas)
+DENSE attn.q_proj    k= 2560 n= 12288 K=6  ATLAS gemm sh3 grid=48 blk=512 occ=1 :    115.6 us   204.1 GB/s  x12/token =    1.39 ms
+                                             BEST  gemm sh4 grid=48                   :    105.0 us   224.7 GB/s  x12/token =    1.26 ms   (1.10x vs Atlas)
+DENSE attn.k_proj    k= 2560 n=   512 K=6  ATLAS gemm sh2 grid=48 blk=512 occ=1 :     22.7 us    43.3 GB/s  x12/token =    0.27 ms
+                                             BEST  gemm sh2 grid=20                   :     16.0 us    61.3 GB/s  x12/token =    0.19 ms   (1.41x vs Atlas)
+DENSE attn.v_proj    k= 2560 n=   512 K=6  ATLAS gemm sh2 grid=48 blk=512 occ=1 :     22.9 us    42.9 GB/s  x12/token =    0.28 ms
+                                             BEST  gemm sh2 grid=20                   :     15.9 us    61.7 GB/s  x12/token =    0.19 ms   (1.44x vs Atlas)
+DENSE attn.o_proj    k= 6144 n=  2560 K=6  ATLAS gemm sh2 grid=48 blk=512 occ=1 :     61.4 us   192.1 GB/s  x12/token =    0.74 ms
+                                             BEST  gemm sh2 grid=48                   :     58.2 us   202.8 GB/s  x12/token =    0.70 ms   (1.06x vs Atlas)
+DENSE lm_head        k= 2560 n=248320 K=6  ATLAS gemm sh4 grid=48 blk=256 occ=1 :   2039.2 us   233.8 GB/s  x1/token =    2.04 ms
+                                             BEST  gemm sh4 grid=36                   :   2034.0 us   234.4 GB/s  x1/token =    2.03 ms   (1.00x vs Atlas)
+DENSE gdn.in_proj_qkv@K4 k= 2560 n= 10240 K=4  ATLAS gemm sh3 grid=48 blk=512 occ=1 :     73.0 us   179.6 GB/s  x36/token =    2.63 ms
+                                             ATLAS gemv cfg1 grid=48 (occ-assumed 1)   :     85.9 us   152.5 GB/s
+                                             BEST  gemm sh4 grid=40                   :     63.2 us   207.3 GB/s  x36/token =    2.28 ms   (1.15x vs Atlas)
+DENSE gdn.out_proj@K4 k= 6144 n=  2560 K=4  ATLAS gemm sh2 grid=48 blk=512 occ=1 :     44.9 us   175.0 GB/s  x36/token =    1.62 ms
+                                             ATLAS gemv heuristic DECLINES -> gemm
+                                             BEST  gemv cfg0 grid=80 (occ 2)          :     44.5 us   176.9 GB/s  x36/token =    1.60 ms   (1.01x vs Atlas)
+DENSE shared.gate@K4 k= 2560 n=   640 K=4  ATLAS gemm sh2 grid=48 blk=512 occ=1 :     20.8 us    39.4 GB/s  x48/token =    1.00 ms
+                                             ATLAS gemv cfg0 grid=20 (occ-assumed 1)   :     13.4 us    61.2 GB/s
+                                             BEST  gemv cfg0 grid=20 (occ 2)          :     10.7 us    76.5 GB/s  x48/token =    0.51 ms   (1.94x vs Atlas)
+DENSE shared.down@K4 k=  640 n=  2560 K=4  ATLAS gemm sh1 grid=48 blk=256 occ=1 :     15.7 us    52.2 GB/s  x48/token =    0.75 ms
+                                             ATLAS gemv cfg0 grid=48 (occ-assumed 1)   :     11.6 us    70.6 GB/s
+                                             BEST  gemv cfg1 grid=4CUDA error an illegal memory access was encountered at exl3_decode_bench.cu:278
+0 (occ 3)          :      8.9 us    92.4 GB/s  x48/token =    0.43 ms   (1.77x vs Atlas)

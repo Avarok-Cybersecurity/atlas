@@ -254,16 +254,17 @@ impl MoeLayer {
         if has_shared {
             // Writes shared_down_out = attn_output(); scratches
             // ssm_deinterleaved()/ssm_qkvz() (input is NOT in either — the
-            // pre-expert-norm case is refused above).
-            self.run_shared_expert_prefill(
+            // pre-expert-norm case is refused above). Decode-shaped arm:
+            // per-row GEMV at <= 8 rows, the prefill-tiled GEMM above that
+            // (forward_exl3_shared.rs — the tiled GEMM at m=1 was 50% of
+            // decode GPU time).
+            self.run_shared_expert_exl3_decode(
                 input,
                 num_tokens as u32,
                 h as u32,
                 shared_inter,
-                stream,
-                stream,
-                false,
                 ctx,
+                stream,
             )?;
         }
         if let Some(comm) = ctx.comm
