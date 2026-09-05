@@ -810,6 +810,36 @@ PY
   ! certed && ok "control: a certificate already posted is not posted again" \
     || bad "control: it posted a second certificate"
 
+  # CONTROL: the PR's title and merge sha are read with `gh api ... 2>/dev/null`,
+  # so an unanswered API is indistinguishable from an answer of "". The renderer
+  # now REFUSES those rather than drawing the template's specimen title and
+  # commit in their place -- and it refuses by exiting non-zero, which under
+  # `set -e` would kill this step before the certificate POST. A merged PR with
+  # no certificate at all is strictly worse than one with no picture, which is
+  # the same trap the rsvg-convert guard exists for. So: the step must ask
+  # first, skip the render, and still post.
+  botstub 0
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+printf 'ARGV: %s\n' "$*" >> "$BCALLS"
+case "$*" in
+  *comments*--jq*)      echo 0 ;;        # no certificate posted yet
+  *"/pulls/1/commits"*) echo "alice" ;;
+  *"/pulls/1"*)         : ;;             # title, merge sha and opener: no answer
+  *)                    : ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/bin/gh"
+  ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+    STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
+    bash "$TMP/bot.sh" >/dev/null 2>&1 )
+  certed && ok "control: an unreadable PR title costs the picture, not the certificate" \
+    || bad "control: an empty title killed the step before the certificate was posted"
+  grep -q 'PUT.*contents/pr-1-' "$TMP/bcalls" \
+    && bad "control: it rendered and uploaded a certificate whose title it never read" \
+    || ok "control: and no image is rendered from data the API never returned"
+
   # CONTROL: when the image upload fails, the comment must NOT link an object
   # that was never written. #843 shipped a certificate whose <img> was a 404,
   # because the PUT is non-fatal by design and nothing checked the result.

@@ -264,6 +264,20 @@ jobs:
               title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null)
               authors=$(printf '%s' "${who:-}" | tr -d '@' | tr -s ' ' ',' | sed 's/,$//')
 
+              # Every lookup above is `2>/dev/null`, so "the API did not answer"
+              # arrives as an empty string and is indistinguishable from a real
+              # value. The renderer now REFUSES an empty title or commit rather
+              # than drawing the template's specimen data in their place, and it
+              # refuses by exiting non-zero -- which under `set -e` would kill
+              # this step before the comment POST below and leave a merged PR
+              # with no certificate at all. Same reasoning as the rsvg-convert
+              # and segno guards above: ask first, and let a missing input cost
+              # the picture, never the certificate.
+              if [ -z "$title" ] || [ -z "${merge_sha:-}" ]; then
+                echo "::warning title=Certificate not rendered::the PR title or the merge commit came back empty from the API. Drawing the certificate without them would publish the template's specimen title and commit as this PR's, so the certificate is posted without an image."
+                render_ok=0
+              fi
+
               # NO generic fallback image. The committed template carries the
               # PLACEHOLDER certifier names it was designed with, so linking it
               # states that fictional people stamped and sealed this PR, over an
