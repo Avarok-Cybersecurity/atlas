@@ -584,6 +584,33 @@
         "https://huggingface.co/Qwen/Qwen3.8-27B-FP8/tree/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
       ],
       "notes": "Single H200 FP8 first paid pair. No repo recipe fixture or explicit PRD 27B flag block exists; context24576 follows the model target effective_context. Common serving flags are the campaign PRD section6 policy; calibration256 is the existing FP8 campaign mitigation. Intended revision is metadata only, not proof of loaded bytes. MTP-scored variant is RECIPE_GAP: target declares mtp_layers=0 and captured vLLM H200 recipe has no speculative profile; both legs use spec off."
+    },
+    {
+      "model_key": "qwen3.8-27b-fp8",
+      "sku": "h100",
+      "hf_id": "Qwen/Qwen3.8-27B-FP8",
+      "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "24576",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "H100 rental shakedown: reuse single-Hopper 27B target and campaign common flags",
+        "kernels/hopper/qwen3.8-27b/MODEL.toml: effective_context=24576, mtp_layers=0, native FP8 checkpoint",
+        "https://huggingface.co/Qwen/Qwen3.8-27B-FP8/tree/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+      ],
+      "notes": "Single-H100 adaptation of the existing H200 27B campaign recipe. Same Hopper target, TP1/EP1 and common policy; context24576 follows target effective_context. No flag tuning or successful H100 runtime claim is implied. Retain pinned snapshot proof, and run audit/boot/coherency before scoring. Spec off: target mtp_layers=0."
     }
   ],
   "recipe_max_note": "recipe_max is true when the entry's topology is the maximum Atlas's own recipe renders for that SKU, and false when the campaign stepped down from it. It is independent of topology.matched, which is about the OTHER engine.",

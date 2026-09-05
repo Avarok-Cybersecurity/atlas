@@ -1904,6 +1904,51 @@
       "spec_description": "No speculative profile in captured H200 recipe. PRD proposed MTP row is RECIPE_GAP; Atlas target mtp_layers=0.",
       "draft_revision": null,
       "notes": "P0 PRD section16 first paid pair. Official recipe and HF metadata verified, engine boot and pinned-image support remain unproven."
+    },
+    {
+      "model_key": "qwen3.8-27b-fp8",
+      "sku": "h100",
+      "hf_id": "Qwen/Qwen3.8-27B-FP8",
+      "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+      "quant": "fp8",
+      "gpus": 1,
+      "nnodes": 1,
+      "deploy_type": "single_node",
+      "strategy": "single_node_tp",
+      "topology": {
+        "tp": 1,
+        "pp": 1,
+        "dp": 1
+      },
+      "image": "vllm/vllm-openai:qwen38",
+      "env": {},
+      "source_url": "https://recipes.vllm.ai/Qwen/Qwen3.8-27B-FP8/hw/h100.json",
+      "retrieved_utc": "2026-09-05T21:20:10.479559+00:00",
+      "evidence_sha256": "6ab7df7b00ec231ca31008004c859792e2ace451f6af7bcf1cfd027a2ce8bbd1",
+      "original_verdict": "verbatim",
+      "verdict": "revision_adaptation",
+      "args": [
+        "vllm",
+        "serve",
+        "Qwen/Qwen3.8-27B-FP8",
+        "--tensor-parallel-size",
+        "1",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "qwen3_coder",
+        "--reasoning-parser",
+        "qwen3",
+        "--mm-encoder-tp-mode",
+        "data",
+        "--revision",
+        "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+      ],
+      "worker_args": null,
+      "spec_args": null,
+      "spec_rendered_default": "off",
+      "spec_description": "No speculative profile in the captured H100 recipe; Atlas target declares mtp_layers=0. Both legs use spec off.",
+      "draft_revision": null,
+      "notes": "Official single-H100 recipe, pinned for the rental shakedown. Runtime support and coherency must be observed on the selected engine environment; metadata is not loaded-byte proof."
     }
   ],
   "revision_adaptation": {
