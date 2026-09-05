@@ -62,6 +62,12 @@
 #       Same owned resources, opposite outcome -- and on a rented box the
 #       difference is a vLLM server holding the GPU until somebody finds it.
 #
+#   (m) ownership during the CREATE itself. `docker run -d` makes the
+#       container and then prints its ID, and a cell killed between the two
+#       held no ID to tear down by: the stub's running set kept the container
+#       and the Docker log showed only `run`. Ownership has to be recoverable
+#       from what was chosen and recorded before the create.
+#
 # Usage: bash bench/campaign/campaign_test.sh
 set -uo pipefail
 
@@ -434,14 +440,53 @@ ok k "qwen3.6-35b-a3b-fp8 on h200 with --spec off records method=none and valida
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
+# A Docker whose bookkeeping is a file. `run` puts the container into the
+# running set BEFORE it answers, because that is the order the real one works
+# in -- `docker run -d` creates the container and then prints its ID -- and
+# DOCKER_RUN_BLOCK_S widens the gap between the two until a signal fits inside
+# it. `ps -aq --filter label=...` answers from that set and stop/rm remove from
+# it, so a test can ask the only question that matters after an interruption:
+# is the container this cell created still there?
 printf '%s\n' "$*" >> "$DOCKER_CALLS"
-if [ "${1:-}" = run ]; then
-  if [ "${DOCKER_RUN_RC:-0}" != "0" ]; then
-    echo "docker: Error response from daemon: Conflict. The container name is already in use." >&2
-    exit "${DOCKER_RUN_RC}"
-  fi
-  echo "${DOCKER_FAKE_CID:?}"
-fi
+running="${DOCKER_RUNNING:-}"
+case "${1:-}" in
+  run)
+    if [ "${DOCKER_RUN_RC:-0}" != "0" ]; then
+      echo "docker: Error response from daemon: Conflict. The container name is already in use." >&2
+      exit "${DOCKER_RUN_RC}"
+    fi
+    label=""; prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--label" ]; then label="$a"; fi
+      prev="$a"
+    done
+    if [ -n "$running" ]; then
+      printf '%s %s\n' "${DOCKER_FAKE_CID:?}" "$label" >> "$running"
+    fi
+    if [ -n "${DOCKER_RUN_BLOCK_S:-}" ]; then sleep "$DOCKER_RUN_BLOCK_S"; fi
+    echo "${DOCKER_FAKE_CID:?}"
+    ;;
+  ps)
+    want=""; prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--filter" ]; then want="${a#label=}"; fi
+      prev="$a"
+    done
+    { [ -n "$running" ] && [ -f "$running" ]; } || exit 0
+    while read -r cid lab; do
+      if [ -z "$want" ] || [ "$lab" = "$want" ]; then echo "$cid"; fi
+    done < "$running"
+    ;;
+  stop|rm)
+    { [ -n "$running" ] && [ -f "$running" ]; } || exit 0
+    kept=""
+    while read -r cid lab; do
+      if [ "$cid" != "${2:-}" ]; then kept="$kept$cid $lab
+"; fi
+    done < "$running"
+    printf '%s' "$kept" > "$running"
+    ;;
+esac
 exit 0
 SH
 cat > "$tmp/bin/nvidia-smi" <<'SH'
@@ -458,6 +503,9 @@ SH
 chmod +x "$tmp/bin/docker" "$tmp/bin/nvidia-smi"
 DIGEST="sha256:$(printf 'a%.0s' $(seq 64))"
 CID="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# The stub's running set: what `docker run` created and stop/rm have not yet
+# taken away. A cleanup that misses is visible here as a leftover line.
+export DOCKER_RUNNING="$tmp/docker.running"; : > "$DOCKER_RUNNING"
 
 # (j1) vllm_control.sh hands the container ID back, or reports that it made none.
 export DOCKER_CALLS="$tmp/vc.calls"; : > "$DOCKER_CALLS"
@@ -628,6 +676,64 @@ assert "boot stage" in notes, notes' "$art" \
   || fail l "the notes must record the interruption, not just a failed stage:
 $(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"notes\"])" "$art")"
 ok l "the notes say it was interrupted by SIGTERM rather than that boot failed on its own"
+
+# ── (m) SIGTERM while the container is still being created ──────────────────
+# The narrower window than (l): `docker run -d` has made the container and has
+# not yet printed its ID, so the ID this cell tears down by does not exist in
+# this shell yet. The stub blocks in exactly that gap. Ownership therefore has
+# to be recoverable from something chosen and recorded BEFORE the create -- the
+# per-invocation label -- or an interrupted create leaks a live server.
+: > "$DOCKER_CALLS"; : > "$DOCKER_RUNNING"
+DOCKER_FAKE_CID="$CID" DOCKER_RUN_BLOCK_S=60 PATH="$tmp/bin:$PATH" \
+  VLLM_IMAGE_DIGEST="$DIGEST" \
+  bash "$RUN" --engine vllm --model nemotron-3-nano-fp8 --sku h100 \
+  --workload lat --concurrency 1 --spec off --think off \
+  --out "$tmp/creating" --yes > "$tmp/creating.log" 2>&1 &
+run_pid=$!
+
+wait_for 120 "docker run to create the container" test -s "$DOCKER_RUNNING" \
+  || fail m "the cell never got as far as creating its container:
+$(cat "$tmp/creating.log")"
+
+kill -TERM "$run_pid"
+wait "$run_pid"; rc=$?
+log="$(cat "$tmp/creating.log")"
+
+[ $rc -eq 143 ] || fail m "a cell killed mid-create must exit 143, got $rc:
+$log"
+ok m "SIGTERM during the create exits 143"
+
+[ -s "$DOCKER_RUNNING" ] && fail m "the container this cell created is still running:
+$(cat "$DOCKER_RUNNING")
+docker calls:
+$(cat "$DOCKER_CALLS")"
+ok m "the container the create had already made is gone, not leaked"
+
+have "$(cat "$DOCKER_CALLS")" "stop $CID" \
+  || fail m "the interrupted create's container was never stopped:
+$(cat "$DOCKER_CALLS")"
+have "$(cat "$DOCKER_CALLS")" "rm $CID" \
+  || fail m "the interrupted create's container was never removed:
+$(cat "$DOCKER_CALLS")"
+stray="$(grep -E '^(stop|rm) ' "$DOCKER_CALLS" | grep -v -F -- "$CID" || true)"
+[ -z "$stray" ] || fail m "the reconciliation must touch nothing else, saw:
+$stray"
+ok m "SIGTERM mid-create stops and removes exactly the container that was made"
+
+art="$tmp/creating/artifact.json"
+[ -f "$art" ] || fail m "a cell interrupted mid-create must still write its artifact:
+$log"
+python3 "$HERE/validate_artifact.py" "$art" >/dev/null \
+  || fail m "the mid-create interruption artifact must validate:
+$(python3 "$HERE/validate_artifact.py" "$art")"
+read -r verdict stage_name <<<"$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["verdict"], d["failing_stage"])' "$art")"
+[ "$verdict" = "NO-GO" ] || fail m "an interrupted cell is a NO-GO, got $verdict"
+[ "$stage_name" = "serve" ] \
+  || fail m "a cell killed inside its create was killed at serve, got $stage_name"
+ok m "the artifact is a valid NO-GO at 'serve'"
 
 # ── (i) lints ────────────────────────────────────────────────────────────────
 if command -v shellcheck >/dev/null 2>&1; then

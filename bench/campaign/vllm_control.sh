@@ -41,9 +41,11 @@
 # remove. A name is a claim anybody can hold; an ID is proof this invocation
 # created that container. So a successful run ends by printing
 # `container_id: <id>` as its LAST line and, with --id-file, writing the bare
-# ID to that path. A `docker run` that fails (125 = the name is already in
-# use) writes nothing: there is no container of ours to clean up, and the one
-# holding the name is not ours to delete.
+# ID to that path -- via a temp file and a rename, so a caller reading that
+# path concurrently sees either no file or the whole ID, never a prefix of one.
+# A `docker run` that fails (125 = the name is already in use) writes nothing:
+# there is no container of ours to clean up, and the one holding the name is
+# not ours to delete.
 #
 # Usage:
 #   vllm_control.sh <model-key> <sku> --spec on|off [--dry-run] [--extra "..."]
@@ -85,7 +87,7 @@ LABELS=()
 LIST=0
 SELFTEST=0
 
-usage() { sed -n '2,60p' "$0"; }
+usage() { sed -n '2,61p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -226,6 +228,11 @@ if [ -z "$CID" ]; then
   exit 5
 fi
 if [ -n "$ID_FILE" ]; then
-  printf '%s\n' "$CID" > "$ID_FILE"
+  # Temp file then rename: the caller's teardown may read this path at any
+  # moment, including while a signal is landing here, and a rename is the only
+  # write it can observe as all-or-nothing. A half-written ID is worse than no
+  # ID -- `docker stop <truncated>` is a stop of nothing while the container it
+  # was meant to name keeps the GPU.
+  printf '%s\n' "$CID" > "$ID_FILE.tmp.$$" && mv -f "$ID_FILE.tmp.$$" "$ID_FILE"
 fi
 echo "container_id: $CID"

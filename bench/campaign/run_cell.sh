@@ -175,12 +175,23 @@ CELL_ID="$ENGINE.$MODEL.$SKU.$WORKLOAD.c$CONC.spec$SPEC.think$THINK"
 # somebody else's live server.
 CONTAINER="atlas-campaign-$(printf '%s' "$MODEL-$SKU-$WORKLOAD-c$CONC-spec$SPEC-think$THINK" | tr '.' '-')-$$"
 # The ownership stamp that survives on the container itself, so a stray one can
-# be traced back to the cell and the moment that created it.
-RUN_LABEL="atlas-campaign.run=$CELL_ID-$(date +%s)"
+# be traced back to the cell and the moment that created it -- and so teardown
+# can FIND it. Cell, epoch and pid together make the value this invocation's
+# alone: two runs of the same cell, even in the same second, hold different
+# pids, so a query by this label can never return somebody else's container.
+# That is what makes asking Docker "what did I create?" safe where asking by
+# name is not.
+RUN_LABEL="atlas-campaign.run=$CELL_ID-$(date +%s)-$$"
 # Written by vllm_control.sh only when its `docker run -d` actually created a
 # container. Its absence is the proof that there is nothing to tear down.
 CONTAINER_ID_FILE="$OUT/container.id"
 CONTAINER_ID=""
+# The name and the label are both chosen HERE and written down BEFORE the
+# create, because the window that leaks is the one inside `docker run -d`: the
+# container exists and its ID has not come back yet. A record written after the
+# ID arrives cannot describe that window; this one can.
+OWNER_JSON="$OUT/owner.json"
+CREATE_ATTEMPTED=0
 # The launcher identifies a launch by (run dir, PORT_BASE), and its --stop
 # reaches only what its own run directory recorded. A run directory of this
 # cell's own is what keeps the teardown below -- normal or interrupted -- aimed
@@ -332,15 +343,40 @@ teardown_owned() {
   # nothing is this cell's to remove.
   if [ "$DRY_RUN" = "1" ]; then
     show "docker stop <id from docker run -d> && docker rm <the same id>"
-  elif [ -n "$CONTAINER_ID" ]; then
-    show "docker stop $CONTAINER_ID && docker rm $CONTAINER_ID"
-    "${DOCKER:-docker}" stop "$CONTAINER_ID" >/dev/null 2>&1 || true
-    "${DOCKER:-docker}" rm "$CONTAINER_ID" >/dev/null 2>&1 || true
-  else
-    echo "no container was created by this invocation ($CONTAINER_ID_FILE is absent):"
-    echo "  nothing to stop or remove. A container already holding the name"
-    echo "  '$CONTAINER' is not this cell's to delete."
+    return 0
   fi
+
+  # Three places the ID can be, in the order they become true:
+  #   1. this shell, once the serve stage read it back;
+  #   2. the id file, which vllm_control.sh writes the moment `docker run -d`
+  #      returns -- a signal between the write and the read lands here;
+  #   3. Docker itself, asked for whatever wears this invocation's label. That
+  #      is the interrupted CREATE: the container exists, its ID was never
+  #      printed, and the only thing that survives the window is the label
+  #      chosen and recorded before the create. It identifies this invocation
+  #      alone (cell, epoch, pid), so what comes back is this cell's own.
+  local ids="$CONTAINER_ID" cid
+  if [ -z "$ids" ] && [ -s "$CONTAINER_ID_FILE" ]; then
+    ids="$(cat "$CONTAINER_ID_FILE")"
+    echo "the id file holds $ids: the create finished, this shell never read it."
+  fi
+  if [ -z "$ids" ] && [ "$CREATE_ATTEMPTED" = "1" ]; then
+    echo "no container ID reached this shell, and a create was attempted:"
+    echo "  asking Docker for anything labelled $RUN_LABEL."
+    ids="$("${DOCKER:-docker}" ps -aq --filter "label=$RUN_LABEL" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$ids" ]; then
+    echo "no container was created by this invocation ($CONTAINER_ID_FILE is absent"
+    echo "  and nothing wears its label): nothing to stop or remove. A container"
+    echo "  already holding the name '$CONTAINER' is not this cell's to delete."
+    return 0
+  fi
+  for cid in $ids; do
+    show "docker stop $cid && docker rm $cid"
+    "${DOCKER:-docker}" stop "$cid" >/dev/null 2>&1 || true
+    "${DOCKER:-docker}" rm "$cid" >/dev/null 2>&1 || true
+  done
 }
 
 # Built at call time, not once: the failing stage and the interruption note are
@@ -517,6 +553,19 @@ else
       bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --dry-run 2>&1 | sed 's/^/  | /'
   else
     printf 'VLLM_IMAGE_DIGEST=%s\n' "${VLLM_IMAGE_DIGEST:-}" > "$SERVE_ENV"
+    # Ownership is written down BEFORE the create, not after it: from the next
+    # line on, a container of this cell's may exist whether or not its ID ever
+    # comes back, and the finalizer has to be able to find it either way.
+    cat > "$OWNER_JSON" <<OWNER
+{
+  "cell_id": "$CELL_ID",
+  "container_name": "$CONTAINER",
+  "run_label": "$RUN_LABEL",
+  "container_id_file": "$CONTAINER_ID_FILE",
+  "runner_pid": $$
+}
+OWNER
+    CREATE_ATTEMPTED=1
     START_EPOCH="$(date +%s)"
     run_child env VLLM_CONTAINER="$CONTAINER" VLLM_RECIPES="$VLLM_RECIPES" \
       bash "$HERE/vllm_control.sh" "${VC_ARGS[@]}" --id-file "$CONTAINER_ID_FILE" \
