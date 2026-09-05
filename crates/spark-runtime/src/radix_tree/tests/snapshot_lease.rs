@@ -19,22 +19,31 @@ fn tail_lease_protects_live_session_is_tail() {
 
 /// Direct inversion of #278's off-target semantics: the live session's
 /// DEEPEST entry (the end-of-turn finish leaf, NOT a tail) is a normal
-/// eviction candidate. The old policy protected exactly this entry — which
+/// eviction candidate, while the tail is leased even when it is the pool's
+/// natural LRU victim. The old policy protected exactly this entry — which
 /// sits above `matched_tokens` and never restores — while the true restore
 /// point died (2026-07-20 rig: 0 hits with old protection on or off).
+///
+/// The pool holds THREE entries on purpose. With the tail as the only other
+/// entry the lease leaves exactly one candidate, so "no lease at all" and
+/// "lease the tail" pick the same victim and the oracle cannot tell them
+/// apart; the fresh shallow entry keeps both the lease and the within-session
+/// recency order observable in the one answer.
 #[test]
 fn finish_leaf_not_protected() {
     let idx = index(
         vec![
-            entry(7, 1, 6080, 50),      // finish leaf: deepest, oldest, NOT a tail
-            tail_entry(9, 1, 6064, 90), // true restore point
+            entry(6, 1, 100, 95),       // freshest, shallow, NOT a tail
+            entry(7, 1, 6080, 50),      // finish leaf: deepest, NOT a tail
+            tail_entry(9, 1, 6064, 40), // true restore point: OLDEST, leased
         ],
         1,
     );
     let v = idx.session_aware_victim(true, false).unwrap();
     assert_eq!(
         idx.entries[v].snapshot_id, 7,
-        "the deepest non-tail entry must be evictable"
+        "the deepest non-tail entry must be the victim: the tail is leased \
+         despite being the oldest, and recency still orders the unleased pair"
     );
 }
 
@@ -204,6 +213,11 @@ fn new_tail_sweeps_old_tail_and_sibling() {
 
 /// A pool consisting ONLY of leased entries (tail + sibling) must still
 /// yield a victim — the lease binds only while an unleased candidate exists.
+///
+/// The premise is asserted, not assumed: "some victim came back" is trivially
+/// true whenever the lease is INACTIVE, so without the `tail_lease_active`
+/// check this test passes even with the kill switch's polarity inverted (the
+/// lease off for everyone) — it would then be measuring nothing.
 #[test]
 fn all_leased_pool_still_evicts() {
     let mut idx = SsmSnapshotIndex::new();
@@ -212,8 +226,22 @@ fn all_leased_pool_still_evicts() {
     // Latch the lease onto session 7.
     let toks: Vec<u32> = (0..8).collect();
     let _ = idx.lookup_tiered(&toks, 0, 7, 0);
-    let v = idx.evict_lru();
-    assert!(v.is_some(), "only-leased pool must still yield a victim");
+    assert!(
+        idx.tail_lease_active(),
+        "the lease must actually be in force"
+    );
+    assert!(
+        idx.entries
+            .iter()
+            .all(|e| (e.is_tail || e.is_tail_sibling) && e.session_hash == 7),
+        "every entry must be a leased restore point of the live session"
+    );
+    assert_eq!(
+        idx.evict_lru(),
+        Some(1),
+        "only-leased pool must still yield a victim, oldest-first"
+    );
+    assert_eq!(idx.len(), 1, "and the reclaim must actually have happened");
 }
 
 /// Sibling entries are exact-prefix keyed and carry NO `is_tail` gate: the
