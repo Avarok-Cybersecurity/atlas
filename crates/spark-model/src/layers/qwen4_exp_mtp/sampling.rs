@@ -17,9 +17,9 @@ pub(super) fn grammar_argmax(
 fn allowed_argmax(bytes: &[u8], bitmask: &[i32]) -> Result<u32> {
     let mut best: Option<(u32, f32)> = None;
     for (token, value) in bytes.chunks_exact(2).enumerate() {
-        if !bitmask
+        if bitmask
             .get(token / 32)
-            .is_some_and(|word| word & (1i32 << (token % 32)) != 0)
+            .is_none_or(|word| word & (1i32 << (token % 32)) == 0)
         {
             continue;
         }
