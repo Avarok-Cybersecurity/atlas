@@ -494,3 +494,46 @@ on "certify", proven by sabotage, not asserted in a comment).
 **The wave-4 finding worth the most:** at SIGTERM the scheduler failed only its `preempted` requests. `prefilling` were freed and `swapped` had their disk image deleted, sinks dropped — and a dropped sink is not a quiet failure but a FALSE one: the blocking client renders it as `500 "Inference cancelled"`, the same words the server uses when the CLIENT aborts, so log and client agree on a lie. Streaming clients get a truncated body under the HTTP 200 already committed — an SDK sees a short but complete-looking response. `docker stop` is the common path into it.
 
 **CITED:** R-16 (pipeline masking — twice more today: `$?` after `tail`, and `pgrep | head` self-matching); R-24 (a sabotage that does not land makes a control vacuous — mine did, and the green it produced was worthless until redone).
+
+---
+
+## Run 24 — 2026-09-05T22:40Z — campaign complete; regression bisected to ONE commit
+
+```text
+GATES (#877, pin f3f77c82fc): 10 of 11 PASS
+  agentic-webserver 10/10 ws_ok, 10/10 followed, 4.901 s/turn <= 8.5, Sigma-wall 607s <= 1800
+  bfcl-subset        overall 84.22 (bar 83.42) / normalized 84.12 (bar 83.32), n=995 MLPerf draw
+  bfcl-subset-echolp overall 86.55 (bar 86.10) / normalized 86.95 (bar 86.50), n=1004
+  decode-floor       23.7 tok/s median vs 20.5 floor
+  vision-fidelity    14 geometry cells, 3/3 probes, control held
+  video-fidelity     13/13 legs, control held, 0 skipped
+  ssm-state-poisoning 12/12 replays byte-identical
+  concurrency-sweep-dflash2  5 cells, zero vacuous (incl. C4 47.4/41.8, C8 56.3/49.6)
+  ttft-warm / ttft-cold      recorded as this box's baselines
+  concurrency-sweep  FAIL
+
+BISECT — 8 GPU legs, first bad commit identified:
+  main                          PASS  C4 43.7  C8 64.6
+  #837 e4356b49df (foundation)  PASS  C4 45.5  C8 60.7   <- "behavior-neutral" claim CONFIRMED under concurrency
+  #838 b51b60e449 (switch-on)   PASS  C4 47.3  C8 61.4
+  d8778c441d (prompt-hiddens)   PASS  C4 43.7  C8 57.1
+  977f6b4d9b (write-on-accept)  FAIL  C8 198/320 tok     <- FIRST BAD COMMIT (#844)
+  c00ce83562 (#844 complete)    FAIL  C4 79    C8 132
+  full stack f3f77c82fc         FAIL  C4 104   C8 179
+  + flag A/B (ATLAS_DFLASH_BATCH_VERIFY=0): still fails -> DFlash lever is not the mechanism
+
+VERDICT: 977f6b4d9b was measured and tuned at C=16 ("C=16 prose 187.7, code 269.7").
+C16/C32/C64/C128 pass in every leg. It starves C4 and C8 — BELOW the concurrency it
+was optimised for. Accuracy is unaffected: both BFCL legs and agentic-webserver clear
+their bars, so this is admission/scheduling, not numerics.
+
+THREE WRONG ATTRIBUTIONS, each retired by measurement not reconsideration:
+  1. "environmental / thermals"      killed by the same-box main control leg
+  2. "#845's gamma resolver"         killed by: this sweep runs MTP not DFlash2, and the
+                                     dflash2 gate passed the very cells in question
+  3. "#838's K=5..16 switch-on"      killed by bisect step 2 passing
+```
+
+**The sieve predicted the cluster.** Wave 1's sonnet sieve gave #844 `sieve:integrity` for exactly the commits lacking in-tree tests, resting on hardware receipts. The cure I wrote added a slot-ORDERING test — it passes — but ordering correctness and throughput-under-concurrency are different properties. Only the composed-tree campaign could see the second.
+
+**CITED:** R-control-or-it-did-not-happen (the same-box main leg is what turned "inconclusive, probably thermals" into a real regression); R-verify-dont-accept (three hypotheses named and dropped on evidence); R-stacks-see-what-constituents-cannot (nine individual campaigns would all have gone green — the defect exists only in the composed tree).
