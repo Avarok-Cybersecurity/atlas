@@ -1564,6 +1564,12 @@ impl DenseFfnLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // As in k2/k3, concurrent decode must preserve an installed native
+        // overlay even when valid, lower-precision NVFP4 fallbacks coexist.
+        if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
+        {
+            return self.forward_prefill(input, m as usize, ctx, stream);
+        }
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
         let kh = self.batchm_kernel(m);
@@ -2659,11 +2665,15 @@ impl DenseFfnLayer {
     }
 }
 
-/// Native BF16/FP8 layers do not own usable NVFP4 fallback weights. Their
-/// small-batch path must therefore use the format-aware prefill dispatcher.
+/// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
+/// Small batches must use the same format-aware dispatcher as prefill.
 fn native_small_batch_uses_prefill(has_bf16: bool, has_fp8: bool) -> bool {
     has_bf16 || has_fp8
 }
+
+#[cfg(test)]
+#[path = "dense_ffn_native_batch_tests.rs"]
+mod native_batch_tests;
 
 #[cfg(test)]
 mod tests {
