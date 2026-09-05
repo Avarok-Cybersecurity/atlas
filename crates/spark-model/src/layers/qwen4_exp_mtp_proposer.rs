@@ -82,9 +82,21 @@ impl DraftProposer for Qwen4ExpMtpHead {
             st.inner.pending_rewind = 0;
         }
 
-        // Snapshot the DRAFT body's own carry before advancing it, so
-        // `after_verify` can unwind the rejected rows.
-        st.inner.pre_draft_aux = self.snapshot_draft_aux(&st.inner, ctx.gpu, stream)?;
+        // QSA rollback moves contiguous marks; it never consumes a snapshot.
+        // Keep the former prefix-sized D2H only for a same-binary A/B. Normal
+        // drafts stay stream-ordered without this redundant host round trip.
+        static SNAPSHOT_AB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let snapshot_ab = *SNAPSHOT_AB.get_or_init(|| {
+            let enabled = std::env::var("ATLAS_QWEN4EXP_MTP_SNAPSHOT_AB").as_deref() == Ok("1");
+            tracing::info!(
+                snapshot_ab = enabled,
+                "Qwen MTP draft prefix snapshot diagnostic"
+            );
+            enabled
+        });
+        if snapshot_ab {
+            drop(self.snapshot_draft_aux(&st.inner, ctx.gpu, stream)?);
+        }
 
         let mut drafts = Vec::with_capacity(num_drafts);
         let mut token = last_token;

@@ -44,7 +44,6 @@ impl super::Qwen4ExpMtpHead {
         state.pending_draft = None;
         state.last_num_drafted = 0;
         state.pending_rewind = 0;
-        state.pre_draft_aux = None;
         // The draft attention body owns per-sequence QSA device buffers just
         // like target attention. Dropping LayerState only drops their pointers.
         self.module
@@ -81,7 +80,6 @@ mod tests {
             pending_draft: None,
             last_num_drafted: 0,
             pending_rewind: 0,
-            pre_draft_aux: None,
         }
     }
 

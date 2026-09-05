@@ -141,7 +141,6 @@ fn only_qwen_proposer_state_allows_wider_grammar_proposals() {
                 pending_draft: None,
                 last_num_drafted: 0,
                 pending_rewind: 0,
-                pre_draft_aux: None,
             },
         },
     ));

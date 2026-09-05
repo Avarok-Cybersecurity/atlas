@@ -117,11 +117,6 @@ pub struct Qwen4ExpMtpState {
     /// where `ctx.gpu` is available. Deferring is safe: nothing reads the draft
     /// body's state in between.
     pub pending_rewind: usize,
-    /// The draft BODY's aux carry (its own QSA indexer state) snapshotted before
-    /// this round's drafts. The draft body advances its carry exactly like the
-    /// target does, and its ingest asserts `pos == ingested` — so a rejected
-    /// draft must rewind it or the NEXT draft trips that assert.
-    pub pre_draft_aux: Option<Vec<u8>>,
 }
 
 /// Private device buffers. The head owns every buffer it writes so it cannot
@@ -367,11 +362,11 @@ impl Qwen4ExpMtpHead {
             pending_draft: None,
             last_num_drafted: 0,
             pending_rewind: 0,
-            pre_draft_aux: None,
         })
     }
 
-    /// Snapshot the draft body's own carry before a round of drafts.
+    /// Diagnostic-only copy of the draft prefix for the old-snapshot A/B.
+    /// Rejected drafts use `rewind_aux` marks and never consume this blob.
     pub fn snapshot_draft_aux(
         &self,
         st: &Qwen4ExpMtpState,
@@ -409,7 +404,6 @@ impl Qwen4ExpMtpHead {
         self.module
             .body
             .rewind_aux(st.body_state.as_mut(), rows, gpu, stream)?;
-        st.pre_draft_aux = None;
         Ok(())
     }
 
