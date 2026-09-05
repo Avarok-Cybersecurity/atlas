@@ -45,7 +45,12 @@ impl Rows {
         sched: &SchedCtx,
         ctx: &LogitsContext,
     ) -> Option<u32> {
+        // Row zero commits one input, not both speculative input rows. Keep
+        // the context-limit guard aligned with the serial emission position.
+        let forward_len = seq.seq.seq_len;
+        seq.seq.seq_len = forward_len - 1;
         emit_token(seq, first.0, first.1, sched);
+        seq.seq.seq_len = forward_len;
         if seq.finished {
             return None;
         }

@@ -170,3 +170,45 @@ fn eos_at_every_position_stops_before_suffix_sampling() {
         }
     }
 }
+
+#[test]
+fn context_limit_uses_committed_row_and_restores_forward_length() {
+    for nd in [2, 3] {
+        let k = nd + 1;
+        let base = 100;
+        for until_limit in 1..=k {
+            for rejection in 0..=nd {
+                let mut sched = SchedCtx::for_test();
+                sched.limits.max_seq_len = base + until_limit + 1;
+                let ctx = context(&sched);
+                let (mut seq, _rx) = test_seq(Vec::new(), 100, None, base + k);
+                seq.finished = false;
+                seq.inside_thinking = true;
+                seq.force_end_thinking = true;
+                let mut drafts = vec![1; nd];
+                if rejection < nd {
+                    drafts[rejection] = 2;
+                }
+                let picks = sample_and_emit(
+                    &bytes(&[[0.0, 10.0, 0.0, 0.0]; 4]),
+                    4,
+                    &drafts,
+                    &mut seq,
+                    &sched,
+                    &ctx,
+                );
+                let emitted = until_limit.min(rejection + 1);
+                assert_eq!(
+                    picks.len(),
+                    emitted,
+                    "K={k}, limit={until_limit}, reject={rejection}"
+                );
+                assert_eq!(seq.finished, emitted == until_limit);
+                assert_eq!(seq.sentence_defer_count as usize, emitted);
+                // The GPU forward length must survive until the verdict
+                // broadcast and the common model-state rewind use it.
+                assert_eq!(seq.seq.seq_len, base + k);
+            }
+        }
+    }
+}

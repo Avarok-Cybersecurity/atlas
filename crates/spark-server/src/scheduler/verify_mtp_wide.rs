@@ -20,10 +20,18 @@ fn sample_and_emit(
     sched: &SchedCtx,
     ctx: &LogitsContext,
 ) -> Vec<u32> {
+    let forward_len = seq.seq.seq_len;
+    let first_committed_len = forward_len - drafts.len();
     let mut emitted = Vec::new();
     for row in 0..=drafts.len() {
+        // The model has executed the whole speculative batch, but emission's
+        // context ceiling must see only the input prefix for this sample.
+        seq.seq.seq_len = first_committed_len + row;
         let (token, lp) = process_seq_logits(seq, bytes, row, vocab, 2, false, ctx, false);
         emit_token(seq, token, lp, sched);
+        // Preserve the full forward length for the common verdict rewind,
+        // including rejection, EOS and context/budget finishes.
+        seq.seq.seq_len = forward_len;
         emitted.push(token);
         if seq.finished || drafts.get(row) != Some(&token) {
             break;

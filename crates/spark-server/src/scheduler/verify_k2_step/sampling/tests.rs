@@ -120,3 +120,18 @@ fn rejected_draft_does_not_advance_suffix_counters() {
     assert_eq!(seq.sentence_defer_count, 1);
     assert_eq!(seq.output_tokens, [1]);
 }
+
+#[test]
+fn context_limit_keeps_room_for_accepted_bonus() {
+    let mut sched = SchedCtx::for_test();
+    sched.limits.max_seq_len = 11;
+    let ctx = context(&sched);
+    let rows = rows([[0.0, 10.0, 0.0, 0.0], [0.0, 0.0, 10.0, 0.0]]);
+    let (mut seq, _rx) = test_seq(Vec::new(), 100, None, 10);
+    seq.finished = false;
+    let first = rows.pick(0, &mut seq, &ctx);
+    assert_eq!(rows.emit_accepted(first, &mut seq, &sched, &ctx), Some(2));
+    assert_eq!(seq.output_tokens, [1, 2]);
+    assert!(seq.finished);
+    assert_eq!(seq.seq.seq_len, 10);
+}
