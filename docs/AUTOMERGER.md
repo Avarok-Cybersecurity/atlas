@@ -418,3 +418,20 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-compose-then-gate (twice in two waves the composed tree caught what per-lane green did not); R-diagnose-dont-generalise (checking each lane separately showed this was a lane defect, not the composition defect I had seen before — the same symptom with a different cause).
+
+---
+
+## Run 20 — 2026-09-05T06:35Z — wave 2 ctl2 (opus 5): two of wave 1's own claims DEFEATED
+
+```text
+2026-09-05T06:35Z  return     ctl2 relaunched on OPUS 5 after the fable limit; 6 new commits, atlasctl-src suite 866/866, clippy+fmt clean
+2026-09-05T06:36Z  aggregate  IT DEFEATED WAVE 1, TWICE, WITH MEASUREMENTS — the whole point of an adversarial second pass:
+                              (1) the "low-speed stall deadline" claim is FALSE: timed https://192.0.2.1 (TEST-NET-1) at 132.95s WITH the settings vs 135.16s WITHOUT — identical, both bounded by the OS TCP SYN timeout, because curl's low-speed applies only to a transfer that STARTS. Worse: a hang is still reachable via `ssh://`, an ALLOWED transport with no client-side banner deadline.
+                              (2) the uid-mismatch "do NOT chown" warning was printed BELOW the chown command it warns about — coordinator confirmed on the fb6cd8c blob: `sudo chown -R` at line 111, the warning at line 121. A reader following top-down destroys the install before reaching the caution. Fixed by inverting the remedy order (5d04b87).
+2026-09-05T06:38Z  aggregate  the scheme-refusal half of d45275c HELD under 30 inputs incl. bypass attempts (`ftp:/host/x` falls through to ssh not the ftp helper; `FTP://` case-folded; `ext::sh -c` refused by git's own protocol.allow; `--upload-pack=` neutralised by the pre-existing `--`)
+2026-09-05T06:39Z  aggregate  it also REWROTE the dead predecessor's partial work rather than finishing it: the hang it targeted is real (4 unbounded read_frame awaits, no caller wraps them) but its error text asserted a cause measured FALSE (a plain axum listener rejects the ClientHello in 2.7ms, so the operator never reaches that timeout)
+2026-09-05T06:40Z  aggregate  NEW defects found: a timed-out dial read as "the machine answered and refused" (bare anyhow! has no error source, so reach::never_reached mis-walked and told users to mint a fresh code for a code never presented); `registry update` never carried the stall settings that `add` had; a failed `docker pull` aborted a launch whose image was ALREADY LOCAL
+2026-09-05T06:41Z  aggregate  and it declined honestly: no wall-clock bound on git clone/fetch (needs a ProcessRunner trait change, 3 impls — out of lane scope, recorded in code docs); a credential-prompt hang it SUSPECTED but could not reproduce, so did not claim
+```
+
+**CITED:** R-verify-dont-accept, wave-on-wave and now with instruments — a claim about a timeout is worth exactly the stopwatch behind it, and 132.95 vs 135.16 killed a fix's headline; R-report-your-own-errors (the lane's predecessor and its sibling were both corrected in public).
