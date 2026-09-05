@@ -475,3 +475,22 @@ on "certify", proven by sabotage, not asserted in a comment).
 **AMENDED — rule 24 extension (a control must survive the arithmetic it polices):** a negative control perturbing an INPUT must be large enough to survive the operation under test — accumulation length and output rounding both attenuate it. A 1-ULP mantissa flip vanished across K=5120 into bf16. CHECK: the control must print `detected=true`; a harness whose control cannot fire must exit nonzero and say it is vacuous (this one did, which is the only reason it was caught).
 
 **CITED:** R-16 (pipeline `$?` — violated by me, caught in the same minute); R-24 (prove every guard can fail — the oracle proved itself unable and said so); R-1 (finalise the tree before the campaign — the oracle fix landed before any gate started).
+
+---
+
+## Run 23 — 2026-09-05T17:05Z — campaign under way; two blockers fixed as PRs; wave 4 error-path lane
+
+```text
+2026-09-05T16:30Z  tool       gates fanned across three boxes after FOUR environment blockers were cleared: recipe index unwritable (/home/nologik/.atlas is uid 1000, we are 996 -> ATLAS_HOME); sync-recipes had never been run; dgx3 could not find libnccl.so.2 -> LD_LIBRARY_PATH; detached serves kept dying to session restarts -> tmux with an EXPLICIT SOCKET
+2026-09-05T16:30Z  aggregate  my own trap again: `pkill -f` matched my own shell (exit 144). Killed by PID with a self-filter instead.
+2026-09-05T16:42Z  return     GATE A agentic-webserver PASS: 10/10 webserver_ok, 10/10 followed_directions, 4.901 s/turn <= 8.5, Sigma-wall 607s <= 1800
+2026-09-05T16:42Z  return     ttft-warm + ttft-cold: recorded (first on that box -> baselines). decode-floor PASS: 23.7 tok/s median over 3 pinned runs, clears the 20.5 floor
+2026-09-05T16:43Z  aggregate  ★ #777 EARNED ITS PLACE IN PRODUCTION TODAY: bfcl-subset died at "checking the scorer can import" instead of after ~1.6 GPU-hours of generation. Root cause: bfcl-eval pulls qwen_agent, whose utils.py does a bare `import soundfile as sf`, and NEITHER declares it — so from a clean provision the BFCL gate was UNRUNNABLE. Pinned soundfile==0.14.0, scorer selftest rc=0, gate relaunched and now past that step. PR #906.
+2026-09-05T17:01Z  return     vision-fidelity PASS (14 geometry cells, 3/3 probes, control held); ssm-state-poisoning PASS (12 of 12 replays byte-identical)
+2026-09-05T17:03Z  return     wave-4 error-path lane (opus): 3 fixes, 2338/2338, all three cleanliness checks run
+2026-09-05T17:05Z  tool       coordinator re-proved one control from scratch: reverting completion_error_frame to string interpolation reproduces EXACTLY the reported failure — `expected , or } at line 1 column 33` on a message containing quotes. First attempt at the sabotage MISSED (pub(super) vs pub(crate)) and the test passed vacuously; caught it, redid it, and only then counted it.
+```
+
+**The wave-4 finding worth the most:** at SIGTERM the scheduler failed only its `preempted` requests. `prefilling` were freed and `swapped` had their disk image deleted, sinks dropped — and a dropped sink is not a quiet failure but a FALSE one: the blocking client renders it as `500 "Inference cancelled"`, the same words the server uses when the CLIENT aborts, so log and client agree on a lie. Streaming clients get a truncated body under the HTTP 200 already committed — an SDK sees a short but complete-looking response. `docker stop` is the common path into it.
+
+**CITED:** R-16 (pipeline masking — twice more today: `$?` after `tail`, and `pgrep | head` self-matching); R-24 (a sabotage that does not land makes a control vacuous — mine did, and the green it produced was worthless until redone).
