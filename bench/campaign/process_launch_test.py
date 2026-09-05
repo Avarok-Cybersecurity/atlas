@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Real Linux process ownership oracles; no GPU or engine dependency."""
 import json
+import errno
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +12,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+
+import process_launch_proc
 
 MANAGER = Path(__file__).with_name("process_launch.py")
 
@@ -107,6 +111,53 @@ class ProcessLaunchTests(unittest.TestCase):
         self.assertFalse(self.running(snapshot["pid"]))
         self.assertFalse(self.running(child_pid))
         self.assertEqual(self.call("stop").returncode, 0)
+
+    def test_leader_exit_between_stat_and_environment_read_is_absent(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                 start_new_session=True,
+                                 env=dict(os.environ, ATLAS_CAMPAIGN_RUN_TOKEN='race-fixture'))
+        owner = dict(process_launch_proc.process_stat(child.pid), run_marker='race-fixture')
+        original = process_launch_proc.marker_matches
+        observed = []
+
+        def disappear(pid, marker):
+            if pid != child.pid or observed:
+                return original(pid, marker)
+            # Resolve the proc directory while live, then let the exact owned
+            # child exit/reap before the kernel opens its environ entry.
+            directory = os.open(f'/proc/{pid}', os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                child.kill()
+                child.wait(timeout=3)
+                try:
+                    descriptor = os.open('environ', os.O_RDONLY, dir_fd=directory)
+                except ProcessLookupError as error:
+                    observed.append(error.errno)
+                    raise
+                else:
+                    os.close(descriptor)
+                    self.fail('kernel did not produce the expected procfs ESRCH race')
+            finally:
+                os.close(directory)
+
+        try:
+            with patch.object(process_launch_proc, 'marker_matches', side_effect=disappear):
+                self.assertEqual(process_launch_proc.owned_members(owner), [])
+            self.assertEqual(observed, [errno.ESRCH])
+            self.assertEqual(process_launch_proc.stop(owner, 0.1)['status'], 'stopped')
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)
+
+    def test_leader_environment_permission_and_io_errors_still_refuse(self):
+        snapshot = self.start()
+        for error in (PermissionError(errno.EACCES, 'denied'), OSError(errno.EIO, 'I/O error')):
+            with self.subTest(errno=error.errno):
+                with patch.object(process_launch_proc, 'marker_matches', side_effect=error):
+                    with self.assertRaises(type(error)):
+                        process_launch_proc.owned_members(self.owner)
+                self.assertTrue(self.running(snapshot['pid']))
 
     def test_failed_launch_and_unknown_environment_refuse(self):
         self.argv_file.write_text(json.dumps(["/no/such/campaign-engine"]))

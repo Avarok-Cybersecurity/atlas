@@ -134,7 +134,7 @@ def owned_members(owner):
         if leader["state"] not in ("Z", "X") and not marker_matches(
                 owner["pid"], owner["run_marker"]):
             raise ValueError("foreign process ownership marker")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         pass
     members = []
     for entry in Path("/proc").iterdir():
