@@ -83,7 +83,7 @@ pub fn device_compute_capability() -> Result<(u32, u32)> {
 /// documents the thread-current requirement as belonging to `cuCtx*`, not to
 /// device enumeration), so the preflight needs no bind and cannot be made
 /// wrong by which thread it runs on. `cuInit` is still a precondition, and the
-/// `host(ordinal)` call in [`preflight_device_arch_with`] is what satisfies it.
+/// `host(ordinal)` call in `preflight_device_arch_with` is what satisfies it.
 pub fn device_compute_capability_of(ordinal: usize) -> Result<(u32, u32)> {
     let ordinal_i32 = i32::try_from(ordinal)
         .map_err(|_| anyhow::anyhow!("GPU ordinal {ordinal} does not fit a CUdevice ordinal"))?;
