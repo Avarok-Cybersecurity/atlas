@@ -54,6 +54,12 @@
 #       exiting non-zero is not "no such container": the intent is the only
 #       record of the create, and deleting it on a daemon hiccup is what turns
 #       a recoverable leak into an unrecoverable one.
+#   (m) the same rule on the path that owns a create which COMPLETED. A
+#       rank<N>.container is the authoritative record, and a cleanup that
+#       cannot remove the container it names has stopped nothing: the record,
+#       the image and the intent all stay, --stop fails, and the retry
+#       finishes the job. A container Docker reports as already gone is not a
+#       leak, so that one clears its records and succeeds.
 #
 # Usage: bash scripts/start_node_ep_test.sh
 set -uo pipefail
@@ -358,9 +364,31 @@ case "$cmd" in
       echo "docker: Error response from daemon: cannot stop container." >&2
       exit 1
     fi
+    # And the STICKY variant, for as long as the marker exists. A one-shot
+    # cannot express the cleanup case (m) is about, where `stop` AND `rm` both
+    # fail inside the SAME --stop -- which is the shape a leak actually takes:
+    # a one-shot `stop` failure is followed by an `rm` that succeeds, and the
+    # container is gone for the wrong reason.
+    if [ -n "${DOCKER_STOP_FAIL_WHILE:-}" ] && [ -f "$DOCKER_STOP_FAIL_WHILE" ]; then
+      echo "docker: Error response from daemon: cannot stop container." >&2
+      exit 1
+    fi
     for a in "$@"; do name="$a"; done
-    awk -v n="$name" '$1 != n && $2 != n' "$DOCKER_STATE" > "$DOCKER_STATE.next"
-    mv "$DOCKER_STATE.next" "$DOCKER_STATE"
+    # Real Docker does not silently succeed on a container it does not have,
+    # and the difference matters to the caller: "no such container" is a
+    # CONFIRMED absence -- a container that has vanished is not a leak -- while
+    # any other failure leaves the question open.
+    if ! awk -v n="$name" '$1 == n || $2 == n { found = 1 } END { exit !found }' "$DOCKER_STATE"; then
+      echo "Error response from daemon: No such container: $name" >&2
+      exit 1
+    fi
+    # `stop` ends a container; `rm` is what makes it stop existing. Only the
+    # second one may drop the line, or a `stop` that succeeded would make the
+    # `rm` after it report an absence that never happened.
+    if [ "$cmd" = "rm" ]; then
+      awk -v n="$name" '$1 != n && $2 != n' "$DOCKER_STATE" > "$DOCKER_STATE.next"
+      mv "$DOCKER_STATE.next" "$DOCKER_STATE"
+    fi
     ;;
   logs) echo "(fake logs for ${*: -1})" ;;
 esac
@@ -566,6 +594,69 @@ state_has_cid "cid-$name_l" && fail l "the retry must remove the container the f
 $(cat "$DOCKER_STATE")"
 [ -e "$run_l/rank0.intent" ] && fail l "the retry must clear the intent it reconciled"
 ok l "the next --stop, with Docker answering, removes the leaked rank and clears the intent"
+
+# ── (m) a completed create whose cleanup FAILED keeps its records ───────────
+# (l) fixed the path for a create that never got to write its container record.
+# This is the path for one that did -- and it was the path with no error
+# handling at all: `docker stop || true`, `docker rm || true`, then the
+# container record AND the image record deleted whatever came back, with the
+# intent already thrown away upstream for the sole reason that a container
+# record existed. Against a Docker that refuses both halves of the removal,
+# --stop therefore exited 0, reported the rank stopped, and destroyed every
+# record of a container still holding a GPU. Nothing could find it afterwards:
+# the retry has nothing left to read.
+run_m="$tmp/run-m"
+mkdir -p "$run_m"
+name_m="atlas-run-m-9999-rank0"
+label_m="atlas-node-ep.run=atlas-run-m-9999-1757000002-4244"
+write_records_m() {
+  printf '%s\n' "$name_m" > "$run_m/rank0.container"
+  printf 'id=%s\nref=%s\n' "sha256:feedfacefeedfacefeedfacefeedface" \
+    "avarok/atlas-gb10:latest" > "$run_m/rank0.image"
+  printf 'name=%s\nlabel=%s\n' "$name_m" "$label_m" > "$run_m/rank0.intent"
+}
+write_records_m
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+printf '%s %s %s\n' "cid-$name_m" "$name_m" "$label_m" >> "$DOCKER_STATE"
+
+: > "$tmp/docker-down"
+out_m="$(DOCKER="$tmp/fake-docker" DOCKER_STOP_FAIL_WHILE="$tmp/docker-down" \
+          ATLAS_NODE_RUN_DIR="$run_m" bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -ne 0 ] || fail m "a --stop that could not remove its container must not report success:
+$out_m"
+have "$out_m" "$name_m" || fail m "the failure must name the rank it could not clean up:
+$out_m"
+state_has_name "$name_m" || fail m "the removal failed, so the container must still be live:
+$(cat "$DOCKER_STATE")"
+for rec in container image intent; do
+  [ -f "$run_m/rank0.$rec" ] \
+    || fail m "a failed cleanup must keep rank0.$rec: $(ls "$run_m")"
+done
+ok m "a --stop whose removal failed keeps the container, image and intent records"
+
+rm -f "$tmp/docker-down"
+: > "$DOCKER_CALLS"
+out_m2="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_m" \
+           bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail m "the retry against a healthy Docker exited $rc: $out_m2"
+state_has_name "$name_m" && fail m "the retry must remove the container the first --stop left:
+$(cat "$DOCKER_STATE")"
+for rec in container image intent; do
+  [ -e "$run_m/rank0.$rec" ] && fail m "the retry must clear rank0.$rec"
+done
+ok m "the next --stop, with Docker answering, removes the container and clears all three records"
+
+# The other half of the rule, so that keeping evidence does not become keeping
+# it forever: a container Docker reports as gone is not a leak.
+write_records_m
+: > "$DOCKER_STATE"; : > "$DOCKER_CALLS"
+out_m3="$(DOCKER="$tmp/fake-docker" ATLAS_NODE_RUN_DIR="$run_m" \
+           bash "$SCRIPT" --stop 2>&1)"; rc=$?
+[ $rc -eq 0 ] || fail m "a container already gone must not fail the --stop: $out_m3"
+for rec in container image intent; do
+  [ -e "$run_m/rank0.$rec" ] && fail m "a confirmed absence must clear rank0.$rec: $out_m3"
+done
+ok m "a container Docker answers 'No such container' for is confirmed absent, not unresolved"
 
 echo ""
 echo "ALL $asserts assertions passed."

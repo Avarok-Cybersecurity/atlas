@@ -171,6 +171,40 @@ DOCKER="${DOCKER:-docker}"
 # one: the rank kept its GPU and the evidence that would have found it was
 # gone. So the lookup's exit status is read separately from its output, and
 # recovery evidence is deleted only once absence or removal is confirmed.
+#
+# remove_container REF -> 0 stopped it and removed it
+#                         1 it is CONFIRMED gone (Docker answers "No such
+#                           container": a container that has vanished is not a
+#                           leak, so its records may go)
+#                         2 the removal FAILED (the records must be KEPT)
+#
+# Both teardown paths go through this, because "the stop failed" has exactly
+# one correct answer and it is not `|| true`. REMOVE_ERR carries the daemon's
+# own words back so the caller can say what it could not do and to which rank.
+REMOVE_ERR=""
+remove_container() {
+  local ref="$1" out="" rc=0
+  REMOVE_ERR=""
+  out="$("$DOCKER" stop "$ref" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$out" in
+      *"No such container"*) REMOVE_ERR="$out"; return 1 ;;
+    esac
+    REMOVE_ERR="docker stop $ref exited $rc: ${out:-(no output)}"
+    return 2
+  fi
+  rc=0
+  out="$("$DOCKER" rm "$ref" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$out" in
+      *"No such container"*) REMOVE_ERR="$out"; return 1 ;;
+    esac
+    REMOVE_ERR="docker rm $ref exited $rc: ${out:-(no output)}"
+    return 2
+  fi
+  return 0
+}
+
 reconcile_intent() {
   local f="$1" line name="" label="" out="" ids id found=1 rc=0 failed=0
   while IFS= read -r line; do
@@ -201,19 +235,15 @@ reconcile_intent() {
   fi
   for id in $ids; do
     echo "  stopping container $id"
-    if ! "$DOCKER" stop "$id" >/dev/null 2>&1; then
-      echo "  CANNOT RECONCILE $name: docker stop $id failed, so the container may" >&2
-      echo "  still be running. $(basename "$f") is KEPT." >&2
-      failed=1
-      continue
-    fi
-    if ! "$DOCKER" rm "$id" >/dev/null 2>&1; then
-      echo "  CANNOT RECONCILE $name: docker rm $id failed, so the container is" >&2
-      echo "  stopped but not removed. $(basename "$f") is KEPT." >&2
-      failed=1
-      continue
-    fi
-    found=0
+    rc=0
+    remove_container "$id" || rc=$?
+    case "$rc" in
+      0) found=0 ;;
+      1) echo "  container $id was already gone: $REMOVE_ERR" ;;
+      *) echo "  CANNOT RECONCILE $name: $REMOVE_ERR" >&2
+         echo "  The container may still be running. $(basename "$f") is KEPT." >&2
+         failed=1 ;;
+    esac
   done
   [ "$failed" = "0" ] || return 2
   return "$found"
@@ -230,7 +260,12 @@ stop_ranks() {
   for f in "$RUN_DIR"/rank*.intent; do
     [ -e "$f" ] || continue
     if [ -e "${f%.intent}.container" ]; then
-      rm -f "$f"
+      # The create returned, so the container record below is the
+      # authoritative one and it owns BOTH records. Deleting the intent here
+      # used to happen before anything had been stopped, which threw away
+      # recovery evidence for a container the teardown might then fail to
+      # remove -- and the intent is what a later --stop reconciles by name and
+      # label. It goes when the removal is confirmed, with the rest.
       continue
     fi
     rc=0
@@ -243,14 +278,28 @@ stop_ranks() {
       *) unresolved=$((unresolved + 1)) ;;
     esac
   done
+  # A create that COMPLETED is reconciled by the same rule as one that did
+  # not. This path used to be the one with no rule at all: `|| true` on both
+  # halves of the removal, then the container, image and intent records
+  # deleted whatever Docker had answered. A --stop against a daemon that
+  # refused to stop the container therefore exited 0, said it had stopped the
+  # rank, and destroyed the only records that could find it again.
   for f in "$RUN_DIR"/rank*.container; do
     [ -e "$f" ] || continue
     name="$(cat "$f")"
     echo "stopping container $name"
-    "$DOCKER" stop "$name" >/dev/null 2>&1 || true
-    "$DOCKER" rm "$name" >/dev/null 2>&1 || true
-    rm -f "$f" "${f%.container}.image"
-    stopped=$((stopped + 1))
+    rc=0
+    remove_container "$name" || rc=$?
+    case "$rc" in
+      0) rm -f "$f" "${f%.container}.image" "${f%.container}.intent"
+         stopped=$((stopped + 1)) ;;
+      1) echo "  container $name was already gone: $REMOVE_ERR"
+         rm -f "$f" "${f%.container}.image" "${f%.container}.intent" ;;
+      *) echo "  CANNOT STOP $name: $REMOVE_ERR" >&2
+         echo "  The container may still be running and holding a GPU, so" >&2
+         echo "  $(basename "$f") and its image and intent records are KEPT." >&2
+         unresolved=$((unresolved + 1)) ;;
+    esac
   done
   for f in "$RUN_DIR"/rank*.pid; do
     [ -e "$f" ] || continue
@@ -268,7 +317,7 @@ stop_ranks() {
   if [ "$unresolved" != "0" ]; then
     echo "" >&2
     echo "INCOMPLETE: $unresolved rank(s) could not be reconciled (see above)." >&2
-    echo "  Their intent records are kept in $RUN_DIR so a later" >&2
+    echo "  Their records are kept in $RUN_DIR so a later" >&2
     echo "  ATLAS_NODE_RUN_DIR=$RUN_DIR $0 --stop" >&2
     echo "  can finish the job. Nothing was deleted that was not confirmed absent" >&2
     echo "  or removed." >&2
