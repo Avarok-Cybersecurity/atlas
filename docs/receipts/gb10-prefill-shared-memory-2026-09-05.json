@@ -1,0 +1,700 @@
+{
+  "source_commit": "567b5ebe7784ac3657a4ae97940f6783c8414393",
+  "generated_utc": "2026-09-05T03:38:50.682196+00:00",
+  "host": "spark1",
+  "toolchain": "CUDA 13.0.88 (Build cuda_13.0.r13.0/compiler.36424714_0)",
+  "arch": "sm_121f",
+  "model": "qwen3.6-35b-a3b",
+  "cpu_only": true,
+  "nice": 10,
+  "jobs": 4,
+  "gate_script_sha256": "ab607db266f530c7463b1925b3a6fe4b860db9744ff7001e7929b37d37f4360b",
+  "gate_command": "CUDA_VISIBLE_DEVICES= nice -n 10 bash scripts/hopper_ptx_gate.sh --hw gb10 --model qwen3.6-35b-a3b --jobs 4 --strict --nvcc /usr/local/cuda/bin/nvcc --out ../evidence/gate-main.json",
+  "gate_summary": {
+    "total": 173,
+    "pass": 151,
+    "fail": 22,
+    "by_model": {
+      "qwen3.6-35b-a3b": {
+        "total": 173,
+        "pass": 151,
+        "fail": 22
+      }
+    }
+  },
+  "gate_selftest": {
+    "bad_failed": true,
+    "good_passed": true,
+    "bad_fixture": "known_bad_post_hopper.cu"
+  },
+  "original_gate_generated_utc": "2026-09-05T03:29:23Z",
+  "original_gate_summary": {
+    "total": 173,
+    "pass": 151,
+    "fail": 22,
+    "by_model": {
+      "qwen3.6-35b-a3b": {
+        "total": 173,
+        "pass": 151,
+        "fail": 22
+      }
+    }
+  },
+  "nvcc_flags": [
+    "--ptx",
+    "-arch=sm_121f",
+    "-O3",
+    "--fmad=false",
+    "-DTQ_PLUS_SIGNS",
+    "--Werror",
+    "all-warnings",
+    "-Ikernels/gb10/qwen3.6-35b-a3b/nvfp4",
+    "-Ikernels/gb10/common"
+  ],
+  "ptxas_flags": [
+    "-arch=sm_121f",
+    "-v",
+    "-o",
+    "/dev/null"
+  ],
+  "common_header_sha256": {
+    "prefill_paged_compute.cuh": "cbb06e523ba0fb84f45a44345c2ff176527b1310e563b463bb1199d58773f91c",
+    "prefill_paged_compute_512.cuh": "c08349e2b9e3161a122ed33b4bf97d793917ef9d4f899fad9b8ad648ca1386f7",
+    "prefill_paged_compute_asym.cuh": "1c3fbc014a4aa2dd047694d8e3eaf5001c368f9a20691c80dd74346792c2b65a"
+  },
+  "results": [
+    {
+      "stem": "inferspark_prefill",
+      "source_sha256": "d8b537e76556bc1a7d423ade7a041193fb949e3e3cf2983b9c36cdf48341c5b1",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill",
+        "inferspark_prefill_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_64",
+          "static_bytes": 90112,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill",
+          "static_bytes": 70400,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_64' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill' uses too much shared data (0x11300 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 124 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 58.649 ms\nptxas info    : Compiling entry function 'inferspark_prefill' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 70400 bytes smem\nptxas info    : Compile time = 65.081 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_fp8kv",
+      "source_sha256": "2c764cfe0fbdc8db459fe019b6cf94a41537e329c080481a2bba044696312f8a",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_fp8kv_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_fp8kv_64",
+          "static_bytes": 90112,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_fp8kv_64' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_fp8kv_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_fp8kv_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 61.839 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged",
+      "source_sha256": "10baefeb6025f2844f196f158d21b5f61b066f5a3c7929c65b5a5aa87717f786",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged",
+        "inferspark_prefill_paged_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_64",
+          "static_bytes": 90112,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged",
+          "static_bytes": 70400,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_64' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged' uses too much shared data (0x11300 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 89.799 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 70400 bytes smem\nptxas info    : Compile time = 89.994 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_batched",
+      "source_sha256": "a30bb0dbae2f087bd8a7b3fdb86324ebf6ebdb24a3774b4d5ddd68ba9d993110",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_batched",
+        "inferspark_prefill_paged_batched_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_batched_64",
+          "static_bytes": 90112,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_batched",
+          "static_bytes": 70400,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_batched_64' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_batched' uses too much shared data (0x11300 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_batched_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_batched_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 86.269 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_batched' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_batched\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 70400 bytes smem\nptxas info    : Compile time = 89.054 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_bf16k_turbo2v",
+      "source_sha256": "65ee1c7b43054a4ae9b26f3e0c62bb328c37ce3ba9744579013a37393e6c46d8",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_bf16k_turbo2v",
+        "inferspark_prefill_paged_bf16k_turbo2v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_bf16k_turbo2v_64",
+          "static_bytes": 90128,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_bf16k_turbo2v",
+          "static_bytes": 70416,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo2v_64' uses too much shared data (0x16010 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo2v' uses too much shared data (0x11310 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_bf16k_turbo2v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_bf16k_turbo2v_64\n    16 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 16 bytes cumulative stack size, 90128 bytes smem\nptxas info    : Compile time = 79.066 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_bf16k_turbo2v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_bf16k_turbo2v\n    16 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 16 bytes cumulative stack size, 70416 bytes smem\nptxas info    : Compile time = 78.360 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_bf16k_turbo3v",
+      "source_sha256": "11fdfb641c6322461b4ab8b7aa067ce4cef4e50653ae9bb700ed5f44a9119e21",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_bf16k_turbo3v",
+        "inferspark_prefill_paged_bf16k_turbo3v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_bf16k_turbo3v_64",
+          "static_bytes": 90144,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_bf16k_turbo3v",
+          "static_bytes": 70432,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo3v_64' uses too much shared data (0x16020 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo3v' uses too much shared data (0x11320 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_bf16k_turbo3v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_bf16k_turbo3v_64\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 32 bytes cumulative stack size, 90144 bytes smem\nptxas info    : Compile time = 84.617 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_bf16k_turbo3v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_bf16k_turbo3v\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 32 bytes cumulative stack size, 70432 bytes smem\nptxas info    : Compile time = 82.439 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_bf16k_turbo4v",
+      "source_sha256": "63067f90b52db1941cd0abe890f9de6403447dcece3a85e1a9dc84f090b15cf2",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_bf16k_turbo4v",
+        "inferspark_prefill_paged_bf16k_turbo4v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_bf16k_turbo4v_64",
+          "static_bytes": 90176,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_bf16k_turbo4v",
+          "static_bytes": 70464,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo4v_64' uses too much shared data (0x16040 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo4v' uses too much shared data (0x11340 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_bf16k_turbo4v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_bf16k_turbo4v_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 64 bytes cumulative stack size, 90176 bytes smem\nptxas info    : Compile time = 79.450 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_bf16k_turbo4v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_bf16k_turbo4v\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 64 bytes cumulative stack size, 70464 bytes smem\nptxas info    : Compile time = 79.263 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_fp8",
+      "source_sha256": "c6b14215590bbf72c68c9bca2b8272dae4a782f47bc62ce4135234a82442ed34",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_fp8",
+        "inferspark_prefill_paged_fp8_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_fp8_64",
+          "static_bytes": 66560,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8_64' uses too much shared data (0x10400 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 66560 bytes smem\nptxas info    : Compile time = 130.404 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 46336 bytes smem\nptxas info    : Compile time = 146.127 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_fp8_batched",
+      "source_sha256": "812a88ce226a35992ed0592907e3bbb3f02c759e5f39bacd67c1d55763b960fc",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_fp8_batched",
+        "inferspark_prefill_paged_fp8_batched_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_fp8_batched_64",
+          "static_bytes": 90112,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_fp8_batched",
+          "static_bytes": 70400,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8_batched_64' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_fp8_batched' uses too much shared data (0x11300 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8_batched_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8_batched_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 127 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 67.343 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8_batched' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8_batched\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 126 registers, used 1 barriers, 70400 bytes smem\nptxas info    : Compile time = 69.582 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_fp8k_turbo2v",
+      "source_sha256": "b3292b8c915b8a01e40cf2f4f7d6cdbf7ef978756eb7a44f9308fa1bca242bdd",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_fp8k_turbo2v",
+        "inferspark_prefill_paged_fp8k_turbo2v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_fp8k_turbo2v_64",
+          "static_bytes": 90128,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_fp8k_turbo2v",
+          "static_bytes": 70416,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo2v_64' uses too much shared data (0x16010 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo2v' uses too much shared data (0x11310 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8k_turbo2v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8k_turbo2v_64\n    16 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 16 bytes cumulative stack size, 90128 bytes smem\nptxas info    : Compile time = 70.094 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8k_turbo2v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8k_turbo2v\n    16 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 16 bytes cumulative stack size, 70416 bytes smem\nptxas info    : Compile time = 71.874 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_fp8k_turbo3v",
+      "source_sha256": "cc20fe00a661b340e3540a58aabe3dd5974b658a2ceb1ea19e4520d3382bc704",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_fp8k_turbo3v",
+        "inferspark_prefill_paged_fp8k_turbo3v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_fp8k_turbo3v_64",
+          "static_bytes": 90144,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_fp8k_turbo3v",
+          "static_bytes": 70432,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo3v_64' uses too much shared data (0x16020 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo3v' uses too much shared data (0x11320 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8k_turbo3v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8k_turbo3v_64\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 32 bytes cumulative stack size, 90144 bytes smem\nptxas info    : Compile time = 68.460 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8k_turbo3v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8k_turbo3v\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 32 bytes cumulative stack size, 70432 bytes smem\nptxas info    : Compile time = 69.650 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_fp8k_turbo4v",
+      "source_sha256": "785bc2d555592dae702dd99434e6dc35fcab35086803ead736ddd08f7bb54d3b",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_fp8k_turbo4v",
+        "inferspark_prefill_paged_fp8k_turbo4v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_fp8k_turbo4v_64",
+          "static_bytes": 90176,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_fp8k_turbo4v",
+          "static_bytes": 70464,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo4v_64' uses too much shared data (0x16040 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo4v' uses too much shared data (0x11340 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8k_turbo4v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8k_turbo4v_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 64 bytes cumulative stack size, 90176 bytes smem\nptxas info    : Compile time = 70.604 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8k_turbo4v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8k_turbo4v\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 64 bytes cumulative stack size, 70464 bytes smem\nptxas info    : Compile time = 72.099 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_indirect",
+      "source_sha256": "9262650122f14bafb751d1e023b1fda6a8da18d0ccfc3b6041734d1d9259345b",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_indirect",
+        "inferspark_prefill_paged_indirect_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_indirect_64",
+          "static_bytes": 90124,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_indirect",
+          "static_bytes": 70412,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_indirect_64' uses too much shared data (0x1600c bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_indirect' uses too much shared data (0x1130c bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_indirect_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_indirect_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 90124 bytes smem\nptxas info    : Compile time = 85.692 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_indirect' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_indirect\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 126 registers, used 1 barriers, 70412 bytes smem\nptxas info    : Compile time = 87.863 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_nvfp4",
+      "source_sha256": "0697b957fe95cc5ccd313dfa67e96a8658ff346c10cd4c7093863a97a86a53bd",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_nvfp4",
+        "inferspark_prefill_paged_nvfp4_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_nvfp4_64",
+          "static_bytes": 90176,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_nvfp4",
+          "static_bytes": 70464,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_nvfp4_64' uses too much shared data (0x16040 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_nvfp4' uses too much shared data (0x11340 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_nvfp4_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_nvfp4_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 64 bytes cumulative stack size, 90176 bytes smem\nptxas info    : Compile time = 71.093 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_nvfp4' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_nvfp4\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 64 bytes cumulative stack size, 70464 bytes smem\nptxas info    : Compile time = 73.064 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_nvfp4_batched",
+      "source_sha256": "b8a1c9404bfa463c3228b892bfe9d58d1a665526c27ea5b19f2fb2ed1088a145",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_nvfp4_batched",
+        "inferspark_prefill_paged_nvfp4_batched_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_nvfp4_batched_64",
+          "static_bytes": 90176,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_nvfp4_batched",
+          "static_bytes": 70464,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_nvfp4_batched_64' uses too much shared data (0x16040 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_nvfp4_batched' uses too much shared data (0x11340 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_nvfp4_batched_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_nvfp4_batched_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 127 registers, used 1 barriers, 64 bytes cumulative stack size, 90176 bytes smem\nptxas info    : Compile time = 71.414 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_nvfp4_batched' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_nvfp4_batched\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 126 registers, used 1 barriers, 64 bytes cumulative stack size, 70464 bytes smem\nptxas info    : Compile time = 72.313 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo2",
+      "source_sha256": "88bfcdadf25b53ddfa1f83f746945624b8a450054445a3eff4190f0f30489ceb",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo2",
+        "inferspark_prefill_paged_turbo2_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo2_64",
+          "static_bytes": 90128,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo2",
+          "static_bytes": 70416,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo2_64' uses too much shared data (0x16010 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo2' uses too much shared data (0x11310 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo2_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo2_64\n    16 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 16 bytes cumulative stack size, 90128 bytes smem\nptxas info    : Compile time = 70.172 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo2' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo2\n    16 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 16 bytes cumulative stack size, 70416 bytes smem\nptxas info    : Compile time = 72.125 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo3",
+      "source_sha256": "f77a56bce7ce28b8b8fae04a920b597757ef9d778b9732efcfc6f6864ec46f4b",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo3",
+        "inferspark_prefill_paged_turbo3_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo3_64",
+          "static_bytes": 90144,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo3",
+          "static_bytes": 70432,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo3_64' uses too much shared data (0x16020 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo3' uses too much shared data (0x11320 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo3_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo3_64\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 128 registers, used 1 barriers, 32 bytes cumulative stack size, 90144 bytes smem\nptxas info    : Compile time = 70.904 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo3' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo3\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 32 bytes cumulative stack size, 70432 bytes smem\nptxas info    : Compile time = 72.999 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo3k_turbo8v",
+      "source_sha256": "617030274ce672fb054b01e192a26d8719a3dd7383ed9c24076c571dbde8dcb2",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo3k_turbo8v",
+        "inferspark_prefill_paged_turbo3k_turbo8v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo3k_turbo8v_64",
+          "static_bytes": 90144,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo3k_turbo8v",
+          "static_bytes": 70432,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo3k_turbo8v_64' uses too much shared data (0x16020 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo3k_turbo8v' uses too much shared data (0x11320 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo3k_turbo8v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo3k_turbo8v_64\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 32 bytes cumulative stack size, 90144 bytes smem\nptxas info    : Compile time = 72.370 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo3k_turbo8v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo3k_turbo8v\n    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 32 bytes cumulative stack size, 70432 bytes smem\nptxas info    : Compile time = 74.241 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo4",
+      "source_sha256": "838fcb40bd634f86d4fa63588955312a7ba36be4c68b12c3e3beb73aee4cbbcb",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo4",
+        "inferspark_prefill_paged_turbo4_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo4_64",
+          "static_bytes": 90176,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo4",
+          "static_bytes": 70464,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo4_64' uses too much shared data (0x16040 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo4' uses too much shared data (0x11340 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo4_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo4_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 125 registers, used 1 barriers, 64 bytes cumulative stack size, 90176 bytes smem\nptxas info    : Compile time = 68.535 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo4' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo4\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 64 bytes cumulative stack size, 70464 bytes smem\nptxas info    : Compile time = 70.181 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo4k_turbo3v",
+      "source_sha256": "60e453f2289cea8706db0a6492124f7cdf65f39ba1e77e7d35f9a1fb2802c31c",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo4k_turbo3v",
+        "inferspark_prefill_paged_turbo4k_turbo3v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo4k_turbo3v_64",
+          "static_bytes": 90208,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo4k_turbo3v",
+          "static_bytes": 70496,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo4k_turbo3v_64' uses too much shared data (0x16060 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo4k_turbo3v' uses too much shared data (0x11360 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo4k_turbo3v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo4k_turbo3v_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 64 bytes cumulative stack size, 90208 bytes smem\nptxas info    : Compile time = 72.027 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo4k_turbo3v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo4k_turbo3v\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 64 bytes cumulative stack size, 70496 bytes smem\nptxas info    : Compile time = 73.599 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo4k_turbo8v",
+      "source_sha256": "67b1956a326e07d75819665fb9975bf316085842bdbf2ea213c92adf8b04ab27",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo4k_turbo8v",
+        "inferspark_prefill_paged_turbo4k_turbo8v_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo4k_turbo8v_64",
+          "static_bytes": 90176,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo4k_turbo8v",
+          "static_bytes": 70464,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo4k_turbo8v_64' uses too much shared data (0x16040 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo4k_turbo8v' uses too much shared data (0x11340 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo4k_turbo8v_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo4k_turbo8v_64\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 64 bytes cumulative stack size, 90176 bytes smem\nptxas info    : Compile time = 68.676 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo4k_turbo8v' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo4k_turbo8v\n    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 121 registers, used 1 barriers, 64 bytes cumulative stack size, 70464 bytes smem\nptxas info    : Compile time = 69.990 ms\n"
+    },
+    {
+      "stem": "inferspark_prefill_paged_turbo8",
+      "source_sha256": "61f98c2eff95978a1e903957da7b8e9084e96338be2a4ef5958a57cf0288f2dd",
+      "nvcc_exit": 0,
+      "ptxas_exit": 255,
+      "entries": [
+        "inferspark_prefill_paged_turbo8",
+        "inferspark_prefill_paged_turbo8_64"
+      ],
+      "shared_memory_errors": [
+        {
+          "entry": "inferspark_prefill_paged_turbo8_64",
+          "static_bytes": 90112,
+          "limit_bytes": 49152
+        },
+        {
+          "entry": "inferspark_prefill_paged_turbo8",
+          "static_bytes": 70400,
+          "limit_bytes": 49152
+        }
+      ],
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo8_64' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas error   : Entry function 'inferspark_prefill_paged_turbo8' uses too much shared data (0x11300 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo8_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo8_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 128 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 66.360 ms\nptxas info    : Compiling entry function 'inferspark_prefill_paged_turbo8' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_turbo8\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 70400 bytes smem\nptxas info    : Compile time = 67.158 ms\n"
+    }
+  ],
+  "controls": [
+    {
+      "name": "static_48k",
+      "ptxas_exit": 0,
+      "ptxas_output": "ptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'shared_boundary' for 'sm_121f'\nptxas info    : Function properties for shared_boundary\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 10 registers, used 1 barriers, 49152 bytes smem\nptxas info    : Compile time = 2.100 ms\n",
+      "nvcc_exit": 0,
+      "nvcc_command": [
+        "/usr/local/cuda/bin/nvcc",
+        "--ptx",
+        "-arch=sm_121f",
+        "-O3",
+        "--Werror",
+        "all-warnings",
+        "-DSTORAGE_FLOATS=12288",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/shared_boundary.cu",
+        "-o",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/static_48k.ptx"
+      ],
+      "ptxas_command": [
+        "/usr/local/cuda/bin/ptxas",
+        "-arch=sm_121f",
+        "-v",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/static_48k.ptx",
+        "-o",
+        "/dev/null"
+      ]
+    },
+    {
+      "name": "static_48k_plus4",
+      "ptxas_exit": 255,
+      "ptxas_output": "ptxas error   : Entry function 'shared_boundary' uses too much shared data (0xc004 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'shared_boundary' for 'sm_121f'\nptxas info    : Function properties for shared_boundary\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 10 registers, used 1 barriers, 49156 bytes smem\nptxas info    : Compile time = 2.123 ms\n",
+      "nvcc_exit": 0,
+      "nvcc_command": [
+        "/usr/local/cuda/bin/nvcc",
+        "--ptx",
+        "-arch=sm_121f",
+        "-O3",
+        "--Werror",
+        "all-warnings",
+        "-DSTORAGE_FLOATS=12289",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/shared_boundary.cu",
+        "-o",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/static_48k_plus4.ptx"
+      ],
+      "ptxas_command": [
+        "/usr/local/cuda/bin/ptxas",
+        "-arch=sm_121f",
+        "-v",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/static_48k_plus4.ptx",
+        "-o",
+        "/dev/null"
+      ]
+    },
+    {
+      "name": "static_88k",
+      "ptxas_exit": 255,
+      "ptxas_output": "ptxas error   : Entry function 'shared_boundary' uses too much shared data (0x16000 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'shared_boundary' for 'sm_121f'\nptxas info    : Function properties for shared_boundary\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 10 registers, used 1 barriers, 90112 bytes smem\nptxas info    : Compile time = 2.121 ms\n",
+      "nvcc_exit": 0,
+      "nvcc_command": [
+        "/usr/local/cuda/bin/nvcc",
+        "--ptx",
+        "-arch=sm_121f",
+        "-O3",
+        "--Werror",
+        "all-warnings",
+        "-DSTORAGE_FLOATS=22528",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/shared_boundary.cu",
+        "-o",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/static_88k.ptx"
+      ],
+      "ptxas_command": [
+        "/usr/local/cuda/bin/ptxas",
+        "-arch=sm_121f",
+        "-v",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/static_88k.ptx",
+        "-o",
+        "/dev/null"
+      ]
+    },
+    {
+      "name": "dynamic_88k",
+      "ptxas_exit": 0,
+      "ptxas_output": "ptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'shared_boundary' for 'sm_121f'\nptxas info    : Function properties for shared_boundary\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 10 registers, used 1 barriers\nptxas info    : Compile time = 2.097 ms\n",
+      "nvcc_exit": 0,
+      "nvcc_command": [
+        "/usr/local/cuda/bin/nvcc",
+        "--ptx",
+        "-arch=sm_121f",
+        "-O3",
+        "--Werror",
+        "all-warnings",
+        "-DSTORAGE_FLOATS=22528",
+        "-DDYNAMIC_SHARED",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/shared_boundary.cu",
+        "-o",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/dynamic_88k.ptx"
+      ],
+      "ptxas_command": [
+        "/usr/local/cuda/bin/ptxas",
+        "-arch=sm_121f",
+        "-v",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/dynamic_88k.ptx",
+        "-o",
+        "/dev/null"
+      ]
+    },
+    {
+      "name": "inferspark_prefill_paged_fp8",
+      "ptxas_exit": 0,
+      "ptxas_output": "ptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 123 registers, used 1 barriers, 46336 bytes smem\nptxas info    : Compile time = 288.319 ms\n",
+      "ptxas_command": [
+        "/usr/local/cuda/bin/ptxas",
+        "-arch=sm_121f",
+        "-v",
+        "--entry",
+        "inferspark_prefill_paged_fp8",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/inferspark_prefill_paged_fp8.ptx",
+        "-o",
+        "/dev/null"
+      ]
+    },
+    {
+      "name": "inferspark_prefill_paged_fp8_64",
+      "ptxas_exit": 255,
+      "ptxas_output": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8_64' uses too much shared data (0x10400 bytes, 0xc000 max)\nptxas info    : 0 bytes gmem\nptxas info    : Compiling entry function 'inferspark_prefill_paged_fp8_64' for 'sm_121f'\nptxas info    : Function properties for inferspark_prefill_paged_fp8_64\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 122 registers, used 1 barriers, 66560 bytes smem\nptxas info    : Compile time = 266.858 ms\n",
+      "ptxas_command": [
+        "/usr/local/cuda/bin/ptxas",
+        "-arch=sm_121f",
+        "-v",
+        "--entry",
+        "inferspark_prefill_paged_fp8_64",
+        "/home/pidtom/atlas-gb10-shared-audit-20260905/evidence/inferspark_prefill_paged_fp8.ptx",
+        "-o",
+        "/dev/null"
+      ]
+    }
+  ],
+  "control_fixture_cuda": "// SPDX-License-Identifier: AGPL-3.0-only\n// Compile-only fixture: preserve storage through a runtime-dependent index.\nextern \"C\" __global__ void shared_boundary(float* out, unsigned int index) {\n#ifdef DYNAMIC_SHARED\n    extern __shared__ volatile float scratch[];\n#else\n    __shared__ volatile float scratch[STORAGE_FLOATS];\n#endif\n    scratch[index] = (float)threadIdx.x;\n    __syncthreads();\n    out[threadIdx.x] = scratch[(index + 1) % STORAGE_FLOATS];\n}\n"
+}

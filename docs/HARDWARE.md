@@ -411,6 +411,31 @@ To add a new scheme (e.g., MX4, INT4):
 
 ## Testing a new target
 
+### PTX emission is not assembly validation
+
+The NVIDIA backend used by `crates/atlas-kernels/build.rs` runs `nvcc --ptx`
+(`build_target.rs`, `NvidiaTarget::compile`), without a separate `ptxas` stage.
+Runtime loads the embedded PTX through `cuModuleLoadData`. A successful PTX
+build therefore does not establish that every entry can be assembled.
+
+On 2026-09-05, the strict CPU-only GB10 gate for `qwen3.6-35b-a3b` reproduced
+**151/173 source files passing** on Spark 1 with CUDA 13.0.88. The 22 failures
+contain **42 entries** rejected for static shared memory above 48 KiB: all
+22 BR=64 entries and 20 BR=32 siblings. The ledger shows only the first error
+per file. These fixed allocations cannot be rescued by the runtime's
+`MAX_DYNAMIC_SHARED_SIZE_BYTES` attribute; the affected launch wrappers also
+request zero dynamic shared memory. Keep the assembler failures visible;
+GB10 is not a green assembly control at this source revision.
+
+See the [GB10 prefill investigation](GB10_PREFILL_SHARED_MEMORY.md) for the
+entry inventory, compiler receipts and runtime trace. Many rejected entries
+are explicitly selected by the source dispatch, so this is not evidence
+that the deployed runtime silently avoids them. Driver JIT and production
+binary provenance were not tested in this CPU-only investigation. This GB10
+finding is separate from the Hopper/B200 work in PR #895.
+
+### Device validation
+
 Once compiled:
 
 ```bash
