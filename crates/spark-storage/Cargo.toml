@@ -64,5 +64,10 @@ path = "examples/iouring_bench.rs"
 name = "long-context-bench"
 path = "examples/long_context_bench.rs"
 
+# HARDWARE.toml is the SSOT for the SM architecture the predictor kernels
+# compile for; build.rs reads it.
+[build-dependencies]
+toml = "0.8"
+
 [lints]
 workspace = true

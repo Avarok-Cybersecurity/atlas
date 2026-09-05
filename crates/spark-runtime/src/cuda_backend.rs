@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use atlas_core::registry::AtlasRegistry;
 
+pub mod arch_preflight;
 mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;

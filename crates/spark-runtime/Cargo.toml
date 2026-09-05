@@ -113,5 +113,10 @@ parking_lot = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# HARDWARE.toml is the SSOT for the SM architecture the optional CUTLASS /
+# FlashInfer reference objects compile for; build.rs reads it.
+[build-dependencies]
+toml = "0.8"
+
 [lints]
 workspace = true
