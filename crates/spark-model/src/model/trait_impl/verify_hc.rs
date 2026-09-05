@@ -578,10 +578,13 @@ impl TransformerModel {
         let Some((base, k)) = span else {
             return Ok(());
         };
-        // A full accept keeps the live carries — they are already exactly
-        // `base + k`. Zero accepted has no row-0 snapshot to land on and is
-        // rejected upstream by `commit_accepted_prefix`.
-        if num_accepted == 0 || num_accepted >= k {
+        anyhow::ensure!(
+            (1..=k).contains(&num_accepted) && seq.seq_len == base + num_accepted,
+            "batched mHC commit: {num_accepted}/{k} rows from {base}, but seq_len={}",
+            seq.seq_len
+        );
+        // Full accept consumes the span too; the live carries already agree.
+        if num_accepted == k {
             return Ok(());
         }
         let row = commit_rewind_index(num_accepted);
@@ -1092,9 +1095,7 @@ pub(super) fn verify_row_decode_seq_len(base_seq_len: usize, t: usize) -> usize 
 /// layers back on the K-row `prefill()` body.
 pub(super) fn verify_attn_decode_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE").as_deref() != Ok("0")
-    })
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE").as_deref() != Ok("0"))
 }
 
 /// EXPERIMENTAL, default-OFF. `ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1` puts the

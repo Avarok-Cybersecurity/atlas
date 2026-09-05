@@ -257,7 +257,7 @@ impl TransformerModel {
         // Full accept: the verify kernel's final h_state/conv_state is
         // already the canonical committed state — nothing to do.
         if num_accepted == k {
-            return Ok(());
+            return self.commit_verify_aux_rows(seq, num_accepted, self.secondary_stream);
         }
 
         // `num_accepted == 0` has no representable rewind target here: the

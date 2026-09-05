@@ -520,34 +520,10 @@ impl Qwen4ExpMtpHead {
         let eps = ctx.config.rms_norm_eps as f32;
         let row = h as usize * 2;
 
-        // ★ THE BODY'S HIGHWAY IS `ctx.buffers.hc_streams()`, NOT a buffer we
-        // can hand it. `decode_inner_hc` reads and writes the multi-stream state
-        // through that buffer directly — the `hidden` argument is only the
-        // single-stream scratch hc_pre collapses into. Two consequences, both
-        // measured the hard way (0/240 accept AND a corrupted, truncated target
-        // response when this was got wrong):
-        //
-        //   1. the combiner's output must be written INTO `hc_streams`, or the
-        //      body silently runs on the target's highway and the draft is
-        //      meaningless;
-        //   2. that highway is PERSISTENT per-sequence state, so it must be
-        //      saved and put back, or the draft destroys the target's next step.
-        //
-        // `buf.streams` is the save slot; the combiner reads from it and writes
-        // into `hc_streams`.
-        //
-        // ★★ THE HIGHWAY IS FP32, NOT BF16. `BufferSizes` allocates it as
-        // `m * hc_mult * h * 4` with the comment "the residual streams grow
-        // large across the blocks ... so BF16 storage swamps the small
-        // per-layer signal at scale and collapses generation".
-        //
-        // Sizing this as BF16 was a REAL corruption: the save/restore covered
-        // only the first HALF of the highway, so the body's full-width FP32
-        // writes survived the restore and poisoned every later target step
-        // (measured: a thinking-loop degeneration, watchdog-forced `</think>`,
-        // truncated answer). The bisect is the proof — the `combine` stage was
-        // clean precisely BECAUSE it only ever touched, and then restored, that
-        // same first half.
+        // The body reads its highway through the private arena. Snapshot the
+        // input before the combiner writes that arena: chained drafts read
+        // from the same arena, so input and output can alias. Highway elements
+        // are FP32, even though collapsed hidden rows are BF16.
         let hc_bytes = hc as usize * h as usize * 4;
 
         // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
@@ -696,6 +672,9 @@ impl Qwen4ExpMtpHead {
         };
 
         let mtp_ctx = ForwardContext {
+            // This private arena contains one draft row, regardless of the
+            // accepted row selected from the target's verification highway.
+            hc_row_offset: 0,
             attn_metadata: Some(meta),
             // The draft body must not issue an EP all-reduce: it is rank-0 only
             // and `ensure_loadable` refuses ep_world_size > 1 outright.
@@ -761,12 +740,9 @@ impl Qwen4ExpMtpHead {
             stream,
         );
 
-        // ★ RESTORE THE TARGET'S HIGHWAY, unconditionally and before returning
-        // any error. `hc_streams` is persistent per-sequence state: leaving the
-        // draft's streams in it corrupts every subsequent target step, which is
-        // exactly how this bug first showed up (a truncated, rewritten answer).
-        ctx.gpu
-            .copy_d2d_async(self.buf.streams, body_streams, hc_bytes, stream)?;
+        // Keep the private arena's output highway for the next autoregressive
+        // draft. The input snapshot belongs to the combiner; restoring it here
+        // would make every later draft consume the preceding draft's INPUT.
 
         if diff {
             ctx.gpu.synchronize(stream).ok();
@@ -780,7 +756,7 @@ impl Qwen4ExpMtpHead {
                 .collect();
             tracing::info!(
                 "qwen4_exp MTP diff: buffers changed across the draft body = {:?} \
-                 (hc_streams should NOT appear — it is restored above; anything \
+                 (target hc_streams should NOT appear — the draft arena is private; anything \
                  else that appears is shared state the target still needs)",
                 changed
             );

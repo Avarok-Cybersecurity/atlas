@@ -90,7 +90,12 @@ impl DraftProposer for Qwen4ExpMtpHead {
         let mut token = last_token;
         // Draft 1 reads the TARGET's highway; each later draft reads the one the
         // draft body itself just wrote, in the head's own arena.
-        let mut streams = ctx.buffers.hc_streams();
+        let mut streams = target_highway_row(
+            ctx.buffers.hc_streams(),
+            ctx.hc_row_offset,
+            ctx.config.hc_mult,
+            ctx.config.hidden_size,
+        );
 
         for j in 0..num_drafts {
             let h_out = self.draft_h_out();
@@ -140,5 +145,28 @@ impl DraftProposer for Qwen4ExpMtpHead {
         // KV pool); per-sequence state holds only host bookkeeping plus the
         // body's layer state, which drops with the box.
         Ok(())
+    }
+}
+
+/// Select the target highway that produced the last committed token.
+fn target_highway_row(base: DevicePtr, row: usize, streams: usize, hidden: usize) -> DevicePtr {
+    base.offset(row * streams * hidden * std::mem::size_of::<f32>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_highway_rows_use_full_fp32_stream_stride() {
+        let base = DevicePtr(4096);
+        for row in 0..4 {
+            assert_eq!(
+                target_highway_row(base, row, 4, 2560).0,
+                4096 + (row * 40960) as u64
+            );
+        }
+        // A serial bootstrap after wider verify explicitly selects row zero.
+        assert_eq!(target_highway_row(base, 0, 4, 2560).0, base.0);
     }
 }
