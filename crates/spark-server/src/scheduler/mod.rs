@@ -61,6 +61,8 @@ mod spec_capacity;
 pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
+#[cfg(test)]
+mod swap_resume_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;

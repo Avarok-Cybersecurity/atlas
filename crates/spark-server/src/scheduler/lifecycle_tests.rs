@@ -179,7 +179,13 @@ fn empty_output_edges() {
 /// Minimal `Model`: only the paths `finish_sequence` exercises
 /// (`cache_sequence`, `free_sequence`, `ep_broadcast_cmd_for_seq`
 /// default) are live; everything else is unreachable in these tests.
-struct StubModel;
+#[derive(Default)]
+pub(super) struct StubModel {
+    /// Slots handed to `free_sequence`. Lets a sibling test prove that a
+    /// failing path released what it had already allocated instead of
+    /// leaking it (see `swap_resume_tests`).
+    pub(super) freed: std::sync::Mutex<Vec<usize>>,
+}
 
 impl Model for StubModel {
     fn prefill(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
@@ -305,7 +311,13 @@ impl Model for StubModel {
         anyhow::bail!("unused in lifecycle tests")
     }
     fn cache_sequence(&self, _s: &SequenceState) {}
-    fn free_sequence(&self, _s: &mut SequenceState) -> Result<()> {
+    fn free_sequence(&self, s: &mut SequenceState) -> Result<()> {
+        self.freed.lock().expect("stub freed list").push(s.slot_idx);
+        Ok(())
+    }
+    /// A swap image the spill manager can actually write and re-open.
+    fn save_sequence_state(&self, _s: &SequenceState, w: &mut dyn std::io::Write) -> Result<()> {
+        w.write_all(&[0u8; 8])?;
         Ok(())
     }
     fn compact_sequence(&self, _s: &mut SequenceState, _slot: usize) -> Result<()> {
@@ -417,7 +429,7 @@ fn test_seq(
 }
 
 fn finish_and_recv(mut a: ActiveSeq, mut rx: RespRx) -> InferenceResponse {
-    finish_sequence(&StubModel, &mut a, MAX_SEQ_LEN);
+    finish_sequence(&StubModel::default(), &mut a, MAX_SEQ_LEN);
     rx.try_recv()
         .expect("finish_sequence must send the blocking response")
         .expect("response must be Ok")

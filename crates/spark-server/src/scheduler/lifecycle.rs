@@ -307,22 +307,64 @@ pub fn swap_out_sequence(
     }
 }
 
+/// Refill an already-claimed slot from the swap image on disk.
+///
+/// Split out so the caller has exactly ONE error path to notify the
+/// client on, and so a failure leaves the slot in the caller's hands to
+/// release: `SequenceState`'s guard returns the SSM slot, but the KV
+/// blocks `restore_sequence_state` allocated are the model's and only
+/// `free_sequence` gives them back.
+fn refill_from_image(
+    model: &dyn Model,
+    s: &SwappedSeq,
+    spill: &mut KvSpillManager,
+    seq: &mut SequenceState,
+) -> Result<()> {
+    let mut reader = spill.open_file(s.swap_id)?;
+    model.restore_sequence_state(seq, s.num_blocks, &mut reader)?;
+    drop(reader);
+    spill.remove_file(s.swap_id)?;
+    Ok(())
+}
+
 /// Resume a swapped-out sequence by restoring its state from disk.
 pub fn resume_swapped_seq(
     _think_end_token: Option<u32>,
     _think_start_token: Option<u32>,
     model: &dyn Model,
-    s: SwappedSeq,
+    mut s: SwappedSeq,
     spill: &mut KvSpillManager,
 ) -> Result<ActiveSeq> {
     // Starvation guard: a just-resumed sequence must not be the next KV
     // victim before it makes real progress (see `preempt` module docs).
     let immune_until = s.output_tokens.len() + super::preempt::PREEMPT_IMMUNITY_TOKENS;
-    let mut seq = model.alloc_sequence()?;
-    let mut reader = spill.open_file(s.swap_id)?;
-    model.restore_sequence_state(&mut seq, s.num_blocks, &mut reader)?;
-    drop(reader);
-    spill.remove_file(s.swap_id)?;
+    // Every step of the restore is fallible, and `s.sink` is the ONLY
+    // handle to the request still waiting on it. A bare `?` dropped it:
+    // the caller logged `Swap-in failed: …` and the client's channel just
+    // closed — reported by the API layer as the generic "Inference
+    // cancelled", or, streaming, as a stream that stops mid-response.
+    // The swap-OUT half was already fixed for exactly this; this is the
+    // same contract on the way back in.
+    let restored = model.alloc_sequence().and_then(|mut seq| {
+        match refill_from_image(model, &s, spill, &mut seq) {
+            Ok(()) => Ok(seq),
+            Err(e) => {
+                if let Err(free_err) = model.free_sequence(&mut seq) {
+                    tracing::error!(
+                        "resume_swapped_seq: free after a failed restore: {free_err:#}"
+                    );
+                }
+                Err(e)
+            }
+        }
+    });
+    let mut seq = match restored {
+        Ok(seq) => seq,
+        Err(e) => {
+            send_error_to_sink(&mut s.sink, &format!("swap-in failed: {e:#}"));
+            return Err(e);
+        }
+    };
 
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
