@@ -1,0 +1,113 @@
+{
+  "step": "B",
+  "status": "BLOCKED_GPU_OCCUPIED_AND_TARGET_SELECTION",
+  "requested_pin": "792579b24164d8696083760073b5c85b29cd968a",
+  "fetched_fork_tip": "8b7405ca159a6ab8bb3e593a740f4d20f93996fd",
+  "reason": "The user requested both the exact current campaign tip and checkout 792579b. These differ; 792579b precedes the new preflight. The pending question asks which commit to build. Do not publish stale-tip records as current-tip coverage. A subsequent occupancy check also shows an unowned compute process, so Spark2 is no longer idle.",
+  "clone_created": true,
+  "clone_verification": "clone-verification.json",
+  "build_status": "NOT_RUN",
+  "check_kernels_status": "NOT_RUN",
+  "coverage_check_status": "NOT_RUN",
+  "new_benchmark_records": 0,
+  "gate_records_branch": null,
+  "gate_records_pr": null,
+  "planned_gate_statuses": [
+    {
+      "id": "concurrency-sweep",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "decode-floor",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "ttft-warm-gate",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "ttft-cold-gate",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "bfcl-subset",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "bfcl-subset-echolp",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "ssm-state-poisoning-gate",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "agentic-webserver",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "vision-fidelity",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "video-fidelity",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    },
+    {
+      "id": "concurrency-sweep-dflash2",
+      "status": "NOT_RUN",
+      "reason": "Step B build target unresolved and Spark2 occupied by unowned compute workload",
+      "duration_s": null,
+      "hardware": null
+    }
+  ],
+  "additional_prerequisites": [
+    "--check-kernels loads real weights before auditing, but the proposed sequence downloads the absent Qwen checkpoint afterward.",
+    "Current REQUIRED list has eleven gates, including concurrency-sweep-dflash2, rather than ten.",
+    "Current registered gate defaults select three main checkpoints plus a DFlash2 draft model; one shared Qwen3.8 checkpoint does not provision all gates.",
+    "Agentic shell uses inherited-environment sh -c with directory-only containment; no OS sandbox or network boundary. Unconfined model-authored shell cannot be treated as safe containment for the protected host.",
+    "Qwen3.8 repository payload is 23,444,511,857 bytes, not the estimated 15 GB; all new allocations remain subject to the 70 GB / 12 GB limits."
+  ],
+  "source_inventory": "gate-source-inventory.md",
+  "model_prerequisites": "qwen-preflight-prerequisites.md",
+  "timestamp_utc": "2026-09-05T05:12:36.518772+00:00",
+  "gpu_compute_workloads_started": false,
+  "hardware_blocker": {
+    "receipt": "final-occupancy.json",
+    "observed_utc": "2026-09-05T05:17:31.583226+00:00",
+    "compute_pid": 207906,
+    "reported_gpu_memory_mib": 9169,
+    "owned_by_this_task": false,
+    "action": "No GPU work started; process left untouched"
+  }
+}

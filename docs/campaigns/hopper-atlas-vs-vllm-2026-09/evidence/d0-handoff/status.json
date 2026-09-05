@@ -1,0 +1,37 @@
+{
+  "step": "D0",
+  "code_base": "b2c17cfe30c33c53d28c4fbec35f6204b8cfb14b",
+  "step_c": "DONE: CPU-only PTX/shared-memory investigation at upstream567b5ebe; original source revision preserved in report",
+  "step_a2": "NOT STARTED in available execution evidence; no bf16-KV/calibrated-FP8-KV/NVFP4 three-way results found",
+  "step_b": "NOT STARTED: historical status records no cargo build or GPU gates, target ambiguity and unowned Spark2 compute; current-tip gate records absent",
+  "correction": "The lead subsequently clarified tree-based gate coverage and the current-tip target. Historical target-ambiguity text is preserved as a record of the stop, not endorsed as a current blocker. Current StepD target is b2c17cf.",
+  "storage_note": "The documented40GB initial storage cap blocked prefetch at02:41Z; it was superseded by70GB and the initial rehearsal later ran. It is not evidence that A2 ran or that A2 specifically hit that same cap.",
+  "searched_for_a2": [
+    "code branch StepC diff",
+    "docs branch campaign evidence tree",
+    "/tmp/atlas-vllm-control/docs",
+    "/tmp/atlas-rst-overnight-20260904/docs"
+  ],
+  "historical_artifacts": [
+    {
+      "file": "step-b.status.json",
+      "source": "/tmp/atlas-vllm-control/docs/campaigns/hopper-atlas-vs-vllm-2026-09/vllm-control/gb10-dryrun/overnight-20260905/step-b.status.json",
+      "sha256": "b16e42543adbc7ab66eb34374d6f9015098adec0365320a51acf0872acc2bab2",
+      "historical": true
+    },
+    {
+      "file": "clone-verification.json",
+      "source": "/tmp/atlas-vllm-control/docs/campaigns/hopper-atlas-vs-vllm-2026-09/vllm-control/gb10-dryrun/overnight-20260905/clone-verification.json",
+      "sha256": "611718ee4955bb78e5c9a3d9e695e39e33f7b22c99c2ec8dc4d9735ad78cda7f",
+      "historical": true
+    },
+    {
+      "file": "step-b-end-df.json",
+      "source": "/tmp/atlas-vllm-control/docs/campaigns/hopper-atlas-vs-vllm-2026-09/vllm-control/gb10-dryrun/overnight-20260905/step-b-end-df.json",
+      "sha256": "57b65d4c76b0fcb023088afc8de8db762f7a744e6f982dda5ab045a68bcd9824",
+      "historical": true
+    }
+  ],
+  "oracle": "A2 completion requires three labelled engine/gate outputs; B completion requires new exact-tip benchmark records. Neither was found.",
+  "stopping_rule": "Publish the existing StepC evidence and explicit A2/B status; do not perform A2/B measurements during D0."
+}
