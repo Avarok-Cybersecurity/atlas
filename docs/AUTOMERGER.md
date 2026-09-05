@@ -264,3 +264,14 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-reproduce-the-runner (the failure was invisible locally until the Actions env was simulated — 2>/dev/null in a harness hides exactly the evidence CI dies on); R-assert-anchors (the wrong-tree edit was refused by anchors ONCE and slipped through a sed the second time — sed has no anchors, prefer asserted replaces).
+
+---
+
+## Run 9 — 2026-09-05T01:50Z — a clock misread, retracted
+
+```text
+2026-09-05T01:50Z  aggregate  RETRACTION: the "jobs start then die, newest completion 2h old" verdict was built on an imagined clock — `date -u` reads 01:49; the 01:25 completion was ~20 minutes old, normal for kernel-compile-length jobs. The pool is throttled-slow, nothing more dramatic. Several earlier trace timestamps in runs 4-8 are likewise approximate and should not be used for duration math.
+2026-09-05T01:50Z  aggregate  rule: never state a duration without printing the clock beside the timestamp in the same command.
+```
+
+**CITED:** R-print-the-clock (a duration claim without a same-command timestamp is a guess wearing units).
