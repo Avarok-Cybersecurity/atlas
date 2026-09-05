@@ -20,6 +20,7 @@ use crate::traits::Model;
 use crate::weight_loader::load_dflash_weights;
 
 mod kv_summary;
+mod mtp_validation;
 
 pub fn build_model(
     mut config: ModelConfig,
@@ -66,6 +67,14 @@ pub fn build_model(
     // encoder-decoder checkpoint). `None` = base model.
     nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn Model>> {
+    let requested_spec = config.model_type == "qwen4_exp"
+        && use_speculative
+        && std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
+    mtp_validation::validate_qwen_mtp_verify(
+        requested_spec,
+        requested_spec
+            && crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled(),
+    )?;
     // NLLB / M2M-100 is an encoder-decoder model that cannot be represented by
     // the decoder-only TransformerModel stack. Serve it with the dedicated
     // `NllbGpuModel`, which reads its weights from the standard `store` — this
@@ -1044,8 +1053,6 @@ pub fn build_model(
         // scheduler logged an error per decode step, and speculation
         // degenerated to serial while the startup banner said ARMED. Fall back
         // cleanly instead — one WARN at load, serial decode after.
-        let requested_spec =
-            use_speculative && std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
         let arm_spec = requested_spec && model.qwen4_exp_mtp_draft_head_available();
         if requested_spec && !arm_spec {
             tracing::warn!(
