@@ -1421,7 +1421,7 @@
       "source_url": "https://recipes.vllm.ai/moonshotai/Kimi-K3/hw/h100.json",
       "retrieved_utc": "2026-09-05T02:41:14.375914+00:00",
       "evidence_sha256": "20eb535dafa9e63e64859106b02bec526f924ade135abadffb853461f6a1233e",
-      "verdict": "revision_adaptation",
+      "verdict": "campaign_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1440,7 +1440,7 @@
         "--max-num-seqs",
         "5",
         "--max-model-len",
-        "32768",
+        "49152",
         "--moe-backend",
         "marlin",
         "--disable-custom-all-reduce",
@@ -1477,7 +1477,7 @@
           "--max-num-seqs",
           "5",
           "--max-model-len",
-          "32768",
+          "49152",
           "--moe-backend",
           "marlin",
           "--disable-custom-all-reduce",
@@ -1513,7 +1513,7 @@
           "--max-num-seqs",
           "5",
           "--max-model-len",
-          "32768",
+          "49152",
           "--moe-backend",
           "marlin",
           "--disable-custom-all-reduce",
@@ -1549,7 +1549,7 @@
           "--max-num-seqs",
           "5",
           "--max-model-len",
-          "32768",
+          "49152",
           "--moe-backend",
           "marlin",
           "--disable-custom-all-reduce",
@@ -1578,6 +1578,11 @@
       "draft_revision": {
         "repo_id": "RedHatAI/Kimi-K3-speculator.dspark",
         "revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb"
+      },
+      "context_adaptation": {
+        "original_max_model_len": 32768,
+        "scored_max_model_len": 49152,
+        "source": "PRD-atlas-vs-vllm-hopper.md section 16; explicit 2026-09-05 lead handoff"
       }
     },
     {
@@ -1606,7 +1611,7 @@
       "source_url": "https://recipes.vllm.ai/moonshotai/Kimi-K3/hw/h200.json",
       "retrieved_utc": "2026-09-05T02:41:14.393368+00:00",
       "evidence_sha256": "3097d85ce78e768e5ec54c689684bd930945bd92812eef3e94887557a3db8ec3",
-      "verdict": "revision_adaptation",
+      "verdict": "campaign_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1625,7 +1630,7 @@
         "--max-num-seqs",
         "5",
         "--max-model-len",
-        "32768",
+        "49152",
         "--moe-backend",
         "marlin",
         "--disable-custom-all-reduce",
@@ -1662,7 +1667,7 @@
           "--max-num-seqs",
           "5",
           "--max-model-len",
-          "32768",
+          "49152",
           "--moe-backend",
           "marlin",
           "--disable-custom-all-reduce",
@@ -1691,6 +1696,11 @@
       "draft_revision": {
         "repo_id": "RedHatAI/Kimi-K3-speculator.dspark",
         "revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb"
+      },
+      "context_adaptation": {
+        "original_max_model_len": 32768,
+        "scored_max_model_len": 49152,
+        "source": "PRD-atlas-vs-vllm-hopper.md section 16; explicit 2026-09-05 lead handoff"
       }
     },
     {
@@ -1721,7 +1731,7 @@
       "source_url": "https://recipes.vllm.ai/moonshotai/Kimi-K3/hw/b200/strategies/multi_node_tp_pp.json",
       "retrieved_utc": "2026-09-05T02:43:24.405867+00:00",
       "evidence_sha256": "700e6327dcd3aa4d8f2241ee4cc59e4072f45abe97e2578022759aaccd7850cc",
-      "verdict": "revision_adaptation",
+      "verdict": "campaign_adaptation",
       "args": [
         "vllm",
         "serve",
@@ -1745,7 +1755,7 @@
         "fastsafetensors",
         "--no-enable-flashinfer-autotune",
         "--max-model-len",
-        "1048576",
+        "49152",
         "--kv-cache-dtype",
         "fp8",
         "--attention-config",
@@ -1786,7 +1796,7 @@
           "fastsafetensors",
           "--no-enable-flashinfer-autotune",
           "--max-model-len",
-          "1048576",
+          "49152",
           "--kv-cache-dtype",
           "fp8",
           "--attention-config",
@@ -1814,6 +1824,11 @@
       "draft_revision": {
         "repo_id": "RedHatAI/Kimi-K3-speculator.dspark",
         "revision": "48beb88daae33227c148ea2b78a2ac2f493dbccb"
+      },
+      "context_adaptation": {
+        "original_max_model_len": 1048576,
+        "scored_max_model_len": 49152,
+        "source": "PRD-atlas-vs-vllm-hopper.md section 16; explicit 2026-09-05 lead handoff"
       }
     }
   ],
