@@ -236,6 +236,27 @@ fn test_insert_idempotent() {
     tree.insert(&tokens, &[42], &[], 16, 0, 0);
 
     assert_eq!(tree.stats(), (1, 1));
+
+    // A node count cannot say WHICH block the surviving node holds. The second
+    // sequence normally does not get its block from the cache (it never
+    // matched, or it restored from a swap file), so it re-inserts the same
+    // token chunk with a DIFFERENT physical block. The node must keep the block
+    // the cache already holds a reference on: adopting the sequence's block
+    // strands that reference, and evicting the node then returns a block a live
+    // sequence still owns. See `InsertAcquired`.
+    let second = tree.insert(&tokens, &[43], &[], 16, 0, 0);
+    assert_eq!(tree.stats(), (1, 1), "still one node");
+    assert!(
+        second.blocks.is_empty(),
+        "no node was created, so no KV ref is owed; got {second:?}"
+    );
+    let m = tree.lookup(&tokens, 16, 0, 0);
+    assert_eq!(
+        m.matched_blocks,
+        vec![42],
+        "the node keeps the block the cache references"
+    );
+    tree.release(&tokens, 16, 0);
 }
 
 #[test]
