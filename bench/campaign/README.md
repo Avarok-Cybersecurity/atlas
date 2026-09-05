@@ -20,6 +20,7 @@ that a cell is reproducible from its artifact alone.
 | `process_recipe.py` | Adapts the existing recipe argv to an explicit pinned snapshot and a prepared local executable. |
 | `process_launch.py` | Starts, captures and stops only a Linux process whose PID/start identity, group and run marker match its ownership record. |
 | `process_endpoint.py` | Refuses occupied ports before process launch and proves the listener and an accepted connection belong to the recorded process group. |
+| `stream_probe.py` | Captures one separate diagnostic stream with raw bytes, event timestamps, usage and terminal validation. |
 | `atlas_recipes.json` | The Atlas serve side: 17 entries from PRD §6 plus the repo's own recipe fixtures. Data only. |
 | `atlas_render.py` | Renders `EXTRA_ARGS` for `scripts/start-node-ep.sh`. `--selftest`. |
 | `cell_assemble.py` | Turns the stage outputs into the §10 artifact. Every field is copied or null. |
@@ -97,6 +98,30 @@ immediately before the ladder it proves both listener ownership and which
 process accepted a fresh TCP connection. These are observations at those
 boundaries, not a reservation of every future request socket. Endpoint JSON and
 logs are retained in the cell output directory. A refused proof blocks scoring.
+
+### Inspect one diagnostic stream
+
+Outside measured ladders, save an explicit chat request JSON with `stream:true`
+and `stream_options.include_usage:true`, then invoke against an owned local
+server:
+
+```bash
+python3 bench/campaign/stream_probe.py \
+  --url http://127.0.0.1:8000/v1/chat/completions \
+  --request-json request.json --out out/stream-diagnostic --timeout-s 30
+```
+
+The output directory must not exist. The probe retains the exact request,
+base64 raw chunks with monotonic arrival times, and `report.json`. Exit 0 proves
+structural completion of this request: valid UTF-8/SSE, a supported finish
+reason, positive integer usage, generated content/reasoning or complete tool
+arguments, and `[DONE]`. Malformed, incomplete, empty, oversized or timed-out
+streams exit nonzero and keep their evidence. The default byte limit is 1 MiB;
+`--max-bytes` accepts up to 16 MiB. The timeout is a total network deadline,
+including trickling headers/body. This is not a semantic coherency gate, a
+tokenizer truth oracle or proof of every scored request. First role, reasoning,
+content and tool times remain separate; no SSE-frame-based token rate is
+computed. It does not alter or proxy the frozen ladder.
 
 ## Environment
 

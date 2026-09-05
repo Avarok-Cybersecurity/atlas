@@ -115,6 +115,8 @@ python3 "$HERE/dryrun_failure_test.py" || fail dryrun "renderer failure regressi
 ok dryrun "3 dry-run exit regressions passed (both engines, refusal before boot)"
 python3 "$HERE/admission_test.py" || fail admission "preflight admission regression"
 ok admission "failed preflight never launches either engine"
+python3 "$HERE/stream_probe_test.py" || fail stream "stream evidence regression"
+ok stream "raw streaming diagnostic rejects incomplete replies and bounds trickling input"
 python3 "$HERE/thinking_policy_test.py" || fail policy "thinking policy regression"
 ok policy "campaign thinking eligibility refuses excluded modes before launch"
 python3 "$HERE/../hopper_ab/coherency_policy_test.py" || fail coherency "HTTP thinking policy regression"
