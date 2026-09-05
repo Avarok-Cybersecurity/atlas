@@ -421,8 +421,10 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
     // pixels never enter the token IDs: the stream is identical to page A.
     let page_b = page_a.clone();
 
-    // Admitting page A's blocks would let page B match them in full.
-    tree.insert(&page_a, &[10, 20], &[], 16, 0, 0);
+    // Admitting page A's blocks would let page B match them in full — and
+    // restore page A's SSM state on top of them, which is what turns the key
+    // collision into "the previous picture's answer".
+    tree.insert_with_snapshot(&page_a, &[10, 20], &[], 16, 77, 0, 0, 0);
     let m = tree.lookup(&page_b, 16, 0, 0);
 
     assert_eq!(
@@ -432,6 +434,13 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
          vision prefills into the radix cache"
     );
     assert_eq!(m.matched_blocks, vec![10, 20]);
+    assert_eq!(
+        m.ssm_snapshot,
+        Some(77),
+        "page B also restores page A's SSM snapshot"
+    );
+    assert_eq!(m.ssm_snapshot_tokens, 32);
+    tree.release(&page_b, 16, 0);
 }
 
 /// The cache must own a KV ref on a `partial_suffix` block, not just on full
