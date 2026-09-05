@@ -1,5 +1,7 @@
 # Native EXL3 MTP review — 2026-09-05
 
+Follow-up: [wider drafts, live grammar, and thinking validation](MTP_WIDE_REVIEW.md).
+
 Branch: `wip/exl3-mtp-batched`, starting at `283d780d1`.
 Hardware: GB10, native EXL3 checkpoint
 `/tank/exl3-ckpt/qwen38-flash-next-4.05bpw`, BF16 KV,
