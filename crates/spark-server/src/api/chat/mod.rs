@@ -228,25 +228,9 @@ pub(crate) async fn chat_completions_inner(
         return ChatOutcome::Http(resp);
     }
 
-    // Tool-parser behavioral system prompt REMOVED again (2026-05-25 PM).
-    //
-    // Re-injecting the qwen3_coder `system_prompt` (with its
-    // `<parameter=content>[package]\nname = "x"</parameter>` example
-    // and `For 'Write'/'Edit' tools specifically: ...` guidance) was a
-    // mid-day attempt to give the model better multi-line content
-    // hints. Live opencode v39 session showed the opposite effect:
-    // the model emitted LITERAL `<tool_call><bash><command>` XML as
-    // CONTENT (with HTML-entity escaping like `&amp;`) because TWO
-    // tool-format guidances were competing — the chat template's
-    // `tools` argument AND my injected prompt — combined with PR 73's
-    // `qwen3_xml` parser. The model got confused which format to use
-    // and emitted free-form XML that the parser couldn't recognise.
-    //
-    // Per user's recall: the "MUCH better" state had `thinking_in_tools=true`
-    // and the chat template alone (no injection). Reverting matches
-    // that state. PR 73's qwen3_xml + native FP8 SSM + streaming
-    // byte-exact + gate-BF16 + thinking_in_tools=true is the live
-    // combination.
+    // Parser/native-template ownership is resolved by prepare_chat_prompt.
+    // Native Qwen templates provide their own instructions; fallback,
+    // custom-template, Hermes, and TSCG paths retain parser contributions.
 
     // M2 per-request LoRA routing: resolve the optional `adapter` name to a
     // pool slot ONCE here (both dispatch paths inherit it). Unset defers to the
