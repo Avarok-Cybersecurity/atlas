@@ -79,7 +79,7 @@ class PinTests(unittest.TestCase):
                 config = json.loads(entry['spec_args'][1])
                 if 'model' in config:
                     drafts += 1
-        self.assertEqual(drafts, 6)
+        self.assertEqual(drafts, 5)
 
     def test_missing_pin_refused(self):
         self.entry.pop('revision', None)

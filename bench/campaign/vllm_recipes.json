@@ -6,7 +6,11 @@
     "--async-scheduling",
     "--attention-backend",
     "--attention-config",
+    "--attention_config.backend",
+    "--attention_config.indexer_kv_dtype",
+    "--attention_config.minimax_m3_msa_decode_backend",
     "--attention_config.use_fp4_indexer_cache",
+    "--attention_config.use_trtllm_attention",
     "--block-size",
     "--disable-custom-all-reduce",
     "--enable-auto-tool-choice",
@@ -38,7 +42,7 @@
     "--tool-call-parser",
     "--trust-remote-code"
   ],
-  "known_flag_prefixes_note": "Frozen recipe vocabulary plus the explicitly approved --revision adaptation below; not re-derived from entries.",
+  "known_flag_prefixes_note": "Captured recipe vocabulary, including the 2026-09-05 NVIDIA MiniMax-M3-NVFP4 B200 capture, plus the explicit --revision adaptation; not re-derived from entries.",
   "entries": [
     {
       "model_key": "nemotron-3-super-fp8",
@@ -1348,8 +1352,8 @@
     {
       "model_key": "minimax-m3",
       "sku": "b200",
-      "hf_id": "MiniMaxAI/MiniMax-M3",
-      "quant": "bf16",
+      "hf_id": "nvidia/MiniMax-M3-NVFP4",
+      "quant": "nvfp4",
       "gpus": 8,
       "nnodes": 1,
       "deploy_type": "single_node",
@@ -1360,17 +1364,31 @@
         "dp": 1
       },
       "image": "vllm/vllm-openai:minimax-m3",
-      "env": {},
-      "source_url": "https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3/hw/b200.json",
-      "retrieved_utc": "2026-09-05T02:41:14.767156+00:00",
-      "evidence_sha256": "5a7cb568ddafc91a661a11873a4caaada021405c8a74cc344e53367f699c70f4",
+      "env": {
+        "VLLM_FLOAT32_MATMUL_PRECISION": "high",
+        "VLLM_FLASHINFER_ALLREDUCE_BACKEND": "trtllm"
+      },
+      "source_url": "https://recipes.vllm.ai/nvidia/MiniMax-M3-NVFP4/hw/b200.json",
+      "retrieved_utc": "2026-09-05T14:02:15.083529+00:00",
+      "evidence_sha256": "e551db9fc18e7572d4f7cffae01fd50068ff5dc8907bf6f6bc6e161ac6a833f6",
       "verdict": "revision_adaptation",
       "args": [
         "vllm",
         "serve",
-        "MiniMaxAI/MiniMax-M3",
+        "nvidia/MiniMax-M3-NVFP4",
         "--block-size",
         "128",
+        "--trust-remote-code",
+        "--kv-cache-dtype",
+        "fp8",
+        "--attention_config.backend",
+        "FLASHINFER",
+        "--attention_config.use_trtllm_attention",
+        "true",
+        "--attention_config.indexer_kv_dtype",
+        "fp8",
+        "--attention_config.minimax_m3_msa_decode_backend",
+        "cutlass",
         "--tensor-parallel-size",
         "8",
         "--tool-call-parser",
@@ -1379,21 +1397,22 @@
         "--reasoning-parser",
         "minimax_m3",
         "--revision",
-        "f0e1c1e04d40177e4673a22097036854f536e9c0"
+        "901464083161bf8612a29ff7ad29914cd4ab4a85"
       ],
       "worker_args": null,
-      "spec_args": [
-        "--speculative-config",
-        "{\"method\":\"eagle3\",\"model\":\"Inferact/MiniMax-M3-EAGLE3\",\"num_speculative_tokens\":3,\"attention_backend\":\"FLASH_ATTN\",\"revision\":\"44cafa5ace418d8b22e2958df0c6aa1f2476842c\"}"
-      ],
+      "spec_args": null,
       "spec_rendered_default": "off",
-      "spec_description": "Eagle3 speculative decoding with an Inferact MiniMax-M3 draft head \u2014 accelerates decoding. Choose between the standard MHA head and the GQA head (16\u00d7 smaller draft KV cache \u2014 better for long-context or high-batch deployments).",
+      "spec_description": "No speculative profile captured for the NVIDIA NVFP4 B200 recipe; no external draft inferred from the former BF16 recipe.",
       "original_verdict": "verbatim",
-      "revision": "f0e1c1e04d40177e4673a22097036854f536e9c0",
-      "draft_revision": {
-        "repo_id": "Inferact/MiniMax-M3-EAGLE3",
-        "revision": "44cafa5ace418d8b22e2958df0c6aa1f2476842c"
-      }
+      "revision": "901464083161bf8612a29ff7ad29914cd4ab4a85",
+      "draft_revision": null,
+      "superseded_recipe": {
+        "hf_id": "MiniMaxAI/MiniMax-M3",
+        "quant": "bf16",
+        "source_url": "https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3/hw/b200.json",
+        "evidence_sha256": "5a7cb568ddafc91a661a11873a4caaada021405c8a74cc344e53367f699c70f4"
+      },
+      "notes": "PRD B200 reference uses NVIDIA NVFP4. Metadata and official B200 recipe verified; engine not run. The NVIDIA card requires a nightly containing vLLM PR46380; selected image support must be verified before rental. Atlas has no MiniMax M3 recipe, so this remains vLLM-reference only."
     },
     {
       "model_key": "kimi-k3",
