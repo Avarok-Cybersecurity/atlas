@@ -656,10 +656,20 @@ STUB
     else
       bad "control: a missing render tool swallowed the certificate entirely"
     fi
+    # It must NOT fall back to the committed template. That sample carries the
+    # placeholder certifier names it was designed with (m-ferraro / a-hoffmann)
+    # over a fixed author line, so linking it tells the world that fictional
+    # people certified this PR. Observed on #901 (opened by @TheTom, sample says
+    # tbraun96), and on every certificate before it: bot-cards held zero pr-*.png.
     if grep -q 'certificate-merged.png' "$TMP/bcalls"; then
-      ok "control: and it points at the generic image, not a render that never happened"
+      bad "control: the fallback linked the template — that publishes placeholder certifiers"
     else
-      bad "control: it linked a rendered certificate that was never produced"
+      ok "control: no render, no image — the template's placeholder names are never published"
+    fi
+    if grep -q 'could not be rendered' "$TMP/bcalls"; then
+      ok "control: and it says why the picture is missing"
+    else
+      bad "control: the image vanished with no explanation"
     fi
   fi
 

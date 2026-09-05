@@ -251,7 +251,16 @@ jobs:
               title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null)
               authors=$(printf '%s' "${who:-}" | tr -d '@' | tr -s ' ' ',' | sed 's/,$//')
 
-              cert="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/certificate-merged.png"
+              # NO generic fallback image. The committed template carries the
+              # PLACEHOLDER certifier names it was designed with, so linking it
+              # states that fictional people stamped and sealed this PR, over an
+              # author line that is not the opener's. This block's own comment
+              # above already says embedding the template is "worse than no
+              # image" -- the fallback did it anyway, on every certificate ever
+              # posted (bot-cards held zero pr-*.png as of 2026-09-05, so the
+              # fallback fired 100% of the time). Empty means: post the words,
+              # skip the picture.
+              cert=""
               if [ "$render_ok" = 1 ]; then
                 python3 .github/scripts/render-certificate.py \
                   --template docs/diagrams/states/certificate-merged.svg \
@@ -288,14 +297,20 @@ jobs:
                 if gh api "repos/$REPO/contents/$path?ref=bot-cards" >/dev/null 2>&1; then
                   cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
                 else
-                  echo "::warning title=Certificate image was not uploaded::falling back to the generic certificate. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this."
+                  echo "::warning title=Certificate image was not uploaded::posting the certificate WITHOUT an image. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this. The generic template is deliberately NOT linked: it carries placeholder certifier names."
                 fi
+              fi
+              # An image only when one was actually produced FOR THIS PR.
+              if [ -n "$cert" ]; then
+                pic="<img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">"
+              else
+                pic="_(The certificate image could not be rendered for this PR. The gate records themselves are public -- see the checks on the merge commit.)_"
               fi
               gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
           ${who:-@}— merged. Every required benchmark gate was certified against a
           frozen commit before this landed, and the record is public.
 
-          <img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">
+          $pic
 
           Merge commit \`${merge_sha:0:10}\`. Yours to share." >/dev/null
               echo "posted the certificate -> ${who:-nobody}"
