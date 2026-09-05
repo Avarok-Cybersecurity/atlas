@@ -342,22 +342,48 @@ fn parse_mike_screenshot_format() {
 
 #[test]
 fn streaming_bare_function_flush() {
+    // Regression: a bare tag-style call split across stream chunks so the
+    // NAME closes (`</function>`) before the `<parameters>` block does.
+    // `bare_function_end` used to treat the name-closing `</function>` as
+    // end-of-call whenever `</parameters>` hadn't streamed in yet, emitting
+    // a zero-argument call from `process()` alone and leaking the orphaned
+    // `<parameters>...` text as raw content on the next call (it has no
+    // `<function` prefix, so nothing recognizes it as part of the tool
+    // call). Fixed by holding the block incomplete once `<parameters>` has
+    // opened, until its close (or end-of-stream via `flush()`) arrives.
     let mut det = StreamingToolDetector::new();
-    // Feed complete content including bare function tag
     let out1 = det.process(
-        "Hello <function>test</function><parameters><name>x</name><value>1</value></parameters>",
+        "Hello <function>test</function><parameters><name>x</name><value>1</value>",
     );
-    // Flush triggers bare function detection on buffered content
+    let premature_tool_calls = out1
+        .iter()
+        .filter(|o| matches!(o, DetectorOutput::ToolCall(..)))
+        .count();
+    assert_eq!(
+        premature_tool_calls, 0,
+        "must not complete the call before </parameters> arrives (params would be dropped)"
+    );
+    // `</parameters>` never arrives (e.g. max_tokens cutoff) — end of
+    // stream. Flush must recover the call, with its argument, from the
+    // buffered partial block — this is the actual flush() code path this
+    // test's name refers to.
     let out2 = det.flush();
     let all: Vec<_> = out1.into_iter().chain(out2).collect();
     let has_content = all
         .iter()
         .any(|o| matches!(o, DetectorOutput::Content(s) if s.contains("Hello")));
-    let has_tool = all
-        .iter()
-        .any(|o| matches!(o, DetectorOutput::ToolCall(tc, _) if tc.function.name == "test"));
+    let tool_call = all.iter().find_map(|o| match o {
+        DetectorOutput::ToolCall(tc, _) => Some(tc),
+        _ => None,
+    });
     assert!(has_content, "Should have content before function tag");
-    assert!(has_tool, "Should detect bare function tag on flush");
+    let tc = tool_call.expect("Should detect bare function tag on flush");
+    assert_eq!(tc.function.name, "test");
+    let args: serde_json::Value = serde_json::from_str(&tc.function.arguments).unwrap();
+    assert_eq!(
+        args["x"], 1,
+        "flush must recover the parameter value, not drop it: {args:?}"
+    );
 }
 
 // ── Duplicated name sanitization (Bash=Bash bug) ──
