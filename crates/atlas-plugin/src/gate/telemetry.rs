@@ -60,8 +60,28 @@ pub struct PrFacts {
     #[serde(default)]
     pub merged: bool,
     /// Repo-relative paths this PR changes.
+    ///
+    /// Only meaningful when [`Self::paths_unknown`] is false. When the list
+    /// could not be read it is empty, and empty-because-unknown is NOT the
+    /// same fact as empty-because-nothing-changed.
     #[serde(default)]
     pub changed_paths: Vec<String>,
+    /// True when the collector could not read this PR's file list at all.
+    ///
+    /// ★ The whole point of this view is blast radius, and understating it is
+    /// the one direction it must not fail in. A failed `pulls/N/files` call
+    /// used to fall through to `changed_paths: []`, which every consumer here
+    /// reads as *this PR touches nothing*: no targets, no owners, no promotion
+    /// debt, no collisions — a maximally reassuring record produced by an API
+    /// error. This flag makes the absence of the input a first-class fact so
+    /// the renderer can say "unknown" instead of "none".
+    ///
+    /// The marker is kept rather than dropping the record: a dropped PR is
+    /// simply absent from the comment, and absent reads as *no such PR* — the
+    /// same understatement by a different route, and one that also removes it
+    /// from the collision table and the merge order it should be blocking.
+    #[serde(default)]
+    pub paths_unknown: bool,
 }
 
 /// One PR's derived position in the taxonomy.
@@ -98,7 +118,11 @@ pub fn views(root: &Path, prs: &[PrFacts]) -> Vec<PrView> {
                 .filter(|p| taxon::hardware_of(p).is_some())
                 .cloned()
                 .collect();
-            let whole_repo = facts.changed_paths.len() > kernel_paths.len();
+            // ★ Unknown paths are the MAXIMUM blast radius, never the empty
+            // one. `whole_repo` is what makes a PR re-open every target and
+            // contend with every other PR, so routing the unknown case through
+            // it gives the conservative answer everywhere at once.
+            let whole_repo = facts.paths_unknown || facts.changed_paths.len() > kernel_paths.len();
             PrView {
                 hardware: taxon::hardware_span(&kernel_paths),
                 models: taxon::model_span(&kernel_paths),
@@ -109,9 +133,17 @@ pub fn views(root: &Path, prs: &[PrFacts]) -> Vec<PrView> {
                 },
                 owners: codeowners::owners_for_paths(&rules, &facts.changed_paths),
                 whole_repo,
-                promotion_debt: coverage::promotion_debt(
-                    facts.changed_paths.iter().map(String::as_str),
-                ),
+                // Same rule for debt: with no paths there is no join to
+                // perform, so the answer is every candidate, and the renderer
+                // labels the row as assumed rather than measured.
+                promotion_debt: if facts.paths_unknown {
+                    coverage::PROMOTION_CANDIDATES
+                        .iter()
+                        .map(|gate| gate.id)
+                        .collect()
+                } else {
+                    coverage::promotion_debt(facts.changed_paths.iter().map(String::as_str))
+                },
                 facts: facts.clone(),
             }
         })
@@ -167,6 +199,29 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
         "\nAdvisory. Nothing here blocks a merge — the blocking checks live on each PR.\n",
     );
 
+    // ── The one thing this view cannot be quiet about ──
+    //
+    // A PR whose file list the collector could not read is shown at MAXIMUM
+    // blast radius below, not zero. Saying so out loud is the difference
+    // between a conservative estimate and a fabricated measurement: every
+    // "ALL" and every debt row those PRs contribute is an assumption, and a
+    // reader who cannot tell which rows are assumed will quote them as facts.
+    let blind: Vec<u64> = views
+        .iter()
+        .filter(|v| v.facts.paths_unknown)
+        .map(|v| v.facts.number)
+        .collect();
+    if !blind.is_empty() {
+        out.push_str(&format!(
+            "\n> ⚠ **Changed files unavailable for {}.** The API call for their diffs \
+             failed on this run, so nothing below measures them. They are counted at \
+             MAXIMUM blast radius — every target, every promotion candidate — because \
+             an unknown diff must never render as an empty one. Re-run this workflow \
+             before using any row they appear in.\n",
+            order::cap_prs(&blind)
+        ));
+    }
+
     out.push_str(&order::render_next_steps(&views));
 
     // ── PRs, grouped by the hardware they touch ──
@@ -198,14 +253,20 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
     }
     for (category, group) in &grouped {
         for view in group {
-            let targets = if view.whole_repo {
+            let targets = if view.facts.paths_unknown {
+                "ALL — **assumed**, changed files unreadable".to_string()
+            } else if view.whole_repo {
                 "ALL (diff reaches outside kernels/)".to_string()
             } else if view.targets.is_empty() {
                 "none".to_string()
             } else {
                 format!("{}", view.targets.len())
             };
-            let owners = if view.owners.is_empty() {
+            // "—" means CODEOWNERS matched nobody. With no paths there was
+            // nothing to match, which is a different sentence.
+            let owners = if view.facts.paths_unknown {
+                "unknown".to_string()
+            } else if view.owners.is_empty() {
                 "—".to_string()
             } else {
                 view.owners.join(" ")
@@ -259,7 +320,14 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
                 // those two different rows instead of one undifferentiated list.
                 if v.facts.merged { "**yes**" } else { "not yet" },
                 escape(&v.facts.title),
-                v.promotion_debt.join(", ")
+                if v.facts.paths_unknown {
+                    format!(
+                        "{} — **assumed** (paths unreadable)",
+                        v.promotion_debt.join(", ")
+                    )
+                } else {
+                    v.promotion_debt.join(", ")
+                }
             ));
         }
     }
@@ -315,3 +383,7 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
 #[cfg(test)]
 #[path = "telemetry_tests.rs"]
 mod telemetry_tests;
+
+#[cfg(test)]
+#[path = "telemetry_unknown_tests.rs"]
+mod telemetry_unknown_tests;
