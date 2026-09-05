@@ -6,14 +6,23 @@ Atlas provides per-model Dockerfiles organized by `(Hardware, Model, Quantizatio
 
 ```
 docker/
-  gb10/                              # NVIDIA GB10 (DGX Spark)
+  gb10/                              # NVIDIA GB10 (DGX Spark), sm_121f
+    Dockerfile                       # all models, one multi-target binary
     qwen3-next-80b-a3b/
       nvfp4/
         Dockerfile                   # 80B model, NVFP4 quantization
     qwen3.5-35b-a3b/
       nvfp4/
         Dockerfile                   # 35B model, NVFP4 quantization
+  hopper/                            # NVIDIA H100 / H200, sm_90a
+    Dockerfile
+  b200/                              # NVIDIA B200 / GB200, sm_100a
+    Dockerfile
 ```
+
+The three hardware sets are not interchangeable. Each image carries PTX for
+one architecture and `spark`'s arch preflight refuses to start on any other
+GPU — see [Hopper / B200 images](#hopper--b200-images) below.
 
 ## Prerequisites
 
@@ -93,6 +102,124 @@ docker run --gpus all --ipc=host -p 8888:8888 \
 ```
 
 > **Note:** The 35B model's `extra_weights.safetensors` is a symlink that may break with HF cache mounts. Use `--local-dir` download or `--model-from-path` instead.
+
+## Hopper / B200 images
+
+`docker/hopper/Dockerfile` (H100 / H200, `sm_90a`) and
+`docker/b200/Dockerfile` (B200 / GB200, `sm_100a`) are the datacentre
+counterparts of `docker/gb10/Dockerfile`. They exist so that **renting the GPU
+and building on it are two different things**: `nvcc --ptx -arch=sm_90a` is a
+cross-compile and the kernels ship as PTX embedded in the binary, so both
+images build end to end on any x86_64 Linux host with Docker and no NVIDIA
+hardware at all. The rented box only pulls.
+
+### Build
+
+From the repository root, on any x86_64 Docker host:
+
+```bash
+docker build -f docker/hopper/Dockerfile -t atlas-hopper:latest .
+docker build -f docker/b200/Dockerfile   -t atlas-b200:latest .
+```
+
+Roughly an hour cold — the Rust release build plus one nvcc invocation per
+kernel per model target. To build one model instead of all five:
+
+```bash
+docker build -f docker/hopper/Dockerfile \
+  --build-arg ATLAS_TARGET_MODEL=nemotron-super-120b-a12b \
+  -t atlas-hopper:nemotron .
+```
+
+Build args: `ATLAS_TARGET_HW` (defaults to `hopper` / `b200` per file),
+`ATLAS_TARGET_MODEL` (`*` by default — `deepseek-v4-flash`,
+`nemotron-3-nano-30b-a3b`, `nemotron-super-120b-a12b`, `qwen3.6-35b-a3b`,
+`qwen3-next-80b-a3b`), `ATLAS_TARGET_QUANT` (`nvfp4`), and `ATLAS_GIT_SHA`
+(stamped into `org.opencontainers.image.revision`).
+
+Neither image builds the optional CUTLASS or FlashInfer side objects
+(`CUTLASS_HOME` / `FLASHINFER_HOME` are deliberately unset). The CUTLASS
+NVFP4 wrappers are gated on SM120/SM121 support and compile to nothing for
+both of these architectures, so there is nothing to gain;
+`docker/gb10/Dockerfile.builder` is the image that wires them up.
+
+### First boot: `--check-kernels`
+
+Run this before serving anything, and before timing anything. It resolves
+every kernel the model needs against the PTX actually compiled into the
+binary, prints the ones it cannot resolve, and exits with that count:
+
+```bash
+docker run --gpus all --ipc=host --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  atlas-hopper:latest \
+  serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --check-kernels --no-tui
+```
+
+A non-zero exit names kernels that are missing for this architecture. Some
+absences are expected and declared: `kernels/<hw>/qwen3.6-35b-a3b/MODEL.toml`
+lists the two W4A4 MoE entry points under `[expected_absent.moe_w4a16]`,
+because the warp-level block-scaled MMA they use exists on neither `sm_90a`
+nor `sm_100a`. The `[expected_absent]` tables in these trees were harvested on
+GB10 and have **not** been re-harvested on datacentre silicon, so the first
+real `--check-kernels` run on an H100 or a B200 is also the thing that
+validates them.
+
+### Serve
+
+Single GPU:
+
+```bash
+docker run --gpus all --ipc=host --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  atlas-hopper:latest \
+  serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --no-tui
+```
+
+N GPUs on one node — use the launcher rather than N hand-written `docker run`
+lines. It pins rank `i` to GPU `i` and ships **no** NCCL environment, which is
+the correct configuration on an NVLink box:
+
+```bash
+NGPUS=4 IMAGE=atlas-hopper:latest \
+  scripts/start-node-ep.sh nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+
+NGPUS=8 IMAGE=atlas-b200:latest \
+  scripts/start-node-ep.sh deepseek-ai/DeepSeek-V4-Flash
+```
+
+Neither image bakes in any `NCCL_*` variable. `scripts/start-ep2.sh`'s block
+is tuned for two GB10 chassis over RoCE and is actively wrong here: it names a
+NIC these machines do not have, disables NVLink SHARP, and forces the slowest
+protocol/algorithm pair onto an intra-node transport. `start-node-ep.sh`'s
+`NCCL_PROFILE` knob is where a deliberate override belongs.
+
+Both runtime stages enforce **NCCL >= 2.28** at build time (`ncclMemAlloc` /
+`ncclMemFree` symmetric-memory windows); the build fails rather than shipping
+an image that would lose them.
+
+### These images are architecture-locked, on purpose
+
+`atlas-hopper` carries `sm_90a` PTX and nothing else; `atlas-b200` carries
+`sm_100a` and nothing else. Point either at the wrong GPU and `spark`'s arch
+preflight refuses to start, before the driver would. **That is the feature.**
+PTX built for an `a`-suffixed architecture does not run forward, and the two
+Blackwell architectures are siblings rather than a ladder — `sm_100a` has
+tcgen05 and `redux.sync.max.abs.f32`, `sm_120a`/`sm_121` have the warp-level
+`mma … .kind::mxf4nvf4.block_scale` that `sm_100a` lacks. B300 / GB300 are
+`sm_103a` and are served by neither image. The measured table is in the B200
+section of [`docs/HARDWARE.md`](../docs/HARDWARE.md).
+
+Hopper is also **FP8 / BF16 only**: it has no NVFP4 datapath, and
+`kernels/hopper/<model>/nvfp4/` is a directory name rather than a promise —
+an NVFP4-built kernel bundle also serves FP8 and BF16 checkpoints, which is
+why the directory is called that.
+
+### Just want the binary?
+
+`.github/workflows/datacenter-binaries.yml` builds the same `spark` on a
+GitHub-hosted runner and uploads `spark-hopper-x86_64` / `spark-b200-x86_64`.
+See [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#a-prebuilt-binary-for-a-rental-box).
 
 ## API
 
