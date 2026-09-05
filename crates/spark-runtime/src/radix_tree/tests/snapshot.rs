@@ -17,8 +17,18 @@ fn test_insert_without_snapshot() {
 
     tree.insert(&tokens, &[10], &[], 16, 0, 0);
     let m = tree.lookup(&tokens, 16, 0, 0);
+    // The KV walk must actually HIT first. `lookup` skips the snapshot index
+    // entirely when `matched_tokens == 0`, so without this the snapshot
+    // assertions below also hold for a tree that matches nothing at all.
+    assert_eq!(m.matched_tokens, 16);
+    assert_eq!(m.matched_blocks, vec![10]);
     assert_eq!(m.ssm_snapshot, None);
     assert_eq!(m.ssm_snapshot_tokens, 0);
+    // The tier fields are the other half of "no snapshot": a spilled anchor
+    // arrives there, not in `ssm_snapshot`.
+    assert_eq!(m.ssm_snapshot_tier_key, None);
+    assert_eq!(m.ssm_snapshot_tier_tokens, 0);
+    assert!(!m.ssm_snapshot_is_tail);
     tree.release(&tokens, 16, 0);
 }
 
@@ -152,8 +162,9 @@ fn test_partial_suffix_not_matched_for_full_block_request() {
     let tokens: Vec<u32> = (0..20).collect();
     tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
 
-    // Lookup 32 tokens — 2 full blocks in request. Partial suffix is 4 tokens
-    // but remainder is 0 (32 % 16 == 0), so partial check is skipped.
+    // Lookup 32 tokens — 2 full blocks in request. Only the first matches, and
+    // the unmatched remainder is a WHOLE block (16), so the sub-block arms are
+    // out of range for it.
     let tokens_32: Vec<u32> = (0..32).collect();
     let m = tree.lookup(&tokens_32, 16, 0, 0);
 
@@ -161,6 +172,26 @@ fn test_partial_suffix_not_matched_for_full_block_request() {
     assert_eq!(m.matched_tokens, 16);
     assert_eq!(m.matched_blocks, vec![10]);
     tree.release(&tokens_32, 16, 0);
+
+    // The case the name is actually about: a BLOCK-ALIGNED request. Its
+    // remainder is zero, so the sub-block arms must not run at all — an empty
+    // suffix is a prefix of every stored key, so a missing `remainder > 0`
+    // guard appends the 4-token partial block to a 16-token match and hands
+    // the caller a block table longer than `matched_tokens` describes.
+    let tokens_16: Vec<u32> = (0..16).collect();
+    let m16 = tree.lookup(&tokens_16, 16, 0, 0);
+    assert_eq!(m16.matched_tokens, 16);
+    assert_eq!(
+        m16.matched_blocks,
+        vec![10],
+        "the partial slot must not be appended to a block-aligned match"
+    );
+    assert_eq!(
+        m16.matched_blocks.len(),
+        m16.matched_tokens / 16,
+        "block table must stay aligned with matched_tokens"
+    );
+    tree.release(&tokens_16, 16, 0);
 }
 
 #[test]
@@ -217,7 +248,9 @@ fn test_partial_suffix_multi_block_prefix() {
     let m = tree.lookup(&tokens, 16, 0, 0);
 
     assert_eq!(m.matched_tokens, 396);
-    assert_eq!(m.matched_blocks.len(), 25);
+    // Identity AND order, not just the count: a count-only oracle accepts a
+    // walk that returns 25 wrong blocks (e.g. each node's parent block).
+    assert_eq!(m.matched_blocks, block_table);
     tree.release(&tokens, 16, 0);
 }
 
