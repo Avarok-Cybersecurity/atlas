@@ -294,3 +294,59 @@ fn a_record_with_a_different_param_pin_value_fails() {
         ]
     );
 }
+
+/// ★ A multi-GPU run records BOTH halves of its topology: what was asked of
+/// the box, and what the box actually was.
+///
+/// The two are independently insufficient. `--tp-size 2` on a 2-GPU node and
+/// the same flag on an 8-GPU node are different measurements — the second
+/// leaves six cards idle and the memory system uncontended — and the flags
+/// alone cannot tell them apart. The width alone cannot either: an 8-GPU node
+/// serving at tp=1 and at tp=8 differ by the whole point of the run.
+///
+/// Oracle: the record format's own rule that `served_by` plus `serve_overrides`
+/// must reconstruct a replayable `command` (see
+/// `a_run_with_serve_overrides_records_them_and_stays_replayable` above), now
+/// with the topology keys the Hopper A/B pins, crossed with the fingerprint
+/// half added for it.
+#[test]
+fn a_multi_gpu_run_records_its_width_and_replays_its_topology_flags() {
+    let mut overrides = BTreeMap::new();
+    overrides.insert("tp_size".to_string(), "2".to_string());
+    overrides.insert("ep_size".to_string(), "2".to_string());
+    overrides.insert("world_size".to_string(), "2".to_string());
+    let mut gate = GateRecord::from_run(
+        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
+        overrides.clone(),
+    )
+    .unwrap();
+    gate.hardware = crate::hardware::Hardware {
+        gpu: "NVIDIA H100 80GB HBM3".into(),
+        driver: "580.126.09".into(),
+        gpu_count: Some(8),
+        ..Default::default()
+    };
+
+    // The width the box offered.
+    assert_eq!(gate.hardware.gpu_count, Some(8));
+    assert_eq!(gate.hardware.gate_key(), "h100");
+    // The width that was used, still replayable from `command` alone.
+    assert_eq!(gate.serve_overrides, overrides);
+    let replay = gate.command.join(" ");
+    for pin in [
+        "--serve-override ep_size=2",
+        "--serve-override tp_size=2",
+        "--serve-override world_size=2",
+    ] {
+        assert!(replay.contains(pin), "{pin} missing from: {replay}");
+    }
+    // And both survive the trip to disk and back.
+    let back: GateRecord = serde_json::from_str(&serde_json::to_string(&gate).unwrap()).unwrap();
+    assert_eq!(back.hardware.gpu_count, Some(8));
+    assert_eq!(back.serve_overrides, overrides);
+    assert_eq!(back.command, gate.command);
+}
