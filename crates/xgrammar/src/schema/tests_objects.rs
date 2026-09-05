@@ -64,22 +64,45 @@ fn object_additional_properties_schema() {
 
 #[test]
 fn object_additional_properties_false() {
-    let got = json_schema_to_ebnf(
-        r#"{"type":"object","properties":{"a":{"type":"integer"}},"additionalProperties":false}"#,
-        &no_space(),
-    )
-    .unwrap();
+    let schema =
+        r#"{"type":"object","properties":{"a":{"type":"integer"}},"additionalProperties":false}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    // The oracle: `additionalProperties:false` means the compiled
+    // grammar must accept only the declared property and reject any
+    // extra key (JSON Schema `additionalProperties` semantics) — not
+    // merely "the generated EBNF text parses".
+    let opts = no_space();
+    assert!(
+        schema_accepts(schema, &opts, r#"{"a": 1}"#),
+        "declared property alone must be accepted"
+    );
+    assert!(
+        !schema_accepts(schema, &opts, r#"{"a": 1, "b": 2}"#),
+        "additionalProperties:false must reject an undeclared key"
+    );
 }
 
 #[test]
 fn object_min_max_properties() {
-    let got = json_schema_to_ebnf(
-        r#"{"type":"object","additionalProperties":{"type":"integer"},"minProperties":1,"maxProperties":3}"#,
-        &no_space(),
-    )
-    .unwrap();
+    let schema = r#"{"type":"object","additionalProperties":{"type":"integer"},"minProperties":1,"maxProperties":3}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    // Oracle: `minProperties`/`maxProperties` must actually bound the
+    // number of properties the compiled grammar accepts, not merely
+    // appear as inert numbers that never reach the generated repeat
+    // count.
+    let opts = no_space();
+    assert!(
+        !schema_accepts(schema, &opts, r#"{}"#),
+        "minProperties:1 must reject the empty object"
+    );
+    assert!(schema_accepts(schema, &opts, r#"{"a": 1}"#));
+    assert!(schema_accepts(schema, &opts, r#"{"a": 1, "b": 2, "c": 3}"#));
+    assert!(
+        !schema_accepts(schema, &opts, r#"{"a": 1, "b": 2, "c": 3, "d": 4}"#),
+        "maxProperties:3 must reject a fourth property"
+    );
 }
 
 #[test]
@@ -94,22 +117,40 @@ fn object_min_greater_than_max_unsatisfiable() {
 
 #[test]
 fn object_pattern_properties() {
-    let got = json_schema_to_ebnf(
-        r#"{"type":"object","patternProperties":{"^x":{"type":"integer"}}}"#,
-        &no_space(),
-    )
-    .unwrap();
+    let schema = r#"{"type":"object","patternProperties":{"^x":{"type":"integer"}}}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    // Oracle: a `patternProperties` key regex must actually gate which
+    // keys are legal, not just decorate a grammar that accepts any key.
+    // (xgrammar's regex converter compiles a `pattern` to a *whole-key*
+    // match — `^`/`$` are stray no-ops it strips per `regex/mod.rs` —
+    // so `"^x"` accepts only the literal key `x`, not any key merely
+    // starting with `x`; see that module's documented anchor handling.)
+    let opts = no_space();
+    assert!(
+        schema_accepts(schema, &opts, r#"{"x": 1}"#),
+        "the key matching the (whole-key) pattern must be accepted"
+    );
+    assert!(
+        !schema_accepts(schema, &opts, r#"{"y": 1}"#),
+        "a key NOT matching the pattern must be rejected (strict_mode has no additionalProperties)"
+    );
 }
 
 #[test]
 fn object_property_names() {
-    let got = json_schema_to_ebnf(
-        r#"{"type":"object","propertyNames":{"type":"string","minLength":1}}"#,
-        &no_space(),
-    )
-    .unwrap();
+    let schema = r#"{"type":"object","propertyNames":{"type":"string","minLength":1}}"#;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    // Oracle: `propertyNames` sub-schema constraints (here `minLength:1`)
+    // must actually gate keys, not just get parsed and then dropped for
+    // an unconstrained key rule.
+    let opts = no_space();
+    assert!(schema_accepts(schema, &opts, r#"{"a": 1}"#));
+    assert!(
+        !schema_accepts(schema, &opts, r#"{"": 1}"#),
+        "propertyNames minLength:1 must reject the empty-string key"
+    );
 }
 
 #[test]
@@ -225,22 +266,34 @@ fn type_array_empty_is_any() {
 
 #[test]
 fn ref_to_defs() {
-    let got = json_schema_to_ebnf(
-        r##"{"$defs":{"Pos":{"type":"integer","minimum":0}},"type":"object","properties":{"x":{"$ref":"#/$defs/Pos"}},"required":["x"]}"##,
-        &no_space(),
-    )
-    .unwrap();
+    let schema = r##"{"$defs":{"Pos":{"type":"integer","minimum":0}},"type":"object","properties":{"x":{"$ref":"#/$defs/Pos"}},"required":["x"]}"##;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    // Oracle: the `$ref`-resolved target schema's constraints
+    // (`type: integer`) must actually reach the compiled grammar — a
+    // resolver that silently degraded every ref to "any" (as it does
+    // for a malformed URI) would still pass `parse_ebnf_default`.
+    let opts = no_space();
+    assert!(schema_accepts(schema, &opts, r#"{"x": 5}"#));
+    assert!(
+        !schema_accepts(schema, &opts, r#"{"x": "not-an-integer"}"#),
+        "$ref target's type:integer must be enforced, not degraded to any"
+    );
 }
 
 #[test]
 fn ref_to_definitions() {
-    let got = json_schema_to_ebnf(
-        r##"{"definitions":{"Name":{"type":"string"}},"type":"object","properties":{"n":{"$ref":"#/definitions/Name"}},"required":["n"]}"##,
-        &no_space(),
-    )
-    .unwrap();
+    let schema = r##"{"definitions":{"Name":{"type":"string"}},"type":"object","properties":{"n":{"$ref":"#/definitions/Name"}},"required":["n"]}"##;
+    let got = json_schema_to_ebnf(schema, &no_space()).unwrap();
     assert!(parse_ebnf_default(&got).is_ok());
+    // Same oracle as `ref_to_defs`, but for the legacy `definitions`
+    // (draft-4/6/7) pointer root instead of `$defs`.
+    let opts = no_space();
+    assert!(schema_accepts(schema, &opts, r#"{"n": "hello"}"#));
+    assert!(
+        !schema_accepts(schema, &opts, r#"{"n": 5}"#),
+        "$ref target's type:string must be enforced, not degraded to any"
+    );
 }
 
 #[test]
