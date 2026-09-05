@@ -293,3 +293,7 @@ mod tests {
         assert_eq!(messages[0].text(), "tool instructions\n\noriginal");
     }
 }
+
+#[cfg(test)]
+#[path = "../../tokenizer/tests/native_tool_prompt.rs"]
+mod native_tool_prompt;
