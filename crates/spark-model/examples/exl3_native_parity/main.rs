@@ -70,6 +70,7 @@ mod legs_dense_attn;
 mod legs_dense_gdn;
 mod legs_kladder;
 mod legs_moe;
+mod legs_moe_ingress;
 mod legs_moe_verify_grid;
 mod legs_moe_prefill;
 mod legs_moe_prefill_debug;
@@ -198,6 +199,11 @@ fn main() -> Result<()> {
     let ctx = Ctx { g, locks, sms };
     let mut rng = Lcg(0x5EED_D06E);
 
+    if std::env::var("EXL3_INGRESS_ONLY").as_deref() == Ok("1") {
+        anyhow::ensure!(legs_moe_ingress::run(&ctx)?, "EXL3 ingress parity failed");
+        return Ok(());
+    }
+
     if std::env::var("EXL3_VERIFY_GRID_ONLY").as_deref() == Ok("1") {
         anyhow::ensure!(legs_moe_verify_grid::run(&ctx)?, "EXL3 verify grid parity failed");
         return Ok(());
@@ -222,6 +228,7 @@ fn main() -> Result<()> {
     }
     clean &= legs::leg_mgemm(&ctx, &mut rng)?;
     clean &= legs_moe::leg_moe_decode(&ctx, &mut rng)?;
+    clean &= legs_moe_ingress::run(&ctx)?;
     clean &= legs_moe_verify_grid::run(&ctx)?;
     clean &= legs_moe_prefill::leg_moe_prefill(&ctx, &mut rng)?;
     clean &= legs_moe_prefill_det::leg_moe_prefill_determinism(&ctx, &mut rng)?;

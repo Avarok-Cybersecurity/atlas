@@ -367,6 +367,41 @@ extern "C" __global__ void __launch_bounds__(256) exl3_moe_replicate_a_bf16(
     }
 }
 
+// Fused ingress: independent staging outputs, identical casts and flat slot
+// order to the two kernels above. The activation launch geometry is retained;
+// routing has its own grid-stride loop so small hidden widths remain valid.
+extern "C" __global__ void __launch_bounds__(256) exl3_moe_stage_ingress(
+    const __nv_bfloat16* __restrict__ in,
+    const unsigned int* __restrict__ indices,
+    const float* __restrict__ probs,
+    int64_t* __restrict__ b_indices,
+    half* __restrict__ b_weights,
+    half* __restrict__ out,
+    int local_start,
+    int num_local,
+    int top_k,
+    long long hidden,
+    long long s,
+    long long total)
+{
+    long long first = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    long long stride = (long long) gridDim.x * blockDim.x;
+    for (long long i = first; i < s; i += stride)
+    {
+        long long gid = (long long) indices[i];
+        long long local = gid - (long long) local_start;
+        b_indices[i] = (local >= 0 && local < (long long) num_local) ? local : (int64_t) -1;
+        b_weights[i] = __float2half_rn(probs[i]);
+    }
+    for (long long i = first; i < total; i += stride)
+    {
+        long long slot = i / hidden;
+        long long col = i - slot * hidden;
+        long long token = slot / top_k;
+        out[i] = __float2half_rn(__bfloat162float(in[token * hidden + col]));
+    }
+}
+
 // ── MoE prefill-tier staging (contracts in the header) ─────────────────────
 //
 // exl3_moe_stage_sorted: map Atlas's sort outputs (moe_sort_by_expert:

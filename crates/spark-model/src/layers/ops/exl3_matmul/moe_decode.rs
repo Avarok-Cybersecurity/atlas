@@ -222,27 +222,45 @@ pub fn exl3_moe_decode_routed(
          multiples of 128 (trellis tile + Hadamard block)"
     );
 
-    // 1) Routing staging + replicated fp16 ingress (plain launches).
-    exl3_moe_stage_routing(
-        gpu,
-        indices_u32,
-        probs_f32,
-        scratch.b_indices,
-        scratch.b_weights,
-        local_start,
-        num_local,
-        s,
-        stream,
-    )?;
-    exl3_moe_replicate_a_bf16(
-        gpu,
-        input_bf16,
-        scratch.a_f16,
-        num_tokens,
-        top_k,
-        hidden,
-        stream,
-    )?;
+    // 1) Independent route casts + replicated fp16 ingress, normally fused.
+    if super::moe_ingress::fused_ingress_enabled() {
+        super::exl3_moe_stage_ingress(
+            gpu,
+            input_bf16,
+            indices_u32,
+            probs_f32,
+            scratch.b_indices,
+            scratch.b_weights,
+            scratch.a_f16,
+            local_start,
+            num_local,
+            num_tokens,
+            top_k,
+            hidden,
+            stream,
+        )?;
+    } else {
+        exl3_moe_stage_routing(
+            gpu,
+            indices_u32,
+            probs_f32,
+            scratch.b_indices,
+            scratch.b_weights,
+            local_start,
+            num_local,
+            s,
+            stream,
+        )?;
+        exl3_moe_replicate_a_bf16(
+            gpu,
+            input_bf16,
+            scratch.a_f16,
+            num_tokens,
+            top_k,
+            hidden,
+            stream,
+        )?;
+    }
 
     // 2) GATE / UP: per-slot f16 C, indices select the expert, NO weights
     //    (the reduction must not run — per-slot rows feed the activation).
