@@ -82,7 +82,14 @@ def _start(args):
         time.sleep(0.05)
         if process.poll() is not None:
             raise ValueError("server exited during launch: " + str(process.returncode))
-        proof = snapshot(process.pid, environment)
+        try:
+            proof = snapshot(process.pid, environment)
+        except ValueError as error:
+            # The child can exit after poll() but while /proc is read. Preserve
+            # the actual exit diagnosis when the cleared cmdline is observed.
+            if process.poll() is not None:
+                raise ValueError("server exited during launch: " + str(process.returncode)) from error
+            raise
         if proof["run_marker"] != marker:
             raise ValueError("new process did not retain its ownership marker")
         owner = {key: proof[key] for key in ("schema", "pid", "start_ticks", "boot_id",
