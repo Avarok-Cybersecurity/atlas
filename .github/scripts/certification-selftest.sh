@@ -305,6 +305,72 @@ state_is pr-certification-blocked "control: blocked outranks stage 3"    false d
 state_is pr-certification-stage-2-both "control: a failed Seal is not a seal" false clean success failure ""
 state_is pr-certification-stage-2-needs-seal "control: a failed Seal with records still needs a seal" false clean success failure success
 
+# AN UNREADABLE API IS NOT A BOARD OF "NO"s. `pr_json=$(gh api ... || echo '{}')`
+# and `conclusion_of`'s `2>/dev/null` made an outage look like a PR with nothing
+# stamped, nothing sealed and no records. With a stage-2/3/queued marker already
+# on the comment -- the bot's normal case -- the demotion branch then rendered
+# "A new commit landed. The seal is void and the records no longer cover this
+# tree — a perf path moved" over a matching diagram, and wrote that state into
+# the marker, so the next run could not tell it had ever demoted. A fabricated
+# event, posted as the PR's one status comment.
+st_broken() {  # st_broken <which call fails: pulls|check-runs>
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/gh" <<STUB
+#!/bin/bash
+args="\$*"
+case "\$args" in
+  *check-runs*) [ "$1" = check-runs ] && { echo "gh: HTTP 502" >&2; exit 1; }; printf '\\n'; exit 0 ;;
+  *"/pulls/"*)  [ "$1" = pulls ] && { echo "gh: HTTP 502" >&2; exit 1; }
+                printf '{"merged":false,"head":{"sha":"abc1234567"},"mergeable_state":"clean"}\n'; exit 0 ;;
+  *) echo "" ;;
+esac
+STUB
+  chmod +x "$TMP/bin/gh"
+}
+st_run() {  # st_run -> "<exit>|<stdout>"
+  local out rc
+  out=$(PATH="$TMP/bin:$PATH" REPO=o/r PREV_STATE=pr-certification-stage-3 \
+        bash .github/scripts/certification-state.sh 7 2>/dev/null); rc=$?
+  printf '%s|%s' "$rc" "$out"
+}
+for which in pulls check-runs; do
+  st_broken "$which"
+  got=$(st_run)
+  case "$got" in
+    0\|*) bad "an unreadable $which API classified anyway, as '${got#*|}'" ;;
+    *demoted*) bad "an unreadable $which API invented a demotion: ${got#*|}" ;;
+    *) ok "an unreadable $which API refuses to classify, instead of inventing a demotion" ;;
+  esac
+done
+
+# CONTROL: the pre-fix fallbacks, restored in a COPY, on the same broken API.
+# They must produce the fabricated demotion -- that is what proves the two
+# checks above are not passing by construction.
+mkdir -p "$TMP/st"
+cp .github/scripts/certification-state.sh "$TMP/st/state.sh"
+python3 - "$TMP/st/state.sh" <<'STSAB'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+# Restore both pre-fix fallbacks: swallow the error and carry on with empties.
+t = t.replace('''pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>&1) || {''',
+              '''pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>/dev/null || echo '{"merged":false,"head":{"sha":"abc1234567"},"mergeable_state":"clean"}')
+false && {''')
+t = t.replace('''          --jq ".check_runs[] | select(.name == \\"$1\\") | .conclusion" 2>&1) || {''',
+              '''          --jq ".check_runs[] | select(.name == \\"$1\\") | .conclusion" 2>/dev/null) || out=""
+  false && {''')
+t = t.replace('stamp=$(conclusion_of "Stamp") || exit 3', 'stamp=$(conclusion_of "Stamp")')
+t = t.replace('seal=$(conclusion_of "Seal") || exit 3', 'seal=$(conclusion_of "Seal")')
+t = t.replace('records=$(conclusion_of "PR Benchmark Certifications") || exit 3',
+              'records=$(conclusion_of "PR Benchmark Certifications")')
+p.write_text(t)
+STSAB
+st_broken check-runs
+sab=$(PATH="$TMP/bin:$PATH" REPO=o/r PREV_STATE=pr-certification-stage-3 \
+      bash "$TMP/st/state.sh" 7 2>/dev/null | cut -f1)
+[ "$sab" = "pr-certification-demoted-push-both" ] \
+  && ok "control: swallowing the API error invents 'the seal is void — a perf path moved'" \
+  || bad "control: the sabotage did not reproduce the fabrication (got '$sab')"
+
 echo "== command handlers: who may do what =="
 # The handlers live in certification-commands.yml. What matters is not only that
 # a refusal prints a message, but that a REFUSED command creates NO check run --
