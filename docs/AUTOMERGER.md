@@ -374,3 +374,18 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept, applied wave-on-wave — the value of a second pass is that it can argue the first one DOWN, and this one did, twice; R-defer-what-you-cannot-prove (the pin proposal names the exact test lines a daytime engineer must change).
+
+---
+
+## Run 17 — 2026-09-05T04:00Z — wave 2 API lane: the server asserting the opposite of the truth
+
+```text
+2026-09-05T04:00Z  return     api lane (fable): 3 commits on nightly/w2-api, 7/7 new tests, tree clean
+2026-09-05T04:02Z  tool       coordinator verified the headline claim by grep on origin/main: `ResponsesStreamEvent::Failed` occurs EXACTLY ONCE in the whole tree — in the event-NAME MAP — and is constructed nowhere. The failure path existed on paper only. CONFIRMED.
+2026-09-05T04:03Z  aggregate  the defect: a mid-stream engine failure (OOM/scheduler abort/watchdog) was log-only, finish_reason stayed "stop", so the SSE stream ended with a spec-perfect `response.completed` + `status:"completed"` + zeroed usage. An SDK client had NO programmatic signal the output was truncated — and the half-answer was then PERSISTED as a good turn that previous_response_id happily resumed from. This is the only defect found tonight where the server actively asserts the opposite of what happened.
+2026-09-05T04:04Z  aggregate  also fixed: malformed/unknown /v1/responses input items were SILENTLY DROPPED (a dropped function_call desyncs its paired function_call_output); top_logprobs>20 silently clamped instead of 400.
+2026-09-05T04:05Z  aggregate  lane discipline worth keeping: it reported that after restoring a mutated file with `mv`, cargo REUSED THE STALE BINARY (mtime unchanged) and its green run was therefore meaningless until a touch+rebuild. It said so rather than reporting the first green. That is the a-passing-test-may-not-have-run trap, caught by the agent on itself.
+2026-09-05T04:06Z  aggregate  recorded-not-fixed: top_logprobs without logprobs:true still silently enables logprobs (needs a wire-level seam); api/chat/mod.rs is 511 lines — ALREADY over the 500 cap on origin/main, before any edit tonight
+```
+
+**CITED:** R-verify-dont-accept (the dead-enum claim settled by grep on origin/main, not by reading the report); R-a-passing-test-may-not-have-run (the lane caught cargo serving it a stale binary mid-control and disclosed it).
