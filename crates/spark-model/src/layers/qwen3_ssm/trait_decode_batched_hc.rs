@@ -392,8 +392,14 @@ impl Qwen3SsmLayer {
             }
             return Ok(());
         }
-        match num_tokens {
-            1 if small_m => {
+        use super::hc_ffn_dispatch::{HcFfnDispatch, hc_ffn_dispatch};
+        match hc_ffn_dispatch(
+            num_tokens,
+            small_m,
+            ctx.gdn_exact_replay,
+            self.ffn.exl3_native_moe(),
+        ) {
+            HcFfnDispatch::Single => {
                 let out = self.ffn.forward(rows, ctx, stream)?;
                 anyhow::ensure!(
                     out == ctx.buffers.moe_output(),
@@ -401,9 +407,13 @@ impl Qwen3SsmLayer {
                      moe_output(), which the hc post-site reads unconditionally"
                 );
             }
-            2 if small_m => self.ffn.forward_k2(rows, ctx, stream)?,
-            3 if small_m => self.ffn.forward_k3(rows, ctx, stream)?,
-            _ => self.ffn.forward_prefill(rows, num_tokens, ctx, stream)?,
+            HcFfnDispatch::K2 => self.ffn.forward_k2(rows, ctx, stream)?,
+            HcFfnDispatch::K3 => self.ffn.forward_k3(rows, ctx, stream)?,
+            HcFfnDispatch::NativeBatched => match &self.ffn {
+                FfnComponent::Moe(moe) => moe.forward_batched(rows, num_tokens, ctx, stream)?,
+                _ => anyhow::bail!("native EXL3 replay requires a MoE FFN"),
+            },
+            HcFfnDispatch::Prefill => self.ffn.forward_prefill(rows, num_tokens, ctx, stream)?,
         }
         Ok(())
     }
