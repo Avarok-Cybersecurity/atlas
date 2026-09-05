@@ -6,10 +6,28 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "campaign", "cell_id", "engine", "model", "engine_version",
-    "hardware", "topology", "serve_command", "serve_env", "workload", "client",
-    "spec", "think", "boot", "coherency", "metrics", "ptx_gate_receipt_sha256",
-    "ptx_gate_not_applicable_reason", "paired_cell", "verdict", "failing_stage",
+    "schema",
+    "campaign",
+    "cell_id",
+    "engine",
+    "model",
+    "engine_version",
+    "hardware",
+    "topology",
+    "serve_command",
+    "serve_env",
+    "workload",
+    "client",
+    "spec",
+    "think",
+    "boot",
+    "coherency",
+    "metrics",
+    "ptx_gate_receipt_sha256",
+    "ptx_gate_not_applicable_reason",
+    "paired_cell",
+    "verdict",
+    "failing_stage",
     "notes"
   ],
   "x-atlas-cross-checks": [
@@ -21,81 +39,211 @@
   ],
   "x-atlas-cross-checks-note": "Conditional rules the draft-2020-12 keyword set would express with if/then. validate_artifact.py implements them by these names; adding one here without adding it there is an error the validator reports on itself.",
   "properties": {
-    "schema": {"type": "integer", "const": 1},
-    "campaign": {"type": "string", "enum": ["hopper-atlas-vs-vllm-2026-09"]},
+    "schema": {
+      "type": "integer",
+      "const": 1
+    },
+    "campaign": {
+      "type": "string",
+      "enum": [
+        "hopper-atlas-vs-vllm-2026-09"
+      ]
+    },
     "cell_id": {
       "type": "string",
       "description": "engine.model_key.sku.workload.cC.specX.thinkY -- the cell's identity and the key the compare step pairs on.",
       "pattern": "^(atlas|vllm)\\.[a-z0-9._-]+\\.(h100|h200|b200|gb10)\\.(lat|agent)\\.c[0-9]+\\.spec(on|off)\\.think(on|off)$"
     },
-    "engine": {"type": "string", "enum": ["atlas", "vllm"]},
-
+    "engine": {
+      "type": "string",
+      "enum": [
+        "atlas",
+        "vllm"
+      ]
+    },
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hf_id", "model_key", "revision", "quant"],
+      "required": [
+        "hf_id",
+        "model_key",
+        "revision",
+        "quant"
+      ],
       "properties": {
-        "hf_id": {"type": "string"},
-        "model_key": {"type": "string"},
+        "hf_id": {
+          "type": "string"
+        },
+        "model_key": {
+          "type": "string"
+        },
         "revision": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Pinned HF snapshot revision. Null means the run did not pin one -- a manifest proving a revision exists is not evidence those bytes were loaded (SCHEMA-GAPS)."
         },
-        "quant": {"type": "string", "enum": ["fp8", "nvfp4", "mxfp4", "bf16", "int4"]}
+        "quant": {
+          "type": "string",
+          "enum": [
+            "fp8",
+            "nvfp4",
+            "mxfp4",
+            "bf16",
+            "int4"
+          ]
+        }
       }
     },
-
     "engine_version": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["git_sha", "image_digest", "binary_sha256", "vllm_version"],
+      "required": [
+        "git_sha",
+        "image_digest",
+        "binary_sha256",
+        "vllm_version"
+      ],
       "description": "Atlas is identified by git_sha (+ binary_sha256 when the binary is on the host); vLLM has no single binary and no server git revision, so its identity is image_digest. Each engine leaves the other's fields null rather than substituting the client hash.",
       "properties": {
-        "git_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$"},
-        "image_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
-        "binary_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-        "vllm_version": {"type": ["string", "null"]}
+        "git_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{7,40}$"
+        },
+        "image_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "binary_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "vllm_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
-
     "hardware": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["gpu", "gpu_count", "hardware_id", "driver", "cuda",
-                   "sm_clock_mhz", "clocks_locked", "nvidia_smi_q_sha256"],
+      "required": [
+        "gpu",
+        "gpu_count",
+        "hardware_id",
+        "driver",
+        "cuda",
+        "sm_clock_mhz",
+        "clocks_locked",
+        "nvidia_smi_q_sha256"
+      ],
       "properties": {
         "gpu": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Product name from `nvidia-smi -q`. Null when preflight could not read one -- a cell that failed before the box was described still has to produce an artifact."
         },
-        "gpu_count": {"type": "integer", "minimum": 1},
-        "hardware_id": {"type": "string", "enum": ["h100", "h200", "b200", "gb10"]},
-        "driver": {"type": ["string", "null"]},
+        "gpu_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hardware_id": {
+          "type": "string",
+          "enum": [
+            "h100",
+            "h200",
+            "b200",
+            "gb10"
+          ]
+        },
+        "driver": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "cuda": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "The container's CUDA runtime, kept distinct from the driver's advertised CUDA compatibility (SCHEMA-GAPS)."
         },
         "sm_clock_mhz": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "minimum": 0,
           "description": "Null unless a clock was sampled under load. The ladder samples one string per rep BEFORE the batch starts; an idle reading is not a performance clock."
         },
-        "clocks_locked": {"type": ["boolean", "null"]},
-        "nvidia_smi_q_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+        "clocks_locked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nvidia_smi_q_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     },
-
     "topology": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tp", "ep", "pp", "dp", "world_size", "nnodes", "matched", "recipe_max"],
+      "required": [
+        "tp",
+        "ep",
+        "pp",
+        "dp",
+        "world_size",
+        "nnodes",
+        "matched",
+        "recipe_max"
+      ],
       "properties": {
-        "tp": {"type": "integer", "minimum": 1},
-        "ep": {"type": "integer", "minimum": 1},
-        "pp": {"type": "integer", "minimum": 1},
-        "dp": {"type": "integer", "minimum": 1},
-        "world_size": {"type": "integer", "minimum": 1},
-        "nnodes": {"type": "integer", "minimum": 1},
+        "tp": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ep": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pp": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dp": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "world_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nnodes": {
+          "type": "integer",
+          "minimum": 1
+        },
         "matched": {
           "type": "boolean",
           "description": "True only when the paired cell ran the same tp/ep/pp/dp/world_size. A vLLM-only run cannot set this true."
@@ -106,176 +254,424 @@
         }
       }
     },
-
     "serve_command": {
       "type": "array",
-      "items": {"type": "string"},
+      "items": {
+        "type": "string"
+      },
       "description": "argv as executed, including the docker preamble. A reconstructed command belongs in notes, not here."
     },
     "serve_env": {
       "type": "object",
       "description": "Environment set for the serve process. Empty object means none was set, which for Atlas on an NVLink box is the correct NCCL configuration."
     },
-
     "workload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "isl", "osl", "concurrency", "source"],
+      "required": [
+        "name",
+        "isl",
+        "osl",
+        "concurrency",
+        "source"
+      ],
       "properties": {
-        "name": {"type": "string", "enum": ["lat", "agent"]},
-        "isl": {"type": "integer", "minimum": 1},
-        "osl": {"type": "integer", "minimum": 1},
-        "concurrency": {"type": "integer", "minimum": 1},
-        "source": {"type": "string", "enum": ["bench/hopper_ab/workloads.json"]}
+        "name": {
+          "type": "string",
+          "enum": [
+            "lat",
+            "agent"
+          ]
+        },
+        "isl": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "osl": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "bench/hopper_ab/workloads.json"
+          ]
+        }
       }
     },
-
     "client": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "sha256", "isl_nominal", "isl_measured_p50", "osl",
-                   "reps", "warmup", "seed", "temperature", "penalties", "prompt_mode"],
+      "required": [
+        "name",
+        "sha256",
+        "isl_nominal",
+        "isl_measured_p50",
+        "osl",
+        "reps",
+        "warmup",
+        "seed",
+        "temperature",
+        "penalties",
+        "prompt_mode"
+      ],
       "description": "Client provenance, kept strictly separate from the engine's (SCHEMA-GAPS: the ladder's driver_sha256 is the CLIENT hash and has been mistaken for a server revision).",
       "properties": {
-        "name": {"type": "string"},
+        "name": {
+          "type": "string"
+        },
         "sha256": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{64}$",
           "description": "SHA256 of the client source as executed. Null if it could not be read -- never a placeholder, which would be an invented hash."
         },
         "isl_nominal": {
-          "type": "integer", "minimum": 1,
+          "type": "integer",
+          "minimum": 1,
           "description": "The --isl the client was given. make_prompt() builds isl-12 filler WORDS plus a nonce and a suffix, so this is nominal, not tokenizer-exact."
         },
         "isl_measured_p50": {
-          "type": ["integer", "null"], "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
           "description": "Median observed prompt_tokens, when usage evidence exists. Null otherwise -- the workload may not be called exactly 1024/4096 tokens without it."
         },
-        "osl": {"type": "integer", "minimum": 1},
-        "reps": {"type": "integer", "minimum": 1},
-        "warmup": {"type": "integer", "minimum": 0},
-        "seed": {"type": "integer"},
-        "temperature": {"type": "number", "minimum": 0},
+        "osl": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "warmup": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0
+        },
         "penalties": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["presence_penalty", "frequency_penalty"],
+          "required": [
+            "presence_penalty",
+            "frequency_penalty"
+          ],
           "description": "Pinned explicitly on both engines: Atlas's non_thinking preset injects presence_penalty 1.5 when a request omits it while vLLM defaults to 0, which moved the GB10 ladder 7.8%.",
           "properties": {
-            "presence_penalty": {"type": "number"},
-            "frequency_penalty": {"type": "number"}
+            "presence_penalty": {
+              "type": "number"
+            },
+            "frequency_penalty": {
+              "type": "number"
+            }
           }
         },
-        "prompt_mode": {"type": "string", "enum": ["essay"]}
+        "prompt_mode": {
+          "type": "string",
+          "enum": [
+            "essay"
+          ]
+        }
       }
     },
-
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["on", "method", "k"],
+      "required": [
+        "on",
+        "method",
+        "k"
+      ],
       "description": "Server-side speculation state, which the ladder JSON does not carry. Both-or-neither across the two legs of a pair.",
       "properties": {
-        "on": {"type": "boolean"},
-        "method": {"type": "string", "enum": ["mtp", "dspark", "eagle3", "none"]},
-        "k": {"type": ["integer", "null"], "minimum": 1}
+        "on": {
+          "type": "boolean"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "mtp",
+            "dspark",
+            "eagle3",
+            "none"
+          ]
+        },
+        "k": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
       }
     },
-    "think": {"type": "string", "enum": ["on", "off"]},
-
+    "think": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off"
+      ]
+    },
     "boot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["time_to_ready_s", "first_token_s", "pass", "timeout_s"],
+      "required": [
+        "time_to_ready_s",
+        "first_token_s",
+        "pass",
+        "timeout_s"
+      ],
       "properties": {
-        "time_to_ready_s": {"type": ["number", "null"], "minimum": 0},
+        "time_to_ready_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
         "first_token_s": {
-          "type": ["number", "null"], "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
           "description": "Non-streaming one-token response latency including framing -- NOT the ladder's SSE TTFT."
         },
-        "pass": {"type": ["boolean", "null"]},
-        "timeout_s": {"type": "integer", "minimum": 1}
+        "pass": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-
     "coherency": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["determinism_ok", "toolcall_ok", "think_leak_ok", "gate_json_path"],
+      "required": [
+        "determinism_ok",
+        "toolcall_ok",
+        "think_leak_ok",
+        "gate_json_path",
+        "known_answer_ok"
+      ],
       "properties": {
         "determinism_ok": {
-          "type": ["boolean", "null"],
-          "description": "Two greedy runs byte-identical. Determinism is equal nonempty content, not semantic correctness."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Two greedy runs byte-identical AND the reply is not degenerate (repetition-loop detector, bounded-answer truncation). Identical garbage is not determinism; see bench/hopper_ab/coherency_gate.py."
         },
-        "toolcall_ok": {"type": ["boolean", "null"]},
-        "think_leak_ok": {"type": ["boolean", "null"]},
-        "gate_json_path": {"type": ["string", "null"]}
+        "toolcall_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "think_leak_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gate_json_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "known_answer_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Known-answer probes (17*23=391, capital of Japan, 'refrigerator' backwards) answered in the first or last line without loop signals. null = gate predates the check (before 2026-09-05)."
+        }
       }
     },
-
     "metrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["percentile_method", "tok_s_series", "tok_s_mean",
-                   "tok_s_spread_pct", "ttft_p50_ms", "ttft_p99_ms",
-                   "tpot_p50_ms", "e2e_p50_s", "vacuous", "ladder_json_path"],
+      "required": [
+        "percentile_method",
+        "tok_s_series",
+        "tok_s_mean",
+        "tok_s_spread_pct",
+        "ttft_p50_ms",
+        "ttft_p99_ms",
+        "tpot_p50_ms",
+        "e2e_p50_s",
+        "vacuous",
+        "ladder_json_path"
+      ],
       "properties": {
         "percentile_method": {
           "type": "string",
-          "enum": ["pooled_requests", "mean_of_rep_percentiles"],
+          "enum": [
+            "pooled_requests",
+            "mean_of_rep_percentiles"
+          ],
           "description": "REQUIRED, and the reason this schema exists. bench/ladder38/harness_w55_conc_ladder.py computes a percentile per rep and discards the per-request latencies, so pooled cell percentiles cannot be reconstructed from its output. A ladder-derived value is mean_of_rep_percentiles; recording it as pooled_requests is the masquerade this field prevents."
         },
         "tok_s_series": {
           "type": "array",
-          "items": {"type": "number", "minimum": 0},
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
           "description": "Raw per-rep rates, never only the mean. tok_s_mean is an unweighted mean of rep rates, not total tokens over total elapsed."
         },
-        "tok_s_mean": {"type": ["number", "null"], "minimum": 0},
-        "tok_s_spread_pct": {"type": ["number", "null"], "minimum": 0},
-        "ttft_p50_ms": {"type": ["number", "null"], "minimum": 0},
-        "ttft_p99_ms": {"type": ["number", "null"], "minimum": 0},
+        "tok_s_mean": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "tok_s_spread_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ttft_p50_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ttft_p99_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
         "tpot_p50_ms": {
-          "type": ["number", "null"], "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
           "description": "Null when unavailable. A zero TPOT arises from one content delta or a single token and is an absence, not a zero-time decode."
         },
-        "e2e_p50_s": {"type": ["number", "null"], "minimum": 0},
+        "e2e_p50_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
         "vacuous": {
-          "type": ["boolean", "null"],
+          "type": [
+            "boolean",
+            "null"
+          ],
           "description": "True when any timed request returned under 80% of the output budget. Such a cell is non-comparable."
         },
-        "ladder_json_path": {"type": ["string", "null"]}
+        "ladder_json_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
-
     "ptx_gate_receipt_sha256": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "pattern": "^[0-9a-f]{64}$",
       "description": "Atlas PTX gate ledger receipt. Null for vLLM -- the Atlas custom PTX gate does not apply to an official vLLM image, and copying Atlas's ledger into a vLLM receipt would be a fabrication."
     },
     "ptx_gate_not_applicable_reason": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Required (non-empty) whenever ptx_gate_receipt_sha256 is null. Cross-check ptx_receipt_or_reason."
     },
-
     "paired_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cell_id", "artifact_path", "within_24h"],
+      "required": [
+        "cell_id",
+        "artifact_path",
+        "within_24h"
+      ],
       "description": "The other engine's cell. A cell is CERTIFIED only when this is filled in and within_24h is true (PRD section 4 A/B gate).",
       "properties": {
-        "cell_id": {"type": ["string", "null"]},
-        "artifact_path": {"type": ["string", "null"]},
-        "within_24h": {"type": ["boolean", "null"]}
+        "cell_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifact_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "within_24h": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
       }
     },
-
-    "verdict": {"type": "string", "enum": ["CERTIFIED", "NO-GO", "PARTIAL"]},
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "CERTIFIED",
+        "NO-GO",
+        "PARTIAL"
+      ]
+    },
     "failing_stage": {
-      "type": ["string", "null"],
-      "enum": ["preflight", "serve", "boot", "coherency", "ladder", "teardown",
-               "validate", "pair", null],
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "preflight",
+        "serve",
+        "boot",
+        "coherency",
+        "ladder",
+        "teardown",
+        "validate",
+        "pair",
+        null
+      ],
       "description": "The stage that did not complete. Null iff the verdict is CERTIFIED. A cell whose gates all passed but whose paired cell is not yet recorded names `pair`: it is unfinished, not broken. Cross-check verdict_failing_stage."
     },
-    "notes": {"type": "string"}
+    "notes": {
+      "type": "string"
+    }
   }
 }

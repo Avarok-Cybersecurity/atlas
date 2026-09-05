@@ -125,7 +125,8 @@
     "determinism_ok": true,
     "toolcall_ok": true,
     "think_leak_ok": true,
-    "gate_json_path": "out/coherency.json"
+    "gate_json_path": "out/coherency.json",
+    "known_answer_ok": null
   },
   "metrics": {
     "percentile_method": "pooled_requests",

@@ -359,6 +359,7 @@ def main():
             "determinism_ok": (coh or {}).get("determinism_ok"),
             "toolcall_ok": (coh or {}).get("toolcall_ok"),
             "think_leak_ok": (coh or {}).get("think_leak_ok"),
+            "known_answer_ok": (coh or {}).get("known_answer_ok"),
             "gate_json_path": args.coherency_json if coh is not None else None,
         },
         "metrics": metrics,

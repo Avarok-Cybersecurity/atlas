@@ -127,7 +127,14 @@ def assemble(ladder, boot, coherency, provenance, workload, run_id, frozen):
         boot_pass = False
     elif boot_incomplete:
         boot_pass = None
-    check_names = ("determinism_ok", "toolcall_ok", "think_leak_ok")
+    check_names = ["determinism_ok", "toolcall_ok", "think_leak_ok"]
+    # known_answer_ok was added to the gate on 2026-09-05; a gate JSON written
+    # before then has no key at all (as opposed to null), and is judged on the
+    # three checks it did run -- with the gap recorded, never silently.
+    if "known_answer_ok" in coherency:
+        check_names.append("known_answer_ok")
+    else:
+        gaps.append("coherency.known_answer_ok: gate predates the known-answer probes")
     checks = {key: coherency.get(key) for key in check_names}
     for key, value in checks.items():
         require(value is None or type(value) is bool, f"coherency.{key} must be boolean or null")
