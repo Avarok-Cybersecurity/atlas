@@ -87,6 +87,18 @@ class ThinkingPolicyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 9, result.stdout + result.stderr)
         self.assertNotIn("stage 1/7", result.stdout)
 
+    def test_g_minimax_unmapped_request_policy_refuses_all_skus(self):
+        # Both pinned M3 templates use thinking_mode; enable_thinking true and
+        # false produce the same adaptive prompt, so neither label is proven.
+        for sku in ("h100", "h200", "b200"):
+            for think in ("on", "off"):
+                with self.subTest(sku=sku, think=think):
+                    result = self.cell("vllm", "minimax-m3", think, sku=sku)
+                    self.assertEqual(result.returncode, 9, result.stdout + result.stderr)
+                    self.assertIn("thinking_mode", result.stderr)
+                    self.assertEqual(len(result.stderr.strip().splitlines()), 1)
+                    self.assertNotIn("stage 1/7", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

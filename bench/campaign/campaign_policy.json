@@ -30,7 +30,8 @@
       "allowed": [
         "on",
         "off"
-      ]
+      ],
+      "blocked_reason": "RECIPE_GAP: pinned M3 templates require thinking_mode; enable_thinking produces adaptive prompts for both labels; a verified request adapter is required"
     },
     "nemotron-3-nano-fp8": {
       "allowed": [

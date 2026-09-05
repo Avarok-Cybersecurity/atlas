@@ -16,6 +16,8 @@ def refusal(doc, model, think):
     entry = doc.get("models", {}).get(model)
     if not isinstance(entry, dict):
         return f"REFUSED: {model} --think {think}: no campaign thinking policy"
+    if entry.get("blocked_reason"):
+        return f"REFUSED: {model} --think {think}: {entry['blocked_reason']}"
     allowed = entry.get("allowed")
     if (not isinstance(allowed, list) or not allowed
             or any(mode not in ("on", "off") for mode in allowed)):
