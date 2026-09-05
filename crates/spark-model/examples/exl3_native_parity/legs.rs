@@ -361,6 +361,7 @@ pub fn leg_mgemm_k(ctx: &Ctx, rng: &mut Lcg, k_bits: u32) -> Result<bool> {
             None,
             None,
             None,
+            None,
             ctx.sms,
             stream,
         )?;

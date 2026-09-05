@@ -186,6 +186,8 @@ pub fn exl3_silu_mul_f16(
 /// `tables` order is `[gate, up, down]`; gate/up decode `hidden -> inter`,
 /// down `inter -> hidden`. `k_bits`/`cb` may differ per projection (three
 /// separate launches), but every expert within one table shares them.
+/// `stable_token_grid` retains single-token expert shape/split-K geometry
+/// for all three projections, while processing the full batch in slot waves.
 #[allow(clippy::too_many_arguments)]
 pub fn exl3_moe_decode_routed(
     gpu: &dyn GpuBackend,
@@ -203,6 +205,7 @@ pub fn exl3_moe_decode_routed(
     local_start: usize,
     num_local: usize,
     act_limit: f32,
+    stable_token_grid: bool,
     sm_count: u32,
     stream: u64,
 ) -> Result<()> {
@@ -273,6 +276,7 @@ pub fn exl3_moe_decode_routed(
             None,
             None,
             None,
+            stable_token_grid.then_some(top_k),
             sm_count,
             stream,
         )?;
@@ -320,6 +324,7 @@ pub fn exl3_moe_decode_routed(
         None,
         None,
         None,
+        stable_token_grid.then_some(top_k),
         sm_count,
         stream,
     )?;

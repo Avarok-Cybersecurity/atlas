@@ -161,6 +161,29 @@ impl Qwen3SsmLayer {
                     stream,
                 );
             }
+            // Only the projections need M=1. The other three stages are
+            // row-independent, so share their launches across the batch.
+            if !ops::hc_decode_split_forced()
+                && !ctx.buffers.hc_lowrank_scratch().is_null()
+                && let Some(w) = &site.lowrank
+            {
+                return ops::hc_pre_gemm(
+                    ctx.gpu,
+                    streams,
+                    w,
+                    hidden,
+                    post,
+                    ctx.buffers.hc_lowrank_scratch(),
+                    n,
+                    h as u32,
+                    hc.hc_mult as u32,
+                    eps,
+                    true,
+                    true,
+                    true,
+                    stream,
+                );
+            }
             for t in 0..num_tokens {
                 ops::hc_pre_site(
                     ctx.gpu,

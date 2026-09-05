@@ -432,6 +432,7 @@ mod forward_batched;
 mod forward_batched_gate;
 mod forward_ep;
 mod forward_exl3;
+mod forward_exl3_router;
 mod forward_k2;
 mod forward_k3;
 mod forward_phase;
