@@ -67,11 +67,11 @@
 #       held no ID to tear down by: the stub's running set kept the container
 #       and the Docker log showed only `run`. Ownership has to be recoverable
 #       from what was chosen and recorded before the create.
-#   (n) ownership of an atlas launch that was REFUSED. The wrapper set its
-#       "this launch is mine to stop" flag the moment it backgrounded the
-#       launcher, so a launcher that refused an occupied port before creating
-#       anything still got a --stop -- against a run directory whose records
-#       belonged to an earlier invocation, whose rank it then killed.
+#   (n) a failed Atlas kernel audit must not start normal serving or touch
+#       records from an earlier invocation. The wrapper used to background
+#       the launcher after a failed audit, then race it against teardown.
+#       A successful audit still permits serving, and termination cleans up
+#       only this invocation's ranks. The launcher suite tests occupied ports.
 #   (o) the same create window as (m), on the ATLAS side. The launcher records
 #       rank<N>.container only after `docker run -d` returns, so a cell killed
 #       inside the create owned a rank by no record at all and stopped

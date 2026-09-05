@@ -173,48 +173,17 @@ print(d["verdict"], d["failing_stage"])' "$art")"
   || fail m "a cell killed inside its create was killed at serve, got $stage_name"
 ok m "the artifact is a valid NO-GO at 'serve'"
 
-# ── (n) a REFUSED atlas launch owns nothing of a prior run's ────────────────
-# The wrapper used to treat "I started the launcher" as "I own what this run
-# directory records". The launcher, handed a directory that already held rank
-# records and a port whose /health already answered, refused before creating
-# anything -- and the wrapper's finalizer then ran --stop against that
-# directory and killed the earlier run's rank. Nothing there was ever this
-# invocation's, and the fix is that this invocation's run directory is its own.
+# ── (n) a failed Atlas kernel audit must not start normal serving ───────────
+# A failed audit is already NO-GO/serve. Starting the ordinary launcher next
+# races teardown, so seeing its occupied-port refusal was never guaranteed.
+# Keep that oracle in start_node_ep_test.sh; here observe that a failed audit
+# creates no ordinary launch and touches none of a prior invocation's ranks.
 prior="$tmp/prior-node-ep"
 mkdir -p "$prior"
 # A container record only: a pid record would make a failing test kill whatever
 # process happens to hold that number on this box.
 echo "prior-invocation-rank0" > "$prior/rank0.container"
 
-ready_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-cat > "$tmp/ready_stub.py" <<'READYPY'
-import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-BODY = b'{"status": "ready"}'
-
-
-class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(BODY)))
-        self.end_headers()
-        self.wfile.write(BODY)
-
-    def log_message(self, *args):
-        pass
-
-
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
-READYPY
-python3 "$tmp/ready_stub.py" "$ready_port" >/dev/null 2>&1 & ready_pid=$!
-wait_for 30 "the occupied /health endpoint" \
-  curl -sf -o /dev/null "http://127.0.0.1:$ready_port/health" \
-  || fail n "the stub endpoint never came up"
-
-# The kernel audit cannot pass on a host with no GPU, and that is the stage
-# failure this cell records. What matters is what the launcher does next.
 cat > "$tmp/stub-spark" <<'STUBSH'
 #!/usr/bin/env bash
 echo "stub spark: $*"
@@ -224,19 +193,21 @@ STUBSH
 chmod +x "$tmp/stub-spark"
 
 : > "$DOCKER_CALLS"; : > "$DOCKER_RUNNING"
-out="$(PATH="$tmp/bin:$PATH" ATLAS_PORT="$ready_port" \
+out="$(PATH="$tmp/bin:$PATH" \
         ATLAS_NODE_RUN_DIR="$prior" SPARK_BIN="$tmp/stub-spark" \
         bash "$RUN" --engine atlas --model nemotron-3-nano-fp8 --sku h100 \
         --workload lat --concurrency 1 --spec off --think off \
         --out "$tmp/refused" --yes 2>&1)"; rc=$?
-kill "$ready_pid" 2>/dev/null; wait "$ready_pid" 2>/dev/null
 
 [ $rc -eq 1 ] || fail n "a cell whose serve stage failed must exit 1, got $rc:
 $out"
-have "$(cat "$tmp/refused/serve.log")" "REFUSED" \
-  || fail n "the launcher was supposed to refuse the occupied endpoint:
-$(cat "$tmp/refused/serve.log")"
-ok n "the launcher refuses an occupied /health and the cell records a failed serve"
+have "$(cat "$tmp/refused/check-kernels.txt")" "--check-kernels exited 1" \
+  || fail n "the kernel audit was supposed to fail:
+$(cat "$tmp/refused/check-kernels.txt")"
+[ ! -e "$tmp/refused/serve.log" ] && ! have "$out" "launcher pid " \
+  || fail n "normal serving was started after the failed kernel audit:
+$out"
+ok n "a failed kernel audit starts no normal launcher"
 
 touched="$(grep -E '^(stop|rm) prior-invocation-rank0' "$DOCKER_CALLS" || true)"
 [ -z "$touched" ] || fail n "a refused launch must stop nothing of the prior run, saw:

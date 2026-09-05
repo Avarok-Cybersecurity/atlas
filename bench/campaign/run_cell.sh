@@ -375,16 +375,19 @@ argv = shlex.split(line[len("rank0_command: "):]) if line else []
 pathlib.Path(sys.argv[2]).write_bytes(b"\0".join(a.encode() for a in argv))
 PY
     if [ "$NODE_RUN_DIR_RESERVED" = "1" ]; then
-      run_child env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --check-kernels "$HF_ID" \
-        > "$OUT/check-kernels.txt" 2>&1 || note_fail serve
-      START_EPOCH="$(date +%s)"
-      env "${ATLAS_ENV[@]}" bash "$LAUNCHER" "$HF_ID" > "$OUT/serve.log" 2>&1 &
-      SERVE_PID=$!
-      CHILD_PIDS="$CHILD_PIDS $SERVE_PID"
-      # The launcher pid is this invocation's to KILL. What is this invocation's
-      # to STOP is decided later, by what the launcher actually recorded in the
-      # run directory above -- a launcher that refuses records nothing.
-      echo "launcher pid $SERVE_PID; log $OUT/serve.log"
+      if run_child env "${ATLAS_ENV[@]}" bash "$LAUNCHER" --check-kernels "$HF_ID" \
+        > "$OUT/check-kernels.txt" 2>&1; then
+        START_EPOCH="$(date +%s)"
+        env "${ATLAS_ENV[@]}" bash "$LAUNCHER" "$HF_ID" > "$OUT/serve.log" 2>&1 &
+        SERVE_PID=$!
+        CHILD_PIDS="$CHILD_PIDS $SERVE_PID"
+        # The launcher pid is this invocation's to KILL. What is this invocation's
+        # to STOP is decided later, by what the launcher actually recorded in the
+        # run directory above -- a launcher that refuses records nothing.
+        echo "launcher pid $SERVE_PID; log $OUT/serve.log"
+      else
+        note_fail serve
+      fi
     fi
   fi
 else
