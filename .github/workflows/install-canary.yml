@@ -171,9 +171,17 @@ jobs:
           # /control must not be an error. It is the SPA fallback here -- the
           # wrong page, but harmless. A 5xx means something shipped a directory
           # where the server expects a file, which is exactly how this broke.
+          #
+          # curl ALREADY prints `000` on a transport failure, because
+          # --write-out runs either way. The `|| echo 000` that used to close
+          # this line appended a second one, so `code` became the two-line
+          # string "000\n000" -- which matches neither `5*` nor `000`, fell to
+          # the healthy arm, and reported `ok   /control -> 000000 (fallback,
+          # not an error)`. A /control-only timeout or TLS error read as a pass,
+          # and this probe has no --retry, unlike `check` above.
           code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-                   --location --max-time 20 https://atlasinference.io/control || echo 000)
-          case "$code" in
+                   --location --max-time 20 https://atlasinference.io/control) || true
+          case "${code:-000}" in
             5*|000)
               echo "::error::/control returned $code -- a directory is shadowing the page again"
               fail=1

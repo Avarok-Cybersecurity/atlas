@@ -1090,6 +1090,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The install canary must not report a probe it could not make
+# ---------------------------------------------------------------------------
+# `code=$(curl ... --write-out '%{http_code}' ... || echo 000)`. curl prints
+# `000` on a transport failure ALREADY -- --write-out runs either way -- so the
+# `|| echo 000` appended a second one and `code` became the two-line string
+# "000\n000". That matches neither `5*` nor `000`, so the case fell through to
+# `ok   /control -> 000000 (fallback, not an error)` and the nightly canary
+# called a timed-out or TLS-failed /control healthy. This probe has no --retry,
+# unlike the `check` helper above it, so it is the likeliest one to trip.
+mkdir -p "$TMP/ic/bin"
+python3 - > "$TMP/ic/step.sh" <<'ICX'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/install-canary.yml").read_text())
+for st in d["jobs"]["pages"]["steps"]:
+    if "run" in st:
+        print(st["run"]); break
+ICX
+# A curl that serves a healthy site, except that /control can be made to fail at
+# the transport level -- printing 000 and exiting non-zero, exactly as curl does.
+ic_curl() {  # ic_curl <"break" to fail the /control probe>
+  cat > "$TMP/ic/bin/curl" <<STUB
+#!/bin/bash
+url=""; for a in "\$@"; do case "\$a" in https://*) url="\$a" ;; esac; done
+case "\$url" in
+  */control)      [ "$1" = break ] && { printf '000'; exit 7; }; printf '200'; exit 0 ;;
+  */control.html) printf '<title>Control plane</title>' ;;
+  */install.sh)   printf '#!/bin/sh\nexit 0\n' ;;
+  */install.ps1)  printf '# atlas installer\n' ;;
+  *)              printf '<title>Atlas, pure Rust inference</title>' ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/ic/bin/curl"
+}
+ic_run() { ( PATH="$TMP/ic/bin:$PATH" bash "$1" ) >"$TMP/ic/out" 2>&1; echo $?; }
+
+if [ -s "$TMP/ic/step.sh" ]; then
+  ic_curl healthy
+  [ "$(ic_run "$TMP/ic/step.sh")" = 0 ] \
+    && ok "a healthy site passes the install canary" \
+    || bad "a healthy site failed the canary: $(grep -m1 error "$TMP/ic/out")"
+
+  ic_curl break
+  if [ "$(ic_run "$TMP/ic/step.sh")" != 0 ]; then
+    ok "a /control probe that could not be made fails the canary"
+  else
+    bad "a /control probe that never completed was reported as healthy"
+  fi
+  grep -q 'fallback, not an error' "$TMP/ic/out" \
+    && bad "and it called the unmade probe 'ok ... (fallback, not an error)'" \
+    || ok "and it does not call the unmade probe a fallback"
+
+  # CONTROL: the pre-fix `|| echo 000` restored in a COPY, same broken curl.
+  python3 - "$TMP/ic/step.sh" "$TMP/ic/step-sab.sh" <<'ICSAB'
+import pathlib, sys
+t = pathlib.Path(sys.argv[1]).read_text()
+old = "--location --max-time 20 https://atlasinference.io/control) || true"
+new = "--location --max-time 20 https://atlasinference.io/control || echo 000)"
+pathlib.Path(sys.argv[2]).write_text(t.replace(old, new, 1))
+ICSAB
+  if ! cmp -s "$TMP/ic/step.sh" "$TMP/ic/step-sab.sh"; then
+    ic_curl break
+    [ "$(ic_run "$TMP/ic/step-sab.sh")" = 0 ] && grep -q 'fallback, not an error' "$TMP/ic/out" \
+      && ok "control: the pre-fix form calls a failed /control probe healthy" \
+      || bad "control: the sabotage did not reproduce the defect -- the checks above prove nothing"
+  else
+    bad "control setup: the sabotage did not land; the probe's shape has changed"
+  fi
+else
+  bad "setup: could not extract the install canary's page step"
+fi
+
+# ---------------------------------------------------------------------------
 # nginx add_header does not accumulate across contexts
 # ---------------------------------------------------------------------------
 # Three vhosts, one rule, three separate incidents -- each found by hand after
