@@ -352,9 +352,8 @@ fn streaming_bare_function_flush() {
     // call). Fixed by holding the block incomplete once `<parameters>` has
     // opened, until its close (or end-of-stream via `flush()`) arrives.
     let mut det = StreamingToolDetector::new();
-    let out1 = det.process(
-        "Hello <function>test</function><parameters><name>x</name><value>1</value>",
-    );
+    let out1 =
+        det.process("Hello <function>test</function><parameters><name>x</name><value>1</value>");
     let premature_tool_calls = out1
         .iter()
         .filter(|o| matches!(o, DetectorOutput::ToolCall(..)))
