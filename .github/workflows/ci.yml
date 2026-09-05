@@ -428,13 +428,35 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
-          # The workflow-wide ATLAS_SKIP_BUILD=1 stubs atlas-kernels' build
-          # script, so `metallib_modules()` is EMPTY and every parity test
-          # fails with `Metal: unknown module '...'`. That never showed on
-          # GitHub-hosted macOS runners because MTLCreateSystemDefaultDevice
-          # returns null there and the tests skip themselves; on a real Mac
-          # (the self-hosted M5) they run and go red. This step is the one
-          # place the metal kernel set must actually be built.
+          # ★ ATLAS_SKIP_BUILD=0, overriding the workflow-level "1".
+          #
+          # Reached independently three times (TheTom's #907, #909, #911); this
+          # is #911's writeup, kept because it names the guards.
+          #
+          # This job used to inherit `ATLAS_SKIP_BUILD: "1"` from the top of
+          # this file, which exists so the ubuntu jobs can type-check without
+          # nvcc. atlas-kernels' build.rs honours it FIRST -- before the
+          # macOS/ATLAS_TARGET_HW logic -- and emits a stub whose
+          # `metallib_modules()` returns `Vec::new()`. `MetalGpuBackend::new`
+          # then builds an EMPTY library cache (an empty module slice is not an
+          # error to it) and every pipeline lookup dies with
+          # `Metal: unknown module '<name>'`, so all 35 parity tests failed
+          # instantly and this required context was red on every non-web PR --
+          # red about the stub, never about the kernels.
+          #
+          # The Metal compile path is implemented, not stubbed:
+          # build_target.rs `AppleTarget` (xcrun -sdk macosx metal -> AIR ->
+          # metallib), reached from `resolve_compute_target("apple")`, over the
+          # 43 `.metal` sources under kernels/metal/ whose HARDWARE.toml
+          # declares `vendor = "apple"`. So the fix is to let it run, not to
+          # skip the suite: a suite told not to build the thing it tests can
+          # neither fail for a real defect nor pass meaningfully, and a skip
+          # that survived Phase 2 would be the same bug wearing green.
+          #
+          # `.github/scripts/assert-gates-are-wired.py` pins this statically and
+          # `metal_backend::tests::embedded_kernels` refuses at RUNTIME if the
+          # embedded metallib set is ever empty again, so the stub cannot come
+          # back quietly by either route.
           ATLAS_SKIP_BUILD: "0"
           ATLAS_TARGET_HW: metal
           ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
