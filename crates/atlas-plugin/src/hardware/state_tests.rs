@@ -252,3 +252,52 @@ fn one_line_names_the_box_and_says_when_something_is_unknown() {
     let blind = HardwareState::default().one_line();
     assert!(blind.contains("foreign gpu proc unknown"), "{blind}");
 }
+
+/// ★ A sum over three unreadable counters is not zero throttling.
+///
+/// The fraction used to be `unwrap_or(0)` across all three, so a box that
+/// reported no counter at all produced `Some(0.0)` — the same number a
+/// genuinely cool run produces, and the number the postcheck's summary line is
+/// built from. Compare `thermal_throttle_advanced` directly above it, which
+/// has always answered `None` for exactly this input.
+#[test]
+fn a_fraction_over_no_readable_counter_is_unknown_not_zero() {
+    let d = HardwareStateDelta {
+        elapsed_s: Some(692),
+        sw_thermal_us: None,
+        hw_thermal_us: None,
+        hw_power_brake_us: None,
+        ..HardwareStateDelta::default()
+    };
+    assert_eq!(d.thermal_throttle_advanced(), None);
+    assert_eq!(d.thermal_throttle_fraction(), None);
+    assert!(!d.thermal_counters_complete());
+}
+
+/// A PARTIAL sum is still worth reporting — it is a floor — but it must be
+/// flagged as one, because every unreadable counter moves it downwards.
+#[test]
+fn a_partial_sum_is_a_floor_and_says_so() {
+    let d = HardwareStateDelta {
+        elapsed_s: Some(692),
+        sw_thermal_us: None,
+        hw_thermal_us: Some(12_000_000),
+        hw_power_brake_us: Some(0),
+        ..HardwareStateDelta::default()
+    };
+    let f = d
+        .thermal_throttle_fraction()
+        .expect("one counter was readable");
+    assert!(
+        (f - 12.0 / 692.0).abs() < 1e-9,
+        "the readable counter counts"
+    );
+    assert!(
+        !d.thermal_counters_complete(),
+        "an unreadable counter must not pass as a complete sum"
+    );
+    // And the fully-readable case is NOT flagged, so the label discriminates.
+    let mut full = d.clone();
+    full.sw_thermal_us = Some(0);
+    assert!(full.thermal_counters_complete());
+}
