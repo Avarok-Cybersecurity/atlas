@@ -121,3 +121,49 @@ pub(super) fn test_seq(
     };
     (a, rx)
 }
+
+/// A `PrefillInProgress` with a blocking oneshot sink — the shape the
+/// scheduler is holding when a shutdown lands mid-prefill.
+pub(super) fn test_prefill(prompt: Vec<u32>) -> (super::types::PrefillInProgress, RespRx) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let p = super::types::PrefillInProgress {
+        prompt_tokens: std::sync::Arc::new(prompt),
+        session_hash: 0,
+        seq: SequenceState::host_only(0),
+        chunk_offset: 0,
+        max_tokens: 16,
+        min_tokens: 0,
+        eos_tokens: EOS.to_vec(),
+        sink: ResponseSink::Blocking(Some(tx)),
+        cancel_flag: None,
+        request_start: Instant::now(),
+        temperature: 0.0,
+        top_k: 0,
+        top_p: 1.0,
+        top_n_sigma: 0.0,
+        min_p: 0.0,
+        repetition_penalty: 1.0,
+        repetition_penalty_window: 256,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        lz_penalty: DEFAULT_LZ_PENALTY,
+        dry_multiplier: 0.0,
+        dry_base: 0.0,
+        dry_allowed_length: 0,
+        dry_sequence_breakers: Vec::new(),
+        logit_bias: Vec::new(),
+        enable_thinking: false,
+        thinking_budget: None,
+        repetition_detection: None,
+        spontaneous_think_budget: 0,
+        require_tool_call: false,
+        tools_present: false,
+        suppress_tool_call: false,
+        disable_mtp: false,
+        grammar_state: None,
+        seed: None,
+        top_logprobs: None,
+        timeout_at: None,
+    };
+    (p, rx)
+}
