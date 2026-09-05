@@ -404,3 +404,17 @@ on "certify", proven by sabotage, not asserted in a comment).
 ```
 
 **CITED:** R-verify-dont-accept (error_body's zero tracing calls and the absent TraceLayer both confirmed on origin/main before entering the record); R-state-the-rule (a level-bump wave is only trustworthy if the rule is written down and exceptions are named).
+
+---
+
+## Run 19 — 2026-09-05T06:20Z — wave 2 composed: stack/nightly-serve-truth
+
+```text
+2026-09-05T06:20Z  tool       composed sched + api + obs into stack/nightly-serve-truth: 8 commits, 30 files, NO cherry-pick conflicts between the three lanes
+2026-09-05T06:22Z  tool       gates: cargo check EXIT=0, spark-server 2351/2351, selftest 110/110 — but `cargo fmt --check` DIRTY
+2026-09-05T06:23Z  aggregate  DIAGNOSED PER-LANE rather than assumed: unlike wave 1 (where the fmt defect existed ONLY in the composition), this time the api lane ITSELF was dirty — sched and obs were individually clean. The lane had reported "tree clean" meaning `git status`, which is not `cargo fmt --check`. Different cause, same catch; my wave-1 generalisation would have mis-attributed it.
+2026-09-05T06:24Z  aggregate  lane-instruction gap recorded for wave 3: "tree clean" must be defined as git status AND cargo fmt --check AND clippy, or lanes will keep reporting the first and meaning all three
+2026-09-05T06:25Z  tool       fmt applied as its own commit, suite re-run 2351/2351, fmt now clean; stack at 8 commits
+```
+
+**CITED:** R-compose-then-gate (twice in two waves the composed tree caught what per-lane green did not); R-diagnose-dont-generalise (checking each lane separately showed this was a lane defect, not the composition defect I had seen before — the same symptom with a different cause).
