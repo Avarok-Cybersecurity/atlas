@@ -595,7 +595,9 @@
       "ep_size": 1,
       "tp_size": 1,
       "recipe_max": true,
-      "overrides": {},
+      "overrides": {
+        "--max-batch-size": "4"
+      },
       "extra_args": [
         "--max-seq-len",
         "24576",
@@ -610,7 +612,7 @@
         "kernels/hopper/qwen3.8-27b/MODEL.toml: effective_context=24576, mtp_layers=0, native FP8 checkpoint",
         "https://huggingface.co/Qwen/Qwen3.8-27B-FP8/tree/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
       ],
-      "notes": "Single-H100 adaptation of the existing H200 27B campaign recipe. Same Hopper target, TP1/EP1 and common policy; context24576 follows target effective_context. No flag tuning or successful H100 runtime claim is implied. Retain pinned snapshot proof, and run audit/boot/coherency before scoring. Spec off: target mtp_layers=0."
+      "notes": "Rental profile qwen38-h100-atlas-capacity4: single-H100 capacity adaptation of the existing H200 27B campaign recipe, not a performance-tuned result. The original batch32 profile and failed qwen38.atlas.a.lat.c1 kernel audit are retained: 57.2 GiB pre-KV plus 45.823 GiB inference reserve exceeded the 71.3 GiB budget. Only max-batch-size changes from 32 to 4; the eight-slot rollback ring, 16 prefix snapshots, watchdogs, numerical flags, TP1/EP1, spec off and context24576 remain unchanged. The resulting reserve is 8.540 GiB. Conservative rounding of that audit leaves at least 5.459 GiB for paged KV, enough in the capacity model for both frozen ladders and four full contexts; a fresh audit/boot/coherency must still prove runtime viability. max-num-seqs128 remains explicit: C16 is offered concurrency with at most four active sequences and the rest queued. Preserve that scheduling distinction in measurements. Retain pinned snapshot proof; target mtp_layers=0."
     }
   ],
   "recipe_max_note": "recipe_max is true when the entry's topology is the maximum Atlas's own recipe renders for that SKU, and false when the campaign stepped down from it. It is independent of topology.matched, which is about the OTHER engine.",
