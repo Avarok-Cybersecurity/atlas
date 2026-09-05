@@ -5,6 +5,18 @@
 # tables are NOT: they were harvested on GB10 and are carried here only so
 # the target parses. Re-harvest them on a B200/GB200 before trusting a
 # startup kernel audit on this hardware.
+#
+# W4A4 GAP (measured 2026-09-05, CUDA 13.0.88, receipts in
+# docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/): the W4A4 tail of
+# this target's moe_w4a16_grouped_gemm.cu cannot exist on sm_100a — its NVFP4
+# block-scaled MMA is the WARP-level `mma ... .kind::mxf4nvf4.block_scale`,
+# which datacentre Blackwell does not have (it issues block-scaled MMA
+# through tcgen05). It is compiled out by -DATLAS_NO_WARP_BLOCKSCALE_MMA
+# (kernels/b200/HARDWARE.toml) and its two entry points are declared in
+# [expected_absent.moe_w4a16] below. Everything else in that file is W4A16 —
+# 4-bit weights dequantised to BF16, plain mma.sync — and compiles: 173/173
+# for this model, 871/871 across the five P0 targets. Porting it to tcgen05
+# is the work that would restore W4A4 here; nothing in this PR does that.
 [model]
 name = "qwen3.6-35b-a3b"
 hf_id = "Qwen/Qwen3.6-35B-A3B-FP8"
@@ -359,6 +371,24 @@ exists solely in nemotron-labs-3-puzzle-75b-a9b. Dispatch
 27B declares. UNMEASURED for this target."""
 
 [expected_absent.moe_w4a16]
+moe_w4a16_fused_gate_up_t_k64_fp4 = """
+W4A4 (FP4 weights AND FP4 activations) fused gate+up. Compiled out on
+this hardware: -DATLAS_NO_WARP_BLOCKSCALE_MMA (kernels/b200/HARDWARE.toml).
+sm_100a HAS NVFP4, but issues block-scaled MMA through tcgen05; the
+warp-level form this kernel uses is sm_120/sm_121 — ptxas: "Instruction
+'mma with block scale' not supported on .target 'sm_100a'" (measured
+2026-09-05, CUDA 13.0.88). A tcgen05 rewrite would lift this. Resolved
+with try_kernel and fired only when ATLAS_HOLO_MOE_GATEUP_FP4 is set AND
+the handle is non-zero; absent, prefill takes
+moe_w4a16_fused_gate_up_t_k64 (FP8 activations), which resolves here.
+UNMEASURED on B200 silicon."""
+moe_w4a16_down_t_k64_fp4 = """
+Same W4A4 family — the routed-expert down projection, in the same
+guarded region. Compiled out by -DATLAS_NO_WARP_BLOCKSCALE_MMA for the
+same reason: "Instruction 'mma with block scale' not supported on
+.target 'sm_100a'", and liftable by the same tcgen05 port. Fired only
+when ATLAS_HOLO_MOE_DOWN_FP4 is set AND the handle is non-zero; absent,
+the FP8 down path serves. UNMEASURED on B200 silicon."""
 moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
 Native-MXFP4 (E8M0) scale-format variant. Shipped only in
 deepseek-v4-flash's moe_w4a16 module (ARM-2 Phase-K). This target is
