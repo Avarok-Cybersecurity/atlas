@@ -167,10 +167,22 @@ fn the_indexer_checks_capacity_before_it_writes() {
 #[test]
 fn every_graph_replay_checks_room_before_it_launches() {
     let paths: [(&str, &str); 4] = [
-        ("decode_a", include_str!("../../../model/trait_impl/decode_a.rs")),
-        ("verify_b", include_str!("../../../model/trait_impl/verify_b.rs")),
-        ("verify_c", include_str!("../../../model/trait_impl/verify_c.rs")),
-        ("verify_c2", include_str!("../../../model/trait_impl/verify_c2.rs")),
+        (
+            "decode_a",
+            include_str!("../../../model/trait_impl/decode_a.rs"),
+        ),
+        (
+            "verify_b",
+            include_str!("../../../model/trait_impl/verify_b.rs"),
+        ),
+        (
+            "verify_c",
+            include_str!("../../../model/trait_impl/verify_c.rs"),
+        ),
+        (
+            "verify_c2",
+            include_str!("../../../model/trait_impl/verify_c2.rs"),
+        ),
     ];
     for (name, src) in paths {
         let guard = src
@@ -225,4 +237,133 @@ fn the_replay_refusal_is_distinguishable_from_the_prefill_one() {
             "the replay guard must tag its refusal so a log can name the route"
         );
     }
+}
+
+// ── Batched-selector execution scope ────────────────────────────────────────────────────
+//
+// The batched prefill selector was measured and qualified on PREFILL alone. These pin the
+// phases it may and may not run in, because the earlier gate (`!graph_capture && k > 1`) let
+// an EAGER verify in: `verify_a` builds its context with `graph_capture: false` outright, and
+// `verify_b/c/c2/d/fused` set it from `use_graphs`, which is false under
+// `ATLAS_GLM_VERIFY_GRAPHS=0`, under high-speed swap, and under `ATLAS_LORA_EAGER`.
+
+use super::super::layer::batch_select_enabled;
+
+#[test]
+fn only_a_multi_row_eager_prefill_takes_the_batched_selector() {
+    // (phase, workspace_ready, is_prefill, graph_capture, k, expected)
+    let cases: &[(&str, bool, bool, bool, usize, bool)] = &[
+        (
+            "prefill sub-chunk, PREFILL_ROWS=16",
+            true,
+            true,
+            false,
+            16,
+            true,
+        ),
+        ("prefill tail sub-chunk, k=2", true, true, false, 2, true),
+        ("prefill tail sub-chunk, k=1", true, true, false, 1, false),
+        ("chunked prefill, second chunk", true, true, false, 16, true),
+        ("decode step, k=1, graphed", true, false, true, 1, false),
+        ("decode step, k=1, eager", true, false, false, 1, false),
+        ("graphed verify K=3", true, false, true, 3, false),
+        ("graphed verify K=4", true, false, true, 4, false),
+        // 🔴 the regression this table exists for
+        (
+            "EAGER verify K=3 (ATLAS_GLM_VERIFY_GRAPHS=0)",
+            true,
+            false,
+            false,
+            3,
+            false,
+        ),
+        (
+            "EAGER verify K=2 (verify_b, HSS engaged)",
+            true,
+            false,
+            false,
+            2,
+            false,
+        ),
+        (
+            "EAGER verify K=4 (verify_c2, LoRA eager)",
+            true,
+            false,
+            false,
+            4,
+            false,
+        ),
+        (
+            "verify_a generic N-token (graph_capture hard false)",
+            true,
+            false,
+            false,
+            5,
+            false,
+        ),
+        (
+            "kill-switch ATLAS_DSA_SELECT_ROWS=0, prefill",
+            false,
+            true,
+            false,
+            16,
+            false,
+        ),
+        ("kill-switch, eager verify", false, false, false, 3, false),
+    ];
+    for &(phase, ws, pf, gc, k, want) in cases {
+        assert_eq!(
+            batch_select_enabled(ws, pf, gc, k),
+            want,
+            "{phase}: workspace={ws} is_prefill={pf} graph_capture={gc} k={k}"
+        );
+    }
+}
+
+/// `is_prefill` is only worth anything if every caller states it correctly. `forward_k` has
+/// exactly two call sites — the prefill sub-chunk loop and the speculative verify — and the
+/// verify one must pass `false`. A third caller has to come here and choose.
+#[test]
+fn forward_k_has_two_callers_and_the_verify_one_is_not_prefill() {
+    let src = include_str!("../../glm5next_layer/mod.rs");
+    assert_eq!(
+        src.matches("self.forward_k(").count(),
+        2,
+        "a new forward_k caller must decide its own `is_prefill`, not inherit one"
+    );
+    assert!(
+        src.contains(
+            "// This IS the prefill sub-chunk caller.
+                    true,"
+        ),
+        "the prefill sub-chunk must pass is_prefill = true"
+    );
+    assert!(
+        src.contains("// A speculative verify, NOT a prefill sub-chunk"),
+        "the speculative verify must pass is_prefill = false, and say why"
+    );
+}
+
+/// The tail's first slot is `select_k * KP`, and `select_k` is a PER-PASS scalar. A batched
+/// pass plans it from the group's FINAL length, so without a per-row clamp every earlier row
+/// gets a wider `select_k` than its serial twin and the visible tail slides forward. That is
+/// not cosmetic: `glm5next_dsa_mla_decode_fp8` splits the selection row into 8 warp slices
+/// and merges their online softmaxes, so a tail token that slides across a slice boundary is
+/// folded by the MERGE instead of by its warp's serial loop. Measured on the real kernel:
+/// 14 of 18 crossing configurations differ, up to 2 BF16 ulp.
+#[test]
+fn expand_selection_clamps_select_k_to_the_row() {
+    let src = include_str!("../../../../../../kernels/gb10/common/dsa_indexer.cu");
+    assert!(
+        src.contains("const unsigned int row_pools = (unsigned int)(q_pos[r] + 1) / KP;"),
+        "the row's own pool count must come from its own q_pos"
+    );
+    assert!(
+        src.contains("unsigned int base = row_select_k * KP;"),
+        "the tail base must be the ROW's select_k, never the pass's"
+    );
+    assert!(
+        !src.contains("unsigned int base = select_k * KP;"),
+        "the pass-scalar tail base is the defect; it must not come back"
+    );
 }

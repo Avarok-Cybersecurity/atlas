@@ -379,7 +379,30 @@ extern "C" __global__ void dsa_expand_selection(
     __syncthreads();
     if (q_mask[r] == 0) return;   // a padded query selects nothing, and the row stays all -1
 
-    for (unsigned int j = tid; j < select_k; j += blockDim.x) {
+    // 🔴 PER-ROW `select_k`. The scalar above is the PASS's, planned from the cache length
+    // the pass saw. A single-row pass plans from that row's own length, so the two agree and
+    // this is a no-op — `(q_pos[0]+1)/KP` IS `len/KP`. A MULTI-row pass plans once from the
+    // group's FINAL length, so without this every earlier row gets a wider `select_k` than
+    // its serial twin, and `base` below — the visible tail's first slot — slides forward by
+    // up to `(rows/KP)*KP` slots.
+    //
+    // That is not cosmetic. The same tokens are selected either way, but
+    // `glm5next_dsa_mla_decode_fp8` splits the selection row into NUM_WARPS=8 slices of
+    // `ceil(width/8)` and runs a per-warp online softmax merged by a cross-warp tree, so a
+    // tail token that slides from slot 253 to slot 257 is folded by the MERGE instead of by
+    // warp 0's serial loop. MEASURED on the real kernel over 64 draws x 18 crossing
+    // configurations (spark-bench `scripts/glm53-dsa-promote/boundary_attend_test.cu`,
+    // 2026-09-06): 14 of the 18 differ, up to 2 BF16 ulp. Over a 9,000-token prefill at
+    // PREFILL_ROWS=16 the host enumeration finds 1,920 of 8,999 rows with a moved base and
+    // 42 that move a REAL tail token across a warp boundary.
+    //
+    // Clamping to the row's own pool count restores the serial layout exactly, which is what
+    // makes a batched selection bit-identical BY CONSTRUCTION rather than by luck of the
+    // draw. `selected` keeps the PASS stride — only the count is per row.
+    const unsigned int row_pools = (unsigned int)(q_pos[r] + 1) / KP;
+    const unsigned int row_select_k = (row_pools < select_k) ? row_pools : select_k;
+
+    for (unsigned int j = tid; j < row_select_k; j += blockDim.x) {
         int p = selected[(size_t)r * select_k + j];
         bool ok = (p >= 0) && (valid_cand[(size_t)r * P + p] != 0);
         for (unsigned int s = 0; s < KP; ++s) {
@@ -395,7 +418,7 @@ extern "C" __global__ void dsa_expand_selection(
             if ((int)t <= q_pos[r] && valid_keys[t] != 0) ++vis_count;
         int tail_count = vis_count % (int)KP;
         int tail_start = first_key + vis_count - tail_count;
-        unsigned int base = select_k * KP;
+        unsigned int base = row_select_k * KP;   // per-row, see above
         for (unsigned int t = 0; t + 1 < KP; ++t) {
             long long idx = (long long)tail_start + t;
             bool ok = ((int)t < tail_count) && idx >= 0 && idx < (long long)S

@@ -40,7 +40,6 @@ use super::state::Glm5NextDsaState;
 use super::{Glm5NextDsaConfig, Glm5NextDsaKernels};
 use crate::layer::{ForwardContext, LayerState, TransformerLayer};
 
-
 /// GEMM launch: `C[M, N] = A[M, K] @ B[N, K]^T`. Grid `(ceil(N/16), ceil(M/16))`,
 /// block `(16, 16)` — one thread per output element.
 fn gemm(
@@ -178,6 +177,31 @@ pub struct Glm5NextDsaWeights {
 /// 🔴 PREFILL ONLY. The K-token verify keeps its per-row selection: it runs the
 /// device-geometry (`replay_safe`) path, and `select_tokens` refuses a ceiling launch at
 /// `q_rows > 1` because a replayed graph would index the wrong rows.
+/// Whether ONE selection pass covers the whole row group, or each row selects on its own.
+///
+/// Extracted from `decode_k` so the choice is a table a test can drive, not a boolean buried
+/// in a 300-line function. Every term is load-bearing:
+///
+/// * `workspace_ready` — the four `[max_rows]` twins exist. False under
+///   `ATLAS_DSA_SELECT_ROWS=0`, which is what keeps that arm's heap layout byte for byte.
+/// * `is_prefill` — stated by the caller. NOTHING in `ForwardContext` implies it:
+///   `decode_step` is false for prefill AND verify, and `graph_capture` is false for prefill
+///   AND for an eager verify (`verify_a` hard-codes it; `verify_b/c/c2/d/fused` take it from
+///   `use_graphs`, false under `ATLAS_GLM_VERIFY_GRAPHS=0`, high-speed swap, or
+///   `ATLAS_LORA_EAGER`).
+/// * `!graph_capture` — independent of the above, and kept for its own reason:
+///   `select_rows_batched` issues a host `copy_h2d`, which is
+///   `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED` inside a recording stream.
+/// * `k > 1` — a single row has nothing to batch, and there is no behaviour to change.
+pub(crate) fn batch_select_enabled(
+    workspace_ready: bool,
+    is_prefill: bool,
+    graph_capture: bool,
+    k: usize,
+) -> bool {
+    workspace_ready && is_prefill && !graph_capture && k > 1
+}
+
 pub(crate) fn dsa_select_rows_enabled() -> bool {
     std::env::var("ATLAS_DSA_SELECT_ROWS").as_deref() != Ok("0")
 }
@@ -800,6 +824,14 @@ impl Glm5NextDsaLayer {
         block_table: &mut Vec<u32>,
         ctx: &ForwardContext,
         stream: u64,
+        // TRUE only on a prefill sub-chunk. Passed explicitly by
+        // [`crate::layers::glm5next_layer::Glm5NextLayer::forward_k`]'s two call sites; it
+        // is NOT inferable from the context. `decode_step` is false for prefill AND for a
+        // speculative verify, and `graph_capture` is false for prefill AND for an EAGER
+        // verify — `verify_a` hard-codes `graph_capture: false`, and `verify_b/c/c2/d` set
+        // it from `use_graphs`, which is false under `ATLAS_GLM_VERIFY_GRAPHS=0`, under
+        // high-speed swap, and under `ATLAS_LORA_EAGER`. See `select_rows_batched`.
+        is_prefill: bool,
     ) -> Result<()> {
         use crate::layers::glm5next_layer::profile;
         // Captured before the KV borrows below, for the block-table trim at the
@@ -928,11 +960,22 @@ impl Glm5NextDsaLayer {
         // after the attend, which reads it. ANOMALIES A65.
         let mut owns_scratch = false;
         let mut attend_paging: Option<DsaDecodePaging> = None;
-        // PREFILL ONLY: `ctx.graph_capture` marks the verify/decode path, which keeps its
-        // per-row selection (a replayed graph would index the wrong rows). The buffers are
-        // NULL under `ATLAS_DSA_SELECT_ROWS=0`, so this is false on that arm and the
-        // heap layout is unchanged there.
-        let batch_select = w.q_idx_rows.0 != 0 && !ctx.graph_capture && k > 1;
+        // 🔴 PREFILL ONLY, and said so EXPLICITLY. `!ctx.graph_capture` does NOT mean
+        // "prefill": `verify_a` builds its context with `graph_capture: false` outright, and
+        // `verify_b/c/c2/d/fused` set it from `use_graphs`, which is false whenever
+        // `ATLAS_GLM_VERIFY_GRAPHS=0`, high-speed swap is engaged, or `ATLAS_LORA_EAGER` is
+        // set. `!ctx.decode_step` does not separate them either — a verify sets it false too.
+        // So the caller states it. An eager K-row verify would otherwise silently take a path
+        // that was measured and qualified on prefill alone.
+        //
+        // `!ctx.graph_capture` is KEPT as a second, independent condition rather than
+        // replaced: `select_rows_batched` does a host `copy_h2d` of `q_pos`, which is
+        // CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED inside a recording stream. Both must hold.
+        //
+        // The buffers are NULL under `ATLAS_DSA_SELECT_ROWS=0`, so this is false on that arm
+        // and the heap layout is unchanged there.
+        let batch_select =
+            batch_select_enabled(w.q_idx_rows.0 != 0, is_prefill, ctx.graph_capture, k);
         let mut batch_q_pos: Vec<i32> = Vec::with_capacity(if batch_select { k } else { 0 });
         for row in 0..k {
             let pos = seq_len + row;
@@ -1147,7 +1190,6 @@ impl Glm5NextDsaLayer {
                 attend_paging = Some(paging);
                 owns_scratch = owns_bt && !self.persist_bt;
             }
-
         }
 
         // ── ONE selection pass for all K rows (default; off under ...SELECT_ROWS=0) ──
@@ -1188,7 +1230,6 @@ impl Glm5NextDsaLayer {
         profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
         Ok(())
     }
-
 }
 
 impl TransformerLayer for Glm5NextDsaLayer {
@@ -1253,6 +1294,8 @@ impl TransformerLayer for Glm5NextDsaLayer {
             block_table,
             ctx,
             stream,
+            // A single-token decode, never a prefill sub-chunk. Moot at k == 1, stated anyway.
+            false,
         )
     }
 }

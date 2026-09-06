@@ -708,6 +708,12 @@ impl Glm5NextLayer {
         stream: u64,
         take_snapshots: bool,
         slot_base: usize,
+        // TRUE only when this call is a PREFILL sub-chunk. `forward_k` is shared by prefill
+        // and by the speculative verify, and nothing in `ForwardContext` separates them:
+        // `decode_step` is false for both, and `graph_capture` is false for prefill AND for
+        // an eager verify. The DSA layer's batched selector is qualified on prefill only, so
+        // the distinction is carried explicitly rather than re-derived downstream.
+        is_prefill: bool,
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let h = self.hidden;
@@ -800,7 +806,17 @@ impl Glm5NextLayer {
             }
             (Glm5NextMixer::Dsa(layer), _) => {
                 // 🪤 DSA writes its `o_proj` output back over the buffer it was handed.
-                layer.decode_k(normed, k, state, kv_cache, seq_len, block_table, ctx, stream)?;
+                layer.decode_k(
+                    normed,
+                    k,
+                    state,
+                    kv_cache,
+                    seq_len,
+                    block_table,
+                    ctx,
+                    stream,
+                    is_prefill,
+                )?;
                 normed
             }
             (Glm5NextMixer::Kda { .. }, None) => {
@@ -1114,6 +1130,8 @@ impl TransformerLayer for Glm5NextLayer {
                     false,
                     // Absolute slot within this prefill, so sub-chunks never share a slot.
                     t,
+                    // This IS the prefill sub-chunk caller.
+                    true,
                 )?;
                 t += k;
             }
@@ -1205,6 +1223,9 @@ impl TransformerLayer for Glm5NextLayer {
             stream,
             true,
             0,
+            // A speculative verify, NOT a prefill sub-chunk — true here would hand an eager
+            // verify the prefill-only batched DSA selector.
+            false,
         )
     }
 
