@@ -67,7 +67,19 @@ impl TransformerModel {
         for (i, layer) in self.layers.iter().enumerate() {
             let layer_type = self.config.layer_type(i);
 
-            if layer_type == atlas_core::config::LayerType::FullAttention {
+            // BOTH attention flavors take the per-token path. SlidingAttention
+            // previously fell into the decode_batched fallback below, whose
+            // default per-token decode() loop reuses the caller's ONE
+            // attn_metadata upload -- every one of the K tokens then attends
+            // and writes KV at the SAME position, and the verify commits one
+            // token repeated (Laguna-XS DFlash 'ToToTo...' degeneration,
+            // 2026-08-25; Laguna is the first spec target with sliding
+            // layers, so no earlier model could hit this).
+            if matches!(
+                layer_type,
+                atlas_core::config::LayerType::FullAttention
+                    | atlas_core::config::LayerType::SlidingAttention
+            ) {
                 // Attention layers: sequential per-token (need per-token metadata)
                 for t in 0..k {
                     let pos = seq.seq_len + t;
@@ -261,224 +273,145 @@ impl TransformerModel {
         Ok(results)
     }
 
-    pub(super) fn checkpoint_ssm_states_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
-        use crate::layer::SsmLayerState;
-
-        let stream = self.gpu.default_stream();
-        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
-        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
-        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
-            if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
-                let ssm = layer_state
-                    .as_any_mut()
-                    .downcast_mut::<SsmLayerState>()
-                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
-
-                // Determine sizes from config
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let kd = self.config.linear_key_head_dim;
-                // STORAGE width of pool h regions (SSOT: ssm_pool /
-                // ssm_reserve::ssm_h_stored_bytes) — FP32 today; halves
-                // under the stage-3 f16-sized pool so these copies can
-                // never overrun a narrow slot.
-                let h_bytes = self.ssm_pool.h_stored_bytes;
-                let conv_dim = nk * kd * 2 + nv * vd; // 8192
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4; // FP32
-
-                // Lazy alloc checkpoint buffers
-                if ssm.h_state_checkpoint.is_none() {
-                    ssm.h_state_checkpoint = Some(self.gpu.alloc(h_bytes)?);
-                }
-                if ssm.conv_state_checkpoint.is_none() {
-                    ssm.conv_state_checkpoint = Some(self.gpu.alloc(conv_bytes)?);
-                }
-
-                // D2D copy: state → checkpoint
-                h_plan.push(StateCopy {
-                    src: ssm.h_state,
-                    dst: ssm.h_state_checkpoint.unwrap(),
-                    bytes: h_bytes,
-                });
-                conv_plan.push(StateCopy {
-                    src: ssm.conv_state,
-                    dst: ssm.conv_state_checkpoint.unwrap(),
-                    bytes: conv_bytes,
-                });
-            }
-        }
-        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
-        self.gpu.synchronize(stream)?;
-        Ok(())
-    }
-
-    pub(super) fn rollback_ssm_states_dispatch(
+    /// Sequential per-token attention decode over K verify rows, uploading
+    /// CORRECT per-token metadata (position, KV slot, seq_len, block table)
+    /// before each `decode()` — the same pattern this file's eager verify
+    /// uses inline for its attention arm.
+    ///
+    /// Exists for SLIDING-WINDOW attention layers inside the K=2 / K=γ
+    /// verify bodies: those routes send non-FullAttention layers to
+    /// `decode_batched`, whose default per-token loop reuses the caller's
+    /// single multi-row metadata upload — every token then attends and
+    /// writes KV at the SAME position, and verify commits one token
+    /// repeated (Laguna-XS DFlash 'ToToTo…' degeneration, 2026-08-25;
+    /// `decode_multi_seq` is no alternative — it has no sliding-window
+    /// handling at all). Eager H2D uploads per token: callers must run
+    /// OUTSIDE CUDA-graph capture (the verify bodies drop graphs when the
+    /// model has sliding layers).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn verify_attention_per_token(
         &self,
+        layer: &dyn TransformerLayer,
+        layer_idx: usize,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        k: usize,
         seq: &mut SequenceState,
-        num_accepted: usize,
+        kv_cache: &mut PagedKvCache,
+        stream: u64,
     ) -> Result<()> {
-        use crate::layer::SsmLayerState;
-
-        // PRE-VALIDATION PASS — no GPU work is enqueued until every SSM layer
-        // is known to be restorable. Bailing part-way through the copy loop
-        // below would leave the first N layers rewound and the rest advanced
-        // past the accepted boundary: a MIXED state, which is strictly worse
-        // than the uniform corruption it is meant to prevent and much harder
-        // to reason about. Validate first, then copy unconditionally.
-        if num_accepted > 0 {
-            for (i, layer_state) in seq.layer_states.iter().enumerate() {
-                if self.config.layer_type(i) != atlas_core::config::LayerType::LinearAttention {
-                    continue;
-                }
-                let ssm = layer_state
-                    .as_any()
-                    .downcast_ref::<SsmLayerState>()
-                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
-                if num_accepted > ssm.h_state_intermediates.len() {
-                    anyhow::bail!(
-                        "rollback_ssm_states: cannot restore SSM to N={num_accepted} \
-                         (layer {i}): only {} per-token intermediate(s) available. \
-                         With no intermediates this is the self-speculative / ngram \
-                         path — use --speculative (MTP) or --num-drafts 1 for SSM \
-                         models. With too few, the MTP h-intermediate pool \
-                         (num_drafts per slot, tiered — K-1 snapshots for a \
-                         K-row verify) is smaller than this rollback target. \
-                         No rollback copies were enqueued.",
-                        ssm.h_state_intermediates.len(),
-                    );
-                }
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        // Dedicated staging — NOT `scratch + 32768`: the verify bodies'
+        // multi-seq metadata overlay lives there and can span the entire
+        // scratch buffer, and the interleaved FullAttention layers'
+        // decode_multi_seq still reads it between our per-token calls
+        // (clobbering it was a sticky CUDA-700 on Laguna-XS, 2026-08-25).
+        const PTOK_META_BYTES: usize = 16 * 1024;
+        let meta_base = match self.verify_ptok_meta.get() {
+            Some(&p) => p,
+            None => {
+                let p = self.gpu.alloc(PTOK_META_BYTES)?;
+                *self.verify_ptok_meta.get_or_init(|| p)
             }
+        };
+        // +4 blocks of slack: ensure_blocks_through_decode below may grow the
+        // table by up to ceil(k/block_size)+1 entries before the upload.
+        anyhow::ensure!(
+            256 + (seq.block_table.len() + 4) * 4 <= PTOK_META_BYTES,
+            "verify_attention_per_token: block table ({} blocks) exceeds the \
+             16 KB per-token metadata staging",
+            seq.block_table.len(),
+        );
+        for t in 0..k {
+            let pos = seq.seq_len + t;
+            let bs = kv_cache.block_size();
+            let blocks_needed = (pos / bs) + 1;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+                self.levers.kv_poison,
+            )?;
+
+            let max_blocks = seq.block_table.len() as u32;
+            let pos_val = pos as u32;
+            self.gpu
+                .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
+            let block_idx = seq
+                .physical_block_for(pos / bs)
+                .unwrap_or(self.dummy_kv_block);
+            let global_slot = (block_idx as i64) * (bs as i64) + ((pos % bs) as i64);
+            self.gpu
+                .copy_h2d_async(&global_slot.to_le_bytes(), meta_base.offset(8), stream)?;
+            let actual_seq_len = (pos + 1) as i32;
+            self.gpu
+                .copy_h2d_async(&actual_seq_len.to_le_bytes(), meta_base.offset(16), stream)?;
+            let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+            // SAFETY: length derived from `bt_i32` itself (`len() * 4`), a
+            // fresh `collect()` above; i32 is POD; `bt_i32` outlives the
+            // H2D enqueue.
+            let bt_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4)
+            };
+            self.gpu
+                .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
+
+            let seq_slot =
+                self.upload_seq_slot_uniform(seq.adapter_slot, 1, meta_base.offset(128), stream)?;
+
+            let attn_metadata = AttnMetadataDev {
+                positions: meta_base,
+                positions_h: meta_base,
+                positions_w: meta_base,
+                slot: meta_base.offset(8),
+                seq_len: meta_base.offset(16),
+                block_table: meta_base.offset(256),
+                max_blocks_per_seq: max_blocks,
+                num_seqs: 1,
+                seq_slot,
+                moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
+            };
+
+            let ctx = ForwardContext {
+                buffers: &self.buffers,
+                gpu: self.gpu.as_ref(),
+                config: &self.config,
+                dispatch: &self.dispatch,
+                derived: &self.derived,
+                levers: &self.levers,
+                stats: &self.stats,
+                attn_metadata: Some(attn_metadata),
+                profile: false,
+                comm: self.comm_ref(),
+                graph_capture: false,
+                gdn_exact_replay: false,
+                token_ids: None,
+                hc_row_offset: 0,
+                host_token_ids: None,
+                routed_lora_layers: None,
+                midchunk_capture: None,
+                moe_lora_route: self.decode_moe_route(),
+            };
+
+            let h_t = hidden.offset(t * h * bf16);
+            let r_t = residual.offset(t * h * bf16);
+            layer.decode(
+                h_t,
+                r_t,
+                seq.layer_states[layer_idx].as_mut(),
+                kv_cache,
+                pos,
+                &mut seq.block_table,
+                &mut seq.disk_block_ids,
+                &mut seq.disk_last_offloaded_per_layer,
+                &ctx,
+                stream,
+            )?;
         }
-
-        let stream = self.gpu.default_stream();
-        let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
-        let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
-        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
-            if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
-                let ssm = layer_state
-                    .as_any_mut()
-                    .downcast_mut::<SsmLayerState>()
-                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
-
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let kd = self.config.linear_key_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                // Pool h STORAGE width (SSOT: ssm_reserve::ssm_h_stored_bytes).
-                let h_bytes = self.ssm_pool.h_stored_bytes;
-                let conv_dim = nk * kd * 2 + nv * vd; // 8192
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4;
-
-                if num_accepted == 0 {
-                    // Restore to pre-verification checkpoint
-                    if let Some(ckpt) = ssm.h_state_checkpoint {
-                        h_plan.push(StateCopy {
-                            src: ckpt,
-                            dst: ssm.h_state,
-                            bytes: h_bytes,
-                        });
-                    }
-                    if let Some(ckpt) = ssm.conv_state_checkpoint {
-                        conv_plan.push(StateCopy {
-                            src: ckpt,
-                            dst: ssm.conv_state,
-                            bytes: conv_bytes,
-                        });
-                    }
-                } else if num_accepted <= ssm.h_state_intermediates.len() {
-                    // Restore to intermediate checkpoint after the last accepted token
-                    let idx = num_accepted - 1;
-                    h_plan.push(StateCopy {
-                        src: ssm.h_state_intermediates[idx],
-                        dst: ssm.h_state,
-                        bytes: h_bytes,
-                    });
-                    conv_plan.push(StateCopy {
-                        src: ssm.conv_state_intermediates[idx],
-                        dst: ssm.conv_state,
-                        bytes: conv_bytes,
-                    });
-                } else {
-                    // Unreachable: the pre-validation pass above already
-                    // bailed for every `num_accepted > intermediates.len()`,
-                    // and `num_accepted == 0` took the first branch. Kept as
-                    // a hard error rather than a silent fallthrough — the
-                    // original code returned Ok(()) here, leaving h_state and
-                    // conv_state ADVANCED past the last accepted token with
-                    // no error and no log line, which corrupts every
-                    // subsequent decode and surfaces much later as gibberish.
-                    unreachable!(
-                        "rollback_ssm_states: layer {i} passed pre-validation but \
-                         num_accepted={num_accepted} exceeds {} intermediates",
-                        ssm.h_state_intermediates.len(),
-                    );
-                }
-                // `num_accepted == num_tokens` (full accept) never reaches
-                // here: callers guard it (`seq.seq_len > expected_seq_len`),
-                // and it would otherwise be swallowed by the branch above.
-            }
-        }
-        // Enqueued only after every layer validated AND planned — the
-        // pre-validation pass above already guarantees no bail can happen
-        // here, and building the plan first makes that structural rather
-        // than argued: a partially-rewound MIXED state is unrepresentable.
-        run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
-        // No synchronize needed: rollback copies and subsequent operations
-        // are on the same CUDA stream, so ordering is guaranteed.
         Ok(())
-    }
-
-    /// Phase-C decode-time boundary snapshot save.
-    ///
-    /// Copies the sequence's live SSM state (the active `SsmStatePool`
-    /// slot `seq.slot_idx`) into the decode-rollback ring slot
-    /// `(seq.slot_idx, ring_slot)` of [`SsmSnapshotPool`]. Reuses the
-    /// same D2D copy primitive Marconi and MTP verify use (SSOT). The
-    /// copies run on the default stream so they are ordered after the
-    /// decode that produced this boundary token and before any later
-    /// decode that would overwrite the pool slot.
-    pub(super) fn save_decode_ssm_snapshot_dispatch(
-        &self,
-        seq: &SequenceState,
-        ring_slot: usize,
-    ) -> Result<()> {
-        if !self.ssm_snapshots.decode_rollback_enabled() {
-            anyhow::bail!("save_decode_ssm_snapshot: decode-rollback region not allocated");
-        }
-        let stream = self.gpu.default_stream();
-        self.ssm_snapshots.save_decode(
-            seq.slot_idx,
-            ring_slot,
-            &self.ssm_pool,
-            self.gpu.as_ref(),
-            stream,
-        )
-    }
-
-    /// Phase-C decode-time boundary snapshot restore.
-    ///
-    /// Inverse of [`Self::save_decode_ssm_snapshot_dispatch`]: copies the
-    /// ring snapshot `(seq.slot_idx, ring_slot)` back into the live
-    /// `SsmStatePool` slot, undoing every recurrent update the dropped
-    /// degenerate tail applied.
-    pub(super) fn restore_decode_ssm_snapshot_dispatch(
-        &self,
-        seq: &SequenceState,
-        ring_slot: usize,
-    ) -> Result<()> {
-        if !self.ssm_snapshots.decode_rollback_enabled() {
-            anyhow::bail!("restore_decode_ssm_snapshot: decode-rollback region not allocated");
-        }
-        let stream = self.gpu.default_stream();
-        self.ssm_snapshots.restore_decode(
-            seq.slot_idx,
-            ring_slot,
-            &self.ssm_pool,
-            self.gpu.as_ref(),
-            stream,
-        )
     }
 }
