@@ -400,6 +400,8 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
+          # The real parity tests need metallibs, not the workflow's empty stub.
+          ATLAS_SKIP_BUILD: "0"
           ATLAS_TARGET_HW: metal
           ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
           ATLAS_TARGET_QUANT: mlx_int8
