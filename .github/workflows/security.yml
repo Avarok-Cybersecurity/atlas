@@ -39,6 +39,13 @@ concurrency:
 jobs:
   cargo-deny:
     name: cargo deny
+    # STAYS HOSTED. `cargo deny` runs through EmbarkStudios' Docker action,
+    # which builds an Alpine image at job time. On avarok that build fails:
+    # the host resolves dl-cdn.alpinelinux.org to an IPv6 address only, and
+    # Docker containers there have no IPv6, so `apk update` cannot reach the
+    # CDN and the image never builds. Routing this was over-reach on my part —
+    # the two pools are for toolchain-free scripts and for cargo, not for
+    # container actions. Revisit when the box has container IPv6.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
