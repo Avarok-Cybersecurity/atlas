@@ -167,3 +167,57 @@ pub(super) fn test_prefill(prompt: Vec<u32>) -> (super::types::PrefillInProgress
     };
     (p, rx)
 }
+
+/// A real `PrefillInProgress` at `chunk_offset == 0`, identified by
+/// `session_hash` so an ordering test can name the request it is tracking.
+///
+/// `eos_tokens` is empty and `temperature` is 0.0 on purpose: that is the
+/// `sample_token` greedy fast path (`argmax_on_device`), which a stub `Model`
+/// can answer without a device logits buffer. `max_tokens` is 8 (> 1) so
+/// promotion pushes onto `active` instead of finishing immediately.
+pub(super) fn test_prefill_ident(
+    id: u64,
+    prompt_len: usize,
+) -> (super::types::PrefillInProgress, RespRx) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let p = super::types::PrefillInProgress {
+        prompt_tokens: std::sync::Arc::new(vec![1u32; prompt_len]),
+        session_hash: id,
+        seq: SequenceState::host_only(id as usize),
+        chunk_offset: 0,
+        max_tokens: 8,
+        min_tokens: 0,
+        eos_tokens: Vec::new(),
+        sink: ResponseSink::Blocking(Some(tx)),
+        cancel_flag: None,
+        request_start: Instant::now(),
+        temperature: 0.0,
+        top_k: 0,
+        top_p: 1.0,
+        top_n_sigma: 0.0,
+        min_p: 0.0,
+        repetition_penalty: 1.0,
+        repetition_penalty_window: 256,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        lz_penalty: DEFAULT_LZ_PENALTY,
+        dry_multiplier: 0.0,
+        dry_base: 0.0,
+        dry_allowed_length: 0,
+        dry_sequence_breakers: Vec::new(),
+        logit_bias: Vec::new(),
+        enable_thinking: false,
+        thinking_budget: None,
+        repetition_detection: None,
+        spontaneous_think_budget: 0,
+        require_tool_call: false,
+        tools_present: false,
+        suppress_tool_call: false,
+        disable_mtp: false,
+        grammar_state: None,
+        seed: None,
+        top_logprobs: None,
+        timeout_at: None,
+    };
+    (p, rx)
+}
