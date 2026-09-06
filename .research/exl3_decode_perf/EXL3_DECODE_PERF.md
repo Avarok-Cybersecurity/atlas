@@ -775,6 +775,47 @@ prefix caching stays on by rule, so the fix is making the snapshot D2H asynchron
 not turning it off), and host memory headroom on the 128K x 4 preset (available fell to 7 GB and swap
 to 5 GB in the 30K arm; the box has swapped under similar pressure before).
 
+## Warm-restore TTFT probe (2026-09-06 02:21, explains the 128-token anomaly)
+
+`probe_warm_restore_ttft.py` + `warm_restore_probe_20260906T022156/`: four requests per prompt length
+(cold, the SAME prompt again, a tail-modified variant, a second cold), `max_tokens=1`, temp 0, server
+TTFT and `cached_tokens` from the usage block. Arms: the named preset (prefix caching ON) and the same
+flags without `--enable-prefix-caching`. Median TTFT in ms, two repeats:
+
+| prompt tokens | arm | cold | exact repeat | tail-modified (~95% cached) | second cold |
+|---:|---|---:|---:|---:|---:|
+| ~195 | prefix ON | 663 | **640** | 650 | 662 |
+| ~625 | prefix ON | 1183 | **197** | 757 (one rep 334, one 1180) | 1169 |
+| ~2340 | prefix ON | 4250 | **220** | **4215** | 4157 |
+| ~195 | prefix OFF | 528 | 506 | 509 | 518 |
+| ~625 | prefix OFF | 1023 | 979 | 992 | 1024 |
+| ~2340 | prefix OFF | 4047 | 3964 | 4034 | 4004 |
+
+Two defects, both visible in the `cached_tokens` column of the raw log:
+
+1. **A short exact hit is reported but not honoured.** At ~195 tokens the repeat reports
+   `cached=192/193` and still costs 640 ms — the same as its own cold run, and MORE than the
+   prefix-OFF cold (506 ms). At ~2340 tokens the identical situation costs 220 ms. So below some
+   length the restore path recomputes the prompt while still counting it as cached. That is exactly
+   the operator's TUI row: a 128-token prompt at 97% cache with the WORST TTFT at every concurrency
+   (729 / 1515 / 2194 ms) while a 512-token prompt at 100% cache read 209 / 404 / 651 ms.
+2. **A partial hit is charged the full cold price.** The tail variant at ~2340 tokens reports
+   `cached=2272` (94%) and costs 4215 ms, indistinguishable from cold; at ~625 tokens one repeat took
+   the fast path (334 ms) and the other did not (1180 ms) on the same shape. Reuse is therefore
+   all-or-nothing *and* nondeterministic near the boundary — a partial prefix does not save prefill,
+   it only saves the lookup.
+
+Prefix caching also costs ~20-30% on genuinely cold prompts (663 vs 528, 1183 vs 1023, 4250 vs 4047):
+the snapshot/insert work on the ingest path. That is the price of the hit when the hit works, and it
+is why defect 1 is worse than "no cache": short prompts pay the insert and never collect.
+
+Suspects, in the order a fix should test them (UNVERIFIED): the block granularity of the radix match
+(the log shows `cached` moving in 16/32-token steps, so a short prompt may match blocks the restore
+then declines to use); the Marconi SSM snapshot policy declining to snapshot/restore below a token
+threshold, forcing a full recompute of the GDN state while the KV blocks are reported as hits; and the
+PLE row-cache re-stage, which is per-request host work the restore path cannot skip. Records:
+`warm_restore_probe_20260906T022156/` (fingerprint, per-request rows, both arms).
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
