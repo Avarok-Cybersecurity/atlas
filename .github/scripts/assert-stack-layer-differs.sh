@@ -85,21 +85,28 @@ selftest() {
   ) > "$tmp/shas" || { echo "selftest: fixture build failed"; return 1; }
   read -r BASE LAYER EMPTY < "$tmp/shas"
 
-  run() { # run <expect 0|1> <label> <head> <base>
-    local want="$1" label="$2"; shift 2
+  # ★ EACH CONTROL ASSERTS WHICH RULE FIRED, NOT MERELY THAT SOMETHING DID.
+  # The three refusals overlap: head==base ALSO has identical trees, and an
+  # ancestor MAY. A control that checks only the exit code therefore stays
+  # green when the rule it is named after is dead and a sibling catches the
+  # input instead -- which is exactly what happened the first time this suite
+  # was sabotaged for its own negative control.
+  run() { # run <expect 0|1> <needle> <label> <head> <base>
+    local want="$1" needle="$2" label="$3"; shift 3
     out=$(cd "$tmp" && check_layer "$@" 2>&1); local got=$?
-    if [ "$got" -eq "$want" ]; then
+    if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qF -- "$needle"; then
       printf '  ok   %s\n' "$label"
     else
-      printf '  FAIL %s (wanted rc=%s, got rc=%s)\n     %s\n' "$label" "$want" "$got" "$out"
+      printf '  FAIL %s (wanted rc=%s + %s, got rc=%s)\n     %s\n' \
+        "$label" "$want" "\"$needle\"" "$got" "$out"
       rc=1
     fi
   }
-  run 0 "a real layer passes"                              "$LAYER" "$BASE"
-  run 1 "control: head == base is refused"                 "$BASE"  "$BASE"
-  run 1 "control: head is an ancestor of base is refused"  "$BASE"  "$LAYER"
-  run 1 "control: identical trees, different shas, refused" "$EMPTY" "$BASE"
-  run 1 "control: a nonexistent head is refused, not skipped" "no-such-ref" "$BASE"
+  run 0 "differs from base"    "a real layer passes"                        "$LAYER" "$BASE"
+  run 1 "same commit"          "control: head == base is refused"           "$BASE"  "$BASE"
+  run 1 "is an ancestor of"    "control: head under its own base refused"   "$BASE"  "$LAYER"
+  run 1 "identical trees"      "control: same tree, different sha, refused" "$EMPTY" "$BASE"
+  run 1 "is not a commit"      "control: a nonexistent head is refused"     "no-such-ref" "$BASE"
   [ "$rc" -eq 0 ] && echo "selftest: 5 passed, 0 failed" || echo "selftest: FAILED"
   return "$rc"
 }

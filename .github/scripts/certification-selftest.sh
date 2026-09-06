@@ -2301,6 +2301,20 @@ want_rc_msg 1 "could not find the verb whitelist" \
   "control: a guard that cannot find its input refuses, it does not pass" \
   python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
 
+echo "== stack-layer push guard =="
+# ★ A GUARD NOBODY RUNS IS DECORATION. `assert-stack-layer-differs.sh` refuses
+# the push that closed #937/#938/#939 and merged #944 away on 2026-09-06, and
+# it is only worth having if CI keeps proving it can still refuse. Its own
+# `--selftest` builds a throwaway repo and exercises each rule against an input
+# that MUST be refused; this row runs that, and the row below shows the suite
+# goes red when the guard is the thing that breaks.
+want_rc 0 "the stack-layer guard's own controls all fire" \
+  bash .github/scripts/assert-stack-layer-differs.sh --selftest
+want_rc_msg 1 "same commit" "control: head == base is refused" \
+  sh -c 'cd "$(git rev-parse --show-toplevel)" && bash .github/scripts/assert-stack-layer-differs.sh HEAD HEAD'
+want_rc 2 "control: called with no arguments it refuses, it does not pass" \
+  bash .github/scripts/assert-stack-layer-differs.sh
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
