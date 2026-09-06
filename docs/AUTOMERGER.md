@@ -892,3 +892,69 @@ precisely for this and a "clever" placement expression is outside its reach.
 **CITED:** R-32 (per-runner CARGO_HOME on the four new runners); R-34 (the
 preflight is still holding the campaign's pin); R-38 (verified the new runners
 by what they RAN, not by a status flag).
+
+---
+
+## Run 31 — 2026-09-06T10:20Z — the queue toll, and a landmine that no linter could see
+
+```text
+09:15Z  aggregate Stack C (#877's eight + the ffmpeg diagnosis) composed onto #934's
+                 head with ZERO conflicts. Preflight found 3 of 8 gates red.
+09:16Z  return   The three were ONE defect. #837 split ssm_gdn_b.rs at the 500-LoC cap
+                 one item too early: gdn_decode_chunk3's doc block and its #[allow]
+                 crossed into ssm_gdn_wyn.rs while chunk3 stayed behind, so
+                 gdn_decode_wy4 -- a 4-token 2-pass decode -- was documented as
+                 "Fused 3-token GDN decode (K=3)". clippy saw the duplicated
+                 attribute; rustdoc saw `0..na_tab[b]` as a link to `b`; fmt saw the
+                 use-ordering. cargo test --workspace was green throughout, which is
+                 exactly why a pure-move diff survives review.
+09:15Z  aggregate Stack C: PREFLIGHT fail=0, all eight.
+09:22Z  land     #935 opened -- the queue toll, extracted from #876.
+```
+
+**THE QUEUE TOLL, MEASURED.** #856 is a documentation PR. It sat in the merge
+queue for over an hour running **nine cross-platform release builds**. #833 and
+#875 were queued behind it to pay the same toll, and so was every remaining PR.
+The fix had been written two days earlier on #876 and was stuck there behind a
+29-commit skill stack that conflicts with #934. Extracting two commits cost
+forty minutes and stops the whole backlog paying for it.
+
+**Extraction is where the interesting failures were.**
+
+*One hunk would have deleted a guard.* `release-build.yml`'s HEAD side read
+`!inputs.publishing && !inputs.web_only`; `publishing` was added to main AFTER
+the commit being ported, so "take theirs" -- correct for the other six hunks --
+would have silently started the release matrix during publishes. The resolver
+asserted per hunk that every `inputs.X` conjunct present in HEAD survives into
+the result, and refused. Three earlier drafts of that assertion were too strict
+and stopped before writing; none of them wrote a wrong file.
+
+*The port left a landmine no single-file check can see.* `stack_layer` arrived
+in `ci.yml`'s `with:` block while its input DECLARATION stayed in an unported
+third commit. Every file parses. Every script is valid. `cargo test` green.
+Self-test green. And GitHub validates `with:` at DISPATCH, so the calling
+workflow would have failed to start and created NONE of its contexts -- which
+branch protection cannot distinguish from "still running".
+
+> **R-40. A defect can live in the relationship between two files, where no
+> linter is looking.** YAML parses per file; `with:` is checked against a
+> callee's `inputs:` only at dispatch, and the failure mode is silence, not an
+> error. EVIDENCE: 2026-09-06, porting two commits out of #876 passed fmt,
+> clippy, rustdoc, cargo test and a 128-check self-test while carrying a
+> `with:` key whose declaration was never ported. CHECK:
+> `assert-reusable-workflow-inputs.py`, both directions, every local callee,
+> inside the required `cargo deny` context.
+
+**AND THE GUARD WAS WRONG FIRST.** Its opening run accused `release.yml` of
+calling a `ci.yml` that "is not a workflow_call workflow". ci.yml declares
+`workflow_call:` with nothing under it; PyYAML renders that `None`; I tested the
+VALUE instead of the KEY. One of the four controls is now that exact shape, so
+the next edit cannot reintroduce it. A guard's first red is as likely to be the
+guard as the tree -- check which before filing a bug against the repo.
+
+Self-test 128 -> 133, 0 failed.
+
+**CITED:** R-34 (the preflight caught three red gates on Stack C before GPU
+time -- second campaign running, second catch); R-assert-all-anchors (four
+resolver assertions, each stopping before a write); R-38 (verified the ported
+behaviour by what the callee DECLARES, not by whether the file parsed).
