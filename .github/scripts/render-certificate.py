@@ -116,16 +116,32 @@ def main():
     with open(a.template, encoding="utf-8") as fh:
         svg = fh.read()
 
-    for id_, val in (
-        ("value-cert-pr", f"#{a.pr}"),
-        ("value-cert-pr-title", a.title),
-        ("value-cert-repo", a.repo),
-        ("value-cert-commit", a.commit),
-        ("value-cert-date", a.date),
-        ("value-cert-gates", a.gates),
+    # These six rows have no group to hide -- the template draws their labels
+    # unconditionally -- so a missing value cannot be answered by hiding. It
+    # also cannot be answered by SKIPPING the substitution, which is what this
+    # loop used to do: the template is artwork drawn on a specimen PR, and every
+    # one of these ids ships that specimen's data. `--title ""` rendered "Fuse
+    # the GDN spine epilogue into the decode kernel" and commit 9d4e1f07c2 onto
+    # whatever PR was merging, and published it as that PR's own record. Both
+    # are reachable -- the bot reads them with `gh api ... 2>/dev/null`, so a
+    # rate limit or a 404 is indistinguishable from an answer. A certificate is
+    # a record; the only honest answer to a missing field is to refuse to draw
+    # one, and to let the caller post the words without a picture.
+    for flag, id_, val in (
+        ("--pr", "value-cert-pr", f"#{a.pr}"),
+        ("--title", "value-cert-pr-title", a.title),
+        ("--repo", "value-cert-repo", a.repo),
+        ("--commit", "value-cert-commit", a.commit),
+        ("--date", "value-cert-date", a.date),
+        ("--gates", "value-cert-gates", a.gates),
     ):
-        if val:
-            svg = set_text(svg, id_, val)
+        if not str(val).strip():
+            raise SystemExit(
+                f"{flag} is empty -- refusing to render. The template carries a "
+                f"placeholder at {id_}, so an empty value does not blank the row, "
+                f"it publishes the specimen's data as though it were this PR's."
+            )
+        svg = set_text(svg, id_, val)
 
     authors = [x.strip() for x in a.authors.split(",") if x.strip()]
     for i in range(1, 4):

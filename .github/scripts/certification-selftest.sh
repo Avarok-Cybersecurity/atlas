@@ -322,6 +322,75 @@ PY
 }
 [ "$(vis "$TMP/c1.svg")" = "1" ] && ok "one author -> one visible slot" || bad "one author -> $(vis "$TMP/c1.svg") visible slots"
 [ "$(vis "$TMP/c3.svg")" = "3" ] && ok "three authors -> three visible slots" || bad "three authors -> $(vis "$TMP/c3.svg") visible slots"
+
+# THE SPECIMEN MUST NEVER SURVIVE. The template is artwork drawn on a specimen
+# PR -- its title, its commit and its author are all real-looking strings sitting
+# in the file. A row with no group cannot be hidden, so an empty value used to be
+# answered by SKIPPING the substitution, which does not blank the row: it leaves
+# the specimen's data standing and publishes it as this PR's. Reachable, not
+# theoretical -- the bot reads both the title and the merge sha through
+# `gh api ... 2>/dev/null`, so either comes back empty on a rate limit or a 404.
+SPECIMEN_TITLE='Fuse the GDN spine epilogue into the decode kernel'
+SPECIMEN_COMMIT='9d4e1f07c2'
+SPECIMEN_AUTHOR=$(grep -o 'id="value-cert-author-1"[^>]*>[^<]*' "$T" | sed 's/.*>//')
+if grep -qF "$SPECIMEN_TITLE" "$T" && grep -qF "$SPECIMEN_COMMIT" "$T" && [ -n "$SPECIMEN_AUTHOR" ]; then
+  ok "the template does carry specimen data (so the checks below mean something)"
+else
+  bad "setup: the template no longer carries the specimen strings these checks look for"
+fi
+
+want_nonzero "an empty --title is refused, not drawn over with the specimen's" \
+  render "$TMP/spec-t.svg" --authors alice --title ""
+want_nonzero "an empty --commit is refused, not drawn over with the specimen's" \
+  render "$TMP/spec-c.svg" --authors alice --commit ""
+render "$TMP/spec-ok.svg" --authors alice >/dev/null 2>&1
+if grep -qF "$SPECIMEN_TITLE" "$TMP/spec-ok.svg" || grep -qF "$SPECIMEN_COMMIT" "$TMP/spec-ok.svg"; then
+  bad "a rendered certificate still carries the template's specimen data"
+else
+  ok "a rendered certificate carries none of the template's specimen data"
+fi
+
+# CONTROL: the pre-fix behaviour -- skip the substitution when the value is
+# empty -- restored in a COPY. It must publish the specimen's title, which is
+# what proves the three checks above are not passing by construction.
+mkdir -p "$TMP/rc"
+python3 - .github/scripts/render-certificate.py "$TMP/rc/render.py" <<'RCSAB'
+import pathlib, re, sys
+t = pathlib.Path(sys.argv[1]).read_text()
+new, n = re.subn(r'        if not str\(val\)\.strip\(\):\n(?:            .*\n)+',
+                 '        if not str(val).strip():\n            continue\n', t)
+assert n == 1, "sabotage would not land: the empty-value guard was not found"
+pathlib.Path(sys.argv[2]).write_text(new)
+RCSAB
+python3 "$TMP/rc/render.py" --template "$T" --out "$TMP/rc/out.svg" \
+  --url https://github.com/o/r/pull/7 --pr 7 --title "" --repo o/r --commit abc1234567 \
+  --date 2026-01-01 --gates "11 / 11" --authors alice --qr-x 980 --qr-y 455 >/dev/null 2>&1
+grep -qF "$SPECIMEN_TITLE" "$TMP/rc/out.svg" \
+  && ok "control: skipping an empty field publishes the specimen's title" \
+  || bad "control: the sabotage did not reproduce the defect -- the checks above prove nothing"
+
+# ZERO authors is reachable too: `who` is built from two `gh api ... 2>/dev/null`
+# calls and can come back empty. Slot 1 is the only one the template ships
+# VISIBLE, so vis() above cannot see this -- it counts slots the template had
+# already hidden, and a run with hide() deleted left every check in this section
+# green while a certificate named the specimen author.
+render "$TMP/c-none.svg" --authors "" >/dev/null 2>&1
+[ "$(vis "$TMP/c-none.svg")" = "0" ] \
+  && ok "no authors -> no visible slot (the specimen author is not left standing)" \
+  || bad "no authors -> $(vis "$TMP/c-none.svg") visible slots, drawing the specimen's name"
+python3 - .github/scripts/render-certificate.py "$TMP/rc/nohide.py" <<'HDSAB'
+import pathlib, sys
+t = pathlib.Path(sys.argv[1]).read_text()
+old = '        else:\n            svg = hide(svg, f"field-cert-author-{i}")\n'
+assert t.count(old) == 1, "sabotage would not land: the author hide() was not found"
+pathlib.Path(sys.argv[2]).write_text(t.replace(old, '        else:\n            pass\n'))
+HDSAB
+python3 "$TMP/rc/nohide.py" --template "$T" --out "$TMP/rc/nohide.svg" \
+  --url https://github.com/o/r/pull/7 --pr 7 --title t --repo o/r --commit abc1234567 \
+  --date 2026-01-01 --gates "11 / 11" --authors "" --qr-x 980 --qr-y 455 >/dev/null 2>&1
+[ "$(vis "$TMP/rc/nohide.svg")" != "0" ] \
+  && ok "control: dropping hide() leaves the specimen author visible" \
+  || bad "control: the sabotage did not reproduce the defect -- the check above proves nothing"
 # CONTROL: a template that lacks an id must be an error, not a silent no-op.
 sed 's/id="value-cert-pr"/id="value-cert-pr-RENAMED"/' "$T" > "$TMP/broken.svg"
 want_rc 1 "control: a renamed id is an error, not a silent skip" \
@@ -929,11 +998,43 @@ STUB
     else
       bad "control: a missing render tool swallowed the certificate entirely"
     fi
+    # It must NOT fall back to the committed template. That sample carries the
+    # placeholder certifier names it was designed with (m-ferraro / a-hoffmann)
+    # over a fixed author line, so linking it tells the world that fictional
+    # people certified this PR. Observed on #901 (opened by @TheTom, sample says
+    # tbraun96), and on every certificate before it: bot-cards held zero pr-*.png.
     if grep -q 'certificate-merged.png' "$TMP/bcalls"; then
-      ok "control: and it points at the generic image, not a render that never happened"
+      bad "control: the fallback linked the template — that publishes placeholder certifiers"
     else
-      bad "control: it linked a rendered certificate that was never produced"
+      ok "control: no render, no image — the template's placeholder names are never published"
     fi
+    if grep -q 'could not be rendered' "$TMP/bcalls"; then
+      ok "control: and it says why the picture is missing"
+    else
+      bad "control: the image vanished with no explanation"
+    fi
+  fi
+
+  # The certificate IMAGE only exists if the PNG reaches bot-cards, and that
+  # PUT needs contents:write. The App did not have it (certification-preflight's
+  # permission probe fails), which is why bot-cards held zero pr-*.png and every
+  # certificate went imageless. The job's own grant is the guarantee, so pin it.
+  if python3 - <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/certification-bot.yml"))
+perms = (d["jobs"]["state"].get("permissions") or {})
+sys.exit(0 if perms.get("contents") == "write" else 1)
+PY
+  then
+    ok "the bot job grants itself contents:write — the certificate image can be uploaded"
+  else
+    bad "the bot job lacks contents:write — the certificate PNG can never reach bot-cards"
+  fi
+  # ...and the upload must actually FALL BACK to that token, not rely on the App.
+  if grep -q 'put_cert "${WORKFLOW_TOKEN:-}"' .github/workflows/certification-bot.yml; then
+    ok "and the upload retries under the workflow token when the App lacks the grant"
+  else
+    bad "the upload never falls back to the token that is guaranteed to have contents:write"
   fi
 
   runbot pr-certification-stage-1 "" 0
@@ -944,10 +1045,31 @@ STUB
   patched && ok "control: an existing comment is edited, not duplicated" \
     || bad "control: it posted a second state comment instead of editing"
 
-  # The marker is both the lookup key and the memory of the previous state.
-  grep -q 'atlas-certification-state' "$TMP/bot.sh" \
-    && ok "the state marker is written into the comment" \
-    || bad "no state marker -- the next run cannot find its own comment"
+  # The marker is both the lookup key and the memory of the previous state, and
+  # BOTH halves live in the state it carries. A substring grep of the step's
+  # source could not see that: deleting the `:$STATE` leaves the string
+  # `atlas-certification-state` in the file, so this check stayed green while
+  # the lookup's `contains("<!-- atlas-certification-state:")` matched nothing,
+  # `prev` was empty on every run, and the bot posted a fresh comment per event
+  # instead of editing one -- the thread of stale states the marker exists to
+  # prevent. Assert the marker the bot actually EMITS, and that the lookup's own
+  # literal is a prefix of it. (The nearby "edited, not duplicated" control
+  # cannot catch this either: it feeds COMMENT_ID in, bypassing the lookup.)
+  LOOKUP=$(python3 - <<'PY'
+import re, pathlib
+t = pathlib.Path(".github/workflows/certification-bot.yml").read_text()
+m = re.search(r'contains\("(<!-- atlas-certification-state[^"]*)"\)', t)
+print(m.group(1) if m else "")
+PY
+)
+  runbot pr-certification-stage-3 "" 0
+  if [ -z "$LOOKUP" ]; then
+    bad "the bot has no marker lookup -- it cannot find its own comment at all"
+  elif grep -qF "${LOOKUP}pr-certification-stage-3 -->" "$TMP/bcalls"; then
+    ok "the state marker is written into the comment, and matches the bot's own lookup"
+  else
+    bad "the posted marker does not match the lookup '$LOOKUP' plus the state -- prev can never be read back"
+  fi
 
   # THE CERTIFICATE: only on merge, and only once.
   runbot pr-certification-merged "" 0
@@ -960,6 +1082,36 @@ STUB
   runbot pr-certification-merged "" 1
   ! certed && ok "control: a certificate already posted is not posted again" \
     || bad "control: it posted a second certificate"
+
+  # CONTROL: the PR's title and merge sha are read with `gh api ... 2>/dev/null`,
+  # so an unanswered API is indistinguishable from an answer of "". The renderer
+  # now REFUSES those rather than drawing the template's specimen title and
+  # commit in their place -- and it refuses by exiting non-zero, which under
+  # `set -e` would kill this step before the certificate POST. A merged PR with
+  # no certificate at all is strictly worse than one with no picture, which is
+  # the same trap the rsvg-convert guard exists for. So: the step must ask
+  # first, skip the render, and still post.
+  botstub 0
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+printf 'ARGV: %s\n' "$*" >> "$BCALLS"
+case "$*" in
+  *comments*--jq*)      echo 0 ;;        # no certificate posted yet
+  *"/pulls/1/commits"*) echo "alice" ;;
+  *"/pulls/1"*)         : ;;             # title, merge sha and opener: no answer
+  *)                    : ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/bin/gh"
+  ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+    STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
+    bash "$TMP/bot.sh" >/dev/null 2>&1 )
+  certed && ok "control: an unreadable PR title costs the picture, not the certificate" \
+    || bad "control: an empty title killed the step before the certificate was posted"
+  grep -q 'PUT.*contents/pr-1-' "$TMP/bcalls" \
+    && bad "control: it rendered and uploaded a certificate whose title it never read" \
+    || ok "control: and no image is rendered from data the API never returned"
 
   # CONTROL: when the image upload fails, the comment must NOT link an object
   # that was never written. #843 shipped a certificate whose <img> was a 404,
@@ -1105,6 +1257,80 @@ want_rc_msg 1 "contents:write is written by a call that swallows" \
   python3 "$TMP/pw/scripts/assert-preflight-covers-writes.py"
 
 # ---------------------------------------------------------------------------
+# The preflight's verdict must be the verdict
+# ---------------------------------------------------------------------------
+# This workflow is schedule- and dispatch-only. It is not a PR check, it cannot
+# be a required context, and a red run in the Actions tab notifies nobody by
+# default -- so the check run it mints on the default branch's head is the only
+# place its answer reaches a human. That check run used to be POSTed
+# `conclusion=success` as the checks:write probe, before any verdict existed.
+# Run 33807779248 is the receipt: it failed on contents:write at 21:24:43Z and
+# left a green "Certification preflight / App permissions verified" on
+# de42fb155e, minted half a second earlier by its own probe. Nobody looked
+# further, and the certificate shipped placeholder certifiers for two more days.
+mkdir -p "$TMP/pf/bin"
+python3 - > "$TMP/pf/step.sh" <<'PFX'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/certification-preflight.yml").read_text())
+for st in d["jobs"]["preflight"]["steps"]:
+    if (st.get("name") or "").startswith("Probe every"):
+        print(st["run"]); break
+PFX
+pf_stub() {  # pf_stub <"deny" to refuse the contents:write PUT>
+  : > "$TMP/pf/calls"
+  cat > "$TMP/pf/bin/gh" <<STUB
+#!/bin/bash
+printf 'ARGV: %s\n' "\$*" >> "\$PFCALLS"
+case "\$*" in
+  *"-X PUT"*contents*)    [ "$1" = deny ] && exit 1 ;;
+  *"-X POST"*check-runs*) echo 424242 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/pf/bin/gh"
+}
+pf_run() { ( PATH="$TMP/pf/bin:$PATH" PFCALLS="$TMP/pf/calls" GH_TOKEN=t REPO=o/r SHA=deadbeef \
+             bash -e "$TMP/pf/step.sh" >/dev/null 2>&1 ); }
+pf_verdict() { grep -o 'conclusion=[a-z]*' "$TMP/pf/calls" | tail -1; }
+
+if [ -s "$TMP/pf/step.sh" ]; then
+  # The mark must be minted UNRESOLVED. A check posted already-green cannot be
+  # made to say anything else, whatever the probes then find.
+  pf_stub allow; pf_run
+  grep -q 'POST repos/o/r/check-runs .*status=in_progress' "$TMP/pf/calls" \
+    && ok "the preflight's check run is minted in progress, not pre-concluded" \
+    || bad "the preflight mints its check run already concluded -- the verdict cannot change it"
+  [ "$(pf_verdict)" = "conclusion=success" ] \
+    && ok "all probes green -> the check run concludes success" \
+    || bad "all probes green -> the check run concluded '$(pf_verdict)'"
+
+  # THE REAL CASE: contents:write denied, exactly as production is today.
+  pf_stub deny; pf_run
+  [ "$(pf_verdict)" = "conclusion=failure" ] \
+    && ok "a denied contents:write -> the check run concludes FAILURE" \
+    || bad "a denied contents:write left the check run at '$(pf_verdict)' -- the green lie is back"
+  # The summary is multi-line, so it lands on its own lines of the call log --
+  # the report reaches the API or it does not appear here at all.
+  grep -q '^  FAIL  contents:write' "$TMP/pf/calls" \
+    && ok "and the check run names the permission that was refused" \
+    || bad "the check run reports a failure without saying which permission"
+
+  # CONTROL: restore the pre-fix probe -- mint the check already-concluded and
+  # never patch it -- in a COPY, and confirm the green lie reappears. Without
+  # this the four checks above could be passing on a step that mints nothing.
+  sed -e 's/-f status=in_progress/-f status=completed -f conclusion=success/' \
+      -e '/gh api -X PATCH "repos\/\$REPO\/check-runs\/\$check_run_id"/,+4d' \
+      "$TMP/pf/step.sh" > "$TMP/pf/step-sab.sh"
+  ( PATH="$TMP/pf/bin:$PATH" PFCALLS="$TMP/pf/calls" GH_TOKEN=t REPO=o/r SHA=deadbeef \
+    bash -e "$TMP/pf/step-sab.sh" >/dev/null 2>&1 )
+  [ "$(pf_verdict)" = "conclusion=success" ] \
+    && ok "control: pre-concluding the mark publishes success on a failing preflight" \
+    || bad "control: the sabotage did not reproduce the green lie -- the checks above prove nothing"
+else
+  bad "setup: could not extract the preflight's probe step"
+fi
+
+# ---------------------------------------------------------------------------
 # /stamp must not report success when it did not release the lane
 # ---------------------------------------------------------------------------
 python3 - > "$TMP/stamp.sh" <<'PY'
@@ -1121,7 +1347,7 @@ if [ -s "$TMP/stamp.sh" ]; then
 all="$*"
 case "$all" in
   *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
-  *"actions/runs?head_sha"*)  echo 12345; exit 0 ;;
+  *"actions/runs?head_sha"*)  echo "${RUNMETA:-12345 completed}"; exit 0 ;;
   *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
   *)                          exit 0 ;;
 esac
@@ -1158,6 +1384,32 @@ STUB
     ok "control: /seal re-runs CI so seal status is re-evaluated"
   else
     bad "control: /seal minted its mark and never refreshed the job that reads it"
+  fi
+
+  # CONTROL: stamping while CI is still in flight must NOT warn. Re-running an
+  # unfinished run returns 403 "This workflow is already running", which the
+  # warning would report as a failure -- and it is not one: a run still in
+  # flight reads the mark when its gate jobs execute. Found in production the
+  # first time the warning printed the API's own words, which is what it is for.
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" RUNMETA="777 queued" REPO=o/r PR=1 VERB=/stamp \
+    ACTOR=me AUTHOR=me PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 \
+    bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  src=$?
+  if [ "$src" -eq 0 ]; then
+    ok "control: stamping mid-run is not an error"
+  else
+    bad "control: stamping while CI was queued failed the command job"
+  fi
+  if grep -q '^RERUN ' "$TMP/scalls"; then
+    bad "control: it tried to re-run a run that had not finished"
+  else
+    ok "control: a run still in flight is not re-run"
+  fi
+  if grep -q "but CI was not re-run" "$TMP/scalls"; then
+    bad "control: it warned about a benign in-flight run"
+  else
+    ok "control: and no false warning is posted"
   fi
 else
   bad "could not extract the /stamp step"
@@ -1271,6 +1523,43 @@ want_rc_msg 1 "no known static root" "control: a site-root link from an unknown 
 # deploy time, so requiring it in the tree would fail every PR forever.
 dl_tree; printf '[a](/api/spark_model/)\n[b](/api/)\n' > "$TMP/dl/book/src/more.md"
 want_rc 0 "control: generated /api/ paths are not treated as breakage" dl_run
+
+# ---------------------------------------------------------------------------
+# Commands that exist only in a workflow file
+# ---------------------------------------------------------------------------
+# Three of the five -- /help, /review and /expedite -- were accepted by the bot
+# and mentioned nowhere in the README. /expedite skips certification outright.
+# All three arrived during this record's own waves, one commit at a time, and no
+# single change looked like it was leaving something out.
+want_rc 0 "every accepted command is documented" \
+  python3 .github/scripts/assert-commands-documented.py
+mkdir -p "$TMP/cd/.github/workflows"
+cp .github/scripts/assert-commands-documented.py "$TMP/cd/.github/"
+mkdir -p "$TMP/cd/.github/scripts"
+mv "$TMP/cd/.github/assert-commands-documented.py" "$TMP/cd/.github/scripts/"
+
+cd_case() { printf '%s\n' \
+  "jobs:" "  command:" "    steps:" "      - run: |" "          case \"\$VERB\" in" \
+  "            $1) ;;" "            *) exit 0 ;;" "          esac" \
+  > "$TMP/cd/.github/workflows/certification-commands.yml"; }
+
+cd_case '/help|/stamp|/seal'
+printf 'we document /help and /stamp and /seal here.\n' > "$TMP/cd/README.md"
+want_rc 0 "control: a README covering every verb passes" \
+  python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
+
+cd_case '/help|/stamp|/seal|/expedite'
+want_rc_msg 1 "accepts \`/expedite\`" "control: a command missing from the README is caught" \
+  python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
+
+# If the case arm is renamed or restructured, the guard must REFUSE rather than
+# find nothing and report success -- a guard that cannot locate its input and
+# passes is the failure mode this whole suite exists to catch.
+printf 'jobs:\n  command:\n    steps:\n      - run: echo no case arm here\n' \
+  > "$TMP/cd/.github/workflows/certification-commands.yml"
+want_rc_msg 1 "could not find the verb whitelist" \
+  "control: a guard that cannot find its input refuses, it does not pass" \
+  python3 "$TMP/cd/.github/scripts/assert-commands-documented.py"
 
 echo
 echo "  $PASS passed, $FAIL failed"
