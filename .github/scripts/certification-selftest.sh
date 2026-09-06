@@ -45,6 +45,21 @@ fi
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
+
+# A control that calls a helper this file does not define runs as NOTHING.
+# bash prints "command not found" on stderr, the assertion never executes, and
+# the suite's totals do not move -- so deleting six controls reads as
+# "134 passed, 0 failed" instead of six failures. That happened here on
+# 2026-09-06: `want_out` was used by rows ported from #876 but its DEFINITION
+# stayed behind, and both a local run and a CI run reported a clean pass.
+#
+# This turns the silence into a failure. Anything bash cannot resolve -- a
+# missing helper, a typo'd assertion name, a tool absent from the runner --
+# now costs a FAIL that names the word it could not find.
+command_not_found_handle() {
+  bad "INTERNAL: '$1' is not a command or function — whatever control invoked it did nothing"
+  return 127
+}
 # want_broken_pipe <label> <cmd...> -- asserts the command FAILS because of a
 # broken pipe, without pinning the exit code. jq traps EPIPE and exits 2 with a
 # message; tools that take the signal die with 141. Both are the failure this
@@ -70,6 +85,25 @@ want_rc_msg() {
   if [ "$got" = "$want" ] && grep -qF "$needle" "$TMP/out"; then ok "$label"; else
     bad "$label (rc=$got want=$want; expected message containing '$needle')"
     sed 's/^/       /' "$TMP/out" | head -4
+  fi
+}
+
+# want_out <expected-stdout> <label> <cmd...> -- for a guard whose verdict is a
+# VALUE it prints, not an exit code. `stack_says` returns a count, and a count
+# of 0 and a count of 2 are both a clean exit.
+#
+# ★ This function was MISSING when the stack rows were ported here from #876,
+# and bash's answer to an undefined function is "command not found" on stderr
+# and a non-zero status that nothing was reading. Six controls therefore ran as
+# NOTHING -- no ok, no FAIL, no effect on the totals -- while the suite printed
+# a clean "133 passed, 0 failed" both locally and on the runner. A control that
+# cannot be seen to fail is not a control, and one that cannot be seen to RUN
+# is not even a line of code.
+want_out() {
+  local want=$1 label=$2; shift 2
+  local got; got=$("$@" 2>"$TMP/err")
+  if [ "$got" = "$want" ]; then ok "$label"; else
+    bad "$label (printed '$got', want '$want')"; sed 's/^/       /' "$TMP/err" | head -3
   fi
 }
 
@@ -159,6 +193,71 @@ jobs:
 Y
 want_rc 0 "the shipped cheap-pool routing shape is accepted" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+
+echo "== the suite cannot silently skip a control =="
+# CONTROL: a helper this file does not define must COST a failure, not vanish.
+# Run in a subshell so the probe's FAIL does not enter the real totals; assert
+# on what the handler printed.
+probe=$( (command_not_found_handle no_such_assertion_helper) 2>&1 )
+case "$probe" in
+  *"INTERNAL: 'no_such_assertion_helper' is not a command or function"*)
+    ok "an undefined helper is reported, not silently skipped" ;;
+  *) bad "an undefined helper vanished silently: $probe" ;;
+esac
+
+echo "== a reusable workflow is called with the inputs it declares =="
+G=.github/scripts/assert-reusable-workflow-inputs.py
+want_rc 0 "the workflows as they stand match their callees" python3 "$G"
+mkdir -p "$TMP/ri/.github/workflows"
+mk_callee() { cat > "$TMP/ri/.github/workflows/callee.yml" <<Y
+on:
+  workflow_call:
+    inputs:
+      web_only: { required: false, type: boolean, default: false }
+      $1
+jobs: { j: { runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+}
+mk_caller() { cat > "$TMP/ri/.github/workflows/caller.yml" <<Y
+on: { pull_request: { types: [opened] } }
+jobs:
+  call:
+    uses: ./.github/workflows/callee.yml
+    with:
+$1
+Y
+}
+# The shape that must PASS: every key passed is declared.
+mk_callee 'flag: { required: false, type: boolean, default: false }'
+mk_caller '      web_only: true
+      flag: true'
+want_rc 0 "a call site passing only declared inputs is accepted" python3 "$G" "$TMP/ri"
+# CONTROL: the 2026-09-06 near-miss -- `with:` carries a key whose DECLARATION
+# was left behind in an unported commit. GitHub rejects the whole calling
+# workflow at dispatch, so every context it would report is never created and
+# branch protection waits forever on a check nobody will write.
+mk_callee 'flag: { required: false, type: boolean, default: false }'
+mk_caller '      web_only: true
+      stack_layer: true'
+want_rc 1 "control: an input passed but never declared is refused" python3 "$G" "$TMP/ri"
+# CONTROL: the same dispatch failure from the other side.
+mk_callee 'must_have: { required: true, type: string }'
+mk_caller '      web_only: true'
+want_rc 1 "control: a required input the caller omits is refused" python3 "$G" "$TMP/ri"
+# NOT flagged: `workflow_call:` with nothing under it is a valid callee taking
+# no inputs. The first draft tested the VALUE rather than the KEY and reported
+# ci.yml as "not a workflow_call workflow" -- a false alarm about release.yml.
+cat > "$TMP/ri/.github/workflows/callee.yml" <<'Y'
+on:
+  workflow_call:
+jobs: { j: { runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+cat > "$TMP/ri/.github/workflows/caller.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs: { call: { uses: ./.github/workflows/callee.yml } }
+Y
+want_rc 0 "an input-less workflow_call callee is not mistaken for a non-callee" \
+  python3 "$G" "$TMP/ri"
 
 echo "== a required check cannot be cancelled by comment timing =="
 want_rc 0 "the workflows as they stand are safe" \
@@ -372,6 +471,101 @@ if [ -s "$TMP/alias.sh" ]; then
     env RESULT=skipped WEB_ONLY= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
 else
   bad "could not extract the alias shell from ci.yml"
+fi
+
+# ── The classify side: what DECIDES is_stack_layer ──────────────────────────
+# The alias rows above prove the verdict is translated correctly. These prove
+# the verdict itself is reached correctly -- including that every way the
+# lookup can go wrong lands on "certify".
+extract 'changes/Stack position' > "$TMP/stack.sh"
+if [ -s "$TMP/stack.sh" ]; then
+  # `gh pr list ... --jq length` prints the number of open PRs stacked on top.
+  stub_gh_count() { printf '#!/bin/bash\nprintf "%s\\n"\n' "$1" > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"; }
+  # stack_says <event> <head_repo> -- head ref fixed; the layer test must not
+  # depend on the base ref at all (see the workflow comment: the top of a
+  # native stack has a non-main base and is the PR that lands on main).
+  stack_says() {
+    mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
+    env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
+        GITHUB_EVENT_NAME="$1" HEAD_REPO="$2" HEAD_REF=feat/mine REPO=o/r \
+        bash "$TMP/stack.sh" >/dev/null 2>&1
+    grep -c "^is_stack_layer=true$" "$TMP/gh_out"
+  }
+
+  stub_gh_count 0
+  want_out 0 "stack: a PR with nothing stacked above it certifies — whatever its base" stack_says pull_request o/r
+  stub_gh_count 2
+  want_out 1 "stack: a PR with 2 PRs stacked above it is a lower layer" stack_says pull_request o/r
+
+  # FAIL-SAFE, every way the classification can break. Each must CERTIFY
+  # (false), never skip: an extra campaign is recoverable, an uncertified
+  # merge is not.
+  printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  want_out 0 "control: a failing gh call certifies rather than skipping" stack_says pull_request o/r
+  stub_gh_count "not-a-number"
+  want_out 0 "control: garbage from gh certifies rather than skipping" stack_says pull_request o/r
+  stub_gh_count 2
+  want_out 0 "control: a merge_group run certifies (no PR context to read)" stack_says merge_group o/r
+  # A FORK PR's head branch name can coincide with a stack's base branch in
+  # this repo -- `--base` matches by name. If that coincidence ever counted as
+  # "stacked above", any fork could skip certification by naming its branch.
+  stub_gh_count 2
+  want_out 0 "control: a fork PR certifies even when its branch name matches a stack base" stack_says pull_request someone/fork
+else
+  bad "could not extract the stack-position shell from ci.yml"
+fi
+
+# ── release matrix: the summary's skip-acceptance logic ─────────────────────
+# `dry-run summary` is a required context; its first step converts upstream
+# results into a verdict. Exactly two skips are acceptable, and each must be
+# NAMED by its input -- a bare skip is still a failure.
+extract_rb() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/release-build.yml"))
+for st in d["jobs"]["dry-run-summary"]["steps"]:
+    if (st.get("name") or "") == sys.argv[1]:
+        print(st["run"]); break
+' "$1"; }
+extract_rb 'Fail explicitly if anything upstream failed' > "$TMP/rbsum.sh"
+if [ -s "$TMP/rbsum.sh" ]; then
+  want_rc 0 "matrix summary: a stack layer's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: an UNEXPLAINED skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: a FAILED build on a stack layer stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=failure WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: being a stack layer does not excuse a failed validate" \
+    env VALIDATE_RESULT=failure BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  # The inert-diff skip. Before this acceptance branch existed, ci-cost-controls
+  # added the builds_binaries SKIP without teaching the summary that it was
+  # legitimate -- so `dry-run summary` went red on exactly the diffs the
+  # feature was built for. The pair below is the fix and its control.
+  want_rc 0 "matrix summary: an inert diff's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: builds_binaries=true with a skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=true bash "$TMP/rbsum.sh"
+
+  # The classifier that decides builds_binaries, driven through its stdin mode.
+  # GITHUB_OUTPUT must be PINNED: inside Actions it points at the step-output
+  # file, so emit's lines vanish from the pipe and every row below reads rc=1
+  # from grep. These passed locally (variable unset -> /dev/stdout) and failed
+  # on the runner for exactly that reason.
+  classify() { printf '%s\n' "$@" | env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
+  # The wildcard (push/schedule/workflow_call) branch must emit ALL FOUR
+  # outputs: under `set -u` a three-argument emit dies on unbound $4, and no
+  # row exercised that branch at all.
+  wildcard_classify() { env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=schedule bash .github/scripts/classify-diff.sh 2>/dev/null | grep "^builds_binaries="; }
+  want_rc_msg 0 "builds_binaries=false" "classify: a docs-only diff cannot change a binary" \
+    classify docs/AUTOMERGER.md README.md
+  want_rc_msg 0 "builds_binaries=true" "control: touching release-build.yml builds, .github or not" \
+    classify docs/AUTOMERGER.md .github/workflows/release-build.yml
+  want_rc_msg 0 "builds_binaries=true" "control: one crates/ file makes the whole diff build" \
+    classify docs/AUTOMERGER.md crates/spark-model/src/lib.rs
+  want_rc_msg 0 "builds_binaries=true" \
+    "classify: a schedule event never fast-paths and emits all four outputs" \
+    wildcard_classify
+else
+  bad "could not extract the dry-run summary shell from release-build.yml"
 fi
 
 echo "== one PR, one commit, one signer =="
