@@ -72,7 +72,7 @@
     "toolchain": "none",
     "experimental": true,
     "pr_validate": true,
-    "test_mode": "no-run"
+    "test_mode": "skip"
   },
   {
     "id": "macos-x86_64-metal",
@@ -85,7 +85,7 @@
     "experimental": true,
     "pr_validate": true,
     "cross": true,
-    "test_mode": "no-run"
+    "test_mode": "skip"
   },
   {
     "id": "windows-x86_64-nvidia-cuda",
