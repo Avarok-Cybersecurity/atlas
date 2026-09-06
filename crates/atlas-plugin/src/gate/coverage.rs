@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 8] = [
+pub const BOUNDARY_FILES: [&str; 9] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -127,6 +127,67 @@ pub const BOUNDARY_FILES: [&str; 8] = [
     "crates/atlas-plugin/src/gate/taxon.rs",
     // `baseline_for`: decides WHICH thresholds a record is judged against.
     "crates/atlas-plugin/src/gate/bench.rs",
+    // ★ `amnesty.rs` decides whether a gate is EXCUSED. A PR that widens the
+    // amnesty table excuses ITSELF, which is the PR #420 shape with the lock
+    // moved one room over again — the same way `scoring.rs` was missed after a
+    // split and `agreement.rs` after an addition. An escape hatch is a verdict.
+    "crates/atlas-plugin/src/gate/amnesty.rs",
+];
+
+/// Gate sources deliberately reviewed and found NOT to decide a verdict.
+///
+/// `BOUNDARY_FILES` above is the authority for what re-opens every gate. This
+/// is the authority for the opposite claim — "someone looked at this file and
+/// it does not decide a verdict" — and every file under `src/gate` must appear
+/// in exactly one of the two. `gate_sources_are_all_classified` proves the
+/// union is the whole directory, so ADDING a file to `src/gate` fails the
+/// build until its author says which it is.
+///
+/// ★ WHY A SECOND LIST AND NOT A SMARTER TEST. The existing
+/// `every_verdict_symbol_is_defined_inside_the_boundary` walks a hardcoded set
+/// of seven verdict FUNCTIONS and asserts each one's defining file is inside
+/// the boundary. That catches a function MOVING — the 6c6fcb2b1 split which
+/// carried `check_record`/`compare` into a new `scoring.rs` — but it is blind
+/// to a NEW verdict function in a NEW file, because nothing adds the new symbol
+/// to its list. A file added to this directory is invisible to every check we
+/// had. Classification is the only form the guard can take that a new file
+/// cannot pass by default.
+/// Accessor for the classification test; see [`GATE_MACHINERY_FILES`].
+#[cfg(test)]
+pub(super) fn gate_machinery_files() -> &'static [&'static str] {
+    GATE_MACHINERY_FILES
+}
+
+#[cfg(test)]
+const GATE_MACHINERY_FILES: &[&str] = &[
+    // Record IO and paths: they decide WHERE a record is read from, not
+    // whether it passes. `record_path.rs` is the closest call in this list —
+    // picking the wrong record would change a verdict — but the choice is
+    // pinned by `resolve_record`'s own tests and the record it returns is
+    // still judged by `scoring.rs`.
+    "crates/atlas-plugin/src/gate/record.rs",
+    "crates/atlas-plugin/src/gate/record_path.rs",
+    // Rendering and reporting only.
+    "crates/atlas-plugin/src/gate/card.rs",
+    "crates/atlas-plugin/src/gate/check_fmt.rs",
+    "crates/atlas-plugin/src/gate/telemetry.rs",
+    "crates/atlas-plugin/src/gate/telemetry_order.rs",
+    // Ownership resolution for the telemetry table; no gate consults it.
+    "crates/atlas-plugin/src/gate/codeowners.rs",
+    // Reads `.github/pr-taxonomy.json`, which IS a boundary file. The parser
+    // cannot widen coverage on its own: `required.rs` (boundary) decides what
+    // the intent half adds.
+    "crates/atlas-plugin/src/gate/pr_taxonomy.rs",
+    // Signature minting and the signer registry. A forged signature is caught
+    // by CI's committed-signer check, not by a gate verdict.
+    "crates/atlas-plugin/src/gate/signing.rs",
+    // Test-only baseline fixtures.
+    "crates/atlas-plugin/src/gate/fixture_baseline.rs",
+    // Module wiring.
+    "crates/atlas-plugin/src/gate/mod.rs",
+    // ★ NOT machinery, and NOT here: `amnesty.rs`. It decides whether a gate is
+    // EXCUSED, which is a verdict by any reading, so it belongs in
+    // BOUNDARY_FILES — see the entry added there.
 ];
 
 /// Basenames under `kernels/` that are read by the gate and compiled by nothing.
