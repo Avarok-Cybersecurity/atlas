@@ -18,7 +18,10 @@ fn test_cli_parse_positional_model() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) | Command::DumpServeOptions | Command::SyncRecipes => {
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
             unreachable!("this test parses a serve command")
         }
         Command::Serve(args) => {
@@ -48,7 +51,10 @@ fn test_cli_parse_model_from_path() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) | Command::DumpServeOptions | Command::SyncRecipes => {
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
             unreachable!("this test parses a serve command")
         }
         Command::Serve(args) => {
@@ -74,7 +80,10 @@ fn test_cli_parse_slai_policy() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) | Command::DumpServeOptions | Command::SyncRecipes => {
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
             unreachable!("this test parses a serve command")
         }
         Command::Serve(args) => {
@@ -237,7 +246,10 @@ fn test_cli_parse_kv_high_precision_layers() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) | Command::DumpServeOptions | Command::SyncRecipes => {
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
             unreachable!("this test parses a serve command")
         }
         Command::Serve(args) => {
@@ -251,7 +263,10 @@ fn test_cli_default_kv_high_precision_layers() {
     let cli = Cli::try_parse_from(["spark", "serve", "nvidia/model"]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) | Command::DumpServeOptions | Command::SyncRecipes => {
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
             unreachable!("this test parses a serve command")
         }
         Command::Serve(args) => {

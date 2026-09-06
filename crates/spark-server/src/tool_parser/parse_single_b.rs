@@ -270,7 +270,20 @@ pub(super) fn bare_function_end(text: &str) -> Option<usize> {
         if let Some(p) = text.find("</parameters>") {
             return Some(p + "</parameters>".len());
         }
-        // No parameters block — just <function>NAME</function>
+        // A `<parameters>` block has been OPENED but its close hasn't
+        // streamed in yet. Falling through to the "no parameters block"
+        // branch below would misread the name-closing `</function>` (which
+        // necessarily appears before `<parameters>` in this shape) as the
+        // end of a zero-argument call, truncating the block right before
+        // the params. The leftover `<parameters>...` text then has no
+        // `<function` prefix for the caller to recognise, so on the next
+        // `process()` call it falls through to plain content emission and
+        // leaks the raw XML into the client-visible text instead of being
+        // parsed as arguments. Wait for more tokens instead.
+        if text.contains("<parameters>") {
+            return None;
+        }
+        // No parameters block at all — just <function>NAME</function>
         if let Some(p) = text.find("</function>") {
             let after = p + "</function>".len();
             // Check if there's a trailing </function> (some models emit an extra one)

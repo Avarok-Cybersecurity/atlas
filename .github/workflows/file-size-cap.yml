@@ -462,6 +462,31 @@ jobs:
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged_qkv.rs"
           )
 
+          # ★ The scanned tree must EXIST and must contain Rust. `find crates`
+          # on a missing directory writes to stderr and yields nothing; the
+          # loop below then runs zero times, `violations` stays 0, and this
+          # required check prints its tick and exits 0 -- the cap silently
+          # unenforced for the whole repo. `set -euo pipefail` does not help:
+          # the failure is inside a process substitution, whose status is not
+          # the command's. Same shape as the render-thread gate's missing-tree
+          # bug. Assert the input before trusting an empty result.
+          # Counted inside the `-d` guard on purpose: under `set -euo pipefail`
+          # a bare `find crates | wc -l` on a missing directory kills the step
+          # at the assignment, which is a non-zero exit with no explanation of
+          # why -- right verdict, useless log.
+          scanned=0
+          if [[ -d crates ]]; then
+            scanned=$(find crates -name '*.rs' -not -name '*.bak' -not -path '*/target/*' | wc -l)
+          fi
+          if [[ $scanned -eq 0 ]]; then
+            echo "::error::found no .rs files under crates/, so the 500-line cap scanned nothing."
+            echo "Either crates/ moved or the find expression stopped matching. An unscanned"
+            echo "tree is an unenforced cap, and this check would have gone green without"
+            echo "this line."
+            exit 1
+          fi
+          echo "scanning $scanned Rust source file(s) under crates/"
+
           violations=0
           while IFS= read -r -d '' file; do
             lines=$(wc -l < "$file")

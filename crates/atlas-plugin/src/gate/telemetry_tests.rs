@@ -17,6 +17,7 @@ fn pr(number: u64, paths: &[&str]) -> PrFacts {
         author: "someone".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: paths.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -257,6 +258,7 @@ fn pr_titles_cannot_break_the_table() {
         author: "x".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: vec![FLAGSHIP.to_string()],
     };
     let body = render(&root, &[hostile]);
@@ -304,6 +306,7 @@ fn the_promotion_debt_section_is_always_rendered() {
         author: "someone".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
     }];
     let body = super::render(&root, &prs);
@@ -332,6 +335,7 @@ fn debt_is_derived_from_the_prs_own_paths() {
             author: "a".into(),
             draft: false,
             merged: false,
+            paths_unknown: false,
             changed_paths: vec!["docs/adr/README.md".into()],
         },
         super::PrFacts {
@@ -340,6 +344,7 @@ fn debt_is_derived_from_the_prs_own_paths() {
             author: "b".into(),
             draft: false,
             merged: false,
+            paths_unknown: false,
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
     ];
@@ -368,6 +373,7 @@ fn the_debt_table_distinguishes_merged_from_open() {
             author: "a".into(),
             draft: false,
             merged: false,
+            paths_unknown: false,
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
         super::PrFacts {
@@ -376,6 +382,7 @@ fn the_debt_table_distinguishes_merged_from_open() {
             author: "b".into(),
             draft: false,
             merged: true,
+            paths_unknown: false,
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
     ];

@@ -7,3 +7,13 @@
 #
 # bfcl-eval carries both the AST checker and the BFCL v4 data files.
 bfcl-eval==2026.3.23
+#
+# soundfile is a TRANSITIVE import that bfcl-eval does not declare:
+# bfcl-eval -> qwen_agent, and qwen_agent/utils/utils.py does a bare
+# `import soundfile as sf` at module scope. Without it the venv provisions
+# "successfully" and the SCORER then fails to import -- which, from a clean
+# provision, made the BFCL gate unrunnable. Observed 2026-09-05 on gb10:
+#   ModuleNotFoundError: No module named 'soundfile'
+# Pinned like everything else here: a scorer dependency that floats can move
+# the score between runs and silently invalidate stored baselines.
+soundfile==0.14.0

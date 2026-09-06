@@ -312,8 +312,10 @@ note = """\
 REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \
 skipped, control held. Confirms video is not specific to the Qwen3.8 checkpoint — all \
 three vision targets declare <|video_pad|> 248057 and share the Qwen3-VL temporal \
-geometry, and this one decodes, groups and orders a clip identically. `default = \
-false`: qwen3.8-27b owns this gate's default serve."""
+geometry, and this one decodes, groups and orders a clip identically. ★ THIS NOTE USED \
+TO END "`default = false`: qwen3.8-27b owns this gate's default serve", which stopped \
+being true on 2026-08-15: this target IS the gate's required subject and the key above \
+reads `default = true`. The reason for the flip is in the comment directly above it."""
 
 [benchmarks.metrics.legs_passed]
 min = 13.0

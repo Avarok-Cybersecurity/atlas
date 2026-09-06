@@ -465,9 +465,9 @@ pub(super) async fn completions_stream(
                     )]
                 }
             }
-            StreamEvent::Error(msg) => {
-                vec![Ok(Event::default().data(format!(r#"{{"error":"{msg}"}}"#)))]
-            }
+            StreamEvent::Error(msg) => vec![Ok(
+                Event::default().data(super::compact::completion_error_frame(&msg))
+            )],
         };
         futures::stream::iter(events)
     });

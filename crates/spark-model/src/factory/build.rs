@@ -439,11 +439,34 @@ pub fn build_model(
                 gib(used_so_far - ledger_live),
             );
             used_so_far = ledger_live;
-        } else {
+        } else if ledger_live > used_so_far {
+            // Not "the ledger is implausible" — it is the DEVICE figure that
+            // cannot be true. The ledger counts only allocations this backend
+            // made and still holds, so real device usage is always at least
+            // `ledger_live`; `used_so_far` (total − free_memory()) coming out
+            // SMALLER means `free_memory()` over-reported free memory. That is
+            // exactly what a discrete GPU did when `free_memory()` substituted
+            // host MemAvailable: ~990 GB "free" on a 95 GB card → used_so_far
+            // 0 → a KV pool sized as if nothing were allocated → OOM at
+            // cuMemAlloc. Charging the ledger is strictly more conservative
+            // than charging the smaller (impossible) device-derived figure:
+            // it can only shrink the KV budget, never grow it.
             tracing::warn!(
-                "KV budget ledger implausible (ledger {:.1} GB, used {:.1} \
-                 GB) — using raw used_so_far",
+                "KV budget: free_memory() looks wrong — the alloc ledger holds \
+                 {:.1} GB but the device implies only {:.1} GB used, and real \
+                 device usage can never be below the ledger. Charging the \
+                 ledger's {:.1} GB (the larger, safer figure) instead.",
                 gib(ledger_live),
+                gib(used_so_far),
+                gib(ledger_live),
+            );
+            used_so_far = ledger_live;
+        } else {
+            // ledger_live == 0: nothing ledgered yet (or a backend that does
+            // not ledger). Nothing better to charge than the raw figure.
+            tracing::warn!(
+                "KV budget: alloc ledger reports 0 GB live against {:.1} GB \
+                 used on the device — using raw used_so_far",
                 gib(used_so_far),
             );
         }

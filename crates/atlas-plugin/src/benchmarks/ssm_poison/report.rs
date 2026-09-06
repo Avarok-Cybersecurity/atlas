@@ -116,21 +116,34 @@ pub(super) fn summary(s: &Score) -> Vec<Stat> {
 /// missing key and a zero must stay distinguishable to whatever compares
 /// records later.
 pub(super) fn metrics(s: &Score) -> BTreeMap<String, f64> {
-    [
+    let mut m: BTreeMap<String, f64> = [
         ("rounds", s.rounds),
         ("invariant", s.invariant),
         ("jittered", s.jittered),
         ("collapsed", s.collapsed),
         ("unmeasured", s.unmeasured),
-        // The vacuity attestation, floored in BENCH.toml. A run that never
-        // engaged the prefix cache records 0 here and fails at the record
-        // level too — before this metric existed, such a run was a green
-        // PASS that had measured nothing.
-        ("min_cached_prompt_tokens", s.min_turn1_cached.unwrap_or(0)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v as f64))
-    .collect()
+    .collect();
+    // The vacuity attestation, floored in BENCH.toml at `min = 1.0`. A run
+    // that engaged the prefix cache and got NOTHING back records 0 here and
+    // fails at the record level too — before this metric existed, such a run
+    // was a green PASS that had measured nothing.
+    //
+    // ★ But only when a round actually reported a figure. `min_turn1_cached`
+    // is `None` when no replay produced a turn-1 attestation at all, and
+    // `unwrap_or(0)` wrote that absence as the vacuity value — collapsing "the
+    // cache restored nothing" into "nobody looked", which is precisely the
+    // distinction the doc comment above demands and the one a reader of the
+    // failure ("min_cached_prompt_tokens 0 < 1") would get wrong. Both cases
+    // still fail the floor: an absent key is reported as missing from the
+    // record. `concurrency.rs` omits the identically-named key on `None`
+    // already; this makes the two agree.
+    if let Some(min) = s.min_turn1_cached {
+        m.insert("min_cached_prompt_tokens".to_string(), min as f64);
+    }
+    m
 }
 
 #[cfg(test)]

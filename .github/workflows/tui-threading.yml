@@ -60,6 +60,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check the render thread never blocks on a future
         shell: bash
+        env:
+          # SSOT for the trees this rule covers: the existence assertion and
+          # the grep must never be able to disagree about which they are.
+          SCAN_DIRS: "crates/spark-server/src/tui/ crates/spark-server/src/recipe/"
         run: |
           set -euo pipefail
           # Only real call syntax counts -- comments explaining the rule are
@@ -79,23 +83,39 @@ jobs:
           # production code is ever put in a file named that way, this check
           # will not see it -- that is the cost, and it is smaller than the
           # alternative.
+          # ★ TWO WAYS THIS CHECK WENT GREEN WITHOUT SCANNING, BOTH CLOSED.
+          # Each of the two branches that met here caught one and missed the
+          # other.
           #
-          # grep's exit 2 means the SCAN FAILED -- a renamed or deleted
-          # directory, an unreadable file -- and GNU grep returns 2 even when it
-          # also found matches. `if hits=$(...)` read 2 as "no hits" and fell
-          # straight through to the OK line, so this REQUIRED check reported a
-          # clean tree for a scan that never happened. The two directory names
-          # are hard-coded again in this workflow's push `paths:` filter, so
-          # renaming one is precisely the change that would have tripped it.
-          # Stderr no longer goes to /dev/null either: the reason belongs in the
-          # log of the job that refuses.
+          # (1) THE TREES MUST EXIST. `grep -r` on a missing directory exits 2,
+          # `2>/dev/null` hid the reason, and `if hits=$(...)` read any non-zero
+          # as "no hits" — so this required check printed OK against a tree with
+          # no `tui/` at all. Verified: the old block passed in an empty
+          # directory. A rename would have retired the rule silently.
+          #
+          # (2) EXIT 2 MEANS THE SCAN FAILED — a missing directory OR an
+          # unreadable file — and GNU grep returns 2 even when it ALSO found
+          # matches. Asserting the directories exist still lets an unreadable
+          # file report clean, so capture the status and refuse on >= 2.
+          #
+          # Stderr no longer goes to /dev/null: the reason belongs in the log of
+          # the job that refuses.
+          for d in $SCAN_DIRS; do
+            [ -d "$d" ] || {
+              echo "::error::$d does not exist, so this check scanned nothing."
+              echo "The render-thread rule is pinned to these trees. If one moved,"
+              echo "update SCAN_DIRS in this workflow in the same commit -- an"
+              echo "unscanned tree is an unenforced rule, and it would have gone"
+              echo "green without this line."
+              exit 1
+            }
+          done
           rc=0
           hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
                    --include='*.rs' --exclude='*_tests.rs' \
-                   crates/spark-server/src/tui/ \
-                   crates/spark-server/src/recipe/) || rc=$?
+                   $SCAN_DIRS) || rc=$?
           if [ "$rc" -ge 2 ]; then
-            echo "::error::The block_on scan did not run (grep exited $rc). This check cannot vouch for a tree it failed to read -- most likely one of the two directories above was renamed or removed. Update this workflow, including its push paths: filter."
+            echo "::error::The block_on scan did not run (grep exited $rc). This check cannot vouch for a tree it failed to read. The directories exist (asserted above), so this is most likely an unreadable file; grep's own message is in the log."
             exit 1
           fi
           if [ "$rc" -eq 0 ]; then

@@ -91,3 +91,45 @@ fn the_enumerated_list_and_the_registry_agree_on_membership() {
         "options_for_flag knows a flag this test does not (or vice versa)"
     );
 }
+
+/// The parse `validate_serve_args` refuses with and the parse
+/// `serve_phases::kv_cache` resolves with are ONE definition. These pin the
+/// forms, so a change to either consumer cannot quietly widen or narrow what
+/// the other accepts.
+#[test]
+fn kv_high_precision_layers_accepts_exactly_the_documented_forms() {
+    use super::KvHighPrecisionLayers as K;
+    let p = |s: &str| s.parse::<K>();
+    assert_eq!(p("auto"), Ok(K::Auto));
+    assert_eq!(p("max"), Ok(K::All));
+    assert_eq!(p("all"), Ok(K::All));
+    assert_eq!(p("0"), Ok(K::Count(0)));
+    assert_eq!(p("6"), Ok(K::Count(6)));
+    // Case and surrounding whitespace are tolerated; the old resolve site
+    // lowercased too, so narrowing here would be a regression.
+    assert_eq!(p("  AuTo "), Ok(K::Auto));
+    // The typo that used to become 0.
+    assert!(p("atuo").is_err());
+    assert!(p("-1").is_err());
+    assert!(p("").is_err());
+    assert!(p("2.5").is_err());
+}
+
+#[test]
+fn kv_high_precision_layers_resolves_against_the_attention_layer_count() {
+    use super::{AUTO_KV_HIGH_PRECISION_LAYERS, KvHighPrecisionLayers as K};
+    assert_eq!(K::All.resolve(48), 48);
+    assert_eq!(K::Auto.resolve(48), AUTO_KV_HIGH_PRECISION_LAYERS);
+    assert_eq!(K::Count(6).resolve(48), 6);
+    // `0` must stay 0 so the auto-per-dtype path downstream still sees it.
+    assert_eq!(K::Count(0).resolve(48), 0);
+}
+
+/// The error text is what the operator reads, so it has to name the forms.
+#[test]
+fn the_kv_high_precision_layers_error_names_the_accepted_forms() {
+    let e = "atuo".parse::<super::KvHighPrecisionLayers>().unwrap_err();
+    assert!(e.contains("auto"), "{e}");
+    assert!(e.contains("max"), "{e}");
+    assert!(e.contains("all"), "{e}");
+}

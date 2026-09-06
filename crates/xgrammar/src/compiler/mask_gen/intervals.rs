@@ -60,9 +60,13 @@ impl MaskGenerator<'_> {
         first_char_mask: &[bool; 256],
         is_root_rule: bool,
     ) -> bool {
-        let sorted = self.tokenizer_info.sorted_decoded_vocab().to_vec();
-        let subtree = self.tokenizer_info.trie_subtree_nodes_range().to_vec();
-        let (intervals, possible) = possible_token_intervals(&sorted, first_char_mask);
+        // The tokenizer is external immutable data: copy its reference so
+        // mutating the parser does not require copying every vocabulary token
+        // for each prepared mask (especially costly with concurrent workers).
+        let tokenizer_info = self.tokenizer_info;
+        let sorted = tokenizer_info.sorted_decoded_vocab();
+        let subtree = tokenizer_info.trie_subtree_nodes_range();
+        let (intervals, possible) = possible_token_intervals(sorted, first_char_mask);
         if intervals.is_empty() {
             return true;
         }
@@ -87,7 +91,7 @@ impl MaskGenerator<'_> {
 
         let mut prev_matched: i32 = 0;
         let mut last_rejected_range: i32 = 0;
-        let mut prev_token: Option<Vec<u8>> = None;
+        let mut prev_token: Option<&[u8]> = None;
 
         for interval_idx in 0..intervals.len() {
             let (lo, hi) = intervals[interval_idx];
@@ -126,8 +130,8 @@ impl MaskGenerator<'_> {
                     continue;
                 }
 
-                let advanced = self.scan_one_token(token, prev_token.as_deref(), &mut prev_matched);
-                prev_token = Some(token.clone());
+                let advanced = self.scan_one_token(token, prev_token, &mut prev_matched);
+                prev_token = Some(token);
 
                 let can_reach_end = *self.can_reach_end_prefix_or_stack.last().unwrap();
                 if advanced {
