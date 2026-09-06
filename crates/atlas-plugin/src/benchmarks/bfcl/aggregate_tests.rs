@@ -206,3 +206,81 @@ fn an_empty_tally_set_is_all_zero_rather_than_a_panic() {
     assert_eq!(a.overall_accuracy, 0.0);
     assert_eq!(a.normalized_single_turn_score, 0.0);
 }
+
+// ── The partition ────────────────────────────────────────────────────────────
+
+use super::draw;
+
+/// THE INVARIANT THE SPLIT LIVES OR DIES BY: the four shards must together be
+/// exactly the draw. Not approximately, not up to a rounding — exactly, for
+/// EVERY subset, or the aggregate is computed over a different sample set than
+/// the pinned `samples` count says.
+#[test]
+fn the_four_shards_partition_every_pinned_draw_exactly() {
+    for (name, spec) in [
+        ("golden", draw::DrawSpec::golden()),
+        ("echolp", draw::DrawSpec::echolp()),
+    ] {
+        let totals = draw::reference_subset_totals();
+        let plan = draw::plan(&spec, &totals);
+        let whole: usize = draw::total(&plan);
+        let mut summed = 0usize;
+        for (subset, take) in &plan {
+            let parts: usize = (0..4).map(|k| draw::shard_take(*take, k, 4)).sum();
+            assert_eq!(
+                parts, *take,
+                "{name}/{subset}: shards sum to {parts}, draw says {take}"
+            );
+            summed += parts;
+        }
+        assert_eq!(summed, whole, "{name}: total drifted");
+    }
+}
+
+/// Every drawn row belongs to EXACTLY ONE shard — no gaps, no duplicates. The
+/// count test above would pass even if two shards claimed the same row and a
+/// third claimed none.
+#[test]
+fn every_row_belongs_to_exactly_one_shard() {
+    for take in [0usize, 1, 3, 4, 5, 16, 31, 248, 1004] {
+        for row in 0..take {
+            let owners: Vec<usize> = (0..4).filter(|k| draw::shard_owns(row, *k, 4)).collect();
+            assert_eq!(owners.len(), 1, "row {row} of {take} owned by {owners:?}");
+        }
+    }
+}
+
+/// A subset smaller than the shard count must not vanish. `live_parallel` is 16
+/// rows and `live_parallel_multiple` 24 in both pinned draws; a subset of 3
+/// would leave one shard empty for it, which is fine — but zero shards is not.
+#[test]
+fn a_subset_smaller_than_the_shard_count_still_lands_somewhere() {
+    for take in 1..=4usize {
+        let parts: Vec<usize> = (0..4).map(|k| draw::shard_take(take, k, 4)).collect();
+        assert_eq!(parts.iter().sum::<usize>(), take, "take={take} {parts:?}");
+        assert!(
+            parts.iter().any(|n| *n > 0),
+            "take={take} vanished entirely"
+        );
+    }
+}
+
+/// Shards are within one row of each other — the property that makes them
+/// finish together, which is the entire point of sharding.
+#[test]
+fn the_shards_are_balanced_to_within_one_row() {
+    for take in [1usize, 7, 16, 31, 92, 248, 995, 1004] {
+        let parts: Vec<usize> = (0..4).map(|k| draw::shard_take(take, k, 4)).collect();
+        let (lo, hi) = (
+            *parts.iter().min().expect("4 shards"),
+            *parts.iter().max().expect("4 shards"),
+        );
+        assert!(hi - lo <= 1, "take={take} unbalanced: {parts:?}");
+    }
+}
+
+#[test]
+fn a_shard_index_outside_the_count_takes_nothing() {
+    assert_eq!(draw::shard_take(100, 4, 4), 0);
+    assert_eq!(draw::shard_take(100, 0, 0), 0);
+}
