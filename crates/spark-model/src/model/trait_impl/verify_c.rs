@@ -184,7 +184,14 @@ impl TransformerModel {
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager;
+        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager
+            // Sliding-window layers verify via the eager per-token metadata
+            // loop (verify_attention_per_token) -- per-token H2D uploads are
+            // illegal under capture, and a captured verify would bake row-0's
+            // position into every token anyway (the Laguna-XS 'ToToTo...'
+            // failure this fix exists for).
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -274,6 +281,21 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: per-token metadata loop --
+                    // the decode_batched default reuses ONE metadata upload
+                    // and decodes every token at the same position (Laguna
+                    // 'ToToTo...'). Graphs are off for sliding models above.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        k,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     layer.decode_batched(
                         hidden,
