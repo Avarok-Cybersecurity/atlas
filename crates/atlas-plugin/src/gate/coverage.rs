@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 9] = [
+pub const BOUNDARY_FILES: [&str; 10] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -127,6 +127,14 @@ pub const BOUNDARY_FILES: [&str; 9] = [
     "crates/atlas-plugin/src/gate/taxon.rs",
     // `baseline_for`: decides WHICH thresholds a record is judged against.
     "crates/atlas-plugin/src/gate/bench.rs",
+    // ★ `agreement.rs` decides which record SETS are acceptable — one commit,
+    // and signer agreement per metric class. It reached main UNCLASSIFIED (in
+    // #934), which is precisely the hole this list exists to close: a PR
+    // widening the signer rule would have been judged by its own new rule.
+    // Its absence was found by `gate_sources_are_all_classified` refusing the
+    // rebase that brought it in, which is the mechanism working rather than a
+    // note someone remembered to act on.
+    "crates/atlas-plugin/src/gate/agreement.rs",
     // ★ `amnesty.rs` decides whether a gate is EXCUSED. A PR that widens the
     // amnesty table excuses ITSELF, which is the PR #420 shape with the lock
     // moved one room over again — the same way `scoring.rs` was missed after a
