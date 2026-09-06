@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Enforce the 500-LoC cap on crates/**/*.rs.
+#
+# Extracted verbatim from file-size-cap.yml so the standalone job and the batched
+# `cheap checks` job run THE SAME CODE during the transition. If these two
+# ever disagree, the batch is not a faithful merge and the transition is not
+# safe to complete.
+set -euo pipefail
+# Cap is 500 LoC per Rust source file in crates/.
+# Allow-list: previously held the last two unsplittable
+# monoliths (`chat.rs` 1121 LoC and `chat_stream.rs` 1484 LoC).
+# Wave 4g (2026-05-03) lifted both via the `Ctx`+`State`
+# struct pattern.
+#
+# The five entries below are launch-day carry-overs: each is
+# marginally over 500 LoC (505-528) and waiting on a clean
+# split. Adding to this list requires a rationale comment AND
+# a tracking issue.
+allow_list=(
+  # 2026-08-15 concurrency cycle (#525): grew past 500 in this stack's
+  # instrumentation work. Reduce when feasible.
+  "crates/atlas-plugin/src/benchmarks/concurrency.rs"
+  "crates/atlas-plugin/src/gate/record.rs"
+  "crates/spark-server/src/scheduler/lifecycle.rs"
+  "crates/spark-server/src/scheduler/mtp_gate.rs"
+  # 2026-08-16: 510 LoC — crossed 500 by the regression-pin tests
+  # for the serial-in-think dispatch fix (2c80bf2f7). Splitting a
+  # test module mid-campaign would invalidate the night's gate
+  # records (any crates/ diff does); split next cycle.
+  "crates/spark-server/src/scheduler/mtp_gate/tests.rs"
+  # 2026-08-15 stack merge (#516 video + #514 batch6 + reasoning-effort):
+  # these crossed 500 in the merged stacks; splitting them mid-campaign
+  # was judged riskier than shipping. Reduce when feasible.
+  "crates/atlas-plugin/src/benchmarks/video/driver.rs"
+  "crates/atlas-plugin/src/benchmarks/vision/driver.rs"
+  "crates/atlas-plugin/src/benchmarks/media_integrity.rs"
+  "crates/atlas-plugin/src/http.rs"
+  "crates/spark-server/src/api/chat/msg_entry.rs"
+  "crates/spark-server/src/openai/chat_request.rs"
+  "crates/spark-server/src/api/chat/mod.rs"
+  "crates/spark-server/src/main_modules/serve.rs"
+  # 524 LoC — single-file FFI surface for the NCCL backend.
+  # Splitting requires moving the unsafe-impl Send/Sync block
+  # and ~30 cudarc/cuda-driver C-binding wrappers into a
+  # `nccl_ffi/` submodule; deferred until after launch.
+  "crates/spark-comm/src/nccl_backend.rs"
+  # 528 LoC — Model trait definition + default impls.
+  # Atomic interface; splitting hurts discoverability for
+  # external contributors. Candidate for a `traits/model/mod.rs`
+  # split that pulls verify/decode default impls into siblings.
+  "crates/spark-model/src/traits/model.rs"
+  # ── PR: LoRA-on-HSS-tier carry-over ──
+  # 502 LoC — `TransformerLayer` trait: the core per-layer interface
+  # (~20 methods spanning decode / prefill / SSM-phase / MoE-transpose,
+  # each with a long arg list + doc). Atomic interface, same rationale
+  # as `traits/model.rs` above. Tipped over 500 by the `as_any_mut`
+  # downcast hook the LoRA install walk needs. Clean split
+  # (SSM-prefill phases -> sibling supertrait) tracked as follow-up.
+  "crates/spark-model/src/layer/transformer_layer.rs"
+  # 513 LoC — Gemma-4 weight loader (variant-dispatch family).
+  # Already part of a `gemma4/` split; the leftover holds the
+  # single-file dispatch entry-point + per-layer-type orchestration.
+  "crates/spark-model/src/weight_loader/gemma4/loader_a.rs"
+  # 512 LoC — single chunked-prefill phase. Already part of a
+  # `prefill_b/`-style split family; the leftover is one long
+  # function with too many local closures to extract cleanly.
+  "crates/spark-model/src/model/trait_impl/prefill_c.rs"
+  # 507 LoC — single-token decode attention forward.
+  # Compute-heavy template (kernel-launch sequence + buffer
+  # ping-pong); splitting fragments the launch order, which is
+  # critical for CUDA graph capture correctness.
+  "crates/spark-model/src/layers/qwen3_attention/decode/attention_forward.rs"
+  # 537 LoC — multi-sequence QKV projection orchestration.
+  # Heavy stride/pointer arithmetic that's easier to audit in
+  # one file than fragmented across siblings.
+  "crates/spark-model/src/layers/qwen3_attention/trait_impl/multi_seq/qkv.rs"
+  # 517 LoC — one-step decode-logit transform. Tightly coupled
+  # to the sampler context; splitting risks inflating the
+  # cross-file pub(super) surface.
+  "crates/spark-server/src/scheduler/decode_logits_step.rs"
+  # 950 LoC — the model-dependent half of startup (phases 1-10),
+  # split OUT of serve.rs so a hot-swap can run it twice. Same
+  # rationale the serve.rs entry carried, and the same code: this is
+  # the linear bootstrapping sequence, already heavily split into
+  # `serve_phases`. Splitting it further needs a context struct
+  # threading ~40 locals between phases, which makes the load order —
+  # the thing that actually matters here — harder to read, not easier.
+  #
+  # serve.rs itself is now 356 LoC and OFF this list: the allow-listed
+  # body shrank from 1260 to 950 by moving, not by growing.
+  "crates/spark-server/src/main_modules/serve_load.rs"
+  # 524 LoC — Qwen3 attention layer kernel-handle bootstrap.
+  # The TurboQuant+ asymmetric variants extend several existing
+  # `match kv_dtype` arms (turbo3 + asym pair members route to
+  # the same kernel module) and the new InnerQ + Turbo2 +
+  # Bf16K+Turbo3V handles slot into the single-pass struct
+  # constructor. Splitting fragments the kernel-loading
+  # sequence which is read top-to-bottom alongside `types.rs`.
+  "crates/spark-model/src/layers/qwen3_attention/init.rs"
+  # 552 LoC — Qwen3 attention decode dispatcher. TQ+ ships 9 asym
+  # KvCacheDtype variants (bf16k_/fp8k_/turbo*k_*); each takes a
+  # dedicated arm in the decode-kernel match expression. The fp8k_ +
+  # turbo*k_ wrappers were already extracted to sibling ops modules
+  # (`kv_cache_fp8k.rs`, `kv_cache_turbok.rs`); the dispatcher proper
+  # is the single per-call kernel-selection site and reads top-to-
+  # bottom with `write_kv_cache.rs` as a paired audit.
+  "crates/spark-model/src/layers/qwen3_attention/decode/run_paged_decode.rs"
+  # 522 LoC — paged-prefill kernel dispatcher (paired with decode
+  # dispatcher above). Fp8k_ asym was already extracted to
+  # `paged_attn_fp8k.rs`; the remaining tuple-match selects the
+  # prefill kernel handle per (KvCacheDtype, use_br64).
+  "crates/spark-model/src/layers/qwen3_attention/prefill/paged_attn.rs"
+  # 508 LoC — write_kv_cache dispatcher. Each KvCacheDtype arm runs
+  # the WHT bookend conditionally (gated on weight_pre_rotation env)
+  # then calls the per-variant reshape kernel. Splitting the arms
+  # into per-variant files would invert the read order with
+  # run_paged_decode.rs — they're audited as a pair.
+  "crates/spark-model/src/layers/qwen3_attention/decode/write_kv_cache.rs"
+  # 533 LoC — generic ops/kv_cache wrappers. Holds the BF16/FP8/NVFP4
+  # reshape_and_cache wrappers + the asym wrappers that share the
+  # same FFI signature shape. Asym variants with k_scale threading
+  # (fp8k_) were already extracted to `kv_cache_fp8k.rs`; turbo*k_
+  # to `kv_cache_turbok.rs`. The remainder is the wrapper backbone.
+  "crates/spark-model/src/layers/ops/kv_cache.rs"
+  # 508 LoC — prefill_attn ops wrappers. Same pattern: per-variant
+  # asym wrappers extracted to siblings (`prefill_attn_fp8k.rs`,
+  # `prefill_attn_turbok.rs`); this file is the original
+  # ungated/bf16/fp8/nvfp4/turbo3/turbo4 + Bf16KTurbo* set.
+  "crates/spark-model/src/layers/ops/prefill_attn_main_b.rs"
+  # 509 LoC — single integration test orchestration; one
+  # comprehensive end-to-end harness. Splitting would require
+  # extracting fixtures into a shared module that's only used
+  # by this single test, adding indirection for no payoff.
+  "crates/spark-server/tests/integration.rs"
+  # 734 LoC — `MetalGpuBackend` single-impl file. The body is
+  # a single `impl GpuBackend for MetalGpuBackend` which Rust
+  # forbids splitting across files; type aliases and the
+  # private inherent helpers (`current_cmd_buf`, `find_buffer`,
+  # `stream_index`) are tightly coupled to the trait methods'
+  # `Mutex`/`MTLBuffer`/`ObjCmdBuf` plumbing. The test module
+  # was already extracted to `metal_backend/tests/`; what's
+  # left is the irreducible backend surface. Tracked under
+  # the launch-day allow-list pending a free-function
+  # `ops/{alloc,copy,launch,events}.rs` extraction.
+  "crates/spark-runtime/src/metal_backend.rs"
+  # 519 LoC — BufferArena: the single pre-allocated GPU intermediate-
+  # buffer set. One `impl BufferArena` (per-field alloc + a getter per
+  # buffer); the file sat at 499 LoC and the native keep-packed Q2_0
+  # prefill fix added one persistent dequant-scratch buffer (field +
+  # alloc + two getters) to kill a per-matmul cuMemAlloc/sync/free.
+  # Adding a buffer is inherently spread across the struct, the ctor,
+  # and the getter block, so it cannot land without nudging over the
+  # cap. Clean split (getters → `arena/getters.rs`) tracked as
+  # follow-up.
+  "crates/spark-runtime/src/buffers.rs"
+  # 524 LoC — BufferSizes: the single per-buffer sizing table (field
+  # per buffer + one ctor + the total() sum). Same change, same
+  # inherent spread as `buffers.rs` above: the file sat at 499 LoC and
+  # the two Q2_0 scratch buffers add a field, a ctor line, and a sum
+  # line each (the sizing MATH itself was already split out to
+  # `sizes_q2.rs`). Clean split (total() → `sizes/total.rs`) tracked
+  # as the same follow-up as the buffers.rs getter split.
+  "crates/spark-runtime/src/buffers/sizes.rs"
+  # ── PR #90 (fix/in-think-tool-call-leak) carry-overs ──
+  # The overnight coherence-debugging work grew these past 500 LoC
+  # (19 newly over-cap + impl_a2/compile_tools inherited from main).
+  # Allow-listed to unblock the PR; clean splits tracked as follow-up
+  # (per-file Ctx/State or sub-module extraction, Atlas idiom).
+  "crates/atlas-kernels/build.rs"
+  "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
+  "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
+  "crates/spark-model/src/layers/moe/forward.rs"
+  "crates/spark-model/src/layers/mtp_head/forward.rs"
+  "crates/spark-model/src/layers/ops/gemm_quant.rs"
+  "crates/spark-model/src/layers/ops/moe_expert.rs"
+  # 648 LoC — grew via #231 (per-call penalty-history scope) + the
+  # #237 fast-greedy penalty bound. Split tracked in #244: move the
+  # remaining inline greedy admission into the existing fast_greedy.rs
+  # sibling + a sample_step_slow.rs. Exact piecewise copy, deferred to
+  # keep #242 focused on the verify-perf fixes.
+  "crates/spark-server/src/scheduler/sample_step.rs"
+  # 523 LoC — run() loop grew by the depth-aware MTP-gate per-step
+  # consultation (#242). Extract the gate step-dispatch+decision block
+  # into a scheduler helper. Split tracked in #244.
+  "crates/spark-server/src/scheduler/mod.rs"
+  # 521 LoC — parallel-tool-call fixture suite added by #231. Split
+  # into per-format (hermes/qwen3_coder) sibling test files. #244.
+  "crates/spark-server/src/tool_parser/tests/group_g_parallel.rs"
+  # 533 LoC — streaming tool-handler grew by the #231 name-run cap +
+  # #224 BPE-fragment guard. Extract the run-tracking helpers. #244.
+  "crates/spark-server/src/api/chat_stream/tool_handlers.rs"
+  "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
+  "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
+  "crates/spark-model/src/model/block_mgmt.rs"
+  "crates/spark-model/src/model/impl_a1.rs"
+  "crates/spark-model/src/model/impl_a2.rs"
+  "crates/spark-model/src/model/ssm_pool.rs"
+  "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
+  "crates/spark-runtime/src/sampler.rs"
+  "crates/spark-server/src/api/chat_blocking.rs"
+  "crates/spark-server/src/api/chat_stream/handle_token.rs"
+  "crates/spark-server/src/grammar/compile_tools.rs"
+  "crates/spark-server/src/scheduler/emit_step.rs"
+  "crates/spark-server/src/scheduler/helpers.rs"
+  "crates/spark-server/src/tool_parser/validation.rs"
+  # 510 LoC — prefill-b step: grew by the #283 param_close_pending
+  # field addition. Split tracked as follow-up.
+  "crates/spark-server/src/scheduler/prefill_b_step.rs"
+  # 516 LoC — verify pipeline helpers: grew by the #283
+  # mtp_verify_sample_enabled + dflash helpers. Split tracked as follow-up.
+  "crates/spark-server/src/scheduler/verify_pipeline_helper.rs"
+  # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over,
+  # grown by PR #223 (perf/qwen36-27b-prefill-nvfp4) ──
+  # 1507 LoC — dense-FFN forward: multi-arm quantized-FFN dispatch
+  # (w4a16 t_m128 / int8 faith2 / Q4_K MMQ / NVFP4 W4A4 MMQ) under
+  # active A/B development across concurrent sessions; the per-arm
+  # launch sequences read top-to-bottom and a mid-flight split would
+  # conflict with in-progress work. Split scheduled post PR #223.
+  "crates/spark-model/src/layers/dense_ffn.rs"
+  # ── PR #223 (perf/qwen36-27b-prefill-nvfp4) carry-over ──
+  # 1634 LoC — int8 W4A8 prefill GEMM microbench example: one
+  # sequential fn main (alloc → upload → launch → verify → time) whose
+  # host-reference checks mirror the kernel launch order step by step;
+  # splitting fragments that order (same rationale as the
+  # gdn_fla_e2e_gateb.rs example entry above). Dev-only harness, run
+  # manually on GB10.
+  "crates/spark-model/examples/int8_gemm_test.rs"
+  # ── PR #202 (perf/vision-vit-perf) carry-over ──
+  # 513 LoC — prefill phase-A (vision-embed prepare + single/batched
+  # dispatch). The GEMM-based ViT perf work adds the co-dispatch
+  # `prepare_vision_embed_batched_dispatch` path alongside the existing
+  # single-image dispatch; both share the encode→splice launch order
+  # that reads top-to-bottom with `prefill_b/` and the scheduler's
+  # `prefill_a_step`. Splitting fragments that ordered sequence (same
+  # rationale as the prefill_c.rs / kernel-dispatch entries above).
+  # Clean split tracked as follow-up.
+  "crates/spark-model/src/model/trait_impl/prefill_a.rs"
+  # 506 LoC — GEMM-based ViT attention block (vit_gemm_bias +
+  # vit_attention_gemm + vit_block). Compute-heavy launch sequence:
+  # the per-head GEMM1→softmax→GEMM2→scatter ordering and the shared
+  # buf_scores/buf_probs/buf_o_stage reuse are correctness-critical and
+  # read top-to-bottom (splitting them across files inverts the launch
+  # order, same rationale as the qwen3_attention compute-heavy entries).
+  # Pushed over 500 purely by `cargo fmt` wrapping the kernel-launch
+  # arg chains. Clean split tracked as follow-up.
+  "crates/spark-model/src/layers/vision_encoder/enc_impl/vit_block.rs"
+  # ── PR #186 (DeepSeek-V4-Flash port) carry-over ──
+  # 12 files the V4 port lands over the cap. Allow-listed to ship DS4F
+  # to users (today it's runnable only by building the #186 branch);
+  # consistent with the existing big-but-unsplittable entries above
+  # (build.rs 891, metal_backend.rs 733). The shared-file growth
+  # (prefill_inner/decode_inner — V4 added CSA/HCA + MLA decode paths)
+  # and the V4-new kernel/loader/MTP-head files read top-to-bottom like
+  # the other compute-heavy entries. Clean split tracked in #219.
+  "crates/spark-model/src/layers/qwen3_attention/trait_impl/prefill_inner.rs"
+  "crates/spark-model/src/layers/qwen3_attention/trait_impl/decode_inner.rs"
+  "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_v4.rs"
+  "crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_v4.rs"
+  "crates/spark-model/src/layers/qwen3_attention/trait_impl/multi_seq/mla.rs"
+  "crates/spark-model/src/weight_loader/deepseek_v4/assemble.rs"
+  "crates/spark-model/src/layers/deepseek_v4_mtp.rs"
+  "crates/spark-model/src/factory/build.rs"
+  "crates/atlas-core/src/config/tests.rs"
+  "crates/atlas-core/src/config.rs"
+  "crates/spark-model/src/model/impl_b1.rs"
+  "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
+  # ── #203 (Holo/Ornith GB10 enablement) carry-over ──
+  # 549 LoC — prefill phase-A vision-slice base wiring + Holo
+  # set_vision_slice_base call sites; too many local bindings/closures
+  # to extract cleanly. Clean split tracked as follow-up.
+  "crates/spark-server/src/scheduler/prefill_a_step.rs"
+  # ── #214 (batched decode engine) carry-over ──
+  # 575 LoC — Qwen3.5 dense-checkpoint loader grew with the batched
+  # decode + mixed-precision/fused-FP8 expert branches. One linear
+  # load sequence read top-to-bottom; clean split tracked as follow-up.
+  "crates/spark-model/src/weight_loader/qwen35_dense.rs"
+  # 508 LoC — serve CLI arg surface grew with the batched-decode /
+  # max-batch-size + FP8-KV flags. Marginally over; back under 500 in
+  # the follow-on dense-FP8 PR. Clean split tracked as follow-up.
+  "crates/spark-server/src/cli/serve_args.rs"
+  # ── PR #229 (perf/qwen36-27b-prefill-nvfp4) carry-overs ──
+  # Three files inherited over-cap from main unchanged (grew on
+  # main between this branch's base and its main-merge; would fail
+  # on any fresh PR): 632 / 521 / 533 LoC. Clean splits tracked
+  # as follow-up.
+  "crates/spark-server/src/scheduler/sample_step.rs"
+  "crates/spark-server/src/tool_parser/tests/group_g_parallel.rs"
+  "crates/spark-server/src/api/chat_stream/tool_handlers.rs"
+  # 572 LoC — SSM batched-decode dispatcher grew with the
+  # native-FP8 NULL-QKVZ/out_proj dispatch fix (K=2/K=3 MTP-verify
+  # would deref a NULL QuantizedWeight on FP8-only builds). Single
+  # impl block, launch-order-critical like the qwen3_attention
+  # decode dispatchers above; conv/GDN halves were already
+  # extracted to trait_decode_batched_conv_gdn.rs. Clean split
+  # tracked as follow-up.
+  # 548 LoC — Qwen3.5 linear-attn (SSM) loader arm; grew with the
+  # HeadParallel config-localize + per-rank segmented weight loads
+  # (FP8-dense + NVFP4 builders). Two linear load sequences read
+  # top-to-bottom; clean split tracked as follow-up.
+  "crates/spark-model/src/weight_loader/qwen35/load_layers/linear_attn_arms.rs"
+  # 503 LoC — batched-recurrent GDN decode; marginally over (added the
+  # per-seq SSM out_proj all-reduce for HeadParallel). Back under 500
+  # once the batched/graph paths consolidate. Follow-up.
+  "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
+  # -- #300/#301 (mixed-precision NVFP4 weights) carry-over --
+  # 522 LoC; landed on main 2026-07-12 without an entry, so the
+  # check is red on main and fails every fresh PR. Entry added by
+  # the first affected PR per the #229 carry-over precedent above;
+  # not this PR's code. Clean split tracked as follow-up by the
+  # fp8_lut authors.
+  "crates/spark-model/src/weight_map/fp8_lut.rs"
+  # -- K=gamma DFlash base engine carry-overs (this PR) --
+  # Drafter block forward + paged attention + weight assembly are
+  # compute-heavy launch sequences that read top-to-bottom (same
+  # rationale as the qwen3_attention compute-heavy entries above);
+  # trait_impl/mod.rs grew with the ctx-append dispatch family.
+  # Splits tracked as follow-up per the #90/#186 precedent.
+  "crates/spark-model/src/layers/dflash_head.rs"
+  "crates/spark-model/src/layers/dflash_head/forward_block.rs"
+  "crates/spark-model/src/layers/dflash_head/forward_block_layer_paged.rs"
+  "crates/spark-model/src/layers/dflash_head/from_weights.rs"
+  "crates/spark-model/src/layers/dflash_head/propose.rs"
+  "crates/spark-model/src/layers/ops/gemm_dense.rs"
+  "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
+  "crates/spark-model/src/model/trait_impl/mod.rs"
+  # -- PR #373 (prefix-cache refcount fixes) carry-over --
+  # 505 LoC — paged KV block pool. Sat at 493 (under cap); the two
+  # refcount fixes push it 12 over: `return_evicted_block` must release
+  # only the prefix cache's own ref (force-zeroing freed blocks a live
+  # sequence still held → aliased KV pointer → CUDA-700), and `dec_ref`
+  # is now saturating because `debug_assert` is compiled out in release
+  # with no `overflow-checks`, so a 0-ref decrement wrapped to u32::MAX
+  # and pinned the block forever. Both need their "why" inline — the
+  # bugs are invisible from the code alone. Comments already trimmed
+  # 520 → 505. Single `impl PagedKvCache` (alloc/free/refcount/block IO)
+  # whose ordering is read top-to-bottom, same rationale as the other
+  # compute/state-heavy entries above. Clean split (block IO → sibling)
+  # tracked as follow-up.
+  "crates/spark-runtime/src/kv_cache/paged_impl.rs"
+  # ── Wave-55 integration (perf/enterprise-concurrency-v2 -> main) ──
+  # Thirteen of the fifteen below were ALREADY over the cap on the
+  # branch tip before this merge; two (`model/types.rs`,
+  # `scheduler/mtp_step.rs`) crossed it in the merge itself, from the
+  # union of main's carried-context refactor with the campaign's
+  # multi-sequence work. All fifteen are the enterprise-concurrency
+  # campaign's compute/dispatch surfaces, where the read order IS the
+  # launch order; splitting them mid-campaign is exactly the change
+  # that would have gone unmeasured. Split tracked as follow-up.
+  #
+  # 698 LoC — batched MTP drafter forward (n-row propose).
+  "crates/spark-model/src/layers/mtp_head/forward_batch.rs"
+  # 647 LoC — R-row batched verify forward + graph capture.
+  "crates/spark-model/src/model/trait_impl/verify_e.rs"
+  # 617 LoC — multi-seq decode driver + graph-key selection.
+  "crates/spark-model/src/model/trait_impl/decode_a2.rs"
+  # 596 LoC — batched GDN recurrent decode scan.
+  "crates/spark-model/src/layers/qwen3_ssm/trait_decode_multi_seq/ssm_batched_recurrent.rs"
+  # 545 LoC — quantized weight-map layouts (MMQ SoA + transposed twins).
+  "crates/spark-model/src/weight_map/quantized.rs"
+  # 536 LoC — model-wide type/field surface; grew by the union of
+  # main's `ModelLevers`/`GemmDispatch` carriers with the campaign's
+  # verify-pool and FP16-h-state fields.
+  "crates/spark-model/src/model/types.rs"
+  # 532 LoC — decode phase B (drafter prefill + carry).
+  "crates/spark-model/src/model/trait_impl/decode_b.rs"
+  # 525 LoC — speculative trait impl (propose/verify plumbing).
+  "crates/spark-model/src/model/trait_impl/speculative.rs"
+  # 524 LoC — SSM snapshot capture/restore.
+  "crates/spark-model/src/model/ssm_snapshot.rs"
+  # 522 LoC — speculation mode/width resolution.
+  "crates/spark-model/src/speculative.rs"
+  # 518 LoC — Mamba/SSM op wrappers.
+  "crates/spark-model/src/layers/ops/ssm_mamba.rs"
+  # 513 LoC — dev-only W4A16 BF16-v2 microbench example.
+  "crates/spark-model/examples/w4a16_bf16_v2_microtest.rs"
+  # 584 LoC — dev-only #435 verify-cost microbench example (GPU
+  # required): one sequential alloc→launch→time body whose legs
+  # mirror the exact/WY kernel chains step by step; splitting
+  # fragments the launch order (same rationale as the
+  # int8_gemm_test.rs / w4a16 entries above). Landed over-cap with
+  # the #435 stack; entry added by the first follow-on commit.
+  # Tracking issue owed when this branch gets its PR.
+  "crates/spark-model/examples/x435_ssm_cost.rs"
+  # 509 LoC — scheduler type surface.
+  "crates/spark-server/src/scheduler/types.rs"
+  # 504 LoC — MTP step driver; crossed the cap when the run context
+  # was threaded through the bootstrap/verify dispatch in this merge.
+  "crates/spark-server/src/scheduler/mtp_step.rs"
+  # 502 LoC — /v1/completions handler.
+  "crates/spark-server/src/api/completions.rs"
+  # -- PR #469 (SSM State Poisoning Gate) --
+  # 522 LoC — gate coverage table. Crossed the cap when the sixth
+  # mandatory gate (ssm-state-poisoning-gate) added SSM_POISON_EXCLUDES
+  # plus its own exclusion entries in the four sibling EXCLUDES
+  # arrays. Splitting it here is NOT free: coverage.rs is a
+  # BOUNDARY_FILE, so any edit to it (including a pure split)
+  # invalidates every standing gate record and forces a full GPU
+  # re-cycle — which is exactly why the entry goes here instead of
+  # a split commit in this PR. A clean split (per-gate EXCLUDES
+  # arrays -> sibling module) is tracked as follow-up; this entry
+  # lands with the PR that tipped it.
+  "crates/atlas-plugin/src/gate/coverage.rs"
+  # -- PR #464 (batch4 stack: #400/#401/#402/#350/#403) --
+  # Three files the restack tipped marginally over, each of which sat
+  # JUST under the cap on main (498/489/499 -> 509/501/501). The
+  # overage is a mechanical consequence of merging five upstream
+  # branches, not new monolith growth, and the content belongs to the
+  # upstream PRs rather than to this restack -- same footing as the
+  # #90/#229/#300 carry-over entries above. Clean splits tracked as
+  # follow-up with the upstream authors.
+  # 509 LoC (was 498) -- routed-expert prefill; grew with p400's
+  # native MXFP4/E8M0 routed-expert loading (#293 content).
+  "crates/spark-model/src/layers/moe/forward_prefill_routed.rs"
+  # 501 LoC (was 489) -- tool-call parser entry point; grew with
+  # p350 (Laguna-S-2.1) adding its parser arm.
+  "crates/spark-server/src/tool_parser.rs"
+  # 501 LoC (was 499) -- paged QKV prefill; +2 lines from the
+  # Nemotron-H-Puzzle/Mamba work (#281 content) carried in the stack.
+  "crates/spark-model/src/layers/qwen3_attention/prefill/paged_qkv.rs"
+)
+
+violations=0
+while IFS= read -r -d '' file; do
+  lines=$(wc -l < "$file")
+  if [[ $lines -gt 500 ]]; then
+    # Strip leading "./" if present
+    normalized="${file#./}"
+    # Check allow-list
+    allowed=0
+    for entry in "${allow_list[@]}"; do
+      if [[ "$normalized" == "$entry" ]]; then
+        allowed=1
+        break
+      fi
+    done
+    if [[ $allowed -eq 1 ]]; then
+      echo "::warning file=$normalized::Allow-listed: $lines LoC (>500). Reduce when feasible."
+    else
+      echo "::error file=$normalized::$lines LoC exceeds 500-line cap. Split into sub-modules per Atlas idiom (see crates/spark-model/src/layers/qwen3_attention/ for compute-heavy template, crates/spark-model/src/weight_loader/ for variant-dispatch template)."
+      violations=$((violations + 1))
+    fi
+  fi
+done < <(find crates -name '*.rs' -not -name '*.bak' -not -path '*/target/*' -print0)
+
+if [[ $violations -gt 0 ]]; then
+  echo ""
+  echo "❌ $violations file(s) exceed the 500-line cap. Split them per Atlas idiom."
+  echo ""
+  echo "Quick fix: extract a cohesive cluster (impl block, related fns, tests)"
+  echo "to a sibling file:"
+  echo "  1. cp foo.rs foo.rs.bak"
+  echo "  2. mkdir foo/  (Rust 2018+ allows foo.rs + foo/ submodules)"
+  echo "  3. Move the cluster to foo/<cluster>.rs with pub(super) on cross-file private items"
+  echo "  4. Add 'mod <cluster>;' + 'pub use <cluster>::*' as needed in foo.rs"
+  echo "  5. cargo check -p <crate> must pass"
+  exit 1
+fi
+
+echo "✓ All .rs files in crates/ are ≤500 LoC (or in the allow-list)."
+

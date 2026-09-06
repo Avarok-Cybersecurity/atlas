@@ -370,6 +370,106 @@ jobs:
       - name: every bot command is documented
         run: python3 .github/scripts/assert-commands-documented.py
 
+  # ── Nine checks that did no work, in one job ──────────────────────────────
+  #
+  # Measured across 11 completed runs, on the self-hosted pool:
+  #
+  #     job                              queue   wall   real work
+  #     classify diff (web-only?)          28s     5s     0s
+  #     kernel shadow structure            28s     6s     0s
+  #     harvest triage decision table      15s     6s     0s
+  #     SPDX license headers               15s     9s     1s
+  #     typos                              26s     9s     2s
+  #
+  # Eight of these cost 151s of QUEUE and 48s of wall to do about 7s of work —
+  # queue was 76% of their total, and several spent zero measurable seconds on
+  # the thing they exist for. The pool is 12 runners wide, so the slots matter
+  # more than the seconds: eight jobs held eight slots to run eight scripts.
+  #
+  # ★ EVERY CHECK RUNS. NO FAIL-FAST. Nine checks in one job is a loss of
+  # signal unless the job runs all of them and reports all of them — otherwise
+  # one red PR becomes nine sequential round trips, which is worse than the
+  # nine jobs this replaces. Failures are collected and reported together, each
+  # `::error` naming the context it stands in for.
+  #
+  # ★ EACH CHECK STILL CALLS THE SAME SCRIPT ITS OWN JOB CALLS. The bodies were
+  # extracted to `.github/scripts/check-*.sh` first, so during the transition —
+  # while both this job and the nine originals run — they cannot disagree. If
+  # they ever could, this would not be a faithful merge and the originals could
+  # not safely be deleted.
+  #
+  # NOT batched: `PR shares history with its base` (merge-ancestry `guard`)
+  # needs `fetch-depth: 0` to resolve the base, and giving this job full history
+  # would hand back most of what the batch saves. It stays its own job.
+  cheap-checks:
+    name: cheap checks
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prerequisites
+        run: python3 -m pip install --quiet PyYAML
+      # `typos` is a compiled action, not a script, so it cannot join the
+      # collector below. `continue-on-error` keeps it from short-circuiting the
+      # rest; its outcome is folded into the verdict.
+      - id: typos
+        continue-on-error: true
+        uses: crate-ci/typos@5e38bf262baaf477ca9f241b3a7cd3d277fd7df8 # master
+      - id: checks
+        env:
+          TYPOS_OUTCOME: ${{ steps.typos.outcome }}
+        run: |
+          set -uo pipefail
+          failed=()
+          # run <context-name> <command...>
+          run() {
+            local ctx=$1; shift
+            echo "::group::$ctx"
+            if "$@"; then
+              echo "  ok   $ctx"
+            else
+              echo "  FAIL $ctx"
+              failed+=("$ctx")
+            fi
+            echo "::endgroup::"
+          }
+
+          run "SPDX license headers"          python3 scripts/check_spdx.py
+          run "SPDX license headers (vhost)"  python3 .github/scripts/assert-vhost-headers.py
+          run "SPDX license headers (links)"  python3 .github/scripts/assert-doc-links.py
+          run "SPDX license headers (cmds)"   python3 .github/scripts/assert-commands-documented.py
+          run "kernel shadow structure"       python3 scripts/check_kernel_shadows.py
+          run "harvest triage decision table" bash .github/scripts/harvest-triage-test.sh
+          run "Enforce <=500 LoC per source file" bash .github/scripts/check-file-size-cap.sh
+          run "Verify committed GDN binaries match PINS.sha256" bash .github/scripts/check-gdn-so-pins.sh
+          run "No block_on under tui/ or recipe/"  bash .github/scripts/check-no-block-on.sh
+          run "Merge-ancestry guard self-test" bash scripts/check_merge_ancestry_test.sh
+          run "the certification self-test is still wired" python3 .github/scripts/assert-selftest-wired.py
+
+          # `typos` ran as its own step; fold its verdict in here so the summary
+          # below is the whole truth rather than most of it.
+          if [ "${TYPOS_OUTCOME}" = "success" ]; then
+            echo "  ok   typos"
+          else
+            echo "  FAIL typos (outcome: ${TYPOS_OUTCOME})"
+            failed+=("typos")
+          fi
+
+          if [ "${#failed[@]}" -eq 0 ]; then
+            echo "all cheap checks pass"
+            exit 0
+          fi
+          for c in "${failed[@]}"; do
+            echo "::error title=$c::this check failed. It runs inside the batched \`cheap checks\` job; the group above carries its output."
+          done
+          echo "${#failed[@]} cheap check(s) failed: ${failed[*]}"
+          exit 1
+
   typos:
     name: typos
     # ── First job on the cheap self-hosted pool. ────────────────────────────
