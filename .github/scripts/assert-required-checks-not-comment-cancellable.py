@@ -60,7 +60,25 @@ COMMENT_TRIGGERS = {"issue_comment", "pull_request_review_comment", "pull_reques
 
 
 def cancels(section):
-    return isinstance(section, dict) and section.get("cancel-in-progress") is True
+    """Whether this concurrency block can cost a required context its run.
+
+    ★ `cancel-in-progress: true` is NOT the only way. From GitHub's docs: when a
+    run is queued while another in the same group is in progress it goes
+    PENDING, and "any previously pending job or workflow in the concurrency
+    group will be cancelled." That happens whatever `cancel-in-progress` says —
+    it governs the IN-PROGRESS run, not the pending one.
+
+    So a shared group is enough. On 2026-09-06 `cla.yml` carried
+    `cancel-in-progress: false`, added after the #907 incident and believed to
+    close this class, and `CLAAssistant` still went missing on #934, #935 and
+    #908 at once: each run for the current head was `completed/cancelled` with
+    ZERO jobs. This function said those workflows were safe, because it only
+    looked at the flag.
+
+    Any concurrency block therefore counts. A required context is worth more
+    than the runner-seconds a group saves.
+    """
+    return isinstance(section, dict) and bool(section.get("group"))
 
 
 def main(root="."):
@@ -90,8 +108,8 @@ def main(root="."):
             ):
                 problems.append(
                     f"{path.name}:{name} emits the required context {context!r}, "
-                    f"is triggered by {sorted(comment_fired)}, and sets "
-                    f"cancel-in-progress: true — two comments seconds apart will "
+                    f"is triggered by {sorted(comment_fired)}, and declares a "
+                    f"concurrency group — a later event leaves this run pending and "
                     f"cancel it and leave the PR red on a check that was never run. "
                     f"Set cancel-in-progress: false."
                 )
