@@ -247,13 +247,114 @@ fn a_hanging_decoder_is_killed_at_timeout() {
         timeout_secs: 1,
         ..Default::default()
     };
-    let started = std::time::Instant::now();
+    // ★ A SPAWN THAT NEVER HAPPENED IS THE HARNESS, NOT THE CODE.
+    //
+    // This test writes an executable and immediately execs it. `fs::write`
+    // closes its own descriptor, but a SIBLING test calling `Command::spawn`
+    // forks, and a fork duplicates every descriptor open in the process --
+    // including ours, if it lands between our open and our close. That child
+    // then holds a write descriptor on the file we are trying to exec, and
+    // Linux answers ETXTBSY. Nothing inside this test can prevent it; only
+    // the absence of concurrent spawns could, and `cargo test` promises no
+    // such thing. Seen on the #880 merge-queue run and again on #938, forty
+    // minutes apart on 2026-09-06, both times reported as "is ffmpeg
+    // installed and on PATH?" -- the misdiagnosis this PR exists to remove.
+    //
+    // ★ THE RETRY KEYS ON "THE SPAWN FAILED", NOT ON A GUESSED ERRNO.
+    //
+    // ETXTBSY is the best explanation, and it is still an INFERENCE: the code
+    // that produced those two failures wrapped every spawn error in one
+    // `anyhow` context and threw the source errno away, so neither job log
+    // contains an errno at all. Keying the retry on the word "ETXTBSY" would
+    // therefore bet the whole fix on that inference -- if the real errno is
+    // something else, the retry silently never fires and the flake survives
+    // behind a test that looks fixed. Keying on the spawn-failure prefix
+    // costs nothing if the guess is right and still works if it is wrong.
+    //
+    // It does not weaken the test: a genuinely unrunnable binary fails all
+    // five attempts and the assertion below still fails, naming what it saw.
+    // Each attempt is printed, so the NEXT occurrence in CI reports the errno
+    // instead of leaving the next reader to infer it as I did.
+    //
+    // The descriptor closes when that child execs or exits, so the window is
+    // milliseconds. Retries are BOUNDED and running out is a FAILURE: a test
+    // that skips itself on a known flake hides the next real regression
+    // behind it. The elapsed-time assertion restarts with each attempt,
+    // because it measures the kill, not the retries.
+    let mut attempts = 0;
+    let err = loop {
+        attempts += 1;
+        let started = std::time::Instant::now();
+        let err = decode_frames(b"input", 2.0, &policy)
+            .unwrap_err()
+            .to_string();
+        // `spawn_failure` is the only producer of this prefix, so it means
+        // "the process never started" and never "the decode ran and failed".
+        if err.starts_with("could not run") && attempts < 5 {
+            eprintln!("attempt {attempts}: the fake decoder would not spawn: {err}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the timeout kill took {:?}",
+            started.elapsed()
+        );
+        break err;
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        err.contains("decoding exceeded 1s"),
+        "after {attempts} attempt(s): {err}"
+    );
+}
+
+/// The ETXTBSY branch of `spawn_failure`, CONSTRUCTED rather than waited for.
+///
+/// Holding a write handle open on the target is exactly the condition Linux
+/// refuses to exec, so this reproduces it with no race and no sleep. It earns
+/// its place by proving the string the retry above keys on is the string
+/// production actually emits: without it, `err.contains("ETXTBSY")` could
+/// match a message nothing ever produces, the retry would never fire, and the
+/// flake would come back wearing a green test.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_binary_still_open_for_writing_is_reported_as_etxtbsy() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("atlas-busy-ffmpeg-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("busy-ffmpeg");
+
+    // The handle stays alive across the spawn attempt below -- that IS the
+    // condition under test, so it must not be dropped early.
+    let mut held = std::fs::File::create(&binary).unwrap();
+    held.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+    held.flush().unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    let policy = FfmpegPolicy {
+        enabled: true,
+        binary: binary.display().to_string(),
+        timeout_secs: 1,
+        ..Default::default()
+    };
     let err = decode_frames(b"input", 2.0, &policy)
         .unwrap_err()
         .to_string();
+    drop(held);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(err.contains("decoding exceeded 1s"), "{err}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+
+    assert!(err.contains("ETXTBSY"), "{err}");
+    assert!(
+        !err.contains("is ffmpeg installed"),
+        "a busy binary must not be reported as a missing one: {err}"
+    );
 }
 
 /// H.265 in the same container — the case a linked H.264-only decoder could
@@ -282,6 +383,52 @@ fn an_empty_stream_splits_to_nothing() {
             .expect("empty is not an error")
             .is_empty()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Spawn diagnosis
+//
+// The old message told every failing spawn to install ffmpeg. These pin that a
+// present-but-unrunnable binary is no longer misreported, which is the case
+// that actually reached CI: a script written and chmod'd 0755 by the test above.
+// ---------------------------------------------------------------------------
+
+fn spawn_message(kind: std::io::ErrorKind) -> String {
+    spawn_failure("/opt/ff", std::io::Error::new(kind, "boom")).to_string()
+}
+
+#[test]
+fn a_missing_binary_still_says_install_ffmpeg() {
+    let m = spawn_message(std::io::ErrorKind::NotFound);
+    assert!(m.contains("is ffmpeg installed"), "{m}");
+    assert!(m.contains("/opt/ff"), "the binary must be named: {m}");
+}
+
+#[test]
+fn a_present_but_unrunnable_binary_is_not_reported_as_missing() {
+    for (kind, expected) in [
+        (std::io::ErrorKind::PermissionDenied, "noexec"),
+        (std::io::ErrorKind::ExecutableFileBusy, "ETXTBSY"),
+    ] {
+        let m = spawn_message(kind);
+        assert!(
+            !m.contains("is ffmpeg installed"),
+            "{kind:?} must not be blamed on a missing install: {m}"
+        );
+        assert!(m.contains(expected), "{kind:?} must name its cause: {m}");
+    }
+}
+
+#[test]
+fn an_unclassified_spawn_error_still_carries_the_os_message() {
+    // No hint is invented for a kind we have not reasoned about -- but the OS
+    // text must survive, because that is the whole point of the change.
+    let m = spawn_message(std::io::ErrorKind::Other);
+    assert!(
+        m.contains("boom"),
+        "the OS error must reach the operator: {m}"
+    );
+    assert!(!m.contains("is ffmpeg installed"), "{m}");
 }
 
 #[test]
