@@ -432,15 +432,15 @@ impl TransformerModel {
                 .map_err(|e| anyhow::anyhow!("Prefill layer {i} failed: {e}"))?;
             // DFlash prefill capture: writes layer i's hidden output for
             // all `proc_count` tokens into the seq's accumulator at slots
-            // [layer_kv_write_start .. layer_kv_write_start + proc_count].
-            // No-op when DFlash is disabled.
-            self.try_dflash_prefill_capture_layer(
-                seq,
-                i,
-                layer_kv_write_start,
-                proc_count,
-                stream,
-            )?;
+            // [seq_len_start .. seq_len_start + proc_count]. The base is the
+            // chunk's PROCESSING start (absolute position of buffer row 0),
+            // NOT `layer_kv_write_start` — on a prefix-cache hit the KV
+            // write floor sits at the matched boundary while the forward
+            // recomputes from 0, and using the floor here shifted every
+            // captured row by the cached-prefix length (see the twin call in
+            // `prefill_b::forward_layers` for the full failure). No-op when
+            // DFlash is disabled.
+            self.try_dflash_prefill_capture_layer(seq, i, seq_len_start, proc_count, stream)?;
 
             // MLA diagnostic: dump per-layer hidden state norm (once per model).
             // Per-model latch (see `ModelStats::dumped`) rather than a static: an
@@ -520,8 +520,11 @@ impl TransformerModel {
         self.prefill_save_snapshot_with_vision_gate(tokens, seq, &mut kv_cache, bs, stream);
 
         // DFlash: advance the seq's `ctx_len` to span all just-prefilled
-        // positions so the next propose() can read them.
-        self.update_dflash_ctx_len_after_prefill(seq, layer_kv_write_start, proc_count)?;
+        // positions so the next propose() can read them. Same base as the
+        // capture above: the PROCESSING start, not the KV write floor — the
+        // floor would claim `matched + proc_count` rows on a prefix-cache
+        // hit, past the prompt's end.
+        self.update_dflash_ctx_len_after_prefill(seq, seq_len_start, proc_count)?;
 
         Ok(self.decode_logits_ptr())
     }

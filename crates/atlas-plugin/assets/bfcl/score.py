@@ -111,7 +111,31 @@ def _read_jsonl(path):
                 yield json.loads(line)
 
 
+def _selftest() -> int:
+    """Import what scoring imports, and nothing else.
+
+    The AST checker is imported INSIDE `_score_ast`, so nothing at module
+    scope touches `bfcl_eval` — `score.py --help` succeeds against a venv that
+    cannot score at all. That is how a missing transitive dependency
+    (`qwen_agent` -> `soundfile`) stayed invisible until after 995 responses
+    had been generated: an hour and a half of inference, then an import error,
+    and no gate record because the run ended Failed.
+
+    Kept here rather than as a list of module names in the provisioner, so it
+    cannot drift from what the scorer actually needs.
+    """
+    from bfcl_eval.constants.enums import Language  # noqa: F401
+    from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker  # noqa: F401
+
+    return 0
+
+
 def main() -> int:
+    # Handled before the parser is built, so `--dataset`/`--responses` keep
+    # argparse's own `required=True` contract: a scoring invocation that omits
+    # them must still fail exactly as it always has.
+    if "--selftest" in sys.argv[1:]:
+        return _selftest()
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--responses", required=True)

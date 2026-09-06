@@ -271,6 +271,16 @@ pub struct TransformerModel {
     /// token's intermediate hiddens; the drafter consumes them via its `fc`
     /// projection on the next propose() call. None for non-DFlash runs.
     pub(super) dflash_hidden_save: Option<DevicePtr>,
+    /// Lazily-allocated 16 KB metadata staging for the sliding-attention
+    /// per-token verify loop (`verify_attention_per_token`). The verify
+    /// bodies' multi-seq metadata overlay at `scratch + 32768` can span the
+    /// ENTIRE scratch buffer (scratch is sized to exactly `bt_meta`), so the
+    /// per-token loop CANNOT stage there without clobbering the metadata the
+    /// interleaved FullAttention layers' `decode_multi_seq` still reads --
+    /// doing so was a sticky CUDA-700 on Laguna-XS (2026-08-25). Layout
+    /// mirrors the scratch meta block: pos@0, slot@8, seq_len@16,
+    /// seq_slot@128, block_table@256 (cap ~15.7 KB, about 4000 blocks).
+    pub(super) verify_ptok_meta: std::sync::OnceLock<DevicePtr>,
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
@@ -318,6 +328,12 @@ pub struct TransformerModel {
     /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
     /// NULL without an MTP proposer (path self-gates).
     pub(super) verify_wy_tables: DevicePtr,
+    /// Write-on-accept: device `u32[VERIFY_WY_TABLE_SEQS]` of accepted row
+    /// counts for the post-verdict fold, and the ssm slots whose h state the
+    /// fold already committed this step (`commit_accepted_prefix` skips the
+    /// h restore for them). NULL/empty when no batched verify exists.
+    pub(super) gdn_woa_na_tab: DevicePtr,
+    pub(super) gdn_woa_folded_slots: Mutex<Vec<usize>>,
     /// Encoded key of the bytes CURRENTLY staged in `verify_wy_tables`, or
     /// `None` when nothing has been staged (the buffer is memset to zero at
     /// allocation, which no key describes).

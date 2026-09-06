@@ -216,11 +216,36 @@ impl BlockDiffusionDraftHead {
             // try_kernel: absent on targets whose w4a16 module predates
             // Phase G — the FP8 drafter path is then skipped at the
             // ATLAS_DFLASH_DRAFTER_FP8 gate below (BF16 fallback).
-            fp8_gemm_n128_row_scaled: crate::layers::try_kernel(
-                gpu,
-                "w4a16",
-                "fp8_gemm_t_row_scaled",
-            ),
+            // 2026-09-03: `_p4` = same kernel with a 4-stage cp.async ring
+            // (byte-identical output; 2-stage ran at ~1/3 of DRAM peak at
+            // M=64). `ATLAS_DFLASH_FP8_GEMM_P2=1` pins the 2-stage original.
+            fp8_gemm_n128_row_scaled: {
+                let pin_p2 = std::env::var("ATLAS_DFLASH_FP8_GEMM_P2").ok().as_deref() == Some("1");
+                // Preference: `_k64` (64 B per weight row per K step) ->
+                // `_p4` (4-stage ring) -> original. All three byte-identical.
+                let pin_p4 = std::env::var("ATLAS_DFLASH_FP8_GEMM_P4").ok().as_deref() == Some("1");
+                let mut h = spark_runtime::gpu::KernelHandle(0);
+                if !pin_p2 && !pin_p4 {
+                    h = crate::layers::try_kernel(gpu, "w4a16", "fp8_gemm_t_row_scaled_k64");
+                    if h.0 != 0 {
+                        tracing::info!(
+                            "DFlash drafter FP8 GEMM: fp8_gemm_t_row_scaled_k64 (deep-K)"
+                        );
+                    }
+                }
+                if h.0 == 0 && !pin_p2 {
+                    h = crate::layers::try_kernel(gpu, "w4a16", "fp8_gemm_t_row_scaled_p4");
+                    if h.0 != 0 {
+                        tracing::info!(
+                            "DFlash drafter FP8 GEMM: fp8_gemm_t_row_scaled_p4 (4-stage ring)"
+                        );
+                    }
+                }
+                if h.0 == 0 {
+                    h = crate::layers::try_kernel(gpu, "w4a16", "fp8_gemm_t_row_scaled");
+                }
+                h
+            },
             // Phase G — Row-scaled BF16 × FP8 → BF16 GEMV (M=1). Used
             // by the lm_head GEMM swap in a γ-loop, since the
             // fp8_gemm_n128 GEMM kernel wastes 75% of its M_TILE at
@@ -322,6 +347,9 @@ impl BlockDiffusionDraftHead {
             // i64 slot mapping for reshape_and_cache (kernel takes
             // `long long*`). One entry per new ctx row.
             slot_mapping_dev: gpu.alloc(ctx_window * 8)?,
+            precompute_in: gpu.alloc(
+                super::PRECOMPUTE_BATCH_ROWS * target_layer_ids.len() * target_hidden_size * bf16,
+            )?,
             // 12 bytes of device memory holding the per-call triple
             // `[u32 kv_len, u32 q_offset, u32 q_rope_pos]` that the indirect
             // paged-attention kernel reads at entry. Host writes via H2D
@@ -546,6 +574,7 @@ impl BlockDiffusionDraftHead {
             vocab_size,
             draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
+            block_gamma: std::sync::atomic::AtomicUsize::new(gamma_val),
             max_batch: nb,
             mask_token_id,
             window_size,
@@ -604,9 +633,8 @@ impl BlockDiffusionDraftHead {
             ctx_window,
             // Phase F: per-subgraph graph state — empty until the first
             // capture pass lands. Layout: [pre_0, post_0, ..., tail].
-            propose_graphs: parking_lot::Mutex::new(None),
+            propose_graphs: parking_lot::Mutex::new(super::ProposeGraphs::default()),
             suppress_graphs: std::sync::atomic::AtomicBool::new(false),
-            propose_warmup_count: std::sync::atomic::AtomicUsize::new(0),
             quant: DflashQuantization::Bf16,
             // DSpark heads. `markov_rank` is zeroed when the tensors are
             // absent so the runtime gate is a single field check.

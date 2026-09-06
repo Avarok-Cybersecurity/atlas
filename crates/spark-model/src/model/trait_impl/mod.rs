@@ -39,6 +39,7 @@ mod sequence;
 mod speculative;
 pub(in crate::model) mod ssm_fault_in;
 mod verify_a;
+mod verify_a_ssm;
 mod verify_b;
 mod verify_c;
 mod verify_c2;
@@ -846,6 +847,53 @@ impl Model for TransformerModel {
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
     }
+    fn gdn_fold_accepted(
+        &self,
+        slots: &[usize],
+        accepted_rows: &[u32],
+        k_rows: usize,
+    ) -> Result<bool> {
+        use crate::layer::{VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS};
+        if self.gdn_woa_na_tab.is_null()
+            || self.verify_wy_tables.is_null()
+            || accepted_rows.is_empty()
+            || accepted_rows.len() > VERIFY_WY_TABLE_SEQS
+        {
+            return Ok(false);
+        }
+        let mut host = [0u32; VERIFY_WY_TABLE_SEQS];
+        host[..accepted_rows.len()].copy_from_slice(accepted_rows);
+        let bytes: Vec<u8> = host.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let stream = self.gpu.default_stream();
+        self.gpu
+            .copy_h2d_async(&bytes, self.gdn_woa_na_tab, stream)?;
+        let mut ssm_idx = 0usize;
+        let mut any = false;
+        for (i, layer) in self.layers.iter().enumerate() {
+            if self.config.layer_type(i) != atlas_core::config::LayerType::LinearAttention {
+                continue;
+            }
+            let h_table = self
+                .verify_wy_tables
+                .offset(ssm_idx * VERIFY_WY_LAYER_STRIDE_BYTES);
+            any |= layer.gdn_fold_accepted(
+                self.gpu.as_ref(),
+                h_table,
+                self.gdn_woa_na_tab,
+                k_rows,
+                accepted_rows.len(),
+                stream,
+            )?;
+            ssm_idx += 1;
+        }
+        if any {
+            let mut f = self.gdn_woa_folded_slots.lock();
+            f.clear();
+            f.extend_from_slice(slots);
+        }
+        Ok(any)
+    }
+
     fn commit_accepted_prefix(
         &self,
         seq: &mut SequenceState,

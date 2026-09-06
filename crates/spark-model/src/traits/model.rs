@@ -1103,6 +1103,20 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Write-on-accept fold after a batched K=4 verify: `slots[i]` /
+    /// `accepted_rows[i]` (verify-width rows incl. the anchor, 1..=k) in the
+    /// verify's batch order. Returns `Ok(true)` when the GDN h states were
+    /// committed here, in which case `commit_accepted_prefix` for those
+    /// slots restores conv state only. Default: nothing to fold.
+    fn gdn_fold_accepted(
+        &self,
+        _slots: &[usize],
+        _accepted_rows: &[u32],
+        _k_rows: usize,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Save KV blocks + SSM state to writer. Does NOT free resources.
     ///
     /// Format: `[KV layers × blocks × (K + V)]` then `[SSM layers × (h + conv)]`.
