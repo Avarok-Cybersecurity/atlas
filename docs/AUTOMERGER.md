@@ -958,3 +958,68 @@ Self-test 128 -> 133, 0 failed.
 time -- second campaign running, second catch); R-assert-all-anchors (four
 resolver assertions, each stopping before a write); R-38 (verified the ported
 behaviour by what the callee DECLARES, not by whether the file parsed).
+
+---
+
+## Run 32 — 2026-09-06T11:10Z — the rule I wrote rejected my own plan, and nine gates that never ran
+
+```text
+10:35Z  aggregate CHECKED BEFORE THE LEGS LANDED: gate::agreement's first rule is
+                 "records measured at more than one commit -- always fatal, every
+                 class". The branch already carries ELEVEN records at ef5ea006eb.
+                 Adding 2 re-measured at a87687880a makes a set spanning two
+                 commits. REJECTED -- even though record_covers says all nine
+                 non-BFCL records still stand at the new pin.
+10:38Z  spawn    dgx3 idle (load 0.08, GPU 0%) -> the other nine, same pin, one box.
+10:52Z  return   NINE_COMPLETE in ELEVEN SECONDS. Every leg rc=127.
+                 ./target/release/spark: error while loading shared libraries:
+                 libnccl.so.2. Build was fine (Finished release in 1m06s, 90 MB
+                 binary, executable). The LOADER exits 127, which the shell
+                 reports identically to "command not found".
+11:05Z  aggregate dgx1 has /lib/aarch64-linux-gnu/libnccl.so.2 -> .so.2.29.7.
+                 dgx3 had only libnccl.so, pointing into a home directory.
+                 sha256 of both files: cc01f863461ea28f... IDENTICAL. Symlinked,
+                 ldconfig, spark --version answers. Relaunched 09:30:47Z.
+```
+
+**THE RULE REJECTED THE PLAN, AND I DID NOT EDIT THE RULE.** The one-commit rule
+is arguably wrong: `record_covers` measures "describes the same PERF tree"
+directly, and commit-equality is a strictly weaker proxy that produces exactly
+this false rejection — nine records that provably still stand, refused for
+being older than two that had to be redone. But the rule was blocking MY stack,
+and rewriting a verdict rule to unblock your own PR is the conflict of interest
+the whole `BOUNDARY_FILES` doctrine exists to name. Re-measuring cost one hour
+on an idle box. The rule change, if it is right, belongs in a PR that is not
+waiting on it.
+
+**AND WHILE CHECKING, A REAL GAP.** `agreement.rs` decides a verdict — which
+record SETS are acceptable — and it is NOT in `BOUNDARY_FILES`. `GATE_MACHINERY`
+excludes the whole `crates/atlas-plugin/src/gate` prefix, so a PR rewriting the
+signer or commit rule invalidates nothing and is then judged by its own new
+logic. That is PR #420's shape exactly, the one that list was created to close,
+left unapplied to a file added later — the same way `.github/pr-taxonomy.json`
+was, per its own entry. Cost of closing it: ~4h19m on the next campaign that
+touches the file. It goes in a later stack with the cost stated.
+
+> **R-41. A loop that reports success for work it never did is worse than one
+> that crashes.** Exit 127 from the dynamic loader is indistinguishable from
+> "command not found", and a `for` loop over gates will print DONE for every
+> one of them in the same second. EVIDENCE: 2026-09-06, nine gates
+> "NINE_COMPLETE" in eleven seconds on dgx3 with no libnccl on the loader path;
+> the only thing between that and a bad certification was the collector's
+> record-count assertion. CHECK: fail fast on 127 and print the first line of
+> the gate log; more generally, assert a gate's DURATION is plausible before
+> believing its verdict.
+
+> **R-42. Provision differences show up as impossible errors.** dgx1 resolves
+> `libnccl.so.2` from `/lib/aarch64-linux-gnu`; dgx3 had only the `.so`
+> development symlink, into a home directory. Same byte-identical library,
+> different loader path, and the symptom was "command not found" for a file
+> that exists and is executable. CHECK: before trusting a second box, run
+> `ldd` on the built binary there, and diff the answer against the box that
+> works. Verify the library is IDENTICAL (sha256) before symlinking it into
+> place on a measurement box — a different NCCL would be a silent variable in
+> a Speed-class number.
+
+**CITED:** R-38 (verified the fix by what `ldd` resolves and what
+`spark --version` answers, not by the symlink existing).
