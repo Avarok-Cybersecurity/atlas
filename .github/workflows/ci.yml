@@ -431,11 +431,52 @@ jobs:
     # suppresses the implicit success() on `needs` — so this job RUNS. Written
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
-    runs-on: [self-hosted, macOS, ARM64]
+    # HOSTED, and this is a compromise with its reasoning written down.
+    #
+    # #901 moved this to the self-hosted Apple Silicon box. Then TheTom's
+    # ATLAS_SKIP_BUILD="0" (below) made the step actually BUILD the metal kernel
+    # set instead of stubbing `metallib_modules()` to an empty list -- and the
+    # build immediately failed there:
+    #
+    #     xcrun: error: unable to find utility "metal", not a developer tool
+    #                   or in PATH
+    #
+    # `apple-48gb-metal` carries the Command Line Tools but not the Metal
+    # compiler, which ships with Xcode. The fix is right; the box is not yet
+    # provisioned for it. GitHub-hosted macOS runners DO carry Xcode, so the 43
+    # `.metal` sources under kernels/metal/ compile there.
+    #
+    # Splitting it keeps both properties honest instead of trading one away:
+    #   * THIS job (required) compiles the kernels for real on hosted macOS --
+    #     strictly more than the `35 passed in 0.07s` this lane reported for its
+    #     entire existence while the build was stubbed out.
+    #   * `metal-device-parity` below runs on the self-hosted box and EXECUTES
+    #     the kernels against a real GPU. Advisory until that box has the Metal
+    #     toolchain, so real-device coverage is kept rather than dropped -- it
+    #     just does not block every PR on one unprovisioned machine.
+    #
+    # ★ Move this back to [self-hosted, macOS, ARM64] and delete the advisory
+    #   job the moment `xcrun -f metal` answers on that box.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # FAIL FAST on a runner without the Metal compiler. Without this the
+      # absence surfaces as `failed to run custom build command for
+      # atlas-kernels` after minutes of dependency compilation, with the real
+      # cause one line inside a wall of cargo output.
+      - name: the Metal compiler must be present
+        run: |
+          if ! xcrun -f metal >/dev/null 2>&1; then
+            echo "::error title=No Metal compiler on this runner::xcrun cannot \
+          find 'metal'. This runner has the Command Line Tools but not the Metal \
+          compiler, which ships with Xcode. Install Xcode (or the Metal toolchain \
+          component) on this machine, or route this job to a runner that has it. \
+          ATLAS_SKIP_BUILD=0 below needs it to compile kernels/metal/*.metal."
+            exit 1
+          fi
+          echo "metal compiler: $(xcrun -f metal)"
       # Apple Silicon path: no CUDA toolchain, no nvcc. The `metal`
       # feature opts out of cudarc workspace-wide and into the Metal
       # runtime backend (objc2-metal). xcrun + metallib are part of
@@ -494,6 +535,49 @@ jobs:
   # and CI is never executed twice for one commit. Guarded to pull_request:
   # release.yml calls this workflow for its own gate, and must not trigger a
   # second matrix build there.
+  metal-device-parity:
+    # ADVISORY, deliberately. This is the only job in the repo that executes
+    # Metal kernels against a REAL GPU: the required job above compiles them on
+    # a hosted runner, where `MTLCreateSystemDefaultDevice` returns null and
+    # every parity test takes its `let Some(backend) = ... else { return }` arm
+    # and reports success having run nothing.
+    #
+    # It is not required because `apple-48gb-metal` does not yet have the Metal
+    # compiler (Command Line Tools only), so it fails on the build. Making it
+    # required today would block every non-web-only PR on one unprovisioned
+    # machine; deleting it would quietly give up the only real-device coverage
+    # that exists. Advisory keeps the signal visible and honest until the box is
+    # provisioned, at which point this job and the hosted routing above collapse
+    # back into one.
+    name: metal device parity (self-hosted, advisory)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    continue-on-error: true
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: report what this box can do
+        run: |
+          if xcrun -f metal >/dev/null 2>&1; then
+            echo "metal compiler: $(xcrun -f metal)"
+          else
+            echo "::warning title=No Metal compiler::this box has the Command \
+          Line Tools but not the Metal compiler; install Xcode or the Metal \
+          toolchain component and this job can become required."
+          fi
+      # A REAL device must be present, or this job is measuring nothing and
+      # there is no point running it here rather than on hosted.
+      - name: cargo test -p spark-runtime --features metal (real device)
+        env:
+          ATLAS_SKIP_BUILD: "0"
+          ATLAS_TARGET_HW: metal
+          ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
+          ATLAS_TARGET_QUANT: mlx_int8
+        run: |
+          cargo test -p spark-runtime --no-default-features \
+            --features metal --locked metal_backend -- --nocapture
+
   release-matrix:
     name: release matrix
     # Runs for pull_request AND merge_group (queue entry validation on the
