@@ -28,19 +28,46 @@ pub fn print_suite(format: OutputFormat) -> Result<()> {
                     "duration_hint": d.duration_hint,
                     "needs_confirmation": d.needs_confirmation,
                     "intended_for": d.intended_for.map(|e| e.families),
+                    // Explicit, so a consumer never has to infer the structure
+                    // from an id suffix. `members` is present only on a group;
+                    // `member_of` only on a shard.
+                    "members": atlas_plugin::gate::group::find(d.id).map(|g| g.members),
+                    "member_of": atlas_plugin::gate::group::member_of(d.id).map(|g| g.id),
                 })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
-    let width = all.iter().map(|d| d.id.len()).max().unwrap_or(0);
+    // Members are printed UNDER their group, not as eleven more top-level rows.
+    // Two reasons, and the second is not cosmetic: a reader scanning the suite
+    // should see eleven gates, not nineteen entries of which eight are quarters
+    // of two others; and `render/bench/list.rs` already records that the
+    // ELEVENTH registered benchmark rendered nowhere at 160x48, so eight more
+    // flat rows would push real gates off the screen.
+    let width = all.iter().map(|d| d.id.len() + 2).max().unwrap_or(0);
     for d in all {
+        if atlas_plugin::gate::group::member_of(d.id).is_some() {
+            continue;
+        }
         let mark = if d.needs_confirmation { " (--yes)" } else { "" };
         println!(
             "{:width$}  {:<10}  {}{}",
             d.id, d.duration_hint, d.summary, mark
         );
+        let Some(group) = atlas_plugin::gate::group::find(d.id) else {
+            continue;
+        };
+        for m in group.members {
+            let Some(md) = registry::find(m) else {
+                continue;
+            };
+            println!(
+                "{:width$}  {:<10}  one shard; run all four, or run the group id above",
+                format!("  {m}"),
+                md.duration_hint
+            );
+        }
     }
     Ok(())
 }

@@ -4,6 +4,7 @@
 
 use clap::Parser;
 
+pub mod bench_aggregate;
 mod bench_args;
 pub mod bench_card;
 mod bench_gate_check;

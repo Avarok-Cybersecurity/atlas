@@ -66,6 +66,12 @@ pub enum BenchmarkCommand {
     List(ListArgs),
     /// Run one benchmark against a served endpoint.
     Run(RunArgs),
+    /// Show a benchmark group's aggregate over its committed shard records.
+    ///
+    /// Pure and GPU-free: it reads what is already in `.benchmarks/` and applies
+    /// the same aggregation the gate does, so an operator can see the group's
+    /// number — and WHICH shard is missing — without waiting for CI to say so.
+    Aggregate(AggregateArgs),
     /// Past runs, from `~/.atlas/runs`.
     History(HistoryArgs),
     /// Render a shareable result card from a committed gate record.
@@ -318,3 +324,16 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 #[cfg(test)]
 #[path = "bench_args_tests.rs"]
 mod tests;
+
+/// `spark benchmark aggregate <group>`.
+#[derive(clap::Args, Debug)]
+pub struct AggregateArgs {
+    /// The GROUP id, e.g. `bfcl-subset`. Not a member id — a shard has no
+    /// aggregate of its own.
+    pub id: String,
+    /// The commit the records must cover. Defaults to HEAD.
+    #[arg(long)]
+    pub sha: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub format: OutputFormat,
+}
