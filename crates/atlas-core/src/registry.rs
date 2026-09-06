@@ -24,10 +24,10 @@ use cudarc::nvrtc::Ptx;
 pub use crate::cuda_host::{CudaHost, host, release};
 use crate::error::{AtlasError, Result};
 
-// Raw CUDA driver API
+// Raw CUDA driver API. (`cuModuleLoadData`/`cuModuleUnload` left this list
+// when the raw handles became views into the cudarc-loaded modules — the
+// registry no longer loads or unloads anything through the raw API.)
 unsafe extern "C" {
-    fn cuModuleLoadData(module: *mut *mut c_void, image: *const c_void) -> i32;
-    fn cuModuleUnload(hmod: *mut c_void) -> i32;
     fn cuModuleGetFunction(hfunc: *mut *mut c_void, hmod: *mut c_void, name: *const i8) -> i32;
     fn cuLaunchKernel(
         f: *mut c_void,
@@ -223,25 +223,18 @@ impl AtlasRegistry {
             let module = ctx
                 .load_module(ptx)
                 .map_err(|e| AtlasError::ModuleLoad(format!("{name}: {e}")))?;
-            modules.insert(name, module);
 
-            // Load via raw CUDA API (for launch_on_stream — avoids cudarc layout issues)
-            let mut raw_mod: *mut c_void = std::ptr::null_mut();
-            let status = if is_binary {
-                // Self-describing binary object: pass the bytes directly.
-                unsafe { cuModuleLoadData(&mut raw_mod, blob.as_ptr() as *const c_void) }
-            } else {
-                let src_nul = CString::new(blob)
-                    .map_err(|e| AtlasError::ModuleLoad(format!("{name}: CString: {e}")))?;
-                unsafe { cuModuleLoadData(&mut raw_mod, src_nul.as_ptr() as *const c_void) }
-            };
-            if status != 0 {
-                return Err(AtlasError::ModuleLoad(format!(
-                    "{name}: cuModuleLoadData failed: {}",
-                    cuda_error_text(status)
-                )));
-            }
-            raw_modules.insert(name, raw_mod);
+            // The raw handle for launch_on_stream (which avoids cudarc's
+            // struct layouts) is the SAME module: derive it instead of
+            // JIT-compiling the blob a second time through
+            // `cuModuleLoadData`. The double load kept a second copy of
+            // every module's SASS resident and doubled driver-JIT time at
+            // boot for the entire kernel set. Lifetime: the handle is owned
+            // by the `Arc<CudaModule>` stored right beside it — `modules`
+            // and `raw_modules` live and die together in this struct, and
+            // `unload_raw` no longer unloads (cudarc's `Drop` does).
+            raw_modules.insert(name, module.cu_module_raw() as *mut c_void);
+            modules.insert(name, module);
         }
 
         Ok(AtlasRegistry {
@@ -314,23 +307,18 @@ impl AtlasRegistry {
         Ok(raw)
     }
 
-    /// Unload every raw module. Idempotent; `Drop` calls it.
+    /// Retire the raw handles. Idempotent; `Drop` calls it.
     ///
-    /// The cudarc-owned `modules` map unloads itself when its `Arc<CudaModule>`s
-    /// drop; only the handles obtained through the raw driver API need this.
+    /// Since the raw map stopped being a second `cuModuleLoadData` of every
+    /// blob and became views into the cudarc-owned `modules`, there is
+    /// nothing to `cuModuleUnload` here — the `Arc<CudaModule>`s unload the
+    /// one real copy when they drop. Draining first keeps the invariant
+    /// that no raw handle survives its module: the maps are torn down
+    /// together, raw side first.
     pub(crate) fn unload_raw(&mut self) -> Vec<String> {
-        let mut failures = Vec::new();
-        for (name, raw) in self.raw_modules.drain() {
-            // SAFETY: `raw` came from `cuModuleLoadData` in `init` on this
-            // process's context, has not been unloaded (the map is drained), and
-            // no launch can be in flight — the caller guarantees quiescence.
-            let status = unsafe { cuModuleUnload(raw) };
-            // A context that is already gone took its modules with it.
-            if status != 0 && !is_teardown_noop(status) {
-                failures.push(format!("{name}: {}", cuda_error_text(status)));
-            }
-        }
-        failures
+        self.raw_modules.drain().for_each(drop);
+        self.modules.drain().for_each(drop);
+        Vec::new()
     }
 
     /// Get the raw CUstream handle for Atlas's own stream.

@@ -12,6 +12,47 @@ use spark_runtime::gpu::GpuBackend;
 
 use super::super::VisionEncoder;
 
+/// Do the packed merged rows this batch will write fit `buf_out`?
+///
+/// #799: this bound existed as a `debug_assert!`, which is compiled out of the
+/// `--release` binaries we serve. A single video request then wrote 4.7x past
+/// the allocation, raising `CUDA_ERROR_ILLEGAL_ADDRESS` and poisoning the CUDA
+/// context — the process survived and answered 503 to every later request, for
+/// every tenant, until it was restarted.
+///
+/// The caller's own doc comment says the scheduler caps `Σp <= p_max` "so this
+/// is normally unreachable". Video defeats that cap: all temporal groups of one
+/// clip arrive as a SINGLE media item and are encoded as one batch, so the
+/// per-item cap never sees the sum. 19 groups of 30x34 patches merge to 4845
+/// rows against a 1024-row buffer.
+///
+/// A `Result` rather than an assert, and a free function rather than a method,
+/// for the same reason `check_pixel_len` next door is one: the refusal is the
+/// behaviour worth testing, and a bound that can only be exercised with a GPU
+/// attached is a bound nothing will exercise. Prose is not a bound; this is.
+fn check_packed_rows(mp_i: &[usize], mp_off: &[usize], p_max: usize) -> Result<()> {
+    anyhow::ensure!(
+        mp_i.len() == mp_off.len(),
+        "vision: {} merged row counts but {} offsets; the packed layout is inconsistent",
+        mp_i.len(),
+        mp_off.len()
+    );
+    let end = match (mp_off.last(), mp_i.last()) {
+        (Some(off), Some(n)) => off
+            .checked_add(*n)
+            .ok_or_else(|| anyhow::anyhow!("vision: merged row offset {off} + {n} overflows"))?,
+        _ => 0,
+    };
+    anyhow::ensure!(
+        end <= p_max,
+        "vision: this batch packs {end} merged rows into an output buffer of {p_max} rows. \
+         A video arrives as one media item whose temporal groups encode as a single batch, \
+         which defeats the scheduler's per-item cap. Send fewer frames, or allocate a \
+         larger vision scratch."
+    );
+    Ok(())
+}
+
 impl VisionEncoder {
     /// Single-image forward (back-compat shim). For N=1 this issues the SAME
     /// kernels with the SAME args in the SAME order as the old per-image path
@@ -246,10 +287,7 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
-        debug_assert!(
-            mp_off.last().map(|o| o + mp_i.last().unwrap()).unwrap_or(0) <= self.p_max,
-            "oversized vision batch: Σmerged_p exceeds buf_out rows"
-        );
+        check_packed_rows(mp_i, mp_off, self.p_max)?;
         let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
@@ -290,5 +328,67 @@ impl VisionEncoder {
             .iter()
             .map(|(_px, gh, gw)| (gh / sms, gw / sms, (gh * gw) / (sms * sms)))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_packed_rows;
+
+    /// The batch from issue #799, with its real numbers. A Qwen3.8-27B serve at
+    /// `--vision-max-pixels 262144` allocates 1024 patch rows; one video of 19
+    /// temporal groups at 30x34 patches merges 2x2 to 255 rows per group, so
+    /// the packed write ends at 4845 — 4.7x the allocation.
+    ///
+    /// Before this check that write happened, in release, and poisoned the CUDA
+    /// context: the server then answered 503 to every request, for every
+    /// tenant, until restarted. It must now be a refused request instead.
+    #[test]
+    fn refuses_the_video_batch_that_poisoned_the_cuda_context() {
+        let groups = 19;
+        let merged_per_group = (30 / 2) * (34 / 2); // 255
+        let mp_i = vec![merged_per_group; groups];
+        let mp_off: Vec<usize> = (0..groups).map(|g| g * merged_per_group).collect();
+        assert_eq!(mp_off.last().unwrap() + mp_i.last().unwrap(), 4845);
+
+        let err = check_packed_rows(&mp_i, &mp_off, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("4845"),
+            "must name the rows it would have written: {err}"
+        );
+        assert!(err.contains("1024"), "must name the capacity: {err}");
+    }
+
+    /// The ordinary path the scheduler's cap produces must still pass, or the
+    /// fix trades an outage for a refusal of every image request.
+    #[test]
+    fn admits_a_batch_that_fits() {
+        assert!(check_packed_rows(&[100, 200], &[0, 100], 1024).is_ok());
+        // Exactly full is not over-full.
+        assert!(check_packed_rows(&[24], &[1000], 1024).is_ok());
+        // One row past is.
+        assert!(check_packed_rows(&[25], &[1000], 1024).is_err());
+    }
+
+    /// An empty batch writes nothing. The previous expression reached
+    /// `mp_i.last().unwrap()` whenever `mp_off` was non-empty, so a length
+    /// mismatch was a panic rather than an error.
+    #[test]
+    fn handles_empty_and_mismatched_layouts_without_panicking() {
+        assert!(check_packed_rows(&[], &[], 1024).is_ok());
+        let err = check_packed_rows(&[], &[0], 1024).unwrap_err().to_string();
+        assert!(err.contains("inconsistent"), "{err}");
+    }
+
+    /// `usize` addition on attacker-influenced geometry must not wrap into a
+    /// passing comparison.
+    #[test]
+    fn an_overflowing_offset_is_an_error_not_a_wrap() {
+        let err = check_packed_rows(&[2], &[usize::MAX - 1], 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("overflows"), "{err}");
     }
 }
