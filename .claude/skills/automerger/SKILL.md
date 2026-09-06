@@ -113,10 +113,66 @@ every label/retarget by reading it back.
 Stacks are **one subsystem, one author where possible**. Confirm chain ancestry
 with `git merge-base --is-ancestor` per pair; run file-overlap analysis
 (`comm -12` of sorted `git diff --name-only` sets) and classify each hit
-**before** any cherry-pick. Name the branch `stack/<group>` — the repo already
-uses that convention.
+before touching anything.
 
-### D — Compose and gate offline
+### C1 — Build a NATIVE stack. Do not compose commits into a new PR.
+
+★ **THIS IS THE STEP THAT HAS BEEN DONE WRONG.** Corrected 2026-09-06 by the
+repo owner, after four stacks in a row were built the wrong way.
+
+**WRONG — what not to do:** cherry-pick or merge the constituent PRs' commits
+onto a fresh `stack/<group>` branch, open ONE aggregation PR for the lot, and
+close the originals once it lands. It gets a campaign down to one, and it
+throws away everything else: per-PR review threads, per-PR authorship in the
+UI, the ability to drop one constituent without rebuilding the branch, and the
+stack icon — GitHub cannot see a stack that exists only as a merge commit.
+Reviewers get a 100-commit diff with no seams.
+
+**RIGHT:** leave every PR on its own branch, with its own author and its own
+review. Make the stack out of the BASE CHAIN and then register it.
+
+1. **Base-link, bottom to top.** The bottom PR's base is `main`; every other
+   PR's base is the HEAD BRANCH of the PR below it. The API enforces exactly
+   this: *"Each pull request's base ref must match the previous pull request's
+   head ref."*
+
+   ```bash
+   gh api -X PATCH repos/$REPO/pulls/<n> -f base=<head-branch-of-the-PR-below>
+   ```
+
+   (`gh pr edit --base` fails silently on gh 2.45 — see the gh-version trap.)
+
+2. **Register the stack**, numbers **bottom first**:
+
+   ```bash
+   gh api -X POST repos/$REPO/stacks \
+     -F "pull_requests[]=<bottom>" -F "pull_requests[]=<next>" ... -F "pull_requests[]=<top>"
+   ```
+
+3. **Read it back.** `gh api repos/$REPO/stacks/<n>` and confirm `open: true`
+   and the ORDER. A silent-failure gh path is never trusted on its exit code.
+
+4. **Extend later** with `POST /repos/$REPO/stacks/<n>/add`, body
+   `{"pull_requests":[...]}` — the first new PR's base must match the current
+   TOP PR's head ref. **Remove** with `POST /repos/$REPO/stacks/<n>/unstack`.
+
+Reference: `https://docs.github.com/en/rest/pulls/stacks`.
+
+**What this changes downstream, and it is not cosmetic:**
+
+- The **top** PR is the one whose merge lands the whole stack, so it is the one
+  that pays for certification. That is exactly what `is_stack_layer` decides —
+  a PR with another open PR stacked ABOVE it is a lower layer and skips the
+  nine release-matrix builds. A composed aggregation PR has nothing above it,
+  so every constituent it replaced paid nothing and the economics looked the
+  same by accident.
+- **Never merge a base out from under its children.** `--delete-branch` on a
+  lower layer CLOSES every PR stacked on it, irrecoverably. Retarget the child
+  first, then merge the base.
+- Dropping a bad constituent is a `PATCH base` on the PR above it plus an
+  `unstack`, not a branch rebuild.
+
+### D — Gate the top of the stack offline
 
 Every one of these caught a real defect on the run this skill came from. Run
 them all before spending a second of GPU:
@@ -168,6 +224,16 @@ clause, all three layers classified as "lower" and nothing would ever have
 certified.) Fork PRs never classify as layers — `--base` matches branch names,
 and a fork whose branch name coincides with a stack's base branch must
 certify, not skip. Both holes have selftest controls proven able to fail.
+
+> **R-43. A stack is a BASE CHAIN plus a registration, not a branch with
+> everyone's commits on it.** Composing constituents into one aggregation PR
+> gets the campaign count right and loses per-PR review, per-PR authorship, the
+> ability to drop one constituent, and the stack icon — GitHub cannot see a
+> stack that exists only as a merge commit. EVIDENCE: 2026-09-06, four stacks
+> built by cherry-pick before the repo owner pointed at
+> `docs.github.com/en/rest/pulls/stacks`. CHECK: every PR keeps its own branch;
+> each base = the head branch of the PR below; `POST /repos/{owner}/{repo}/stacks`
+> bottom-first; then READ THE STACK BACK and confirm `open: true` and the order.
 
 **Native stacks (public preview) — the mechanics that matter:**
 
