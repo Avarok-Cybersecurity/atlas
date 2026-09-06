@@ -897,6 +897,45 @@ NOT as a compiled-default change: the 256 default is shared with models whose tr
 differently. Set the variable to 256 to restore it. Floor 0 (always restore) is UNMEASURED — the E1
 arm `B0` exists for it.
 
+## The partial-hit reuse cliff, MEASURED (2026-09-06 19:33) — it is the chunk boundary
+
+`probe_partial_hit_cliff.py`, records in `cliff_20260906T193328/`: prime a prompt, then send variants
+whose tail is regenerated from a given kept-prefix fraction, `max_tokens=1`, temp 0, server-attested
+TTFT and `cached_tokens`, 2 repeats. Named preset on the shipped binary (Marconi floor 64, MoE row cap
+1024, reconstruct tier 512). Median TTFT in ms:
+
+| kept prefix | ~2350-token prompt | ~8960-token prompt |
+|---|---:|---:|
+| cold (0%) | 4249 | 18333 |
+| 25% | 4220 | 18342 |
+| 50% | 4131 | 18243 |
+| 75% | 4152 | 18352 |
+| 90% | 4147 | 18123 |
+| **95%** | 4136 | **1802** |
+| **99%** | 4146 | **1793** |
+| exact (100%) | **219** | **242** |
+
+**The cliff is the prefill CHUNK boundary, exactly as `prefill_b/save_checkpoint.rs` says it must be.**
+At `--max-prefill-tokens 8192` the ~8960-token prompt is two chunks, so snapshots exist at 8192 and in
+the last blocks near 8960. Keeping 95% leaves the divergence above 8192, the 8192 anchor is usable, and
+the cost falls to a ~770-token replay: 18.3 s → 1.8 s, a **10x**. Keeping 90% puts the divergence at
+~8064, BELOW the only chunk anchor, and the price is a full cold prefill even though the server reports
+8048 of 8960 tokens cached. The ~2350-token prompt is a SINGLE chunk, so it has no interior anchor at
+all: every fraction from 25% to 99% pays full cold price, and only a byte-exact repeat is fast.
+
+So on this engine prefix reuse is not proportional to how much of the prompt matched — it is
+**all-or-nothing at chunk granularity**. An agentic turn that appends to a conversation lands in the
+final chunk and reuses; edit a tool result, a system prompt, or anything mid-context and the entire
+prompt is recomputed. At the measured ~480 tok/s a 30K context costs ~62 s of that.
+
+The fix is the one the source file already names as untested: make the checkpoint interval GENERATE
+boundaries instead of only filtering chunk ends (`save_checkpoint.rs`: "Making the interval a real
+generator (splitting chunks at interval boundaries) is a behaviour change with a prefill-throughput
+cost and is deliberately NOT made here; it needs its own measured A/B"). The cost is more snapshots
+competing for the `--ssm-cache-slots` pool, which is the pressure the operator has separately observed
+dropping checkpoints; the benefit, from the 8960-token row, is turning an 18.3 s recompute into a
+replay bounded by the interval. UNMEASURED until that A/B runs.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
