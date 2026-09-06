@@ -1139,12 +1139,12 @@ jobs:
         # individually valid and signed, which is exactly the "different records
         # at different commits" this feature exists to prevent.
         #
-        # It lives here rather than in `gate/check.rs` for one blunt reason:
-        # `crates/` is a measured input (PERF_PATHS), so editing the Rust gate
-        # would invalidate every record the campaign certifying THIS PR just
-        # produced, costing a five-hour re-measure to add a rule about
-        # bookkeeping. @human-review: fold it into the Rust gate in a follow-up
-        # so the verdict has a single home.
+        # The verdict itself is in Rust now (`gate::agreement`, invoked below).
+        # It lived in bash only because `crates/` is a measured input, so
+        # editing the Rust gate would have invalidated the in-flight campaign's
+        # records for the sake of a bookkeeping rule. What stays here is the
+        # collection of the added files and the unsigned-record check, which
+        # need git and the working tree rather than the registry.
         if: github.event_name == 'pull_request'
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
@@ -1182,17 +1182,21 @@ jobs:
             echo "::error title=Unsigned record added::${#missing[@]} record(s) added by this PR have no .json.sig. A record introduced by a PR is never exempt from signing, whatever its recorded_at says. Commit the sidecar the CLI wrote beside each record."
             exit 1
           fi
-          us=$(printf '%s\n' "${shas[@]}" | sort -u | wc -l)
-          uk=$(printf '%s\n' "${keys[@]}" | sort -u | wc -l)
-          if [ "$us" -ne 1 ]; then
-            echo "::error title=Records span more than one commit::This PR adds records measured at $us different commits. A certification is ONE campaign at ONE commit; re-measure the stragglers at the head you intend to merge."
-            exit 1
-          fi
-          if [ "$uk" -ne 1 ]; then
-            echo "::error title=Records carry more than one signer::$uk distinct signing keys across the added records. One campaign, one box, one identity."
-            exit 1
-          fi
-          echo "all ${#added[@]} added record(s) agree: one commit (${shas[0]}), one signer (${keys[0]})."
+          # The commit/signer verdict now lives in Rust
+          # (`gate::agreement`), which is the only place that can read a
+          # benchmark's Sensitivity from the registry. Signer agreement is
+          # class-conditional: Speed gates (thermally corruptible, and measured
+          # 0.66 tok/s apart between two boxes against a 0.07 within-box sigma)
+          # must come from ONE box; Correctness gates are box-independent (the
+          # same BFCL gate on two boxes at one sha returned byte-identical
+          # 86.55 / 86.95 / n=1004), so they may span registered signers -- which
+          # is what lets a sharded gate run four ways at once. One COMMIT is
+          # still universal.
+          #
+          # This resolves the @human-review left above: the rule was in bash
+          # only because editing crates/ would have invalidated the records of
+          # the campaign then in flight. This PR is buying a campaign anyway.
+          cargo run --locked -q -p atlas-plugin --bin record_agreement -- "${added[@]}"
 
       - name: Check committed benchmark records against their baselines
         env:
