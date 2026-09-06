@@ -16,24 +16,24 @@
 # Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
 # Default fallback — every PR pings the maintainer.
-*                                            @tbraun96 @rsafier @SeedSource
+*                                            @tbraun96 @rsafier @SeedSource @TheTom
 
 # Compute path: kernel registration, model loaders, hot-path Rust.
-kernels/                                     @tbraun96 @rsafier @SeedSource
-crates/atlas-kernels/                        @tbraun96 @rsafier @SeedSource
-crates/spark-model/                          @tbraun96 @rsafier @SeedSource
-crates/spark-runtime/                        @tbraun96 @rsafier @SeedSource
+kernels/                                     @tbraun96 @rsafier @SeedSource @TheTom
+crates/atlas-kernels/                        @tbraun96 @rsafier @SeedSource @TheTom
+crates/spark-model/                          @tbraun96 @rsafier @SeedSource @TheTom
+crates/spark-runtime/                        @tbraun96 @rsafier @SeedSource @TheTom
 
 # Server / HTTP API surface.
-crates/spark-server/                         @tbraun96 @rsafier @SeedSource
+crates/spark-server/                         @tbraun96 @rsafier @SeedSource @TheTom
 
 # Multi-rank communication (NCCL / RDMA).
-crates/spark-comm/                           @tbraun96 @rsafier @SeedSource
-crates/atlas-rdma/                           @tbraun96 @rsafier @SeedSource
+crates/spark-comm/                           @tbraun96 @rsafier @SeedSource @TheTom
+crates/atlas-rdma/                           @tbraun96 @rsafier @SeedSource @TheTom
 
 # Storage / NVMe-backed swap.
-crates/spark-storage/                        @tbraun96 @rsafier @SeedSource
-crates/atlas-tier/                           @tbraun96 @rsafier @SeedSource
+crates/spark-storage/                        @tbraun96 @rsafier @SeedSource @TheTom
+crates/atlas-tier/                           @tbraun96 @rsafier @SeedSource @TheTom
 
 # Web properties. The blog is the one tree an editorial contributor owns:
 # @DrRainbows reviews and approves posts under `blog/` without gaining any
@@ -46,18 +46,18 @@ crates/atlas-tier/                           @tbraun96 @rsafier @SeedSource
 # owners are repeated here deliberately so that, until then, `blog/`
 # ownership is exactly what the `*` fallback already gave it: this line can
 # only ever add a reviewer, never remove one.
-blog/                                        @tbraun96 @rsafier @SeedSource @DrRainbows
+blog/                                        @tbraun96 @rsafier @SeedSource @DrRainbows @TheTom
 
 # Build, CI, governance. Belt-and-suspenders: the broad `.github/`
 # pattern catches everything in the tree, and the more specific entries
 # below are restated explicitly so a future contributor adding a more
 # specific override (e.g. `.github/workflows/scratch.yml @someone-else`)
 # notices they're working against an explicit ownership decision.
-.github/                                     @tbraun96 @rsafier @SeedSource
-.github/workflows/                           @tbraun96 @rsafier @SeedSource
-.github/CODEOWNERS                           @tbraun96 @rsafier @SeedSource
-.github/dependabot.yml                       @tbraun96 @rsafier @SeedSource
-docs/adr/                                    @tbraun96 @rsafier @SeedSource
-Cargo.toml                                   @tbraun96 @rsafier @SeedSource
-LICENSE                                      @tbraun96 @rsafier @SeedSource
-CLA.md                                       @tbraun96 @rsafier @SeedSource
+.github/                                     @tbraun96 @rsafier @SeedSource @TheTom
+.github/workflows/                           @tbraun96 @rsafier @SeedSource @TheTom
+.github/CODEOWNERS                           @tbraun96 @rsafier @SeedSource @TheTom
+.github/dependabot.yml                       @tbraun96 @rsafier @SeedSource @TheTom
+docs/adr/                                    @tbraun96 @rsafier @SeedSource @TheTom
+Cargo.toml                                   @tbraun96 @rsafier @SeedSource @TheTom
+LICENSE                                      @tbraun96 @rsafier @SeedSource @TheTom
+CLA.md                                       @tbraun96 @rsafier @SeedSource @TheTom
