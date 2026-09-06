@@ -45,6 +45,21 @@ fi
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
+
+# A control that calls a helper this file does not define runs as NOTHING.
+# bash prints "command not found" on stderr, the assertion never executes, and
+# the suite's totals do not move -- so deleting six controls reads as
+# "134 passed, 0 failed" instead of six failures. That happened here on
+# 2026-09-06: `want_out` was used by rows ported from #876 but its DEFINITION
+# stayed behind, and both a local run and a CI run reported a clean pass.
+#
+# This turns the silence into a failure. Anything bash cannot resolve -- a
+# missing helper, a typo'd assertion name, a tool absent from the runner --
+# now costs a FAIL that names the word it could not find.
+command_not_found_handle() {
+  bad "INTERNAL: '$1' is not a command or function — whatever control invoked it did nothing"
+  return 127
+}
 # want_broken_pipe <label> <cmd...> -- asserts the command FAILS because of a
 # broken pipe, without pinning the exit code. jq traps EPIPE and exits 2 with a
 # message; tools that take the signal die with 141. Both are the failure this
@@ -70,6 +85,25 @@ want_rc_msg() {
   if [ "$got" = "$want" ] && grep -qF "$needle" "$TMP/out"; then ok "$label"; else
     bad "$label (rc=$got want=$want; expected message containing '$needle')"
     sed 's/^/       /' "$TMP/out" | head -4
+  fi
+}
+
+# want_out <expected-stdout> <label> <cmd...> -- for a guard whose verdict is a
+# VALUE it prints, not an exit code. `stack_says` returns a count, and a count
+# of 0 and a count of 2 are both a clean exit.
+#
+# ★ This function was MISSING when the stack rows were ported here from #876,
+# and bash's answer to an undefined function is "command not found" on stderr
+# and a non-zero status that nothing was reading. Six controls therefore ran as
+# NOTHING -- no ok, no FAIL, no effect on the totals -- while the suite printed
+# a clean "133 passed, 0 failed" both locally and on the runner. A control that
+# cannot be seen to fail is not a control, and one that cannot be seen to RUN
+# is not even a line of code.
+want_out() {
+  local want=$1 label=$2; shift 2
+  local got; got=$("$@" 2>"$TMP/err")
+  if [ "$got" = "$want" ]; then ok "$label"; else
+    bad "$label (printed '$got', want '$want')"; sed 's/^/       /' "$TMP/err" | head -3
   fi
 }
 
@@ -159,6 +193,17 @@ jobs:
 Y
 want_rc 0 "the shipped cheap-pool routing shape is accepted" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+
+echo "== the suite cannot silently skip a control =="
+# CONTROL: a helper this file does not define must COST a failure, not vanish.
+# Run in a subshell so the probe's FAIL does not enter the real totals; assert
+# on what the handler printed.
+probe=$( (command_not_found_handle no_such_assertion_helper) 2>&1 )
+case "$probe" in
+  *"INTERNAL: 'no_such_assertion_helper' is not a command or function"*)
+    ok "an undefined helper is reported, not silently skipped" ;;
+  *) bad "an undefined helper vanished silently: $probe" ;;
+esac
 
 echo "== a reusable workflow is called with the inputs it declares =="
 G=.github/scripts/assert-reusable-workflow-inputs.py
@@ -432,13 +477,24 @@ if [ -s "$TMP/rbsum.sh" ]; then
     env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=true bash "$TMP/rbsum.sh"
 
   # The classifier that decides builds_binaries, driven through its stdin mode.
-  classify() { printf '%s\n' "$@" | GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
+  # GITHUB_OUTPUT must be PINNED: inside Actions it points at the step-output
+  # file, so emit's lines vanish from the pipe and every row below reads rc=1
+  # from grep. These passed locally (variable unset -> /dev/stdout) and failed
+  # on the runner for exactly that reason.
+  classify() { printf '%s\n' "$@" | env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
+  # The wildcard (push/schedule/workflow_call) branch must emit ALL FOUR
+  # outputs: under `set -u` a three-argument emit dies on unbound $4, and no
+  # row exercised that branch at all.
+  wildcard_classify() { env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=schedule bash .github/scripts/classify-diff.sh 2>/dev/null | grep "^builds_binaries="; }
   want_rc_msg 0 "builds_binaries=false" "classify: a docs-only diff cannot change a binary" \
     classify docs/AUTOMERGER.md README.md
   want_rc_msg 0 "builds_binaries=true" "control: touching release-build.yml builds, .github or not" \
     classify docs/AUTOMERGER.md .github/workflows/release-build.yml
   want_rc_msg 0 "builds_binaries=true" "control: one crates/ file makes the whole diff build" \
     classify docs/AUTOMERGER.md crates/spark-model/src/lib.rs
+  want_rc_msg 0 "builds_binaries=true" \
+    "classify: a schedule event never fast-paths and emits all four outputs" \
+    wildcard_classify
 else
   bad "could not extract the dry-run summary shell from release-build.yml"
 fi
