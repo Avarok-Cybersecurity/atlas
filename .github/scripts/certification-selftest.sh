@@ -235,19 +235,32 @@ if [ -s "$TMP/oc.sh" ]; then
   BASE=$( cd "$R" && git rev-parse HEAD )
   mk() { printf '{"git_sha":"%s","recorded_at":1788300000}' "$2" > "$R/.benchmarks/b/$1.json"; }
   sg() { printf '{"v":1,"key":"%s","sig":"x"}' "$2" > "$R/.benchmarks/b/$1.json.sig"; }
+  # ── What this step still does in bash ────────────────────────────────────
+  # The commit/signer VERDICT moved into `gate::agreement` (Rust), because only
+  # the registry knows a benchmark's Sensitivity and the rule is now
+  # class-conditional. This selftest step is deliberately pure-Python with NO
+  # Rust toolchain, so it cannot and must not run that half; the verdict has ten
+  # tests with red/green controls under `cargo test -p atlas-plugin agreement`,
+  # including the two that matter — a Speed set spanning signers is refused, a
+  # Correctness set spanning signers is allowed.
+  #
+  # What remains here is the part that is still shell: collecting the records a
+  # PR adds, and refusing an added record with no signature.
   mk r1 aaaaaaaaaa; sg r1 k1; ( cd "$R" && git add -A && git commit -qm r1 ) >/dev/null 2>&1
-  want_rc 0 "records that agree pass" sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
-  mk r2 bbbbbbbbbb; sg r2 k1; ( cd "$R" && git add -A && git commit -qm r2 ) >/dev/null 2>&1
-  want_rc_msg 1 "span more than one commit" "control: records from two commits are refused" \
-    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
-  mk r2 aaaaaaaaaa; sg r2 k2; ( cd "$R" && git add -A && git commit -qm r3 ) >/dev/null 2>&1
-  want_rc_msg 1 "more than one signer" "control: records from two signers are refused" \
-    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
-  # The backdating bypass: an ADDED record with no signature at all.
-  rm -f "$R/.benchmarks/b/r2.json.sig"; sg r1 k1
-  ( cd "$R" && git add -A && git rm -q --cached .benchmarks/b/r2.json.sig 2>/dev/null; git commit -qm r4 ) >/dev/null 2>&1
+  # The backdating bypass: an ADDED record with no signature at all. `recorded_at`
+  # lives INSIDE the file being authenticated, so backdating it below the signing
+  # cutover would skip the signature entirely — git, not the file's own contents,
+  # decides what a PR introduced.
+  mk r2 aaaaaaaaaa
+  ( cd "$R" && git add -A && git commit -qm r2 ) >/dev/null 2>&1
   want_rc_msg 1 "Unsigned record added" "control: an added record with no signature is refused" \
     sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
+  # WIRING: the step must still hand the verdict to the Rust gate. Without this
+  # the class rule could be deleted from ci.yml and every test above would stay
+  # green — the shell would simply stop asking.
+  grep -q "record_agreement" "$TMP/oc.sh" \
+    && ok "the step delegates the verdict to the Rust gate" \
+    || bad "the step no longer invokes record_agreement — the commit/signer verdict is gone"
 else
   bad "could not extract the one-commit-one-signer shell from ci.yml"
 fi
