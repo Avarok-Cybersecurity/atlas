@@ -637,3 +637,60 @@ Fault 4 is the one worth keeping: it looked exactly like flake — pass, then fa
 > **R-32. N runner processes on one machine share `$HOME`, and any tool that writes to a dotdir in it is a race.** `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.cache` are all per-USER, not per-runner. EVIDENCE: `cargo test --workspace` passed at 153s and failed on the next run with the rustup binary deleted mid-job. CHECK: give every runner its own CARGO_HOME/RUSTUP_HOME (and equivalent), then run the same job on two runners CONCURRENTLY and confirm both pass.
 
 > **R-33. A run that never STARTED cannot be cancelled, and it holds its concurrency group.** `gh run cancel` returns success and does nothing; the run stays `queued` and every later run on that ref sits `pending` with zero jobs. EVIDENCE: 34007699203 blocked #933 for 40 minutes across four superseding pushes. CHECK: `gh api -X POST .../runs/<id>/force-cancel`, then confirm the successor moves `pending -> queued`.
+
+---
+
+## Run 27 — 2026-09-06T08:15Z — certified 11/11, then paid 7 GPU-hours for a doc link
+
+```text
+07:20Z  return   dgx3  bfcl-subset        PASS  84.22 / 84.12 / n=995
+07:48Z  return   dgx2  bfcl-subset-echolp PASS  86.45 / 86.79 / n=1004
+06:44Z  return   dgx1  the other nine     PASS  (56 minutes, unattended)
+07:53Z  aggregate  11/11. `spark benchmark --pull-request-gate-check` -> "all 11 required gates pass".
+07:56Z  return   CI: `Build mdBook + rustdoc` FAILED — three unresolvable intra-doc links in MY code.
+08:05Z  aggregate  the fix edits crates/atlas-plugin/src/benchmarks/bfcl/aggregate.rs, a measured input
+                   for BFCL -> both BFCL records invalidated. The other nine survive, because
+                   aggregate.rs is excluded for every non-BFCL gate.
+08:07Z  spawn      dgx2 re-running echolp at the new pin.
+```
+
+**THE THREE-BOX SPLIT WORKED, AND IT IS THE HEADLINE.** Six Speed-class gates on
+dgx1 under one signer; the two BFCL legs on dgx2 and dgx3 under their own keys.
+Accepted by the PR's OWN rule — `ci.yml` runs `record_agreement` from the PR's
+checkout — with "one commit, and signer agreement holds for every speed-class
+gate". The identical split was rejected by CI last night and cost seven
+re-measures. Critical path ~7 h -> ~3.5 h.
+
+Pre-flighted rather than hoped: the exact record set was built as a fixture and
+run through the real binary BEFORE the campaign started, and the wrong split
+(one Speed gate moved to another box) was confirmed to be REJECTED. A pre-flight
+that only ever says yes proves nothing.
+
+**AND THEN I PAID FOR A DOC COMMENT.** I froze the pin having run check, clippy,
+fmt, the prose checker, the certification self-test and the full test suite —
+six gates. Not rustdoc. `Build mdBook + rustdoc` is one of the twenty required
+contexts and it was ALREADY red at the pin I certified. The fix touches a BFCL
+driver file, so the two expensive records died with it.
+
+I considered `gate::amnesty` and rejected it. That mechanism is a content-pinned
+bootstrap for when a POLICY file is itself a boundary, with a table pinned by
+test and an expiry test demanding its removal. Using it to excuse a comment edit
+would hollow out the one escape hatch the gate has.
+
+**AMENDED — the rule that would have prevented it:**
+
+> **R-34. Freezing a pin means passing EVERY cheap gate, not the ones you
+> remembered.** A required check that is red at the pin will have to be fixed,
+> and if the fix touches a measured input the campaign dies with it. EVIDENCE:
+> 2026-09-06, six offline gates green, rustdoc not run, three intra-doc links in
+> `aggregate.rs` cost both BFCL records — 7 GPU-hours for one link. CHECK: the
+> campaign script now runs fmt, rustdoc `-D warnings`, clippy, SPDX, kernel
+> shadows, threshold prose and the certification self-test, and REFUSES to spend
+> GPU time if any fails. Enumerate the required contexts and tick them off; do
+> not run the ones that come to mind.
+
+**CITED:** R-32 (per-runner CARGO_HOME — verified by running the same job
+CONCURRENTLY on two runners, not sequentially); R-33 (`force-cancel` on a run
+that never started, which had held a concurrency group for 40 minutes);
+R-control-or-it-did-not-happen (removing the group's whole-draw fallback turned
+EIGHT tests red — the outage made visible before it shipped).
