@@ -10,8 +10,6 @@
 //! The bodies are an EXACT copy. If this file and `ssm_gdn_b.rs` ever
 //! disagree about a function, this one was edited by mistake.
 
-// SPDX-License-Identifier: AGPL-3.0-only
-
 #![allow(unused_imports)]
 
 use anyhow::Result;
@@ -23,17 +21,6 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
-/// Fused 3-token GDN decode (K=3 speculative verification).
-///
-/// Processes exactly 3 tokens through GDN in a single kernel launch.
-/// Saves 2 intermediate H states (H_1, H_2) for rollback on draft rejection.
-/// 4 passes vs 6 for 3× sequential decode.
-///
-/// Kernel: `gated_delta_rule_chunk3(h_state, query, key, value, gate, beta,
-///          output, h_inter0, h_inter1, batch_size, num_k_heads,
-///          num_v_heads, k_dim, v_dim, qk_stride, v_stride, gb_stride)`
-/// Grid: (num_v_heads, batch, 1)  Block: (128, 1, 1)
-#[allow(clippy::too_many_arguments)]
 /// WY-chunkwise 4-token GDN decode (2-pass algorithm).
 ///
 /// All 4 H^T @ k_t dot products computed in a single pass, then WY correction
@@ -344,7 +331,7 @@ pub fn gdn_decode_wy4_woa(
         .launch(stream)
 }
 
-/// Post-verdict fold (`gated_delta_rule_wy4_fold`): applies rows 0..na_tab[b]
+/// Post-verdict fold (`gated_delta_rule_wy4_fold`): applies rows `0..na_tab[b]`
 /// of the stashed updates to H, one read + one write per state.
 #[allow(clippy::too_many_arguments)]
 pub fn gdn_wy4_fold(
