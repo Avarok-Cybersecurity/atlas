@@ -588,3 +588,52 @@ The self-hosted `apple-48gb-metal` runner came back online after last wave's hos
 **AMENDED — new rule for the skill's rulebook:**
 
 > **R-31. A green check on a capability-gated lane is worthless until you have seen it RED on hardware that has the capability.** Tests that skip gracefully when a device is absent (`let Some(x) = maybe_device() else { return }`) report `passed`, not `skipped`, and the runner that lacks the device is exactly the runner where nobody looks. EVIDENCE: the Metal lane reported `35 passed` in 0.07 s for its entire existence; the first execution on a box with a real GPU failed 35/35 instantly. CHECK: for every hardware-gated suite, find the runner that HAS the hardware and confirm a real failure is reachable there — and prefer a hard failure over a silent skip when an env var declares the hardware is expected.
+
+---
+
+## Run 26 — 2026-09-06T05:05Z — the stack is built and under campaign; CI moved to our own hardware
+
+```text
+2026-09-06T02:44Z  return     dgx1 re-measure COMPLETE: 10 gates, ONE signer daa4bc7c19f25eda, 30 minutes
+                              unattended. The re-measure I feared would cost the night cost half an hour,
+                              because dgx1 already held both expensive BFCL legs.
+2026-09-06T02:50Z  aggregate  STACK BUILT: 20 of TheTom's PRs (58 commits, all authored TheTom) + our 8.
+                              cargo test --workspace 5561 passed / 0 failed.
+2026-09-06T02:5xZ  tool       runner pool: 8 processes on avarok (32 cores) labelled atlas-pr-cheap;
+                              self-hosted concurrency 2 -> 10.
+2026-09-06T03:00Z  aggregate  HOSTED CI STOPPED ORG-WIDE. 74 queued, 0 in progress, sibling repos idle,
+                              Actions enabled, GitHub all-operational, only self-hosted completing.
+                              I called it a spending limit. It cleared on its own at ~04:15 with nobody
+                              touching billing, so that diagnosis was UNCONFIRMED AND PROBABLY WRONG.
+                              What was measured stands; the explanation did not.
+2026-09-06T04:07Z  spawn      froze the stack at 71ea0344e8 and started the campaign DURING the outage —
+                              the GPU path needs no GitHub, and main could not move, which is exactly the
+                              condition the serialized-landing protocol wants.
+2026-09-06T04:45Z  return     8 of 11 gates PASS at the frozen pin, one signer.
+```
+
+**Four faults found by routing ONE job and then watching it, rather than routing twenty and assuming.**
+
+| # | Fault | How it presented | Cause |
+|---|---|---|---|
+| 1 | `Enforce ≤500 LoC` red | `error: externally-managed-environment` | stock Ubuntu python refuses `pip install` under PEP 668; hosted allows it. Fixed at the RUNNER (`PIP_BREAK_SYSTEM_PACKAGES=1`), not by special-casing four workflows — a job must not care where it lands |
+| 2 | `cargo deny` red | Alpine `apk update` fails in the action's container | the host resolves that CDN to IPv6 ONLY and Docker there has no IPv6. Reverted to hosted: container actions are neither of my two pools. My over-reach |
+| 3 | `cargo fmt` red | "the 'cargo' binary … is not applicable to the '1.93.1' toolchain" | I installed stable 1.98.1; `rust-toolchain.toml` pins 1.93.1, present as a stub without cargo |
+| 4 | `cargo test --workspace` passed at 153s then FAILED | `cargo build could not start: No such file or directory` | **eight runners share one `$HOME`**, so they shared `~/.cargo`; `dtolnay/rust-toolchain` reinstalls rustup into CARGO_HOME every job and `rust-cache` prunes it, so concurrent Rust jobs delete each other's toolchain. Reproduced on the box: the `rustup` BINARY was gone, leaving dangling shims. Fixed with a private CARGO_HOME/RUSTUP_HOME per runner |
+
+Fault 4 is the one worth keeping: it looked exactly like flake — pass, then fail, same commit — and writing it off would have left a required check intermittently red for good.
+
+**The metal lane, and a decision that is a compromise.** TheTom's `ATLAS_SKIP_BUILD: "0"` works, and working broke the lane: the build now genuinely compiles the 43 `.metal` sources and `apple-48gb-metal` has the Command Line Tools but not the Metal compiler. The lane went from GREEN-AND-VACUOUS (`35 passed` in 0.07s, executing nothing, for its whole existence) to RED-AND-HONEST — truer, and a total block on merging. Split rather than traded: the REQUIRED job compiles on hosted macOS where Xcode exists; a new ADVISORY job executes on the real GPU. Both properties kept, one of them non-blocking, with the collapse condition written in the comment (`xcrun -f metal` answering on that box).
+
+**Two self-inflicted CI faults, both mine, both instructive.**
+
+* I blocked #907 by COMMENTING on it — twice, seconds apart, which is the etiquette this repo asks for (explain, then bare command). `cla.yml` fires on `issue_comment` with `cancel-in-progress: true`, so the second run cancelled the first and a REQUIRED context went red on a check that never ran. I then did it AGAIN an hour after writing the checker for that exact class. Until the fix lands the resolution is one comment with the command on line 1 — the parser reads only the first word of the first line.
+* My rapid pushes to #933 left a run from 02:55 stuck `queued`, and a queued run has no runner to cancel, so `gh run cancel` is a no-op on it. It held the concurrency group and every later run sat `pending` with zero jobs for 40 minutes. `force-cancel` cleared it instantly.
+
+**CITED:** R-31 (the metal lane, again — the advisory job exists so real-device coverage stays visible); R-control-or-it-did-not-happen (every fix this run carries a red-then-green sabotage, each verified to have changed the file first); R-verify-dont-accept (the "flaky" test was reproduced on the box instead of retried).
+
+**AMENDED — two new rules:**
+
+> **R-32. N runner processes on one machine share `$HOME`, and any tool that writes to a dotdir in it is a race.** `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.cache` are all per-USER, not per-runner. EVIDENCE: `cargo test --workspace` passed at 153s and failed on the next run with the rustup binary deleted mid-job. CHECK: give every runner its own CARGO_HOME/RUSTUP_HOME (and equivalent), then run the same job on two runners CONCURRENTLY and confirm both pass.
+
+> **R-33. A run that never STARTED cannot be cancelled, and it holds its concurrency group.** `gh run cancel` returns success and does nothing; the run stays `queued` and every later run on that ref sits `pending` with zero jobs. EVIDENCE: 34007699203 blocked #933 for 40 minutes across four superseding pushes. CHECK: `gh api -X POST .../runs/<id>/force-cancel`, then confirm the successor moves `pending -> queued`.
