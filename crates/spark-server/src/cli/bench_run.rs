@@ -46,6 +46,12 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
         },
         BenchmarkCommand::History(a) => history_cmd(a),
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
+        BenchmarkCommand::Aggregate(a) => {
+            // Exits with the code so a script can gate on "is this group
+            // complete", the same shape `Run` uses below.
+            let code = super::bench_aggregate::aggregate_cmd(a)?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Run(a) => {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
