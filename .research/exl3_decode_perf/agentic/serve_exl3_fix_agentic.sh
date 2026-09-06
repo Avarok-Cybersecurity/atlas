@@ -3,6 +3,9 @@
 set -u
 PORT=${1:-8890}
 BIN=${SPARK_BIN:-/home/ms/.claude/jobs/5a7bd33d/tmp/exl3bench/spark-sharedgemv}
+# CHAT_KWARGS overrides the default chat-template kwargs (thinking off = '{"enable_thinking":false}').
+KWARGS=${CHAT_KWARGS:-'{"reasoning_effort":"low"}'}
+[ "${NOTHINK:-0}" = 1 ] && KWARGS='{"enable_thinking":false}'
 cd /home/ms/atlas/.claude/worktrees/exl3-research
 export ATLAS_EXL3_NATIVE=1 ATLAS_EXL3_NATIVE_MOE=1 ATLAS_EXL3_NATIVE_DENSE=1
 export ATLAS_PLE_MAX_TOKENS=9216 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768
@@ -22,4 +25,4 @@ exec "$BIN" serve \
   --gpu-memory-utilization 0.72 --kv-cache-dtype bf16 --ssm-cache-slots 64 \
   --request-timeout 1800 --fast-load-prefetch-shards \
   --speculative --num-drafts 2 --enable-prefix-caching \
-  --default-chat-template-kwargs '{"reasoning_effort":"low"}'
+  --default-chat-template-kwargs "$KWARGS"

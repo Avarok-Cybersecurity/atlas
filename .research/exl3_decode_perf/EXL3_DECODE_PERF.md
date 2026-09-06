@@ -284,6 +284,11 @@ iteration: **Pass** — webserver_ok 1/1, followed_directions 1/1, 6 turns / 97 
 tokens, harness decode_tps 19.1, **0 mangling markers** in the 8.6 KB trajectory
 (`agentic/run-1788657364366230696.json`). One sampled trajectory, not a rate.
 
+Same again with thinking OFF (`--default-chat-template-kwargs '{"enable_thinking":false}'`, the
+card's non-thinking preset applies): **Pass** — webserver_ok 1/1, followed_directions 1/1,
+11 turns / 126 s, 0 `[reasoning]` blocks in the trajectory (thinking confirmed off), 0 mangling
+markers (`agentic/run-1788657924008552574.json`).
+
 ## PLE verify snapshots on device (fourth lever, this commit)
 
 `push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after
