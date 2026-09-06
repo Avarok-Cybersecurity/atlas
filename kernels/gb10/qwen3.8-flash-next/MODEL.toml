@@ -308,7 +308,7 @@ max_thinking_budget = 2048
 name = "qwen3.8-flash-next-exl3"
 hf_id = "turboderp/Qwen3.8-Flash-Next-exl3"
 hf_revision = "4.05bpw_h6_ng6"
-description = "Qwen3.8-Flash-Next, EXL3 4.05 bpw (turboderp), native EXL3 kernels, bf16 KV, 2 MTP drafts, prefix caching, thinking preserved, 4 sequences x 128K — the 2026-09-05 gate-passing single-GB10 kernels at the operator's serving envelope"
+description = "Qwen3.8-Flash-Next, EXL3 4.05 bpw (turboderp), native EXL3 kernels, bf16 KV, 2 MTP drafts, prefix caching, thinking preserved, 4 sequences x 128K — the gate-passing single-GB10 profile (2026-09-06: ~480 tok/s prefill at 8K/11K, ~30 tok/s decode, model-card agentic PASS)."
 
 [serve_presets.flags]
 # 128K context on one GB10 at util 0.72 alongside the packed EXL3 weights; the
@@ -368,3 +368,16 @@ ATLAS_NO_THINKENDED_GPU_ARGMAX = "1"
 # Size the private MTP draft KV pool to the preset's four sequence slots (the
 # compiled default cap is 32); the 2026-09-05 C=2 validation set this to 2.
 ATLAS_MTP_MAX_SEQS = "4"
+# Round-2 prefill levers (2026-09-06, .research/exl3_decode_perf: ab_moe_row_cap,
+# ab_dense_reconstruct, merged_gate_*). Both are the binary's defaults; pinned
+# here so the served profile is self-describing and survives a default change.
+# Fused MoE prefill tier rows per expert (was 128, which sent 48% of prefill GPU
+# time through the serialized overflow tier): +10% prefill, output identical,
+# parity-gated. ATLAS_NO_EXL3_MOE_WIDE_ROWS=1 restores 128.
+ATLAS_EXL3_MOE_ROWS_PER_EXPERT = "1024"
+# Dense prefill calls with >= this many rows reconstruct the trellis weight to
+# BF16 once and run the tensor-core GEMM: +8% prefill, decode untouched, a
+# one-time numerics change (agentic gate PASS). ATLAS_NO_EXL3_DENSE_RECONSTRUCT=1
+# restores the trellis-only prefill. The fused BF16 egress of the dense decode
+# GEMM is also default-on (bit-exact; ATLAS_EXL3_NO_FUSED_EGRESS=1 disarms).
+ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS = "512"

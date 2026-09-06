@@ -336,6 +336,9 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
     assert_eq!(get("ATLAS_QSA_MAX_TOKENS"), "131072");
     // The private MTP draft KV pool is sized to the preset's sequence slots.
     assert_eq!(get("ATLAS_MTP_MAX_SEQS"), "4");
+    // Round-2 prefill levers pinned to their measured values (2026-09-06).
+    assert_eq!(get("ATLAS_EXL3_MOE_ROWS_PER_EXPERT"), "1024");
+    assert_eq!(get("ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS"), "512");
     assert!(get("ATLAS_PLE_MAX_TOKENS").parse::<usize>().unwrap() >= args.max_prefill_tokens);
 
     // An operator override of --max-seq-len carries into the QSA cap.
