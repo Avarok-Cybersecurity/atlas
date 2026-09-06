@@ -151,8 +151,26 @@ pub(super) fn cache_dir(root: &Path) -> PathBuf {
 /// before a fetch has finished — or without one ever succeeding.
 pub fn cached(root: &Path) -> Index {
     let path = cache_dir(root).join(INDEX);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Index::default();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        // An index that is not there yet is the ordinary state of a box that
+        // has never synced, and an empty Library is the right answer for it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Index::default(),
+        // Anything ELSE is a fact about this machine, not an empty index, and
+        // collapsing the two is how a box spends an hour on the wrong problem.
+        // Measured case: `$HOME/.atlas` created by uid 1000 while the server
+        // runs as uid 996. The index was complete and unreadable; `cached`
+        // answered "no recipes", and `bench_selfstart` therefore told the
+        // operator to run `spark sync-recipes` to populate a file that was
+        // already populated. `parse_cache` below already refuses to render a
+        // CORRUPT index as an empty one for exactly this reason; a permission
+        // error deserves the same treatment.
+        Err(e) => {
+            return Index {
+                offline: Some(format!("{} could not be read: {e}", path.display())),
+                ..Index::default()
+            };
+        }
     };
     match parse_cache(&text) {
         Ok(index) => index,

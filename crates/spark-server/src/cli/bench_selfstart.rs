@@ -176,11 +176,22 @@ pub async fn serve_for(
         .with_context(|| {
             format!(
                 "recipe {recipe_id:?} is not in the local index ({} cached). The index is read \
-                 from {}/atlas-recipes/index.json. Populate it with:\n    spark sync-recipes\n\
+                 from {}/atlas-recipes/index.json.{} Populate it with:\n    spark sync-recipes\n\
                  (this used to say \"open the TUI Library once\", which a CI runner, a \
                  container, or a machine reached over ssh cannot do.)",
                 index.recipes.len(),
-                store.root().display()
+                store.root().display(),
+                // Why the index is empty, when the index layer knows. Without
+                // it an index that exists and cannot be READ -- a `$HOME`
+                // owned by another uid is the measured case -- reads as one
+                // that was never written, and `sync-recipes` is the wrong
+                // remedy: it fetches from GitHub and then fails on the same
+                // unwritable path, having spent the round trip to say so.
+                index
+                    .offline
+                    .as_deref()
+                    .map(|why| format!(" That index could not be used: {why}."))
+                    .unwrap_or_default()
             )
         })?;
 

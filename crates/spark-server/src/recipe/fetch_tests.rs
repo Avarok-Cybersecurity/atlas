@@ -291,3 +291,62 @@ fn measure_refresh_wall_time() {
     );
     assert!(index.offline.is_none());
 }
+
+/// An index that EXISTS and cannot be read is not an empty index.
+///
+/// The measured failure: `$HOME/.atlas` created by uid 1000 while the server
+/// runs as uid 996. `cached` swallowed the `EACCES` into `Index::default()`,
+/// so `bench_selfstart` reported "not in the local index (0 cached)" and told
+/// the operator to run `spark sync-recipes` — which fetches from GitHub and
+/// then fails writing to the same unreadable path. The index was complete the
+/// whole time.
+#[test]
+fn an_unreadable_index_is_not_reported_as_an_absent_one() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = Dir::new("unreadable");
+        seed(&dir, unix_now());
+        let path = cache_dir(&dir.0).join(INDEX);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        // Staged, then PROVEN staged. root — and any ACL — ignores the mode
+        // bits, and a test that cannot create the fault would pass for a
+        // reason that has nothing to do with the code. Skip there rather than
+        // report a green nobody can trust.
+        if std::fs::read_to_string(&path).is_ok() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            return;
+        }
+
+        let index = cached(&dir.0);
+        let why = index.offline.as_deref().unwrap_or_default();
+        assert!(
+            !why.is_empty(),
+            "an unreadable index must say so, not answer `no recipes`"
+        );
+        assert!(
+            why.contains(&path.display().to_string()),
+            "the operator needs the path that could not be read: {why}"
+        );
+
+        // Restore so `Dir`'s cleanup can remove it.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// And the ordinary case must stay quiet.
+///
+/// The control for the test above: a check that fires on a healthy box is
+/// worse than no check, and "never synced" is the state of every fresh
+/// install. `NotFound` is the one read error that IS an empty index.
+#[test]
+fn an_index_that_was_never_written_is_still_an_ordinary_empty_store() {
+    let dir = Dir::new("never-written");
+    let index = cached(&dir.0);
+    assert!(index.recipes.is_empty());
+    assert!(
+        index.offline.is_none(),
+        "a box that has never synced has no fault to report, got: {:?}",
+        index.offline
+    );
+}
