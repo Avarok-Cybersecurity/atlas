@@ -324,7 +324,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
-          components: clippy
+          # rustfmt as well as clippy: the formatter runs as this job's first
+          # cargo step now, so the two required checks share ONE toolchain
+          # install and ONE cache restore instead of two.
+          components: clippy,rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Lint policy lives in the workspace `Cargo.toml` `[workspace.lints]`
       # block (deny `warnings` + `clippy::all`, with a few targeted
@@ -332,6 +335,18 @@ jobs:
       # `[lints] workspace = true`, and `lib.rs` / `main.rs` re-add the
       # same denies as inner attributes so they apply even when the
       # workspace lints table isn't honoured (e.g. older tooling).
+      # Formatting first: it is ~6s against clippy's ~88s, and a formatting
+      # failure reported before the long run is a much shorter round trip than
+      # one reported after it.
+      #
+      # NOTE the behavioural difference this inherits, which matters when the
+      # standalone `cargo fmt --check` job is retired: that job is UNGATED,
+      # while this one is skipped on a web-only diff. A web-only diff touches
+      # only site/blog/book/web-shared and so contains no .rs file for the
+      # formatter to reject — skipping is sound, but it IS a change, and it
+      # should be stated rather than discovered.
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --tests
 
   license-headers:
