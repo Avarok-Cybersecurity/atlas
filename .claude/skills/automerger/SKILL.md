@@ -255,8 +255,29 @@ Comment protocol and stack map, below.
 
 ### G — Certify once, then merge
 
-Stamp → **stop for approval to spend the GPU** → campaign → seal **last**.
-A seal is voided by the next commit; a stamp is not.
+Stamp → **stop for approval to spend the GPU** → campaign → **bring the branch
+up to date** → **re-stamp** → seal → merge, in that order and in one pass.
+
+★ **A MARK IS A CHECK RUN BOUND TO A SHA, SO ANY HEAD MOVE LOSES IT.** The
+older wording here — *"a seal is voided by the next commit; a stamp is not"* —
+describes the mark's SEMANTICS and is true of them. It is not true of the check
+run, and the check run is what the gate reads. Measured 2026-09-06 on #880 and
+#891: both were stamped, certified green, then rebased for `strict: true`
+protection, and both came back
+
+    ::error title=Certification is held::
+    Comment /stamp to release certification and the nine release-matrix builds.
+
+with **no `Stamp` check on the new head at all**. Re-stamping at the new head
+fixed both. So never stamp before an update you know is coming — it costs two
+extra CI cycles per PR and reads as a mysterious regression.
+
+★ **A MARK MINTED AFTER ITS GATE JOBS RAN IS INERT FOR THAT ATTEMPT**, and a
+job inside a run cannot be re-run alone: `gh run rerun --job` reuses the cached
+`stamp` dependency and faithfully reproduces `stamped:false`. Re-run the WHOLE
+workflow. A run still in flight refuses with `403 already running`, so wait for
+it rather than retrying — and check first whether the gate has already gone
+green, because the cheapest re-run is the one you do not do.
 
 **★ SEALING IS DELEGATED BY DEFAULT.** Granted by the repo owner 2026-09-06:
 *"the auto-merger should /seal for me by default unless human intervention is
@@ -496,12 +517,12 @@ recording it. Treat that as a defect and say so.
 
 # RULEBOOK
 
-33 rules, distilled by three adversarial passes from 59 lessons mined from real
+34 rules, distilled by three adversarial passes from 59 lessons mined from real
 incidents. Every rule carries **EVIDENCE** (what it cost) and **CHECK** (the
 command or comparison that proves compliance). A rule you cannot check is
 decoration; a rule without evidence is an opinion.
 
-AUTOMERGER RULEBOOK — 33 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order)
+AUTOMERGER RULEBOOK — 34 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks)
 
 ═══ DO NOT (highest cost first) ═══
 
@@ -646,4 +667,10 @@ AUTOMERGER RULEBOOK — 33 rules (30 distilled from 59 candidates × 3 adversari
 33. DO print the stack's ordering justification in every wave report while the stack is open — one line per layer, plus ORACLE's verdict and timestamp.
     EVIDENCE: on 2026-09-06 a wrong order sat visible in the base chain for six hours and nobody, the author included, articulated it until the same flake failed the same test twice.
     CHECK: the wave report contains an ordering table for every open stack; a stack with no justification is treated as unchecked, not as fine.
+
+═══ MARKS ═══
+
+34. DO stamp and seal AFTER the branch is up to date, never before — a mark is a check run bound to a sha, so any head move (rebase, update-branch, amend) leaves the new head unmarked and the certification lane held again. And when a mark lands after the jobs that read it, re-run the WHOLE workflow: a job re-run inside the same run reuses the cached `stamp` dependency and reproduces `stamped:false`, while a run still in flight refuses with 403 "already running".
+    EVIDENCE: 2026-09-06, #880 and #891 were both stamped, certified green, rebased for `strict: true`, and both returned "Certification is held" with no Stamp check on the new head; re-stamping fixed both. Separately #934/#935/#908 lost a morning to marks minted 5-9 minutes after their gate jobs completed.
+    CHECK: `gh api repos/$REPO/commits/$HEAD/check-runs` lists `Stamp`/`Seal` on the CURRENT head, and their `completed_at` precedes the gate jobs' `completed_at`.
 
