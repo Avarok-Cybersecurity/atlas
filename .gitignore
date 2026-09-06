@@ -29,11 +29,13 @@ docker/gb10/spark-fastbin
 /site/.svelte-kit/
 /site/.vite/
 
-# Editor / agent scratch. `.claude/skills/` is deliberately TRACKED — repo
-# skills (atlas-release, measurement-discipline) are shared process, not
-# scratch; everything else under .claude/ stays ignored.
+# Editor / agent scratch. `.claude/skills/` and `.claude/agents/` are
+# deliberately TRACKED — repo skills (atlas-release, measurement-discipline)
+# and the agents they spawn (oracle) are shared process, not scratch;
+# everything else under .claude/ stays ignored.
 .claude/*
 !.claude/skills/
+!.claude/agents/
 .gemini/
 .agent*/
 .codex/
