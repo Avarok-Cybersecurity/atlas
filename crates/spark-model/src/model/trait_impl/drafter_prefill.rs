@@ -201,6 +201,9 @@ impl TransformerModel {
             derived: &self.derived,
             levers: &self.levers,
             stats: &self.stats,
+            // None: drafter routing is not the target model's (see
+            // `MoeSite::MtpHead`).
+            expert_telemetry: None,
             attn_metadata: None,
             profile: false,
             comm: None,

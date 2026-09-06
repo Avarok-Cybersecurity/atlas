@@ -19,6 +19,7 @@ fn usage(prompt: usize, completion: usize) -> Usage {
         accepted_prediction_tokens: 0,
         time_to_first_token_ms: 0.0,
         response_tokens_per_second: 0.0,
+        expert_activation: None,
     }
 }
 

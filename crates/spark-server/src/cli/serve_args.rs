@@ -709,6 +709,50 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 256)]
     pub ssm_checkpoint_interval: usize,
 
+    /// Record which MoE experts each request routes to, so a request that
+    /// asks (`"report_expert_metadata": true` in the request body) gets the
+    /// per-layer expert set back on `usage.expert_activation`.
+    ///
+    /// A BOOT flag, not a per-request one, because the device-side copies
+    /// that collect the routing have to be recorded into the decode CUDA
+    /// graph: a request cannot add work to a graph that was already
+    /// captured. Which requests REPORT is still per-request; this only
+    /// decides whether the serve can answer at all.
+    ///
+    /// Costs one staging buffer sized (layers x max batch tokens x top-k)
+    /// x 8 bytes, and one device-to-device copy per MoE layer per pass.
+    /// Ignored on a dense (non-MoE) checkpoint, which has no router to
+    /// observe; a request that asks for experts there is refused by name.
+    ///
+    /// Feeds the `expert-categories` benchmark, which maps prompt
+    /// categories to the experts they need.
+    #[arg(long, default_value_t = false)]
+    pub expert_telemetry: bool,
+
+    /// Load ONLY the MoE experts these prompt categories route to, from the
+    /// model's MODEL.toml `[expert_categories]` table.
+    ///
+    /// Accepts a comma-separated list, in which case the serve holds the UNION
+    /// of those categories' experts — a request does not announce its
+    /// category, so serving several means holding what any of them needs. The
+    /// boot log reports the union and what each category costs on its own.
+    ///
+    /// The table is produced by the `expert-categories` benchmark and read at
+    /// BUILD time, so a newly measured category needs a rebuild before this
+    /// flag can name it. An unknown name lists what the model declares.
+    ///
+    /// Experts outside the category are not loaded at all, and the router is
+    /// masked so it cannot select one — the serve answers from a re-weighted
+    /// blend of the experts it holds. Expect a quality cost that grows as
+    /// coverage falls, and traffic outside the category's register to pay the
+    /// most.
+    ///
+    /// Refused rather than silently degraded on configurations whose routing
+    /// path is not masked (expert parallelism, zero-computation-expert
+    /// routers), and on dense checkpoints, which have no experts to select.
+    #[arg(long)]
+    pub expert_category: Option<String>,
+
     /// Enable automatic context compaction for long conversations.
     /// **DISABLED BY DEFAULT** (2026-04-25): the auto-compactor has
     /// historically been a source of agent loops — synthesised

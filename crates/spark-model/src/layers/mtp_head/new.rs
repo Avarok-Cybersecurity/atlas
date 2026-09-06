@@ -8,7 +8,7 @@ use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 
 use super::{MtpHead, MtpQuantization, ProjectionWeight};
-use crate::layers::MoeLayer;
+use crate::layers::{MoeLayer, MoeSite};
 use crate::weight_map::{DenseWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4};
 
 impl MtpHead {
@@ -178,6 +178,7 @@ impl MtpHead {
                         correction_bias: None,
                     };
                     let moe = MoeLayer::new(
+                        MoeSite::MtpHead,
                         moe_weights,
                         config.num_experts,
                         Some(gate_nvfp4),

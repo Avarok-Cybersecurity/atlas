@@ -58,6 +58,9 @@ impl ModelConfig {
             dspark_target_layer_ids: Vec::new(),
             dspark_markov_rank: 0,
             weight_prefix: String::new(),
+            // No plan: every expert loads. `--expert-category` installs one
+            // after the config is parsed.
+            bel: None,
             ep_rank: 0,
             ep_world_size: 1,
             tp_rank: 0,

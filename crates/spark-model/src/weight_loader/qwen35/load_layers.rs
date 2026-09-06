@@ -12,7 +12,7 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::super::{ModelWeightLoader, QuantFormat, WeightFormat};
 use crate::layer::TransformerLayer;
-use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_fp8_block_scaled};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Nvfp4Variant, QuantizedWeight, dense_auto, detect_nvfp4_variant,
@@ -309,8 +309,14 @@ pub(super) fn load_layers(
                 stream,
             )?)
         };
-        let mut moe_layer =
-            MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
+        let mut moe_layer = MoeLayer::new(
+            MoeSite::Layer(i),
+            moe_weights,
+            config.num_experts,
+            gate_nvfp4,
+            gpu,
+            config,
+        )?;
         // Phase 2.7 Tier C: flag DFlash capture layers so the MoE forward
         // can dispatch the Frankenstein kernel route (env-var-gated). The
         // capture-layer indices are already offset-adjusted in factory.rs

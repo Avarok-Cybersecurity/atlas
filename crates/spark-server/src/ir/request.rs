@@ -30,6 +30,10 @@ pub struct ChatRequest {
     /// Stop sequences (generation halts when one is produced).
     pub stop: Vec<String>,
     pub stream: bool,
+    /// Return this request's MoE expert routing on `usage.expert_activation`.
+    /// Validated at the wire edge — a request only carries `true` here on a
+    /// serve that can answer it.
+    pub report_expert_metadata: bool,
     /// Number of choices (>1 only reachable from the OpenAI surface;
     /// other adapters pin 1).
     pub n: usize,

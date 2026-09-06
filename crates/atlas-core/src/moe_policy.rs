@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! MoE quality interventions: LASER routing rebalance + MoE-Spec
+//! MoE policy primitives: LASER routing rebalance + MoE-Spec
 //! verification-time expert budgeting (B.5, 2026-04-25).
+//!
+//! Moved here from `spark-server::moe_quality` (2026-08-30) so both the
+//! engine and `atlas-plugin`'s expert-categories benchmark share one
+//! implementation — atlas-plugin must stay CUDA-free, and this module is
+//! pure math, so `atlas-core` (with `default-features = false`) is the
+//! lowest common home.
 //!
 //! References:
 //!  - LASER: arXiv:2510.03293 — score-distribution-aware top-k

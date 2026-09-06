@@ -345,6 +345,9 @@ impl TransformerModel {
         // every sequence's first decode step.
         let num_attn_layers = self.config.num_attention_layers();
         Ok(SequenceState {
+            // Installed by the scheduler only when the request asked to
+            // report experts and the serve enabled telemetry.
+            expert_activation: None,
             adapter_id: 0,
             adapter_slot: -1,          // default: defer to installed active adapter
             acquired_adapter_slot: -1, // Task #25: no ref held until prefill acquires

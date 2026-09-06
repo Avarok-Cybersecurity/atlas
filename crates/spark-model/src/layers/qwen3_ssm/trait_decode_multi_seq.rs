@@ -191,9 +191,9 @@ impl Qwen3SsmLayer {
         match n {
             2 | 3 => {
                 if n == 2 {
-                    self.ffn.forward_k2(normed_base, ctx, stream)?;
+                    self.ffn.forward_k2(normed_base, 0, ctx, stream)?;
                 } else {
-                    self.ffn.forward_k3(normed_base, ctx, stream)?;
+                    self.ffn.forward_k3(normed_base, 0, ctx, stream)?;
                 }
                 // Batched output lives in moe_output[0..n].
                 for i in 0..n {
@@ -389,7 +389,7 @@ impl Qwen3SsmLayer {
                     for i in 0..n {
                         let hidden_i = hidden.offset(i * h * residual_elem);
                         let normed_i = normed_base.offset(i * h * bf16);
-                        let moe_out = self.ffn.forward(normed_i, ctx, stream)?;
+                        let moe_out = self.ffn.forward(normed_i, i, ctx, stream)?;
                         ops::residual_add(
                             ctx.gpu,
                             self.residual_add_k,

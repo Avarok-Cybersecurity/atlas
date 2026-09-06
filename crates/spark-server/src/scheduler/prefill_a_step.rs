@@ -81,6 +81,7 @@ pub fn start_chunked_prefill(
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
     let req_prompt_logprobs = req.prompt_logprobs();
+    let req_expert_metadata = req.report_expert_metadata();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
@@ -164,6 +165,12 @@ pub fn start_chunked_prefill(
     // which route through free_sequence) hold + release the ref symmetrically.
     seq.acquired_adapter_slot = model.acquire_adapter_slot(req_adapter_slot);
     seq.collect_prompt_logprobs = req_prompt_logprobs;
+    // Installing the accumulator is what makes the model FOLD this pass's
+    // staged routing; a request that did not ask leaves it None and the
+    // staging is written but never read.
+    if req_expert_metadata {
+        seq.expert_activation = model.new_expert_activation();
+    }
 
     // Beam search (NLLB): run the whole search to completion in the model and
     // return a FINISHED sequence carrying the winning hypothesis, bypassing both

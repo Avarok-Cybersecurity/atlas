@@ -92,6 +92,9 @@ pub(crate) async fn run_chat_stream(
     timeout_at: Option<std::time::Instant>,
     stop_strings: Vec<String>,
     req_return_token_ids: bool,
+    // `report_expert_metadata`: return this request's MoE expert routing.
+    // Already validated against the serve's capability at the wire edge.
+    report_expert_metadata: bool,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
     active_guard: crate::metrics::ActiveRequestGuard,
@@ -159,6 +162,7 @@ pub(crate) async fn run_chat_stream(
         seed,
         top_logprobs,
         prompt_logprobs: None,
+        report_expert_metadata,
         echo: false,
         timeout_at,
         token_tx,
@@ -277,6 +281,7 @@ pub(crate) async fn run_chat_stream(
                 reasoning_tokens,
                 cached_prompt_tokens,
                 accepted_prediction_tokens,
+                expert_activation,
                 guard_stop,
             } => {
                 // ★ `.or()`, NOT `=`. This field began life as a scheduler-owned
@@ -303,6 +308,7 @@ pub(crate) async fn run_chat_stream(
                     reasoning_tokens,
                     cached_prompt_tokens,
                     accepted_prediction_tokens,
+                    expert_activation,
                 )
             }
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),

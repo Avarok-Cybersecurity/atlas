@@ -313,6 +313,16 @@ pub struct ForwardContext<'a> {
     /// averages two models and describes neither, and a one-shot latch that
     /// already fired swallows the next model's dump.
     pub stats: &'a crate::layers::ops::ModelStats,
+    /// Device staging for per-request MoE expert telemetry, or `None` when
+    /// the serve did not enable it (`--expert-telemetry`).
+    ///
+    /// Carried rather than reached through the model for the same reason as
+    /// `levers` and `stats`: it is one model's buffer, sized for that
+    /// model's layer count and top-k, and a stale one would mis-slice every
+    /// row after a hot swap. MoE layers copy their router output into it;
+    /// the trait impl that owns the pass drains it once, after the sync it
+    /// already performs.
+    pub expert_telemetry: Option<&'a crate::layers::ExpertTelemetryStaging>,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.

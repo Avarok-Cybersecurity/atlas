@@ -51,6 +51,7 @@ pub(super) fn build_moe_ffn(
         stream,
     )?;
     let mut moe_layer = crate::layers::MoeLayer::new(
+        crate::layers::MoeSite::Layer(i),
         moe_weights,
         config.num_experts,
         Some(gate_nvfp4),

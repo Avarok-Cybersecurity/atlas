@@ -143,6 +143,12 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
         a.seq.seq_len,
         max_seq_len,
     );
+    // The model folded this request's routing into the sequence during
+    // prefill; convert it once here, for whichever sink the request used.
+    let expert_activation =
+        a.seq.expert_activation.take().map(|acc| {
+            Box::new(crate::ir::expert_activation::ExpertActivationReport::from_acc(&acc))
+        });
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
@@ -161,6 +167,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
                     reasoning_tokens: a.thinking_tokens,
                     cached_prompt_tokens: a.cached_prompt_tokens,
                     accepted_prediction_tokens: a.mtp_acct.accepted_total() as usize,
+                    expert_activation,
                     guard_stop: a.guard_stop,
                 },
                 "done frame",
@@ -180,6 +187,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
                         accepted_prediction_tokens: a.mtp_acct.accepted_total() as usize,
+                        expert_activation,
                         prompt_logprobs: std::mem::take(&mut a.seq.prompt_logprobs)
                             .into_iter()
                             .map(|p| crate::api::TokenLogprobs {

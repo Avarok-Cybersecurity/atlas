@@ -171,10 +171,11 @@ mod tests {
             vec![],
             0,
             None,
-            None, // dflash_args
-            None, // lora_args
-            None, // nllb_lang
-            None, // nllb_lora_dir
+            None,  // dflash_args
+            None,  // lora_args
+            None,  // nllb_lang
+            None,  // nllb_lora_dir
+            false, // expert_telemetry
         );
         match result {
             Err(e) => assert!(e.to_string().contains("Unsupported model type: 'llama'")),

@@ -9,10 +9,10 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::FfnComponent;
-use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{
     CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
 };
+use crate::layers::{MoeLayer, MoeSite};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
     quantized, quantized_v2,
@@ -335,6 +335,7 @@ pub fn assemble_layer(
         None
     };
     let mut moe = MoeLayer::new_with_hash(
+        MoeSite::Layer(layer_idx),
         moe_weights,
         config.num_experts,
         gate_nvfp4,

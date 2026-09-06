@@ -16,9 +16,16 @@ impl MoeLayer {
     pub fn forward_ep_dispatch(
         &self,
         input: DevicePtr,
+        // First batch row this call owns; forwarded to the base path.
+        row_base: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
+        // BEL is not wired on this routing path: it computes its own gate
+        // logits without the mask, so the top-k could name an expert whose
+        // weights were never loaded. Refuse by name — the alternative is a
+        // null dereference inside a GEMM.
+        self.bel_guard("forward_ep_dispatch")?;
         // LongCat zero-experts are wired only on the single-token decode
         // + prefill paths (v1); this variant would silently mis-route the
         // 384-wide router. Named refusal, not silent wrongness.
@@ -139,6 +146,6 @@ impl MoeLayer {
         //   - comm.group_end()
         //   - Weighted sum into output
         let _ = routing; // suppress unused warning until dispatch is wired
-        self.forward(input, ctx, stream)
+        self.forward(input, row_base, ctx, stream)
     }
 }

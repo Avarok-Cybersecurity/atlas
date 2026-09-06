@@ -177,6 +177,10 @@ pub enum InferenceRequest {
         /// logprobs (top-k alternatives) during prefill. Forces full
         /// recompute (prefix cache bypassed) so every position is scored.
         prompt_logprobs: Option<u8>,
+        /// Report which MoE experts this request's prompt routed to
+        /// (`report_expert_metadata`). Validated at the API edge: a request
+        /// only gets here with this set if the serve can actually answer.
+        report_expert_metadata: bool,
         /// Legacy /v1/completions `echo`: prepend the prompt to the
         /// response text (handler-side; carried here for symmetry/logging).
         echo: bool,
@@ -274,6 +278,10 @@ pub enum InferenceRequest {
         /// Legacy /v1/completions `logprobs`: Some(k) = collect prompt-token
         /// logprobs during prefill (see Blocking variant).
         prompt_logprobs: Option<u8>,
+        /// Report which MoE experts this request's prompt routed to
+        /// (`report_expert_metadata`). Validated at the API edge: a request
+        /// only gets here with this set if the serve can actually answer.
+        report_expert_metadata: bool,
         /// Legacy /v1/completions `echo` (see Blocking variant).
         echo: bool,
         /// Request timeout as absolute deadline. None = no timeout.
@@ -327,6 +335,12 @@ pub struct InferenceResponse {
     /// OpenAI field's meaning (predicted tokens that matched generation),
     /// carried by Atlas's self-drafted MTP predictions. 0 when speculation is
     /// off or nothing was accepted.
+    /// Which MoE experts this request's prefill routed to, when the request
+    /// asked (`report_expert_metadata`) and the serve enabled telemetry.
+    /// `None` on every other request — a consumer can tell "not instrumented"
+    /// from "used no experts", the same distinction
+    /// `accepted_prediction_tokens` makes for speculation.
+    pub expert_activation: Option<Box<crate::ir::expert_activation::ExpertActivationReport>>,
     pub accepted_prediction_tokens: usize,
     /// Prompt-token logprobs (legacy /v1/completions `logprobs` + `echo`):
     /// one entry per prompt position i in [0, prompt_len-1) scoring token
@@ -356,6 +370,9 @@ pub enum StreamEvent {
         /// Accepted speculative draft tokens (for usage details — see
         /// [`InferenceResponse::accepted_prediction_tokens`]).
         accepted_prediction_tokens: usize,
+        /// Which MoE experts this request's prefill routed to — see
+        /// [`InferenceResponse::expert_activation`].
+        expert_activation: Option<Box<crate::ir::expert_activation::ExpertActivationReport>>,
         /// Server-side guard that force-finished the sequence (e.g.
         /// "fuzzy_repetition"), if any — dump/observability only, never
         /// part of the OpenAI wire format.

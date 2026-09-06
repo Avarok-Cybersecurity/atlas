@@ -81,6 +81,19 @@ pub(super) fn generate_target_ptx_rs(
             g.push_str(&format!("        (\"{module_name}\", {const_name}),\n"));
         }
         g.push_str("    ]\n}\n\n");
+
+        // `[expert_categories]` as a named static, not an inline literal in
+        // the `all_ptx_sets()` body: const-promotion does not reach inside a
+        // `vec![]` expression, so an inline `&[ExpertCategory { .. }]` is a
+        // temporary and fails to borrow for `'static`.
+        g.push_str(&format!(
+            "/// `[expert_categories]` for target: ({}, {}, {}).\n",
+            target.hw, target.model, target.quant
+        ));
+        g.push_str(&format!(
+            "pub static {prefix}EXPERT_CATEGORIES: &[ExpertCategory] = &[{}];\n\n",
+            super::build_parse_experts::render_expert_categories(&target.expert_categories)
+        ));
     }
 
     // Multi-target builds: `ptx_modules()` aliases the first target.
@@ -128,6 +141,11 @@ pub(super) fn generate_target_ptx_rs(
             "ptx_modules".to_string()
         } else {
             format!("ptx_modules_t{idx}")
+        };
+        let ec_static = if single_target {
+            "EXPERT_CATEGORIES".to_string()
+        } else {
+            format!("T{idx}_EXPERT_CATEGORIES")
         };
         let fmt_cat = |c: &SamplingCat| -> String {
             format!(
@@ -198,6 +216,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20           model_type_matches: vec![{}],\n\
              \x20           match_names: &[{}],\n\
              \x20           dflash: {},\n\
+             \x20           expert_categories: {ec_static},\n\
              \x20           shadowed_dropped: &[{}],\n\
              \x20           expected_absent: &[{}],\n\
              \x20       }},\n",

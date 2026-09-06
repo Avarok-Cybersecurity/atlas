@@ -4,8 +4,8 @@
 
 use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{
-    agentic, bfcl, concurrency, contamination, decode_floor, mlperf_agentic, quick_speed,
-    serve_matrix, ssm_poison, ttft, video, vision,
+    agentic, bfcl, concurrency, contamination, decode_floor, expert_categories, expert_fidelity,
+    mlperf_agentic, quick_speed, serve_matrix, ssm_poison, ttft, video, vision,
 };
 
 /// Every benchmark, list order. Cheapest and most-run first.
@@ -29,6 +29,16 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
     &contamination::DESCRIPTOR,
+    // Endpoint-only and cheap per prompt, but 320 of them. A measurement
+    // tool with no threshold: it produces the category → expert table that
+    // --expert-category consumes, so it is excused in
+    // `gate::coverage::NOT_REQUIRED` rather than gating anything.
+    &expert_categories::DESCRIPTOR,
+    // The instrument the expert-loading work is judged with: teacher-forced
+    // divergence of a restricted serve from the full model. A measurement
+    // tool comparing configurations of ONE model, so it is excused in
+    // `gate::coverage::NOT_REQUIRED` like the categorizer it serves.
+    &expert_fidelity::DESCRIPTOR,
     // Cheap and endpoint-only, and REQUIRED on the vision targets — the
     // per-model constraint lives in BENCH.toml, since gate coverage is
     // path-based and has no per-model dimension. A text-only target has no

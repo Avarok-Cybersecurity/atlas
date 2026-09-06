@@ -7,6 +7,7 @@
 // request/response type. This is the narrow waist that keeps the
 // OpenAI/Anthropic surfaces from drifting (AGENTS.md).
 
+pub mod expert_activation;
 pub mod message;
 pub mod request;
 pub mod response;
@@ -22,5 +23,7 @@ pub use response::{
 };
 pub use stream::{DeltaStream, StreamDelta};
 
+#[cfg(test)]
+mod expert_activation_tests;
 #[cfg(test)]
 mod tests;

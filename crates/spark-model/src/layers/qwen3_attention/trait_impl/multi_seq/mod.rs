@@ -390,7 +390,7 @@ impl Qwen3AttentionLayer {
         // Per-token sequential FFN (MLA models always take this path).
         for i in 0..n {
             let normed2_i = c.normed.offset(i * c.h * c.bf16);
-            let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
+            let moe_out = self.ffn.forward(normed2_i, i, ctx, stream)?;
             // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
             let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
             let post_i = post.offset(i * hc.hc_mult * 4);

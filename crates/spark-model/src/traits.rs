@@ -126,6 +126,14 @@ pub struct SequenceState {
     /// Persistent paged metadata for chunked prefill, allocated lazily on the
     /// first chunk that needs paged attention.
     pub chunked_prefill_meta: Option<ChunkedPrefillPageMetadata>,
+    /// Per-request MoE expert telemetry, when the request asked for it
+    /// (`report_expert_metadata`) AND the serve enabled the capability
+    /// (`--expert-telemetry`). `None` on every other request, which is what
+    /// keeps the ~187 KB accumulator off requests that never report it.
+    ///
+    /// Written by the model layer during prefill; read by the scheduler when
+    /// the sequence finishes, the same contract `cached_prefix_tokens` has.
+    pub expert_activation: Option<Box<crate::layers::ExpertActivationAcc>>,
     /// Number of prompt tokens served by the prefix cache (block-aligned).
     /// Set by the model layer on the chunk-0 prefix-cache lookup; read by
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
@@ -271,6 +279,7 @@ impl SequenceState {
     /// crate-private by design.
     pub fn host_only(slot_idx: usize) -> Self {
         SequenceState {
+            expert_activation: None,
             tokens: Vec::new(),
             block_table: Vec::new(),
             seq_len: 0,

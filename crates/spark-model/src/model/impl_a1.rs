@@ -73,6 +73,10 @@ impl TransformerModel {
         vision_encoder: Option<crate::layers::VisionEncoder>,
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
+        // `--expert-telemetry`: allocate the MoE expert-activation staging and
+        // have the MoE layers copy their routing into it. A boot decision
+        // because the copies must be recorded into the decode CUDA graph.
+        expert_telemetry: bool,
     ) -> Result<Self> {
         // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
         // checkpoint tensor). Models that ship HF-vanilla norm weights load it
@@ -150,6 +154,24 @@ impl TransformerModel {
         // tasks/determinism_investigation.md).
         let mut levers = ops::ModelLevers::from_env();
         levers.max_decode_seqs = (max_batch_size as u32).max(1);
+        levers.expert_telemetry = expert_telemetry;
+
+        // Per-request expert telemetry: one staging buffer for the whole
+        // model, sized to the widest pass the arena admits, allocated only
+        // when the serve asked for it. A dense model has no router to
+        // observe, so the flag resolves to nothing rather than an error —
+        // the request-level refusal (which can name the model) is where a
+        // caller learns why no experts came back.
+        let expert_telemetry = if expert_telemetry && config.num_experts > 0 {
+            Some(crate::layers::ExpertTelemetryStaging::new(
+                gpu.as_ref(),
+                config.num_hidden_layers,
+                buffers.max_batch_tokens(),
+                config.num_experts_per_tok,
+            )?)
+        } else {
+            None
+        };
 
         tracing::info!(
             "TransformerModel: {} layers, vocab={}, hidden={}{}{}",
@@ -728,6 +750,7 @@ impl TransformerModel {
             derived: crate::layers::ops::DerivedWeights::new(),
             levers,
             stats: ops::ModelStats::new(),
+            expert_telemetry,
             #[cfg(feature = "cuda")]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;

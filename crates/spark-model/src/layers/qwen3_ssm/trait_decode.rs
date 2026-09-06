@@ -77,7 +77,7 @@ impl Qwen3SsmLayer {
                 eps,
                 stream,
             )?;
-            let moe_out = self.ffn.forward(normed2, ctx, stream)?;
+            let moe_out = self.ffn.forward(normed2, 0, ctx, stream)?;
             ctx.gpu.synchronize(stream)?;
             let moe_us = t0.elapsed().as_micros();
             tracing::info!("  SSM-MoE: {:.1}ms", moe_us as f64 / 1000.0);
@@ -134,7 +134,7 @@ impl Qwen3SsmLayer {
             Self::debug_bf16(ctx.gpu, "moe-input-normed", normed2, 4);
         }
 
-        let moe_out = self.ffn.forward(normed2, ctx, stream)?;
+        let moe_out = self.ffn.forward(normed2, 0, ctx, stream)?;
         if debug {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "moe-output", moe_out, 8);

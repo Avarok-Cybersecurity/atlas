@@ -17,10 +17,17 @@ impl MoeLayer {
     /// (sized for 2 tokens). Output at moe_output() [2, H].
     pub fn forward_k2(
         &self,
-        input: DevicePtr, // [2, H] BF16 — normed MoE input for 2 tokens
+        input: DevicePtr,
+        // First batch row this call owns; expert telemetry stages here.
+        row_base: usize, // [2, H] BF16 — normed MoE input for 2 tokens
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // BEL is not wired on this routing path: it computes its own gate
+        // logits without the mask, so the top-k could name an expert whose
+        // weights were never loaded. Refuse by name — the alternative is a
+        // null dereference inside a GEMM.
+        self.bel_guard("forward_k2")?;
         // LongCat zero-experts are wired only on the single-token decode
         // + prefill paths (v1); this variant would silently mis-route the
         // 384-wide router. Named refusal, not silent wrongness.
@@ -193,6 +200,17 @@ impl MoeLayer {
             )?;
         }
         super::union_stats::maybe_sample_expert_union(ctx, indices_dev, 2, top_k as usize, stream);
+        // Verify rows are staged but NOT folded in v1 (see expert_drain): a
+        // rejected draft's routing belongs to a token that was rolled back.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            row_base,
+            2,
+            top_k as usize,
+            stream,
+        )?;
 
         if k2_diag {
             ctx.gpu

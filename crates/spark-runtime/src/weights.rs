@@ -290,6 +290,10 @@ pub trait WeightLoader {
 
 /// Loads weights from safetensors files using mmap.
 pub struct SafetensorsLoader {
+    /// Boot-time expert loading plan (`--expert-category`). `None` = load
+    /// every expert. The router is masked from the SAME plan, so a skipped
+    /// expert is one the top-k cannot select.
+    pub bel: Option<std::sync::Arc<atlas_core::config::bel::BelPlan>>,
     /// EP rank (0-based). Only used when ep_world_size > 1.
     pub ep_rank: usize,
     /// EP world size. When > 1, remote expert tensors are skipped.
@@ -333,6 +337,7 @@ impl SafetensorsLoader {
     /// Create a loader with no expert parallelism (loads all tensors).
     pub fn new() -> Self {
         Self {
+            bel: None,
             ep_rank: 0,
             ep_world_size: 1,
             num_experts: 0,
@@ -345,6 +350,10 @@ impl SafetensorsLoader {
     /// Create a loader with EP-aware filtering.
     pub fn with_ep(ep_rank: usize, ep_world_size: usize, num_experts: usize) -> Self {
         Self {
+            // The BEL plan is installed by the caller (`with_bel`) when
+            // `--expert-category` is set; EP and BEL are independent
+            // restrictions and compose through `should_skip_tensor`.
+            bel: None,
             ep_rank,
             ep_world_size,
             num_experts,
@@ -366,6 +375,15 @@ impl SafetensorsLoader {
         // loader falls back to `DevicePtr::NULL`), and 4-byte allocations are
         // almost pure granule padding at expert scale.
         if self.skip_activation_scales && name.ends_with(".input_scale") {
+            return true;
+        }
+        // BEL (`--expert-category`): an expert this category never routes
+        // to. Before the EP early-return, because BEL applies on a
+        // single-GPU serve where ep_world_size is 1.
+        if let Some(plan) = self.bel.as_ref()
+            && let Some((layer, expert)) = parse_layer_expert(name)
+            && !plan.is_loaded(layer, expert)
+        {
             return true;
         }
         if self.ep_world_size <= 1 {
@@ -411,7 +429,7 @@ pub(crate) use loader::estimate_has_fp8;
 
 mod name_utils;
 pub(crate) use name_utils::split_trailing_index;
-pub use name_utils::{is_ngram_table, parse_expert_index};
+pub use name_utils::{is_ngram_table, parse_expert_index, parse_layer_expert};
 
 #[cfg(test)]
 mod packed_q2_tests;

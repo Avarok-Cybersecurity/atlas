@@ -153,7 +153,7 @@ impl Qwen3SsmLayer {
             stream,
         )?;
         stage!("hc_post+hc_pre_ffn");
-        let moe_out = self.ffn.forward(hidden, ctx, stream)?;
+        let moe_out = self.ffn.forward(hidden, 0, ctx, stream)?;
         stage!("moe");
         ops::hc_post_site(
             ctx.gpu,

@@ -61,7 +61,7 @@ pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
-pub use moe::MoeLayer;
+pub use moe::{ExpertActivationAcc, ExpertTelemetryStaging, MoeLayer, MoeSite};
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
 pub use nemotron_moe::NemotronMoeLayer;
@@ -351,30 +351,51 @@ impl FfnComponent {
         }
     }
 
+    /// `row_base` is this call's first row in the pass's batch — the index
+    /// expert telemetry stages under, so a per-sequence loop attributes each
+    /// sequence's routing to the sequence that produced it.
+    ///
+    /// Explicit rather than defaulted to 0: a caller inside a per-sequence
+    /// loop that forgot it would have every sequence overwrite the previous
+    /// one's staged routing, and the result would look like a plausible
+    /// answer for whichever sequence ran last.
     pub fn forward(
         &self,
         input: DevicePtr,
+        row_base: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
         match self {
-            Self::Moe(m) => m.forward(input, ctx, stream),
+            Self::Moe(m) => m.forward(input, row_base, ctx, stream),
             Self::Dense(d) => d.forward(input, ctx, stream),
             Self::None => Ok(input),
         }
     }
 
-    pub fn forward_k2(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+    pub fn forward_k2(
+        &self,
+        input: DevicePtr,
+        row_base: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         match self {
-            Self::Moe(m) => m.forward_k2(input, ctx, stream),
+            Self::Moe(m) => m.forward_k2(input, row_base, ctx, stream),
             Self::Dense(d) => d.forward_k2(input, ctx, stream),
             Self::None => Ok(()),
         }
     }
 
-    pub fn forward_k3(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+    pub fn forward_k3(
+        &self,
+        input: DevicePtr,
+        row_base: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         match self {
-            Self::Moe(m) => m.forward_k3(input, ctx, stream),
+            Self::Moe(m) => m.forward_k3(input, row_base, ctx, stream),
             Self::Dense(d) => d.forward_k3(input, ctx, stream),
             Self::None => Ok(()),
         }

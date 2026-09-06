@@ -69,6 +69,7 @@ fn setup_model(
     );
 
     let loader = spark_runtime::weights::SafetensorsLoader {
+        bel: None,
         ep_rank: 0,
         ep_world_size: 1,
         num_experts: 0,
@@ -134,6 +135,7 @@ fn setup_model(
         None,               // lora_args (no LoRA adapter)
         None,               // nllb_lang (not an NLLB translation model)
         None,               // nllb_lora_dir
+        false,              // expert_telemetry
     )?;
 
     Ok((model, config))

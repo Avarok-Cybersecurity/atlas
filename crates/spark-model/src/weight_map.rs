@@ -31,6 +31,8 @@ mod nemotron;
 mod nvfp4_detect;
 #[path = "weight_map/quant_helpers.rs"]
 mod quant_helpers;
+mod resident;
+pub(crate) use resident::expert_resident;
 #[path = "weight_map/quantize_fns.rs"]
 mod quantize_fns;
 #[path = "weight_map/quantize_fp8_bs.rs"]

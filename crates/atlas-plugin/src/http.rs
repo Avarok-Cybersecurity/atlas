@@ -70,6 +70,12 @@ pub struct ChatOutcome {
     /// instrumentation" (None) can, which is exactly the distinction the
     /// decode-floor gate's vacuity pin makes.
     pub accepted_prediction_tokens: Option<usize>,
+    /// Server-reported MoE expert routing for this request's prompt
+    /// (`usage.expert_activation`), verbatim. `None` when the field was
+    /// absent — which means the serve is not instrumented, NOT that the
+    /// prompt used no experts. The expert-categories benchmark refuses
+    /// rather than reading the first as the second.
+    pub expert_activation: Option<Value>,
 }
 
 /// POST `/v1/chat/completions` with `"stream": true` and measure it.
@@ -178,6 +184,12 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
             .and_then(Value::as_u64)
         {
             out.accepted_prediction_tokens = Some(v as usize);
+        }
+        // Captured raw, not parsed: keeping the shape knowledge in the one
+        // benchmark that consumes it leaves this client generic, and lets
+        // that benchmark say precisely which field was malformed.
+        if let Some(v) = usage.get("expert_activation") {
+            out.expert_activation = Some(v.clone());
         }
     }
     let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {
@@ -295,7 +307,48 @@ pub async fn responses_blocking(
         .map_err(|_| anyhow!("request exceeded {:.0}s", timeout.as_secs_f64()))?
 }
 
+/// POST a JSON body and return the parsed response VERBATIM.
+///
+/// `post_json` reduces the response to text and token counts, which is all
+/// most benchmarks need. Fidelity measurement needs per-position logprobs,
+/// which that reduction drops — so the transport is shared and the two
+/// readers differ.
+pub async fn post_json_raw(target: &TargetEndpoint, path: &str, body: &Value) -> Result<Value> {
+    post_json_value(target, path, body).await
+}
+
+/// Teacher-force a token sequence and read the model's per-position
+/// distribution over it — `/v1/completions` with `echo` and `logprobs`.
+///
+/// `max_tokens: 0` because nothing is generated: the point is to score text
+/// the model did NOT choose, so a restricted serve can be compared against
+/// the full model on identical positions. Greedy generation would let the two
+/// diverge after one token and make everything downstream incomparable.
+pub async fn teacher_force(
+    target: &TargetEndpoint,
+    text: &str,
+    top_logprobs: u8,
+    timeout: Duration,
+) -> Result<Value> {
+    let body = serde_json::json!({
+        "model": target.model,
+        "prompt": text,
+        "max_tokens": 0,
+        "echo": true,
+        "logprobs": top_logprobs,
+        "temperature": 0.0,
+    });
+    tokio::time::timeout(timeout, post_json_raw(target, "/v1/completions", &body))
+        .await
+        .map_err(|_| anyhow!("teacher-force exceeded {:.0}s", timeout.as_secs_f64()))?
+}
+
 async fn post_json(target: &TargetEndpoint, path: &str, body: &Value) -> Result<BlockingOutcome> {
+    let v = post_json_value(target, path, body).await?;
+    blocking_outcome_from(v)
+}
+
+async fn post_json_value(target: &TargetEndpoint, path: &str, body: &Value) -> Result<Value> {
     let (host, port) = target.host_port()?;
     let payload = serde_json::to_string(body)?;
     let mut sock = TcpStream::connect((host.as_str(), port))
@@ -363,6 +416,10 @@ async fn post_json(target: &TargetEndpoint, path: &str, body: &Value) -> Result<
         )
     })?;
 
+    Ok(v)
+}
+
+fn blocking_outcome_from(v: Value) -> Result<BlockingOutcome> {
     // Chat-completions puts the reply in `choices[].message.content`;
     // Responses puts it in `output[].content[].text`. Read whichever is
     // present so one reader serves both surfaces.

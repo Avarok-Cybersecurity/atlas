@@ -16,6 +16,11 @@ description = "Atlas: plugin + benchmark abstraction and registry driven by the 
 # with 16 tests and zero callers.
 atlas-governance = { path = "../atlas-governance" }
 atlas-closure = { path = "../atlas-closure" }
+# `moe_policy::budget_experts` — the expert-set selection rule, shared with
+# the engine so one implementation decides what a category needs.
+# `default-features = false` drops the cudarc feature: the HARD CONSTRAINT
+# above still holds, this pulls in serde/anyhow-level code only.
+atlas-core = { path = "../atlas-core", default-features = false }
 # BENCH.toml — a model's benchmarks and thresholds, beside the model.
 toml = "0.8"
 anyhow = { workspace = true }
