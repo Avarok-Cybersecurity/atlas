@@ -160,6 +160,49 @@ Y
 want_rc 0 "the shipped cheap-pool routing shape is accepted" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 
+echo "== a required check cannot be cancelled by comment timing =="
+want_rc 0 "the workflows as they stand are safe" \
+  python3 .github/scripts/assert-required-checks-not-comment-cancellable.py
+mkdir -p "$TMP/cc/.github/workflows"
+# CONTROL: the exact shape that blocked #907 -- required context + comment
+# trigger + cancel-in-progress.
+cat > "$TMP/cc/.github/workflows/a.yml" <<'Y'
+on: { issue_comment: { types: [created] } }
+concurrency: { group: g, cancel-in-progress: true }
+jobs: { CLAAssistant: { name: CLAAssistant, runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+want_rc 1 "control: required check cancellable by a comment" \
+  python3 .github/scripts/assert-required-checks-not-comment-cancellable.py "$TMP/cc"
+# A job-level concurrency block must be seen too, not just the workflow one.
+cat > "$TMP/cc/.github/workflows/a.yml" <<'Y'
+on: { issue_comment: { types: [created] } }
+jobs:
+  CLAAssistant:
+    name: CLAAssistant
+    runs-on: ubuntu-latest
+    concurrency: { group: g, cancel-in-progress: true }
+    steps: [{ run: "true" }]
+Y
+want_rc 1 "control: job-level concurrency is checked as well" \
+  python3 .github/scripts/assert-required-checks-not-comment-cancellable.py "$TMP/cc"
+# NOT flagged: a push-triggered required check. There a cancellation is a
+# supersession and the replacement run reports, so forbidding it would be wrong.
+cat > "$TMP/cc/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+concurrency: { group: g, cancel-in-progress: true }
+jobs: { typos: { name: typos, runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+want_rc 0 "a push-triggered required check may still cancel itself" \
+  python3 .github/scripts/assert-required-checks-not-comment-cancellable.py "$TMP/cc"
+# NOT flagged: a comment-triggered job that is not a required context.
+cat > "$TMP/cc/.github/workflows/a.yml" <<'Y'
+on: { issue_comment: { types: [created] } }
+concurrency: { group: g, cancel-in-progress: true }
+jobs: { advisory: { name: "PR categorize (advisory)", runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+want_rc 0 "a non-required comment-triggered job may cancel itself" \
+  python3 .github/scripts/assert-required-checks-not-comment-cancellable.py "$TMP/cc"
+
 echo "== certificate rendering =="
 T=docs/diagrams/states/certificate-merged.svg
 render() { python3 .github/scripts/render-certificate.py --template "$T" --out "$1" \
