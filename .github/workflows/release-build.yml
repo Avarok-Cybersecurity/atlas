@@ -540,6 +540,20 @@ jobs:
             no-run)
               cargo test --release --no-run -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
               ;;
+            skip)
+              # ★ WHY A LEG IS SKIPPED, AND WHAT IT COSTS.
+              # `skip` preserves the pre-existing behaviour for a leg whose
+              # TESTS do not compile yet — the build above still runs, so the
+              # leg is no weaker than it was, but it gains nothing either.
+              # Both macOS legs are here because `cargo test --no-run
+              # --no-default-features --features metal` fails with
+              #   error[E0433]: could not find `cuda_backend` in `spark_runtime`
+              # spark-server's test code references cuda-only items with no cfg
+              # gate, so the metal configuration's tests have NEVER compiled.
+              # `cargo build` never touched them, which is precisely the gap
+              # this change exists to close — it found one immediately.
+              echo "::warning title=${{ matrix.id }}: tests not compiled::test_mode=skip. This leg builds but does not compile its tests. See the note in release-matrix.json."
+              ;;
             *)
               echo "::error::unknown test_mode '${{ matrix.test_mode }}' for ${{ matrix.id }}"
               exit 1
@@ -568,6 +582,8 @@ jobs:
             cargo test --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
           } elseif ("${{ matrix.test_mode }}" -eq "no-run") {
             cargo test --release --no-run -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          } elseif ("${{ matrix.test_mode }}" -eq "skip") {
+            Write-Output "::warning title=${{ matrix.id }}: tests not compiled::test_mode=skip. This leg builds but does not compile its tests."
           } else {
             Write-Output "::error::unknown test_mode '${{ matrix.test_mode }}' for ${{ matrix.id }}"
             exit 1
