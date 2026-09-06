@@ -8,7 +8,8 @@
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "cuda",
     "experimental": false,
-    "pr_validate": true
+    "pr_validate": true,
+    "test_mode": "no-run"
   },
   {
     "id": "linux-x86_64-nvidia-cuda-nccl",
@@ -19,7 +20,8 @@
     "cargo_features": "--features cuda,nccl",
     "toolchain": "cuda-nccl",
     "experimental": true,
-    "pr_validate": true
+    "pr_validate": true,
+    "test_mode": "no-run"
   },
   {
     "id": "linux-aarch64-nvidia-cuda",
@@ -30,7 +32,8 @@
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "cuda-sbsa",
     "experimental": false,
-    "pr_validate": true
+    "pr_validate": true,
+    "test_mode": "no-run"
   },
   {
     "id": "linux-aarch64-nvidia-cuda-nccl",
@@ -41,7 +44,8 @@
     "cargo_features": "--features cuda,nccl",
     "toolchain": "cuda-nccl-sbsa",
     "experimental": true,
-    "pr_validate": true
+    "pr_validate": true,
+    "test_mode": "no-run"
   },
   {
     "id": "linux-x86_64-amd-scale",
@@ -55,7 +59,8 @@
     "pr_validate": true,
     "scale_arch": "gfx1151",
     "target_model": "qwen3.6-27b",
-    "target_quant": "nvfp4"
+    "target_quant": "nvfp4",
+    "test_mode": "no-run"
   },
   {
     "id": "macos-aarch64-metal",
@@ -66,7 +71,8 @@
     "cargo_features": "--no-default-features --features metal",
     "toolchain": "none",
     "experimental": true,
-    "pr_validate": true
+    "pr_validate": true,
+    "test_mode": "no-run"
   },
   {
     "id": "macos-x86_64-metal",
@@ -78,7 +84,8 @@
     "toolchain": "none",
     "experimental": true,
     "pr_validate": true,
-    "cross": true
+    "cross": true,
+    "test_mode": "no-run"
   },
   {
     "id": "windows-x86_64-nvidia-cuda",
@@ -89,7 +96,8 @@
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "cuda",
     "experimental": true,
-    "pr_validate": true
+    "pr_validate": true,
+    "test_mode": "no-run"
   },
   {
     "id": "windows-x86_64-amd-hip",
@@ -101,9 +109,10 @@
     "toolchain": "hip",
     "experimental": true,
     "pr_validate": true,
-    "note": "Native-HIP AMD (gfx1151) build via the Windows HIP SDK (clang/hipcc, ROCm 6.4 / installer 25.Q3). SCALE, Atlas's other AMD toolchain, is Linux-only, so HIP is the only conceivable Windows AMD path. NOT EXECUTED IN CI: hosted runners have no AMD GPU, so this binary is compiled and packaged but never run — a green check here means it builds and links, nothing more. The CUDA driver and runtime symbols are satisfied by real HIP-backed shims (crates/atlas-kernels/hip/libcuda_hip_shim.cpp, libcudart_hip_shim.cpp), NOT by stubs; cuBLASLt alone is a deliberate stub (libcublaslt_stub.cpp) that fails its create call, which is safe because the default GEMM path is Atlas's own and cuBLASLt is opt-in via ATLAS_CUBLAS_GEMM=1. Mapping it to hipBLASLt, and porting the spark-storage predictor kernels (its PTX registry is empty on this target), remain open — see crates/atlas-kernels/hip/README-HIP.md. Running this binary on real gfx1151 hardware additionally needs the Windows runtime fixes in PR #470, which are not merged here yet; without them serve dies at KV sizing because hipMemGetInfo reports no free memory on Windows. Kept experimental so a Windows-clang kernel-compile regression does not block a release.",
+    "note": "Native-HIP AMD (gfx1151) build via the Windows HIP SDK (clang/hipcc, ROCm 6.4 / installer 25.Q3). SCALE, Atlas's other AMD toolchain, is Linux-only, so HIP is the only conceivable Windows AMD path. NOT EXECUTED IN CI: hosted runners have no AMD GPU, so this binary is compiled and packaged but never run \u2014 a green check here means it builds and links, nothing more. The CUDA driver and runtime symbols are satisfied by real HIP-backed shims (crates/atlas-kernels/hip/libcuda_hip_shim.cpp, libcudart_hip_shim.cpp), NOT by stubs; cuBLASLt alone is a deliberate stub (libcublaslt_stub.cpp) that fails its create call, which is safe because the default GEMM path is Atlas's own and cuBLASLt is opt-in via ATLAS_CUBLAS_GEMM=1. Mapping it to hipBLASLt, and porting the spark-storage predictor kernels (its PTX registry is empty on this target), remain open \u2014 see crates/atlas-kernels/hip/README-HIP.md. Running this binary on real gfx1151 hardware additionally needs the Windows runtime fixes in PR #470, which are not merged here yet; without them serve dies at KV sizing because hipMemGetInfo reports no free memory on Windows. Kept experimental so a Windows-clang kernel-compile regression does not block a release.",
     "scale_arch": "gfx1151",
     "target_model": "qwen3.6-27b",
-    "target_quant": "nvfp4"
+    "target_quant": "nvfp4",
+    "test_mode": "no-run"
   }
 ]

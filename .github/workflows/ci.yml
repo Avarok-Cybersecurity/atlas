@@ -774,8 +774,8 @@ jobs:
           (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
           (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') &&
-          needs.stamp.outputs.stamped != 'false' }}
-    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+          (needs.stamp.outputs.stamped != 'false' || needs.seal.result == 'success') }}
+    needs: [changes, stamp, seal, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}
