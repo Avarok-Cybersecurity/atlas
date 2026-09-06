@@ -151,8 +151,8 @@ pub struct Glm5NextDsaWeights {
     pub ape: DevicePtr,
 }
 
-/// `ATLAS_DSA_SELECT_ROWS=1` runs the PREFILL selector once for the whole row group
-/// instead of once per token.
+/// The PREFILL selector runs once for the whole row group instead of once per token.
+/// ON by default; `ATLAS_DSA_SELECT_ROWS=0` is the kill-switch back to per-row selection.
 ///
 /// Bit-identical by construction, and the kernels are untouched. `dsa_index_scores`
 /// already carries the row axis on `gridDim.y` with a per-row `q_pos[Q]`, and its
@@ -164,16 +164,22 @@ pub struct Glm5NextDsaWeights {
 /// excludes it under a TOTAL order (score DESC, then pool index ASC — unique, so the
 /// top-`select_k` prefix is unique). There is no partial-pool scoring to disagree about.
 ///
-/// OFF by default, and every buffer it needs is allocated ONLY when it is on, so the
-/// control arm keeps today's heap layout byte for byte. That matters here: this
-/// workspace is the one where merely making an allocation unconditionally was itself
-/// enough to move the model's sampled output (see `bt`/`sl` below, and A55).
+/// Measured on the 9K prefill probe, n3+n4, fresh container, control -> arm -> control ->
+/// arm on ONE image: 146.073 s -> 133.550 s, **-8.57 %**, ~36x the control spread, with all
+/// four arms byte-identical on the sealed hash. Promoted to the default after the six
+/// canonical probes reproduced the sealed reference 6/6 with the batching on
+/// (2026-09-06, `scripts/glm53-dsa-promote/gate-6probe.sh`).
+///
+/// The four `[max_rows]` twins are allocated only when this is on, so the kill-switch arm
+/// keeps the pre-batching heap layout byte for byte. That matters here: this workspace is
+/// the one where merely making an allocation unconditionally was itself enough to move the
+/// model's sampled output (see `bt`/`sl` below, and A55).
 ///
 /// 🔴 PREFILL ONLY. The K-token verify keeps its per-row selection: it runs the
 /// device-geometry (`replay_safe`) path, and `select_tokens` refuses a ceiling launch at
 /// `q_rows > 1` because a replayed graph would index the wrong rows.
 pub(crate) fn dsa_select_rows_enabled() -> bool {
-    std::env::var("ATLAS_DSA_SELECT_ROWS").as_deref() == Ok("1")
+    std::env::var("ATLAS_DSA_SELECT_ROWS").as_deref() != Ok("0")
 }
 
 /// Scratch reused across decode steps. Allocated once per layer.
@@ -187,7 +193,7 @@ pub struct Glm5NextDsaWorkspace {
     q_pos: DevicePtr,
     q_mask: DevicePtr,
     /// `[max_rows, ...]` twins of `q_idx` / `head_weights` / `q_pos` / `q_mask`, used only
-    /// by the batched prefill selector. NULL unless `ATLAS_DSA_SELECT_ROWS=1` — see
+    /// by the batched prefill selector. NULL when `ATLAS_DSA_SELECT_ROWS=0` — see
     /// [`dsa_select_rows_enabled`] for why they are not allocated unconditionally.
     q_idx_rows: DevicePtr,
     head_weights_rows: DevicePtr,
@@ -538,7 +544,7 @@ impl Glm5NextDsaLayer {
     }
 
     /// The selection for ALL `k` query rows in ONE pass — the prefill twin of
-    /// [`Self::attend_rows`], enabled by `ATLAS_DSA_SELECT_ROWS=1`.
+    /// [`Self::attend_rows`]. On by default; disabled by `ATLAS_DSA_SELECT_ROWS=0`.
     ///
     /// Per 9,000-token prefill this replaces 4 x 9,000 x 11 single-row launches. Measured
     /// at `6228baa2` (nsys s3-candcap, n3+n4): `dsa_topk_pools` and `dsa_expand_selection`
@@ -924,7 +930,7 @@ impl Glm5NextDsaLayer {
         let mut attend_paging: Option<DsaDecodePaging> = None;
         // PREFILL ONLY: `ctx.graph_capture` marks the verify/decode path, which keeps its
         // per-row selection (a replayed graph would index the wrong rows). The buffers are
-        // NULL unless `ATLAS_DSA_SELECT_ROWS=1`, so this is false on the control arm and the
+        // NULL under `ATLAS_DSA_SELECT_ROWS=0`, so this is false on that arm and the
         // heap layout is unchanged there.
         let batch_select = w.q_idx_rows.0 != 0 && !ctx.graph_capture && k > 1;
         let mut batch_q_pos: Vec<i32> = Vec::with_capacity(if batch_select { k } else { 0 });
@@ -1144,7 +1150,7 @@ impl Glm5NextDsaLayer {
 
         }
 
-        // ── ONE selection pass for all K rows (ATLAS_DSA_SELECT_ROWS=1) ──
+        // ── ONE selection pass for all K rows (default; off under ...SELECT_ROWS=0) ──
         // AFTER the row loop, so every row's indexer write is already in the cache. That
         // ordering is what makes the hoist exact rather than merely cheaper: row `r` gates
         // on `end_c <= q_pos[r]`, so rows appended after it stay invisible to it, and the
