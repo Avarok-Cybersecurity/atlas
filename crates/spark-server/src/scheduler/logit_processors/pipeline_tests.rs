@@ -159,6 +159,7 @@ fn logits_context_field_set_is_stable() {
         think_start_token: Some(2),
         tool_call_start_token: Some(3),
         tool_call_end_token: Some(4),
+        verify_pos: 0,
     };
     // Clone semantics — the context now carries the vocab-indexed sched, which
     // are `Arc`s, so it is Clone rather than Copy. Pipeline stages still take

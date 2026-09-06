@@ -687,6 +687,7 @@ pub fn run(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                verify_pos: 0,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
                 sampling: sched.levers.sampling(),
