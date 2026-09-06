@@ -55,16 +55,56 @@ case "${classify_only:+stdin}${GITHUB_EVENT_NAME:-}" in
   stdin*)
     ;;
   pull_request)
-    # Three-dot: the diff against the MERGE BASE. The event payload's base sha
-    # is the base tip at PR creation and goes stale, and a two-dot diff against
-    # the moving base tip would count main's own commits as this PR's.
-    files=$(git diff --name-only "origin/${PR_BASE_REF:?}...${PR_HEAD_SHA:?}")
+    # ★ THE FILE LIST COMES FROM THE API, NOT FROM A CLONE.
+    #
+    # This used to be `git diff --name-only origin/$BASE...$HEAD`, which needs
+    # the whole commit graph, which needs `fetch-depth: 0`. Six workflows run
+    # this same job, so a PR paid six full-history fetches per push to compute
+    # three booleans. Measured: 5-6s wall per instance of which the script
+    # itself is under a second — the job was ~100% checkout.
+    #
+    # `pulls/{n}/files` is EXACTLY the three-dot diff this replaced: it is the
+    # merge-base comparison, the same set the "Files changed" tab shows, so the
+    # staleness argument that ruled out a two-dot diff still holds and is now
+    # the API's problem rather than ours.
+    if ! files=$(gh api "repos/${REPO:?}/pulls/${PR_NUM:?}/files" \
+                   --paginate --jq '.[].filename' 2>&1); then
+      # An UNANSWERED API is not an empty diff. Falling through with
+      # `files=""` would classify as "nothing changed", and while that happens
+      # to be conservative for `web_only` and `builds_binaries`, it silently
+      # sets `web_touched=false` and it teaches the next reader that the two
+      # cases are the same. They are not.
+      emit false true true true
+      echo "could not list the PR's files, so nothing is fast-pathed: $files"
+      exit 0
+    fi
+    # 3000 is the endpoint's hard ceiling. At the ceiling the list is truncated
+    # and every rule below would be reasoning about a partial diff, so refuse
+    # to classify instead — fail-safe means "build everything", never "skip".
+    if [ "$(printf '%s\n' "$files" | grep -c .)" -ge 3000 ]; then
+      emit false true true true
+      echo "the PR touches >= 3000 files; the API list is truncated, so nothing is fast-pathed"
+      exit 0
+    fi
     ;;
   merge_group)
     # Queue entry: base_sha is main plus every earlier entry, head_sha adds
-    # this one. Two-dot is exact — precisely what this entry contributes on top
-    # of what the queue has already validated.
-    files=$(git diff --name-only "${MG_BASE_SHA:?}" "${MG_HEAD_SHA:?}")
+    # this one. The queue branch is built by appending to the base, so the base
+    # IS an ancestor of the head and the API's three-dot compare is identical
+    # to the two-dot diff this replaced. That equivalence is why the endpoint
+    # is usable here at all.
+    if ! files=$(gh api "repos/${REPO:?}/compare/${MG_BASE_SHA:?}...${MG_HEAD_SHA:?}" \
+                   --paginate --jq '.files[]?.filename' 2>&1); then
+      emit false true true true
+      echo "could not compare the queue entry, so nothing is fast-pathed: $files"
+      exit 0
+    fi
+    # The compare endpoint truncates at 300 files with no flag saying so.
+    if [ "$(printf '%s\n' "$files" | grep -c .)" -ge 300 ]; then
+      emit false true true true
+      echo "the queue entry touches >= 300 files; the compare list may be truncated, so nothing is fast-pathed"
+      exit 0
+    fi
     ;;
   *)
     # push, schedule, workflow_dispatch, workflow_call: never fast-path.
