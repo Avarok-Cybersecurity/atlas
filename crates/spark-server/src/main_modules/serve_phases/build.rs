@@ -15,8 +15,9 @@ pub(crate) fn build_prefix_cache(
 ) -> Box<dyn spark_runtime::prefix_cache::PrefixCache> {
     if args.enable_prefix_caching && !config.kv_only_prefix_cache_is_safe() {
         tracing::warn!(
-            "Prefix caching: DISABLED for compressed DeepSeek V4 because the cache does not yet \
-             preserve the compressor pool/ring state required for exact reuse"
+            model_type = %config.model_type,
+            "Prefix caching: DISABLED because this model builds per-sequence state outside KV; \
+             the KV-only cache cannot resume it exactly"
         );
         return Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
     }
@@ -303,6 +304,15 @@ mod prefix_cache_tests {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
         config.model_type = "deepseek_v4".to_string();
         config.compress_ratios = vec![0, 4, 128];
+
+        let cache = build_prefix_cache(&enabled_args(), &config);
+        assert!(!cache.is_active());
+    }
+
+    #[test]
+    fn glm5_next_disables_incomplete_prefix_cache() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.model_type = "glm5_next".to_string();
 
         let cache = build_prefix_cache(&enabled_args(), &config);
         assert!(!cache.is_active());

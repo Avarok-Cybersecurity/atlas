@@ -846,6 +846,8 @@ pub(crate) fn default_conv_kernel() -> usize {
 mod dispatch;
 mod factory;
 mod gguf;
+#[cfg(test)]
+mod kv_completeness_tests;
 mod methods;
 mod parsers;
 #[cfg(test)]

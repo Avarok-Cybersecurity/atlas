@@ -428,35 +428,15 @@ impl ModelConfig {
     }
 
     /// Whether the radix prefix cache captures every state needed to resume
-    /// this model exactly. DeepSeek V4 compression also carries a prompt-built
-    /// pool and ring that are not represented by KV blocks today.
+    /// this model exactly. Compressed DeepSeek V4 carries a prompt-built
+    /// compressor pool and ring; GLM-5.3 carries prompt-built DSA indexer
+    /// rows (`Glm5NextDsaState`). Neither is represented by KV blocks, so a
+    /// KV-only reuse cannot resume either exactly.
     pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
-        self.model_type != "deepseek_v4" || self.compress_ratios.iter().all(|&ratio| ratio == 0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ModelConfig;
-
-    #[test]
-    fn any_compressed_deepseek_v4_layer_is_not_kv_cache_complete() {
-        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        config.model_type = "deepseek_v4".to_string();
-
-        for ratios in [vec![4, 0, 0], vec![0, 4, 0], vec![0, 0, 128]] {
-            config.compress_ratios = ratios;
-            assert!(!config.kv_only_prefix_cache_is_safe());
+        match self.model_type.as_str() {
+            "glm5_next" | "glm5_next_text" => false,
+            "deepseek_v4" => self.compress_ratios.iter().all(|&ratio| ratio == 0),
+            _ => true,
         }
-    }
-
-    #[test]
-    fn kv_complete_models_can_use_the_prefix_cache() {
-        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        assert!(config.kv_only_prefix_cache_is_safe());
-
-        config.model_type = "deepseek_v4".to_string();
-        config.compress_ratios = vec![0; 3];
-        assert!(config.kv_only_prefix_cache_is_safe());
     }
 }
