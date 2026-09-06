@@ -94,7 +94,10 @@ fn a_diff_reaching_outside_kernels_is_marked_whole_repo() {
 fn codeowners_are_resolved_from_the_changed_paths() {
     let root = repo_root();
     let v = &views(&root, &[pr(4, &["crates/spark-model/src/lib.rs"])])[0];
-    assert_eq!(v.owners, ["@SeedSource", "@rsafier", "@tbraun96"]);
+    assert_eq!(
+        v.owners,
+        ["@SeedSource", "@TheTom", "@rsafier", "@tbraun96"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +268,7 @@ fn pr_titles_cannot_break_the_table() {
         .expect("the row rendered");
     assert_eq!(
         row,
-        "| #9 evil \\| row injection | gb10 | 2 | @SeedSource @rsafier @tbraun96 |"
+        "| #9 evil \\| row injection | gb10 | 2 | @SeedSource @TheTom @rsafier @tbraun96 |"
     );
 }
 
@@ -281,7 +284,7 @@ fn a_draft_is_marked_as_one() {
         .to_string();
     assert_eq!(
         row,
-        "| #5 (draft) pr 5 | gb10 | 2 | @SeedSource @rsafier @tbraun96 |"
+        "| #5 (draft) pr 5 | gb10 | 2 | @SeedSource @TheTom @rsafier @tbraun96 |"
     );
 }
 
