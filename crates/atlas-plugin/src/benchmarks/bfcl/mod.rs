@@ -48,7 +48,8 @@ pub use report::{
 
 mod descriptors;
 pub use descriptors::{
-    ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
+    ECHOLP_A, ECHOLP_B, ECHOLP_C, ECHOLP_D, ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA,
+    SUBSET_A, SUBSET_B, SUBSET_C, SUBSET_D, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
     SUBSET_METADATA,
 };
 
@@ -145,6 +146,9 @@ enum Phase {
 
 pub struct Bfcl {
     variant: Variant,
+    /// Which slice of the draw this run measures, if it is a shard of a group.
+    /// `None` is the whole draw and is byte-for-byte the pre-shard behaviour.
+    shard: Option<dataset::Shard>,
     handle: Option<PluginHandle>,
     phase: Phase,
     artifacts: Option<provision::Artifacts>,
@@ -171,9 +175,41 @@ pub struct Bfcl {
 }
 
 impl Bfcl {
+    /// The sample count THIS run should produce: the variant's pinned draw, or
+    /// this shard's slice of it.
+    ///
+    /// Derived with `draw::shard_take` over the same plan the loader uses, so a
+    /// shard cannot disagree with the rows it was handed. Restating a per-shard
+    /// number here is the `default_floor` mistake this file already documents.
+    fn expected_samples(&self) -> Option<usize> {
+        let whole = self.variant.expected_samples()?;
+        match self.shard {
+            None => Some(whole),
+            Some(sh) => {
+                let totals = draw::reference_subset_totals();
+                let plan = draw::plan(&self.variant.spec(), &totals);
+                Some(
+                    plan.iter()
+                        .map(|(_, take)| draw::shard_take(*take, sh.index, sh.count))
+                        .sum(),
+                )
+            }
+        }
+    }
+
     pub fn new(variant: Variant) -> Self {
+        Self::maybe_sharded(variant, None)
+    }
+
+    /// One shard of `variant`'s draw. The group aggregates the members.
+    pub fn sharded(variant: Variant, index: usize, count: usize) -> Self {
+        Self::maybe_sharded(variant, Some(dataset::Shard { index, count }))
+    }
+
+    fn maybe_sharded(variant: Variant, shard: Option<dataset::Shard>) -> Self {
         Self {
             variant,
+            shard,
             handle: None,
             phase: Phase::Provision,
             artifacts: None,
@@ -414,7 +450,7 @@ impl Benchmark for Bfcl {
                     .artifacts
                     .clone()
                     .context("artifacts were not provisioned")?;
-                self.samples = dataset::load(&artifacts.dataset, &self.spec)?;
+                self.samples = dataset::load_shard(&artifacts.dataset, &self.spec, self.shard)?;
                 self.phase = Phase::Generate;
                 let n = self.samples.len();
                 let mut frame = BenchmarkResult::running("draw", self.elapsed())
@@ -429,12 +465,16 @@ impl Benchmark for Bfcl {
                     )));
                 // The single most useful thing to say up front: whether this
                 // is the MLPerf-comparable draw or something else.
-                if let Some(want) = self.variant.expected_samples()
+                if let Some(want) = self.expected_samples()
                     && n != want
                 {
+                    let of = match self.shard {
+                        None => String::new(),
+                        Some(sh) => format!(" (shard {} of {})", sh.index, sh.count),
+                    };
                     frame = frame.log_line(LogLine::warn(format!(
-                        "n={n}, not the pinned {want} — this run is NOT comparable to this \
-                         draw's baseline"
+                        "n={n}, not the pinned {want}{of} — this run is NOT comparable to \
+                         this draw's baseline"
                     )));
                 }
                 Ok(frame)

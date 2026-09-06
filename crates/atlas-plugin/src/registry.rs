@@ -45,6 +45,17 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &bfcl::SUBSET_DESCRIPTOR,
     &bfcl::SUBSET_ECHOLP_DESCRIPTOR,
     &bfcl::FULL_DESCRIPTOR,
+    // The two gates above are also benchmark GROUPS; these are their members.
+    // Members are not required gates — `gate::group::GROUPS` names them and
+    // `coverage::REQUIRED` still lists only the group ids.
+    &bfcl::SUBSET_A,
+    &bfcl::SUBSET_B,
+    &bfcl::SUBSET_C,
+    &bfcl::SUBSET_D,
+    &bfcl::ECHOLP_A,
+    &bfcl::ECHOLP_B,
+    &bfcl::ECHOLP_C,
+    &bfcl::ECHOLP_D,
     // Unrunnable until MLCommons publishes its dataset; listed after the BFCL
     // legs it will eventually sit beside so the pane shows it exists.
     &mlperf_agentic::SUBSET_DESCRIPTOR,
