@@ -55,7 +55,11 @@ jobs:
   # comments; this is the safe half of it.
   changes:
     name: classify diff (web-only?)
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     permissions:
       contents: read
     outputs:
@@ -95,7 +99,11 @@ jobs:
   # A broken stamp lookup must cost runner minutes, never wave a PR through.
   stamp:
     name: stamp status
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     outputs:
       stamped: ${{ steps.q.outputs.stamped }}
       expedited: ${{ steps.q.outputs.expedited }}
@@ -174,7 +182,11 @@ jobs:
   # cla.yml uses for the same reason.
   seal:
     name: seal status
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - id: q
         env:
@@ -271,7 +283,11 @@ jobs:
 
   license-headers:
     name: SPDX license headers
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Was `apache/skywalking-eyes/header`. That action is a composite that
@@ -325,7 +341,11 @@ jobs:
 
   kernel-structure:
     name: kernel shadow structure
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Validates the kernels/{hw} shadowing mechanism (build.rs
@@ -338,7 +358,11 @@ jobs:
 
   harvest-triage:
     name: harvest triage decision table
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # governance-harvest.yml decides whether to leave an open harvest PR
@@ -1237,7 +1261,11 @@ jobs:
     # it — and a skipped required check is treated as unsatisfied-but-pending,
     # which reads as "still running" instead of "the gate said no".
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - name: Mirror the certification verdict
         env:

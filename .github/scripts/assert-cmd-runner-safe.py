@@ -70,8 +70,14 @@ def guards_against_forks(job):
     return SAME_REPO_GUARD in blob
 
 
+def routing_blob(job):
+    """The cheap pool's `runs-on`, whitespace-collapsed for comparison."""
+    return " ".join(str(job.get("runs-on")).split())
+
+
 def main():
     problems = []
+    routed = []
     for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
         try:
             wf = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -85,6 +91,7 @@ def main():
             if not isinstance(job, dict):
                 continue
             if uses_pr_pool(job):
+                routed.append((routing_blob(job), f"{path.name}:{name}"))
                 if triggers & FORK_CONTROLLED and not guards_against_forks(job):
                     problems.append(
                         f"{path.name}:{name} runs on {PR_LABEL} under a "
@@ -128,6 +135,24 @@ def main():
                         f"{path.name}:{name} checks out '{ref}' on {LABEL} — that is "
                         f"untrusted code on our own machine."
                     )
+    # SSOT: the routing expression is repeated per job because GitHub Actions
+    # has no anchors and no per-job include. Repetition is tolerable only while
+    # every copy is IDENTICAL -- one job drifting to a weaker expression is
+    # exactly the hole this file exists to close, and it would not be visible in
+    # review of a 19-job diff. So the shapes are compared, not just each one's
+    # guard.
+    shapes = {}
+    for blob, where in routed:
+        shapes.setdefault(blob, []).append(where)
+    if len(shapes) > 1:
+        listing = "; ".join(
+            f"{len(v)} job(s) use {k!r}" for k, v in sorted(shapes.items(), key=lambda kv: -len(kv[1]))
+        )
+        problems.append(
+            "the cheap pool is routed with more than one expression — "
+            f"{listing}. Every routed job must use the same one."
+        )
+
     if problems:
         print("the self-hosted command runner is reachable from untrusted code:")
         for p in problems:
