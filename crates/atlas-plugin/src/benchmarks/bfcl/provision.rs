@@ -331,6 +331,52 @@ mod tests {
         assert_eq!(result["overall_accuracy"], 66.67);
         assert_eq!(result["total_samples"], 12);
         assert_eq!(result["unmatched_responses"], 0);
+
+        // ── Cross-language conformance ────────────────────────────────────
+        // The four-way shard split recombines per-subset (hits, n) counts in
+        // Rust and applies score.py's weighting there. That is a second
+        // implementation of the aggregation, so the two must be pinned to each
+        // other on real scorer output -- not on a hand-written fixture, which
+        // would only prove the Rust agrees with my reading of the Python.
+        let totals = result["subset_totals"]
+            .as_object()
+            .expect("score.py must emit subset_totals for the shard aggregator");
+        let tallies: std::collections::BTreeMap<String, super::super::aggregate::Tally> = totals
+            .iter()
+            .map(|(k, v)| {
+                let a = v.as_array().expect("[hits, n]");
+                (
+                    k.clone(),
+                    super::super::aggregate::Tally {
+                        hits: a[0].as_u64().expect("hits"),
+                        n: a[1].as_u64().expect("n"),
+                    },
+                )
+            })
+            .collect();
+        let rust = super::super::aggregate::aggregate(&tallies);
+        assert_eq!(
+            rust.overall_accuracy,
+            result["overall_accuracy"].as_f64().unwrap(),
+            "the Rust aggregator disagrees with score.py on overall_accuracy"
+        );
+        assert_eq!(
+            rust.normalized_single_turn_score,
+            result["normalized_single_turn_score"].as_f64().unwrap(),
+            "the Rust aggregator disagrees with score.py on normalized"
+        );
+        assert_eq!(
+            rust.total_samples,
+            result["total_samples"].as_u64().unwrap(),
+            "sample count disagrees"
+        );
+        for (cat, v) in result["category_scores"].as_object().unwrap() {
+            assert_eq!(
+                rust.category_scores.get(cat).copied(),
+                v.as_f64(),
+                "category {cat} disagrees between score.py and the Rust aggregator"
+            );
+        }
     }
 
     #[test]

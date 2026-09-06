@@ -16,6 +16,7 @@
 //! is what the recorded scores were produced with. Concurrency would change the
 //! numbers.
 
+pub mod aggregate;
 pub mod dataset;
 pub mod draw;
 pub mod provision;
@@ -492,3 +493,7 @@ impl Benchmark for Bfcl {
 #[cfg(test)]
 #[path = "bfcl_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "aggregate_tests.rs"]
+mod aggregate_tests;
