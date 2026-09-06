@@ -220,37 +220,55 @@ measured without proof of speculative engagement is the 2026-08-15 decode \
 flip-flop all over again."""
 
 [benchmarks.metrics.server_decode_tok_s]
-# Median-of-3 server decode rate. The floor of 21.0 is the bound in force —
-# effective 20.5 once noise 0.5 is applied by scoring::compare.
+# Median-of-3 server decode rate. The floor of 22.7 is the bound in force —
+# an effective floor of 22.2 tok/s once noise 0.5 is applied by
+# scoring::compare.
 #
-# ★ THE 12-RUN 28.03 / sigma-0.05 CALIBRATION IS NOT THIS NUMBER'S BASIS.
-# Claiming it was is the defect these lines used to carry: for weeks after
-# the value beside them became 21.0 they went on advertising 27.0 as this
-# gate's bar, derived as "mean minus ~1 tok/s", so anyone reading the file to
-# judge a measurement read a number 6 tok/s above the gate. (Phrased that way
-# on purpose — scripts/check_bench_threshold_prose.py reads "the floor of N"
-# as a claim about the bound in force, so a dead number must not be written
-# in that shape. The live claim, three lines up, is written in it deliberately
-# and is checked.) The calibration ran on a hand-built serve with the DEFAULT
-# lm head; the GATE serves the recipe, which pins lm_head_dtype bf16 as a
-# correctness pin, and that head costs ~20%. The first in-gate runs measured
-# 22.3 / 22.4 / 22.0 tok/s, and 21.0 replaced 27.0 on that basis in
-# c9a682734f (2026-08-15, TOML-only) with this paragraph left untouched.
+# ★ RATCHETED 2026-09-06, 21.0 -> 22.7, and this is the FIRST time this
+# entry's own ">=10-run set on this same instrument" rule has actually been
+# satisfied. 21.0 was set in c9a682734f from n=3 (22.3 / 22.4 / 22.0) and sat
+# ~1.3 tok/s under the band it was drawn from with no measured sigma behind
+# the gap. The set behind 22.7 is ten consecutive gate runs — the gate's own
+# serve, recipe as-is, bf16 lm head, no hand-built harness:
 #
-# ★ SO THE RATCHET RULE BELOW IS UNSATISFIED FOR THE VALUE IN FORCE, and that
-# is the honest reading rather than a reason to move it. n=3 is not the
-# ">=10-run set on this same instrument" this entry demands, and 21.0 sits
-# ~1.3 tok/s under the 22.0-22.4 band it was drawn from with no measured sigma
-# behind the gap. Recalibrate on the gate's OWN serve (recipe as-is, bf16
-# head) before ratcheting; never re-derive from the 28.03 set, which belongs
-# to a serve this gate does not run.
+#     22.9 22.8 22.8 22.8 22.8 22.7 22.7 22.8 22.7 22.8
+#     n=10  mean 22.78  sigma 0.063  range 22.7-22.9
 #
-# noise 0.5 covers the run-to-run band and stays under the 5% validate_noise
-# cap (5% of 21.0 = 1.05). Ratchet only from a fresh >=10-run set on this
-# same instrument.
-min = 21.0
+# so 22.2 sits ~9 sigma below the mean. That is a real-regression margin, not
+# a noise allowance.
+#
+# ★ THE 12-RUN 28.03 / sigma-0.05 CALIBRATION IS STILL NOT THIS NUMBER'S
+# BASIS, and never was. For weeks the lines here advertised 27.0 as this
+# gate's bar, derived as "mean minus ~1 tok/s", while the value beside them
+# read 21.0 — so anyone reading the file to judge a measurement read a number
+# 6 tok/s above the gate. (Phrased that way on purpose:
+# scripts/check_bench_threshold_prose.py reads "the floor of N" as a claim
+# about the bound in force, so a dead number must not be written in that
+# shape. The live claim, at the top, is written in it deliberately and is
+# checked.) That calibration ran on a hand-built serve with the DEFAULT lm
+# head; the GATE serves the recipe, which pins lm_head_dtype bf16 as a
+# correctness pin, and that head costs ~20%. Never re-derive from it.
+#
+# ★ WHICH BOX THE MARGIN IS MEASURED ON MATTERS, because the boxes differ by
+# more than the within-box sigma. Same gate, same pin f3f77c82fc, same night:
+#
+#     dgx2 (spark-43fa)  n=10  mean 22.78   <- the calibration above, slowest
+#     dgx3 (spark-28c2)  n=3   23.6 23.5 23.5
+#     dgx1 (spark-256a)  n=1   23.7
+#
+# The 0.7-0.8 tok/s spread is between boxes, an order of magnitude above the
+# 0.063 within-box sigma, so a floor drawn on one box does not describe
+# another — which is exactly why ci.yml's "One PR, one commit, one signer"
+# refuses a record set spanning boxes. 22.7 is drawn from the SLOWEST box on
+# purpose. On dgx1, currently the only fingerprint in .github/record-signers/
+# and therefore the only box that can certify, the margin is ~1.5 tok/s.
+# Re-cut this floor if a second box is ever registered and is slower.
+#
+# noise 0.5 covers the run-to-run band (observed 0.2 peak-to-peak over the ten
+# runs) and stays under the 5% validate_noise cap (5% of 22.7 = 1.135).
+# Ratchet only from a fresh >=10-run set on this same instrument.
+min = 22.7
 noise = 0.5
-
 [benchmarks.metrics.output_tokens]
 # The driver emits the MINIMUM completion_tokens across the 3 runs, so this
 # floor means "every run decoded at least 750 of the 1500 budget" — the same
