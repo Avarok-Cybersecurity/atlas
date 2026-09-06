@@ -292,3 +292,179 @@ fn from_exl3_maps_codebook_and_rejects_envelope_breaches() {
     };
     assert!(Exl3DenseWeight::from_exl3(&odd).is_err());
 }
+
+// ── reconstruct-to-BF16 prefill tier (`exl3_dense/reconstruct.rs`) ────────
+
+#[test]
+fn reconstruct_rows_env_parsing_is_presence_armed() {
+    // Unset = off (the default, nothing measured yet).
+    assert_eq!(parse_reconstruct_rows(None, false), None);
+    // A row count arms at that count.
+    assert_eq!(parse_reconstruct_rows(Some("512"), false), Some(512));
+    assert_eq!(parse_reconstruct_rows(Some(" 1024 "), false), Some(1024));
+    // Presence arms: `=0`, a value inside the decode tier, or garbage all
+    // clamp to the minimum — they never mean "off".
+    for v in ["0", "1", "8", "abc", ""] {
+        assert_eq!(
+            parse_reconstruct_rows(Some(v), false),
+            Some(EXL3_DENSE_RECONSTRUCT_MIN_ROWS),
+            "{v:?}"
+        );
+    }
+    assert_eq!(EXL3_DENSE_RECONSTRUCT_MIN_ROWS, EXL3_GEMV_MAX_M + 1);
+    // The kill switch wins over any threshold.
+    assert_eq!(parse_reconstruct_rows(Some("512"), true), None);
+    assert_eq!(parse_reconstruct_rows(None, true), None);
+}
+
+#[test]
+fn reconstruct_tier_decision_never_reaches_the_decode_arm() {
+    // Off: never.
+    for m in [1usize, 8, 9, 512, 8192] {
+        assert!(!reconstruct_tier_takes(m, None), "m={m}");
+    }
+    // Armed at 512: m >= 512 only.
+    assert!(!reconstruct_tier_takes(511, Some(512)));
+    assert!(reconstruct_tier_takes(512, Some(512)));
+    assert!(reconstruct_tier_takes(8192, Some(512)));
+    // Even a threshold inside the decode tier cannot pull m <= 8 in.
+    for m in 1..=EXL3_GEMV_MAX_M {
+        assert!(!reconstruct_tier_takes(m, Some(1)), "m={m}");
+    }
+    assert!(reconstruct_tier_takes(EXL3_GEMV_MAX_M + 1, Some(1)));
+}
+
+#[test]
+fn reconstruct_scratch_is_sized_from_the_stage_maxima() {
+    // qwen4_exp maxima: 6144 x 12288 x 2 B = 151 MB per slab (f16 [in, out]
+    // + bf16 [out, in]), the number the design quotes.
+    let (f16, bf16) = reconstruct_scratch_bytes(6144, 12288);
+    assert_eq!(f16, 6144 * 12288 * 2);
+    assert_eq!(bf16, f16);
+    assert_eq!(f16, 150_994_944);
+    let gpu = MockGpuBackend::new();
+    let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
+    // Off (None): no scratch, no GEMM kernel probe.
+    let off = Exl3DenseStage::new_with_reconstruct(&gpu, launch.clone(), 256, 2560, 10240, 0, None)
+        .unwrap();
+    assert!(off.recon.is_none());
+    assert!(
+        !kernel_names(&gpu)
+            .iter()
+            .any(|n| n == "dense_gemm_bf16_pipelined")
+    );
+    off.release(&gpu).unwrap();
+    // Armed: both slabs at max_in x max_out, the GEMM probed at construction.
+    let on =
+        Exl3DenseStage::new_with_reconstruct(&gpu, launch, 256, 2560, 10240, 0, Some(64)).unwrap();
+    let rs = on.recon.as_ref().unwrap();
+    assert_eq!(rs.elems, 2560 * 10240);
+    assert_eq!(rs.threshold, 64);
+    assert!(rs.takes(64) && !rs.takes(63) && !rs.takes(8));
+    assert!(
+        kernel_names(&gpu)
+            .iter()
+            .any(|n| n == "dense_gemm_bf16_pipelined")
+    );
+    on.release(&gpu).unwrap();
+    // A threshold inside the decode tier is refused outright.
+    assert!(Exl3ReconScratch::new(&gpu, 2560, 10240, EXL3_GEMV_MAX_M).is_err());
+}
+
+#[test]
+fn launch_plan_reconstruct_tier_above_threshold_only() {
+    let gpu = MockGpuBackend::new();
+    let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
+    // fp32-C capacity for the widest weight so the `with_fp32` leg below
+    // passes the stage contract (the layers only pin out = hidden to fp32).
+    let stage =
+        Exl3DenseStage::new_with_reconstruct(&gpu, launch, 256, 2560, 10240, 10240, Some(64))
+            .unwrap();
+    let w = weight_k(&gpu, 2560, 10240, 6);
+    let a = gpu.alloc(700 * 2560 * 2).unwrap();
+    let dst = gpu.alloc(700 * 10240 * 2).unwrap();
+
+    // m <= 8: the decode arm, byte-for-byte the plan it had before.
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear(&gpu, &w, a, contiguous(dst), 8, &stage, 0).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names[0].starts_with("exl3_gemm_k6_cb2_sh") && names[0].ends_with("_f32_abf16"));
+    assert_eq!(names[1], "exl3_f32_to_bf16");
+
+    // 8 < m < threshold: the trellis GEMM tier, unchanged.
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear(&gpu, &w, a, contiguous(dst), 63, &stage, 0).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert!(names[1].starts_with("exl3_gemm_k6_cb2_sh") && names[1].ends_with("_f16"));
+
+    // m >= threshold, contiguous: reconstruct, transpose, ONE GEMM straight
+    // into dst — no converter, no trellis GEMM, even above rows_cap.
+    let d2d_before = gpu.d2d_2d_count();
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear(&gpu, &w, a, contiguous(dst), 700, &stage, 0).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(
+        names,
+        vec![
+            "exl3_reconstruct_had_k6_cb2",
+            "exl3_f16_to_bf16_t",
+            "dense_gemm_bf16_pipelined",
+        ]
+    );
+    assert_eq!(
+        gpu.d2d_2d_count(),
+        d2d_before,
+        "contiguous dst needs no copy"
+    );
+
+    // fp32-C destinations take the same plan (fp32 accumulate + one BF16
+    // round is what the GEMM does anyway).
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear(&gpu, &w, a, contiguous(dst).with_fp32(), 300, &stage, 0).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert_eq!(names[2], "dense_gemm_bf16_pipelined");
+    assert!(!names.iter().any(|n| n.contains("f32_to_bf16")));
+
+    // Strided shared-A pair at m=300 over a 256-row stage: per weight ONE
+    // reconstruct + transpose, then a GEMM + 2-D copy per row batch (2).
+    let z = weight_k(&gpu, 2560, 6144, 6);
+    let arena = gpu.alloc(300 * 16384 * 2).unwrap();
+    let d2d_before = gpu.d2d_2d_count();
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear_shared_a(
+        &gpu,
+        &[
+            (w, Exl3DenseOut::strided(arena, 16384)),
+            (z, Exl3DenseOut::strided(arena.offset(10240 * 2), 16384)),
+        ],
+        a,
+        300,
+        &stage,
+        0,
+    )
+    .unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(
+        names,
+        vec![
+            "exl3_reconstruct_had_k6_cb2",
+            "exl3_f16_to_bf16_t",
+            "dense_gemm_bf16_pipelined",
+            "dense_gemm_bf16_pipelined",
+            "exl3_reconstruct_had_k6_cb2",
+            "exl3_f16_to_bf16_t",
+            "dense_gemm_bf16_pipelined",
+            "dense_gemm_bf16_pipelined",
+        ]
+    );
+    assert_eq!(
+        gpu.d2d_2d_count() - d2d_before,
+        4,
+        "one 2-D copy per (batch, weight)"
+    );
+    assert!(!names.iter().any(|n| n == "exl3_bf16_to_f16"));
+    stage.release(&gpu).unwrap();
+}

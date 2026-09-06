@@ -38,10 +38,10 @@
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::gpu::{DevicePtr, GpuBackend};
-use crate::kernel_args::KernelLaunch;
 use crate::weights::{WeightDtype, WeightStore};
 
-const MODULE: &str = "exl3_reconstruct";
+/// Kernel module holding the reconstruct + transpose instances.
+pub(crate) const MODULE: &str = "exl3_reconstruct";
 
 /// True for EXL3 f16 auxiliary tensors whose EXACT f16 bits are decode
 /// inputs and must NOT take the loaders' default F16->BF16 conversion:
@@ -239,109 +239,14 @@ pub fn k_bits_from_trellis_dim(inner: usize) -> Result<u32> {
     Ok((inner / 16) as u32)
 }
 
-/// Reconstruct an EXL3 tensor to the upstream-native f16 `[in, out]`
-/// row-major layout on the GPU (the reconstruct kernel's coalesced store
-/// order). Returns a fresh f16 buffer of `in * out` elements (caller owns).
-///
-/// * `trellis` — device ptr to the packed `.trellis` int16 data
-///   (`(in/16) * (out/16) * 16 * k_bits` u16s, uploaded by the caller).
-/// * `suh` / `svh` — device ptrs to the f16 sign vectors (`in` / `out` f16s).
-#[allow(clippy::too_many_arguments)]
-pub fn reconstruct_had_f16_device(
-    gpu: &dyn GpuBackend,
-    trellis: DevicePtr,
-    suh: DevicePtr,
-    svh: DevicePtr,
-    in_dim: usize,
-    out_dim: usize,
-    k_bits: u32,
-    cb: Exl3Codebook,
-) -> Result<DevicePtr> {
-    ensure!(
-        in_dim.is_multiple_of(128) && out_dim.is_multiple_of(128),
-        "EXL3 reconstruct needs both dims divisible by 128, got [{in_dim}, {out_dim}]"
-    );
-    ensure!(
-        (1..=8).contains(&k_bits),
-        "EXL3 K must be 1..=8, got {k_bits}"
-    );
-
-    let name = format!("exl3_reconstruct_had_k{}_cb{}", k_bits, cb as u32);
-    let kernel = match gpu.kernel(MODULE, &name) {
-        Ok(k) => k,
-        Err(e) => bail!("EXL3 kernel {name} unavailable on this target: {e}"),
-    };
-    let stream = gpu.default_stream();
-    let f16_out = gpu.alloc(in_dim * out_dim * 2)?;
-    let launch = KernelLaunch::new(gpu, kernel)
-        .grid([(out_dim / 128) as u32, (in_dim / 128) as u32, 1])
-        .block([256, 1, 1])
-        .arg_ptr(f16_out)
-        .arg_ptr(trellis)
-        .arg_ptr(suh)
-        .arg_ptr(svh)
-        .arg_u32((out_dim / 16) as u32) // packed_blocks_n
-        .arg_u32(0) // packed_n_offset
-        .launch(stream);
-    if let Err(e) = launch {
-        gpu.free(f16_out).ok();
-        return Err(e);
-    }
-    Ok(f16_out)
-}
-
-/// Reconstruct an EXL3 tensor to Atlas-layout BF16 `[out, in]` on the GPU.
-/// Returns a fresh BF16 buffer of `out * in` elements (caller owns it).
-///
-/// Reconstructs to the f16 `[in, out]` layout first, then transposes to
-/// Atlas's `[out, in]` row-major with a single f32-exact f16->bf16 rounding.
-#[allow(clippy::too_many_arguments)]
-pub fn reconstruct_had_bf16(
-    gpu: &dyn GpuBackend,
-    trellis: DevicePtr,
-    suh: DevicePtr,
-    svh: DevicePtr,
-    in_dim: usize,
-    out_dim: usize,
-    k_bits: u32,
-    cb: Exl3Codebook,
-) -> Result<DevicePtr> {
-    let f16_tmp = reconstruct_had_f16_device(gpu, trellis, suh, svh, in_dim, out_dim, k_bits, cb)?;
-    let transpose = match gpu.kernel(MODULE, "exl3_f16_to_bf16_t") {
-        Ok(k) => k,
-        Err(e) => {
-            gpu.free(f16_tmp).ok();
-            return Err(e);
-        }
-    };
-    let stream = gpu.default_stream();
-    let out = match gpu.alloc(out_dim * in_dim * 2) {
-        Ok(p) => p,
-        Err(e) => {
-            gpu.free(f16_tmp).ok();
-            return Err(e);
-        }
-    };
-    let launch = KernelLaunch::new(gpu, transpose)
-        .grid([
-            (out_dim.div_ceil(32)) as u32,
-            (in_dim.div_ceil(32)) as u32,
-            1,
-        ])
-        .block([32, 8, 1])
-        .arg_ptr(f16_tmp)
-        .arg_ptr(out)
-        .arg_u32(in_dim as u32)
-        .arg_u32(out_dim as u32)
-        .launch(stream);
-    gpu.synchronize(stream).ok();
-    gpu.free(f16_tmp).ok();
-    if let Err(e) = launch {
-        gpu.free(out).ok();
-        return Err(e);
-    }
-    Ok(out)
-}
+// Reconstruct launchers (allocating `reconstruct_had_*` forms and the
+// stream-ordered `_into` forms the native dense prefill tier reuses) —
+// sibling file, 500-LoC cap.
+mod reconstruct_launch;
+pub use reconstruct_launch::{
+    reconstruct_had_bf16, reconstruct_had_f16_device, reconstruct_had_f16_into,
+    transpose_f16_to_bf16_into,
+};
 
 #[cfg(test)]
 mod store_tests {

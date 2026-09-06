@@ -13,6 +13,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use crate::layers::ops::exl3_matmul::EXL3_GEMV_MAX_M;
 
 use super::launch_state::Exl3LaunchState;
+use super::reconstruct::{Exl3ReconScratch, reconstruct_rows_from_env};
 
 /// Default row capacity of the staging slabs (`ATLAS_EXL3_DENSE_STAGE_ROWS`
 /// overrides). Row batching above it costs one extra launch triple per
@@ -51,6 +52,10 @@ pub struct Exl3DenseStage {
     pub max_in: usize,
     /// Largest `out_dim` any weight served through this stage may have.
     pub max_out: usize,
+    /// Reconstruct-to-BF16 prefill tier scratch (`ops/exl3_dense/reconstruct.rs`)
+    /// — `Some` only when `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS` armed it at
+    /// construction; `None` = the trellis GEMM serves every m > 8 (default).
+    pub recon: Option<Exl3ReconScratch>,
 }
 
 impl Exl3DenseStage {
@@ -79,6 +84,31 @@ impl Exl3DenseStage {
         max_in: usize,
         max_out: usize,
         max_out_f32: usize,
+    ) -> Result<Self> {
+        Self::new_with_reconstruct(
+            gpu,
+            launch,
+            rows_cap,
+            max_in,
+            max_out,
+            max_out_f32,
+            reconstruct_rows_from_env(),
+        )
+    }
+
+    /// [`Self::new_with_fp32`] with the reconstruct tier's threshold passed
+    /// explicitly instead of read from the environment (`None` = tier off):
+    /// the primitive every other constructor lowers to, and the one tests
+    /// call so they never touch process env.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_reconstruct(
+        gpu: &dyn GpuBackend,
+        launch: std::sync::Arc<Exl3LaunchState>,
+        rows_cap: usize,
+        max_in: usize,
+        max_out: usize,
+        max_out_f32: usize,
+        reconstruct_rows: Option<usize>,
     ) -> Result<Self> {
         let rows_cap = std::env::var("ATLAS_EXL3_DENSE_STAGE_ROWS")
             .ok()
@@ -116,6 +146,24 @@ impl Exl3DenseStage {
         let c_f16 = alloc(rows_cap * max_out * 2)?;
         let c_f32_elems = (EXL3_GEMV_MAX_M * max_out).max(rows_cap * max_out_f32);
         let c_f32 = alloc(c_f32_elems * 4)?;
+        let recon = match reconstruct_rows {
+            Some(threshold) => match Exl3ReconScratch::new(gpu, max_in, max_out, threshold) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    for p in [a_f16, a_had_f16, c_f16, c_f32] {
+                        gpu.free(p).ok();
+                    }
+                    return Err(e);
+                }
+            },
+            None => {
+                tracing::info!(
+                    "EXL3 dense reconstruct tier off (default): every m > 8 call runs the \
+                     cooperative trellis GEMM; ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows> arms it"
+                );
+                None
+            }
+        };
         let total = rows_cap * (max_in * 4 + max_out * 2) + c_f32_elems * 4;
         tracing::info!(
             "EXL3 native dense stage allocated: {rows_cap} rows x (in {max_in}, out \
@@ -134,6 +182,7 @@ impl Exl3DenseStage {
             rows_cap,
             max_in,
             max_out,
+            recon,
         })
     }
 
@@ -184,6 +233,9 @@ impl Exl3DenseStage {
     pub fn release(&self, gpu: &dyn GpuBackend) -> Result<()> {
         for p in [self.a_f16, self.a_had_f16, self.c_f16, self.c_f32] {
             gpu.free(p)?;
+        }
+        if let Some(r) = &self.recon {
+            r.release(gpu)?;
         }
         Ok(())
     }

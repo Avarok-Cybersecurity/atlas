@@ -27,6 +27,10 @@
 //!                              exl3_f16_to_bf16 IN PLACE (lm_head precedent)
 //!              strided dst:    exl3_gemm fp16 C into stage.c_f16, then
 //!                              exl3_f16_to_bf16_2d into the arena rows
+//!   m >= ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS (opt-in, default off):
+//!            reconstruct the weight to BF16 once, dense_gemm_bf16_pipelined
+//!            straight into dst (or staged + one 2-D copy when strided) —
+//!            `exl3_dense/reconstruct.rs`; numerics differ from the tiers above
 //! ```
 //!
 //! `A_had` (the kernels' rotation scratch) is a SEPARATE slab, never aliased
@@ -53,6 +57,13 @@ pub use launch_state::{Exl3LaunchState, Exl3Section};
 #[path = "exl3_dense/stage.rs"]
 mod stage;
 pub use stage::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage};
+#[path = "exl3_dense/reconstruct.rs"]
+mod reconstruct;
+pub use reconstruct::{
+    EXL3_DENSE_RECONSTRUCT_KILL_ENV, EXL3_DENSE_RECONSTRUCT_MIN_ROWS,
+    EXL3_DENSE_RECONSTRUCT_ROWS_ENV, Exl3ReconScratch, parse_reconstruct_rows,
+    reconstruct_rows_from_env, reconstruct_scratch_bytes, reconstruct_tier_takes,
+};
 
 use super::exl3_matmul::{
     EXL3_GEMM_K_BITS, EXL3_GEMV_MAX_M, exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d,
@@ -423,6 +434,13 @@ fn dense_linear_shared_a(
             }
         }
         return Ok(());
+    }
+
+    // Reconstruct-to-BF16 prefill tier (opt-in, `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS`):
+    // one trellis decode per weight per call + a fixed-config BF16 GEMM. Not
+    // bit-identical to the trellis GEMM below — see `exl3_dense/reconstruct.rs`.
+    if let Some(rs) = stage.recon.as_ref().filter(|rs| rs.takes(m)) {
+        return reconstruct::run_reconstruct_tier(gpu, ws, a_bf16, m, stage, rs, stream);
     }
 
     // GEMM tier, row-batched at the slab capacity.

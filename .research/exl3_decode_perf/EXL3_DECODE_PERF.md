@@ -366,6 +366,27 @@ levers: nsys an 8K EXL3 prefill first; raise the fused MoE tier's 128-row-per-ex
 is 2048; ours overflows at every 4K chunk); a dense reconstruct-to-BF16 GEMM tier above a row
 threshold using the byte-identical `exl3_reconstruct.cu` Atlas already has.
 
+### Prefill lever 3, built and UNMEASURED: dense reconstruct-to-BF16 tier (branch `perf/exl3-dense-reconstruct-prefill-tier`)
+
+`ops/exl3_dense/reconstruct.rs`: for `m >= ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS` (presence arms; unset =
+off, the default; `ATLAS_NO_EXL3_DENSE_RECONSTRUCT` kills) each dense weight is reconstructed once per
+call — `exl3_reconstruct_had_k{K}_cb{cb}` (f16 `[in, out]`) + `exl3_f16_to_bf16_t` (bf16 `[out, in]`)
+into two stage-owned slabs of `max_in x max_out x 2 B` (302 MB at 6144 x 12288, allocated at load
+inside the util pledge only when armed) — and multiplied with the fixed-config tensor-core
+`dense_gemm_bf16_pipelined` (128x128 tile, no split-K, no cuBLASLt heuristics; run-to-run
+deterministic, m-independent per element). Contiguous destinations take the GEMM's BF16 C directly
+(zero egress launches); the GDN `[Q|K|V|Z]` arena stages through `c_f16` per row batch + one
+`cudaMemcpy2DAsync`. The m <= 8 decode arm is untouched (asserted by the mock plan tests).
+
+Not bit-identical to the trellis tier: the reconstructed weight is rounded once to BF16 (2^-9
+relative, a rounding the trellis path never takes), the activation is read unrounded (the trellis
+path rounds it to f16 and rotates in f16), and the reduction order differs. HYPOTHESIS: swamped by
+the 4-bit trellis noise, judged by the greedy samples and the model-card agentic gate. HYPOTHESIS on
+speed: one trellis decode per weight per call instead of `rows/16` (512x at an 8192-row chunk) and a
+~50 TFLOP/s GEMM in place of a kernel upstream measured at 0.59 TFLOP/s at m=128; nothing is a number
+until `ab_dense_reconstruct.sh` runs (arms: off / 512 / 1024 on `measure_prefill.py` 8000/11000,
+decode sanity, greedy samples recorded — expected to differ from the off arm).
+
 ## BF16 ingress fused into the dense GEMM prologue (seventh lever, bit-exact)
 
 The dense decode arm ran `exl3_bf16_to_f16` before every projection group (183 launches per
