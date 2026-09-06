@@ -153,30 +153,58 @@ pub struct Glm5NextDsaWeights {
 /// The PREFILL selector runs once for the whole row group instead of once per token.
 /// ON by default; `ATLAS_DSA_SELECT_ROWS=0` is the kill-switch back to per-row selection.
 ///
-/// Bit-identical by construction, and the kernels are untouched. `dsa_index_scores`
-/// already carries the row axis on `gridDim.y` with a per-row `q_pos[Q]`, and its
-/// candidacy test (`dsa_indexer.cu`) is *"a pool is a candidate only when it is complete
-/// AND its LAST token is visible to this query"* — `pool_valid[p] && end_c <= q_pos[r]`.
-/// Both terms are per-row or per-pool; neither reads the scalar `P`. So widening `P` from
-/// row `r`'s own pool count to the group's is a no-op for row `r`: every extra pool is
-/// either incomplete or ends past `q_pos[r]`, scores `-FLT_MAX`, and `dsa_topk_pools`
-/// excludes it under a TOTAL order (score DESC, then pool index ASC — unique, so the
-/// top-`select_k` prefix is unique). There is no partial-pool scoring to disagree about.
+/// 🔴 EXPLICIT PREFILL ONLY. The batched pass runs when — and only when — the caller states
+/// `is_prefill`; see [`batch_select_enabled`] for the whole table. Nothing in
+/// `ForwardContext` implies it. `decode_step` is false for prefill AND for a speculative
+/// verify, and `graph_capture` is false for prefill AND for an EAGER verify: `verify_a`
+/// hard-codes `graph_capture: false`, and `verify_b/c/c2/d/fused` take it from `use_graphs`,
+/// which is false under `ATLAS_GLM_VERIFY_GRAPHS=0`, under high-speed swap, and under
+/// `ATLAS_LORA_EAGER`. **Both eager and graphed verification keep the original per-row
+/// path.**
 ///
-/// Measured on the 9K prefill probe, n3+n4, fresh container, control -> arm -> control ->
-/// arm on ONE image: 146.073 s -> 133.550 s, **-8.57 %**, ~36x the control spread, with all
-/// four arms byte-identical on the sealed hash. Promoted to the default after the six
-/// canonical probes reproduced the sealed reference 6/6 with the batching on
-/// (2026-09-06, `scripts/glm53-dsa-promote/gate-6probe.sh`).
+/// `!graph_capture` is required SEPARATELY, for its own reason rather than as a proxy for
+/// "not verify": `select_rows_batched` performs host copy/H2D work (`copy_h2d` of `q_pos`),
+/// which is `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED` inside a recording stream.
+///
+/// Selection MEMBERSHIP is unaffected by the widened pool walk, and the kernels are
+/// untouched. `dsa_index_scores` already carries the row axis on `gridDim.y` with a per-row
+/// `q_pos[Q]`, and its candidacy test (`dsa_indexer.cu`) is *"a pool is a candidate only when
+/// it is complete AND its LAST token is visible to this query"* — `pool_valid[p] && end_c <=
+/// q_pos[r]`. Both terms are per-row or per-pool; neither reads the scalar `P`. So widening
+/// `P` from row `r`'s own pool count to the group's selects the same pools in the same order
+/// for row `r`: every extra pool is either incomplete or ends past `q_pos[r]`, scores
+/// `-FLT_MAX`, and `dsa_topk_pools` excludes it under a TOTAL order (score DESC, then pool
+/// index ASC — unique, so the top-`select_k` prefix is unique).
+///
+/// 🔴 Equal membership was NOT equal placement, and that distinction cost a review cycle.
+/// `dsa_expand_selection` writes the visible tail at `select_k * KP`, and `select_k` is a
+/// per-pass scalar: the original batched geometry planned it once from the group's FINAL
+/// cache length, so every earlier row's tail slid forward relative to its serial twin. The
+/// production attention (`glm5next_dsa_mla_decode_fp8`) splits the selection row into
+/// `NUM_WARPS = 8` slices, runs a per-warp online softmax and merges across warps, so a
+/// slid token is folded by the MERGE instead of by its warp's serial loop. **The original
+/// batched geometry was shown to ALTER warp FP reduction grouping** — measured on the real
+/// kernel, 14 of 18 crossing configurations differ by up to 2 BF16 ulp over 64 draws each
+/// (a single draw is byte-identical, which is why one probe proved nothing: the kernel
+/// accumulates in FP32 and writes BF16). Over a 9,000-token prefill at `PREFILL_ROWS = 16`,
+/// 1,920 of 8,999 rows moved their tail base and 42 moved a real token across a warp slice.
+///
+/// The correction is per-row geometry inside `dsa_expand_selection`:
+/// `row_select_k = min(select_k, (q_pos[r] + 1) / KP)`, applied to both the pool loop and
+/// the tail base. It **preserves serial selection-slot geometry** and is a no-op at
+/// `q_rows == 1`, so the serial and replay-safe paths are untouched. Exact selector parity
+/// was restored: real-kernel serial-vs-batched comparison over 2,397 rows went from 1,533
+/// mismatching rows to **0**.
+///
+/// Measured on the 9K prefill probe, n3+n4, fresh container, first request after launch:
+/// **146.073 s -> 134.001 s, -12.072 s / -8.26 %**, with the canonical six reproducing the
+/// sealed reference **6/6** and the sealed p9000 hash `4187fe63fa78d8b4` unchanged
+/// (2026-09-06, `scripts/glm53-dsa-promote/{gate-6probe.sh,ADJUDICATION.md}`).
 ///
 /// The four `[max_rows]` twins are allocated only when this is on, so the kill-switch arm
 /// keeps the pre-batching heap layout byte for byte. That matters here: this workspace is
 /// the one where merely making an allocation unconditionally was itself enough to move the
 /// model's sampled output (see `bt`/`sl` below, and A55).
-///
-/// 🔴 PREFILL ONLY. The K-token verify keeps its per-row selection: it runs the
-/// device-geometry (`replay_safe`) path, and `select_tokens` refuses a ceiling launch at
-/// `q_rows > 1` because a replayed graph would index the wrong rows.
 /// Whether ONE selection pass covers the whole row group, or each row selects on its own.
 ///
 /// Extracted from `decode_k` so the choice is a table a test can drive, not a boolean buried
