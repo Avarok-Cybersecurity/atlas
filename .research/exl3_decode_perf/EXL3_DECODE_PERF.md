@@ -275,6 +275,27 @@ Cumulative on the operating profile (2 drafts, prefix cache on): 25.95 → 29.89
 grid and row-exact changes; on top of the shared-expert fix, the pre-fix TUI server logged
 12.9-13.7 tok/s under this profile earlier the same day (longer context, observation not A/B).
 
+## PLE verify snapshots on device (fourth lever, this commit)
+
+`push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after
+each verify row a partial accept can land on — a stream sync per row. In the step timeline each
+of the two per-step snapshots drained the queue and then idled the GPU 0.7-0.8 ms while the host
+hashed and gathered the next row's n-gram embeddings. The conv state (~160 KB FP32) now copies
+device-to-device into a per-row slot (`PleSeqState::verify_conv`, allocated on first use, freed
+with `conv`), and the token history — host state anyway — is cloned. `rewind_verify_row` copies
+back from the slot. Numerics unchanged by construction; partial accepts exercise the rewind every
+few steps (accepted/step ≈1.47 of 2), so a wrong rewind would show up as a diverging sample.
+
+Measured (`spark-plesnap`, MTP profile, same fingerprint as the row-exact confirmation, fresh
+server): **29.86 tok/s** vs 29.89 on the previous binary — neutral within run-to-run spread;
+accepted/step 1.47 unchanged; greedy sample `c5d02cf5…` byte-identical (the rewind path is
+exercised and correct). The two syncs per step were cheaper than the 0.7-0.8 ms stalls around
+them suggested: most of that idle was the host hash + gather of the next row, which this change
+does not touch. Kept because it removes two host syncs per step from the critical path at no
+cost and closes the host-blob asymmetry with the SSM intermediates; the host-side prestage of
+all K rows' gathers at pass start is the follow-up that would recover the remaining ~2 ms.
+Record: `ab_plesnap_mtp.txt`.
+
 ## What is left after the fix, ranked (hypotheses from the trace, not yet measured e2e)
 
 Post-fix serial token budget is roughly: EXL3 trellis kernels ~21 ms + cuBLASLt mHC ~7.5 ms +

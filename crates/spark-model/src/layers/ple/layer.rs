@@ -53,21 +53,30 @@ pub struct PleSeqState {
     /// in `slots_dev` and history has already advanced, so re-hashing would
     /// double-count the token — re-arming is the only correct recovery.
     last_staged_va: u64,
-    /// HOST snapshots of this carry taken at each row boundary of a K-row
-    /// speculative verify — index `t` is "the carry AFTER row t".
+    /// Snapshots of this carry taken at each row boundary of a K-row
+    /// speculative verify — index `t` is "the carry AFTER row t". The token
+    /// history lives here on the host (it is host state to begin with); the
+    /// FP32 `conv` state is copied device-to-device into `verify_conv[t]`.
     ///
     /// The SSM's `h_state`/`conv_state` get the same treatment in device pool
-    /// memory (`h_state_intermediates`); PLE's is a host blob instead because
-    /// the carry is ~150 KB and lives on exactly ONE model layer, so K-1
-    /// snapshots per verify is a rounding error next to 36 layers of GDN, and
-    /// a host Vec cannot leak the way a per-sequence device buffer can
-    /// (`release_seq_state` frees `conv`; this frees itself).
+    /// memory (`h_state_intermediates`). PLE's snapshot used to be a host
+    /// blob (`copy_d2h_on_stream`), which is a stream SYNC per row: nsys on
+    /// the 2-draft mHC verify (2026-09-05) showed each of the two per-step
+    /// snapshots draining the queue and then idling the GPU for 0.7-0.8 ms
+    /// while the host hashed and gathered the next row. A D2D copy is
+    /// stream-ordered and needs no sync.
     ///
     /// Empty except between `begin_verify_rows` and the commit that consumes
     /// it. Unlike QSA's `ingested`/`pooled` marks, this carry CANNOT be
     /// rebuilt by truncation: `conv` is a rolling FP32 state and `history` is
     /// a fixed window whose oldest entries have already rolled off.
-    verify_rows: Vec<Vec<u8>>,
+    verify_rows: Vec<Vec<u32>>,
+    /// Device slots holding the `conv` snapshot for verify row `t`, one
+    /// `conv`-sized buffer each, allocated on first use and kept for the
+    /// life of the sequence (a verify never needs more than K-1 ≤ 7). Freed
+    /// with `conv` in `release_seq_state` — the leak class that motivated the
+    /// host blob is closed the same way `conv`'s was.
+    verify_conv: Vec<DevicePtr>,
 }
 
 pub struct PleLayer {
@@ -207,6 +216,7 @@ impl PleLayer {
             prestaged_va: None,
             last_staged_va: 0,
             verify_rows: Vec::new(),
+            verify_conv: Vec::new(),
         })
     }
 
@@ -223,8 +233,18 @@ impl PleLayer {
         if st.conv.is_null() {
             return Ok(());
         }
-        let r = gpu.free(st.conv);
+        let mut r = gpu.free(st.conv);
         st.conv = DevicePtr(0);
+        // The verify snapshot slots share `conv`'s lifetime and its leak class.
+        for slot in st.verify_conv.drain(..) {
+            if !slot.is_null()
+                && let Err(e) = gpu.free(slot)
+                && r.is_ok()
+            {
+                r = Err(e);
+            }
+        }
+        st.verify_rows.clear();
         st.history.clear();
         st.prestaged_va = None;
         st.last_staged_va = 0;

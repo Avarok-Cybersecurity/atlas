@@ -124,7 +124,8 @@ impl PleLayer {
 // class. These three calls give it the same per-row granularity the other two
 // carries have.
 impl PleLayer {
-    /// Start a K-row verify: drop any snapshots a previous verify left.
+    /// Start a K-row verify: drop any snapshots a previous verify left. The
+    /// device slots are kept — the next verify reuses them.
     pub fn begin_verify_rows(&self, st: &mut PleSeqState) {
         st.verify_rows.clear();
     }
@@ -132,14 +133,24 @@ impl PleLayer {
     /// Record "the carry after row `t`". Called once per row boundary a
     /// partial accept can land on — rows `0..K-1`, matching `hc_publish_rows`;
     /// the last row needs none because a full accept keeps the live state.
+    ///
+    /// Stream-ordered, no sync: the token history is host state and is
+    /// cloned; the FP32 conv state is copied device-to-device into slot `t`
+    /// on `stream`. The previous host blob (`copy_d2h_on_stream`) was a
+    /// stream sync per row — see `PleSeqState::verify_rows`.
     pub fn push_verify_row(
         &self,
         st: &mut PleSeqState,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        let blob = self.snapshot_aux(st, gpu, stream)?;
-        st.verify_rows.push(blob);
+        let t = st.verify_rows.len();
+        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        while st.verify_conv.len() <= t {
+            st.verify_conv.push(gpu.alloc(conv_bytes)?);
+        }
+        gpu.copy_d2d_async(st.conv, st.verify_conv[t], conv_bytes, stream)?;
+        st.verify_rows.push(st.history.clone());
         Ok(())
     }
 
@@ -156,7 +167,7 @@ impl PleLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        let blob = st.verify_rows.get(t).cloned().ok_or_else(|| {
+        let history = st.verify_rows.get(t).cloned().ok_or_else(|| {
             anyhow::anyhow!(
                 "PLE verify rewind to row {t}, but only {} row snapshots were \
                  recorded. The carry would be left ADVANCED over the rejected \
@@ -164,6 +175,18 @@ impl PleLayer {
                 st.verify_rows.len()
             )
         })?;
-        self.restore_aux(st, &blob, gpu, stream)
+        let slot = st
+            .verify_conv
+            .get(t)
+            .copied()
+            .filter(|p| !p.is_null())
+            .ok_or_else(|| {
+                anyhow::anyhow!("PLE verify rewind to row {t}: conv snapshot slot missing")
+            })?;
+        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        gpu.copy_d2d_async(slot, st.conv, conv_bytes, stream)?;
+        st.history = history;
+        st.prestaged_va = None;
+        Ok(())
     }
 }
