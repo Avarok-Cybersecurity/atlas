@@ -1,0 +1,6 @@
+FINGERPRINT port=8899 model=qwen3.8-flash-next prompt_tokens~30000 max_tokens=200 temp=0 effort=low stream=1 date=2026-09-05T23:40:12
+C=2: streams_ok=2/2 errors=0 per_stream_tok_s=[6.3, 11.8] median_per_stream=9.0 aggregate_tok_s=2.3 ttft_s=[141.3, 156.8] prompt_tokens=[29871] wall=173.8s min_host_avail_GB=15 max_swap_used_GB=1
+C=4: streams_ok=1/4 errors=3 per_stream_tok_s=[0.1] median_per_stream=0.1 aggregate_tok_s=0.0 ttft_s=[268.4] prompt_tokens=[29884] wall=314.8s min_host_avail_GB=7 max_swap_used_GB=1
+  error: only 3 chunks
+  error: only 1 chunks
+  error: only 1 chunks

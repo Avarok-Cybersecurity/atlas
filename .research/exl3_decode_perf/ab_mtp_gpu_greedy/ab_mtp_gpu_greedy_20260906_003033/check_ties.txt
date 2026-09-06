@@ -1,0 +1,5 @@
+2026-09-06T04:31:22.874249Z  INFO spark::scheduler::verify_mtp_wide::gpu_greedy: MTP GPU-greedy check: exact bf16 tie at row 0: host=2577 device=586 logit=Some(22.25)
+2026-09-06T04:31:30.589711Z  INFO spark::scheduler::verify_mtp_wide::gpu_greedy: MTP GPU-greedy check: exact bf16 tie at row 1: host=11205 device=314 logit=Some(24.5)
+2026-09-06T04:31:33.427090Z  INFO spark::scheduler::verify_mtp_wide::gpu_greedy: MTP GPU-greedy check: exact bf16 tie at row 0: host=2577 device=586 logit=Some(22.25)
+ties logged: 4
+defects logged: 0

@@ -1,0 +1,1 @@
+FINGERPRINT bin=target/release/spark sha256=69e1db8b0b924f3a date=2026-09-06T06:21:56Z host=dgx-00

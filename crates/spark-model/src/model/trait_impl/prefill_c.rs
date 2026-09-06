@@ -451,9 +451,10 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
-            // Marconi warm hit: GDN layers replay from a restored SSM state
-            // and must use the bit-faithful WY4 recurrence (see layer.rs).
-            gdn_exact_replay: marconi_skip,
+            // Cold and warm passes must take the SAME GDN recurrence kernel
+            // across a Marconi restore boundary, so this is NOT `marconi_skip`
+            // alone — see `crate::model::gdn_replay`.
+            gdn_exact_replay: self.gdn_exact_replay_for_prefill(marconi_skip),
             token_ids: None,
             host_token_ids: None,
             // #30: request slot pairs (None unless routing to a non-active slot).
@@ -562,6 +563,15 @@ impl TransformerModel {
 
         // ── 7. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
+        // ATLAS_LOGIT_PROBE=1: token 0 of a completion comes from PREFILL, not
+        // decode, so the A/B needs this row too or its indices are off by one.
+        self.logit_probe(
+            "prefill_last",
+            0,
+            self.decode_logits_ptr(),
+            self.decode_logits_fp32(),
+            stream,
+        );
 
         // ── 8. Insert into prefix cache + Marconi snapshot ──
         self.prefill_save_snapshot_and_insert(tokens, seq, &mut kv_cache, bs, stream);

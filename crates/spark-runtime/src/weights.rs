@@ -35,9 +35,20 @@ pub(crate) fn evict_page_cache(_file: &std::fs::File) {
 pub enum WeightDtype {
     BF16,
     FP32,
+    /// IEEE fp16. Shipped by EXL3 checkpoints (Hadamard sign vectors `suh`/
+    /// `svh` and the unquantized dense tensors); consumers convert to BF16
+    /// at load where a path expects it.
+    F16,
     FP8E4M3,
     FP8E8M0,
     UInt8,
+    /// Opaque 2-byte container: EXL3 `.trellis` packed code words arrive as
+    /// safetensors I16 but are raw bits, not integers — nothing may do
+    /// arithmetic on them except the EXL3 decode kernels.
+    UInt16,
+    /// Raw i32 scalars — the EXL3 per-tensor codebook flag (`.mul1`, which
+    /// stores the codebook's multiplier constant).
+    Int32,
     Int64,
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
@@ -59,9 +70,12 @@ impl WeightDtype {
         match self {
             Self::BF16 => 2,
             Self::FP32 => 4,
+            Self::F16 => 2,
             Self::FP8E4M3 => 1,
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
+            Self::UInt16 => 2,
+            Self::Int32 => 4,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
         }
@@ -71,10 +85,16 @@ impl WeightDtype {
         match dtype {
             safetensors::Dtype::BF16 => Ok(Self::BF16),
             safetensors::Dtype::F32 => Ok(Self::FP32),
+            safetensors::Dtype::F16 => Ok(Self::F16),
             safetensors::Dtype::U8 => Ok(Self::UInt8),
             // I8: raw 1-byte container for 4-bit-packed NVFP4 (DeepSeek-V4 MTP
             // experts). Treat as UInt8 — signedness is irrelevant for packed FP4.
             safetensors::Dtype::I8 => Ok(Self::UInt8),
+            // I16: raw 2-byte container for EXL3 packed trellis codes —
+            // opaque bits, decoded only by the exl3_reconstruct kernels.
+            safetensors::Dtype::I16 => Ok(Self::UInt16),
+            // I32: raw scalar container (EXL3 codebook flag).
+            safetensors::Dtype::I32 => Ok(Self::Int32),
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
             safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
@@ -91,10 +111,16 @@ impl WeightDtype {
         Ok(match s {
             "F32" => Self::FP32,
             "BF16" => Self::BF16,
+            "F16" => Self::F16,
             "U8" => Self::UInt8,
             // I8 is a 1-byte raw container (packed NVFP4); signedness is
             // irrelevant, treat as raw bytes exactly like the disk path.
             "I8" => Self::UInt8,
+            // I16 is a 2-byte raw container (EXL3 packed trellis codes),
+            // mirroring the disk path's mapping.
+            "I16" => Self::UInt16,
+            // I32 raw scalar (EXL3 codebook flag), mirroring the disk path.
+            "I32" => Self::Int32,
             "F8_E4M3" => Self::FP8E4M3,
             "F8_E8M0" => Self::FP8E8M0,
             "I64" => Self::Int64,
@@ -176,6 +202,10 @@ pub struct WeightStore {
     /// quantize-on-load or straight off NVMe by `NgramRowCache`, both of
     /// which need only this (path, offset) locator.
     deferred: HashMap<String, DeferredTensor>,
+    /// Pooled allocations this store owns, keyed by base address. Member
+    /// tensors are `.offset()` views inserted as ordinary entries; the
+    /// ownership rules live in `weights/arena.rs`.
+    arenas: std::collections::BTreeMap<u64, WeightArena>,
 }
 
 /// Where a skipped tensor lives, so a consumer can read it in place.
@@ -193,10 +223,7 @@ pub struct DeferredTensor {
 impl WeightStore {
     /// Create an empty weight store (for testing).
     pub fn empty() -> Self {
-        Self {
-            weights: HashMap::new(),
-            deferred: HashMap::new(),
-        }
+        Self::from_map(HashMap::new())
     }
 
     /// Record a tensor that was skipped at load, with its on-disk location.
@@ -226,7 +253,26 @@ impl WeightStore {
         Self {
             weights,
             deferred: HashMap::new(),
+            arenas: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Insert (or replace) a tensor. Used by load-time materialization
+    /// passes that rewrite a checkpoint's tensors into a layout the model
+    /// loaders consume (the EXL3 pass: trellis triplets -> `.weight` [+
+    /// NVFP4 scales]). Returns the displaced tensor, if any — the CALLER
+    /// owns freeing its device memory, through [`Self::release_tensor`]
+    /// (a no-op for arena members; the store itself never frees here).
+    pub fn insert(&mut self, name: String, t: WeightTensor) -> Option<WeightTensor> {
+        self.weights.insert(name, t)
+    }
+
+    /// Remove a tensor by name, returning it. As with [`Self::insert`], the
+    /// caller owns freeing the returned tensor's device memory — via
+    /// [`Self::release_tensor`] / [`Self::remove_and_free`], never a raw
+    /// `gpu.free`, because the tensor may be a view into a pooled arena.
+    pub fn remove(&mut self, name: &str) -> Option<WeightTensor> {
+        self.weights.remove(name)
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
@@ -357,7 +403,10 @@ impl SafetensorsLoader {
     /// Check if a tensor should be skipped under EP.
     /// Skips `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
-    fn should_skip_tensor(&self, name: &str) -> bool {
+    /// Public: the out-of-index sidecar registration (spark-model
+    /// `register_exl3_sidecar_shards`) reuses it so a sidecar cannot smuggle
+    /// in a tensor these rules withheld (fast_weights/skip.rs is identical).
+    pub fn should_skip_tensor(&self, name: &str) -> bool {
         // MTP head weights for a model whose loader does not build one.
         if self.skip_mtp && name.starts_with("mtp.") {
             return true;
@@ -396,11 +445,13 @@ impl SafetensorsLoader {
 /// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
+pub mod exl3;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
 pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
 pub(crate) use loader::estimate_load_bytes;
+pub use loader::load_safetensors_file;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path
 // AND by the GGUF loader, which builds everywhere. Gating this on `unix` broke
 // the Windows CUDA build the moment `gguf.rs` started using it.
@@ -418,36 +469,12 @@ mod packed_q2_tests;
 mod prefix_detect;
 pub use prefix_detect::auto_detect_weight_prefix;
 
-/// Release every weight tensor.
-///
-/// Safe to free per-entry because the loaders allocate per-tensor: the fast
-/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
-/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
-/// a shared block into this map. (Fused per-expert views DO exist — see
-/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
-/// the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
-    fn label(&self) -> &'static str {
-        "weight store"
-    }
-
-    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        let mut first_error = None;
-        // `drain` rather than iterate: the map must not be left holding
-        // pointers to memory that is gone, and it makes this idempotent.
-        for (name, tensor) in self.weights.drain() {
-            if let Err(e) = gpu.free(tensor.ptr)
-                && first_error.is_none()
-            {
-                first_error = Some(e.context(format!("freeing weight {name}")));
-            }
-        }
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-}
+// Pooled-arena ownership + the `ModelResource` teardown impl. Ownership
+// invariant: a store pointer is either a per-tensor allocation base (freed
+// per entry) or an interior view of a `WeightArena` the store owns (freed
+// once, with the arena) — see the module docs.
+mod arena;
+pub use arena::WeightArena;
 
 #[cfg(test)]
 mod teardown_tests;

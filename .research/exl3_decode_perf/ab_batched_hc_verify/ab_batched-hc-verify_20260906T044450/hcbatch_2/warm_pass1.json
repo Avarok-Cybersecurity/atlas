@@ -1,0 +1,246 @@
+{
+ "fingerprint": {
+  "port": 8899,
+  "model": "qwen3.8-flash-next-exl3",
+  "concurrency": [
+   1,
+   2,
+   4
+  ],
+  "prompt_tokens": 512,
+  "max_tokens": 128,
+  "repeats": 1,
+  "effort": "low",
+  "label": "warm1",
+  "salt": 4242,
+  "timeout_s": 5400,
+  "sample_interval": 5.0,
+  "abort_avail_gb": 8.0,
+  "abort_swap_delta_gb": 4.0,
+  "server_pid": 3935103,
+  "json_out": "/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/.research/exl3_decode_perf/ab_batched-hc-verify_20260906T044450/20260906_050146_concurrency_sweep_hcbatch_2/warm_pass1.json"
+ },
+ "cells": [
+  {
+   "label": "warm1",
+   "C": 1,
+   "rep": 0,
+   "streams_ok": 1,
+   "errors": [],
+   "prompt_tokens": [
+    548
+   ],
+   "completion_tokens": [
+    128
+   ],
+   "finish": [
+    "length"
+   ],
+   "per_stream_tok_s": [
+    28.07
+   ],
+   "median_per_stream_tok_s": 28.07,
+   "aggregate_decode_tok_s": 28.29,
+   "aggregate_wall_tok_s": 22.31,
+   "ttft_s": [
+    1.1
+   ],
+   "cell_wall_s": 5.7,
+   "aborted": false,
+   "streams": [
+    0
+   ],
+   "content_sha256": [
+    "32d03623df2013a7"
+   ],
+   "min_avail_gb": 22.5,
+   "max_swap_used_gb": 1.0,
+   "swap_delta_gb": 0.0,
+   "gpu_samples": [
+    "89,32.47",
+    "90,33.48"
+   ]
+  },
+  {
+   "label": "warm1",
+   "C": 2,
+   "rep": 0,
+   "streams_ok": 2,
+   "errors": [],
+   "prompt_tokens": [
+    552,
+    542
+   ],
+   "completion_tokens": [
+    128,
+    128
+   ],
+   "finish": [
+    "length",
+    "length"
+   ],
+   "per_stream_tok_s": [
+    10.97,
+    11.77
+   ],
+   "median_per_stream_tok_s": 11.37,
+   "aggregate_decode_tok_s": 20.01,
+   "aggregate_wall_tok_s": 18.43,
+   "ttft_s": [
+    2.3,
+    1.1
+   ],
+   "cell_wall_s": 13.9,
+   "aborted": false,
+   "streams": [
+    0,
+    1
+   ],
+   "content_sha256": [
+    "f7abfd57d795ebf1",
+    "80ed66a3d1a0f9a8"
+   ],
+   "min_avail_gb": 22.0,
+   "max_swap_used_gb": 1.0,
+   "swap_delta_gb": 0.0,
+   "gpu_samples": [
+    "90,33.48",
+    "91,33.76"
+   ]
+  },
+  {
+   "label": "warm1",
+   "C": 4,
+   "rep": 0,
+   "streams_ok": 4,
+   "errors": [],
+   "prompt_tokens": [
+    553,
+    552,
+    552,
+    546
+   ],
+   "completion_tokens": [
+    128,
+    128,
+    128,
+    128
+   ],
+   "finish": [
+    "length",
+    "length",
+    "length",
+    "length"
+   ],
+   "per_stream_tok_s": [
+    4.13,
+    5.39,
+    4.33,
+    4.77
+   ],
+   "median_per_stream_tok_s": 4.55,
+   "aggregate_decode_tok_s": 16.04,
+   "aggregate_wall_tok_s": 15.48,
+   "ttft_s": [
+    2.3,
+    1.1,
+    3.6,
+    4.8
+   ],
+   "cell_wall_s": 33.1,
+   "aborted": false,
+   "streams": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "content_sha256": [
+    "52982cb396cd5af7",
+    "e52b4518ffb9722e",
+    "52f9bed08e0a0850",
+    "406494ff13d5c0a5"
+   ],
+   "min_avail_gb": 21.0,
+   "max_swap_used_gb": 1.0,
+   "swap_delta_gb": -0.0,
+   "gpu_samples": [
+    "88,43.71",
+    "90,34.20",
+    "90,34.22",
+    "91,34.19",
+    "90,33.91",
+    "89,34.30"
+   ]
+  }
+ ],
+ "mem_samples": [
+  [
+   1788685768.030777,
+   23.041152954101562,
+   1.0206222534179688,
+   "89,32.47"
+  ],
+  [
+   1788685773.0687592,
+   22.52023696899414,
+   1.0206222534179688,
+   "90,33.48"
+  ],
+  [
+   1788685778.1059031,
+   22.025527954101562,
+   1.0206222534179688,
+   "90,33.48"
+  ],
+  [
+   1788685783.1740427,
+   22.027503967285156,
+   1.0206222534179688,
+   "91,33.76"
+  ],
+  [
+   1788685788.2057614,
+   22.81098175048828,
+   1.0206108093261719,
+   "91,33.93"
+  ],
+  [
+   1788685793.2367573,
+   20.982250213623047,
+   1.0205802917480469,
+   "88,43.71"
+  ],
+  [
+   1788685798.267616,
+   21.023189544677734,
+   1.0205612182617188,
+   "90,34.20"
+  ],
+  [
+   1788685803.3080416,
+   21.024322509765625,
+   1.0205612182617188,
+   "90,34.22"
+  ],
+  [
+   1788685808.3394148,
+   21.042388916015625,
+   1.0205612182617188,
+   "91,34.19"
+  ],
+  [
+   1788685813.3829849,
+   21.55441665649414,
+   1.0205612182617188,
+   "90,33.91"
+  ],
+  [
+   1788685818.4184525,
+   21.54635238647461,
+   1.0205612182617188,
+   "89,34.30"
+  ]
+ ],
+ "aborted": false
+}

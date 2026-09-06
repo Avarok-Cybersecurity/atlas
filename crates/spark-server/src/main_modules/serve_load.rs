@@ -425,7 +425,7 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(5, "weight load");
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
     tracing::info!("OOM guard reserve: {} MB", args.oom_guard_mb);
-    let store = serve_phases::load_weight_store(
+    let mut store = serve_phases::load_weight_store(
         &args,
         &config,
         &model_dir,
@@ -434,6 +434,43 @@ pub(crate) fn load_model(
         ep_size,
         oom_reserve_bytes,
     )?;
+
+    // 3a. Out-of-index sidecar shards: every `*.safetensors` the checkpoint
+    // keeps outside `model.safetensors.index.json` that no loader owns
+    // (the EXL3 export's `vision_k6.safetensors` ViT tower on 4.05bpw, its
+    // MTP mixer patch on the other branches). Registered BEFORE the EXL3
+    // pass so their trellis linears materialize like the indexed ones, under
+    // the SAME skip policy the main shards got. No-op without such files,
+    // and gated to EXL3 stores: a non-EXL3 model dir with a stray un-indexed
+    // *.safetensors (an adapter, a hand-copied export) must not have it
+    // uploaded under new names, uncounted by the pre-flight estimate.
+    if spark_runtime::weights::exl3::store_has_exl3(&store) {
+        let policy = serve_phases::main_shard_skip_policy(&args, &config, ep_rank, ep_size);
+        spark_model::weight_map::register_exl3_sidecar_shards(
+            gpu.as_ref(),
+            &mut store,
+            &model_dir,
+            oom_reserve_bytes,
+            &|name| policy.should_skip_tensor(name),
+        )
+        .context("out-of-index sidecar shard registration failed")?;
+    }
+
+    // 3a-bis. EXL3 (QTIP trellis) checkpoints: rewrite trellis linears into
+    // loader-consumable tensors NOW, before the preflight and quant-format
+    // detection below read the store (both key off `.weight`-style names
+    // that an EXL3 store does not have yet). No-op for every other format;
+    // `build_model` carries an idempotent second call for non-serve entry
+    // points. See spark-model weight_map/exl3_materialize.rs.
+    spark_model::weight_map::materialize_exl3(gpu.as_ref(), &mut store)
+        .context("EXL3 checkpoint materialization failed")?;
+    // The EXL3 export keeps the PLE n-gram tables in a standalone
+    // `ngram_embedding.safetensors` (exl3_ngram_trellis row format) outside
+    // the weight index — register its tensors (trellis deferred for the
+    // NVMe row cache, id tables + head_bias uploaded) so the PLE loader
+    // finds them. No-op when the file is absent.
+    spark_model::weight_map::register_exl3_ngram_sidecar(gpu.as_ref(), &mut store, &model_dir)
+        .context("EXL3 ngram sidecar registration failed")?;
 
     // 3b. Auto-detect weight key prefix for nested models.
     spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);
@@ -567,6 +604,21 @@ pub(crate) fn load_model(
     // listener, the TUI thread, the OOM watchdog), and a concurrent getenv
     // during setenv is UB.
     config.profile = args.profile;
+    // Operator kill switch for the batched mHC decode MoE FFN. Only ever
+    // turns the batching OFF, so a model config that already disabled it stays
+    // disabled when the flag is absent.
+    if args.hc_per_row_moe_decode {
+        config.hc_batched_moe_decode = false;
+    }
+    tracing::info!(
+        "mHC decode MoE FFN: {} (hc_batched_moe_decode={})",
+        if config.hc_batched_moe_decode {
+            "BATCHED — one n-row dispatch per layer per step"
+        } else {
+            "per-sequence loop (kill switch engaged)"
+        },
+        config.hc_batched_moe_decode,
+    );
     serve_phases::cap_vocab_size_to_tokenizer(&model_dir, &mut config);
     let serve_phases::KvCacheConfig {
         effective_kv_dtype_str: _,

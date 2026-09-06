@@ -26,6 +26,7 @@
 pub(crate) mod block_mgmt;
 pub(crate) mod drafter_context;
 pub(crate) mod drop;
+pub(crate) mod gdn_replay;
 pub(crate) mod impl_a1;
 pub(crate) mod impl_a1_init;
 pub(crate) mod impl_a2;
@@ -39,6 +40,7 @@ pub(crate) mod impl_b3_accessors;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
 mod impl_ngram;
+pub(crate) mod lm_head_exl3;
 pub(crate) mod mtp_carry;
 pub(crate) mod pinned_pack;
 pub(crate) mod ssm_batched_copy;

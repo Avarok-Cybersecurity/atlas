@@ -40,9 +40,17 @@ impl TransformerLayer for Qwen3SsmLayer {
 
     /// PLE's per-seq host hash on the hc multi-seq decode path is
     /// capture-illegal (pageable reads); the single-decode path prestages
-    /// around it, the batched path does not — veto batched graphs.
+    /// around it, the batched path does not — veto batched graphs. Native
+    /// EXL3 MoE experts launch cooperatively (never capturable) — same veto,
+    /// keyed on the layer itself rather than the lm_head coincidence.
     fn decode_graph_unsupported(&self) -> bool {
-        self.ple.is_some()
+        self.ple.is_some() || self.exl3_graph_veto()
+    }
+
+    fn exl3_graph_veto(&self) -> bool {
+        // Native EXL3 GDN projections (ATLAS_EXL3_NATIVE_DENSE=1) are the
+        // same cooperative-launch class as the MoE experts.
+        self.ffn.exl3_native_moe() || self.exl3_gdn.is_some()
     }
 
     fn snapshot_aux(
@@ -79,6 +87,34 @@ impl TransformerLayer for Qwen3SsmLayer {
             .ok_or_else(|| anyhow::anyhow!("restore_aux: no PLE on this layer"))?;
         let st = ple_seq_state(ple, state, gpu)?;
         ple.restore_aux(st, blob, gpu, stream)
+    }
+
+    /// PLE's half of the K-row verify commit: rewind the rolling conv +
+    /// history window to the snapshot taken after row `row`.
+    ///
+    /// Only meaningful after `decode_batched_inner_hc` ran — that is what
+    /// records the per-row snapshots. No PLE on this layer, or no sequence
+    /// state yet, means nothing was advanced and there is nothing to rewind.
+    fn commit_verify_row(
+        &self,
+        state: &mut dyn LayerState,
+        row: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let Some(ple) = self.ple.as_ref() else {
+            return Ok(());
+        };
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(st) = ssm.ple.as_mut() else {
+            return Ok(());
+        };
+        ple.rewind_verify_row(st, row, gpu, stream)
     }
 
     fn decode_prestage_rearm(&self, state: &mut dyn LayerState) {
@@ -136,6 +172,22 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // K-row batched GDN verify under the highway (#753 item B, the
+        // single-sequence axis). `decode_batched_inner_hc` replaces the
+        // residual bracket with hc_pre/hc_post around the SAME residual-free
+        // block this path uses, so the highway is not double-counted.
+        //
+        // ARMED BY ENV, not by `hc.is_some()`. The refusal below still guards
+        // every OTHER caller: `decode_verify_dispatch` (verify_a.rs) mixes
+        // per-token attention `decode()` with a K-row SSM `decode_batched()`,
+        // and those two disagree about which highway row a stream belongs to
+        // (the buffer is `[T, hc, H]`). Only `verify_hc.rs`, which runs a
+        // uniform K on every layer, may take this path.
+        if self.hc.is_some()
+            && super::trait_decode_batched_hc::hc_batched_verify_enabled()
+        {
+            return self.decode_batched_inner_hc(hidden, num_tokens, state, ctx, stream);
+        }
         // v1 is C=1 only under an mHC highway: these paths keep their own
         // residual bookkeeping, which the highway replaces. Refusing is the
         // point — a batched GDN step running on an unmixed stream produces
@@ -408,6 +460,28 @@ impl TransformerLayer for Qwen3SsmLayer {
 
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         self.alloc_state_inner(gpu)
+    }
+
+    /// Free the PLE carry this sequence lazily attached.
+    ///
+    /// Only the `ple` field — the h/conv state in `SsmLayerState` is pooled
+    /// and released by slot in `free_sequence_dispatch`, so freeing it here
+    /// would be a double free. The PLE conv buffer is the one piece that is
+    /// allocated per sequence and owned by nothing.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(mut st) = ssm.ple.take() else {
+            return Ok(());
+        };
+        let Some(ple) = self.ple.as_ref() else {
+            anyhow::bail!("release_state: PLE seq state present but layer has no PLE");
+        };
+        ple.release_seq_state(&mut st, gpu)
     }
 }
 

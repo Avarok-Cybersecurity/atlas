@@ -4,8 +4,10 @@ pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
+pub mod exl3_dense;
 pub mod fp8_calibration;
 mod gemv_tier;
+pub mod hc_ffn_plan;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
@@ -18,6 +20,8 @@ pub mod ple;
 pub mod qsa;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;
+pub mod qwen4_exp_mtp;
+pub mod qwen4_exp_mtp_proposer;
 pub mod vision_encoder;
 pub mod w4a16_gemv_tiers;
 
@@ -61,6 +65,7 @@ pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
+pub use exl3_dense::{AttnProj, Exl3AttnWeights, Exl3GdnWeights};
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
@@ -347,6 +352,18 @@ impl FfnComponent {
     pub fn fp32_routing_active(&self) -> bool {
         match self {
             Self::Moe(m) => m.fp32_routing_active(),
+            _ => false,
+        }
+    }
+
+    /// True when this FFN's routed experts are served natively from EXL3
+    /// trellis (`ATLAS_EXL3_NATIVE_MOE=1`). Every mgemm in that arm is a
+    /// COOPERATIVE launch — not CUDA-graph-capturable — so each layer kind's
+    /// `decode_graph_unsupported` (and the verify-path `use_graphs` terms)
+    /// must include this, exactly like the `lm_head_exl3` veto.
+    pub fn exl3_native_moe(&self) -> bool {
+        match self {
+            Self::Moe(m) => m.exl3_native_active(),
             _ => false,
         }
     }

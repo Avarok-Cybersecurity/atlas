@@ -45,6 +45,11 @@ pub struct MockGpuBackend {
     d2d_async_streams: Mutex<Vec<u64>>,
     d2d_2d_async_streams: Mutex<Vec<u64>>,
     host_pinned_allocs: AtomicUsize,
+    /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call, in
+    /// order. The attribute raise is a ONE-TIME per-kernel opt-in the real
+    /// driver makes sticky; recording it lets a test prove a layer raised the
+    /// cap at kernel resolution rather than per launch (or not at all).
+    max_dynamic_smem: Mutex<Vec<(u64, usize)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +59,11 @@ pub struct MockLaunch {
     pub block: [u32; 3],
     pub shared_mem: u32,
     pub stream: u64,
+    /// Whether this launch went through the cooperative path
+    /// (`launch_cooperative[_typed]`). A grid.sync() kernel dispatched down
+    /// the eager path is a deadlock on real hardware, so tests assert the
+    /// ROUTE, not just the geometry.
+    pub cooperative: bool,
     pub args: Vec<MockArg>,
 }
 
@@ -64,148 +74,9 @@ pub enum MockArg {
     Bytes(Vec<u8>),
 }
 
-impl Default for MockGpuBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MockGpuBackend {
-    pub fn new() -> Self {
-        Self {
-            op_cache: crate::op_cache::OpCache::new(),
-            allocs: Mutex::new(HashMap::new()),
-            next_ptr: Mutex::new(0x1000_0000),
-            max_allocation_bytes: AtomicUsize::new(usize::MAX),
-            launches: Mutex::new(Vec::new()),
-            kernel_lookups: Mutex::new(Vec::new()),
-            syncs: AtomicUsize::new(0),
-            d2h_blocking: AtomicUsize::new(0),
-            d2h_async: AtomicUsize::new(0),
-            d2h_async_streams: Mutex::new(Vec::new()),
-            sync_d2h_async_counts: Mutex::new(Vec::new()),
-            d2d: AtomicUsize::new(0),
-            d2d_2d: AtomicUsize::new(0),
-            d2d_async_streams: Mutex::new(Vec::new()),
-            d2d_2d_async_streams: Mutex::new(Vec::new()),
-            host_pinned_allocs: AtomicUsize::new(0),
-        }
-    }
-
-    pub fn alloc_count(&self) -> usize {
-        self.allocs.lock().len()
-    }
-
-    /// Reject individual allocations above `bytes`, for exercising
-    /// production fallback paths without exhausting host memory.
-    pub fn set_max_allocation_bytes(&self, bytes: usize) {
-        self.max_allocation_bytes.store(bytes, Ordering::Relaxed);
-    }
-
-    pub fn launch_count(&self) -> usize {
-        self.launches.lock().len()
-    }
-
-    /// `synchronize` calls so far — a proxy for "full stream drains", the cost
-    /// a batched gather exists to amortize.
-    pub fn sync_count(&self) -> usize {
-        self.syncs.load(Ordering::Relaxed)
-    }
-
-    /// BLOCKING `copy_d2h` calls (each one drains the stream on the real
-    /// backend). A bulk gather must have zero of these.
-    pub fn d2h_blocking_count(&self) -> usize {
-        self.d2h_blocking.load(Ordering::Relaxed)
-    }
-
-    /// `copy_d2h_async` calls (enqueue-only).
-    pub fn d2h_async_count(&self) -> usize {
-        self.d2h_async.load(Ordering::Relaxed)
-    }
-
-    pub fn d2h_async_streams(&self) -> Vec<u64> {
-        self.d2h_async_streams.lock().clone()
-    }
-
-    pub fn sync_d2h_async_counts(&self) -> Vec<(u64, usize)> {
-        self.sync_d2h_async_counts.lock().clone()
-    }
-
-    /// `copy_d2d` + `copy_d2d_async` calls so far — one eager launch each on
-    /// the real backend.
-    pub fn d2d_count(&self) -> usize {
-        self.d2d.load(Ordering::Relaxed)
-    }
-
-    /// `copy_d2d_2d_async` calls so far — one `cudaMemcpy2DAsync` each,
-    /// whatever the row count.
-    pub fn d2d_2d_count(&self) -> usize {
-        self.d2d_2d.load(Ordering::Relaxed)
-    }
-
-    /// Streams supplied to `copy_d2d_async`, in dispatch order.
-    pub fn d2d_async_streams(&self) -> Vec<u64> {
-        self.d2d_async_streams.lock().clone()
-    }
-
-    /// Streams supplied to `copy_d2d_2d_async`, in dispatch order.
-    pub fn d2d_2d_async_streams(&self) -> Vec<u64> {
-        self.d2d_2d_async_streams.lock().clone()
-    }
-
-    /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
-    /// re-allocated per event instead of reused.
-    pub fn host_pinned_alloc_count(&self) -> usize {
-        self.host_pinned_allocs.load(Ordering::Relaxed)
-    }
-
-    pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
-        self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
-    }
-
-    /// `bytes` from `src` to `dst` inside the simulated device memory.
-    ///
-    /// Real byte movement, not a no-op: a D2D that silently succeeds without
-    /// moving anything lets a test "pass" while asserting the destination is
-    /// still zero — the exact shape of a rollback bug this backend exists to
-    /// catch. Source is staged through a temporary so `src` and `dst` may sit
-    /// in the same allocation (the borrow checker would otherwise reject it,
-    /// and the real `cudaMemcpyAsync` accepts it for non-overlapping ranges).
-    fn blit(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
-        if bytes == 0 {
-            return Ok(());
-        }
-        let mut allocs = self.allocs.lock();
-        let staged = {
-            let (offset, alloc) = find_alloc(&allocs, src)
-                .ok_or_else(|| anyhow::anyhow!("copy_d2d: src {src} not allocated"))?;
-            if offset + bytes > alloc.bytes {
-                anyhow::bail!("copy_d2d: src {src} + {bytes} overruns its allocation");
-            }
-            alloc.data[offset..offset + bytes].to_vec()
-        };
-        let (offset, alloc) = find_alloc_mut(&mut allocs, dst)
-            .ok_or_else(|| anyhow::anyhow!("copy_d2d: dst {dst} not allocated"))?;
-        if offset + bytes > alloc.bytes {
-            anyhow::bail!("copy_d2d: dst {dst} + {bytes} overruns its allocation");
-        }
-        alloc.data[offset..offset + bytes].copy_from_slice(&staged);
-        Ok(())
-    }
-
-    /// Every launch recorded so far, in dispatch order. Lets a test assert
-    /// WHICH kernel shape ran (grid/block signature), not just how many —
-    /// the mock's `kernel()` hands out one shared handle, so geometry is
-    /// the only per-launch identity available.
-    pub fn launches_snapshot(&self) -> Vec<MockLaunch> {
-        self.launches.lock().clone()
-    }
-
-    /// Module/function pairs requested through `kernel`, in lookup order.
-    pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
-        self.kernel_lookups.lock().clone()
-    }
-}
+// Construction + inspection accessors (and `blit`) live in `mock/inspect.rs`
+// (≤500 LoC split; child module so they keep reading the private fields).
+mod inspect;
 
 /// Find the allocation containing `ptr` (supports offset pointers).
 fn find_alloc(allocs: &HashMap<u64, MockAlloc>, ptr: DevicePtr) -> Option<(usize, &MockAlloc)> {
@@ -368,8 +239,66 @@ impl GpuBackend for MockGpuBackend {
             block,
             shared_mem,
             stream,
+            cooperative: false,
             args: Vec::new(),
         });
+        Ok(())
+    }
+
+    fn launch_cooperative(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        _params: &mut [*mut std::ffi::c_void],
+    ) -> Result<()> {
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            cooperative: true,
+            args: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn launch_cooperative_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        // NOT delegating to the trait default (which would flatten the args
+        // into raw pointers): recorded typed, exactly like `launch_typed`, so
+        // a test can assert the args AND the route in one snapshot.
+        let args = args
+            .iter()
+            .map(|arg| match arg {
+                KernelArg::Buffer(ptr) => MockArg::Buffer(*ptr),
+                KernelArg::Bytes(bytes) => MockArg::Bytes(bytes.to_vec()),
+            })
+            .collect();
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            cooperative: true,
+            args,
+        });
+        Ok(())
+    }
+
+    fn set_kernel_max_dynamic_smem(&self, kernel: KernelHandle, bytes: usize) -> Result<()> {
+        self.max_dynamic_smem.lock().push((kernel.0, bytes));
         Ok(())
     }
 
@@ -395,6 +324,7 @@ impl GpuBackend for MockGpuBackend {
             block,
             shared_mem,
             stream,
+            cooperative: false,
             args,
         });
         Ok(())

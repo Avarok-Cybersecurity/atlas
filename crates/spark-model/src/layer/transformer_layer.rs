@@ -97,6 +97,16 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer launches COOPERATIVE kernels on the verify path
+    /// (routed experts served natively from EXL3 trellis) — never
+    /// graph-capturable. Every graph-capturing verify site ORs this across
+    /// layers next to the `lm_head_exl3` veto. Kept separate from
+    /// `decode_graph_unsupported` so the EXL3 gate leaves the verify-graph
+    /// behavior of QSA/PLE models exactly as it was.
+    fn exl3_graph_veto(&self) -> bool {
+        false
+    }
+
     /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
     /// travel with an SSM snapshot for a prefix-cache hit to be complete —
     /// PLE's n-gram history + conv state, QSA's ingested indexer keys.
@@ -117,6 +127,82 @@ pub trait TransformerLayer: Send + Sync {
     /// to decline snapshots that lack aux rather than restore a stale mix.
     fn has_aux_state(&self) -> bool {
         false
+    }
+
+    /// True when [`Self::align_aux`] alone restores this layer's aux carry
+    /// exactly, so a speculative rollback needs NO blob for it.
+    ///
+    /// The two carries this model class advances during a K-row verify want
+    /// different mechanisms, and the difference is not stylistic:
+    ///
+    /// * QSA's `ingested`/`pooled` are CONTIGUOUS MARKS over buffers written
+    ///   forward from them, so moving the mark back to the committed position
+    ///   is a complete rewind — and it costs nothing, where a snapshot would
+    ///   round-trip `ingested * head_dim * 2` bytes of raw keys per attention
+    ///   layer through the host on EVERY speculative step.
+    /// * PLE's rolling conv state and its fixed-length n-gram history window
+    ///   have already discarded their oldest entries, so truncation cannot
+    ///   rebuild them. Those must be snapshotted.
+    ///
+    /// `collect_verify_aux_states` skips layers that answer `true` here;
+    /// `commit_verify_aux` realigns them by absolute position instead.
+    fn aux_rewind_is_exact(&self) -> bool {
+        false
+    }
+
+    /// Align this layer's aux carry to an ABSOLUTE sequence position.
+    ///
+    /// Used before a verify replays rows the carry may already have ingested.
+    /// Absolute, because the overlap is not a constant — see
+    /// `QsaIndexer::align_seq_state`.
+    fn align_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Rewind this layer's aux carry to the boundary AFTER verify row `row`,
+    /// i.e. to a commit of `row + 1` rows out of a K-row speculative verify.
+    ///
+    /// The third of the three per-row carries, and the only one that needs a
+    /// snapshot. The SSM `h_state`/`conv_state` are rewound from pool
+    /// intermediates by `commit_accepted_prefix`, and QSA's contiguous marks
+    /// are rewound by `align_aux` to an absolute position — neither goes
+    /// through here. PLE does: its rolling conv + fixed history window cannot
+    /// be reconstructed by truncation.
+    ///
+    /// Default no-op: only the one layer carrying PLE has anything to do.
+    fn commit_verify_row(
+        &self,
+        _state: &mut dyn LayerState,
+        _row: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Roll this layer's aux carry back by `rows`, after a rejected
+    /// speculative draft.
+    ///
+    /// Distinct from `restore_aux` on purpose. `snapshot_aux` returns `None`
+    /// when a sequence has not reached this layer's ingest yet, so a
+    /// snapshot/restore pair CANNOT undo the very first draft — there is
+    /// nothing to restore, and the carry is left ahead of the sequence
+    /// (measured: `QSA: decode at pos 0 but 1 tokens ingested`). A mark rewind
+    /// has no such hole and needs no blob.
+    fn rewind_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
     }
 
     /// Restore the aux state captured by [`Self::snapshot_aux`] on a
@@ -643,4 +729,28 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// Release the per-sequence state `alloc_state` produced, plus anything
+    /// the layer attached to it lazily afterwards.
+    ///
+    /// Called once per sequence from the teardown chokepoint
+    /// (`free_sequence_dispatch`). The default no-op is correct for layers
+    /// whose state owns no device memory (`EmptyLayerState`) and for state
+    /// that comes from a pool reclaimed by slot (`SsmLayerState`'s h/conv,
+    /// released via `ssm_pool.release_slot`).
+    ///
+    /// It exists because `LayerState` implementors hold BARE `DevicePtr`s:
+    /// dropping the box reclaims the host struct and leaks the device buffer.
+    /// The QSA indexer carry (~739 MB per request at 200K context across the
+    /// 12 full-attention layers) and the PLE conv carry both leaked this way.
+    /// On unified memory such a leak is invisible to RSS and reported as N/A
+    /// by `nvidia-smi`, so it surfaces only as the host exhausting RAM with no
+    /// process to blame.
+    ///
+    /// MUST be idempotent — teardown can run after a partial failure. Callers
+    /// log errors and continue rather than aborting: a sequence that cannot
+    /// free its state is still finished, and bailing would strand the rest.
+    fn release_state(&self, _state: &mut dyn LayerState, _gpu: &dyn GpuBackend) -> Result<()> {
+        Ok(())
+    }
 }

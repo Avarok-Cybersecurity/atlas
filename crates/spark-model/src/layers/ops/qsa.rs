@@ -280,3 +280,85 @@ pub fn qsa_prefill_attn(
         .arg_f32(inv_sqrt_d)
         .launch(stream)
 }
+
+/// Device top-k for prefill selection: `scores [rows, stride]` -> `lists
+/// [rows, topk]` block ids.
+///
+/// Replaces a D2H of every score plus a per-row CPU sort. One block per row,
+/// radix select (4 fixed passes) rather than K argmax passes — K is 512 here,
+/// so the moe_topk approach would be 512 sweeps.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_topk_rows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    scores: DevicePtr,
+    lists: DevicePtr,
+    rows: u32,
+    stride: u32,
+    topk: u32,
+    first_pos: u32,
+    ratio: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1]) // one block per query row
+        .block([256, 1, 1])
+        .arg_ptr(scores)
+        .arg_ptr(lists)
+        .arg_u32(rows)
+        .arg_u32(stride)
+        .arg_u32(topk)
+        .arg_u32(first_pos)
+        .arg_u32(ratio)
+        .launch(stream)
+}
+
+/// Device sort+expand for DECODE selection: `lists [rows, topk]` block ids
+/// (any order) -> `sel [rows, sel_stride]` token indices, ascending by block,
+/// plus the incomplete tail. Also writes `seq_lens[r] = n_sel` and the
+/// identity block table when those pointers are non-null.
+///
+/// Together with `qsa_topk_rows` this removes every host transfer from the
+/// decode selection: the D2H of the block scores (a stream drain), the H2D of
+/// the expanded selection, and the per-step seq_len / identity-table uploads.
+///
+/// `visible_rows` is optional: null means row r's visible prefix is
+/// `first_pos + r + 1` (the prefill row convention); a non-null `[rows]` array
+/// gives each row its own length, which is what a batched multi-sequence
+/// decode needs.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_expand_sel(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    lists: DevicePtr,
+    visible_rows: DevicePtr,
+    sel: DevicePtr,
+    seq_lens: DevicePtr,
+    tables: DevicePtr,
+    rows: u32,
+    topk: u32,
+    ratio: u32,
+    first_pos: u32,
+    sel_stride: u32,
+    table_stride: u32,
+    block_size: u32,
+    stream: u64,
+) -> Result<()> {
+    // QSA_EXPAND_MAX_K in the .cu — the shared-memory sort buffer.
+    anyhow::ensure!(topk <= 512, "qsa_expand_sel: topk {topk} > 512");
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1]) // one block per query row
+        .block([256, 1, 1])
+        .arg_ptr(lists)
+        .arg_ptr(visible_rows)
+        .arg_ptr(sel)
+        .arg_ptr(seq_lens)
+        .arg_ptr(tables)
+        .arg_u32(topk)
+        .arg_u32(ratio)
+        .arg_u32(first_pos)
+        .arg_u32(sel_stride)
+        .arg_u32(table_stride)
+        .arg_u32(block_size)
+        .launch(stream)
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub(crate) mod attention_arms;
+mod exl3_dense_arms;
 pub(crate) mod linear_attn_arms;
 mod tq_plus_weight_rotation;
 
@@ -421,7 +422,7 @@ pub(super) fn load_layers(
                 for suffix in ["weight", "weight_scale_inv"] {
                     let k = format!("{prefix}.{suffix}");
                     if let Ok(w) = store.get(&k) {
-                        let _ = gpu.free(w.ptr);
+                        let _ = store.release_ptr(gpu, w.ptr);
                     }
                 }
             };
@@ -745,6 +746,7 @@ pub(super) fn load_layers(
                     input_norm,
                     post_attn_norm,
                     ffn,
+                    None,
                 )?;
                 layers.push(layer);
                 attn_idx += 1;
@@ -829,6 +831,7 @@ pub(super) fn load_layers(
                             input_norm,
                             post_attn_norm,
                             ffn,
+                            None,
                         )?
                     }
                     // force_nvfp4_all routes the FP8 SSM through the NVFP4 builder

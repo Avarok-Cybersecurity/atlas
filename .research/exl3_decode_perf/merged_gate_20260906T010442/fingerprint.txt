@@ -1,0 +1,4 @@
+FINGERPRINT merged_gate bin=/home/ms/atlas/.claude/worktrees/exl3-research/target/release/spark sha256=ea9c5dad0146afb8 git=78f5b0a85 port=8888 date=2026-09-06T05:04:42Z host=dgx-00 preset=qwen3.8-flash-next-exl3 ckpt=/tank/exl3-ckpt/qwen38-flash-next-4.05bpw arms=default
+               total        used        free      shared  buff/cache   available
+Mem:             121          10          90           0          22         110
+Swap:             31           1          30

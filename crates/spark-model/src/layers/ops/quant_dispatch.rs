@@ -51,6 +51,15 @@ pub fn quant_gemv(
         QuantWeight::PackedQ2(_) => anyhow::bail!(
             "quant_gemv: PackedQ2 not routed through the generic dispatcher; use q2_0_gemv_vec"
         ),
+        // EXL3 needs cooperative-launch state this signature cannot carry
+        // (per-device locks buffer, fp16 A_had rotation scratch sized at
+        // construction, sm_count) — dispatch at the layer's own sites via
+        // `ops::exl3_gemv` / `ops::exl3_gemm` (the LM head path lives in
+        // `model/lm_head_exl3.rs`). Bail rather than misdispatch.
+        QuantWeight::Exl3(_) => anyhow::bail!(
+            "quant_gemv: EXL3 trellis not routed through the generic dispatcher; \
+             use ops::exl3_gemv/exl3_gemm at the layer site"
+        ),
     }
 }
 
@@ -90,6 +99,13 @@ pub fn quant_gemm(
         QuantWeight::PackedQ2(_) => anyhow::bail!(
             "quant_gemm: PackedQ2 not routed through the generic dispatcher; \
              use the layer's transient-dequant prefill path"
+        ),
+        // Same reason as `quant_gemv`: the cooperative EXL3 kernels need
+        // launch state (locks / A_had / sm_count) that this fixed 3-handle
+        // signature cannot carry. Layer-site dispatch only.
+        QuantWeight::Exl3(_) => anyhow::bail!(
+            "quant_gemm: EXL3 trellis not routed through the generic dispatcher; \
+             use ops::exl3_gemm at the layer site"
         ),
     }
 }

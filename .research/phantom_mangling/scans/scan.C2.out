@@ -1,0 +1,10 @@
+### ARM C2
+
+--- per transcript (assistant prose bytes, markers) ---
+     3353     0  C2-trajectories/run-00.trajectory.txt
+     4328     0  C2-trajectories/run-01.trajectory.txt
+     3412     0  C2-trajectories/run-02.trajectory.txt
+
+assistant prose      : 11093 bytes = 10.83 KB
+markers total        : 0   by tier {}
+markers per KB prose : 0.0000

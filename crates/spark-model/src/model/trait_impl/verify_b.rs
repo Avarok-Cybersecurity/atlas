@@ -229,7 +229,10 @@ impl TransformerModel {
             // illegal under CUDA graph capture.
             && !hss_engaged
             && !k2_diag_eager
-            && !lora_eager;
+            && !lora_eager
+            // EXL3-native lm_head / MoE experts launch COOPERATIVELY —
+            // illegal under graph capture (same veto as decode_a/decode_a2).
+            && !self.exl3_graph_veto();
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
         // id via the static tid2eid table, so the verify forward needs the 2

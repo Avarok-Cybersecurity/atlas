@@ -470,6 +470,10 @@ impl MoeLayer {
             // Phase 2.7 Tier C — set by loader after construction (qwen35.rs).
             is_dflash_capture_layer: false,
             lora: None,
+            // Native EXL3 experts (ATLAS_EXL3_NATIVE_MOE=1) — installed by
+            // the loader via set_exl3_experts after construction.
+            exl3_expert_tables: None,
+            exl3_moe_state: None,
             correction_bias_dev: weights_correction_bias,
             // `moe_topk_sig` is only registered for sigmoid-gated MoE models
             // (MiniMax-M2, Nemotron-Nano, Nemotron-Super). Softmax-gated MoEs

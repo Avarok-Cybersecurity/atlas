@@ -14,7 +14,9 @@ use spark_runtime::kv_dequant::{
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::ForwardContext;
+use crate::layers::exl3_dense::AttnProj;
 use crate::layers::ops;
+use crate::layers::ops::Exl3DenseOut;
 
 impl Qwen3AttentionLayer {
     pub(in super::super) fn attention_forward(
@@ -96,7 +98,31 @@ impl Qwen3AttentionLayer {
 
         if self.gated {
             // Q+Gate projection with inline deinterleave (output is [Q_all | Gate_all])
-            if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+            if let Some(x) = self.exl3_attn_arm(ctx, "decode q_proj")? {
+                // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed q_proj
+                // writes the RAW interleaved [Q|gate] row (checkpoint column
+                // order), then the q LoRA fold and the same deinterleave the
+                // dense fallback runs. K/V take their own arm below.
+                x.proj_linear(
+                    ctx.gpu,
+                    AttnProj::Q,
+                    normed,
+                    Exl3DenseOut::contiguous(q_out),
+                    1,
+                    stream,
+                )?;
+                self.apply_q_lora(ctx, normed, q_out, stream)?;
+                ops::deinterleave_qg(
+                    ctx.gpu,
+                    self.deinterleave_qg_k,
+                    q_out,
+                    1,
+                    nq,
+                    hd,
+                    nq * hd * 2,
+                    stream,
+                )?;
+            } else if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
                 // Keep-packed Q2_0 (Tier-1c): 2-bit GEMV → gated [Q|Gate], then
                 // the same deinterleave the dense fallback uses.
                 ops::q2_0_gemv_vec(ctx.gpu, self.q2_0_gemv_k, normed, q2, q_out, stream)?;
@@ -201,7 +227,16 @@ impl Qwen3AttentionLayer {
             }
         } else {
             // Ungated: Q projection only (no gate)
-            if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+            if let Some(x) = self.exl3_attn_arm(ctx, "decode q_proj")? {
+                x.proj_linear(
+                    ctx.gpu,
+                    AttnProj::Q,
+                    normed,
+                    Exl3DenseOut::contiguous(q_out),
+                    1,
+                    stream,
+                )?;
+            } else if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
                 ops::q2_0_gemv_vec(ctx.gpu, self.q2_0_gemv_k, normed, q2, q_out, stream)?;
             } else if let Some(fp8) = self.q_weight.as_ref().and_then(|w| w.as_fp8()) {
                 ops::w8a16_gemv(

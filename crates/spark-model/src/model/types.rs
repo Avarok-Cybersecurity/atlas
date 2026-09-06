@@ -32,6 +32,26 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight
 /// 512 covers the gate's 256-token serial re-probe interval with 2x margin.
 pub(super) const MTP_CATCHUP_RING_ROWS: usize = 512;
 
+/// The per-row auxiliary-carry snapshots an mHC K-row verify leaves behind for
+/// the commit that follows it.
+///
+/// `rows[t]` is `collect_verify_aux_states` taken AFTER verify row `t`, for
+/// every `t` in `verify_hc::hc_publish_rows(k)`. It carries only the layers
+/// whose carry cannot be rebuilt by truncation (PLE's rolling conv + n-gram
+/// history); the mark-rewindable ones (QSA `ingested`/`pooled`) are realigned
+/// from `base_pos + num_accepted` instead of restored from a blob, which keeps
+/// a per-step multi-megabyte key D2H out of the decode loop.
+pub(crate) struct VerifyAuxRows {
+    /// `seq_len` BEFORE the verify — the position row 0 was processed at. The
+    /// absolute alignment target for a commit of `n` rows is `base_pos + n`.
+    pub(crate) base_pos: usize,
+    /// The verify width this stash was taken for. A commit quoting a different
+    /// `k` is a scheduler/model disagreement, not something to paper over.
+    pub(crate) k: usize,
+    /// Snapshot after row `t`, indexed by `t`.
+    pub(crate) rows: Vec<Vec<(u32, Vec<u8>)>>,
+}
+
 pub struct TransformerModel {
     pub(super) config: ModelConfig,
     /// Which GEMM implementation each projection takes, resolved from the
@@ -83,6 +103,19 @@ pub struct TransformerModel {
     /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
+    /// Native EXL3 (QTIP trellis) LM head (`ATLAS_EXL3_NATIVE=1`): serves the
+    /// vocab projection from the packed checkpoint tensors via the fused
+    /// cooperative `exl3_matmul` kernels. When `Some`, it is the LEADING arm
+    /// of every LM-head dispatch (the other head fields stay `None` and
+    /// `lm_head_weight` is NULL — see `factory/build.rs`), and decode-graph
+    /// capture is vetoed (cooperative launches cannot be captured). Installed
+    /// post-construction via `set_lm_head_exl3`.
+    /// Shared (`Arc`) because the qwen4_exp MTP draft head borrows the SAME
+    /// head: the checkpoint ships exactly ONE `lm_head` trellis (there is no
+    /// `mtp.lm_head`), so the draft must project through the target's head —
+    /// and through the same `Exl3LaunchState` section — rather than
+    /// materialize a second copy.
+    pub(super) lm_head_exl3: Option<std::sync::Arc<super::lm_head_exl3::Exl3LmHead>>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
@@ -204,6 +237,41 @@ pub struct TransformerModel {
     pub(super) suppress_graphs: std::sync::atomic::AtomicBool,
     /// MTP draft proposer (built from mtp_weights at init).
     pub(super) proposer: Option<Arc<dyn DraftProposer>>,
+    /// The qwen4_exp MTP draft module, when one was loaded.
+    ///
+    /// Held so it is not DROPPED: `DevicePtr` has no `Drop`, so a module built
+    /// and let go leaks its quantized MoE and attention buffers (~1.5 GB) for
+    /// the process lifetime. Nothing reads this yet — the proposer that will
+    /// consume it is not written — but the alternative to storing it is a leak,
+    /// not a saving. It is deliberately NOT in `layers`: its body was built at
+    /// `attn_idx = 0` and must never be handed the shared paged KV pool.
+    pub(super) qwen4_exp_mtp: Option<Box<crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule>>,
+    /// SHADOW MODE ONLY (`ATLAS_QWEN4EXP_MTP_SHADOW=1`): the draft head, which
+    /// owns the module. Present INSTEAD of `qwen4_exp_mtp` when shadow is on.
+    /// It drafts a token each decode step and records whether the target's next
+    /// token matches — nothing is ever fed back, so no speculation occurs.
+    pub(super) qwen4_exp_mtp_head: Option<Arc<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead>>,
+    /// PER-ROW aux snapshots taken during an mHC K-row verify, one entry per
+    /// row in `verify_hc::hc_publish_rows(k)`: entry `t` is the carry state
+    /// after verify row `t`. `commit_verify_aux` restores entry
+    /// `commit_rewind_index(num_accepted)` — the SAME index
+    /// `commit_accepted_prefix` rewinds the SSM state to — so a partial accept
+    /// lands the carries on exactly the rows that were committed.
+    ///
+    /// A single row-0 snapshot (what this held before 2026-09-03) is only
+    /// correct when exactly one row commits; every K=3 partial accept restored
+    /// a row SHORT. See verify_hc.
+    pub(super) pending_verify_aux: std::sync::Mutex<Option<VerifyAuxRows>>,
+    /// `(seq_len before the verify, verify width K)` for the K-row mHC
+    /// BATCHED verify, so the aux commit can compute the ABSOLUTE position a
+    /// partial accept lands on (`base + num_accepted`) instead of guessing
+    /// whether the scheduler has already rewound `seq.seq_len`.
+    pub(super) pending_verify_span: std::sync::Mutex<Option<(usize, usize)>>,
+    /// The head's single-sequence draft state. Shadow mode is C=1 only: one
+    /// state, so a concurrent batch would interleave two sequences' drafts into
+    /// it. The shadow step refuses to run when the batch is wider than one.
+    pub(super) qwen4_exp_mtp_state:
+        Option<std::sync::Mutex<crate::layers::qwen4_exp_mtp::Qwen4ExpMtpState>>,
     /// Dedicated buffer for saving hidden state before MTP head runs.
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.

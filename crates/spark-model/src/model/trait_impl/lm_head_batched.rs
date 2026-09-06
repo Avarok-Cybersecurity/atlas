@@ -55,6 +55,14 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         let logits = self.buffers.logits();
         let v = self.config.vocab_size;
+        if let Some(ref exl3) = self.lm_head_exl3 {
+            // Native EXL3 head (LEADING arm, mirrors `lm_head_batched`).
+            // Cooperative launches — this path never runs under graph capture
+            // (installing the head vetoes decode graphs at both decision
+            // points; see model/lm_head_exl3.rs module docs).
+            self.lm_head_exl3_project(exl3, normed, padded_n, logits, stream)?;
+            return Ok(logits);
+        }
         if let Some(ref fp8) = self.lm_head_fp8 {
             for i in 0..padded_n {
                 ops::dense_gemv_fp8w(

@@ -1,0 +1,23 @@
+DEVICE NVIDIA GB10 cc=12.1 SMs=48 L2=24 MB smem/SM=100 KB clock=2418 MHz memclk=8533 MHz bus=256 bit coop=1
+PEAK streaming read: 232.6 GB/s (4616.6 us per GiB)
+LAUNCH floor: plain<1,32> 2.07 us | plain<48,256> 2.05 us | coop<48,256> grid.sync 4.06 us | coop<48,512,90KB smem> 4.07 us  (per launch, back-to-back)
+MOE T=1 S=10 K=4  ATLAS gate/up sh2 grid=(8,6) down sh4 grid=(8,6): gate 56.7 up 56.7 silu 2.1 down 57.8 us | chain 171.8 us  143.0 GB/s(weights) x48 layers = 8.25 ms/token
+      S=10 plan atlas (8,6) waves    gate/up sh2   54.1 us | down sh4   55.1 us | down sh3   55.6 us | chain est (2g+d)  163.3 us
+      S=10 plan (4,12)               gate/up sh2   48.0 us | down sh4   49.3 us | down sh3   49.3 us | chain est (2g+d)  145.2 us
+      S=10 plan (4,10)               gate/up sh2   47.4 us | down sh4   49.4 us | down sh3   49.4 us | chain est (2g+d)  144.2 us
+      S=10 plan (3,16)               gate/up sh2   54.8 us | down sh4   67.4 us | down sh3   60.3 us | chain est (2g+d)  169.9 us
+      S=10 plan (2,24)               gate/up sh2   76.2 us | down sh4   65.0 us | down sh3   64.8 us | chain est (2g+d)  217.2 us
+      S=10 plan (6,8)                gate/up sh2   63.9 us | down sh4   62.3 us | down sh3   63.4 us | chain est (2g+d)  190.2 us
+      S=10 plan (12,4)               gate/up sh2   61.5 us | down sh4   74.2 us | down sh3   70.9 us | chain est (2g+d)  193.9 us
+      S=10 plan (16,3)               gate/up sh2   72.6 us | down sh4   79.6 us | down sh3   72.3 us | chain est (2g+d)  217.6 us
+      S=10 plan (1,48)               gate/up sh2  154.9 us | down sh4  107.8 us | down sh3  137.9 us | chain est (2g+d)  417.6 us
+MOE T=3 S=30 K=4  ATLAS gate/up sh2 grid=(2,24) down sh4 grid=(2,24): gate 161.0 up 161.1 silu 2.1 down 180.2 us | chain 517.1 us  142.6 GB/s(weights) x48 layers = 24.82 ms/token
+      S=30 plan atlas (8,6) waves    gate/up sh2  137.4 us | down sh4  141.1 us | down sh3  141.2 us | chain est (2g+d)  416.0 us
+      S=30 plan (4,12)               gate/up sh2  134.4 us | down sh4  138.3 us | down sh3  136.2 us | chain est (2g+d)  405.1 us
+      S=30 plan (4,10)               gate/up sh2  154.8 us | down sh4  137.7 us | down sh3  135.4 us | chain est (2g+d)  445.0 us
+      S=30 plan (3,16)               gate/up sh2  121.4 us | down sh4  133.2 us | down sh3  131.2 us | chain est (2g+d)  373.9 us
+      S=30 plan (2,24)               gate/up sh2  159.9 us | down sh4  163.0 us | down sh3  171.9 us | chain est (2g+d)  482.8 us
+      S=30 plan (6,8)                gate/up sh2  147.3 us | down sh4  136.6 us | down sh3  135.8 us | chain est (2g+d)  430.4 us
+      S=30 plan (12,4)               gate/up sh2  214.7 us | down sh4  177.1 us | down sh3  164.6 us | chain est (2g+d)  594.0 us
+      S=30 plan (16,3)               gate/up sh2  175.4 us | down sh4  211.9 us | down sh3  176.4 us | chain est (2g+d)  527.3 us
+      S=30 plan (1,48)               gate/up sh2  141.6 us | down sh4  164.5 us | down sh3  149.8 us | chain est (2g+d)  433.0 us

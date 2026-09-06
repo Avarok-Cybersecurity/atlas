@@ -17,6 +17,24 @@ use crate::layers::ngram_embed::NgramTable;
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
+/// How the n-gram table's arena rows decode into BF16 embedding rows.
+#[derive(Debug, Clone, Copy)]
+pub enum NgramRowFormat {
+    /// Rows are plain BF16 `[head_dim]` — the historical layout; the plain
+    /// `batched_embed` gather copies them.
+    Bf16,
+    /// FP8 E4M3 rows with a stable device array of FP32 scales indexed by slot.
+    Fp8 { scale: DevicePtr },
+    /// Rows are packed `exl3_ngram_trellis` (`1 + 160*K/16` u16 words:
+    /// fp16 row scale + mul1-codebook trellis ring); `batched_embed_exl3`
+    /// decodes on gather and adds the per-head bias.
+    Exl3 {
+        k_bits: u32,
+        /// Device `[num_heads, 160]` f16 bias, added after the row scale.
+        head_bias: DevicePtr,
+    },
+}
+
 /// Per-SEQUENCE carry: the dilated conv's 9 steps and the token history the
 /// id hash needs. Owned by the sequence's [`crate::layer::SsmLayerState`]
 /// (Avarok #753 item B: concurrency needs one of these per in-flight
@@ -35,6 +53,30 @@ pub struct PleSeqState {
     /// in `slots_dev` and history has already advanced, so re-hashing would
     /// double-count the token — re-arming is the only correct recovery.
     last_staged_va: u64,
+    /// Snapshots of this carry taken at each row boundary of a K-row
+    /// speculative verify — index `t` is "the carry AFTER row t". The token
+    /// history lives here on the host (it is host state to begin with); the
+    /// FP32 `conv` state is copied device-to-device into `verify_conv[t]`.
+    ///
+    /// The SSM's `h_state`/`conv_state` get the same treatment in device pool
+    /// memory (`h_state_intermediates`). PLE's snapshot used to be a host
+    /// blob (`copy_d2h_on_stream`), which is a stream SYNC per row: nsys on
+    /// the 2-draft mHC verify (2026-09-05) showed each of the two per-step
+    /// snapshots draining the queue and then idling the GPU for 0.7-0.8 ms
+    /// while the host hashed and gathered the next row. A D2D copy is
+    /// stream-ordered and needs no sync.
+    ///
+    /// Empty except between `begin_verify_rows` and the commit that consumes
+    /// it. Unlike QSA's `ingested`/`pooled` marks, this carry CANNOT be
+    /// rebuilt by truncation: `conv` is a rolling FP32 state and `history` is
+    /// a fixed window whose oldest entries have already rolled off.
+    verify_rows: Vec<Vec<u32>>,
+    /// Device slots holding the `conv` snapshot for verify row `t`, one
+    /// `conv`-sized buffer each, allocated on first use and kept for the
+    /// life of the sequence (a verify never needs more than K-1 ≤ 7). Freed
+    /// with `conv` in `release_seq_state` — the leak class that motivated the
+    /// host blob is closed the same way `conv`'s was.
+    verify_conv: Vec<DevicePtr>,
 }
 
 pub struct PleLayer {
@@ -59,10 +101,15 @@ pub struct PleLayer {
     table: std::sync::Mutex<NgramTable>,
 
     embed_k: KernelHandle,
+    embed_fp8_k: Option<KernelHandle>,
+    embed_exl3_k: KernelHandle,
     gemm_k: KernelHandle,
     gate_k: KernelHandle,
     conv_k: KernelHandle,
     add_k: KernelHandle,
+
+    /// How the arena's row bytes decode into BF16 embedding rows.
+    ngram_format: NgramRowFormat,
 
     /// Scratch, sized once for `max_tokens`.
     emb: DevicePtr,
@@ -87,6 +134,7 @@ impl PleLayer {
         eps: f32,
         weights: PleWeights,
         table: NgramTable,
+        ngram_format: NgramRowFormat,
         max_tokens: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
@@ -100,6 +148,24 @@ impl PleLayer {
              geometry is not what we think.",
             heads * head_dim
         );
+        if let NgramRowFormat::Exl3 { k_bits, head_bias } = ngram_format {
+            anyhow::ensure!(
+                (1..=8).contains(&k_bits) && head_bias != DevicePtr::NULL,
+                "PLE: exl3 ngram format needs K in 1..=8 (got {k_bits}) and a \
+                 head_bias tensor"
+            );
+            anyhow::ensure!(
+                head_dim == 160,
+                "PLE: exl3_ngram_trellis rows are fixed at 160 dims, checkpoint \
+                 says head_dim={head_dim}"
+            );
+        }
+        if let NgramRowFormat::Fp8 { scale } = ngram_format {
+            anyhow::ensure!(
+                scale != DevicePtr::NULL,
+                "PLE: FP8 rows require slot scales"
+            );
+        }
         let c = hc_mult * hidden;
         let state_len = (k_size - 1) * dilation;
         Ok(Self {
@@ -118,7 +184,14 @@ impl PleLayer {
             norm_conv: weights.norm_conv,
             conv1d: weights.conv1d,
             table: std::sync::Mutex::new(table),
+            ngram_format,
             embed_k: gpu.kernel("embed_from_argmax", "batched_embed")?,
+            embed_fp8_k: if matches!(ngram_format, NgramRowFormat::Fp8 { .. }) {
+                Some(gpu.kernel("embed_from_argmax", "batched_embed_fp8")?)
+            } else {
+                None
+            },
+            embed_exl3_k: gpu.kernel("embed_from_argmax", "batched_embed_exl3")?,
             gemm_k: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
             gate_k: gpu.kernel("ple", "ple_gate")?,
             conv_k: gpu.kernel("ple", "ple_conv")?,
@@ -142,7 +215,40 @@ impl PleLayer {
             history: Vec::new(),
             prestaged_va: None,
             last_staged_va: 0,
+            verify_rows: Vec::new(),
+            verify_conv: Vec::new(),
         })
+    }
+
+    /// Release one sequence's PLE carry.
+    ///
+    /// Same shape of defect as the QSA indexer carry: `conv` is a bare
+    /// `DevicePtr`, so dropping `PleSeqState` frees nothing. Individually
+    /// small (~147 KB) and below the 32 MB allocation-trace threshold, which
+    /// is exactly why it stayed invisible — but it is one per SSM layer (36
+    /// on qwen4_exp) per sequence, and it never comes back.
+    ///
+    /// Idempotent: `conv` is nulled once freed.
+    pub fn release_seq_state(&self, st: &mut PleSeqState, gpu: &dyn GpuBackend) -> Result<()> {
+        if st.conv.is_null() {
+            return Ok(());
+        }
+        let mut r = gpu.free(st.conv);
+        st.conv = DevicePtr(0);
+        // The verify snapshot slots share `conv`'s lifetime and its leak class.
+        for slot in st.verify_conv.drain(..) {
+            if !slot.is_null()
+                && let Err(e) = gpu.free(slot)
+                && r.is_ok()
+            {
+                r = Err(e);
+            }
+        }
+        st.verify_rows.clear();
+        st.history.clear();
+        st.prestaged_va = None;
+        st.last_staged_va = 0;
+        r
     }
 
     // `reset` + `prestage` live in `aux_state.rs` (≤500 LoC split).
@@ -369,116 +475,8 @@ impl PleLayer {
         Ok(())
     }
 
-    /// Resolve row ids to cache slots and gather them into `self.emb`.
-    ///
-    /// `T * ngram_heads` rows of `head_dim` land contiguously, which IS the
-    /// `[T, ngram_heads * head_dim]` concatenation the projections expect —
-    /// so `batched_embed` needs no PLE-specific variant.
-    fn gather(
-        &self,
-        ids: &[u64],
-        num_tokens: usize,
-        heads: usize,
-        gpu: &dyn GpuBackend,
-        stream: u64,
-    ) -> Result<()> {
-        let table_va = self.gather_host(ids, gpu, stream)?;
-        self.gather_embed(table_va, num_tokens, heads, gpu, stream)
-    }
-
-    /// The HOST half of `gather`: NVMe fault-in + slot upload into the
-    /// stable `slots_dev` buffer. Capture-illegal (pageable H2D), so under
-    /// CUDA graphs it runs from `prestage` BEFORE replay/capture. Returns
-    /// the table's device VA for the kernel half.
-    fn gather_host(&self, ids: &[u64], gpu: &dyn GpuBackend, stream: u64) -> Result<u64> {
-        let mut table = self
-            .table
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PLE table mutex poisoned"))?;
-        let table_va = match &mut *table {
-            #[cfg(feature = "cuda")]
-            NgramTable::Cached(cache) => {
-                // Host resolves row -> slot (the ids are host-side anyway) and
-                // faults missing rows off NVMe into the pinned, GPU-addressable
-                // arena. The gather kernel then reads the arena BY SLOT.
-                let mut slots = Vec::with_capacity(ids.len());
-                let (h0, m0, _) = cache.stats();
-                let t0 = std::time::Instant::now();
-                cache.resolve(ids, &mut slots)?;
-                // Prefill-scale gathers log the fault profile at info: the
-                // misses are SERIAL blocking preads today (QD=1 under this
-                // mutex), so miss-count x latency IS the prefill stall.
-                // Decode-scale (16 ids) stays at debug.
-                let (h1, m1, _) = cache.stats();
-                let (dh, dm) = (h1 - h0, m1 - m0);
-                let us = t0.elapsed().as_micros();
-                if ids.len() > 64 {
-                    tracing::info!(
-                        "PLE gather: {} ids, {dh} hits / {dm} misses, resolve {us}us",
-                        ids.len()
-                    );
-                } else {
-                    tracing::debug!(
-                        "PLE gather: {} ids, {dh} hits / {dm} misses, resolve {us}us",
-                        ids.len()
-                    );
-                }
-                let bytes: Vec<u8> = slots.iter().flat_map(|s| s.to_le_bytes()).collect();
-                gpu.copy_h2d_async(&bytes, self.slots_dev, stream)?;
-                let va = cache.table_dev_va()?;
-                // ⚠ KNOWN. `end_batch`'s contract is "call once the gather has
-                // been ISSUED"; this releases the pins before `gather_embed` runs
-                // the kernel, which under CUDA graphs is a replay later. A next
-                // chunk's `resolve` could evict one of these slots and fault new
-                // bytes in from the HOST, which is not stream-ordered, and the
-                // in-flight kernel would gather the wrong row. Reaching a
-                // just-used slot needs the CLOCK hand around inside one resolve —
-                // order 65_536 misses against a 32_768-id chunk: close enough to
-                // matter later, not reachable now. Moving the release also changes
-                // when pins drop on every error path, and a leaked pin exhausts
-                // the cache — worse than the race. `NgramEmbeddings` does it in
-                // the documented order; copy that, with a prefill-scale test.
-                cache.end_batch();
-                DevicePtr(va)
-            }
-            NgramTable::Bf16(w) => {
-                // Fully resident table (small fixtures / tests): the "slot" IS
-                // the row id, so upload the ids truncated to u32.
-                let bytes: Vec<u8> = ids.iter().flat_map(|r| (*r as u32).to_le_bytes()).collect();
-                gpu.copy_h2d_async(&bytes, self.slots_dev, stream)?;
-                w.weight
-            }
-            NgramTable::Fp8(_) => anyhow::bail!(
-                "PLE: FP8 n-gram tables are not wired. This checkpoint ships BF16 \
-                 rows, which are both simpler and more accurate (on LongCat, BF16 \
-                 measured 0.0050 error vs FP8's 0.0247)."
-            ),
-        };
-        Ok(table_va.0)
-    }
-
-    /// The KERNEL half of `gather`: reads `slots_dev` and the table arena —
-    /// both stable device addresses — so it is graph-capture-safe.
-    fn gather_embed(
-        &self,
-        table_va: u64,
-        num_tokens: usize,
-        heads: usize,
-        gpu: &dyn GpuBackend,
-        stream: u64,
-    ) -> Result<()> {
-        ops::batched_embed(
-            gpu,
-            self.embed_k,
-            self.slots_dev,
-            DevicePtr(table_va),
-            self.emb,
-            (num_tokens * heads) as u32,
-            self.head_dim as u32,
-            stream,
-        )
-        .context("PLE row gather")
-    }
+    // `gather` / `gather_host` / `gather_embed` live in `gather.rs` (≤500 LoC
+    // split; child module so they keep reading the private fields above).
 }
 
 /// The dense weights of one PLE site.
@@ -496,3 +494,9 @@ pub struct PleWeights {
 // qsa.rs uses for its tests.
 #[path = "aux_state.rs"]
 mod aux_state;
+#[path = "gather.rs"]
+mod gather;
+
+#[cfg(all(test, feature = "cuda"))]
+#[path = "fp8_tests.rs"]
+mod fp8_tests;

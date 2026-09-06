@@ -136,6 +136,136 @@ pub(super) fn load(
     dims.validate().context("PLE: checkpoint id geometry")?;
     let heads = dims.ngram_heads();
 
+    // ── EXL3 sidecar table (exl3_ngram_trellis) ──
+    // Registered by `register_exl3_ngram_sidecar`: deferred
+    // `[rows, 1 + 160*K/16]` I16 trellis tensors + an uploaded per-head
+    // bias. Two published layouts exist: one monolithic
+    // `ngram_embedding.trellis` (the 4.05bpw branch) or 128
+    // `ngram_embedding.shard_{i}.trellis` shards (2.05bpw). Rows are
+    // faulted RAW into the pinned arena (the cache is byte-agnostic) and
+    // `batched_embed_exl3` decodes them on gather.
+    let exl3_mono = format!("{lp}.ple_embedding.ngram_embedding.trellis");
+    let mut exl3_segments: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    let mut exl3_shape: Option<Vec<usize>> = None;
+    if let Some(d) = store.deferred(&exl3_mono) {
+        exl3_segments.push((d.path.clone(), d.offset));
+        exl3_shape = Some(d.shape.clone());
+    } else {
+        for i in 0.. {
+            let name = format!("{lp}.ple_embedding.ngram_embedding.shard_{i}.trellis");
+            let Some(d) = store.deferred(&name) else {
+                break;
+            };
+            if let Some(s) = &exl3_shape {
+                anyhow::ensure!(
+                    d.shape == *s,
+                    "PLE exl3: shard {i} is {:?} but shard 0 is {s:?}; the \
+                     segmented row cache needs equal shards",
+                    d.shape
+                );
+            } else {
+                exl3_shape = Some(d.shape.clone());
+            }
+            exl3_segments.push((d.path.clone(), d.offset));
+        }
+    }
+    if let Some(shape) = exl3_shape {
+        anyhow::ensure!(
+            shape.len() == 2,
+            "PLE exl3: trellis shape {shape:?}, expected [rows, words]"
+        );
+        let rows_per = shape[0];
+        let rows = rows_per * exl3_segments.len();
+        let words = shape[1];
+        anyhow::ensure!(
+            words >= 2 && (words - 1) * 16 % 160 == 0,
+            "PLE exl3: {words} words/row does not decode as 1 + 160*K/16"
+        );
+        let k_bits = ((words - 1) * 16 / 160) as u32;
+        anyhow::ensure!(
+            (1..=8).contains(&k_bits),
+            "PLE exl3: derived K={k_bits} from {words} words/row; expected 1..=8"
+        );
+        let head_dim = 160usize;
+
+        // Same missing-rows refusal as the sharded path: the id tables say
+        // how many rows the hash can produce.
+        let highest_id = dims
+            .head_offsets
+            .iter()
+            .zip(dims.head_vocab_sizes.iter())
+            .map(|(off, vocab)| off + vocab)
+            .max()
+            .unwrap_or(0);
+        anyhow::ensure!(
+            highest_id <= rows as u64,
+            "PLE exl3: the id tables reach row {highest_id}, but the trellis \
+             holds {rows} rows — the sidecar belongs to a different conversion"
+        );
+
+        let bias_name = format!("{lp}.ple_embedding.ngram_embedding.head_bias");
+        let bias = store
+            .get(&bias_name)
+            .with_context(|| format!("PLE exl3: sidecar registered no {bias_name}"))?;
+        anyhow::ensure!(
+            bias.dtype == spark_runtime::weights::WeightDtype::F16
+                && bias.num_elements() == heads * head_dim,
+            "PLE exl3: head_bias is {:?} x {}, expected F16 [{heads}, {head_dim}] — \
+             and it must SKIP the loader's F16->BF16 conversion (exact bits are \
+             gather-kernel inputs)",
+            bias.dtype,
+            bias.num_elements()
+        );
+
+        let slots = slots_from_env();
+        let row_stride = words * 2; // i16 words
+        let cache = spark_storage::NgramRowCache::open_segmented(
+            &exl3_segments,
+            rows_per as u64,
+            None,
+            row_stride,
+            slots,
+        )
+        .context("PLE exl3: n-gram row cache")?;
+
+        let weights = PleWeights {
+            key_proj: dense(store, &format!("{lp}.key_proj.weight"))?,
+            value_proj: dense(store, &format!("{lp}.value_proj.weight"))?,
+            norm_key: dense(store, &format!("{lp}.norm_key.weight"))?,
+            norm_query: dense(store, &format!("{lp}.norm_query.weight"))?,
+            norm_conv: dense(store, &format!("{lp}.norm_conv.weight"))?,
+            conv1d: dense(store, &format!("{lp}.conv1d.weight"))?,
+        };
+        let dilation = config.emb_neighbor_num;
+        tracing::info!(
+            "PLE at MODEL LAYER {layer_idx} (exl3_ngram_trellis): {rows} rows x \
+             {head_dim} dims at K={k_bits} ({:.1} GB packed) served off NVMe with \
+             {slots} cached slots ({:.1} MB); {heads} heads, conv k={} dilation={dilation}",
+            (rows * row_stride) as f64 / 1e9,
+            (slots * row_stride) as f64 / 1e6,
+            config.ple_conv_kernel_size,
+        );
+        return PleLayer::new(
+            dims,
+            head_dim,
+            h,
+            hc,
+            config.ple_conv_kernel_size,
+            dilation,
+            config.rms_norm_eps as f32,
+            weights,
+            NgramTable::Cached(Box::new(cache)),
+            crate::layers::ple::NgramRowFormat::Exl3 {
+                k_bits,
+                head_bias: bias.ptr,
+            },
+            max_tokens,
+            gpu,
+        )
+        .map(Some)
+        .context("PLE: layer construction (exl3)");
+    }
+
     // ── the segmented table ──
     // (path, byte offset) per shard. The path is carried PER SHARD because the
     // released NVFP4 checkpoint spreads these 128 shards across ten
@@ -226,9 +356,7 @@ pub(super) fn load(
         ),
     };
     let slots = slots_from_env();
-    // No longer `mut`: the only mutation was the constant scale, which the
-    // gather cannot use and which is now a refusal (below).
-    let cache = spark_storage::NgramRowCache::open_segmented(
+    let mut cache = spark_storage::NgramRowCache::open_segmented(
         &shards,
         rows_per as u64,
         None, // scales are not per-row here; see the constant below
@@ -241,7 +369,7 @@ pub(super) fn load(
     // checkpoint carries ONE for the whole table
     // (`ngram_embedding.weight_scale`, BF16, shape [1]) rather than one per
     // row, so every slot gets the same value and nothing is faulted for it.
-    if elem == 1 {
+    let format = if elem == 1 {
         let name = format!("{lp}.ple_embedding.ngram_embedding.weight_scale");
         let scale = f32_scalar(store, &name, gpu)
             .with_context(|| format!("PLE: FP8 table needs {name}"))?;
@@ -249,28 +377,17 @@ pub(super) fn load(
             scale.is_finite() && scale > 0.0,
             "PLE: n-gram weight_scale is {scale}, which cannot dequantize anything"
         );
-        // ...and the gather cannot use it, so REFUSE rather than answer wrongly.
-        //
-        // `PleLayer` binds `embed_from_argmax::batched_embed`, whose table
-        // pointer is `__nv_bfloat16*`. Pointed at an arena packed one byte per
-        // element it strides twice as far as a row, so every row but the first
-        // is read from the middle of another row, those bytes are reinterpreted
-        // as BF16, this scale is multiplied in nowhere, and slots past the
-        // halfway mark read beyond the allocation. The model loads, serves, and
-        // is fluently wrong -- the one failure no operator can attribute to the
-        // checkpoint they chose, which is why it is a refusal and not a warning.
-        //
-        // `batched_embed_fp8` already exists in that same .cu file; wiring it to
-        // `PleLayer` and checking its numerics on a GPU is the fix. Until that is
-        // measured, an honest error at load beats a model that answers.
-        anyhow::bail!(
-            "PLE: this checkpoint stores the n-gram table in FP8 (1 byte/element, \
-             scale {scale:.6e}), but the gather kernel wired to PleLayer reads BF16 \
-             (2 bytes/element) and applies no scale -- loading it would produce \
-             silently wrong output rather than an error. Use a BF16 conversion of \
-             this model, or wire `batched_embed_fp8` into PleLayer first."
-        );
-    }
+        cache.set_constant_scale(scale)?;
+        crate::layers::ple::NgramRowFormat::Fp8 {
+            scale: spark_runtime::gpu::DevicePtr(
+                cache
+                    .scale_dev_va()?
+                    .context("PLE: FP8 cache has no scales")?,
+            ),
+        }
+    } else {
+        crate::layers::ple::NgramRowFormat::Bf16
+    };
 
     let weights = PleWeights {
         key_proj: dense(store, &format!("{lp}.key_proj.weight"))?,
@@ -284,14 +401,14 @@ pub(super) fn load(
     let dilation = config.emb_neighbor_num; // conv dilation IS ngram_size
     tracing::info!(
         "PLE at MODEL LAYER {layer_idx} (ple_layer_ids={:?}, 1-indexed): \
-         {} shards x {rows_per} rows x {head_dim} dims = {} rows ({:.1} GB BF16) \
+         {} shards x {rows_per} rows x {head_dim} dims = {} rows ({:.1} GB {dtype:?}) \
          served off NVMe with {slots} cached slots ({:.1} MB); {heads} heads, \
          conv k={} dilation={dilation} (state {} steps)",
         config.ple_layer_ids,
         shards.len(),
         shards.len() * rows_per,
-        (shards.len() * rows_per * head_dim * 2) as f64 / 1e9,
-        (slots * head_dim * 2) as f64 / 1e6,
+        (shards.len() * rows_per * head_dim * elem) as f64 / 1e9,
+        (slots * head_dim * elem) as f64 / 1e6,
         config.ple_conv_kernel_size,
         (config.ple_conv_kernel_size - 1) * dilation,
     );
@@ -306,6 +423,7 @@ pub(super) fn load(
         config.rms_norm_eps as f32,
         weights,
         NgramTable::Cached(Box::new(cache)),
+        format,
         max_tokens,
         gpu,
     )

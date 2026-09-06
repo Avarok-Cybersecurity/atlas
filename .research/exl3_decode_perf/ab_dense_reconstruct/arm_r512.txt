@@ -1,0 +1,20 @@
+=== arm r512 start 2026-09-06T04:35:10Z ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
+READY after ~46s
+served model id: qwen3.8-flash-next-exl3
+               total        used        free      shared  buff/cache   available
+Mem:             121          98          14           0          10          22
+Swap:             31           1          30
+[2m2026-09-06T04:35:53.827434Z[0m [32m INFO[0m [2mspark_model::layers::ops::exl3_dense::reconstruct[0m[2m:[0m EXL3 dense reconstruct tier ARMED: calls with m >= 512 rows reconstruct the trellis weight to BF16 once and run dense_gemm_bf16_pipelined; scr
+[2m2026-09-06T04:35:53.827452Z[0m [32m INFO[0m [2mspark_model::layers::ops::exl3_dense::stage[0m[2m:[0m EXL3 native dense stage allocated: 4096 rows x (in 6144, out 12288; fp32-C out 2560) = 2
+FINGERPRINT port=8899 model=qwen3.8-flash-next-exl3 max_tokens=1 temp=0 salted-unique-prompts date=2026-09-06T00:35:57
+target~8000: prompt_tokens=8001 wall=18.38s prefill=435 tok/s
+target~8000: prompt_tokens=7987 wall=18.05s prefill=443 tok/s
+SUMMARY target~8000: prompt_tokens~8001 prefill_tok_s_median=439
+target~11000: prompt_tokens=10980 wall=25.43s prefill=432 tok/s
+target~11000: prompt_tokens=10973 wall=25.29s prefill=434 tok/s
+SUMMARY target~11000: prompt_tokens~10980 prefill_tok_s_median=433
+FINGERPRINT port=8899 model=qwen3.8-flash-next-exl3 prompt=code max_tokens=300 temp=0 effort=low stream=1 date=2026-09-06T00:37:24
+SUMMARY n=3 gap_median_ms=0.68 decode_tok_s_median=30.59 ttft_ms=[495, 469, 469]
+sample_long: 834 bytes sha256 69e8a4360c003630
+sample_short: 775 bytes sha256 c5d02cf52a6db14b
+=== arm r512 done 2026-09-06T04:38:13Z

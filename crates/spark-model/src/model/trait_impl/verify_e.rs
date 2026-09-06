@@ -30,6 +30,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+#[path = "verify_e_eligibility.rs"]
+mod eligibility;
+
 use anyhow::{Result, bail, ensure};
 
 /// Batched-verify metadata overlay, every offset derived from
@@ -69,6 +72,9 @@ impl TransformerModel {
     /// logits-rows / meta-gap / bt-staging capacity — sizes.rs). Everything
     /// outside falls back to the per-seq loop.
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
+        if !eligibility::supports_verify_layout(self.config.hc_mult) {
+            return false;
+        }
         let n = ks.len();
         // Two admissible shapes:
         //  * MTP ladder — every k in 2..=4, no DFlash capture buffer.
@@ -255,7 +261,11 @@ impl TransformerModel {
         // currently free (pad writes land on unowned pool state, zeroed
         // again at the next claim) and its tiered intermediate pool covers
         // the baked depth.
-        let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
+        // EXL3-native head / MoE experts launch cooperatively — never
+        // capturable; without this term every batched-verify capture step
+        // would trip the arms' graph_capture ensures mid-serve.
+        let graphs_on =
+            super::verify_e2::verify_graphs_enabled() && !k4_diag && !self.exl3_graph_veto();
         let graph_key = if graphs_on {
             self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
         } else {

@@ -1,0 +1,395 @@
+{
+  "schema": 1,
+  "run_id": "run-1788357721228503590",
+  "benchmark_id": "agentic-webserver",
+  "benchmark_name": "Agentic Webserver Test",
+  "recorded_at": 1788357721,
+  "target_url": "http://127.0.0.1:8890",
+  "target_model": "qwen4exp-exl3",
+  "params": {
+    "build_timeout_s": "600",
+    "command_timeout_s": "180",
+    "iterations": "3",
+    "max_tokens": "8192",
+    "max_turns": "40",
+    "request_timeout_s": "900",
+    "s_per_turn_budget": "0",
+    "serve_timeout_s": "30",
+    "wall_budget_s": "9000"
+  },
+  "source": "cli",
+  "atlas_version": "1.0.0-beta-preview",
+  "frame": {
+    "status": "Completed",
+    "phase": "done",
+    "progress": [
+      3,
+      3
+    ],
+    "summary": [
+      {
+        "label": "webserver_ok",
+        "value": "3/3",
+        "unit": "",
+        "style": "Good"
+      },
+      {
+        "label": "followed_directions",
+        "value": "3/3",
+        "unit": "",
+        "style": "Good"
+      },
+      {
+        "label": "s/turn",
+        "value": "28.475",
+        "unit": "s",
+        "style": "Neutral"
+      },
+      {
+        "label": "Σ wall",
+        "value": "1232",
+        "unit": "s",
+        "style": "Good"
+      }
+    ],
+    "table": {
+      "title": "ITERATIONS",
+      "columns": [
+        {
+          "title": "Run",
+          "align": "Right",
+          "width": 4
+        },
+        {
+          "title": "wall s",
+          "align": "Right",
+          "width": 8
+        },
+        {
+          "title": "ws_ok",
+          "align": "Left",
+          "width": 6
+        },
+        {
+          "title": "steps",
+          "align": "Right",
+          "width": 6
+        },
+        {
+          "title": "turns",
+          "align": "Right",
+          "width": 6
+        },
+        {
+          "title": "tools",
+          "align": "Right",
+          "width": 6
+        },
+        {
+          "title": "note",
+          "align": "Left",
+          "width": 40
+        }
+      ],
+      "rows": [
+        [
+          {
+            "text": "0",
+            "style": "Neutral"
+          },
+          {
+            "text": "482.3",
+            "style": "Neutral"
+          },
+          {
+            "text": "pass",
+            "style": "Good"
+          },
+          {
+            "text": "6/6",
+            "style": "Good"
+          },
+          {
+            "text": "16",
+            "style": "Neutral"
+          },
+          {
+            "text": "15",
+            "style": "Neutral"
+          },
+          {
+            "text": "",
+            "style": "Dim"
+          }
+        ],
+        [
+          {
+            "text": "1",
+            "style": "Neutral"
+          },
+          {
+            "text": "402.3",
+            "style": "Neutral"
+          },
+          {
+            "text": "pass",
+            "style": "Good"
+          },
+          {
+            "text": "6/6",
+            "style": "Good"
+          },
+          {
+            "text": "13",
+            "style": "Neutral"
+          },
+          {
+            "text": "12",
+            "style": "Neutral"
+          },
+          {
+            "text": "",
+            "style": "Dim"
+          }
+        ],
+        [
+          {
+            "text": "2",
+            "style": "Neutral"
+          },
+          {
+            "text": "347.0",
+            "style": "Neutral"
+          },
+          {
+            "text": "pass",
+            "style": "Good"
+          },
+          {
+            "text": "6/6",
+            "style": "Good"
+          },
+          {
+            "text": "14",
+            "style": "Neutral"
+          },
+          {
+            "text": "16",
+            "style": "Neutral"
+          },
+          {
+            "text": "",
+            "style": "Dim"
+          }
+        ]
+      ]
+    },
+    "verdict": {
+      "kind": "Pass",
+      "reason": "3/3 webserver_ok · 3/3 followed_directions · 28.475s/turn (unbounded) · Σwall 1232s ≤ 9000s"
+    },
+    "metrics": {
+      "decode_tps": 10.672011658806303,
+      "followed_directions": 3.0,
+      "iterations": 3.0,
+      "s_per_turn": 28.47483029869768,
+      "step:curled": 3.0,
+      "step:ran_server": 3.0,
+      "step:ran_tests": 3.0,
+      "step:tore_down": 3.0,
+      "step:wrote_project": 3.0,
+      "step:wrote_tests": 3.0,
+      "sum_agent_wall_s": 1224.4177028440001,
+      "sum_completion_tokens": 13067.0,
+      "sum_tool_calls": 43.0,
+      "sum_turns": 43.0,
+      "sum_wall_s": 1231.671011345,
+      "webserver_ok": 3.0
+    },
+    "log": [],
+    "elapsed": {
+      "secs": 1253,
+      "nanos": 465718522
+    },
+    "hardware_state": {
+      "sensitivity": "speed",
+      "before": {
+        "captured_at": 1788356466,
+        "machine": {
+          "hostname": "dgx-00",
+          "machine_id": "d103edc98a4b40419003c632707f59b6",
+          "gpu": "NVIDIA GB10",
+          "driver": "580.173.02"
+        },
+        "gpu_temp_c": 51.0,
+        "chassis_temps_c": [
+          {
+            "name": "acpitz",
+            "temp_c": 54.8
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 52.6
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 52.5
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 52.3
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 52.0
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 54.8
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 52.8
+          }
+        ],
+        "sm_clock_mhz": 2288.0,
+        "sm_clock_max_mhz": 3003.0,
+        "throttle_counters": {
+          "sw_power_cap_us": 2634350390,
+          "sw_thermal_us": 0,
+          "hw_thermal_us": 0,
+          "hw_power_brake_us": 0,
+          "sync_boost_us": 0
+        },
+        "throttle_active": {
+          "sw_power_cap": false,
+          "sw_thermal": false,
+          "hw_thermal": false,
+          "hw_power_brake": false
+        },
+        "mem_available_kb": 18849576,
+        "mem_total_kb": 127535020,
+        "page_cache_kb": 10513780,
+        "gpu_compute_apps": [
+          {
+            "pid": 228300,
+            "name": "/usr/local/bin/monumental-asr",
+            "used_mib": 3614
+          },
+          {
+            "pid": 1698626,
+            "name": "/home/ms/atlas/.claude/worktrees/exl3-research/target/release/spark",
+            "used_mib": 89774
+          }
+        ],
+        "cpu_governor": "performance",
+        "persistence_mode": true,
+        "sources": [
+          "nvidia-smi",
+          "procfs",
+          "sysfs"
+        ]
+      },
+      "after": {
+        "captured_at": 1788357721,
+        "machine": {
+          "hostname": "dgx-00",
+          "machine_id": "d103edc98a4b40419003c632707f59b6",
+          "gpu": "NVIDIA GB10",
+          "driver": "580.173.02"
+        },
+        "gpu_temp_c": 58.0,
+        "chassis_temps_c": [
+          {
+            "name": "acpitz",
+            "temp_c": 64.7
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 61.4
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 63.3
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 60.8
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 64.7
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 62.3
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 62.8
+          }
+        ],
+        "sm_clock_mhz": 2281.0,
+        "sm_clock_max_mhz": 3003.0,
+        "throttle_counters": {
+          "sw_power_cap_us": 2634350390,
+          "sw_thermal_us": 0,
+          "hw_thermal_us": 0,
+          "hw_power_brake_us": 0,
+          "sync_boost_us": 0
+        },
+        "throttle_active": {
+          "sw_power_cap": false,
+          "sw_thermal": false,
+          "hw_thermal": false,
+          "hw_power_brake": false
+        },
+        "mem_available_kb": 17968648,
+        "mem_total_kb": 127535020,
+        "page_cache_kb": 12037480,
+        "gpu_compute_apps": [
+          {
+            "pid": 228300,
+            "name": "/usr/local/bin/monumental-asr",
+            "used_mib": 3614
+          },
+          {
+            "pid": 1698626,
+            "name": "/home/ms/atlas/.claude/worktrees/exl3-research/target/release/spark",
+            "used_mib": 89798
+          }
+        ],
+        "cpu_governor": "performance",
+        "persistence_mode": true,
+        "sources": [
+          "nvidia-smi",
+          "procfs",
+          "sysfs"
+        ]
+      },
+      "delta": {
+        "elapsed_s": 1255,
+        "sw_power_cap_us": 0,
+        "sw_thermal_us": 0,
+        "hw_thermal_us": 0,
+        "hw_power_brake_us": 0,
+        "gpu_temp_delta_c": 7.0,
+        "hottest_chassis_delta_c": 9.900000000000006
+      },
+      "precheck": {
+        "decision": "warn",
+        "concerns": [
+          "2 GPU compute processes other than this one (at most 1 expected — the model under test)",
+          "ATLAS_NO_HW_PRECHECK=1 — REFUSAL SUPPRESSED BY OPERATOR. The concerns above stand and are recorded with the run; the kill switch only lets it start."
+        ]
+      },
+      "postcheck": {
+        "validity": "valid",
+        "concerns": [
+          "hottest chassis zone moved +10 °C"
+        ]
+      },
+      "perf_class": "gb10@dgx-00"
+    }
+  }
+}

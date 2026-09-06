@@ -2,6 +2,7 @@
 
 //! K=3 verify step.
 
+use super::verify_k2_step::commit_verify_aux_or_finish;
 use super::*;
 
 // The AtomicU64 counters that lived here are now `SchedCtx::stats`
@@ -100,7 +101,7 @@ fn k3_record_positional(
 }
 
 #[inline]
-fn k3_record_outcome(
+pub(super) fn k3_record_outcome(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
     num_accepted: usize,
     seq_len: usize,
@@ -193,6 +194,10 @@ pub fn step_verify_k3(
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
+    if !dflash_verify_raw_argmax {
+        super::verify_mtp_wide::finish(model, a, sched, &drafts[..2], num_drafts, verify_ctx);
+        return;
+    }
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
 
     let (v0, v1, v2) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
@@ -222,6 +227,17 @@ pub fn step_verify_k3(
     } else {
         2
     };
+
+    // Context-vs-emit ledger (debug): pins that this branch commits to the
+    // model exactly what it emits to the client. See `verify_ledger`.
+    crate::scheduler::verify_ledger::trace_ctx_vs_emit(
+        "K3",
+        a,
+        3,
+        &[v0, v1, v2],
+        drafts,
+        num_accepted,
+    );
 
     // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
@@ -338,6 +354,9 @@ pub fn step_verify_k3(
             a.finished = true;
             return;
         }
+        if !commit_verify_aux_or_finish(model, a, 3, 3) {
+            return;
+        }
         if let Err(e) = model.save_hidden_for_mtp(2, 0) {
             tracing::error!("save_hidden_for_mtp(2): {e:#}");
             return;
@@ -378,6 +397,13 @@ pub fn step_verify_k3(
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 3) {
             tracing::error!("commit_accepted_prefix (K=3 accept-2): {e:#}");
             a.finished = true;
+            return;
+        }
+        // TWO of three rows committed: the carries must land on row 1, not on
+        // row 0. This is the branch a single row-0 snapshot got wrong, and
+        // K=3's `num_accepted <= 2 < k` means EVERY K=3 step takes a partial
+        // branch — there is no full-accept path here that could hide it.
+        if !commit_verify_aux_or_finish(model, a, 2, 3) {
             return;
         }
         emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
@@ -426,6 +452,9 @@ pub fn step_verify_k3(
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 3) {
             tracing::error!("commit_accepted_prefix (K=3 accept-1): {e:#}");
             a.finished = true;
+            return;
+        }
+        if !commit_verify_aux_or_finish(model, a, 1, 3) {
             return;
         }
         emit_token(a, v0, verify_lps.first().cloned(), sched);

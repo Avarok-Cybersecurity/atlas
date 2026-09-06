@@ -6,10 +6,10 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Axis, BarChart, Chart, Dataset, LineGauge, Paragraph, Sparkline};
+use ratatui::widgets::{Axis, BarChart, Chart, Dataset, Paragraph, Sparkline};
 
 use super::panel;
 use crate::tui::app::App;
@@ -35,7 +35,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
         .split(rows[2]);
-    draw_sequences(f, app, bottom[0]);
+    super::stats_tab_panels::draw_sequences(f, app, bottom[0]);
     // Thermal sits under speculation & cache rather than taking a column of its
     // own: it is a small fixed-height panel, and splitting the bottom row three
     // ways would squeeze the two that carry per-sequence detail.
@@ -43,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(5), Constraint::Length(6)])
         .split(bottom[1]);
-    draw_spec_cache(f, app, right[0]);
+    super::stats_tab_panels::draw_spec_cache(f, app, right[0]);
     super::stats_thermal::draw(f, app, right[1]);
 }
 
@@ -71,11 +71,16 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
     let s = &app.stats;
     let tiles = Layout::default()
         .direction(Direction::Horizontal)
+        // Unequal on purpose: five EQUAL tiles truncated the REQUESTS row
+        // ("1007 ● 8 ↓2.0 KB/s ↑3.0 MB/s" is ~32 cols and the widest content
+        // here), which the tile test catches. Widths follow the content —
+        // REQUESTS and GPU carry two figures each, THROUGHPUT carries one.
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(24),
+            Constraint::Percentage(16),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+            Constraint::Percentage(22),
         ])
         .split(area);
     let req = Line::from(vec![
@@ -112,6 +117,46 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         tp,
         Some(&s.gen_tps_history.as_u64()),
     );
+    // Prefill ingest. Counted per chunk as it lands (see
+    // scheduler/phase_continue_prefills), so this is the rate at the moment
+    // ingest happens — not, as it used to be, the whole prompt credited to
+    // whenever the response finished. `● n` is the number of sequences
+    // currently prefilling, straight off the scheduler snapshot.
+    let pf = Line::from(vec![
+        Span::styled(
+            format!(" {:.0} tok/s", s.prompt_tps),
+            theme::text().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            match s.sched {
+                Some(x) if x.prefilling_seqs > 0 => format!("  ● {}", x.prefilling_seqs),
+                _ => String::new(),
+            },
+            theme::brand_cyan(),
+        ),
+        // In-flight progress as a PERCENT: this tile is the narrowest on the
+        // row (18%) and the absolute pair "4.2k/12.6k" truncates in it. The
+        // exact numbers go to the sequences pane, which has the width.
+        // Rendered only while something is prefilling — a permanent 0% would
+        // be noise on an idle server.
+        Span::styled(
+            match s.sched {
+                Some(x) if x.prefill_tokens_total > 0 => format!(
+                    "  {:.0}%",
+                    100.0 * x.prefill_tokens_done as f64 / x.prefill_tokens_total as f64
+                ),
+                _ => String::new(),
+            },
+            theme::text2(),
+        ),
+    ]);
+    tile(
+        f,
+        tiles[2],
+        "PREFILL",
+        pf,
+        Some(&s.prompt_tps_history.as_u64()),
+    );
     let ttft = Line::from(vec![
         Span::styled(
             format!(" p50 {}", fmt_ms(s.ttft_p50_ms)),
@@ -119,7 +164,7 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(format!("  p90 {}", fmt_ms(s.ttft_p90_ms)), theme::text2()),
     ]);
-    tile(f, tiles[2], "TTFT", ttft, None);
+    tile(f, tiles[3], "TTFT", ttft, None);
     // `—`, not 0.0, when the device never answered.
     let gpu = if s.gpu_known {
         Line::from(vec![
@@ -132,7 +177,7 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Line::from(Span::styled(" —", theme::dim()))
     };
-    tile(f, tiles[3], "GPU", gpu, None);
+    tile(f, tiles[4], "GPU", gpu, None);
 }
 
 fn draw_ttft_hist(f: &mut Frame, app: &App, area: Rect) {
@@ -175,7 +220,7 @@ fn draw_ttft_hist(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_throughput(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel("THROUGHPUT ── gen tok/s ─".into(), false);
+    let block = panel("THROUGHPUT ── gen ─ prefill ─".into(), false);
     let pts: Vec<(f64, f64)> = app
         .stats
         .gen_tps_history
@@ -185,15 +230,51 @@ fn draw_throughput(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, v)| (i as f64, *v))
         .collect();
     let max_y = pts.iter().map(|(_, v)| *v).fold(10.0_f64, f64::max) * 1.15;
-    let datasets = vec![
+
+    // Prefill on the SAME plot but its OWN scale, printed up the right edge.
+    // The two series differ by ~20x (≈890 vs ≈40 tok/s), so one shared axis
+    // buries the generation line on the baseline. Instead the prefill series
+    // is normalised onto the generation axis and the right-hand labels say
+    // what full-scale means for it — a dual-axis chart, which ratatui's
+    // `Chart` has no native support for, so the right scale is drawn by hand
+    // below.
+    let pf_raw: Vec<f64> = app
+        .stats
+        .prompt_tps_history
+        .points
+        .iter()
+        .copied()
+        .collect();
+    let pf_max = pf_raw.iter().copied().fold(0.0_f64, f64::max);
+    let pf_scale = if pf_max > 0.0 {
+        max_y / (pf_max * 1.15)
+    } else {
+        0.0
+    };
+    let pf_pts: Vec<(f64, f64)> = pf_raw
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i as f64, v * pf_scale))
+        .collect();
+
+    let mut datasets = vec![
         Dataset::default()
             .marker(symbols::Marker::Braille)
             .graph_type(ratatui::widgets::GraphType::Line)
             .style(theme::brand_cyan())
             .data(&pts),
     ];
+    if pf_max > 0.0 {
+        datasets.push(
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(ratatui::widgets::GraphType::Line)
+                .style(theme::brand_purple())
+                .data(&pf_pts),
+        );
+    }
     let caption = format!(
-        "gen {:.0} tok/s · prompt {:.0} tok/s",
+        "gen {:.0} tok/s · prefill {:.0} tok/s",
         app.stats.gen_tps, app.stats.prompt_tps
     );
     let chart = Chart::new(datasets)
@@ -204,204 +285,34 @@ fn draw_throughput(f: &mut Frame, app: &App, area: Rect) {
         ]))
         .block(block.title_bottom(Line::from(Span::styled(caption, theme::text2()))));
     f.render_widget(chart, area);
-}
 
-fn line_gauge(f: &mut Frame, area: Rect, label: &str, used: f64, total: f64, gradient: bool) {
-    let frac = if total > 0.0 {
-        (used / total).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let color = theme::pressure_color(frac).unwrap_or(if gradient {
-        theme::gradient_at(frac)
-    } else {
-        theme::CYAN.color()
-    });
-    let g = LineGauge::default()
-        .ratio(frac)
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(theme::GAUGE_TRACK.color()))
-        .label(Span::styled(format!("{label:<4}"), theme::dim()));
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(10), Constraint::Length(16)])
-        .split(area);
-    f.render_widget(g, cols[0]);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("{used:.0}/{total:.0}"),
-            theme::text2(),
-        )),
-        cols[1],
-    );
-}
-
-fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel("SEQUENCES & MEMORY ─".into(), false);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let s = &app.stats;
-    let (active, prefill, swapped, queue) = s
-        .sched
-        .map(|x| {
-            (
-                x.active_seqs,
-                x.prefilling_seqs,
-                x.swapped_seqs,
-                x.pending_len,
-            )
-        })
-        .unwrap_or_default();
-    // Every row below is placed by hand rather than by a `Layout`, so every
-    // row has to be checked against the pane it is meant to be inside: a
-    // `Rect` one line past the bottom is not clipped by ratatui, it panics —
-    // and this pane is six rows tall on a terminal that is only eight, so the
-    // dashboard (and with it the server's foreground) went down on a resize.
-    let row = |y: u16| -> Option<Rect> {
-        (y < inner.bottom()).then_some(Rect {
-            y,
-            height: 1,
-            ..inner
-        })
-    };
-    let mut y = inner.y;
-    if let Some(r) = row(y) {
+    // Right-hand scale for the prefill series, in the prefill colour so it
+    // reads as "the purple line tops out here". Only drawn once prefill has
+    // been observed — an idle server gets the single-scale chart it had.
+    // Placed inside the block border, right-aligned, and only when the pane
+    // is tall/wide enough to hold it without colliding with the plot.
+    if pf_max > 0.0 && area.height >= 4 && area.width >= 24 {
+        let label = format!("{:.0} ", pf_max * 1.15);
+        let w = label.len() as u16;
         f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                format!(
-                    " active {active} · prefill {prefill} · swapped {swapped} · queue {queue} "
-                ),
-                theme::text(),
-            )])),
-            r,
-        );
-    }
-    y += 1;
-    let qh = s.queue_history.as_u64();
-    if !qh.is_empty()
-        && let Some(r) = row(y)
-    {
-        f.render_widget(
-            Sparkline::default().data(&qh).style(theme::brand_cyan()),
+            Paragraph::new(Line::from(Span::styled(label, theme::brand_purple()))),
             Rect {
-                x: inner.x + 1,
-                width: inner.width.saturating_sub(2),
-                ..r
-            },
-        );
-    }
-    y += 2;
-    if let Some(x) = s.sched {
-        let used = (x.kv_blocks_total - x.kv_blocks_free) as f64;
-        if let Some(r) = row(y) {
-            line_gauge(f, r, " KV", used, x.kv_blocks_total as f64, true);
-        }
-        y += 1;
-        if let Some(r) = row(y) {
-            line_gauge(
-                f,
-                r,
-                " SSM",
-                x.ssm_slots_used as f64,
-                x.ssm_slots_total as f64,
-                false,
-            );
-        }
-        y += 1;
-    }
-    if let Some(r) = row(y) {
-        if s.gpu_known {
-            line_gauge(
-                f,
-                r,
-                " GPU",
-                s.atlas_used_gb,
-                s.gpu_total_gb.max(0.001),
-                true,
-            );
-        } else {
-            // A 0 % bar reads as "empty", which is a claim. Say nothing instead.
-            f.render_widget(
-                ratatui::widgets::Paragraph::new(Span::styled(" GPU  —", theme::dim())),
-                r,
-            );
-        }
-    }
-    if let Some(r) = row(y + 1) {
-        line_gauge(
-            f,
-            r,
-            " RAM",
-            (s.host_total_gb - s.host_avail_gb).max(0.0),
-            s.host_total_gb.max(0.001),
-            false,
-        );
-    }
-}
-
-fn draw_spec_cache(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel("SPECULATION & CACHE ─".into(), false);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let s = &app.stats;
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(x) = s.sched {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(
-                    " MTP gate {}",
-                    crate::tui::format::mtp_mode_label(x.mtp_mode)
-                ),
-                theme::text(),
-            ),
-            Span::styled(
-                format!(" · delivered {:.0} tok/s", x.delivered_tps),
-                theme::text2(),
-            ),
-        ]));
-    }
-    for (k, accepted, total) in &s.spec_accept {
-        if *total == 0 {
-            continue;
-        }
-        let rate = *accepted as f64 / *total as f64;
-        let w = 16usize;
-        let filled = (rate * w as f64) as usize;
-        let bar: String = "█".repeat(filled) + &"░".repeat(w - filled);
-        lines.push(Line::from(vec![
-            Span::styled(format!(" accept k={k:<3}"), theme::text2()),
-            Span::styled(bar, theme::brand_cyan()),
-            Span::styled(format!(" {:>3.0}%", rate * 100.0), theme::text()),
-        ]));
-    }
-    lines.push(Line::default());
-    let hit = s
-        .prefix_hit_rate
-        .map(|r| format!("{:.0}%", r * 100.0))
-        .unwrap_or_else(|| "—".into());
-    lines.push(Line::from(Span::styled(
-        format!(" prefix-cache hit {hit} · {} tok warm", s.prefix_hit_tokens),
-        theme::text(),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(
-            " tool calls {} · entropy {:.2}",
-            s.tool_calls_total, s.entropy
-        ),
-        theme::text2(),
-    )));
-    f.render_widget(Paragraph::new(lines), inner);
-    let eh = s.entropy_history.as_u64();
-    if !eh.is_empty() && inner.height >= 6 {
-        f.render_widget(
-            Sparkline::default().data(&eh).style(theme::brand_cyan()),
-            Rect {
-                y: inner.y + inner.height - 1,
+                x: area.right().saturating_sub(w + 1),
+                y: area.y + 1,
+                width: w,
                 height: 1,
-                x: inner.x + 1,
-                width: inner.width.saturating_sub(2),
             },
         );
+    }
+}
+
+/// `12618` -> `12.6k`. The PREFILL tile is the narrowest on the row, so the
+/// progress pair has to stay short enough not to clip it.
+fn compact_tokens(n: u32) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
     }
 }
 

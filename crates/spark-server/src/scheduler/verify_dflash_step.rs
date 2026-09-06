@@ -180,16 +180,22 @@ pub fn step_verify_dflash(
         a.last_token = bonus;
     }
 
+    // Accept telemetry, in DRAFT TOKENS not steps. A gamma-block drafter
+    // accepts 0..gamma per step, so a per-step accept/reject binary carries
+    // no information — and the two labels this used to emit ("accept_all" /
+    // "accept_partial") BOTH matched the TUI's `outcome.contains("accept")`
+    // test, which pinned the Stats page's `accept k=dflash` bar at 100%
+    // forever. Counting tokens makes that bar the real draft-acceptance
+    // rate, the same number the benchmarks report.
+    let rejected = drafts.len().saturating_sub(num_accepted);
     crate::metrics::SPEC_DECODE_VERIFY
-        .with_label_values(&[
-            "dflash",
-            if num_accepted == drafts.len() {
-                "accept_all"
-            } else {
-                "accept_partial"
-            },
-        ])
-        .inc();
+        .with_label_values(&["dflash", "accept"])
+        .inc_by(num_accepted as u64);
+    if rejected > 0 {
+        crate::metrics::SPEC_DECODE_VERIFY
+            .with_label_values(&["dflash", "reject"])
+            .inc_by(rejected as u64);
+    }
 
     tracing::info!(
         "DFLASH K=γ verify: γ={} accepted={}/{} ({:.0}%) seq_len={}",

@@ -18,6 +18,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::{ForwardContext, LayerState};
+use crate::layers::hc_ffn_plan::{HcFfnPlan, hc_ffn_plan};
 use crate::layers::ops;
 
 mod attn;
@@ -26,6 +27,8 @@ mod ffn;
 mod mla;
 mod mla_gemv;
 mod qkv;
+mod qkv_exl3;
+mod qsa;
 
 impl Qwen3AttentionLayer {
     #[allow(clippy::too_many_arguments)]
@@ -216,13 +219,32 @@ impl Qwen3AttentionLayer {
             .expect("attention layer requires metadata");
 
         // ── Phases 2-6: attention ──
+        // QSA (#753 phase G): once a row's visible prefix passes the indexer's
+        // inert bound its attention must read the SELECTED KV, not the whole
+        // paged cache. `ms_qsa_phase_paged_decode` selects and consumes per row
+        // (the indexer owns ONE set of scratch buffers, so a selection has to
+        // be attended before the next row selects — see `qsa.rs`) and ingests
+        // every row on the way, which is why the ingest-only sweep below is
+        // skipped in that case. Batches entirely inside the bound keep the
+        // bit-identical batched attention + ingest-only loop.
+        let qsa_selecting = self.ms_qsa_selection_active(seq_lens, n);
         let o_out = if let Some(ref _mla) = self.mla {
+            anyhow::ensure!(
+                !qsa_selecting,
+                "QSA selection active on the batched MLA multi-seq decode path; \
+                 the absorbed-MLA kernel has no selection hook — serve with \
+                 ATLAS_HC_PERSEQ_DECODE=1"
+            );
             self.ms_mla_decode(&c, kv_cache, meta)?
         } else {
             self.ms_phase_qkv(&c)?;
             self.ms_phase_rope(&c, meta)?;
             self.ms_phase_cache_write(&c, kv_cache, meta)?;
-            let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
+            let attn_out = if qsa_selecting {
+                self.ms_qsa_phase_paged_decode(&c, states, seq_lens, kv_cache, meta)?
+            } else {
+                self.ms_phase_paged_decode(&c, kv_cache, meta)?
+            };
             self.ms_phase_o_proj(&c, attn_out)?
         };
 
@@ -234,33 +256,11 @@ impl Qwen3AttentionLayer {
         }
 
         // ── QSA ingest continuity (per-seq) ──
-        // Below the inert bound `decode_select` is ingest-only and returns
-        // `None`; the dispatch gate (decode_a2) routes any batch with an
-        // ACTIVE-selection sequence to the per-seq loop, so a `Some` here
-        // means the gate and this path disagree — refuse loudly rather than
-        // serve dense-past-budget (not the reference model).
-        if let Some(qsa) = self.qsa.as_ref() {
-            for (i, state) in states.iter_mut().enumerate().take(n) {
-                let st =
-                    crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, *state, ctx.gpu)?;
-                let sel = qsa.decode_select(
-                    st,
-                    c.normed.offset(i * h * c.bf16),
-                    seq_lens[i],
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
-                    meta.block_table
-                        .offset(i * meta.max_blocks_per_seq as usize * 4),
-                    c.bs,
-                    ctx.gpu,
-                    stream,
-                )?;
-                anyhow::ensure!(
-                    sel.is_none(),
-                    "QSA selection active for seq {i} on the batched ms path; \
-                     the dispatch gate should have routed this batch per-seq"
-                );
-            }
+        // Every row must be ingested every step or the indexer's raw-key cache
+        // loses sync. When `qsa_selecting`, `ms_qsa_phase_paged_decode` already
+        // did the ingest as part of selecting, so this would double-ingest.
+        if !qsa_selecting {
+            self.ms_qsa_ingest_only(&c, states, seq_lens, kv_cache, meta)?;
         }
 
         // Expand attention output back into multi-stream state.
@@ -387,27 +387,58 @@ impl Qwen3AttentionLayer {
                 .copy_d2d_async(c.hidden, c.normed, n * h * 2, stream)?;
         }
 
-        // Per-token sequential FFN (MLA models always take this path).
-        for i in 0..n {
-            let normed2_i = c.normed.offset(i * c.h * c.bf16);
-            let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
-            // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
-            let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
-            let post_i = post.offset(i * hc.hc_mult * 4);
-            let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
+        // FFN + hc_post. ONE n-row dispatch when the batched plan applies
+        // (#753 item B follow-up: the per-row loop below ran the dominant part
+        // of the step n times, so decode scaled linearly with C); otherwise the
+        // per-token sequential loop — MLA models, C=1 and the
+        // `hc_batched_moe_decode` kill switch always take that one.
+        //
+        // MLA is excluded for the same reason `ms_phase_ffn`'s `force_seq_ffn`
+        // excludes it: the batched-MoE kernels have a pre-existing illegal
+        // address on Mistral-Small-4's MoE config, and DeepSeek-V4 (MLA + mHC)
+        // reaches this body. Only the qwen4_exp/GDN family changes shape here.
+        let batched_ok = ctx.config.hc_batched_moe_decode && self.mla.is_none();
+        let plan = hc_ffn_plan(n, !self.ffn.is_none(), batched_ok, false);
+        if plan == HcFfnPlan::Batched {
+            // Writes moe_output()[0..n); one EP all-reduce for the batch.
+            self.ffn
+                .forward_token_major_decode(c.normed, n, ctx, stream)?;
             ops::hc_post_site(
                 ctx.gpu,
                 self.hc_post_k,
                 hc,
-                moe_out,
-                hc_streams_i,
-                post_i,
-                comb_i,
-                hc_streams_i,
-                1,
+                ctx.buffers.moe_output(),
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                n as u32,
                 h as u32,
                 stream,
             )?;
+        } else {
+            // Per-token sequential FFN (MLA models always take this path).
+            for i in 0..n {
+                let normed2_i = c.normed.offset(i * c.h * c.bf16);
+                let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
+                // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
+                let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
+                let post_i = post.offset(i * hc.hc_mult * 4);
+                let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
+                ops::hc_post_site(
+                    ctx.gpu,
+                    self.hc_post_k,
+                    hc,
+                    moe_out,
+                    hc_streams_i,
+                    post_i,
+                    comb_i,
+                    hc_streams_i,
+                    1,
+                    h as u32,
+                    stream,
+                )?;
+            }
         }
         if diag_this {
             super::diag_norm_f32(

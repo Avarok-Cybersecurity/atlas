@@ -67,9 +67,8 @@ mod tscg;
 pub mod tui;
 
 use anyhow::Result;
-use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use crate::cli::Command;
 use crate::main_modules::serve;
 
 pub(crate) use crate::main_modules::AppState;
@@ -81,7 +80,13 @@ pub type ModelBehavior = atlas_kernels::ModelBehavior;
 async fn main() -> Result<()> {
     // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
     // clap emits no tracing events, so plain-mode output is unchanged.
-    let cli = Cli::parse();
+    //
+    // A positional MODEL that names a serve preset (`spark serve
+    // qwen3.8-flash-next-exl3`) is expanded HERE — flag defaults appended and
+    // re-parsed, `ATLAS_*` defaults published — so the host, the dashboard and
+    // the validator all see the configuration that will actually run. For
+    // every other invocation this is `Cli::parse()`.
+    let (cli, preset) = main_modules::serve_presets::parse_cli()?;
 
     // Answered before anything else initialises. This prints a document and
     // exits: no subscriber, no TUI, no GPU. A dashboard would take the
@@ -129,6 +134,12 @@ async fn main() -> Result<()> {
         tui::init::install_tty_subscriber(progress_tx);
         Some(progress_rx)
     };
+
+    // The preset's decisions were made before a subscriber existed; record
+    // them now, first thing in the log, where a reproduction starts reading.
+    if let Some(applied) = &preset {
+        main_modules::serve_presets::log_applied(applied);
+    }
 
     // Race the server against shutdown. No spawn: `serve()` is a real future that
     // yields while its blocking startup runs on the blocking pool, so pinning it

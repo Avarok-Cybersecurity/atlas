@@ -79,6 +79,17 @@ impl WeightLoader for SafetensorsLoader {
         //   FP8 native:    ~1.5x  (store stays FP8, only attention prefill gets NVFP4 copies)
         // The n-gram tables are deferred, never uploaded, so they must not
         // count toward the peak — see the note in `fast_weights`.
+        //
+        // Allocator granularity is NOT modelled here, and the multiplier is
+        // about model building, not upload. Per-tensor `cuMemAlloc` on GB10
+        // charges sub-2 MiB requests a 2 MiB chunk-tail tax (an 800 KiB K=4
+        // EXL3 expert trellis costs 1.32x; ~17.9 GiB on the 4.05bpw
+        // Qwen3.8-Flash-Next export), which this 1.3x happened to absorb.
+        // The fast loader now pools the kept-packed EXL3 quartets into one
+        // arena per (shard, class) — `fast_weights/pool.rs`, ~1.006x — so on
+        // a native EXL3 boot the true upload footprint is ≈ on-disk bytes
+        // and the multiplier is headroom for the materialize transients +
+        // model building only. This mmap path stays per tensor.
         let preflight_skip = |name: &str| skip_fn(name) || super::is_ngram_table(name);
         {
             let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;
@@ -350,3 +361,24 @@ pub(crate) fn check_oom_guard(
 }
 mod load_fns;
 use load_fns::{load_sharded, load_single};
+
+/// Load every tensor of ONE safetensors file that `skip_fn` does not reject,
+/// under the loaders' standard ingest rules: F16 is converted to BF16 on the
+/// host EXCEPT the EXL3 Hadamard sign vectors (`.suh`/`.svh` keep their exact
+/// f16 bits — they are decode inputs), I16 lands as raw `UInt16` trellis
+/// codes, I32 as `Int32`. The file need not be listed in any index: this is
+/// the `extra_weights.safetensors` path, exposed so a model crate can
+/// register an out-of-index sidecar after the main load (the EXL3 export's
+/// `vision_k6.safetensors`, whose 987 `model.visual.*` tensors are in no
+/// `model.safetensors.index.json`). Returns the loaded tensors — the caller
+/// owns inserting them into its store (and the device memory). The OOM
+/// guard runs once after the file.
+pub fn load_safetensors_file(
+    path: &Path,
+    gpu: &dyn GpuBackend,
+    oom_reserve_bytes: usize,
+    skip_fn: &dyn Fn(&str) -> bool,
+) -> Result<HashMap<String, super::WeightTensor>> {
+    load_single(path, gpu, oom_reserve_bytes, skip_fn)
+        .with_context(|| format!("loading safetensors file {}", path.display()))
+}

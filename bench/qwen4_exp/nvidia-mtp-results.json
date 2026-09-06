@@ -1,0 +1,1928 @@
+{
+  "artifacts": {
+    "fingerprint.json": {
+      "commit": "98595757e53c1316523e6b9e081a87bed39e1a0f",
+      "binary": "/tmp/atlas-nvidia-mtp/spark",
+      "sha256": "4dd28c0ea88e13b507ecee060b431100524f98bc579df237af06318c427bab9a",
+      "host": "dgx-00",
+      "date": "2026-09-05T15:02:54.051597-04:00",
+      "snapshot": "fab0aecb760cec45227f6656abcaafa11abca87a",
+      "serial_launcher": "#!/bin/bash\n# SPDX-License-Identifier: AGPL-3.0-only\nset -euo pipefail\ncd /home/ms/atlas\nexport ATLAS_PLE_MAX_TOKENS=3072 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768\nexport ATLAS_INTHINK_TOOL_LEAK_OPENERS=0\nexport ATLAS_NO_HW_PRECHECK=1\nexport ATLAS_DFLASH_SPEC_THINK=1\nexport ATLAS_QWEN4EXP_MTP_HC_BATCHED=1\nexport ATLAS_VERIFY_ROW_PROJ=1\nexport ATLAS_MTP_ACCEPT_DEBUG=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1\nexec /tmp/atlas-nvidia-mtp/spark serve \\\n  --model-from-path /tank/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fab0aecb760cec45227f6656abcaafa11abca87a \\\n  --model-name qwen4exp-nvfp4 --kernel-target qwen3.8-flash-next \\\n  --world-size 1 --bind 127.0.0.1 --port 8892 \\\n  --max-seq-len 32768 --max-num-seqs 1 --max-batch-size 1 \\\n  --gpu-memory-utilization 0.71 --kv-cache-dtype bf16 --ssm-cache-slots 4 --max-prefill-tokens 2048 --vision-max-pixels 1048576 \\\n  --request-timeout 1800 --fast-load-prefetch-shards \\\n  --default-chat-template-kwargs '{\"reasoning_effort\":\"low\"}' \"$@\"\n",
+      "mtp_launcher": "#!/bin/bash\n# SPDX-License-Identifier: AGPL-3.0-only\nset -euo pipefail\ncd /home/ms/atlas\nexport ATLAS_PLE_MAX_TOKENS=3072 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768\nexport ATLAS_INTHINK_TOOL_LEAK_OPENERS=0\nexport ATLAS_NO_HW_PRECHECK=1\nexport ATLAS_QWEN4EXP_MTP=1 ATLAS_QWEN4EXP_MTP_VERIFY=1 ATLAS_DFLASH_SPEC_THINK=1\nexport ATLAS_QWEN4EXP_MTP_HC_BATCHED=1\nexport ATLAS_VERIFY_ROW_PROJ=1\nexport ATLAS_MTP_ACCEPT_DEBUG=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1\nexec /tmp/atlas-nvidia-mtp/spark serve \\\n  --model-from-path /tank/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fab0aecb760cec45227f6656abcaafa11abca87a \\\n  --model-name qwen4exp-nvfp4 --kernel-target qwen3.8-flash-next \\\n  --world-size 1 --bind 127.0.0.1 --port 8892 \\\n  --max-seq-len 32768 --max-num-seqs 1 --max-batch-size 1 \\\n  --gpu-memory-utilization 0.71 --kv-cache-dtype bf16 --ssm-cache-slots 4 --max-prefill-tokens 2048 --vision-max-pixels 1048576 \\\n  --request-timeout 1800 --fast-load-prefetch-shards \\\n  --speculative --num-drafts \"${MTP_DRAFTS:?set MTP_DRAFTS}\" --mtp-gate force \\\n  --default-chat-template-kwargs '{\"reasoning_effort\":\"low\"}' \"$@\"\n",
+      "tree_commit": "7b190e8e42efd48bed33b32c7875bb893d7d29b7"
+    },
+    "comparison-mtp-d2.json": [
+      {
+        "prompt": 0,
+        "identical": true
+      },
+      {
+        "prompt": 1,
+        "identical": true
+      },
+      {
+        "prompt": 2,
+        "identical": true
+      },
+      {
+        "prompt": 3,
+        "identical": false
+      },
+      {
+        "arm": "serial",
+        "repeats": 3,
+        "median_wall_s": 25.387682911008596,
+        "median_server_response_tps": 20.782337239716142
+      }
+    ],
+    "memory-summary.json": {
+      "minimum_available_gib": 12.023635864257812,
+      "swap_in_pages": 8,
+      "swap_out_pages": 0,
+      "samples": 138
+    },
+    "ab-serial.json": [
+      {
+        "wall_s": 25.38526038301643,
+        "response": {
+          "id": "chatcmpl-c4f31ec5-d4d0-4065-b8e5-5471b26f0f5e",
+          "object": "chat.completion",
+          "created": 1788635109,
+          "model": "qwen4exp-nvfp4",
+          "system_fingerprint": "fp_atlas",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python implementation of an LRU (Least Recently Used) cache that uses:\n1. A dictionary for O(1) lookups\n2. A doubly linked list for O(1) insertion/removal and maintaining access order\n\nI need to:\n- Implement a doubly linked list node class\n- Implement the LRU cache with `get` and `put` methods\n- Explain the invariants that make this work correctly\n- Include comprehensive unit tests\n\nLet me think about the design:\n\n**Doubly Linked List Node**: Each node stores a key-value pair, plus prev/next pointers.\n\n**LRU Cache**: \n- A dictionary maps keys to nodes (O(1) lookup)\n- A doubly linked list maintains the order of usage (most recently used at head, least recently used at tail)\n- On `get`: if key exists, move node to head, return value. If not, return -1.\n- On `put`: if key exists, update value and move to head. If not, create new node, add to head. If capacity exceeded, remove tail node and remove from dict.\n\n**Invariants**:\n1. The dictionary and the linked list always contain the same set of keys.\n2. The head of the list is the most recently accessed item.\n3. The tail of the list is the least recently accessed item.\n4. The number of items never exceeds capacity.\n5. Every node in the list has a corresponding entry in the dict, and vice versa.\n\n**Unit tests** should cover:\n- Basic get/put\n- Capacity eviction\n- Access order maintenance\n- Updating existing keys\n- Edge cases (capacity 1, getting non-existent key)\n\nLet me write clean, well-documented code.\n",
+                "content": "# LRU Cache: Dictionary + Doubly Linked List\n\n## Implementation\n\n```python\nfrom __future__ import annotations\nfrom typing import Any, Optional\n\n\nclass _Node:\n    \"\"\"A node in the doubly linked list, storing a key-value pair.\"\"\"\n\n    __slots__ = (\"key\", \"value\", \"prev\", \"next\")\n\n    def __init__(self, key: Any = None, value: Any = None) -> None:\n        self.key = key\n        self.value = value\n        self.prev: Optional[_Node] = None\n        self.next: Optional[_Node] = None\n\n\nclass LRUCache:\n"
+              },
+              "finish_reason": "length",
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 73,
+            "completion_tokens": 512,
+            "total_tokens": 585,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 374,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 805.081368,
+            "response_token/s": 20.79266522661523
+          }
+        },
+        "request": {
+          "model": "qwen4exp-nvfp4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Write a Python implementation of an LRU cache using a dictionary and a doubly linked list, with get and put methods. Explain its invariants and include unit tests."
+            }
+          ],
+          "temperature": 0,
+          "max_tokens": 512
+        },
+        "repeat": 0,
+        "prompt_index": 0
+      },
+      {
+        "wall_s": 25.39898646902293,
+        "response": {
+          "id": "chatcmpl-44dee8fe-368f-4c8f-a62f-533e7489a8a0",
+          "object": "chat.completion",
+          "created": 1788635134,
+          "model": "qwen4exp-nvfp4",
+          "system_fingerprint": "fp_atlas",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python implementation of an LRU (Least Recently Used) cache that uses:\n1. A dictionary for O(1) lookups\n2. A doubly linked list for O(1) insertion/removal and maintaining access order\n\nI need to:\n- Implement a doubly linked list node class\n- Implement the LRU cache with `get` and `put` methods\n- Explain the invariants that make this work correctly\n- Include comprehensive unit tests\n\nLet me think about the design:\n\n**Doubly Linked List Node**: Each node stores a key-value pair, plus prev/next pointers.\n\n**LRU Cache**: \n- A dictionary maps keys to nodes (O(1) lookup)\n- A doubly linked list maintains the order of usage (most recently used at head, least recently used at tail)\n- On `get`: if key exists, move node to head, return value. If not, return -1.\n- On `put`: if key exists, update value and move to head. If not, create new node, add to head. If capacity exceeded, remove tail node and remove from dict.\n\n**Invariants**:\n1. The dictionary and the linked list always contain the same set of keys.\n2. The head of the list is the most recently accessed item.\n3. The tail of the list is the least recently accessed item.\n4. The number of items never exceeds capacity.\n5. Every node in the list has a corresponding entry in the dict, and vice versa.\n\n**Unit tests** should cover:\n- Basic get/put\n- Capacity eviction\n- Access order maintenance\n- Updating existing keys\n- Edge cases (capacity 1, getting non-existent key)\n\nLet me write clean, well-documented code.\n",
+                "content": "# LRU Cache: Dictionary + Doubly Linked List\n\n## Implementation\n\n```python\nfrom __future__ import annotations\nfrom typing import Any, Optional\n\n\nclass _Node:\n    \"\"\"A node in the doubly linked list, storing a key-value pair.\"\"\"\n\n    __slots__ = (\"key\", \"value\", \"prev\", \"next\")\n\n    def __init__(self, key: Any = None, value: Any = None) -> None:\n        self.key = key\n        self.value = value\n        self.prev: Optional[_Node] = None\n        self.next: Optional[_Node] = None\n\n\nclass LRUCache:\n"
+              },
+              "finish_reason": "length",
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 73,
+            "completion_tokens": 512,
+            "total_tokens": 585,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 374,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 805.286876,
+            "response_token/s": 20.781069821319207
+          }
+        },
+        "request": {
+          "model": "qwen4exp-nvfp4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Write a Python implementation of an LRU cache using a dictionary and a doubly linked list, with get and put methods. Explain its invariants and include unit tests."
+            }
+          ],
+          "temperature": 0,
+          "max_tokens": 512
+        },
+        "repeat": 1,
+        "prompt_index": 0
+      },
+      {
+        "wall_s": 25.387682911008596,
+        "response": {
+          "id": "chatcmpl-3d89e5bc-d241-45a6-875c-a91623626f93",
+          "object": "chat.completion",
+          "created": 1788635160,
+          "model": "qwen4exp-nvfp4",
+          "system_fingerprint": "fp_atlas",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python implementation of an LRU (Least Recently Used) cache that uses:\n1. A dictionary for O(1) lookups\n2. A doubly linked list for O(1) insertion/removal and maintaining access order\n\nI need to:\n- Implement a doubly linked list node class\n- Implement the LRU cache with `get` and `put` methods\n- Explain the invariants that make this work correctly\n- Include comprehensive unit tests\n\nLet me think about the design:\n\n**Doubly Linked List Node**: Each node stores a key-value pair, plus prev/next pointers.\n\n**LRU Cache**: \n- A dictionary maps keys to nodes (O(1) lookup)\n- A doubly linked list maintains the order of usage (most recently used at head, least recently used at tail)\n- On `get`: if key exists, move node to head, return value. If not, return -1.\n- On `put`: if key exists, update value and move to head. If not, create new node, add to head. If capacity exceeded, remove tail node and remove from dict.\n\n**Invariants**:\n1. The dictionary and the linked list always contain the same set of keys.\n2. The head of the list is the most recently accessed item.\n3. The tail of the list is the least recently accessed item.\n4. The number of items never exceeds capacity.\n5. Every node in the list has a corresponding entry in the dict, and vice versa.\n\n**Unit tests** should cover:\n- Basic get/put\n- Capacity eviction\n- Access order maintenance\n- Updating existing keys\n- Edge cases (capacity 1, getting non-existent key)\n\nLet me write clean, well-documented code.\n",
+                "content": "# LRU Cache: Dictionary + Doubly Linked List\n\n## Implementation\n\n```python\nfrom __future__ import annotations\nfrom typing import Any, Optional\n\n\nclass _Node:\n    \"\"\"A node in the doubly linked list, storing a key-value pair.\"\"\"\n\n    __slots__ = (\"key\", \"value\", \"prev\", \"next\")\n\n    def __init__(self, key: Any = None, value: Any = None) -> None:\n        self.key = key\n        self.value = value\n        self.prev: Optional[_Node] = None\n        self.next: Optional[_Node] = None\n\n\nclass LRUCache:\n"
+              },
+              "finish_reason": "length",
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 73,
+            "completion_tokens": 512,
+            "total_tokens": 585,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 374,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 795.11096,
+            "response_token/s": 20.782337239716142
+          }
+        },
+        "request": {
+          "model": "qwen4exp-nvfp4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Write a Python implementation of an LRU cache using a dictionary and a doubly linked list, with get and put methods. Explain its invariants and include unit tests."
+            }
+          ],
+          "temperature": 0,
+          "max_tokens": 512
+        },
+        "repeat": 2,
+        "prompt_index": 0
+      }
+    ],
+    "ab-serial-warmup.json": [
+      {
+        "wall_s": 9.596871025045402,
+        "response": {
+          "id": "chatcmpl-f3c21f9f-d10f-4a82-acb5-a3cb78b1c4e4",
+          "object": "chat.completion",
+          "created": 1788635057,
+          "model": "qwen4exp-nvfp4",
+          "system_fingerprint": "fp_atlas",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "user\n\nassistant\n<think>\nThe tool call was executed, but the content of the response appears to be empty. I shouldn't fabricate a fake response. The system returned an empty result. I should report that no weather data was returned, and suggest a retry if necessary. However, I must not simulate a tool response. Since the tool has already been called and an empty response came back, I'll convey that no data was obtained.",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_0000000000000003",
+                    "type": "function",
+                    "function": {
+                      "name": "get_weather",
+                      "arguments": "{\"city\":\"Paris\"}"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": "tool_calls",
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 1139,
+            "completion_tokens": 143,
+            "total_tokens": 1282,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 120,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 2304.589821,
+            "response_token/s": 19.52020207682699
+          }
+        },
+        "request": {
+          "model": "qwen4exp-nvfp4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Use get_weather to check the weather in Paris."
+            }
+          ],
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          ],
+          "tool_choice": "required",
+          "temperature": 0,
+          "seed": 123,
+          "max_tokens": 250
+        }
+      },
+      {
+        "wall_s": 26.854690632084385,
+        "response": {
+          "id": "chatcmpl-c627c316-e127-4290-8b3a-520ee7a63abc",
+          "object": "chat.completion",
+          "created": 1788635084,
+          "model": "qwen4exp-nvfp4",
+          "system_fingerprint": "fp_atlas",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python implementation of an LRU (Least Recently Used) cache that uses:\n1. A dictionary for O(1) lookups\n2. A doubly linked list for O(1) insertion/removal and maintaining access order\n\nI need to:\n- Implement a doubly linked list node class\n- Implement the LRU cache with `get` and `put` methods\n- Explain the invariants that make this work correctly\n- Include comprehensive unit tests\n\nLet me think about the design:\n\n**Doubly Linked List Node**: Each node stores a key-value pair, plus prev/next pointers.\n\n**LRU Cache**: \n- A dictionary maps keys to nodes (O(1) lookup)\n- A doubly linked list maintains the order of usage (most recently used at head, least recently used at tail)\n- On `get`: if key exists, move node to head, return value. If not, return -1.\n- On `put`: if key exists, update value and move to head. If not, create new node, add to head. If capacity exceeded, remove tail node and remove from dict.\n\n**Invariants**:\n1. The dictionary and the linked list always contain the same set of keys.\n2. The head of the list is the most recently accessed item.\n3. The tail of the list is the least recently accessed item.\n4. The number of items never exceeds capacity.\n5. Every node in the list has a corresponding entry in the dict, and vice versa.\n\n**Unit tests** should cover:\n- Basic get/put\n- Capacity eviction\n- Access order maintenance\n- Updating existing keys\n- Edge cases (capacity 1, getting non-existent key)\n\nLet me write clean, well-documented code.\n",
+                "content": "# LRU Cache: Dictionary + Doubly Linked List\n\n## Implementation\n\n```python\nfrom __future__ import annotations\nfrom typing import Any, Optional\n\n\nclass _Node:\n    \"\"\"A node in the doubly linked list, storing a key-value pair.\"\"\"\n\n    __slots__ = (\"key\", \"value\", \"prev\", \"next\")\n\n    def __init__(self, key: Any = None, value: Any = None) -> None:\n        self.key = key\n        self.value = value\n        self.prev: Optional[_Node] = None\n        self.next: Optional[_Node] = None\n\n\nclass LRUCache:\n"
+              },
+              "finish_reason": "length",
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 73,
+            "completion_tokens": 512,
+            "total_tokens": 585,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 374,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 813.808801,
+            "response_token/s": 19.625952577769382
+          }
+        },
+        "request": {
+          "model": "qwen4exp-nvfp4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Write a Python implementation of an LRU cache using a dictionary and a doubly linked list, with get and put methods. Explain its invariants and include unit tests."
+            }
+          ],
+          "temperature": 0,
+          "max_tokens": 512
+        }
+      }
+    ],
+    "pre-projection-mismatches.json": [
+      {
+        "prompt": 0,
+        "serial": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user asks a simple multiplication question: 12 \u00d7 8. The answer is 96. They want a brief answer.\n",
+              "content": "96"
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "mtp": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user asks a simple multiplication question: 12 \u00d7 8. The answer is 96. They want a brief answer.\n",
+              "content": "96"
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ]
+      },
+      {
+        "prompt": 1,
+        "serial": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a concise, two-sentence explanation of a Merkle tree \u2014 what it is and why it's useful. I need to be precise and avoid unnecessary detail while still being informative.\n",
+              "content": "A Merkle tree is a binary tree in which each non-leaf node contains a cryptographic hash of its children's hashes, with the leaves being hashes of the underlying data blocks. This structure allows anyone to verify the integrity of a specific piece of data by checking only a small subset of hashes (a \"Merkle proof\") against the single root hash, making it efficient for verifying large datasets without rehashing everything."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "mtp": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a concise, two-sentence explanation of a Merkle tree \u2014 what it is and why it's useful. I need to be precise and avoid unnecessary detail while still being informative.\n",
+              "content": "A Merkle tree is a binary tree in which each non-leaf node contains a cryptographic hash of its children's hashes, with the leaves holding hashes of the actual data blocks. It is useful because it allows anyone to verify the integrity of a single piece of data by checking only a small path of hashes up to the single \"Merkle root,\" rather than re-hashing the entire dataset."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ]
+      },
+      {
+        "prompt": 2,
+        "serial": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I could use several approaches: slicing (`[::-1]`), a loop, recursion, or `reversed()`. The most Pythonic and concise approach is slicing. I'll provide that as the primary solution and keep the explanation to exactly one sentence as requested.\n",
+              "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "mtp": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I could use several approaches: slicing (`[::-1]`), a loop, or `reversed()`. The most Pythonic and concise is slicing. I'll provide that as the primary solution and keep the explanation to exactly one sentence.\n",
+              "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ]
+      },
+      {
+        "prompt": 3,
+        "serial": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "user\n\nassistant\n<think>\nThe tool call was executed, but the content of the response appears to be empty. I shouldn't fabricate a fake response. The system returned an empty result. I should report that no weather data was returned, and suggest a retry if necessary. However, I must not simulate a tool response. Since the tool has already been called and an empty response came back, I'll convey that no data was obtained.",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000001",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "mtp": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000000",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ]
+      }
+    ],
+    "serial-0.json": {
+      "arm": "serial",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is 12 times 8? Answer briefly."
+          }
+        ],
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-2042e356-242d-446e-91a9-8cdb7d1dba52",
+        "object": "chat.completion",
+        "created": 1788635020,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user asks a simple multiplication question: 12 \u00d7 8. The answer is 96. They want a brief answer.\n",
+              "content": "96"
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 52,
+          "completion_tokens": 34,
+          "total_tokens": 86,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 28,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 677.188218,
+          "response_token/s": 19.344550574243833
+        }
+      },
+      "wall_s": 2.3856110989581794
+    },
+    "serial-1.json": {
+      "arm": "serial",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "In two sentences, explain what a Merkle tree is and why it is useful."
+          }
+        ],
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-f8f3f143-1110-42b6-a55b-cddece93f5a6",
+        "object": "chat.completion",
+        "created": 1788635027,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a concise, two-sentence explanation of a Merkle tree \u2014 what it is and why it's useful. I need to be precise and avoid unnecessary detail while still being informative.\n",
+              "content": "A Merkle tree is a binary tree in which each non-leaf node contains a cryptographic hash of its children's hashes, with the leaves being hashes of the underlying data blocks. This structure allows anyone to verify the integrity of a specific piece of data by checking only a small subset of hashes (a \"Merkle proof\") against the single root hash, making it efficient for verifying large datasets without rehashing everything."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 57,
+          "completion_tokens": 128,
+          "total_tokens": 185,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 39,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 689.313437,
+          "response_token/s": 19.571053943238606
+        }
+      },
+      "wall_s": 7.181531949900091
+    },
+    "serial-2.json": {
+      "arm": "serial",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a Python function that reverses a string, then explain it in one sentence."
+          }
+        ],
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-5dc821b6-9a11-442a-af8c-df5a14eaa3bb",
+        "object": "chat.completion",
+        "created": 1788635035,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I could use several approaches: slicing (`[::-1]`), a loop, recursion, or `reversed()`. The most Pythonic and concise approach is slicing. I'll provide that as the primary solution and keep the explanation to exactly one sentence as requested.\n",
+              "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 57,
+          "completion_tokens": 133,
+          "total_tokens": 190,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 77,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 664.1633350000001,
+          "response_token/s": 19.718162492610386
+        }
+      },
+      "wall_s": 7.361674332991242
+    },
+    "serial-3.json": {
+      "arm": "serial",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use get_weather to check the weather in Paris."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get weather for a city",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "required",
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-2c77333c-451e-40b4-a509-809c2266e861",
+        "object": "chat.completion",
+        "created": 1788635047,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "user\n\nassistant\n<think>\nThe tool call was executed, but the content of the response appears to be empty. I shouldn't fabricate a fake response. The system returned an empty result. I should report that no weather data was returned, and suggest a retry if necessary. However, I must not simulate a tool response. Since the tool has already been called and an empty response came back, I'll convey that no data was obtained.",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000001",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1139,
+          "completion_tokens": 143,
+          "total_tokens": 1282,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 120,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 2815.512103,
+          "response_token/s": 18.637138739333427
+        }
+      },
+      "wall_s": 12.624780745944008
+    },
+    "mtp-d2-0.json": {
+      "arm": "mtp-d2",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is 12 times 8? Answer briefly."
+          }
+        ],
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-21644faa-03cc-4588-a6cb-2eddfd077d53",
+        "object": "chat.completion",
+        "created": 1788635210,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user asks a simple multiplication question: 12 \u00d7 8. The answer is 96. They want a brief answer.\n",
+              "content": "96"
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 52,
+          "completion_tokens": 34,
+          "total_tokens": 86,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 28,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 19,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 688.272834,
+          "response_token/s": 17.995826044835194
+        }
+      },
+      "wall_s": 2.524868851993233
+    },
+    "mtp-d2-1.json": {
+      "arm": "mtp-d2",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "In two sentences, explain what a Merkle tree is and why it is useful."
+          }
+        ],
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-88b3e726-9f2a-4a0d-bbdb-bda2479386dc",
+        "object": "chat.completion",
+        "created": 1788635218,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a concise, two-sentence explanation of a Merkle tree \u2014 what it is and why it's useful. I need to be precise and avoid unnecessary detail while still being informative.\n",
+              "content": "A Merkle tree is a binary tree in which each non-leaf node contains a cryptographic hash of its children's hashes, with the leaves being hashes of the underlying data blocks. This structure allows anyone to verify the integrity of a specific piece of data by checking only a small subset of hashes (a \"Merkle proof\") against the single root hash, making it efficient for verifying large datasets without rehashing everything."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 57,
+          "completion_tokens": 128,
+          "total_tokens": 185,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 39,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 68,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 701.6341189999999,
+          "response_token/s": 16.214635409691688
+        }
+      },
+      "wall_s": 8.537391553050838
+    },
+    "mtp-d2-2.json": {
+      "arm": "mtp-d2",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a Python function that reverses a string, then explain it in one sentence."
+          }
+        ],
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-763259d8-c2cd-4fe2-b9a6-69b0b2162a53",
+        "object": "chat.completion",
+        "created": 1788635226,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I could use several approaches: slicing (`[::-1]`), a loop, recursion, or `reversed()`. The most Pythonic and concise approach is slicing. I'll provide that as the primary solution and keep the explanation to exactly one sentence as requested.\n",
+              "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+            },
+            "finish_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 57,
+          "completion_tokens": 133,
+          "total_tokens": 190,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 77,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 79,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 663.5584289999999,
+          "response_token/s": 18.846957837276157
+        }
+      },
+      "wall_s": 7.67111502494663
+    },
+    "mtp-d2-3.json": {
+      "arm": "mtp-d2",
+      "request": {
+        "model": "qwen4exp-nvfp4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use get_weather to check the weather in Paris."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get weather for a city",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "required",
+        "temperature": 0,
+        "seed": 123,
+        "max_tokens": 250
+      },
+      "response": {
+        "id": "chatcmpl-2a42e9d5-c0a9-466d-9af0-97d412bdeab4",
+        "object": "chat.completion",
+        "created": 1788635232,
+        "model": "qwen4exp-nvfp4",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000000",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1139,
+          "completion_tokens": 28,
+          "total_tokens": 1167,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 26,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 17,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 2782.291757,
+          "response_token/s": 21.222576777768843
+        }
+      },
+      "wall_s": 6.249229577020742
+    }
+  },
+  "memory_samples": [
+    {
+      "time": 1788634975.1009998,
+      "available_kib": 116660604,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634977.1016278,
+      "available_kib": 112907676,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634979.1023016,
+      "available_kib": 108845628,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634981.1028595,
+      "available_kib": 102528284,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634983.1035,
+      "available_kib": 98867816,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634985.1040325,
+      "available_kib": 92281344,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634987.104567,
+      "available_kib": 88373280,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634989.1052039,
+      "available_kib": 81581112,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634991.1058712,
+      "available_kib": 78037088,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634993.1066031,
+      "available_kib": 73507824,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634995.1072714,
+      "available_kib": 67781916,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634997.1078174,
+      "available_kib": 64249304,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788634999.108477,
+      "available_kib": 58124296,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635001.1090212,
+      "available_kib": 54486864,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635003.1095734,
+      "available_kib": 49579692,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635005.1101198,
+      "available_kib": 45324360,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635007.1107898,
+      "available_kib": 41628192,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635009.1113262,
+      "available_kib": 35051392,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635011.1118712,
+      "available_kib": 30952488,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635013.1125977,
+      "available_kib": 27712028,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635015.1132066,
+      "available_kib": 20482568,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635017.113835,
+      "available_kib": 12830532,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635019.1146853,
+      "available_kib": 12679088,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635021.115639,
+      "available_kib": 12672292,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635023.1164546,
+      "available_kib": 12645156,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635025.1171436,
+      "available_kib": 12641932,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635027.1178975,
+      "available_kib": 12651120,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635029.1189144,
+      "available_kib": 12648360,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635031.1199708,
+      "available_kib": 12666372,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635033.1208475,
+      "available_kib": 12691140,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635035.121437,
+      "available_kib": 12774432,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635037.121984,
+      "available_kib": 12777052,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635039.122505,
+      "available_kib": 12668452,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635041.1232283,
+      "available_kib": 12621256,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635043.1243787,
+      "available_kib": 12618232,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635045.1250105,
+      "available_kib": 12616192,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635047.1257963,
+      "available_kib": 12609460,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635049.1263208,
+      "available_kib": 12679020,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635051.127051,
+      "available_kib": 12627012,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635053.127805,
+      "available_kib": 12626936,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635055.1285052,
+      "available_kib": 12625964,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635057.129105,
+      "available_kib": 12636252,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635059.1297445,
+      "available_kib": 12645344,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635061.130784,
+      "available_kib": 12634528,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635063.131482,
+      "available_kib": 12632612,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635065.1323283,
+      "available_kib": 12620636,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635067.1331413,
+      "available_kib": 12631776,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635069.1340687,
+      "available_kib": 12617760,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635071.1348476,
+      "available_kib": 12617040,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635073.1357067,
+      "available_kib": 12614412,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635075.1366143,
+      "available_kib": 12628920,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635077.1374874,
+      "available_kib": 12607696,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635079.1383617,
+      "available_kib": 12609712,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635081.139461,
+      "available_kib": 12614756,
+      "swap_free_kib": 31688672,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635083.1399767,
+      "available_kib": 12610264,
+      "swap_free_kib": 31688680,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635085.1406431,
+      "available_kib": 12618004,
+      "swap_free_kib": 31688680,
+      "pswpin": 9857390,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635087.1414146,
+      "available_kib": 12612236,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635089.1422215,
+      "available_kib": 12616372,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635091.1430748,
+      "available_kib": 12619352,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635093.1438723,
+      "available_kib": 12627148,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635095.1445901,
+      "available_kib": 12621188,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635097.1452336,
+      "available_kib": 12615244,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635099.1459775,
+      "available_kib": 12615764,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635101.1467752,
+      "available_kib": 12617432,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635103.1477456,
+      "available_kib": 12627520,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635105.1492255,
+      "available_kib": 12625916,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635107.150514,
+      "available_kib": 12636060,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635109.1516201,
+      "available_kib": 12634584,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635111.1522958,
+      "available_kib": 12634804,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635113.1531775,
+      "available_kib": 12620608,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635115.1540616,
+      "available_kib": 12627056,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635117.1548688,
+      "available_kib": 12635524,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635119.1556182,
+      "available_kib": 12634976,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635121.1566408,
+      "available_kib": 12630012,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635123.158051,
+      "available_kib": 12631904,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635125.1591942,
+      "available_kib": 12626356,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635127.1599317,
+      "available_kib": 12629844,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635129.1609135,
+      "available_kib": 12647276,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635131.16162,
+      "available_kib": 12650476,
+      "swap_free_kib": 31688684,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635133.1628127,
+      "available_kib": 12644576,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635135.1635008,
+      "available_kib": 12750396,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635137.1643023,
+      "available_kib": 12637904,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635139.1654134,
+      "available_kib": 12636540,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857397,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635141.166471,
+      "available_kib": 12636920,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635143.1672907,
+      "available_kib": 12639920,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635145.1681514,
+      "available_kib": 12644072,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635147.1692715,
+      "available_kib": 12642040,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635149.1701517,
+      "available_kib": 12642636,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635151.1710622,
+      "available_kib": 12644264,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635153.1717622,
+      "available_kib": 12649312,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635155.1727564,
+      "available_kib": 12646004,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635157.17372,
+      "available_kib": 12628308,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635159.1745036,
+      "available_kib": 12630392,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635161.1751173,
+      "available_kib": 14277672,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635163.1757627,
+      "available_kib": 84086700,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635165.1764822,
+      "available_kib": 117518828,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635167.1772227,
+      "available_kib": 112668688,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635169.1777904,
+      "available_kib": 106931800,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635171.178418,
+      "available_kib": 101088860,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635173.178966,
+      "available_kib": 95330740,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635175.1800475,
+      "available_kib": 89267596,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635177.1805506,
+      "available_kib": 83598812,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635179.1818316,
+      "available_kib": 78916768,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635181.18257,
+      "available_kib": 74280744,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635183.183292,
+      "available_kib": 67762928,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635185.1838644,
+      "available_kib": 63553692,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635187.1844933,
+      "available_kib": 57842408,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635189.1850555,
+      "available_kib": 54045924,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635191.185704,
+      "available_kib": 48258928,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635193.1862745,
+      "available_kib": 43890552,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635195.1869133,
+      "available_kib": 40822580,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635197.1876004,
+      "available_kib": 34772600,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635199.1882842,
+      "available_kib": 30568660,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635201.1892793,
+      "available_kib": 26247860,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635203.190051,
+      "available_kib": 23469984,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635205.1916876,
+      "available_kib": 19430344,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635207.1930332,
+      "available_kib": 14517496,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635209.1940143,
+      "available_kib": 14376820,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635211.1948857,
+      "available_kib": 14396820,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635213.1960218,
+      "available_kib": 14409796,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635215.1969085,
+      "available_kib": 14427992,
+      "swap_free_kib": 31688688,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635217.1980336,
+      "available_kib": 14463572,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635219.1988466,
+      "available_kib": 14578628,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635221.199948,
+      "available_kib": 14541008,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635223.2008796,
+      "available_kib": 14550792,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635225.2017078,
+      "available_kib": 14586268,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635227.2023544,
+      "available_kib": 14724612,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635229.2028778,
+      "available_kib": 14704364,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635231.2033985,
+      "available_kib": 14622740,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635233.2043815,
+      "available_kib": 14771512,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635235.2052665,
+      "available_kib": 14794880,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635237.20596,
+      "available_kib": 14813900,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635239.2064557,
+      "available_kib": 14819096,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635241.2070878,
+      "available_kib": 14826472,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635243.2077334,
+      "available_kib": 14846336,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635245.2082393,
+      "available_kib": 14844124,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635247.2091067,
+      "available_kib": 14846756,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    },
+    {
+      "time": 1788635249.2100158,
+      "available_kib": 14849560,
+      "swap_free_kib": 31688692,
+      "pswpin": 9857398,
+      "pswpout": 12711793
+    }
+  ],
+  "text_artifacts": {
+    "serve-serial.sh": "#!/bin/bash\n# SPDX-License-Identifier: AGPL-3.0-only\nset -euo pipefail\ncd /home/ms/atlas\nexport ATLAS_PLE_MAX_TOKENS=3072 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768\nexport ATLAS_INTHINK_TOOL_LEAK_OPENERS=0\nexport ATLAS_NO_HW_PRECHECK=1\nexport ATLAS_DFLASH_SPEC_THINK=1\nexport ATLAS_QWEN4EXP_MTP_HC_BATCHED=1\nexport ATLAS_VERIFY_ROW_PROJ=1\nexport ATLAS_MTP_ACCEPT_DEBUG=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1\nexec /tmp/atlas-nvidia-mtp/spark serve \\\n  --model-from-path /tank/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fab0aecb760cec45227f6656abcaafa11abca87a \\\n  --model-name qwen4exp-nvfp4 --kernel-target qwen3.8-flash-next \\\n  --world-size 1 --bind 127.0.0.1 --port 8892 \\\n  --max-seq-len 32768 --max-num-seqs 1 --max-batch-size 1 \\\n  --gpu-memory-utilization 0.71 --kv-cache-dtype bf16 --ssm-cache-slots 4 --max-prefill-tokens 2048 --vision-max-pixels 1048576 \\\n  --request-timeout 1800 --fast-load-prefetch-shards \\\n  --default-chat-template-kwargs '{\"reasoning_effort\":\"low\"}' \"$@\"\n",
+    "serve-mtp.sh": "#!/bin/bash\n# SPDX-License-Identifier: AGPL-3.0-only\nset -euo pipefail\ncd /home/ms/atlas\nexport ATLAS_PLE_MAX_TOKENS=3072 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768\nexport ATLAS_INTHINK_TOOL_LEAK_OPENERS=0\nexport ATLAS_NO_HW_PRECHECK=1\nexport ATLAS_QWEN4EXP_MTP=1 ATLAS_QWEN4EXP_MTP_VERIFY=1 ATLAS_DFLASH_SPEC_THINK=1\nexport ATLAS_QWEN4EXP_MTP_HC_BATCHED=1\nexport ATLAS_VERIFY_ROW_PROJ=1\nexport ATLAS_MTP_ACCEPT_DEBUG=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1\nexec /tmp/atlas-nvidia-mtp/spark serve \\\n  --model-from-path /tank/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fab0aecb760cec45227f6656abcaafa11abca87a \\\n  --model-name qwen4exp-nvfp4 --kernel-target qwen3.8-flash-next \\\n  --world-size 1 --bind 127.0.0.1 --port 8892 \\\n  --max-seq-len 32768 --max-num-seqs 1 --max-batch-size 1 \\\n  --gpu-memory-utilization 0.71 --kv-cache-dtype bf16 --ssm-cache-slots 4 --max-prefill-tokens 2048 --vision-max-pixels 1048576 \\\n  --request-timeout 1800 --fast-load-prefetch-shards \\\n  --speculative --num-drafts \"${MTP_DRAFTS:?set MTP_DRAFTS}\" --mtp-gate force \\\n  --default-chat-template-kwargs '{\"reasoning_effort\":\"low\"}' \"$@\"\n",
+    "sanity.py": "# SPDX-License-Identifier: AGPL-3.0-only\nimport json,time,urllib.request,pathlib,sys,os\nout=pathlib.Path('/tmp/atlas-nvidia-mtp'); arm=sys.argv[1]\nbase='http://127.0.0.1:8892'\nfor attempt in range(600):\n    try:\n        urllib.request.urlopen(base+'/v1/models',timeout=2);break\n    except Exception:\n        pid=int((out/f\"{arm}.pid\").read_text())\n        os.kill(pid,0)\n        time.sleep(2)\nelse: raise RuntimeError('server not ready')\nprompts=['What is 12 times 8? Answer briefly.', 'In two sentences, explain what a Merkle tree is and why it is useful.', 'Write a Python function that reverses a string, then explain it in one sentence.']\nrequests=[{'model':'qwen4exp-nvfp4','messages':[{'role':'user','content':p}],'temperature':0,'seed':123,'max_tokens':250} for p in prompts]\ntool=json.loads(pathlib.Path('/tmp/atlas-mtp-final/tool-request.json').read_text());tool['model']='qwen4exp-nvfp4'; requests.append(tool)\nfor i,body in enumerate(requests):\n    t=time.monotonic();req=urllib.request.Request(base+'/v1/chat/completions',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})\n    with urllib.request.urlopen(req,timeout=300) as r: result=json.load(r)\n    record={'arm':arm,'request':body,'response':result,'wall_s':time.monotonic()-t}\n    (out/f'{arm}-{i}.json').write_text(json.dumps(record,indent=2));print(json.dumps(record),flush=True)\n",
+    "long_ab.py": "# SPDX-License-Identifier: AGPL-3.0-only\nimport json\nimport pathlib\nimport sys\nimport subprocess\nimport time\nimport urllib.request\n\narm = sys.argv[1]\nout = pathlib.Path('/tmp/atlas-nvidia-mtp')\nprompts = [\n    'Write a Python implementation of an LRU cache using a dictionary and a doubly linked list, with get and put methods. Explain its invariants and include unit tests.'\n]\n(out / f'ab-{arm}-hardware-before.txt').write_text(subprocess.check_output(['nvidia-smi', '--query-gpu=name,temperature.gpu,clocks.sm,power.draw', '--format=csv'], text=True))\nrequests = [dict(model='qwen4exp-nvfp4', messages=[dict(role='user', content=p)],\n                 temperature=0, max_tokens=512) for p in prompts]\nurl = 'http://127.0.0.1:8892/v1/chat/completions'\n\n\ndef run(body):\n    start = time.perf_counter()\n    req = urllib.request.Request(url, data=json.dumps(body).encode(),\n                                 headers={'Content-Type': 'application/json'})\n    with urllib.request.urlopen(req, timeout=600) as response:\n        value = json.load(response)\n    return dict(wall_s=time.perf_counter()-start, response=value, request=body)\n\n\n# Identical warmup in each fresh server process, retained as untimed evidence.\nwarmup = [run(json.load(open('/tmp/atlas-nvidia-mtp/tool-request.json')))]\nwarmup.extend(run(body) for body in requests)\n(out / f'ab-{arm}-warmup.json').write_text(json.dumps(warmup, indent=2))\nresults = []\nfor repeat in range(3):\n    for index, body in enumerate(requests):\n        result = run(body)\n        result.update(repeat=repeat, prompt_index=index)\n        results.append(result)\n        (out / f'ab-{arm}.json').write_text(json.dumps(results, indent=2))\n        print(arm, repeat, index, result['wall_s'], result['response']['usage'], flush=True)\n\n(out / f'ab-{arm}-hardware-after.txt').write_text(subprocess.check_output(['nvidia-smi', '--query-gpu=name,temperature.gpu,clocks.sm,power.draw', '--format=csv'], text=True))\n",
+    "compare.py": "# SPDX-License-Identifier: AGPL-3.0-only\nimport json,pathlib,sys,statistics\np=pathlib.Path('/tmp/atlas-nvidia-mtp');arm=sys.argv[1]\ndef normalize(c):\n c=json.loads(json.dumps(c))\n for choice in c:\n  for call in choice.get('message',{}).get('tool_calls',[]):call.pop('id',None)\n return c\nsummary=[]\nfor i in range(4):\n a=json.loads((p/f'serial-{i}.json').read_text());b=json.loads((p/f'{arm}-{i}.json').read_text())\n summary.append({'prompt':i,'identical':normalize(a['response']['choices'])==normalize(b['response']['choices'])})\nfor name in ['serial',arm]:\n f=p/f'ab-{name}.json'\n if f.exists():\n  v=json.loads(f.read_text());summary.append({'arm':name,'repeats':len(v),'median_wall_s':statistics.median(r['wall_s'] for r in v),'median_server_response_tps':statistics.median(r['response']['usage']['response_token/s'] for r in v)})\nif (p/f'ab-{arm}.json').exists():\n a=json.loads((p/'ab-serial.json').read_text());b=json.loads((p/f'ab-{arm}.json').read_text());summary.append({'long_choices_identical':all(normalize(r['response']['choices'])==normalize(a[0]['response']['choices']) for r in a+b)})\n(p/f'comparison-{arm}.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary,indent=2))\n",
+    "gpu-final-tests.log": "\nrunning 2 tests\ntest layers::ple::layer::fp8_tests::ple_fp8_cached_gather_matches_independent_oracle ... ok\ntest layers::ple::layer::fp8_tests::ple_fp8_checkpoint_gather_matches_oracle ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 789 filtered out; finished in 0.92s\n\n",
+    "gdn-out-green.log": "warning: atlas-kernels@1.0.0-beta-preview: atlas-kernels: compiled 180 kernels for target 0 (gb10, qwen3.8-flash-next, nvfp4) (9 model-specific overrides)\nwarning: atlas-kernels@1.0.0-beta-preview: atlas-kernels: dedup+parallel: 180/180 unique nvcc invocations (0 cache hits, 1.0\u00d7 dedup), 20 parallel workers\n   Compiling spark-model v1.0.0-beta-preview (/home/ms/atlas/crates/spark-model)\n    Finished `release` profile [optimized] target(s) in 14.19s\n     Running unittests src/lib.rs (.claude/worktrees/exl3-mtp-batched/target/release/deps/spark_model-1b59efb73b9f42ad)\n\nrunning 2 tests\ntest layers::qwen3_ssm::trait_decode_batched::bf16_verify_out::tests::bf16_verify_checkpoint_out_matches_serial_decode ... BF16 GDN outproj K2/3/4 exact; old GEMM differs in 12 BF16 values\nok\ntest layers::qwen3_ssm::trait_decode_batched::bf16_verify_out::tests::bf16_verify_out_matches_serial_decode ... BF16 GDN outproj K2/3/4 exact; old GEMM differs in 6 BF16 values\nok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 794 filtered out; finished in 1.05s\n\n",
+    "model-tests-projection.log": "   Compiling spark-model v1.0.0-beta-preview (/home/ms/atlas/crates/spark-model)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.02s\n     Running unittests src/lib.rs (/tmp/atlas-mtp-review/cpu-target/debug/deps/spark_model-05f4cfcdb53cfb93)\n\nrunning 796 tests\ntest engine::tests::test_argmax_bf16_basic ... ok\ntest engine::tests::test_generate_immediate_stop ... ok\ntest engine::tests::test_generate_stops_on_eos ... ok\ntest engine::tests::test_generate_stops_on_max_tokens ... ok\ntest factory::build::mtp_validation::tests::active_qwen_mtp_requires_retained_verification_rows ... ok\ntest factory::build::mtp_validation::tests::serial_and_shadow_do_not_require_batched_verification ... ok\ntest factory::tests::all_declared_model_type_spellings_are_accepted ... ok\ntest factory::tests::nllb_mandatory_generic_loads_fail_fast ... ok\ntest factory::tests::test_unsupported_model_type ... ok\ntest layer::tests::test_empty_layer_state_downcast ... ok\ntest layer::tests::test_ssm_layer_state_downcast ... ok\ntest layer::tests::test_ssm_layer_state_mut ... ok\ntest layers::dense_ffn::tests::native_weight_presence_requires_prefill_dispatch ... ok\ntest layers::dflash_head::forward_block::tests::the_rt2_vocab_kernel_is_only_eligible_for_batches_it_covers ... ok\ntest layers::dflash_head::option_b_tests::option_b_defaults_on_and_only_zero_turns_it_off ... ok\ntest layers::ep_dispatch::tests::index_length_mismatch_panics - should panic ... ok\ntest layers::ep_dispatch::tests::test_all_local ... ok\ntest layers::ep_dispatch::tests::test_all_remote ... ok\ntest layers::ep_dispatch::tests::test_mixed_routing ... ok\ntest layers::ep_dispatch::tests::test_rank1_perspective ... ok\ntest layers::ep_dispatch::tests::test_single_token ... ok\ntest layers::ep_dispatch::tests::weight_length_mismatch_panics - should panic ... ok\ntest layers::exl3_dense::attn_dispatch::tests::attention_funnels_take_the_dense_arm ... ok\ntest layers::exl3_dense::tests::gdn_out_proj_linear_takes_the_dense_arm ... ok\ntest layers::fp8_calibration::tests::attention_init_gates_calibrator_on_tokens_and_plain_fp8 ... ok\ntest layers::fp8_calibration::tests::decode_uses_shared_calibration_readiness ... ok\ntest layers::fp8_calibration::tests::fused_verify_unsuppress_matches_decode_frozen_flag ... ok\ntest layers::fp8_calibration::tests::graphs_ready_blocked_while_any_calibrator_is_warm ... ok\ntest layers::fp8_calibration::tests::graphs_ready_vacuous_when_no_calibrator ... ok\ntest layers::fp8_calibration::tests::graphs_ready_when_every_calibrator_frozen ... ok\ntest layers::fp8_calibration::tests::graphs_stay_blocked_when_a_warm_layer_follows_a_frozen_layer ... ok\ntest layers::fp8_calibration::tests::only_plain_fp8_kv_runs_online_calibration ... ok\ntest layers::fp8_calibration::tests::scale_freezes_on_first_observe_and_stays_fixed_by_default ... ok\ntest layers::hc_ffn_plan::tests::batch_of_eight_is_one_dispatch_on_both_sites ... ok\ntest layers::hc_ffn_plan::tests::every_ladder_rung_above_two_batches ... ok\ntest layers::hc_ffn_plan::tests::kill_switch_restores_the_per_row_loop ... ok\ntest layers::hc_ffn_plan::tests::no_ffn_layer_passes_through ... ok\ntest layers::hc_ffn_plan::tests::pair_batch_respects_the_site ... ok\ntest layers::hc_ffn_plan::tests::single_row_stays_per_row ... ok\ntest layers::moe::exl3_tables_tests::dense_local_table_from_ep_rank1_shaped_vec ... ok\ntest layers::moe::exl3_tables_tests::mcg_maps_to_kernel_index_1 ... ok\ntest layers::moe::exl3_tables_tests::rejects_all_remote_and_mixed_template ... ok\ntest layers::moe::exl3_tables_tests::rejects_gap_in_local_run ... ok\ntest layers::moe::exl3_tables_tests::slot_index_maps_local_dense_and_remote_negative ... ok\ntest layers::moe::forward_exl3_router::tests::row_router_is_limited_to_opted_in_small_verify_batches ... ok\ntest layers::moe::forward_k2::k2_dispatch_tests::batch2_block_width_switches_at_3072_for_supported_models ... ok\ntest layers::moe::forward_k2::k2_dispatch_tests::no_e8m0_tensor_reaches_gs16_batch2 ... ok\ntest layers::moe::forward_k3::k3_dispatch_tests::no_e8m0_tensor_reaches_gs16_batch3 ... ok\ntest layers::moe::lora::tests::down_only_is_moe_inter ... ok\ntest layers::moe::lora::tests::full_adapter_takes_max_of_router_and_down ... ok\ntest layers::moe::lora::tests::gateup_only_no_router_is_unit ... ok\ntest layers::moe::lora::tests::router_only_is_num_experts ... ok\ntest layers::moe::lora::tests::router_pair_builds_single_uploaded_route ... ok\ntest layers::moe::lora::tests::router_wins_when_experts_exceed_inter ... ok\ntest layers::moe::lora_gateup::tests::absent_proj_returns_none ... ok\ntest layers::moe::lora_gateup::tests::gate_route_dims_are_hidden_to_inter ... ok\ntest layers::moe::lora_gateup::tests::mixed_proj_layer_yields_three_independent_tables ... ok\ntest layers::moe::mod_tests::bf16_shared_expert_requires_three_non_null_weights ... ok\ntest layers::moe_grouped_decode_tests::the_force_override_reaches_below_the_threshold ... ok\ntest layers::moe_grouped_decode_tests::the_grouped_arm_engages_at_and_above_the_measured_width ... ok\ntest layers::moe_grouped_decode_tests::the_grouped_arm_stays_off_below_the_measured_width ... ok\ntest layers::moe_grouped_decode_tests::the_kill_switch_wins_over_any_width ... ok\ntest layers::moe_grouped_decode_tests::the_threshold_is_the_measured_width ... ok\ntest layers::mtp_head::batch_caps::tests::computed_stride_caps_extreme_contexts_without_overflow ... ok\ntest layers::mtp_head::batch_caps::tests::propose_meta_stride_16k ... ok\ntest layers::mtp_head::batch_caps::tests::propose_meta_stride_64k ... ok\ntest layers::mtp_head::batch_caps::tests::propose_meta_stride_covers_boundary_and_alignment ... ok\ntest layers::mtp_head::batch_caps::tests::propose_meta_stride_floor_at_4k ... ok\ntest layers::mtp_head::batch_caps::tests::propose_meta_stride_never_below_floor ... ok\ntest layers::mtp_head::batch_caps::tests::stride_override_is_panic_and_overflow_safe ... ok\ntest layers::mtp_head::batch_caps::tests::stride_override_parser_accepts_trimmed_bytes_and_rejects_invalid_values ... ok\ntest layers::mtp_head::refeed_trim_tests::flag_off_is_exactly_the_legacy_behaviour ... ok\ntest layers::mtp_head::refeed_trim_tests::flag_on_also_drops_accepted_rows_past_the_first ... ok\ntest layers::mtp_head::refeed_trim_tests::full_reject_is_identical_with_and_without_the_flag ... ok\ntest layers::mtp_head::refeed_trim_tests::never_trims_more_rows_than_were_drafted ... ok\ntest layers::mtp_head::row_dispatch::tests::every_projection_batches_across_the_covered_widths ... ok\ntest layers::mtp_head::row_dispatch::tests::kill_switch_restores_the_pre_tier_dispatch_exactly ... ok\ntest layers::mtp_head::row_dispatch::tests::kv_gemv_lever_still_pins_small_n_at_every_width ... ok\ntest layers::mtp_head::row_dispatch::tests::missing_kernel_handle_falls_back_like_the_kill_switch ... ok\ntest layers::mtp_head::row_dispatch::tests::never_selects_batchm_above_the_kernel_row_cap ... ok\ntest layers::mtp_head::row_dispatch::tests::unaligned_k_stays_on_the_per_row_loop ... ok\ntest layers::mtp_head::row_dispatch::tests::widths_outside_the_tier_are_untouched ... ok\ntest layers::mtp_head::tests::test_mtp_proposer_state_downcast ... ok\ntest layers::mtp_meta::tests::packs_the_documented_layout ... ok\ntest layers::mtp_meta::tests::refuses_a_block_table_that_would_overrun_the_region ... ok\ntest layers::mtp_meta::tests::refuses_a_region_too_small_for_the_header ... ok\ntest layers::mtp_meta::tests::refuses_an_unrepresentable_block_table_length ... ok\ntest layers::mtp_multi::tests::test_empty_modules_rejected ... ok\ntest layers::ngram_embed::tests::cached_table_matches_resident_table ... ignored\ntest layers::ngram_embed::tests::decode_context_window_suffices ... ok\ntest layers::ngram_embed::tests::ids_match_python_reference ... ok\ntest layers::ngram_embed::tests::ngram_gpu_matches_golden ... ignored\ntest layers::ops::derived_weights::tests::a_derivation_is_built_once_per_key ... ok\ntest layers::ops::derived_weights::tests::a_failed_build_is_not_memoized ... ok\ntest layers::ops::derived_weights::tests::a_fresh_cache_is_empty ... ok\ntest layers::ops::derived_weights::tests::pair_derivations_round_trip_without_sharing_a_keyspace ... ok\ntest layers::ops::derived_weights::tests::release_frees_only_derived_values_and_drains_every_map ... ok\ntest layers::ops::derived_weights::tests::the_derivations_do_not_share_a_keyspace ... ok\ntest layers::ops::derived_weights::tests::two_models_memoize_independently_even_on_a_recycled_pointer ... ok\ntest layers::ops::dispatch_config::tests::an_unknown_projection_label_falls_back_to_the_umbrella_flag ... ok\ntest layers::ops::dispatch_config::tests::defaults_have_only_blockscaled_prefill_on ... ok\ntest layers::ops::dispatch_config::tests::non_nvfp4_flags_map_independently_and_single_scale_is_inverted ... ok\ntest layers::ops::dispatch_config::tests::per_projection_flags_are_independent ... ok\ntest layers::ops::dispatch_config::tests::the_umbrella_flag_implies_the_per_projection_ones ... ok\ntest layers::ops::dispatch_config::tests::w4a16_variants_accept_only_documented_spellings ... ok\ntest layers::ops::dispatch_helpers::tests::accepts_boolean_environment_spellings ... ok\ntest layers::ops::dispatch_helpers::tests::either_chunk_zero_spelling_enables_admission ... ok\ntest layers::ops::dispatch_proj_rowwise::rowwise_passthrough_tests::an_already_rowwise_weight_passes_through_verbatim ... ok\ntest layers::ops::dispatch_proj_rowwise::rowwise_passthrough_tests::cached_requant_returns_rowwise_checkpoint_pointers_without_gpu_work ... ok\ntest layers::ops::dispatch_proj_rowwise::rowwise_passthrough_tests::other_formats_still_requantize ... ok\ntest layers::ops::exl3_dense::launch_state::tests::section_serializes_and_fences_on_stream_change ... ok\ntest layers::ops::exl3_dense::tests::contract_checks_refuse_bad_geometry ... ok\ntest layers::ops::exl3_dense::tests::from_exl3_maps_codebook_and_rejects_envelope_breaches ... ok\ntest layers::ops::exl3_dense::tests::launch_plan_gemv_tier_and_row_batched_gemm_tier ... ok\ntest layers::ops::exl3_dense::tests::launch_plan_k6_skips_the_gemv_tier_at_small_m ... ok\ntest layers::ops::exl3_matmul::envelope::tests::dense_kernel_names_follow_the_dispatch_rule ... ok\ntest layers::ops::exl3_matmul::envelope::tests::k_envelopes_match_the_instantiated_sets ... ok\ntest layers::ops::exl3_matmul::mgemm::mgemm_grid::tests::every_replay_preserves_decode_split_and_cooperative_residency ... ok\ntest layers::ops::exl3_matmul::mgemm::mgemm_grid::tests::invalid_launch_dimensions_are_refused ... ok\ntest layers::ops::exl3_matmul::mgemm::mgemm_grid::tests::verify_keeps_decode_split_and_schedules_extra_slot_waves ... ok\ntest layers::ops::exl3_matmul::moe_prefill_det::tests::an_empty_local_range_makes_every_slot_remote ... ok\ntest layers::ops::exl3_matmul::moe_prefill_det::tests::determinism_is_the_default ... ok\ntest layers::ops::exl3_matmul::moe_prefill_det::tests::ep_rotation_is_a_bijection_onto_the_local_prefix ... ok\ntest layers::ops::exl3_matmul::moe_prefill_det::tests::non_ep_is_the_identity_and_never_remote ... ok\ntest layers::ops::exl3_matmul::tests::blackwell_shape_heuristic_matches_upstream_branch ... ok\ntest layers::ops::exl3_matmul::tests::locks_sizing_matches_upstream_devctx ... ok\ntest layers::ops::exl3_matmul::tests::shape_compat_gates_divisibility ... ok\ntest layers::ops::gemm_dense::gemm_dense_tests::ldb_kernels_actually_use_the_parameter ... ok\ntest layers::ops::gemm_dense::gemm_dense_tests::ldb_kernels_keep_their_dialect_specific_bounds ... ok\ntest layers::ops::gemm_dense::gemm_dense_tests::ldb_launcher_arg_count_matches_kernel_param_count ... ok\ntest layers::ops::gemm_dense::gemm_dense_tests::non_ldb_wrapper_forwards_n_as_the_stride ... ok\ntest layers::ops::gemm_dense::gemm_dense_tests::padded_twin_stride_is_16_byte_aligned ... ok\ntest layers::ops::gemm_dense::gemm_dense_tests::w4a16_gemm_t_ldb_drift_is_exactly_the_known_set ... ok\ntest layers::ops::gemv_q2::tests::q2_block_layout_reference_matches_dense_for_supported_groups ... ok\ntest layers::ops::gemv_q2::tests::shipped_kernels_use_the_q2_layout_and_symbol_mapping ... ok\ntest layers::ops::gemv_q2::tests::ternary_symbols_are_code_minus_one ... ok\ntest layers::ops::gemv_q2_vec::tests::batchm_row_chunks_cover_all_rows_exactly ... ok\ntest layers::ops::gemv_q2_vec::tests::chunked_batchm_equals_per_row_gemv ... ok\ntest layers::ops::gemv_q2_vec::tests::launch_chunks_advance_bf16_input_and_output_rows_independently ... ok\ntest layers::ops::gemv_sw::tests::attention_decode_does_not_call_base_w4a16_gemv ... ok\ntest layers::ops::gemv_sw::tests::cuda_n_per_block_matches_rust_ssot ... ok\ntest layers::ops::gemv_sw::tests::decode_dispatch_uses_the_selected_handle_and_matching_grid ... ok\ntest layers::ops::gemv_sw::tests::decode_gemv_partials_index_a_shared_staged_lut ... ok\ntest layers::ops::gemv_sw::tests::gemv_sw_ships_on_and_only_the_one_value_kills ... ok\ntest layers::ops::gemv_sw::tests::sw_gemv_stages_the_lut_per_warp_without_a_block_barrier ... ok\ntest layers::ops::gemv_sw::tests::sw_grid_covers_every_output_and_is_half_base_when_n_divisible_by_8 ... ok\ntest layers::ops::gemv_sw::tests::sw_partial_shares_pipelined_k16_loop ... ok\ntest layers::ops::gemv_sw::tests::sw_requires_both_the_lever_and_a_live_handle ... ok\ntest layers::ops::hyper_connection_lowrank_tests::hc_lowrank_matches_reference ... ignored\ntest layers::ops::hyper_connection_lowrank_tests::hc_pre_gemm_matches_reference ... ignored\ntest layers::ops::hyper_connection_lowrank_tests::verify::hc_verify_batched_stages_match_serial_bytes ... ignored, requires GB10 and ATLAS_HC_TEST_DATA\ntest layers::ops::model_levers::tests::exact_one_opt_ins_map_to_their_own_fields ... ok\ntest layers::ops::model_levers::tests::externally_resolved_shadow_and_drafter_values_are_carried ... ok\ntest layers::ops::model_levers::tests::kill_switches_and_zero_opt_outs_keep_their_distinct_polarities ... ok\ntest layers::ops::model_levers::tests::the_gdn_fla_prefix_cache_kill_switch_is_an_exact_opt_in ... ok\ntest layers::ops::model_levers::tests::the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off ... ok\ntest layers::ops::model_levers::tests::truthy_opt_ins_map_independently_and_presence_is_distinct ... ok\ntest layers::ops::model_stats::tests::a_keyed_latch_fires_once_per_key_per_model ... ok\ntest layers::ops::model_stats::tests::two_models_count_expert_unions_independently ... ok\ntest layers::ops::moe_grouped_a2::tests::read_honors_the_requested_length ... ok\ntest layers::ops::moe_grouped_a2::tests::read_reflects_current_device_contents_at_a_reused_address ... ok\ntest layers::ops::moe_grouped_a2::tests::snapshot_maps_every_table_to_its_field ... ok\ntest layers::ops::moe_grouped_a::tests::legacy_ptrtable_grid_covers_every_64_column_tile ... ok\ntest layers::ops::moe_lora_grouped::tests::chunks_tile_range_without_gap_or_overlap ... ok\ntest layers::ops::moe_lora_grouped::tests::empty_entries_none ... ok\ntest layers::ops::moe_lora_grouped::tests::empty_window_still_launches_one_tile ... ok\ntest layers::ops::moe_lora_grouped::tests::entry_order_independent ... ok\ntest layers::ops::moe_lora_grouped::tests::full_window_equals_prechunk_wc ... ok\ntest layers::ops::moe_lora_grouped::tests::gather_grids_rank_not_multiple_of_four_rounds_up ... ok\ntest layers::ops::moe_lora_grouped::tests::gather_grids_single_token_decode ... ok\ntest layers::ops::moe_lora_grouped::tests::gather_grids_verify_flat_rows ... ok\ntest layers::ops::moe_lora_grouped::tests::router_fold_grid_covers_all_experts_qwen36 ... ok\ntest layers::ops::moe_lora_grouped::tests::router_fold_grid_single_token_decode ... ok\ntest layers::ops::moe_lora_grouped::tests::router_fold_top_k_one_row_is_token ... ok\ntest layers::ops::moe_lora_grouped::tests::short_prefill_slot_rows_map_to_owning_token ... ok\ntest layers::ops::moe_lora_grouped::tests::single_expert_zero_padded_prefix ... ok\ntest layers::ops::moe_lora_grouped::tests::sparse_experts_dense_table ... ok\ntest layers::ops::moe_lora_grouped::tests::table_length_is_max_id_plus_one ... ok\ntest layers::ops::moe_lora_grouped::tests::window_grid_covers_only_the_slice ... ok\ntest layers::ops::ple_tests::ple_gather_reads_the_right_rows ... ignored\ntest layers::ops::ple_tests::ple_kernels_match_reference ... ignored\ntest layers::ops::q2_0_mmq::tests::q2_0_block_layout_matches_spec ... ok\ntest layers::ops::q2_0_mmq::tests::q2_0_mmq_reference_arithmetic_matches_fp_oracle ... ok\ntest layers::ple::layer::fp8_tests::ple_fp8_cached_gather_matches_independent_oracle ... ignored, requires CUDA kernels and a GPU\ntest layers::ple::layer::fp8_tests::ple_fp8_checkpoint_gather_matches_oracle ... ignored, requires CUDA and ATLAS_PLE_FP8_FIXTURE checkpoint oracle\ntest layers::ple::tests::ids_match_the_reference_bit_exactly ... ok\ntest layers::ple::tests::shift_refuses_to_read_across_eos ... ok\ntest layers::ple::tests::validate_rejects_a_head_count_mismatch ... ok\ntest layers::ple::tests::validate_rejects_an_even_multiplier ... ok\ntest layers::qsa::tests::decode::qsa_decode_select_device_matches_host ... ignored\ntest layers::qsa::tests::prefill::flash64_long_seq_rows_repro ... ignored\ntest layers::qsa::tests::prefill::qsa_prefill_attn_matches_cpu ... ignored\ntest layers::qsa::tests::prefill::qsa_prefill_select_sets_match_reference ... ignored\ntest layers::qsa::tests::qsa_matches_reference ... ignored\ntest layers::qsa::tests::topk::qsa_prefill_topk_bit_deterministic ... ignored\ntest layers::qwen3_attention::helpers::yarn_mscale_tests::ds4f_forced_config_yields_mscale_one ... ok\ntest layers::qwen3_attention::helpers::yarn_mscale_tests::generic_yarn_default_unchanged_1277 ... ok\ntest layers::qwen3_attention::helpers::yarn_mscale_tests::yarn_disabled_factor_one_is_mscale_one ... ok\ntest layers::qwen3_attention::init_arch_gates::tests::a_heterogeneous_model_gates_on_its_max_head_dim ... ok\ntest layers::qwen3_attention::init_arch_gates::tests::a_plain_gqa_model_probes_for_nothing ... ok\ntest layers::qwen3_attention::init_arch_gates::tests::all_zero_compress_ratios_is_not_compressed_attention ... ok\ntest layers::qwen3_attention::init_arch_gates::tests::each_architecture_signal_enables_only_its_kernel_families ... ok\ntest layers::qwen3_attention::init_kernel_dispatch::tests::each_asym_variant_routes_to_dedicated_kernel ... ok\ntest layers::qwen3_attention::init_kernel_dispatch::tests::every_variant_returns_non_empty_modules ... ok\ntest layers::qwen3_attention::init_kernel_dispatch::tests::hd_gate_picks_128_or_full_kernel ... ok\ntest layers::qwen3_attention::init_kernel_dispatch::tests::sym_variants_route_to_sym_kernels ... ok\ntest layers::qwen3_attention::kernel_requirements::tests::required_optional_kernels_cover_turbo_variants ... ok\ntest layers::qwen3_attention::kernel_requirements::tests::turbo2_is_wht_rotated ... ok\ntest layers::qwen3_attention::split_ref_seqs_tests::a_batch_larger_than_the_pin_clamps_up ... ok\ntest layers::qwen3_attention::split_ref_seqs_tests::the_split_count_does_not_move_with_co_batch_size ... ok\ntest layers::qwen3_attention::split_ref_seqs_tests::two_models_can_pin_to_different_batches ... ok\ntest layers::qwen3_attention::trait_impl::multi_seq::qsa::tests::a_single_long_row_activates_the_batch ... ok\ntest layers::qwen3_attention::trait_impl::multi_seq::qsa::tests::an_all_inert_batch_stays_on_the_batched_attention ... ok\ntest layers::qwen3_attention::trait_impl::multi_seq::qsa::tests::bound_is_exclusive_below_and_inclusive_at ... ok\ntest layers::qwen3_attention::trait_impl::multi_seq::qsa::tests::mixed_batch_flags_only_the_rows_past_the_bound ... ok\ntest layers::qwen3_attention::trait_impl::multi_seq::qsa::tests::padding_rows_beyond_n_are_ignored ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::a_pass_declaring_exact_replay_is_row_exact_without_the_cli_flag ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::an_f16_h_pool_refuses_the_exact_chain_from_either_source ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::env_fallback_never_enables_exact_verify ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::exact_verify_flag_selects_the_exact_chain ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::h_f16_forces_non_exact_even_when_requested ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::legacy_wy_verify_is_the_default ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::passes_that_do_not_declare_exact_replay_keep_the_batched_arms ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::the_cli_opt_in_is_independent_of_the_pass_scoped_lever ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::the_kill_switch_restores_the_batched_arms ... ok\ntest layers::qwen3_ssm::gdn_flags::tests::the_pool_bit_is_never_set_without_the_dtype_bit ... ok\ntest layers::qwen3_ssm::hc_ffn_dispatch::tests::four_row_native_replay_uses_decode_experts ... ok\ntest layers::qwen3_ssm::hc_ffn_dispatch::tests::preserve_cold_prefill_other_formats_and_explicit_small_m_disable ... ok\ntest layers::qwen3_ssm::ssm_h_fp16::prefill_narrowing_tests::a_null_converter_refuses_rather_than_running_fp32_over_a_narrow_slot ... ok\ntest layers::qwen3_ssm::ssm_h_fp16::prefill_narrowing_tests::an_fp32_flagged_state_over_a_narrow_slot_is_refused ... ok\ntest layers::qwen3_ssm::ssm_h_fp16::prefill_narrowing_tests::f16_sized_pool_widens_in_and_narrows_out_over_the_stage ... ok\ntest layers::qwen3_ssm::ssm_h_fp16::prefill_narrowing_tests::fp32_sized_pool_launches_nothing_and_hands_back_the_slot ... ok\ntest layers::qwen3_ssm::tests::batched_verify_null_out_proj_fails_fast ... ok\ntest layers::qwen3_ssm::tests::batched_verify_null_qkvz_fails_fast ... ok\ntest layers::qwen3_ssm::tests::native_fp8_gdn_batched_verify_r4_still_ok ... ok\ntest layers::qwen3_ssm::tests::native_fp8_gdn_batched_verify_r7_dispatches_w8a16_gemm ... ok\ntest layers::qwen3_ssm::tests::qkvz_verify_declines_without_a_tile_gemm ... ok\ntest layers::qwen3_ssm::tests::qkvz_verify_declines_without_the_fp8_copy ... ok\ntest layers::qwen3_ssm::tests::qkvz_verify_declines_without_the_nvfp4_twin ... ok\ntest layers::qwen3_ssm::tests::qkvz_verify_keeps_fp8_at_and_below_the_threshold ... ok\ntest layers::qwen3_ssm::tests::qkvz_verify_kill_switch_restores_the_fp8_arm ... ok\ntest layers::qwen3_ssm::tests::qkvz_verify_takes_nvfp4_above_the_threshold ... ok\ntest layers::qwen3_ssm::tests::ssm_state_allocation_uses_layer_sizes_and_defaults ... ok\ntest layers::qwen3_ssm::trait_decode_batched::bf16_verify_out::tests::bf16_verify_checkpoint_out_matches_serial_decode ... ignored, requires CUDA and ATLAS_GDN_OUT_WEIGHT checkpoint BF16 weight\ntest layers::qwen3_ssm::trait_decode_batched::bf16_verify_out::tests::bf16_verify_out_matches_serial_decode ... ignored, requires CUDA kernels and a GPU\ntest layers::qwen3_ssm::trait_decode_batched_conv_gdn_exact::tests::exact_row_snapshot_skips_only_last_token ... ok\ntest layers::qwen3_ssm::trait_decode_batched_conv_gdn_exact::tests::exact_row_strides_match_27b_shapes ... ok\ntest layers::qwen4_exp_mtp::sampling::tests::grammar_draft_handles_signed_mask_words_and_missing_words ... ok\ntest layers::qwen4_exp_mtp::sampling::tests::grammar_draft_reads_bf16_and_excludes_higher_forbidden_logits ... ok\ntest layers::qwen4_exp_mtp::sampling::tests::grammar_draft_refuses_empty_or_nonfinite_allowed_set ... ok\ntest layers::qwen4_exp_mtp::state::tests::abandoned_round_queues_every_completed_draft_for_rewind ... ok\ntest layers::qwen4_exp_mtp::state::tests::accepted_round_preserves_only_its_existing_rejection_rewind ... ok\ntest layers::qwen4_exp_mtp::state::tests::draft_pool_covers_every_live_slot_with_tail_space ... ok\ntest layers::qwen4_exp_mtp::state::tests::draft_pool_rejects_empty_and_overflowed_capacity ... ok\ntest layers::qwen4_exp_mtp::state::tests::finished_draft_sequences_return_blocks_for_repeated_requests ... ok\ntest layers::qwen4_exp_mtp_proposer::tests::accepted_highway_rows_use_full_fp32_stream_stride ... ok\ntest layers::vision_encoder::enc_impl::init::derive_tests::a_declared_bound_over_the_ceiling_is_clamped_and_reported ... ok\ntest layers::vision_encoder::enc_impl::init::derive_tests::a_low_operator_bound_shrinks_the_allocation ... ok\ntest layers::vision_encoder::enc_impl::init::derive_tests::capacity_tracks_patch_size ... ok\ntest layers::vision_encoder::enc_impl::init::derive_tests::degenerate_inputs_do_not_produce_a_zero_allocation ... ok\ntest layers::vision_encoder::enc_impl::init::derive_tests::no_bound_keeps_the_historical_capacity ... ok\ntest layers::vision_encoder::enc_impl::init::derive_tests::the_ceiling_matches_the_measured_affordable_rung ... ok\ntest layers::vision_encoder::enc_impl::patch_embed::tests::accepts_the_geometry_the_encoder_was_built_for ... ok\ntest layers::vision_encoder::enc_impl::patch_embed::tests::rejects_a_consistent_buffer_with_too_many_patches ... ok\ntest layers::vision_encoder::enc_impl::patch_embed::tests::rejects_a_small_image_placed_past_the_end ... ok\ntest layers::vision_encoder::enc_impl::patch_embed::tests::rejects_narrower_patch_dim_instead_of_reading_past_the_buffer ... ok\ntest layers::vision_encoder::enc_impl::patch_embed::tests::rejects_patch_count_that_overflows ... ok\ntest layers::vision_encoder::enc_impl::patch_embed::tests::rejects_wider_patch_dim ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::absent_tiers_widen_to_the_next_resolved_one ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::default_table_is_empty_and_declines ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::empty_family_declines_everywhere ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::exact_m_rows_pick_their_own_tier ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::kill_switch_matches_a_legacy_target ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::kill_switch_restores_the_shipped_decision ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::out_of_family_widths_decline ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::pre_existing_widths_are_untouched ... ok\ntest layers::w4a16_gemv_tiers::w4a16_gemv_tiers_tests::width_table_and_resolver_stay_in_lockstep ... ok\ntest lora::expert_apply::tests::workitems_map_offsets_to_row_ranges ... ok\ntest lora::expert_apply::tests::workitems_only_adapted_experts_launch ... ok\ntest lora::expert_apply::tests::workitems_skip_empty_and_out_of_range ... ok\ntest lora::expert_pack::tests::key_lists_projects_layers_and_projs ... ok\ntest lora::expert_pack::tests::pack_into_r12_is_uint4_aligned_and_matches_sizing ... ok\ntest lora::expert_pack::tests::pack_into_r16_layout_is_unpadded ... ok\ntest lora::expert_pack::tests::packed_stride_rounds_up_to_multiple_of_8 ... ok\ntest lora::expert_pack::tests::present_is_false_only_when_both_empty ... ok\ntest lora::key::tests::adapter_id_hash_generation_changes_id_but_never_base ... ok\ntest lora::key::tests::adapter_id_hash_is_stable_and_base_reserved ... ok\ntest lora::key::tests::classify_key_maps_experts_and_router ... ok\ntest lora::key::tests::classify_key_maps_supported_and_rejects_unsupported ... ok\ntest lora::key::tests::classify_key_rejects_experts_on_dense_model ... ok\ntest lora::moe_row_adapter::tests::decode_map_all_base_skips ... ok\ntest lora::moe_row_adapter::tests::decode_map_full_cap_32_all_active ... ok\ntest lora::moe_row_adapter::tests::decode_map_mixed_base_and_active ... ok\ntest lora::moe_row_adapter::tests::decode_map_mixed_batch_16_exact ... ok\ntest lora::moe_row_adapter::tests::decode_map_off_when_no_moe_lora ... ok\ntest lora::moe_row_adapter::tests::decode_map_padding_widths ... ok\ntest lora::moe_row_adapter::tests::decode_map_refuse_row_defensively_skips ... ok\ntest lora::moe_row_adapter::tests::decode_route_guard_refuses_only_refuse ... ok\ntest lora::moe_row_adapter::tests::route_active_adapter_folds ... ok\ntest lora::moe_row_adapter::tests::route_base_request_skips ... ok\ntest lora::moe_row_adapter::tests::route_non_active_adapter_refuses ... ok\ntest lora::moe_row_adapter::tests::route_off_when_no_moe_lora ... ok\ntest lora::moe_row_adapter::tests::row_adapter_empty_stream_span ... ok\ntest lora::moe_row_adapter::tests::row_adapter_rejects_malformed ... ok\ntest lora::moe_row_adapter::tests::row_adapter_uniform_single_stream ... ok\ntest lora::moe_row_adapter::tests::row_adapter_varlen_mixed_streams ... ok\ntest lora::overlay::tests::clamp_keeps_in_vocab_ascending ... ok\ntest lora::overlay::tests::clamp_rejects_index_beyond_adapter ... ok\ntest lora::overlay::tests::clamp_rejects_nonascending_or_nontrailing_ids ... ok\ntest lora::overlay::tests::clamp_skips_vocab_extension_tail ... ok\ntest lora::overlay::tests::classifies_lm_head_and_multimodal_prefix ... ok\ntest lora::overlay::tests::classifies_lora_embedding_tier2 ... ok\ntest lora::overlay::tests::classifies_modules_to_save_full_weight ... ok\ntest lora::overlay::tests::classifies_trainable_tokens_pair ... ok\ntest lora::overlay::tests::lora_embedding_hits_tier2_reject ... ok\ntest lora::overlay::tests::no_overlay_tensors_passes_gate ... ok\ntest lora::overlay::tests::ordinary_lora_and_layer_weights_are_not_overlays ... ok\ntest lora::overlay::tests::overlay_tensors_collects_and_rejects_dupes ... ok\ntest lora::overlay::tests::overlay_tensors_tracks_lora_embedding_flag ... ok\ntest lora::overlay::tests::override_set_empty_when_nothing_changes ... ok\ntest lora::overlay::tests::override_set_unions_sorts_dedups ... ok\ntest lora::overlay::tests::override_source_delta_wins_over_baked ... ok\ntest lora::overlay::tests::trainable_tokens_now_loads_not_rejected ... ok\ntest lora::overlay_build::tests::build_overlay_delta_path_compacts_and_maps ... ok\ntest lora::overlay_build::tests::build_overlay_no_override_is_none ... ok\ntest lora::overlay_build::tests::build_overlay_null_kernels_bails ... ok\ntest lora::overlay_build::tests::f32_to_bf16_round_nearest_even ... ok\ntest lora::overlay_tables::tests::embed_bound_table_and_vocab_are_published ... ok\ntest lora::overlay_tables::tests::empty_pool_is_inert ... ok\ntest lora::overlay_tables::tests::mixed_vocab_slots_are_refused ... ok\ntest lora::overlay_tables::tests::tied_reuses_embed_rows_and_ids ... ok\ntest lora::overlay_tables::tests::untied_with_lmhead_uses_distinct_rows ... ok\ntest lora::overlay_tables::tests::untied_without_lmhead_zeroes_lmhead_count ... ok\ntest lora::rdma_stage::tests::land_targets_map_to_slot_subregions ... ok\ntest lora::rdma_stage::tests::land_targets_reject_malformed_or_incomplete_pairs ... ok\ntest lora::rdma_stage::tests::rebuild_slot_layers_rejects_config_rank_mismatch ... ok\ntest lora::rdma_stage::tests::rebuild_slot_layers_rejects_inconsistent_target_geometry ... ok\ntest lora::rdma_stage::tests::rebuild_slot_layers_sets_rank_and_pointers ... ok\ntest lora::slot_math::tests::module_offsets_none_for_non_full_attention_layer ... ok\ntest lora::slot_math::tests::module_offsets_walk_matches_pack_loop_and_fill_exactly_one_slot ... ok\ntest lora::slot_math::tests::pool_slot_bytes_absolute_golden ... ok\ntest lora::slot_math::tests::routed_prefill_slot_predicate ... ok\ntest lora::slot_math::tests::scale_table_values_per_slot_and_padded ... ok\ntest lora::slot_math::tests::select_routed_pair_by_global_index_and_module ... ok\ntest lora::slot_math::tests::seq_slot_host_defers_negatives_and_pads ... ok\ntest lora::slot_math::tests::seq_slot_uniform_prefill_fills_and_resolves ... ok\ntest lora::slot_math::tests::slot_base_is_k_times_slot_bytes ... ok\ntest lora::slot_math::tests::slot_boundaries_do_not_overlap ... ok\ntest lora::slot_math::tests::victim_free_first_before_lru ... ok\ntest lora::slot_math::tests::victim_lru_idle_when_all_filled ... ok\ntest lora::slot_math::tests::victim_pool_full_when_all_busy ... ok\ntest lora::target::tests::expert_and_router_dims_use_moe_intermediate ... ok\ntest lora::target::tests::expert_layer_adapted_experts_sorted_deduped ... ok\ntest lora::target::tests::expert_router_bytes_golden ... ok\ntest lora::types::tests::adapter_names_and_slot_resolve ... ok\ntest lora::types::tests::rank_gate_is_independent_of_the_target_gate ... ok\ntest lora::types::tests::ref_count_and_lru_bookkeeping_follow_resolved_slots ... ok\ntest lora::types::tests::slot_generation_bump_freshens_adapter_id ... ok\ntest lora::types::tests::unsupported_target_modules_are_refused_and_name_the_escape_hatch ... ok\ntest mistral_loader::loader_impl::phase_per_head::tests::per_head_runs_cover_the_same_bytes ... ok\ntest mistral_loader::loader_impl::phase_qk_absorbed::tests::absorb_qk_bench ... ignored, wall-clock benchmark: seconds per run, not a correctness gate\ntest mistral_loader::loader_impl::phase_qk_absorbed::tests::absorb_qk_matches_reference ... ok\ntest mistral_loader::loader_impl::phase_qk_absorbed::tests::absorb_rows_is_bit_exact_vs_reference ... ok\ntest mistral_loader::loader_impl::phase_qk_absorbed::tests::bf16_truncate_matches_old_flat_map ... ok\ntest mistral_loader::loader_impl::phase_qk_absorbed::tests::widen_bf16_is_exact_high_half ... ok\ntest model::block_mgmt::tests::advance_after_slide_never_moves_cursor_backward ... ok\ntest model::block_mgmt::tests::advance_after_slide_promotes_lagging_cursors ... ok\ntest model::block_mgmt::tests::safe_to_evict_when_all_layers_caught_up ... ok\ntest model::block_mgmt::tests::safe_to_evict_with_empty_cursor_vec_is_vacuously_true ... ok\ntest model::block_mgmt::tests::unsafe_to_evict_when_a_layer_lags ... ok\ntest model::block_mgmt::tests::unsafe_to_evict_when_a_layer_never_offloaded ... ok\ntest model::drafter_context::tests::bare_environment_enables_both ... ok\ntest model::drafter_context::tests::kill_switch_beats_the_research_arm ... ok\ntest model::drafter_context::tests::kill_switch_disables_both ... ok\ntest model::drafter_context::tests::obsolete_opt_in_names_are_pinned ... ok\ntest model::drafter_context::tests::only_exactly_one_switches_anything ... ok\ntest model::drafter_context::tests::prefill_only_arm_disables_carry_only ... ok\ntest model::gdn_replay::tests::a_cold_pass_without_a_prefix_cache_keeps_the_chunked_kernel ... ok\ntest model::gdn_replay::tests::a_model_without_ssm_layers_is_unaffected ... ok\ntest model::gdn_replay::tests::cold_and_warm_agree_when_the_prefix_cache_is_active ... ok\ntest model::gdn_replay::tests::the_kill_switch_restores_the_split_but_never_unpins_the_replay ... ok\ntest model::mtp_carry::tests::append_plan_clamps_up_to_the_hidden_store_floor ... ok\ntest model::mtp_carry::tests::append_plan_covers_exactly_the_missing_pair_keys ... ok\ntest model::mtp_carry::tests::append_plan_declines_on_a_degenerate_prompt ... ok\ntest model::mtp_carry::tests::append_plan_declines_when_nothing_is_missing ... ok\ntest model::mtp_carry::tests::append_plan_declines_when_the_store_stops_short_of_the_last_key ... ok\ntest model::mtp_carry::tests::common_prefix_len_is_the_validity_primitive ... ok\ntest model::mtp_carry::tests::merge_interval_extends_on_overlap_and_abut ... ok\ntest model::mtp_carry::tests::merge_interval_replaces_on_a_gap ... ok\ntest model::mtp_carry::tests::usable_by_declines_when_nothing_survives ... ok\ntest model::mtp_carry::tests::usable_by_keeps_everything_when_the_whole_entry_matches ... ok\ntest model::mtp_carry::tests::usable_by_never_drops_more_rows_than_exist ... ok\ntest model::mtp_carry::tests::usable_by_truncates_the_tail_instead_of_refusing ... ok\ntest model::nllb::util::tests::decoder_pos_table_offsets_by_two ... ok\ntest model::nllb::util::tests::encoder_input_wraps_src_lang_and_eos ... ok\ntest model::nllb::util::tests::encoder_positions_skip_pad_and_count_from_two ... ok\ntest model::nllb::util::tests::h2d_byte_views_preserve_element_bytes ... ok\ntest model::pinned_pack::tests::empty_source_is_a_no_op ... ok\ntest model::pinned_pack::tests::packs_at_offsets_and_reports_the_high_water ... ok\ntest model::pinned_pack::tests::pad_to_extends_the_range_but_is_still_bounded ... ok\ntest model::pinned_pack::tests::put_prefix_at_checks_the_source_length_too ... ok\ntest model::pinned_pack::tests::refuses_before_writing_a_single_byte ... ok\ntest model::pinned_pack::tests::the_last_byte_fits_and_one_more_does_not ... ok\ntest model::ssm_batched_copy::tests::a_plan_that_a_2d_copy_cannot_reproduce_is_refused ... ok\ntest model::ssm_batched_copy::tests::batching_collapses_the_layer_loop_to_one_launch ... ok\ntest model::ssm_batched_copy::tests::commit_is_byte_identical_at_every_accepted_depth ... ok\ntest model::ssm_batched_copy::tests::every_slot_rolls_back_to_its_own_state ... ok\ntest model::ssm_batched_copy::tests::full_reject_restore_is_byte_identical ... ok\ntest model::ssm_batched_copy::tests::kill_switch_default_is_batched ... ok\ntest model::ssm_batched_copy::tests::single_ssm_layer_still_copies_the_right_bytes ... ok\ntest model::ssm_batched_copy::tests::the_collapsed_run_reproduces_the_plan_row_for_row ... ok\ntest model::ssm_pool::h_inter_layout_tests::offsets_are_prefix_sums_and_total_is_the_sum ... ok\ntest model::ssm_pool::h_stored_geometry_tests::h_bytes_stays_the_fp32_width ... ok\ntest model::ssm_pool::h_stored_geometry_tests::h_families_stride_by_the_stored_width ... ok\ntest model::ssm_pool::h_stored_geometry_tests::layer_pools_are_one_contiguous_block_per_family ... ok\ntest model::ssm_pool::h_stored_geometry_tests::prefill_staging_is_one_fp32_blob_per_slot_and_only_when_narrowed ... ok\ntest model::ssm_pool::h_stored_geometry_tests::rejected_bulk_allocation_falls_back_to_owned_layer_allocations ... ok\ntest model::ssm_pool::h_stored_geometry_tests::release_frees_backing_allocations_not_layer_views ... ok\ntest model::ssm_pool::h_stored_geometry_tests::replay_pool_has_checkpoints_and_ring_but_no_intermediates ... ok\ntest model::ssm_pool::slot_guard_tests::guard_releases_on_drop ... ok\ntest model::ssm_pool::slot_guard_tests::migration_releases_old_once_then_owns_new ... ok\ntest model::ssm_pool::slot_guard_tests::take_neutralizes_drop_no_double_release ... ok\ntest model::ssm_snapshot_faultin::reap_tests::spill_refusal_retires_the_entry_immediately ... ok\ntest model::ssm_snapshot_faultin::reap_tests::tier_error_retains_the_key ... ok\ntest model::ssm_snapshot_faultin::reap_tests::tier_miss_retires_the_key_instead_of_thrashing ... ok\ntest model::ssm_snapshot_faultin::tier_tests::acquire_or_spill_frees_a_slot_under_full_pool ... ok\ntest model::ssm_snapshot_faultin::tier_tests::fault_in_absent_key_is_miss ... ok\ntest model::ssm_snapshot_faultin::tier_tests::shallow_victim_is_dropped_but_still_yields_a_slot ... ok\ntest model::ssm_snapshot_faultin::tier_tests::spill_blob_bytes_matches_layout ... ok\ntest model::ssm_snapshot_faultin::tier_tests::spill_issues_exactly_one_trailing_sync ... ok\ntest model::ssm_snapshot_faultin::tier_tests::staging_buffer_allocated_once ... ok\ntest model::ssm_snapshot_faultin::tier_tests::tier_survives_slot_recycling ... ok\ntest model::ssm_spill_gate::tests::parse_spill_min_defaults_when_unset_or_garbage ... ok\ntest model::ssm_spill_gate::tests::parse_spill_min_parses_explicit_values ... ok\ntest model::ssm_spill_gate::tests::shipped_defaults_satisfy_the_invariant ... ok\ntest model::ssm_spill_gate::tests::spill_min_clamped_to_fault_min ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::decode_and_marconi_tiers_do_not_cross_serve_on_one_peer ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::distinct_fingerprints_do_not_cross_serve ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::equal_namespaces_cross_serve_the_old_default_bug ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::remove_is_namespace_scoped ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::same_fingerprint_round_trips_across_clients ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::wire_fold_is_deterministic_per_store_instance ... ok\ntest model::ssm_tier::arena_store::paging_isolation_tests::wire_key_is_mix64_of_key_and_ns ... ok\ntest model::ssm_tier::arena_store::tests::file_arena_round_trip_bit_identical ... ok\ntest model::ssm_tier::arena_store::tests::file_arena_write_past_capacity_errs_not_corrupts ... ok\ntest model::ssm_tier::arena_store::tests::rdma_full_arena_put_returns_false_not_err ... ok\ntest model::ssm_tier::arena_store::tests::rdma_get_absent_is_miss_not_error ... ok\ntest model::ssm_tier::arena_store::tests::rdma_overwrite_in_place_no_slot_leak ... ok\ntest model::ssm_tier::arena_store::tests::rdma_put_get_round_trip_bit_identical ... ok\ntest model::ssm_tier::arena_store::tests::rdma_remove_frees_slot_for_reuse ... ok\ntest model::ssm_tier::arena_store::tests::rdma_wrong_size_get_refused_out_untouched ... ok\ntest model::ssm_tier::arena_store::tests::rdma_wrong_size_put_refused ... ok\ntest model::ssm_tier::capability::tests::attention_only_moe_with_ssm_tier_var_is_rejected ... ok\ntest model::ssm_tier::capability::tests::capability_predicates_are_honest ... ok\ntest model::ssm_tier::capability::tests::dense_model_error_lists_all_set_vars ... ok\ntest model::ssm_tier::capability::tests::dense_model_rejects_every_tier_selector_var ... ok\ntest model::ssm_tier::capability::tests::dense_model_with_ssm_tier_var_is_rejected ... ok\ntest model::ssm_tier::capability::tests::dense_model_without_tier_vars_is_ok ... ok\ntest model::ssm_tier::capability::tests::hybrid_model_with_all_tier_vars_is_ok ... ok\ntest model::ssm_tier::fingerprint::tests::decode_ns_mixes_fingerprint_domain_and_client_salt ... ok\ntest model::ssm_tier::fingerprint::tests::every_fingerprint_field_is_load_bearing ... ok\ntest model::ssm_tier::fingerprint::tests::fnv1a_64_matches_reference_vectors ... ok\ntest model::ssm_tier::fingerprint::tests::golden_fingerprint_dense_is_pinned ... ok\ntest model::ssm_tier::fingerprint::tests::golden_fingerprint_hybrid_moe_is_pinned ... ok\ntest model::ssm_tier::fingerprint::tests::golden_kv_fingerprint_is_pinned_and_distinct ... ok\ntest model::ssm_tier::fingerprint::tests::kv_layer_dims_order_is_canonical ... ok\ntest model::ssm_tier::fingerprint::tests::mix64_frozen_literals ... ok\ntest model::ssm_tier::fingerprint::tests::override_precedence_and_strict_parse ... ok\ntest model::ssm_tier::fingerprint::tests::string_encoding_is_injective ... ok\ntest model::ssm_tier::fingerprint::tests::underivable_config_fails_fast ... ok\ntest model::ssm_tier::selectors::tests::decode_tier_defaults_to_host_ram_non_dropping ... ok\ntest model::ssm_tier::selectors::tests::disk_cap_defaults_to_unbounded ... ok\ntest model::ssm_tier::store::tests::blob_larger_than_cap_refused ... ok\ntest model::ssm_tier::store::tests::cap_evicts_fifo ... ok\ntest model::ssm_tier::store::tests::get_absent_is_miss_not_error ... ok\ntest model::ssm_tier::store::tests::growing_oldest_overwrite_evicts_another_blob_without_exceeding_cap ... ok\ntest model::ssm_tier::store::tests::overwrite_reclaims_bytes ... ok\ntest model::ssm_tier::store::tests::put_get_round_trip ... ok\ntest model::ssm_tier::store::tests::wrong_size_get_refused ... ok\ntest model::ssm_tier::unified::tests::capped_store_bounds_disk_but_never_rejects ... ok\ntest model::ssm_tier::unified::tests::capped_store_miss_is_clean ... ok\ntest model::ssm_tier::unified::tests::ssm_tier_disk_slots_conversion_and_strictness ... ok\ntest model::ssm_tier::unified::tests::uncapped_new_never_drops ... ok\ntest model::ssm_tier::unified::tests::unified_flag_accepts_only_documented_truthy_values ... ok\ntest model::ssm_tier::unified::tests::unified_over_transport_never_drops_where_bounded_store_did ... ok\ntest model::ssm_tier::unified::tests::unified_store_remove_releases_resident_key ... ok\ntest model::ssm_tier::unified::tests::unified_store_victim_is_lru_not_fifo_and_not_a_reject ... ok\ntest model::ssm_tier::unified::tests::unified_store_wrong_size_refused_gracefully ... ok\ntest model::trait_impl::decode_graph_key::tests::cap_is_headroom_over_decode_meta_rows ... ok\ntest model::trait_impl::decode_graph_key::tests::lru_insert_at_cap_evicts_oldest_not_the_new_key ... ok\ntest model::trait_impl::decode_graph_key::tests::lru_insert_below_cap_drops_nothing ... ok\ntest model::trait_impl::decode_graph_key::tests::replacing_an_existing_key_destroys_the_old_handle_without_evicting_peers ... ok\ntest model::trait_impl::decode_route::tests::kill_switch_restores_the_per_seq_loop ... ok\ntest model::trait_impl::decode_route::tests::multi_rank_keeps_qsa_active_batches_per_seq ... ok\ntest model::trait_impl::decode_route::tests::non_hc_models_are_never_routed_per_seq ... ok\ntest model::trait_impl::decode_route::tests::qsa_active_batch_stays_on_the_batched_path ... ok\ntest model::trait_impl::decode_route::tests::short_context_hc_batch_stays_batched ... ok\ntest model::trait_impl::graph_borrow::tests::a_claimed_tail_slot_vetoes_the_borrow ... ok\ntest model::trait_impl::graph_borrow::tests::a_dummy_padded_canonical_key_serves_the_rest_of_its_bucket ... ok\ntest model::trait_impl::graph_borrow::tests::a_non_prefix_slot_vector_never_borrows ... ok\ntest model::trait_impl::graph_borrow::tests::borrow_log_gate_fires_once_per_transition ... ok\ntest model::trait_impl::graph_borrow::tests::borrow_width_cap_is_twice_the_power_of_two_bucket ... ok\ntest model::trait_impl::graph_borrow::tests::drain_widths_below_the_window_capture_a_narrow_canonical_graph ... ok\ntest model::trait_impl::graph_borrow::tests::drain_widths_inside_the_bucket_replay_the_steady_state_graph ... ok\ntest model::trait_impl::graph_borrow::tests::invalid_or_exact_width_keys_never_borrow ... ok\ntest model::trait_impl::graph_borrow::tests::the_narrowest_candidate_is_preferred ... ok\ntest model::trait_impl::graph_borrow::tests::verify_borrow_requires_matching_depths_and_sentinel ... ok\ntest model::trait_impl::graph_borrow::tests::verify_drain_widths_replay_the_steady_state_graph_with_ghost_tails ... ok\ntest model::trait_impl::graph_borrow::tests::verify_prefers_the_fewest_ghost_rows ... ok\ntest model::trait_impl::graph_borrow::tests::verify_tail_check_receives_slot_and_depth ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::accepts_chunk_zero_when_explicitly_allowed ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::accepts_uniform_paged_n_2 ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::accepts_varlen_batch_when_packed_footprint_fits ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::cache_batch_accepts_equal_partial_hits ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::cache_batch_rejects_full_chunk_hit ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::cache_batch_rejects_mixed_processing_geometry ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::cache_batch_rejects_restore_metadata ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::effective_charge_allows_warm_stacking ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::effective_charge_rejects_zero_length_stream ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::effective_charge_still_rejects_when_sum_exceeds_arena ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::hybrid_ssm_admits_only_all_cold_reservations ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::mistral_config_is_rejected_as_mla ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::raw_charge_blocks_stacking_at_production_sizes ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_arena_overflow ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_chunk_zero ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_large_head_dim ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_mismatched_chunk_len ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_mismatched_chunk_start ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_mismatched_is_last ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_scratch_footprint_overflow ... ok\ntest model::trait_impl::prefill_b::batch_kernel_tests::rejects_under_two_streams ... ok\ntest model::trait_impl::prefill_b::prefix_reanchor::tests::default_bypass_declines_every_exact_leaf ... ok\ntest model::trait_impl::prefill_b::prefix_reanchor::tests::intermediate_and_warm_turn_anchors_are_never_declined ... ok\ntest model::trait_impl::prefill_b::prefix_reanchor::tests::reanchor_cap_leaves_at_least_two_tokens_to_replay ... ok\ntest model::trait_impl::prefill_b::prefix_reanchor::tests::shortcut_enabled_declines_only_hidden_less_leaves ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::a_degenerate_grid_is_survivable ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::a_long_clip_advances_by_its_temporal_extent ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::a_one_group_video_matches_the_equivalent_image ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::a_video_advances_t_once_per_temporal_group ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::a_video_and_an_image_interleave_correctly ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::an_image_holds_t_constant_and_advances_by_its_long_side ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::pads_beyond_the_owned_grids_do_not_panic ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::text_only_is_the_identity_ramp_on_all_three_streams ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::the_grid_window_bounds_which_items_are_consumed ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::the_image_rule_is_unchanged_by_the_temporal_axis ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::the_streams_start_where_the_caller_says ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::the_three_streams_always_match_the_token_count ... ok\ntest model::trait_impl::prefill_b::upload_meta::mrope_pos::tests::two_images_each_advance_the_running_position ... ok\ntest model::trait_impl::ssm_fault_in::tests::gate_disabled_never_skips ... ok\ntest model::trait_impl::ssm_fault_in::tests::gate_skips_shallow_faults_only ... ok\ntest model::trait_impl::ssm_fault_in::tests::min_tokens_defaults_when_unset_or_garbage ... ok\ntest model::trait_impl::ssm_fault_in::tests::min_tokens_parses_explicit_values ... ok\ntest model::trait_impl::verify_e2::tests::key_changes_when_any_input_changes ... ok\ntest model::trait_impl::verify_e2::tests::key_is_injective_over_the_reachable_domain ... ok\ntest model::trait_impl::verify_e2::tests::key_is_reused_when_no_input_changes ... ok\ntest model::trait_impl::verify_e2::tests::value_switch_is_armed_only_by_a_literal_one ... ok\ntest model::trait_impl::verify_e::eligibility::tests::generic_batched_verify_refuses_hc_and_preserves_residual_models ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::aux_restore_row_is_none_on_a_full_accept ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::aux_restore_row_is_not_always_row_zero ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::aux_restore_row_tracks_the_ssm_rewind_index ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::every_restorable_row_is_inside_the_stash ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::hc_ple_snapshot_range_matches_the_ssm_one ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::hc_publish_covers_every_commit_rewind ... ok\ntest model::trait_impl::verify_hc::hc_intermediate_contract_tests::hc_publish_stops_at_the_last_reachable_row ... ok\ntest model::trait_impl::verify_hc::verify_attn_row_tests::each_row_advances_by_exactly_one_token ... ok\ntest model::trait_impl::verify_hc::verify_attn_row_tests::every_row_gets_its_own_seq_len_word ... ok\ntest model::trait_impl::verify_hc::verify_attn_row_tests::row_zero_matches_a_serial_decode_of_the_committed_token ... ok\ntest model::trait_impl::verify_hc::verify_attn_row_tests::the_per_row_metadata_strides_are_not_uniform ... ok\ntest model::trait_impl::verify_hc::verify_attn_row_tests::the_row_seq_len_array_clears_the_slot_table ... ok\ntest norm_convention_tests::vanilla_norm_models_are_explicit ... ok\ntest precision_schedule::tests::default_schedule_is_all_inherit ... ok\ntest precision_schedule::tests::dtype_str_parsing ... ok\ntest precision_schedule::tests::role_override_wins_over_default ... ok\ntest precision_schedule::tests::role_str_round_trips ... ok\ntest precision_schedule::tests::sensitive_layer_does_not_override_router_or_lm_head ... ok\ntest precision_schedule::tests::sensitive_layer_overrides_bulk_default_for_weights ... ok\ntest preflight::deepseek_v4::tests::pure_tp_draft_contract_rejects_invalid_or_overflowing_geometry ... ok\ntest preflight::deepseek_v4::tests::pure_tp_draft_contract_restores_full_width_and_partitions_experts ... ok\ntest preflight::deepseek_v4::tests::stage_discovery_is_exact_and_ordered ... ok\ntest preflight::deepseek_v4::tests::tensor_contract_rejects_e8m0_where_fp8_weight_is_required ... ok\ntest preflight::deepseek_v4::tests::tensor_contract_rejects_missing_required_tensor ... ok\ntest preflight::deepseek_v4::tests::tensor_contract_rejects_wrong_scale_shape ... ok\ntest preflight::qsa_kv_tests::a_non_qsa_checkpoint_accepts_any_kv_dtype ... ok\ntest preflight::qsa_kv_tests::a_qsa_checkpoint_accepts_bf16 ... ok\ntest preflight::qsa_kv_tests::a_qsa_checkpoint_refuses_a_quantized_kv_cache_by_name ... ok\ntest preflight::qsa_kv_tests::spellings_that_do_not_parse_downstream_are_not_accepted ... ok\ntest preflight::qsa_kv_tests::the_engine_default_is_not_something_a_qsa_checkpoint_can_use ... ok\ntest quant_format::tests::exact_match ... ok\ntest quant_format::tests::ignore_patterns_drive_effective_variants_for_every_format ... ok\ntest quant_format::tests::leading_and_all_star_patterns ... ok\ntest quant_format::tests::middle_star ... ok\ntest quant_format::tests::prefix_star ... ok\ntest quant_format::tests::trailing_star_matches_a_prefix ... ok\ntest speculative::ladder::tests::default_ladder_holds_depth_to_the_cap ... ok\ntest speculative::ladder::tests::depth_at_width_env_rungs_parse_shape ... ok\ntest speculative::ladder::tests::explicit_steps_are_honored ... ok\ntest speculative::ladder::tests::ladder_clamps_to_configured_ceiling ... ok\ntest speculative::ladder::tests::malformed_ladder_is_rejected_as_a_unit ... ok\ntest speculative::tree_shape::tests::accept_full_spine ... ok\ntest speculative::tree_shape::tests::accept_hedge_after_spine_prefix_is_terminal ... ok\ntest speculative::tree_shape::tests::accept_hedge_rescue_is_terminal ... ok\ntest speculative::tree_shape::tests::accept_reject_all_gives_root_bonus ... ok\ntest speculative::tree_shape::tests::parse_and_validate ... ok\ntest speculative::tree_shape::tests::row_layout_spine_prefix ... ok\ntest speculative::verify_key::tests::at_the_threshold_the_gate_selects_the_canonical_arm ... ok\ntest speculative::verify_key::tests::below_the_threshold_is_byte_identical_to_pre_canonical ... ok\ntest speculative::verify_key::tests::canonical_order_is_idempotent ... ok\ntest speculative::verify_key::tests::canonical_order_is_slot_ascending_and_depth_descending ... ok\ntest speculative::verify_key::tests::different_multisets_have_different_keys ... ok\ntest speculative::verify_key::tests::different_slot_sets_have_different_keys ... ok\ntest speculative::verify_key::tests::each_depth_run_owns_a_consecutive_slot_block ... ok\ntest speculative::verify_key::tests::empty_and_single_batches_are_well_formed ... ok\ntest speculative::verify_key::tests::kill_switch_dominates_width_and_override ... ok\ntest speculative::verify_key::tests::kill_switch_restores_the_arrangement_keyed_behaviour ... ok\ntest speculative::verify_key::tests::min_width_override_moves_the_boundary ... ok\ntest speculative::verify_key::tests::min_width_override_parses ... ok\ntest speculative::verify_key::tests::mismatched_batch_vectors_fail_closed ... ok\ntest speculative::verify_key::tests::n8_key_space_collapses_266_to_3 ... ok\ntest speculative::verify_key::tests::permutation_leaves_depths_attached_to_their_member ... ok\ntest speculative::verify_key::tests::same_multiset_different_arrangement_is_one_key ... ok\ntest speculative::verify_key::tests::the_gate_boundary_is_the_constant ... ok\ntest speculative::verify_key::tests::uniform_depths_are_identical_under_both_arms ... ok\ntest speculative::verify_key::tests::wy_table_presence_splits_the_key ... ok\ntest ssm_reserve::mtp_state_slot_tests::bs64_ledger_before_after_and_fit ... ok\ntest ssm_reserve::mtp_state_slot_tests::cap_bites_above_32_and_kill_switch_restores ... ok\ntest ssm_reserve::mtp_state_slot_tests::cap_identity_at_or_below_32_every_config ... ok\ntest ssm_reserve::mtp_state_slot_tests::decode_ring_decision_matrix ... ok\ntest ssm_reserve::mtp_state_slot_tests::f16_pool_sizing_pinned_and_flag_off_untouched ... ok\ntest ssm_reserve::mtp_state_slot_tests::h_stored_bytes_is_identity_off_and_half_on ... ok\ntest ssm_reserve::mtp_state_slot_tests::h_stored_bytes_rejects_non_fp32_width ... ok\ntest ssm_reserve::mtp_state_slot_tests::k_minus_1_shrink_and_kill_switch_shape ... ok\ntest ssm_reserve::mtp_state_slot_tests::prefill_staging_costs_one_fp32_layer_blob_per_slot ... ok\ntest ssm_reserve::mtp_state_slot_tests::replay_mode_keeps_one_checkpoint_blob_per_slot ... ok\ntest ssm_reserve::mtp_state_slot_tests::replay_ring_bytes_pinned_27b ... ok\ntest ssm_reserve::mtp_state_slot_tests::rollback_mode_parses_and_rejects ... ok\ntest ssm_reserve::mtp_state_slot_tests::tier_capacity_default_ladder_shape ... ok\ntest ssm_reserve::mtp_state_slot_tests::tiered_totals_pinned ... ok\ntest tp_shard::tests::ba_single_segment_group_aligned ... ok\ntest tp_shard::tests::column_parallel_offsets ... ok\ntest tp_shard::tests::conv_segment_plan_uses_qkv_segments ... ok\ntest tp_shard::tests::divisibility_check ... ok\ntest tp_shard::tests::gdn_dims_derived ... ok\ntest tp_shard::tests::qkvz_plan_holo_dense_dims ... ok\ntest tp_shard::tests::qkvz_segment_plan_is_segmented_not_contiguous ... ok\ntest tp_shard::tests::qkvz_two_rank_reconcat_tiles_full ... ok\ntest tp_shard::tests::row_parallel_offsets ... ok\ntest tp_shard::tests::segment_plan_rejects_indivisible ... ok\ntest tp_shard::tests::value_vector_offsets ... ok\ntest traits::logprobs::tests::bf16_slice_roundtrip_extract ... ok\ntest traits::logprobs::tests::empty_vocab_is_neg_inf_with_no_alternatives ... ok\ntest traits::logprobs::tests::k_zero_returns_empty_top ... ok\ntest traits::logprobs::tests::logprob_matches_manual_log_softmax ... ok\ntest traits::logprobs::tests::out_of_vocab_target_is_neg_inf_not_panic ... ok\ntest traits::model::padded_batch_n_tests::ladder_rungs ... ok\ntest video_decode_ffmpeg::tests::a_hanging_decoder_is_killed_at_timeout ... ok\ntest video_decode_ffmpeg::tests::a_missing_binary_fails_the_decode_by_name ... ok\ntest video_decode_ffmpeg::tests::a_non_video_payload_fails_cleanly ... ok\ntest video_decode_ffmpeg::tests::a_stream_of_two_pngs_splits_into_two_frames ... ok\ntest video_decode_ffmpeg::tests::an_empty_stream_splits_to_nothing ... ok\ntest video_decode_ffmpeg::tests::an_h264_mp4_decodes_to_frames_at_the_requested_rate ... ok\ntest video_decode_ffmpeg::tests::an_hevc_clip_decodes_too_when_the_encoder_is_available ... ok\ntest video_decode_ffmpeg::tests::an_output_cap_smaller_than_the_clip_is_refused ... ok\ntest video_decode_ffmpeg::tests::decoded_frames_are_not_all_identical ... ok\ntest video_decode_ffmpeg::tests::disabled_refuses_before_touching_the_binary ... ok\ntest video_decode_ffmpeg::tests::probing_a_missing_binary_reports_it_by_name ... ok\ntest video_decode_ffmpeg::tests::probing_while_disabled_says_disabled_rather_than_missing ... ok\ntest video_decode_ffmpeg::tests::the_default_policy_runs_nothing ... ok\ntest video_decode_ffmpeg::tests::the_frame_cap_is_honoured ... ok\ntest video_decode_ffmpeg::tests::the_requested_rate_actually_changes_the_frame_count ... ok\ntest video_preprocess::tests::a_clip_is_sampled_to_the_requested_rate ... ok\ntest video_preprocess::tests::a_short_clip_is_never_padded_up_to_the_minimum ... ok\ntest video_preprocess::tests::a_single_frame_gif_is_refused_rather_than_treated_as_a_still ... ok\ntest video_preprocess::tests::an_animated_gif_decodes_to_its_frames ... ok\ntest video_preprocess::tests::an_empty_clip_samples_to_nothing ... ok\ntest video_preprocess::tests::an_inverted_frame_band_uses_the_ceiling ... ok\ntest video_preprocess::tests::an_mp4_is_refused_by_name_with_a_conversion_hint ... ok\ntest video_preprocess::tests::consecutive_groups_hold_different_frames ... ok\ntest video_preprocess::tests::garbage_is_an_error_not_a_panic ... ok\ntest video_preprocess::tests::gif_magic_wins_over_a_mislabelled_mime ... ok\ntest video_preprocess::tests::grouping_produces_correctly_shaped_buffers ... ok\ntest video_preprocess::tests::indices_are_in_range_and_non_decreasing ... ok\ntest video_preprocess::tests::invalid_geometry_is_refused_before_dividing_by_it ... ok\ntest video_preprocess::tests::one_frame_cannot_make_a_group_at_tp2 ... ok\ntest video_preprocess::tests::pad_count_is_groups_times_the_merged_plane ... ok\ntest video_preprocess::tests::the_area_bound_shrinks_the_grid ... ok\ntest video_preprocess::tests::the_frame_count_is_always_a_whole_number_of_groups ... ok\ntest video_preprocess::tests::the_max_frames_ceiling_is_honoured ... ok\ntest video_preprocess::tests::the_two_frames_of_a_group_are_actually_different ... ok\ntest video_preprocess::tests::zero_and_nonfinite_rates_fall_back_rather_than_exploding ... ok\ntest vision_preprocess::tests::a_red_pixel_produces_the_exact_grid_and_normalized_channel_layout ... ok\ntest vision_preprocess::tests::a_small_unbounded_image_only_moves_to_the_nearest_grid ... ok\ntest vision_preprocess::tests::a_square_area_bound_snaps_to_its_exact_grid ... ok\ntest vision_preprocess::tests::absolute_ceiling_bounds_a_pathological_aspect_ratio ... ok\ntest vision_preprocess::tests::an_aligned_small_image_is_not_scaled_up_to_a_large_declared_bound ... ok\ntest vision_preprocess::tests::an_exif_tagged_image_is_rotated_upright ... ok\ntest vision_preprocess::tests::an_unbounded_large_image_uses_the_fallback_long_side ... ok\ntest vision_preprocess::tests::an_untagged_image_is_not_rotated ... ok\ntest vision_preprocess::tests::aspect_ratio_is_preserved_within_grid_rounding ... ok\ntest vision_preprocess::tests::declared_area_bound_raises_above_the_fallback ... ok\ntest vision_preprocess::tests::declared_area_bound_still_downscales_when_exceeded ... ok\ntest vision_preprocess::tests::declared_area_bound_survives_grid_rounding ... ok\ntest vision_preprocess::tests::decode_bomb_dimensions_are_rejected_before_allocation ... ok\ntest vision_preprocess::tests::exif_rotation_precedes_grid_sizing ... ok\ntest vision_preprocess::tests::malformed_base64_and_undecodable_bytes_fail_for_distinct_reasons ... ok\ntest vision_preprocess::tests::no_declared_bound_keeps_the_1280_fallback ... ok\ntest vision_preprocess::tests::operator_override_can_lower_below_the_fallback ... ok\ntest vision_preprocess::tests::sides_are_always_grid_multiples ... ok\ntest vision_preprocess::tests::still_image_pad_count_floors_partial_merge_blocks ... ok\ntest vision_preprocess::tests::still_image_pad_count_is_identity_without_merging ... ok\ntest vision_preprocess::tests::still_image_pad_count_treats_zero_merge_as_one ... ok\ntest vision_preprocess::tests::still_image_pad_count_uses_the_spatially_merged_grid ... ok\ntest vision_preprocess::tests::zero_patch_size_is_an_error_not_a_divide_by_zero_panic ... ok\ntest vision_preprocess::tests::zero_spatial_merge_size_is_an_error ... ok\ntest vision_preprocess::tests::zero_temporal_patch_size_is_an_error ... ok\ntest weight_loader::deepseek_v4::attn_sink::attn_sink_dtype_tests::bf16_checkpoint_is_widened_into_a_new_exact_fp32_buffer ... ok\ntest weight_loader::deepseek_v4::attn_sink::attn_sink_dtype_tests::fp32_checkpoint_pointer_passes_through_unchanged ... ok\ntest weight_loader::deepseek_v4::attn_sink::attn_sink_dtype_tests::missing_sink_returns_null_without_allocating ... ok\ntest weight_loader::deepseek_v4::attn_sink::attn_sink_dtype_tests::unsupported_checkpoint_dtype_names_the_tensor_and_contract ... ok\ntest weight_loader::deepseek_v4::csa_ape::csa_ape_dtype_tests::bf16_checkpoint_is_widened_into_a_new_exact_fp32_buffer ... ok\ntest weight_loader::deepseek_v4::csa_ape::csa_ape_dtype_tests::fp32_checkpoint_pointer_passes_through_unchanged ... ok\ntest weight_loader::deepseek_v4::csa_ape::csa_ape_dtype_tests::missing_required_ape_names_the_tensor ... ok\ntest weight_loader::deepseek_v4::csa_ape::csa_ape_dtype_tests::unsupported_checkpoint_dtype_names_the_tensor_and_contract ... ok\ntest weight_loader::dflash_loader::loader_tests::effective_block_size_falls_back_to_the_top_level ... ok\ntest weight_loader::dflash_loader::loader_tests::effective_block_size_prefers_the_drafters_own_value ... ok\ntest weight_loader::dflash_loader::loader_tests::malformed_runtime_field_is_rejected_with_parser_context ... ok\ntest weight_loader::dflash_loader::loader_tests::omitted_optional_fields_use_runtime_defaults ... ok\ntest weight_loader::dflash_loader::loader_tests::shipped_qwen3_6_fields_reach_the_runtime_config ... ok\ntest weight_loader::laguna::load_layers::tests::unified_moe_layout_is_explicitly_opt_in ... ok\ntest weight_loader::longcat::prep::tests::deinterleave_moves_even_rows_first ... ok\ntest weight_loader::longcat::prep::tests::deinterleave_respects_base_row_and_width ... ok\ntest weight_loader::nemotron::tests::explicit_lm_head_takes_precedence_over_tied_embedding ... ok\ntest weight_loader::nemotron::tests::nemotron_layout_routes_embedding_norm_and_tied_head ... ok\ntest weight_loader::qwen35_dense::rowwise_fp8::rowwise_fp8_tests::a_block_grid_is_not_per_row ... ok\ntest weight_loader::qwen35_dense::rowwise_fp8::rowwise_fp8_tests::a_column_vector_is_rejected_even_with_n_elements ... ok\ntest weight_loader::qwen35_dense::rowwise_fp8::rowwise_fp8_tests::a_scalar_scale_is_not_per_row ... ok\ntest weight_loader::qwen35_dense::rowwise_fp8::rowwise_fp8_tests::per_row_shapes_are_accepted ... ok\ntest weight_loader::qwen35_dense::rowwise_fp8::rowwise_fp8_tests::projection_metadata_gates_the_rowwise_loader_path ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::a_missing_combiner_tensor_is_named ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::an_empty_store_is_reported_and_is_ok_when_no_module_is_declared ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::both_expert_layouts_are_refused_as_ambiguous ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::complete_fused_store_passes ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::complete_per_expert_nvfp4_store_passes ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::ep_world_size_above_one_is_refused ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::mtp_header_inventory ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::neither_expert_layout_is_refused ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::pre_fc_norm_hidden_at_the_embedding_width_is_refused ... ok\ntest weight_loader::qwen4_exp::probe_mtp::probe_mtp_tests::single_width_q_proj_is_refused ... ok\ntest weight_map::exl3_materialize::pool_predicate::tests::prediction_matches_pass_all_gates ... ok\ntest weight_map::exl3_materialize::pool_predicate::tests::prediction_matches_pass_gates_off ... ok\ntest weight_map::exl3_materialize::pool_predicate::tests::prediction_matches_pass_native_moe ... ok\ntest weight_map::exl3_materialize::pool_predicate::tests::prediction_matches_pass_native_only ... ok\ntest weight_map::exl3_materialize::pool_predicate::tests::rejects_bad_geometry_and_unknown_k ... ok\ntest weight_map::exl3_materialize::sidecar_shards::tests::directory_without_sidecars_is_a_noop ... ok\ntest weight_map::exl3_materialize::sidecar_shards::tests::discovery_rule_never_double_reads_the_main_loaders_files ... ok\ntest weight_map::exl3_materialize::sidecar_shards::tests::discovery_rule_selects_unindexed_sidecars_only ... ok\ntest weight_map::exl3_materialize::sidecar_shards::tests::no_policy_registers_the_mixer_patch_too ... ok\ntest weight_map::exl3_materialize::sidecar_shards::tests::registers_vision_sidecar_then_materialize_sees_its_trellis ... ok\ntest weight_map::exl3_materialize::sidecar_shards::tests::vision_sidecar_name_shape ... ok\ntest weight_map::exl3_materialize::tests::moe_gate_off_experts_materialize_exactly_as_before ... ok\ntest weight_map::exl3_materialize::tests::native_mode_keeps_k6_lm_head_packed ... ok\ntest weight_map::exl3_materialize::tests::native_mode_keeps_supported_lm_head_packed ... ok\ntest weight_map::exl3_materialize::tests::native_mode_unsupported_codebook_falls_back_to_bf16 ... ok\ntest weight_map::exl3_materialize::tests::native_moe_keeps_uniform_layer_atomically_drops_mixed_layer ... ok\ntest weight_map::exl3_materialize::tests::native_serve_set_and_support_envelope ... ok\ntest weight_map::exl3_materialize::tests::no_exl3_is_noop ... ok\ntest weight_map::exl3_materialize::tests::pool_tests::pooled_quartet_kept_native_stays_pooled ... ok\ntest weight_map::exl3_materialize::tests::pool_tests::pooled_quartet_materializes_without_interior_free ... ok\ntest weight_map::exl3_materialize::tests::routes_experts_to_triplet_and_attention_to_bf16 ... ok\ntest weight_map::exl3_materialize_dense::tests::families_from_env_values ... ok\ntest weight_map::exl3_materialize_dense::tests::family_prefixes ... ok\ntest weight_map::exl3_materialize_dense::tests::gate_combinations ... ok\ntest weight_map::exl3_materialize_dense::tests::keep_set_bad_projection_drops_that_layer_only ... ok\ntest weight_map::exl3_materialize_dense::tests::keep_set_half_family_materializes_the_whole_layer ... ok\ntest weight_map::exl3_materialize_dense::tests::keep_set_ignores_non_dense_prefixes ... ok\ntest weight_map::exl3_materialize_dense::tests::keep_set_keeps_the_routed_leaves_only ... ok\ntest weight_map::exl3_materialize_dense::tests::pass::dense_gate_keeps_the_routed_set_atomically ... ok\ntest weight_map::exl3_materialize_dense::tests::pass::dense_gate_off_materializes_everything_as_before ... ok\ntest weight_map::exl3_materialize_dense::tests::pass::family_prefix_helpers_match_the_store_layout ... ok\ntest weight_map::exl3_materialize_dense::tests::pass::gdn_subgate_off_materializes_out_proj_too ... ok\ntest weight_map::exl3_materialize_dense::tests::prefix_classification ... ok\ntest weight_map::exl3_materialize_dense::tests::routed_leaves_are_a_subset_of_the_family ... ok\ntest weight_map::exl3_materialize_moe::tests::gate_combination ... ok\ntest weight_map::exl3_materialize_moe::tests::keep_set_k5_k6_uniform_layers_kept_mixed_high_k_dropped ... ok\ntest weight_map::exl3_materialize_moe::tests::keep_set_mixed_codebook_across_projections_falls_back ... ok\ntest weight_map::exl3_materialize_moe::tests::keep_set_mixed_k_layer_fully_falls_back ... ok\ntest weight_map::exl3_materialize_moe::tests::keep_set_out_of_envelope_falls_back ... ok\ntest weight_map::exl3_materialize_moe::tests::keep_set_uniform_layer_kept_whole ... ok\ntest weight_map::exl3_materialize_moe::tests::serves_moe_prefixes ... ok\ntest weight_map::exl3_materialize_moe::tests::supported_moe_envelope ... ok\ntest weight_map::nvfp4_detect::tests::ep_detection_tests::alternate_layer0_fp8_dtype_is_detected_on_every_ep_rank ... ok\ntest weight_map::nvfp4_detect::tests::ep_detection_tests::scale_inv_suffix_fallback_detects_an_unexpected_prefix ... ok\ntest weight_map::nvfp4_detect::tests::key_variant_tests::materialized_triplet_under_bf16raw_routes_to_standard_when_gated ... ok\ntest weight_map::nvfp4_detect::tests::key_variant_tests::triplet_fallback_does_not_steal_other_layouts ... ok\ntest weight_map::nvfp4_detect::tests::mixed_tests::mixed_main_mtp_tests::explicit_scheme_still_precedes_main_expert_sniff ... ok\ntest weight_map::nvfp4_detect::tests::mixed_tests::mixed_main_mtp_tests::main_nvfp4_detection_does_not_change_when_fp8_mtp_is_loaded ... ok\ntest weight_map::nvfp4_detect::tests::mixed_tests::mixed_main_mtp_tests::mixed_precision_requires_positive_main_expert_evidence ... ok\n\ntest result: ok. 778 passed; 0 failed; 18 ignored; 0 measured; 0 filtered out; finished in 11.57s\n\n",
+    "clippy-projection.log": "    Checking spark-model v1.0.0-beta-preview (/home/ms/atlas/crates/spark-model)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.43s\n",
+    "hardware.txt": "Sat Sep  5 14:43:54 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 580.173.02             Driver Version: 580.173.02     CUDA Version: 13.0     |\n+-----------------------------------------+------------------------+----------------------+\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA GB10                    On  |   0000000F:01:00.0 Off |                  N/A |\n| N/A   59C    P0             26W /  N/A  | Not Supported          |     87%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n\n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|    0   N/A  N/A          647678      C   /tmp/atlas-nvidia-mtp/spark           94692MiB |\n+-----------------------------------------------------------------------------------------+\n",
+    "mtp_engagement": "2026-09-05T19:06:45.455236Z  INFO spark_model::layers::qwen4_exp_mtp: qwen4_exp MTP head: private KV pool 2050 blocks x 16 tok = 32800 tokens, 2 kv_heads x 256 head_dim BF16 (~0.07 GB), capacity 1 sequence slots (67174400 bytes). This is allocated AFTER the main pool and is therefore OUTSIDE the util pledge.\n2026-09-05T19:06:45.462083Z  WARN spark_model::model::impl_b3_accessors: qwen4_exp MTP SPECULATION ARMED: the draft head is installed as the active proposer, and the mHC K-row verify path is live. Measured draft accept is 86.5-95.5%, but this is the FIRST configuration in which a draft is actually fed back \u2014 treat output quality as unproven until the agentic battery runs.\n2026-09-05T19:06:50.287232Z  INFO spark::scheduler::mtp_accept_debug: Done: 34 tokens (stop) 18.5 tok/s, TTFT=688.3ms, serial=0.00 mtp=1.00 p1=0.786 mean_na=1.357 tok_step=2.357 regime_reprobes=0\n2026-09-05T19:06:58.825187Z  INFO spark::scheduler::mtp_accept_debug: Done: 128 tokens (stop) 16.3 tok/s, TTFT=701.6ms, serial=0.00 mtp=1.00 p1=0.644 mean_na=1.153 tok_step=2.153 regime_reprobes=0\n2026-09-05T19:07:06.496283Z  INFO spark::scheduler::mtp_accept_debug: Done: 133 tokens (stop) 19.0 tok/s, TTFT=663.6ms, serial=0.00 mtp=1.00 p1=0.830 mean_na=1.491 tok_step=2.491 regime_reprobes=0\n2026-09-05T19:07:12.745713Z  INFO spark::scheduler::mtp_accept_debug: Done: 28 tokens (stop) 22.0 tok/s, TTFT=2782.3ms, serial=0.00 mtp=1.00 p1=0.900 mean_na=1.700 tok_step=2.700 regime_reprobes=0",
+    "load_failures": "2026-09-05T18:34:19.312385Z  INFO spark_model::layers::qwen3_ssm::init: GDN state spine: gated_delta_rule_chunk_delta_h_vfused\n2026-09-05T18:34:19.732963Z  WARN spark_runtime::cuda_backend: sweep: 222626 allocation(s) totalling 78.73 GB had no owner; largest sites: crates/spark-runtime/src/fast_weights/shard.rs:256 (74914.8 MB x222578), crates/spark-model/src/weight_map/fp8_lut.rs:398 (160.0 MB x2), crates/spark-model/src/weight_map/loaders_fp8.rs:233 (5.9 MB x8), crates/spark-model/src/weight_map/fp8_lut.rs:451 (0.9 MB x2), crates/spark-model/src/weight_map/loaders_fp8.rs:234 (0.7 MB x8)\n2026-09-05T18:34:24.552967Z  WARN spark_runtime::cuda_backend: backend drop reclaimed 222626 allocation(s) that no owner released \u2014 expected if a load was abandoned part-way, otherwise an unregistered owner\nError: Failed to build model\n\nCaused by:\n    PLE: this checkpoint stores the n-gram table in FP8 (1 byte/element, scale 1.993179e-4), but the gather kernel wired to PleLayer reads BF16 (2 bytes/element) and applies no scale -- loading it would produce silently wrong output rather than an error. Use a BF16 conversion of this model, or wire `batched_embed_fp8` into PleLayer first.\n2026-09-05T18:46:15.993138Z  WARN spark_runtime::cuda_backend: sweep: 225692 allocation(s) totalling 81.43 GB had no owner; largest sites: crates/spark-runtime/src/fast_weights/shard.rs:256 (77657.2 MB x225686), crates/spark-model/src/weight_map/loaders_fp8.rs:233 (2.3 MB x3), crates/spark-model/src/weight_map/loaders_fp8.rs:234 (0.3 MB x3)\n2026-09-05T18:46:21.327184Z  WARN spark_runtime::cuda_backend: backend drop reclaimed 225692 allocation(s) that no owner released \u2014 expected if a load was abandoned part-way, otherwise an unregistered owner\nError: Failed to build model\n\nCaused by:\n    0: qwen4_exp: MoE block at model.language_model.layers.0\n    1: Expected FP8E4M3 for model.language_model.layers.0.mlp.experts.0.gate_proj.weight, got UInt8\n2026-09-05T18:54:54.799723Z  INFO spark_model::factory::build: KV budget self-relative (ledger): Atlas-own 80.1 GB live in the alloc ledger; 23.8 GB of co-tenant/page-cache use excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)\n2026-09-05T18:54:54.937506Z  WARN spark_runtime::cuda_backend: sweep: 230097 allocation(s) totalling 85.97 GB had no owner; largest sites: crates/spark-runtime/src/fast_weights/shard.rs:256 (74327.2 MB x225470), crates/spark-model/src/weight_map/fp8_lut.rs:398 (2880.0 MB x36), crates/spark-model/src/weight_map/loaders_fp8.rs:233 (1957.0 MB x1785), crates/spark-model/src/weight_map/quantized.rs:514 (617.5 MB x52), crates/spark-model/src/weight_map/quantized.rs:270 (308.8 MB x52)\n2026-09-05T18:55:00.062523Z  WARN spark_runtime::cuda_backend: backend drop reclaimed 230097 allocation(s) that no owner released \u2014 expected if a load was abandoned part-way, otherwise an unregistered owner\nError: Failed to build model\n\nCaused by:\n    No memory left for KV cache: total GPU = 121.6 GB, --gpu-memory-utilization 68% \u2192 budget 82.7 GB, but 80.1 GB already consumed + 5.0 GB inference reserve = 85.0 GB committed.  Raise --gpu-memory-utilization or use a smaller model."
+  }
+}

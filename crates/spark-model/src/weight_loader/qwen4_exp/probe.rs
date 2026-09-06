@@ -40,14 +40,27 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
         config.weight_prefix.clone()
     };
     r.has_embed = store.contains(&format!("{pfx}.embed_tokens.weight"));
-    r.has_lm_head = store.contains("lm_head.weight");
+    // A kept-packed EXL3 lm_head (ATLAS_EXL3_NATIVE=1) counts: the native
+    // head serves it without a dense `.weight` ever existing.
+    r.has_lm_head = store.contains("lm_head.weight")
+        || spark_runtime::weights::exl3::is_exl3_linear(store, "lm_head");
 
+    // Like the lm_head and the experts, a kept-packed EXL3 dense family
+    // (ATLAS_EXL3_NATIVE_DENSE=1) counts: the native GDN / attention arms
+    // serve it without a dense `.weight` ever existing. The predicate is the
+    // loader's own (`exl3_dense_family_kept`), so the audit and the arms
+    // cannot disagree about which layers are native.
+    use crate::weight_map::{Exl3DenseFamily, exl3_dense_family_kept};
     for i in 0..config.num_hidden_layers {
         let lp = config.layer_prefix(i);
-        if store.contains(&format!("{lp}.linear_attn.in_proj_qkv.weight")) {
+        if store.contains(&format!("{lp}.linear_attn.in_proj_qkv.weight"))
+            || exl3_dense_family_kept(store, &lp, Exl3DenseFamily::Gdn)
+        {
             r.gdn_layers += 1;
         }
-        if store.contains(&format!("{lp}.self_attn.q_proj.weight")) {
+        if store.contains(&format!("{lp}.self_attn.q_proj.weight"))
+            || exl3_dense_family_kept(store, &lp, Exl3DenseFamily::Attn)
+        {
             r.attn_layers += 1;
         }
         if store.contains(&format!("{lp}.self_attn.indexer.index_qk_proj.weight")) {
@@ -68,7 +81,14 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
         let first_local = (0..config.num_experts)
             .find(|e| config.is_local_expert(*e))
             .unwrap_or(0);
-        if store.contains(&format!("{lp}.mlp.experts.{first_local}.gate_proj.weight")) {
+        // Like the lm_head above, kept-packed EXL3 experts
+        // (ATLAS_EXL3_NATIVE_MOE=1) count: the native MoE path serves them
+        // without a dense `.weight` ever existing.
+        let first_local_gate = format!("{lp}.mlp.experts.{first_local}.gate_proj");
+        if store.contains(&format!("{first_local_gate}.weight"))
+            || (crate::weight_map::exl3_native_moe_enabled()
+                && spark_runtime::weights::exl3::is_exl3_linear(store, &first_local_gate))
+        {
             r.expert_tensors += 1;
         }
         if store.contains(&format!("{lp}.input_layernorm.weight"))

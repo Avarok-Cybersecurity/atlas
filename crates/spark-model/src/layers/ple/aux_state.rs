@@ -105,3 +105,88 @@ impl PleLayer {
         Ok(())
     }
 }
+
+// ── Per-row carry checkpoints for the K-row speculative verify ──
+//
+// The mHC K-row verify (`qwen3_ssm/trait_decode_batched_hc.rs`) advances THREE
+// per-row carries in one pass. Two of them already had a mechanism:
+//
+//   * the SSM `h_state`/`conv_state` are written per row into pool
+//     intermediates by the conv+GDN kernels, and
+//   * QSA's `ingested`/`pooled` are contiguous marks, so
+//     `QsaIndexer::align_seq_state` rewinds them to an ABSOLUTE position with
+//     no snapshot at all.
+//
+// PLE was the one with neither. Its conv is a rolling FP32 state and its
+// history is a fixed-length window whose oldest ids have already rolled off,
+// so nothing about it can be reconstructed by truncation — a partial accept
+// left it ADVANCED over the rejected rows, which is the documented corruption
+// class. These three calls give it the same per-row granularity the other two
+// carries have.
+impl PleLayer {
+    /// Start a K-row verify: drop any snapshots a previous verify left. The
+    /// device slots are kept — the next verify reuses them.
+    pub fn begin_verify_rows(&self, st: &mut PleSeqState) {
+        st.verify_rows.clear();
+    }
+
+    /// Record "the carry after row `t`". Called once per row boundary a
+    /// partial accept can land on — rows `0..K-1`, matching `hc_publish_rows`;
+    /// the last row needs none because a full accept keeps the live state.
+    ///
+    /// Stream-ordered, no sync: the token history is host state and is
+    /// cloned; the FP32 conv state is copied device-to-device into slot `t`
+    /// on `stream`. The previous host blob (`copy_d2h_on_stream`) was a
+    /// stream sync per row — see `PleSeqState::verify_rows`.
+    pub fn push_verify_row(
+        &self,
+        st: &mut PleSeqState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let t = st.verify_rows.len();
+        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        while st.verify_conv.len() <= t {
+            st.verify_conv.push(gpu.alloc(conv_bytes)?);
+        }
+        gpu.copy_d2d_async(st.conv, st.verify_conv[t], conv_bytes, stream)?;
+        st.verify_rows.push(st.history.clone());
+        Ok(())
+    }
+
+    /// Rewind the carry to the boundary after row `t`, i.e. to a commit of
+    /// `t + 1` rows.
+    ///
+    /// Errors rather than silently no-opping when the row was never recorded:
+    /// a missing snapshot means the carry stays ahead of the sequence, which
+    /// is precisely the silent desync this exists to prevent.
+    pub fn rewind_verify_row(
+        &self,
+        st: &mut PleSeqState,
+        t: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let history = st.verify_rows.get(t).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "PLE verify rewind to row {t}, but only {} row snapshots were \
+                 recorded. The carry would be left ADVANCED over the rejected \
+                 rows — the documented degeneration class — so this refuses.",
+                st.verify_rows.len()
+            )
+        })?;
+        let slot = st
+            .verify_conv
+            .get(t)
+            .copied()
+            .filter(|p| !p.is_null())
+            .ok_or_else(|| {
+                anyhow::anyhow!("PLE verify rewind to row {t}: conv snapshot slot missing")
+            })?;
+        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        gpu.copy_d2d_async(slot, st.conv, conv_bytes, stream)?;
+        st.history = history;
+        st.prestaged_va = None;
+        Ok(())
+    }
+}

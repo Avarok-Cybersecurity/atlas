@@ -1,0 +1,478 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Prefill-tier native EXL3 MoE pipeline: the routed experts of one MoE
+//! layer served DIRECTLY from packed trellis by upstream ExLlamaV3's
+//! sort-by-expert tier (`ext.exl3_moe`) — ONE persistent fused launch
+//! (module `exl3_moe`) runs gather→Had→gate/up trellis GEMM→SiLU·mul→down
+//! trellis GEMM→Had→weighted fp32 scatter-add for EVERY local expert with
+//! `0 < token_count <= rows_per_expert` sorted rows (the temp-slab height,
+//! resolved at model build — `moe_prefill_cap.rs`; default 1024, legacy 128);
+//! hotter experts take the overflow path (upstream's `run_single_expert`
+//! tier: chunked cooperative trellis GEMMs over the same packed weights).
+//!
+//! Pipeline for one token batch (T tokens, S = T*top_k slots):
+//!
+//! ```text
+//!   [caller]        moe_sort_by_expert over the batch's GLOBAL expert ids
+//!   stage_sorted:   Atlas sort outputs -> token_sorted/weight_sorted i64/f16
+//!                   in LOCAL-expert order (EP-remote slots -> sentinel tail
+//!                   bucket) + expert_count i64 [num_local+1] bincount
+//!   ingress:        bf16 [T, H] -> f16 hidden_f16 (RAW; the kernel applies
+//!                   suh+Hadamard itself while gathering)
+//!   out_f32:        [T, H] fp32 routed accumulator — written whole by the
+//!                   slot reduce (det arm), or zeroed + atomicAdded (atomic)
+//!   slot_f32:       det arm only: [T*top_k, H] fp32, one row per sorted
+//!                   slot, reduced in fixed order — see `moe_prefill_det`
+//!   tier select:    S <= cap -> NO-SYNC shortcut (num_active = -1, no D2H,
+//!                   overflow impossible); else ONE stream-sync D2H of the
+//!                   local expert_offsets slice (upstream's
+//!                   `expert_count.tolist()` host-sync tier)
+//!   exl3_moe:       fused launch over the 0 < count <= cap experts
+//!   overflow:       per count > cap expert: chunked f16 gather -> gate/up
+//!                   exl3_gemm (f16 C) -> half SiLU·mul -> down exl3_gemm
+//!                   (f32 C) -> weighted scatter-add (persistent slabs only)
+//!   egress:         f32 [T, H] -> bf16 (routing probs ALREADY applied)
+//! ```
+//!
+//! Contracts carried from the vendored kernel (`exl3_moe_kernel.cuh`):
+//!  * Pointer tables are DENSE over the EP-LOCAL experts; remote slots are
+//!    excluded by the sentinel bucket (`expert_count[num_local]`), which the
+//!    kernel's expert loop never reaches — never null entries at reachable
+//!    indices.
+//!  * The fused kernel needs ONE codebook across gate/up/down and either
+//!    uniform K in [`EXL3_MOE_FUSED_K_BITS`] = {2,3,4,5,6} (fixed-K
+//!    instance) or mixed K with every value in [`EXL3_MOE_MIXED_K_BITS`] =
+//!    {2,3,4} (k0 runtime-dispatch instance) — [`exl3_moe_fused_serves`].
+//!  * temp slabs `(C, cap, H/I)` need NO zero-init (group barriers protect
+//!    them); `output_state` MUST be zeroed every call.
+//!  * PLAIN launch, but every block spins on group barriers in the shared
+//!    locks buffer: treat like the cooperative entries — never under CUDA
+//!    graph capture, never concurrently with another exl3 launch sharing the
+//!    locks buffer unless stream-ordered.
+//!  * Overflow was ROUTINE at the legacy 128-row cap (a 4096-token batch at
+//!    top_k 10 over 512 experts averages 80 rows/expert with a heavy tail —
+//!    the reason the cap moved to 1024, see `moe_prefill_cap.rs`), so the
+//!    overflow path is alloc-free and sync-free (persistent `ov_*` slabs,
+//!    cooperative trellis GEMMs stream-ordered behind the fused launch) and
+//!    decodes at the same fp16 precision as the fused tier. The ONE host sync
+//!    per batch is the expert_offsets D2H of the host-sync tier (S > cap).
+
+use anyhow::{Result, ensure};
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::kernel_args::KernelLaunch;
+
+use super::moe_decode::Exl3MoeProj;
+use super::moe_ingress::exl3_moe_stage_sorted;
+
+// Overflow (count > cap) tier and the cap's resolution/sizing arithmetic —
+// split on the 500-LoC cap. The parent-module `#[path]` chain resolves these
+// against `ops/exl3_matmul/`.
+#[path = "moe_prefill_overflow.rs"]
+mod overflow;
+pub use overflow::Exl3MoeOverflowCtx;
+use overflow::run_overflow_expert;
+#[path = "moe_prefill_cap.rs"]
+mod cap;
+pub use cap::{
+    EXL3_MOE_ROWS_PER_EXPERT_DEFAULT, EXL3_MOE_ROWS_PER_EXPERT_ENV,
+    EXL3_MOE_ROWS_PER_EXPERT_LEGACY, EXL3_MOE_ROWS_PER_EXPERT_MIN, EXL3_MOE_WIDE_ROWS_KILL_ENV,
+    Exl3MoeExpertTier, Exl3MoeRowCap, Exl3MoeRowCapGeometry, Exl3MoeRowCapSource,
+    exl3_moe_expert_tier, exl3_moe_needs_host_sync, exl3_moe_row_cap_from_env,
+    exl3_moe_row_cap_kernel_max, exl3_moe_temp_slab_bytes, resolve_exl3_moe_row_cap,
+};
+
+/// K values the fused `exl3_moe` module has FIXED-K instances for
+/// (`exl3_moe_k{K}_n{128,256}_cb{1,2}`) — a layer whose gate/up/down share
+/// one K in this set takes the fused tier. Mirrored by
+/// `weight_map::EXL3_NATIVE_MOE_K_BITS` (pinned equal by test). K=8 is
+/// deliberately absent: no shipped checkpoint has K=8 routed experts and each
+/// K adds four full pipelined-GEMM instantiations to the module.
+pub const EXL3_MOE_FUSED_K_BITS: [u32; 5] = [2, 3, 4, 5, 6];
+
+/// K values the fused module's k0 RUNTIME-DISPATCH instances switch over —
+/// the only instances a MIXED-K layer (gate/up/down at different K) can use.
+/// Kept at upstream-minus-{1,5,6,7,8} on purpose: every retained case
+/// instantiates the full pipelined GEMM in all four k0 variants, and widening
+/// the switch to {2..6} measured 3.0x the module's compile time (53.5 s vs
+/// 17.7 s) for a layout no shipped checkpoint has (all five bpw branches are
+/// uniform-K per layer). See `exl3_vendor/exl3_moe_kernel.cuh`.
+pub const EXL3_MOE_MIXED_K_BITS: [u32; 3] = [2, 3, 4];
+
+/// Whether the fused tier can serve a layer with these per-projection K
+/// (gate, up, down): uniform K in [`EXL3_MOE_FUSED_K_BITS`], or mixed K with
+/// every value in [`EXL3_MOE_MIXED_K_BITS`]. The loader's keep-set and the
+/// launch both apply this rule — a K reaching a k0 instance outside its
+/// switch would SILENTLY skip that projection's GEMM.
+pub fn exl3_moe_fused_serves(ks: [u32; 3]) -> bool {
+    if ks[0] == ks[1] && ks[1] == ks[2] {
+        EXL3_MOE_FUSED_K_BITS.contains(&ks[0])
+    } else {
+        ks.iter().all(|k| EXL3_MOE_MIXED_K_BITS.contains(k))
+    }
+}
+
+/// Device scratch for the prefill pipeline; one set serves every MoE layer
+/// (all launches are stream-ordered). See `moe::tables::Exl3MoeState` for
+/// the serving-side owner; the parity example allocates its own.
+#[derive(Clone, Copy, Debug)]
+pub struct Exl3MoePrefillScratch {
+    /// f16 `[t_cap, hidden]` RAW activation ingress (the kernel's
+    /// `hidden_state`).
+    pub hidden_f16: DevicePtr,
+    /// f32 `[t_cap, hidden]` routed accumulator (`output_state`) — zeroed by
+    /// the pipeline every call on the ATOMIC arm; on the deterministic arm
+    /// the reduce overwrites it whole and the memset is skipped.
+    pub out_f32: DevicePtr,
+    /// f32 `[t_cap * top_k, hidden]` PER-SORTED-SLOT rows — the DETERMINISTIC
+    /// epilogue (`moe_prefill_det`, default-ON, and see its module docs).
+    /// `Some`: each expert plain-stores its weighted row to its own slot and
+    /// the pipeline reduces a token's slots in fixed order. `None`: upstream's
+    /// unordered fp32-`atomicAdd` epilogue, which is nondeterministic by
+    /// construction. Needs NO zero-init.
+    pub slot_f32: Option<DevicePtr>,
+    /// f16 `[concurrency, rows_per_expert, hidden]` gate staging slab (no
+    /// zero-init).
+    pub temp_state_g: DevicePtr,
+    /// f16 `[concurrency, rows_per_expert, hidden]` up staging slab.
+    pub temp_state_u: DevicePtr,
+    /// f16 `[concurrency, rows_per_expert, inter]` gate intermediate slab.
+    pub temp_inter_g: DevicePtr,
+    /// f16 `[concurrency, rows_per_expert, inter]` up intermediate slab.
+    pub temp_inter_u: DevicePtr,
+    /// i64 `[t_cap * top_k]` token index per LOCAL-sorted slot.
+    pub token_sorted: DevicePtr,
+    /// f16 `[t_cap * top_k]` routing weight per LOCAL-sorted slot.
+    pub weight_sorted: DevicePtr,
+    /// i64 `[e_cap + 1]` per-local-expert bincount + sentinel tail.
+    pub expert_count: DevicePtr,
+    /// f16 `[ov_chunk, hidden]` overflow gathered-A chunk (RAW rows of
+    /// `hidden_f16`).
+    pub ov_a_f16: DevicePtr,
+    /// f16 `[ov_chunk, hidden]` overflow `A_had` scratch — dedicated, must
+    /// NOT alias `ov_a_f16` (the gate and up GEMMs read the same A).
+    pub ov_a_had_f16: DevicePtr,
+    /// f16 `[ov_chunk, inter]` overflow gate GEMM out (SiLU·mul in place).
+    pub ov_gate_f16: DevicePtr,
+    /// f16 `[ov_chunk, inter]` overflow up GEMM out.
+    pub ov_up_f16: DevicePtr,
+    /// f32 `[ov_chunk, hidden]` overflow down GEMM out.
+    pub ov_down_f32: DevicePtr,
+    /// Token capacity of `hidden_f16`/`out_f32` (+`token_sorted`/
+    /// `weight_sorted` at `t_cap * top_k` slots) — callers batch above it.
+    pub t_cap: usize,
+    /// Slot rows `slot_f32` holds (0 when it is absent). Carried, not
+    /// derived: `top_k` is a per-call argument, and a call wider than the
+    /// slab was sized for would be a silent OOB write rather than an error.
+    pub slot_cap: usize,
+    /// Local-expert capacity of `expert_count` (slab holds `e_cap + 1`).
+    pub e_cap: usize,
+    /// Temp-slab count C; the launch requires `C * 8 <= sm_count`.
+    pub concurrency: usize,
+    /// Per-expert row cap = the height the four temp slabs were ALLOCATED
+    /// at (`max_tokens_per_expert` to the kernel). Carried, not derived: a
+    /// cap wider than the slabs is a silent out-of-bounds write.
+    pub rows_per_expert: usize,
+    /// Row chunk of the overflow GEMMs (slab rows of `ov_*`).
+    pub ov_chunk: usize,
+}
+
+/// What one batch actually exercised — parity asserts on it, serving traces
+/// it.
+#[derive(Clone, Copy, Debug)]
+pub struct Exl3MoePrefillStats {
+    /// Experts the fused kernel processed (`0 < count <= cap`); -1 when the
+    /// S <= cap no-sync shortcut skipped the host readback.
+    pub num_active: i64,
+    /// Experts served by the chunked overflow path (count > cap).
+    pub overflow_experts: usize,
+}
+
+/// Launch the fused `exl3_moe` kernel (module `exl3_moe`) over the staged
+/// batch. `num_active`: count of experts with `0 < count <= cap` from the
+/// host-sync tier, or -1 for the S <= cap no-sync shortcut (defaults grid).
+/// The caller must NOT launch when `num_active == 0`.
+///
+/// PLAIN launch, but spin-barrier co-resident (grid <= sm_count by
+/// construction, 1 block/SM at 90KB smem) — operationally like the
+/// cooperative entries: no graph capture, one in-flight launch per locks
+/// buffer.
+#[allow(clippy::too_many_arguments)]
+pub fn exl3_moe_fused(
+    gpu: &dyn GpuBackend,
+    tables: &[Exl3MoeProj; 3],
+    scratch: &Exl3MoePrefillScratch,
+    t: usize,
+    top_k: usize,
+    hidden: usize,
+    inter: usize,
+    num_local: usize,
+    num_active: i64,
+    act_limit: f32,
+    locks: DevicePtr,
+    sm_count: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        num_active != 0,
+        "exl3_moe_fused: no active experts — skip the launch"
+    );
+    let ks = [tables[0].k_bits, tables[1].k_bits, tables[2].k_bits];
+    ensure!(
+        exl3_moe_fused_serves(ks),
+        "exl3_moe_fused: gate/up/down K={ks:?} outside the fused-kernel envelope \
+         (uniform K in {EXL3_MOE_FUSED_K_BITS:?}, or mixed K all in \
+         {EXL3_MOE_MIXED_K_BITS:?}; mgemm serves {{2..6,8}}); the loader \
+         keep-predicate must refuse this layer"
+    );
+    let cb = tables[0].cb;
+    ensure!(
+        tables[1].cb == cb && tables[2].cb == cb && (cb == 1 || cb == 2),
+        "exl3_moe_fused: gate/up/down codebooks differ ({}/{}/{}) — the fused \
+         kernel decodes at ONE codebook",
+        tables[0].cb,
+        tables[1].cb,
+        tables[2].cb,
+    );
+    ensure!(
+        hidden.is_multiple_of(128) && inter.is_multiple_of(128),
+        "exl3_moe_fused: hidden {hidden} / inter {inter} must be multiples of 128"
+    );
+    let c = scratch.concurrency;
+    ensure!(
+        c >= 1 && c * 8 <= sm_count as usize,
+        "exl3_moe_fused: concurrency {c} needs {}..{} SMs (have {sm_count})",
+        8,
+        c * 8,
+    );
+    let cap = scratch.rows_per_expert;
+    ensure!(
+        cap >= 1 && cap <= exl3_moe_row_cap_kernel_max(c, hidden, inter),
+        "exl3_moe_fused: rows_per_expert {cap} outside the kernel's slab-index bound at C={c}"
+    );
+
+    let kname = if ks[0] == ks[1] && ks[1] == ks[2] {
+        ks[0]
+    } else {
+        0
+    };
+    let n_tile = if hidden.is_multiple_of(256) && inter.is_multiple_of(256) {
+        256
+    } else {
+        128
+    };
+    let name = format!("exl3_moe_k{kname}_n{n_tile}_cb{cb}");
+    let h = gpu.kernel("exl3_moe", &name)?;
+    super::raise_smem_once(gpu, h)?;
+
+    // Upstream grid selection (exl3_moe.cu host, mirrored in the kernel-file
+    // header): defaults 8 SMs/expert x min(C, 64) groups; a known-small
+    // active set narrows the groups and widens each to <= 32 SMs.
+    let mut num_groups = c.min(64);
+    let mut group_size = 8usize;
+    if num_active > 0 {
+        num_groups = num_groups.min(num_active as usize);
+        group_size = (sm_count as usize / num_groups).min(32);
+    }
+
+    KernelLaunch::new(gpu, h)
+        .grid([group_size as u32, 1, num_groups as u32])
+        .block([512, 1, 1])
+        .shared_mem(super::EXL3_SMEM_MAX)
+        .arg_ptr(scratch.hidden_f16)
+        .arg_ptr(scratch.temp_state_g)
+        .arg_ptr(scratch.temp_state_u)
+        .arg_ptr(scratch.temp_inter_g)
+        .arg_ptr(scratch.temp_inter_u)
+        .arg_ptr(scratch.out_f32)
+        .arg_ptr(tables[0].trellis_ptrs)
+        .arg_ptr(tables[0].suh_ptrs)
+        .arg_ptr(tables[0].svh_ptrs)
+        .arg_ptr(tables[1].trellis_ptrs)
+        .arg_ptr(tables[1].suh_ptrs)
+        .arg_ptr(tables[1].svh_ptrs)
+        .arg_ptr(tables[2].trellis_ptrs)
+        .arg_ptr(tables[2].suh_ptrs)
+        .arg_ptr(tables[2].svh_ptrs)
+        .arg_ptr(scratch.expert_count)
+        .arg_ptr(scratch.token_sorted)
+        .arg_ptr(scratch.weight_sorted)
+        .arg_i32(hidden as i32)
+        .arg_i32(inter as i32)
+        .arg_i32(num_local as i32)
+        .arg_i32(top_k as i32)
+        .arg_i32(cap as i32)
+        .arg_i32(c as i32)
+        .arg_f32(act_limit)
+        .arg_i32(0) // act_function: 0 = SiLU (qwen4_exp)
+        .arg_i32(ks[0] as i32)
+        .arg_i32(ks[1] as i32)
+        .arg_i32(ks[2] as i32)
+        .arg_ptr(locks)
+        // `output_slots`: non-null = the deterministic per-slot epilogue,
+        // null = upstream's atomicAdd into `output_state`.
+        .arg_ptr(scratch.slot_f32.unwrap_or(DevicePtr(0)))
+        .launch(stream)?;
+    let _ = t; // geometry is carried by the staged tensors
+    Ok(())
+}
+
+/// The full prefill-tier routed-expert pipeline over ONE token batch (header
+/// diagram). The caller has already run `moe_sort_by_expert` over this
+/// batch's GLOBAL expert ids; `expert_offsets`/`token_to_perm` are its
+/// outputs, `probs_f32` the batch's flat `[t*top_k]` routing weights. Writes
+/// the per-token WEIGHTED routed sums (probs applied in the fp32
+/// accumulator; the caller's blend must NOT re-apply them) as BF16
+/// `[t, hidden]` at `out_bf16`. A token whose experts are all remote
+/// contributes an exact 0.0 row (EP partial-sum convention).
+#[allow(clippy::too_many_arguments)]
+pub fn exl3_moe_prefill_routed(
+    gpu: &dyn GpuBackend,
+    input_bf16: DevicePtr,
+    probs_f32: DevicePtr,
+    expert_offsets: DevicePtr,
+    token_to_perm: DevicePtr,
+    out_bf16: DevicePtr,
+    tables: &[Exl3MoeProj; 3],
+    ov: &Exl3MoeOverflowCtx,
+    scratch: &Exl3MoePrefillScratch,
+    locks: DevicePtr,
+    t: usize,
+    top_k: usize,
+    hidden: usize,
+    inter: usize,
+    local_start: usize,
+    num_local: usize,
+    act_limit: f32,
+    sm_count: u32,
+    stream: u64,
+) -> Result<Exl3MoePrefillStats> {
+    let s = t * top_k;
+    ensure!(
+        t >= 1 && top_k >= 1 && t <= scratch.t_cap,
+        "exl3_moe_prefill_routed: {t} tokens exceeds the batch capacity {} — \
+         the caller must token-batch",
+        scratch.t_cap
+    );
+    ensure!(
+        num_local >= 1 && num_local <= scratch.e_cap,
+        "exl3_moe_prefill_routed: {num_local} local experts exceeds the \
+         expert_count slab capacity {}",
+        scratch.e_cap
+    );
+    ensure!(
+        ov.gate_host.len() >= num_local
+            && ov.up_host.len() >= num_local
+            && ov.down_host.len() >= num_local,
+        "exl3_moe_prefill_routed: host pointer tables shorter than num_local"
+    );
+    ensure!(
+        hidden.is_multiple_of(128) && inter.is_multiple_of(128),
+        "exl3_moe_prefill_routed: hidden {hidden} / inter {inter} must be \
+         multiples of 128 (trellis tile + Hadamard block)"
+    );
+    ensure!(
+        scratch.slot_f32.is_none() || s <= scratch.slot_cap,
+        "exl3_moe_prefill_routed: {t} tokens x top_k {top_k} = {s} slots \
+         exceeds the deterministic slot slab's {} rows — an undersized slab \
+         is a silent out-of-bounds write, not a slower path",
+        scratch.slot_cap
+    );
+
+    // 1) Staging (LOCAL-expert order + sentinel tail) and f16 ingress.
+    exl3_moe_stage_sorted(
+        gpu,
+        token_to_perm,
+        probs_f32,
+        expert_offsets,
+        scratch.token_sorted,
+        scratch.weight_sorted,
+        scratch.expert_count,
+        local_start,
+        num_local,
+        top_k,
+        s,
+        stream,
+    )?;
+    super::exl3_bf16_to_f16(gpu, input_bf16, scratch.hidden_f16, t * hidden, stream)?;
+
+    // 2) ATOMIC arm only: zero the fp32 accumulator (there both tiers
+    //    accumulate into it). The DETERMINISTIC arm writes one row per
+    //    sorted slot — every local slot exactly once — and its reduce
+    //    (step 6) overwrites the accumulator whole, so neither wants a memset.
+    if scratch.slot_f32.is_none() {
+        gpu.memset_async(scratch.out_f32, 0, t * hidden * 4, stream)?;
+    }
+
+    // 3) Tier select. S <= cap: upstream's no-sync shortcut — every expert
+    //    count is <= S <= cap, so the fused kernel covers everything and no
+    //    host readback is needed (added upstream because the sync was ~33%
+    //    idle at MTP verify shapes). Otherwise ONE stream-sync D2H of the
+    //    LOCAL slice of expert_offsets (the host-sync tier).
+    let cap = scratch.rows_per_expert;
+    let mut num_active: i64 = -1;
+    let mut overflow: Vec<(usize, usize, usize)> = Vec::new(); // (e_local, span_start, count)
+    if exl3_moe_needs_host_sync(s, cap) {
+        let mut raw = vec![0u8; (num_local + 1) * 4];
+        gpu.copy_d2h_on_stream(expert_offsets.offset(local_start * 4), &mut raw, stream)?;
+        let off: Vec<i32> = raw
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let lo = off[0];
+        let mut active = 0i64;
+        for e in 0..num_local {
+            let count = (off[e + 1] - off[e]) as usize;
+            match exl3_moe_expert_tier(count, cap) {
+                Exl3MoeExpertTier::Idle => {}
+                Exl3MoeExpertTier::Fused => active += 1,
+                Exl3MoeExpertTier::Overflow => {
+                    overflow.push((e, (off[e] - lo) as usize, count));
+                }
+            }
+        }
+        num_active = active;
+    }
+
+    // 4) Fused launch (skipped only when the host-sync tier saw no fusable
+    //    expert).
+    if num_active != 0 {
+        exl3_moe_fused(
+            gpu, tables, scratch, t, top_k, hidden, inter, num_local, num_active, act_limit, locks,
+            sm_count, stream,
+        )?;
+    }
+
+    // 5) Overflow experts (count > cap): chunked trellis GEMMs + weighted
+    //    scatter-add, stream-ordered behind the fused kernel.
+    for &(e_local, span_start, count) in &overflow {
+        run_overflow_expert(
+            gpu, ov, tables, scratch, e_local, span_start, count, hidden, inter, act_limit, locks,
+            sm_count, stream,
+        )?;
+    }
+
+    // 6) DETERMINISTIC arm: reduce each token's top_k per-slot rows into the
+    //    accumulator in FIXED flat-slot order — the step that makes prefill
+    //    bit-reproducible whatever order the ticket scheduler ran the experts
+    //    in. No-op on the atomic arm; both leave `out_f32` holding the sums.
+    super::moe_prefill_det::reduce_slots_if_deterministic(
+        gpu,
+        scratch,
+        token_to_perm,
+        expert_offsets,
+        local_start,
+        num_local,
+        top_k,
+        t,
+        hidden,
+        stream,
+    )?;
+
+    // 7) Egress: fp32 accumulator -> BF16 token-major output.
+    super::exl3_f32_to_bf16(gpu, scratch.out_f32, out_bf16, t * hidden, stream)?;
+
+    Ok(Exl3MoePrefillStats {
+        num_active,
+        overflow_experts: overflow.len(),
+    })
+}

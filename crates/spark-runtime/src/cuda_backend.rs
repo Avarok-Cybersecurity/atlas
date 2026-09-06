@@ -17,6 +17,7 @@ mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
 mod gpu_impl_graph;
+mod gpu_impl_launch;
 pub mod tensormap;
 
 // ── Raw CUDA driver API for memory operations ──
@@ -50,6 +51,33 @@ unsafe extern "C" {
     pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
     pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
+    /// Cooperative launch: every block is co-resident for the kernel's whole
+    /// lifetime, which is what makes an in-kernel `grid.sync()` legal (the
+    /// EXL3 trellis GEMM/GEMV kernels depend on it). Same shape as
+    /// `cuLaunchKernel` MINUS the trailing `extra` parameter — the driver API
+    /// has no such argument on the cooperative entry point. Not declared under
+    /// SCALE: its libcuda export set is minimal and an unresolved extern would
+    /// break the gfx1151 link (same treatment as `cuStreamIsCapturing`).
+    #[cfg(not(atlas_scale))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn cuLaunchCooperativeKernel(
+        f: *mut c_void,
+        gridDimX: u32,
+        gridDimY: u32,
+        gridDimZ: u32,
+        blockDimX: u32,
+        blockDimY: u32,
+        blockDimZ: u32,
+        sharedMemBytes: u32,
+        hStream: u64,
+        kernelParams: *mut *mut c_void,
+    ) -> i32;
+    /// Per-function attribute write; used for
+    /// `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES` (= 8) so a kernel may
+    /// be handed more than the 48 KB default dynamic shared memory. Declared
+    /// unconditionally — SCALE exports it too (atlas-core's registry already
+    /// calls it on every large-smem launch).
+    pub(super) fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
     // Capture-status query (telemetry taps must not sync/copy inside an
@@ -106,6 +134,17 @@ pub struct AtlasCudaBackend {
     /// This model's kernel handles and op scratch. Dropped with the backend,
     /// so neither can outlive the registry or context it came from.
     op_cache: crate::op_cache::OpCache,
+    /// Resolved `module::func` -> handle for this backend's registry. Layers
+    /// resolve their kernels at init and keep the handle, but the native EXL3
+    /// wrappers select instances BY NAME per launch (K / codebook / tile
+    /// shape / C dtype encode the symbol), which without this cache meant a
+    /// `cuModuleGetFunction` + CString + an audit row pushed into the
+    /// never-drained `run_metrics.kernel_audit` Vec on every launch — ~1,000
+    /// rows/token on the native qwen4_exp path, unbounded host growth on a
+    /// unified-memory box. A hit returns the handle and records nothing (the
+    /// audit already holds the pair's first lookup); the cache dies with the
+    /// backend, so a hot-swapped model's registry never sees stale handles.
+    kernel_cache: parking_lot::Mutex<std::collections::HashMap<String, u64>>,
     /// Every device allocation this backend made and has not freed.
     ///
     /// The backend is created per model (`preflight.rs`) and moved into it, so
@@ -175,6 +214,7 @@ impl AtlasCudaBackend {
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
+            kernel_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
             default_stream,
             cuda_ctx,
         })

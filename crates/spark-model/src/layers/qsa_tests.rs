@@ -265,3 +265,13 @@ fn qsa_matches_reference() {
 // reachable as `super::*`).
 #[path = "qsa_tests_prefill.rs"]
 mod prefill;
+
+// Device-vs-host parity for the DECODE selection tail (no fixtures — the
+// scores are synthesised). ≤500 LoC split, same #[path] child shape.
+#[path = "qsa_tests_decode.rs"]
+mod decode;
+
+// Bit-determinism of the device PREFILL top-k (no fixtures — synthesised
+// scores). ≤500 LoC split, same #[path] child shape.
+#[path = "qsa_tests_topk.rs"]
+mod topk;

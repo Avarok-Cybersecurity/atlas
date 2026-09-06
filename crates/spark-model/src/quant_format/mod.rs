@@ -123,6 +123,39 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
                 );
                 return Box::new(Fp8BlockScaledFormat::new(ignore));
             }
+            "exl3" => {
+                // EXL3 (QTIP trellis) checkpoints are rewritten in place by
+                // `weight_map::materialize_exl3` before any loader reads the
+                // store: experts land as ModelOpt-style NVFP4 triplets,
+                // everything else as BF16 dense — exactly the shape the
+                // Standard/ModelOpt loaders consume (per-key BF16 fallback in
+                // `quantized_any` handles the dense ones). Under
+                // `ATLAS_EXL3_NATIVE=1` the natively-served linears (see
+                // `exl3_native_serves`) deliberately KEEP their packed trellis
+                // tensors — residual trellis is then expected, not a bug.
+                // Otherwise, raw trellis here means a caller skipped the
+                // materialization pass and the load will fail loudly on dtypes.
+                if spark_runtime::weights::exl3::store_has_exl3(store) {
+                    if crate::weight_map::exl3_native_enabled() {
+                        tracing::info!(
+                            "QuantFormat: exl3 with ATLAS_EXL3_NATIVE=1 — packed trellis \
+                             tensors stay resident for the fused trellis matmul path"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "QuantFormat: exl3 checkpoint but the store still holds raw \
+                             trellis tensors — materialize_exl3 has not run; the load \
+                             will fail. This is a call-order bug, not a checkpoint problem."
+                        );
+                    }
+                }
+                tracing::info!(
+                    "QuantFormat: exl3 (materialized to modelopt-style NVFP4 + BF16 dense), \
+                     {} ignored module(s)",
+                    ignore.len(),
+                );
+                return Box::new(ModeloptFormat::new(String::new(), ignore));
+            }
             other if !other.is_empty() => {
                 tracing::warn!(
                     "QuantFormat: config declares unrecognized quant_method={other:?}; \

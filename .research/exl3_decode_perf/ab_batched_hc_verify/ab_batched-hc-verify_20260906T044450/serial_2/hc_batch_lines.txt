@@ -1,0 +1,2 @@
+2026-09-06T09:12:03.424740Z  INFO spark_model::model::trait_impl::verify_hc_multi_gate: mHC batched verify: DISARMED by ATLAS_NO_MTP_HC_BATCH_VERIFY
+2026-09-06T09:12:58.975598Z  INFO spark::scheduler::verify_hc_multi_step: mHC batched verify gate: arm=KILLED(ATLAS_NO_MTP_HC_BATCH_VERIFY) n_verify=2 row_cap=16 shared_dense=true shared_head=true shared_hc=false

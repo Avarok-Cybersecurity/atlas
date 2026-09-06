@@ -26,6 +26,7 @@ pub fn step_mtp(
     // bootstrap, D-Cut plan, chunk sort) — one component of the out-of-step
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
     let t_step_outer = std::time::Instant::now();
+    let single_sequence = active.len() == 1;
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
@@ -283,22 +284,14 @@ pub fn step_mtp(
             continue;
         }
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        // BUG#4 (2026-06-02): when a grammar is active, generate only ONE draft.
-        // run_mtp_propose_multi (mtp_multi.rs) masks only draft[0] with the
-        // position-0 bitmask and leaves draft[1..] UNMASKED, so multi-draft +
-        // grammar desyncs — a draft[1] token can violate its true per-position
-        // mask, get verified+accepted, then be refused by the matcher later
-        // (→ truncation). A single draft uses its own up-to-date mask and is
-        // sound; drafts.len()==1 routes verify to the K=2 path. Mask is a no-op
-        // when grammar is inactive, so NVFP4/non-tool paths keep full K.
-        // 2026-07-09: hoisted to the `effective_drafts_under_grammar` SSOT,
-        // now also applied at the five verify-path re-propose sites that
-        // previously bypassed this clamp (the "mask held fixed" warn spam).
-        // Composed with the K-vs-batch ladder: the bootstrap propose is
-        // sized for the current concurrency so the next verify is uniform
-        // at the ladder width (no surplus drafts to truncate).
-        let effective_num_drafts =
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, ladder_nd);
+        // The tested single-sequence Qwen path samples target rows after each
+        // real emission, so grammar can advance across a wide prefix. Legacy
+        // and concurrent paths keep the one-draft grammar clamp.
+        let effective_num_drafts = if single_sequence {
+            super::verify_mtp_wide::grammar::drafts(a, ladder_nd, dflash_verify_raw_argmax)
+        } else {
+            crate::scheduler::spec_step::effective_drafts_under_grammar(a, ladder_nd)
+        };
         // Adaptive speculation: a suspended seq skips proposing entirely and
         // stays on this serial bootstrap path until the re-probe fires.
         // (`will_propose` is the single spec_allowed evaluation above.)
@@ -591,6 +584,15 @@ pub fn step_mtp(
     }
     for &idx in &serial_idxs {
         let a = &mut active[idx];
+        let supports_live_grammar =
+            super::verify_mtp_wide::grammar::supported(a, dflash_verify_raw_argmax);
+        let live_grammar = single_sequence && supports_live_grammar;
+        let serial_num_drafts =
+            if !single_sequence && supports_live_grammar && a.grammar_state.is_some() {
+                1
+            } else {
+                num_drafts
+            };
         let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
         // Confidences describe the taken drafts; clearing here is the single
         // place the two vectors are kept in lock-step for the serial path.
@@ -599,16 +601,14 @@ pub fn step_mtp(
             continue;
         }
 
-        // Spec-decode boundary awareness (arXiv:2512.15834): when a
-        // grammar is active, validate the draft sequence against the
-        // matcher and truncate at the first token that crosses a
-        // grammar transition. Without this, a draft span that crosses
-        // `</function>` (or any other structural boundary) gets
-        // accepted by the verifier and emitted, but the post-emit
-        // `accept_token` silently fails — desync'ing the grammar
-        // from the output stream. Truncating here downgrades K=4 →
-        // K=3 → K=2 cleanly.
-        if let Some(ref mut gs) = a.grammar_state {
+        // Live verification owns grammar transitions, including the paused
+        // matcher during thinking. Legacy paths still prevalidate drafts.
+        // If concurrency grew since proposal, reduce to K2; after_verify
+        // rewinds the drafter using its original last_num_drafted count.
+        if !single_sequence && supports_live_grammar && a.grammar_state.is_some() {
+            drafts.truncate(1);
+        }
+        if !live_grammar && let Some(ref mut gs) = a.grammar_state {
             let kept = truncate_drafts_at_grammar_boundary(gs, &drafts);
             if kept < drafts.len() {
                 drafts.truncate(kept);
@@ -629,7 +629,7 @@ pub fn step_mtp(
                 a,
                 sched,
                 &drafts,
-                num_drafts,
+                serial_num_drafts,
                 verify_ctx,
                 dflash_verify_raw_argmax,
             );
@@ -639,7 +639,7 @@ pub fn step_mtp(
                 a,
                 sched,
                 &drafts,
-                num_drafts,
+                serial_num_drafts,
                 verify_ctx,
                 dflash_verify_raw_argmax,
             );
@@ -649,7 +649,7 @@ pub fn step_mtp(
                 a,
                 sched,
                 &drafts,
-                num_drafts,
+                serial_num_drafts,
                 verify_ctx,
                 dflash_verify_raw_argmax,
             );
@@ -659,7 +659,7 @@ pub fn step_mtp(
                 a,
                 sched,
                 &drafts,
-                num_drafts,
+                serial_num_drafts,
                 verify_ctx,
                 dflash_verify_raw_argmax,
             );

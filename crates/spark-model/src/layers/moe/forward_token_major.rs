@@ -31,6 +31,12 @@ impl MoeLayer {
             "zero-expert MoE routing is not wired on this dispatch variant yet (forward_token_major)"
         );
 
+        // Native EXL3 routed experts: see forward_k2 — one generic arm (the
+        // NVFP4 token-major kernels below would read null pointer tables).
+        if self.exl3_native_active() {
+            return self.forward_exl3_decode(input, num_tokens, ctx, stream);
+        }
+
         // SOLID Incr-4: the token-major fast path has no fold hooks. When a
         // MoE adapter is RESIDENT, delegate to the per-row batched fallback,
         // which folds router + gate/up/down route-agnostically (base rows

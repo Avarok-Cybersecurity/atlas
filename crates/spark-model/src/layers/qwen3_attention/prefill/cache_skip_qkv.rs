@@ -11,7 +11,9 @@ use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::ForwardContext;
+use crate::layers::exl3_dense::AttnProj;
 use crate::layers::ops;
+use crate::layers::ops::Exl3DenseOut;
 
 pub(super) enum SkipProj {
     Q,
@@ -166,6 +168,26 @@ impl Qwen3AttentionLayer {
                 "v_proj",
             ),
         };
+
+        // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): packed trellis GEMM straight
+        // into `out` [n, out_dim] (Q keeps the raw [Q|gate] interleave the
+        // caller's deinterleave expects). Every other arm below reads slots
+        // the loader left null for this layer. No LoRA fold on this path.
+        if let Some(x) = self.exl3_attn_arm(ctx, "cache-skip prefill q/k/v_proj")? {
+            let p = match proj {
+                SkipProj::Q => AttnProj::Q,
+                SkipProj::K => AttnProj::K,
+                SkipProj::V => AttnProj::V,
+            };
+            return x.proj_linear(
+                ctx.gpu,
+                p,
+                normed,
+                Exl3DenseOut::contiguous(out),
+                n as usize,
+                stream,
+            );
+        }
 
         // Keep-packed Q2_0 (Tier-1c): transient-dequant to BF16 then dense GEMM.
         if let Some(r) = self.try_q2_prefill(ctx, weight_opt, normed, out, n, stream) {

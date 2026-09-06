@@ -1,9 +1,16 @@
 # Qwen3.8-Flash-Next — hybrid GDN + QSA sparse attention, multi-hyperconnection
 # streams, PLE n-gram injection, 512-expert MoE, ViT tower, 1 MTP layer.
 #
-# Port tracked in Avarok #753. Serving is NOT complete: this target exists so
-# the model can RESOLVE and LOAD. The hyper-connection mixer, the QSA indexer
-# and the PLE n-gram injection are not wired yet and refuse by name.
+# Port tracked in Avarok #753. This ONE target serves every checkpoint of the
+# architecture: the NVFP4 quants (`nvidia/…-NVFP4`, `Inferact/…-NVFP4`,
+# `Mia-AiLab/…-NVFP4`) by HF id as usual, and turboderp's EXL3 quant through the
+# named preset declared at the bottom of this file —
+#
+#     spark serve qwen3.8-flash-next-exl3
+#
+# — which bakes in the checkpoint (HF id + branch), the flags and the `ATLAS_*`
+# gates that configuration was validated under, each overridable. Passing an
+# NVFP4 HF id, or `--model-from-path`, is unchanged by the preset.
 #
 # TWO MODEL_TYPE NAMES, ONE ARCHITECTURE. The model shipped as
 # `qwen3_8_flash_next` and was renamed `qwen4_exp`; quantizers pinned to
@@ -274,3 +281,116 @@ min_reasoning_floor_tokens = 0
 # closes into <|im_start|>user template simulation.
 honor_eos_inside_thinking = true
 max_thinking_budget = 2048
+
+# ── Named serve preset: the validated EXL3 configuration ─────────────────────
+#
+#     spark serve qwen3.8-flash-next-exl3
+#
+# turboderp's 4.05 bpw EXL3 quant (HF branch `4.05bpw_h6_ng6`; the repo's other
+# branches are the 2.05 and 3.05 bpw builds, and its default branch is NOT the
+# validated checkpoint — hence `hf_revision`). Served natively on one GB10:
+# EXL3 MoE + dense + lm_head kernels, bf16 KV (the `[behavior]` default above,
+# which QSA requires), two MTP drafts with the row-exact verify chain. Agentic
+# gates passed 2026-09-05 under exactly these settings; the measurements and
+# the A/B chain are in .research/exl3_decode_perf/EXL3_DECODE_PERF.md and the
+# serve script that produced them is
+# .research/exl3_decode_perf/agentic/serve_exl3_fix_agentic.sh.
+#
+# EVERY entry is a DEFAULT. A flag on the command line is not re-rendered
+# (the operator's value stands); a variable already in the environment is kept
+# and the deviation is logged as a warning at startup. `--model-from-path`
+# still points the preset at a local copy of the same checkpoint.
+#
+# Keys under [serve_presets.flags] are `spark serve` field names, spelled as a
+# recipe `defaults:` block spells them (see crates/spark-server/src/recipe/schema.rs);
+# clap re-parses the rendered command line, so a typo fails at startup.
+[[serve_presets]]
+name = "qwen3.8-flash-next-exl3"
+hf_id = "turboderp/Qwen3.8-Flash-Next-exl3"
+hf_revision = "4.05bpw_h6_ng6"
+description = "Qwen3.8-Flash-Next, EXL3 4.05 bpw (turboderp), native EXL3 kernels, bf16 KV, 2 MTP drafts, prefix caching, thinking preserved, 4 sequences x 128K — the gate-passing single-GB10 profile (2026-09-06: ~480 tok/s prefill at 8K/11K, ~30 tok/s decode, model-card agentic PASS)."
+
+[serve_presets.flags]
+# 128K context on one GB10 at util 0.72 alongside the packed EXL3 weights; the
+# QSA cap below tracks this value, so raising it here raises both. (The
+# 2026-09-05 gates ran at 32K / one sequence; 128K x 4 is the operator's
+# requested serving envelope, sized by the self-relative KV budget at boot.)
+max_seq_len = 131072
+# Four sequences; the mHC MTP verify runs per sequence (serialized) above one.
+max_num_seqs = 4
+max_batch_size = 4
+gpu_memory_utilization = 0.72
+# The TUI launcher's value for this model (GDN state slots).
+ssm_cache_slots = 64
+# Long-context prefill queues behind other sequences at ~400 tok/s: four 30K
+# prompts took 250-275 s to first token and the 300 s default cut three of
+# them with finish_reason=timeout (2026-09-05 sweep). The TUI launcher's value.
+request_timeout = 1800
+fast_load_prefetch_shards = true
+# MTP with two drafts — the profile the agentic gate ran under.
+speculative = true
+num_drafts = 2
+# Prefix caching ON (house rule); the gate ran with it on.
+enable_prefix_caching = true
+# Card-native brief reasoning (the template needs a defined effort), and keep
+# prior turns' reasoning in the rendered history (`preserve_thinking`) — the
+# agentic-webserver gates passed with thinking preserved; a request's own
+# chat_template_kwargs still win over this default.
+default_chat_template_kwargs = '{"reasoning_effort":"low","preserve_thinking":true}'
+
+[serve_presets.env]
+# The native EXL3 weight path — MoE, dense projections and lm_head — instead
+# of materialising 47.7 GB of BF16 at load.
+ATLAS_EXL3_NATIVE = "1"
+ATLAS_EXL3_NATIVE_MOE = "1"
+ATLAS_EXL3_NATIVE_DENSE = "1"
+# PLE n-gram cap must be >= the prefill chunk (--max-prefill-tokens, default
+# 8192); a larger chunk is refused BY NAME by the layer, not overrun. Raise
+# this if you raise --max-prefill-tokens.
+ATLAS_PLE_MAX_TOKENS = "9216"
+ATLAS_PLE_CACHE_SLOTS = "4194304"
+# QSA per-sequence cap MUST equal the served context: resolved from the
+# effective --max-seq-len, so an operator override of the flag carries here.
+ATLAS_QSA_MAX_TOKENS = "{max_seq_len}"
+ATLAS_INTHINK_TOOL_LEAK_OPENERS = "0"
+# MTP on the qwen4_exp verify path, allowed inside <think>, with the
+# hyper-connection batched verify and the EXL3 row-exact router chain
+# (row router + stable grid, FFN leg disarmed) that made 2-draft verify
+# match the serial answers.
+ATLAS_QWEN4EXP_MTP = "1"
+ATLAS_QWEN4EXP_MTP_VERIFY = "1"
+ATLAS_DFLASH_SPEC_THINK = "1"
+ATLAS_QWEN4EXP_MTP_HC_BATCHED = "1"
+ATLAS_VERIFY_EXL3_ROW_ROUTER = "1"
+ATLAS_VERIFY_EXL3_STABLE_GRID = "1"
+ATLAS_NO_VERIFY_ROW_FFN = "1"
+ATLAS_NO_THINKENDED_GPU_ARGMAX = "1"
+# Size the private MTP draft KV pool to the preset's four sequence slots (the
+# compiled default cap is 32); the 2026-09-05 C=2 validation set this to 2.
+ATLAS_MTP_MAX_SEQS = "4"
+# Round-2 prefill levers (2026-09-06, .research/exl3_decode_perf: ab_moe_row_cap,
+# ab_dense_reconstruct, merged_gate_*). Both are the binary's defaults; pinned
+# here so the served profile is self-describing and survives a default change.
+# Fused MoE prefill tier rows per expert (was 128, which sent 48% of prefill GPU
+# time through the serialized overflow tier): +10% prefill, output identical,
+# parity-gated. ATLAS_NO_EXL3_MOE_WIDE_ROWS=1 restores 128.
+ATLAS_EXL3_MOE_ROWS_PER_EXPERT = "1024"
+# Dense prefill calls with >= this many rows reconstruct the trellis weight to
+# BF16 once and run the tensor-core GEMM: +8% prefill, decode untouched, a
+# one-time numerics change (agentic gate PASS). ATLAS_NO_EXL3_DENSE_RECONSTRUCT=1
+# restores the trellis-only prefill. The fused BF16 egress of the dense decode
+# GEMM is also default-on (bit-exact; ATLAS_EXL3_NO_FUSED_EGRESS=1 disarms).
+ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS = "512"
+# Marconi SSM-snapshot restore floor. The compiled default is 256 tokens (set
+# 2026-07-28 from a DECODE measurement: restoring a ~99-token prefix cost -9.7%
+# tok/s, the crossover sitting between 99 and 219 matched tokens). That floor is
+# why a short warm prompt pays a FULL cold prefill: measured 2026-09-06, a
+# ~168-token primed prompt read TTFT 0.65 s at floor 256 versus 0.22 s at floor
+# 64 (3x), and at C=4 the last stream 2.65 s versus 0.91 s, while a 512-token
+# prompt was unchanged (0.21-0.23 s in both — the lever only touches prompts
+# below the floor). The decode side of the old finding reproduces (29.6 ->
+# ~27.5 tok/s at C=1), so this is a TRADEOFF: at 64 the aggregate INCLUDING
+# TTFT still wins (C=4: 28.0-28.2 vs 25.1-26.0), which is the right call for the
+# agentic, concurrent traffic this preset serves. Set 256 to restore the
+# compiled default. Records: .research/exl3_decode_perf/ab_marconi_floor/.
+ATLAS_MARCONI_MIN_TOKENS = "64"

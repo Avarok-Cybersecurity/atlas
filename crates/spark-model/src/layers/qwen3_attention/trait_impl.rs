@@ -106,13 +106,31 @@ impl TransformerLayer for Qwen3AttentionLayer {
 
     /// QSA selection does a host top-k per step — never capturable, and a
     /// graph captured on the dense path would replay wrong attention once
-    /// selection activates.
+    /// selection activates. Native EXL3 MoE experts (main FFN or the LongCat
+    /// shortcut MoE) launch cooperatively — same veto.
     fn decode_graph_unsupported(&self) -> bool {
-        self.qsa.is_some()
+        self.qsa.is_some() || self.exl3_graph_veto()
+    }
+
+    fn exl3_graph_veto(&self) -> bool {
+        // Native EXL3 q/k/v/o (ATLAS_EXL3_NATIVE_DENSE=1) are the same
+        // cooperative-launch class as the MoE experts.
+        self.ffn.exl3_native_moe()
+            || self.moe_ffn.as_ref().is_some_and(|f| f.exl3_native_moe())
+            || self.exl3_attn.is_some()
     }
 
     fn has_aux_state(&self) -> bool {
         self.qsa.is_some()
+    }
+
+    /// QSA is a MARK rewind: `align_aux` below moves `ingested`/`pooled` to an
+    /// absolute position and every buffer is written forward from them, so a
+    /// speculative rollback needs no blob from this layer. Snapshotting it
+    /// instead would push `ingested * hd * 2` bytes per layer through the host
+    /// on every verify step. Pairs with `aux_rewind_is_exact`'s doc comment.
+    fn aux_rewind_is_exact(&self) -> bool {
+        true
     }
 
     fn snapshot_aux(
@@ -133,6 +151,46 @@ impl TransformerLayer for Qwen3AttentionLayer {
             // Sequence never reached this layer's ingest: nothing to carry.
             None => Ok(None),
         }
+    }
+
+    fn align_aux(
+        &self,
+        state: &mut dyn LayerState,
+        to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.align_seq_state(st, to_pos);
+        }
+        Ok(())
+    }
+
+    fn rewind_aux(
+        &self,
+        state: &mut dyn LayerState,
+        rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.rewind_seq_state(st, rows);
+        }
+        Ok(())
     }
 
     fn restore_aux(
@@ -281,6 +339,34 @@ impl TransformerLayer for Qwen3AttentionLayer {
 
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(Box::new(crate::layer::AttnLayerState::default()))
+    }
+
+    /// Free the QSA indexer carry this sequence lazily attached.
+    ///
+    /// `alloc_state` hands back an EMPTY `AttnLayerState`; the buffers appear
+    /// later, on first use, via `qsa_seq_state`. So the thing to release is
+    /// not what `alloc_state` returned — it is whatever the sequence grew.
+    /// `take()` makes this idempotent and leaves the state in the same shape
+    /// `alloc_state` produced.
+    ///
+    /// A layer with no QSA indexer (plain attention) never populates the
+    /// field, so the `take()` yields `None` and this costs nothing.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        let Some(attn) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(mut st) = attn.qsa.take() else {
+            return Ok(());
+        };
+        let Some(qsa) = self.qsa.as_ref() else {
+            // Buffers exist but the indexer is gone: nothing can size or
+            // free them correctly, and guessing would be worse than saying so.
+            anyhow::bail!("release_state: QSA seq state present but layer has no QSA indexer");
+        };
+        qsa.release_seq_state(&mut st, gpu)
     }
 
     fn transpose_moe_for_prefill(

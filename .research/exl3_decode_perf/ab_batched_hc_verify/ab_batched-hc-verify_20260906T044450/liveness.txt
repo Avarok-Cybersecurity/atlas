@@ -1,0 +1,4 @@
+serial_1 live=yes boot_lines=1 gate_lines=1 multi_lines=0 declined=0 verify_errors=0 rc=0
+hcbatch_1 live=yes boot_lines=1 gate_lines=1 multi_lines=1 declined=0 verify_errors=0 rc=0
+hcbatch_2 live=yes boot_lines=1 gate_lines=1 multi_lines=1 declined=0 verify_errors=0 rc=0
+serial_2 live=yes boot_lines=1 gate_lines=1 multi_lines=0 declined=0 verify_errors=0 rc=0
