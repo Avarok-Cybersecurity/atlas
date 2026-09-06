@@ -284,6 +284,52 @@ fn an_empty_stream_splits_to_nothing() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Spawn diagnosis
+//
+// The old message told every failing spawn to install ffmpeg. These pin that a
+// present-but-unrunnable binary is no longer misreported, which is the case
+// that actually reached CI: a script written and chmod'd 0755 by the test above.
+// ---------------------------------------------------------------------------
+
+fn spawn_message(kind: std::io::ErrorKind) -> String {
+    spawn_failure("/opt/ff", std::io::Error::new(kind, "boom")).to_string()
+}
+
+#[test]
+fn a_missing_binary_still_says_install_ffmpeg() {
+    let m = spawn_message(std::io::ErrorKind::NotFound);
+    assert!(m.contains("is ffmpeg installed"), "{m}");
+    assert!(m.contains("/opt/ff"), "the binary must be named: {m}");
+}
+
+#[test]
+fn a_present_but_unrunnable_binary_is_not_reported_as_missing() {
+    for (kind, expected) in [
+        (std::io::ErrorKind::PermissionDenied, "noexec"),
+        (std::io::ErrorKind::ExecutableFileBusy, "ETXTBSY"),
+    ] {
+        let m = spawn_message(kind);
+        assert!(
+            !m.contains("is ffmpeg installed"),
+            "{kind:?} must not be blamed on a missing install: {m}"
+        );
+        assert!(m.contains(expected), "{kind:?} must name its cause: {m}");
+    }
+}
+
+#[test]
+fn an_unclassified_spawn_error_still_carries_the_os_message() {
+    // No hint is invented for a kind we have not reasoned about -- but the OS
+    // text must survive, because that is the whole point of the change.
+    let m = spawn_message(std::io::ErrorKind::Other);
+    assert!(
+        m.contains("boom"),
+        "the OS error must reach the operator: {m}"
+    );
+    assert!(!m.contains("is ffmpeg installed"), "{m}");
+}
+
 #[test]
 fn a_stream_of_two_pngs_splits_into_two_frames() {
     let mut buf = Vec::new();
